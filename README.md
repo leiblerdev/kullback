@@ -16,7 +16,18 @@ Two things follow from grading the end state instead of the transcript. The grad
 
 ## 2. How it solves it
 
-Kullback is two programs over one set of data records, with every model behind one interface.
+Every harness has the same loop. Traces go in, an Environment comes out, candidates run in it, code grades what they changed, you read the report and decide, and what you decide plus the next week of traces feeds the next build.
+
+```mermaid
+flowchart LR
+    T[Your traces] --> B[Build the Environment]
+    B --> R[Run candidates in it]
+    R --> V[Verdict per Run, code only]
+    V --> P[Report per Task, you decide]
+    P -. new traces, fixes, disputes .-> B
+```
+
+Inside the loop, Kullback is two programs over one set of data records, with every model behind one interface.
 
 ```mermaid
 architecture-beta
@@ -38,7 +49,7 @@ architecture-beta
     service route(server)[route] in runner
     service verdict(server)[verdict and judge] in runner
 
-    group models(internet)[Models behind one interface]
+    group models(internet)[Models]
     service candidate(internet)[Candidate] in models
     service judges(internet)[Two judges] in models
 
@@ -68,19 +79,36 @@ The Builder reads traces and writes an Environment. The Runner takes an Environm
 Every stage is a function over records on disk, content-addressed, with a code gate at the end. A stage that fails its gate hands the artifact back to the stage that produced it, with the failure attached, for a bounded number of retries. A share of every Task's runs is held out from the start and never used for building, so the numbers you see at the end are measured on runs the Builder did not see.
 
 ```mermaid
-flowchart TB
-    raw[Raw trace files<br/>stored byte for byte, hashed] --> ingest
-    ingest -->|Trace records, grader fields stripped| mine
-    mine -->|ToolSig per tool<br/>EntitySchema per table| cluster
-    cluster -->|Category by write tools<br/>Task by intent| compile
-    compile -->|db.json from inverse replay<br/>one tool body per ToolSig| gateA{Gate A<br/>replay the recorded calls}
-    gateA -->|writes 100%, reads 0 mismatch| policy
-    gateA -->|miss| compile
-    policy -->|predicates with a positive and a negative test| usersim[user sim]
-    usersim -->|disclosure rules from the trace| verifier
-    verifier -->|atoms from k frontier re-runs| gateV{Verifier gates<br/>oracle passes, empty run fails,<br/>plausible wrong fails}
-    gateV -->|pass| env[(Environment)]
-    gateV -->|fail| verifier
+flowchart LR
+    raw[(Raw traces)]
+    subgraph S1[1 ingest]
+        direction TB
+        i[Trace records] --> ig{{every call parsed<br/>grader fields stripped}}
+    end
+    subgraph S2[2 mine]
+        direction TB
+        m[Tool signatures<br/>tables and columns] --> mg{{3 calls per tool<br/>or flagged}}
+    end
+    subgraph S3[3 cluster]
+        direction TB
+        c[Categories and Tasks<br/>one line intent each] --> cg{{intent grounded<br/>in more than one Run}}
+    end
+    subgraph S4[4 compile]
+        direction TB
+        e[db.json<br/>one tool body per tool] --> eg{{Gate A: replay recorded calls<br/>writes 100%, reads 0 mismatch}}
+        eg -. miss, rewrite, max 3 .-> e
+    end
+    subgraph S5[5 policy and user]
+        direction TB
+        p[predicate per rule<br/>simulated user rules] --> pg{{passing and failing<br/>test per rule}}
+    end
+    subgraph S6[6 verifier]
+        direction TB
+        v[atoms from k frontier re runs] --> vg{{oracle passes<br/>empty run fails<br/>plausible wrong fails}}
+        vg -. fail .-> v
+    end
+    env[(Environment)]
+    raw --> S1 --> S2 --> S3 --> S4 --> S5 --> S6 --> env
 ```
 
 Ingest stores your files unchanged and hashed, then derives trace records from them. Every derived field carries a pointer back to the byte range it came from, so a wrong value can always be traced to its source. Benchmark grader fields, if your traces are from a benchmark, are stripped into a sidecar that only the final comparison code may read.
@@ -101,23 +129,18 @@ Verifier derives the pass condition for each Task from what the frontier model d
 
 ```mermaid
 sequenceDiagram
-    participant C as Candidate model
-    participant L as loop.step
-    participant R as route
-    participant W as World (db + tools)
+    participant C as Candidate
+    participant L as loop
+    participant W as World
     participant U as Simulated user
-    C->>L: message with tool calls
-    L->>R: each call
-    R->>W: code (compiled tool)
-    alt no code path
-        R->>R: recording (same tool, canonical args, same state hash)
-    else no recording
-        R->>R: model stand-in, run marked Assisted
+    loop one turn, one JSONL line per event
+        C->>L: message with tool calls
+        L->>W: route each call: code, else recording, else stand in (Run marked Assisted)
+        W-->>L: result in your tools' own error encoding
+        L->>U: turn ends
+        U-->>C: next message from the recorded user's facts
     end
-    W-->>L: result in the customer's own error encoding
-    L->>U: turn ends
-    U-->>C: next user message from disclosure rules
-    L->>L: one JSONL line per event
+    L->>L: verdict: end state against the Task's Verifier, code only
 ```
 
 The loop is one function that advances a single turn, so the wrapper for any environment standard is packaging rather than redesign. Route tries code first, then an exact recording, then a model stand-in; the route taken is on the event, and a run served by a stand-in anywhere gets no counted Verdict. Verdict is a separate pass over the run's JSONL and the Task's Verifier, code only: required atoms present, forbidden writes absent, policy predicates never fired, the user's questions answered. It reports pass or fail with the failing atom and whether the candidate took the same path as the recording or a different one.
