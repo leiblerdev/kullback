@@ -128,6 +128,21 @@ def _ask(model: Model, system: str, payload: dict) -> Any:
     return model.query(messages)
 
 
+def is_assistant_call(call: Any) -> bool:
+    """Telecom's traces interleave the assistant and the simulated user's own tool calls, the user
+    running a separate toolkit against its own phone (docs/cross-domain-check.md, Judgement). Only the
+    assistant's calls describe the customer's Environment; a missing requestor is the assistant."""
+    return (call.requestor or "assistant") == "assistant"
+
+
+_is_assistant_call = is_assistant_call
+
+
+def skipped_user_calls(traces: list[Trace]) -> int:
+    """Tool calls whose requestor is not the assistant: never mined into a ToolSig, kind or schema."""
+    return sum(1 for trace in traces for call in trace.tool_calls if not _is_assistant_call(call))
+
+
 # --- tools -------------------------------------------------------------------
 
 def _new_acc() -> dict:
@@ -150,6 +165,8 @@ def _accumulate(traces: list[Trace]) -> dict[str, dict]:
     stats: dict[str, dict] = {}
     for trace in traces:
         for call in trace.tool_calls:
+            if not _is_assistant_call(call):
+                continue
             acc = stats.setdefault(call.name, _new_acc())
             acc["calls"] += 1
             if trace.trace_id not in acc["traces"]:
@@ -514,16 +531,20 @@ def reconstruct_truncated(call: Any, sig: ToolSig, complete_calls: list) -> Opti
     donors = _donor_results(call, sig, complete_calls)
     names = sorted(f.name for f in sig.result_schema)
     item_fields = [name[3:] for name in names if name.startswith("[].") and len(name) > 3]
-    if item_fields or isinstance(visible, list):
-        rows = [r for r in visible if isinstance(r, dict)] if isinstance(visible, list) else []
+    # The shape to reconstruct is this call's own visible content alone; `item_fields` (read off the
+    # tool's whole schema, which may carry list-shaped fields from an unrelated call) only decides
+    # which fields fill a row, never which shape a truncated dict result gets rebuilt as.
+    if isinstance(visible, list):
+        rows = [r for r in visible if isinstance(r, dict)]
         donor_rows = [r for d in donors if isinstance(d, list) for r in d if isinstance(r, dict)]
         if not rows and donor_rows:
             rows = [{}]
-        filled = sorted({"[]." + f for row in rows for f in _fill_row(row, item_fields, donor_rows)})
         result: Any = rows
+        targets, fields, donor_pool, prefix = rows, item_fields, donor_rows, "[]."
     else:
         result = dict(visible) if isinstance(visible, dict) else {}
-        filled = _fill_row(result, names, [d for d in donors if isinstance(d, dict)])
+        targets, fields, donor_pool, prefix = [result], names, [d for d in donors if isinstance(d, dict)], ""
+    filled = sorted({prefix + f for row in targets for f in _fill_row(row, fields, donor_pool)})
     return {"result": result, "reconstructed_fields": filled, "tags": ["reconstructed"],
             "assisted": True, "tool": sig.name,
             "visible_len": getattr(call, "visible_len", None),
@@ -633,8 +654,12 @@ def observed_effects(traces: list[Trace]) -> dict[str, list[EffectObservation]]:
     out: dict[str, list[EffectObservation]] = {}
     seen: set = set()
     for trace in traces:
+        # Only the assistant's own calls can be evidence of, or credited with, a change to the
+        # Environment; the simulated user's own actions must not pollute what the agent is seen to
+        # have written (docs/cross-domain-check.md, Judgement).
+        calls = [c for c in trace.tool_calls if _is_assistant_call(c)]
         last: dict[tuple, tuple[int, Any]] = {}
-        for index, call in enumerate(trace.tool_calls):
+        for index, call in enumerate(calls):
             if call.error is not None or call.result is None or getattr(call, "truncated", False):
                 continue  # a cut result is not evidence of a change (D95)
             parsed = _parse(call.result)
@@ -649,7 +674,7 @@ def observed_effects(traces: list[Trace]) -> dict[str, list[EffectObservation]]:
             after = _flat(parsed)
             changed_values = set().union(*(_values_at(after, field) for field in changed))
             candidates = [
-                c for c in trace.tool_calls[previous[0] + 1: index]
+                c for c in calls[previous[0] + 1: index]
                 if c.name != call.name and c.error is None
                 and _explains(c, call.args or {}, changed_values)
             ]
@@ -668,8 +693,12 @@ def observed_effects(traces: list[Trace]) -> dict[str, list[EffectObservation]]:
 
 # --- the mine gate (design section 6) ----------------------------------------
 
-def gate_tools(sigs: list[ToolSig]) -> GateResult:
-    """Each ToolSig has at least three observed calls or is flagged llm; flag, never synthesize."""
+def gate_tools(sigs: list[ToolSig], traces: Optional[list[Trace]] = None) -> GateResult:
+    """Each ToolSig has at least three observed calls or is flagged llm; flag, never synthesize.
+
+    `traces` is optional and only feeds the `skipped_user_calls` metric (the simulated user's own
+    tool calls, mined nowhere); passing it costs nothing when there are none to skip (D66, D68).
+    """
     failures = []
     for sig in sigs:
         calls = sig.evidence_strength.call_count
@@ -680,7 +709,8 @@ def gate_tools(sigs: list[ToolSig]) -> GateResult:
         passed=not failures,
         metrics={"tools": len(sigs), "thin": len(failures),
                  "unclassified": sum(1 for s in sigs if s.unclassified),
-                 "writes": sum(1 for s in sigs if s.kind == "write")},
+                 "writes": sum(1 for s in sigs if s.kind == "write"),
+                 "skipped_user_calls": skipped_user_calls(traces) if traces is not None else 0},
         failures=failures,
     )
 
@@ -903,6 +933,8 @@ def mine_schema(traces: list[Trace], db_json_path: Optional[Path] = None,
                     _add_value(store, str(table), str(name), value)
     for trace in traces:
         for call in trace.tool_calls:
+            if not _is_assistant_call(call):
+                continue
             if call.error is not None or call.result is None:
                 continue
             parsed = _parse(call.result)

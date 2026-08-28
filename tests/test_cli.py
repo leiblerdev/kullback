@@ -9,7 +9,7 @@ import pytest
 from typer.testing import CliRunner
 
 from harness import cli
-from harness.shared.records import Environment, Task, Verdict, Verifier, as_dict
+from harness.shared.records import Environment, RunnerVersion, Task, Verdict, Verifier, as_dict
 
 runner = CliRunner()
 
@@ -155,6 +155,10 @@ def seed_task(workdir: Path) -> None:
     (workdir / "runs" / "t1" / "r1.jsonl").write_text(
         json.dumps({"idx": 0, "type": "stop", "payload": {"run_id": "r1"}}) + "\n", encoding="utf-8")
     (workdir / "environment.json").write_text(json.dumps(as_dict(Environment(env_id="env-1"))), encoding="utf-8")
+    # regrade_gate (D97) refuses a Verdict with no runner_version, so the real regrade path (the
+    # one test below that does not fake cli._entry) needs a frozen RunnerVersion on disk too.
+    (workdir / "runner_version.json").write_text(
+        json.dumps(as_dict(RunnerVersion(runner_version="rv-1"))), encoding="utf-8")
 
 
 def seed_runs(workdir: Path, runs: list) -> None:
@@ -352,6 +356,22 @@ def test_regrade_re_scores_a_queued_run_and_empties_the_queue(workdir):
     assert "1 re-scored from the regrade queue" in result.output
     assert canon.queued_regrades(workdir) == []
     assert json.loads(stored[0].read_text(encoding="utf-8"))["notes"] != ["stale"]
+
+
+def test_a_verdict_missing_its_runner_version_is_refused_not_counted(workdir):
+    """D97: regrade_gate refuses a Verdict that never copied its Runner version (row 18).
+
+    The regrade cache has already written the Verdict to disk by the time the gate sees it (D97's
+    own cache path), so refusal is what happens next: the Task is not counted as scored and the
+    command exits non-zero, rather than the file being retracted.
+    """
+    seed_task(workdir)
+    (workdir / "runner_version.json").unlink()
+    result = invoke("verdict", "--workdir", str(workdir))
+    assert result.exit_code == 1
+    assert "refused" in result.output
+    assert "runner_version is not on the Verdict" in result.output
+    assert "nothing was scored" in result.output
 
 
 def test_nothing_scored_is_a_failure_not_a_silent_success(workdir):

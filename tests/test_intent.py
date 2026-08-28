@@ -39,7 +39,13 @@ def cancel_trace(trace_id: str, order: str) -> Trace:
     return make_trace(
         trace_id,
         [f"i want to cancel order {order} because the delivery was late"],
-        [{"name": "cancel_order", "args": {"order_id": order, "reason": "late delivery"}, "result": {"status": "cancelled"}}],
+        [
+            {
+                "name": "cancel_order",
+                "args": {"order_id": order, "reason": "late delivery"},
+                "result": {"status": "cancelled"},
+            }
+        ],
     )
 
 
@@ -74,7 +80,9 @@ def test_span_candidates_cover_user_words_tool_arguments_and_written_values():
 
 
 def test_a_result_of_a_tool_that_is_not_a_write_is_not_a_span():
-    trace = make_trace("t1", ["where is it"], [{"name": "get_order", "args": {"order_id": "W1"}, "result": {"status": "delivered"}}])
+    trace = make_trace(
+        "t1", ["where is it"], [{"name": "get_order", "args": {"order_id": "W1"}, "result": {"status": "delivered"}}]
+    )
     texts = [s.text for s in span_candidates(trace, WRITES)]
     assert not any("delivered" in t for t in texts)
     assert any("W1" in t for t in texts)
@@ -99,7 +107,13 @@ def test_the_tool_name_is_not_part_of_the_evidence():
     trace = make_trace(
         "t1",
         ["i would like to swap the shirt for a larger one"],
-        [{"name": "exchange_delivered_order_items", "args": {"item_ids": ["4983901480"]}, "result": {"status": "exchange requested"}}],
+        [
+            {
+                "name": "exchange_delivered_order_items",
+                "args": {"item_ids": ["4983901480"]},
+                "result": {"status": "exchange requested"},
+            }
+        ],
     )
     texts = [s.text for s in span_candidates(trace, {"exchange_delivered_order_items"})]
     assert not any("delivered" in t for t in texts), texts
@@ -114,8 +128,16 @@ def test_a_written_value_span_is_what_the_write_changed():
         "t1",
         ["cancel it please"],
         [
-            {"name": "get_order", "args": {"order_id": "W1"}, "result": {"order_id": "W1", "status": "pending", "address": "elm street"}},
-            {"name": "cancel_order", "args": {"order_id": "W1"}, "result": {"order_id": "W1", "status": "cancelled", "address": "elm street"}},
+            {
+                "name": "get_order",
+                "args": {"order_id": "W1"},
+                "result": {"order_id": "W1", "status": "pending", "address": "elm street"},
+            },
+            {
+                "name": "cancel_order",
+                "args": {"order_id": "W1"},
+                "result": {"order_id": "W1", "status": "cancelled", "address": "elm street"},
+            },
         ],
     )
     written = [s for s in span_candidates(trace, WRITES) if s.source == "written_value"]
@@ -220,7 +242,9 @@ def test_an_intent_that_is_the_union_of_two_runs_is_refused(make_test_model):
     """t1 cancels, t2 changes an address: neither half is the Task's shared intent (D83)."""
     traces = [cancel_trace("t1", "W1"), make_trace("t2", ["please change shipping address on order W2"], [])]
     task = Task(id="task_1", run_ids=["t1", "t2"])
-    intent = write_intent(make_test_model(["cancel order and change shipping address"]), task, traces, write_tools=WRITES)
+    intent = write_intent(
+        make_test_model(["cancel order and change shipping address"]), task, traces, write_tools=WRITES
+    )
     assert intent.ungrounded_phrases == []  # each half is evidenced, in one Run each
     assert intent.run_coverage == {"cancel order": ["t1"], "change shipping address": ["t2"]}
     assert intent.grounded is False, [(s.phrase, s.trace_id) for s in intent.spans]
@@ -231,7 +255,12 @@ def test_a_task_whose_member_traces_are_missing_is_an_error(make_test_model):
     """Two Run ids, one Trace handed in: not a single-Run Task, an incomplete call (D97, D81)."""
     task = Task(id="task_1", run_ids=["t1", "t2"])
     with pytest.raises(ValueError) as excinfo:
-        write_intent(make_test_model(["cancel order W1 because of the late delivery"]), task, [cancel_trace("t1", "W1")], write_tools=WRITES)
+        write_intent(
+            make_test_model(["cancel order W1 because of the late delivery"]),
+            task,
+            [cancel_trace("t1", "W1")],
+            write_tools=WRITES,
+        )
     assert "t2" in str(excinfo.value)
 
 
@@ -259,7 +288,12 @@ def test_an_empty_model_reply_is_not_grounded(make_test_model):
 
 def test_the_model_name_travels_with_the_intent(make_test_model):
     task, traces = two_run_task()
-    intent = write_intent(make_test_model(["cancel the order because the delivery was late"], name="scripted"), task, traces, write_tools=WRITES)
+    intent = write_intent(
+        make_test_model(["cancel the order because the delivery was late"], name="scripted"),
+        task,
+        traces,
+        write_tools=WRITES,
+    )
     assert intent.model == "scripted"
 
 
@@ -271,7 +305,9 @@ def test_a_task_with_no_member_traces_is_an_error(make_test_model):
 
 def test_write_intent_round_trips_through_json(make_test_model):
     task, traces = two_run_task()
-    intent = write_intent(make_test_model(["cancel the order because the delivery was late"]), task, traces, write_tools=WRITES)
+    intent = write_intent(
+        make_test_model(["cancel the order because the delivery was late"]), task, traces, write_tools=WRITES
+    )
     assert Intent.model_validate(intent.model_dump(mode="json", by_alias=True)) == intent
 
 
@@ -280,7 +316,9 @@ def test_write_intent_round_trips_through_json(make_test_model):
 
 def test_apply_intent_sets_the_task_name_and_intent(make_test_model):
     task, traces = two_run_task()
-    intent = write_intent(make_test_model(["cancel the order because the delivery was late"]), task, traces, write_tools=WRITES)
+    intent = write_intent(
+        make_test_model(["cancel the order because the delivery was late"]), task, traces, write_tools=WRITES
+    )
     updated = apply_intent(task, intent)
     assert updated.intent == "cancel the order because the delivery was late"
     assert updated.name == "cancel the order because the delivery was late"
@@ -298,5 +336,7 @@ def test_apply_intent_leaves_an_ungrounded_intent_off_the_task(make_test_model):
 def test_apply_intent_carries_the_unguarded_mark(make_test_model):
     traces = [cancel_trace("t1", "W1")]
     task = Task(id="task_1", run_ids=["t1"])
-    intent = write_intent(make_test_model(["cancel order W1 because of the late delivery"]), task, traces, write_tools=WRITES)
+    intent = write_intent(
+        make_test_model(["cancel order W1 because of the late delivery"]), task, traces, write_tools=WRITES
+    )
     assert apply_intent(task, intent).unguarded is True

@@ -634,6 +634,30 @@ def test_a_structured_tool_result_goes_as_json_not_a_python_repr():
     assert "'" not in text and "True" not in text and "None" not in text
 
 
+def test_two_tool_results_from_one_turn_group_into_one_user_message():
+    """Two tool calls in one assistant turn must produce user, assistant, user, not two separate
+    user messages back to back, which the Anthropic Messages API rejects."""
+    _, out = pv._to_anthropic(
+        [
+            {"role": "user", "content": "hi"},
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [
+                    {"id": "c1", "name": "get_order", "arguments": {}},
+                    {"id": "c2", "name": "get_user", "arguments": {}},
+                ],
+            },
+            {"role": "tool", "tool_call_id": "c1", "content": "order result"},
+            {"role": "tool", "tool_call_id": "c2", "content": "user result"},
+        ]
+    )
+    assert [m["role"] for m in out] == ["user", "assistant", "user"]
+    tool_results = out[-1]["content"]
+    assert [b["tool_use_id"] for b in tool_results] == ["c1", "c2"]
+    assert [b["content"] for b in tool_results] == ["order result", "user result"]
+
+
 def test_an_openai_message_carrying_a_dict_result_goes_as_json():
     message = pv._openai_message({"role": "tool", "tool_call_id": "c1", "content": {"a": 1, "b": None}})
     assert json.loads(message["content"]) == {"a": 1, "b": None}
@@ -759,3 +783,127 @@ def test_load_dotenv_adds_keys_without_overriding(tmp_path):
     assert added == {"OPENAI_API_KEY": "sk-test", "HARNESS_ALLOW_MODEL_REQUESTS": "1"}
     assert env == {"ALREADY": "old", "OPENAI_API_KEY": "sk-test", "HARNESS_ALLOW_MODEL_REQUESTS": "1"}
     assert load_dotenv(tmp_path / "missing.env", env) == {}
+
+
+# --- prompt_cache_key (docs/prompt-caching.md item 4) ---
+
+
+def test_openai_body_carries_the_prompt_cache_key_when_set(live, sleeps):
+    seen = {}
+
+    def handler(request):
+        seen["body"] = pv.json_body(request)
+        return httpx.Response(200, json={"model": "gpt-4o-mini", "choices": [{"message": {"content": "hi"}}]})
+
+    model = openai_model(handler, sleeps)
+    model.query(
+        [{"role": "user", "content": "hi"}],
+        config=pv.ModelConfig(prompt_cache_key="kullback-abc-compile_tools"),
+    )
+    assert seen["body"]["prompt_cache_key"] == "kullback-abc-compile_tools"
+
+
+def test_openai_body_omits_the_prompt_cache_key_when_unset(live, sleeps):
+    seen = {}
+
+    def handler(request):
+        seen["body"] = pv.json_body(request)
+        return httpx.Response(200, json={"model": "gpt-4o-mini", "choices": [{"message": {"content": "hi"}}]})
+
+    model = openai_model(handler, sleeps)
+    model.query([{"role": "user", "content": "hi"}])
+    assert "prompt_cache_key" not in seen["body"]
+
+
+def test_anthropic_body_ignores_the_prompt_cache_key(live, sleeps):
+    seen = {}
+
+    def handler(request):
+        seen["body"] = pv.json_body(request)
+        return httpx.Response(
+            200,
+            json={
+                "content": [{"type": "text", "text": "hi"}],
+                "model": "claude-opus-5",
+                "stop_reason": "end_turn",
+                "usage": {"input_tokens": 1, "output_tokens": 1},
+            },
+        )
+
+    model = anthropic_model(handler, sleeps)
+    model.query(
+        [{"role": "user", "content": "hi"}],
+        config=pv.ModelConfig(prompt_cache_key="kullback-abc-compile_tools"),
+    )
+    assert "prompt_cache_key" not in seen["body"]
+
+
+# --- MemoModel (docs/prompt-caching.md item 3) ---
+
+
+def test_a_second_identical_query_is_a_hit_and_does_not_reach_the_inner_model(tmp_path):
+    inner = pv.TestModel(["first", "second"])
+    memo = pv.MemoModel(inner, tmp_path)
+    messages = [{"role": "user", "content": "hi"}]
+
+    first = memo.query(messages)
+    assert first.content == "first"
+    assert memo.calls == 1 and memo.hits == 0 and memo.last_hit is False
+
+    second = memo.query(messages)
+    assert second.content == "first"  # served from the memo, not TestModel's second scripted reply
+    assert memo.calls == 2 and memo.hits == 1 and memo.last_hit is True
+    assert len(inner.calls) == 1, "a hit must never reach the inner model"
+
+
+def test_a_memo_hit_carries_zeroed_usage(tmp_path):
+    inner = pv.TestModel([pv.ModelReply(content="x", usage=pv.Usage(input=10, output=5))])
+    memo = pv.MemoModel(inner, tmp_path)
+    messages = [{"role": "user", "content": "hi"}]
+
+    first = memo.query(messages)
+    assert first.usage.input == 10 and first.usage.output == 5
+
+    second = memo.query(messages)
+    assert second.usage.input == 0 and second.usage.output == 0
+
+
+def test_a_different_config_is_a_miss(tmp_path):
+    inner = pv.TestModel(["a", "b"])
+    memo = pv.MemoModel(inner, tmp_path)
+    messages = [{"role": "user", "content": "hi"}]
+
+    memo.query(messages, config=pv.ModelConfig(temperature=0.1))
+    memo.query(messages, config=pv.ModelConfig(temperature=0.9))
+    assert memo.hits == 0 and len(inner.calls) == 2
+
+
+def test_a_different_tool_list_is_a_miss(tmp_path):
+    inner = pv.TestModel(["a", "b"])
+    memo = pv.MemoModel(inner, tmp_path)
+    messages = [{"role": "user", "content": "hi"}]
+
+    memo.query(messages, tools=[{"name": "get_order"}])
+    memo.query(messages, tools=[{"name": "get_refund"}])
+    assert memo.hits == 0 and len(inner.calls) == 2
+
+
+def test_the_cache_directory_is_content_addressed(tmp_path):
+    inner = pv.TestModel(["a"])
+    memo = pv.MemoModel(inner, tmp_path)
+    memo.query([{"role": "user", "content": "hi"}])
+    files = list((tmp_path / pv.MemoModel.CACHE_DIR).glob("*.json"))
+    assert len(files) == 1
+    key = memo._key([{"role": "user", "content": "hi"}], None, None)
+    assert files[0].name == f"{key}.json"
+
+
+def test_the_memo_survives_a_second_memomodel_over_the_same_workdir(tmp_path):
+    inner_one = pv.TestModel(["a"])
+    pv.MemoModel(inner_one, tmp_path).query([{"role": "user", "content": "hi"}])
+
+    inner_two = pv.TestModel(["should not be reached"])
+    memo_two = pv.MemoModel(inner_two, tmp_path)
+    reply = memo_two.query([{"role": "user", "content": "hi"}])
+    assert reply.content == "a"
+    assert inner_two.calls == []

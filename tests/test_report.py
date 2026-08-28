@@ -89,7 +89,12 @@ def data() -> ReportData:
             StageStatus(name="mine", status="ran"),
             StageStatus(name="compile_tools", status="failed", gate="replay_fidelity", attempts=3),
         ],
-        tasks=[Task(id="t1", name="cancel an order", intent="cancel the pending order", run_ids=["r1", "r2", "r3", "r4", "r5"])],
+        tasks=[
+            Task(
+                id="t1", name="cancel an order", intent="cancel the pending order",
+                run_ids=["r1", "r2", "r3", "r4", "r5"],
+            )
+        ],
         verifiers=[verifier],
         runs=[
             a_run("r1", "frontier-model"),
@@ -116,7 +121,9 @@ def data() -> ReportData:
             Constraint(id="p3", text="never disclose another user's address"),
         ],
         policy_exercised=["p1"],
-        task_coverage=[TaskCoverage(task_id="t1", covered=False, reason="1 Run assisted on search_products", run_count=5)],
+        task_coverage=[
+            TaskCoverage(task_id="t1", covered=False, reason="1 Run assisted on search_products", run_count=5)
+        ],
         judge_disagreement={"pairs": 8, "disagreements": 2, "rate": 0.25},
         disagreement_queue=[
             {"use": "cause", "item_id": "r5", "verdict_a": "environment", "verdict_b": "candidate"},
@@ -386,6 +393,27 @@ def test_load_reads_records_from_a_workdir(workdir: Path, data: ReportData):
     assert loaded.built is True
     text = render(loaded)
     assert text.startswith("# ")
+
+
+def test_load_counts_judge_pairs_the_same_way_judge_py_does(workdir: Path):
+    """Row 20: load() shares judge.py's disagreement_stats, so abstains reach the report (D92).
+
+    Before this fix load() recomputed only pairs/disagreements/rate by hand and never set abstains,
+    so the abstention line in _queue() never fired even though a judge_pairs.jsonl carried abstains.
+    """
+    from harness.runner.judge import disagreement_rate
+
+    (workdir / "judge_pairs.jsonl").write_text(
+        "\n".join(json.dumps(row) for row in [
+            {"disagreement": True}, {"disagreement": False}, {"abstain": True}, {"abstain": True},
+        ]) + "\n",
+        encoding="utf-8",
+    )
+    loaded = load(workdir)
+    assert loaded.judge_disagreement == disagreement_rate(workdir)
+    assert loaded.judge_disagreement["abstains"] == 2
+    assert loaded.judge_disagreement["abstain_rate"] == 0.5
+    assert "Judge abstention: 2 of 4 pairs (50%)" in render(loaded)
 
 
 def test_load_on_an_empty_workdir_still_renders(workdir: Path):

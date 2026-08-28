@@ -376,6 +376,30 @@ def test_retire_lesson_marks_it_and_keeps_it_in_the_file(workdir):
     assert "no confirmed benefit" in (loaded.retired_reason or "")
 
 
+def test_record_application_is_not_rejected_by_an_earlier_applications_own_text(workdir):
+    """D87: only the new application is checked, not the whole reconstituted lesson. A customer's
+    mined vocabulary grows across builds; an old, already-saved application's own build id joining
+    that vocabulary must not reject a later, individually clean application."""
+    saved = save_lesson(workdir, _lesson(), vocabulary=[])
+    record_application(workdir, saved.id, build_id="build-old-1", outcome="fixed the replay",
+                       vocabulary=[])
+    grown_vocabulary = ["build-old-1"]
+    record_application(workdir, saved.id, build_id="build-new-2", outcome="steady",
+                       vocabulary=grown_vocabulary)
+    loaded = load_lessons(workdir)[0]
+    assert [a.build_id for a in loaded.applications] == ["build-old-1", "build-new-2"]
+
+
+def test_retire_lesson_is_not_rejected_by_an_earlier_applications_own_text(workdir):
+    saved = save_lesson(workdir, _lesson(), vocabulary=[])
+    record_application(workdir, saved.id, build_id="build-old-1", outcome="fixed the replay",
+                       vocabulary=[])
+    grown_vocabulary = ["build-old-1"]
+    retired = retire_lesson(workdir, saved.id, reason="no confirmed benefit",
+                            vocabulary=grown_vocabulary)
+    assert retired.retired is True
+
+
 def test_record_application_on_an_unknown_lesson_raises(workdir):
     save_lesson(workdir, _lesson(), vocabulary=[])
     with pytest.raises(KeyError):
@@ -633,6 +657,18 @@ def test_a_node_snapshots_the_builder_files_and_can_restore_them(workdir, tmp_pa
     assert same == node.files_hash
     with pytest.raises(TreeError):
         restore(workdir, init_tree(workdir), builder)
+
+
+def test_restore_deletes_a_file_the_snapshot_does_not_have(workdir, tmp_path):
+    """restore() reverts an edit (D64); a file a rejected edit added has no standing to survive it."""
+    builder = tmp_path / "builder3"
+    builder.mkdir()
+    (builder / "mine.py").write_text("first version", encoding="utf-8")
+    node = propose(workdir, "widen the result schema", "p", files_dir=builder)
+    (builder / "extra.py").write_text("added after the snapshot was taken", encoding="utf-8")
+    restore(workdir, node, builder)
+    assert (builder / "mine.py").read_text(encoding="utf-8") == "first version"
+    assert not (builder / "extra.py").exists()
 
 
 def test_an_edit_node_never_claims_its_parents_files_hash(workdir):

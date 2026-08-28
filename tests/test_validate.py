@@ -540,6 +540,23 @@ def test_regrade_gate_wants_every_version_on_every_verdict():
     assert any("runner_version" in f for f in out.failures)
 
 
+def test_the_predicate_builtins_cover_everything_policy_certifies_at_build_time():
+    """The same pin test_verdict.py runs for verdict.py's atom gate, for validate.py's constraint gate.
+
+    Both import shared/confinement.py's one allowlist now, but this test stays here so a future
+    change that gives either module its own copy again is caught on both sides of the split.
+    """
+    import re
+
+    from harness.builder import policy
+    from harness.runner.validate import SAFE_PREDICATE_BUILTIN_NAMES
+
+    block = re.search(r"_ALLOWED = \(\n(.*?)\n\)", policy._RUNNER_SRC, re.S).group(1)
+    allowed = set(re.findall(r'"([A-Za-z_]+)"', block))
+    assert allowed
+    assert allowed <= set(SAFE_PREDICATE_BUILTIN_NAMES)
+
+
 # --- D89 import boundary ---
 
 def test_import_boundary_check_passes_on_this_repo():

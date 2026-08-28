@@ -20,6 +20,7 @@ from harness.runner.pipeline import (
     PipelineError,
     Stage,
     choose_anchor,
+    code_hash,
     load_anchor,
 )
 from harness.shared.records import Category, GateResult, Task
@@ -236,6 +237,32 @@ def test_a_function_with_no_findable_source_is_refused_rather_than_hashed_as_a_c
     assert "code_version" in str(caught.value)
     assert Pipeline([Stage("s", Callable_(), [], ["out"], code_version="v1")],
                     workdir=workdir).run().status == "complete"
+
+
+def test_the_code_hash_of_one_function_is_not_moved_by_an_edit_elsewhere_in_its_file(tmp_path):
+    """A stage with no code_version must be busted by its own edits, not by every other edit in
+    the module that defines it: build.py holds 11 stages in one 500-line file."""
+    import importlib.util
+    import sys
+
+    def load(name, path, other_body):
+        path.write_text(
+            "def stage(ctx, inputs):\n    return {}\n\n\n"
+            f"def other(ctx, inputs):\n    {other_body}\n",
+            encoding="utf-8",
+        )
+        spec = importlib.util.spec_from_file_location(name, path)
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[name] = module
+        spec.loader.exec_module(module)
+        return module
+
+    # Same module name both times, so __module__ agrees and only the file's own bytes differ;
+    # that is exactly the "one stage edited elsewhere in the same build.py" scenario.
+    before = load("stage_module_under_test", tmp_path / "a.py", "return {'x': 1}")
+    after = load("stage_module_under_test", tmp_path / "b.py", "return {'x': 2}")
+
+    assert code_hash(Stage("s", before.stage, [], ["out"])) == code_hash(Stage("s", after.stage, [], ["out"]))
 
 
 def test_a_declared_input_path_moves_the_cache_key(workdir):

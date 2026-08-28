@@ -76,7 +76,8 @@ def oracle_lines(reason="no longer needed", order_id="W123"):
 
 @pytest.fixture
 def verifier():
-    """One Task's Verifier: a required write, an allowed value, a question, a message, a forbidden write, a Hard constraint."""
+    """One Task's Verifier: a required write, an allowed value, a question, a message, a forbidden write, a Hard
+    constraint."""
     return Verifier(
         task_id="t1",
         verifier_version="v1",
@@ -315,8 +316,14 @@ def _wrong_run_with(extra_event):
     [
         ({"idx": 60, "type": "tool_call", "payload": {"name": "lookup", "args": {}}, "assisted": True},
          "env_mark:assisted"),
-        ({"idx": 60, "type": "user_turn", "payload": {"content": "I do not have that", "fact_unavailable": "card_last_four"}},
-         "env_mark:fact_unavailable"),
+        (
+            {
+                "idx": 60,
+                "type": "user_turn",
+                "payload": {"content": "I do not have that", "fact_unavailable": "card_last_four"},
+            },
+            "env_mark:fact_unavailable",
+        ),
         ({"idx": 60, "type": "tool_call", "payload": {"name": "lookup", "args": {}, "overlay_miss": True}},
          "env_mark:overlay_miss"),
     ],
@@ -791,6 +798,22 @@ def test_inline_tool_calls_keep_the_position_of_their_model_call(write_run):
         id="h", kind="hard", predicate_src='user_confirmed_before("cancel_pending_order")')])
     out = verdict(write_run(lines), confirmed, simple_canon)
     assert out.passed is True
+
+
+def test_inline_tool_calls_are_read_from_a_reply_nested_payload(write_run):
+    """loop.py always nests the reply (and its tool_calls) under payload["reply"] (D90)."""
+    lines = [
+        header(),
+        user(0, "Cancel W123"),
+        user(1, "yes go ahead"),
+        {"idx": 2, "type": "model_call", "payload": {"reply": {"content": "", "tool_calls": [
+            {"id": "c2", "name": CANCEL, "arguments": {"order_id": "W123"}}]}}},
+        stop(3),
+    ]
+    confirmed = Verifier(task_id="t1", atoms=[Atom(
+        id="h", kind="hard", predicate_src='wrote("cancel_pending_order", order_id="W123")')])
+    out = verdict(write_run(lines), confirmed, simple_canon)
+    assert out.passed is True, out.notes
 
 
 def test_a_call_that_errored_is_not_a_call_that_happened(verifier, write_run):

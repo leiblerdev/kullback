@@ -1,4 +1,6 @@
-"""The canonicalizer (D39): rules as data turn a value into one canonical string, and equality by column class (D73), with a judged pair cached in an equivalence table a human can overturn (D84)."""
+"""The canonicalizer (D39): rules as data turn a value into one canonical string, and equality by
+column class (D73), with a judged pair cached in an equivalence table a human can overturn
+(D84)."""
 
 from __future__ import annotations
 

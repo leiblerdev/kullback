@@ -1,4 +1,5 @@
-"""The stage graph: topological, content-addressed, one rollback edge on a failed gate, the held-out anchor (D81) and the spend ceiling (D86)."""
+"""The stage graph: topological, content-addressed, one rollback edge on a failed gate, the held-out anchor
+(D81) and the spend ceiling (D86)."""
 
 from __future__ import annotations
 
@@ -242,11 +243,16 @@ def _fn_identity(fn: Any, stage_name: str) -> dict:
 
 
 def _source_bytes(fn: Any) -> Optional[bytes]:
+    """The stage function's own source, not the whole module: one edit in a 500-line build.py must
+    not cache-bust every other stage that file defines. The whole file is a fallback only, for a
+    function whose own source `inspect.getsource` cannot recover on its own."""
+    try:
+        return inspect.getsource(fn).encode("utf-8")
+    except (OSError, TypeError):
+        pass
     try:
         path = inspect.getsourcefile(fn)
-        if path and Path(path).is_file():
-            return Path(path).read_bytes()
-        return inspect.getsource(fn).encode("utf-8")
+        return Path(path).read_bytes() if path and Path(path).is_file() else None
     except (OSError, TypeError):
         return None
 

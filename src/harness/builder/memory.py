@@ -1,4 +1,5 @@
-"""The Builder's memory: a tree of Builder versions on disk (D64, D69, D82) and the cross-customer lessons file with its anonymization gate (D87)."""
+"""The Builder's memory: a tree of Builder versions on disk (D64, D69, D82) and the cross-customer
+lessons file with its anonymization gate (D87)."""
 
 from __future__ import annotations
 
@@ -125,7 +126,6 @@ class MemoryConfig(Record):
     single_rounds_before_batch: int = 20
     stability_window: int = 10
     max_rate_drift: float = 0.25
-    retire_after_applications: int = 3
 
 
 # --- tree on disk ---
@@ -370,18 +370,29 @@ def snapshot_files(workdir: str | Path, source_dir: str | Path) -> tuple[str, st
 
 
 def restore(workdir: str | Path, node: Node | str, dest_dir: str | Path) -> list[Path]:
-    """Put a node's files back into the Builder directory, so an edit can be reverted (D64)."""
+    """Put a node's files back into the Builder directory, so an edit can be reverted (D64).
+
+    A file dest_dir holds that the snapshot does not is removed too: an edit that added a file and
+    was then rejected would otherwise leave that file behind, which is not what "revert" promises.
+    """
     current = _resolve(workdir, node)
     if not current.files_dir:
         raise TreeError(f"node {current.id} has no files snapshot to restore")
     source = tree_dir(workdir) / current.files_dir
     if not source.is_dir():
         raise TreeError(f"snapshot {current.files_dir} is missing under {tree_dir(workdir)}")
+    dest = Path(dest_dir)
+    relatives = sorted(p.relative_to(source) for p in source.rglob("*") if p.is_file())
+    kept = set(relatives)
+    if dest.is_dir():
+        for path in sorted(p for p in dest.rglob("*") if p.is_file()):
+            if path.relative_to(dest) not in kept:
+                path.unlink()
     written = []
-    for path in sorted(p for p in source.rglob("*") if p.is_file()):
-        target = Path(dest_dir) / path.relative_to(source)
+    for relative in relatives:
+        target = dest / relative
         target.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copyfile(path, target)
+        shutil.copyfile(source / relative, target)
         written.append(target)
     return written
 
@@ -446,6 +457,17 @@ def _files_for(workdir: str | Path, files_hash: Optional[str],
     return (files_hash or ""), None
 
 
+def _prepare_proposal(workdir: str | Path, parent_id: Optional[str], files_hash: Optional[str],
+                      files_dir: Optional[str | Path]) -> tuple[Node, str, Optional[str]]:
+    """The setup a single edit and a batch both need: the tree exists, no proposal is open, and the
+    files are snapshotted, before either builds its own Node (D82)."""
+    init_tree(workdir)
+    _refuse_open(workdir)
+    parent = _parent_for(workdir, parent_id)
+    digest, relative = _files_for(workdir, files_hash, files_dir)
+    return parent, digest, relative
+
+
 def propose(
     workdir: str | Path,
     edit_description: str,
@@ -458,10 +480,7 @@ def propose(
     files_dir: Optional[str | Path] = None,
 ) -> Node:
     """Add a child node for one proposed edit; one open proposal at a time (D82)."""
-    init_tree(workdir)
-    _refuse_open(workdir)
-    parent = _parent_for(workdir, parent_id)
-    digest, relative = _files_for(workdir, files_hash, files_dir)
+    parent, digest, relative = _prepare_proposal(workdir, parent_id, files_hash, files_dir)
     return _new_node(workdir, parent, [edit_description], prediction, digest, relative,
                      edit_kind, edit_paths, False, None, _next_seq(_read_index(workdir)))
 
@@ -485,10 +504,7 @@ def propose_batch(
             "batches are not allowed yet (D82): the config flag, enough accepted single rounds "
             "and steady per-edit-kind acceptance rates all have to hold"
         )
-    init_tree(workdir)
-    _refuse_open(workdir)
-    parent = _parent_for(workdir, parent_id)
-    digest, relative = _files_for(workdir, files_hash, files_dir)
+    parent, digest, relative = _prepare_proposal(workdir, parent_id, files_hash, files_dir)
     return _new_node(workdir, parent, list(edits), prediction, digest, relative,
                      edit_kind, edit_paths, True, None, _next_seq(_read_index(workdir)))
 
@@ -631,6 +647,11 @@ def _collapse(text: str) -> str:
     return re.sub(r"[^a-z0-9]+", "", str(text).lower())
 
 
+def _get(obj: Any, key: str, default: Any = None) -> Any:
+    """One field off a dict or an object, the shape a ToolSig or a policy span arrives in either way."""
+    return obj.get(key, default) if isinstance(obj, dict) else getattr(obj, key, default)
+
+
 def _lesson_text(lesson: Lesson) -> str:
     parts = [lesson.id or ""] + [getattr(lesson, name) or "" for name in _FIELDS]
     parts.append(lesson.retired_reason or "")
@@ -640,14 +661,13 @@ def _lesson_text(lesson: Lesson) -> str:
 
 
 def _field_names(sig: Any) -> list[str]:
-    get = sig.get if isinstance(sig, dict) else (lambda k, d=None: getattr(sig, k, d))
     names = []
     for group in ("args_fields", "result_schema"):
-        for field in get(group, []) or []:
-            name = field.get("name") if isinstance(field, dict) else getattr(field, "name", None)
+        for field in _get(sig, group, []) or []:
+            name = _get(field, "name")
             if name:
                 names.append(str(name))
-    schema = get("args_schema", {}) or {}
+    schema = _get(sig, "args_schema", {}) or {}
     properties = schema.get("properties") if isinstance(schema, dict) else None
     names += [str(k) for k in (properties or {})]
     return names
@@ -659,7 +679,7 @@ def customer_vocabulary(toolsigs: Any = None, tables: Any = None, columns: Any =
     table and column names, entity ids."""
     names: set[str] = set()
     for sig in toolsigs or []:
-        name = sig.get("name") if isinstance(sig, dict) else getattr(sig, "name", None)
+        name = _get(sig, "name")
         if name:
             names.add(str(name))
         names.update(_field_names(sig))
@@ -670,9 +690,8 @@ def customer_vocabulary(toolsigs: Any = None, tables: Any = None, columns: Any =
     return {n.lower() for n in names}
 
 
-def check_anonymized(lesson: Lesson, vocabulary: Any) -> list[str]:
-    """Every customer name the lesson still contains; empty means the gate passes."""
-    raw = _lesson_text(lesson)
+def _names_found(raw: str, vocabulary: Any) -> list[str]:
+    """Every customer name this text contains; empty means the gate passes."""
     text, collapsed = _normalize(raw), _collapse(raw)
     found = set()
     for name in vocabulary or []:
@@ -683,6 +702,11 @@ def check_anonymized(lesson: Lesson, vocabulary: Any) -> list[str]:
         if needle in text or (squashed and squashed in collapsed):
             found.add(str(name))
     return sorted(found)
+
+
+def check_anonymized(lesson: Lesson, vocabulary: Any) -> list[str]:
+    """Every customer name the lesson still contains; empty means the gate passes."""
+    return _names_found(_lesson_text(lesson), vocabulary)
 
 
 def _render(lesson: Lesson) -> str:
@@ -799,7 +823,12 @@ def _update_lesson(target: str | Path, lesson_id: str, change) -> Lesson:
 def record_application(target: str | Path, lesson_id: str, build_id: str,
                        benefit: Optional[bool] = None, outcome: Optional[str] = None,
                        vocabulary: Any = _MISSING) -> Lesson:
-    """Append what this build's anchor said about the lesson, through the same gate (D87)."""
+    """Append what this build's anchor said about the lesson, through the same gate (D87).
+
+    Only the new application's own text is checked, not the whole reconstituted lesson: an
+    already-saved application that cleared the gate once must not fail a later, unrelated call
+    just because the customer's mined vocabulary grew in between (D87).
+    """
     application = LessonApplication(build_id=build_id, benefit=benefit, outcome=outcome)
 
     def change(lesson: Lesson) -> Lesson:
@@ -807,13 +836,14 @@ def record_application(target: str | Path, lesson_id: str, build_id: str,
             raise RetiredLessonError(
                 f"lesson {lesson.id} is retired and takes no new applications (D87)"
             )
-        updated = lesson.model_copy(deep=True)
-        updated.applications = list(updated.applications) + [application]
-        named = check_anonymized(updated, _vocabulary_for(target, vocabulary))
+        named = _names_found(f"{application.build_id or ''} {application.outcome or ''}",
+                             _vocabulary_for(target, vocabulary))
         if named:
             raise AnonymizationError(
                 "application names customer data and was not saved: " + ", ".join(named)
             )
+        updated = lesson.model_copy(deep=True)
+        updated.applications = list(updated.applications) + [application]
         return updated
 
     return _update_lesson(target, lesson_id, change)
@@ -828,21 +858,26 @@ def retirement_candidates(target: Any, min_applications: int = 3) -> list[Lesson
 
 def retire_lesson(target: str | Path, lesson_id: str, reason: str = "",
                   vocabulary: Any = _MISSING, force: bool = False) -> Lesson:
-    """The evaluator retires a lesson with applications and no confirmed benefit (D87), not the Builder."""
+    """The evaluator retires a lesson with applications and no confirmed benefit (D87), not the Builder.
+
+    Only the new retirement reason is checked, not the whole reconstituted lesson: an old,
+    already-approved application must not block a later, individually clean retirement just
+    because the customer's mined vocabulary grew in between (D87).
+    """
 
     def change(lesson: Lesson) -> Lesson:
         if not force and any(a.benefit is True for a in lesson.applications):
             raise LessonError(
                 f"lesson {lesson.id} has a confirmed benefit; retiring it needs force=True (D87)"
             )
-        updated = lesson.model_copy(deep=True)
-        updated.retired = True
-        updated.retired_reason = reason or updated.retired_reason
-        named = check_anonymized(updated, _vocabulary_for(target, vocabulary))
+        named = _names_found(reason, _vocabulary_for(target, vocabulary))
         if named:
             raise AnonymizationError(
                 "the retirement reason names customer data and was not saved: " + ", ".join(named)
             )
+        updated = lesson.model_copy(deep=True)
+        updated.retired = True
+        updated.retired_reason = reason or updated.retired_reason
         return updated
 
     return _update_lesson(target, lesson_id, change)
@@ -861,18 +896,16 @@ _NO_REASON = "set aside: the judge gave no reason"
 
 
 def _tool_line(sig: Any) -> str:
-    get = sig.get if isinstance(sig, dict) else (lambda k, d=None: getattr(sig, k, d))
-    fields = get("result_schema", []) or []
-    names = [f.get("name") if isinstance(f, dict) else getattr(f, "name", "") for f in fields]
-    line = f"- {get('name', '')} (kind {get('kind', 'unknown')}): {get('description', '') or ''}"
+    fields = _get(sig, "result_schema", []) or []
+    names = [_get(f, "name", "") for f in fields]
+    line = f"- {_get(sig, 'name', '')} (kind {_get(sig, 'kind', 'unknown')}): {_get(sig, 'description', '') or ''}"
     return line + (f" result fields: {', '.join(n for n in names if n)}" if names else "")
 
 
 def _span_text(span: Any) -> str:
     if isinstance(span, str):
         return span
-    get = span.get if isinstance(span, dict) else (lambda k, d=None: getattr(span, k, d))
-    return str(get("span_text", None) or get("text", "") or "")
+    return str(_get(span, "span_text", None) or _get(span, "text", "") or "")
 
 
 def _span_line(span: Any) -> str:
@@ -914,7 +947,7 @@ def evidence_in_material(evidence: str, toolsigs: Any = None, policy_spans: Any 
     if not said:
         return False
     for sig in toolsigs or []:
-        name = sig.get("name") if isinstance(sig, dict) else getattr(sig, "name", None)
+        name = _get(sig, "name")
         for candidate in [name] + _field_names(sig):
             squashed = _collapse(candidate or "")
             if len(squashed) >= _MIN_VOCAB_LEN and squashed in said:

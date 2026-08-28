@@ -180,7 +180,9 @@ def test_equivalence_shows_the_column_the_field_type_and_both_values(make_test_m
 
 
 def test_equivalence_abstains_when_the_judge_flags_a_number_or_unit_mismatch(make_test_model):
-    model = make_test_model([call(), answer(verdict="equivalent", flags=["number mismatch"], cited_spans=["25", "25.5"])])
+    model = make_test_model(
+        [call(), answer(verdict="equivalent", flags=["number mismatch"], cited_spans=["25", "25.5"])]
+    )
     result = judge_of(model).judge_equivalence("orders.total", "25", "25.5", field_type="currency amount")
     assert result.verdict == "abstain"
     assert "mismatch" in (result.reason or "")

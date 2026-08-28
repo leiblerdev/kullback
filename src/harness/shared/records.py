@@ -5,7 +5,8 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
-from typing import Any, Literal, Optional
+from pathlib import Path
+from typing import Any, Iterable, Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -420,6 +421,77 @@ class Run(Record):
     route_counts: dict[str, int] = Field(default_factory=dict)
     assisted: bool = False
     parent_run_id: Optional[str] = None
+
+
+_RUN_EVENT_TYPES = frozenset({"model_call", "tool_call", "tool_result", "user_turn", "error", "stop"})
+
+
+def load_run_jsonl(path: Any) -> Run:
+    """Read one Run from a JSONL file: header lines, event lines and a footer all work.
+
+    An event-typed line is an event; anything else updates the header, and a footer's own bundled
+    `events` list is spliced in. Header keys the Run model does not recognize become one final
+    `stop` event's payload instead of being dropped, which is where loop.py's Start and End state
+    land. verdict.py calls this directly; verifier.py keeps its own copy on the Builder side of the
+    D89 boundary, since the Runner and the Builder may not import one another.
+    """
+    file = Path(path)
+    header: dict = {}
+    events: list[dict] = []
+    for line in file.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        obj = json.loads(line)
+        if obj.get("type") in _RUN_EVENT_TYPES:
+            events.append(obj)
+        else:
+            events.extend(obj.pop("events", None) or [])
+            header.update(obj)
+    extra = {key: value for key, value in header.items() if key not in Run.model_fields}
+    if extra:
+        events.append({"type": "stop", "payload": extra})
+    header = {key: value for key, value in header.items() if key in Run.model_fields}
+    header.setdefault("run_id", file.stem)
+    header["events"] = [dict(event, idx=event.get("idx", pos)) for pos, event in enumerate(events)]
+    return Run.model_validate(header)
+
+
+def plain(value: Any) -> Any:
+    """A pydantic value as plain JSON data, so a state hash and an End state stay comparable.
+
+    route.py's StateView and Router use this for the world they read and write; compile_env.py
+    keeps its own copy inline, because its sandboxed subprocess runs with no import path back into
+    this package (`sys.executable -I` and `env={}`).
+    """
+    dump = getattr(value, "model_dump", None)
+    if callable(dump):
+        return dump(mode="json")
+    if isinstance(value, dict):
+        return {k: plain(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [plain(v) for v in value]
+    return value
+
+
+def disagreement_stats(rows: Iterable[dict]) -> dict:
+    """Judge disagreement and abstention over one list of judge_pairs rows (D92).
+
+    judge.py's disagreement_rate() (live, during a build) and report.py's load() (after the fact)
+    both count the same rows this way, so an abstain rate or an empty-pairs rate can never drift
+    between what a judge sees and what a finished report shows.
+    """
+    rows = list(rows)
+    pairs = len(rows)
+    disagreements = sum(1 for row in rows if row.get("disagreement"))
+    abstains = sum(1 for row in rows if row.get("abstain"))
+    return {
+        "pairs": pairs,
+        "disagreements": disagreements,
+        "rate": (disagreements / pairs) if pairs else 0.0,
+        "abstains": abstains,
+        "abstain_rate": (abstains / pairs) if pairs else 0.0,
+    }
 
 
 class RunnerVersion(Record):

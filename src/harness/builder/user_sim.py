@@ -1,4 +1,5 @@
-"""The Simulated user: rules taken exactly from one trace (D44), answers from the trace or the world, never invented (D77)."""
+"""The Simulated user: rules taken exactly from one trace (D44), answers from the trace or the
+world, never invented (D77)."""
 
 from __future__ import annotations
 
@@ -242,37 +243,50 @@ def _field_of(message: Any, key: str) -> str:
     return getattr(message, key, "") or ""
 
 
-def _flatten(row: Any) -> dict:
-    """A row's leaf values by key, nested dicts included, so 'zip' inside 'address' is found."""
-    flat: dict = {}
+def _flatten(row: Any) -> dict[str, list]:
+    """Every leaf value seen under each key, nested dicts included, so 'zip' inside 'address' is
+    found. A key seen more than once (two payment methods that both carry 'source') keeps every
+    value it was seen with, instead of the first one a dict happened to iterate to, so a caller can
+    tell a genuine single answer from an ambiguous one (row 11).
+    """
+    flat: dict[str, list] = {}
     if not isinstance(row, dict):
         return flat
     for key, value in row.items():
         if isinstance(value, dict):
-            for inner_key, inner_value in _flatten(value).items():
-                flat.setdefault(inner_key, inner_value)
+            for inner_key, inner_values in _flatten(value).items():
+                flat.setdefault(inner_key, []).extend(inner_values)
         elif not isinstance(value, list):
-            flat.setdefault(key, value)
+            flat.setdefault(key, []).append(value)
     return flat
+
+
+def _one(values: Optional[list]) -> Any:
+    """The value at one key, only when every occurrence the row carries for it agrees; otherwise the
+    field is unavailable rather than answered from whichever occurrence came first."""
+    if not values:
+        return None
+    return values[0] if len({str(v) for v in values}) == 1 else None
 
 
 def _row_value(row: dict, field: str) -> Any:
     """One field of this user's row, in the customer's own column names."""
     flat = _flatten(row)
     if field == "name":
-        first, last = flat.get("first_name"), flat.get("last_name")
-        return f"{first} {last}" if first and last else flat.get("name")
+        first, last = _one(flat.get("first_name")), _one(flat.get("last_name"))
+        return f"{first} {last}" if first and last else _one(flat.get("name"))
     if field == "address":
         address = row.get("address") if isinstance(row.get("address"), dict) else None
         if address:
             parts = [address.get(key) for key in ("address1", "address2", "city", "state", "zip")]
             return ", ".join(str(part) for part in parts if part)
-        return flat.get("address")
+        return _one(flat.get("address"))
     for key in {"card_last4": ("card_last4", "last_four", "last4"),
                 "payment_method": ("payment_method", "source"),
                 "phone": ("phone", "phone_number")}.get(field, (field,)):
-        if flat.get(key) is not None:
-            return flat[key]
+        value = _one(flat.get(key))
+        if value is not None:
+            return value
     return None
 
 
