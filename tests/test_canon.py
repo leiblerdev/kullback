@@ -590,6 +590,30 @@ def test_overturning_a_pair_queues_every_run_that_used_it(tmp_path):
     assert queued_regrades(tmp_path) == []
 
 
+def test_only_the_runs_a_batch_rescored_leave_the_queue(tmp_path):
+    """D84: a queued Run the batch did not re-score stays queued, or it keeps its stale Verdict."""
+    from harness.shared.canon import (
+        clear_regrade_queue,
+        overturn,
+        put,
+        queued_regrades,
+        record_use,
+    )
+
+    table = EquivalenceTable()
+    put(table, "reason", "no longer needed", "changed my mind", True, "llm", "1")
+    used = compare("no longer needed", "changed my mind", "semantic", table=table, column="reason")
+    for run_id in ("r1", "r2", "r3"):
+        record_use(tmp_path, used, run_id=run_id, task_id="t1")
+    overturn(table, "reason", "no longer needed", "changed my mind", False, workdir=tmp_path)
+    assert queued_regrades(tmp_path) == ["r1", "r2", "r3"]
+
+    clear_regrade_queue(tmp_path, {"r1", "r3"})
+    assert queued_regrades(tmp_path) == ["r2"]
+    clear_regrade_queue(tmp_path, ["r2"])
+    assert queued_regrades(tmp_path) == []
+
+
 def test_an_overturn_without_a_workdir_still_corrects_the_table(tmp_path):
     from harness.shared.canon import overturn, queued_regrades
 
@@ -666,7 +690,7 @@ def test_a_judge_answer_that_is_not_a_verdict_is_refused_loudly():
     """A string 'no' or 'false' used to canonicalize to equal; a silent pass is the worst outcome."""
     for answer in ("no", "false", "not_equivalent_at_all", 0, 1, None, ["equivalent"]):
         with pytest.raises(TypeError):
-            compare("a b", "c d", "semantic", judge=lambda c, x, y: answer, column="c")
+            compare("a b", "c d", "semantic", judge=lambda c, x, y, answer=answer: answer, column="c")
 
 
 def test_a_dict_answer_must_carry_a_real_bool():

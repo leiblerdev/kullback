@@ -11,7 +11,13 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable, Optional
 
-from harness.shared.records import Constraint, ConstraintTests, GateResult, RawPtr, content_hash
+from harness.shared.records import (
+    Constraint,
+    ConstraintTests,
+    GateResult,
+    RawPtr,
+    content_hash,
+)
 
 STAGE = "compile_policy"
 _BULLET_CHARS = "-*+"
@@ -537,7 +543,7 @@ def reference_violations(
                 out.append({"run_id": run_id, "constraint_id": constraint.id, "tool": None,
                             "at": None, "reason": data["error"]})
                 continue
-            for row, case in zip(data.get("results", []), cases):
+            for row, case in zip(data.get("results", []), cases, strict=False):
                 if row.get("error") or row.get("got") is not True:
                     out.append({"run_id": run_id, "constraint_id": constraint.id,
                                 "tool": case["write_call"]["name"], "at": case["at"],

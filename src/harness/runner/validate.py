@@ -3,15 +3,34 @@
 from __future__ import annotations
 
 import ast
+import builtins
 import json
 import re
 from collections import Counter
 from pathlib import Path
 from typing import Any, Callable, Optional, Sequence, Union
 
-from harness.shared.records import GateResult, RunnerVersion, as_dict, canonical_json, content_hash
+from harness.shared.records import (
+    GateResult,
+    RunnerVersion,
+    as_dict,
+    canonical_json,
+    content_hash,
+)
 
 GRADER_FIELDS = ("reward_info", "evaluation_criteria", "action_checks", "nl_assertions", "trial")
+# What a model-written constraint predicate may name when this module runs one (D89, design section 7).
+SAFE_PREDICATE_BUILTIN_NAMES = (
+    "abs", "all", "any", "bool", "dict", "enumerate", "float", "int", "isinstance", "len", "list",
+    "max", "min", "range", "repr", "reversed", "round", "set", "sorted", "str", "sum", "tuple", "zip",
+    "Exception", "KeyError", "TypeError", "ValueError",
+)
+SAFE_PREDICATE_BUILTINS = {name: getattr(builtins, name) for name in SAFE_PREDICATE_BUILTIN_NAMES}
+DENIED_PREDICATE_NAMES = frozenset({
+    "__import__", "eval", "exec", "compile", "open", "input", "breakpoint", "globals", "locals",
+    "vars", "getattr", "setattr", "delattr",
+})
+DENIED_PREDICATE_ATTRS = frozenset({"format", "format_map"})  # "{0.__class__}".format(x) is an attribute walk
 MISS_REASONS = ("our_bug", "reference_bug", "ambiguous")
 TAU2_FILES = ("data_model.py", "tools.py", "db.json", "policy.md", "tasks.json")
 RUNNER_FILES = ("loop.py", "route.py", "verdict.py")
@@ -27,11 +46,11 @@ VERDICT_VERSIONS = (
     "verifier_version", "verdict_version", "runner_version",
 )
 COVERAGE_TAGS = ("fact_unavailable", "overlay_miss", "reconstructed", "truncated")
-# The D96 reasons a Run record can actually carry today. `overlay_miss` and `reconstructed` are read
-# here but nothing writes them onto an Event yet (route.py falls through to the shared world silently,
-# mine.py hands its reconstruction tag to the Builder), so the scorecard says they are not measured
-# instead of letting their absence read as coverage.
-MEASURED_COVERAGE_TAGS = ("fact_unavailable", "truncated")
+# The D96 reasons a Run record can actually carry today: user_sim.py tags a user_turn
+# `fact_unavailable` and loop.py tags a tool_result `overlay_miss`. Nothing writes `reconstructed`
+# (mine.py hands its tag to the Builder, never onto an Event) or `truncated` onto an Event, so the
+# scorecard says those two are not measured instead of letting their absence read as coverage.
+MEASURED_COVERAGE_TAGS = ("fact_unavailable", "overlay_miss")
 # Nothing under runner/ or shared/ may reach the module system at runtime: a dynamic import is a way
 # around the D89 boundary that no static scan can follow.
 DYNAMIC_IMPORT_MODULES = ("importlib", "runpy", "pkgutil")
@@ -63,13 +82,19 @@ def _passed(obj: Any) -> bool:
     return bool(getattr(obj, "passed", False))
 
 
-def _same(a: Any, b: Any, column_class: str = "hard") -> bool:
-    """Equality after canonicalization (D39), so a gate and a Verdict agree by construction."""
+def _same(a: Any, b: Any, column_class: str = "hard", canon_rules: Any = None,
+          equivalence: Any = None, column: str = "") -> bool:
+    """Equality after canonicalization (D39), so a gate and a Verdict agree by construction.
+
+    The customer's own CanonRules and EquivalenceTable are what the Verdict compares under, so a
+    gate given neither compares under the module defaults and can call two values different that
+    the Verdict calls the same. No judge is ever passed: a gate calls no model (D84, D91).
+    """
     try:
         from harness.shared import canon
     except ImportError:
         return content_hash(a) == content_hash(b)
-    return canon.equal(a, b, column_class)
+    return canon.equal(a, b, column_class, rules=canon_rules, table=equivalence, column=column)
 
 
 def _share(part: int, total: int) -> Optional[float]:
@@ -187,36 +212,37 @@ def executes_gate(outcomes: Optional[dict]) -> GateResult:
     return gate("compile_tools.executes", failures, tools=len(outcomes or {}))
 
 
-def deterministic_gate(pairs: Optional[dict]) -> GateResult:
-    """Gate 3: two runs on the same input agree after canonicalization."""
+def deterministic_gate(pairs: Optional[dict], canon_rules: Any = None) -> GateResult:
+    """Gate 3: two runs on the same input agree after canonicalization, under the customer's rules."""
     failures = []
     for name, results in (pairs or {}).items():
         seen = list(results)
         if len(seen) < 2:
             failures.append(f"{name}: needs two runs to check determinism")
-        elif not all(_same(seen[0], other) for other in seen[1:]):
+        elif not all(_same(seen[0], other, canon_rules=canon_rules) for other in seen[1:]):
             failures.append(f"{name}: two runs on the same input differ")
     return gate("compile_tools.deterministic", failures, tools=len(pairs or {}))
 
 
-def non_trivial_gate(outputs: Optional[dict]) -> GateResult:
+def non_trivial_gate(outputs: Optional[dict], canon_rules: Any = None) -> GateResult:
     """Gate 4: a tool that returns the same thing for differing inputs is a constant, not a tool."""
     failures = []
     for name, results in (outputs or {}).items():
         seen = list(results)
         if len(seen) < 2:
             failures.append(f"{name}: needs at least 2 sample outputs to tell a constant from a tool")
-        elif all(_same(seen[0], other) for other in seen[1:]):
+        elif all(_same(seen[0], other, canon_rules=canon_rules) for other in seen[1:]):
             failures.append(f"{name}: returns a constant over differing inputs")
     return gate("compile_tools.non_trivial", failures, tools=len(outputs or {}))
 
 
-def replay_match(call: Any) -> bool:
+def replay_match(call: Any, canon_rules: Any = None) -> bool:
     """Does the rebuilt tool answer a recorded call the way the recording did (errors by shape, D51)."""
     expected_error, actual_error = _get(call, "expected_error"), _get(call, "actual_error")
     if expected_error is not None:
         return actual_error is not None and _get(expected_error, "class_") == _get(actual_error, "class_")
-    return actual_error is None and _same(_get(call, "expected"), _get(call, "actual"))
+    return actual_error is None and _same(_get(call, "expected"), _get(call, "actual"),
+                                          canon_rules=canon_rules)
 
 
 def replay_fidelity_gate(calls) -> GateResult:
@@ -285,11 +311,45 @@ def policy_gate(constraints, evaluate: Optional[Callable] = None, reference_viol
     return gate("compile_policy", failures, compiled=compiled, residual=residual)
 
 
+def predicate_confinement(source: str) -> list[str]:
+    """Everything a model-written constraint predicate names that reaches outside its own case.
+
+    Restricting `__builtins__` is not enough on its own: `check.__globals__` hands the predicate this
+    module's globals and `().__class__.__base__.__subclasses__()` walks every loaded class, so a
+    predicate could read or write anything the process can. policy.py certifies a predicate the same
+    way when it compiles one, but a Constraint can reach this gate from disk, so it is certified
+    again here. It is a name check, not a proof; it is stated as one.
+    """
+    try:
+        tree = ast.parse(source)
+    except SyntaxError as exc:
+        return [f"does not parse: {exc.msg}"]
+    bad: list[str] = []
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.Import, ast.ImportFrom)):
+            bad.append("imports a module")
+        elif isinstance(node, ast.Attribute):
+            if node.attr.startswith("_") or node.attr in DENIED_PREDICATE_ATTRS:
+                bad.append(f"touches {node.attr}")
+        elif isinstance(node, ast.Name) and node.id in DENIED_PREDICATE_NAMES:
+            bad.append(f"uses {node.id}")
+    return sorted(set(bad))
+
+
 def _run_predicate(constraint: Any, case: dict) -> bool:
-    """Run a compiled constraint's predicate. There is no sandbox for model-written code yet; it is on todo.md."""
-    namespace: dict = {}
-    exec(compile(_get(constraint, "predicate_src") or "", f"<constraint {_get(constraint, 'id', '?')}>", "exec"),
-         namespace)
+    """Run a compiled constraint's predicate, once a static check has certified it.
+
+    A predicate that names an import, a dunder attribute or a denied builtin is refused rather than
+    run, and what does run sees a restricted `__builtins__`. Neither is a sandbox: a real one for
+    model-written code is still on todo.md, and this is the static check that stands in for it.
+    """
+    source = _get(constraint, "predicate_src") or ""
+    cid = _get(constraint, "id", "?")
+    refused = predicate_confinement(source)
+    if refused:
+        raise ValueError(f"predicate is not confined and would run in this process: {'; '.join(refused)}")
+    namespace: dict = {"__builtins__": SAFE_PREDICATE_BUILTINS}
+    exec(compile(source, f"<constraint {cid}>", "exec"), namespace)  # noqa: S102
     func = namespace.get("check") or next(
         (v for k, v in reversed(list(namespace.items())) if callable(v) and not k.startswith("__")), None)
     if func is None:
@@ -340,7 +400,7 @@ def _ids_in(obj: Any) -> set:
     return found
 
 
-def user_rules_gate(rules, asked_fields=(), trace_refusals=(), rerun_facts=()) -> GateResult:
+def user_rules_gate(rules, asked_fields=(), trace_refusals=(), rerun_facts=(), canon_rules=None) -> GateResult:
     """A disclosure rule per asked fact, a refusal branch where the trace shows one, facts stable on re-run (D44)."""
     disclosed = {_get(d, "field") for d in _get(rules, "disclosure", []) or ()}
     refusals = list(_get(rules, "refusals", []) or ())
@@ -351,7 +411,7 @@ def user_rules_gate(rules, asked_fields=(), trace_refusals=(), rerun_facts=()) -
                  for r in trace_refusals or () if r not in refusals]
     for observed in rerun_facts or ():
         for field, value in (observed or {}).items():
-            if field in facts and not _same(facts[field], value):
+            if field in facts and not _same(facts[field], value, canon_rules=canon_rules):
                 failures.append(f"fact {field} came back different on a re-run: {facts[field]!r} then {value!r}")
     return gate("build_user_rules", failures, facts=len(facts), disclosure=len(disclosed),
                 refusals=len(refusals), incomplete_reasons=list(failures))
@@ -359,7 +419,7 @@ def user_rules_gate(rules, asked_fields=(), trace_refusals=(), rerun_facts=()) -
 
 # --- Gate A, the verifier suite, and the gates after it ---
 
-def oracle_replay_gate(replays) -> GateResult:
+def oracle_replay_gate(replays, canon_rules: Any = None, equivalence: Any = None) -> GateResult:
     """Replaying a Reference's own calls reaches its End state, seed and held-out counted apart (D39, D51)."""
     splits = {name: {"runs": 0, "writes": 0, "matched": 0, "semantic_mismatches": 0} for name in ("seed", "held_out")}
     failures = []
@@ -369,12 +429,14 @@ def oracle_replay_gate(replays) -> GateResult:
         split["runs"] += 1
         for write in _get(replay, "writes", []) or ():
             split["writes"] += 1
-            if _same(_get(write, "expected"), _get(write, "actual")):
+            if _same(_get(write, "expected"), _get(write, "actual"), canon_rules=canon_rules):
                 split["matched"] += 1
             else:
                 failures.append(f"{run_id}: a write does not match the Reference after canonicalization")
         for read in _get(replay, "semantic_reads", []) or ():
-            if not _same(_get(read, "expected"), _get(read, "actual"), "semantic"):
+            if not _same(_get(read, "expected"), _get(read, "actual"), "semantic",
+                         canon_rules=canon_rules, equivalence=equivalence,
+                         column=_get(read, "column", "")):
                 split["semantic_mismatches"] += 1
                 failures.append(f"{run_id}: a semantic read does not match the Reference")
     return gate("gate_a_oracle_replay", failures, **splits)
@@ -433,6 +495,25 @@ def candidate_runs_gate(runs, k: int = 1, seeds=None) -> GateResult:
         if seeds is not None and {_get(r, "seed") for r in group} != set(seeds):
             failures.append(f"{task_id}: the seeds are not the fixed set the config names")
     return gate("candidate_runs", failures, runs=len(list(runs or ())), tasks=len(groups))
+
+
+def budget_gate(totals: Any, stage: str = "candidate") -> GateResult:
+    """No unpriced call in a Candidate batch: an unpriced call has no cost, so the batch has no cost.
+
+    budget.py counts a call it could not price rather than dropping it, and the report used to carry
+    that count as a number beside the spend. A number nobody has to act on is not a check: a batch
+    whose calls were not priced cannot be compared against the frontier on cost (D85), so it fails
+    here instead (D65).
+    """
+    buckets = _get(totals, "stages", {}) or {}
+    bucket = buckets.get(stage) if isinstance(buckets, dict) else None
+    unpriced = int(_get(bucket or {}, "unpriced_calls", 0) or 0)
+    calls = int(_get(bucket or {}, "calls", 0) or 0)
+    failures = []
+    if unpriced:
+        failures.append(f"{stage}: {unpriced} of {calls} model calls were not priced, so this batch "
+                        "has no cost and no cost margin against the frontier")
+    return gate("budget", failures, bucket=stage, calls=calls, unpriced_calls=unpriced)
 
 
 def audit_gate(samples_by_task, task_ids, min_sample: int = 1, agreement=None) -> GateResult:

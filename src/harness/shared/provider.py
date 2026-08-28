@@ -96,6 +96,30 @@ def require_live_calls_enabled() -> None:
         )
 
 
+def load_dotenv(path: Path = Path(".env"), env: Optional[dict[str, str]] = None) -> dict[str, str]:
+    """Read KEY=VALUE lines from a .env file into the environment, without overriding what is set.
+
+    Blank lines and # comments are skipped, an optional `export ` prefix and matching quotes are
+    stripped. Returns the variables that were added. A missing file adds nothing.
+    """
+    values = os.environ if env is None else env
+    added: dict[str, str] = {}
+    if not Path(path).is_file():
+        return added
+    for line in Path(path).read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        key = key.strip().removeprefix("export ").strip()
+        value = value.strip()
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
+            value = value[1:-1]
+        if key and key not in values:
+            values[key] = added[key] = value
+    return added
+
+
 def enable_live_calls_from_env(env: Optional[dict[str, str]] = None) -> bool:
     """Turn live calls on when a person asked for it in the environment. Returns the new state.
 

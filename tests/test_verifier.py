@@ -7,7 +7,16 @@ from pathlib import Path
 
 from harness.builder import verifier as V
 from harness.shared.canon import canon_value
-from harness.shared.records import Atom, Constraint, Event, Run, Task, UserRules, Verifier, as_dict
+from harness.shared.records import (
+    Atom,
+    Constraint,
+    Event,
+    Run,
+    Task,
+    UserRules,
+    Verifier,
+    as_dict,
+)
 
 WRITE_TOOLS = {"cancel_pending_order"}
 ORDER = {"order_id": "#W123", "status": "pending", "total": 150.0}
@@ -651,7 +660,9 @@ def test_validate_verifier_all_checks_pass(tmp_path, test_model):
 
 def test_the_suite_reports_every_d79_check_by_the_name_validate_py_wants(tmp_path, test_model):
     """validate.py counts a check it was not told about as a failure, so the names have to line up."""
-    from harness.runner import validate  # the mapping is the contract between the two; nothing imports it
+    from harness.runner import (
+        validate,  # the mapping is the contract between the two; nothing imports it
+    )
 
     verifier = derive(tmp_path)
     gates = V.validate_verifier(verifier, reference_run(), empty_run(), wrong_run(), alt_path_run(),

@@ -747,14 +747,14 @@ def _rows_of_db(blob: Any) -> list[dict]:
 def _monotonic(values: list) -> bool:
     numbers = [v for v in values if isinstance(v, (int, float)) and not isinstance(v, bool)]
     return len(numbers) >= 3 and len(numbers) == len(values) and all(
-        b > a for a, b in zip(numbers, numbers[1:]))
+        b > a for a, b in zip(numbers, numbers[1:], strict=False))
 
 
 def _counter_like(values: list) -> bool:
     """Whole numbers, enough of them, only going up. Money and prices are floats and are not this."""
     numbers = [v for v in values if isinstance(v, int) and not isinstance(v, bool)]
     return (len(numbers) >= MIN_COUNTER_VALUES and len(numbers) == len(values)
-            and all(b > a for a, b in zip(numbers, numbers[1:])))
+            and all(b > a for a, b in zip(numbers, numbers[1:], strict=False)))
 
 
 def propose_column_class(table: str, name: str, values: list, count: Optional[int] = None) -> ClassProposal:

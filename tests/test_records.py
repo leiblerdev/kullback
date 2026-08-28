@@ -55,6 +55,10 @@ def _placeholder(name: str, annotation):
         return 0
     if annotation is float:
         return 0.0
+    if isinstance(annotation, type) and issubclass(annotation, Record):
+        # A required field can itself be a record, as `raw_ptr: RawPtr` is on Turn, ToolCall and
+        # Trace (D66); it gets the same minimal treatment as the record under test.
+        return _minimal(annotation)
     return f"x-{name}"
 
 
@@ -160,9 +164,14 @@ def test_raw_ptr_and_spans_point_back_at_the_raw_file():
     atom = Atom(id="a1", kind="required", spans=[ptr], provenance="user_stated")
     verifier = Verifier(task_id="t1", atoms=[atom], verifier_version="v1")
     payload = as_dict(verifier)
-    assert payload["atoms"][0]["spans"][0] == {"file_hash": "abc123", "sim_index": 2, "msg_index": 17}
+    assert payload["atoms"][0]["spans"][0] == {"file_hash": "abc123", "sim_index": 2,
+                                               "msg_index": 17, "section": None}
     assert Verifier.model_validate(payload) == verifier
     assert ToolCall.model_validate(as_dict(call)).raw_ptr == ptr
+    # A field taken from the export's info block is not inside the transcript, so it cites a
+    # section instead of a message (D66).
+    info = RawPtr(file_hash="abc123", sim_index=2, section="info.environment_info")
+    assert RawPtr.model_validate(as_dict(info)) == info and info.msg_index is None
 
 
 def test_overlay_and_user_behaviour_stub_exist():
@@ -218,12 +227,11 @@ def test_an_unknown_field_fails_at_load_instead_of_being_dropped():
     assert good.failing_atom is None
 
 
-def test_the_run_record_still_takes_the_jsonl_footers_extra_keys():
-    """loop.py writes start_state and end_state into the footer that verifier.load_run
-    validates as a Run; until those move into the stop event, Run has to accept them."""
-    run = Run.model_validate({"run_id": "r1", "start_state": {"orders": {}}, "end_state": {"orders": {}}})
-    assert run.run_id == "r1"
-    assert not hasattr(run, "start_state")
+def test_the_run_record_refuses_a_footer_key_that_is_not_a_run_field():
+    """The Start and End state live on the stop event now, so Run forbids extras like every record."""
+    with pytest.raises(ValueError):
+        Run.model_validate({"run_id": "r1", "start_state": {"orders": {}}, "end_state": {"orders": {}}})
+    assert Run.model_validate({"run_id": "r1"}).run_id == "r1"
 
 
 # --- pointers back to the raw file (D66, D67) ---

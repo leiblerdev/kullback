@@ -321,8 +321,11 @@ def test_run_record_fields_are_carried_through(workdir):
     wrote = new_run_state("r2", workdir=workdir)
     run(wrote, writing, router=router)
     assert wrote.run.end_state_hash != before
-    assert footer_of(wrote.path)["start_state"]["orders"]["123"]["status"] == "delivered"
-    assert footer_of(wrote.path)["end_state"]["orders"]["123"]["status"] == "cancelled"
+    # The states are on the stop event, not on the footer: the footer is validated as a Run.
+    stop = [e for e in wrote.run.events if e.type == "stop"][-1]
+    assert stop.payload["start_state"]["orders"]["123"]["status"] == "delivered"
+    assert stop.payload["end_state"]["orders"]["123"]["status"] == "cancelled"
+    assert "start_state" not in footer_of(wrote.path)
 
 
 def test_a_tool_call_without_a_router_is_refused(workdir):

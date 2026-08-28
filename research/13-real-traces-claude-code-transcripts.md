@@ -7,9 +7,9 @@ All statistics are structural. No message text, file contents, names, or busines
 
 ### 1. Corpus size
 
-- 13 project directories under `~/.claude/projects/`, 182 top-level session transcripts, 52,889 records in those files.
+- 13 project directories under `/Users/krishuagarwal/.claude/projects/`, 182 top-level session transcripts, 52,889 records in those files.
 - Additionally 622 sub-agent transcripts live in per-session subdirectories (`<project>/<sessionId>/subagents/agent-<id>.jsonl`, plus `subagents/workflows/wf_<id>/agent-<id>.jsonl`), each with an `agent-<id>.meta.json` sidecar. Sub-agents are NOT interleaved into the parent file.
-- 10 largest transcripts: 3.5 MB to 10.3 MB each, 606 to 4,832 records each; from four local projects.
+- 10 largest transcripts: 3.5 MB to 10.3 MB each, 606 to 4,832 records each; from projects greekOCR (4), cdtm-job (4), leibler (1), intelligent-router (1).
 - Per-session directories also hold `tool-results/*.txt` (persisted oversized tool outputs, referenced from the transcript by `tool_reference` blocks), and `~/.claude/file-history/<sessionId>/<hash>@vN` holds 939 plain-text file backups (11 MB total, median 5.5 KB, max 145 KB) indexed by `file-history-delta` records.
 
 ### 2. Record types and keys
@@ -89,7 +89,7 @@ The `parentUuid` chain is strictly linear within a file (thinking -> tool_use ->
 
 No sample agent traces (no `.jsonl`, no captured tool_use/tool_result payloads) exist in the repo. What exists is documentation only:
 
-- `<brain>/monitoring-tool/research/replay-and-trace-formats-2026-08.md`: survey of trace formats (OTel GenAI, OpenInference, Langfuse, LangSmith, raw OpenAI/Anthropic, Vercel AI SDK, agent frameworks), replay strategies, comparison ladder, and a proposed `ReplayStep` data model (ids, provenance, canonical request incl. `tools[]` and params, reference_output, observations with `idempotent` flag, episode_context with `episode_outcome` and `state_diff`, eval_metadata, raw body refs). That proposed model already covers most of the gaps in section 6.
+- `/Users/krishuagarwal/Desktop/Programming/website/leibler/monitoring-tool/research/replay-and-trace-formats-2026-08.md`: survey of trace formats (OTel GenAI, OpenInference, Langfuse, LangSmith, raw OpenAI/Anthropic, Vercel AI SDK, agent frameworks), replay strategies, comparison ladder, and a proposed `ReplayStep` data model (ids, provenance, canonical request incl. `tools[]` and params, reference_output, observations with `idempotent` flag, episode_context with `episode_outcome` and `state_diff`, eval_metadata, raw body refs). That proposed model already covers most of the gaps in section 6.
 - Other research notes referencing traces: `monitoring-tool/research/00-synthesis.md`, `03-evals-from-production-traces.md`, `04-llm-judge-for-trajectories.md`, `05-tool-call-correctness-metrics.md`, `09-environment-synthesis.md`, `11-tool-simulation-and-mocking.md`, `12-env-synthesis-pipelines-tauforge-style.md`, `landscape-2026-08.md`, `agent-eval-methods-2026-08.md`.
-- `<brain>/docs/adr/0001-trace-capture-no-proxy.md` (capture via log-drain plus fail-open SDK wrapper) and `tech/docs/sdk-wrapper.md` (what the wrapper captures, fail-open rule, open questions).
+- `/Users/krishuagarwal/Desktop/Programming/website/leibler/docs/adr/0001-trace-capture-no-proxy.md` (capture via log-drain plus fail-open SDK wrapper) and `tech/docs/sdk-wrapper.md` (what the wrapper captures, fail-open rule, open questions).
 - Hits in `dashboard/` and `deepline/data/` are unrelated word matches (CSV and lead data), and `dashboard/.next/trace` is a Next.js build trace.

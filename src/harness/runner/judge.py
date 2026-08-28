@@ -285,7 +285,15 @@ def two_judges(
     disagreement = first.verdict != second.verdict
     third: Optional[JudgeResult] = None
     if disagreement and third_sample and first.use != "reference":
-        third = ask(judge_c if judge_c is not None else third_judge(judge_a), *args, **kwargs)
+        extra = judge_c if judge_c is not None else third_judge(judge_a)
+        try:
+            third = ask(extra, *args, **kwargs)
+        except Exception as error:
+            # The default third sample reuses judge A's model, which may have nothing left to say.
+            # A third sample that cannot answer is a refusal, and the split still reaches the queue.
+            third = JudgeResult(use=first.use, verdict=abstain_verdict(first.use), judge=extra.name,
+                                refused=True, judge_version=first.judge_version,
+                                reason=f"the third sample did not answer: {type(error).__name__}: {error}")
         pair.append(as_dict(third))
         majority = next((r for r in (first, second) if r.verdict == third.verdict), None)
         if majority is not None:
@@ -314,6 +322,7 @@ def two_judges(
         )
     elif third is None:
         result = first.model_copy(update={"pair": pair})
+    reason = _queue_reason(result, first, second, third, disagreement)
     if workdir is not None:
         row = {
             "use": first.use,
@@ -321,13 +330,74 @@ def two_judges(
             "verdict_a": first.verdict,
             "verdict_b": second.verdict,
             "disagreement": disagreement,
+            "abstain": bool(reason) and not disagreement,
+            "reason": reason,
         }
         if third is not None:
             row["verdict_c"] = third.verdict
         _append(Path(workdir) / PAIRS_FILE, row)
-        if disagreement:
+        if reason:
             _append(Path(workdir) / QUEUE_FILE, dict(row, judge_a=pair[0], judge_b=pair[1]))
     return result, disagreement
+
+
+def _queue_reason(result: JudgeResult, first: JudgeResult, second: JudgeResult,
+                  third: Optional[JudgeResult], disagreement: bool) -> Optional[str]:
+    """Why a person has to see this item, or None when the judges decided it (D92, D88).
+
+    A split is not the only undecided outcome: two judges that both abstain, two that both refused
+    for want of a tool check, and a third sample that makes abstain the majority all leave the item
+    undecided, and D92 says every one of those goes to the queue.
+    """
+    if disagreement:
+        return "split"
+    if result.verdict != abstain_verdict(result.use):
+        return None
+    if first.refused and second.refused:
+        return "refused"
+    return "abstain_majority" if third is not None else "agreed_abstain"
+
+
+def judge_atom_results(
+    verifier: Any,
+    transcript: Any,
+    judge_a: AgenticJudge,
+    judge_b: AgenticJudge,
+    *,
+    workdir: Optional[Path] = None,
+    run_id: Optional[str] = None,
+) -> dict:
+    """Answer every judge atom of one Verifier for one Run: {atom_id: JudgeResult} (D76).
+
+    This is the shape `verdict.py` takes as `judge_results`; the caller between the Run and the
+    Verdict (the pipeline) runs it, because `verdict.py` never calls a model itself.
+    """
+    out: dict = {}
+    for atom in getattr(verifier, "atoms", []) or []:
+        if not getattr(atom, "judge", False):
+            continue
+        rule = getattr(atom, "description", None) or getattr(atom, "target", None) or atom.id
+        result, _ = two_judges(
+            judge_a, judge_b, "judge_policy_atom", rule, transcript,
+            workdir=workdir, item_id=f"{run_id}:{atom.id}" if run_id else atom.id,
+        )
+        out[atom.id] = result
+    return out
+
+
+def judge_cause_result(
+    failed_run: Any,
+    reference_run: Any,
+    judge_a: AgenticJudge,
+    judge_b: AgenticJudge,
+    *,
+    workdir: Optional[Path] = None,
+    run_id: Optional[str] = None,
+) -> JudgeResult:
+    """Name the cause of one failed Run (D88); `verdict.py` takes this as `cause_result`."""
+    result, _ = two_judges(judge_a, judge_b, "judge_cause", failed_run, reference_run,
+                           workdir=workdir, item_id=run_id)
+    return result
 
 
 def confirm_reference(
@@ -375,10 +445,13 @@ def disagreement_rate(workdir: Path, use: Optional[str] = None) -> dict:
     rows = [r for r in _read(Path(workdir) / PAIRS_FILE) if use is None or r.get("use") == use]
     pairs = len(rows)
     disagreements = sum(1 for r in rows if r.get("disagreement"))
+    abstains = sum(1 for r in rows if r.get("abstain"))
     return {
         "pairs": pairs,
         "disagreements": disagreements,
         "rate": (disagreements / pairs) if pairs else 0.0,
+        "abstains": abstains,
+        "abstain_rate": (abstains / pairs) if pairs else 0.0,
     }
 
 
@@ -388,12 +461,19 @@ def disagreement_rate(workdir: Path, use: Optional[str] = None) -> dict:
 def _verdict_from_sub_answers(subs: list[dict], reason: Any) -> tuple[str, Any]:
     if not subs:
         return "abstain", "no sub-answers to compute the verdict from"
-    answers = [str(s.get("answer", "")).strip().lower() for s in subs]
+    answers = [_first_word(s.get("answer", "")) for s in subs]
     if any(a not in ("yes", "no") for a in answers):
         return "abstain", "a sub-question was not answered yes or no"
     if all(a == "yes" for a in answers):
         return "pass", reason
     return "fail", reason
+
+
+def _first_word(answer: Any) -> str:
+    """The sub-answer's first word, without its punctuation: "Yes." and "yes, it did" are both yes."""
+    text = str(answer or "").strip().lower()
+    word = text.split()[0] if text.split() else ""
+    return word.strip(".,;:!?\"'()[]")
 
 
 def _parse_json(content: Optional[str]) -> Optional[dict]:

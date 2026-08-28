@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import time
+from copy import deepcopy
 from pathlib import Path
 
 import pytest
@@ -201,10 +202,24 @@ def build(tmp_path_factory, request) -> dict:
     router = route.Router(env_tools_module=compile_env.load_toolkit(source, state.db), starting_state=state.db,
                           overlay=overlay, overlay_rows=overlay_rows, tool_sigs=sigs)
     model = RecordedModel(_reference_jsonl(reference, workdir / "reference.jsonl"))
-    run_state = loop.new_run_state("oracle", workdir=workdir / "runs", env_id="e2e",
+    run_state = loop.new_run_state("oracle", workdir=workdir / "runs" / task.id, env_id="e2e",
                                    task_id=task.id, trace_id=reference.trace_id, model="recorded",
                                    user=RecordedUser(reference), max_turns=40)
     loop.run(run_state, model, router=router)
+
+    # a second Run beside the oracle replay: a Candidate that goes straight to the write, on its own
+    # copy of the Starting state, so the report has a Run batch to count and not just the replay.
+    candidate_router = route.Router(env_tools_module=compile_env.load_toolkit(source, deepcopy(state.db)),
+                                    starting_state=deepcopy(state.db),
+                                    overlay=overlay, overlay_rows=overlay_rows, tool_sigs=sigs)
+    write_call = next(c for c in reference.tool_calls if c.name == "exchange_delivered_order_items")
+    candidate_model = TestModel([
+        {"tool_calls": [{"id": "x1", "name": write_call.name, "arguments": write_call.args}]},
+        {"content": "Your exchange is requested. ###STOP###"},
+    ], loop=True)
+    candidate_state = loop.new_run_state("candidate-1", workdir=workdir / "runs" / task.id, env_id="e2e",
+                                         task_id=task.id, model="candidate/scripted", seed=1, max_turns=4)
+    loop.run(candidate_state, candidate_model, router=candidate_router)
 
     rules = user_sim.derive_user_rules(reference)
     simulated = user_sim.SimulatedUser(rules, starting_state_reader=router.state)
@@ -218,7 +233,7 @@ def build(tmp_path_factory, request) -> dict:
                             environment=environment, write_tools=write_tools, schema=schema)
 
     return {
-        "workdir": workdir, "summary": summary, "traces": traces, "sigs": sigs, "schema": schema,
+        "workdir": workdir, "candidate_state": candidate_state, "summary": summary, "traces": traces, "sigs": sigs, "schema": schema,
         "tools_gate": tools_gate, "categories": categories, "tasks": tasks, "state": state,
         "builds": builds, "sentences": sentences, "emitted": emitted, "task": task,
         "reference": reference, "router": router, "run_state": run_state, "rules": rules,
@@ -270,11 +285,16 @@ def test_the_mined_schema_has_the_three_tau2_tables(build):
 
 # --- cluster ---
 
-def test_the_two_exchange_runs_cluster_into_one_task(build):
+def test_each_simulation_of_the_fixture_becomes_its_own_task(build):
+    """tau2's own task_ids for the three fixture simulations are 6, 2 and 1: three different Tasks.
+
+    The two exchange Runs used to merge on the authentication chatter they share ("another way",
+    "look up", "email"), which is what the idf weighting in cluster.py removed. The Category is
+    still one per write-tool signature, so the exchange Category still holds both of them.
+    """
     tasks = {t.id: t for t in build["tasks"]}
-    assert len(tasks) == 2
-    assert sorted(build["task"].run_ids) == sorted(
-        ["4bec2b80-1781-4799-a103-037acd71715d", "526bdc8f-ca8e-4f0d-8406-daa54fa6c3f1"])
+    assert len(tasks) == 3
+    assert build["task"].run_ids == ["4bec2b80-1781-4799-a103-037acd71715d"]
     assert [c.write_tools for c in build["categories"]].count(["exchange_delivered_order_items"]) == 1
 
 
@@ -359,10 +379,11 @@ def test_the_replay_reproduces_the_recorded_write(build):
 def test_the_run_jsonl_carries_its_start_and_end_state(build):
     lines = [json.loads(line) for line in
              build["run_state"].path.read_text(encoding="utf-8").splitlines() if line.strip()]
-    footer = lines[-1]
-    assert footer["run_id"] == "oracle"
-    assert footer["start_state"]["orders"][EXCHANGED_ORDER]["status"] == "delivered"
-    assert footer["end_state"]["orders"][EXCHANGED_ORDER]["status"] == "exchange requested"
+    footer, stop = lines[-1], lines[-2]
+    assert footer["run_id"] == "oracle" and "start_state" not in footer
+    assert stop["type"] == "stop"
+    assert stop["payload"]["start_state"]["orders"][EXCHANGED_ORDER]["status"] == "delivered"
+    assert stop["payload"]["end_state"]["orders"][EXCHANGED_ORDER]["status"] == "exchange requested"
 
 
 # --- the simulated user ---
@@ -438,22 +459,72 @@ def test_regrade_writes_one_verdict_per_run_and_is_stable(build):
 
 # --- the report ---
 
-def test_the_report_reads_the_build_off_disk(build):
-    """The workdir layout report.py declares, written from the records this build produced (D85)."""
+def _lay_out_the_build(build) -> Path:
+    """The records this build produced, in the workdir layout cli.py and report.py read (D85)."""
     workdir = build["workdir"]
     _write(workdir / "environment.json", as_dict(_environment(build)))
     _write(workdir / "gates.json", [as_dict(g) for g in _gates(build)])
-    _write(workdir / "tasks" / f"{build['task'].id}.json", as_dict(build["task"]))
+    _write(workdir / "schema.json", as_dict(build["schema"]))
+    _write(workdir / "tool_sigs.json", [as_dict(sig) for sig in build["sigs"]])
+    for task in build["tasks"]:
+        _write(workdir / "tasks" / f"{task.id}.json", as_dict(task))
     _write(workdir / "verifiers" / f"{build['task'].id}.json", as_dict(build["verifier"]))
-    _write(workdir / "verdicts" / build["task"].id / "oracle.json", as_dict(build["verdict"]))
+    return workdir
+
+
+def test_the_report_reads_the_build_off_disk(build):
+    """cli verdict then cli report over that layout: the numbers are the ones the build produced."""
+    from typer.testing import CliRunner
+
+    from harness import cli
+
+    workdir = _lay_out_the_build(build)
+    scored = CliRunner().invoke(cli.app, ["verdict", "--workdir", str(workdir)])
+    assert scored.exit_code == 0, scored.output
+    written = sorted((workdir / "verdicts" / build["task"].id).glob("*.json"))
+    assert [p.name.split(".")[0] for p in written] == ["candidate-1", "oracle"]
+
+    made = CliRunner().invoke(cli.app, ["report", "--workdir", str(workdir)])
+    assert made.exit_code == 0, made.output
+    assert not [line for line in made.output.splitlines() if line.startswith("not read")]
 
     data = report.load(workdir)
-    text = report.render(data)
+    text = (workdir / "report.md").read_text(encoding="utf-8")
     assert data.environment is not None and data.tasks and data.verdicts
     assert len(data.overlays) == len(build["tasks"])
+    assert {r.run_id for r in data.runs} == {"oracle", "candidate-1"}
     assert "list_all_product_types" in text
     assert build["task"].id in text
     assert "The decision is yours." in text
+
+    numbers = report.task_numbers(data, next(t for t in data.tasks if t.id == build["task"].id))
+    block = text.split(f"### Task {build['task'].id}", 1)[1].split("### Task")[0]
+    assert numbers["runs_graded"] == len(written), "every Verdict the build wrote is counted once"
+    assert f"- Runs graded: {numbers['runs_graded']}" in block
+    assert "  - oracle: pass" in block, "the Reference passes its own Verifier"
+    assert "  - candidate-1: fail, failing atom q.confirm" in block, "and the Candidate that never asked fails"
+    assert numbers["candidate_pass_rate"] == 0.5
+    assert "- Candidate pass rate: 50% (2 Runs)" in block
+    assert "- Margin: n/a" in block, "no frontier Run in this batch, so there is nothing to compare against"
+
+
+def test_the_candidate_run_is_graded_beside_the_oracle_replay(build):
+    """One Run batch beside the replay, and the Verifier tells the two apart.
+
+    The scripted Candidate makes the same write with the same arguments and never asks the user
+    first, which is the atom the Reference's own turn earned, so it fails where the replay passes.
+    """
+    candidate = build["candidate_state"].run
+    assert candidate.model == "candidate/scripted" and candidate.assisted is False
+    assert [e.payload["name"] for e in candidate.events if e.type == "tool_call"] \
+        == ["exchange_delivered_order_items"]
+    verdict = verdict_mod.verdict(build["candidate_state"].path, build["verifier"], canon,
+                                  environment=Environment(env_id="e2e", schema_version="1",
+                                                          tools_version="1", policy_version="1"),
+                                  write_tools=build["write_tools"], schema=build["schema"])
+    assert verdict.passed is False
+    assert verdict.failing_atom.startswith("q.confirm"), verdict.notes
+    assert build["verdict"].passed is True, "the same Verifier passes the Reference replay"
 
 
 # --- the boundaries the design draws ---

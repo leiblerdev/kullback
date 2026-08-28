@@ -5,7 +5,13 @@ from __future__ import annotations
 import pytest
 
 from harness.shared import provider as provider_module
-from harness.shared.provider import Model, ModelConfig, ModelReply, RecordedModel, require_live_calls_enabled
+from harness.shared.provider import (
+    Model,
+    ModelConfig,
+    ModelReply,
+    RecordedModel,
+    require_live_calls_enabled,
+)
 
 
 def test_live_calls_are_off_by_default():

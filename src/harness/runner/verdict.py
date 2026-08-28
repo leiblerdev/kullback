@@ -8,7 +8,7 @@ import json
 from pathlib import Path
 from typing import Any, Iterable, Optional
 
-from harness.shared.canon import canon_value
+from harness.shared.canon import canon_value, compare, record_use
 from harness.shared.records import Atom, Run, Verdict, Verifier
 
 VERDICT_VERSION = "1"
@@ -102,12 +102,17 @@ class AtomContext:
     """Everything an atom predicate may look at: the writes, the messages, and the End state."""
 
     def __init__(self, run: Run, canon: Any = None, write_tools: Optional[Iterable[str]] = None,
-                 schema: Any = None) -> None:
+                 schema: Any = None, rules: Any = None, equivalence: Any = None) -> None:
         self.run = run
         self._canon = _scalar_canon(canon)
         self.write_tools = set(write_tools) if write_tools else None
         self.exempt = {f"{c.table}.{c.name}" for c in getattr(schema, "columns", [])
                        if getattr(c, "class_", None) == "exempt"}
+        self.semantic = {f"{c.table}.{c.name}" for c in getattr(schema, "columns", [])
+                         if getattr(c, "class_", None) == "semantic"}
+        self.rules = rules  # the customer's CanonRules, so a Verdict canonicalizes their way (D39)
+        self.equivalence = equivalence  # the EquivalenceTable a semantic pair is settled by (D84)
+        self.comparisons: list[Any] = []
         self.calls: list[dict] = []
         self.assistant: list[tuple[int, str]] = []
         self.user: list[tuple[int, str]] = []
@@ -214,10 +219,25 @@ class AtomContext:
         """Compare two values the way the rest of the Verdict compares them (D39)."""
         return self.c(left) == self.c(right)
 
+    def same(self, column: str, before: Any, after: Any) -> bool:
+        """Whether two values of one End state column count as the same value.
+
+        A semantic column is not settled by string equality: D84 sends the pair to the customer's
+        EquivalenceTable, and a pair the table does not hold comes back unresolved rather than
+        judged here, because verdict.py never calls a model (D91). Every comparison is kept so the
+        Verdict can say which pairs it rested on and which are still open.
+        """
+        if column not in self.semantic:
+            return self.c(before) == self.c(after)
+        comparison = compare(before, after, "semantic", rules=self.rules,
+                             table=self.equivalence, column=column)
+        self.comparisons.append(comparison)
+        return comparison.equal
+
     def changed(self, table: str, row_id: str, field: str) -> bool:
-        before = self.c(((self.start_state.get(table) or {}).get(row_id) or {}).get(field))
-        after = self.c(((self.end_state.get(table) or {}).get(row_id) or {}).get(field))
-        return before != after
+        before = ((self.start_state.get(table) or {}).get(row_id) or {}).get(field)
+        after = ((self.end_state.get(table) or {}).get(row_id) or {}).get(field)
+        return not self.same(f"{table}.{field}", before, after)
 
     def diff(self) -> dict:
         """The End state diff after canonicalization, with exempt columns dropped (D39, D73)."""
@@ -231,8 +251,9 @@ class AtomContext:
                 for key in sorted(set(before or {}) | set(after or {}), key=str):
                     if f"{table}.{key}" in self.exempt:
                         continue
-                    was, now = self.c((before or {}).get(key)), self.c((after or {}).get(key))
-                    if was != now:
+                    raw_before, raw_after = (before or {}).get(key), (after or {}).get(key)
+                    was, now = self.c(raw_before), self.c(raw_after)
+                    if not self.same(f"{table}.{key}", raw_before, raw_after):
                         fields[key] = {"before": was, "after": now}
                 if fields or (before is None) != (after is None):
                     out[f"{table}.{row_id}"] = {"present_before": before is not None,
@@ -396,6 +417,7 @@ def verdict(run_jsonl: Any, verifier: Verifier, canon: Any = None, judge_results
             *, environment: Any = None, runner_version: Optional[str] = None,
             reference_path: Optional[Iterable[str]] = None, write_tools: Optional[Iterable[str]] = None,
             flagged_tools: Iterable[str] = (), schema: Any = None, cause_result: Any = None,
+            rules: Any = None, equivalence: Any = None, workdir: Any = None,
             verdict_version: str = VERDICT_VERSION) -> Verdict:
     """Pass or fail one stored Run on its End state; never calls a model, judge atoms arrive as results (D76).
 
@@ -403,7 +425,7 @@ def verdict(run_jsonl: Any, verifier: Verifier, canon: Any = None, judge_results
     the judge names the cause, and neither is computed here.
     """
     run = load_run(run_jsonl)
-    context = AtomContext(run, canon, write_tools, schema)
+    context = AtomContext(run, canon, write_tools, schema, rules=rules, equivalence=equivalence)
     notes: list[str] = []
     failures: list[Atom] = []
     unevaluable: list[Atom] = []
@@ -445,6 +467,15 @@ def verdict(run_jsonl: Any, verifier: Verifier, canon: Any = None, judge_results
         elif atom.kind == "forbidden" and holds:
             failures.append(atom)
 
+    for comparison in context.comparisons:
+        # A semantic pair the judge settled makes this a judged Verdict (D84), and a pair nobody has
+        # settled is named so the report can put it in front of a person rather than bury it.
+        judge_used = judge_used or bool(getattr(comparison, "judge_used", False))
+        if getattr(comparison, "route", None) == "unresolved":
+            notes.append(f"semantic_unresolved:{comparison.key}")
+        if workdir is not None:
+            record_use(workdir, comparison, run.run_id, verifier.task_id)
+
     order = {atom.id: i for i, atom in enumerate(verifier.atoms)}
     failures.sort(key=lambda a: order.get(a.id, 0))
     unevaluable.sort(key=lambda a: order.get(a.id, 0))
@@ -470,13 +501,18 @@ def verdict(run_jsonl: Any, verifier: Verifier, canon: Any = None, judge_results
         notes.append("side_effect_check_skipped")
 
     marks = _env_marks(run, flagged_tools)
-    is_env_error = _env_error(run) or not_verdicted
-    passed = failing_atom is None and not is_env_error
+    is_env_error = _env_error(run)
+    passed = failing_atom is None and not is_env_error and not not_verdicted
     names = [call["name"] for call in context.calls]
     side_effects = context.writes_count()
 
     if is_env_error:
         klass, cause, suspected = "env_error", "environment", True
+    elif not_verdicted:
+        # An atom the Verifier could not evaluate is an immature Verifier, not a broken Environment:
+        # design section 6 calls this state "Task not verdicted", so it is not blamed on the
+        # Environment and does not count as a Candidate failure either.
+        klass, cause, suspected = "not_verdicted", "undetermined", False
     elif passed:
         klass, cause, suspected = "pass", None, False
     else:
@@ -499,9 +535,11 @@ def verdict(run_jsonl: Any, verifier: Verifier, canon: Any = None, judge_results
     return Verdict(
         run_id=run.run_id,
         env_id=getattr(environment, "env_id", None) or run.env_id,
-        schema_version=getattr(environment, "schema_version", "0"),
-        tools_version=getattr(environment, "tools_version", "0"),
-        policy_version=getattr(environment, "policy_version", "0"),
+        # None, not "0": a placeholder string is truthy, so it would walk past regrade's presence
+        # check and score a Run against versions nobody ever copied (D97).
+        schema_version=getattr(environment, "schema_version", None),
+        tools_version=getattr(environment, "tools_version", None),
+        policy_version=getattr(environment, "policy_version", None),
         verifier_version=verifier.verifier_version,
         verdict_version=verdict_version,
         runner_version=runner_version,

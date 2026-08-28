@@ -163,8 +163,11 @@ def test_a_hard_rule_agrees_on_a_confirmation_that_came_too_late(tmp_path):
         user("yes"),
         assistant("Great."),
     ])
-    agree(hard_only, confirmed, True)
-    assert agree(hard_only, late, False)[1] == "hard.k1"
+    # A hard-only slice covers no write, so both scorers would call the Reference's own
+    # cancel an extra write. This test is about the rule, so neither side is given the
+    # write-tool set and neither runs the extra-write check.
+    agree(hard_only, confirmed, True, write_tools=None)
+    assert agree(hard_only, late, False, write_tools=None)[1] == "hard.k1"
 
 
 def test_a_hard_rule_agrees_on_a_tool_the_seed_runs_never_used(tmp_path):
@@ -178,5 +181,5 @@ def test_a_hard_rule_agrees_on_a_tool_the_seed_runs_never_used(tmp_path):
         result({"deleted": True}, cid="c9"),
         assistant("Your order #W123 is cancelled and 150.0 is refunded."),
     ])
-    agree(hard_only, reference_run(), True)
-    assert agree(hard_only, deleted, False)[1] == "hard.k1"
+    agree(hard_only, reference_run(), True, write_tools=None)
+    assert agree(hard_only, deleted, False, write_tools=None)[1] == "hard.k1"

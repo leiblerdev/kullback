@@ -29,9 +29,14 @@ class RouteResult(NamedTuple):
     overlay_miss: Optional[list] = None  # D74 rows the Starting state could not pin (D88 env mark)
 
 
-def recording_key(tool: str, args: dict, state_hash: Optional[str]) -> str:
-    """Section 8: a recorded result is keyed by tool, canonical args and pre-state hash."""
-    return content_hash({"tool": tool, "args": canonical_args(args or {}), "state": state_hash})
+def recording_key(tool: str, args: dict, state_hash: Optional[str], rules: Any = None) -> str:
+    """Section 8: a recorded result is keyed by tool, canonical args and pre-state hash.
+
+    The args are canonicalized under the customer's own CanonRules (D39): with the module defaults
+    a customer id the rules would fold two ways round keys two rows in this table, and a recorded
+    call the Run should have hit is missed.
+    """
+    return content_hash({"tool": tool, "args": canonical_args(args or {}, rules), "state": state_hash})
 
 
 def recording(tool: str, args: dict, state_hash: str, result: Any, error: Optional[dict] = None,
@@ -65,8 +70,9 @@ class StateView:
         self.overlay_misses.extend(misses)
         for table, rows in tables.items():
             for row_id, row in (rows or {}).items():
-                self.overlay.setdefault(table, {})[str(row_id)] = row
-                self.put(table, row_id, row)
+                pinned = _plain(row)  # the caller's row store is not this Run's to write through
+                self.overlay.setdefault(table, {})[str(row_id)] = pinned
+                self.put(table, row_id, pinned)
 
     def row(self, table: str, row_id: Any) -> Any:
         """One row by id; the lookup lives here, never in a tool body."""
@@ -78,8 +84,11 @@ class StateView:
         current = rows.get(str(row_id))
         rows[str(row_id)] = dict(current, **row) if isinstance(current, dict) and isinstance(row, dict) else row
 
-    def get(self, field: str) -> Any:
+    def any_value(self, field: str) -> Any:
         """A flat field lookup, which is how a caller with no row of its own reads the world (D77).
+
+        Not called `get`: a StateView is not a mapping, and a caller that reached for `state.get`
+        expecting `dict.get` would get this scoped, cross-row search of the whole world instead.
 
         Scoped to this Task's rows: where the overlay pins rows in a table only those are read, and
         where it pins none the table answers only when its rows agree. The first row that happens to
@@ -137,13 +146,14 @@ class Router:
 
     def __init__(self, env_tools_module: Any = None, recordings: Any = None, starting_state: Any = None,
                  overlay: Any = None, stand_in_model: Any = None, tool_sigs: Optional[list[ToolSig]] = None,
-                 overlay_rows: Optional[dict] = None):
+                 overlay_rows: Optional[dict] = None, canon_rules: Any = None):
         self.tools = env_tools_module
         self.state = starting_state if isinstance(starting_state, StateView) else StateView(starting_state)
         self.state.add(overlay, overlay_rows)  # a view handed beside an overlay keeps both (D74)
         self.stand_in = stand_in_model
         self.sigs = {sig.name: sig for sig in (tool_sigs or [])}
-        self.recordings, self.unkeyed_recordings = _index_recordings(recordings)
+        self.canon_rules = canon_rules  # the customer's CanonRules, which key the recording table (D39)
+        self.recordings, self.unkeyed_recordings = _index_recordings(recordings, canon_rules)
         self.marked_tools = _has_tool_markers(self.tools)
         self._lay_overlay_in_db()
         self.start_world = self.world()
@@ -184,7 +194,7 @@ class Router:
         function = getattr(self.tools, name, None) if self.tools is not None else None
         if self._is_tool(name, function):
             return self._code(name, function, args)
-        entry = self.recordings.get(recording_key(name, args, self.state_hash()))
+        entry = self.recordings.get(recording_key(name, args, self.state_hash(), self.canon_rules))
         if entry is not None:
             error = _error_record(entry.get("error"))
             if error is None:
@@ -273,7 +283,7 @@ def _has_tool_markers(tools: Any) -> bool:
                for name in dir(tools) if not name.startswith("_"))
 
 
-def _index_recordings(recordings: Any) -> tuple[dict, int]:
+def _index_recordings(recordings: Any, rules: Any = None) -> tuple[dict, int]:
     """A list of rows becomes a keyed table; an already-keyed dict is used as it is."""
     if not recordings:
         return {}, 0
@@ -286,7 +296,7 @@ def _index_recordings(recordings: Any) -> tuple[dict, int]:
         if not tool or not state_hash:  # without a pre-state hash a recording cannot be trusted
             unkeyed += 1
             continue
-        table[recording_key(tool, entry.get("args") or {}, state_hash)] = entry
+        table[recording_key(tool, entry.get("args") or {}, state_hash, rules)] = entry
     return table, unkeyed
 
 

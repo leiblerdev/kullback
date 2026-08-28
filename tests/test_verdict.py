@@ -6,6 +6,7 @@ import json
 
 import pytest
 
+from harness.runner.validate import regrade_gate
 from harness.runner.verdict import VERDICT_VERSION, load_run, verdict
 from harness.shared.records import Atom, Column, EntitySchema, Environment, Verifier
 
@@ -362,7 +363,8 @@ def test_judge_used_only_when_judge_results_are_supplied(verifier, write_run):
     without = verdict(path, judged, simple_canon, write_tools=WRITE_TOOLS)
     assert without.judge_used is False
     assert without.passed is False  # a required atom nobody answered is not a pass (D76)
-    assert without.class_ == "env_error"
+    # An unanswered atom is an immature Verifier, not a broken Environment (design section 6).
+    assert without.class_ == "not_verdicted"
     assert "judge_atom_unevaluated:a_polite" in without.notes
 
     with_pass = verdict(path, judged, simple_canon, {"a_polite": True}, write_tools=WRITE_TOOLS)
@@ -435,6 +437,13 @@ def test_all_versions_are_copied_onto_the_verdict(verifier, write_run):
     assert out.run_id == "r1"
 
 
+def test_a_verdict_scored_without_an_environment_leaves_those_versions_absent(verifier, write_run):
+    """A placeholder version string is truthy, so it walks past regrade's presence check (D97)."""
+    out = verdict(write_run(oracle_lines()), verifier, simple_canon, write_tools=WRITE_TOOLS)
+    assert (out.schema_version, out.tools_version, out.policy_version) == (None, None, None)
+    assert regrade_gate([out]).passed is False
+
+
 # --- end state diff ---
 
 def test_end_state_diff_ignores_exempt_columns(verifier, write_run):
@@ -460,6 +469,48 @@ def test_end_state_diff_ignores_exempt_columns(verifier, write_run):
     with_state = Verifier(task_id="t1", verifier_version="v1", atoms=list(verifier.atoms) + [extra])
     out = verdict(write_run(lines), with_state, simple_canon, write_tools=WRITE_TOOLS, schema=schema)
     assert out.passed is True
+
+
+def _semantic_setup(write_run):
+    """A Run whose only doubtful change is one semantic column, and the schema that says so."""
+    lines = oracle_lines()
+    lines[-1] = stop(
+        8,
+        start_state={"orders": {"W123": {"status": "pending", "note": "cancelled by the user"}}},
+        end_state={"orders": {"W123": {"status": "cancelled", "note": "cancelled by user"}}},
+    )
+    schema = EntitySchema(tables=["orders"], columns=[
+        Column(table="orders", name="status", **{"class": "hard"}),
+        Column(table="orders", name="note", **{"class": "semantic"}),
+    ])
+    atom = Atom(id="a_note", kind="required",
+                predicate_src='"note" not in diff()["orders.W123"]["fields"]')
+    return write_run(lines), Verifier(task_id="t1", atoms=[atom]), schema
+
+
+def test_a_semantic_column_is_settled_by_the_equivalence_table_not_by_string_equality(write_run):
+    """D84: two wordings of one field are the same End state only where the table says they are."""
+    from harness.shared import canon as canon_module
+
+    path, semantic, schema = _semantic_setup(write_run)
+    table = canon_module.EquivalenceTable()
+    canon_module.put(table, "orders.note",
+                     canon_module.canon_value("cancelled by the user"),
+                     canon_module.canon_value("cancelled by user"),
+                     True, classified_by="human")
+    out = verdict(path, semantic, schema=schema, equivalence=table)
+    assert out.passed is True, out.notes
+    assert not [note for note in out.notes if note.startswith("semantic_unresolved")]
+
+
+def test_a_semantic_pair_nobody_settled_is_named_and_never_read_as_equal(write_run, tmp_path):
+    """verdict.py never calls a model (D91), so an unsettled pair is left open, not judged here."""
+    path, semantic, schema = _semantic_setup(write_run)
+    out = verdict(path, semantic, schema=schema, workdir=tmp_path)
+    assert out.passed is False
+    assert any(note.startswith("semantic_unresolved:") for note in out.notes)
+    used = (tmp_path / "equivalence_uses.jsonl").read_text(encoding="utf-8").splitlines()
+    assert len(used) == 1 and json.loads(used[0])["run_id"] == "r1"
 
 
 # --- loading and the code-only property ---
@@ -520,7 +571,7 @@ def test_an_atom_without_a_predicate_leaves_the_run_not_verdicted(verifier, writ
     naked = Verifier(task_id="t1", atoms=[Atom(id="a_bare", kind="required")])
     out = verdict(write_run(oracle_lines()), naked, simple_canon)
     assert out.passed is False
-    assert out.class_ == "env_error"
+    assert out.class_ == "not_verdicted"
     assert out.failing_atom == "a_bare"
     assert "atom_without_predicate:a_bare" in out.notes
 
@@ -535,7 +586,7 @@ def test_an_atom_that_cannot_be_checked_never_counts_as_a_pass(write_run):
     assert any(note.startswith("atom_rejected:a_loose") for note in out.notes)
     assert any(note.startswith("atom_error:a_bad:ZeroDivisionError") for note in out.notes)
     assert out.passed is False
-    assert out.class_ == "env_error"
+    assert out.class_ == "not_verdicted"
     assert out.failing_atom == "a_bad"
 
 
@@ -641,7 +692,7 @@ def test_an_abstaining_judge_atom_leaves_the_run_not_verdicted(verifier, write_r
         out = verdict(write_run(oracle_lines()), judged, simple_canon,
                       {"a_polite": {"verdict": word}}, write_tools=WRITE_TOOLS)
         assert out.passed is False
-        assert out.class_ == "env_error"
+        assert out.class_ == "not_verdicted"
         assert any(note.startswith("judge_abstained:a_polite") for note in out.notes)
 
 
@@ -688,9 +739,11 @@ def test_a_required_atom_that_cannot_be_evaluated_is_not_a_pass(write_run):
     ])
     out = verdict(write_run(oracle_lines()), holed, simple_canon, write_tools=WRITE_TOOLS)
     assert out.passed is False
-    assert out.class_ == "env_error"
+    assert out.class_ == "not_verdicted"
     assert out.failing_atom == "j"
-    assert out.environment_suspected is True
+    # The Verifier could not answer, so nothing here points at the Environment (design section 6).
+    assert out.environment_suspected is False
+    assert out.cause == "undetermined"
 
 
 def test_a_definite_failure_wins_over_an_unevaluable_atom(write_run):

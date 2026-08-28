@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any, Iterable, Optional
 
 from harness.runner.verdict import VERDICT_VERSION, load_run, verdict
-from harness.shared.canon import QUEUE_FILE, clear_regrade_queue, queued_regrades
+from harness.shared.canon import clear_regrade_queue, queued_regrades
 from harness.shared.records import Verdict, Verifier, as_dict, content_hash
 
 
@@ -116,18 +116,6 @@ def regrade(run_jsonls: Iterable[Any], verifier: Verifier, canon: Any = None, *,
         ))
         done.add(run_id)
     if forced & done:
-        _drop_from_queue(queue_dir, forced & done)
+        # canon.py owns the queue's format, so the partial removal is its call, not a rewrite here.
+        clear_regrade_queue(queue_dir, forced & done)
     return out
-
-
-def _drop_from_queue(queue_dir: Any, done: set) -> None:
-    """Take the re-scored Runs out of canon.py's queue and leave the rest of it standing."""
-    path = Path(queue_dir) / QUEUE_FILE
-    if not path.is_file():
-        return
-    kept = [line for line in path.read_text(encoding="utf-8").splitlines()
-            if line.strip() and json.loads(line).get("run_id") not in done]
-    if kept:
-        path.write_text("\n".join(kept) + "\n", encoding="utf-8")
-    else:
-        clear_regrade_queue(queue_dir)
