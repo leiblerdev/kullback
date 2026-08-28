@@ -662,3 +662,9 @@ okay cool! we need to now segregrate stuff from the folders and organize to stre
 2026-08-28: "i want this folder to be organized like that sir. what the hell why can't you follow simple instruvctions"
 
 2026-08-28: "there is leibler here right ? we need sub folders right now brain, website and kullback and github which are pointed to the repos."
+
+2026-08-28: "there is leibler here right ? we need sub folders right now brain, website and kullback and github which are pointed to the repos. why can't you simply organize this repo repo meaining this folder which we are in"
+
+2026-08-28: "lovely you did copy everything right ? website folder is not organized well, organize it well pelase."
+
+2026-08-28: "everything pusehdc right ? delete the old folder which was inside website/leibler - we contienue development in dprogramming/leibler."
