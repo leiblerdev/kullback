@@ -390,6 +390,23 @@ def test_compile_rule_rewrites_when_the_first_predicate_fails_its_tests(policy_m
     assert len(model.calls) == 2
 
 
+def test_the_rewrite_call_keeps_the_first_two_messages_byte_identical(policy_md):
+    """docs/prompt-caching.md item 2: the rewrite is a retry, not a fresh ask, so the system
+    message (_CONTRACT plus the policy) and the first user turn must be the same bytes both calls."""
+    sentence = _sentence(policy_md, AUTH)
+    model = TestModel(
+        [
+            _compiled_reply(AUTH_BAD_PRED, AUTH_TESTS),
+            _reply({"rewritten_text": "checkable form", "predicate_src": AUTH_GOOD_PRED, "tests": AUTH_TESTS}),
+        ]
+    )
+    compile_rule(model, sentence, policy_text="Authenticate the user first.")
+    assert len(model.calls) == 2
+    first_two = model.calls[0]["messages"][:2]
+    assert model.calls[1]["messages"][:2] == first_two
+    assert len(model.calls[1]["messages"]) > 2
+
+
 def test_accept_rewrite_turns_it_into_a_normal_constraint(policy_md):
     sentence = _sentence(policy_md, AUTH)
     model = TestModel(

@@ -9,7 +9,7 @@ from typing import Any, Iterable, Optional
 from harness.builder import cluster, compile_env, ingest, memory, mine, policy, user_sim
 from harness.builder import verifier as verifier_mod
 from harness.runner import loop, pipeline, route, validate
-from harness.shared import budget, canon
+from harness.shared import budget, canon, provider
 from harness.shared.records import (
     EntitySchema,
     Environment,
@@ -70,19 +70,40 @@ def load_traces(workdir: Path) -> list[Trace]:
     return _records(sorted(folder.glob("*.json")), Trace) if folder.is_dir() else []
 
 
+def _build_id(workdir: Path) -> str:
+    """A short, stable id for this build: the one thing every build has is its workdir.
+
+    Used only to shape `prompt_cache_key` (docs/prompt-caching.md item 4); it is not a customer
+    identity and it is not meant to match across two different workdirs.
+    """
+    return content_hash(str(Path(workdir).resolve()))[:12]
+
+
 def _wrap(model: Any, stage: str, workdir: Path, ceiling: Any, model_id: Optional[str] = None,
-          cap_context: bool = True) -> Any:
+          cap_context: bool = True, memoize: bool = True) -> Any:
     """Every model the Builder hands to a stage goes through budget.py (D65, D86).
 
     Wrapping here is what writes budget.json and enforces the 40 percent context cap; a Candidate
-    is wrapped with cap_context=False, because it runs under the production setting (D65).
+    is wrapped with cap_context=False, because it runs under the production setting (D65), and
+    with memoize=False, because a Candidate's answer has to be a fresh sample (docs/prompt-caching.md
+    item 3): run_batch is the only caller that passes it. Every other stage is memoized: on a repeat
+    build, a request byte-identical to one already answered in this workdir never reaches the
+    network, and its usage was zeroed at the memo, so BudgetedModel prices it at 0.00 and only
+    counts it in `memo_hits`. `prompt_cache_key` is set here too, one string per build and stage,
+    so OpenAI routes every call of a stage to the same cache regardless of whether it was memoized.
     """
     if model is None:
         return None
     name = model_id or getattr(model, "name", None) or "model"
-    priced = ceiling if ceiling is None or budget.is_priced(name) else None
-    return budget.BudgetedModel(model, stage=stage, workdir=workdir, model_id=name,
-                                ceiling=priced, cap_context=cap_context)
+    if ceiling is not None:
+        # An unpriced model is refused here, before a BudgetedModel is even built, rather than
+        # quietly handed ceiling=None: that would run the model completely unmetered under a
+        # ceiling that was supposed to refuse it (D86).
+        ceiling.require_priced(name)
+    inner = provider.MemoModel(model, workdir) if memoize else model
+    cache_key = f"kullback-{_build_id(workdir)}-{stage}"
+    return budget.BudgetedModel(inner, stage=stage, workdir=workdir, model_id=name,
+                                ceiling=ceiling, cap_context=cap_context, prompt_cache_key=cache_key)
 
 
 def _ceiling(workdir: Path, usd: Optional[float]) -> Optional[budget.Ceiling]:
@@ -188,13 +209,14 @@ def _tools_stage(model: Any, max_attempts: int):
         # D74: each recorded call replays on the world its own Task saw, not on the shared one.
         states = compile_env.call_starting_states(inputs["db"], inputs["overlays"],
                                                   compile_env.overlay_values(ctx.workdir), call_tasks)
+        tool_names = [sig.name for sig in inputs["sigs"]]
         bodies, gates, assisted, builds = {}, [], [], {}
         for sig in inputs["sigs"]:
             build = compile_env.compile_tool(model, sig, calls_by_tool.get(sig.name, []),
                                              inputs["schema"], inputs["db"],
                                              ctx.workdir / "tools" / sig.name,
                                              max_attempts=max_attempts, call_states=states,
-                                             rules=_rules_of(inputs))
+                                             rules=_rules_of(inputs), tool_names=tool_names)
             bodies[sig.name] = build.body
             gates.extend(build.gates)
             builds[sig.name] = {"assisted": build.assisted, "nodes": build.nodes}
@@ -246,7 +268,15 @@ def _policy_stage(model: Any):
 
     return pipeline.Stage(name="compile_policy", fn=run, builder=True, inputs=("traces",),
                           outputs=("constraints", "policy_text"),
-                          code_version=f"compile_policy:{getattr(model, 'name', 'none')}")
+                          code_version=f"compile_policy:{getattr(model, 'name', 'none')}:{_module_hash(policy)}")
+
+
+def _module_hash(module: Any) -> str:
+    """The bytes of the module a stage delegates to, so an edit to policy.py, memory.py or
+    verifier.py invalidates that stage's cache entry (R42). pipeline.code_hash only sees the stage
+    closure here, which does not change when the module it calls does."""
+    path = Path(getattr(module, "__file__", "") or "")
+    return content_hash(path.read_bytes() if path.is_file() else repr(module))[:16]
 
 
 def _policy_text(traces: list[Trace]) -> str:
@@ -280,7 +310,7 @@ def _lessons_stage(model: Any, memory_dir: Path):
     return pipeline.Stage(name="judge_lessons", fn=run, builder=True,
                           inputs=("sigs", "schema", "constraints"),
                           outputs=("lessons_applied", "lessons_set_aside"),
-                          code_version=f"judge_lessons:{getattr(model, 'name', 'none')}")
+                          code_version=f"judge_lessons:{getattr(model, 'name', 'none')}:{_module_hash(memory)}")
 
 
 def _user_rules_stage():
@@ -308,22 +338,32 @@ def _environment_stage(domain: str):
             bodies=inputs["bodies"], db=inputs["db"], overlays=inputs["overlays"],
             overlay_values=compile_env.overlay_values(ctx.workdir), policy_text=inputs["policy_text"],
             tasks=inputs["tasks"], verifiers=[], assumptions=inputs["assumptions"], domain=domain)
+        # Computed once and passed to both build_environment and emit_tau2_shape below, instead of
+        # each rendering the five tau2 files on its own from the same inputs.
+        files = compile_env.tau2_files(bundle)
         # env_id has to cover db.json and tasks.json, or two worlds holding different rows share one
         # identity and a regrade cannot tell them apart (design section 5).
         environment = compile_env.build_environment(
-            inputs["schema"], inputs["sigs"], inputs["bodies"], inputs["policy_text"],
-            files=compile_env.tau2_files(bundle))
+            inputs["schema"], inputs["sigs"], inputs["bodies"], inputs["policy_text"], files=files)
         bundle.environment = environment
-        compile_env.emit_tau2_shape(bundle, ctx.workdir / "env")
+        compile_env.emit_tau2_shape(bundle, ctx.workdir / "env", files=files)
         _write_json(ctx.workdir / "environment.json", as_dict(environment))
-        return {"environment": environment}
+        # The build_environment gate's other two halves: db.json has to hold every id a trace
+        # referenced, and every synthetic row has to be tagged, or both checks are silent no-ops.
+        referenced = [row_id for _, row_id in compile_env.referenced_ids(inputs["traces"], inputs["schema"])]
+        tagged_synthetic = [{"id": row_id, "synthetic": True} for row_id in inputs["synthetic_rows"]]
+        return {"environment": environment, "referenced_ids": referenced,
+                "synthetic_rows_tagged": tagged_synthetic}
 
     def gate(ctx, outputs):
-        return validate.environment_gate(outputs["environment"], files_dir=ctx.workdir / "env")
+        return validate.environment_gate(
+            outputs["environment"], files_dir=ctx.workdir / "env",
+            referenced_ids=outputs.get("referenced_ids", ()),
+            synthetic_rows=outputs.get("synthetic_rows_tagged", ()))
 
     return pipeline.Stage(name="environment", fn=run,
                           inputs=("schema", "sigs", "bodies", "db", "overlays", "policy_text",
-                                  "tasks", "assumptions", "synthetic_rows"),
+                                  "tasks", "assumptions", "synthetic_rows", "traces"),
                           outputs=("environment",), gate=gate)
 
 
@@ -371,7 +411,7 @@ def _verifier_stage():
     return pipeline.Stage(name="derive_verifier", fn=run, builder=True,
                           inputs=("tasks", "sigs", "constraints", "canon_rules"),
                           outputs=("verifiers", "task_status"),
-                          code_version="derive_verifier:1")
+                          code_version=f"derive_verifier:{_module_hash(verifier_mod)}")
 
 
 # --- the two entry points cli.py calls --------------------------------------
@@ -401,11 +441,22 @@ def build(workdir: Any, iterate: bool = False, model: Any = None, files: Optiona
 
     # Phase one reads the customer's traces; it produces the Tasks the anchor is drawn from, so the
     # anchor cannot exist before it and no stage here is a Builder stage (D81).
+    # An iterated build with nothing new to ingest runs no ingest stage, so the record of the last
+    # ingest would vanish from state.json; it is carried over from the previous build's file.
+    prior_ingest = _ingest_record(_read_json(workdir / "pipeline" / "state.json", {})) if not to_ingest else {}
     read = pipeline.Pipeline(
         [s for s in [_ingest_stage(workdir, to_ingest) if to_ingest else None,
                      _mine_stage(), _cluster_stage()] if s is not None],
         workdir, ceiling=ceiling)
     first = read.run({} if to_ingest else {"traces": load_traces(workdir)})
+    # Pipeline.run() writes its own statuses, log and gates to pipeline/state.json unconditionally;
+    # the second Pipeline below writes the same fixed path and would otherwise overwrite this one's
+    # record of ingest, mine and cluster. Captured here so it can be folded back in once the second
+    # pipeline has run and written its own version of the file.
+    first_state = _read_json(workdir / "pipeline" / "state.json", {})
+    for key, value in prior_ingest.items():
+        first_state[key] = {**value, **first_state.get(key, {})} if isinstance(value, dict) \
+            else list(value) + list(first_state.get(key, []))
     if first.status != "complete":
         return _result(workdir, first, None)
 
@@ -421,6 +472,7 @@ def build(workdir: Any, iterate: bool = False, model: Any = None, files: Optiona
         workdir, anchor=anchor, ceiling=ceiling)
     result = second.run(dict(first.artifacts))
     result.gates = list(first.gates) + list(result.gates)
+    _merge_pipeline_state(workdir, first_state)
     _write_scorecard(workdir)
     return _result(workdir, result, result.artifacts.get("environment"))
 
@@ -445,7 +497,7 @@ def run_batch(workdir: Any, task_id: str, model: Any, count: int = 1, seed: int 
     overlay, overlay_rows = compile_env.load_overlay(workdir, task_id)
     source = compile_env.module_source(schema, sigs, bodies)
     ceiling = _ceiling(workdir, ceiling_usd)
-    candidate = _wrap(model, "candidate", workdir, ceiling, cap_context=False)
+    candidate = _wrap(model, "candidate", workdir, ceiling, cap_context=False, memoize=False)
     rules = _user_rules(workdir, task)
     canon_rules = canon.load_rules(workdir / CANON_RULES)  # the recording table is keyed under them (D39)
     paths = []
@@ -490,6 +542,37 @@ def _clear_cache(workdir: Path) -> None:
     folder = workdir / "cache"
     for path in sorted(folder.glob("*.json")) if folder.is_dir() else ():
         path.unlink()
+
+
+def _ingest_record(state: dict) -> dict:
+    """The ingest stage's share of a pipeline/state.json: its status, attempts and gate rows."""
+    if not state or "ingest" not in (state.get("statuses") or {}):
+        return {}
+    return {"statuses": {"ingest": state["statuses"]["ingest"]},
+            "attempts": {"ingest": (state.get("attempts") or {}).get("ingest", 0)},
+            "gates": [g for g in state.get("gates") or [] if isinstance(g, dict) and g.get("stage") == "ingest"]}
+
+
+def _merge_pipeline_state(workdir: Path, first_state: dict) -> None:
+    """Fold phase one's statuses, attempts, log and gates back into pipeline/state.json.
+
+    The second Pipeline's own run() already wrote its version of the file by the time this is
+    called (runner/pipeline.py's write is unconditional and this module does not touch it); this
+    merges phase one's record back in immediately after, so report.py's one read of state.json
+    covers ingest, mine and cluster as well as the second pipeline's stages, instead of only
+    whichever pipeline ran last.
+    """
+    if not first_state:
+        return
+    path = workdir / "pipeline" / "state.json"
+    second_state = _read_json(path, {})
+    if not second_state:
+        return
+    second_state["statuses"] = {**first_state.get("statuses", {}), **second_state.get("statuses", {})}
+    second_state["attempts"] = {**first_state.get("attempts", {}), **second_state.get("attempts", {})}
+    second_state["log"] = list(first_state.get("log", [])) + list(second_state.get("log", []))
+    second_state["gates"] = list(first_state.get("gates", [])) + list(second_state.get("gates", []))
+    _write_json(path, second_state)
 
 
 def _write_scorecard(workdir: Path) -> Path:

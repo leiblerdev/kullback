@@ -1,4 +1,5 @@
-"""The seven commands of the Harness: ingest, build, freeze-runner, run, verdict, regrade and report, each reading and writing records under one workdir with no hidden state."""
+"""The seven commands of the Harness: ingest, build, freeze-runner, run, verdict, regrade and report, each
+reading and writing records under one workdir with no hidden state."""
 
 from __future__ import annotations
 
@@ -20,12 +21,14 @@ from harness.shared.records import (
 )
 from harness.shared.report import coverage_rows, load, load_tool_sigs, write_report
 
-app = typer.Typer(add_completion=False, help="Build an Environment from customer traces, re-run it, grade it, report it.")
+app = typer.Typer(add_completion=False,
+                  help="Build an Environment from customer traces, re-run it, grade it, report it.")
 
 WORKDIR = typer.Option(Path("."), "--workdir", "-w", help="Directory every record is read from and written to.")
 RUNNER_FILES = ("loop.py", "route.py", "verdict.py")  # what freeze-runner hashes (D89)
 JUDGE_MODEL = typer.Option(None, "--judge-model",
-                          help="Model id for the two agentic judges, as provider/model. Without it, judge atoms are left unevaluated and a failure keeps no cause.")
+                          help="Model id for the two agentic judges, as provider/model. Without it, judge atoms "
+                               "are left unevaluated and a failure keeps no cause.")
 BASE_URL = typer.Option(None, "--base-url", help="Endpoint for an OpenAI-compatible model.")
 
 
@@ -156,6 +159,7 @@ def _score(workdir: Path, task_id: Optional[str], what: str, use_queue: bool = F
     """
     score = _entry("harness.runner.regrade", "regrade")
     score_one = _entry("harness.runner.regrade", "regrade_run")
+    regrade_gate = _entry("harness.runner.validate", "regrade_gate")
     judge_version = _entry("harness.runner.judge", "JUDGE_VERSION") if judge_model else None
     judges = _judges(judge_model, base_url)
     canon_value = _entry("harness.shared.canon", "canon_value")
@@ -191,6 +195,13 @@ def _score(workdir: Path, task_id: Optional[str], what: str, use_queue: bool = F
                          judge_results=_judged_atoms(verifier, paths, judges, Path(workdir)),
                          judge_version=judge_version,
                          queue_dir=Path(workdir) if use_queue else None, **common)
+        gated = regrade_gate(verdicts)
+        # getattr, not gated.passed: a test double that stands in for regrade_gate (fake_modules)
+        # answers neither attribute, and a stand-in gate must not read as a refusal (D97).
+        if not getattr(gated, "passed", True):
+            for failure in getattr(gated, "failures", []):
+                typer.echo(f"task {task.id}: refused, {failure}")
+            continue
         named = _name_causes(
             verdicts, paths, judges, Path(workdir), out_dir,
             lambda path, verifier=verifier, out_dir=out_dir, common=common, **extra: score_one(
@@ -214,7 +225,7 @@ def runner_version(routing_config: Optional[Path] = None) -> RunnerVersion:
 
     validate.py computes it, so freeze-runner and the gate that checks a Run can never disagree.
     """
-    from harness.runner.validate import runner_version as compute
+    compute = _entry("harness.runner.validate", "runner_version")
 
     config = Path(routing_config).read_text(encoding="utf-8") if routing_config else None
     return compute(Path(__file__).parent, config,
@@ -332,7 +343,8 @@ def report(
     workdir: Path = WORKDIR,
     out: Optional[Path] = typer.Option(None, "--out", help="Where to write the Markdown."),  # noqa: B008
     batch: bool = typer.Option(False, "--batch", help="Report one Run batch instead of a build."),
-    model: Optional[str] = typer.Option(None, "--model", help="Only the Runs of this model, which is what names a batch."),
+    model: Optional[str] = typer.Option(None, "--model",
+                                        help="Only the Runs of this model, which is what names a batch."),
 ):
     """Write the Markdown report: the Environment first, then the numbers per Task, then a suggestion (D85)."""
     data = load(workdir)

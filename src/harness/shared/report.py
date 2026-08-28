@@ -1,4 +1,5 @@
-"""The face of the Harness: one Markdown report that opens with whether the Environment was built, then the numbers per Task, then a suggestion the person decides on (D85); it reads records and never computes a Verdict."""
+"""The face of the Harness: one Markdown report that opens with whether the Environment was built, then the
+numbers per Task, then a suggestion the person decides on (D85); it reads records and never computes a Verdict."""
 
 from __future__ import annotations
 
@@ -21,6 +22,7 @@ from harness.shared.records import (
     ToolSig,
     Verdict,
     Verifier,
+    disagreement_stats,
 )
 
 SECTIONS = ("## Environment", "## Tasks", "## Disagreement queue", "## Lessons set aside")
@@ -42,6 +44,8 @@ class StageStatus(Record):
     attempts: int = 0
     max_attempts: int = 0
     usd: float = 0.0
+    cache_share: float = 0.0  # share of input tokens the provider served from its prompt cache
+    memo_hits: int = 0  # calls answered from the on-disk memo, never sent to a provider
 
 
 class TaskCoverage(Record):
@@ -253,7 +257,8 @@ def suggestion(numbers: dict, built: bool, aside: Optional[str] = None) -> str:
     """A suggestion, never a decision (D85). The person routing the Task is the one who decides."""
     tail = " The decision is yours."
     if aside:
-        return f"Suggestion: this Task is not gradeable, Reference disputed ({aside}); it comes back once a person resolves it." + tail
+        return (f"Suggestion: this Task is not gradeable, Reference disputed ({aside}); it comes back once a "
+                "person resolves it.") + tail
     if not built:
         return "Suggestion: the Environment was not built, so the numbers cannot support a routing decision yet." + tail
     if not numbers.get("runs_graded"):
@@ -401,11 +406,21 @@ def _environment(data: ReportData) -> list[str]:
     lines += ["", "### Pipeline", "", "```mermaid", pipeline_dag(data.stages), "```"]
     cost = sum(stage.usd for stage in data.stages)
     if cost:
-        lines += ["", "Cost per stage: " + ", ".join(f"{s.name} ${s.usd:.2f}" for s in data.stages if s.usd),
+        lines += ["", "Cost per stage: " + ", ".join(_cost_cell(s) for s in data.stages if s.usd),
                   f"Cost so far: ${cost:.2f}."]
+        memo = sum(s.memo_hits for s in data.stages)
+        if memo:
+            lines += [f"Calls answered from the memo, at no cost: {memo}."]
     else:
         lines += ["", "Cost per stage: nothing recorded, so this build's spend is not known."]
     return lines
+
+
+def _cost_cell(stage: StageStatus) -> str:
+    cell = f"{stage.name} ${stage.usd:.2f}"
+    if stage.cache_share:
+        cell += f" ({_percent(stage.cache_share)} of input from cache)"
+    return cell
 
 
 def _coverage(data: ReportData) -> list[str]:
@@ -820,12 +835,16 @@ def stage_statuses(state: dict, budget: Any = None, stopped: Any = None) -> list
     attempts = state.get("attempts") or {}
     failed = state.get("failed_stage")
     per_stage = dict((stopped or {}).get("stages") or {})
-    for name, bucket in ((budget or {}).get("stages") or {}).items():
-        if isinstance(bucket, dict) and bucket.get("usd"):
+    buckets = {name: bucket for name, bucket in ((budget or {}).get("stages") or {}).items()
+               if isinstance(bucket, dict)}
+    for name, bucket in buckets.items():
+        if bucket.get("usd"):
             per_stage[name] = bucket["usd"]
     stages = []
     for name, status in statuses.items():
-        stage = StageStatus(name=name, status=str(status), usd=float(per_stage.get(name) or 0.0))
+        stage = StageStatus(name=name, status=str(status), usd=float(per_stage.get(name) or 0.0),
+                            cache_share=_cache_share(buckets.get(name, {})),
+                            memo_hits=int(buckets.get(name, {}).get("memo_hits") or 0))
         try:
             stage.attempts = int(attempts.get(name) or 0)
         except (TypeError, ValueError):
@@ -844,19 +863,22 @@ def stage_statuses(state: dict, budget: Any = None, stopped: Any = None) -> list
     return stages
 
 
+def _cache_share(bucket: dict) -> float:
+    """cache_read over all input tokens: the number `docs/prompt-caching.md` says to watch per stage."""
+    try:
+        read = float(bucket.get("cache_read") or 0)
+        total = read + float(bucket.get("input") or 0)
+    except (TypeError, ValueError):
+        return 0.0
+    return read / total if total else 0.0
+
+
 def _read_log_row(row: Any, by_name: dict) -> None:
-    """One rollback log entry, as the dict a caller may write or the sentence pipeline.py writes.
+    """One rollback log entry, the sentence pipeline.py writes to `result.log` (its only writer).
 
     pipeline.py logs "compile_tools: attempt 2 of 3, gate replay_fidelity failed" and, on the last
     attempt, "compile_tools: gate replay_fidelity failed 3 times, stage failed".
     """
-    if isinstance(row, dict):
-        stage = by_name.get(str(row.get("stage")))
-        if stage is not None:
-            stage.gate = row.get("gate") or stage.gate
-            stage.attempts = max(stage.attempts, int(row.get("attempt") or 0))
-            stage.max_attempts = max(stage.max_attempts, int(row.get("max_attempts") or 0))
-        return
     if not isinstance(row, str) or ":" not in row:
         return
     name, said = row.split(":", 1)
@@ -908,7 +930,7 @@ def load_tool_sigs(workdir: Any) -> list[ToolSig]:
     and which are still flagged (D70), and the report and the Verdict cannot disagree about it.
     """
     root = Path(workdir)
-    return _list_of(root / "tool_sigs.json", ToolSig) or _records(root / "tool_sigs", ToolSig)
+    return _list_of(root / "tool_sigs.json", ToolSig)
 
 
 def load(workdir: Any) -> ReportData:
@@ -924,11 +946,9 @@ def load(workdir: Any) -> ReportData:
     stages = stage_statuses(state, budget if isinstance(budget, dict) else {}, stopped)
     config = _json(root / "report_config.json") or {}
     pairs = _jsonl(root / "judge_pairs.jsonl", unread)
-    disagreements = sum(1 for row in pairs if row.get("disagreement"))
     tasks = _records(root / "tasks", Task, unread)
     runs = load_runs(root / "runs", unread)
-    gates = (_list_of(root / "gates.json", GateResult) + _records(root / "gates", GateResult)
-             + _list_of_bodies(state.get("gates"), GateResult))
+    gates = (_list_of(root / "gates.json", GateResult) + _list_of_bodies(state.get("gates"), GateResult))
     status = str(state.get("status", "complete"))
     data = ReportData(
         title=config.get("title") or ("Run batch report" if config.get("kind") == "batch" else "Harness build report"),
@@ -947,13 +967,12 @@ def load(workdir: Any) -> ReportData:
         runs=runs,
         verdicts=_records(root / "verdicts", Verdict, unread),
         overlays=_records(root / "overlays", TaskOverlay),
-        policy_items=_list_of(root / "constraints.json", Constraint) + _records(root / "constraints", Constraint),
+        policy_items=_list_of(root / "constraints.json", Constraint),
         policy_exercised=(_json(root / "policy_coverage.json") or {}).get("exercised", []),
         task_coverage=_list_of(root / "coverage.json", TaskCoverage),
         frontier_models=config.get("frontier_models", []),
         assisted_share=config.get("assisted_share") or assisted_share_from_runs(runs),
-        judge_disagreement={"pairs": len(pairs), "disagreements": disagreements,
-                            "rate": (disagreements / len(pairs)) if pairs else None},
+        judge_disagreement=disagreement_stats(pairs),
         audit_rate=config.get("audit_rate"),
         disagreement_queue=_jsonl(root / "disagreement_queue.jsonl", unread),
         tasks_aside=_jsonl(root / "tasks_aside.jsonl", unread),

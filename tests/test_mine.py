@@ -434,6 +434,41 @@ def test_gate_needs_three_observed_calls_or_the_llm_flag(fixture_traces):
         assert name in joined
 
 
+def test_a_user_requestor_call_is_never_mined_into_a_toolsig_or_schema():
+    """Telecom's traces interleave the assistant and the simulated user's own tool calls, run against
+    the user's own phone (docs/cross-domain-check.md, Judgement). Retail and airline never carry a
+    user-requestor call, so this is new coverage, not a change to their behavior."""
+    traces = [
+        one_trace(
+            "t1",
+            [
+                {"name": "get_order_details", "args": {"order_id": "#W1"}, "result": '{"order_id": "#W1"}'},
+                {"name": "get_order_details", "args": {"order_id": "#W2"}, "result": '{"order_id": "#W2"}'},
+                {"name": "get_order_details", "args": {"order_id": "#W3"}, "result": '{"order_id": "#W3"}'},
+                {"name": "check_network_status", "args": {}, "result": '{"signal": "5g"}', "requestor": "user"},
+            ],
+        )
+    ]
+    sigs = mine_tools(traces)
+    assert not any(s.name == "check_network_status" for s in sigs)
+    assert sig_by_name(sigs, "get_order_details").evidence_strength.call_count == 3
+
+    schema = mine_schema(traces)
+    assert schema.tables == ["orders"]
+    assert "signal" not in {c.name for c in schema.columns}
+
+    gate = gate_tools(sigs, traces)
+    assert gate.metrics["skipped_user_calls"] == 1
+    assert gate.metrics["tools"] == 1
+
+
+def test_gate_tools_without_traces_reports_zero_skipped_as_before():
+    """Retail and airline have no user-requestor calls; the old call shape, with no traces given,
+    must keep working unchanged."""
+    sigs = mine_tools([one_trace("t1", [{"name": "get_thing", "args": {}, "result": '{"a": 1}'}] * 3)])
+    assert gate_tools(sigs).metrics["skipped_user_calls"] == 0
+
+
 def test_gate_passes_when_every_tool_is_thick_or_flagged(make_test_model):
     traces = [
         one_trace(
@@ -466,7 +501,10 @@ def test_propose_column_class_rules():
     assert propose_column_class("orders", "retry_count", [1, 2, 3]).column_class == "exempt"
     assert propose_column_class("orders", "order_id", ["#W1", "#W2"]).column_class == "hard"
     assert propose_column_class("orders", "status", ["pending", "delivered", "pending"]).column_class == "hard"
-    long = ["a paragraph of prose that a person wrote and nobody will match by string equality " + str(i) for i in range(6)]
+    long = [
+        "a paragraph of prose that a person wrote and nobody will match by string equality " + str(i)
+        for i in range(6)
+    ]
     assert propose_column_class("orders", "note", long).column_class == "semantic"
     proposal = propose_column_class("orders", "note", long)
     assert proposal.confidence in {"low", "medium", "high"}
@@ -688,6 +726,22 @@ def test_a_truncated_result_already_parsed_is_filled_the_same_way():
     assert out["result"]["id"] == "t1"
     assert out["result"]["subject"] == "late delivery"
     assert sorted(out["reconstructed_fields"]) == ["history", "subject"]
+
+
+def test_a_truncated_dict_keeps_its_visible_fields_even_when_the_schema_also_saw_lists():
+    """Row 10: the shape to reconstruct is this call's own visible content, not the tool's whole
+    schema. A cut dict result must not be thrown away for a fabricated list row just because some
+    other call to the same tool returned a list."""
+    from harness.builder.mine import reconstruct_truncated
+    from harness.shared.records import FieldStat, ToolSig
+
+    sig = ToolSig(name="get_thing", result_schema=[FieldStat(name="id"), FieldStat(name="[].x")])
+    cut = ToolCall(name="get_thing", args={"id": "1"}, truncated=True, visible_len=26, cut_marker='"',
+                   result='{"id": "1", "extra": "vis', raw_ptr=PTR)
+    donor = ToolCall(name="get_thing", args={"id": "2"}, result=[{"x": 1}], raw_ptr=PTR)
+    out = reconstruct_truncated(cut, sig, [cut, donor])
+    assert out["result"] == {"id": "1"}, "the visible id must survive, not be replaced by a donor row"
+    assert out["reconstructed_fields"] == []
 
 
 def test_a_complete_result_is_never_reconstructed():
@@ -991,7 +1045,9 @@ def test_reconstruction_prefers_a_donor_with_the_same_arguments():
     sig = ToolSig(name="get_ticket", result_schema=[FieldStat(name="id"), FieldStat(name="subject")])
     cut = ToolCall(name="get_ticket", args={"id": "t1"}, truncated=True, result={"id": "t1"}, raw_ptr=PTR)
     other = ToolCall(name="get_ticket", args={"id": "t2"}, result={"id": "t2", "subject": "other ticket"}, raw_ptr=PTR)
-    same = ToolCall(name="get_ticket", args={"id": "t1"}, result={"id": "t1", "subject": "the real subject"}, raw_ptr=PTR)
+    same = ToolCall(
+        name="get_ticket", args={"id": "t1"}, result={"id": "t1", "subject": "the real subject"}, raw_ptr=PTR
+    )
     out = reconstruct_truncated(cut, sig, [cut, other, same])
     assert out["result"]["subject"] == "the real subject"
 

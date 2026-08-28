@@ -1,4 +1,5 @@
-"""Tests for builder/ingest.py: raw store, tau2 derivation, grader stripping, error and truncation marking, the ingest gate."""
+"""Tests for builder/ingest.py: raw store, tau2 derivation, grader stripping, error and
+truncation marking, the ingest gate."""
 
 from __future__ import annotations
 
@@ -361,6 +362,29 @@ def test_gate_fails_when_a_call_has_no_result_and_no_error(workdir, tmp_path):
     assert gate.passed is False
     assert gate.metrics["unresolved"] == 1
     assert any("c9" in failure for failure in gate.failures)
+
+
+def test_a_call_id_reused_while_still_pending_fails_the_gate_on_the_right_call(workdir, tmp_path):
+    """Row 8: a tool_call id issued again before the first is answered must not silently let the
+    first call's id be waved through because the id string does get answered, on a different call."""
+    first_call = [{"id": "c1", "name": "get_user", "arguments": {}, "requestor": "assistant"}]
+    second_call = [{"id": "c1", "name": "get_order", "arguments": {}, "requestor": "assistant"}]
+    sim = {"id": "reused", "messages": [
+        assistant_msg(0, tool_calls=first_call),
+        assistant_msg(1, tool_calls=second_call),
+        tool_msg(2, "c1", "{}"),
+    ]}
+    raw = ingest.store_raw(write_json(tmp_path / "reused.json", tau2_file([sim])), workdir)
+    traces = ingest.derive_traces(raw.raw_hash, workdir)
+    trace = traces[0]
+    assert len(trace.tool_calls) == 2
+    earlier, later = trace.tool_calls
+    assert earlier.name == "get_user" and earlier.resolved is False
+    assert later.name == "get_order" and later.resolved is True and later.result == {}
+    gate = ingest.gate_ingest(traces, workdir)
+    assert gate.passed is False
+    assert gate.metrics["reused_pending_ids"] == 1
+    assert any("c1" in failure and "reused" in failure for failure in gate.failures)
 
 
 def test_gate_fails_when_a_grader_sidecar_is_missing(small_file, workdir):

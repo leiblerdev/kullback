@@ -319,6 +319,22 @@ def test_the_canonicalizer_is_part_of_the_cache_key(runs):
     assert cache_key("r1", verifier, canon=simple_canon) != cache_key("r1", verifier, canon=None)
 
 
+def test_a_code_change_to_a_same_named_canonicalizer_moves_the_cache_key():
+    """A qualname alone is not a body: an edited canon.py function must not share its old cache key."""
+    verifier = _verifier()
+
+    def canon_a(value):
+        return str(value).lower()
+
+    def canon_b(value):
+        return str(value).upper()
+
+    canon_b.__qualname__ = canon_a.__qualname__
+    canon_b.__name__ = canon_a.__name__
+
+    assert cache_key("r1", verifier, canon=canon_a) != cache_key("r1", verifier, canon=canon_b)
+
+
 def test_changed_judge_results_are_not_served_from_the_cache(runs, tmp_path):
     verifier = Verifier(task_id="t1", verifier_version="v1", atoms=[
         Atom(id="a_cancel", kind="allowed", predicate_src='wrote("cancel_pending_order")'),

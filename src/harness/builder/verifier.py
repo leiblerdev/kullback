@@ -21,6 +21,7 @@ not is a hole no D79 gate can see. tests/test_verifier_runner_agreement.py holds
 
 from __future__ import annotations
 
+import ast
 import builtins
 import json
 import re
@@ -52,7 +53,8 @@ REQUIRED_PROVENANCE = ("user_stated", "system_derived")
 EVENT_TYPES = frozenset({"model_call", "tool_call", "tool_result", "user_turn", "error", "stop"})
 _TOKEN = re.compile(r"[#$]?[A-Za-z0-9][A-Za-z0-9_./#-]*")
 _WORD = re.compile(r"[A-Za-z0-9#$€£¥._/-]+")
-CURRENCY = "$€£¥"  # canon.py's default symbols; a word starting with one is also the bare number
+# canon.py's default currency symbols (D39); a word starting with one is also the bare number.
+CURRENCY = "".join(CanonRules().currency_symbols)
 # What check 8 puts in an atom's place: a value no Run of the customer's world produced.
 _MUTANT = "harness_mutation_no_such_value"
 _NEVER_HOLDS = "def check(pre_state, write_call, transcript):\n    return False\n"
@@ -249,11 +251,6 @@ def _token_in(haystack: str, needle: str) -> bool:
         start = at + 1
 
 
-def _all_tokens_in(haystack: str, value: Any) -> bool:
-    parts = [t for t in _texts(value) if t]
-    return bool(parts) and all(_token_in(haystack, t) for t in parts)
-
-
 def _words_of(text: str) -> list[str]:
     """The words a value could hide in, split the way the generated predicates split them.
 
@@ -380,10 +377,6 @@ def communicate_values(run: Run, fn: Callable) -> dict[str, dict]:
 
 
 # --- derivation ------------------------------------------------------------
-
-def _pack(payload: dict) -> str:
-    return json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str)
-
 
 def atom_payload(atom: Atom) -> dict:
     """The structured target an Atom carries; an atom stored before `target` existed is decoded."""
@@ -549,6 +542,38 @@ _HARD_BUILTINS = {name: getattr(builtins, name) for name in (
     "abs", "all", "any", "bool", "dict", "enumerate", "float", "int", "isinstance", "len", "list",
     "max", "min", "range", "repr", "reversed", "round", "set", "sorted", "str", "sum", "tuple", "zip",
     "Exception", "KeyError", "TypeError", "ValueError")}
+# runner/verdict.py's DENIED_NAMES and DENIED_ATTRS, repeated here because builder/ may not import
+# runner/ (D89): a Hard constraint's compiled source can reach this exec the same way a stored
+# Verifier reaches verdict.py's, so the two gates have to refuse the same things.
+_DENIED_NAMES = frozenset({
+    "__import__", "eval", "exec", "compile", "open", "input", "breakpoint", "globals", "locals",
+    "vars", "getattr", "setattr", "delattr",
+})
+_DENIED_ATTRS = frozenset({"format", "format_map"})  # "{0.__class__}".format(x) is an attribute walk
+
+
+def _hard_gate(source: str) -> list[str]:
+    """Certify a Hard constraint's compiled source before exec: no imports, no dunder walk, no denied name.
+
+    This is runner/verdict.py's gate() repeated here (design section 7: the Verdict is code without
+    exception, and builder/ may not import runner/, D89). Restricting the namespace's __builtins__ is
+    not enough on its own: ().__class__.__base__.__subclasses__() walks every loaded class and reaches
+    sys.modules regardless of what _HARD_BUILTINS carries, so the source has to be checked before it runs.
+    """
+    try:
+        tree = ast.parse(source)
+    except SyntaxError as error:
+        return [f"does not parse: {error.msg}"]
+    bad: list[str] = []
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.Import, ast.ImportFrom)):
+            bad.append("imports a module")
+        elif isinstance(node, ast.Attribute):
+            if node.attr.startswith("_") or node.attr in _DENIED_ATTRS:
+                bad.append(f"touches {node.attr}")
+        elif isinstance(node, ast.Name) and node.id in _DENIED_NAMES:
+            bad.append(f"uses {node.id}")
+    return sorted(set(bad))
 
 
 def _start_state(run: Run) -> dict:
@@ -579,11 +604,14 @@ def _hard_holds(atom: Atom, run: Run, write_tools: Optional[set[str]] = None,
     """Does this compiled Hard constraint hold over the Run? None when the atom is not code (D76).
 
     A predicate that raises is a Verifier defect and returns False, so the D79 oracle check reports
-    it; returning None used to read as "the constraint held" and hid a rule that never ran.
+    it; returning None used to read as "the constraint held" and hid a rule that never ran. A
+    predicate _hard_gate refuses is the same kind of defect: it is never given the chance to run.
     """
     source = atom.predicate_src
     if not source or atom.judge:
         return None
+    if _hard_gate(source):
+        return False
     calls = [dict(call) for call in _calls(run)]
     tools = set(write_tools or ())
     namespace: dict = {"__builtins__": _HARD_BUILTINS, "start_state": _start_state(run),
@@ -604,10 +632,6 @@ def _helpers_src() -> str:
     )
 
     return policy.HELPERS_SRC
-
-
-def _words(text: str) -> list[str]:
-    return [w for w in re.split(r"[^A-Za-z0-9]+", text) if w]
 
 
 def _write_fields(payload: dict) -> dict:
@@ -634,13 +658,15 @@ def _predicate(payload: dict) -> str:
     if kind == "entity_count":
         return f"writes_count() <= {int(payload['count'])}"
     if kind == "question":
+        # question_keys() is the only producer of a "question" payload, and both of its shapes
+        # ("confirm:{tool}" and "field:{field}", always with tool and field set) land in one of
+        # these two branches, so there is no third shape left for a predicate to fall back to.
         head, _, rest = str(payload.get("key") or "").partition(":")
         if head == "confirm":
             return _CONFIRM_WRAPPER.format(words=repr(tuple(AFFIRMATIONS)), tool=repr(rest))
         if payload.get("tool") and payload.get("field"):
             return _FIELD_QUESTION_WRAPPER.format(spans=_SPANS_SRC, tool=repr(payload["tool"]),
                                                   field=repr(payload["field"]))
-        return "asked(" + ", ".join(repr(w) for w in _words(rest)) + ")"
     if kind == "communicate":
         return f"communicated({str(payload.get('text') or payload.get('value'))!r})"
     if kind == "hard":

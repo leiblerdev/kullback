@@ -1,4 +1,5 @@
-"""Turns policy sentences into before-write Constraint predicates, with one rewrite pass for review and a judge atom when a rule must stay natural language (D43 case 3, D76)."""
+"""Turns policy sentences into before-write Constraint predicates, with one rewrite pass for
+review and a judge atom when a rule must stay natural language (D43 case 3, D76)."""
 
 from __future__ import annotations
 
@@ -24,7 +25,10 @@ _BULLET_CHARS = "-*+"
 _CLOSERS = ('"', "'", ")", "]", "}")
 _ABBREVIATIONS = ("e.g.", "i.e.", "etc.", "vs.", "no.", "mr.", "mrs.", "ms.", "dr.", "approx.")
 _DENIED_NAMES = frozenset(
-    {"__import__", "eval", "exec", "compile", "open", "input", "breakpoint", "globals", "locals", "vars", "getattr", "setattr", "delattr"}
+    {
+        "__import__", "eval", "exec", "compile", "open", "input", "breakpoint",
+        "globals", "locals", "vars", "getattr", "setattr", "delattr",
+    }
 )
 # The gate is an allowlist, not a blocklist: a name or attribute nobody listed here is refused.
 _SAFE_BUILTINS = (
@@ -415,15 +419,27 @@ def _sandbox(src: str, cases: list[dict], timeout_s: float) -> dict:
 # --- compiling ---
 
 
-def compile_rule(model: Any, sentence: PolicySentence, timeout_s: float = 5.0) -> Constraint:
-    """One sentence into a Constraint: compiled, or rewritten for review, or a judge atom, or residual."""
+def compile_rule(model: Any, sentence: PolicySentence, timeout_s: float = 5.0,
+                 policy_text: str = "") -> Constraint:
+    """One sentence into a Constraint: compiled, or rewritten for review, or a judge atom, or residual.
+
+    `policy_text`, given by compile_policy, is the whole policy: the same on every sentence of this
+    build, so it lives in the system message beside `_CONTRACT` rather than repeated per rule
+    (docs/prompt-caching.md item 1). The rewrite call is a retry, not a fresh ask (item 2): it keeps
+    these same first two messages and appends the model's first reply and the rewrite request as
+    new turns, so the cached prefix never changes between the two calls.
+    """
     constraint = Constraint(
         id="c_" + content_hash({"text": sentence.text, "file": sentence.file_hash})[:12],
         text=sentence.text,
         span=sentence.span(),
         span_text=sentence.text,
     )
-    first, error = _ask(model, _CONTRACT, f"Section: {sentence.section or 'top level'}\nRule: {sentence.text}")
+    messages = [
+        {"role": "system", "content": _stable_system(policy_text)},
+        {"role": "user", "content": f"Section: {sentence.section or 'top level'}\nRule: {sentence.text}"},
+    ]
+    first, reply, error = _ask(model, messages)
     if error:
         constraint.residual_reason = f"model call failed: {error}"
         return constraint
@@ -437,7 +453,8 @@ def compile_rule(model: Any, sentence: PolicySentence, timeout_s: float = 5.0) -
         reason = "; ".join(gate.failures)
     _clear(constraint)
 
-    second, error = _ask(model, _CONTRACT, f"Rule: {sentence.text}\n\n" + _REWRITE.format(reason=reason))
+    messages = _append_retry(messages, reply, _REWRITE.format(reason=reason))
+    second, _reply2, error = _ask(model, messages)
     if error:
         constraint.residual_reason = f"model call failed: {error}"
         return constraint
@@ -475,11 +492,20 @@ def compile_policy(
     timeout_s: float = 5.0,
     limit: Optional[int] = None,
 ) -> list[Constraint]:
-    """Every sentence of a policy, or a chosen list of sentences, compiled in order."""
-    sentences = split_policy(policy, file_hash) if isinstance(policy, str) else list(policy)
+    """Every sentence of a policy, or a chosen list of sentences, compiled in order.
+
+    `policy_text` is the whole policy handed to every `compile_rule` call, so the stable prefix
+    (item 1) is one value shared across the stage: the raw text when `policy` is one, or the given
+    sentences stitched back in order when the caller already split them.
+    """
+    if isinstance(policy, str):
+        policy_text, sentences = policy, split_policy(policy, file_hash)
+    else:
+        sentences = list(policy)
+        policy_text = "\n".join(s.text for s in sorted(sentences, key=lambda s: s.index))
     if limit is not None:
         sentences = sentences[:limit]
-    return [compile_rule(model, sentence, timeout_s) for sentence in sentences]
+    return [compile_rule(model, sentence, timeout_s, policy_text=policy_text) for sentence in sentences]
 
 
 def accept_rewrite(constraint: Constraint, timeout_s: float = 5.0) -> Constraint:
@@ -583,14 +609,30 @@ def _run_cases(run: Any, write_tools: Optional[Iterable[str]]) -> list[dict]:
     return cases
 
 
-def _ask(model: Any, system: str, user: str) -> tuple[dict, Optional[str]]:
-    """One model call; JSON out, or an error string when the provider itself failed."""
-    messages = [{"role": "system", "content": system}, {"role": "user", "content": user}]
+def _stable_system(policy_text: str = "") -> str:
+    """`_CONTRACT` plus the whole policy: the same on every sentence of this build (item 1)."""
+    if not policy_text:
+        return _CONTRACT
+    return _CONTRACT + "\n\nThe policy in full:\n" + policy_text
+
+
+def _append_retry(messages: list[dict], reply: Any, user_text: str) -> list[dict]:
+    """A follow-up call that keeps the messages sent so far and adds the model's reply and a new
+    ask, so the cached system-and-first-user prefix is the same bytes on the first call and this one."""
+    return messages + [
+        {"role": "assistant", "content": (reply.content if reply is not None else "") or ""},
+        {"role": "user", "content": user_text},
+    ]
+
+
+def _ask(model: Any, messages: list[dict]) -> tuple[dict, Optional[Any], Optional[str]]:
+    """One model call over the given messages: the parsed JSON, the raw reply (for a retry to echo
+    back as an assistant turn), and an error string when the provider itself failed."""
     try:
         reply = model.query(messages)
     except Exception as exc:  # a provider failure is not a property of the rule
-        return {}, f"{type(exc).__name__}: {exc}"
-    return _parse(reply.content), None
+        return {}, None, f"{type(exc).__name__}: {exc}"
+    return _parse(reply.content), reply, None
 
 
 def _parse(content: Optional[str]) -> dict:

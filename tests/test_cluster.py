@@ -43,6 +43,7 @@ def make_trace(trace_id: str, user_turns: list[str], calls: list[dict]) -> Trace
                 args=call.get("args", {}),
                 result=call.get("result"),
                 error=error,
+                requestor=call.get("requestor", "assistant"),
                 raw_ptr=PTR,
             )
         )
@@ -92,6 +93,23 @@ def test_write_tool_names_accepts_names_a_mapping_or_nothing():
 def test_category_signature_is_the_confirmed_write_tools_only():
     trace = cancel_trace("t1", "W1")
     assert category_signature(trace, WRITES) == ("cancel_order",)
+
+
+def test_a_user_requestor_write_call_does_not_count_towards_the_signature():
+    """Telecom's simulated user runs its own tool calls against its own phone
+    (docs/cross-domain-check.md, Judgement); those must not enter the write signature. Retail and
+    airline never carry a user-requestor call, so this is new coverage, not a change to their result."""
+    trace = make_trace(
+        "t1",
+        ["cancel order W1"],
+        [
+            {"name": "cancel_order", "args": {"order_id": "W1"}, "result": {"status": "cancelled"},
+             "requestor": "user"},
+            {"name": "modify_address", "args": {"order_id": "W1"}, "result": {"ok": True}},
+        ],
+    )
+    assert [c.name for c in confirmed_write_calls(trace, WRITES)] == ["modify_address"]
+    assert category_signature(trace, WRITES) == ("modify_address",)
 
 
 def test_a_failed_write_call_does_not_count_towards_the_signature():
@@ -161,7 +179,7 @@ def test_run_tokens_use_the_first_two_user_turns_and_not_the_write_arg_keys():
         ["cancel my order", "it was late", "third turn ignored"],
         [{"name": "cancel_order", "args": {"order_id": "W1"}, "result": {}}],
     )
-    toks = run_tokens(trace, WRITES)
+    toks = run_tokens(trace)
     assert "cancel" in toks and "late" in toks
     assert "third" not in toks and "ignored" not in toks
     assert not any(t.startswith("arg:") for t in toks)
@@ -171,8 +189,10 @@ def test_two_runs_with_no_shared_user_words_are_two_tasks():
     """They wrote through the same tool with the same argument keys, and that is not a shared intent."""
     args = {"order_id": "W1", "reason": "asked"}
     t1 = make_trace("t1", ["swap the jacket for a bigger size"], [{"name": "cancel_order", "args": args, "result": {}}])
-    t2 = make_trace("t2", ["wrong colour on my boots, need black"], [{"name": "cancel_order", "args": args, "result": {}}])
-    assert run_tokens(t1, WRITES) & run_tokens(t2, WRITES) == set()
+    t2 = make_trace(
+        "t2", ["wrong colour on my boots, need black"], [{"name": "cancel_order", "args": args, "result": {}}]
+    )
+    assert run_tokens(t1) & run_tokens(t2) == set()
     _, tasks = cluster_runs([t1, t2], SIGS)
     assert sorted(sorted(t.run_ids) for t in tasks) == [["t1"], ["t2"]]
 
@@ -187,7 +207,9 @@ def test_words_every_run_says_do_not_merge_two_tasks():
     """Politeness and authentication chatter is in every Run, so it must not decide membership (D83)."""
     boiler = "hello i need help with my account, another way to look up my email"
     traces = [
-        make_trace(f"t{i}", [f"{boiler}, {extra}"], [{"name": "cancel_order", "args": {"order_id": "W1"}, "result": {}}])
+        make_trace(
+            f"t{i}", [f"{boiler}, {extra}"], [{"name": "cancel_order", "args": {"order_id": "W1"}, "result": {}}]
+        )
         for i, extra in enumerate(
             [
                 "the jacket arrived damaged",
@@ -383,7 +405,7 @@ def test_the_three_tau2_runs_are_three_tasks_as_tau2_says_they_are(tau2_small):
     """
     assert sorted(s["task_id"] for s in tau2_small["simulations"]) == ["1", "2", "6"]
     traces = {t.trace_id: t for t in tau2_traces(tau2_small)}
-    shared = run_tokens(traces["4bec2b80"], TAU2_WRITES) & run_tokens(traces["526bdc8f"], TAU2_WRITES)
+    shared = run_tokens(traces["4bec2b80"]) & run_tokens(traces["526bdc8f"])
     assert {"another", "way", "look", "email"} <= shared  # the words that used to merge them
     _, tasks = cluster_runs(list(traces.values()), TAU2_WRITES)
     membership = sorted(sorted(t.run_ids) for t in tasks)
@@ -432,7 +454,11 @@ def corpus_traces_and_truth(raw_dir):
                         id=tc.get("id"),
                         name=tc["name"],
                         args=tc.get("arguments") or {},
-                        error=ToolCallError(**{"class": "business_error", "payload": ""}) if tc.get("id") in failed else None,
+                        error=(
+                            ToolCallError(**{"class": "business_error", "payload": ""})
+                            if tc.get("id") in failed
+                            else None
+                        ),
                         raw_ptr=PTR,
                     )
                     for m in messages

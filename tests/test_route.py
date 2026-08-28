@@ -91,7 +91,9 @@ def sigs() -> list[ToolSig]:
         ToolSig(
             name="get_order_details",
             error_shapes=[
-                ErrorShape(class_="not_found_entity", count=2, sample_payload={"error": "no such order"}, encoding="json"),
+                ErrorShape(
+                    class_="not_found_entity", count=2, sample_payload={"error": "no such order"}, encoding="json"
+                ),
             ],
         ),
         ToolSig(name="cancel_order"),

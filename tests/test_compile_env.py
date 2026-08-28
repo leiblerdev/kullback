@@ -422,6 +422,20 @@ def test_the_repair_loop_grows_the_evidence_and_marks_the_tool_assisted(
     assert len(written["nodes"]) == 4
 
 
+def test_a_retry_keeps_the_first_two_messages_byte_identical(
+    make_test_model, schema, sigs, db0, workdir, order_calls
+):
+    """docs/prompt-caching.md item 2: the system message and the first user turn are the cached
+    prefix; a retry must append, never rewrite them."""
+    model = make_test_model([WRONG_BODY] * 4)
+    ce.compile_tool(model, sigs[0], order_calls, schema, db0, workdir)
+    assert len(model.calls) == 4
+    first_two = model.calls[0]["messages"][:2]
+    for call in model.calls[1:]:
+        assert call["messages"][:2] == first_two
+        assert len(call["messages"]) > 2
+
+
 def test_an_attempt_over_the_evidence_cap_is_refused_not_truncated(
     make_test_model, schema, sigs, db0, workdir, order_calls
 ):
@@ -1010,8 +1024,32 @@ def test_a_body_that_walks_the_class_tree_is_refused(schema, sigs, db0, workdir)
         ce.load_toolkit(source, db0)
 
 
+def test_a_body_that_walks_the_class_tree_through_getattr_is_refused(schema, sigs, db0, workdir):
+    """The same escape as above, spelled through getattr so the literal dunder attribute never
+    appears; DENIED_BUILTINS has to name getattr, setattr and delattr, not just the dunder."""
+    body = ("cls = getattr(getattr(getattr((), '__class__'), '__base__'), '__subclasses__')()\n"
+            "return {'n': len(cls)}\n")
+    source = ce.module_source(schema, sigs[:1], {sigs[0].name: body})
+    assert any("uses getattr" in line for line in ce.source_confinement(source))
+    with pytest.raises(ce.SandboxError):
+        ce.load_toolkit(source, db0)
+
+
 def test_the_code_owned_skeleton_is_confined_as_it_stands(schema, sigs, db0):
     """DomainDB.load opens the emitted db.json; that is code, not a model's body, and stays allowed."""
     source = ce.module_source(schema, sigs, {s.name: "return None" for s in sigs})
     assert ce.source_confinement(source) == []
     assert ce.load_toolkit(source, db0) is not None
+
+
+def test_a_user_requestor_call_is_not_a_row_sighting(sample, schema):
+    """Telecom's simulated user calls its own phone tools inside the trace (R33); those results
+    describe the user's device, not the customer's system, so they never enter the Starting state."""
+    order = next(iter(sample["orders"].values()))
+    seen = ToolCall(id="c1", name="get_order_details", args={"order_id": order["order_id"]}, result=order,
+                    raw_ptr=PTR)
+    user_side = ToolCall(id="c2", name="check_status_bar", args={},
+                         result={**order, "status": "on the phone"}, requestor="user", raw_ptr=PTR)
+    observations = ce._observations([_trace("t1", [seen, user_side])], schema, set())
+    assert observations
+    assert all(o.order[1] == 0 for o in observations)

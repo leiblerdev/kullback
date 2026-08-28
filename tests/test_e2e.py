@@ -22,6 +22,7 @@ from harness.shared.provider import RecordedModel, TestModel
 from harness.shared.records import (
     Environment,
     GateResult,
+    RunnerVersion,
     Trace,
     UserFact,
     UserRules,
@@ -233,7 +234,8 @@ def build(tmp_path_factory, request) -> dict:
                             environment=environment, write_tools=write_tools, schema=schema)
 
     return {
-        "workdir": workdir, "candidate_state": candidate_state, "summary": summary, "traces": traces, "sigs": sigs, "schema": schema,
+        "workdir": workdir, "candidate_state": candidate_state, "summary": summary, "traces": traces,
+        "sigs": sigs, "schema": schema,
         "tools_gate": tools_gate, "categories": categories, "tasks": tasks, "state": state,
         "builds": builds, "sentences": sentences, "emitted": emitted, "task": task,
         "reference": reference, "router": router, "run_state": run_state, "rules": rules,
@@ -463,6 +465,8 @@ def _lay_out_the_build(build) -> Path:
     """The records this build produced, in the workdir layout cli.py and report.py read (D85)."""
     workdir = build["workdir"]
     _write(workdir / "environment.json", as_dict(_environment(build)))
+    # regrade_gate (D97) refuses a Verdict with no runner_version, so cli verdict needs one frozen.
+    _write(workdir / "runner_version.json", as_dict(RunnerVersion(runner_version="rv-1")))
     _write(workdir / "gates.json", [as_dict(g) for g in _gates(build)])
     _write(workdir / "schema.json", as_dict(build["schema"]))
     _write(workdir / "tool_sigs.json", [as_dict(sig) for sig in build["sigs"]])

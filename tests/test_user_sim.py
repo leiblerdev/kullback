@@ -491,6 +491,31 @@ def test_the_overlay_row_wins_over_the_shared_world(tau2_retail_dir):
     assert "mei.pinned@example.com" in user.reply(ask("What is your email address?"))
 
 
+def test_a_row_with_two_payment_methods_reports_the_field_unavailable_not_a_pick(tau2_retail_dir):
+    """Row 11: noah_brown_6181 carries a paypal and a credit card. Answering from whichever one a
+    dict happened to iterate to first means the answer depends on key order; the field must be
+    reported unavailable instead, in either order."""
+    from harness.runner.route import StateView
+
+    db = json.loads((tau2_retail_dir / "db.json").read_text(encoding="utf-8"))
+    assert len(db["users"]["noah_brown_6181"]["payment_methods"]) == 2
+
+    def reply_for(methods: dict) -> str:
+        row = dict(db["users"]["noah_brown_6181"], payment_methods=methods)
+        view = StateView(shared=db, overlay={"users": {"noah_brown_6181": row}})
+        user = SimulatedUser(UserRules(), starting_state_reader=view, identity={"user_id": "noah_brown_6181"})
+        return user.reply(ask("What is your payment method?")), user
+
+    forward, user_forward = reply_for(dict(db["users"]["noah_brown_6181"]["payment_methods"]))
+    backward, user_backward = reply_for(
+        dict(reversed(list(db["users"]["noah_brown_6181"]["payment_methods"].items())))
+    )
+    for text, user in ((forward, user_forward), (backward, user_backward)):
+        assert "paypal" not in text.lower() and "credit_card" not in text.lower()
+        assert "fact_unavailable" in user.events[-1].payload["tags"]
+        assert user.events[-1].payload["unavailable_fields"] == ["payment_method"]
+
+
 def test_wording_that_adds_a_fact_the_rules_never_gave_is_thrown_away(rules_with_zip, make_test_model):
     model = make_test_model(["Sure, my zip is 19122 and my email is invented@example.com."])
     user = SimulatedUser(rules_with_zip, model=model)

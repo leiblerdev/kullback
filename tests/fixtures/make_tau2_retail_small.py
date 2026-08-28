@@ -1,4 +1,5 @@
-"""Builds tests/fixtures/tau2_retail_small.json: the first 3 simulations of a raw tau2 retail file plus the tasks they reference.
+"""Builds tests/fixtures/tau2_retail_small.json: the first 3 simulations of a raw tau2 retail
+file plus the tasks they reference.
 
 Nothing else is changed. Grader fields stay in, so ingest can be tested stripping them.
 

@@ -1,4 +1,6 @@
-"""Stores the customer's files byte for byte and content-hashed (D66), then derives Trace records from them with a raw pointer on every field, grader fields stripped into a sidecar, tool errors classed (D67) and truncated results marked (D95)."""
+"""Stores the customer's files byte for byte and content-hashed (D66), then derives Trace records
+from them with a raw pointer on every field, grader fields stripped into a sidecar, tool errors
+classed (D67) and truncated results marked (D95)."""
 
 from __future__ import annotations
 
@@ -12,6 +14,7 @@ from typing import Any, Optional
 
 from pydantic import ValidationError
 
+from harness.builder.mine import _reply_json
 from harness.shared.provider import Model
 from harness.shared.records import (
     GateResult,
@@ -84,7 +87,8 @@ _COMPILED_RULES = tuple(
 
 
 def format_detect(obj: Any, jsonl: bool = False) -> str:
-    """Name the export format of an already parsed file: tau2 native, OpenTelemetry GenAI, Claude Code JSONL, unknown."""
+    """Name the export format of an already parsed file: tau2 native, OpenTelemetry GenAI,
+    Claude Code JSONL, unknown."""
     if isinstance(obj, list):
         heads = [item for item in obj[:20] if isinstance(item, dict)]
         if any(_looks_otel(item) for item in heads):
@@ -221,19 +225,6 @@ def classify_error_llm(model: Model, error: ToolCallError) -> ToolCallError:
     return error.model_copy(update={"class_": proposed, "classified_by": "llm"})
 
 
-def _reply_json(reply: Any) -> dict:
-    """The first JSON object in a model reply, or an empty dict when there is none."""
-    text = getattr(reply, "content", None) or ""
-    start, end = text.find("{"), text.rfind("}")
-    if start < 0 or end <= start:
-        return {}
-    try:
-        data = json.loads(text[start:end + 1])
-    except json.JSONDecodeError:
-        return {}
-    return data if isinstance(data, dict) else {}
-
-
 def detect_truncation(text: Any) -> tuple[bool, Optional[int], Optional[str]]:
     """Spot a cut-off tool result (D95): returns (truncated, visible length, the marker found)."""
     if not isinstance(text, str):
@@ -335,7 +326,7 @@ def _tau2_trace(simulation: dict, sim_index: int, raw_hash: str, environment: di
         role = message.get("role") or "assistant"
         requested = message.get("tool_calls") or []
         if role == "tool":
-            waiting = pending.get(message.get("id"))
+            waiting = pending.pop(message.get("id"), None)
             if waiting is not None:
                 _attach_result(waiting[0], message, waiting[1], here)
             turns.append(Turn(idx=msg_index, role="tool", content=_text(message.get("content")),
@@ -497,21 +488,34 @@ def _write_grader(simulation: dict, tasks: dict, trace: Trace, workdir: str | Pa
 def gate_ingest(traces: list[Trace], workdir: str | Path, raw_hash: Optional[str] = None) -> GateResult:
     """Section 6 ingest gate: every tool call has a parseable result or an error, and the grader fields are out."""
     failures: list[str] = []
-    calls = errors = truncated = unresolved = unparseable = orphans = 0
+    calls = errors = truncated = unresolved = unparseable = orphans = reused = 0
     for trace in traces:
         answered = {i for turn in trace.turns if turn.role == "tool" for i in turn.tool_call_ids}
         requested = {call.id for call in trace.tool_calls if call.id}
+        by_id: dict[str, list[ToolCall]] = {}
         for call in trace.tool_calls:
             calls += 1
             errors += 1 if call.error else 0
             truncated += 1 if call.truncated else 0
+            if call.id:
+                by_id.setdefault(call.id, []).append(call)
             named = call.id or call.name
-            if call.error is None and call.result is None and call.id not in answered:
+            # `resolved` is per call object, unlike `answered` which is only the set of id strings
+            # that appear on some "tool" turn; a reused id can leave this exact call unresolved while
+            # its id string does get answered, on a different call (D67, gate_ingest row 8).
+            if not call.resolved:
                 unresolved += 1
                 failures.append(f"{trace.trace_id}: tool call {named} has no result and no error")
             elif unparsed_json(call.result):
                 unparseable += 1
                 failures.append(f"{trace.trace_id}: tool call {named} has a result that does not parse")
+        for call_id, group in by_id.items():
+            if len(group) > 1 and any(not earlier.resolved for earlier in group[:-1]):
+                reused += 1
+                failures.append(
+                    f"{trace.trace_id}: tool call id {call_id} was issued again while the earlier "
+                    "call with that id was still pending"
+                )
         for orphan in sorted(answered - requested):
             orphans += 1
             failures.append(f"{trace.trace_id}: tool result {orphan} answers no recorded call")
@@ -522,7 +526,7 @@ def gate_ingest(traces: list[Trace], workdir: str | Path, raw_hash: Optional[str
     failures += [f"{r.get('trace_id') or 'file'}: rejected at ingest, {r.get('reason')}" for r in rejects]
     metrics = {"traces": len(traces), "tool_calls": calls, "errors": errors, "truncated": truncated,
                "unresolved": unresolved, "unparseable": unparseable, "orphan_results": orphans,
-               "rejected": len(rejects)}
+               "reused_pending_ids": reused, "rejected": len(rejects)}
     return GateResult(stage="ingest", passed=not failures, metrics=metrics, failures=failures)
 
 

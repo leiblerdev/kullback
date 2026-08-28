@@ -58,9 +58,17 @@ def write_tool_names(tool_sigs: Any) -> set[str]:
     return names
 
 
+def _is_assistant_call(call: ToolCall) -> bool:
+    """A domain with two tool-calling actors (telecom's simulated user runs its own user_tools.py)
+    must not credit the simulated user's own actions to the Environment; a missing requestor is the
+    assistant."""
+    return (call.requestor or "assistant") == "assistant"
+
+
 def confirmed_write_calls(trace: Trace, writes: set[str]) -> list[ToolCall]:
-    """The Run's write calls that went through: a call with an error changed nothing."""
-    return [c for c in trace.tool_calls if c.name in writes and c.error is None]
+    """The Run's write calls that went through: a call with an error changed nothing, and only the
+    assistant's own calls count toward what the Run wrote (docs/cross-domain-check.md, Judgement)."""
+    return [c for c in trace.tool_calls if c.name in writes and c.error is None and _is_assistant_call(c)]
 
 
 def category_signature(trace: Trace, writes: set[str]) -> tuple[str, ...]:
@@ -77,13 +85,12 @@ def task_id(cat_id: str, run_ids: Sequence[str]) -> str:
     return "task_" + content_hash({"category_id": cat_id, "run_ids": list(run_ids)})[:12]
 
 
-def run_tokens(trace: Trace, writes: Optional[set[str]] = None) -> set[str]:
+def run_tokens(trace: Trace) -> set[str]:
     """What a Run's intent looks like to code: the words of its first user turns.
 
     The keys of the write call are deliberately not in here. Every Run of a Category wrote through
     the same tools, so those keys are the same for all of them and only add a constant to every
-    similarity: two Runs with no word in common scored 0.308 that way and merged. `writes` is kept
-    on the signature because callers pass it and the Category signature still needs it.
+    similarity: two Runs with no word in common scored 0.308 that way and merged.
     """
     user_turns = [t for t in trace.turns if t.role == "user"][:USER_TURNS_USED]
     return {tok for turn in user_turns for tok in tokens(turn.content)}
@@ -117,16 +124,21 @@ def similarity(a: set[str], b: set[str], weights: Optional[dict[str, float]] = N
     return sum(weights.get(t, 1.0) for t in a & b) / union
 
 
+def first_line(text: Optional[str], max_chars: int) -> Optional[str]:
+    """The first non-empty, whitespace-collapsed line of a model reply, truncated; None when there is none."""
+    for line in (text or "").splitlines():
+        line = " ".join(line.split())
+        if line:
+            return line[:max_chars]
+    return None
+
+
 def name_task(model: Optional[Model], traces: Sequence[Trace]) -> Optional[str]:
     """The one LLM step in clustering: it names a cluster, it never decides membership (D83)."""
     if model is None or not traces:
         return None
     reply = model.query([{"role": "user", "content": _name_prompt(traces)}])
-    for line in (reply.content or "").splitlines():
-        line = " ".join(line.split())
-        if line:
-            return line[:MAX_NAME_CHARS]
-    return None
+    return first_line(reply.content, MAX_NAME_CHARS)
 
 
 def _name_prompt(traces: Sequence[Trace]) -> str:
@@ -201,7 +213,7 @@ def cluster_runs(
     bags: dict[str, set[str]] = {}
     for trace in sorted(traces, key=lambda t: t.trace_id):
         by_signature.setdefault(category_signature(trace, writes), []).append(trace)
-        bags[trace.trace_id] = run_tokens(trace, writes)
+        bags[trace.trace_id] = run_tokens(trace)
     # The weights come from the whole corpus, not from one Category, because a word is boilerplate
     # by how often the customer's users say it, not by which tool the Run happened to write with.
     weights = idf_weights(bags.values())

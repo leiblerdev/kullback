@@ -46,7 +46,11 @@ CONTEXT_WINDOWS: dict[str, int] = {
 }
 
 TOTALS_NAME = "budget.json"
-BUCKET_FIELDS = ("calls", "input", "output", "cache_read", "cache_write", "usd", "wall_ms", "unpriced_calls")
+# memo_hits: how many of "calls" were served from provider.MemoModel's on-disk memo rather than
+# the network. A hit's usage is zeroed at the source, so it already costs 0.00 in the other
+# fields; this is only the count, so a stage's cache effectiveness is a number, not a feeling.
+BUCKET_FIELDS = ("calls", "input", "output", "cache_read", "cache_write", "usd", "wall_ms",
+                 "unpriced_calls", "memo_hits")
 CONTEXT_CAP_FRACTION = 0.40
 # Tokens are estimated from characters before a call, because the count endpoint is itself a
 # call. Four characters per token is the usual English ratio and errs on the low side.
@@ -100,16 +104,21 @@ class BudgetExceeded(BudgetError):
         )
 
 
-def price_for(model_id: Optional[str]) -> Optional[dict[str, float]]:
-    """Prices for a full 'provider/model' id, or for the wire id alone."""
+def _lookup(table: dict[str, Any], model_id: Optional[str]) -> Optional[Any]:
+    """A table keyed by full 'provider/model' id, matched by the full id or by the wire id alone."""
     if not model_id:
         return None
-    if model_id in PRICES:
-        return PRICES[model_id]
-    for key, price in PRICES.items():
+    if model_id in table:
+        return table[model_id]
+    for key, value in table.items():
         if key.split("/", 1)[-1] == model_id:
-            return price
+            return value
     return None
+
+
+def price_for(model_id: Optional[str]) -> Optional[dict[str, float]]:
+    """Prices for a full 'provider/model' id, or for the wire id alone."""
+    return _lookup(PRICES, model_id)
 
 
 def is_priced(model_id: Optional[str]) -> bool:
@@ -118,13 +127,7 @@ def is_priced(model_id: Optional[str]) -> bool:
 
 def window_for(model_id: Optional[str]) -> int:
     """The context window of a model, for the D65 cap."""
-    if model_id:
-        if model_id in CONTEXT_WINDOWS:
-            return CONTEXT_WINDOWS[model_id]
-        for key, window in CONTEXT_WINDOWS.items():
-            if key.split("/", 1)[-1] == model_id:
-                return window
-    return DEFAULT_CONTEXT_WINDOW
+    return _lookup(CONTEXT_WINDOWS, model_id) or DEFAULT_CONTEXT_WINDOW
 
 
 def call_cost(usage: Usage, model_id: Optional[str]) -> float:
@@ -185,11 +188,13 @@ def record_call(
     ceiling: Optional["Ceiling"] = None,
     item: str = "",
     items_left: int = 0,
+    memo_hit: bool = False,
 ) -> Event:
     """Price one model-call Event, write the cost back onto it, and add it to the stage and build totals.
 
     With a ceiling, the same write charges it: the file is the one ledger, so the ceiling's
-    spend and the report's cost so far cannot drift apart.
+    spend and the report's cost so far cannot drift apart. `memo_hit` only adds to the count in
+    `memo_hits`; a hit already carries zeroed usage, so it prices at 0.00 through the usual fields.
     """
     if event.cost is None:
         return event
@@ -207,6 +212,8 @@ def record_call(
         target["wall_ms"] += event.cost.wall_ms
         if not is_priced(event.cost.model):
             target["unpriced_calls"] += 1
+        if memo_hit:
+            target["memo_hits"] += 1
     save_totals(workdir, totals)
     if ceiling is not None:
         ceiling.charge_recorded(totals, stage, item or str(event.idx), items_left)
@@ -306,8 +313,12 @@ class Ceiling:
         return self.remaining
 
     def charge_recorded(self, totals: dict, stage: str, item: str, items_left: int = 0) -> float:
-        """Take the spend from the ledger record_call just wrote, rather than counting twice."""
-        self._refuse_if_reached(stage, item, items_left)
+        """Take the spend from the ledger record_call just wrote, rather than counting twice.
+
+        Spent is refreshed from the ledger before the refuse check, not after: a caller that
+        charges past an already-reached ceiling still has that charge reflected in spent and in
+        report(), instead of both freezing at the value from before this call.
+        """
         self.spent = float(totals["total"]["usd"])
         for name, bucket in totals["stages"].items():
             self.stage_spend[name] = float(bucket["usd"])
@@ -360,6 +371,7 @@ class BudgetedModel(Model):
         window: Optional[int] = None,
         fraction: float = CONTEXT_CAP_FRACTION,
         cap_context: bool = True,
+        prompt_cache_key: Optional[str] = None,
     ):
         self.inner = inner
         self.name = getattr(inner, "name", "model")
@@ -372,6 +384,9 @@ class BudgetedModel(Model):
         # The Candidate is tested under the production setting and is never capped (D65);
         # only the Builder's own calls are.
         self.cap_context = cap_context
+        # OpenAI routes by this key when the caller's own config does not already set one
+        # (build.py sets one per build and stage); the Anthropic adapter ignores it.
+        self.prompt_cache_key = prompt_cache_key
         self.calls = 0
         if ceiling is not None:
             ceiling.require_priced(self.model_id)
@@ -384,10 +399,20 @@ class BudgetedModel(Model):
     ) -> ModelReply:
         if self.cap_context:
             check_context_cap(estimate_tokens(messages, tools), self.window, self.fraction)
+        if self.ceiling is not None:
+            # Refuse before the live call once the ceiling is already reached; without this, a
+            # ceiling breached by one call keeps letting every call after it run to completion
+            # before the after-the-fact check fires.
+            self.ceiling._refuse_if_reached(self.stage, self.model_id, 0)
+        if self.prompt_cache_key and (config is None or config.prompt_cache_key is None):
+            config = (config or ModelConfig()).model_copy(update={"prompt_cache_key": self.prompt_cache_key})
         started = time.monotonic()
         reply = self.inner.query(messages, tools=tools, config=config)
         wall_ms = (time.monotonic() - started) * 1000.0
         self.calls += 1
+        # provider.MemoModel, when this wraps one, marks a served hit here; anything else
+        # (a plain adapter, TestModel, RecordedModel) has no such attribute and counts as a miss.
+        memo_hit = bool(getattr(self.inner, "last_hit", False))
         event = Event(
             idx=self.calls - 1,
             type="model_call",
@@ -398,5 +423,6 @@ class BudgetedModel(Model):
                 wall_ms=wall_ms,
             ),
         )
-        record_call(event, self.stage, self.workdir, ceiling=self.ceiling, item=self.model_id)
+        record_call(event, self.stage, self.workdir, ceiling=self.ceiling, item=self.model_id,
+                   memo_hit=memo_hit)
         return reply

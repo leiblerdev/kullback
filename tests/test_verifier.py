@@ -240,6 +240,48 @@ def test_a_hard_rule_that_raises_is_a_failure_and_not_a_silent_pass(tmp_path):
     assert gates["verifier_oracle"].passed is False
 
 
+def test_a_hard_rule_cannot_walk_dunders_out_of_the_sandbox(tmp_path):
+    """A Hard constraint that never imports anything can still reach the process through
+    ().__class__.__base__.__subclasses__(); _hard_holds has to refuse it before exec, the same way
+    runner/verdict.py's gate() refuses it, or the walk runs for real and the Run scores a pass."""
+    import subprocess  # make sure Popen is a loaded subclass of object for the walk to find
+
+    assert subprocess.Popen  # imported, not used directly: the escape below finds it by name
+    marker = tmp_path / "escaped.txt"
+    escape = (
+        "def check(pre_state, write_call, transcript):\n"
+        "    for cls in ().__class__.__base__.__subclasses__():\n"
+        "        if cls.__name__ == 'Popen':\n"
+        f"            cls(['touch', {str(marker)!r}]).wait()\n"
+        "            return True\n"
+        "    return False\n"
+    )
+    rule = Constraint(id="k1", text="escape probe", compiled=True, predicate_src=escape)
+    verifier = derive(tmp_path, constraints=[rule])
+    atom = atom_by_id(verifier, "hard.k1")
+    assert V._hard_gate(atom.predicate_src)  # the walk is caught by the dunder-attribute gate
+    assert V._hard_holds(atom, reference_run(), WRITE_TOOLS) is False
+    assert not marker.exists(), "the escape payload ran outside the sandbox"
+    assert V.check_run(verifier, reference_run()) == (False, "hard.k1")
+
+
+def test_a_benign_hard_rule_still_evaluates_once_gated(tmp_path):
+    """The gate has to let an ordinary policy predicate through, not just refuse bad ones."""
+    rule = Constraint(id="k1", text="never cancel an order that is not pending", compiled=True,
+                      predicate_src=("def check(pre_state, write_call, transcript):\n"
+                                     "    order = pre_state['orders'][write_call['arguments']['order_id']]\n"
+                                     "    return order['status'] == 'pending'\n"))
+    verifier = derive(tmp_path, constraints=[rule])
+    assert V._hard_gate(rule.predicate_src) == []
+    path = tmp_path / "pending.jsonl"
+    with path.open("w", encoding="utf-8") as handle:
+        for event in as_dict(reference_run())["events"]:
+            handle.write(json.dumps(event) + "\n")
+        handle.write(json.dumps({"run_id": "pending", "task_id": "t1", "termination_reason": "user_stop",
+                                 "start_state": {"orders": {"#W123": {"status": "pending"}}}}) + "\n")
+    assert V.check_run(verifier, path) == (True, None)
+
+
 # --- write-set diff, agreement, provenance --------------------------------
 
 def test_write_present_in_every_successful_rerun_is_required(tmp_path):
@@ -640,6 +682,22 @@ def test_a_write_no_successful_run_made_still_fails_on_the_write_cap(tmp_path):
     passed, failing = V.check_run(verifier, over)
     assert passed is False
     assert failing == "entity_count"
+
+
+def test_check_run_needs_write_tools_to_catch_an_extra_write_on_an_uncovered_tool(tmp_path):
+    """build.py:347 always supplies the mined write_tools in production; no call in this file did
+    until this test, so the extra-write safety net (_extra_write) had no coverage of that shape."""
+    verifier = derive(tmp_path, reruns=[alt_path_run(), extra_write_run()])
+    sneaky = make_run("sneaky", reference_events() + [
+        call("refund_order", {"order_id": "#W123", "amount": 25.0}, kind="read", cid="c2"),
+        result({"ok": True}, cid="c2"),
+    ])
+    # With no write_tools, the extra call is invisible: nothing marked it as a write, so it slips
+    # through as a full pass.
+    assert V.check_run(verifier, sneaky) == (True, None)
+    # The same Run, scored the way build.py actually scores it, is caught.
+    assert V.check_run(verifier, sneaky, write_tools={"cancel_pending_order", "refund_order"}) == (
+        False, "extra_write:refund_order")
 
 
 # --- D79 validation -------------------------------------------------------

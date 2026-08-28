@@ -286,6 +286,22 @@ def test_record_call_charges_the_ceiling_from_the_ledger_without_counting_twice(
     assert budget.load_totals(workdir)["total"]["usd"] == pytest.approx(expected)
 
 
+def test_charge_recorded_refreshes_spent_before_refusing(workdir):
+    """Once the ceiling has already been breached, a further charge still lands in the ledger
+    (say, from a caller that does not check before charging); spent must reflect it rather than
+    freezing at the value from the call that first breached the ceiling."""
+    ceiling = budget.Ceiling(usd=12.0, workdir=workdir)
+    for idx in range(2):
+        budget.record_call(call_event(idx=idx, input=1_000_000), stage="mine", workdir=workdir, ceiling=ceiling)
+    with pytest.raises(budget.BudgetExceeded):
+        budget.record_call(call_event(idx=2, input=1_000_000), stage="mine", workdir=workdir, ceiling=ceiling)
+    assert ceiling.spent == pytest.approx(15.0)
+    with pytest.raises(budget.BudgetExceeded):
+        budget.record_call(call_event(idx=3, input=1_000_000), stage="mine", workdir=workdir, ceiling=ceiling)
+    assert ceiling.spent == pytest.approx(20.0), "spent must reflect the ledger even when charge_recorded refuses"
+    assert budget.load_totals(workdir)["total"]["usd"] == pytest.approx(20.0)
+
+
 def test_record_call_stops_the_build_when_the_ledger_passes_the_ceiling(workdir):
     ceiling = budget.Ceiling(usd=1.0, workdir=workdir)
     with pytest.raises(budget.BudgetExceeded) as excinfo:
@@ -342,6 +358,28 @@ def test_the_wrapper_charges_the_ceiling_and_stops_the_build(workdir, make_test_
     assert ceiling.spent == pytest.approx(15.0)
 
 
+def test_the_wrapper_refuses_before_the_live_call_once_the_ceiling_is_reached(workdir, make_test_model):
+    """Once the ceiling is breached, the live model must not be called again: the refusal has to
+    come before self.inner.query, not only from the after-the-fact record_call check."""
+    from harness.shared.provider import ModelReply
+
+    inner = make_test_model(
+        [ModelReply(model="claude-opus-5", usage={"input": 1_000_000})], loop=True
+    )
+    ceiling = budget.Ceiling(usd=12.0, workdir=workdir)
+    model = budget.BudgetedModel(
+        inner, stage="mine", workdir=workdir, model_id="anthropic/claude-opus-5", ceiling=ceiling
+    )
+    model.query([{"role": "user", "content": "hi"}])
+    model.query([{"role": "user", "content": "hi"}])
+    with pytest.raises(budget.BudgetExceeded):
+        model.query([{"role": "user", "content": "hi"}])  # this one breaches the ceiling
+    calls_after_breach = len(inner.calls)
+    with pytest.raises(budget.BudgetExceeded):
+        model.query([{"role": "user", "content": "hi"}])
+    assert len(inner.calls) == calls_after_breach, "the live model ran again after the ceiling was reached"
+
+
 def test_the_wrapper_refuses_a_builder_prompt_over_the_cap_before_calling(workdir, make_test_model):
     """D65: the call is refused, not compacted, and the model never sees it."""
     inner = make_test_model(["never reached"], loop=True)
@@ -366,6 +404,51 @@ def test_the_candidate_is_not_capped(workdir, make_test_model):
     )
     big = "x" * (budget.context_cap_tokens(200_000) * budget.CHARS_PER_TOKEN + 100)
     assert model.query([{"role": "user", "content": big}]).content == "ok"
+
+
+def test_a_memomodel_hit_is_counted_in_the_memo_hits_bucket_and_priced_at_zero(workdir):
+    """docs/prompt-caching.md item 3: a hit still counts as a call, but adds to memo_hits and
+    prices at zero because MemoModel already zeroed its usage."""
+    from harness.shared.provider import MemoModel, ModelReply, TestModel
+
+    inner = TestModel([ModelReply(content="ok", model="claude-opus-5", usage={"input": 1_000_000})])
+    memo = MemoModel(inner, workdir)
+    model = budget.BudgetedModel(memo, stage="mine", workdir=workdir, model_id="anthropic/claude-opus-5")
+
+    model.query([{"role": "user", "content": "hi"}])
+    model.query([{"role": "user", "content": "hi"}])  # same request: a memo hit
+
+    totals = budget.load_totals(workdir)
+    assert totals["stages"]["mine"]["calls"] == 2
+    assert totals["stages"]["mine"]["memo_hits"] == 1
+    assert totals["total"]["usd"] == pytest.approx(budget.PRICES["anthropic/claude-opus-5"]["input"])
+
+
+def test_a_plain_model_never_adds_to_memo_hits(workdir, make_test_model):
+    inner = make_test_model(["ok"], loop=True)
+    model = budget.BudgetedModel(inner, stage="mine", workdir=workdir, model_id="anthropic/claude-opus-5")
+    model.query([{"role": "user", "content": "hi"}])
+    assert budget.load_totals(workdir)["stages"]["mine"]["memo_hits"] == 0
+
+
+def test_the_wrapper_sets_the_prompt_cache_key_when_the_caller_left_it_unset(workdir, make_test_model):
+    inner = make_test_model(["ok"])
+    model = budget.BudgetedModel(
+        inner, stage="mine", workdir=workdir, model_id="openai/gpt-4o-mini", prompt_cache_key="kullback-abc-mine"
+    )
+    model.query([{"role": "user", "content": "hi"}])
+    assert inner.calls[0]["config"].prompt_cache_key == "kullback-abc-mine"
+
+
+def test_the_wrapper_does_not_override_a_prompt_cache_key_the_caller_already_set(workdir, make_test_model):
+    from harness.shared.provider import ModelConfig
+
+    inner = make_test_model(["ok"])
+    model = budget.BudgetedModel(
+        inner, stage="mine", workdir=workdir, model_id="openai/gpt-4o-mini", prompt_cache_key="kullback-abc-mine"
+    )
+    model.query([{"role": "user", "content": "hi"}], config=ModelConfig(prompt_cache_key="caller-set"))
+    assert inner.calls[0]["config"].prompt_cache_key == "caller-set"
 
 
 def test_token_estimate_counts_the_tools_as_well_as_the_messages():

@@ -71,6 +71,10 @@ class ModelConfig(BaseModel):
     effort: Optional[str] = None
     # OpenAI: reasoning_effort on the reasoning models.
     reasoning_effort: Optional[str] = None
+    # OpenAI: prompt_cache_key, so the provider routes calls that share a prefix to the same
+    # cache. Set once per build and stage (build.py); the Anthropic adapter ignores it, since it
+    # caches by cache_control points instead (cache_system, cache_last_two below).
+    prompt_cache_key: Optional[str] = None
 
 
 class Model:
@@ -189,6 +193,65 @@ class RecordedModel(Model):
         reply = self.replies[self.index]
         self.index += 1
         return reply.model_copy(deep=True)
+
+
+class MemoModel(Model):
+    """A content-addressed, on-disk memo of model replies, so a repeat request never reaches the network.
+
+    Key: sha256 of the model id, the normalized messages, the tools and the config, as sorted-key
+    JSON, so a byte-identical request always finds the same file regardless of process. Value: the
+    reply, stored under `<workdir>/model_cache/<hash>.json`. A hit is returned with its usage
+    zeroed, so budget.py's BudgetedModel (which wraps this) prices it at zero; `hits` and `calls`
+    count on the wrapper itself, and `last_hit` is the per-call marker budget.py reads into its own
+    `memo_hits` bucket, since records.py's Record base forbids an unlisted extra field on a stored
+    reply.
+
+    Never wrap a Candidate's live model in this (build.py's run_batch does not): a Candidate's
+    answer has to be a fresh sample, and a memoized one would turn a sample into a replay.
+    """
+
+    CACHE_DIR = "model_cache"
+
+    def __init__(self, inner: Model, workdir: str | Path):
+        self.inner = inner
+        self.name = getattr(inner, "name", "model")
+        self.dir = Path(workdir) / self.CACHE_DIR
+        self.calls = 0
+        self.hits = 0
+        self.last_hit = False
+
+    def _key(self, messages: list[dict], tools: Optional[list[dict]], config: Optional[ModelConfig]) -> str:
+        payload = {
+            "model": self.name,
+            "messages": normalize_messages(messages),
+            "tools": tools or [],
+            "config": (config or ModelConfig()).model_dump(mode="json"),
+        }
+        blob = json.dumps(payload, sort_keys=True, default=str, ensure_ascii=False)
+        return hashlib.sha256(blob.encode("utf-8")).hexdigest()
+
+    def _path(self, key: str) -> Path:
+        return self.dir / f"{key}.json"
+
+    def query(
+        self,
+        messages: list[dict],
+        tools: Optional[list[dict]] = None,
+        config: Optional[ModelConfig] = None,
+    ) -> ModelReply:
+        self.calls += 1
+        path = self._path(self._key(messages, tools, config))
+        if path.is_file():
+            self.hits += 1
+            self.last_hit = True
+            reply = ModelReply.model_validate(json.loads(path.read_text(encoding="utf-8")))
+            reply.usage = Usage()  # a hit costs nothing; the stored usage is kept on disk, not here
+            return reply
+        self.last_hit = False
+        reply = self.inner.query(messages, tools=tools, config=config)
+        self.dir.mkdir(parents=True, exist_ok=True)
+        path.write_text(reply.model_dump_json(), encoding="utf-8")
+        return reply
 
 
 def _as_reply(item: Any) -> ModelReply:
@@ -415,7 +478,9 @@ def normalize_messages(messages: list[dict]) -> list[dict]:
         message = _clean_ids(dict(message))
         content = message.get("content")
         if isinstance(content, list):
-            message["content"] = [_clean_ids(b) if isinstance(b, dict) else b for b in content if not _is_empty_block(b)]
+            message["content"] = [
+                _clean_ids(b) if isinstance(b, dict) else b for b in content if not _is_empty_block(b)
+            ]
             empty = not message["content"]
         else:
             empty = not str(content or "").strip()
@@ -728,6 +793,8 @@ class OpenAIModel(HttpModel):
             body["seed"] = config.seed
         if config.stop:
             body["stop"] = list(config.stop)
+        if config.prompt_cache_key:
+            body["prompt_cache_key"] = config.prompt_cache_key
         body.update(self.reasoning_fields(config))
         return body
 
@@ -856,28 +923,35 @@ def _text_of(message: dict) -> str:
 
 
 def _to_anthropic(messages: list[dict]) -> tuple[list[dict], list[dict]]:
-    """Our canonical messages into Anthropic's: system pulled out, tool calls and results as blocks."""
+    """Our canonical messages into Anthropic's: system pulled out, tool calls and results as blocks.
+
+    Every tool_result answering one assistant turn has to land in a single following user
+    message, one block each: two tool calls in a turn followed by two tool messages must become
+    one user message with two tool_result blocks, not two user messages back to back, which the
+    Anthropic Messages API rejects.
+    """
     system: list[dict] = []
     out: list[dict] = []
+    in_tool_group = False
     for message in messages:
         role = message.get("role")
         if role == "system":
             system.append({"type": "text", "text": _text_of(message)})
+            in_tool_group = False
             continue
         if role == "tool":
-            out.append(
-                {
-                    "role": "user",
-                    "content": [
-                        {
-                            "type": "tool_result",
-                            "tool_use_id": message.get("tool_call_id") or message.get("id"),
-                            "content": _text_of(message),
-                        }
-                    ],
-                }
-            )
+            block = {
+                "type": "tool_result",
+                "tool_use_id": message.get("tool_call_id") or message.get("id"),
+                "content": _text_of(message),
+            }
+            if in_tool_group:
+                out[-1]["content"].append(block)
+            else:
+                out.append({"role": "user", "content": [block]})
+                in_tool_group = True
             continue
+        in_tool_group = False
         content = message.get("content")
         if isinstance(content, list) and all(isinstance(b, dict) and "type" in b for b in content):
             blocks = list(content)

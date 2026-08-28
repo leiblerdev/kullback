@@ -1,4 +1,5 @@
-"""The agentic judge (D92): read-only tools over the Starting and End state, at least one check before any verdict, two judges whose disagreement goes to a queue."""
+"""The agentic judge (D92): read-only tools over the Starting and End state, at least one check
+before any verdict, two judges whose disagreement goes to a queue."""
 
 from __future__ import annotations
 
@@ -9,7 +10,7 @@ from typing import Any, Callable, Optional
 from pydantic import BaseModel, ConfigDict, Field
 
 from harness.shared.provider import Model, ModelConfig
-from harness.shared.records import as_dict, canonical_json
+from harness.shared.records import as_dict, canonical_json, disagreement_stats
 
 JUDGE_VERSION = "0"
 QUEUE_FILE = "disagreement_queue.jsonl"
@@ -443,16 +444,7 @@ def tasks_set_aside(workdir: Path) -> list[dict]:
 def disagreement_rate(workdir: Path, use: Optional[str] = None) -> dict:
     """The number that travels with every judge result until human labels exist (D92)."""
     rows = [r for r in _read(Path(workdir) / PAIRS_FILE) if use is None or r.get("use") == use]
-    pairs = len(rows)
-    disagreements = sum(1 for r in rows if r.get("disagreement"))
-    abstains = sum(1 for r in rows if r.get("abstain"))
-    return {
-        "pairs": pairs,
-        "disagreements": disagreements,
-        "rate": (disagreements / pairs) if pairs else 0.0,
-        "abstains": abstains,
-        "abstain_rate": (abstains / pairs) if pairs else 0.0,
-    }
+    return disagreement_stats(rows)
 
 
 # --- small helpers ---

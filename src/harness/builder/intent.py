@@ -1,4 +1,5 @@
-"""Writes a Task's one-line Intent and refuses it unless every noun phrase points to a span in every member Run (D47, D83)."""
+"""Writes a Task's one-line Intent and refuses it unless every noun phrase points to a span in
+every member Run (D47, D83)."""
 
 from __future__ import annotations
 
@@ -7,6 +8,7 @@ import re
 from typing import Any, Iterable, Literal, Optional, Sequence
 
 from harness.builder.cluster import APOSTROPHE_RE, STOPWORDS
+from harness.builder.cluster import first_line as _shared_first_line
 from harness.shared.provider import Model
 from harness.shared.records import RawPtr, Record, Task, ToolCall, Trace
 
@@ -122,7 +124,14 @@ def span_candidates(trace: Trace, write_tools: Optional[set[str]] = None) -> lis
     out: list[IntentSpan] = []
     for turn in trace.turns:
         if turn.role == "user" and turn.content:
-            out.append(IntentSpan(trace_id=trace.trace_id, source="user_utterance", text=turn.content, raw_ptr=turn.raw_ptr))
+            out.append(
+                IntentSpan(
+                    trace_id=trace.trace_id,
+                    source="user_utterance",
+                    text=turn.content,
+                    raw_ptr=turn.raw_ptr,
+                )
+            )
     for index, call in enumerate(trace.tool_calls):
         if call.error is not None:
             continue
@@ -244,11 +253,7 @@ def _intent_prompt(traces: Sequence[Trace], write_tools: Optional[set[str]]) -> 
 
 
 def _first_line(text: Optional[str]) -> str:
-    for line in (text or "").splitlines():
-        line = " ".join(line.split())
-        if line:
-            return line[:MAX_INTENT_CHARS]
-    return ""
+    return _shared_first_line(text, MAX_INTENT_CHARS) or ""
 
 
 def write_intent(
