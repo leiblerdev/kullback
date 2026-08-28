@@ -10,13 +10,23 @@ from typing import Any, Optional
 
 import typer
 
-from harness.shared.records import Environment, RunnerVersion, Task, Verifier, as_dict
+from harness.shared.records import (
+    EntitySchema,
+    Environment,
+    RunnerVersion,
+    Task,
+    Verifier,
+    as_dict,
+)
 from harness.shared.report import coverage_rows, load, load_tool_sigs, write_report
 
 app = typer.Typer(add_completion=False, help="Build an Environment from customer traces, re-run it, grade it, report it.")
 
 WORKDIR = typer.Option(Path("."), "--workdir", "-w", help="Directory every record is read from and written to.")
 RUNNER_FILES = ("loop.py", "route.py", "verdict.py")  # what freeze-runner hashes (D89)
+JUDGE_MODEL = typer.Option(None, "--judge-model",
+                          help="Model id for the two agentic judges, as provider/model. Without it, judge atoms are left unevaluated and a failure keeps no cause.")
+BASE_URL = typer.Option(None, "--base-url", help="Endpoint for an OpenAI-compatible model.")
 
 
 def _entry(path: str, name: str):
@@ -48,13 +58,113 @@ def _tasks(workdir: Path, task_id: Optional[str]) -> list[Task]:
     return [task for task in tasks if task_id is None or task.id == task_id]
 
 
-def _score(workdir: Path, task_id: Optional[str], what: str) -> None:
-    """Score stored Runs against their Task's Verifier. Nothing is re-executed; the version cache makes a repeat free."""
+def _schema(workdir: Path):
+    """The mined EntitySchema, which is what drops the exempt columns from the diff a predicate sees (D39, D73).
+
+    Without it a forbidden atom over `diff()` fires on a column the customer marked exempt, so a
+    Verdict from the CLI disagrees with the same Verdict computed in the build. A build that has not
+    written `schema.json` yet is scored without it and told so.
+    """
+    path = Path(workdir) / "schema.json"
+    return _load(path, EntitySchema) if path.is_file() else None
+
+
+def _judges(model_id: Optional[str], base_url: Optional[str] = None):
+    """The two agentic judges of D92, or None when the caller named no judge model.
+
+    Both are constructed here and never inside the Runner: `verdict.py` takes judge answers as data
+    and calls no model itself (D76, build brief rule 2). The second judge is the same adapter under
+    judge.py's own second persona, which is the D97 default; a second model id would be better and is
+    what `--judge-model` should grow when a customer has two providers configured.
+    """
+    if not model_id:
+        return None
+    first = _entry("harness.runner.judge", "AgenticJudge")(_live_model(model_id, base_url),
+                                                           name=f"{model_id}:a")
+    return first, _entry("harness.runner.judge", "third_judge")(first)
+
+
+def _judged_atoms(verifier: Verifier, paths: list, judges, workdir: Path) -> dict:
+    """{run_id: {atom_id: JudgeResult}} for a Verifier with judge atoms, which is verdict.py's shape (D76).
+
+    Without this the judge atoms of a Verifier are never answered, so every Run carrying one is
+    "not verdicted, Verifier immature" whatever the Candidate did.
+    """
+    if judges is None or not any(getattr(atom, "judge", False) for atom in verifier.atoms):
+        return {}
+    load_run = _entry("harness.runner.verdict", "load_run")
+    answer = _entry("harness.runner.judge", "judge_atom_results")
+    out = {}
+    for path in paths:
+        run = load_run(path)
+        out[run.run_id] = answer(verifier, run, judges[0], judges[1],
+                                 workdir=workdir, run_id=run.run_id)
+    return out
+
+
+def _drop_uncaused(out_dir: Path, run_id: str) -> None:
+    """Take away the Verdict written before the judge named the cause, so one Run keeps one Verdict.
+
+    Both sit under the same versions and the same folder, so a report reading it would otherwise
+    count the Run twice; the Verdict that names a cause is the one that stands.
+    """
+    for path in sorted(Path(out_dir).glob(f"{run_id}.*.json")):
+        try:
+            body = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if body.get("run_id") == run_id and body.get("cause") is None:
+            path.unlink()
+
+
+def _name_causes(verdicts: list, paths: list, judges, workdir: Path, out_dir: Path, rescore) -> int:
+    """Ask the judges to name the cause of every failed Run that code left unmarked (D88).
+
+    Code marks the Run and the judge names the cause; neither is computed in `verdict.py`. The Run is
+    scored a second time with the answer, which lands under its own cache key because `cause_result`
+    is one of the Verdict's inputs, so nothing has to be refreshed by hand.
+    """
+    if judges is None:
+        return 0
+    name = _entry("harness.runner.judge", "judge_cause_result")
+    load_run = _entry("harness.runner.verdict", "load_run")
+    by_id = {load_run(path).run_id: path for path in paths}
+    reference = load_run(paths[0]) if paths else None
+    named = 0
+    for record in verdicts:
+        if record.passed or record.cause is not None or "cause_pending_judge" not in record.notes:
+            continue
+        path = by_id.get(record.run_id)
+        if path is None:
+            continue
+        result = name(load_run(path), reference, judges[0], judges[1],
+                      workdir=workdir, run_id=record.run_id)
+        rescore(path, cause_result=result)
+        _drop_uncaused(out_dir, record.run_id)
+        named += 1
+    return named
+
+
+def _score(workdir: Path, task_id: Optional[str], what: str, use_queue: bool = False,
+           judge_model: Optional[str] = None, base_url: Optional[str] = None) -> None:
+    """Score stored Runs against their Task's Verifier. Nothing is re-executed; the version cache makes a repeat free.
+
+    With `--judge-model` the judge atoms of each Verifier are answered before the Verdict and the
+    cause of each unexplained failure after it (D76, D88). Without one, a judge atom stays
+    unevaluated and a failure keeps `cause_pending_judge`; both are said out loud rather than
+    silently passing.
+    """
     score = _entry("harness.runner.regrade", "regrade")
+    score_one = _entry("harness.runner.regrade", "regrade_run")
+    judge_version = _entry("harness.runner.judge", "JUDGE_VERSION") if judge_model else None
+    judges = _judges(judge_model, base_url)
     canon_value = _entry("harness.shared.canon", "canon_value")
     env_path, version_path = Path(workdir) / "environment.json", Path(workdir) / "runner_version.json"
     environment = _load(env_path, Environment) if env_path.is_file() else None
     version = _load(version_path, RunnerVersion).runner_version if version_path.is_file() else None
+    schema = _schema(workdir)
+    if schema is None:
+        typer.echo("no EntitySchema on disk (schema.json): exempt columns are not dropped from the diff (D73)")
     sigs = load_tool_sigs(workdir)  # without these the extra-write and D70 checks never fire
     write_tools = {sig.name for sig in sigs if sig.kind == "write"}
     flagged_tools = {sig.name for sig in sigs if sig.unclassified}
@@ -62,6 +172,8 @@ def _score(workdir: Path, task_id: Optional[str], what: str) -> None:
         typer.echo("no write tools among the mined ToolSigs: side effects are not checked")
     elif not sigs:
         typer.echo("no ToolSigs on disk: side effects are not checked")
+    queued = set(_entry("harness.shared.canon", "queued_regrades")(workdir)) if use_queue else set()
+    scored = 0
     for task in _tasks(workdir, task_id):
         path = Path(workdir) / "verifiers" / f"{task.id}.json"
         if not path.is_file():
@@ -72,10 +184,29 @@ def _score(workdir: Path, task_id: Optional[str], what: str) -> None:
         if not paths:
             typer.echo(f"task {task.id}: no stored Runs")
             continue
-        score(paths, verifier, canon_value, out_dir=Path(workdir) / "verdicts" / task.id,
-              environment=environment, runner_version=version,
-              write_tools=write_tools or None, flagged_tools=flagged_tools)
-        typer.echo(f"task {task.id}: {what} {len(paths)} Runs")
+        out_dir = Path(workdir) / "verdicts" / task.id
+        common = dict(environment=environment, runner_version=version, schema=schema,
+                      write_tools=write_tools or None, flagged_tools=flagged_tools)
+        verdicts = score(paths, verifier, canon_value, out_dir=out_dir,
+                         judge_results=_judged_atoms(verifier, paths, judges, Path(workdir)),
+                         judge_version=judge_version,
+                         queue_dir=Path(workdir) if use_queue else None, **common)
+        named = _name_causes(
+            verdicts, paths, judges, Path(workdir), out_dir,
+            lambda path, verifier=verifier, out_dir=out_dir, common=common, **extra: score_one(
+                path, verifier, canon_value, out_dir=out_dir,
+                judge_version=judge_version, **common, **extra))
+        scored += 1
+        forced = len([p for p in paths if p.stem in queued])
+        cached = len(paths) - forced
+        tail = (f", {forced} re-scored from the regrade queue (D84) and {cached} served from the version cache"
+                if use_queue else "")
+        tail += f", {named} failures given a cause by the judges (D88)" if named else ""
+        typer.echo(f"task {task.id}: {what} {len(paths)} Runs{tail}")
+    if not scored:
+        typer.echo(f"no Task matched {task_id}: nothing was scored" if task_id
+                   else "no Task with a Verifier and stored Runs: nothing was scored")
+        raise typer.Exit(1)
 
 
 def runner_version(routing_config: Optional[Path] = None) -> RunnerVersion:
@@ -91,20 +222,43 @@ def runner_version(routing_config: Optional[Path] = None) -> RunnerVersion:
 
 
 @app.command()
-def ingest(files: list[Path] = typer.Argument(..., help="The customer's export files."), workdir: Path = WORKDIR):
+def ingest(files: list[Path] = typer.Argument(..., help="The customer's export files."),  # noqa: B008
+          workdir: Path = WORKDIR):
     """Store the customer's files byte for byte and derive Traces from them (D66)."""
     ingest_file = _entry("harness.builder.ingest", "ingest_file")
     summaries = [ingest_file(path, workdir) for path in files]
     _write(Path(workdir) / "ingest_summary.json", summaries)
 
 
+def _live_model(model_id: str, base_url: Optional[str]):
+    """One live adapter, after the environment has said live calls are allowed.
+
+    Keys come from the environment or from a .env file in the current directory (read here,
+    never overriding exported values). `enable_live_calls_from_env` is called exactly here:
+    nothing else in the package sets the flag, so a live call needs a person to have set
+    HARNESS_ALLOW_MODEL_REQUESTS.
+    """
+    _entry("harness.shared.provider", "load_dotenv")()
+    enable = _entry("harness.shared.provider", "enable_live_calls_from_env")
+    if not enable():
+        typer.echo("live model requests are off; put HARNESS_ALLOW_MODEL_REQUESTS=1 in .env or export it")
+        raise typer.Exit(2)
+    return _entry("harness.shared.provider", "model_for")(model_id, base_url)
+
+
 @app.command()
 def build(
     workdir: Path = WORKDIR,
     iterate: bool = typer.Option(False, "--iterate", help="Resume the content-addressed build and keep improving."),
+    model: Optional[str] = typer.Option(None, "--model", help="Builder model id, as provider/model."),
+    base_url: Optional[str] = typer.Option(None, "--base-url", help="Endpoint for an OpenAI-compatible model."),
+    files: Optional[list[Path]] = typer.Option(None, "--file", help="Customer export to ingest first."),  # noqa: B008
+    ceiling_usd: Optional[float] = typer.Option(None, "--ceiling-usd", help="Per-build spend ceiling (D86)."),
 ):
     """Run the Builder pipeline over the ingested Traces and write the Environment."""
-    result = _entry("harness.runner.pipeline", "build")(workdir=workdir, iterate=iterate)
+    adapter = _live_model(model, base_url) if model else None
+    result = _entry("harness.builder.build", "build")(
+        workdir=workdir, iterate=iterate, model=adapter, files=list(files or []), ceiling_usd=ceiling_usd)
     typer.echo(json.dumps(result, default=str))
 
 
@@ -112,7 +266,7 @@ def build(
 def freeze_runner(
     workdir: Path = WORKDIR,
     yes: bool = typer.Option(False, "--yes", help="Skip the confirmation."),
-    routing_config: Optional[Path] = typer.Option(None, "--routing-config", help="Routing config to hash in."),
+    routing_config: Optional[Path] = typer.Option(None, "--routing-config", help="Routing config to hash in."),  # noqa: B008
     by: str = typer.Option("unknown", "--by", help="Who confirmed the freeze."),
 ):
     """Write the RunnerVersion that every later Verdict carries, after a person confirms it."""
@@ -133,45 +287,75 @@ def run(
     model: str = typer.Option(..., "--model", help="Candidate model id, as provider/model."),
     count: int = typer.Option(1, "--count", help="Runs per Task."),
     seed: int = typer.Option(0, "--seed", help="First seed; the batch counts up from it."),
+    base_url: Optional[str] = typer.Option(None, "--base-url", help="Endpoint for an OpenAI-compatible model."),
 ):
     """Run a Candidate against the built Environment and write one JSONL per Run."""
-    result = _entry("harness.runner.pipeline", "run_batch")(
-        workdir=workdir, task_id=task, model=model, count=count, seed=seed)
+    result = _entry("harness.builder.build", "run_batch")(
+        workdir=workdir, task_id=task, model=_live_model(model, base_url), count=count, seed=seed)
     typer.echo(json.dumps(result, default=str))
 
 
 @app.command()
-def verdict(workdir: Path = WORKDIR, task: Optional[str] = typer.Option(None, "--task", help="One Task id.")):
+def verdict(workdir: Path = WORKDIR, task: Optional[str] = typer.Option(None, "--task", help="One Task id."),
+            judge_model: Optional[str] = JUDGE_MODEL, base_url: Optional[str] = BASE_URL):
     """Score the stored Runs of one Task, or of every Task, on their End state."""
-    _score(Path(workdir), task, "scored")
+    _score(Path(workdir), task, "scored", judge_model=judge_model, base_url=base_url)
 
 
 @app.command()
-def regrade(workdir: Path = WORKDIR, task: Optional[str] = typer.Option(None, "--task", help="One Task id.")):
-    """Re-score stored Runs against the current Environment and Verifier versions, without re-executing them."""
-    _score(Path(workdir), task, "regraded")
+def regrade(workdir: Path = WORKDIR, task: Optional[str] = typer.Option(None, "--task", help="One Task id."),
+            judge_model: Optional[str] = JUDGE_MODEL, base_url: Optional[str] = BASE_URL):
+    """Re-score stored Runs against the current Environment and Verifier versions, without re-executing them.
+
+    A Run whose equivalence entry a person overturned is in canon.py's regrade queue (D84): its
+    versions have not moved, so only the queue makes it score again.
+    """
+    _score(Path(workdir), task, "regraded", use_queue=True, judge_model=judge_model, base_url=base_url)
+
+
+def _coverage_runs(runs: list) -> list:
+    """The Runs as D96 counts them: a replay stands for the Trace it replays.
+
+    A Task's `run_ids` are the ids of the customer's Traces (cluster.py), while a replayed Run keeps
+    its own id and carries the Trace's id as `trace_id`. Without this every replayed Task reads
+    "Run <trace> was not replayed" while the Run is on disk.
+    """
+    out = list(runs)
+    for run in runs:
+        if run.trace_id and run.trace_id != run.run_id:
+            out.append(run.model_copy(update={"run_id": run.trace_id}))
+    return out
 
 
 @app.command()
 def report(
     workdir: Path = WORKDIR,
-    out: Optional[Path] = typer.Option(None, "--out", help="Where to write the Markdown."),
+    out: Optional[Path] = typer.Option(None, "--out", help="Where to write the Markdown."),  # noqa: B008
     batch: bool = typer.Option(False, "--batch", help="Report one Run batch instead of a build."),
+    model: Optional[str] = typer.Option(None, "--model", help="Only the Runs of this model, which is what names a batch."),
 ):
     """Write the Markdown report: the Environment first, then the numbers per Task, then a suggestion (D85)."""
     data = load(workdir)
+    if model:
+        # A batch is the Runs of one Candidate model; without this filter a batch report counts
+        # every stored Verdict of every batch (design section 4 item 18).
+        data.runs = [run for run in data.runs if run.model == model]
+        keep = {run.run_id for run in data.runs}
+        data.verdicts = [v for v in data.verdicts if v.run_id in keep]
     if not data.task_coverage and data.tasks:
         # D96's two headline numbers: covered Tasks over the frozen list, and the same Run-weighted.
         # The rule lives in validate.py so the scorecard and the report count the same thing.
         task_coverage = _entry("harness.runner.validate", "task_coverage")
         status = json.loads((Path(workdir) / "task_status.json").read_text(encoding="utf-8")) \
             if (Path(workdir) / "task_status.json").is_file() else {}
-        computed = task_coverage(data.tasks, data.runs, status)
+        computed = task_coverage(data.tasks, _coverage_runs(data.runs), status)
         data.task_coverage = coverage_rows(
             data.tasks, {row["task_id"]: row["reason"] for row in computed["uncovered"]})
-    if batch:
+    if batch or model:
         data.kind = "batch"
-        data.title = "Run batch report"
+        data.title = "Run batch report" + (f" for {model}" if model else "")
+    for name in data.records_not_read:
+        typer.echo(f"not read, so it is not counted: {name}")
     target = Path(out) if out else Path(workdir) / "report.md"
     typer.echo(str(write_report(data, target.parent, target.name)))
 

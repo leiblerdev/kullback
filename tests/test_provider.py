@@ -744,3 +744,18 @@ def test_a_retry_after_inside_the_cap_is_still_honoured(live, sleeps):
     model = anthropic_model(handler, sleeps)
     model.query([{"role": "user", "content": "hi"}])
     assert sleeps == [90.0]
+
+
+def test_load_dotenv_adds_keys_without_overriding(tmp_path):
+    from harness.shared.provider import load_dotenv
+
+    dotenv = tmp_path / ".env"
+    dotenv.write_text(
+        "# keys\nOPENAI_API_KEY='sk-test'\nexport HARNESS_ALLOW_MODEL_REQUESTS=1\n\nALREADY=new\nbroken line\n",
+        encoding="utf-8",
+    )
+    env = {"ALREADY": "old"}
+    added = load_dotenv(dotenv, env)
+    assert added == {"OPENAI_API_KEY": "sk-test", "HARNESS_ALLOW_MODEL_REQUESTS": "1"}
+    assert env == {"ALREADY": "old", "OPENAI_API_KEY": "sk-test", "HARNESS_ALLOW_MODEL_REQUESTS": "1"}
+    assert load_dotenv(tmp_path / "missing.env", env) == {}

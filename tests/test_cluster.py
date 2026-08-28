@@ -7,6 +7,7 @@ import json
 
 import pytest
 
+from conftest import PTR
 from harness.builder.cluster import (
     category_signature,
     cluster_runs,
@@ -29,7 +30,7 @@ WRITES = {"cancel_order", "modify_address"}
 
 
 def make_trace(trace_id: str, user_turns: list[str], calls: list[dict]) -> Trace:
-    turns = [Turn(idx=i, role="user", content=c) for i, c in enumerate(user_turns)]
+    turns = [Turn(idx=i, role="user", content=c, raw_ptr=PTR) for i, c in enumerate(user_turns)]
     tool_calls = []
     for i, call in enumerate(calls):
         error = None
@@ -42,6 +43,7 @@ def make_trace(trace_id: str, user_turns: list[str], calls: list[dict]) -> Trace
                 args=call.get("args", {}),
                 result=call.get("result"),
                 error=error,
+                raw_ptr=PTR,
             )
         )
     return Trace(
@@ -51,6 +53,7 @@ def make_trace(trace_id: str, user_turns: list[str], calls: list[dict]) -> Trace
         source="tau2",
         turns=turns,
         tool_calls=tool_calls,
+        raw_ptr=PTR,
     )
 
 
@@ -261,9 +264,9 @@ EVEN_CHAIN = [  # A to B is worth exactly what B to C is worth, so only the word
 def chain_grouping(names: tuple[str, str, str], texts: list[str]) -> list[list[str]]:
     traces = [
         make_trace(name, [text], [{"name": "cancel_order", "args": {"order_id": "W1"}, "result": {}}])
-        for name, text in zip(names, texts)
+        for name, text in zip(names, texts, strict=False)
     ]
-    label = dict(zip(names, "ABC"))
+    label = dict(zip(names, "ABC", strict=False))
     _, tasks = cluster_runs(traces, SIGS, threshold=0.3)
     return sorted(sorted(label[r] for r in task.run_ids) for task in tasks)
 
@@ -351,12 +354,14 @@ def tau2_traces(tau2_small) -> list[Trace]:
                 raw_hash="raw",
                 ingest_version="0",
                 source="tau2",
-                turns=[Turn(idx=i, role=m["role"], content=m.get("content")) for i, m in enumerate(messages)],
+                turns=[Turn(idx=i, role=m["role"], content=m.get("content"), raw_ptr=PTR)
+                       for i, m in enumerate(messages)],
                 tool_calls=[
-                    ToolCall(id=tc.get("id"), name=tc["name"], args=tc.get("arguments") or {})
+                    ToolCall(id=tc.get("id"), name=tc["name"], args=tc.get("arguments") or {}, raw_ptr=PTR)
                     for m in messages
                     for tc in (m.get("tool_calls") or [])
                 ],
+                raw_ptr=PTR,
             )
         )
     return out
@@ -420,17 +425,20 @@ def corpus_traces_and_truth(raw_dir):
                 raw_hash="raw",
                 ingest_version="0",
                 source="tau2",
-                turns=[Turn(idx=i, role=m["role"], content=m.get("content")) for i, m in enumerate(messages)],
+                turns=[Turn(idx=i, role=m["role"], content=m.get("content"), raw_ptr=PTR)
+                       for i, m in enumerate(messages)],
                 tool_calls=[
                     ToolCall(
                         id=tc.get("id"),
                         name=tc["name"],
                         args=tc.get("arguments") or {},
                         error=ToolCallError(**{"class": "business_error", "payload": ""}) if tc.get("id") in failed else None,
+                        raw_ptr=PTR,
                     )
                     for m in messages
                     for tc in (m.get("tool_calls") or [])
                 ],
+                raw_ptr=PTR,
             )
         )
         truth[sim["id"]] = str(sim["task_id"])

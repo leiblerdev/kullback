@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import functools
 import hashlib
 import inspect
 import json
@@ -12,18 +13,20 @@ from typing import Any, Callable, Iterable, Optional, Sequence
 
 from pydantic import BaseModel
 
-from harness.shared.records import ALL_RECORDS, GateResult, as_dict, content_hash
+from harness.shared.records import ALL_RECORDS, GateResult, Task, as_dict, content_hash
 
 ANCHOR_SHARE = 0.20
 ANCHOR_MIN_RUNS = 3
 ANCHOR_SEED = 20260827
 ANCHOR_NAME = "anchor.json"
 MAX_ATTEMPTS = 3
+CACHE_FORMAT = 2  # part of every cache key, so entries written by an older encoder are never read back
 RECORD_TYPES = {cls.__name__: cls for cls in ALL_RECORDS}
 STATUS_STYLE = {
     "pending": "fill:#f5f5f5,stroke:#9e9e9e", "ran": "fill:#e8f5e9,stroke:#43a047",
     "cached": "fill:#e3f2fd,stroke:#1e88e5", "rolled_back": "fill:#fff8e1,stroke:#f9a825",
     "failed": "fill:#ffebee,stroke:#e53935", "stopped": "fill:#ede7f6,stroke:#5e35b1",
+    "crashed": "fill:#fbe9e7,stroke:#d84315",
 }
 
 
@@ -75,10 +78,19 @@ class Anchor:
         return [r for r in run_ids if r not in held]
 
     def mark(self, tasks: Sequence[Any]) -> list[Any]:
-        """Copies of the Task records with anchor_run_ids and the unguarded flag filled in."""
-        ids = [_task(t)[0] for t in tasks]
-        return [t.model_copy(update={"anchor_run_ids": self.anchor_runs(i), "unguarded": i in self.unguarded})
-                for t, i in zip(tasks, ids)]
+        """Copies of the Task records with anchor_run_ids and the unguarded flag filled in.
+
+        A Task this anchor never saw is unguarded: nothing was held out of it, so calling it guarded
+        would hide a Task the Builder built from all of its Runs (D81).
+        """
+        out = []
+        for task in tasks:
+            task_id = _task(task)[0]
+            record = Task.model_validate(task) if isinstance(task, dict) else task
+            out.append(record.model_copy(update={
+                "anchor_run_ids": self.anchor_runs(task_id),
+                "unguarded": task_id in self.unguarded or task_id not in self.held_out}))
+        return out
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -107,14 +119,23 @@ def load_anchor(workdir: str | Path) -> Optional[Anchor]:
 
 def choose_anchor(tasks: Sequence[Any], workdir: str | Path, share: float = ANCHOR_SHARE,
                   min_runs: int = ANCHOR_MIN_RUNS, seed: int = ANCHOR_SEED) -> Anchor:
-    """Pick the held-out Runs once with a fixed seed and store them; a stored anchor is returned unchanged."""
+    """Pick the held-out Runs once with a fixed seed and store them.
+
+    Every Task the stored anchor already knows keeps exactly the Runs it was given. A Task that
+    appeared afterwards (an iterate build, a split) is drawn now under the stored settings and
+    appended, because a Task with nothing held out is a Task the Builder can fit to (D81).
+    """
     stored = load_anchor(workdir)
+    held_out: dict[str, list[str]] = dict(stored.held_out) if stored is not None else {}
+    unguarded: list[str] = list(stored.unguarded) if stored is not None else []
     if stored is not None:
-        return stored
-    held_out: dict[str, list[str]] = {}
-    unguarded: list[str] = []
+        share, min_runs, seed = stored.share, stored.min_runs, stored.seed
+    added = False
     for task in tasks:
         task_id, run_ids = _task(task)
+        if task_id in held_out:
+            continue
+        added = True
         run_ids = sorted(run_ids)
         if len(run_ids) < min_runs:
             held_out[task_id] = []
@@ -122,10 +143,11 @@ def choose_anchor(tasks: Sequence[Any], workdir: str | Path, share: float = ANCH
             continue
         count = max(1, int(len(run_ids) * share))
         held_out[task_id] = sorted(random.Random(f"{seed}:{task_id}").sample(run_ids, count))
-    anchor = Anchor(held_out=held_out, unguarded=sorted(unguarded), share=share, min_runs=min_runs, seed=seed)
-    path = anchor_path(workdir)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(anchor.to_dict(), indent=2, sort_keys=True), encoding="utf-8")
+    anchor = Anchor(held_out=held_out, unguarded=sorted(set(unguarded)), share=share, min_runs=min_runs, seed=seed)
+    if stored is None or added:
+        path = anchor_path(workdir)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(anchor.to_dict(), indent=2, sort_keys=True), encoding="utf-8")
     return anchor
 
 
@@ -133,7 +155,12 @@ def choose_anchor(tasks: Sequence[Any], workdir: str | Path, share: float = ANCH
 
 @dataclass
 class Stage:
-    """One node: a function over named artifacts, with the gate that accepts or rejects what it made."""
+    """One node: a function over named artifacts, with the gate that accepts or rejects what it made.
+
+    A stage must declare everything it reads: artifacts in `inputs`, and files or directories under
+    the workdir in `input_paths`. What is not declared is not in the cache key, and a stage that
+    reads an undeclared file is served its first output forever (design section 8).
+    """
     name: str
     fn: Callable[["StageContext", dict], dict]
     inputs: Sequence[str] = ()
@@ -142,6 +169,7 @@ class Stage:
     builder: bool = False
     code_version: Optional[str] = None
     max_attempts: int = MAX_ATTEMPTS
+    input_paths: Sequence[str] = ()
 
 
 class StageContext:
@@ -161,7 +189,11 @@ class StageContext:
 
     def seed_runs(self, task_id: str, run_ids: Iterable[str]) -> list[str]:
         """The Runs a Builder stage may use: the Task's Runs minus its anchor."""
-        return list(run_ids) if self._anchor is None else self._anchor.seed_runs(task_id, run_ids)
+        if self._anchor is None:
+            raise PipelineError(f"stage {self.name} asked for the seed Runs of Task {task_id} and this "
+                                "build has no anchor, so nothing is held out; choose the anchor before "
+                                "the first Builder stage (D81)")
+        return self._anchor.seed_runs(task_id, run_ids)
 
     def charge(self, usd: float, item: str = "") -> None:
         """Record one item's spend; raises when the ceiling is reached, which stops the build (D86)."""
@@ -182,31 +214,78 @@ class PipelineResult:
 
 
 def code_hash(stage: Stage) -> str:
-    """The code side of a cache key: the stage module's bytes, or an explicit code_version."""
+    """The code side of a cache key: which function this is and the bytes of its module.
+
+    The module's bytes alone are not the function: two stages of the same name in one module, or two
+    partials of one function with different bound parameters, would share a key and the second would
+    be served the first's output. A function whose source cannot be found is refused rather than
+    hashed as a constant.
+    """
     if stage.code_version:
         return stage.code_version
+    return content_hash(_fn_identity(stage.fn, stage.name))
+
+
+def _fn_identity(fn: Any, stage_name: str) -> dict:
+    if isinstance(fn, functools.partial):
+        return {"partial": _fn_identity(fn.func, stage_name),
+                "args": [content_hash(a) for a in fn.args],
+                "keywords": {k: content_hash(v) for k, v in sorted(fn.keywords.items())}}
+    source = _source_bytes(fn)
+    if source is None:
+        raise PipelineError(
+            f"stage {stage_name}: the source of its function cannot be found, so its code hash would "
+            "be the same constant for every such stage and a changed function would be served a stale "
+            "cache entry; give the Stage an explicit code_version")
+    return {"qualname": getattr(fn, "__qualname__", ""), "module": getattr(fn, "__module__", ""),
+            "code": hashlib.sha256(source).hexdigest()}
+
+
+def _source_bytes(fn: Any) -> Optional[bytes]:
     try:
-        path = inspect.getsourcefile(stage.fn)
+        path = inspect.getsourcefile(fn)
         if path and Path(path).is_file():
-            return hashlib.sha256(Path(path).read_bytes()).hexdigest()
-        return content_hash(inspect.getsource(stage.fn))
+            return Path(path).read_bytes()
+        return inspect.getsource(fn).encode("utf-8")
     except (OSError, TypeError):
-        return "unknown"
+        return None
 
 
-def _encode(value: Any) -> dict:
+def _encode(value: Any, where: str = "artifact") -> dict:
+    """A stage output as JSON that decodes back to the same thing, or a refusal to cache it.
+
+    Everything the encoder cannot round-trip is refused at write time: a Path, a set or a tuple would
+    come back as a string or a list on the next build, and the second run would see a different world
+    than the first (design section 8).
+    """
     if isinstance(value, BaseModel):
-        return {"kind": "record", "class": type(value).__name__, "value": as_dict(value)}
-    if isinstance(value, list) and value and all(isinstance(v, BaseModel) for v in value):
-        return {"kind": "records", "class": type(value[0]).__name__, "value": [as_dict(v) for v in value]}
-    return {"kind": "json", "value": value}
+        name = type(value).__name__
+        if RECORD_TYPES.get(name) is not type(value):
+            raise PipelineError(f"{where} is a {name}, which is not one of the records in records.py; "
+                                "the cache carries records, dicts, lists and JSON scalars")
+        return {"kind": "record", "class": name, "value": as_dict(value)}
+    if isinstance(value, list):
+        return {"kind": "list", "value": [_encode(v, f"{where}[{i}]") for i, v in enumerate(value)]}
+    if isinstance(value, dict):
+        wrong = sorted(str(k) for k in value if not isinstance(k, str))
+        if wrong:
+            raise PipelineError(f"{where} has non-string keys {wrong}; JSON turns them into strings, so "
+                                "the cache hit would not be what the stage returned")
+        return {"kind": "dict", "value": {k: _encode(v, f"{where}.{k}") for k, v in value.items()}}
+    if value is None or isinstance(value, (str, bool, int, float)):
+        return {"kind": "json", "value": value}
+    raise PipelineError(f"{where} is a {type(value).__name__}, which does not survive JSON; return "
+                        "records, dicts, lists and JSON scalars from a stage")
 
 
 def _decode(blob: dict) -> Any:
-    if blob["kind"] == "record":
+    kind = blob["kind"]
+    if kind == "record":
         return RECORD_TYPES[blob["class"]].model_validate(blob["value"])
-    if blob["kind"] == "records":
-        return [RECORD_TYPES[blob["class"]].model_validate(v) for v in blob["value"]]
+    if kind == "list":
+        return [_decode(v) for v in blob["value"]]
+    if kind == "dict":
+        return {k: _decode(v) for k, v in blob["value"].items()}
     return blob["value"]
 
 
@@ -221,6 +300,11 @@ def _budget_types() -> tuple:
 
 def _node(name: str) -> str:
     return "".join(c if c.isalnum() or c == "_" else "_" for c in name)
+
+
+def _label(text: Any) -> str:
+    """Mermaid labels are double quoted, so a quote inside one has to be the entity."""
+    return str(text).replace('"', "#quot;")
 
 
 class Pipeline:
@@ -274,18 +358,37 @@ class Pipeline:
     # --- caching, design section 8: (input record hash, code hash of the stage module) ---
 
     def _cache_path(self, stage: Stage, inputs: dict) -> Path:
-        key = content_hash({"stage": stage.name, "code": code_hash(stage),
-                            "inputs": {k: content_hash(v) for k, v in sorted(inputs.items())}})
+        key = content_hash({
+            "format": CACHE_FORMAT,
+            "stage": stage.name,
+            "code": code_hash(stage),
+            "inputs": {k: content_hash(v) for k, v in sorted(inputs.items())},
+            "paths": {name: self._path_hash(name) for name in sorted(stage.input_paths)},
+            # The anchor is part of the world a stage sees: seed_runs and ctx.anchor both move with
+            # it, so an output computed under one anchor is not an answer under another (D81).
+            "anchor": content_hash(self.anchor.to_dict()) if self.anchor is not None else None,
+        })
         return self.workdir / "cache" / f"{stage.name}.{key[:16]}.json"
+
+    def _path_hash(self, name: str) -> str:
+        """The bytes behind a declared path, so a changed input file moves the key."""
+        path = self.workdir / name
+        if path.is_file():
+            return hashlib.sha256(path.read_bytes()).hexdigest()
+        if path.is_dir():
+            return content_hash({str(p.relative_to(path)): hashlib.sha256(p.read_bytes()).hexdigest()
+                                 for p in sorted(path.rglob("*")) if p.is_file()})
+        return "missing"
 
     def _read_cache(self, path: Path) -> Optional[dict]:
         if not path.is_file():
             return None
         return {name: _decode(blob) for name, blob in json.loads(path.read_text(encoding="utf-8")).items()}
 
-    def _write_cache(self, path: Path, outputs: dict) -> None:
+    def _write_cache(self, path: Path, stage: Stage, outputs: dict) -> None:
+        blob = {name: _encode(value, f"stage {stage.name}: artifact {name}") for name, value in outputs.items()}
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps({k: _encode(v) for k, v in outputs.items()}, default=str), encoding="utf-8")
+        path.write_text(json.dumps(blob), encoding="utf-8")
 
     # --- the spend ceiling (D86) ---
 
@@ -318,25 +421,45 @@ class Pipeline:
                 if name not in store and name not in self.producers:
                     raise GraphError(f"stage {stage.name} needs artifact {name}, which nothing produces")
         result = PipelineResult(status="complete", artifacts=store)
-        for position, stage in enumerate(self.order):
-            items_left = len(self.order) - position
-            if self.ceiling is not None and getattr(self.ceiling, "remaining", 1.0) <= 0:
-                result.status = "stopped"
-                result.stopped = self._stop_report(stage.name, "before stage", items_left, None)
-                self.statuses[stage.name] = "stopped"
-                break
-            outcome = self._run_stage(stage, store, items_left, result)
-            if outcome != "ok":
-                result.status = outcome
-                break
+        current: Optional[str] = None
+        try:
+            for position, stage in enumerate(self.order):
+                current = stage.name
+                items_left = len(self.order) - position
+                if self.ceiling is not None and getattr(self.ceiling, "remaining", 1.0) <= 0:
+                    result.status = "stopped"
+                    result.stopped = self._stop_report(stage.name, "before stage", items_left, None)
+                    self.statuses[stage.name] = "stopped"
+                    break
+                outcome = self._run_stage(stage, store, items_left, result)
+                if outcome != "ok":
+                    result.status = outcome
+                    break
+        except Exception as exc:
+            # The report has to be able to say where the build died, so the state is written before
+            # the exception leaves (D86, section 4 item 18).
+            result.status = "crashed"
+            result.failed_stage = current
+            if current is not None:
+                self.statuses[current] = "crashed"
+            result.log.append(f"{current}: {type(exc).__name__}: {exc}")
+            self._finish(result)
+            raise
+        self._finish(result)
+        return result
+
+    def _finish(self, result: PipelineResult) -> None:
         result.statuses, result.attempts = dict(self.statuses), dict(self.attempts)
         self.result = result
         self._write_state(result)
-        return result
 
     def _run_stage(self, stage: Stage, store: dict, items_left: int, result: PipelineResult) -> str:
         """One node, up to max_attempts times; a failed gate is the rollback edge back into this stage."""
         failure: Optional[str] = None
+        if stage.builder and self.anchor is None:
+            raise PipelineError(f"stage {stage.name} is a Builder stage and this build has no anchor, so "
+                                "it would be built from every Run with nothing held out; choose the anchor "
+                                "before the first Builder stage (D81)")
         for attempt in range(1, stage.max_attempts + 1):
             self.attempts[stage.name] = attempt
             inputs = {name: store[name] for name in stage.inputs}
@@ -366,7 +489,7 @@ class Pipeline:
                         return "failed"
                     continue
             if cached is None:
-                self._write_cache(cache_path, outputs)
+                self._write_cache(cache_path, stage, outputs)
             store.update(outputs)
             self.statuses[stage.name] = status
             return "ok"
@@ -396,13 +519,14 @@ class Pipeline:
     def to_mermaid(self) -> str:
         """The graph with each stage's status, for the report to embed."""
         lines = ["flowchart TD"]
-        lines += [f'    {_node(s.name)}["{s.name}<br/>{self.statuses[s.name]}"]' for s in self.stages]
+        lines += [f'    {_node(s.name)}["{_label(s.name)}<br/>{_label(self.statuses[s.name])}"]'
+                  for s in self.stages]
         for stage in self.stages:
             for name in stage.inputs:
                 if self.producers.get(name):
                     lines.append(f"    {_node(self.producers[name])} --> {_node(stage.name)}")
         for name, labels in self.rollbacks.items():
-            lines.append(f'    {_node(name)} -. "{labels[-1]}" .-> {_node(name)}')
+            lines.append(f'    {_node(name)} -. "{_label(labels[-1])}" .-> {_node(name)}')
         used: dict[str, list[str]] = {}
         for stage in self.stages:
             used.setdefault(self.statuses[stage.name], []).append(_node(stage.name))

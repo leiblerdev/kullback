@@ -21,7 +21,7 @@ AtomKind = Literal["required", "allowed", "forbidden", "question", "communicate"
 ProvenanceClass = Literal["user_stated", "system_derived", "user_elicited", "agent_chosen"]
 EventType = Literal["model_call", "tool_call", "tool_result", "user_turn", "error", "stop"]
 Route = Literal["code", "recording", "llm"]
-VerdictClass = Literal["pass", "fail", "transferred_without_acting", "env_error"]
+VerdictClass = Literal["pass", "fail", "transferred_without_acting", "env_error", "not_verdicted"]
 Cause = Literal["candidate", "environment", "simulated_user", "undetermined"]
 SigSource = Literal["observed", "llm", "declared"]
 Role = Literal["system", "assistant", "user", "tool"]
@@ -80,10 +80,16 @@ def _as_text_payload(payload: Any, encoding: str) -> tuple[Any, str]:
 
 
 class RawPtr(Record):
-    """Where a derived field came from in the customer's stored file (D66)."""
+    """Where a derived field came from in the customer's stored file (D66).
+
+    `section` names a part of the file that is not a message, so a field taken from the export's
+    own `info` block (the system prompt, the declared tool list) can still cite where it came
+    from; a pointer with a `section` and no `msg_index` is not inside the transcript.
+    """
     file_hash: str
     sim_index: Optional[int] = None
     msg_index: Optional[int] = None
+    section: Optional[str] = None
 
 # --- raw store and traces ---
 
@@ -121,7 +127,13 @@ class ToolCall(Record):
     truncated: bool = False
     visible_len: Optional[int] = None
     cut_marker: Optional[str] = None
-    raw_ptr: Optional[RawPtr] = None
+    raw_ptr: RawPtr  # where the request for this call sits in the raw file; every derived field cites its raw (D66)
+    result_ptr: Optional[RawPtr] = None  # where the tool message that answered this call sits in the raw file (D66)
+    trace_id: Optional[str] = None  # which Trace recorded it, so a call knows its own Task's world (D74)
+    # None means no one recorded either way, which is what lets validate.py tell a call whose tool
+    # message was never captured apart from a tool that answered with a JSON null (D66).
+    has_result: Optional[bool] = None  # a tool message answered this call, a recorded JSON null included
+    resolved: bool = False  # the answer landed on this call; false where the trace shows none
 
 
 class Turn(Record):
@@ -130,7 +142,7 @@ class Turn(Record):
     role: Role
     content: Optional[str] = None
     tool_call_ids: list[str] = Field(default_factory=list)
-    raw_ptr: Optional[RawPtr] = None
+    raw_ptr: RawPtr  # the message this turn was derived from (D66)
 
 
 class Trace(Record):
@@ -145,8 +157,9 @@ class Trace(Record):
     tools_declared_ptr: Optional[RawPtr] = None
     system_prompt: Optional[str] = None
     system_prompt_ptr: Optional[RawPtr] = None
+    info_ptr: Optional[RawPtr] = None  # the export's own info block, which is where the two above come from
     hash: str = ""
-    raw_ptr: Optional[RawPtr] = None
+    raw_ptr: RawPtr  # the simulation this Trace was derived from (D66)
 
 # --- mined signatures and schema ---
 
@@ -389,13 +402,10 @@ class Event(Record):
 class Run(Record):
     """One re-executed episode: events in, End state and cost out.
 
-    The one record that still ignores unknown keys: `loop.py` writes `start_state` and
-    `end_state` into the Run JSONL footer, and `verifier.load_run` validates that footer
-    as a Run. Until those two move into the stop event's payload (where `verdict.py`
-    already reads them), forbidding extras here would refuse every real Run file.
+    The Start and End state are not fields here: `loop.py` writes them into the stop event's
+    payload, which is where `verdict.py` and `verifier.load_run` read them from, so the JSONL
+    footer holds nothing that is not a Run field and unknown keys are refused like everywhere else.
     """
-    model_config = ConfigDict(populate_by_name=True, extra="ignore")
-
     run_id: str
     env_id: Optional[str] = None
     trace_id: Optional[str] = None
@@ -454,6 +464,13 @@ class Verdict(Record):
                 "pass is true exactly when class is 'pass'"
             )
         return self
+
+
+class SetAsideLesson(Record):
+    """A cross-customer lesson the Builder judged irrelevant to this customer, listed in the report (D87)."""
+    id: str = ""
+    pattern: str = ""
+    reason: str = ""
 
 
 class GateResult(Record):

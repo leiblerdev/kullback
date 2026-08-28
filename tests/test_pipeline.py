@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import functools
 import json
 from pathlib import Path
 
@@ -10,16 +11,18 @@ import pytest
 from harness.runner.pipeline import (
     ANCHOR_MIN_RUNS,
     ANCHOR_SHARE,
+    Anchor,
     AnchorLeak,
     BudgetStop,
     CycleError,
     GraphError,
     Pipeline,
+    PipelineError,
     Stage,
     choose_anchor,
     load_anchor,
 )
-from harness.shared.records import GateResult, Task
+from harness.shared.records import Category, GateResult, Task
 
 # --- toy stages -------------------------------------------------------------
 
@@ -155,6 +158,112 @@ def test_records_survive_the_cache(workdir):
     task = second.artifacts["task"]
     assert isinstance(task, Task)
     assert task.run_ids == ["r1", "r2"]
+
+
+def test_records_nested_in_a_dict_and_a_mixed_list_survive_the_cache(workdir):
+    """A cache hit hands back what the stage returned, not the string of its repr."""
+
+    def make(ctx, inputs):
+        return {"by_id": {"t1": Task(id="t1", run_ids=["r1"], intent="cancel an order")},
+                "mixed": [Task(id="t1", run_ids=["r1"]), Category(id="c1", task_ids=["t1"])]}
+
+    stages = [Stage("cluster", make, [], ["by_id", "mixed"], code_version="v1")]
+    Pipeline(stages, workdir=workdir).run()
+    second = Pipeline(stages, workdir=workdir).run()
+    assert second.statuses["cluster"] == "cached"
+    task = second.artifacts["by_id"]["t1"]
+    assert isinstance(task, Task) and task.run_ids == ["r1"]
+    assert [type(item).__name__ for item in second.artifacts["mixed"]] == ["Task", "Category"]
+    assert second.artifacts["mixed"][1].task_ids == ["t1"]
+
+
+@pytest.mark.parametrize("value", [Path("/tmp/x"), {1, 2}, (1, 2), {1: "a"}])
+def test_an_artifact_the_cache_cannot_round_trip_is_refused(workdir, value):
+    """Better a refusal at write time than a second build that reads a different world."""
+
+    def make(ctx, inputs):
+        return {"out": value}
+
+    with pytest.raises(PipelineError) as caught:
+        Pipeline([Stage("s", make, [], ["out"], code_version="v1")], workdir=workdir).run()
+    assert "s" in str(caught.value) and "out" in str(caught.value)
+
+
+def test_a_model_that_is_not_a_record_is_refused_at_write_time(workdir):
+    from pydantic import BaseModel
+
+    class Foreign(BaseModel):
+        x: int = 1
+
+    def make(ctx, inputs):
+        return {"out": Foreign()}
+
+    with pytest.raises(PipelineError) as caught:
+        Pipeline([Stage("s", make, [], ["out"], code_version="v1")], workdir=workdir).run()
+    assert "Foreign" in str(caught.value)
+
+
+def test_two_functions_with_one_stage_name_do_not_share_a_cache_entry(workdir):
+    def fn_a(ctx, inputs):
+        return {"out": "A"}
+
+    def fn_b(ctx, inputs):
+        return {"out": "B"}
+
+    Pipeline([Stage("s", fn_a, [], ["out"])], workdir=workdir).run()
+    second = Pipeline([Stage("s", fn_b, [], ["out"])], workdir=workdir).run()
+    assert second.artifacts["out"] == "B"
+    assert second.statuses["s"] == "ran"
+
+
+def test_two_partials_of_one_function_do_not_share_a_cache_entry(workdir):
+    def scale(factor, ctx, inputs):
+        return {"out": 3 * factor}
+
+    Pipeline([Stage("s", functools.partial(scale, 2), [], ["out"])], workdir=workdir).run()
+    second = Pipeline([Stage("s", functools.partial(scale, 10), [], ["out"])], workdir=workdir).run()
+    assert second.artifacts["out"] == 30
+    assert second.statuses["s"] == "ran"
+
+
+def test_a_function_with_no_findable_source_is_refused_rather_than_hashed_as_a_constant(workdir):
+    class Callable_:
+        def __call__(self, ctx, inputs):
+            return {"out": 1}
+
+    with pytest.raises(PipelineError) as caught:
+        Pipeline([Stage("s", Callable_(), [], ["out"])], workdir=workdir).run()
+    assert "code_version" in str(caught.value)
+    assert Pipeline([Stage("s", Callable_(), [], ["out"], code_version="v1")],
+                    workdir=workdir).run().status == "complete"
+
+
+def test_a_declared_input_path_moves_the_cache_key(workdir):
+    raw = Path(workdir) / "raw.txt"
+    raw.write_text("one", encoding="utf-8")
+
+    def ingest(ctx, inputs):
+        return {"text": (Path(ctx.workdir) / "raw.txt").read_text(encoding="utf-8")}
+
+    stages = [Stage("ingest", ingest, [], ["text"], code_version="v1", input_paths=["raw.txt"])]
+    assert Pipeline(stages, workdir=workdir).run().artifacts["text"] == "one"
+    raw.write_text("two", encoding="utf-8")
+    second = Pipeline(stages, workdir=workdir).run()
+    assert second.artifacts["text"] == "two"
+    assert second.statuses["ingest"] == "ran"
+
+
+def test_the_anchor_is_part_of_the_cache_key(workdir):
+    def report_stage(ctx, inputs):
+        return {"held": ctx.anchor.anchor_runs("t")}
+
+    stages = [Stage("report", report_stage, [], ["held"], code_version="v1")]
+    first = Anchor(held_out={"t": ["r1"]}, unguarded=[])
+    second = Anchor(held_out={"t": ["r9"]}, unguarded=[])
+    assert Pipeline(stages, workdir=workdir, anchor=first).run().artifacts["held"] == ["r1"]
+    later = Pipeline(stages, workdir=workdir, anchor=second).run()
+    assert later.artifacts["held"] == ["r9"]
+    assert later.statuses["report"] == "ran"
 
 
 def test_cache_keys_do_not_depend_on_run_order(workdir):
@@ -303,7 +412,7 @@ def test_builder_stage_cannot_read_the_anchor_but_later_stages_can(workdir):
 
     def builder_stage(ctx, inputs):
         with pytest.raises(AnchorLeak):
-            ctx.anchor
+            _ = ctx.anchor
         seen["seeds"] = ctx.seed_runs("t", [f"r{i}" for i in range(10)])
         return {"env": "built"}
 
@@ -322,6 +431,56 @@ def test_builder_stage_cannot_read_the_anchor_but_later_stages_can(workdir):
     assert seen["anchor"] == held
     assert set(seen["seeds"]).isdisjoint(held)
     assert len(seen["seeds"]) == 8
+
+
+def test_a_task_that_appears_after_the_anchor_gets_its_own_held_out_share(workdir):
+    """An iterate build or a split must not hand the Builder a Task with nothing held out (D81)."""
+    first = choose_anchor([Task(id="t", run_ids=[f"r{i}" for i in range(10)])], workdir)
+    later = choose_anchor(
+        [Task(id="t", run_ids=[f"r{i}" for i in range(10)]),
+         Task(id="new", run_ids=[f"n{i}" for i in range(10)])], workdir)
+    assert later.anchor_runs("t") == first.anchor_runs("t"), "an existing Task keeps its exact anchor"
+    assert len(later.anchor_runs("new")) == 2
+    assert load_anchor(workdir).anchor_runs("new") == later.anchor_runs("new")
+    marked = later.mark([Task(id="new", run_ids=[f"n{i}" for i in range(10)])])
+    assert marked[0].unguarded is False
+    assert set(marked[0].anchor_run_ids) == set(later.anchor_runs("new"))
+
+
+def test_a_task_the_anchor_never_saw_is_marked_unguarded(workdir):
+    anchor = choose_anchor([Task(id="t", run_ids=[f"r{i}" for i in range(10)])], workdir)
+    marked = anchor.mark([Task(id="stranger", run_ids=[f"s{i}" for i in range(10)])])
+    assert marked[0].unguarded is True
+    assert marked[0].anchor_run_ids == []
+
+
+def test_mark_takes_tasks_as_dicts_the_way_the_rest_of_the_module_does(workdir):
+    anchor = choose_anchor([{"id": "t", "run_ids": [f"r{i}" for i in range(10)]}], workdir)
+    marked = anchor.mark([{"id": "t", "run_ids": [f"r{i}" for i in range(10)]}])
+    assert isinstance(marked[0], Task)
+    assert marked[0].anchor_run_ids == anchor.anchor_runs("t")
+    assert marked[0].unguarded is False
+
+
+def test_a_builder_stage_with_no_anchor_is_refused(workdir):
+    seen = {}
+
+    def builder_stage(ctx, inputs):
+        seen["seeds"] = ctx.seed_runs("t", ["r1", "r2"])
+        return {"env": "built"}
+
+    with pytest.raises(PipelineError) as caught:
+        Pipeline([Stage("compile_env", builder_stage, [], ["env"], builder=True)], workdir=workdir).run()
+    assert "anchor" in str(caught.value)
+    assert seen == {}, "the stage never ran, so nothing was built from every Run"
+
+
+def test_seed_runs_without_an_anchor_is_refused(workdir):
+    def stage_fn(ctx, inputs):
+        return {"seeds": ctx.seed_runs("t", ["r1", "r2"])}
+
+    with pytest.raises(PipelineError):
+        Pipeline([Stage("s", stage_fn, [], ["seeds"])], workdir=workdir).run()
 
 
 def test_seed_runs_refuses_a_run_list_that_is_all_anchor(workdir):
@@ -492,8 +651,55 @@ def test_run_state_is_written_to_the_workdir(workdir):
     assert state["log"] == []
 
 
+def test_a_crashing_stage_still_leaves_state_on_disk(workdir):
+    """A build that died has to say where, so the report can show it (D86, section 4 item 18)."""
+
+    def boom(ctx, inputs):
+        raise RuntimeError("the tool table is empty")
+
+    pipe = Pipeline([Stage("first", lambda ctx, i: {"a": 1}, [], ["a"], code_version="v1"),
+                     Stage("mine", boom, ["a"], ["sigs"], code_version="v1")], workdir=workdir)
+    with pytest.raises(RuntimeError):
+        pipe.run()
+    state = json.loads((Path(workdir) / "pipeline" / "state.json").read_text(encoding="utf-8"))
+    assert state["status"] == "crashed"
+    assert state["failed_stage"] == "mine"
+    assert state["statuses"]["first"] == "ran"
+    assert any("the tool table is empty" in line for line in state["log"])
+    assert "crashed" in state["mermaid"]
+
+
+def test_mermaid_escapes_a_quote_in_a_stage_or_gate_name(workdir):
+    def quoted_gate(ctx, outputs):
+        return GateResult(stage='replay "fidelity"', **{"pass": False}, failures=["writes differ"])
+
+    pipe = Pipeline([Stage('compile "tools"', lambda ctx, i: {"out": 0}, [], ["out"], gate=quoted_gate)],
+                    workdir=workdir)
+    pipe.run()
+    text = pipe.to_mermaid()
+    assert '"' not in text.replace('["', "").replace('"]', "").replace('-. "', "").replace('" .->', "")
+    assert "#quot;tools#quot;" in text
+    assert "#quot;fidelity#quot;" in text
+
+
 def test_pipeline_does_not_import_the_builder():
-    """Build brief rule 7: nothing under runner/ imports builder/."""
-    source = (Path(__file__).resolve().parents[1] / "src" / "harness" / "runner" / "pipeline.py").read_text()
-    assert "harness.builder" not in source
-    assert "from harness import builder" not in source
+    """Build brief rule 7 and D89, checked with the gate rather than a substring scan."""
+    from harness.runner import validate
+
+    src = Path(__file__).resolve().parents[1] / "src"
+    gate = validate.import_boundary_check(src)
+    assert gate.passed, gate.failures
+    assert not any("pipeline.py" in failure for failure in gate.failures)
+
+
+def test_the_boundary_gate_would_catch_a_dynamic_builder_import_from_pipeline(tmp_path: Path):
+    """The guard above is only worth something if the gate catches what it is guarding against."""
+    from harness.runner import validate
+
+    root = tmp_path / "harness"
+    (root / "runner").mkdir(parents=True)
+    source = (Path(__file__).resolve().parents[1] / "src" / "harness" / "runner" / "pipeline.py").read_text(
+        encoding="utf-8")
+    extra = "\n\ndef sneak():\n    import importlib\n    return importlib.import_module('harness' + '.builder')\n"
+    (root / "runner" / "pipeline.py").write_text(source + extra, encoding="utf-8")
+    assert validate.import_boundary_check(root).passed is False

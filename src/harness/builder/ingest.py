@@ -163,8 +163,13 @@ def raw_path(raw_hash: str, workdir: str | Path) -> Path:
 # --- error and truncation marking -----------------------------------------
 
 
-def classify_error(payload: Any, structured: Optional[dict] = None) -> ToolCallError:
-    """Put a tool error in the D67 taxonomy, keeping the customer's verbatim payload and encoding."""
+def classify_error(payload: Any, structured: Optional[dict] = None,
+                   ptr: Optional[RawPtr] = None) -> ToolCallError:
+    """Put a tool error in the D67 taxonomy, keeping the customer's verbatim payload and encoding.
+
+    `ptr` is where the error message sits in the raw file, so a derived error class can be read back
+    against the bytes it came from (D66); it is optional because the rules run on payloads alone.
+    """
     encoding = "text"
     if isinstance(payload, str):
         stripped = payload.strip()
@@ -179,9 +184,11 @@ def classify_error(payload: Any, structured: Optional[dict] = None) -> ToolCallE
     if structured:
         declared = str(structured.get("code") or structured.get("type") or "")
         if declared in ERROR_CLASSES:
-            return ToolCallError(class_=declared, payload=payload, encoding=encoding, classified_by="code")
+            return ToolCallError(class_=declared, payload=payload, encoding=encoding,
+                                 classified_by="code", raw_ptr=ptr)
     text = (payload if isinstance(payload, str) else json.dumps(payload, default=str)).lower()
-    return ToolCallError(class_=_rule_class(text), payload=payload, encoding=encoding, classified_by="rule")
+    return ToolCallError(class_=_rule_class(text), payload=payload, encoding=encoding,
+                         classified_by="rule", raw_ptr=ptr)
 
 
 def _rule_class(text: str) -> str:
@@ -318,6 +325,10 @@ def _llm_error_pass(model: Model, trace: Trace) -> None:
 def _tau2_trace(simulation: dict, sim_index: int, raw_hash: str, environment: dict) -> Trace:
     messages = simulation.get("messages") or []
     ptr = RawPtr(file_hash=raw_hash, sim_index=sim_index)
+    # The info block is not a message, so its pointer names the section instead of a message index;
+    # it is where `tools_declared` and `system_prompt` below were read from (D66).
+    info = RawPtr(file_hash=raw_hash, sim_index=sim_index, section="info.environment_info")
+    trace_id = str(simulation.get("id") or f"{raw_hash[:12]}-{sim_index}")
     turns, calls, pending = [], [], {}
     for msg_index, message in enumerate(messages):
         here = RawPtr(file_hash=raw_hash, sim_index=sim_index, msg_index=msg_index)
@@ -326,7 +337,7 @@ def _tau2_trace(simulation: dict, sim_index: int, raw_hash: str, environment: di
         if role == "tool":
             waiting = pending.get(message.get("id"))
             if waiting is not None:
-                _attach_result(waiting[0], message, waiting[1])
+                _attach_result(waiting[0], message, waiting[1], here)
             turns.append(Turn(idx=msg_index, role="tool", content=_text(message.get("content")),
                               tool_call_ids=[message["id"]] if message.get("id") else [], raw_ptr=here))
             continue
@@ -337,6 +348,7 @@ def _tau2_trace(simulation: dict, sim_index: int, raw_hash: str, environment: di
                 args=request.get("arguments") or {},
                 requestor=request.get("requestor") or role,
                 raw_ptr=here,
+                trace_id=trace_id,
             )
             calls.append(call)
             if call.id:
@@ -344,7 +356,7 @@ def _tau2_trace(simulation: dict, sim_index: int, raw_hash: str, environment: di
         turns.append(Turn(idx=msg_index, role=role, content=_text(message.get("content")),
                           tool_call_ids=[r.get("id") for r in requested if r.get("id")], raw_ptr=here))
     return Trace(
-        trace_id=str(simulation.get("id") or f"{raw_hash[:12]}-{sim_index}"),
+        trace_id=trace_id,
         raw_hash=raw_hash,
         ingest_version=INGEST_VERSION,
         source="tau2_native",
@@ -352,19 +364,31 @@ def _tau2_trace(simulation: dict, sim_index: int, raw_hash: str, environment: di
         tool_calls=calls,
         tools_declared=environment.get("tool_defs") if isinstance(environment.get("tool_defs"), list) else None,
         system_prompt=environment.get("policy"),
+        tools_declared_ptr=info if environment.get("tool_defs") else None,
+        system_prompt_ptr=info if environment.get("policy") else None,
+        info_ptr=info,
         raw_ptr=ptr,
     )
 
 
-def _attach_result(call: ToolCall, message: dict, asked_at: Any) -> None:
+def _attach_result(call: ToolCall, message: dict, asked_at: Any, ptr: Optional[RawPtr] = None) -> None:
+    """Put the tool message that answered this call on the call, and say where it came from.
+
+    `has_result` is set for every answered call, a recorded JSON null included, because `result is
+    None` alone cannot tell a null answer apart from a call whose tool message was never captured
+    (validate.ingest_gate reads the flag). `resolved` says the answer landed on this call.
+    """
     content = message.get("content")
     call.truncated, call.visible_len, call.cut_marker = detect_truncation(content)
     flag = message.get("error")
     if flag:
         structured = flag if isinstance(flag, dict) else _structured(content)
-        call.error = classify_error(content, structured)
+        call.error = classify_error(content, structured, ptr=ptr)
     else:
         call.result = _parsed(content)
+    call.has_result = True
+    call.resolved = True
+    call.result_ptr = ptr
     call.latency_ms = _latency_ms(asked_at, message.get("timestamp"))
 
 

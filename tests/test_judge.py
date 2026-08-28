@@ -527,7 +527,10 @@ def test_a_third_sample_that_cannot_answer_leaves_the_split_in_the_queue(make_te
     assert disagreement is True
     assert result.verdict == "abstain"
     assert len(read_disagreement_queue(workdir)) == 1
-    assert "IndexError" in (result.reason or "") or "refused" in (result.reason or "")
+    assert [row["reason"] for row in read_disagreement_queue(workdir)] == ["split"]
+    third = result.pair[2]
+    assert third["refused"] is True
+    assert "did not answer" in third["reason"]
 
 
 # --- sub-answers as people and models write them (R27 8b) ---

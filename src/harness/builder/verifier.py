@@ -27,7 +27,7 @@ import re
 from pathlib import Path
 from typing import Any, Callable, Iterable, Optional
 
-from harness.shared.canon import canon_value
+from harness.shared.canon import CanonRules, canon_value
 from harness.shared.records import (
     Atom,
     Constraint,
@@ -201,9 +201,15 @@ def _canon_fn(canon: Any) -> Callable[[Any], Any]:
 
     The default used to be the identity, so a Verifier derived without an explicit canon compared
     raw values while the Runner compared canonical ones. There is one canonicalizer; this is it.
+
+    The customer's own CanonRules are accepted here as well, and bound to that one canonicalizer.
+    They used to fall through to the module defaults, because a CanonRules is neither callable nor a
+    module, so a Verifier ignored the rules learned from the customer's own corpus (D39).
     """
     if canon is None:
         return canon_value
+    if isinstance(canon, CanonRules):
+        return lambda value: canon_value(value, rules=canon)
     for attr in ("canon_value", "canonicalize", "canonical", "normalize"):
         if callable(getattr(canon, attr, None)):
             return getattr(canon, attr)
@@ -593,7 +599,9 @@ def _hard_holds(atom: Atom, run: Run, write_tools: Optional[set[str]] = None,
 
 def _helpers_src() -> str:
     """policy.py's transcript helpers, so a compiled rule finds them at Verdict time."""
-    from harness.builder import policy  # builder to builder; the Runner imports neither (D89)
+    from harness.builder import (
+        policy,  # builder to builder; the Runner imports neither (D89)
+    )
 
     return policy.HELPERS_SRC
 
@@ -697,7 +705,7 @@ def derive_verifier(task: Any, reference_run: Any, rerun_paths: Optional[list[st
         atoms.append(_atom("entity_count", "required", {"kind": "entity_count", "count": cap},
                            description=f"the Run makes at most {cap} write calls"))
 
-    asked = [question_keys(r, e, fn) for r, e in zip(good, good_effects)]
+    asked = [question_keys(r, e, fn) for r, e in zip(good, good_effects, strict=False)]
     for key in sorted(set.intersection(*[set(a) for a in asked]) if asked else set()):
         seen = asked[0][key]
         atoms.append(_atom(f"q.{key}", "question",
@@ -731,7 +739,7 @@ def derive_verifier(task: Any, reference_run: Any, rerun_paths: Optional[list[st
 
 def _first_with(runs: list[Run], effects: list[dict], key: str):
     """The first Run that has this write effect; the Reference comes first, so its spans win."""
-    for run, effect in zip(runs, effects):
+    for run, effect in zip(runs, effects, strict=False):
         if key in effect:
             return run, effect[key]
     raise KeyError(key)
@@ -791,7 +799,29 @@ def check_run(verifier: Verifier, run: Any, canon: Any = None, *,
             return False, atom.id
         if kind == "communicate" and payload.get("value") not in said:
             return False, atom.id
-    return True, None
+    extra = _extra_write(verifier, effects, write_tools)
+    return (True, None) if extra is None else (False, extra)
+
+
+def _extra_write(verifier: Verifier, effects: dict, write_tools: Optional[Iterable[str]]) -> Optional[str]:
+    """The first write no atom asked for or allowed, named the way the Verdict names it.
+
+    verdict.py fails a Run on a write to a write tool that no atom covers, so a Verifier with no
+    write atom used to pass here and fail there on the very Runs the D79 gates are made of. The
+    check only runs when the caller supplied the mined write tools, which is the same condition
+    the Verdict puts on it (`AtomContext.write_tools is not None`).
+    """
+    if not write_tools:
+        return None
+    covered = set()
+    for atom in verifier.atoms:
+        payload = atom_payload(atom)
+        if atom.kind != "forbidden" and payload.get("kind") in ("write", "write_value"):
+            covered.add((payload.get("tool"), payload.get("entity")))
+    for effect in effects.values():
+        if (effect["tool"], effect["entity"]) not in covered:
+            return f"extra_write:{effect['tool']}"
+    return None
 
 
 # --- D79 validation --------------------------------------------------------

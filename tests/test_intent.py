@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import pytest
 
+from conftest import PTR
 from harness.builder.intent import (
     MAX_PROMPT_RUNS,
     Intent,
@@ -24,11 +25,13 @@ def make_trace(trace_id: str, user_turns: list[str], calls: list[dict]) -> Trace
         raw_hash="raw",
         ingest_version="0",
         source="tau2",
-        turns=[Turn(idx=i, role="user", content=c) for i, c in enumerate(user_turns)],
+        turns=[Turn(idx=i, role="user", content=c, raw_ptr=PTR) for i, c in enumerate(user_turns)],
         tool_calls=[
-            ToolCall(id=f"{trace_id}-{i}", name=c["name"], args=c.get("args", {}), result=c.get("result"))
+            ToolCall(id=f"{trace_id}-{i}", name=c["name"], args=c.get("args", {}),
+                     result=c.get("result"), raw_ptr=PTR)
             for i, c in enumerate(calls)
         ],
+        raw_ptr=PTR,
     )
 
 

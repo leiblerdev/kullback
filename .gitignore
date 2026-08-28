@@ -3,8 +3,10 @@ __pycache__/
 *.pyc
 .pytest_cache/
 .cache/
+.coverage
 mutants/
 .env
 data/
 work/
+vendor/
 *.part

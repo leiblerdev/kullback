@@ -299,7 +299,7 @@ def test_two_lessons_append_and_keep_their_order(workdir):
     save_lesson(workdir, _lesson(), vocabulary=[])
     save_lesson(workdir, _lesson(pattern="policy text with 'unless' was compiled as one predicate"),
                 vocabulary=[])
-    assert [l.pattern[:6] for l in load_lessons(workdir)] == ["a tool", "policy"]
+    assert [lesson.pattern[:6] for lesson in load_lessons(workdir)] == ["a tool", "policy"]
 
 
 def test_anonymization_gate_rejects_a_customer_tool_name(workdir):
@@ -744,7 +744,7 @@ def test_retirement_candidates_are_the_ones_with_applications_and_no_benefit(wor
     for i in range(3):
         record_application(workdir, dead.id, f"b{i}", benefit=False, vocabulary=[])
     record_application(workdir, alive.id, "b9", benefit=True, vocabulary=[])
-    assert [l.id for l in retirement_candidates(workdir, min_applications=3)] == [dead.id]
+    assert [lesson.id for lesson in retirement_candidates(workdir, min_applications=3)] == [dead.id]
     assert retirement_candidates(workdir, min_applications=4) == []
     with pytest.raises(LessonError):
         retire_lesson(workdir, alive.id, reason="not paying off", vocabulary=[])
@@ -830,7 +830,7 @@ def test_judge_lessons_splits_applied_from_set_aside_for_the_report(workdir, tes
     ])
     sigs = [ToolSig(name="search_products")]
     applied, set_aside = judge_lessons(model, [keep, drop, retired], toolsigs=sigs, policy_spans=[])
-    assert [l.pattern for l in applied] == [keep.pattern]
+    assert [lesson.pattern for lesson in applied] == [keep.pattern]
     assert all(isinstance(s, SetAsideLesson) for s in set_aside)
     assert [s.reason for s in set_aside] == ["no policy text says unless", "retired: no benefit"]
     assert all(s.reason for s in set_aside)

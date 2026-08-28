@@ -9,6 +9,7 @@ from pathlib import Path
 
 import pytest
 
+from conftest import PTR
 from harness.builder.mine import (
     classify_column,
     classify_kind,
@@ -51,6 +52,7 @@ def traces_from_raw(raw: dict, file_hash: str = "fixture") -> list[Trace]:
                 ingest_version="test",
                 source="tau2",
                 tool_calls=[calls[i] for i in order],
+                raw_ptr=RawPtr(file_hash=file_hash, sim_index=sim_index),
             )
         )
     return traces
@@ -63,7 +65,8 @@ def one_trace(trace_id: str, calls: list[dict], tools_declared=None) -> Trace:
         ingest_version="test",
         source="synthetic",
         tools_declared=tools_declared,
-        tool_calls=[ToolCall(**c) for c in calls],
+        tool_calls=[ToolCall(**{"raw_ptr": PTR, **c}) for c in calls],
+        raw_ptr=PTR,
     )
 
 
@@ -543,16 +546,14 @@ def test_schema_round_trips_through_json(fixture_traces):
 
 
 def retail_tool_names() -> set[str]:
-    path = (
-        Path(__file__).resolve().parents[2]
-        / "vendor"
-        / "tau2-bench"
-        / "src"
-        / "tau2"
-        / "domains"
-        / "retail"
-        / "tools.py"
-    )
+    # Kullback keeps vendor/ under the package root; the brain keeps it one level up,
+    # at monitoring-tool/vendor. Try the kullback layout first, same as raw_dir in conftest.
+    rel = Path("vendor") / "tau2-bench" / "src" / "tau2" / "domains" / "retail" / "tools.py"
+    tests_dir = Path(__file__).resolve().parent
+    for root in (tests_dir.parent, tests_dir.parents[1]):
+        path = root / rel
+        if path.is_file():
+            break
     tree = ast.parse(path.read_text(encoding="utf-8"))
     names = set()
     for node in ast.walk(tree):
@@ -565,9 +566,10 @@ def retail_tool_names() -> set[str]:
 
 
 @pytest.mark.slow
-def test_mine_tools_on_the_full_raw_corpus(raw_dir):
+def test_mine_tools_on_the_full_raw_corpus(retail_raw_files):
+    # Retail only: raw_dir also holds airline and telecom traces, checked separately.
     traces: list[Trace] = []
-    for path in sorted(raw_dir.glob("*.json")):
+    for path in retail_raw_files:
         traces += traces_from_raw(json.loads(path.read_text(encoding="utf-8")), file_hash=path.name)
     assert len(traces) > 100
     sigs = mine_tools(traces)
@@ -658,9 +660,9 @@ def test_a_truncated_result_is_rebuilt_from_the_schema_and_complete_calls():
     sig = ToolSig(name="get_ticket", result_schema=[
         FieldStat(name="id"), FieldStat(name="subject"), FieldStat(name="history")])
     cut = ToolCall(name="get_ticket", args={"id": "t1"}, truncated=True, visible_len=40, cut_marker="...",
-                   result='{"id": "t1", "subject": "printer on fire", "hist...')
+                   result='{"id": "t1", "subject": "printer on fire", "hist...', raw_ptr=PTR)
     whole = ToolCall(name="get_ticket", args={"id": "t2"},
-                     result='{"id": "t2", "subject": "late delivery", "history": ["opened"]}')
+                     result='{"id": "t2", "subject": "late delivery", "history": ["opened"]}', raw_ptr=PTR)
     out = reconstruct_truncated(cut, sig, [cut, whole])
     assert out["result"]["id"] == "t1", "the cut row must keep its own id, never a donor's"
     assert out["result"]["subject"] == "printer on fire", "a field the agent saw is not invented"
@@ -679,9 +681,9 @@ def test_a_truncated_result_already_parsed_is_filled_the_same_way():
     sig = ToolSig(name="get_ticket", result_schema=[
         FieldStat(name="id"), FieldStat(name="subject"), FieldStat(name="history")])
     cut = ToolCall(name="get_ticket", args={"id": "t1"}, truncated=True, visible_len=40,
-                   cut_marker="...", result={"id": "t1"})
+                   cut_marker="...", result={"id": "t1"}, raw_ptr=PTR)
     whole = ToolCall(name="get_ticket", args={"id": "t2"},
-                     result={"id": "t2", "subject": "late delivery", "history": ["opened"]})
+                     result={"id": "t2", "subject": "late delivery", "history": ["opened"]}, raw_ptr=PTR)
     out = reconstruct_truncated(cut, sig, [cut, whole])
     assert out["result"]["id"] == "t1"
     assert out["result"]["subject"] == "late delivery"
@@ -693,7 +695,7 @@ def test_a_complete_result_is_never_reconstructed():
     from harness.shared.records import FieldStat, ToolSig
 
     sig = ToolSig(name="get_ticket", result_schema=[FieldStat(name="id")])
-    whole = ToolCall(name="get_ticket", args={}, result={"id": "t1"})
+    whole = ToolCall(name="get_ticket", args={}, result={"id": "t1"}, raw_ptr=PTR)
     assert reconstruct_truncated(whole, sig, [whole]) is None
 
 
@@ -987,9 +989,9 @@ def test_reconstruction_prefers_a_donor_with_the_same_arguments():
     from harness.shared.records import FieldStat, ToolSig
 
     sig = ToolSig(name="get_ticket", result_schema=[FieldStat(name="id"), FieldStat(name="subject")])
-    cut = ToolCall(name="get_ticket", args={"id": "t1"}, truncated=True, result={"id": "t1"})
-    other = ToolCall(name="get_ticket", args={"id": "t2"}, result={"id": "t2", "subject": "other ticket"})
-    same = ToolCall(name="get_ticket", args={"id": "t1"}, result={"id": "t1", "subject": "the real subject"})
+    cut = ToolCall(name="get_ticket", args={"id": "t1"}, truncated=True, result={"id": "t1"}, raw_ptr=PTR)
+    other = ToolCall(name="get_ticket", args={"id": "t2"}, result={"id": "t2", "subject": "other ticket"}, raw_ptr=PTR)
+    same = ToolCall(name="get_ticket", args={"id": "t1"}, result={"id": "t1", "subject": "the real subject"}, raw_ptr=PTR)
     out = reconstruct_truncated(cut, sig, [cut, other, same])
     assert out["result"]["subject"] == "the real subject"
 
@@ -1001,9 +1003,9 @@ def test_reconstruction_of_a_cut_list_result_is_still_a_list():
     sig = ToolSig(name="search_orders",
                   result_schema=[FieldStat(name="[].order_id"), FieldStat(name="[].status")])
     cut = ToolCall(name="search_orders", args={"q": "x"}, truncated=True,
-                   result='[{"order_id": "#W1", "st...')
+                   result='[{"order_id": "#W1", "st...', raw_ptr=PTR)
     whole = ToolCall(name="search_orders", args={"q": "y"},
-                     result='[{"order_id": "#W2", "status": "pending"}]')
+                     result='[{"order_id": "#W2", "status": "pending"}]', raw_ptr=PTR)
     out = reconstruct_truncated(cut, sig, [cut, whole])
     assert isinstance(out["result"], list)
     assert out["result"][0]["order_id"] == "#W1"
@@ -1016,9 +1018,9 @@ def test_reconstruction_never_borrows_another_entitys_id():
     from harness.shared.records import FieldStat, ToolSig
 
     sig = ToolSig(name="get_ticket", result_schema=[FieldStat(name="ticket_id"), FieldStat(name="subject")])
-    cut = ToolCall(name="get_ticket", args={"id": "t1"}, truncated=True, result='{"subj...')
+    cut = ToolCall(name="get_ticket", args={"id": "t1"}, truncated=True, result='{"subj...', raw_ptr=PTR)
     whole = ToolCall(name="get_ticket", args={"id": "t2"},
-                     result='{"ticket_id": "t2", "subject": "late delivery"}')
+                     result='{"ticket_id": "t2", "subject": "late delivery"}', raw_ptr=PTR)
     out = reconstruct_truncated(cut, sig, [cut, whole])
     assert "ticket_id" not in out["result"]
     assert out["reconstructed_fields"] == ["subject"]

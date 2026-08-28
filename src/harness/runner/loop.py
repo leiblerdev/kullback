@@ -46,17 +46,27 @@ def new_run_state(run_id: str, *, workdir: Any = None, path: Any = None, system_
 
 
 def emit(state: RunState, event_type: str, payload: dict, route: Optional[str] = None,
-         cost: Optional[Cost] = None, assisted: bool = False) -> Event:
-    """Append one event to the Run and one line to its JSONL. No clock: the idx is the only order."""
+         cost: Optional[Cost] = None, assisted: bool = False, write: bool = True) -> Event:
+    """Append one event to the Run and one line to its JSONL. No clock: the idx is the only order.
+
+    `write=False` records the event without writing its line yet, which is how the stop event waits
+    for the End state it has to carry.
+    """
     event = Event(idx=len(state.run.events), type=event_type, payload=payload,
                   route=route, cost=cost, assisted=assisted)
     state.run.events.append(event)
     if assisted:
         state.run.assisted = True
-    if state.path is not None:
-        with state.path.open("a", encoding="utf-8") as handle:
-            handle.write(json.dumps(as_dict(event), ensure_ascii=False, default=str) + "\n")
+    if write:
+        _write_event(state, event)
     return event
+
+
+def _write_event(state: RunState, event: Event) -> None:
+    if state.path is None:
+        return
+    with state.path.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(as_dict(event), ensure_ascii=False, default=str) + "\n")
 
 
 def step(state: RunState, model: Any, tools: Optional[list[dict]] = None, router: Any = None) -> RunState:
@@ -109,21 +119,37 @@ def finish(state: RunState, router: Any = None) -> RunState:
     state.finished = True
     if router is not None and hasattr(router, "state_hash"):
         state.run.end_state_hash = router.state_hash()
-    _footer(state, router)
+    _close_stop(state, router)
+    _footer(state)
     return state
 
 
-def _footer(state: RunState, router: Any) -> None:
-    """One trailing line naming the Run and its Start and End state, which is what a Verdict reads."""
+def _close_stop(state: RunState, router: Any) -> None:
+    """Write the stop event, now carrying the Start and End state it names (design section 5).
+
+    The states are the stop event's payload and not a footer key: the footer is validated as a `Run`,
+    and a `Run` forbids unknown keys like every other record, so a state written there would have to
+    be smuggled past the schema. `_stop` holds the line back until here because the End state is not
+    known when the Run decides to stop.
+    """
+    stop = next((event for event in reversed(state.run.events) if event.type == "stop"), None)
+    if stop is None:
+        return
+    if router is not None and hasattr(router, "world"):
+        stop.payload["start_state"] = getattr(router, "start_world", None) or {}
+        stop.payload["end_state"] = router.world()
+    stop.payload["end_state_hash"] = state.run.end_state_hash
+    _write_event(state, stop)
+
+
+def _footer(state: RunState) -> None:
+    """One trailing line naming the Run itself: nothing here that is not a `Run` field."""
     if state.path is None:
         return
     footer = {"run_id": state.run.run_id, "task_id": state.run.task_id, "env_id": state.run.env_id,
               "trace_id": state.run.trace_id, "model": state.run.model, "seed": state.run.seed,
               "termination_reason": state.run.termination_reason,
               "end_state_hash": state.run.end_state_hash}
-    if router is not None and hasattr(router, "world"):
-        footer["start_state"] = getattr(router, "start_world", None) or {}
-        footer["end_state"] = router.world()
     with state.path.open("a", encoding="utf-8") as handle:
         handle.write(json.dumps(footer, ensure_ascii=False, default=str) + "\n")
 
@@ -182,9 +208,11 @@ def _user_payload(user: Any, answer: Optional[str], seen: int) -> tuple[dict, bo
 
 
 def _stop(state: RunState, reason: str) -> None:
+    """The Run stops here; its line waits for `finish` to add the End state to the same event."""
     state.stopped = True
     state.run.termination_reason = reason
-    emit(state, "stop", {"reason": reason, "termination_reason": reason, "turns": state.turn})
+    emit(state, "stop", {"reason": reason, "termination_reason": reason, "turns": state.turn},
+         write=False)
 
 
 def _ends(user: Any, text: str) -> bool:

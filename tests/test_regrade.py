@@ -116,8 +116,7 @@ def test_a_cached_verdict_is_reused_when_no_version_changed(runs, tmp_path):
     path = verdict_path(out_dir, "r1", cache_key("r1", verifier, canon=simple_canon,
                                                  write_tools=WRITE_TOOLS))
     stored = json.loads(path.read_text(encoding="utf-8"))
-    stored["pass"] = False
-    stored["failing_atom"] = "tampered"
+    stored.update({"pass": False, "class": "fail", "failing_atom": "tampered"})
     path.write_text(json.dumps(stored), encoding="utf-8")
 
     again = regrade(runs[:1], verifier, simple_canon, out_dir=out_dir, write_tools=WRITE_TOOLS)[0]
@@ -156,10 +155,9 @@ def test_a_new_environment_version_invalidates_the_cache(runs, tmp_path):
     out_dir = tmp_path / "verdicts"
     regrade(runs[:1], verifier, simple_canon, out_dir=out_dir, environment=first, write_tools=WRITE_TOOLS)
     regrade(runs[:1], verifier, simple_canon, out_dir=out_dir, environment=second, write_tools=WRITE_TOOLS)
-    keys = {env: cache_key("r1", verifier, env, canon=simple_canon, write_tools=WRITE_TOOLS)
-            for env in (first, second)}
-    assert verdict_path(out_dir, "r1", keys[first]).is_file()
-    assert verdict_path(out_dir, "r1", keys[second]).is_file()
+    keys = [cache_key("r1", verifier, env, canon=simple_canon, write_tools=WRITE_TOOLS)
+            for env in (first, second)]
+    assert all(verdict_path(out_dir, "r1", key).is_file() for key in keys)
 
 
 def test_a_new_runner_version_invalidates_the_cache(runs):
@@ -190,7 +188,10 @@ def test_judge_results_are_looked_up_per_run(runs, tmp_path):
     verifier = Verifier(
         task_id="t1",
         verifier_version="v1",
-        atoms=[Atom(id="a_polite", kind="required", judge=True)],
+        atoms=[
+            Atom(id="a_cancel", kind="allowed", predicate_src='wrote("cancel_pending_order")'),
+            Atom(id="a_polite", kind="required", judge=True),
+        ],
     )
     out = regrade(
         runs,
@@ -319,8 +320,9 @@ def test_the_canonicalizer_is_part_of_the_cache_key(runs):
 
 
 def test_changed_judge_results_are_not_served_from_the_cache(runs, tmp_path):
-    verifier = Verifier(task_id="t1", verifier_version="v1",
-                        atoms=[Atom(id="a_polite", kind="required", judge=True)])
+    verifier = Verifier(task_id="t1", verifier_version="v1", atoms=[
+        Atom(id="a_cancel", kind="allowed", predicate_src='wrote("cancel_pending_order")'),
+        Atom(id="a_polite", kind="required", judge=True)])
     out_dir = tmp_path / "verdicts"
     held = regrade(runs[:1], verifier, simple_canon, out_dir=out_dir, judge_version="j1",
                    judge_results={"r1": {"a_polite": {"verdict": "pass"}}}, write_tools=WRITE_TOOLS)[0]

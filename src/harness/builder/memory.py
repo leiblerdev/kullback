@@ -709,7 +709,7 @@ def _one_line(text: str) -> str:
 def _write_lessons(target: str | Path, lessons: list[Lesson]) -> None:
     path = lessons_path(target)
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(_HEADER + "\n" + "\n".join(_render(l) for l in lessons), encoding="utf-8")
+    path.write_text(_HEADER + "\n" + "\n".join(_render(lesson) for lesson in lessons), encoding="utf-8")
 
 
 def load_lessons(target: str | Path) -> list[Lesson]:
@@ -744,7 +744,7 @@ def load_lessons(target: str | Path) -> list[Lesson]:
 def active_lessons(target: Any) -> list[Lesson]:
     """The lessons that still have standing: retired ones are never judged or applied (D87)."""
     lessons = target if isinstance(target, list) else load_lessons(target)
-    return [l for l in lessons if not l.retired]
+    return [lesson for lesson in lessons if not lesson.retired]
 
 
 def _parse_application(value: str) -> LessonApplication:
@@ -821,9 +821,9 @@ def record_application(target: str | Path, lesson_id: str, build_id: str,
 
 def retirement_candidates(target: Any, min_applications: int = 3) -> list[Lesson]:
     """Lessons with N applications and no confirmed benefit: what the evaluator retires (D87)."""
-    return [l for l in active_lessons(target)
-            if len(l.applications) >= min_applications
-            and not any(a.benefit is True for a in l.applications)]
+    return [lesson for lesson in active_lessons(target)
+            if len(lesson.applications) >= min_applications
+            and not any(a.benefit is True for a in lesson.applications)]
 
 
 def retire_lesson(target: str | Path, lesson_id: str, reason: str = "",

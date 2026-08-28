@@ -9,8 +9,13 @@ import pytest
 
 from harness.shared import provider as provider_module
 from harness.shared.provider import RecordedModel, TestModel
+from harness.shared.records import RawPtr
 
 FIXTURES = Path(__file__).parent / "fixtures"
+
+# Every Turn, ToolCall and Trace carries a raw_ptr (D66), so a test that does not care where its
+# record came from still has to name a raw location. This is that location.
+PTR = RawPtr(file_hash="testfile", sim_index=0)
 
 
 @pytest.fixture(autouse=True)
@@ -43,11 +48,31 @@ def tau2_retail_dir() -> Path:
 
 @pytest.fixture(scope="session")
 def raw_dir() -> Path:
-    """The full raw traces, never committed; tests that need them skip when they are absent."""
-    path = Path(__file__).resolve().parents[2] / "data" / "raw"
-    if not path.is_dir():
-        pytest.skip("raw traces not present")
-    return path
+    """The full raw traces, never committed; tests that need them skip when they are absent.
+
+    Kullback keeps them at data/raw under the package root; the brain keeps them one level
+    up, at monitoring-tool/data/raw (../data/raw from here). Try the kullback layout first.
+    """
+    harness_root = Path(__file__).resolve().parents[1]
+    for candidate in (harness_root / "data" / "raw", harness_root.parent / "data" / "raw"):
+        if candidate.is_dir():
+            return candidate
+    pytest.skip("raw traces not present")
+
+
+# The full raw_dir corpus also holds airline and telecom traces (fetched for a separate,
+# cross-domain check); tools mined from the whole folder would be gated against retail-only
+# thresholds, so tests scoped to retail read just these two files by name.
+RETAIL_RAW_FILES = (
+    "claude-3-7-sonnet-20250219_retail_default_gpt-4.1-2025-04-14_4trials.json",
+    "claude-sonnet-4-5_enabled_retail_gpt-5.2_4trials.json",
+)
+
+
+@pytest.fixture
+def retail_raw_files(raw_dir: Path) -> list[Path]:
+    """The two retail trace files in raw_dir; airline and telecom traces are checked elsewhere."""
+    return [raw_dir / name for name in RETAIL_RAW_FILES]
 
 
 @pytest.fixture

@@ -7,6 +7,7 @@ import json
 
 import pytest
 
+from conftest import PTR
 from harness.builder import compile_env as ce
 from harness.shared.records import (
     Atom,
@@ -152,7 +153,7 @@ def sigs():
 
 
 def _call(name, args, result=None, error=None, idx=0):
-    return ToolCall(id=f"c{idx}", name=name, args=args, result=result, error=error)
+    return ToolCall(id=f"c{idx}", name=name, args=args, result=result, error=error, raw_ptr=PTR)
 
 
 def _trace(trace_id, calls):
@@ -162,6 +163,7 @@ def _trace(trace_id, calls):
         ingest_version="1",
         source="tau2",
         tool_calls=calls,
+        raw_ptr=PTR,
     )
 
 
@@ -326,7 +328,11 @@ def test_a_correct_body_passes_all_five_gates(schema, sigs, db0, workdir, order_
     source, box = _sandbox(schema, sigs, db0, workdir, CORRECT_BODY)
     shown, held_out = ce.split_calls(order_calls)
     gates = ce.run_gates(source, box, shown, held_out, schema)
-    assert [g.stage for g in gates][:4] == ["parses", "executes_on_s0", "deterministic", "non_trivial"]
+    # "confined" is the gate that stands in for the deferred sandbox: the same module is exec'd
+    # in the Runner's process by load_toolkit, so a body that reaches past the customer's world
+    # is refused before it ever executes anywhere.
+    assert [g.stage for g in gates][:5] == [
+        "parses", "confined", "executes_on_s0", "deterministic", "non_trivial"]
     assert all(g.passed for g in gates), [g.failures for g in gates if not g.passed]
 
 
@@ -980,3 +986,32 @@ def test_the_repair_loop_grows_the_evidence_until_the_cap_refuses_an_attempt(
     assert build.nodes[-1]["refused"] is True
     assert len(build.nodes) > 1, "the loop refused before it ever grew the evidence"
     assert build.assisted is True
+
+
+# --- confinement: the static check that stands in for the deferred sandbox ---
+
+def test_a_body_that_reaches_outside_the_world_is_refused_before_it_runs(schema, sigs, db0, workdir):
+    """load_toolkit exec's the module in the Runner's own process, so the body is checked first."""
+    body = "import os\nopen('/tmp/x', 'w').write('hi')\nreturn self.db.orders.get(order_id)\n"
+    source = ce.module_source(schema, sigs[:1], {sigs[0].name: body})
+    assert ce.source_confinement(source) == [
+        f"{sigs[0].name} imports os", f"{sigs[0].name} uses open"]
+    with pytest.raises(ce.SandboxError):
+        ce.load_toolkit(source, db0)
+
+
+def test_a_body_that_walks_the_class_tree_is_refused(schema, sigs, db0, workdir):
+    """().__class__.__base__.__subclasses__() is the escape a restricted namespace does not stop."""
+    body = ("cls = ().__class__.__base__.__subclasses__()\n"
+            "return {'n': len(cls)}\n")
+    source = ce.module_source(schema, sigs[:1], {sigs[0].name: body})
+    assert any("touches __class__" in line for line in ce.source_confinement(source))
+    with pytest.raises(ce.SandboxError):
+        ce.load_toolkit(source, db0)
+
+
+def test_the_code_owned_skeleton_is_confined_as_it_stands(schema, sigs, db0):
+    """DomainDB.load opens the emitted db.json; that is code, not a model's body, and stays allowed."""
+    source = ce.module_source(schema, sigs, {s.name: "return None" for s in sigs})
+    assert ce.source_confinement(source) == []
+    assert ce.load_toolkit(source, db0) is not None

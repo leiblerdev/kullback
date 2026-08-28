@@ -393,31 +393,41 @@ def test_canonical_args_keeps_real_differences():
     assert recording_key("t", {"ok": True}, "s") != recording_key("t", {"ok": 1}, "s")
 
 
-def test_state_view_get_reads_overlay_then_shared():
+def test_the_recording_key_folds_the_way_the_customers_rules_fold():
+    """D39: keyed under the module defaults, a call the customer's rules call the same is missed."""
+    from harness.shared.canon import CanonRules
+
+    rules = CanonRules(id_patterns={"order_id": r"#?W\d+"}, id_strip_chars="#")
+    assert recording_key("t", {"order_id": "#W123"}, "s") != recording_key("t", {"order_id": "W123"}, "s")
+    assert recording_key("t", {"order_id": "#W123"}, "s", rules) == \
+        recording_key("t", {"order_id": "W123"}, "s", rules)
+
+
+def test_state_view_any_value_reads_overlay_then_shared():
     """The Simulated user's reader (D77) goes through this same overlay-then-db lookup."""
     state = StateView(
         shared={"users": {"u1": {"email": "old@b.com", "zip": "10001"}}},
         overlay={"users": {"u1": {"email": "new@b.com"}}},
     )
-    assert state.get("email") == "new@b.com"
-    assert state.get("zip") == "10001"
-    assert state.get("nothing") is None
+    assert state.any_value("email") == "new@b.com"
+    assert state.any_value("zip") == "10001"
+    assert state.any_value("nothing") is None
     assert state.row("users", "u1") == {"email": "new@b.com", "zip": "10001"}
 
 
-def test_state_view_get_reads_a_field_the_world_holds_nested():
+def test_state_view_any_value_reads_a_field_the_world_holds_nested():
     """D77: tau2 keeps a user's zip under address and the card's last four under payment_methods."""
     state = StateView(shared={"users": {"u1": {
         "address": {"city": "Denver", "zip": "80279"},
         "payment_methods": {"credit_card_1": {"source": "credit_card", "last_four": "9212"}},
     }}})
-    assert state.get("zip") == "80279"
-    assert state.get("last_four") == "9212"
+    assert state.any_value("zip") == "80279"
+    assert state.any_value("last_four") == "9212"
 
 
-def test_state_view_get_does_not_hand_over_another_rows_fact():
+def test_state_view_any_value_does_not_hand_over_another_rows_fact():
     """D41, D77: a fact taken from some other customer's row is an invented fact for this Task."""
     two = {"users": {"u1": {"email": "one@x.com"}, "u2": {"email": "two@x.com"}}}
-    assert StateView(shared=two).get("email") is None
+    assert StateView(shared=two).any_value("email") is None
     scoped = StateView(shared=two, overlay={"users": {"u2": {"email": "two@x.com"}}})
-    assert scoped.get("email") == "two@x.com"
+    assert scoped.any_value("email") == "two@x.com"

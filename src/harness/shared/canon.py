@@ -518,11 +518,25 @@ def queued_regrades(workdir: Union[str, Path]) -> list[str]:
     return out
 
 
-def clear_regrade_queue(workdir: Union[str, Path]) -> None:
-    """Empty the queue once the Runs in it have been re-scored."""
+def clear_regrade_queue(workdir: Union[str, Path], run_ids: Optional[Iterable[str]] = None) -> None:
+    """Empty the queue, or take just the named Runs out of it, once they have been re-scored.
+
+    A batch re-scores the Runs it was given and no others, so a queued Run that was not in the batch
+    has to stay queued or it keeps its stale Verdict forever (D84). The queue's format lives here, so
+    the partial removal does too rather than in a caller that rewrites the file itself.
+    """
     path = Path(workdir) / QUEUE_FILE
-    if path.is_file():
+    if not path.is_file():
+        return
+    if run_ids is None:
         path.unlink()
+        return
+    done = set(run_ids)
+    kept = [row for row in _rows(path) if row.get("run_id") not in done]
+    if not kept:
+        path.unlink()
+        return
+    path.write_text("".join(json.dumps(row, sort_keys=True) + "\n" for row in kept), encoding="utf-8")
 
 
 def load_table(path: Union[str, Path]) -> EquivalenceTable:

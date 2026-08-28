@@ -46,6 +46,7 @@ def make_trace(pairs, trace_id: str = "t1") -> Trace:
         ingest_version="0",
         source="tau2",
         turns=turns,
+        raw_ptr=RawPtr(file_hash="rawhash", sim_index=0),
     )
 
 
