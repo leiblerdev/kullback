@@ -1,0 +1,7 @@
+Kullback
+Copyright 2026 Leibler
+
+This product includes software developed at Leibler (https://leibler.dev).
+
+Test fixtures under tests/fixtures/tau2_retail/ are copied unchanged from
+tau2-bench (Sierra Research, MIT License, https://github.com/sierra-research/tau2-bench).
