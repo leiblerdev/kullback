@@ -10,7 +10,6 @@ from typing import Literal, get_args, get_origin
 import pytest
 
 from harness.shared import records as records_module
-
 from harness.shared.records import (
     ALL_RECORDS,
     Atom,

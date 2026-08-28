@@ -14,11 +14,18 @@ import pytest
 
 from harness.builder import cluster, compile_env, ingest, mine, policy, user_sim
 from harness.builder import verifier as verifier_mod
-from harness.runner import loop, regrade, route, validate, verdict as verdict_mod
+from harness.runner import loop, regrade, route, validate
+from harness.runner import verdict as verdict_mod
 from harness.shared import canon, report
 from harness.shared.provider import RecordedModel, TestModel
 from harness.shared.records import (
-    Environment, GateResult, Trace, UserFact, UserRules, Verifier, as_dict,
+    Environment,
+    GateResult,
+    Trace,
+    UserFact,
+    UserRules,
+    Verifier,
+    as_dict,
 )
 
 TOOL_BODIES = {

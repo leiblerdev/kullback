@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import re
 from datetime import date, datetime, timezone
-from decimal import Decimal, InvalidOperation, ROUND_HALF_UP, getcontext, localcontext
+from decimal import ROUND_HALF_UP, Decimal, InvalidOperation, getcontext, localcontext
 from pathlib import Path
 from typing import Any, Callable, Iterable, Literal, Optional, Union
 

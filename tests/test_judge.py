@@ -18,7 +18,6 @@ from harness.runner.judge import (
     two_judges,
 )
 
-
 # --- read-only tools the judge is given (design 13b: Starting state and End state) ---
 
 

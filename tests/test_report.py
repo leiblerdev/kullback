@@ -35,7 +35,6 @@ from harness.shared.report import (
     write_report,
 )
 
-
 # --- hand-built records -----------------------------------------------------
 
 def a_verdict(run_id: str, passed: bool, **kwargs) -> Verdict:

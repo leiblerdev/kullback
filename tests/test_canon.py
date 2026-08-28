@@ -11,7 +11,6 @@ from harness.shared.canon import (
     EXEMPT,
     CanonRules,
     Comparison,
-    EquivalenceEntry,
     EquivalenceTable,
     canon_record,
     canon_value,
@@ -567,7 +566,11 @@ def test_an_overturned_entry_survives_the_file_and_still_outranks_the_judge(work
 
 def test_overturning_a_pair_queues_every_run_that_used_it(tmp_path):
     from harness.shared.canon import (
-        clear_regrade_queue, overturn, put, queued_regrades, record_use,
+        clear_regrade_queue,
+        overturn,
+        put,
+        queued_regrades,
+        record_use,
     )
 
     table = EquivalenceTable()

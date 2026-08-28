@@ -15,7 +15,9 @@ harness = "harness.cli:app"
 [dependency-groups]
 dev = [
     "mutmut>=3.7.0",
+    "pre-commit>=4.6.2",
     "pytest>=8.0",
+    "ruff>=0.16.5",
 ]
 
 [build-system]
@@ -33,3 +35,12 @@ markers = ["slow: reads the full raw corpus in ../data/raw"]
 [tool.mutmut]
 source_paths = ["src/harness/"]
 pytest_add_cli_args_test_selection = ["tests/"]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 120
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B"]
+ignore = ["E501"]

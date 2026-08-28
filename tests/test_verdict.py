@@ -553,8 +553,8 @@ def test_the_verdict_builtins_cover_everything_policy_certifies_at_build_time():
 
 
 def test_a_predicate_using_a_certified_builtin_is_evaluated_not_skipped(tmp_path):
-    from harness.shared.records import Atom, Verifier
     from harness.runner.verdict import verdict as run_verdict
+    from harness.shared.records import Atom, Verifier
 
     path = tmp_path / "r.jsonl"
     path.write_text(json.dumps({"run_id": "r", "termination_reason": "user_stop"}) + "\n"

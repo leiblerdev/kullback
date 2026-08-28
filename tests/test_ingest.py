@@ -11,7 +11,6 @@ from harness.builder import ingest
 from harness.shared.provider import TestModel
 from harness.shared.records import Trace
 
-
 # --- helpers ---------------------------------------------------------------
 
 

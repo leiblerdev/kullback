@@ -12,10 +12,20 @@ from __future__ import annotations
 from harness.builder import verifier as V
 from harness.runner import verdict as R
 from harness.shared.records import Constraint, Task, Verifier
-
 from test_verifier import (
-    ORDER, WRITE_TOOLS, alt_path_run, assistant, call, derive, empty_run, make_run, reference_events,
-    reference_run, result, user, wrong_run,
+    ORDER,
+    WRITE_TOOLS,
+    alt_path_run,
+    assistant,
+    call,
+    derive,
+    empty_run,
+    make_run,
+    reference_events,
+    reference_run,
+    result,
+    user,
+    wrong_run,
 )
 
 TASK = Task(id="t1", intent="cancel the pending order and record the reason")
