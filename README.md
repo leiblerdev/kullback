@@ -175,7 +175,7 @@ If you build evals, the design choices are worth stealing even if the code is no
 
 If you build environments for training agents, the Builder is an environment generator whose only input is production traces, with a reconstruction check against a known ground truth, and the loop is already the shape a `reset` and `step` wrapper needs.
 
-If you work on any of this, the design document, the decision log with every choice and the alternative it beat, and 29 research reports are in `docs/` and `research/`. Disagreement with the design is welcome; the decision log exists so that you can see what was already argued.
+If you work on any of this, `docs/design-philosophy.md` says what we built, why, and what we left out; the design document, the decision log with every choice and the alternative it beat, and 29 research reports are in `docs/` and `research/`. Disagreement with the design is welcome; the decision log exists so that you can see what was already argued.
 
 ## 5. Future work
 
