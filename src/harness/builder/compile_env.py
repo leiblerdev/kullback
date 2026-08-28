@@ -26,8 +26,19 @@ from typing import Any, Iterable, Optional
 from harness.shared.budget import CONTEXT_CAP_FRACTION, context_cap_tokens
 from harness.shared.canon import canonicalize as canon  # D39: one canonicalizer, no local variant
 from harness.shared.records import (
-    Atom, EntitySchema, Environment, GateResult, OverlayRow, Task, TaskOverlay,
-    ToolCall, ToolSig, Trace, Verifier, as_dict, content_hash,
+    Atom,
+    EntitySchema,
+    Environment,
+    GateResult,
+    OverlayRow,
+    Task,
+    TaskOverlay,
+    ToolCall,
+    ToolSig,
+    Trace,
+    Verifier,
+    as_dict,
+    content_hash,
 )
 
 DB_FILE = "db.json"

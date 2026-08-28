@@ -29,7 +29,17 @@ from typing import Any, Callable, Iterable, Optional
 
 from harness.shared.canon import canon_value
 from harness.shared.records import (
-    Atom, Constraint, Event, GateResult, RawPtr, Run, Task, UserRules, Verifier, as_dict, canonical_json,
+    Atom,
+    Constraint,
+    Event,
+    GateResult,
+    RawPtr,
+    Run,
+    Task,
+    UserRules,
+    Verifier,
+    as_dict,
+    canonical_json,
 )
 
 # loop.py's own stop reasons are in here: a re-run that ran to the end without a Simulated user

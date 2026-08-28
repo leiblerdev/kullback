@@ -17,16 +17,16 @@ uv sync
 uv run pytest
 ```
 
-Python 3.11 or newer. The test suite runs in about ten seconds and never calls a model. To run the offline slice on real data, `scripts/fetch_tau2_traces.sh` downloads Sierra's public tau2 retail runs into `data/raw/`; that directory is gitignored and stays that way.
+Python 3.11 or newer. The test suite runs in about ten seconds and never calls a model. Install the pre-commit hook once, `uv run pre-commit install`; it runs `ruff check` on the files you stage and fixes what it safely can. To run the offline slice on real data, `scripts/fetch_tau2_traces.sh` downloads Sierra's public tau2 retail runs into `data/raw/`; that directory is gitignored and stays that way.
 
 ## The workflow
 
 1. Branch from `main`. Name it after the change, not after yourself.
 2. Write the failing test first, then the code. Every module has one test file, `tests/test_<module>.py`; new behaviour goes there.
 3. Run `uv run pytest` and paste the summary line in the pull request. If you touched `src/harness/runner/`, also run the import boundary check: `uv run python -c "import harness.runner.validate as v, pathlib; print(v.import_boundary_check(pathlib.Path('src')))"`.
-4. Open the pull request against `main`. Say what changed, why, and what you measured. A reviewer merges it; nobody pushes to `main` directly, maintainers included.
+4. Open the pull request against `main`. Say what changed, why, and what you measured. `main` is protected: every pull request needs an approving review from the maintainer (`.github/CODEOWNERS`), every conversation resolved, and no force pushes.
 
-CI runs the tests on every pull request. Mutation testing (`uv run mutmut run`) is not in CI because it takes long; run it when you touch verdict, canon, route or verifier, and mention survivors you looked at.
+Mutation testing (`uv run mutmut run`) is not in CI because it takes long; run it when you touch verdict, canon, route or verifier, and mention survivors you looked at.
 
 ## Rules the code keeps
 

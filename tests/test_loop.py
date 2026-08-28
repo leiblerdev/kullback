@@ -10,7 +10,6 @@ from harness.runner.loop import finish, new_run_state, run, step
 from harness.runner.route import Router, StateView
 from harness.shared.provider import TestModel
 from harness.shared.records import Event, Run
-
 from test_route import SHARED, fake_tools, sigs
 
 

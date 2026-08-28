@@ -48,7 +48,6 @@ from harness.shared.records import (
     as_dict,
 )
 
-
 # --- ingest ---
 
 def a_trace(**kw) -> Trace:

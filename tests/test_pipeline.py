@@ -10,7 +10,6 @@ import pytest
 from harness.runner.pipeline import (
     ANCHOR_MIN_RUNS,
     ANCHOR_SHARE,
-    Anchor,
     AnchorLeak,
     BudgetStop,
     CycleError,
@@ -21,7 +20,6 @@ from harness.runner.pipeline import (
     load_anchor,
 )
 from harness.shared.records import GateResult, Task
-
 
 # --- toy stages -------------------------------------------------------------
 
