@@ -16,24 +16,49 @@ Two things follow from grading the end state instead of the transcript. The grad
 
 ## 2. How it solves it
 
-Kullback is two programs over one set of data records.
+Kullback is two programs over one set of data records, with every model behind one interface.
 
 ```mermaid
-flowchart LR
-    T[Your traces] --> B
-    subgraph B[Builder]
-        direction TB
-        I[ingest] --> M[mine] --> C[cluster and intent] --> E[compile environment] --> P[policy] --> U[user sim] --> V[verifier]
-    end
-    B --> ENV[(Environment<br/>db.json, tools.py, policy, tasks, verifiers)]
-    ENV --> R
-    subgraph R[Runner]
-        direction TB
-        L[loop] --> RT[route] --> VD[verdict]
-        VD --> J[judge]
-    end
-    CAND[Candidate model] --> R
-    R --> REP[Report per Task]
+architecture-beta
+    group you(cloud)[Your side]
+    service traces(disk)[Agent traces] in you
+
+    group builder(server)[Builder]
+    service ingest(disk)[ingest] in builder
+    service mine(server)[mine and cluster] in builder
+    service build(server)[compile and verifier] in builder
+
+    group env(database)[Environment]
+    service world(database)[db and overlays] in env
+    service tools(server)[tools and predicates] in env
+    service verifiers(disk)[tasks and verifiers] in env
+
+    group runner(server)[Runner]
+    service loop(server)[loop] in runner
+    service route(server)[route] in runner
+    service verdict(server)[verdict and judge] in runner
+
+    group models(internet)[Models behind one interface]
+    service candidate(internet)[Candidate] in models
+    service judges(internet)[Two judges] in models
+
+    group out(cloud)[Back to you]
+    service report(disk)[Report per Task] in out
+
+    traces:R --> L:ingest
+    ingest:R --> L:mine
+    mine:R --> L:build
+    build:R --> L:tools
+    tools:T --> B:world
+    tools:B --> T:verifiers
+    world:R --> L:route
+    tools:R --> L:loop
+    verifiers:R --> L:verdict
+    route:B --> T:loop
+    loop:B --> T:verdict
+    candidate:L --> R:loop
+    judges:L --> R:verdict
+    verdict:B --> T:report
 ```
 
 The Builder reads traces and writes an Environment. The Runner takes an Environment, a recorded run and a candidate model, replays the conversation and computes a Verdict. They share nothing but the record definitions; the Runner cannot import the Builder, and a test checks that.
