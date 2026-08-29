@@ -109,7 +109,7 @@ One JSONL per Run, one JSON per Environment version, one JSON per Verifier versi
 | derive vocabulary | code; LLM lists ask words off fetched pages | every field has a source in the corpus; a web alias appears on a fetched page; never fails (D115) | field left with its name as its only cue |
 | build user rules | code; LLM utterances | a disclosure rule for every fact the agent asked; a refusal branch where the trace shows one; fact consistency check on re-run (D44) | Run flagged `user_rules_incomplete`, still runnable, Verdict not counted |
 | Gate A, oracle replay | code | replaying the Reference's own calls reaches its End state: writes 100% after canonicalization, semantic read mismatches 0, on seed and held-out Runs separately (D39, D51) | Environment rejected for that Task |
-| derive Verifier | code over k re-runs; LLM for Provenance classification, audited | oracle passes, null agent fails, alternative-path re-rolls pass, mutation of any hard atom flips the Verdict, leakage grep clean (step 8) | Task not verdicted, "Verifier immature" |
+| derive Verifier | code over k re-runs; LLM for Provenance classification, audited | oracle passes, null agent fails, the Reference cut one step short fails (D119), alternative-path re-rolls pass, mutation of any hard atom flips the Verdict, leakage grep clean (step 8) | Task not verdicted, "Verifier immature" |
 | setup review | human (ours, then customer) | prominent Tasks by D36 priority (D48 check 1) | Task marked "setup not reviewed" |
 | Candidate runs | LLM | k runs per Run, fixed seeds, complete JSONL each | retry on infrastructure error only |
 | verdict | code | golden files: oracle Run passes, empty Run fails, plausible-wrong fails, two valid orders both pass | block that verdict version |

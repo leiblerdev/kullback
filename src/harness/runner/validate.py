@@ -28,7 +28,7 @@ GRADER_FIELDS = ("reward_info", "evaluation_criteria", "action_checks", "nl_asse
 TAU2_FILES = ("data_model.py", "tools.py", "db.json", "policy.md", "tasks.json")
 LEAK_MIN_LENGTH = 2
 D79_CHECKS = (
-    "provenance_spans", "oracle_passes", "empty_fails", "plausible_wrong_fails",
+    "provenance_spans", "oracle_passes", "empty_fails", "plausible_wrong_fails", "unsolved_state_fails",
     "second_path_passes", "loophole_probe_fails", "leak_check_clean", "mutation_flips",
 )
 VERDICT_GOLDEN_CHECKS = ("oracle_passes", "empty_fails", "plausible_wrong_fails", "two_orders_pass")

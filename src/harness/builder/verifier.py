@@ -862,6 +862,7 @@ D79_STAGES = {
     "verifier_oracle": "oracle_passes",
     "verifier_empty_run": "empty_fails",
     "verifier_wrong_run": "plausible_wrong_fails",
+    "verifier_unfinished_run": "unsolved_state_fails",
     "verifier_alt_path": "second_path_passes",
     "verifier_loophole": "loophole_probe_fails",
     "verifier_leak": "leak_check_clean",
@@ -881,11 +882,12 @@ def validate_verifier(verifier: Verifier, reference_run: Any, empty_run: Any = N
                       write_tools: Optional[Iterable[str]] = None, model: Any = None,
                       run_probe: Optional[Callable] = None,
                       seed_runs: Optional[Iterable[Any]] = None) -> list[GateResult]:
-    """The eight D79 checks as GateResults. A check whose input is missing fails as "not run".
+    """The nine D79 checks as GateResults. A check whose input is missing fails as "not run".
 
     Nothing here executes a Run (D91), so the wrong Run, the second path and the loophole probe are
     the caller's to supply; a check the caller left out is reported as not run, the way validate.py
-    counts it, and never as a pass. The empty Run needs no input and is synthesized.
+    counts it, and never as a pass. The empty Run and the unfinished Run need no input and are
+    synthesized from the Reference.
     """
     reference = _as_run(reference_run)
     runs = {r.trace_id or r.run_id: r for r in [_as_run(s) for s in (seed_runs or [])] + [reference]}
@@ -902,6 +904,7 @@ def validate_verifier(verifier: Verifier, reference_run: Any, empty_run: Any = N
         _run_gate("verifier_empty_run", scored,
                   empty_run if empty_run is not None else _empty_run(reference), expect_pass=False),
         _run_gate("verifier_wrong_run", scored, wrong_run, expect_pass=False),
+        _run_gate("verifier_unfinished_run", scored, unfinished_run(verifier, reference), expect_pass=False),
         _run_gate("verifier_alt_path", scored, alt_path_run, expect_pass=True),
         loophole_probe(verifier, model, run_probe=run_probe, canon=canon, write_tools=write_tools),
         _leak_gate(verifier, reference, intent_text, user_rules),
@@ -971,6 +974,34 @@ def _values_named(run: Run, field: str) -> list[Any]:
         elif event.type == "tool_result":
             walk(_payload(event).get("result"))
     return out
+
+
+def unfinished_run(verifier: Verifier, reference: Any) -> Optional[Run]:
+    """Check 9's Run: the Reference stopped one step short, which must not score a pass (D119).
+
+    GLM 5.3's unsolved-state check, beside the oracle and the no-op: a Verifier that rewards a Run
+    that got most of the way there rewards leaving the job unfinished. The cut is made just before
+    the last required write when the Verifier requires one, else before the last tool call, else
+    before the final assistant turn; a Reference with nothing to cut has no unfinished Run and the
+    check stays not run. Nothing after the cut survives, so the Run reads as one that ran out of
+    turns, not one that did the write and skipped the goodbye.
+    """
+    reference = _as_run(reference)
+    run = reference.model_copy(deep=True)
+    run.run_id = f"{reference.run_id}.unfinished"
+    writes = [atom_payload(a).get("at") for a in verifier.atoms
+              if a.kind == "required" and atom_payload(a).get("kind") == "write"]
+    present = {e.idx for e in run.events if e.type == "tool_call"}
+    cut = max((at for at in writes if isinstance(at, int) and at in present), default=None)
+    for kind in ("tool_call", "model_call"):
+        if cut is not None:
+            break
+        cut = max((e.idx for e in run.events if e.type == kind), default=None)
+    if cut is None:
+        return None
+    run.events = [e for e in run.events if e.idx < cut]
+    run.termination_reason = "max_turns"
+    return run
 
 
 def _empty_run(reference: Run) -> Run:

@@ -710,10 +710,41 @@ def test_validate_verifier_all_checks_pass(tmp_path, test_model):
                                 seed_runs=[alt_path_run(), other_reason_run()])
     assert [g.stage for g in gates] == [
         "verifier_provenance_spans", "verifier_oracle", "verifier_empty_run",
-        "verifier_wrong_run", "verifier_alt_path", "verifier_loophole", "verifier_leak",
-        "verifier_mutation",
+        "verifier_wrong_run", "verifier_unfinished_run", "verifier_alt_path", "verifier_loophole",
+        "verifier_leak", "verifier_mutation",
     ]
     assert all(g.passed for g in gates), [(g.stage, g.failures) for g in gates]
+
+
+def test_the_unfinished_run_stops_just_before_the_required_write_and_must_fail(tmp_path):
+    """D119: the Reference cut one step short (GLM 5.3's unsolved-state check) scores no pass."""
+    verifier = derive(tmp_path)
+    unfinished = V.unfinished_run(verifier, reference_run())
+    assert unfinished.run_id == "ref.unfinished" and unfinished.termination_reason == "max_turns"
+    assert [e.type for e in unfinished.events][-2:] == ["tool_call", "tool_result"]  # the read, not the cancel
+    assert not any(e.type == "tool_call" and e.payload.get("name") == "cancel_pending_order"
+                   for e in unfinished.events)
+    assert V.check_run(verifier, unfinished)[0] is False
+    gates = {g.stage: g for g in V.validate_verifier(verifier, reference_run())}
+    assert gates["verifier_unfinished_run"].passed is True
+
+
+def test_a_verifier_that_rewards_an_unfinished_run_is_caught(tmp_path):
+    verifier = derive(tmp_path)
+    # Only the write cap survives: a Verifier that checks the agent wrote nothing extra and never
+    # that the cancellation happened, which a Run that stopped short satisfies.
+    hollow = verifier.model_copy(update={"atoms": [a for a in verifier.atoms
+                                                    if V.atom_payload(a).get("kind") == "entity_count"]})
+    gates = {g.stage: g for g in V.validate_verifier(hollow, reference_run())}
+    assert gates["verifier_unfinished_run"].metrics["run_passed"] is True
+    assert gates["verifier_unfinished_run"].passed is False
+
+
+def test_a_reference_with_nothing_to_cut_has_no_unfinished_run(tmp_path):
+    verifier = derive(tmp_path)
+    assert V.unfinished_run(verifier, empty_run()) is None
+    assert V.unfinished_run(verifier, make_run("talk", [user("hi"), assistant("hello")])).events == [
+        e for e in make_run("talk", [user("hi"), assistant("hello")]).events if e.type == "user_turn"]
 
 
 def test_the_suite_reports_every_d79_check_by_the_name_validate_py_wants(tmp_path, test_model):
