@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
+import functools
 import json
 from pathlib import Path
 from typing import Any, Iterable, Optional
 
-from harness.builder import cluster, compile_env, ingest, memory, mine, policy, user_sim
+from harness.builder import cluster, compile_env, ingest, memory, mine, policy, sandbox, user_sim
 from harness.builder import verifier as verifier_mod
 from harness.runner import loop, pipeline, route, validate
 from harness.shared import budget, canon, provider
@@ -182,19 +183,28 @@ def _rows_of(result: Any) -> list[dict]:
     return []
 
 
-def _state_stage():
-    def run(ctx, inputs):
+def _state_stage(grow: Optional[dict] = None, grow_seed: int = 0):
+    def run(ctx, inputs, grow=None, grow_seed=0):
         state = compile_env.build_starting_state(inputs["traces"], inputs["schema"], ctx.workdir,
-                                                 inputs["tasks"], inputs["sigs"])
+                                                 inputs["tasks"], inputs["sigs"], grow=grow,
+                                                 grow_seed=grow_seed)
+        # The synthetic ids live on the schema (D40); run_batch reads them back from schema.json.
+        _write_json(ctx.workdir / "schema.json", as_dict(inputs["schema"]))
         return {"db": state.db, "overlays": list(state.overlays),
                 "assumptions": list(state.assumptions), "synthetic_rows": list(state.synthetic_rows)}
 
-    return pipeline.Stage(name="starting_state", fn=run, inputs=("traces", "schema", "tasks", "sigs"),
+    # A partial, so the grow targets are in the stage's cache key: the same traces grown to two
+    # sizes are two Starting states, not one served twice (pipeline._fn_identity).
+    fn = functools.partial(run, grow=dict(grow or {}), grow_seed=grow_seed)
+    return pipeline.Stage(name="starting_state", fn=fn, inputs=("traces", "schema", "tasks", "sigs"),
                           outputs=("db", "overlays", "assumptions", "synthetic_rows"))
 
 
 def _tools_stage(model: Any, max_attempts: int):
     def run(ctx, inputs):
+        if model is None:
+            raise BuildError("compile_tools has to run and this build has no model; pass --model "
+                             "(an --iterate build re-runs the stage when its inputs or code changed)")
         traces, tasks = inputs["traces"], inputs["tasks"]
         seeds = _seed_traces(ctx, tasks, traces)
         calls_by_tool: dict[str, list] = {}
@@ -210,13 +220,18 @@ def _tools_stage(model: Any, max_attempts: int):
         states = compile_env.call_starting_states(inputs["db"], inputs["overlays"],
                                                   compile_env.overlay_values(ctx.workdir), call_tasks)
         tool_names = [sig.name for sig in inputs["sigs"]]
+        # The transport's error wrapper is one per corpus, not one per tool: read it once over
+        # every recorded call, so a tool with a single error still has it peeled.
+        error_prefix = compile_env.shared_error_prefix(
+            call for calls in calls_by_tool.values() for call in calls)
         bodies, gates, assisted, builds = {}, [], [], {}
         for sig in inputs["sigs"]:
             build = compile_env.compile_tool(model, sig, calls_by_tool.get(sig.name, []),
                                              inputs["schema"], inputs["db"],
                                              ctx.workdir / "tools" / sig.name,
                                              max_attempts=max_attempts, call_states=states,
-                                             rules=_rules_of(inputs), tool_names=tool_names)
+                                             rules=_rules_of(inputs), tool_names=tool_names,
+                                             error_prefix=error_prefix)
             bodies[sig.name] = build.body
             gates.extend(build.gates)
             builds[sig.name] = {"assisted": build.assisted, "nodes": build.nodes}
@@ -234,7 +249,13 @@ def _tools_stage(model: Any, max_attempts: int):
 
     return pipeline.Stage(name="compile_tools", fn=run, builder=True,
                           inputs=("traces", "tasks", "sigs", "schema", "db", "overlays", "canon_rules"),
-                          outputs=("bodies", "assisted_tools"), gate=gate)
+                          outputs=("bodies", "assisted_tools"), gate=gate,
+                          # R42 for the stage that needs it most. compile_tools delegates the whole
+                          # of its work to compile_env and sandbox, and until the first live build
+                          # it hashed neither: a fix to the sandbox left every broken body in the
+                          # cache and `--iterate` handed them straight back.
+                          code_version=f"compile_tools:{getattr(model, 'name', 'none')}:"
+                                       f"{_module_hash(compile_env)}:{_module_hash(sandbox)}")
 
 
 def _seed_traces(ctx, tasks, traces) -> set[str]:
@@ -418,14 +439,17 @@ def _verifier_stage():
 
 def build(workdir: Any, iterate: bool = False, model: Any = None, files: Optional[list] = None,
           ceiling_usd: Optional[float] = None, domain: str = "domain",
-          max_attempts: int = 3, memory_dir: Any = None) -> dict:
+          max_attempts: int = 3, memory_dir: Any = None, on_event: Optional[Any] = None,
+          grow: Optional[dict[str, int]] = None, grow_seed: int = 0) -> dict:
     """Read the ingested Traces and write the Environment, the Tasks and one Verifier each.
 
     `model` is the Builder's model, already an adapter; nothing here constructs one (build brief
     rule 2). It is wrapped in `budget.BudgetedModel` before any stage sees it, so every call is
     priced into budget.json and refused past the D65 context cap. `iterate` keeps the
     content-addressed cache, which is what makes a repeat build cheap; without it the cache is
-    dropped and every stage runs again.
+    dropped and every stage runs again. `on_event` is handed to both Pipelines so a live view can
+    watch one build across the two of them; nothing here reads it. `grow` is the row count per
+    table the Starting state is grown to with synthetic rows (D107); by default nothing is grown.
     """
     workdir = Path(workdir)
     workdir.mkdir(parents=True, exist_ok=True)
@@ -447,7 +471,7 @@ def build(workdir: Any, iterate: bool = False, model: Any = None, files: Optiona
     read = pipeline.Pipeline(
         [s for s in [_ingest_stage(workdir, to_ingest) if to_ingest else None,
                      _mine_stage(), _cluster_stage()] if s is not None],
-        workdir, ceiling=ceiling)
+        workdir, ceiling=ceiling, on_event=on_event)
     first = read.run({} if to_ingest else {"traces": load_traces(workdir)})
     # Pipeline.run() writes its own statuses, log and gates to pipeline/state.json unconditionally;
     # the second Pipeline below writes the same fixed path and would otherwise overwrite this one's
@@ -466,10 +490,10 @@ def build(workdir: Any, iterate: bool = False, model: Any = None, files: Optiona
     policy_model = _wrap(model, "compile_policy", workdir, ceiling)
     lessons_model = _wrap(model, "judge_lessons", workdir, ceiling)
     second = pipeline.Pipeline(
-        [_canon_stage(), _state_stage(), _tools_stage(builder_model, max_attempts),
+        [_canon_stage(), _state_stage(grow, grow_seed), _tools_stage(builder_model, max_attempts),
          _policy_stage(policy_model), _lessons_stage(lessons_model, memory_dir),
          _user_rules_stage(), _environment_stage(domain), _verifier_stage()],
-        workdir, anchor=anchor, ceiling=ceiling)
+        workdir, anchor=anchor, ceiling=ceiling, on_event=on_event)
     result = second.run(dict(first.artifacts))
     result.gates = list(first.gates) + list(result.gates)
     _merge_pipeline_state(workdir, first_state)
@@ -508,7 +532,7 @@ def run_batch(workdir: Any, task_id: str, model: Any, count: int = 1, seed: int 
                                            overlay_values=overlay_rows)
         router = route.Router(env_tools_module=toolkit, starting_state=json.loads(json.dumps(db)),
                               overlay=overlay, overlay_rows=overlay_rows, tool_sigs=sigs,
-                              canon_rules=canon_rules)
+                              canon_rules=canon_rules, synthetic_rows=schema.synthetic_rows)
         simulated = user_sim.SimulatedUser(rules, starting_state_reader=router.state) if rules else None
         state = loop.new_run_state(run_id, workdir=workdir / "runs" / task_id,
                                    env_id=environment.get("env_id"), task_id=task_id,

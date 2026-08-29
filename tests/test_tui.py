@@ -1,0 +1,265 @@
+"""The kullback screen: what it shows, and what it refuses to do without being told.
+
+Nothing here calls a model. The Screen takes its runner by injection for exactly that reason:
+the commands are tested against a stand-in that records what it was asked for, so the dispatch is
+covered without a build and without a key.
+"""
+
+from __future__ import annotations
+
+import json
+
+import pytest
+from rich.console import Console
+
+from harness.tui import Board, Screen, _keys, banner
+
+
+def _console():
+    return Console(file=__import__("io").StringIO(), width=100, force_terminal=False, no_color=True)
+
+
+def _text(console):
+    return console.file.getvalue()
+
+
+def _show(renderable, console=None):
+    console = console or _console()
+    console.print(renderable)
+    return _text(console)
+
+
+# --- the banner -------------------------------------------------------------
+
+def test_the_banner_spells_kullback_in_five_rows():
+    rows = banner().plain.rstrip("\n").split("\n")
+    assert len(rows) == 5
+    assert all(row.strip("█ ") == "" for row in rows)
+    # eight letters, five columns of cell each: the word is there in width, not just in name.
+    assert len(rows[0]) == len("kullback") * 5
+
+
+def test_the_banner_only_knows_the_letters_it_has():
+    with pytest.raises(KeyError):
+        banner("kullbackx")
+
+
+# --- the board --------------------------------------------------------------
+
+def test_a_stage_that_starts_and_ends_keeps_its_order_and_its_last_word(tmp_path):
+    board = Board(tmp_path)
+    board.event({"kind": "stage", "stage": "mine", "state": "start", "attempt": 1})
+    board.event({"kind": "stage", "stage": "mine", "state": "ran", "attempt": 1})
+    board.event({"kind": "stage", "stage": "cluster", "state": "start", "attempt": 1})
+    assert board.order == ["mine", "cluster"]
+    assert board.status == {"mine": "ran", "cluster": "start"}
+    assert board.seconds["mine"] >= 0
+
+
+def test_a_stage_is_only_timed_once_it_has_been_seen_to_start(tmp_path):
+    board = Board(tmp_path)
+    board.event({"kind": "stage", "stage": "mine", "state": "cached", "attempt": 1})
+    assert "mine" not in board.seconds
+
+
+def test_the_gate_line_names_the_last_failure_and_its_reason(tmp_path):
+    board = Board(tmp_path)
+    board.event({"kind": "gate", "stage": "mine", "passed": True, "failures": []})
+    board.event({"kind": "gate", "stage": "compile_tools", "passed": False,
+                 "failures": ["replay fidelity 0.82 below 0.9"]})
+    out = board.verdict().plain
+    assert "1 gates passed" in out and "1 failed" in out
+    assert "compile_tools" in out and "replay fidelity 0.82 below 0.9" in out
+
+
+def test_a_build_with_no_failing_gate_says_nothing_about_failures(tmp_path):
+    board = Board(tmp_path)
+    board.event({"kind": "gate", "stage": "mine", "passed": True, "failures": []})
+    board.event({"kind": "pipeline", "state": "complete"})
+    out = board.verdict().plain
+    assert "failed" not in out and "complete" in out
+
+
+def test_the_retry_count_is_shown_only_once_there_has_been_a_retry(tmp_path):
+    board = Board(tmp_path)
+    board.event({"kind": "stage", "stage": "mine", "state": "ran", "attempt": 1})
+    assert "×" not in _show(board.stages())
+    board.event({"kind": "stage", "stage": "compile_tools", "state": "rolled_back", "attempt": 2})
+    assert "×2" in _show(board.stages())
+
+
+def test_spend_is_read_from_the_file_the_build_writes_not_from_the_screen(tmp_path):
+    (tmp_path / "budget.json").write_text(json.dumps(
+        {"total": {"usd": 0.4213, "calls": 37, "input": 812000, "output": 41000, "unpriced_calls": 2}}))
+    board = Board(tmp_path, ceiling=5.0)
+    out = board.money().plain
+    assert "$0.4213" in out and "of $5.00 ceiling" in out
+    assert "37 calls" in out and "812,000 in / 41,000 out" in out
+    assert "2 unpriced" in out
+
+
+def test_spend_before_a_single_call_is_zero_and_says_no_ceiling(tmp_path):
+    out = Board(tmp_path).money().plain
+    assert "$0.0000" in out and "ceiling" not in out
+
+
+def test_provenance_shows_the_content_hash_each_stage_wrote(tmp_path):
+    (tmp_path / "cache").mkdir()
+    (tmp_path / "cache" / "mine.abc123def456.json").write_text("{}")
+    board = Board(tmp_path)
+    board.event({"kind": "stage", "stage": "mine", "state": "ran", "attempt": 1})
+    board.event({"kind": "stage", "stage": "cluster", "state": "ran", "attempt": 1})
+    out = _show(board.provenance())
+    assert "abc123def456" in out
+    # cluster wrote nothing reusable, so it has no provenance row to claim one.
+    assert "cluster" not in out
+
+
+# --- the commands -----------------------------------------------------------
+
+class _Runner:
+    def __init__(self):
+        self.calls = []
+
+    def __call__(self, **kwargs):
+        self.calls.append(kwargs)
+        on_event = kwargs.get("on_event")
+        if on_event:
+            on_event({"kind": "stage", "stage": "mine", "state": "start", "attempt": 1})
+            on_event({"kind": "stage", "stage": "mine", "state": "ran", "attempt": 1})
+            on_event({"kind": "pipeline", "state": "complete"})
+        return {}
+
+
+def _screen(tmp_path, **kwargs):
+    return Screen(tmp_path, console=_console(), runner=_Runner(), **kwargs)
+
+
+def test_quit_closes_the_screen_and_everything_else_keeps_it_open(tmp_path):
+    screen = _screen(tmp_path)
+    assert screen.command("/quit") is False
+    assert screen.command("/help") is True
+    assert screen.command("") is True
+
+
+def test_an_unknown_command_says_so_rather_than_doing_something(tmp_path):
+    screen = _screen(tmp_path)
+    screen.command("/deploy")
+    assert "no command deploy" in _text(screen.console)
+    assert screen.runner.calls == []
+
+
+def test_build_passes_the_flags_it_was_typed_and_no_model_by_default(tmp_path):
+    screen = _screen(tmp_path)
+    screen.command("/build --iterate --file traces.json")
+    call = screen.runner.calls[0]
+    assert call["iterate"] is True
+    assert [p.name for p in call["files"]] == ["traces.json"]
+    assert call["model"] is None
+
+
+def test_a_build_without_iterate_does_not_claim_to_be_resuming(tmp_path):
+    screen = _screen(tmp_path)
+    screen.command("/build")
+    assert screen.runner.calls[0]["iterate"] is False
+
+
+def test_the_ceiling_the_screen_was_opened_with_reaches_the_build(tmp_path):
+    screen = _screen(tmp_path, ceiling_usd=2.5)
+    screen.command("/build")
+    assert screen.runner.calls[0]["ceiling_usd"] == 2.5
+
+
+def test_run_needs_a_task_id_and_says_so_instead_of_guessing_one(tmp_path):
+    screen = _screen(tmp_path)
+    screen.command("/run")
+    assert "run needs a task id" in _text(screen.console)
+    assert screen.runner.calls == []
+
+
+def test_run_passes_the_task_and_the_count(tmp_path):
+    screen = _screen(tmp_path)
+    screen.command("/run task-7 --count 3")
+    call = screen.runner.calls[0]
+    assert call["task_id"] == "task-7" and call["count"] == 3
+
+
+def test_a_build_that_raises_is_shown_as_an_outcome_not_thrown_at_the_terminal(tmp_path):
+    def angry(**kwargs):
+        raise RuntimeError("no key")
+    screen = Screen(tmp_path, console=_console(), runner=angry)
+    screen.command("/build")
+    assert "RuntimeError: no key" in _text(screen.console)
+
+
+def test_a_screen_with_a_model_named_refuses_to_call_it_with_live_calls_off(tmp_path, monkeypatch):
+    monkeypatch.delenv("HARNESS_ALLOW_MODEL_REQUESTS", raising=False)
+    monkeypatch.chdir(tmp_path)  # so load_dotenv finds no .env that could turn them on
+    screen = _screen(tmp_path, model="openai/gpt-5.6-luna")
+    screen.command("/build")
+    assert "live model requests are off" in _text(screen.console)
+    assert screen.runner.calls == []
+
+
+def test_status_reads_the_last_build_off_disk_and_runs_no_stage(tmp_path):
+    (tmp_path / "pipeline").mkdir()
+    (tmp_path / "pipeline" / "state.json").write_text(json.dumps({
+        "status": "failed", "statuses": {"mine": "ran", "compile_tools": "failed"},
+        "attempts": {"mine": 1, "compile_tools": 3},
+        "gates": [{"stage": "compile_tools", "passed": False, "failures": ["bodies did not replay"]}]}))
+    screen = _screen(tmp_path)
+    screen.command("/status")
+    out = _text(screen.console)
+    assert "mine" in out and "compile_tools" in out and "failed" in out
+    assert "bodies did not replay" in out
+    assert screen.runner.calls == []
+
+
+def test_status_before_any_build_says_there_is_none(tmp_path):
+    screen = _screen(tmp_path)
+    screen.command("/status")
+    assert "no build yet" in _text(screen.console)
+
+
+def test_keys_says_which_are_set_and_never_what_they_are():
+    out = _keys({"OPENAI_API_KEY": "sk-secret-value", "HARNESS_ALLOW_MODEL_REQUESTS": "1"}).plain
+    assert "sk-secret-value" not in out
+    assert "OPENAI_API_KEY" in out and "set" in out
+    assert "ANTHROPIC_API_KEY" in out and "missing" in out
+
+
+# --- a flag typed without its value is a usage message, not an IndexError (Greptile, PR 1) ---
+
+def test_a_flag_with_no_value_is_told_in_words_and_starts_nothing(tmp_path):
+    screen = _screen(tmp_path)
+    screen.command("/build --file")
+    assert "--file needs a value after it" in _text(screen.console)
+    assert screen.runner.calls == []
+
+
+def test_a_flag_followed_by_another_flag_has_no_value(tmp_path):
+    screen = _screen(tmp_path)
+    screen.command("/build --file --iterate")
+    assert "--file needs a value after it" in _text(screen.console)
+    assert screen.runner.calls == []
+
+
+def test_a_count_that_is_not_a_number_is_told_in_words(tmp_path):
+    screen = _screen(tmp_path)
+    screen.command("/run task-7 --count lots")
+    assert "--count takes a whole number, not 'lots'" in _text(screen.console)
+    assert screen.runner.calls == []
+
+
+def test_a_count_below_one_is_refused(tmp_path):
+    screen = _screen(tmp_path)
+    screen.command("/run task-7 --count 0")
+    assert "--count takes a number of runs" in _text(screen.console)
+    assert screen.runner.calls == []
+
+
+def test_run_with_only_a_flag_still_asks_for_the_task(tmp_path):
+    screen = _screen(tmp_path)
+    screen.command("/run --count 3")
+    assert "run needs a task id" in _text(screen.console)
+    assert screen.runner.calls == []

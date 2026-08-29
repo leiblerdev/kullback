@@ -907,3 +907,51 @@ def test_the_memo_survives_a_second_memomodel_over_the_same_workdir(tmp_path):
     reply = memo_two.query([{"role": "user", "content": "hi"}])
     assert reply.content == "a"
     assert inner_two.calls == []
+
+
+# --- the request shape the gpt-5 family insists on (found on the first live build) ---
+
+def _body(model_id: str, tools=None, **config):
+    """The body one call would send, without sending it."""
+    model = pv.OpenAIModel(model_id=model_id, api_key="k", env={})
+    return model.build_body([{"role": "user", "content": "hi"}], tools, pv.ModelConfig(**config))
+
+
+def test_the_gpt5_family_is_sent_max_completion_tokens_not_max_tokens():
+    body = _body("openai/gpt-5.6-luna", max_tokens=2000)
+    assert body["max_completion_tokens"] == 2000
+    assert "max_tokens" not in body
+
+
+def test_an_older_openai_model_keeps_the_field_it_has_always_taken():
+    body = _body("openai/gpt-4.1-mini", max_tokens=2000)
+    assert body["max_tokens"] == 2000
+    assert "max_completion_tokens" not in body
+
+
+def test_the_o_series_is_read_as_the_same_family():
+    for model_id in ("openai/o1", "openai/o3-mini", "openai/o4-mini"):
+        assert "max_completion_tokens" in _body(model_id, max_tokens=8)
+
+
+def test_the_gpt5_family_is_not_sent_a_temperature_it_will_refuse():
+    assert "temperature" not in _body("openai/gpt-5.6-luna", temperature=0)
+    assert _body("openai/gpt-4.1-mini", temperature=0)["temperature"] == 0
+
+
+def test_a_tool_call_to_the_gpt5_family_turns_reasoning_off_by_name():
+    tools = [{"name": "get_order", "input_schema": {"type": "object"}}]
+    assert _body("openai/gpt-5.6-luna", tools=tools)["reasoning_effort"] == "none"
+    # Not sending the field is not the same as sending 'none': the endpoint applies its own
+    # default, and that default is what returns HTTP 400 alongside tools.
+    assert "reasoning_effort" not in _body("openai/gpt-5.6-luna")
+
+
+def test_an_effort_the_caller_asked_for_survives_a_tool_call():
+    tools = [{"name": "get_order", "input_schema": {"type": "object"}}]
+    assert _body("openai/gpt-5.6-luna", tools=tools, reasoning_effort="high")["reasoning_effort"] == "high"
+
+
+def test_an_older_model_is_left_alone_when_it_is_given_tools():
+    tools = [{"name": "get_order", "input_schema": {"type": "object"}}]
+    assert "reasoning_effort" not in _body("openai/gpt-4.1-mini", tools=tools)

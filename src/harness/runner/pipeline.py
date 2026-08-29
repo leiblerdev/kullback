@@ -317,8 +317,10 @@ class Pipeline:
     """Runs the stages in topological order, caches what it can, and stops on a gate or the ceiling."""
 
     def __init__(self, stages: Sequence[Stage], workdir: str | Path,
-                 anchor: Optional[Anchor] = None, ceiling: Any = None):
+                 anchor: Optional[Anchor] = None, ceiling: Any = None,
+                 on_event: Optional[Callable[[dict], None]] = None):
         self.stages, self.workdir, self.ceiling = list(stages), Path(workdir), ceiling
+        self.on_event = on_event
         self.anchor = anchor if anchor is not None else load_anchor(self.workdir)
         self.producers = self._producers()
         self.order = self._toposort()
@@ -326,6 +328,21 @@ class Pipeline:
         self.attempts = {s.name: 0 for s in self.stages}
         self.rollbacks: dict[str, list[str]] = {}
         self.result: Optional[PipelineResult] = None
+
+    def _emit(self, kind: str, **fields: Any) -> None:
+        """Tell a watcher where the build is, without letting the watcher stop the build.
+
+        state.json is only written once the pipeline is done, so nothing outside this object can
+        see a build while it is running; a live view needs to be told. The callback is a screen,
+        not a stage: a screen that raises has no business failing a build that was going fine, so
+        whatever it throws is dropped here.
+        """
+        if self.on_event is None:
+            return
+        try:
+            self.on_event({"kind": kind, **fields})
+        except Exception:
+            pass
 
     def _producers(self) -> dict[str, str]:
         producers: dict[str, str] = {}
@@ -436,9 +453,11 @@ class Pipeline:
                     result.status = "stopped"
                     result.stopped = self._stop_report(stage.name, "before stage", items_left, None)
                     self.statuses[stage.name] = "stopped"
+                    self._emit("stage", stage=stage.name, state="stopped", attempt=0)
                     break
                 outcome = self._run_stage(stage, store, items_left, result)
                 if outcome != "ok":
+                    self._emit("stage", stage=stage.name, state=outcome, attempt=self.attempts[stage.name])
                     result.status = outcome
                     break
         except Exception as exc:
@@ -449,6 +468,7 @@ class Pipeline:
             if current is not None:
                 self.statuses[current] = "crashed"
             result.log.append(f"{current}: {type(exc).__name__}: {exc}")
+            self._emit("stage", stage=current or "", state="crashed", attempt=0)
             self._finish(result)
             raise
         self._finish(result)
@@ -458,6 +478,7 @@ class Pipeline:
         result.statuses, result.attempts = dict(self.statuses), dict(self.attempts)
         self.result = result
         self._write_state(result)
+        self._emit("pipeline", state=result.status, failed_stage=result.failed_stage)
 
     def _run_stage(self, stage: Stage, store: dict, items_left: int, result: PipelineResult) -> str:
         """One node, up to max_attempts times; a failed gate is the rollback edge back into this stage."""
@@ -468,6 +489,7 @@ class Pipeline:
                                 "before the first Builder stage (D81)")
         for attempt in range(1, stage.max_attempts + 1):
             self.attempts[stage.name] = attempt
+            self._emit("stage", stage=stage.name, state="start", attempt=attempt)
             inputs = {name: store[name] for name in stage.inputs}
             cache_path = self._cache_path(stage, inputs)
             cached = self._read_cache(cache_path) if attempt == 1 else None
@@ -486,6 +508,8 @@ class Pipeline:
             if stage.gate is not None:
                 gate_result = stage.gate(ctx, outputs)
                 result.gates.append(gate_result)
+                self._emit("gate", stage=stage.name, passed=bool(gate_result.passed),
+                           failures=list(gate_result.failures), attempt=attempt)
                 if not gate_result.passed:
                     failure = "; ".join(gate_result.failures) or "gate failed"
                     self._log_rollback(stage, attempt, gate_result, result)
@@ -498,6 +522,7 @@ class Pipeline:
                 self._write_cache(cache_path, stage, outputs)
             store.update(outputs)
             self.statuses[stage.name] = status
+            self._emit("stage", stage=stage.name, state=status, attempt=attempt)
             return "ok"
         self.statuses[stage.name] = "failed"
         result.failed_stage = stage.name

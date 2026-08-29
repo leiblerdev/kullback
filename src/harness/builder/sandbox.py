@@ -65,14 +65,37 @@ def columns_of(schema: EntitySchema, table: str, kind: Optional[str] = None) -> 
     return sorted(c.name for c in schema.columns if c.table == table and (kind is None or c.class_ == kind))
 
 
+def id_pattern_for(schema: EntitySchema, table: str, name: Optional[str] = None) -> Optional[str]:
+    """The shape a table's ids take, under either key the schema may hold it by.
+
+    `mine_schema` records a pattern per column, keyed `table.column`; a schema written by hand
+    keys it by the table alone. Reading only the second key is what made this check dead code on
+    every mined schema: the lookup missed, the pattern came back None, and every candidate row
+    passed the guard whatever its id looked like.
+    """
+    patterns = schema.id_patterns or {}
+    if name and f"{table}.{name}" in patterns:
+        return patterns[f"{table}.{name}"]
+    return patterns.get(table)
+
+
 def id_field(schema: EntitySchema, table: str) -> Optional[str]:
-    """The column holding a row's id, by the customer's own naming."""
+    """The column holding a row's id, by the customer's own naming.
+
+    The three name candidates first, because they are the customer's own convention where they
+    apply. Then the columns the miner recorded a pattern for, which is where an id the name rule
+    cannot see arrives: airline's `flights` are addressed by `flight_number`, and reading only the
+    `_id` names left the table proposed and empty.
+    """
     names = set(columns_of(schema, table))
     singular = table[:-1] if table.endswith("s") and not table.endswith("ss") else table
     for candidate in (f"{singular}_id", "id", f"{table}_id"):
         if candidate in names:
             return candidate
-    return next((n for n in sorted(names) if n.endswith("_id")), None)
+    mined = [key.split(".", 1)[1] for key in sorted(schema.id_patterns or {})
+             if key.startswith(f"{table}.") and key.split(".", 1)[1] in names]
+    preferred = [n for n in mined if n.startswith(singular)]
+    return next(iter(preferred or mined), None) or next((n for n in sorted(names) if n.endswith("_id")), None)
 
 
 def match_table(schema: EntitySchema, value: Any) -> Optional[tuple[str, str]]:
@@ -84,7 +107,7 @@ def match_table(schema: EntitySchema, value: Any) -> Optional[tuple[str, str]]:
         name = id_field(schema, table)
         if not name or not isinstance(value.get(name), str):
             continue
-        pattern = schema.id_patterns.get(table)
+        pattern = id_pattern_for(schema, table, name)
         if pattern and not re.match(pattern, value[name]):
             continue
         score = len(set(columns_of(schema, table)) & set(value))
@@ -177,7 +200,12 @@ class Sandbox:
         self.source, self.db, self.timeout = source, db, timeout
         self.class_name, self.db_class = class_name, db_class
         self.call_states = dict(call_states or {})  # call id -> the Starting state that call ran on
-        self.dir = Path(workdir) / "sandbox"
+        # Absolute, because the subprocess is started with cwd inside this directory: a relative
+        # workdir would be resolved against it a second time and every path would double. Found on
+        # the first live build, where `--workdir .work-retail` made all sixteen tools fail the
+        # executes gate with a run_tool.py that was not there. Every test passes tmp_path, which is
+        # already absolute, so nothing caught it.
+        self.dir = (Path(workdir) / "sandbox").resolve()
         self.dir.mkdir(parents=True, exist_ok=True)
         self.cache: dict[str, dict] = {}
         self._state_hashes: dict[int, str] = {}

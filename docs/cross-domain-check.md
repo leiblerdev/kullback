@@ -126,3 +126,102 @@ Held without change:
 - `gate_tools` and `gate_ingest` are domain-agnostic and correctly went red on telecom and green on retail and airline. The gates work; the miners feeding them are what is tuned.
 
 What this means for the next build, in order: read `requestor` and mine only the agent's calls (user-side tools become part of the user simulator, not the Environment); replace the prefix lists with the observed-effect classifier as the primary signal and a small learned verb list as the fallback; widen `_is_id()` to any column that is unique per row and referenced by other rows, not only `_id` suffixes; make `_table_of()` prefer the id whose singular matches the tool's object noun and fall back to the id that is unique within the result; accept write results that are confirmation strings or partial dicts by reading the End state from the next read of the same row instead of from the write's return value; and support per-task initialization actions as a Starting-state overlay. Each of these has a test to write against airline and telecom first, then retail must still pass unchanged.
+
+## Rerun from a committed script (2026-08-29)
+
+The check above was run from scratch scripts kept outside the repository, and two bugs in them had
+to be found before the numbers were honest. That is not a good place for the measurement that
+decides whether a fix worked, so the check is now `scripts/xdomain_check.py`: one command, no model
+call, ingest through Starting state, compared against the domain's own `tools.py` and seed database.
+
+    uv run python scripts/xdomain_check.py retail airline telecom
+
+Rebuilding it surfaced two more conventions the scratch scripts had wrong, both about absence and
+neither a defect in the harness:
+
+- **Null and absent are the same field.** Our rows are built from tool results, which write a
+  declared-optional field as `null`; the seed file leaves it out. Counting that as a mismatch cost
+  retail 161 of its 252 rows. With it settled, retail is 252/252 again.
+- **The row key is not a row field.** A dict-shaped table is keyed by row id and a list-shaped one
+  is not, and the old script wrote the key into the row before comparing, so every telecom row
+  differed from the real one by an `id` field our harness never claimed.
+
+Two numbers in the table above do not survive the corrected comparison, and both were measurement
+artifacts rather than harness defects:
+
+- Airline `users.yara_garcia_1905` is an exact match, not a mismatch. Our row carries
+  `gift_card_6941833` at 152.0, which is the seed value; the 338.0 above came from the scratch
+  script, not from the build. Airline is 148/148 exact on the rows it touched, plus 3 new bookings
+  correctly absent from the seed.
+- Telecom is 5 of 6 exact once the datetime separator is settled, not 4 of 6. The one real mismatch
+  is `lines.L1002.roaming_enabled` (we build `false`, the seed holds `true`), which is the
+  `initialization_actions` gap and nothing else.
+
+Baseline at this commit, with the requestor filter in and nothing else fixed:
+
+| | Retail | Airline | Telecom |
+|---|---|---|---|
+| Tool calls, of which by the assistant | 3,591 / 3,591 | 1,678 / 1,678 | 8,742 / 3,121 |
+| Tools mined against real | 15 / 16 | 14 / 14 | 21 / 13 |
+| Argument names exact | 15/15 | 14/14 | 9/9 |
+| Kind exact | 15/15 | 12/14 | 8/9 |
+| Cluster pair F1 (ceiling) | 0.717 (0.798) | 0.788 (0.660) | 0.177 (0.658) |
+| Tables recovered | 3/3 | 2/3 | 4/5 |
+| Rows exact / mismatched | 252 / 0 | 148 / 0 | 5 / 1 |
+
+Two movements against the first run are the requestor filter's, and they go in opposite directions.
+Telecom's clustering ceiling rose from 0.561 to 0.658, because the write signature no longer carries
+the simulated user's own phone actions. Its pair F1 fell from 0.207 to 0.177, because a Run whose
+only writes were the user's now has an empty write signature, and every such Run lands in one
+category: precision 0.106. Removing the wrong tools from the signature exposed how many telecom Runs
+have no agent write at all, which the contamination had been hiding.
+
+Telecom still mines 21 tools against 13 real, and the 8 extra are not a filter failure. The
+assistant in this export really does call the user's phone tools: `check_network_status` 53 times,
+`run_speed_test` 5, `toggle_data` and `reboot_device` twice each, out of 266, 480, 258 and 615 calls
+the user makes to the same tools. The requestor filter is doing exactly what it should; what is left
+is a domain where the two toolkits overlap in the agent's own hands. `gate_tools` flags all but one
+of them as thin, which is the right outcome for a tool seen twice.
+
+Retail kind is now 15/15 rather than 13/15: D98's generic-name rule landed after the first run and
+picks out `calculate` and `transfer_to_human_agents`, the two that used to fall to a read default.
+
+## After the fixes (2026-08-29)
+
+Four of the seven follow-ups are in, recorded as D101 to D104. Every number below is one command
+(`uv run python scripts/xdomain_check.py retail airline telecom`) with nothing tuned per domain.
+
+| | Retail | Airline | Telecom |
+|---|---|---|---|
+| Kind exact, before | 15/15 | 12/14 | 8/9 |
+| Kind exact, after | **15/15** | **14/14** | **9/9** |
+| Tables recovered, before | 3/3 | 2/3 | 4/5 |
+| Tables recovered, after | **3/3** | **3/3** | **5/5** |
+| Rows exact, after | 252 | 148 | 8 |
+| Fields exact (of fields both rows carry) | 1559/1559 | 2393/2393 | 83/84 |
+| Cluster pair F1, before | 0.717 | 0.788 | 0.177 |
+| Cluster pair F1, after | 0.717 | 0.756 | 0.178 |
+
+Retail did not move on anything, which is the condition each of these fixes had to meet.
+
+Three things the corrected comparison says that the first run could not:
+
+- **Airline's `flights` is recovered and its rows are right where the tool shows them.** The 121 rows
+  the strict row count calls mismatches differ by nesting, not by value: tau2 keeps per-date state
+  under `dates[date]` and `search_direct_flight` hands it back flat, so our row carries `date`,
+  `prices`, `available_seats` and `status` at the top level. Every field both rows carry is exact.
+- **13 more airline flights are tagged synthetic rows** (D40), filled from the observed rows for ids
+  the traces named but never showed. They are no longer scored against the real database, because
+  they were never a claim about it.
+- **Telecom's one remaining row mismatch is `lines.L1002.roaming_enabled`**, which is the
+  `initialization_actions` gap and nothing else.
+
+Airline's cluster F1 falling from 0.788 to 0.756 is the price of D101 and it is in the decision log:
+two real writes now enter the Category signature and split Runs that a missing write had held
+together. The signature is what the Verifier rests on, so a more truthful signature is worth more
+than the third of a point.
+
+Still open from the list above: write results that are confirmation strings need the End state read
+from the next read of the same row; per-task initialization actions need a Starting-state overlay
+that carries values rather than only a version hash; and `norm()` in the comparison script settles
+the datetime separator, which is a measurement convention rather than a harness fix.

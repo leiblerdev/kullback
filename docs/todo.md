@@ -49,7 +49,7 @@ I chose which of the missing components go into the first build (clusters, inten
 - **Scenario generation and seed augmentation** (D54 stages 2 and 3). Already gated in "Post-train on generated Environments" above; listed here so the module gap is explicit.
 - **Dataset export for the Student**. The tree of Runs with Verdicts as a post-training set (harness glossary, second half).
 - **Deploy and route**. The routing half of the glossary Harness.
-- **Production monitoring**. Comparing the routed model's live traffic against the Environment's predictions; the "monitoring" in the product name; nothing designed yet.
+- **Production monitoring**. Comparing the routed model's live traffic against the Environment's predictions; the "monitoring" in the product name; nothing designed yet. Opened up on 2026-08-29, see "Execution and production monitoring" at the end of this file.
 
 ## Mining (2026-08-27)
 
@@ -86,13 +86,17 @@ This comes from the first offline slice (2026-08-28) and the build workflow's re
 
 Airline and telecom were run through the offline slice with nothing retuned. The numbers are in `docs/cross-domain-check.md`. Five places turned out to be shaped by retail, each with its fix. Write the test against airline and telecom first, then retail must still pass unchanged.
 
-- Read `ToolCall.requestor` in mine, cluster and compile_env. Only the agent's calls define the Environment; user-side tools (telecom's `user_tools.py`, 29 names) belong to the user simulator. This is the largest single cause of telecom's numbers: 38 mined tools against 13 real, `grant_app_permission` in a Category write signature, cluster F1 0.207, 240 of 356 Gate A calls with no tool to hit.
-- Retire `WRITE_PREFIXES` and `READ_PREFIXES` as the primary kind signal. The observed-effect classifier (D68) recovered 5 of 6 telecom writes and 2 of airline's that the prefix list missed; make it primary and keep a small verb list only as the fallback. Airline's `book_reservation` and `send_certificate` and telecom's `send_payment_request` are real writes currently mined as read.
-- Widen `_is_id()` beyond `_id` suffixes: any column unique per row and referenced by other rows is an id. Airline's `flight_number` defeats the current rule and the `flights` table is never recovered despite 338 calls, which is every Gate A loss on airline.
-- Fix `_table_of()`'s tie-break when a row carries two or more id keys: prefer the id whose singular matches the tool's object noun, fall back to the id unique within the result. Telecom files every `Bill` row under `customers` because `customer` is a token of `get_bills_for_customer` and `bill` is not.
+Four are done (2026-08-29, D101 to D104), and the check itself is now `scripts/xdomain_check.py` rather than scratch scripts outside the repository. Kind is exact on all three domains and every table is recovered on all three; retail did not move. The three still open are marked below.
+
+- ~~Read `ToolCall.requestor` in mine, cluster and compile_env.~~ Done (2026-08-28). Telecom's mined tools fell from 38 to 21 and its clustering ceiling rose from 0.561 to 0.658. The 8 that remain are not a filter failure: the assistant in that export really does call the user's phone tools, 53 times for `check_network_status`. Old note: Only the agent's calls define the Environment; user-side tools (telecom's `user_tools.py`, 29 names) belong to the user simulator. This is the largest single cause of telecom's numbers: 38 mined tools against 13 real, `grant_app_permission` in a Category write signature, cluster F1 0.207, 240 of 356 Gate A calls with no tool to hit.
+- ~~Retire `WRITE_PREFIXES` and `READ_PREFIXES` as the primary kind signal.~~ Done, D101. Three observed signals decide and the name rule is the fallback: a changed field (D68), a result that is mostly what the call sent, and a message answer about a row the tool was handed with no read ever showing it unmoved. Kind is now exact on all three domains. Old note: The observed-effect classifier (D68) recovered 5 of 6 telecom writes and 2 of airline's that the prefix list missed; make it primary and keep a small verb list only as the fallback. Airline's `book_reservation` and `send_certificate` and telecom's `send_payment_request` are real writes currently mined as read.
+- ~~Widen `_is_id()` beyond `_id` suffixes.~~ Done, D102: a column the calls address whose values are distinct per row. Airline recovers `flights`. Old note: any column unique per row and referenced by other rows is an id. Airline's `flight_number` defeats the current rule and the `flights` table is never recovered despite 338 calls, which is every Gate A loss on airline.
+- ~~Fix `_table_of()`'s tie-break.~~ Done, D103: the noun before the first preposition, then the id distinct across the rows it came back with. Telecom recovers `bills`. Old note: prefer the id whose singular matches the tool's object noun, fall back to the id unique within the result. Telecom files every `Bill` row under `customers` because `customer` is a token of `get_bills_for_customer` and `bill` is not.
 - Accept write results that are confirmation strings or partial dicts. Read the End state from the next read of the same row instead of from the write's return value. Telecom's writes return "Roaming enabled successfully" or an id-less summary, so the End-state check finds nothing there on either database.
 - Support per-task initialization actions as a Starting-state overlay. All 2,285 telecom tasks apply real tool calls to the shared database before the conversation starts, invisible to the trajectory; the one shared trace-reconstructible world is the wrong model for that domain.
-- `norm()` in the comparison scripts: treat `"2025-01-15 10:30:00"` and `"2025-01-15T10:30:00"` as the same datetime.
+- ~~`norm()` in the comparison scripts.~~ Done in `scripts/xdomain_check.py`, along with two conventions the old scratch scripts had wrong: null and absent are the same field, and a table's row key is not one of the row's fields.
+
+- **Still open**: write results that are confirmation strings (read the End state from the next read of the same row); per-task initialization actions as a Starting-state overlay that carries values, not only a version hash (`OverlayRow` holds a `version_hash` today, so an overlay can detect a version but not reconstruct one).
 
 ## Prompt caching (2026-08-28)
 
@@ -105,3 +109,99 @@ My words: "you also need to explore how to cache prompts as well please or else 
 - Per-stage hit rate and dollars saved in the report.
 - Measure on the first live build before and after; the Builder's read share is the number to beat.
 
+
+## Execution and production monitoring (2026-08-29)
+
+Founder's words: "we need execution monitoring and production monitoring as well haha, we need to mine those from the traces right ?", with https://trymaitai.com/ as the reference. Maitai organizes production traffic by Application and Intent, runs what it calls Sentinels (automated quality checks) against live traffic, and feeds what those catch back into fine-tuning. It takes traffic through a base-URL redirect on an OpenAI-compatible SDK or as request and response pairs.
+
+The shape is close enough to ours that the interesting question is not what to build but who writes the checks. Theirs are configured. Ours should be mined from the customer's own traces, which is the claim the Verifier already makes offline; this is that claim pointed at live traffic instead of at a replay. Answering the founder's question directly: yes, nearly all of it is already mined, and most of the work is wiring what the Builder produces to a live stream rather than inventing new checks.
+
+Both items extend the "Production monitoring" line in the D69 deferred components above. Neither may become a second grading path: a production fault is a flag for review, never a Verdict (D49 wording).
+
+### Execution monitoring (inside one Run, while it happens)
+
+What the Builder already produces that a live check can read, with nothing new to mine:
+
+- `ToolSig.args_schema` (D72): an argument outside the observed schema, or a required argument missing. Already the `mine_gate` check, run against a live call instead of a recorded one.
+- Error classes and per-tool error rates (D67): an error class this tool has never returned, or a rate outside the band the corpus shows.
+- Hard constraints compiled from the policy (D43): a policy line violated mid-Run, and the sequence constraints for orderings the traces never show.
+- `UserRules` disclosure rules: the agent asking for a fact the user already volunteered, which is the D44 fact-consistency check pointed at a live turn.
+- Observed step counts per Task: a Run past the band its Task's References sit in, which is the cheap loop and stall detector.
+- The Category write signature (D83): a Run writing through tools no confirmed Reference for that Task ever wrote through.
+
+Gated on: a live traffic source, which is the SDK wrapper or log drain in `tech/docs/sdk-wrapper.md` and does not exist yet. Not gated on Gate A, because none of these compare against a rebuilt Environment; they compare against what the traces showed.
+
+### Production monitoring (across Runs, over time)
+
+- **Intent drift**. Live Runs clustered with the same D100 similarity against the build's Categories and Tasks. A Run that joins nothing is an intent the Environment was never built for, and it is the signal that says when to rebuild.
+- **Tool contract drift**. Result schema, error classes and encodings compared against the mined `ToolSig`. The customer changed their API and the Environment is now stale; today nothing would notice until a rebuild.
+- **Routing quality**. The routed model's live outcome against the Environment's prediction for that Task, which is the original line above and the only one that needs Gate A first.
+- **Live coverage**. What share of live traffic falls in Tasks that have a confirmed Reference and a passing Verifier, extending the per-Task policy coverage line ("your traces cover 6 of 40 policy items") from the build corpus to live traffic.
+- **Feed the loop**. Live Runs that trip a check are the next build's traces, and the ones that pass are candidates for the synthetic data set. This closes the loop the training plan describes and is why the mining has to be shared rather than reimplemented per surface.
+
+Gated on the same traffic source, plus two questions that are already open and unanswered: anonymization and boundary control (what may leave the customer's boundary, ADR-0002 and trace intake question 13), and retention. A live stream makes both urgent in a way a one-off trace upload does not.
+
+Not decided, and worth deciding before code: whether a check runs inline (able to block or correct a Run, which is what Maitai's fine-tuning loop implies) or strictly after the fact. Inline means we are in the customer's request path, which is a different product and a different trust conversation from reading their traces.
+
+## After the first live build (2026-08-29)
+
+The build ran end to end; docs/live-build.md has what broke and the fidelity table. Left open from it:
+
+- **Price `openai/gpt-5.6-*`.** No row in `budget.PRICES`, so `usd` stays 0.00 and `--ceiling-usd`
+  raises `UnpricedModel`. The number has to come from a person.
+- **Rebuild and remeasure.** Every fix below and the D106 mining fixes (observed error prefix,
+  nested homes, import hint) landed after the build that measured 64.3 percent, so that number is
+  the floor, not the current state. `harness build --workdir $PWD/.work-retail
+  --model openai/gpt-5.6-luna` then `scripts/env_fidelity.py`; the by-cause table in
+  docs/live-build.md says which of the six causes each fix was meant to close.
+- **A UI over the Builder and Runner.** Asked 2026-08-29: "we need a good ui for the same as
+  well so that it can talk to the underlying implementation." The TUI shows one build; the ask is
+  a UI that drives builds, runs and reports through the same entry points the CLI uses, with no
+  logic of its own (design section 3).
+- **Telecom shows one customer.** 456 traces, one customer row, one device, one plan. Growing it
+  is copying (docs/synthetic-rows.md, last section). Either the corpus needs traces over more
+  customers or telecom's Starting state comes from the customer's snapshot (ADR-0006), not traces.
+- **Tool parity for synthetic rows.** Replay recorded calls with a synthetic id substituted and
+  require the same result schema and the same success or error branch (docs/synthetic-rows.md,
+  practice 6). Belongs in `scripts/env_fidelity.py`.
+- **Free text in synthetic rows.** Product names repeat because nothing invents them; either an
+  LM-written list per free-text column (tau-bench's own method) or a customer-supplied list. A
+  zip drawn with its city is the same kind of fix (a joint draw of the address record).
+- **Airline and telecom live builds.** Retail is one domain. The confinement prompt, the scalar
+  result rule and the error prefix rule were each written from one corpus.
+- **`compile_policy` cost.** 123 of 174 calls in the build were policy sentences, one call each.
+  It was the slowest stage by far. Batching sentences per call is an obvious cut; whether it
+  changes the constraints it produces is the question to measure first.
+
+## First live build (2026-08-29)
+
+Nothing in the Builder has ever run against a real model. Every stage above `state` is written and
+unit tested against `TestModel`, and four things are untested for that reason alone, all of them in
+section 11 steps 5 to 8: whether the model writes tool bodies that compile and pass the sandbox
+gates, whether those bodies replay the corpus per tool at the fidelity the gate demands, whether
+`compile_policy` and `judge_lessons` produce anything a Verifier can use, and whether the whole
+graph gets through on a budget worth paying. Mutation testing cannot answer any of them, because
+the thing under test is what the model writes, not what we wrote.
+
+To run one:
+
+1. `cp .env.example .env` and fill in `OPENAI_API_KEY`. `.env` is gitignored.
+2. `uv run harness ingest <export>.json --workdir .work` (or hand the file to `/build --file`).
+3. `uv run harness tui --workdir .work --model openai/gpt-5.6-luna --ceiling-usd 25`
+4. `/keys` to confirm the shell sees the key, then `/build`.
+
+The ceiling is the thing to set first. `budget.Ceiling` stops the graph before a stage rather than
+during it, so a low ceiling on the first run costs one stage's worth of tokens to find out that a
+prompt is wrong. Raise it once `compile_tools` has got through once.
+
+Remaining, not done:
+
+- Mutation survivors above 200 per module: `report` 681, `provider` 498, `verifier` 476, `memory`
+  343, `judge` 263. `gate_support._passed` is closed. The next holes by value are
+  `sandbox._classify_exception` (39), `verdict.verdict` (37), `validate._run_predicate` (30),
+  `validate.candidate_runs_gate` (28), `verifier._hard_holds` (20), `boundary.runner_version` (17).
+- The mutmut results for `mine.py`, `sandbox.py` and `compile_env.py` are stale after D101 to D104
+  and need a re-run before their counts mean anything.
+- Cross-domain, still open: write results that are only a confirmation string (read the End state
+  from the next read of the same row); per-task initialization actions as a Starting-state overlay
+  that carries values, since `OverlayRow` holds only a `version_hash` today.

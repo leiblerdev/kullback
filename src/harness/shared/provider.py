@@ -786,8 +786,8 @@ class OpenAIModel(HttpModel):
         if tools:
             body["tools"] = [_openai_tool(t) for t in tools]
         if config.max_tokens is not None:
-            body["max_tokens"] = config.max_tokens
-        if config.temperature is not None:
+            body[self.token_cap_field()] = config.max_tokens
+        if config.temperature is not None and not self._reasoning_family():
             body["temperature"] = config.temperature
         if config.seed is not None:
             body["seed"] = config.seed
@@ -796,7 +796,29 @@ class OpenAIModel(HttpModel):
         if config.prompt_cache_key:
             body["prompt_cache_key"] = config.prompt_cache_key
         body.update(self.reasoning_fields(config))
+        if tools and self._reasoning_family() and "reasoning_effort" not in body:
+            # Found live: gpt-5.6-luna answers a tool call with HTTP 400 saying function tools and
+            # reasoning_effort cannot be combined on /v1/chat/completions unless the effort is
+            # 'none'. The endpoint applies a default effort we never sent, so not sending one is
+            # not enough; it has to be turned off by name. A caller that did ask for an effort
+            # keeps it and gets the 400, because silently downgrading what they asked for would be
+            # a worse answer than the error.
+            body["reasoning_effort"] = "none"
         return body
+
+    def _reasoning_family(self) -> bool:
+        """The OpenAI models that took a different request shape from gpt-4 onwards.
+
+        Found live, not read: gpt-5.6-luna answers `max_tokens` with HTTP 400 telling us to send
+        `max_completion_tokens`, and the same families refuse any temperature but the default. The
+        test is on the wire id rather than a list of model names, because a list would be stale the
+        week after it was written and the failure mode is a whole build dying on its first call.
+        """
+        wire = (self.wire_id or "").lower()
+        return wire.startswith(("gpt-5", "o1", "o3", "o4"))
+
+    def token_cap_field(self) -> str:
+        return "max_completion_tokens" if self._reasoning_family() else "max_tokens"
 
     def reasoning_fields(self, config: ModelConfig) -> dict:
         """Reasoning branch two of three: OpenAI takes one reasoning_effort field."""

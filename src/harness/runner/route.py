@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import inspect
 import json
-from typing import Any, NamedTuple, Optional
+from typing import Any, Iterable, NamedTuple, Optional
 
 from harness.runner.state import StateView, _db_put, _row_model  # noqa: F401
 from harness.shared.canon import canonical_args
@@ -61,8 +61,11 @@ class Router:
 
     def __init__(self, env_tools_module: Any = None, recordings: Any = None, starting_state: Any = None,
                  overlay: Any = None, stand_in_model: Any = None, tool_sigs: Optional[list[ToolSig]] = None,
-                 overlay_rows: Optional[dict] = None, canon_rules: Any = None):
+                 overlay_rows: Optional[dict] = None, canon_rules: Any = None,
+                 synthetic_rows: Optional[Iterable[str]] = None):
         self.tools = env_tools_module
+        # D40: a result that names a synthetic row was answered from a row no trace showed.
+        self.synthetic_rows = frozenset(synthetic_rows or ())
         self.state = starting_state if isinstance(starting_state, StateView) else StateView(starting_state)
         self.state.add(overlay, overlay_rows)  # a view handed beside an overlay keeps both (D74)
         self.stand_in = stand_in_model
@@ -133,9 +136,17 @@ class Router:
 
     def _code(self, name: str, function: Any, args: dict) -> RouteResult:
         try:
-            return RouteResult(_call(function, self.state, args), "code", False, None, self._misses())
+            result = _call(function, self.state, args)
+            return RouteResult(result, "code", self._reads_synthetic(result, args), None, self._misses())
         except Exception as exc:  # the customer's tools answer with an error, they do not crash the Run
             return self._error(name, _class_of(exc), _message_of(exc))
+
+    def _reads_synthetic(self, result: Any, args: dict) -> bool:
+        """The call named or returned a synthetic row (D40): the Run is assisted (D49)."""
+        if not self.synthetic_rows:
+            return False
+        text = json.dumps([result, args], default=str, ensure_ascii=False)
+        return any(row_id in text for row_id in self.synthetic_rows)
 
     def _stand_in(self, name: str, args: dict) -> RouteResult:
         """D49: an LLM answers a tool with no code and no recording, and the Run is Assisted."""

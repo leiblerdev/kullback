@@ -524,6 +524,195 @@ The number at the best threshold is the same either way; what changes is that th
 
 Where research pulls the other way: the unweighted measure at 0.6 scores marginally higher on this one corpus (0.720 versus 0.717), so this is a trade of a third of a point of F1 for a flat curve. On a corpus whose traces share more boilerplate than tau2 retail's, the flat curve is worth more than the point.
 
+### D101. Tool kind comes from what the calls show, not from a verb list (2026-08-29)
+
+`propose_kind` decided read or write from `READ_PREFIXES` and `WRITE_PREFIXES`, which are retail's own
+verb vocabulary. The cross-domain check showed what that costs off retail: airline's `book_reservation`
+and `send_certificate` and telecom's `send_payment_request` are real writes mined as reads, so no
+Category write signature ever contained a booking, a certificate or a payment request.
+
+The lists are not widened. Three signals read off the recorded calls now decide, and the name rule is
+only what is left when none of them speaks:
+
+1. A later read shows a field this call changed, and no other call explains it. Unchanged, D68.
+2. Most of what came back is what the call sent. A read answers with the world; a create answers with
+   what you handed it. Measured across all three domains the two do not overlap: `book_reservation`
+   sits at 0.81 and the highest read anywhere sits at 0.20.
+3. Every call answered with a message rather than data, the tool was handed something that names a row,
+   and no read of that row ever showed it unmoved. This is the weakest of the three and the only one
+   held to `MIN_OBSERVED_CALLS`, the floor the mine gate already uses: a tool seen once or twice stays
+   unclassified and flagged rather than being called a write on its answer shape alone.
+
+Alongside them, `quiet_tools` reads the same evidence the other way: two identical reads that bracket a
+call with nothing changed are evidence against a write. A read only counts as evidence about a call
+when the read asked about what the call named, which mirrors how `_explains` credits a change.
+
+Result, with nothing tuned per domain: kind is exact on all three, 15/15 retail, 14/14 airline, 9/9
+telecom, against 15/15, 12/14 and 8/9 before.
+
+Where this pulls the other way: airline's cluster pair F1 falls from 0.788 to 0.756, because two real
+writes now enter the Category signature and split Runs that a missing write had held together. The
+signature is more truthful and the clustering is slightly worse, and the signature is the thing the
+Verifier rests on, so the trade is taken.
+
+### D102. An id is a column the calls address and that is distinct per row (2026-08-29)
+
+`_is_id` was `name == "id" or name.endswith("_id")`, which is retail's id convention. Airline's
+`flight_number` defeats it completely: the `flights` table was never proposed despite 338 calls
+showing its rows, and every Gate A loss on airline traced back to it.
+
+`id_columns` now reads the corpus for two things at once. The column is passed as an argument by some
+call, which is what makes it an id rather than a value; and wherever a result came back with several
+rows carrying it, every one of those rows had a different value for it, which is what an id does and
+what a status, a price or a filter does not. No threshold and no vocabulary, so nothing here is fitted
+to a domain: being addressed alone would make `origin` an id of every flight search.
+
+`id_field` reads the columns the miner recorded a pattern for after its three name candidates, which
+is how a table whose id the name rule cannot see stops being proposed and left empty.
+
+### D103. A tool is about the noun before the preposition (2026-08-29)
+
+`_table_of` walked a row's `_id` keys and took the first whose singular appeared anywhere in the tool
+name. Telecom filed every `Bill` under `customers`, because `customer` is a token of
+`get_bills_for_customer` and `bill` is not, and the `bills` table was lost entirely.
+
+A tool name says what it is about before any preposition and how it is addressed after one. The noun
+is now the head of the run before the first preposition, and the tie-break is: the id whose entity is
+that noun; then the id whose values are distinct across the rows this one came back with, which a
+foreign key's are not; then the only id there is.
+
+Result: airline recovers `flights` (3/3 tables) and telecom recovers `bills` (5/5), retail unchanged
+at 3/3, and every field our rows carry that the real rows also carry is exact on all three
+(1559/1559, 2393/2393, 83/84).
+
+### D104. The mined id patterns were never actually read (2026-08-29)
+
+Found while threading D102 through, and not a cross-domain issue at all. `mine_schema` records a
+pattern per column keyed `table.column`; `match_table` and `referenced_ids` looked it up by the table
+alone. On every mined schema the lookup missed, the pattern came back `None`, and both guards let
+every candidate through whatever its id looked like. `id_pattern_for` reads either key, and a test
+holds that the guard rejects an argument that is not an id of that table.
+
+### D105. The screen is the pipeline, not a chat (2026-08-29)
+
+Asked for a TUI "inspired from pi", with feynman.is named as the reference because it is built on
+top of Pi and the difference between them is supposed to tell us what to build. The difference is
+not a better chat. Feynman keeps Pi's loop and adds two things: named workflows over one domain
+(`/deepresearch`, `/lit`, `/replicate`, `/audit`) and provenance for what each one produced. Both
+of those already exist here under other names. The stage graph is the named workflow and the
+content-addressed cache is the provenance, so the screen invents neither: it lists the stages
+pipeline.py is about to run, marks the one running, and shows the cache hash each stage wrote.
+
+What it adds that no file gave us before is timing: `pipeline/state.json` is written once, when
+the pipeline is done, so until now a build in progress was invisible. `Pipeline` now takes an
+`on_event` callback and emits a stage start, a stage end, every gate result and the final status.
+The callback is a screen, not a stage, so anything it raises is swallowed: a view that dies has no
+business failing a build that was going fine, and there is a test for that.
+
+The two numbers that decide a live build are on it and nowhere else together: what the gates said,
+and what has been spent against the D86 ceiling. Both are read back from the files the build
+writes, never from state the screen keeps, so closing the screen loses nothing.
+
+Left out on purpose: a chat pane, a tool picker, an approval prompt, a diff view. The pipeline is
+the conversation. `harness tui` opens it; `/build`, `/run`, `/status`, `/keys` are the commands.
+
+### D106. A miss with signal in the traces is mined, not prompted around; schema shape had signal (2026-08-29)
+
+Asked: "if any of the above problems can be fixed with better mining please do that", with the
+cut drawn by hand: confinement, missing import, result shape and error prefix are ours to fix and
+have signal in hand; schema shape "cannot be prompted away" because "the traces only ever showed
+items by id, never nested under a product", so it belongs to D28's schema ingestion. And: "please
+don't over fit, we will test this on multiple environments from the benchmarks you mined."
+
+The premise on schema shape was wrong, and the fix moved from D28 to mining because of it. Every
+`get_product_details` result in the retail corpus carries `variants: {item_id: {item_id, ...}}`,
+5,615 nested item sightings against 9 standalone ones. The nesting was visible from the outside
+the whole time; the miner read only the top level of each result. What was mined:
+
+- `mine.nested_rows`: a column holding a dict whose values are dicts, each keyed by the value of
+  its own id column, is a collection of that entity stored inside the parent row. Structural, no
+  vocabulary, no domain. `EntitySchema.homes` records `items -> products.variants`; the nested
+  sightings count as sightings of the child's columns; the schema block tells the body to look in
+  the home first and the top-level table second, and says the top-level table may be empty on the
+  customer's real database. `compile_env.fold_into_homes` moves every standalone row whose parent
+  the traces showed into its home, so one row has one place (retail: 9 of 9 folded).
+- Error prefix as an observed rule, closing the log's open note "error payloads need a per-source
+  prefix rule": `compile_env.shared_error_prefix` is the prefix every recorded error in the corpus
+  shares, cut at a ": " boundary that leaves a message behind on every payload, read once per build
+  and passed to every tool. The `"Error: "` constant is gone. One payload alone yields no prefix,
+  because one message is its own prefix.
+- Missing import: the executes gate already had the name (`NameError: name 're' is not defined`)
+  and the sandbox already had the list; `_import_hints` turns the two into one line in the retry
+  ("`re` is on the allowed import list but the body never imported it"). The preamble does not
+  import for the body, so a body's imports keep saying what it depends on.
+- Result shape: already landed before this decision (`SCALAR_RESULT_FIELD`); the corpus shows the
+  exact recorded type on every call, and the fidelity comparison is on the recorded type.
+
+The cut, restated: a miss is the Builder's when the corpus shows the fact and the Builder did not
+read it. Schema ingestion (D28) is for facts no corpus can show, and retail's nesting was not one
+of them. The overfit check is the one the founder named: the same rules run unchanged on the
+next benchmark's corpus (docs/benchmark-landscape.md), and a rule that only holds on tau2 is
+reported as overfitting under D51.
+
+### D107. The Starting state grows from the rows the traces showed, by structural rules only (2026-08-29)
+
+Asked: "we also need to focus on synthetic user generation and db generation as well, as described
+in tau forge where we just have a synthetic seed of user data - see the best practices to do that
+and then we need to do this as well." D40 already said synthetic rows are generated by observing
+the real rows and tagged; what was built under it filled only ids the traces named (retail: zero
+rows). This entry is the rest of D40: a database grown to a chosen size.
+
+"Tau forge" could not be found as a paper, a repository or a product (two searches, 2026-08-29;
+docs/synthetic-rows.md section 2 already recorded it as unverifiable). The method taken is the
+one tau-bench itself documents in its appendix B.2: code samples numeric and categorical entries,
+an LM only supplies lists of free text, and "code-based database construction is more reliable
+than GPT-based construction". Ours goes one step further and uses no model at all, because the
+observed rows already hold the vocabulary a list would have held.
+
+How `builder/synth.py` grows a table:
+
+- A new row starts as a bootstrap of one observed row, so the co-occurrences stay (a cancelled
+  order carries its cancel reason, a pending one has no fulfillment). Then the parts that have to
+  be new are replaced by mined rules, every one structural: a template of letter, digit and
+  punctuation runs where a run that always equals another leaf of the row is a reference (the
+  email is `first.last` plus four digits, the user id is `first_last_` plus four digits); a leaf
+  unique across the observed rows is an identity and is redrawn; a leaf whose values sit among
+  another table's ids, or that carries that table's id column name, is a foreign key; a list of
+  keys that holds exactly the rows pointing back is a back reference; a list element that carries
+  a key and repeats the named row's fields is an embedded copy; a dict keyed by each entry's own
+  id is a keyed collection (the home rule of D106); a leaf whose values are keys of a collection
+  on the row a key names is a nested key; a number that equals the sum of a field over a list is
+  a sum. Retail yields all of them without being named anywhere in the code.
+- Observed rows are never edited. A synthetic order hangs off a synthetic user, so a recorded
+  `get_user_details` result stays replayable on the grown database; the users this implies beyond
+  the target are reported. A homed table grows with its parent's collection and cannot be
+  targeted on its own.
+- Checks after growing, from docs/synthetic-rows.md practice 6: id uniqueness across the union,
+  foreign key closure, id shape against the mined pattern, no synthetic twin of an observed row's
+  identity, and per-leaf total variation (categories) and KS (numbers) against the observed rows,
+  written to `synthetic.json` beside the rules.
+- Every grown id joins `EntitySchema.synthetic_rows`. The Runner marks a code route whose
+  arguments or result name one as assisted (D49); until now only the Simulated user did that, so
+  a tool read of a synthetic row went uncounted.
+- Off by default. `harness build --grow users=500 --grow orders=1000` asks for it; the targets are
+  in the stage's cache key, and the same seed gives the same rows.
+
+Retail, grown to the real seed's counts from 53 users, 158 orders and 35 products: 447 users,
+842 orders, 15 products and 178 items added in under four seconds; every check passes; list
+sizes land on the real seed's (items per order 3.02 against 2.98, payment methods per user 1.46
+against 1.39, variants per product 11.9 against 11.8); city and state distributions sit within
+0.25 total variation of the real 500 users, which is what 53 observed rows can carry. What it does
+not do, recorded rather than hidden: product names repeat (free text needs an LM or a list, and
+neither was taken); a zip code is redrawn independently of its city; a product option seen a few
+times with distinct values is a category by the evidence rule and stays as bootstrapped; item
+popularity in new orders is the observed frequency plus one, so unseen items appear but rarely.
+
+The overfit check is the one D106 set, and it ran the same day: airline grows to the real seed's
+counts with every check passing and the reservations-per-user ratio on the real value, after three
+rules the run forced (per-position ids, digit runs drawn inside their observed range, a key list
+named after its table); telecom shows one customer in 456 traces and is reported as too thin to
+grow rather than grown (docs/synthetic-rows.md, last section).
+
 ## Pending (asked, not yet answered)
 
 - D71 provisional (user-side writes); I want more discussion: Simulated user tools, interaction with sequence Hard constraints, required vs allowed. Three questions, to take up when I'm ready.

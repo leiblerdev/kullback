@@ -730,3 +730,60 @@ def test_the_boundary_gate_would_catch_a_dynamic_builder_import_from_pipeline(tm
     extra = "\n\ndef sneak():\n    import importlib\n    return importlib.import_module('harness' + '.builder')\n"
     (root / "runner" / "pipeline.py").write_text(source + extra, encoding="utf-8")
     assert validate.import_boundary_check(root).passed is False
+
+
+# --- what a watcher is told (the live screen's only input) -------------------
+
+def _events(pipeline, artifacts=None):
+    seen = []
+    pipeline.on_event = seen.append
+    try:
+        pipeline.run(artifacts or {})
+    except Exception:
+        pass
+    return seen
+
+
+def test_every_stage_says_when_it_starts_and_what_it_ended_as(tmp_path):
+    pipe = Pipeline([Stage("first", lambda ctx, i: {"a": 1}, outputs=["a"]),
+                     Stage("second", lambda ctx, i: {"b": i["a"] * 2}, inputs=["a"],
+                           outputs=["b"])], tmp_path)
+    seen = _events(pipe)
+    stages = [(e["stage"], e["state"]) for e in seen if e["kind"] == "stage"]
+    assert stages == [("first", "start"), ("first", "ran"), ("second", "start"), ("second", "ran")]
+    assert seen[-1] == {"kind": "pipeline", "state": "complete", "failed_stage": None}
+
+
+def test_a_second_build_says_cached_where_the_first_said_ran(tmp_path):
+    def make():
+        return Pipeline([Stage("first", lambda ctx, i: {"a": 1}, outputs=["a"])], tmp_path)
+    make().run({})
+    states = [e["state"] for e in _events(make()) if e["kind"] == "stage"]
+    assert states == ["start", "cached"]
+
+
+def test_a_failing_gate_is_reported_with_its_reasons_on_every_attempt(tmp_path):
+    def gate(ctx, outputs):
+        return GateResult(stage="g", passed=False, failures=["too thin"])
+    pipe = Pipeline([Stage("first", lambda ctx, i: {"a": 1}, outputs=["a"], gate=gate, max_attempts=2)],
+                    tmp_path)
+    seen = _events(pipe)
+    gates = [e for e in seen if e["kind"] == "gate"]
+    assert [g["attempt"] for g in gates] == [1, 2]
+    assert all(g["passed"] is False and g["failures"] == ["too thin"] for g in gates)
+    assert ("first", "failed") in [(e["stage"], e["state"]) for e in seen if e["kind"] == "stage"]
+
+
+def test_a_watcher_that_raises_does_not_fail_a_build_that_was_going_fine(tmp_path):
+    def angry(event):
+        raise RuntimeError("the screen died")
+    pipe = Pipeline([Stage("first", lambda ctx, i: {"a": 1}, outputs=["a"])], tmp_path, on_event=angry)
+    assert pipe.run({}).status == "complete"
+
+
+def test_a_crash_names_the_stage_it_died_in_before_the_exception_leaves(tmp_path):
+    def boom(ctx, inputs):
+        raise ValueError("no")
+    pipe = Pipeline([Stage("first", boom, outputs=["a"])], tmp_path)
+    seen = _events(pipe)
+    assert ("first", "crashed") in [(e["stage"], e["state"]) for e in seen if e["kind"] == "stage"]

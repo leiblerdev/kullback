@@ -265,12 +265,28 @@ def build(
     base_url: Optional[str] = typer.Option(None, "--base-url", help="Endpoint for an OpenAI-compatible model."),
     files: Optional[list[Path]] = typer.Option(None, "--file", help="Customer export to ingest first."),  # noqa: B008
     ceiling_usd: Optional[float] = typer.Option(None, "--ceiling-usd", help="Per-build spend ceiling (D86)."),
+    grow: Optional[list[str]] = typer.Option(None, "--grow",  # noqa: B008
+                                             help="Grow a table to this many rows with synthetic ones, "
+                                                  "as table=count; repeatable (D107)."),
+    grow_seed: int = typer.Option(0, "--grow-seed", help="Seed for the synthetic rows."),
 ):
     """Run the Builder pipeline over the ingested Traces and write the Environment."""
     adapter = _live_model(model, base_url) if model else None
     result = _entry("harness.builder.build", "build")(
-        workdir=workdir, iterate=iterate, model=adapter, files=list(files or []), ceiling_usd=ceiling_usd)
+        workdir=workdir, iterate=iterate, model=adapter, files=list(files or []), ceiling_usd=ceiling_usd,
+        grow=_grow_targets(grow), grow_seed=grow_seed)
     typer.echo(json.dumps(result, default=str))
+
+
+def _grow_targets(pairs: Optional[list[str]]) -> dict[str, int]:
+    """`--grow users=500 --grow orders=1000` as {table: count}; a malformed pair is refused."""
+    out: dict[str, int] = {}
+    for pair in pairs or []:
+        table, sep, count = pair.partition("=")
+        if not sep or not table or not count.isdigit():
+            raise typer.BadParameter(f"--grow takes table=count, got {pair!r}")
+        out[table.strip()] = int(count)
+    return out
 
 
 @app.command("freeze-runner")
@@ -370,6 +386,17 @@ def report(
         typer.echo(f"not read, so it is not counted: {name}")
     target = Path(out) if out else Path(workdir) / "report.md"
     typer.echo(str(write_report(data, target.parent, target.name)))
+
+
+@app.command()
+def tui(
+    workdir: Path = WORKDIR,
+    model: Optional[str] = typer.Option(None, "--model", help="Builder model id, as provider/model."),
+    base_url: Optional[str] = typer.Option(None, "--base-url", help="Endpoint for an OpenAI-compatible model."),
+    ceiling_usd: Optional[float] = typer.Option(None, "--ceiling-usd", help="Per-build spend ceiling (D86)."),
+):
+    """Open the kullback screen: one build, its stages, its gates and its spend, while it runs."""
+    _entry("harness.tui", "loop")(workdir=workdir, model=model, base_url=base_url, ceiling_usd=ceiling_usd)
 
 
 if __name__ == "__main__":
