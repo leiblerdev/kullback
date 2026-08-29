@@ -1574,12 +1574,32 @@ def test_the_tool_rounds_cap_ends_the_attempt_with_no_body_submitted(
     )
     build = ce.compile_tool(model, sigs[0], order_calls, schema, db0, workdir)
 
-    assert len(model.calls) == ce.MAX_TOOL_ROUNDS
-    assert len(build.nodes) == 1, "the attempt loop must not start a second attempt after the cap"
-    assert build.assisted is True
-    assert build.nodes[-1]["refused"] is True
-    assert build.nodes[-1]["failures"] == ["no body was submitted"]
+    # Every attempt gets its rounds, is told no body arrived, and the tool ends assisted with no
+    # body: the stage gate then names it, as it would any tool the Builder could not write.
+    attempts = ce.MAX_REPAIR_ATTEMPTS + 1  # the first attempt plus the repairs (D75)
+    assert len(model.calls) == ce.MAX_TOOL_ROUNDS * attempts
+    assert len(build.nodes) == attempts
+    assert build.assisted is True and build.body == ""
+    assert all(n["failures"] == ["no body was submitted"] and not n.get("refused") for n in build.nodes)
     assert len(build.nodes[-1]["tool_uses"]) == ce.MAX_TOOL_ROUNDS
+    retry = model.calls[ce.MAX_TOOL_ROUNDS]["messages"]
+    assert retry[-2]["content"] == "(no body was submitted)" and "send the body as your reply" in retry[-1]["content"]
+
+
+def test_the_last_tested_draft_is_the_body_when_the_rounds_run_out(
+    make_test_model, schema, sigs, db0, workdir, order_calls
+):
+    """The sixth retail build: three drafts tested, a row looked up, the rounds gone, no reply."""
+    model = make_test_model(
+        [_tool_call_reply("t1", "test_body", {"body": WRONG_BODY}),
+         _tool_call_reply("t2", "test_body", {"body": CORRECT_BODY})]
+        + [_tool_call_reply("l", "lookup_rows", {"table": "orders"})] * (ce.MAX_TOOL_ROUNDS - 2)
+    )
+    build = ce.compile_tool(model, sigs[0], order_calls, schema, db0, workdir)
+
+    assert len(model.calls) == ce.MAX_TOOL_ROUNDS and len(build.nodes) == 1
+    assert build.nodes[0]["body_from_draft"] is True and build.nodes[0]["passed"] is True
+    assert build.assisted is False and build.body.strip() == CORRECT_BODY.strip()
 
 
 def test_builder_tools_false_sends_no_tools_and_keeps_the_old_behaviour(

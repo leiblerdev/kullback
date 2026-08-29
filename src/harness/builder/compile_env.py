@@ -717,7 +717,9 @@ _BUILDER_TOOLS_PARAGRAPH = (
     "Two tools are available while you write this body: lookup_rows(table, key=None) reads a row "
     "of the Starting state (or, with no key, that table's row count and a few sample keys), and "
     "test_body(body) runs a draft through the same gates this attempt will face, on the calls you "
-    "were shown. Look a row up before guessing its shape; test the draft before you submit it.")
+    "were shown. Look a row up before guessing its shape; test the draft before you submit it. "
+    "A tool call is never a submission: when a draft passes, send the body itself as your reply. "
+    "The rounds are few; if they run out, the last body you tested is taken as your reply.")
 
 
 def _stable_system(schema: Optional[EntitySchema] = None, tool_names: Iterable[str] = (),
@@ -961,29 +963,34 @@ def _assistant_tool_turn(reply: Any) -> dict:
 
 
 def _reply_with_tools(model, messages: list[dict], tools_impl: dict[str, Callable[..., str]],
-                      max_rounds: int = MAX_TOOL_ROUNDS) -> tuple[str, list[dict]]:
+                      max_rounds: int = MAX_TOOL_ROUNDS) -> tuple[str, list[dict], str]:
     """Query the model with lookup_rows and test_body on, executing whatever it calls (D117).
 
     `messages` (the attempt's own system and user turns, exactly as compile_tool built them) is
     never mutated: the tool exchange runs over a local copy, so the next attempt's retry still
     appends its assistant reply and new evidence onto the plain chain `_append_retry` expects,
     never onto a transcript of tool calls. At most `max_rounds` model calls; a reply that asks for
-    no tool is the body, and one still asking after the last round is taken as the body anyway,
-    empty or not, since round `max_rounds` is the last one this attempt gets.
+    no tool is the body. The third value is the last body the model handed to test_body, so a
+    model that tests a draft and keeps probing until the rounds run out (the sixth retail build's
+    cancel_pending_order: three drafts tested, then a row lookup, and no reply) still hands the
+    caller the draft it was working on rather than nothing.
     """
     working = list(messages)
     tool_uses: list[dict] = []
     reply = None
+    draft = ""
     for _ in range(max_rounds):
         reply = model.query(working, tools=BUILDER_TOOLS)
         if not reply.tool_calls:
-            return reply.content or "", tool_uses
+            return reply.content or "", tool_uses, draft
         working = working + [_assistant_tool_turn(reply)]
         for call in reply.tool_calls:
             result_text = _run_builder_tool(call, tools_impl)
             tool_uses.append(_tool_use_record(call, result_text))
+            if call.name == "test_body" and (call.arguments or {}).get("body"):
+                draft = str(call.arguments["body"])
             working = working + [{"role": "tool", "tool_call_id": call.id, "content": result_text}]
-    return (reply.content or "") if reply is not None else "", tool_uses
+    return (reply.content or "") if reply is not None else "", tool_uses, draft
 
 # --- the bounded repair loop (D75) ---
 
@@ -1183,9 +1190,9 @@ def compile_tool(model, toolsig: ToolSig, calls: Iterable[ToolCall], schema: Ent
                      if builder_tools else None)
         try:
             if builder_tools:
-                reply_content, tool_uses = _reply_with_tools(model, messages, tools_impl)
+                reply_content, tool_uses, draft = _reply_with_tools(model, messages, tools_impl)
             else:
-                reply_content, tool_uses = model.query(messages).content or "", []
+                reply_content, tool_uses, draft = model.query(messages).content or "", [], ""
         except _context_cap_error() as refusal:
             # `max_evidence_chars` above is not enough on its own, and the first live build is
             # what showed it. It counts the characters of the message contents; budget.py counts
@@ -1204,13 +1211,21 @@ def compile_tool(model, toolsig: ToolSig, calls: Iterable[ToolCall], schema: Ent
         if tool_uses:
             node["tool_uses"] = tool_uses
         body = _strip_fence(reply_content)
+        if not body and draft:
+            # The rounds ran out on a model that had tested a draft and was still probing: that
+            # draft is what it was submitting, so it is gated like any reply (D117).
+            body, reply_content = _strip_fence(draft), draft
+            node["body_from_draft"] = True
         if not body:
-            # Every round of `_reply_with_tools` asked for a tool and none ever settled on a
-            # reply, or the model settled on nothing: either way there is no body to gate, and
-            # gating "pass" would blame the code-owned skeleton for a reply the model never gave.
+            # No reply and no draft: nothing to gate, and gating "pass" would blame the code-owned
+            # skeleton for a reply the model never gave. The attempt fails and the next one runs
+            # with that said; the sixth retail build failed whole on a refusal here, because the
+            # stage gate reads an empty body as a tool the Builder could not write.
+            failure = "\nno body was submitted: every round asked for a tool; send the body as your reply"
+            reply_content = "(no body was submitted)"
             node["failures"] = ["no body was submitted"]
-            build.nodes.append(dict(node, refused=True))
-            break
+            build.nodes.append(node)
+            continue
         source = module_source(schema, [toolsig], {toolsig.name: body})
         sandbox = Sandbox(source, db, workdir / f"attempt_{attempt}", timeout=timeout,
                           call_states=call_states)
