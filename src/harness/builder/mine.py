@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import re
 from pathlib import Path
-from typing import Any, NamedTuple, Optional
+from typing import Any, NamedTuple, Optional, Sequence
 
 from harness.shared.provider import Model
 from harness.shared.records import (
@@ -78,10 +78,21 @@ def _add_type(out: dict[str, list[str]], name: str, type_name: str) -> None:
         types.append(type_name)
 
 
+# A bare scalar ("-121.2", 4, true) is not a field of an object; it is the whole result. Naming it
+# "value" made a one-column object indistinguishable from a tool that hands back a number, and
+# every body the model wrote for such a tool obediently returned {"value": ...} to match, then
+# failed replay against the real tool's bare scalar (docs/live-build.md, the calculate miss). The
+# marker keeps the D72 union (types, count, first and last seen) without claiming a field name
+# that was never on the wire.
+SCALAR_RESULT_FIELD = "$scalar"
+
+
 def _fields(obj: Any) -> dict[str, list[str]]:
     """Top-level field name to the types seen for it in one observed result or argument.
 
-    A list result contributes every item's types, not only the first item's (D72 union).
+    A list result contributes every item's types, not only the first item's (D72 union). A result
+    that is neither a dict nor a list carries no field name of its own; it is recorded under
+    SCALAR_RESULT_FIELD so a caller can tell a bare scalar apart from a real single-field object.
     """
     if isinstance(obj, dict):
         return {str(k): [_type_name(v)] for k, v in obj.items()}
@@ -94,7 +105,7 @@ def _fields(obj: Any) -> dict[str, list[str]]:
             else:
                 _add_type(out, "[]", _type_name(item))
         return out
-    return {"value": [_type_name(obj)]}
+    return {SCALAR_RESULT_FIELD: [_type_name(obj)]}
 
 
 def _note_field(store: dict[str, FieldStat], name: str, types: list[str], trace_id: str) -> None:
@@ -147,7 +158,8 @@ def skipped_user_calls(traces: list[Trace]) -> int:
 
 def _new_acc() -> dict:
     return {"calls": 0, "errors": 0, "traces": [], "args": {}, "results": {},
-            "arg_calls": 0, "result_calls": 0, "errors_by_class": {}, "samples": []}
+            "arg_calls": 0, "result_calls": 0, "errors_by_class": {}, "samples": [],
+            "echoed": 0.0, "messages": 0}
 
 
 def _declared_specs(traces: list[Trace]) -> dict[str, dict]:
@@ -190,11 +202,43 @@ def _accumulate(traces: list[Trace]) -> dict[str, dict]:
                 continue
             parsed = _parse(call.result)
             acc["result_calls"] += 1
+            acc["echoed"] += _echoed_share(call.args or {}, parsed)
+            acc["messages"] += isinstance(parsed, str)
             for name, types in _fields(parsed).items():
                 _note_field(acc["results"], name, types, trace.trace_id)
             if len(acc["samples"]) < MAX_SAMPLES:
                 acc["samples"].append({"args": call.args, "result": _short(parsed)})
     return stats
+
+
+def _leaves(value: Any, out: Optional[list] = None) -> list[str]:
+    """Every scalar inside a value, canonically, so two nested shapes can be compared by content."""
+    out = [] if out is None else out
+    if isinstance(value, dict):
+        for item in value.values():
+            _leaves(item, out)
+    elif isinstance(value, list):
+        for item in value:
+            _leaves(item, out)
+    elif value is not None:
+        out.append(canonical_json(value))
+    return out
+
+
+def _echoed_share(args: dict, result: Any) -> float:
+    """How much of what came back is what the call sent.
+
+    A read answers with the world: you send an id and the world sends back everything it knows. A
+    create answers with what you handed it: airline's `book_reservation` returns the reservation it
+    just made out of the origin, destination, cabin, flights, passengers and payment in its own
+    arguments. Measured on all three tau2 domains the two do not overlap: `book_reservation` sits at
+    0.81 and every read in retail, airline and telecom sits at 0.20 or below.
+    """
+    values = _leaves(result)
+    if not values:
+        return 0.0
+    sent = set(_leaves(args))
+    return sum(1 for value in values if value in sent) / len(values)
 
 
 def _short(value: Any, limit: int = 200) -> str:
@@ -270,6 +314,16 @@ def _build_sig(name: str, acc: dict, spec: Optional[dict], effects: list[EffectO
     sig.args_fields = list(args.values())
     sig.args_schema = _args_schema(sig.args_fields)
     return sig
+
+
+def is_scalar_result(sig: ToolSig) -> bool:
+    """True when every observed result of this tool was a bare scalar, not an object or a list.
+
+    A tool that sometimes answers with a scalar and sometimes with an object is not this case: the
+    D72 union keeps both shapes in result_schema and compile_env describes it as an object, as
+    before the marker existed.
+    """
+    return [f.name for f in sig.result_schema] == [SCALAR_RESULT_FIELD]
 
 
 def propose_kind(name: str) -> KindProposal:
@@ -356,7 +410,49 @@ def _llm_result_schema(model: Model, sig: ToolSig, samples: list) -> None:
     sig.source = "llm"
 
 
-def _decide_kind(sig: ToolSig, model: Optional[Model], samples: list, spec: Optional[dict] = None) -> None:
+CONFIDENCE_ORDER = ("low", "medium", "high")
+
+
+def _stronger(a: Optional[str], b: str) -> str:
+    return max([a or "low", b], key=lambda c: CONFIDENCE_ORDER.index(c) if c in CONFIDENCE_ORDER else 0)
+
+
+def _observed_kind(sig: ToolSig, rule: KindProposal, acc: Optional[dict],
+                   quiet: Optional[set] = None) -> Optional[KindProposal]:
+    """What the recorded calls themselves say about a tool's kind, in order of how much they say.
+
+    Three signals, none of them a verb list. A later read shows a field this call changed (D68). Or
+    most of what came back is what the call sent, so the call made the thing rather than found it.
+    Or the tool answered with a message instead of data, which a read does not do: the reads that
+    return a bare string in these corpora all announce themselves in their names (`find_user_id_by_email`,
+    `get_flight_status`), so the message signal is only read where the name rule found nothing.
+
+    The message signal is the weakest of the three and it is the only one held to the corpus floor
+    the mine gate already uses: a tool seen once or twice stays unclassified and flagged rather than
+    being called a write on its answer shape alone ("flag, never synthesize", design section 6).
+
+    The prefix lists were retail's own verb vocabulary and they miss `book_`, `send_`, `enable_` and
+    `refuel_` (docs/cross-domain-check.md). These three signals recover every write the lists miss on
+    airline and telecom, and they misclassify nothing on retail.
+    """
+    if sig.effects_observed:
+        fields = ", ".join(sorted({e.field for e in sig.effects_observed})[:3])
+        return KindProposal("write", "high", f"observed effect on {fields}", "observed")
+    results = (acc or {}).get("result_calls") or 0
+    if results and (acc["echoed"] / results) > 0.5:
+        return KindProposal("write", "high",
+                            f"{acc['echoed'] / results:.0%} of what came back was what the call sent, "
+                            "so the call made the thing rather than found it", "observed")
+    if results >= MIN_OBSERVED_CALLS and acc["messages"] == results and rule.confidence == "low" \
+            and _has_id_argument(sig) and sig.name not in (quiet or set()):
+        return KindProposal("write", "medium",
+                            "every call answered with a message about a row it was handed rather "
+                            "than with data, and no read of that row ever showed it unmoved", "observed")
+    return None
+
+
+def _decide_kind(sig: ToolSig, model: Optional[Model], samples: list, spec: Optional[dict] = None,
+                 acc: Optional[dict] = None, quiet: Optional[set] = None) -> None:
     rule = propose_kind(sig.name)
     annotation = _annotation_kind(spec)
     if annotation is not None and rule.confidence != "high":
@@ -374,10 +470,15 @@ def _decide_kind(sig: ToolSig, model: Optional[Model], samples: list, spec: Opti
             sig.unclassified = False
         elif llm is not None:
             sig.kind_reason = f"{sig.kind_reason}; llm low confidence: {llm.reason}"
-    if sig.effects_observed:  # D68: observed effects beat both the rule and the LLM
-        fields = ", ".join(sorted({e.field for e in sig.effects_observed})[:3])
-        sig.kind, sig.kind_confidence = "write", "high"
-        sig.kind_reason = f"observed effect on {fields}"
+    observed = _observed_kind(sig, rule, acc, quiet)
+    if observed is not None:  # D68: what the calls show beats both the name rule and the LLM
+        # Evidence that agrees with what already stands is a confirmation, not a downgrade: it must
+        # never lower a confidence the annotations or the LLM had already earned.
+        agrees = observed.kind == sig.kind
+        sig.kind = observed.kind
+        sig.kind_confidence = _stronger(sig.kind_confidence, observed.confidence) if agrees \
+            else observed.confidence
+        sig.kind_reason = f"{sig.kind_reason}; {observed.reason}" if agrees else observed.reason
         sig.classified_by = "observed"
         sig.unclassified = False
 
@@ -389,11 +490,12 @@ def mine_tools(traces: list[Trace], model: Optional[Model] = None) -> list[ToolS
     for name in specs:
         stats.setdefault(name, _new_acc())
     effects = observed_effects(traces)
+    quiet = quiet_tools(traces)
     sigs = []
     for name in sorted(stats):
         acc = stats[name]
         sig = _build_sig(name, acc, specs.get(name), effects.get(name, []))
-        _decide_kind(sig, model, acc["samples"], specs.get(name))
+        _decide_kind(sig, model, acc["samples"], specs.get(name), acc, quiet)
         if model is not None and not sig.result_schema and acc["calls"]:
             _llm_result_schema(model, sig, acc["samples"])
         sigs.append(sig)
@@ -691,6 +793,46 @@ def observed_effects(traces: list[Trace]) -> dict[str, list[EffectObservation]]:
     return out
 
 
+def quiet_tools(traces: list[Trace]) -> set[str]:
+    """Tools that two identical reads bracketed with nothing changed in between.
+
+    The complement of `observed_effects` and the same evidence read the other way: if the world was
+    read before and after a call and it did not move, that call is evidence against a write. It is
+    what stops the weakest write signal from firing on a tool the corpus has already shown to be
+    quiet, and it is why a tool can be answered for without any verb list at all.
+    """
+    quiet: set[str] = set()
+    for trace in traces:
+        calls = [c for c in trace.tool_calls if _is_assistant_call(c)]
+        last: dict[tuple, tuple[int, Any]] = {}
+        for index, call in enumerate(calls):
+            if call.error is not None or call.result is None or getattr(call, "truncated", False):
+                continue
+            parsed = _parse(call.result)
+            key = (call.name, canonical_json(call.args))
+            previous = last.get(key)
+            last[key] = (index, parsed)
+            if previous is None:
+                continue
+            if [f for f in _changed_fields(previous[1], parsed) if not _exempt_field(f)]:
+                continue
+            # Only a read that is about what the call named is evidence about that call, and
+            # "about" means what the read was asked for, never what its answer happened to mention.
+            # Airline's `send_certificate` touches a user; a reservation names its user in its body,
+            # so reading a reservation twice was enough to call the certificate quiet and leave it
+            # mined as a read. This mirrors `_explains`, which credits a change the same way.
+            named = _scalars(call.args or {})
+            quiet.update(c.name for c in calls[previous[0] + 1: index]
+                         if c.name != call.name and c.error is None
+                         and _scalars(c.args or {}) & named)
+    return quiet
+
+
+def _has_id_argument(sig: ToolSig) -> bool:
+    """The tool is handed something that names a row, so its message is about that row."""
+    return any(_is_id(field.name) for field in (sig.args_fields or []))
+
+
 # --- the mine gate (design section 6) ----------------------------------------
 
 def gate_tools(sigs: list[ToolSig], traces: Optional[list[Trace]] = None) -> GateResult:
@@ -718,7 +860,25 @@ def gate_tools(sigs: list[ToolSig], traces: Optional[list[Trace]] = None) -> Gat
 # --- the world (D73) ---------------------------------------------------------
 
 def _is_id(name: str) -> bool:
+    """The name rule for an id column: the customer wrote `id` or `<entity>_id`.
+
+    A name rule alone is retail's own convention (docs/cross-domain-check.md). It is kept because it
+    is free and right whenever it fires; what the corpus finds on top of it is `id_columns`.
+    """
     return name == "id" or name.endswith("_id")
+
+
+# The suffixes a customer puts on an id column that is not called `_id`. Stripping one gives the
+# entity the column names, which is what a table name is matched against.
+ID_SUFFIXES = ("_id", "_number", "_no", "_code", "_key", "_ref", "_uuid")
+
+
+def _entity_of(column: str) -> str:
+    """The entity an id column names: `bill_id` is a bill, `flight_number` is a flight."""
+    for suffix in ID_SUFFIXES:
+        if column.endswith(suffix) and len(column) > len(suffix):
+            return column[: -len(suffix)]
+    return column
 
 
 def _plural(token: str) -> str:
@@ -729,34 +889,107 @@ def _plural(token: str) -> str:
     return token + "s"
 
 
+def _singular(token: str) -> str:
+    if token.endswith("ies") and len(token) > 3:
+        return token[:-3] + "y"
+    if token.endswith("ss") or token.endswith("us") or not token.endswith("s"):
+        return token
+    return token[:-1]
+
+
 TOOL_VERBS = {"get", "find", "list", "search", "fetch", "retrieve", "read", "lookup", "load", "show",
               "details", "detail", "info", "information", "all", "by", "for", "the", "a", "my", "current"}
 
+# A preposition ends the part of a tool name that says what the tool is about and begins the part
+# that says how it is addressed: `get_bills_for_customer` is about bills, not about customers.
+PREPOSITIONS = ("for", "by", "of", "from", "with", "to", "in", "at", "on")
+
 
 def _noun_of(tool_name: str) -> Optional[str]:
-    """The entity a tool name is about, with the verb and the filler words taken off."""
-    tokens = [t for t in re.split(r"[^a-z0-9]+", tool_name.lower()) if t]
-    nouns = [t for t in tokens if t not in TOOL_VERBS]
-    return "_".join(nouns) if nouns else None
+    """The entity a tool name is about, singular, with the verb, the filler and any `for x` taken off.
 
-
-def _table_of(tool_name: str, row: dict) -> Optional[str]:
-    """The entity a result row is about: an id field whose name the tool name also uses.
-
-    A row whose only id is `id`, which is how support, CRM and ticketing APIs return rows (D52),
-    takes its table from the tool name instead of being dropped.
+    Reading the whole name filed every telecom bill under `customers`, because `customer` is a token
+    of `get_bills_for_customer` and the tie-break took the first id token it recognised. What the
+    tool is about is the noun run before the first preposition, and the last word of that run is the
+    head of it: `search_direct_flight` is about a flight, not about a direct.
     """
-    tokens = set(re.split(r"[^a-z0-9]+", tool_name.lower()))
-    ids = [key[:-3] for key in row if isinstance(key, str) and key.endswith("_id") and len(key) > 3]
-    for token in ids:
-        if token in tokens:
-            return _plural(token)
+    tokens = [t for t in re.split(r"[^a-z0-9]+", tool_name.lower()) if t]
+    head: list[str] = []
+    for token in tokens:
+        if token in PREPOSITIONS:
+            break
+        head.append(token)
+    nouns = [t for t in head if t not in TOOL_VERBS]
+    return _singular(nouns[-1]) if nouns else None
+
+
+def _table_of(tool_name: str, row: dict, id_names: Sequence[str] = (), siblings: Sequence[dict] = ()) -> Optional[str]:
+    """The entity a result row is about, from the id columns it carries and the tool's own noun.
+
+    In order: the id whose entity is what the tool is about; the id whose values are distinct across
+    the rows this one came back with, which is what an id does and a foreign key does not; the only
+    id there is. A row whose only id is `id`, which is how support, CRM and ticketing APIs return
+    rows (D52), takes its table from the tool name instead of being dropped.
+    """
+    ids = [key for key in row if isinstance(key, str) and key != "id"
+           and (key.endswith("_id") and len(key) > 3 or key in id_names)]
+    noun = _noun_of(tool_name)
+    for key in ids:
+        if _entity_of(key) == noun:
+            return _plural(_entity_of(key))
+    if len(ids) > 1:
+        distinct = [key for key in ids if _distinct_across(key, siblings)]
+        if len(distinct) == 1:
+            return _plural(_entity_of(distinct[0]))
     if len(ids) == 1:
-        return _plural(ids[0])
+        return _plural(_entity_of(ids[0]))
     if not ids and any(key == "id" for key in row):
-        noun = _noun_of(tool_name)
         return _plural(noun) if noun else None
     return None
+
+
+def _distinct_across(column: str, rows: Sequence[dict]) -> bool:
+    """True when every row carrying this column carries a different value for it."""
+    values = [canonical_json(row[column]) for row in rows if isinstance(row, dict) and column in row]
+    return len(values) > 1 and len(set(values)) == len(values)
+
+
+def id_columns(traces: list[Trace]) -> set[str]:
+    """Column names the corpus shows behaving like an id, whatever the customer called them.
+
+    Two things at once, and both are needed. The column is used to address a row: some call passes
+    it as an argument, which is what makes it an id rather than a value. And wherever a result came
+    back with several rows carrying the column, every one of those rows had a different value for
+    it, which is what an id does and what a foreign key, a status or a price does not.
+
+    No threshold and no vocabulary, so nothing here is fitted to a domain. It is what recovers
+    airline's `flights`: `flight_number` addresses a flight in 30 calls and is distinct in every
+    search result, and the `_id` name rule alone never sees it, so the table is never proposed
+    despite 338 calls that show its rows (docs/cross-domain-check.md).
+    """
+    addressed = {str(name) for trace in traces for call in trace.tool_calls
+                 for name in (call.args or {}) if _is_assistant_call(call)}
+    distinct: dict[str, bool] = {}
+    for trace in traces:
+        for call in trace.tool_calls:
+            if not _is_assistant_call(call) or call.error is not None or call.result is None:
+                continue
+            rows = _result_rows(_parse(call.result))
+            if len(rows) < 2:
+                continue
+            for name in addressed:
+                if not any(name in row for row in rows):
+                    continue
+                distinct[name] = distinct.get(name, True) and _distinct_across(name, rows)
+    return {name for name, ok in distinct.items() if ok} | {n for n in addressed if _is_id(n)}
+
+
+def _result_rows(parsed: Any) -> list[dict]:
+    if isinstance(parsed, dict):
+        return [parsed]
+    if isinstance(parsed, list):
+        return [row for row in parsed if isinstance(row, dict)]
+    return []
 
 
 def _add_value(store: dict, table: str, name: str, value: Any) -> None:
@@ -931,17 +1164,16 @@ def mine_schema(traces: list[Trace], db_json_path: Optional[Path] = None,
             for row in _rows_of_db(table_blob):
                 for name, value in row.items():
                     _add_value(store, str(table), str(name), value)
+    id_names = id_columns(traces)
     for trace in traces:
         for call in trace.tool_calls:
             if not _is_assistant_call(call):
                 continue
             if call.error is not None or call.result is None:
                 continue
-            parsed = _parse(call.result)
-            rows = [parsed] if isinstance(parsed, dict) else (
-                [r for r in parsed if isinstance(r, dict)] if isinstance(parsed, list) else [])
+            rows = _result_rows(_parse(call.result))
             for row in rows:
-                table = _table_of(call.name, row)
+                table = _table_of(call.name, row, id_names, rows)
                 if table is None:
                     continue
                 for name, value in row.items():
@@ -963,7 +1195,7 @@ def mine_schema(traces: list[Trace], db_json_path: Optional[Path] = None,
                     column.class_reason = verified.reason
                     column.classified_by = "llm"
             columns.append(column)
-            if _is_id(name):
+            if _is_id(name) or name in id_names:
                 pattern = id_pattern(cell["values"])
                 if pattern:
                     id_patterns[f"{table}.{name}"] = pattern

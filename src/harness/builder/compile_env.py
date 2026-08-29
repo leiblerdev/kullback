@@ -16,15 +16,18 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable, Optional
 
-from harness.builder.mine import is_assistant_call
+from harness.builder.mine import is_assistant_call, is_scalar_result
 from harness.builder.sandbox import (
+    ALLOWED_IMPORTS,
     DB_CLASS,
+    DENIED_BUILTINS,
     TOOLS_CLASS,
     Sandbox,
     SandboxError,
     args_text,
     gate_parses,
     id_field,
+    id_pattern_for,
     match_table,
     parse_result,
     run_gates,
@@ -221,7 +224,7 @@ def referenced_ids(traces: Iterable[Trace], schema: EntitySchema) -> list[tuple[
                 if not isinstance(value, str):
                     continue
                 for table, field_name in fields.items():
-                    pattern = schema.id_patterns.get(table)
+                    pattern = id_pattern_for(schema, table, field_name)
                     if field_name == name and (not pattern or re.match(pattern, value)):
                         out.add((table, value))
     return sorted(out)
@@ -442,7 +445,10 @@ def _docstring(sig: ToolSig) -> str:
         sig.description or f"The customer's {sig.name} tool, as the traces show it.")]
     if sig.args_fields:
         lines += ["", "        Args:"] + [f"            {f.name}: {_annotation(f.types)}" for f in sig.args_fields]
-    if sig.result_schema:
+    if is_scalar_result(sig):
+        lines += ["", "        Returns:",
+                  "            a bare " + _annotation(sig.result_schema[0].types) + ", not wrapped in an object"]
+    elif sig.result_schema:
         lines += ["", "        Returns:", "            " + ", ".join(f.name for f in sig.result_schema)]
     return "\n".join(lines + ['        """'])
 
@@ -497,10 +503,35 @@ def load_toolkit(source: str, db: dict, class_name: str = TOOLS_CLASS, db_class:
 
 # --- the model writes the body (D56, D75) ---
 
+# tau2 wraps every raised exception as f"Error: {e}" before it reaches the agent
+# (vendor/tau2-bench, Environment.get_response), on every domain we have: retail, airline and
+# telecom raw traces all carry it. That prefix is the transport talking, not the customer's tool,
+# so a stored payload of "Error: User not found" is not the message a ValueError should carry.
+# `ToolCallError.payload` keeps the wrapper (D67 keeps the payload verbatim, with `raw_ptr` back to
+# D66's untouched byte); only the copy shown to the model has it peeled off. The first live build
+# copied it into seven bodies, faithfully, because nothing said it was not part of the message.
+_ERROR_TRANSPORT_PREFIX = "Error: "
+
+
+def _display_error_payload(payload: Any) -> Any:
+    """The error payload as the model should read it, with the known transport wrapper peeled off.
+
+    Only a leading, exact "Error: " is peeled, and only from a str payload; a JSON payload (D67's
+    `code` class) and a payload that never carried the prefix pass through untouched.
+    """
+    if isinstance(payload, str) and payload.startswith(_ERROR_TRANSPORT_PREFIX):
+        return payload[len(_ERROR_TRANSPORT_PREFIX):]
+    return payload
+
+
 _SYSTEM = ("You write the body of one Python method of a tool class rebuilt from a customer's traces. "
            "Return only the body: no signature, no fences, no explanation. The body may read and write "
-           "self.db, a pydantic model with one dict per table. Raise ValueError with the customer's own "
-           "message where the traces show an error.")
+           "self.db, a pydantic model with one dict per table. Each dict's values are pydantic model rows, "
+           "not plain dicts: read or write a row's field by attribute, as in order.status or "
+           "order.status = \"cancelled\", never with .get(...) or any other dict method. Raise ValueError "
+           "with the customer's own message where the traces show an error. A recorded error is shown "
+           "without the transport's leading 'Error: ', so write the message exactly as shown and do not "
+           "put an 'Error: ' of your own in front of it.")
 
 
 def _example_block(calls: Iterable[ToolCall]) -> str:
@@ -512,7 +543,8 @@ def _example_block(calls: Iterable[ToolCall]) -> str:
     """
     lines = []
     for call in calls:
-        outcome = (f"error {call.error.class_}: {call.error.payload!r}" if call.error is not None
+        outcome = (f"error {call.error.class_}: {_display_error_payload(call.error.payload)!r}"
+                   if call.error is not None
                    else "result " + json.dumps(parse_result(call.result), default=str))
         lines.append(f"- args {json.dumps(call.args, sort_keys=True, default=str)} -> {outcome}")
     return "\n".join(lines)
@@ -520,18 +552,50 @@ def _example_block(calls: Iterable[ToolCall]) -> str:
 
 def _schema_block(schema: EntitySchema) -> str:
     """Tables and columns of the customer's world: the same for every tool in this build (D65's
-    stable prefix, docs/prompt-caching.md item 1)."""
+    stable prefix, docs/prompt-caching.md item 1).
+
+    A column mined as a dict gets one sample beside it. Mining cannot tell a customer's real table
+    from a stand-in built out of a value nested inside another table's column: retail's
+    get_item_details answers with an item-shaped dict, so mining proposes an "items" table for it,
+    and get_product_details answers with a product whose "variants" column holds dicts of exactly
+    that shape. Both are real observations and nothing here decides which is the customer's real
+    storage; the sample is what lets the model notice the second on its own, instead of trusting
+    the "items" table alone and raising "not found" on a database that only fills it through the
+    nesting. That is what happened on the first live build, nine calls out of nine.
+    """
     lines = ["Tables on self.db:"]
     for table in sorted(schema.tables):
-        columns = sorted({c.name for c in schema.columns if c.table == table})
-        lines.append(f"- {table}: {', '.join(columns) if columns else '(no columns observed)'}")
+        columns = sorted((c for c in schema.columns if c.table == table), key=lambda c: c.name)
+        names = ", ".join(c.name for c in columns) if columns else "(no columns observed)"
+        lines.append(f"- {table}: {names}")
+        for column in columns:
+            if "dict" in (column.evidence or {}).get("types", []) and column.samples:
+                lines.append(f"    {table}.{column.name} looks like: {column.samples[0]}")
     return "\n".join(lines)
+
+
+def _confinement_block() -> str:
+    """The confinement gate's own rules, in words, generated from the gate's own constants.
+
+    The first live build spent four of sixteen tools discovering these by being refused: the model
+    reached for `getattr` and `__dict__` because nothing had told it not to, and each refusal cost
+    an attempt to learn one rule. Written out here it costs nothing, because this text sits in the
+    stable system prefix that every call of the stage reuses from the provider's cache.
+
+    Generated rather than written so the two can never drift: if sandbox.py starts denying a name,
+    the prompt says so on the next build without anyone remembering to edit it.
+    """
+    return ("The body is checked before it runs and is refused if it names anything outside the "
+            "customer's world. It may not use: " + ", ".join(sorted(DENIED_BUILTINS)) + ". It may "
+            "not touch a dunder attribute (`__dict__`, `__class__`, `__globals__` and the rest). "
+            "It may import only: " + ", ".join(sorted(ALLOWED_IMPORTS)) + ". Read fields by name "
+            "(`order.status`) or by key (`self.db.orders[order_id]`), never through getattr.")
 
 
 def _stable_system(schema: Optional[EntitySchema] = None, tool_names: Iterable[str] = ()) -> str:
     """`_SYSTEM` plus what every tool in this build shares: one prefix, sent unchanged on every
     call of the stage, long enough on a real customer to clear a provider's cache minimum."""
-    parts = [_SYSTEM]
+    parts = [_SYSTEM, _confinement_block()]
     if schema is not None:
         parts.append(_schema_block(schema))
     names = sorted(set(tool_names))
@@ -542,10 +606,15 @@ def _stable_system(schema: Optional[EntitySchema] = None, tool_names: Iterable[s
 
 def _tool_block(toolsig: ToolSig, examples: Iterable[ToolCall]) -> str:
     """What differs call to call: this one tool, its signature and its recorded calls."""
+    if is_scalar_result(toolsig):
+        result_line = ("Result: a bare " + _annotation(toolsig.result_schema[0].types)
+                       + ", returned directly, not as {\"value\": ...} or any other wrapper object")
+    else:
+        result_line = "Result fields: " + ", ".join(f.name for f in toolsig.result_schema)
     parts = [f"Tool: {toolsig.name}",
              f"Description: {toolsig.description or 'not declared by the customer'}",
              "Arguments: " + ", ".join(f"{f.name} ({_annotation(f.types)})" for f in toolsig.args_fields),
-             "Result fields: " + ", ".join(f.name for f in toolsig.result_schema),
+             result_line,
              "Recorded calls:", _example_block(examples)]
     return "\n".join(parts)
 
@@ -575,6 +644,15 @@ def _append_retry(messages: list[dict], reply_content: str, evidence: Iterable[T
     turn = "Recorded calls:\n" + _example_block(evidence) + "\n\nThe previous body failed these gates:\n" + failure
     return messages + [{"role": "assistant", "content": reply_content},
                        {"role": "user", "content": turn}]
+
+
+def _context_cap_error() -> tuple:
+    """budget.py's D65 refusal, imported late so this module does not need budget.py to exist."""
+    try:
+        from harness.shared.budget import ContextCapExceeded
+        return (ContextCapExceeded,)
+    except Exception:  # pragma: no cover - budget.py is always importable in this package
+        return ()
 
 
 def prompt_chars(messages: Iterable[dict]) -> int:
@@ -623,6 +701,26 @@ def _held_out_only(gates: list[GateResult]) -> bool:
     """True when the held-out replay is the only gate that failed, so no shown call can be shown."""
     failed = [g for g in gates if not g.passed]
     return bool(failed) and all(g.metrics.get("split") == "held_out" for g in failed)
+
+
+def _constant_evidence_note(evidence: Iterable[ToolCall]) -> str:
+    """Said once, when the calls just shown already share one answer among themselves.
+
+    Gate 4 fails a body that answers every call the same way, and the failure line reads like an
+    instruction to make the answers differ. For a tool whose own recorded calls differ in nothing
+    but their arguments, that is not a defect the next attempt can write its way out of; it is
+    what the evidence says the tool does. Left unsaid, the model takes gate 4 at its word and
+    invents a categorization the traces never showed. transfer_to_human_agents did exactly that on
+    the first live build: every recorded call answered "Transfer successful" whatever the summary,
+    three repair attempts each added logic to make the answers differ, and the last used a name it
+    never imported and crashed on every call.
+    """
+    results = [canon(parse_result(call.result)) for call in evidence if call.error is None]
+    if len(results) < 2 or len(set(results)) != 1:
+        return ""
+    return ("\nThe recorded calls above already answer every one of them the same way. If your body "
+            "does too, that may be the correct behaviour; do not invent a detail the calls never "
+            "showed just to make the answers differ.")
 
 
 def _failure_text(gates: list[GateResult], held_out: Iterable[ToolCall] = ()) -> str:
@@ -729,13 +827,40 @@ def compile_tool(model, toolsig: ToolSig, calls: Iterable[ToolCall], schema: Ent
             messages = body_messages(toolsig, evidence, schema=schema, tool_names=tool_names)
         else:
             messages = _append_retry(messages, reply_content, evidence, failure)
+        # Fewer whole calls, never a shortened one. `_example_block` refuses to cut a call in
+        # half and that stays true: what is dropped here is the last recorded call, entire. The
+        # first live build refused `get_order_details` outright at 815,972 characters, because the
+        # last-resort evidence is every shown call and this corpus has hundreds of them; a body
+        # written from thirty complete calls is worth more than an attempt not taken.
+        while (max_evidence_chars is not None and len(evidence) > 1
+               and prompt_chars(messages) > max_evidence_chars):
+            evidence = evidence[:-1]
+            node["evidence_calls"] = len(evidence)
+            messages = (body_messages(toolsig, evidence, schema=schema, tool_names=tool_names)
+                        if attempt == 0 else _append_retry(messages[:-2], reply_content, evidence, failure))
         size = prompt_chars(messages)
         if max_evidence_chars is not None and size > max_evidence_chars:
             node["failures"] = [f"a prompt of {size} characters is over the cap "
                                 f"of {max_evidence_chars}; refused, not truncated"]
             build.nodes.append(dict(node, refused=True))
             break
-        reply = model.query(messages)
+        try:
+            reply = model.query(messages)
+        except _context_cap_error() as refusal:
+            # `max_evidence_chars` above is not enough on its own, and the first live build is
+            # what showed it. It counts the characters of the message contents; budget.py counts
+            # the tokens of the JSON the request will actually carry, which is larger by the
+            # envelope and by every escaped quote and newline in a tool result. A prompt of
+            # 358,580 content characters was under the 320,000 cap on nothing and over the 80,000
+            # token cap at 89,645. No constant reconciles two different measures, so the one that
+            # is authoritative is the one the wrapper raises, and it is caught here.
+            #
+            # Before this it left compile_tool and killed the build: one tool with a large corpus
+            # took the other thirteen with it. The stage already has a word for a tool it could not
+            # write, so the refusal becomes that word: assisted (D49), and the build carries on.
+            node["failures"] = [f"{refusal}; refused, not truncated"]
+            build.nodes.append(dict(node, refused=True))
+            break
         reply_content = reply.content or ""
         body = _strip_fence(reply_content)
         source = module_source(schema, [toolsig], {toolsig.name: body})
@@ -749,6 +874,8 @@ def compile_tool(model, toolsig: ToolSig, calls: Iterable[ToolCall], schema: Ent
         if node["passed"]:
             break
         failure = "\n" + _failure_text(gates, held_out)
+        if any(g.stage == "non_trivial" and not g.passed for g in gates):
+            failure += _constant_evidence_note(evidence)
     build.assisted = not build.nodes[-1]["passed"]
     directory = workdir / NODE_DIR
     directory.mkdir(parents=True, exist_ok=True)

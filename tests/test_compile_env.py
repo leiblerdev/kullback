@@ -1053,3 +1053,224 @@ def test_a_user_requestor_call_is_not_a_row_sighting(sample, schema):
     observations = ce._observations([_trace("t1", [seen, user_side])], schema, set())
     assert observations
     assert all(o.order[1] == 0 for o in observations)
+
+
+def test_the_mined_id_pattern_actually_guards_referenced_ids():
+    """A pattern the miner recorded must reject an argument that is not an id of that table.
+
+    `mine_schema` keys its patterns `table.column` and this guard used to look them up by the table
+    alone, so on every mined schema the lookup missed, the pattern came back None and the guard let
+    every argument through. The regression this test holds is that the guard does something at all.
+    """
+    schema = EntitySchema(
+        tables=["orders"],
+        columns=[Column(table="orders", name="order_id", **{"class": "hard"}, classified_by="rule")],
+        id_patterns={"orders.order_id": r"^#W\d+$"},
+    )
+    traces = [_trace("t1", [
+        _call("get_order_details", {"order_id": "#W123"}, result='{"order_id": "#W123"}', idx=0),
+        _call("get_order_details", {"order_id": "not-an-order"}, result="{}", idx=1),
+    ])]
+    assert ce.referenced_ids(traces, schema) == [("orders", "#W123")]
+
+
+def test_the_id_pattern_lookup_reads_a_hand_written_schema_too():
+    """A schema written by hand keys the pattern by the table; both keys must resolve."""
+    from harness.builder.sandbox import id_pattern_for
+
+    by_column = EntitySchema(tables=["orders"], id_patterns={"orders.order_id": r"^#W\d+$"})
+    by_table = EntitySchema(tables=["orders"], id_patterns={"orders": r"^#W\d+$"})
+    assert id_pattern_for(by_column, "orders", "order_id") == r"^#W\d+$"
+    assert id_pattern_for(by_table, "orders", "order_id") == r"^#W\d+$"
+    assert id_pattern_for(by_column, "orders", "user_id") is None
+
+
+def test_a_tool_the_model_wrapper_refuses_on_size_does_not_take_the_build_with_it(
+    make_test_model, schema, sigs, db0, workdir, order_calls
+):
+    """The live case: budget.py counts the request, compile_env counts the contents, and only the
+    first one is authoritative. A refusal from the wrapper has to land as an assisted tool."""
+    from harness.shared.budget import ContextCapExceeded
+
+    class Refusing:
+        name = "refusing"
+        calls = 0
+
+        def query(self, messages, tools=None, config=None):
+            Refusing.calls += 1
+            raise ContextCapExceeded(89_645, 80_000, 200_000)
+
+    build = ce.compile_tool(Refusing(), sigs[0], order_calls, schema, db0, workdir)
+    assert Refusing.calls == 1, "it should not keep retrying a prompt that is too big"
+    assert build.nodes[-1]["refused"] is True
+    assert build.assisted is True
+    assert "refused, not truncated" in build.nodes[-1]["failures"][0]
+
+
+def test_a_refusal_on_size_is_the_only_exception_compile_tool_swallows(
+    make_test_model, schema, sigs, db0, workdir, order_calls
+):
+    class Broken:
+        name = "broken"
+
+        def query(self, messages, tools=None, config=None):
+            raise RuntimeError("the provider is down")
+
+    with pytest.raises(RuntimeError, match="the provider is down"):
+        ce.compile_tool(Broken(), sigs[0], order_calls, schema, db0, workdir)
+
+
+def test_a_relative_workdir_still_finds_the_runner_it_just_wrote(tmp_path, monkeypatch, db0, sigs, schema, order_calls):
+    """The sandbox subprocess runs with cwd inside its own directory, so a relative path handed in
+    would be resolved against that directory a second time and every path would double. The first
+    live build failed all sixteen tools this way; every test until now passed an absolute tmp_path."""
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "work").mkdir()
+    source = ce.module_source(schema, sigs[:1], {"get_order_details": "return {}"})
+    box = ce.Sandbox(source, db0, "work")
+    assert box.dir.is_absolute() and box.runner.is_file()
+    box.run([order_calls[0]])
+
+
+def test_the_prompt_states_the_rules_the_gate_will_enforce(schema, sigs):
+    """Four of sixteen tools were refused on the first live build for reaching for names nothing
+    had told the model about. The rules are in the stable prefix, so saying them is free."""
+    from harness.builder.sandbox import ALLOWED_IMPORTS, DENIED_BUILTINS
+
+    system = ce.body_messages(sigs[0], [], schema=schema)[0]["content"]
+    for name in DENIED_BUILTINS:
+        assert name in system, f"the gate denies {name} and the prompt never says so"
+    for name in ALLOWED_IMPORTS:
+        assert name in system
+    assert "dunder" in system
+
+
+def test_the_rules_in_the_prompt_are_generated_from_the_gate_not_copied(monkeypatch):
+    """A hand-written copy drifts the first time the gate changes; a generated one cannot."""
+    monkeypatch.setattr(ce, "DENIED_BUILTINS", frozenset({"summon_a_demon"}))
+    assert "summon_a_demon" in ce._confinement_block()
+
+
+def test_evidence_shrinks_by_whole_calls_rather_than_giving_up(
+    make_test_model, schema, sigs, db0, workdir, order_calls
+):
+    """The live build refused `get_order_details` at 815,972 characters because the last-resort
+    evidence is every shown call. Dropping whole calls keeps the attempt; no call is ever cut."""
+    model = make_test_model([CORRECT_BODY] * 4)
+    one_call = len(ce._example_block(order_calls[:1]))
+    cap = len(ce.body_messages(sigs[0], [], schema=schema)[0]["content"]) + 4 * one_call
+    build = ce.compile_tool(model, sigs[0], order_calls, schema, db0, workdir,
+                            max_evidence_chars=cap)
+    assert model.calls, "the attempt was taken rather than refused"
+    assert build.nodes[0]["refused"] is False
+    assert 1 <= build.nodes[0]["evidence_calls"] <= 3
+    # what went out is whole calls: the block ends where a call ends, never mid row.
+    sent = model.calls[0]["messages"][-1]["content"]
+    assert not sent.rstrip().endswith(",")
+
+
+def test_a_single_call_that_cannot_fit_is_still_refused_not_cut(
+    make_test_model, schema, sigs, db0, workdir, order_calls
+):
+    model = make_test_model([CORRECT_BODY] * 4)
+    build = ce.compile_tool(model, sigs[0], order_calls, schema, db0, workdir, max_evidence_chars=10)
+    assert model.calls == []
+    assert build.nodes[-1]["refused"] is True
+    assert build.assisted is True
+
+
+def test_a_scalar_result_tool_is_described_as_a_bare_value_not_an_object():
+    """calculate's traces record a bare number ("-121.2"), never {"value": ...}. The prompt has to
+    say so, or the model reaches for the one-field-object shape it uses for any other tool whose
+    result_schema lists one name, and every replay against the real tool fails."""
+    from harness.builder.mine import SCALAR_RESULT_FIELD
+
+    calc = ToolSig(name="calculate", description="Calculate the result of an expression.",
+                   args_fields=[FieldStat(name="expression", types=["str"], optional=False)],
+                   result_schema=[FieldStat(name=SCALAR_RESULT_FIELD, types=["str"], count=3, optional=False)],
+                   kind="generic", unclassified=False)
+    block = ce._tool_block(calc, [_call("calculate", {"expression": "1 + 1"}, result="2")])
+    assert "Result fields:" not in block
+    assert 'Result: a bare str, returned directly, not as {"value": ...}' in block
+    assert "a bare str, not wrapped in an object" in ce._docstring(calc)
+
+
+def test_the_prompt_says_rows_are_pydantic_models_not_dicts(schema, sigs):
+    """modify_pending_order_payment called order.get("payment_history") on the live build and
+    crashed with AttributeError. The prompt said self.db holds one dict per table and never said
+    what is inside the dict."""
+    system = ce.body_messages(sigs[0], [], schema=schema)[0]["content"]
+    assert "pydantic model rows" in system
+    assert ".get(" in system  # named as what not to do
+
+
+def test_the_schema_block_shows_a_sample_of_a_dict_shaped_column():
+    """products.variants and a mined "items" table carried the same rows on the live corpus, and
+    nothing in the block said so beyond the bare column name."""
+    schema = EntitySchema(tables=["items", "products"], columns=[
+        Column(table="items", name="item_id", **{"class": "hard"}, classified_by="rule"),
+        Column(table="products", name="variants", **{"class": "hard"}, classified_by="rule",
+               evidence={"types": ["dict"]},
+               samples=['{"9612497925":{"item_id":"9612497925","price":50.88}}'])])
+    block = ce._schema_block(schema)
+    assert 'products.variants looks like: {"9612497925":{"item_id":"9612497925","price":50.88}}' in block
+
+
+def test_the_schema_block_stays_quiet_for_a_column_with_no_dict_samples():
+    schema = EntitySchema(tables=["orders"], columns=[
+        Column(table="orders", name="status", **{"class": "hard"}, classified_by="rule",
+               evidence={"types": ["str"]}, samples=["pending"])])
+    assert "looks like:" not in ce._schema_block(schema)
+
+
+def test_constant_evidence_note_speaks_only_when_the_recorded_calls_already_agree(order_calls):
+    same = [_call("transfer_to_human_agents", {"summary": s}, result="Transfer successful", idx=i)
+            for i, s in enumerate("ab")]
+    assert "already answer every one of them the same way" in ce._constant_evidence_note(same)
+    assert ce._constant_evidence_note(order_calls) == ""
+    assert ce._constant_evidence_note(same[:1]) == ""
+
+
+def test_a_repair_prompt_says_the_evidence_already_agrees_when_gate_four_fails_on_it(
+    make_test_model, workdir
+):
+    """transfer_to_human_agents's own recorded calls all answer "Transfer successful". A body that
+    also answers that way should not be told to invent detail."""
+    schema = EntitySchema(tables=[], columns=[])
+    sig = ToolSig(name="transfer_to_human_agents", kind="generic", unclassified=False,
+                  args_fields=[FieldStat(name="summary", types=["str"], optional=False)])
+    calls = [_call("transfer_to_human_agents", {"summary": f"issue {i}"},
+                   result="Transfer successful", idx=i) for i in range(4)]
+    model = make_test_model(['return "Transfer successful"'] * 4)
+    ce.compile_tool(model, sig, calls, schema, {}, workdir)
+    assert len(model.calls) >= 2, "gate 4 fails a constant body, so a retry happens"
+    assert "already answer every one of them the same way" in model.calls[1]["messages"][-1]["content"]
+
+
+def test_the_example_block_peels_the_transport_error_prefix_off_the_payload():
+    """tau2 wraps every raised exception as "Error: {e}" before the agent sees it. A model that
+    copies the payload verbatim raises ValueError("Error: User not found") where the real tool
+    raises ValueError("User not found"); seven bodies did on the first live build."""
+    calls = [_call("find_user_id_by_email", {"email": "a@example.com"},
+                   error=ToolCallError(**{"class": "not_found_entity"}, payload="Error: User not found"))]
+    block = ce._example_block(calls)
+    assert "'User not found'" in block
+    assert "Error: User not found" not in block
+
+
+def test_the_example_block_leaves_a_payload_with_no_transport_prefix_alone():
+    calls = [_call("get_order_details", {"order_id": "#W0000000"},
+                   error=ToolCallError(**{"class": "not_found_entity"}, payload="Order not found"))]
+    assert "'Order not found'" in ce._example_block(calls)
+
+
+def test_the_example_block_does_not_peel_a_prefix_out_of_a_json_payload():
+    """D67's code-classified errors carry a structured payload; the prefix is a string artifact."""
+    calls = [_call("find_user_id_by_email", {"email": "a@example.com"},
+                   error=ToolCallError(**{"class": "not_found_entity"},
+                                       payload={"message": "Error: User not found"}))]
+    assert "{'message': 'Error: User not found'}" in ce._example_block(calls)
+
+
+def test_the_system_prompt_says_the_transport_prefix_is_already_removed():
+    assert "transport's leading 'Error: '" in ce._SYSTEM

@@ -668,3 +668,13 @@ okay cool! we need to now segregrate stuff from the folders and organize to stre
 2026-08-28: "lovely you did copy everything right ? website folder is not organized well, organize it well pelase."
 
 2026-08-28: "everything pusehdc right ? delete the old folder which was inside website/leibler - we contienue development in dprogramming/leibler."
+
+2026-08-29: "did you apply mut mut ? and qa for hardening of the existing harness ?"
+
+2026-08-29: "https://trymaitai.com/ we need execution monitoring and production monitoring as well haha, we need to mine those from the traces right ? just have these in todo please."
+
+2026-08-29: "continue improving the harness please, kill all the mutants ( which are relevant please ) and what are the next task you are doing to do ?"
+
+> do we actually need to test stuff now ? i can drop in the env keys to see how well we can generate the environments ? by using the harness ? also can you create a cool tui ( which is essentially like open code and stuff ? ) would be nice core feature only ( inspired from pi ) where you have printed kullback ? https://www.feynman.is/ use this as a refernce please ( differnece over pi, this is built on top of pi ) as well so difference between them would exactly tell us how to build the harness.
+
+> we are creating the harness we should be able have a tui and stuff please.

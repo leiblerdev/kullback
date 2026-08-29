@@ -372,5 +372,16 @@ def report(
     typer.echo(str(write_report(data, target.parent, target.name)))
 
 
+@app.command()
+def tui(
+    workdir: Path = WORKDIR,
+    model: Optional[str] = typer.Option(None, "--model", help="Builder model id, as provider/model."),
+    base_url: Optional[str] = typer.Option(None, "--base-url", help="Endpoint for an OpenAI-compatible model."),
+    ceiling_usd: Optional[float] = typer.Option(None, "--ceiling-usd", help="Per-build spend ceiling (D86)."),
+):
+    """Open the kullback screen: one build, its stages, its gates and its spend, while it runs."""
+    _entry("harness.tui", "loop")(workdir=workdir, model=model, base_url=base_url, ceiling_usd=ceiling_usd)
+
+
 if __name__ == "__main__":
     app()

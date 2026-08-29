@@ -6,7 +6,7 @@ import json
 from pathlib import Path
 from typing import Any, Iterable, Optional
 
-from harness.builder import cluster, compile_env, ingest, memory, mine, policy, user_sim
+from harness.builder import cluster, compile_env, ingest, memory, mine, policy, sandbox, user_sim
 from harness.builder import verifier as verifier_mod
 from harness.runner import loop, pipeline, route, validate
 from harness.shared import budget, canon, provider
@@ -234,7 +234,13 @@ def _tools_stage(model: Any, max_attempts: int):
 
     return pipeline.Stage(name="compile_tools", fn=run, builder=True,
                           inputs=("traces", "tasks", "sigs", "schema", "db", "overlays", "canon_rules"),
-                          outputs=("bodies", "assisted_tools"), gate=gate)
+                          outputs=("bodies", "assisted_tools"), gate=gate,
+                          # R42 for the stage that needs it most. compile_tools delegates the whole
+                          # of its work to compile_env and sandbox, and until the first live build
+                          # it hashed neither: a fix to the sandbox left every broken body in the
+                          # cache and `--iterate` handed them straight back.
+                          code_version=f"compile_tools:{getattr(model, 'name', 'none')}:"
+                                       f"{_module_hash(compile_env)}:{_module_hash(sandbox)}")
 
 
 def _seed_traces(ctx, tasks, traces) -> set[str]:
@@ -418,14 +424,15 @@ def _verifier_stage():
 
 def build(workdir: Any, iterate: bool = False, model: Any = None, files: Optional[list] = None,
           ceiling_usd: Optional[float] = None, domain: str = "domain",
-          max_attempts: int = 3, memory_dir: Any = None) -> dict:
+          max_attempts: int = 3, memory_dir: Any = None, on_event: Optional[Any] = None) -> dict:
     """Read the ingested Traces and write the Environment, the Tasks and one Verifier each.
 
     `model` is the Builder's model, already an adapter; nothing here constructs one (build brief
     rule 2). It is wrapped in `budget.BudgetedModel` before any stage sees it, so every call is
     priced into budget.json and refused past the D65 context cap. `iterate` keeps the
     content-addressed cache, which is what makes a repeat build cheap; without it the cache is
-    dropped and every stage runs again.
+    dropped and every stage runs again. `on_event` is handed to both Pipelines so a live view can
+    watch one build across the two of them; nothing here reads it.
     """
     workdir = Path(workdir)
     workdir.mkdir(parents=True, exist_ok=True)
@@ -447,7 +454,7 @@ def build(workdir: Any, iterate: bool = False, model: Any = None, files: Optiona
     read = pipeline.Pipeline(
         [s for s in [_ingest_stage(workdir, to_ingest) if to_ingest else None,
                      _mine_stage(), _cluster_stage()] if s is not None],
-        workdir, ceiling=ceiling)
+        workdir, ceiling=ceiling, on_event=on_event)
     first = read.run({} if to_ingest else {"traces": load_traces(workdir)})
     # Pipeline.run() writes its own statuses, log and gates to pipeline/state.json unconditionally;
     # the second Pipeline below writes the same fixed path and would otherwise overwrite this one's
@@ -469,7 +476,7 @@ def build(workdir: Any, iterate: bool = False, model: Any = None, files: Optiona
         [_canon_stage(), _state_stage(), _tools_stage(builder_model, max_attempts),
          _policy_stage(policy_model), _lessons_stage(lessons_model, memory_dir),
          _user_rules_stage(), _environment_stage(domain), _verifier_stage()],
-        workdir, anchor=anchor, ceiling=ceiling)
+        workdir, anchor=anchor, ceiling=ceiling, on_event=on_event)
     result = second.run(dict(first.artifacts))
     result.gates = list(first.gates) + list(result.gates)
     _merge_pipeline_state(workdir, first_state)

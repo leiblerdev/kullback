@@ -524,6 +524,98 @@ The number at the best threshold is the same either way; what changes is that th
 
 Where research pulls the other way: the unweighted measure at 0.6 scores marginally higher on this one corpus (0.720 versus 0.717), so this is a trade of a third of a point of F1 for a flat curve. On a corpus whose traces share more boilerplate than tau2 retail's, the flat curve is worth more than the point.
 
+### D101. Tool kind comes from what the calls show, not from a verb list (2026-08-29)
+
+`propose_kind` decided read or write from `READ_PREFIXES` and `WRITE_PREFIXES`, which are retail's own
+verb vocabulary. The cross-domain check showed what that costs off retail: airline's `book_reservation`
+and `send_certificate` and telecom's `send_payment_request` are real writes mined as reads, so no
+Category write signature ever contained a booking, a certificate or a payment request.
+
+The lists are not widened. Three signals read off the recorded calls now decide, and the name rule is
+only what is left when none of them speaks:
+
+1. A later read shows a field this call changed, and no other call explains it. Unchanged, D68.
+2. Most of what came back is what the call sent. A read answers with the world; a create answers with
+   what you handed it. Measured across all three domains the two do not overlap: `book_reservation`
+   sits at 0.81 and the highest read anywhere sits at 0.20.
+3. Every call answered with a message rather than data, the tool was handed something that names a row,
+   and no read of that row ever showed it unmoved. This is the weakest of the three and the only one
+   held to `MIN_OBSERVED_CALLS`, the floor the mine gate already uses: a tool seen once or twice stays
+   unclassified and flagged rather than being called a write on its answer shape alone.
+
+Alongside them, `quiet_tools` reads the same evidence the other way: two identical reads that bracket a
+call with nothing changed are evidence against a write. A read only counts as evidence about a call
+when the read asked about what the call named, which mirrors how `_explains` credits a change.
+
+Result, with nothing tuned per domain: kind is exact on all three, 15/15 retail, 14/14 airline, 9/9
+telecom, against 15/15, 12/14 and 8/9 before.
+
+Where this pulls the other way: airline's cluster pair F1 falls from 0.788 to 0.756, because two real
+writes now enter the Category signature and split Runs that a missing write had held together. The
+signature is more truthful and the clustering is slightly worse, and the signature is the thing the
+Verifier rests on, so the trade is taken.
+
+### D102. An id is a column the calls address and that is distinct per row (2026-08-29)
+
+`_is_id` was `name == "id" or name.endswith("_id")`, which is retail's id convention. Airline's
+`flight_number` defeats it completely: the `flights` table was never proposed despite 338 calls
+showing its rows, and every Gate A loss on airline traced back to it.
+
+`id_columns` now reads the corpus for two things at once. The column is passed as an argument by some
+call, which is what makes it an id rather than a value; and wherever a result came back with several
+rows carrying it, every one of those rows had a different value for it, which is what an id does and
+what a status, a price or a filter does not. No threshold and no vocabulary, so nothing here is fitted
+to a domain: being addressed alone would make `origin` an id of every flight search.
+
+`id_field` reads the columns the miner recorded a pattern for after its three name candidates, which
+is how a table whose id the name rule cannot see stops being proposed and left empty.
+
+### D103. A tool is about the noun before the preposition (2026-08-29)
+
+`_table_of` walked a row's `_id` keys and took the first whose singular appeared anywhere in the tool
+name. Telecom filed every `Bill` under `customers`, because `customer` is a token of
+`get_bills_for_customer` and `bill` is not, and the `bills` table was lost entirely.
+
+A tool name says what it is about before any preposition and how it is addressed after one. The noun
+is now the head of the run before the first preposition, and the tie-break is: the id whose entity is
+that noun; then the id whose values are distinct across the rows this one came back with, which a
+foreign key's are not; then the only id there is.
+
+Result: airline recovers `flights` (3/3 tables) and telecom recovers `bills` (5/5), retail unchanged
+at 3/3, and every field our rows carry that the real rows also carry is exact on all three
+(1559/1559, 2393/2393, 83/84).
+
+### D104. The mined id patterns were never actually read (2026-08-29)
+
+Found while threading D102 through, and not a cross-domain issue at all. `mine_schema` records a
+pattern per column keyed `table.column`; `match_table` and `referenced_ids` looked it up by the table
+alone. On every mined schema the lookup missed, the pattern came back `None`, and both guards let
+every candidate through whatever its id looked like. `id_pattern_for` reads either key, and a test
+holds that the guard rejects an argument that is not an id of that table.
+
+### D105. The screen is the pipeline, not a chat (2026-08-29)
+
+Asked for a TUI "inspired from pi", with feynman.is named as the reference because it is built on
+top of Pi and the difference between them is supposed to tell us what to build. The difference is
+not a better chat. Feynman keeps Pi's loop and adds two things: named workflows over one domain
+(`/deepresearch`, `/lit`, `/replicate`, `/audit`) and provenance for what each one produced. Both
+of those already exist here under other names. The stage graph is the named workflow and the
+content-addressed cache is the provenance, so the screen invents neither: it lists the stages
+pipeline.py is about to run, marks the one running, and shows the cache hash each stage wrote.
+
+What it adds that no file gave us before is timing: `pipeline/state.json` is written once, when
+the pipeline is done, so until now a build in progress was invisible. `Pipeline` now takes an
+`on_event` callback and emits a stage start, a stage end, every gate result and the final status.
+The callback is a screen, not a stage, so anything it raises is swallowed: a view that dies has no
+business failing a build that was going fine, and there is a test for that.
+
+The two numbers that decide a live build are on it and nowhere else together: what the gates said,
+and what has been spent against the D86 ceiling. Both are read back from the files the build
+writes, never from state the screen keeps, so closing the screen loses nothing.
+
+Left out on purpose: a chat pane, a tool picker, an approval prompt, a diff view. The pipeline is
+the conversation. `harness tui` opens it; `/build`, `/run`, `/status`, `/keys` are the commands.
+
 ## Pending (asked, not yet answered)
 
 - D71 provisional (user-side writes); I want more discussion: Simulated user tools, interaction with sequence Hard constraints, required vs allowed. Three questions, to take up when I'm ready.

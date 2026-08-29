@@ -11,9 +11,11 @@ import pytest
 
 from conftest import PTR
 from harness.builder.mine import (
+    SCALAR_RESULT_FIELD,
     classify_column,
     classify_kind,
     gate_tools,
+    is_scalar_result,
     mine_schema,
     mine_tools,
     propose_column_class,
@@ -128,10 +130,14 @@ def test_mine_tools_result_and_args_schema_from_observed_results(fixture_traces)
     assert order.args_schema["required"] == ["order_id"]
 
 
-def test_mine_tools_scalar_result_becomes_a_value_field(fixture_traces):
+def test_mine_tools_scalar_result_is_marked_apart_from_a_field_named_value(fixture_traces):
+    """A bare scalar result is not an object with one field named value: mixing the two up is
+    what made every generated calculate body wrap its answer in {"value": ...} and fail replay
+    against the real tool's bare number (docs/live-build.md)."""
     find = sig_by_name(mine_tools(fixture_traces), "find_user_id_by_name_zip")
-    assert [f.name for f in find.result_schema] == ["value"]
+    assert [f.name for f in find.result_schema] == [SCALAR_RESULT_FIELD]
     assert find.result_schema[0].types == ["str"]
+    assert is_scalar_result(find)
 
 
 def test_mine_tools_kind_by_code_rule(fixture_traces):
@@ -1131,3 +1137,151 @@ def test_an_id_shape_that_appears_late_is_still_matched_by_the_pattern():
     assert all(re.fullmatch(pattern, v) for v in values)
     tight = id_pattern([f"u_{i}" for i in range(200)])
     assert tight == r"^[A-Za-z]+_\d+$"
+
+
+# --- kind and table naming, against the domains the retail rules missed ------
+# docs/cross-domain-check.md: every case below is a tool or a table that airline or telecom got
+# wrong and retail never exercised. The retail-shaped cases at the end must keep their old answer.
+
+
+def test_a_tool_that_returns_what_it_was_sent_is_a_write():
+    """Airline's `book_reservation`: no write verb in the name and no field it visibly changed.
+
+    A read answers with the world; a create answers with what you handed it. On all three tau2
+    domains `book_reservation` is the only tool where most of the result came back out of the
+    arguments, at 0.81 against 0.20 for the highest read.
+    """
+    booked = {"reservation_id": "R1", "user_id": "u_1", "origin": "LAS", "destination": "DEN",
+              "cabin": "economy", "insurance": "yes", "total_baggages": 2}
+    traces = [one_trace("t1", [
+        {"name": "book_reservation",
+         "args": {"user_id": "u_1", "origin": "LAS", "destination": "DEN", "cabin": "economy",
+                  "insurance": "yes", "total_baggages": 2},
+         "result": json.dumps(booked)},
+    ])]
+    sig = sig_by_name(mine_tools(traces), "book_reservation")
+    assert sig.kind == "write"
+    assert sig.classified_by == "observed"
+    assert "what the call sent" in sig.kind_reason
+
+
+def test_a_tool_that_answers_with_a_message_about_a_row_it_was_handed_is_a_write():
+    """Airline's `send_certificate` and telecom's `send_payment_request`, which return a sentence.
+
+    Neither matches a write verb, neither returns a row, and neither was ever bracketed by two
+    identical reads of the thing it touched, so the two stronger signals say nothing about them.
+    """
+    traces = [one_trace(f"t{i}", [
+        {"name": "send_payment_request", "args": {"customer_id": "C1", "bill_id": f"B{i}"},
+         "result": "Payment request sent."},
+    ]) for i in range(3)]
+    sig = sig_by_name(mine_tools(traces), "send_payment_request")
+    assert sig.kind == "write"
+    assert sig.classified_by == "observed"
+
+
+def test_a_message_tool_the_corpus_barely_shows_stays_unclassified():
+    """The weakest signal is held to the same floor as the mine gate: flag, never synthesize."""
+    traces = [one_trace("t1", [
+        {"name": "send_payment_request", "args": {"customer_id": "C1", "bill_id": "B1"},
+         "result": "Payment request sent."},
+    ])]
+    sig = sig_by_name(mine_tools(traces), "send_payment_request")
+    assert sig.kind == "read"
+    assert sig.unclassified is True
+
+
+def test_a_message_tool_an_unchanged_read_brackets_is_not_called_a_write():
+    """Positive evidence of quiet beats the answer-shape guess."""
+    calls = []
+    for _ in range(3):
+        calls += [
+            {"name": "get_line", "args": {"line_id": "L1"}, "result": '{"line_id": "L1", "state": "on"}'},
+            {"name": "ping_line", "args": {"line_id": "L1"}, "result": "ok"},
+            {"name": "get_line", "args": {"line_id": "L1"}, "result": '{"line_id": "L1", "state": "on"}'},
+        ]
+    sig = sig_by_name(mine_tools([one_trace("t1", calls)]), "ping_line")
+    assert sig.kind == "read"
+
+
+def test_quiet_evidence_needs_a_read_that_asked_about_what_the_call_named():
+    """A reservation names its user in its body, and reading it twice says nothing about the user.
+
+    Reading the answer rather than the question is what kept `send_certificate` mined as a read
+    even after the quiet rule went in: every airline trace reads a reservation twice, and every
+    reservation body carries the `user_id` the certificate was sent to.
+    """
+    calls = []
+    for _ in range(3):
+        body = '{"reservation_id": "R1", "user_id": "u_1", "cabin": "economy"}'
+        calls += [
+            {"name": "get_reservation_details", "args": {"reservation_id": "R1"}, "result": body},
+            {"name": "send_certificate", "args": {"user_id": "u_1", "amount": 100},
+             "result": "Certificate certificate_1 added to user u_1 with amount 100."},
+            {"name": "get_reservation_details", "args": {"reservation_id": "R1"}, "result": body},
+        ]
+    sig = sig_by_name(mine_tools([one_trace("t1", calls)]), "send_certificate")
+    assert sig.kind == "write"
+
+
+def test_the_table_is_the_noun_before_the_preposition_not_after_it():
+    """Telecom filed every Bill under `customers`: `customer` is a token of the tool name, `bill` is not."""
+    row = '{"bill_id": "B1", "customer_id": "C1", "total_due": 10.0, "status": "Draft"}'
+    traces = [one_trace("t1", [
+        {"name": "get_bills_for_customer", "args": {"customer_id": "C1"}, "result": f"[{row}]"},
+    ])]
+    schema = mine_schema(traces)
+    assert "bills" in schema.tables
+    assert "customers" not in schema.tables
+
+
+def test_an_id_column_the_name_rule_cannot_see_is_found_from_the_calls():
+    """Airline's `flights` was never recovered despite 338 calls, because ids there end in `_number`.
+
+    The column is used to address a row and its values are distinct in every result that shows
+    several rows. That is what an id does, and no verb list or suffix list is consulted to see it.
+    """
+    rows = json.dumps([
+        {"flight_number": "HAT001", "origin": "LAS", "destination": "DEN", "status": "available"},
+        {"flight_number": "HAT002", "origin": "LAS", "destination": "DEN", "status": "available"},
+    ])
+    traces = [one_trace("t1", [
+        {"name": "search_direct_flight", "args": {"origin": "LAS", "destination": "DEN"}, "result": rows},
+        {"name": "get_flight_status", "args": {"flight_number": "HAT001"}, "result": '"delayed"'},
+    ])]
+    schema = mine_schema(traces)
+    assert "flights" in schema.tables
+    assert schema.id_patterns.get("flights.flight_number")
+
+
+def test_a_column_shared_by_every_row_of_a_result_is_not_an_id():
+    """`origin` is passed as an argument too, and it is the same on every row a search returns.
+
+    Being addressed is not enough on its own, or every filter a search takes would name a table.
+    """
+    rows = json.dumps([
+        {"flight_number": "HAT001", "origin": "LAS", "destination": "DEN"},
+        {"flight_number": "HAT002", "origin": "LAS", "destination": "DEN"},
+    ])
+    traces = [one_trace("t1", [
+        {"name": "search_direct_flight", "args": {"origin": "LAS", "destination": "DEN"}, "result": rows},
+        {"name": "get_flight_status", "args": {"flight_number": "HAT001"}, "result": '"delayed"'},
+    ])]
+    from harness.builder.mine import id_columns
+
+    found = id_columns(traces)
+    assert "flight_number" in found
+    assert "origin" not in found and "destination" not in found
+
+
+def test_the_retail_shaped_names_keep_their_old_answer():
+    """Nothing above may move retail: its verbs, its `_id` columns and its object nouns are unchanged."""
+    assert propose_kind("get_order_details").kind == "read"
+    assert propose_kind("cancel_pending_order").kind == "write"
+    assert propose_kind("calculate").kind == "generic"
+    traces = [one_trace("t1", [
+        {"name": "get_order_details", "args": {"order_id": "#W1"},
+         "result": '{"order_id": "#W1", "user_id": "u_1", "status": "pending"}'},
+    ])]
+    schema = mine_schema(traces)
+    assert schema.tables == ["orders"]

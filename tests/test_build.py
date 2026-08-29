@@ -220,3 +220,14 @@ def test_a_stage_that_delegates_to_a_module_carries_that_module_in_its_code_vers
     assert len(set(versions.values())) == 3
     assert build_module._policy_stage(None).code_version.endswith(versions["policy"])
     assert build_module._verifier_stage().code_version.endswith(versions["verifier"])
+
+
+def test_the_compile_tools_cache_moves_when_the_modules_it_delegates_to_change(monkeypatch, tmp_path):
+    """R42, for the stage that has the most of its work somewhere else. Without this, a fix to
+    sandbox.py left every body it had already refused sitting in the cache for --iterate to reuse."""
+    from harness.builder import build as bd
+
+    first = bd._tools_stage(None, 3).code_version
+    monkeypatch.setattr(bd.sandbox, "__file__", str(tmp_path / "different.py"))
+    (tmp_path / "different.py").write_text("# not the sandbox we hashed a moment ago\n")
+    assert bd._tools_stage(None, 3).code_version != first
