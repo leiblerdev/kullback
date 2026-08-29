@@ -1,11 +1,13 @@
 """The Simulated user: rules taken exactly from one trace (D44), answers from the trace or the
-world, never invented (D77)."""
+world, never invented (D77). What a fact is, how a turn states it and how an agent asks for it come
+from the Vocabulary the build derived (D115); the generic core is the default."""
 
 from __future__ import annotations
 
 import re
 from typing import Any, Iterable, NamedTuple, Optional
 
+from harness.builder.vocabulary import GENERIC, Vocabulary
 from harness.shared.records import DisclosureRule, Event, Trace, UserFact, UserRules
 
 # Whole sentences the recorded user said, kept verbatim: the goal it opened with, the confirmations
@@ -13,43 +15,6 @@ from harness.shared.records import DisclosureRule, Event, Trace, UserFact, UserR
 # touches these, so a confirmation is repeated exactly as it was given.
 GOAL, CONFIRMATION, CHOICE, CLOSING = "goal", "confirmation", "choice", "closing"
 SPOKEN_FIELDS = (GOAL, CONFIRMATION, CHOICE, CLOSING)
-
-# The fields that say which user this is, used to read the Starting state as that user (D77).
-IDENTITY_FIELDS = ("email", "name", "zip", "phone", "address")
-
-# A value the customer's users state, and the words an agent uses to ask for it. Code only:
-# the model never decides what a fact is, it only words the sentence (design section 7).
-VALUE_PATTERNS: list[tuple[str, re.Pattern]] = [
-    ("email", re.compile(r"[\w.+-]+@[\w-]+\.[\w.-]*\w")),
-    ("order_id", re.compile(r"#?\b[A-Za-z]\d{6,}\b")),
-    ("phone", re.compile(r"\b\d{3}[-. ]\d{3}[-. ]\d{4}\b")),
-    ("card_last4", re.compile(r"(?:last four|last 4|ending in)\D{0,12}(\d{4})\b", re.I)),
-    ("zip", re.compile(r"\b(?:zip|zipcode|postal code|postcode)\D{0,12}(\d{5}(?:-\d{4})?)\b", re.I)),
-    ("name", re.compile(r"\b(?i:my name is|i am|i'm|this is)\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)+)")),
-    ("address", re.compile(r"(?:my address is|the address is)\s+(.+?)(?:\.|$)", re.I)),
-    ("payment_method", re.compile(
-        r"\b(gift card|credit card|debit card|paypal|mastercard|visa|amex|american express)\b", re.I)),
-]
-
-# Bare values with no cue of their own: read only from a turn that answers an ask for that field,
-# so "item 12345" is not a zip and "Mei Kovacs, 28236." after a name ask is a name.
-ASKED_ONLY_PATTERNS: dict[str, re.Pattern] = {
-    "zip": re.compile(r"\b(\d{5}(?:-\d{4})?)\b"),
-    "name": re.compile(r"^[^A-Za-z]*(?:it is |it's |sure[!,.]*\s*)?([A-Z][a-z]+\s+[A-Z][a-z]+)\b"),
-}
-
-# What an agent's request has to say to count as an ask for a field. Word boundaries, so
-# "headphones" is not a phone ask and "address your questions" is not an address ask.
-ASK_CUES: dict[str, tuple[str, ...]] = {
-    "email": (r"\bemail\b",),
-    "order_id": (r"\border (?:id|number|#)\b", r"\bwhich order\b", r"\border#\b"),
-    "zip": (r"\bzip\b", r"\bpostal code\b", r"\bpostcode\b"),
-    "phone": (r"\bphone\b",),
-    "name": (r"\byour (?:first |last |full )?name\b", r"\b(?:first|last|full) name\b"),
-    "address": (r"\byour address\b", r"\b(?:shipping|billing|delivery|mailing) address\b"),
-    "card_last4": (r"\blast four\b", r"\blast 4\b", r"\bcard ending\b"),
-    "payment_method": (r"\bpayment method\b", r"\brefund method\b"),
-}
 
 # A sentence is an ask only when it is a question or asks in so many words.
 REQUEST_CUE = re.compile(
@@ -105,41 +70,45 @@ def _is_request(sentence: str) -> bool:
     return "?" in sentence or bool(REQUEST_CUE.search(sentence))
 
 
-def _value_of(field: str, value: str) -> str:
-    """The stored form of a value: an order id keeps the '#' the customer's tools take."""
+def _value_of(prefix: str, value: str) -> str:
+    """The stored form of a value: an id keeps the mark the customer's tools take (retail's '#')."""
     text = value.strip()
-    if field == "order_id" and not text.startswith("#"):
-        return "#" + text
-    return text
+    return text if not prefix or text.startswith(prefix) else prefix + text
 
 
-def extracted_values(text: Optional[str], asked: Iterable[str] = ()) -> list[tuple[str, str]]:
+def _group(match: re.Match) -> str:
+    return match.group(1) if match.groups() else match.group(0)
+
+
+def extracted_values(text: Optional[str], asked: Iterable[str] = (),
+                     vocab: Vocabulary = GENERIC) -> list[tuple[str, str]]:
     """Every (field, value) a user turn states; `asked` allows the bare values that answer an ask."""
     found: list[tuple[str, str]] = []
     body = (text or "").replace("’", "'")
-    for field, pattern in VALUE_PATTERNS:
-        for match in pattern.finditer(body):
-            found.append((field, _value_of(field, match.group(1) if match.groups() else match.group(0))))
+    for spec in vocab.fields:
+        if spec.pattern:
+            for match in re.finditer(spec.pattern, body):
+                found.append((spec.field, _value_of(spec.prefix, _group(match))))
     for field in asked:
-        pattern = ASKED_ONLY_PATTERNS.get(field)
-        if pattern is None or any(seen == field for seen, _ in found):
+        spec = vocab.get(field)
+        if spec is None or not spec.asked_only or any(seen == field for seen, _ in found):
             continue
-        match = pattern.search(body)
+        match = re.search(spec.asked_only, body)
         if match is not None:
-            found.append((field, _value_of(field, match.group(1))))
+            found.append((field, _value_of(spec.prefix, _group(match))))
     return found
 
 
-def asked_fields(text: Optional[str]) -> list[str]:
+def asked_fields(text: Optional[str], vocab: Vocabulary = GENERIC) -> list[str]:
     """The fields an agent turn asks for: request sentences only, in vocabulary order."""
     requests = [sentence for sentence in _sentences(_norm(text)) if _is_request(sentence)]
     if not requests:
         return []
-    return [field for field, cues in ASK_CUES.items()
-            if any(re.search(cue, sentence) for sentence in requests for cue in cues)]
+    return [spec.field for spec in vocab.fields
+            if any(re.search(cue, sentence) for sentence in requests for cue in spec.cues)]
 
 
-def derive_user_rules(trace: Trace) -> UserRules:
+def derive_user_rules(trace: Trace, vocab: Vocabulary = GENERIC) -> UserRules:
     """Facts, disclosure, refusals and walk-away for one Run, read off the trace's user turns (D44)."""
     rules = UserRules(style_sample=[trace.trace_id])
     seen_values: set[tuple[str, str]] = set()
@@ -151,8 +120,8 @@ def derive_user_rules(trace: Trace) -> UserRules:
     agent_refused = False
     for turn in trace.turns:
         if turn.role == "assistant":
-            stated = {field for field, _ in extracted_values(turn.content)}
-            pending = [field for field in asked_fields(turn.content) if field not in stated]
+            stated = {field for field, _ in extracted_values(turn.content, vocab=vocab)}
+            pending = [field for field in asked_fields(turn.content, vocab=vocab) if field not in stated]
             asked_anywhere += [field for field in pending if field not in asked_anywhere]
             agent_refused = bool(AGENT_REFUSAL.search(turn.content or ""))
             continue
@@ -160,7 +129,7 @@ def derive_user_rules(trace: Trace) -> UserRules:
             continue
         text = (turn.content or "").strip()
         said = _norm(text)
-        values = extracted_values(text, asked=pending)
+        values = extracted_values(text, asked=pending, vocab=vocab)
         for field, value in values:
             if (field, value) in seen_values:
                 continue
@@ -294,14 +263,16 @@ class SimulatedUser:
     """Replies as the recorded user: facts from the rules, then the Starting state, then nothing (D77)."""
 
     def __init__(self, rules: UserRules, starting_state_reader: Any = None, model: Any = None,
-                 identity: Optional[dict] = None):
+                 identity: Optional[dict] = None, vocab: Vocabulary = GENERIC):
         self.rules = rules
         self.reader = starting_state_reader
         self.model = model
+        self.vocab = vocab
         self.events: list[Event] = []
         self.done = False
+        identity_fields = vocab.by_kind("identity")
         self.identity = dict(identity) if identity else {
-            fact.field: fact.value for fact in rules.facts if fact.field in IDENTITY_FIELDS}
+            fact.field: fact.value for fact in rules.facts if fact.field in identity_fields}
         self._row: Any = None
         self._row_read = False
         self._used: dict[str, int] = {CONFIRMATION: 0, CHOICE: 0}
@@ -317,7 +288,7 @@ class SimulatedUser:
         spoken: list[str] = []
         unavailable: list[str] = []
         assisted = False
-        for field in asked_fields(question):
+        for field in asked_fields(question, vocab=self.vocab):
             fact = self._fact(field)
             if fact is not None:
                 answers[field], sources[field] = fact.value, "rules"
@@ -465,7 +436,7 @@ class SimulatedUser:
         if not text or any(str(value) not in text for value in answers.values()):
             return sentence
         allowed = [str(value).lower() for value in answers.values()]
-        for _, value in extracted_values(text, asked=sources):
+        for _, value in extracted_values(text, asked=sources, vocab=self.vocab):
             spoken_value = value.lower()
             if not any(spoken_value in known or known in spoken_value for known in allowed):
                 return sentence  # the model added a fact the rules and the world never gave

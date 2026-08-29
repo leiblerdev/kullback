@@ -18,6 +18,7 @@ from harness.builder.user_sim import (
     dict_reader,
     extracted_values,
 )
+from harness.builder.vocabulary import GENERIC_FIELDS, FieldSpec, Vocabulary
 from harness.shared.records import (
     DisclosureRule,
     RawPtr,
@@ -27,6 +28,16 @@ from harness.shared.records import (
     UserRules,
     as_dict,
 )
+
+# What the retail build derives (D115): the generic core plus the fields retail's users state.
+RETAIL = Vocabulary(domain="retail", fields=[f.model_copy(deep=True) for f in GENERIC_FIELDS] + [
+    FieldSpec(field="order_id", kind="reference", pattern=r"(?:\#)?\bW\d{7}\b", prefix="#",
+              cues=[r"\border (?:id|number|no\.?|#|reference|code)\b", r"\bwhich order\b"], aliases=["order id"]),
+    FieldSpec(field="card_last4", pattern=r"(?i:(?:last four|last 4|ending in)\D{0,12})(\d{4})\b",
+              cues=[r"\blast four\b", r"\blast 4\b", r"\bcard ending\b"], aliases=["last four"]),
+    FieldSpec(field="payment_method", pattern=r"\b(?i:gift card|credit card|debit card|paypal|mastercard|visa|amex|american express)\b",
+              cues=[r"\bpayment method\b", r"\brefund method\b"], aliases=["payment method"]),
+])
 
 
 def make_trace(pairs, trace_id: str = "t1") -> Trace:
@@ -78,7 +89,8 @@ def test_facts_come_from_user_turns_with_a_span():
                 ("assistant", "Which order id is this about? my email is agent@shop.com"),
                 ("user", "Order #W2378156 please."),
             ]
-        )
+        ),
+        vocab=RETAIL,
     )
     assert facts_by_field(rules) == {
         "email": "yusuf.rossi@example.com",
@@ -111,7 +123,8 @@ def test_disclosure_marks_asked_facts_on_request_and_volunteered_facts_not():
                 ("assistant", "Sure. Could you give me your zip code?"),
                 ("user", "It is 19122."),
             ]
-        )
+        ),
+        vocab=RETAIL,
     )
     rules_by_field = disclosure_by_field(rules)
     assert isinstance(rules_by_field["zip"], DisclosureRule)
@@ -231,7 +244,7 @@ def rules_from_fixture(tau2_small, index: int) -> UserRules:
         for message in sim["messages"]
         if message["role"] in ("user", "assistant")
     ]
-    return derive_user_rules(make_trace(pairs, trace_id=sim["id"]))
+    return derive_user_rules(make_trace(pairs, trace_id=sim["id"]), vocab=RETAIL)
 
 
 def test_derive_over_the_tau2_fixture_finds_the_recorded_zip_and_name(tau2_small):
@@ -389,7 +402,7 @@ def test_a_world_answer_from_a_synthetic_row_marks_the_turn_assisted():
 
 
 def test_a_fact_neither_the_rules_nor_the_world_hold_is_unavailable():
-    user = SimulatedUser(UserRules(), starting_state_reader=dict_reader({}))
+    user = SimulatedUser(UserRules(), starting_state_reader=dict_reader({}), vocab=RETAIL)
     text = user.reply(ask("Could you give me the last four digits of your card?"))
     assert "do not have" in text
     event = user.events[-1]
@@ -503,7 +516,8 @@ def test_a_row_with_two_payment_methods_reports_the_field_unavailable_not_a_pick
     def reply_for(methods: dict) -> str:
         row = dict(db["users"]["noah_brown_6181"], payment_methods=methods)
         view = StateView(shared=db, overlay={"users": {"noah_brown_6181": row}})
-        user = SimulatedUser(UserRules(), starting_state_reader=view, identity={"user_id": "noah_brown_6181"})
+        user = SimulatedUser(UserRules(), starting_state_reader=view, identity={"user_id": "noah_brown_6181"},
+                             vocab=RETAIL)
         return user.reply(ask("What is your payment method?")), user
 
     forward, user_forward = reply_for(dict(db["users"]["noah_brown_6181"]["payment_methods"]))

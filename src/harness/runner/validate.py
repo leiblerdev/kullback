@@ -285,9 +285,17 @@ def environment_gate(environment, files_dir=None, referenced_ids=(), db_ids=(), 
 
 
 def _ids_in(obj: Any) -> set:
-    """Every value under a key named id or ending in _id; pass db_ids yourself when the db keys rows differently."""
+    """Every value under a key named id or ending in _id, and every key a collection of rows is keyed by.
+
+    The row key is how a document db names a row whatever its id column is called: airline's
+    flights are keyed by `flight_number`, and the first airline build failed this gate over three
+    flights that were in db.json under keys the `_id` rule never looked at. Pass `db_ids` yourself
+    when the db names rows some third way.
+    """
     found: set = set()
     if isinstance(obj, dict):
+        if obj and all(isinstance(v, dict) for v in obj.values()):
+            found |= {key for key in obj if isinstance(key, (str, int))}
         for key, value in obj.items():
             if isinstance(value, (str, int)) and (key == "id" or str(key).endswith("_id")):
                 found.add(value)

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import inspect
 import json
 
@@ -9,6 +10,7 @@ import pytest
 
 from conftest import PTR
 from harness.builder import compile_env as ce
+from harness.builder import sandbox as sandbox_mod
 from harness.shared.records import (
     Atom,
     Column,
@@ -513,7 +515,7 @@ def test_emit_merges_overlays_into_one_db(sample, schema, sigs, db0, workdir):
     assert merged["orders"][oid]["status"] == "cancelled"
 
 
-def test_emit_refuses_two_tasks_that_pin_the_same_row_differently(sample, schema, sigs, db0, workdir):
+def test_emit_records_two_tasks_that_pin_the_same_row_differently(sample, schema, sigs, db0, workdir):
     order = sample["by_status"]["pending"]
     oid = order["order_id"]
     cancelled = dict(order, status="cancelled")
@@ -525,9 +527,25 @@ def test_emit_refuses_two_tasks_that_pin_the_same_row_differently(sample, schema
     state = ce.build_starting_state(traces, schema, workdir, tasks=tasks, tool_sigs=sigs)
     bundle = _bundle(schema, sigs, db0, overlays=state.overlays)
     bundle.overlay_values = ce.overlay_values(workdir)
-    with pytest.raises(ce.OverlayConflict) as caught:
-        ce.emit_tau2_shape(bundle, workdir / "out")
-    assert oid in str(caught.value)
+    ce.emit_tau2_shape(bundle, workdir / "out")
+    # D74: the export records the conflict and keeps one version; the Runner keeps both overlays.
+    assert len(bundle.conflicts) == 1 and oid in bundle.conflicts[0]
+    exported = json.loads((workdir / "out" / "db.json").read_text())
+    assert exported["orders"][oid]["status"] == order["status"]
+    with pytest.raises(ce.OverlayConflict):
+        ce.merge_overlays(db0, state.overlays, bundle.overlay_values)
+
+
+def test_the_export_prefers_the_version_seen_before_a_write(tmp_path):
+    from harness.shared.records import OverlayRow, TaskOverlay
+    late = TaskOverlay(task_id="t1", rows=[OverlayRow(table="orders", id="o1", version_hash="v_after",
+                                                       after_write=True)])
+    early = TaskOverlay(task_id="t2", rows=[OverlayRow(table="orders", id="o1", version_hash="v_before")])
+    values = {"v_after": {"status": "cancelled"}, "v_before": {"status": "pending"}}
+    conflicts: list[str] = []
+    merged = ce.merge_overlays({"orders": {}}, [late, early], values, conflicts)
+    assert merged["orders"]["o1"]["status"] == "pending"
+    assert conflicts == ["tasks t1 and t2 pin orders row o1 in different versions; the tau2 export keeps t2's"]
 
 
 # --- the Environment record, its sub-versions and its open flags (D67, D70, D97) ---
@@ -1231,20 +1249,21 @@ def test_constant_evidence_note_speaks_only_when_the_recorded_calls_already_agre
     assert ce._constant_evidence_note(same[:1]) == ""
 
 
-def test_a_repair_prompt_says_the_evidence_already_agrees_when_gate_four_fails_on_it(
+def test_a_body_that_is_constant_like_the_recorded_tool_passes_gate_four_first_time(
     make_test_model, workdir
 ):
     """transfer_to_human_agents's own recorded calls all answer "Transfer successful". A body that
-    also answers that way should not be told to invent detail."""
+    also answers that way is right, and is not sent back to invent detail (second retail build)."""
     schema = EntitySchema(tables=[], columns=[])
     sig = ToolSig(name="transfer_to_human_agents", kind="generic", unclassified=False,
                   args_fields=[FieldStat(name="summary", types=["str"], optional=False)])
     calls = [_call("transfer_to_human_agents", {"summary": f"issue {i}"},
                    result="Transfer successful", idx=i) for i in range(4)]
     model = make_test_model(['return "Transfer successful"'] * 4)
-    ce.compile_tool(model, sig, calls, schema, {}, workdir)
-    assert len(model.calls) >= 2, "gate 4 fails a constant body, so a retry happens"
-    assert "already answer every one of them the same way" in model.calls[1]["messages"][-1]["content"]
+    build = ce.compile_tool(model, sig, calls, schema, {}, workdir)
+    assert len(model.calls) == 1 and build.assisted is False
+    gate_four = next(g for g in build.gates if g.stage == "non_trivial")
+    assert gate_four.passed is True and gate_four.metrics["recorded_constant"] is True
 
 
 def test_the_example_block_peels_the_transport_error_prefix_off_the_payload():
@@ -1411,3 +1430,166 @@ def test_without_grow_nothing_is_grown_and_no_synthetic_file_is_written(tmp_path
     state = ce.build_starting_state(traces, mine.mine_schema(traces), tmp_path)
     assert len(state.db["users"]) == 12 and state.synthetic_rows == []
     assert not (tmp_path / "synthetic.json").exists()
+
+
+# --- gate 4 against the recording, gate 6 the refusal probe ---
+
+STRICT_CANCEL_BODY = """
+if order_id not in self.db.orders:
+    raise ValueError("Order not found")
+order = self.db.orders[order_id]
+order.status = "cancelled"
+return order
+"""
+
+PERMISSIVE_CANCEL_BODY = """
+order = self.db.orders.get(order_id)
+if order is None:
+    return {"order_id": order_id, "status": "cancelled"}
+order.status = "cancelled"
+return order
+"""
+
+
+def _cancel_calls(sample):
+    pending = sample["by_status"]["pending"]
+    return [_call("cancel_pending_order", {"order_id": pending["order_id"], "reason": "no longer needed"},
+                  result=dict(pending, status="cancelled"), idx=idx) for idx in range(2)]
+
+
+CANCEL_SIG = ToolSig(name="cancel_pending_order", kind="write", unclassified=False,
+                     args_fields=[FieldStat(name="order_id", types=["str"], optional=False),
+                                  FieldStat(name="reason", types=["str"], optional=False)])
+
+
+def _both_tools(schema, sigs, db0, workdir, cancel_body):
+    source = ce.module_source(schema, [sigs[0], CANCEL_SIG],
+                              {"get_order_details": CORRECT_BODY, "cancel_pending_order": cancel_body})
+    return source, ce.Sandbox(source, db0, workdir)
+
+
+def test_a_constant_body_passes_non_trivial_when_the_recorded_tool_was_constant(schema, sigs, db0, workdir, order_calls):
+    """The recording is the standard: a tool that answered every call the same way is faithfully constant."""
+    constant = [c.model_copy(update={"result": {"order_id": "#W0000000", "status": "delivered"}})
+                for c in order_calls[:3]]
+    source, box = _sandbox(schema, sigs, db0, workdir, CONSTANT_BODY)
+    result = ce.gate_non_trivial(box, constant)
+    assert result.passed is True and result.metrics["recorded_constant"] is True
+    assert result.metrics["recorded_answers"] == 1 and result.metrics["arg_sets"] == 3
+
+
+def test_reference_args_are_the_arguments_whose_values_the_world_holds(schema, sigs, db0, workdir, sample):
+    source, box = _both_tools(schema, sigs, db0, workdir, STRICT_CANCEL_BODY)
+    assert list(sandbox_mod.reference_args(box, _cancel_calls(sample))) == ["order_id"]  # reason is free text
+
+
+def test_the_refusal_probe_fails_a_body_that_writes_on_an_id_nobody_holds(schema, sigs, db0, workdir, sample):
+    calls = _cancel_calls(sample)
+    for body, expected in ((STRICT_CANCEL_BODY, True), (PERMISSIVE_CANCEL_BODY, False)):
+        source, box = _both_tools(schema, sigs, db0, workdir, body)
+        result = sandbox_mod.gate_refuses_unknown(box, calls)
+        assert result.passed is expected, body
+        assert result.metrics["reference_args"] == 1
+    assert "accepted order_id=" in result.failures[0]
+
+
+def test_the_refusal_probe_runs_on_write_tools_only(schema, sigs, db0, workdir, sample):
+    calls = _cancel_calls(sample)
+    source, box = _both_tools(schema, sigs, db0, workdir, PERMISSIVE_CANCEL_BODY)
+    assert "refuses_unknown" not in [g.stage for g in ce.run_gates(source, box, calls, [], schema)]
+    probed = ce.run_gates(source, box, calls, [], schema, probe_refusals=True)
+    assert probed[-1].stage == "refuses_unknown" and probed[-1].passed is False
+
+
+def test_build_environment_lists_the_assisted_tools_it_is_told(schema, sigs):
+    env = ce.build_environment(schema, sigs, {s.name: "pass" for s in sigs}, "policy",
+                               assisted_tools=["cancel_pending_order"])
+    assert env.assisted_tools == ["cancel_pending_order"]
+
+
+# --- the builder tools: lookup_rows and test_body, in a bounded loop (D117) ---
+
+
+def _tool_call_reply(call_id, name, arguments):
+    return {"content": None, "tool_calls": [{"id": call_id, "name": name, "arguments": arguments}]}
+
+
+def test_a_lookup_rows_call_returns_the_row_and_the_body_still_gets_gated(
+    make_test_model, schema, sigs, db0, workdir, order_calls
+):
+    order_id = order_calls[0].args["order_id"]
+    model = make_test_model([
+        _tool_call_reply("tc1", "lookup_rows", {"table": "orders", "key": order_id}),
+        CORRECT_BODY,
+    ])
+    build = ce.compile_tool(model, sigs[0], order_calls, schema, db0, workdir)
+
+    tool_messages = [m for call in model.calls for m in call["messages"] if m.get("role") == "tool"]
+    assert len(tool_messages) == 1
+    result_text = tool_messages[0]["content"]
+    assert tool_messages[0]["tool_call_id"] == "tc1"
+    assert order_id in result_text and "status" in result_text
+
+    assert build.assisted is False
+    assert build.body.strip() == CORRECT_BODY.strip()
+    assert build.nodes[0]["tool_uses"] == [
+        {"name": "lookup_rows", "arguments": {"table": "orders", "key": order_id},
+         "result_chars": len(result_text)}
+    ]
+    # two rounds of the tool loop, one model call each
+    assert len(model.calls) == 2
+    assert model.calls[0]["tools"] == ce.BUILDER_TOOLS
+
+
+def test_a_test_body_call_returns_the_gate_failure_and_never_names_a_held_out_call(
+    make_test_model, schema, sigs, db0, workdir, order_calls
+):
+    shown, held_out = ce.split_calls(order_calls)
+    hidden_id = held_out[0].args["order_id"]
+    model = make_test_model([
+        _tool_call_reply("tc1", "test_body", {"body": WRONG_BODY}),
+        CORRECT_BODY,
+    ])
+    build = ce.compile_tool(model, sigs[0], order_calls, schema, db0, workdir)
+
+    tool_messages = [m for call in model.calls for m in call["messages"] if m.get("role") == "tool"]
+    assert len(tool_messages) == 1
+    result_text = tool_messages[0]["content"]
+    assert "gate" in result_text
+    assert hidden_id not in result_text, "a held-out call's argument reached the model through test_body"
+
+    assert build.assisted is False
+    assert build.body.strip() == CORRECT_BODY.strip()
+    tool_use = build.nodes[0]["tool_uses"][0]
+    assert tool_use["name"] == "test_body"
+    assert tool_use["arguments"] == {"body_sha256": hashlib.sha256(WRONG_BODY.encode("utf-8")).hexdigest()}
+    assert "body" not in tool_use["arguments"]
+
+
+def test_the_tool_rounds_cap_ends_the_attempt_with_no_body_submitted(
+    make_test_model, schema, sigs, db0, workdir, order_calls
+):
+    model = make_test_model(
+        [_tool_call_reply("tc", "lookup_rows", {"table": "orders"})], loop=True
+    )
+    build = ce.compile_tool(model, sigs[0], order_calls, schema, db0, workdir)
+
+    assert len(model.calls) == ce.MAX_TOOL_ROUNDS
+    assert len(build.nodes) == 1, "the attempt loop must not start a second attempt after the cap"
+    assert build.assisted is True
+    assert build.nodes[-1]["refused"] is True
+    assert build.nodes[-1]["failures"] == ["no body was submitted"]
+    assert len(build.nodes[-1]["tool_uses"]) == ce.MAX_TOOL_ROUNDS
+
+
+def test_builder_tools_false_sends_no_tools_and_keeps_the_old_behaviour(
+    make_test_model, schema, sigs, db0, workdir, order_calls
+):
+    model = make_test_model([CORRECT_BODY])
+    build = ce.compile_tool(model, sigs[0], order_calls, schema, db0, workdir, builder_tools=False)
+
+    assert len(model.calls) == 1
+    assert not model.calls[0]["tools"]
+    assert build.body.strip() == CORRECT_BODY.strip()
+    assert build.assisted is False
+    assert "tool_uses" not in build.nodes[0]

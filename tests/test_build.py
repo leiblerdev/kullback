@@ -219,7 +219,7 @@ def test_a_stage_that_delegates_to_a_module_carries_that_module_in_its_code_vers
                 for name, mod in (("policy", policy), ("memory", memory), ("verifier", verifier_mod))}
     assert len(set(versions.values())) == 3
     assert build_module._policy_stage(None).code_version.endswith(versions["policy"])
-    assert build_module._verifier_stage().code_version.endswith(versions["verifier"])
+    assert versions["verifier"] in build_module._verifier_stage().code_version
 
 
 def test_the_compile_tools_cache_moves_when_the_modules_it_delegates_to_change(monkeypatch, tmp_path):
@@ -231,3 +231,62 @@ def test_the_compile_tools_cache_moves_when_the_modules_it_delegates_to_change(m
     monkeypatch.setattr(bd.sandbox, "__file__", str(tmp_path / "different.py"))
     (tmp_path / "different.py").write_text("# not the sandbox we hashed a moment ago\n")
     assert bd._tools_stage(None, 3).code_version != first
+
+
+# --- what a tool is gated on (D74) ---
+
+def _trace(trace_id, calls):
+    from conftest import PTR
+    from harness.shared.records import Trace
+    return Trace(trace_id=trace_id, raw_hash="h", ingest_version="1", source="tau2", tool_calls=calls, raw_ptr=PTR)
+
+
+def _tc(name, args, error=None):
+    from conftest import PTR
+    from harness.shared.records import ToolCall
+    return ToolCall(name=name, args=args, raw_ptr=PTR, error=error)
+
+
+def test_a_call_after_a_write_on_the_same_row_is_not_gate_evidence():
+    trace = _trace("t", [
+        _tc("get_order_details", {"order_id": "#W1"}),
+        _tc("modify_pending_order_items", {"order_id": "#W1", "item_ids": ["11"], "new_item_ids": ["22"]}),
+        _tc("get_order_details", {"order_id": "#W1"}),
+        _tc("get_order_details", {"order_id": "#W2"}),
+        _tc("get_product_details", {"product_id": "22"}),  # named by the write's list argument
+    ])
+    assert build_module.after_write_calls([trace], {"modify_pending_order_items"}) == {("t", 2), ("t", 4)}
+
+
+def test_a_refused_write_changes_nothing_so_nothing_follows_it():
+    from harness.shared.records import ToolCallError
+    refused = _tc("cancel_pending_order", {"order_id": "#W1"},
+                  error=ToolCallError(**{"class": "business_error"}, payload="Non-pending order"))
+    trace = _trace("t", [refused, _tc("get_order_details", {"order_id": "#W1"})])
+    assert build_module.after_write_calls([trace], {"cancel_pending_order"}) == set()
+
+
+def test_the_rerolls_gate_is_not_green_over_runs_that_all_died():
+    dead = {"t1": [{"termination_reason": "env_error"}] * 3, "t2": [{"termination_reason": "env_error"}]}
+    gate = build_module.rerolls_gate(dead, 3)
+    assert not gate.passed and gate.metrics["runs"] == 4 and gate.metrics["finished"] == 0
+    assert "no re-roll finished" in gate.failures[0]
+    one_alive = {"t1": [{"termination_reason": "env_error"}, {"termination_reason": "stop"}]}
+    assert build_module.rerolls_gate(one_alive, 2).passed
+    assert build_module.rerolls_gate({}, 3).passed  # no confirmed Task to re-roll is not a failure
+
+
+def test_a_candidate_run_opens_with_the_system_prompt_the_user_and_the_tools(built):
+    """A model asked for a first turn over an empty transcript with no tools is the second retail build's
+    597 dead re-rolls; every Candidate Run is seeded like the recorded one instead."""
+    from harness.shared.provider import TestModel
+
+    task_id = sorted(p.stem for p in (built / "tasks").glob("*.json"))[0]
+    candidate = TestModel([{"content": "done ###STOP###"}], loop=True)
+    out = build_module.run_batch(built, task_id, candidate, count=1)
+    first = candidate.calls[0]
+    roles = [m["role"] for m in first["messages"]]
+    assert roles[0] == "system" and "user" in roles
+    assert first["tools"] and {t["name"] for t in first["tools"]} >= {"get_order_details"}
+    events = [json.loads(x) for x in Path(out["runs"][0]).read_text(encoding="utf-8").splitlines() if x.strip()]
+    assert events[0]["type"] == "user_turn" and events[0]["payload"]["text"]

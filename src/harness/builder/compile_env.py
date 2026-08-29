@@ -9,12 +9,13 @@ model on its own: write_tool_body takes a Model.
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
 import re
 import textwrap
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Iterable, Optional
+from typing import Any, Callable, Iterable, Optional
 
 from harness.builder import synth
 from harness.builder.mine import is_assistant_call, is_scalar_result
@@ -72,6 +73,10 @@ DB_FILE = "db.json"
 OVERLAY_DIR = "overlays"
 NODE_DIR = "tool_nodes"
 MAX_REPAIR_ATTEMPTS = 3
+# D117: at most this many model calls inside one attempt's tool-use loop, so a model that keeps
+# reaching for lookup_rows or test_body instead of ever submitting a body cannot spend an attempt
+# for free; the last reply's content is taken as the body once the rounds run out.
+MAX_TOOL_ROUNDS = 6
 # CONTEXT_WINDOW and CHARS_PER_TOKEN are budget.py's own (imported above): one context-sizing
 # constant per Harness, not a second copy that could drift from what budget.py actually bills.
 MAX_EVIDENCE_CHARS = context_cap_tokens(CONTEXT_WINDOW, CONTEXT_CAP_FRACTION) * CHARS_PER_TOKEN
@@ -108,6 +113,7 @@ class EnvBundle:
     verifiers: list[Verifier] = field(default_factory=list)
     assumptions: list[str] = field(default_factory=list)
     domain: str = "domain"
+    conflicts: list[str] = field(default_factory=list)  # overlay rows the tau2 export could not keep both of
 
 
 @dataclass
@@ -161,6 +167,21 @@ def _observations(traces: list[Trace], schema: EntitySchema, write_tools: set[st
                 written |= {row_id for _, row_id, _ in rows}
                 written |= {v for v in call.args.values() if isinstance(v, str)}
     return out
+
+
+def trace_worlds(traces: Iterable[Trace], schema: EntitySchema, write_tools: set[str]) -> dict[str, dict]:
+    """Per trace, the version of every row it saw before any write touched it: the world it started in.
+
+    Two traces that saw one row in two such versions started in different worlds. cluster.py keeps
+    them in different Tasks, because a Task's overlay can pin one version only (D74), and a trace
+    replayed on the other version differs on every read of that row; telecom's one customer seen
+    across 456 traces in as many states is where this was found.
+    """
+    worlds: dict[str, dict] = {}
+    for obs in _observations(list(traces), schema, write_tools):
+        if not obs.after_write:
+            worlds.setdefault(obs.trace_id, {}).setdefault((obs.table, obs.row_id), content_hash(obs.row))
+    return worlds
 
 
 def build_starting_state(
@@ -334,7 +355,7 @@ def _build_overlays(observations: list[_Obs], tasks: Iterable[Task], workdir: Pa
                         for (table, row_id), hashes in sorted(per_trace.items()) if len(set(hashes.values())) > 1]
         overlay = TaskOverlay(task_id=task.id, rows=[
             OverlayRow(table=t, id=i, version_hash=content_hash(rows[(t, i)].row),
-                       trace_id=rows[(t, i)].trace_id)
+                       trace_id=rows[(t, i)].trace_id, after_write=rows[(t, i)].after_write)
             for t, i in sorted(rows)
         ])
         assumptions += [f"task {task.id} pins {t} row {i} from a post-write sighting"
@@ -369,17 +390,32 @@ def overlay_values(workdir: Path | str) -> dict:
     return values
 
 
-def merge_overlays(db: dict, overlays: Iterable[TaskOverlay], values: dict) -> dict:
-    """Merge every Task overlay into the one db tau2's harness loads; disagreement is a failure (D74)."""
+def merge_overlays(db: dict, overlays: Iterable[TaskOverlay], values: dict,
+                   conflicts: Optional[list[str]] = None) -> dict:
+    """Merge every Task overlay into the one db tau2's harness loads (D74).
+
+    Two Tasks pinning one row in different versions is a disagreement about the world, which the
+    per-Task overlays in the Runner never have to settle: each Task reads its own. The single db of
+    the tau2 export has to pick one, so with `conflicts` given it keeps the version a Task saw before
+    any write (over one seen after a write) and, between two of the same standing, the first Task's,
+    and appends one line per conflict for the export gate. Without `conflicts` a disagreement raises,
+    which is the contract the single-overlay callers rely on.
+    """
     merged = copy.deepcopy(db)
-    pinned: dict[tuple[str, str], tuple[str, str]] = {}
+    pinned: dict[tuple[str, str], tuple[str, str, bool]] = {}
     for overlay in overlays:
         for row in overlay.rows:
             seen = pinned.get((row.table, row.id))
             if seen and seen[0] != row.version_hash:
-                raise OverlayConflict(f"tasks {seen[1]} and {overlay.task_id} pin {row.table} row "
-                                      f"{row.id} in different versions")
-            pinned[(row.table, row.id)] = (row.version_hash, overlay.task_id)
+                if conflicts is None:
+                    raise OverlayConflict(f"tasks {seen[1]} and {overlay.task_id} pin {row.table} row "
+                                          f"{row.id} in different versions")
+                conflicts.append(f"tasks {seen[1]} and {overlay.task_id} pin {row.table} row {row.id} in "
+                                 f"different versions; the tau2 export keeps "
+                                 f"{overlay.task_id if seen[2] and not row.after_write else seen[1]}'s")
+                if not (seen[2] and not row.after_write):
+                    continue  # the pinned version stands: it was seen before a write, or both were
+            pinned[(row.table, row.id)] = (row.version_hash, overlay.task_id, row.after_write)
             if row.version_hash in values:
                 merged.setdefault(row.table, {})[row.id] = values[row.version_hash]
     return merged
@@ -675,7 +711,17 @@ def _confinement_block() -> str:
             "(`order.status`) or by key (`self.db.orders[order_id]`), never through getattr.")
 
 
-def _stable_system(schema: Optional[EntitySchema] = None, tool_names: Iterable[str] = ()) -> str:
+# D117: said once, only when compile_tool was asked to offer the two builder tools, so a caller
+# that turns them off (or an old caller that never knew about them) gets exactly the old prompt.
+_BUILDER_TOOLS_PARAGRAPH = (
+    "Two tools are available while you write this body: lookup_rows(table, key=None) reads a row "
+    "of the Starting state (or, with no key, that table's row count and a few sample keys), and "
+    "test_body(body) runs a draft through the same gates this attempt will face, on the calls you "
+    "were shown. Look a row up before guessing its shape; test the draft before you submit it.")
+
+
+def _stable_system(schema: Optional[EntitySchema] = None, tool_names: Iterable[str] = (),
+                   builder_tools: bool = False) -> str:
     """`_SYSTEM` plus what every tool in this build shares: one prefix, sent unchanged on every
     call of the stage, long enough on a real customer to clear a provider's cache minimum."""
     parts = [_SYSTEM, _confinement_block()]
@@ -684,6 +730,8 @@ def _stable_system(schema: Optional[EntitySchema] = None, tool_names: Iterable[s
     names = sorted(set(tool_names))
     if names:
         parts.append("Tools in this build: " + ", ".join(names))
+    if builder_tools:
+        parts.append(_BUILDER_TOOLS_PARAGRAPH)
     return "\n\n".join(parts)
 
 
@@ -704,18 +752,20 @@ def _tool_block(toolsig: ToolSig, examples: Iterable[ToolCall], error_prefix: Op
 
 def body_messages(toolsig: ToolSig, examples: Iterable[ToolCall], schema: Optional[EntitySchema] = None,
                   failure: str = "", tool_names: Iterable[str] = (),
-                  error_prefix: Optional[str] = None) -> list[dict]:
+                  error_prefix: Optional[str] = None, builder_tools: bool = False) -> list[dict]:
     """The whole message list one body request sends, so its size can be checked before it goes.
 
     The system message carries the fixed instructions plus what is the same for every tool in
     this build (the schema, the tool list): one prefix, unchanged call to call, for a provider's
     cache to reuse. The user message carries only this one tool, its recorded calls, and (for a
-    one-shot request outside the repair loop) the failure of a previous attempt.
+    one-shot request outside the repair loop) the failure of a previous attempt. `builder_tools`
+    (D117) adds the one paragraph naming lookup_rows and test_body to the stable prefix; it is the
+    same value on every call of one compile_tool, so the cached bytes never move mid-build.
     """
     user = _tool_block(toolsig, examples, error_prefix)
     if failure:
         user += "\n\nThe previous body failed these gates:\n" + failure
-    return [{"role": "system", "content": _stable_system(schema, tool_names)},
+    return [{"role": "system", "content": _stable_system(schema, tool_names, builder_tools)},
             {"role": "user", "content": user}]
 
 
@@ -763,6 +813,177 @@ def _strip_fence(text: str) -> str:
         lines = text.splitlines()[1:]
         text = "\n".join(lines[:-1] if lines and lines[-1].strip().startswith("```") else lines)
     return textwrap.dedent(text).strip("\n")
+
+# --- the two tools the body-writing model may call (D117) ---
+#
+# A body-writing model has to guess a row's shape from the schema block and the recorded calls
+# alone, and has to guess whether its own draft clears the gates. lookup_rows answers the first
+# guess and test_body answers the second, both without spending a repair attempt to find out.
+# Neither is allowed to touch the held-out split: lookup_rows only reads db and the shown calls'
+# own worlds, and test_body only ever gates the shown calls, with an empty held-out list, so
+# nothing the held-out replay would have caught can leak back through either tool.
+
+LOOKUP_ROWS_TOOL = {
+    "name": "lookup_rows",
+    "description": ("Read one row of the Starting state by table and key, or (with no key) a "
+                    "table's row count and a few sample keys. Read-only: nothing here changes "
+                    "the world. Never returns a held-out row."),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "table": {"type": "string", "description": "the table to look in"},
+            "key": {"type": "string", "description": "the row's id; omit to see the table's shape"},
+        },
+        "required": ["table"],
+    },
+}
+
+TEST_BODY_TOOL = {
+    "name": "test_body",
+    "description": ("Run a draft body through the same gates this attempt will face, on the "
+                    "calls you were shown (never the held-out ones). Returns which gate failed "
+                    "and why, or that every gate passed."),
+    "parameters": {
+        "type": "object",
+        "properties": {"body": {"type": "string", "description": "the full body to test, as Python source"}},
+        "required": ["body"],
+    },
+}
+
+BUILDER_TOOLS = [LOOKUP_ROWS_TOOL, TEST_BODY_TOOL]
+
+
+def _find_row(schema: EntitySchema, world: dict, table: str, key: str) -> tuple[Optional[dict], Optional[str]]:
+    """A row and where it sits: the table itself, or (schema.homes) the parent it is nested in."""
+    row = (world.get(table) or {}).get(key)
+    if isinstance(row, dict):
+        return row, table
+    home = (schema.homes or {}).get(table)
+    if home:
+        parent, column = home.split(".", 1)
+        for parent_row in (world.get(parent) or {}).values():
+            nest = parent_row.get(column) if isinstance(parent_row, dict) else None
+            if isinstance(nest, dict) and isinstance(nest.get(key), dict):
+                return nest[key], home
+    return None, None
+
+
+def _shown_worlds(db: dict, shown: list[ToolCall], call_states: Optional[dict]) -> list[dict]:
+    """db, then every distinct world a shown call ran on (D74's per-Task overlay), never a held-out
+    one: the same call_states lookup Sandbox.state_for makes, read here off the dict directly
+    since no Sandbox exists yet when the model is still drafting the body."""
+    seen = {id(db)}
+    worlds = [db]
+    for call in shown if call_states else []:
+        state = call_states.get(call.id, db) if call.id else db
+        if id(state) not in seen:
+            seen.add(id(state))
+            worlds.append(state)
+    return worlds
+
+
+def _lookup_rows_text(schema: EntitySchema, db: dict, shown: list[ToolCall], call_states: Optional[dict],
+                      table: Optional[str] = None, key: Optional[str] = None) -> str:
+    """What lookup_rows answers: a row, a table's shape, or the table list for an unknown name."""
+    tables = sorted(schema.tables)
+    if table not in tables:
+        return f"unknown table {table!r}; tables on self.db: {', '.join(tables)}"
+    if not key:
+        rows = db.get(table) or {}
+        return f"{table}: {len(rows)} rows; sample keys: {sorted(rows)[:3]}"
+    row, location = None, None
+    for world in _shown_worlds(db, shown, call_states):
+        row, location = _find_row(schema, world, table, key)
+        if row is not None:
+            break
+    if row is None:
+        return f"{table} row {key!r} was not found in the Starting state or a shown call's world"
+    text = json.dumps(row, sort_keys=True, default=str)
+    note = ""
+    if len(text) > 2000:
+        text, note = text[:2000], " (truncated to 2000 characters)"
+    where = f"table {table}" if location == table else f"nested inside {location} (schema.homes)"
+    return f"{table} row {key} is stored in {where}{note}: {text}"
+
+
+def _build_tools_impl(schema: EntitySchema, toolsig: ToolSig, shown: list[ToolCall], db: dict,
+                      call_states: Optional[dict], workdir: Path, attempt: int, timeout: float,
+                      rules: Any) -> dict[str, Callable[..., str]]:
+    """lookup_rows and test_body, closed over one attempt's own evidence and probe directory.
+
+    test_body gates on `shown` alone, with an empty held-out list: the split the repair loop keeps
+    hidden from the model stays hidden from the model's own probing too, not just from the failure
+    text a rejected attempt is shown.
+    """
+    probes = {"n": 0}
+
+    def lookup_rows(table: Optional[str] = None, key: Optional[str] = None) -> str:
+        return _lookup_rows_text(schema, db, shown, call_states, table, key)
+
+    def test_body(body: Optional[str] = None) -> str:
+        probes["n"] += 1
+        source = module_source(schema, [toolsig], {toolsig.name: body or ""})
+        sandbox = Sandbox(source, db, workdir / f"attempt_{attempt}_probe_{probes['n']}", timeout=timeout,
+                          call_states=call_states)
+        gates = run_gates(source, sandbox, shown, [], schema, rules, probe_refusals=toolsig.kind == "write")
+        if all(g.passed for g in gates):
+            return "passed every gate: " + ", ".join(g.stage for g in gates)
+        return _failure_text(gates)
+
+    return {"lookup_rows": lookup_rows, "test_body": test_body}
+
+
+def _tool_use_record(call: Any, result_text: str) -> dict:
+    """What a tool use is remembered as on the node: never the row or the body, only what was asked."""
+    if call.name == "test_body":
+        body = (call.arguments or {}).get("body") or ""
+        arguments: dict = {"body_sha256": hashlib.sha256(body.encode("utf-8")).hexdigest()}
+    else:
+        arguments = {"table": (call.arguments or {}).get("table"), "key": (call.arguments or {}).get("key")}
+    return {"name": call.name, "arguments": arguments, "result_chars": len(result_text)}
+
+
+def _run_builder_tool(call: Any, tools_impl: dict[str, Callable[..., str]]) -> str:
+    impl = tools_impl.get(call.name)
+    if impl is None:
+        return f"unknown tool {call.name!r}; available tools: {', '.join(sorted(tools_impl))}"
+    try:
+        return impl(**(call.arguments or {}))
+    except TypeError as exc:
+        return f"bad arguments for {call.name}: {exc}"
+
+
+def _assistant_tool_turn(reply: Any) -> dict:
+    """The canonical assistant turn a tool-calling reply becomes, the same shape the Runner's own
+    loop and provider.py's adapters read (runner.loop._assistant_message)."""
+    return {"role": "assistant", "content": reply.content,
+            "tool_calls": [{"id": c.id, "name": c.name, "arguments": c.arguments} for c in reply.tool_calls]}
+
+
+def _reply_with_tools(model, messages: list[dict], tools_impl: dict[str, Callable[..., str]],
+                      max_rounds: int = MAX_TOOL_ROUNDS) -> tuple[str, list[dict]]:
+    """Query the model with lookup_rows and test_body on, executing whatever it calls (D117).
+
+    `messages` (the attempt's own system and user turns, exactly as compile_tool built them) is
+    never mutated: the tool exchange runs over a local copy, so the next attempt's retry still
+    appends its assistant reply and new evidence onto the plain chain `_append_retry` expects,
+    never onto a transcript of tool calls. At most `max_rounds` model calls; a reply that asks for
+    no tool is the body, and one still asking after the last round is taken as the body anyway,
+    empty or not, since round `max_rounds` is the last one this attempt gets.
+    """
+    working = list(messages)
+    tool_uses: list[dict] = []
+    reply = None
+    for _ in range(max_rounds):
+        reply = model.query(working, tools=BUILDER_TOOLS)
+        if not reply.tool_calls:
+            return reply.content or "", tool_uses
+        working = working + [_assistant_tool_turn(reply)]
+        for call in reply.tool_calls:
+            result_text = _run_builder_tool(call, tools_impl)
+            tool_uses.append(_tool_use_record(call, result_text))
+            working = working + [{"role": "tool", "tool_call_id": call.id, "content": result_text}]
+    return (reply.content or "") if reply is not None else "", tool_uses
 
 # --- the bounded repair loop (D75) ---
 
@@ -887,7 +1108,8 @@ def compile_tool(model, toolsig: ToolSig, calls: Iterable[ToolCall], schema: Ent
                  workdir: Path | str, max_attempts: int = MAX_REPAIR_ATTEMPTS,
                  max_evidence_chars: Optional[int] = MAX_EVIDENCE_CHARS, timeout: float = 30.0,
                  call_states: Optional[dict] = None, rules: Any = None,
-                 tool_names: Iterable[str] = (), error_prefix: Optional[str] = None) -> ToolBuild:
+                 tool_names: Iterable[str] = (), error_prefix: Optional[str] = None,
+                 builder_tools: bool = True) -> ToolBuild:
     """Write one tool body, gate it, and repair it at most three times with growing evidence (D75).
 
     Attempt 1 sees the failing call, attempt 2 every failing call, attempt 3 the full call table, and
@@ -907,6 +1129,11 @@ def compile_tool(model, toolsig: ToolSig, calls: Iterable[ToolCall], schema: Ent
     same bytes a cache can reuse.
     Each attempt is a node dict; after the last miss the tool is marked assisted (D49) and the nodes
     are written under the workdir.
+
+    `builder_tools` (D117, on by default) lets the model call `lookup_rows` and `test_body` while
+    it drafts this attempt's reply, inside `_reply_with_tools`'s own bounded loop
+    (`MAX_TOOL_ROUNDS`), before the reply it settles on is gated the same way an old, tool-less
+    reply always was. Turn it off for a caller that wants the old one-call-per-attempt behaviour.
     """
     workdir, calls = Path(workdir), list(calls)
     if error_prefix is None:  # build.py passes the corpus-wide prefix; alone, this tool's own calls
@@ -929,7 +1156,7 @@ def compile_tool(model, toolsig: ToolSig, calls: Iterable[ToolCall], schema: Ent
                 "evidence_calls": len(evidence), "passed": False, "refused": False}
         if attempt == 0:
             messages = body_messages(toolsig, evidence, schema=schema, tool_names=tool_names,
-                                     error_prefix=error_prefix)
+                                     error_prefix=error_prefix, builder_tools=builder_tools)
         else:
             messages = _append_retry(messages, reply_content, evidence, failure, error_prefix)
         # Fewer whole calls, never a shortened one. `_example_block` refuses to cut a call in
@@ -942,7 +1169,7 @@ def compile_tool(model, toolsig: ToolSig, calls: Iterable[ToolCall], schema: Ent
             evidence = evidence[:-1]
             node["evidence_calls"] = len(evidence)
             messages = (body_messages(toolsig, evidence, schema=schema, tool_names=tool_names,
-                                      error_prefix=error_prefix)
+                                      error_prefix=error_prefix, builder_tools=builder_tools)
                         if attempt == 0
                         else _append_retry(messages[:-2], reply_content, evidence, failure, error_prefix))
         size = prompt_chars(messages)
@@ -951,8 +1178,14 @@ def compile_tool(model, toolsig: ToolSig, calls: Iterable[ToolCall], schema: Ent
                                 f"of {max_evidence_chars}; refused, not truncated"]
             build.nodes.append(dict(node, refused=True))
             break
+        tools_impl = (_build_tools_impl(schema, toolsig, shown, db, call_states, workdir, attempt,
+                                        timeout, rules)
+                     if builder_tools else None)
         try:
-            reply = model.query(messages)
+            if builder_tools:
+                reply_content, tool_uses = _reply_with_tools(model, messages, tools_impl)
+            else:
+                reply_content, tool_uses = model.query(messages).content or "", []
         except _context_cap_error() as refusal:
             # `max_evidence_chars` above is not enough on its own, and the first live build is
             # what showed it. It counts the characters of the message contents; budget.py counts
@@ -968,12 +1201,20 @@ def compile_tool(model, toolsig: ToolSig, calls: Iterable[ToolCall], schema: Ent
             node["failures"] = [f"{refusal}; refused, not truncated"]
             build.nodes.append(dict(node, refused=True))
             break
-        reply_content = reply.content or ""
+        if tool_uses:
+            node["tool_uses"] = tool_uses
         body = _strip_fence(reply_content)
+        if not body:
+            # Every round of `_reply_with_tools` asked for a tool and none ever settled on a
+            # reply, or the model settled on nothing: either way there is no body to gate, and
+            # gating "pass" would blame the code-owned skeleton for a reply the model never gave.
+            node["failures"] = ["no body was submitted"]
+            build.nodes.append(dict(node, refused=True))
+            break
         source = module_source(schema, [toolsig], {toolsig.name: body})
         sandbox = Sandbox(source, db, workdir / f"attempt_{attempt}", timeout=timeout,
                           call_states=call_states)
-        gates = run_gates(source, sandbox, shown, held_out, schema, rules)
+        gates = run_gates(source, sandbox, shown, held_out, schema, rules, probe_refusals=toolsig.kind == "write")
         node.update(body_hash=content_hash(body), gates=[as_dict(g) for g in gates],
                     passed=all(g.passed for g in gates))
         build.nodes.append(node)
@@ -1028,7 +1269,8 @@ def _tau2_task(task: Task, verifier: Optional[Verifier], domain: str) -> dict:
 
 def build_environment(schema: EntitySchema, sigs: Iterable[ToolSig], bodies: dict, policy_text: str,
                       builds: Optional[dict] = None, parent_env_id: Optional[str] = None,
-                      version: int = 1, files: Optional[dict] = None) -> Environment:
+                      version: int = 1, files: Optional[dict] = None,
+                      assisted_tools: Iterable[str] = ()) -> Environment:
     """The Environment record: identity, the D97 sub-versions, assisted tools and the flags.
 
     `env_id` is the hash of the five emitted files plus the three sub-versions (design section 5).
@@ -1038,6 +1280,10 @@ def build_environment(schema: EntitySchema, sigs: Iterable[ToolSig], bodies: dic
 
     Flags are what the setup review has to close before the Environment is trusted: a tool whose
     errors are mostly `unknown` (D67) and a tool whose read or write class nobody confirmed (D70).
+
+    `assisted_tools` are the names the compile_tools stage marked assisted (D49), by name because the
+    stage hands its builds on as JSON; the second retail build wrote `assisted_tools: []` on an
+    Environment with six assisted tools because nothing passed them in.
     """
     from harness.builder.mine import (
         unknown_error_flags,  # builder to builder; the Runner imports neither
@@ -1056,7 +1302,8 @@ def build_environment(schema: EntitySchema, sigs: Iterable[ToolSig], bodies: dic
                              "policy": policy_version, "files": file_hashes}),
         schema_version=schema_version, tools_version=tools_version, policy_version=policy_version,
         version=version, parent_env_id=parent_env_id, files=file_hashes,
-        assisted_tools=sorted(name for name, build in (builds or {}).items() if build.assisted),
+        assisted_tools=sorted({name for name, build in (builds or {}).items() if build.assisted}
+                              | set(assisted_tools)),
         flags=flags,
     )
 
@@ -1064,10 +1311,10 @@ def build_environment(schema: EntitySchema, sigs: Iterable[ToolSig], bodies: dic
 def tau2_files(env: EnvBundle) -> dict:
     """The five tau2 files as text, keyed by name: what is written, and what env_id hashes.
 
-    Overlays merge into the one db.json tau2's harness loads; a conflict between two Tasks is a Gate
-    failure and raises here, before anything is written (D74).
+    Overlays merge into the one db.json tau2's harness loads; a conflict between two Tasks is recorded
+    on `env.conflicts` for the export gate, and the Task stays gradeable in the Runner (D74).
     """
-    db = merge_overlays(env.db, env.overlays, env.overlay_values) if env.overlays else env.db
+    db = merge_overlays(env.db, env.overlays, env.overlay_values, env.conflicts) if env.overlays else env.db
     verifiers = {v.task_id: v for v in env.verifiers}
     return {
         "data_model.py": render_data_model(env.schema),

@@ -146,12 +146,9 @@ def is_assistant_call(call: Any) -> bool:
     return (call.requestor or "assistant") == "assistant"
 
 
-_is_assistant_call = is_assistant_call
-
-
 def skipped_user_calls(traces: list[Trace]) -> int:
     """Tool calls whose requestor is not the assistant: never mined into a ToolSig, kind or schema."""
-    return sum(1 for trace in traces for call in trace.tool_calls if not _is_assistant_call(call))
+    return sum(1 for trace in traces for call in trace.tool_calls if not is_assistant_call(call))
 
 
 # --- tools -------------------------------------------------------------------
@@ -177,7 +174,7 @@ def _accumulate(traces: list[Trace]) -> dict[str, dict]:
     stats: dict[str, dict] = {}
     for trace in traces:
         for call in trace.tool_calls:
-            if not _is_assistant_call(call):
+            if not is_assistant_call(call):
                 continue
             acc = stats.setdefault(call.name, _new_acc())
             acc["calls"] += 1
@@ -759,7 +756,7 @@ def observed_effects(traces: list[Trace]) -> dict[str, list[EffectObservation]]:
         # Only the assistant's own calls can be evidence of, or credited with, a change to the
         # Environment; the simulated user's own actions must not pollute what the agent is seen to
         # have written (docs/cross-domain-check.md, Judgement).
-        calls = [c for c in trace.tool_calls if _is_assistant_call(c)]
+        calls = [c for c in trace.tool_calls if is_assistant_call(c)]
         last: dict[tuple, tuple[int, Any]] = {}
         for index, call in enumerate(calls):
             if call.error is not None or call.result is None or getattr(call, "truncated", False):
@@ -803,7 +800,7 @@ def quiet_tools(traces: list[Trace]) -> set[str]:
     """
     quiet: set[str] = set()
     for trace in traces:
-        calls = [c for c in trace.tool_calls if _is_assistant_call(c)]
+        calls = [c for c in trace.tool_calls if is_assistant_call(c)]
         last: dict[tuple, tuple[int, Any]] = {}
         for index, call in enumerate(calls):
             if call.error is not None or call.result is None or getattr(call, "truncated", False):
@@ -968,11 +965,11 @@ def id_columns(traces: list[Trace]) -> set[str]:
     despite 338 calls that show its rows (docs/cross-domain-check.md).
     """
     addressed = {str(name) for trace in traces for call in trace.tool_calls
-                 for name in (call.args or {}) if _is_assistant_call(call)}
+                 for name in (call.args or {}) if is_assistant_call(call)}
     distinct: dict[str, bool] = {}
     for trace in traces:
         for call in trace.tool_calls:
-            if not _is_assistant_call(call) or call.error is not None or call.result is None:
+            if not is_assistant_call(call) or call.error is not None or call.result is None:
                 continue
             rows = _result_rows(_parse(call.result))
             if len(rows) < 2:
@@ -998,7 +995,7 @@ def nested_rows(traces: list[Trace], id_names: Sequence[str] = ()) -> list[tuple
     out: list[tuple[str, str, str, dict]] = []
     for trace in traces:
         for call in trace.tool_calls:
-            if not _is_assistant_call(call) or call.error is not None or call.result is None:
+            if not is_assistant_call(call) or call.error is not None or call.result is None:
                 continue
             rows = _result_rows(_parse(call.result))
             for row in rows:
@@ -1218,7 +1215,7 @@ def mine_schema(traces: list[Trace], db_json_path: Optional[Path] = None,
     id_names = id_columns(traces)
     for trace in traces:
         for call in trace.tool_calls:
-            if not _is_assistant_call(call):
+            if not is_assistant_call(call):
                 continue
             if call.error is not None or call.result is None:
                 continue

@@ -67,6 +67,9 @@ if order is None:
     raise ValueError("Order not found")
 if order.status != "delivered":
     raise ValueError("Non-delivered order cannot be exchanged")
+user = self.db.users.get(order.user_id)
+if user is None or payment_method_id not in (user.payment_methods or {}):
+    raise ValueError("Payment method not found")
 difference = 0.0
 for old_id, new_id in zip(item_ids, new_item_ids):
     old_price = None
@@ -94,6 +97,9 @@ if order is None:
     raise ValueError("Order not found")
 if order.status != "delivered":
     raise ValueError("Non-delivered order cannot be returned")
+user = self.db.users.get(order.user_id)
+if user is None or payment_method_id not in (user.payment_methods or {}):
+    raise ValueError("Payment method not found")
 order.status = "return requested"
 order.return_items = sorted(item_ids)
 order.return_payment_method_id = payment_method_id

@@ -340,3 +340,13 @@ def test_apply_intent_carries_the_unguarded_mark(make_test_model):
         make_test_model(["cancel order W1 because of the late delivery"]), task, traces, write_tools=WRITES
     )
     assert apply_intent(task, intent).unguarded is True
+
+
+def test_the_user_wanted_frame_is_stripped_before_grounding():
+    from harness.builder.intent import strip_frame
+
+    assert strip_frame("The user wanted help to cancel order #W1.") == "cancel order #W1."
+    assert strip_frame("Wanted to fix sending picture messages") == "fix sending picture messages"
+    assert strip_frame("The customer asked for a refund on #W2") == "a refund on #W2"
+    assert strip_frame("cancel order #W1") == "cancel order #W1"
+    assert strip_frame("The user wanted") == "The user wanted"

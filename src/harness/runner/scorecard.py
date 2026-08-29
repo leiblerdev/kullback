@@ -69,6 +69,11 @@ def scorecard(build_dir: Union[str, Path], reference_verdicts=None) -> dict:
                  for m in card["user_fact_consistency"]["misses"] if m.get("reason") not in MISS_REASONS]
     failures += [_agreement_failure(m) for m in card["verdict_agreement"]["misses"]
                  if m.get("reason") not in MISS_REASONS]
+    if tasks and not card["task_coverage"]["tasks_covered"]:
+        # A green scorecard that grades nothing is the one output that should never be green: the
+        # second retail build passed here with tasks_covered 0.0 over 205 Tasks.
+        failures.append(f"no Task is gradeable: {len(tasks)} Tasks and not one has a confirmed Reference "
+                        "and a passing Verifier")
     card["gate"] = as_dict(gate(
         "scorecard", failures,
         tasks_covered=card["task_coverage"]["tasks"],

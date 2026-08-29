@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable, Optional
 
+from harness.shared import parallel
 from harness.shared.records import (
     Constraint,
     ConstraintTests,
@@ -491,12 +492,14 @@ def compile_policy(
     file_hash: Optional[str] = None,
     timeout_s: float = 5.0,
     limit: Optional[int] = None,
+    workers: int = 1,
 ) -> list[Constraint]:
     """Every sentence of a policy, or a chosen list of sentences, compiled in order.
 
     `policy_text` is the whole policy handed to every `compile_rule` call, so the stable prefix
     (item 1) is one value shared across the stage: the raw text when `policy` is one, or the given
-    sentences stitched back in order when the caller already split them.
+    sentences stitched back in order when the caller already split them. `workers` (D118) compiles
+    that many sentences at once; the list comes back in sentence order either way.
     """
     if isinstance(policy, str):
         policy_text, sentences = policy, split_policy(policy, file_hash)
@@ -505,7 +508,8 @@ def compile_policy(
         policy_text = "\n".join(s.text for s in sorted(sentences, key=lambda s: s.index))
     if limit is not None:
         sentences = sentences[:limit]
-    return [compile_rule(model, sentence, timeout_s, policy_text=policy_text) for sentence in sentences]
+    return parallel.each(sentences, lambda sentence: compile_rule(model, sentence, timeout_s, policy_text=policy_text),
+                         workers)
 
 
 def accept_rewrite(constraint: Constraint, timeout_s: float = 5.0) -> Constraint:

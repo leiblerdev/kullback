@@ -321,6 +321,7 @@ class OverlayRow(Record):
     id: str
     version_hash: str
     trace_id: Optional[str] = None
+    after_write: bool = False  # the sighting came after a write in its own trace (D74 merge order)
 
 
 class TaskOverlay(Record):
@@ -391,6 +392,9 @@ class Cost(Record):
     usage: Usage = Field(default_factory=Usage)
     usd: float = Field(default=0.0, ge=0)
     wall_ms: float = Field(default=0.0, ge=0)
+    # Where usd's price came from: "models.dev" or "table" (budget.PRICES), or None for an
+    # unpriced model. Set by budget.record_call; nothing else writes it.
+    price_source: Optional[str] = None
 
 
 class Event(Record):

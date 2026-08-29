@@ -358,21 +358,25 @@ def question_keys(run: Run, effects: dict, fn: Callable) -> dict[str, dict]:
 
 
 def communicate_values(run: Run, fn: Callable) -> dict[str, dict]:
-    """Facts read from the world that the Run's final answer states back to the user."""
+    """Facts read from the world that the Run's answers state back to the user.
+
+    Every answer turn counts, not the closing one alone: a recorded conversation usually ends with a
+    farewell after the user's thanks, and the facts were stated the turn before. The second retail
+    build derived no communicate atom for 25 read-only Tasks this way, and each of their Verifiers
+    was one write cap an empty Run passes. The Runner's `communicated()` reads every assistant turn
+    too, so the atom and its check agree on where a fact may be said.
+    """
     out: dict[str, dict] = {}
-    final_pos, text = None, ""
-    for pos, event in enumerate(run.events):
-        if _assistant_text(event) and not _reply(event).get("tool_calls"):
-            final_pos, text = pos, _assistant_text(event)
-    if final_pos is None:
-        return out
+    answers = [(pos, _assistant_text(e)) for pos, e in enumerate(run.events)
+               if _assistant_text(e) and not _reply(e).get("tool_calls")]
     results = [(pos, canonical_json(_payload(e).get("result")))
-               for pos, e in enumerate(run.events) if e.type == "tool_result" and pos < final_pos]
-    for token in _tokens(text):
-        for pos, blob in results:
-            if _token_in(blob, token):
-                out.setdefault(_key(fn, token), {"text": token, "span": _ptr(run, run.events[pos].idx)})
-                break
+               for pos, e in enumerate(run.events) if e.type == "tool_result"]
+    for answer_pos, text in answers:
+        for token in _tokens(text):
+            for pos, blob in results:
+                if pos < answer_pos and _token_in(blob, token):
+                    out.setdefault(_key(fn, token), {"text": token, "span": _ptr(run, run.events[pos].idx)})
+                    break
     return out
 
 
@@ -903,6 +907,70 @@ def validate_verifier(verifier: Verifier, reference_run: Any, empty_run: Any = N
         _leak_gate(verifier, reference, intent_text, user_rules),
         _mutation_gate(verifier, reference, score, _canon_fn(canon)),
     ]
+
+
+def wrong_run(verifier: Verifier, reference: Any, canon: Any = None) -> Optional[Run]:
+    """Check 4's Run, built from the Reference with no Runner: every required write aimed at the wrong entity.
+
+    D79 names the two shapes of a plausible wrong End state, the wrong entity and the missing
+    question. Writes are swapped first: the tool is right and the row is not, which is the mistake a
+    Candidate makes when it picks the wrong order, and the swap takes another id the Reference itself
+    showed under the same field where one exists. A Verifier with no required write instead loses
+    what the agent asked and told the user. A Verifier that requires nothing has no wrong Run, and
+    the check stays not run rather than passing on a Run that is not wrong.
+    """
+    fn = _canon_fn(canon)
+    reference = _as_run(reference)
+    run = reference.model_copy(deep=True)
+    run.run_id = f"{reference.run_id}.wrong"
+    writes = [atom_payload(a) for a in verifier.atoms
+              if a.kind == "required" and atom_payload(a).get("kind") == "write"]
+    swapped = 0
+    for payload in writes:
+        event = next((e for e in run.events if e.type == "tool_call" and e.idx == payload.get("at")), None)
+        field = payload.get("id_field")
+        if event is None or not field:
+            continue
+        args = dict(_args(event))
+        current = _text_of(fn(args.get(field)))
+        others = [v for v in _values_named(reference, field) if _text_of(fn(v)) != current]
+        args[field] = others[0] if others else f"{_MUTANT}_{current}"
+        event.payload = dict(event.payload, args=args)
+        swapped += 1
+    if swapped:
+        return run
+    demanded = [a for a in verifier.atoms
+                if a.kind == "required" or atom_payload(a).get("kind") in ("question", "communicate")]
+    if not demanded:
+        return None
+    for event in run.events:
+        if event.type == "model_call":
+            event.payload = {"reply": {"content": "", "tool_calls": []}}
+        elif event.type == "user_turn":
+            event.payload = dict(event.payload, text="", content="")
+    return run
+
+
+def _values_named(run: Run, field: str) -> list[Any]:
+    """Every scalar the Reference showed under this field name, in tool arguments and results, in order."""
+    out: list[Any] = []
+
+    def walk(value: Any) -> None:
+        if isinstance(value, dict):
+            for key, item in value.items():
+                if key == field and not isinstance(item, (dict, list, tuple)) and item not in out:
+                    out.append(item)
+                walk(item)
+        elif isinstance(value, (list, tuple)):
+            for item in value:
+                walk(item)
+
+    for event in run.events:
+        if event.type == "tool_call":
+            walk(_args(event))
+        elif event.type == "tool_result":
+            walk(_payload(event).get("result"))
+    return out
 
 
 def _empty_run(reference: Run) -> Run:

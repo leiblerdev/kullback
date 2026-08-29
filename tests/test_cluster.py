@@ -498,3 +498,28 @@ def test_the_corpus_score_does_not_hang_on_the_exact_threshold(raw_dir):
     traces, truth = corpus_traces_and_truth(raw_dir)
     scores = {th: pair_f1(cluster_runs(traces, TAU2_RETAIL_WRITES, threshold=th)[1], truth) for th in (0.3, 0.5)}
     assert min(scores.values()) >= 0.65, scores
+
+
+# --- D74: one starting world per Task ---------------------------------------
+
+def test_runs_that_saw_a_row_in_two_versions_before_writing_are_different_tasks():
+    from harness.builder.cluster import split_by_world
+
+    class T:
+        def __init__(self, trace_id):
+            self.trace_id = trace_id
+
+    worlds = {"a": {("orders", "o1"): "v_pending"}, "b": {("orders", "o1"): "v_pending", ("users", "u1"): "v1"},
+              "c": {("orders", "o1"): "v_delivered"}, "d": {}}
+    parts = split_by_world([T("c"), T("a"), T("d"), T("b")], worlds)
+    assert [[t.trace_id for t in part] for part in parts] == [["a", "b", "d"], ["c"]]
+
+
+def test_a_group_with_no_world_information_stays_one_task():
+    from harness.builder.cluster import split_by_world
+
+    class T:
+        def __init__(self, trace_id):
+            self.trace_id = trace_id
+
+    assert [[t.trace_id for t in p] for p in split_by_world([T("b"), T("a")], {})] == [["a", "b"]]

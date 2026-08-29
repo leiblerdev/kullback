@@ -269,12 +269,20 @@ def build(
                                              help="Grow a table to this many rows with synthetic ones, "
                                                   "as table=count; repeatable (D107)."),
     grow_seed: int = typer.Option(0, "--grow-seed", help="Seed for the synthetic rows."),
+    probe_limit: Optional[int] = typer.Option(None, "--probe-limit",
+                                              help="Loophole probes per build (D79 check 6); default every Task."),
+    rerolls: int = typer.Option(3, "--rerolls", help="Frontier re-rolls per Task beside its recordings (D112); "
+                                                    "0 turns them off."),
+    workers: int = typer.Option(8, "--workers", help="Model calls in flight at once across tools, policy "
+                                                     "sentences, Intents and re-rolls (D118); 1 runs them in a line."),
 ):
     """Run the Builder pipeline over the ingested Traces and write the Environment."""
     adapter = _live_model(model, base_url) if model else None
+    search = _entry("harness.shared.search", "search_for")(workdir)  # None unless live is on or a memo exists
     result = _entry("harness.builder.build", "build")(
         workdir=workdir, iterate=iterate, model=adapter, files=list(files or []), ceiling_usd=ceiling_usd,
-        grow=_grow_targets(grow), grow_seed=grow_seed)
+        grow=_grow_targets(grow), grow_seed=grow_seed, probe_limit=probe_limit, rerolls=rerolls, search=search,
+        workers=workers)
     typer.echo(json.dumps(result, default=str))
 
 

@@ -7,6 +7,7 @@ import math
 import re
 from typing import Any, Iterable, Optional, Sequence
 
+from harness.builder.mine import is_assistant_call
 from harness.shared.provider import Model
 from harness.shared.records import Category, Task, ToolCall, Trace, content_hash
 
@@ -58,17 +59,10 @@ def write_tool_names(tool_sigs: Any) -> set[str]:
     return names
 
 
-def _is_assistant_call(call: ToolCall) -> bool:
-    """A domain with two tool-calling actors (telecom's simulated user runs its own user_tools.py)
-    must not credit the simulated user's own actions to the Environment; a missing requestor is the
-    assistant."""
-    return (call.requestor or "assistant") == "assistant"
-
-
 def confirmed_write_calls(trace: Trace, writes: set[str]) -> list[ToolCall]:
     """The Run's write calls that went through: a call with an error changed nothing, and only the
     assistant's own calls count toward what the Run wrote (docs/cross-domain-check.md, Judgement)."""
-    return [c for c in trace.tool_calls if c.name in writes and c.error is None and _is_assistant_call(c)]
+    return [c for c in trace.tool_calls if c.name in writes and c.error is None and is_assistant_call(c)]
 
 
 def category_signature(trace: Trace, writes: set[str]) -> tuple[str, ...]:
@@ -199,6 +193,26 @@ def _cluster_by_intent(
     return [[by_id[tid] for tid in sorted(members_ids)] for _, members_ids in sorted(groups.items())]
 
 
+def split_by_world(group: Sequence[Trace], worlds: dict[str, dict]) -> list[list[Trace]]:
+    """Runs that saw one row in two versions before writing started in different worlds: different Tasks.
+
+    `worlds` is compile_env.trace_worlds: per trace, row key to version hash of its pre-write
+    sightings. Greedy and order free in effect: traces are taken by id and each joins the first
+    subgroup whose rows it does not contradict, so the same traces always land the same way.
+    """
+    subgroups: list[tuple[list[Trace], dict]] = []
+    for trace in sorted(group, key=lambda t: t.trace_id):
+        seen = worlds.get(trace.trace_id) or {}
+        for members, world in subgroups:
+            if all(world.get(key, version) == version for key, version in seen.items()):
+                members.append(trace)
+                world.update(seen)
+                break
+        else:
+            subgroups.append(([trace], dict(seen)))
+    return [members for members, _ in subgroups]
+
+
 def cluster_runs(
     traces: Iterable[Trace],
     tool_sigs: Any = None,
@@ -206,8 +220,9 @@ def cluster_runs(
     threshold: float = DEFAULT_THRESHOLD,
     model: Optional[Model] = None,
     min_runs: int = MIN_RUNS_GUARDED,
+    worlds: Optional[dict[str, dict]] = None,
 ) -> tuple[list[Category], list[Task]]:
-    """Categories by write-tool signature and Tasks by intent similarity inside them (D83, D81)."""
+    """Categories by write-tool signature, Tasks by intent similarity and starting world inside them (D83, D81, D74)."""
     writes = write_tool_names(tool_sigs)
     by_signature: dict[tuple[str, ...], list[Trace]] = {}
     bags: dict[str, set[str]] = {}
@@ -223,7 +238,8 @@ def cluster_runs(
     for signature in sorted(by_signature):
         cat_id = category_id(signature)
         task_ids: list[str] = []
-        for group in _cluster_by_intent(by_signature[signature], bags, weights, threshold):
+        for cluster in _cluster_by_intent(by_signature[signature], bags, weights, threshold):
+          for group in split_by_world(cluster, worlds or {}):
             run_ids = sorted(t.trace_id for t in group)
             tid = task_id(cat_id, run_ids)
             tasks.append(

@@ -386,16 +386,25 @@ def gate_deterministic(sandbox: Sandbox, calls: Iterable[ToolCall], rules: Any =
 
 
 def gate_non_trivial(sandbox: Sandbox, calls: Iterable[ToolCall], rules: Any = None) -> GateResult:
-    """4. Different arguments do not all give one constant answer."""
+    """4. Different arguments do not all give one constant answer, unless the recorded tool answered them that way.
+
+    The recording is the standard: a hand-off tool that acknowledged 32 argument sets with the same
+    line is faithfully constant, and a body that matches it is right. The second retail build failed
+    `transfer_to_human_agents` here for doing what the real tool did, 25 of 25 replays agreeing.
+    """
     calls = list(calls)
     try:
         results = sandbox.run(calls)
     except SandboxError as exc:
         return _gate("non_trivial", False, {}, [str(exc)])
     metrics = {"arg_sets": len({content_hash(c.args) for c in calls}),
-               "distinct_answers": len({content_hash(canon(r, rules)) for r in results})}
+               "distinct_answers": len({content_hash(canon(r, rules)) for r in results}),
+               "recorded_answers": len({content_hash(canon(parse_result(c.result), rules))
+                                        for c in calls if c.error is None})}
     if metrics["arg_sets"] < 2:
         return _gate("non_trivial", True, dict(metrics, insufficient_evidence=True))
+    if metrics["recorded_answers"] < 2:
+        return _gate("non_trivial", True, dict(metrics, recorded_constant=True))
     trivial = metrics["distinct_answers"] < 2
     return _gate("non_trivial", not trivial, metrics,
                  ["the body answers every call the same way"] if trivial else [])
@@ -494,13 +503,104 @@ def gate_replay_fidelity(sandbox: Sandbox, calls: Iterable[ToolCall], schema: En
     return _gate("replay_fidelity", success >= threshold and errors >= threshold, metrics, failures)
 
 
+def _collection_keys(state: Any) -> set[str]:
+    """Every key of a keyed collection in a world: a dict of rows, keyed by what the row is called.
+
+    A collection is a dict whose values are all dicts and that holds more than one of them, or one
+    whose row carries its own key as a field. Column names never qualify, since a row has scalar
+    fields beside its nested ones.
+    """
+    out: set[str] = set()
+
+    def walk(node: Any) -> None:
+        if isinstance(node, dict):
+            rows = node and all(isinstance(v, dict) for v in node.values())
+            if rows and (len(node) > 1 or any(isinstance(inner, str) and inner == key
+                                                for key, row in node.items() for inner in row.values())):
+                out.update(k for k in node if isinstance(k, str))
+            for value in node.values():
+                walk(value)
+        elif isinstance(node, list):
+            for value in node:
+                walk(value)
+
+    walk(state)
+    return out
+
+
+def reference_args(sandbox: Sandbox, calls: Iterable[ToolCall]) -> dict[str, ToolCall]:
+    """Arguments whose every recorded value names a row the call's own world holds, each with a call that carries it.
+
+    A value that is a collection key of the Starting state refers to something the world holds. An
+    argument whose recorded values all do is a reference argument: the customer's tool looked the row
+    up by it, and a value it cannot find is one it refused. Values are strings or lists of strings;
+    a call the tool refused is not evidence, since its value may be the very one nobody holds.
+    """
+    hits: dict[str, list[bool]] = {}
+    carriers: dict[str, ToolCall] = {}
+    keys_of: dict[int, set[str]] = {}
+    for call in calls:
+        if call.error is not None:
+            continue
+        state = sandbox.state_for(call)
+        keys = keys_of.get(id(state))
+        if keys is None:
+            keys = keys_of[id(state)] = _collection_keys(state)
+        for name, value in call.args.items():
+            values = value if isinstance(value, list) else [value]
+            if not values or not all(isinstance(v, str) and v for v in values):
+                continue
+            hits.setdefault(name, []).append(all(v in keys for v in values))
+            carriers.setdefault(name, call)
+    return {name: carriers[name] for name, seen in hits.items() if seen and all(seen)}
+
+
+def _unknown_value(value: str, keys: set[str]) -> str:
+    """A value shaped like this one that the world does not hold."""
+    candidates = [value[:-1] + ("0" if value[-1] != "0" else "1"), value + "0", value[::-1], "x" + value]
+    return next((c for c in candidates if c not in keys), f"{value}_unknown")
+
+
+def gate_refuses_unknown(sandbox: Sandbox, calls: Iterable[ToolCall], rules: Any = None) -> GateResult:
+    """6. A write given a reference the world does not hold refuses it, as the recorded tool would.
+
+    Gate 5 holds the body to the refusals the corpus recorded; this is the refusal the corpus never
+    recorded. Every reference argument (`reference_args`) is probed once with a value nobody holds,
+    on the same world as a recorded call, and a body that answers instead of raising is permissive
+    where the real system refuses. Permissive is the direction that flatters a Candidate, which is
+    why it is a gate and not a note: the second retail build's `modify_pending_order_payment` accepted
+    any payment_method_id and wrote, where the real tool raises "Payment method not found".
+    """
+    calls = list(calls)
+    probes = []
+    for name, call in sorted(reference_args(sandbox, calls).items()):
+        keys = _collection_keys(sandbox.state_for(call))
+        value = call.args[name]
+        unknown = ([_unknown_value(value[0], keys)] + list(value[1:]) if isinstance(value, list)
+                   else _unknown_value(value, keys))
+        probes.append((name, unknown, call.model_copy(update={"args": dict(call.args, **{name: unknown})})))
+    if not probes:
+        return _gate("refuses_unknown", True, {"reference_args": 0, "insufficient_evidence": True})
+    try:
+        results = sandbox.run([probe for _, _, probe in probes])
+    except SandboxError as exc:
+        return _gate("refuses_unknown", False, {"reference_args": len(probes)}, [str(exc)])
+    failures = [f"{probe.name}({args_text(probe)}): accepted {name}={unknown!r}, which the world does not "
+                f"hold, and answered {json.dumps(result['value'], default=str)[:80]}; a reference the tool "
+                "cannot find has to be refused, not written"
+                for (name, unknown, probe), result in zip(probes, results, strict=False) if result["ok"]]
+    return _gate("refuses_unknown", not failures,
+                 {"reference_args": len(probes), "accepted": len(failures)}, failures)
+
+
 def run_gates(source: str, sandbox: Sandbox, shown: Iterable[ToolCall], held_out: Iterable[ToolCall],
-              schema: EntitySchema, rules: Any = None) -> list[GateResult]:
-    """The five gates in order, stopping at the first failure so the failure localizes (EvoEnv).
+              schema: EntitySchema, rules: Any = None, probe_refusals: bool = False) -> list[GateResult]:
+    """The gates in order, stopping at the first failure so the failure localizes (EvoEnv).
 
     Gate 3 runs over every recorded call, not a first pair: a body that is steady on the first two
     calls and rolls a die on the third is nondeterministic, and one more subprocess is the whole cost
-    of seeing it.
+    of seeing it. Gate 6, the refusal probe, runs only where `probe_refusals` says so: on a write
+    tool, since a read given an id nobody holds may answer with nothing and be right.
     """
     shown, held_out = list(shown), list(held_out)
     every = shown + held_out
@@ -517,4 +617,6 @@ def run_gates(source: str, sandbox: Sandbox, shown: Iterable[ToolCall], held_out
     gates.append(gate_replay_fidelity(sandbox, shown, schema, label="shown", rules=rules))
     if held_out and gates[-1].passed:
         gates.append(gate_replay_fidelity(sandbox, held_out, schema, label="held_out", rules=rules))
+    if probe_refusals and gates[-1].passed:
+        gates.append(gate_refuses_unknown(sandbox, every, rules))
     return gates

@@ -690,3 +690,9 @@ okay cool! we need to now segregrate stuff from the folders and organize to stre
 > okay if any of the above problems can be fixed with better mining please do that. [...] So the split is: confinement, missing import, result shape, error prefix are ours to fix and all have signal in hand; schema shape is the one that needs the customer's schema, and it should be reported as "outside what traces can show" rather than as a Builder miss. ( note please don't over fit, we will test this on multiple environments from the benchmarks you mined to verify whether this harness can generalize or not )
 
 > i would say we also need to focus on synthetic user generation and db generation as well, as described in tau forge where we just have a synthetic seed of user data - see the best practices to do that and then we need to do this as well.
+
+> we need the verifier  The Verifier stage produced zero confirmed verifiers on the first build because nothing converts a Trace into the Run it consumes, so the pass condition that makes an environment usable for grading has never been derived for real. as well, the harness should build thsi as well what is the problem ?
+
+> you don't need to build anything the harness needs to build everythign sir.
+
+> environment is one major step the next major step is good and accurate verifiers -> i think mostly the rsearch has converged them with llm as judges / reward models with rubrics, here we don't have reward models so we use llm as judges

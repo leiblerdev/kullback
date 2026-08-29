@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import json
+import os
+import threading
 import time
 from pathlib import Path
 from typing import Any, Optional
 
+from harness.shared import pricing as pricing_module
 from harness.shared.provider import Model, ModelConfig, ModelReply
 from harness.shared.records import Cost, Event, Usage
 
@@ -14,11 +17,13 @@ from harness.shared.records import Cost, Event, Usage
 # Data, not code. US dollars per 1M tokens. cache_read is what a cache hit costs,
 # cache_write what writing the cache costs.
 #
-# UPDATE ME: these are list prices checked by hand on the date below. Vendors change
-# them without warning, so re-check before trusting a build's cost, and add an entry
-# for every model a build actually calls. A model with no entry is not priced at zero
-# quietly: its calls are counted under unpriced_calls in the totals file and the
-# report shows that count.
+# UPDATE ME: this table is now the offline fallback, not the only source. price_for() asks
+# harness.shared.pricing's models.dev snapshot first, since a vendor's list price changes
+# without warning; this table is what prices a call when there is no snapshot (no network
+# allowed, or nothing fetched yet) or when models.dev has no row for the model. Keep it
+# checked by hand on the date below anyway, and add an entry for every model a build
+# actually calls: a model priced by neither source is not priced at zero quietly, its calls
+# are counted under unpriced_calls in the totals file and the report shows that count.
 PRICES_CHECKED = "2026-08-28"
 PRICES_NOTE = (
     "list prices per 1M tokens, checked by hand on "
@@ -52,11 +57,17 @@ CONTEXT_WINDOWS: dict[str, int] = {
 }
 
 TOTALS_NAME = "budget.json"
+# One ledger, one lock (D118): the Builder's stages call the model from a few threads at once,
+# and record_call is a read-modify-write of budget.json. Process-wide rather than per model,
+# since every wrapper in a build writes the same file.
+_LEDGER_LOCK = threading.RLock()
 # memo_hits: how many of "calls" were served from provider.MemoModel's on-disk memo rather than
 # the network. A hit's usage is zeroed at the source, so it already costs 0.00 in the other
 # fields; this is only the count, so a stage's cache effectiveness is a number, not a feeling.
+# models_dev_calls: how many priced calls got their price from the models.dev snapshot rather
+# than the PRICES table below, so a stale table is visible in the totals file, not just guessed.
 BUCKET_FIELDS = ("calls", "input", "output", "cache_read", "cache_write", "usd", "wall_ms",
-                 "unpriced_calls", "memo_hits")
+                 "unpriced_calls", "memo_hits", "models_dev_calls")
 CONTEXT_CAP_FRACTION = 0.40
 # Tokens are estimated from characters before a call, because the count endpoint is itself a
 # call. Four characters per token is the usual English ratio and errs on the low side.
@@ -122,9 +133,49 @@ def _lookup(table: dict[str, Any], model_id: Optional[str]) -> Optional[Any]:
     return None
 
 
+# The models.dev snapshot, loaded and cached once per process: price_for is on the hot path
+# of every call and must not re-read a file each time. _SNAPSHOT_PATH is None for the real
+# default (harness.shared.pricing.snapshot_path()); tests monkeypatch it to a tmp path so no
+# test ever reads or writes the real ~/.cache/harness/models.dev.json.
+_SNAPSHOT_PATH: Optional[Path] = None
+_CATALOG_LOADED = False
+_CATALOG: Optional[dict] = None
+
+
+def _price_catalog() -> Optional[dict]:
+    """models.dev's catalog for this process. No network unless live calls are allowed: with
+    them off (the default, and always off in tests), this only ever reads a snapshot already
+    on disk, if any."""
+    global _CATALOG_LOADED, _CATALOG
+    if not _CATALOG_LOADED:
+        from harness.shared import provider as provider_module
+        env = os.environ if provider_module.ALLOW_MODEL_REQUESTS else {}
+        _CATALOG = pricing_module.refresh(path=_SNAPSHOT_PATH, env=env)
+        _CATALOG_LOADED = True
+    return _CATALOG
+
+
+def _price_from_models_dev(model_id: Optional[str]) -> Optional[dict[str, float]]:
+    return pricing_module.price_from_catalog(_price_catalog(), model_id)
+
+
 def price_for(model_id: Optional[str]) -> Optional[dict[str, float]]:
-    """Prices for a full 'provider/model' id, or for the wire id alone."""
-    return _lookup(PRICES, model_id)
+    """Prices for a full 'provider/model' id, or for the wire id alone.
+
+    models.dev's live snapshot is asked first, since a vendor's list price changes without
+    warning; PRICES below is the offline fallback for a model or a machine without one.
+    """
+    return _price_from_models_dev(model_id) or _lookup(PRICES, model_id)
+
+
+def price_source(model_id: Optional[str]) -> Optional[str]:
+    """Where price_for's answer for this model came from: "models.dev" or "table". None when
+    neither source prices the model."""
+    if _price_from_models_dev(model_id) is not None:
+        return "models.dev"
+    if _lookup(PRICES, model_id) is not None:
+        return "table"
+    return None
 
 
 def is_priced(model_id: Optional[str]) -> bool:
@@ -206,6 +257,14 @@ def record_call(
         return event
     usage = event.cost.usage
     event.cost.usd = call_cost(usage, event.cost.model)
+    source = price_source(event.cost.model)
+    event.cost.price_source = source
+    with _LEDGER_LOCK:
+        return _record_locked(event, usage, source, stage, workdir, ceiling, item, items_left, memo_hit)
+
+
+def _record_locked(event: Event, usage: Usage, source: Optional[str], stage: str, workdir: str | Path,
+                   ceiling: Optional["Ceiling"], item: str, items_left: int, memo_hit: bool) -> Event:
     totals = load_totals(workdir)
     bucket = totals["stages"].setdefault(stage, empty_bucket())
     for target in (bucket, totals["total"]):
@@ -216,8 +275,10 @@ def record_call(
         target["cache_write"] += usage.cache_write
         target["usd"] += event.cost.usd
         target["wall_ms"] += event.cost.wall_ms
-        if not is_priced(event.cost.model):
+        if source is None:
             target["unpriced_calls"] += 1
+        elif source == "models.dev":
+            target["models_dev_calls"] += 1
         if memo_hit:
             target["memo_hits"] += 1
     save_totals(workdir, totals)
@@ -310,13 +371,14 @@ class Ceiling:
 
     def add(self, usd: float, stage: str, item: str, items_left: int = 0) -> float:
         """Charge one item, then stop the build if the ceiling is reached. Returns what remains."""
-        self._refuse_if_reached(stage, item, items_left)
-        self.spent += float(usd)
-        self.stage_spend[stage] = self.stage_spend.get(stage, 0.0) + float(usd)
-        self.stage_charges[stage] = self.stage_charges.get(stage, 0) + 1
-        self._write_spend(stage, float(usd))
-        self._stop_if_reached(stage, item, items_left)
-        return self.remaining
+        with _LEDGER_LOCK:
+            self._refuse_if_reached(stage, item, items_left)
+            self.spent += float(usd)
+            self.stage_spend[stage] = self.stage_spend.get(stage, 0.0) + float(usd)
+            self.stage_charges[stage] = self.stage_charges.get(stage, 0) + 1
+            self._write_spend(stage, float(usd))
+            self._stop_if_reached(stage, item, items_left)
+            return self.remaining
 
     def charge_recorded(self, totals: dict, stage: str, item: str, items_left: int = 0) -> float:
         """Take the spend from the ledger record_call just wrote, rather than counting twice.
@@ -415,12 +477,15 @@ class BudgetedModel(Model):
         started = time.monotonic()
         reply = self.inner.query(messages, tools=tools, config=config)
         wall_ms = (time.monotonic() - started) * 1000.0
-        self.calls += 1
-        # provider.MemoModel, when this wraps one, marks a served hit here; anything else
-        # (a plain adapter, TestModel, RecordedModel) has no such attribute and counts as a miss.
+        # provider.MemoModel, when this wraps one, marks a served hit here (per thread, D118);
+        # anything else (a plain adapter, TestModel, RecordedModel) has no such attribute and
+        # counts as a miss.
         memo_hit = bool(getattr(self.inner, "last_hit", False))
+        with _LEDGER_LOCK:
+            self.calls += 1
+            idx = self.calls - 1
         event = Event(
-            idx=self.calls - 1,
+            idx=idx,
             type="model_call",
             cost=Cost(
                 provider=self.model_id.split("/", 1)[0] if "/" in self.model_id else None,

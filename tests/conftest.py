@@ -24,6 +24,18 @@ def no_live_models(monkeypatch):
     monkeypatch.setattr(provider_module, "ALLOW_MODEL_REQUESTS", False)
 
 
+@pytest.fixture(autouse=True)
+def isolated_price_catalog(tmp_path, monkeypatch):
+    """No test reads or writes the real ~/.cache/harness/models.dev.json snapshot, and every
+    test starts with budget's price-catalog cache unloaded rather than carrying over the
+    previous test's snapshot."""
+    from harness.shared import budget as budget_module
+
+    monkeypatch.setattr(budget_module, "_SNAPSHOT_PATH", tmp_path / "models.dev.json")
+    monkeypatch.setattr(budget_module, "_CATALOG_LOADED", False)
+    monkeypatch.setattr(budget_module, "_CATALOG", None)
+
+
 @pytest.fixture(scope="session")
 def fixtures_dir() -> Path:
     return FIXTURES

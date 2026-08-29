@@ -112,7 +112,7 @@ _Avoid_: optimization plan, model strategy, report
 - A Verdict depends only on End state and Hard constraints. Effect-free actions (reads), their order, and the reasoning text never change a Verdict; reasoning is monitored for fabrication only.
 - A Run without an Environment gets a Screen result but no Verdict.
 - Verdicts come from Replicas only. Scenarios never enter pass rate or the routing plan.
-- A recorded Run becomes a Reference only after its End state is confirmed as success (customer outcome signal, agreeing frontier re-rolls, or a human label). Runs the frontier itself failed are reported separately and never set the bar.
+- A recorded Run becomes a Reference only after its End state is confirmed as success: it holds what the Intent plus the Hard constraints say should have happened (the requested change present when allowed, absent when forbidden), and it agrees with the other References of its Task. A customer outcome signal, a human label, or a benchmark reward may corroborate that afterwards but never replaces it. Runs the frontier itself failed are reported separately and never set the bar.
 - A Verifier is derived from the reference Run plus k re-rolls of the frontier and must pass its validation gates before any Verdict uses it.
 - Replay fidelity gates the Environment; Verifier validation gates the Verdict. Both must hold before a Task can clear the bar.
 - A Verifier is anchored to the Intent, not to the Reference's End state. The Reference and its frontier re-rolls are samples of what satisfies the Intent; atoms present in every successful sample are required, atoms in some are allowed, write effects in none and unimplied by the Intent are forbidden.

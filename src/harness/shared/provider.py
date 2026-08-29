@@ -8,6 +8,7 @@ import json
 import os
 import random
 import re
+import threading
 import time
 from email.utils import parsedate_to_datetime
 from pathlib import Path
@@ -218,7 +219,19 @@ class MemoModel(Model):
         self.dir = Path(workdir) / self.CACHE_DIR
         self.calls = 0
         self.hits = 0
-        self.last_hit = False
+        # D118: the Builder queries one MemoModel from several threads, and budget.py reads
+        # last_hit right after its own call returns, so the flag is per thread, not per instance.
+        self._local = threading.local()
+        self._lock = threading.Lock()
+        self._inflight: dict[str, threading.Lock] = {}
+
+    @property
+    def last_hit(self) -> bool:
+        return bool(getattr(self._local, "hit", False))
+
+    @last_hit.setter
+    def last_hit(self, value: bool) -> None:
+        self._local.hit = bool(value)
 
     def _key(self, messages: list[dict], tools: Optional[list[dict]], config: Optional[ModelConfig]) -> str:
         payload = {
@@ -239,19 +252,29 @@ class MemoModel(Model):
         tools: Optional[list[dict]] = None,
         config: Optional[ModelConfig] = None,
     ) -> ModelReply:
-        self.calls += 1
-        path = self._path(self._key(messages, tools, config))
-        if path.is_file():
-            self.hits += 1
-            self.last_hit = True
-            reply = ModelReply.model_validate(json.loads(path.read_text(encoding="utf-8")))
-            reply.usage = Usage()  # a hit costs nothing; the stored usage is kept on disk, not here
+        key = self._key(messages, tools, config)
+        with self._lock:
+            self.calls += 1
+            # One request in flight per key (D118): a second thread asking the same thing waits
+            # for the first answer and reads it as a hit, rather than paying for it twice.
+            gate = self._inflight.setdefault(key, threading.Lock())
+        with gate:
+            path = self._path(key)
+            if path.is_file():
+                with self._lock:
+                    self.hits += 1
+                self.last_hit = True
+                reply = ModelReply.model_validate(json.loads(path.read_text(encoding="utf-8")))
+                reply.usage = Usage()  # a hit costs nothing; the stored usage is kept on disk, not here
+                return reply
+            self.last_hit = False
+            reply = self.inner.query(messages, tools=tools, config=config)
+            self.dir.mkdir(parents=True, exist_ok=True)
+            # Written whole under a temporary name and renamed, so a reader never sees half a reply.
+            tmp = path.with_name(f"{path.name}.{threading.get_ident()}.tmp")
+            tmp.write_text(reply.model_dump_json(), encoding="utf-8")
+            tmp.replace(path)
             return reply
-        self.last_hit = False
-        reply = self.inner.query(messages, tools=tools, config=config)
-        self.dir.mkdir(parents=True, exist_ok=True)
-        path.write_text(reply.model_dump_json(), encoding="utf-8")
-        return reply
 
 
 def _as_reply(item: Any) -> ModelReply:
@@ -598,12 +621,16 @@ class HttpModel(Model):
         self.sleep = sleep or time.sleep
         self.rng = rng or random.Random()
         self._client = client
+        self._client_lock = threading.Lock()
 
     def client(self) -> Any:
-        if self._client is None:
-            require_live_calls_enabled()
-            self._client = httpx.Client()
-        return self._client
+        # httpx.Client is safe to share across threads; creating it is the one step that is
+        # not, so the first caller makes it and the rest wait (D118).
+        with self._client_lock:
+            if self._client is None:
+                require_live_calls_enabled()
+                self._client = httpx.Client()
+            return self._client
 
     def query(
         self,
@@ -911,7 +938,11 @@ def _openai_message(message: dict) -> dict:
     if isinstance(out.get("content"), dict):
         out["content"] = _text_of(out)  # JSON, not a Python repr; same rule as _text_of
     calls = out.get("tool_calls")
-    if calls:
+    if not calls:
+        # the loop writes every assistant message with a tool_calls list; the API rejects an
+        # empty one ("Invalid 'messages[4].tool_calls': empty array"), so a plain reply goes without
+        out.pop("tool_calls", None)
+    else:
         out["tool_calls"] = [
             call
             if "function" in call

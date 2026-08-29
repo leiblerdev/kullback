@@ -18,6 +18,11 @@ MAX_PROMPT_SPAN_CHARS = 300
 PHRASE_RE = re.compile(r"[a-z0-9_]+")
 MATCH_RE = re.compile(r"[a-z0-9]+")  # splits credit_card_1234 into credit, card, 1234, so a phrase can reach it
 CLAUSE_RE = re.compile(r"[.,;:!?\n]")
+# The frame every model writes the Intent in ("The user wanted help to ...") is not evidence of anything
+# and grounded on no span in any domain; it is stripped before the noun phrases are read.
+FRAME_RE = re.compile(r"^\s*(?:the\s+)?(?:user|customer|caller|client)?(?:'s)?\s*(?:wanted|wants|asked|asks|"
+                      r"needed|needs|requested|requests|would like|is asking|was asking)?"
+                      r"(?:\s+(?:help|to|for|with|about))*\s*", re.IGNORECASE)
 # A phrase the user ruled out in the same breath is not evidence that the user wanted it.
 NEGATIONS = frozenset("not no never dont cannot cant wont without nor neither".split())
 
@@ -238,6 +243,7 @@ def _intent_prompt(traces: Sequence[Trace], write_tools: Optional[set[str]]) -> 
     shown = list(traces[:MAX_PROMPT_RUNS])
     lines = [
         "Write one line saying what the user wanted, common to all these runs.",
+        "Start with the verb (as in: cancel order #W1). Do not write 'the user wanted'.",
         "Use only words evidenced below; every noun must appear in the evidence.",
     ]
     if len(traces) > len(shown):
@@ -252,8 +258,14 @@ def _intent_prompt(traces: Sequence[Trace], write_tools: Optional[set[str]]) -> 
     return "\n".join(lines)
 
 
+def strip_frame(text: str) -> str:
+    """"The user wanted help to cancel order #W1" is "cancel order #W1"; a line that is only the frame stays."""
+    stripped = FRAME_RE.sub("", text or "", count=1).strip()
+    return stripped if stripped else (text or "").strip()
+
+
 def _first_line(text: Optional[str]) -> str:
-    return _shared_first_line(text, MAX_INTENT_CHARS) or ""
+    return strip_frame(_shared_first_line(text, MAX_INTENT_CHARS) or "")
 
 
 def write_intent(

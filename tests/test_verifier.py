@@ -916,3 +916,16 @@ def test_export_can_be_limited_to_required_writes(tmp_path):
     assert len(V.export_tau2_actions(verifier)) == 2
     required_only = V.export_tau2_actions(verifier, include_allowed=False)
     assert [a["arguments"]["order_id"] for a in required_only] == ["#W123"]
+
+
+def test_a_fact_stated_before_the_farewell_is_a_communicate_fact():
+    run = make_run("r", [
+        user("What is the status of order #W123?"),
+        call("get_order_details", {"order_id": "#W123"}, kind="read", cid="c0"),
+        result(ORDER, cid="c0"),
+        assistant("Order #W123 is pending."),
+        user("Thanks, that is all."),
+        assistant("You are welcome, goodbye."),
+    ])
+    said = V.communicate_values(run, V._canon_fn(None))
+    assert [v["text"] for v in said.values()] == ["#W123"]

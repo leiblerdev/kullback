@@ -663,6 +663,15 @@ def test_an_openai_message_carrying_a_dict_result_goes_as_json():
     assert json.loads(message["content"]) == {"a": 1, "b": None}
 
 
+def test_an_assistant_message_without_tool_calls_goes_without_the_key():
+    """The loop writes tool_calls on every assistant message; the API rejects an empty list."""
+    plain = pv._openai_message({"role": "assistant", "content": "Which order?", "tool_calls": []})
+    assert "tool_calls" not in plain and plain["content"] == "Which order?"
+    calling = pv._openai_message({"role": "assistant", "content": None,
+                                  "tool_calls": [{"id": "c1", "name": "get_order", "arguments": {"id": "1"}}]})
+    assert calling["tool_calls"][0]["function"]["name"] == "get_order"
+
+
 def test_a_recorded_assistant_message_of_blocks_replays(make_recorded_model):
     """Anthropic and Claude Code JSONL record assistant content as a list of blocks."""
     model = make_recorded_model(

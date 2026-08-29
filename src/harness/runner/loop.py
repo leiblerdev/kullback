@@ -171,6 +171,24 @@ def _tool_call(state: RunState, call: Any, router: Any) -> None:
                            "content": _as_text(outcome.result)})
 
 
+def open_with_user(state: RunState) -> Optional[str]:
+    """The Simulated user speaks first: its opening reply, recorded as a user_turn like every later one.
+
+    `step` calls the model before anyone has spoken, so a Run seeded with nothing sends a model an
+    empty transcript; every one of the second retail build's 597 re-rolls died on that first call.
+    The opening is the goal the recorded user stated plus what it volunteered (D44).
+    """
+    if state.user is None:
+        return None
+    seen = len(getattr(state.user, "events", None) or [])
+    answer = state.user.reply(state.messages)
+    payload, assisted = _user_payload(state.user, answer, seen)
+    emit(state, "user_turn", payload, assisted=assisted)
+    if answer:
+        state.messages.append({"role": "user", "content": answer})
+    return answer
+
+
 def _user_turn(state: RunState, said: str) -> None:
     """No tool calls, so the Simulated user answers, or the Run stops here."""
     if state.user is None or _ends(state.user, said):

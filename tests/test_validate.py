@@ -1113,3 +1113,26 @@ def test_share_of_an_empty_sample_is_not_a_hundred_percent():
     assert _share(0, 0) is None
     assert _share(0, 4) == 0.0
     assert _share(4, 4) == 1.0
+
+
+def test_the_scorecard_gate_is_never_green_over_nothing(build_dir: Path):
+    status = {t: {"reference_confirmed": False, "verifier_passed": False, "reason": "x"} for t in ("t1", "t2")}
+    (build_dir / "task_status.json").write_text(json.dumps(status), encoding="utf-8")
+    card = scorecard(build_dir)
+    assert card["task_coverage"]["tasks_covered"] == 0
+    assert not card["gate"].get("pass", card["gate"].get("passed"))
+    assert any("no Task is gradeable" in f for f in card["gate"]["failures"])
+
+
+def test_environment_gate_finds_a_row_keyed_by_a_column_not_named_id(tmp_path):
+    """Airline's flights are keyed by flight_number; the row is there, and the gate has to see it."""
+    env_dir = tmp_path / "env"
+    env_dir.mkdir()
+    for name in ("data_model.py", "tools.py", "policy.md"):
+        (env_dir / name).write_text("", encoding="utf-8")
+    (env_dir / "tasks.json").write_text("[]", encoding="utf-8")
+    (env_dir / "db.json").write_text(json.dumps({"flights": {"HAT006": {"flight_number": "HAT006", "origin": "SFO"}}}),
+                                     encoding="utf-8")
+    gate = environment_gate({"files": {}}, files_dir=env_dir, referenced_ids=["HAT006", "HAT999"])
+    assert gate.passed is False
+    assert gate.failures == ["id HAT999 is referenced by the traces and is not in db.json"]
