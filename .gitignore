@@ -10,3 +10,4 @@ data/
 work/
 vendor/
 *.part
+.work*/

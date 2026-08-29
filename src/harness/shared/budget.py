@@ -43,6 +43,12 @@ CONTEXT_WINDOWS: dict[str, int] = {
     "anthropic/claude-haiku-4-5": 200_000,
     "openai/gpt-4.1-mini": 1_000_000,
     "openai/o4-mini": 200_000,
+    # Measured, not read off a page: a 500,000 token prompt was accepted, so this is a floor and
+    # the real window is at least this. It is here because the 200,000 default put the D65 cap at
+    # 80,000 tokens and refused a compile_tools prompt the model would have taken.
+    "openai/gpt-5.6-luna": 400_000,
+    "openai/gpt-5.6-sol": 400_000,
+    "openai/gpt-5.6-terra": 400_000,
 }
 
 TOTALS_NAME = "budget.json"

@@ -240,6 +240,11 @@ class EntitySchema(Record):
     columns: list[Column] = Field(default_factory=list)
     id_patterns: dict[str, str] = Field(default_factory=dict)
     synthetic_rows: list[str] = Field(default_factory=list)
+    # table -> "parent.column": where the corpus stores this table's rows inside another table's
+    # row, keyed by their own id (retail's items under products.variants). A table with a home is
+    # still a table, because some rows are only ever shown on their own, but the home is where a
+    # tool has to look first on the customer's real database.
+    homes: dict[str, str] = Field(default_factory=dict)
 
 # --- policy and the simulated user ---
 
