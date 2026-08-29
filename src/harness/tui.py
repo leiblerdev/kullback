@@ -171,6 +171,20 @@ class Board:
                      title=self.title, title_align="left", border_style="dim")
 
 
+def _values(words: list[str], flag: str) -> list[str]:
+    """Every value given to `flag`, in order. A flag with nothing after it, or with another flag
+    after it, is a mistake the person typing can act on, so it is said in those words rather than
+    surfacing as an IndexError from inside the build."""
+    out = []
+    for i, word in enumerate(words):
+        if word != flag:
+            continue
+        if i + 1 >= len(words) or words[i + 1].startswith("--"):
+            raise ValueError(f"{flag} needs a value after it")
+        out.append(words[i + 1])
+    return out
+
+
 def _read(path: Path, fallback: Any) -> Any:
     try:
         return json.loads(path.read_text(encoding="utf-8"))
@@ -226,8 +240,8 @@ class Screen:
         elif verb == "build":
             self._live("build", lambda emit: self._build(emit, rest))
         elif verb == "run":
-            if not rest:
-                self.console.print(Text("run needs a task id", style="red"))
+            if not rest or rest[0].startswith("--"):
+                self.console.print(Text("run needs a task id: /run TASK [--count N]", style="red"))
             else:
                 self._live(f"run {rest[0]}", lambda emit: self._run(emit, rest))
         else:
@@ -242,20 +256,33 @@ class Screen:
                 live.update(board.render())
             try:
                 work(on_event)
+            except ValueError as exc:
+                # No stage has started when the typed line itself was wrong, so it is a usage
+                # message and not a build outcome (Greptile, PR 1).
+                if board.order:
+                    board.outcome = f"{type(exc).__name__}: {exc}"
+                else:
+                    board.outcome = f"{exc}   (/help for usage)"
             except Exception as exc:  # a failed build is a result to read, not a traceback to lose
                 board.outcome = f"{type(exc).__name__}: {exc}"
             live.update(board.render())
 
     def _build(self, on_event: Any, rest: list[str]) -> None:
         from harness.builder import build as builder
-        files = [Path(rest[i + 1]) for i, part in enumerate(rest) if part == "--file"]
+        files = [Path(value) for value in _values(rest, "--file")]
         (self.runner or builder.build)(workdir=self.workdir, iterate="--iterate" in rest,
                                        model=self._adapter(), files=files, on_event=on_event,
                                        ceiling_usd=self.ceiling_usd)
 
     def _run(self, on_event: Any, rest: list[str]) -> None:
         from harness.builder import build as builder
-        count = int(rest[rest.index("--count") + 1]) if "--count" in rest else 1
+        counts = _values(rest, "--count")
+        try:
+            count = int(counts[-1]) if counts else 1
+        except ValueError:
+            raise ValueError(f"--count takes a whole number, not {counts[-1]!r}") from None
+        if count < 1:
+            raise ValueError(f"--count takes a number of runs, not {count}")
         on_event({"kind": "stage", "stage": rest[0], "state": "start", "attempt": 1})
         (self.runner or builder.run_batch)(workdir=self.workdir, task_id=rest[0],
                                            model=self._adapter(), count=count,

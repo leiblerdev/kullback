@@ -226,3 +226,40 @@ def test_keys_says_which_are_set_and_never_what_they_are():
     assert "sk-secret-value" not in out
     assert "OPENAI_API_KEY" in out and "set" in out
     assert "ANTHROPIC_API_KEY" in out and "missing" in out
+
+
+# --- a flag typed without its value is a usage message, not an IndexError (Greptile, PR 1) ---
+
+def test_a_flag_with_no_value_is_told_in_words_and_starts_nothing(tmp_path):
+    screen = _screen(tmp_path)
+    screen.command("/build --file")
+    assert "--file needs a value after it" in _text(screen.console)
+    assert screen.runner.calls == []
+
+
+def test_a_flag_followed_by_another_flag_has_no_value(tmp_path):
+    screen = _screen(tmp_path)
+    screen.command("/build --file --iterate")
+    assert "--file needs a value after it" in _text(screen.console)
+    assert screen.runner.calls == []
+
+
+def test_a_count_that_is_not_a_number_is_told_in_words(tmp_path):
+    screen = _screen(tmp_path)
+    screen.command("/run task-7 --count lots")
+    assert "--count takes a whole number, not 'lots'" in _text(screen.console)
+    assert screen.runner.calls == []
+
+
+def test_a_count_below_one_is_refused(tmp_path):
+    screen = _screen(tmp_path)
+    screen.command("/run task-7 --count 0")
+    assert "--count takes a number of runs" in _text(screen.console)
+    assert screen.runner.calls == []
+
+
+def test_run_with_only_a_flag_still_asks_for_the_task(tmp_path):
+    screen = _screen(tmp_path)
+    screen.command("/run --count 3")
+    assert "run needs a task id" in _text(screen.console)
+    assert screen.runner.calls == []
