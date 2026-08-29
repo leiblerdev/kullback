@@ -433,3 +433,18 @@ def test_state_view_any_value_does_not_hand_over_another_rows_fact():
     assert StateView(shared=two).any_value("email") is None
     scoped = StateView(shared=two, overlay={"users": {"u2": {"email": "two@x.com"}}})
     assert scoped.any_value("email") == "two@x.com"
+
+
+# --- a synthetic row read through a tool makes the Run assisted (D40, D49, D107) ---
+
+def test_a_code_route_that_returns_a_synthetic_row_is_assisted():
+    router = make_router(synthetic_rows=["123"])
+    out = router.route("get_order_details", {"order_id": "123"})
+    assert out.route == "code" and out.error is None
+    assert out.assisted is True
+
+
+def test_a_code_route_that_touches_no_synthetic_row_is_not_assisted():
+    router = make_router(synthetic_rows=["999"])
+    assert router.route("get_order_details", {"order_id": "123"}).assisted is False
+    assert make_router().route("get_order_details", {"order_id": "123"}).assisted is False

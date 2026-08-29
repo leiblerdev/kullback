@@ -984,6 +984,57 @@ def id_columns(traces: list[Trace]) -> set[str]:
     return {name for name, ok in distinct.items() if ok} | {n for n in addressed if _is_id(n)}
 
 
+def nested_rows(traces: list[Trace], id_names: Sequence[str] = ()) -> list[tuple[str, str, str, dict]]:
+    """(child table, parent table, column, row) for every row stored inside another row's column.
+
+    The signal is structural and needs no vocabulary: a column holding a dict whose values are
+    dicts, each keyed by the value of its own id column. Retail's get_product_details answers with
+    a product whose `variants` holds `{item_id: {item_id, price, ...}}`; get_item_details answers
+    with the same rows on their own. Read only from the outside, the first live build filed them
+    as a top-level `items` table, and on the customer's real database, where no such table exists,
+    every lookup raised "not found" (docs/live-build.md, schema_shape). The nesting was in the
+    traces the whole time; this is where it is read.
+    """
+    out: list[tuple[str, str, str, dict]] = []
+    for trace in traces:
+        for call in trace.tool_calls:
+            if not _is_assistant_call(call) or call.error is not None or call.result is None:
+                continue
+            rows = _result_rows(_parse(call.result))
+            for row in rows:
+                parent = _table_of(call.name, row, id_names, rows)
+                if parent is None:
+                    continue
+                for column, value in row.items():
+                    if not isinstance(value, dict) or not value:
+                        continue
+                    if not all(isinstance(inner, dict) for inner in value.values()):
+                        continue
+                    for key, inner in value.items():
+                        child = _keyed_by_own_id(str(key), inner, id_names)
+                        if child and child != parent:
+                            out.append((child, parent, str(column), inner))
+    return out
+
+
+def _keyed_by_own_id(key: str, row: dict, id_names: Sequence[str] = ()) -> Optional[str]:
+    """The table a nested row belongs to when the key it sits under is its own id; else None."""
+    for name, value in row.items():
+        is_id = isinstance(name, str) and (name.endswith("_id") and len(name) > 3 or name in id_names)
+        if is_id and isinstance(value, str) and value == key:
+            return _plural(_entity_of(name))
+    return None
+
+
+def nested_homes(traces: list[Trace], id_names: Sequence[str] = ()) -> dict[str, dict[str, int]]:
+    """Child table -> {"parent.column": rows seen there}, from `nested_rows`."""
+    homes: dict[str, dict[str, int]] = {}
+    for child, parent, column, _ in nested_rows(traces, id_names):
+        place = homes.setdefault(child, {})
+        place[f"{parent}.{column}"] = place.get(f"{parent}.{column}", 0) + 1
+    return homes
+
+
 def _result_rows(parsed: Any) -> list[dict]:
     if isinstance(parsed, dict):
         return [parsed]
@@ -1178,6 +1229,16 @@ def mine_schema(traces: list[Trace], db_json_path: Optional[Path] = None,
                     continue
                 for name, value in row.items():
                     _add_value(store, table, str(name), value)
+    # A table the corpus also stores inside another table's rows: its nested sightings are
+    # sightings of its columns too, and the place seen most often is recorded as its home.
+    homes: dict[str, str] = {}
+    for child, places in nested_homes(traces, id_names).items():
+        if child in store:
+            homes[child] = max(sorted(places), key=places.get)
+    for child, _parent, _column, row in nested_rows(traces, id_names):
+        if child in homes:
+            for name, value in row.items():
+                _add_value(store, child, str(name), value)
     columns, id_patterns = [], {}
     for table in sorted(store):
         for name in sorted(store[table]):
@@ -1199,4 +1260,4 @@ def mine_schema(traces: list[Trace], db_json_path: Optional[Path] = None,
                 pattern = id_pattern(cell["values"])
                 if pattern:
                     id_patterns[f"{table}.{name}"] = pattern
-    return EntitySchema(tables=sorted(store), columns=columns, id_patterns=id_patterns)
+    return EntitySchema(tables=sorted(store), columns=columns, id_patterns=id_patterns, homes=homes)

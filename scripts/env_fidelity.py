@@ -185,6 +185,66 @@ def verdict(mine: dict, real: dict, rules: Any) -> str:
     return "same"
 
 
+
+# One word for why a call missed, so the headline splits by cause and not only by tool. The
+# verdict says what was observed; the cause says which part of the Builder owns it.
+CAUSE_OWNER = {
+    "confinement": "compile_tools: the body used getattr, __dict__ or a denied builtin",
+    "missing_import": "compile_tools: the body used a module it never imported",
+    "row_access": "compile_tools: the body treated a pydantic row as a dict",
+    "result_shape": "compile_tools: same value, different wrapping (scalar boxed, key renamed)",
+    "error_prefix": "compile_tools: the body copied the transport's error prefix into the message",
+    "error_message": "compile_tools: both refused, the wording differs",
+    "schema_shape": "mine: our table layout differs from the real one, so a real row is not found (retail: items nested under products.variants, mined since D106)",
+    "body_error": "compile_tools: the body raised where the real tool answered",
+    "value": "compile_tools: a different answer with no shape or error explanation",
+    "effect": "compile_tools: same answer, different state change",
+    "real_errored": "reference: the real tool refused where ours answered",
+}
+
+
+def _peel(text: str) -> str:
+    """Drop every leading `Word: ` prefix an error message carries (exception name, transport)."""
+    parts = str(text).split(": ")
+    while len(parts) > 1 and parts[0].strip().replace("_", "").isalnum():
+        parts = parts[1:]
+    return ": ".join(parts).strip()
+
+
+def cause(word: str, mine: dict, real: dict) -> str:
+    if word == "not_confined":
+        return "confinement"
+    if word == "same" or word == "both_error":
+        return "none"
+    if word == "both_error_other_message":
+        return "error_prefix" if _peel(mine.get("error")) == _peel(real.get("error")) else "error_message"
+    if word == "only_ours_errored":
+        error = str(mine.get("error") or "")
+        if error.startswith("NameError"):
+            return "missing_import"
+        if error.startswith("AttributeError"):
+            return "row_access"
+        if "not found" in error.lower():
+            return "schema_shape"
+        return "body_error"
+    if word == "only_theirs_errored":
+        return "real_errored"
+    if word == "result_differs":
+        ours, theirs = plain(_payload(mine.get("result"))), plain(_payload(real.get("result")))
+        if isinstance(ours, dict) and len(ours) == 1 and not isinstance(theirs, dict) and \
+                str(next(iter(ours.values()))) == str(theirs):
+            return "result_shape"
+        if isinstance(ours, dict) and isinstance(theirs, dict) and \
+                sorted(map(str, ours.values())) == sorted(map(str, theirs.values())):
+            return "result_shape"
+        if not isinstance(ours, dict) and not isinstance(theirs, dict) and str(ours) == str(theirs):
+            return "result_shape"
+        return "value"
+    if word == "effect_differs":
+        return "effect"
+    return "value"
+
+
 def check(workdir: Path, domain: str, venv_python: Path, per_tool: int) -> dict:
     schema = EntitySchema.model_validate(_read(workdir / "schema.json", {}) or {})
     sigs = [ToolSig.model_validate(s) for s in _read(workdir / "tool_sigs.json", []) or []]
@@ -208,6 +268,7 @@ def check(workdir: Path, domain: str, venv_python: Path, per_tool: int) -> dict:
 
     reference = Reference(domain, venv_python)
     per_tool_rows, totals = {}, Counter()
+    causes: dict[str, Counter] = defaultdict(Counter)
     examples: list[dict] = []
     try:
         for tool in sorted(set(bodies) | set(calls)):
@@ -216,6 +277,7 @@ def check(workdir: Path, domain: str, venv_python: Path, per_tool: int) -> dict:
                 n = len(calls.get(tool, []))
                 counts["not_confined"] = n
                 totals["not_confined"] += n
+                causes["confinement"][tool] += n
                 per_tool_rows[tool] = {"calls": n, "assisted": tool in assisted,
                                        "why": unconfined[tool], **counts}
                 continue
@@ -223,10 +285,13 @@ def check(workdir: Path, domain: str, venv_python: Path, per_tool: int) -> dict:
                 args = call.get("args") or {}
                 mine, real = ours(source, blob, tool, args), reference.call(tool, args)
                 word = verdict(mine, real, rules)
+                why = cause(word, mine, real)
                 counts[word] += 1
                 totals[word] += 1
+                if why != "none":
+                    causes[why][tool] += 1
                 if word != "same" and len(examples) < 40:
-                    examples.append({"tool": tool, "args": args, "verdict": word,
+                    examples.append({"tool": tool, "args": args, "verdict": word, "cause": why,
                                      "ours": str(mine.get("error") or mine.get("result"))[:300],
                                      "real": str(real.get("error") or real.get("result"))[:300]})
             per_tool_rows[tool] = {"calls": sum(counts.values()), "assisted": tool in assisted,
@@ -235,11 +300,16 @@ def check(workdir: Path, domain: str, venv_python: Path, per_tool: int) -> dict:
         reference.close()
 
     scored = sum(totals.values()) - totals["not_confined"]
+    recorded = sum(totals.values())
     agree = totals["same"] + totals["both_error"]
+    by_cause = {why: {"calls": sum(tools.values()), "tools": dict(sorted(tools.items()))}
+                for why, tools in sorted(causes.items(), key=lambda kv: -sum(kv[1].values()))}
     return {"domain": domain, "workdir": str(workdir), "tools": len(bodies),
-            "assisted": sorted(assisted), "calls_scored": scored,
+            "assisted": sorted(assisted), "calls_scored": scored, "calls_recorded": recorded,
             "agreement": round(agree / scored, 4) if scored else 0.0,
-            "totals": dict(totals), "per_tool": per_tool_rows, "examples": examples}
+            "agreement_all": round(agree / recorded, 4) if recorded else 0.0,
+            "totals": dict(totals), "by_cause": by_cause,
+            "per_tool": per_tool_rows, "examples": examples}
 
 
 def report(result: dict) -> str:
@@ -264,10 +334,22 @@ def report(result: dict) -> str:
                      f"| {row.get('only_theirs_errored', 0)} "
                      f"| {row.get('both_error_other_message', 0)} "
                      f"| {row.get('not_confined', 0)} | {'yes' if row['assisted'] else ''} |")
+    by_cause = result.get("by_cause") or {}
+    if by_cause:
+        recorded = result.get("calls_recorded") or 1
+        lines += ["", f"Over every recorded call, refused tools counted as misses: "
+                      f"**{result.get('agreement_all', 0):.1%}**", "",
+                  "## Where the misses come from", "",
+                  "| cause | calls | share of recorded | tools | owner |", "|---|---:|---:|---|---|"]
+        for why, row in by_cause.items():
+            tools = ", ".join(f"`{t}` {n}" for t, n in row["tools"].items())
+            lines.append(f"| {why} | {row['calls']} | {row['calls'] / recorded:.1%} | {tools} "
+                         f"| {CAUSE_OWNER.get(why, '')} |")
     if result["examples"]:
         lines += ["", "## Where they part", ""]
         for item in result["examples"][:15]:
-            lines += [f"**`{item['tool']}`** ({item['verdict']}) `{json.dumps(item['args'])[:160]}`",
+            lines += [f"**`{item['tool']}`** ({item['verdict']}, {item.get('cause', '')}) "
+                      f"`{json.dumps(item['args'])[:160]}`",
                       f"- ours: `{item['ours']}`", f"- real: `{item['real']}`", ""]
     return "\n".join(lines)
 

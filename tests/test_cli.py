@@ -495,3 +495,21 @@ def test_a_failure_code_left_unmarked_gets_a_cause_and_one_verdict_file(tmp_path
         body = json.loads(path.read_text(encoding="utf-8"))
         stored.setdefault(body["run_id"], []).append(body.get("cause"))
     assert stored == {"r1": [None], "r2": ["candidate"]}
+
+
+# --- build --grow table=count (D107) ---
+
+def test_grow_targets_parse_table_equals_count_and_refuse_anything_else():
+    assert cli._grow_targets(["users=500", "orders=1000"]) == {"users": 500, "orders": 1000}
+    assert cli._grow_targets(None) == {}
+    for bad in ("users", "users=", "=5", "users=many"):
+        with pytest.raises(Exception, match="table=count"):
+            cli._grow_targets([bad])
+
+
+def test_build_passes_grow_through(workdir, fake_modules):
+    result = runner.invoke(cli.app, ["build", "--workdir", str(workdir), "--grow", "users=500",
+                                     "--grow", "orders=1000", "--grow-seed", "7"])
+    assert result.exit_code == 0, result.output
+    kwargs = fake_modules["harness.builder.build.build"][0]["kwargs"]
+    assert kwargs["grow"] == {"users": 500, "orders": 1000} and kwargs["grow_seed"] == 7

@@ -116,3 +116,34 @@ What each column is telling us:
   shape of the world.
 - **other message (7)**: ours raises `Error: User not found`, the real tool `User not found`. The
   model copied tau2's transport prefix out of the trace into the exception.
+
+### The same number split by cause (25 calls per tool, 297 recorded)
+
+The per-tool table says where; the cause table says why and which Builder stage owns it.
+`env_fidelity.py` now names a cause per missed call and prints both denominators, because the
+headline flatters: the five refused tools are the biggest single miss and the scored number
+does not contain them.
+
+- Agreement on the 179 calls that loaded: **65.4%**.
+- Agreement over every recorded call, refused tools counted as misses: **39.4%**.
+
+| cause | calls | share of recorded | tools | owner |
+|---|---:|---:|---|---|
+| confinement | 118 | 39.7% | `exchange_delivered_order_items`, `get_order_details`, `get_product_details`, `modify_pending_order_address`, `modify_pending_order_items` | compile_tools: `getattr` or `__dict__` in the body |
+| missing_import | 25 | 8.4% | `transfer_to_human_agents` | compile_tools: the body calls `re.findall` and never imports `re`; `re` is on the allowed list, the module preamble does not import it |
+| result_shape | 19 | 6.4% | `calculate` | compile_tools: `{"value": -121.2}` where the real tool returns `"-121.2"`; same number |
+| schema_shape | 9 | 3.0% | `get_item_details` | mine: we mined a top-level `items` table; the real db nests items under `products[id].variants`, so on the real seed our body finds no `items`. The nesting is in the traces (5,615 `variants` sightings) and the miner now reads it (D106) |
+| error_prefix | 8 | 2.7% | `find_user_id_by_email`, `find_user_id_by_name_zip`, `return_delivered_order_items` | compile_tools: `Error: ` copied from the transport into the message |
+| row_access | 1 | 0.3% | `modify_pending_order_payment` | compile_tools: `.get` on a pydantic row |
+
+Five of the six causes are the model being told less than it needed. The confinement block,
+scalar results, no `.get` and dict-typed column samples were already in `compile_env.py`; D106
+added the rest: the error prefix is now read off the corpus (`shared_error_prefix`) instead of a
+constant, a NameError on an allowed module is turned into a one-line import hint in the retry, and
+the sixth cause, `schema_shape`, turned out to have signal in the traces after all: every
+`get_product_details` result nests items under `variants` keyed by `item_id`, so the miner now
+records `items -> products.variants` as the table's home, tells the body to look there first, and
+folds the standalone rows into it (9 of 9 on retail). On the first build this was the one miss the
+real seed exposed and our own `db.json` hid: on our db the `items` table existed and the tool
+answered. The rebuild will say whether the six are closed; none of these rules names a tau2 table,
+tool or message, which is the overfit check the next benchmark corpus has to pass (D51, D106).

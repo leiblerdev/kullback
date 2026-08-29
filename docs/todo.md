@@ -149,9 +149,24 @@ The build ran end to end; docs/live-build.md has what broke and the fidelity tab
 
 - **Price `openai/gpt-5.6-*`.** No row in `budget.PRICES`, so `usd` stays 0.00 and `--ceiling-usd`
   raises `UnpricedModel`. The number has to come from a person.
-- **Rebuild and remeasure.** Every fix below landed after the build that measured 64.3 percent, so
-  that number is the floor, not the current state. `harness build --workdir $PWD/.work-retail
-  --model openai/gpt-5.6-luna` then `scripts/env_fidelity.py`.
+- **Rebuild and remeasure.** Every fix below and the D106 mining fixes (observed error prefix,
+  nested homes, import hint) landed after the build that measured 64.3 percent, so that number is
+  the floor, not the current state. `harness build --workdir $PWD/.work-retail
+  --model openai/gpt-5.6-luna` then `scripts/env_fidelity.py`; the by-cause table in
+  docs/live-build.md says which of the six causes each fix was meant to close.
+- **A UI over the Builder and Runner.** Asked 2026-08-29: "we need a good ui for the same as
+  well so that it can talk to the underlying implementation." The TUI shows one build; the ask is
+  a UI that drives builds, runs and reports through the same entry points the CLI uses, with no
+  logic of its own (design section 3).
+- **Telecom shows one customer.** 456 traces, one customer row, one device, one plan. Growing it
+  is copying (docs/synthetic-rows.md, last section). Either the corpus needs traces over more
+  customers or telecom's Starting state comes from the customer's snapshot (ADR-0006), not traces.
+- **Tool parity for synthetic rows.** Replay recorded calls with a synthetic id substituted and
+  require the same result schema and the same success or error branch (docs/synthetic-rows.md,
+  practice 6). Belongs in `scripts/env_fidelity.py`.
+- **Free text in synthetic rows.** Product names repeat because nothing invents them; either an
+  LM-written list per free-text column (tau-bench's own method) or a customer-supplied list. A
+  zip drawn with its city is the same kind of fix (a joint draw of the address record).
 - **Airline and telecom live builds.** Retail is one domain. The confinement prompt, the scalar
   result rule and the error prefix rule were each written from one corpus.
 - **`compile_policy` cost.** 123 of 174 calls in the build were policy sentences, one call each.

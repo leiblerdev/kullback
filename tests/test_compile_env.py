@@ -1252,10 +1252,108 @@ def test_the_example_block_peels_the_transport_error_prefix_off_the_payload():
     copies the payload verbatim raises ValueError("Error: User not found") where the real tool
     raises ValueError("User not found"); seven bodies did on the first live build."""
     calls = [_call("find_user_id_by_email", {"email": "a@example.com"},
-                   error=ToolCallError(**{"class": "not_found_entity"}, payload="Error: User not found"))]
+                   error=ToolCallError(**{"class": "not_found_entity"}, payload="Error: User not found")),
+             _call("get_order_details", {"order_id": "#W0000000"},
+                   error=ToolCallError(**{"class": "not_found_entity"}, payload="Error: Order not found"),
+                   idx=1)]
     block = ce._example_block(calls)
-    assert "'User not found'" in block
+    assert "'User not found'" in block and "'Order not found'" in block
     assert "Error: User not found" not in block
+
+
+def test_a_single_recorded_error_is_shown_whole_because_one_message_is_its_own_prefix():
+    calls = [_call("find_user_id_by_email", {"email": "a@example.com"},
+                   error=ToolCallError(**{"class": "not_found_entity"}, payload="Error: User not found"))]
+    assert "'Error: User not found'" in ce._example_block(calls)
+    assert "'User not found'" in ce._example_block(calls, error_prefix="Error: ")
+
+
+@pytest.mark.parametrize("payloads, expected", [
+    (["Error: User not found", "Error: Order not found"], "Error: "),
+    (["Error: User not found", "Error: User not found"], "Error: "),
+    (["ValueError: Error: a", "ValueError: Error: b"], "ValueError: Error: "),
+    (["User not found", "Order not found"], ""),
+    (["Error: User not found"], ""),
+    (["Error: ", "Error: x"], ""),
+    (["Error: x", {"message": "Error: y"}], ""),
+])
+def test_the_shared_error_prefix_is_read_off_the_corpus_not_written_in(payloads, expected):
+    """D51: which wrapper a customer's transport adds is not known in advance. The rule is the
+    prefix every recorded error shares, cut at a ': ' boundary that leaves a message behind."""
+    calls = [_call("t", {"i": i}, error=ToolCallError(**{"class": "unknown"}, payload=payload), idx=i)
+             for i, payload in enumerate(payloads)]
+    assert ce.shared_error_prefix(calls) == expected
+
+
+def test_a_repair_prompt_names_an_allowed_module_the_body_forgot_to_import():
+    """transfer_to_human_agents used re.findall and never imported re: 25 of 25 replays died on
+    the same NameError, and the retry handed back the traceback instead of the one-line fix."""
+    from harness.runner.validate import gate
+    gates = [gate("executes", ["call 0: NameError: name 're' is not defined",
+                               "call 1: NameError: name 'requests' is not defined"])]
+    text = ce._failure_text(gates)
+    assert "`re` is on the allowed import list but the body never imported it" in text
+    assert "`requests` is on the allowed import list" not in text
+    assert ce._failure_text([gate("executes", [])]) == ""
+
+
+def _retail_nesting_traces():
+    variants = {"1906487464": {"item_id": "1906487464", "price": 102.02, "available": True},
+                "2820119811": {"item_id": "2820119811", "price": 94.68, "available": False}}
+    product = {"name": "Tea Kettle", "product_id": "9832717871", "variants": variants}
+    item = {"item_id": "1906487464", "price": 102.02, "available": True,
+            "options": {"capacity": "2 liters"}}
+    return [_trace("t1", [_call("get_product_details", {"product_id": "9832717871"}, result=product),
+                          _call("get_item_details", {"item_id": "1906487464"}, result=item, idx=1)])]
+
+
+def test_mining_reads_a_nested_home_off_the_traces():
+    """items sat under products.variants in every get_product_details result of the first live
+    build, keyed by item_id, and the schema still said items was a top-level table: nine calls
+    out of nine raised 'not found' on the real database (docs/live-build.md, schema_shape)."""
+    from harness.builder import mine
+    schema = mine.mine_schema(_retail_nesting_traces())
+    assert schema.homes == {"items": "products.variants"}
+    assert "items" in schema.tables and "products" in schema.tables
+    names = {c.name for c in schema.columns if c.table == "items"}
+    assert {"item_id", "price", "available", "options"} <= names
+
+
+def test_a_nested_collection_never_shown_on_its_own_stays_a_column_of_its_parent():
+    from harness.builder import mine
+    traces = _retail_nesting_traces()
+    traces[0].tool_calls = traces[0].tool_calls[:1]
+    schema = mine.mine_schema(traces)
+    assert schema.homes == {}
+    assert "items" not in schema.tables
+
+
+def test_the_schema_block_says_where_a_table_with_a_home_is_stored():
+    from harness.builder import mine
+    block = ce._schema_block(mine.mine_schema(_retail_nesting_traces()))
+    assert "items rows are stored inside products.variants, keyed by item_id" in block
+    assert "self.db.products.values()" in block and ".variants" in block
+    assert "may be empty on the customer's real database" in block
+
+
+def test_the_starting_state_folds_a_standalone_row_into_its_home(workdir):
+    from harness.builder import mine
+    traces = _retail_nesting_traces()
+    schema = mine.mine_schema(traces)
+    state = ce.build_starting_state(traces, schema, workdir, synthetic=False)
+    assert "1906487464" not in state.db["items"]
+    nested = state.db["products"]["9832717871"]["variants"]["1906487464"]
+    assert nested["options"] == {"capacity": "2 liters"}, "the standalone copy's extra field is kept"
+    assert nested["price"] == 102.02
+    assert any("is stored under products.variants" in a for a in state.assumptions)
+
+
+def test_a_row_whose_parent_was_never_shown_stays_in_its_table():
+    db = {"items": {"x1": {"item_id": "x1"}, "y1": {"item_id": "y1"}},
+          "products": {"p": {"product_id": "p", "variants": {"x1": {"item_id": "x1", "price": 1}}}}}
+    schema = EntitySchema(tables=["items", "products"], homes={"items": "products.variants"})
+    assert ce.fold_into_homes(db, schema) == [("items", "x1", "products.variants")]
+    assert list(db["items"]) == ["y1"]
 
 
 def test_the_example_block_leaves_a_payload_with_no_transport_prefix_alone():
@@ -1273,4 +1371,43 @@ def test_the_example_block_does_not_peel_a_prefix_out_of_a_json_payload():
 
 
 def test_the_system_prompt_says_the_transport_prefix_is_already_removed():
-    assert "transport's leading 'Error: '" in ce._SYSTEM
+    assert "same transport prefix" in ce._SYSTEM and "prefix removed" in ce._SYSTEM
+
+
+# --- the Starting state grows on request, and the ids are tagged (D40, D107) ---
+
+def _twelve_user_traces():
+    first = ["Ava", "Liam", "Mia", "Noah", "Zoe", "Eli", "Ivy", "Max", "Uma", "Kai", "Lea", "Tom"]
+    last = ["Chen", "Diaz", "Khan", "Lee", "Moss", "Nair", "Ortiz", "Park", "Quinn", "Reyes", "Sato", "Voss"]
+    traces = []
+    for n, (f, l_) in enumerate(zip(first, last, strict=True)):
+        uid = f"{f.lower()}_{l_.lower()}_{1000 + n}"
+        row = {"user_id": uid, "name": {"first_name": f, "last_name": l_},
+               "email": f"{f.lower()}.{l_.lower()}{2000 + n}@example.com", "tier": ["gold", "basic"][n % 2]}
+        traces.append(_trace(f"u{n}", [_call("get_user_details", {"user_id": uid}, result=row, idx=n)]))
+    return traces
+
+
+def test_the_starting_state_grows_to_the_asked_size_and_tags_every_grown_row(tmp_path):
+    from harness.builder import mine
+    traces = _twelve_user_traces()
+    schema = mine.mine_schema(traces)
+    state = ce.build_starting_state(traces, schema, tmp_path, grow={"users": 20}, grow_seed=1)
+    assert len(state.db["users"]) == 20
+    assert len(state.synthetic_rows) == 8
+    assert set(state.synthetic_rows) <= set(state.db["users"]) and set(state.synthetic_rows) <= set(schema.synthetic_rows)
+    assert any("8 synthetic rows" in note and "D107" in note for note in state.assumptions)
+    written = json.loads((tmp_path / "synthetic.json").read_text())
+    assert written["added"] == {"users": 8} and written["checks"]["ok"] is True
+    grown = state.db["users"][state.synthetic_rows[0]]
+    first, last = grown["name"]["first_name"], grown["name"]["last_name"]
+    assert grown["user_id"].startswith(f"{first.lower()}_{last.lower()}_")
+    assert grown["email"].startswith(f"{first.lower()}.{last.lower()}")
+
+
+def test_without_grow_nothing_is_grown_and_no_synthetic_file_is_written(tmp_path):
+    from harness.builder import mine
+    traces = _twelve_user_traces()
+    state = ce.build_starting_state(traces, mine.mine_schema(traces), tmp_path)
+    assert len(state.db["users"]) == 12 and state.synthetic_rows == []
+    assert not (tmp_path / "synthetic.json").exists()

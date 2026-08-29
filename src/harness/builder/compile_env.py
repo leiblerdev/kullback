@@ -16,6 +16,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable, Optional
 
+from harness.builder import synth
 from harness.builder.mine import is_assistant_call, is_scalar_result
 from harness.builder.sandbox import (
     ALLOWED_IMPORTS,
@@ -169,6 +170,8 @@ def build_starting_state(
     tasks: Optional[Iterable[Task]] = None,
     tool_sigs: Optional[Iterable[ToolSig]] = None,
     synthetic: bool = True,
+    grow: Optional[dict[str, int]] = None,
+    grow_seed: int = 0,
 ) -> StartingState:
     """One shared db.json for the customer, plus one TaskOverlay per Task (D33, D74).
 
@@ -176,7 +179,9 @@ def build_starting_state(
     observed write is undone. Where a trace shows only the post-state, that state is kept and the
     assumption is recorded. Order is the order the traces are passed in, then call order; nothing is
     keyed by wall-clock time (design section 8). Ids the traces asked for but never showed are then
-    filled with tagged synthetic rows (D40), unless `synthetic` is off.
+    filled with tagged synthetic rows (D40), unless `synthetic` is off. `grow` names a row count per
+    table to reach with rows composed from the observed ones (D107, `synth.grow`); what was added,
+    the rules it followed and the checks it passed are written to synthetic.json.
     """
     traces, workdir = list(traces), Path(workdir)
     workdir.mkdir(parents=True, exist_ok=True)
@@ -201,11 +206,52 @@ def build_starting_state(
                     "shaped from the observed rows and a Run that reads it is assisted"
                     for table_of, row_id in added]
     overlays = _build_overlays(observations, tasks or [], workdir, assumptions)
+    assumptions += [f"{table_of} row {row_id} is stored under {home}; the standalone copy was folded "
+                    "into it and a Task overlay that pins it re-adds the standalone copy"
+                    for table_of, row_id, home in fold_into_homes(db, schema)]
+    grown_ids: list[str] = []
+    if grow:
+        grown = synth.grow(db, schema, dict(grow), seed=grow_seed)
+        grown_ids = grown.ids
+        schema.synthetic_rows = sorted(set(schema.synthetic_rows) | set(grown_ids))
+        assumptions += [f"{table_of} holds {len(ids)} synthetic rows composed from the observed ones "
+                        "(D107); a Run that reads one is assisted"
+                        for table_of, ids in sorted(grown.added.items())]
+        if not grown.checks.get("ok", False):
+            assumptions.append("the synthetic rows failed a check; see synthetic.json")
+        (workdir / "synthetic.json").write_text(
+            json.dumps(synth.report(grown), indent=2, sort_keys=True, default=str) + "\n", encoding="utf-8")
     path = workdir / DB_FILE
     path.write_text(json.dumps(db, sort_keys=True, indent=2) + "\n", encoding="utf-8")
     (workdir / "assumptions.json").write_text(json.dumps(assumptions, indent=2) + "\n", encoding="utf-8")
     return StartingState(db=db, overlays=overlays, assumptions=assumptions, path=path,
-                         synthetic_rows=[row_id for _, row_id in added])
+                         synthetic_rows=[row_id for _, row_id in added] + grown_ids)
+
+
+def fold_into_homes(db: dict, schema: EntitySchema) -> list[tuple[str, str, str]]:
+    """Move a row the corpus stores inside another row (schema.homes) out of its top-level table.
+
+    One row, one place. A standalone sighting (get_item_details) and a nested one (the same item
+    under products.variants) are the same row; keeping both would let a write land in one and a
+    read come from the other. The nested copy wins the position, the standalone copy contributes
+    any field the nested one lacks, and a row whose parent the traces never showed stays where it
+    is, because there is nowhere to put it. Returns (table, id, home) per folded row.
+    """
+    folded: list[tuple[str, str, str]] = []
+    for table, home in sorted((schema.homes or {}).items()):
+        parent, column = home.split(".", 1)
+        rows = db.get(table) or {}
+        parents = [r for r in (db.get(parent) or {}).values() if isinstance(r, dict)]
+        for row_id in sorted(rows):
+            for parent_row in parents:
+                nest = parent_row.get(column)
+                if isinstance(nest, dict) and isinstance(nest.get(row_id), dict):
+                    for name, value in rows[row_id].items():
+                        nest[row_id].setdefault(name, value)
+                    del rows[row_id]
+                    folded.append((table, row_id, home))
+                    break
+    return folded
 
 
 def referenced_ids(traces: Iterable[Trace], schema: EntitySchema) -> list[tuple[str, str]]:
@@ -504,23 +550,48 @@ def load_toolkit(source: str, db: dict, class_name: str = TOOLS_CLASS, db_class:
 # --- the model writes the body (D56, D75) ---
 
 # tau2 wraps every raised exception as f"Error: {e}" before it reaches the agent
-# (vendor/tau2-bench, Environment.get_response), on every domain we have: retail, airline and
-# telecom raw traces all carry it. That prefix is the transport talking, not the customer's tool,
-# so a stored payload of "Error: User not found" is not the message a ValueError should carry.
-# `ToolCallError.payload` keeps the wrapper (D67 keeps the payload verbatim, with `raw_ptr` back to
-# D66's untouched byte); only the copy shown to the model has it peeled off. The first live build
-# copied it into seven bodies, faithfully, because nothing said it was not part of the message.
-_ERROR_TRANSPORT_PREFIX = "Error: "
+# (vendor/tau2-bench, Environment.get_response), and the first live build copied that wrapper into
+# seven bodies, faithfully, because nothing said it was not part of the message. The wrapper is
+# the transport talking, not the customer's tool, but which wrapper a customer's transport adds
+# is not ours to know in advance (D51): it is read off the corpus. A prefix that every recorded
+# error shares, ending at a ": " boundary and leaving a message behind on every one of them, is
+# transport; the copy shown to the model has it peeled off. `ToolCallError.payload` keeps the
+# wrapper (D67 keeps the payload verbatim, with `raw_ptr` back to D66's untouched byte).
 
 
-def _display_error_payload(payload: Any) -> Any:
-    """The error payload as the model should read it, with the known transport wrapper peeled off.
+def shared_error_prefix(calls: Iterable[ToolCall]) -> str:
+    """The prefix every string error payload in `calls` shares, cut at the last ": " they all have.
 
-    Only a leading, exact "Error: " is peeled, and only from a str payload; a JSON payload (D67's
+    Two payloads at least, or one message alone would be its own prefix. The remainder has to be
+    non-empty on every payload, so a corpus whose errors are all one identical message yields the
+    part before its last ": " only if that leaves something after it.
+    """
+    payloads = [call.error.payload for call in calls
+                if call.error is not None and isinstance(call.error.payload, str)]
+    if len(payloads) < 2:
+        return ""
+    common = payloads[0]
+    for payload in payloads[1:]:
+        limit = min(len(common), len(payload))
+        cut = next((i for i in range(limit) if common[i] != payload[i]), limit)
+        common = common[:cut]
+    boundary = common.rfind(": ")
+    while boundary >= 0:
+        prefix = common[:boundary + 2]
+        if all(len(payload) > len(prefix) for payload in payloads):
+            return prefix
+        boundary = common.rfind(": ", 0, boundary)
+    return ""
+
+
+def _display_error_payload(payload: Any, prefix: str = "") -> Any:
+    """The error payload as the model should read it, with the corpus's shared prefix peeled off.
+
+    Only a leading, exact `prefix` is peeled, and only from a str payload; a JSON payload (D67's
     `code` class) and a payload that never carried the prefix pass through untouched.
     """
-    if isinstance(payload, str) and payload.startswith(_ERROR_TRANSPORT_PREFIX):
-        return payload[len(_ERROR_TRANSPORT_PREFIX):]
+    if prefix and isinstance(payload, str) and payload.startswith(prefix) and len(payload) > len(prefix):
+        return payload[len(prefix):]
     return payload
 
 
@@ -529,21 +600,24 @@ _SYSTEM = ("You write the body of one Python method of a tool class rebuilt from
            "self.db, a pydantic model with one dict per table. Each dict's values are pydantic model rows, "
            "not plain dicts: read or write a row's field by attribute, as in order.status or "
            "order.status = \"cancelled\", never with .get(...) or any other dict method. Raise ValueError "
-           "with the customer's own message where the traces show an error. A recorded error is shown "
-           "without the transport's leading 'Error: ', so write the message exactly as shown and do not "
-           "put an 'Error: ' of your own in front of it.")
+           "with the customer's own message where the traces show an error. Where every recorded error "
+           "in this corpus begins with the same transport prefix, it is shown with that prefix removed, "
+           "so write the message exactly as shown and do not put a prefix of your own in front of it.")
 
 
-def _example_block(calls: Iterable[ToolCall]) -> str:
+def _example_block(calls: Iterable[ToolCall], error_prefix: Optional[str] = None) -> str:
     """The recorded calls as the model sees them: arguments, then result or error class, in full.
 
     Nothing is cut here. D75's third attempt is the full call table, and a node that says
     `evidence_calls: 30` has to mean the model saw thirty complete rows; the only limit is the D65
-    cap, which refuses the call rather than shortening it.
+    cap, which refuses the call rather than shortening it. `error_prefix` is the corpus-wide shared
+    error prefix (`shared_error_prefix`); given None it is read off these calls alone.
     """
+    calls = list(calls)
+    prefix = shared_error_prefix(calls) if error_prefix is None else error_prefix
     lines = []
     for call in calls:
-        outcome = (f"error {call.error.class_}: {_display_error_payload(call.error.payload)!r}"
+        outcome = (f"error {call.error.class_}: {_display_error_payload(call.error.payload, prefix)!r}"
                    if call.error is not None
                    else "result " + json.dumps(parse_result(call.result), default=str))
         lines.append(f"- args {json.dumps(call.args, sort_keys=True, default=str)} -> {outcome}")
@@ -568,6 +642,15 @@ def _schema_block(schema: EntitySchema) -> str:
         columns = sorted((c for c in schema.columns if c.table == table), key=lambda c: c.name)
         names = ", ".join(c.name for c in columns) if columns else "(no columns observed)"
         lines.append(f"- {table}: {names}")
+        home = (schema.homes or {}).get(table)
+        if home:
+            parent, column = home.split(".", 1)
+            key = id_field(schema, table) or "its id"
+            lines.append(f"    {table} rows are stored inside {home}, keyed by {key}: walk "
+                         f"self.db.{parent}.values() and read .{column} to find one. self.db.{table} "
+                         f"holds only rows the traces showed on their own and may be empty on the "
+                         f"customer's real database, so look in {home} first and in self.db.{table} "
+                         f"second.")
         for column in columns:
             if "dict" in (column.evidence or {}).get("types", []) and column.samples:
                 lines.append(f"    {table}.{column.name} looks like: {column.samples[0]}")
@@ -604,7 +687,7 @@ def _stable_system(schema: Optional[EntitySchema] = None, tool_names: Iterable[s
     return "\n\n".join(parts)
 
 
-def _tool_block(toolsig: ToolSig, examples: Iterable[ToolCall]) -> str:
+def _tool_block(toolsig: ToolSig, examples: Iterable[ToolCall], error_prefix: Optional[str] = None) -> str:
     """What differs call to call: this one tool, its signature and its recorded calls."""
     if is_scalar_result(toolsig):
         result_line = ("Result: a bare " + _annotation(toolsig.result_schema[0].types)
@@ -615,12 +698,13 @@ def _tool_block(toolsig: ToolSig, examples: Iterable[ToolCall]) -> str:
              f"Description: {toolsig.description or 'not declared by the customer'}",
              "Arguments: " + ", ".join(f"{f.name} ({_annotation(f.types)})" for f in toolsig.args_fields),
              result_line,
-             "Recorded calls:", _example_block(examples)]
+             "Recorded calls:", _example_block(examples, error_prefix)]
     return "\n".join(parts)
 
 
 def body_messages(toolsig: ToolSig, examples: Iterable[ToolCall], schema: Optional[EntitySchema] = None,
-                  failure: str = "", tool_names: Iterable[str] = ()) -> list[dict]:
+                  failure: str = "", tool_names: Iterable[str] = (),
+                  error_prefix: Optional[str] = None) -> list[dict]:
     """The whole message list one body request sends, so its size can be checked before it goes.
 
     The system message carries the fixed instructions plus what is the same for every tool in
@@ -628,7 +712,7 @@ def body_messages(toolsig: ToolSig, examples: Iterable[ToolCall], schema: Option
     cache to reuse. The user message carries only this one tool, its recorded calls, and (for a
     one-shot request outside the repair loop) the failure of a previous attempt.
     """
-    user = _tool_block(toolsig, examples)
+    user = _tool_block(toolsig, examples, error_prefix)
     if failure:
         user += "\n\nThe previous body failed these gates:\n" + failure
     return [{"role": "system", "content": _stable_system(schema, tool_names)},
@@ -636,12 +720,13 @@ def body_messages(toolsig: ToolSig, examples: Iterable[ToolCall], schema: Option
 
 
 def _append_retry(messages: list[dict], reply_content: str, evidence: Iterable[ToolCall],
-                  failure: str) -> list[dict]:
+                  failure: str, error_prefix: Optional[str] = None) -> list[dict]:
     """A gate-failure retry (D75, docs/prompt-caching.md item 2): the messages so far are kept
     exactly as they were sent, so the system and first user turn stay the cached prefix; the
     model's previous reply arrives as an assistant turn and the new evidence and failure as a
     new user turn, never folded back into the first one."""
-    turn = "Recorded calls:\n" + _example_block(evidence) + "\n\nThe previous body failed these gates:\n" + failure
+    turn = ("Recorded calls:\n" + _example_block(evidence, error_prefix)
+            + "\n\nThe previous body failed these gates:\n" + failure)
     return messages + [{"role": "assistant", "content": reply_content},
                        {"role": "user", "content": turn}]
 
@@ -743,7 +828,24 @@ def _failure_text(gates: list[GateResult], held_out: Iterable[ToolCall] = ()) ->
         if withheld:
             text += ("; " if text else "") + f"{withheld} more on calls you were not shown"
         lines.append(f"- gate {gate.stage} ({split}): {text}")
+    lines += _import_hints(gates)
     return "\n".join(lines)
+
+
+_UNDEFINED_NAME = re.compile(r"NameError: name '(\w+)' is not defined")
+
+
+def _import_hints(gates: list[GateResult]) -> list[str]:
+    """A NameError on a module the sandbox allows names the fix; say it instead of the traceback.
+
+    transfer_to_human_agents called re.findall on the first live build and never imported re, and
+    every one of its 25 replays died on the same NameError. The gate already knew which name was
+    missing and that the module is on the allowed list; the retry was handing back the raw error.
+    """
+    names = sorted({m.group(1) for gate in gates if not gate.passed
+                    for failure in gate.failures for m in _UNDEFINED_NAME.finditer(failure)})
+    return [f"- `{name}` is on the allowed import list but the body never imported it; put "
+            f"`import {name}` at the top of the body" for name in names if name in ALLOWED_IMPORTS]
 
 
 def _evidence_for(attempt: int, shown: list[ToolCall], gates: list[GateResult]) -> list[ToolCall]:
@@ -785,7 +887,7 @@ def compile_tool(model, toolsig: ToolSig, calls: Iterable[ToolCall], schema: Ent
                  workdir: Path | str, max_attempts: int = MAX_REPAIR_ATTEMPTS,
                  max_evidence_chars: Optional[int] = MAX_EVIDENCE_CHARS, timeout: float = 30.0,
                  call_states: Optional[dict] = None, rules: Any = None,
-                 tool_names: Iterable[str] = ()) -> ToolBuild:
+                 tool_names: Iterable[str] = (), error_prefix: Optional[str] = None) -> ToolBuild:
     """Write one tool body, gate it, and repair it at most three times with growing evidence (D75).
 
     Attempt 1 sees the failing call, attempt 2 every failing call, attempt 3 the full call table, and
@@ -807,6 +909,8 @@ def compile_tool(model, toolsig: ToolSig, calls: Iterable[ToolCall], schema: Ent
     are written under the workdir.
     """
     workdir, calls = Path(workdir), list(calls)
+    if error_prefix is None:  # build.py passes the corpus-wide prefix; alone, this tool's own calls
+        error_prefix = shared_error_prefix(calls)
     shown, held_out = split_calls(calls)
     build, failure = ToolBuild(name=toolsig.name, body=""), ""
     skeleton = gate_parses(module_source(schema, [toolsig], {toolsig.name: "pass"}))
@@ -824,9 +928,10 @@ def compile_tool(model, toolsig: ToolSig, calls: Iterable[ToolCall], schema: Ent
         node = {"attempt": attempt, "tool": toolsig.name, "evidence": _evidence_label(attempt, build.gates),
                 "evidence_calls": len(evidence), "passed": False, "refused": False}
         if attempt == 0:
-            messages = body_messages(toolsig, evidence, schema=schema, tool_names=tool_names)
+            messages = body_messages(toolsig, evidence, schema=schema, tool_names=tool_names,
+                                     error_prefix=error_prefix)
         else:
-            messages = _append_retry(messages, reply_content, evidence, failure)
+            messages = _append_retry(messages, reply_content, evidence, failure, error_prefix)
         # Fewer whole calls, never a shortened one. `_example_block` refuses to cut a call in
         # half and that stays true: what is dropped here is the last recorded call, entire. The
         # first live build refused `get_order_details` outright at 815,972 characters, because the
@@ -836,8 +941,10 @@ def compile_tool(model, toolsig: ToolSig, calls: Iterable[ToolCall], schema: Ent
                and prompt_chars(messages) > max_evidence_chars):
             evidence = evidence[:-1]
             node["evidence_calls"] = len(evidence)
-            messages = (body_messages(toolsig, evidence, schema=schema, tool_names=tool_names)
-                        if attempt == 0 else _append_retry(messages[:-2], reply_content, evidence, failure))
+            messages = (body_messages(toolsig, evidence, schema=schema, tool_names=tool_names,
+                                      error_prefix=error_prefix)
+                        if attempt == 0
+                        else _append_retry(messages[:-2], reply_content, evidence, failure, error_prefix))
         size = prompt_chars(messages)
         if max_evidence_chars is not None and size > max_evidence_chars:
             node["failures"] = [f"a prompt of {size} characters is over the cap "
