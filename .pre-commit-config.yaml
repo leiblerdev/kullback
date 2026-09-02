@@ -5,3 +5,11 @@ repos:
       - id: ruff
         name: ruff check
         args: [--fix, --exit-non-zero-on-fix]
+  - repo: local
+    hooks:
+      - id: lint-imports
+        name: import-linter (package dependency direction)
+        entry: uv run lint-imports
+        language: system
+        pass_filenames: false
+        files: ^(kullback/.*\.py|pyproject\.toml)$

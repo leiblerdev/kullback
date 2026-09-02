@@ -147,3 +147,48 @@ folds the standalone rows into it (9 of 9 on retail). On the first build this wa
 real seed exposed and our own `db.json` hid: on our db the `items` table existed and the tool
 answered. The rebuild will say whether the six are closed; none of these rules names a tau2 table,
 tool or message, which is the overfit check the next benchmark corpus has to pass (D51, D106).
+
+## Second live build (2026-08-29, evening): 88.2 percent, and what the number hides
+
+Rebuilt with `--iterate`, `openai/gpt-5.6-luna`, grown to the real seed's counts
+(`--grow users=500 --grow orders=1000 --grow products=50`): 217 calls, 27 minutes, 16 tools,
+seven marked assisted by the gates. `scripts/env_fidelity.py` over 25 calls per tool, 297 recorded:
+
+- Agreement on the 297 calls that loaded: **88.2%** (255 same, 7 both refused). No tool was refused by
+  the confinement gate this time, so the two denominators are the same number.
+- First build: 65.4% on 179 loaded calls, 39.4% over every recorded call.
+
+| cause | calls | share of recorded | tools | what it is |
+|---|---:|---:|---|---|
+| result_shape | 19 | 6.4% | `calculate` | still `{"value": x}` for a scalar; the prompt's scalar rule did not take on this tool |
+| body_error | 9 | 3.0% | `get_item_details` | the body looks up a top-level `items` table; see below |
+| value | 4 | 1.3% | `modify_pending_order_items` | a different answer with no shape or error explanation |
+| error_message | 3 | 1.0% | `find_user_id_by_name_zip` | both refused, the wording differs |
+
+Closed since the first build: confinement (118), missing_import (25), error_prefix (8),
+row_access (1). Open: result_shape on one tool, and `get_item_details`, which is not the D106 fix
+failing but the D106 fix never running. The `mine` stage was served from the cache: its code version
+hashed only the closure in `build.py`, not `mine.py`, so the schema this Environment was built on is
+the one mined before D106, with `items` as a table of nine rows and no home under
+`products.variants`. Every stage now hashes the modules it delegates to (D109), and the third build
+is the one that measures D106.
+
+### The Verifier stage had never derived anything
+
+`task_status.json` from this build: 205 Tasks, every one `reference_confirmed: False`,
+`verifiers: 0`, Task coverage 0 of 205, and the scorecard reads "Run ... was not replayed" 456
+times. The stage read Runs from `runs/<task>/`, which only `harness run` writes; the oracle replay
+that design section 6 calls Gate A lived in `tests/test_e2e.py` and nowhere in `src/`. So the
+Environment was measured tool by tool against tau2's toolkit and never once against its own
+Traces end to end, and no Task had a pass condition.
+
+D108 puts the replay in the build: `runner/replay.py` drives the loop with the Trace's own
+assistant and user turns over the built tools, scores every routed answer against the recorded
+one, and a Trace whose writes all agree and whose reads never differ in substance confirms its
+Reference. The Verifier stage derives from the confirmed seed replays and runs the whole D79 suite:
+the wrong Run is built by code from the Reference, the second path is the Task's second confirmed
+Trace, the leak check reads the Intent and the user rules, and the loophole probe is one Run per
+Task by the model in the Task's own world (`--probe-limit` caps it). On the offline fixture two of
+three Tasks confirm and their Verifiers pass seven of eight checks, failing only the second path,
+because a single-Trace Task has none until the k re-runs of D78 exist. The third live build is the
+first with the stage in it; its numbers go below when it finishes.

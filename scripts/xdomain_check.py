@@ -24,11 +24,11 @@ from pathlib import Path
 from typing import Any, Iterable, Optional
 
 REPO = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(REPO / "src"))
+sys.path.insert(0, str(REPO))
 
-from harness.builder import cluster, compile_env, ingest, mine  # noqa: E402
-from harness.shared import canon  # noqa: E402
-from harness.shared.records import Trace  # noqa: E402
+from kullback.builder import cluster, compile_env, ingest, mine  # noqa: E402
+from kullback.runner import canon  # noqa: E402
+from kullback.runner.records import Trace  # noqa: E402
 
 VENDOR = REPO / "vendor" / "tau2-bench"
 RAW = REPO / "data" / "raw"

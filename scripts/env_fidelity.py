@@ -30,16 +30,16 @@ from pathlib import Path
 from typing import Any, Optional
 
 REPO = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(REPO / "src"))
+sys.path.insert(0, str(REPO))
 sys.path.insert(0, str(REPO / "scripts"))
 
 from xdomain_check import VENDOR, norm  # noqa: E402
 
-from harness.builder import compile_env  # noqa: E402
-from harness.builder.build import CANON_RULES  # noqa: E402
-from harness.builder.sandbox import source_confinement  # noqa: E402
-from harness.shared import canon  # noqa: E402
-from harness.shared.records import EntitySchema, ToolSig  # noqa: E402
+from kullback.builder import compile_env  # noqa: E402
+from kullback.builder.build import CANON_RULES  # noqa: E402
+from kullback.gates.confinement import source_confinement  # noqa: E402
+from kullback.runner import canon  # noqa: E402
+from kullback.runner.records import EntitySchema, ToolSig  # noqa: E402
 
 REFERENCE = REPO / "scripts" / "tau2_reference.py"
 

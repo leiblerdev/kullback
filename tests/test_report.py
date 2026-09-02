@@ -7,20 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from harness.shared.records import (
-    Atom,
-    Constraint,
-    Environment,
-    GateResult,
-    OverlayRow,
-    Run,
-    Task,
-    TaskOverlay,
-    Verdict,
-    Verifier,
-    as_dict,
-)
-from harness.shared.report import (
+from kullback.report import (
     SECTIONS,
     ReportData,
     ScorecardItem,
@@ -33,6 +20,19 @@ from harness.shared.report import (
     suggestion,
     task_numbers,
     write_report,
+)
+from kullback.runner.records import (
+    Atom,
+    Constraint,
+    Environment,
+    GateResult,
+    OverlayRow,
+    Run,
+    Task,
+    TaskOverlay,
+    Verdict,
+    Verifier,
+    as_dict,
 )
 
 # --- hand-built records -----------------------------------------------------
@@ -176,13 +176,24 @@ def test_scorecard_shows_raw_and_explained_side_by_side(data):
     assert row.index("96%") < row.index("100%")
 
 
-def test_assisted_tools_unguarded_tasks_and_overlay_counts(data):
+def block_of(text: str, heading: str) -> str:
+    """One `###` subsection of the report, up to the next heading; a name in the whole report
+    proves nothing, since every Task and every reason is rendered somewhere in it."""
+    return text.split(heading, 1)[1].split("###", 1)[0]
+
+
+def test_the_environment_section_names_assisted_tools_unguarded_tasks_and_counts_overlay_rows(data):
     data.tasks[0].unguarded = True
     text = render(data)
-    assert "search_products" in text
-    assert "Unguarded Tasks" in text and "t1" in text
+    assert "search_products" in block_of(text, "### Assisted tools")
+    assert "t1" in block_of(text, "### Unguarded Tasks")
     assert "Overlay rows: 2" in text
     assert "Tasks with an overlay: 1" in text
+
+    data.tasks[0].unguarded = False
+    guarded = block_of(render(data), "### Unguarded Tasks")
+    assert "t1" not in guarded
+    assert "No unguarded Tasks" in guarded
 
 
 def test_the_assisted_share_per_tool_is_shown_when_it_is_known(data):
@@ -240,7 +251,7 @@ def test_assisted_runs_are_not_counted(data):
     assert "Runs not counted (assisted or environment suspected): 1" in render(data)
 
 
-def test_pass_rates_and_margin(data):
+def test_the_frontier_and_candidate_pass_rates_give_the_margin_between_them(data):
     numbers = task_numbers(data, data.tasks[0])
     assert numbers["frontier_pass_rate"] == 0.5
     assert numbers["candidate_pass_rate"] == 1.0
@@ -254,7 +265,7 @@ def test_judge_atoms_carry_the_disagreement_rate(data):
     assert "Judge atoms: 1 (judge disagreement rate 25%" in render(data)
 
 
-def test_failing_atoms_by_class_and_cause_counts(data):
+def test_failing_atoms_are_counted_by_atom_class_and_failures_by_cause(data):
     numbers = task_numbers(data, data.tasks[0])
     assert numbers["failing_atoms"] == {"required": 1}
     assert numbers["causes"] == {"candidate": 1}
@@ -267,7 +278,9 @@ def test_a_task_with_no_verdicts_is_reported_as_not_graded(data):
     numbers = task_numbers(data, data.tasks[0])
     assert numbers["runs_graded"] == 0
     assert numbers["margin"] is None
-    assert "Runs graded: 0" in render(data)
+    text = render(data)
+    assert "Runs graded: 0" in text
+    assert "say nothing either way" in text, "with nothing graded there is no suggestion either way"
 
 
 # --- suggestion, never a decision (D85) -------------------------------------
@@ -285,11 +298,6 @@ def test_a_negative_margin_does_not_support_routing(data):
     ]
     text = render(data)
     assert "Suggestion: the numbers do not support routing this Task to the Candidate" in text
-
-
-def test_no_graded_runs_gives_no_suggestion_either_way(data):
-    data.verdicts = []
-    assert "say nothing either way" in render(data)
 
 
 def test_an_unbuilt_environment_suggests_nothing(data):
@@ -327,7 +335,7 @@ def test_the_disagreement_queue_lists_both_verdicts_and_the_tasks_set_aside(data
     assert "environment" in block and "candidate" in block
     assert "r5" in block
     assert "t9" in block and "reference_disputed" in block
-    assert "8 pairs" in block and "2" in block
+    assert "Judge disagreement: 2 of 8 pairs" in block
 
 
 def test_an_empty_queue_says_so(data):
@@ -401,7 +409,7 @@ def test_load_counts_judge_pairs_the_same_way_judge_py_does(workdir: Path):
     Before this fix load() recomputed only pairs/disagreements/rate by hand and never set abstains,
     so the abstention line in _queue() never fired even though a judge_pairs.jsonl carried abstains.
     """
-    from harness.runner.judge import disagreement_rate
+    from kullback.runner.judge import disagreement_rate
 
     (workdir / "judge_pairs.jsonl").write_text(
         "\n".join(json.dumps(row) for row in [
@@ -423,7 +431,7 @@ def test_load_on_an_empty_workdir_still_renders(workdir: Path):
     assert headings == list(SECTIONS)
 
 
-def test_write_report_writes_markdown(workdir: Path, data: ReportData):
+def test_write_report_returns_the_file_it_wrote_with_the_title_on_the_first_line(workdir: Path, data: ReportData):
     path = write_report(data, workdir)
     assert path.is_file()
     assert path.read_text(encoding="utf-8").startswith("# Harness build report")
@@ -433,8 +441,8 @@ def test_write_report_writes_markdown(workdir: Path, data: ReportData):
 
 def test_the_report_counts_verdicts_that_rest_on_a_flagged_tool(data):
     """D70: a customer sees how much of a pass rate rests on tools nobody has confirmed."""
-    from harness.shared.records import Event, ToolSig
-    from harness.shared.report import flagged_tool_verdicts
+    from kullback.report import flagged_tool_verdicts
+    from kullback.runner.records import Event, ToolSig
 
     call = Event(idx=0, type="tool_call", payload={"name": "search_products"})
     other = Event(idx=0, type="tool_call", payload={"name": "get_order_details"})
@@ -450,8 +458,8 @@ def test_the_report_counts_verdicts_that_rest_on_a_flagged_tool(data):
 
 def test_no_flagged_tools_says_so(data):
     """The sentence only holds when every mined ToolSig is confirmed read or write (D70)."""
-    from harness.shared.records import ToolSig
-    from harness.shared.report import flagged_tool_verdicts
+    from kullback.report import flagged_tool_verdicts
+    from kullback.runner.records import ToolSig
 
     data.tool_sigs = [ToolSig(name="cancel_order", kind="write", unclassified=False),
                       ToolSig(name="get_order_details", kind="read", unclassified=False)]
@@ -476,7 +484,7 @@ def test_the_environment_lists_its_open_flags(data):
 
 
 def test_coverage_rows_carry_the_first_failing_reason():
-    from harness.shared.report import coverage_rows
+    from kullback.report import coverage_rows
 
     tasks = [Task(id="t1", run_ids=["r1", "r2"]), Task(id="t2", run_ids=["r3"])]
     rows = coverage_rows(tasks, {"t2": "Run r3 is assisted (D49)"})
@@ -485,8 +493,8 @@ def test_coverage_rows_carry_the_first_failing_reason():
 
 
 def test_tool_sigs_are_read_off_disk(tmp_path):
-    from harness.shared.records import ToolSig
-    from harness.shared.report import load_tool_sigs
+    from kullback.report import load_tool_sigs
+    from kullback.runner.records import ToolSig
 
     assert load_tool_sigs(tmp_path) == []
     (tmp_path / "tool_sigs.json").write_text(
@@ -499,22 +507,29 @@ def test_tool_sigs_are_read_off_disk(tmp_path):
 
 # --- house rules ------------------------------------------------------------
 
-SOURCE = Path(__file__).resolve().parents[1] / "src" / "harness" / "shared" / "report.py"
+SOURCE = Path(__file__).resolve().parents[1] / "kullback" / "report.py"
 
 
 def test_report_never_computes_a_verdict():
-    """Design section 4 item 18: report.py reads records, it never computes a Verdict."""
+    """Design section 4 item 18: report.py reads records, it never computes a Verdict.
+
+    records moved into kullback.runner with the rest of the Runner package (D121); report.py may
+    still read it, so the check names the internal modules that stay out of reach rather than the
+    package prefix records now happens to share.
+    """
+    import re
+
     source = SOURCE.read_text(encoding="utf-8")
     assert "runner.verdict" not in source
-    assert "harness.runner" not in source
-    assert "harness.builder" not in source
+    assert re.search(r"kullback\.runner\.(?!records\b)\w", source) is None
+    assert "kullback.builder" not in source
 
 
 def test_no_em_dashes_in_the_source_or_the_output(data):
     source = SOURCE.read_text(encoding="utf-8")
-    assert "—" not in source and "–" not in source
+    assert "\u2014" not in source and "\u2013" not in source
     text = render(data)
-    assert "—" not in text and "–" not in text
+    assert "\u2014" not in text and "\u2013" not in text
 
 
 # --- what the pipeline and the loop actually write (D85, D86, D90) ----------
@@ -558,7 +573,7 @@ def test_load_reads_the_state_json_the_pipeline_writes(workdir: Path):
 
 def test_a_real_pipeline_run_is_readable_by_the_report(workdir: Path):
     """The one guard against the two modules drifting: a Pipeline writes, the report reads."""
-    from harness.runner.pipeline import Pipeline, Stage
+    from kullback.builder.pipeline import Pipeline, Stage
 
     failing = GateResult(stage="mine_gate", **{"pass": False}, failures=["tool_a: 1 call"])
     stages = [Stage("mine", lambda ctx, inputs: {"sigs": [1]}, outputs=["sigs"],
@@ -607,12 +622,12 @@ def test_a_failed_build_environment_gate_means_not_built(workdir: Path):
 
 def test_runs_are_read_from_the_jsonl_the_loop_writes(workdir: Path, make_test_model):
     """loop.py writes runs/<task>/<run>.jsonl; reading only *.json left every Run count at zero."""
-    from harness.runner import loop
+    from kullback.runner import loop
+    from kullback.runner.route import RouteResult
 
     class Router:
         def route(self, name, args):
-            from types import SimpleNamespace
-            return SimpleNamespace(result={"ok": True}, error=None, route="llm", assisted=True)
+            return RouteResult(result={"ok": True}, route="llm", assisted=True)
 
     model = make_test_model([{"tool_calls": [{"id": "c1", "name": "mystery_tool", "arguments": {}}]},
                              {"content": "done"}], loop=True)
@@ -654,7 +669,7 @@ def test_one_run_is_counted_once_even_with_two_verdict_versions(workdir: Path, d
 
 def test_the_scorecard_reads_the_nested_dict_validate_returns(workdir: Path):
     """validate.scorecard is the only writer, and it returns one nested dict, not a list of rows."""
-    from harness.shared.report import scorecard_rows
+    from kullback.report import scorecard_rows
 
     card = {
         "tool_fidelity": {"success": {"total": 25, "matched": 24, "raw": 0.96, "explained": 1.0,
@@ -687,7 +702,7 @@ def test_each_counted_verdict_is_listed_with_its_atom_and_its_path(data):
 
 def test_the_verdicts_left_out_are_listed_with_what_excluded_them(data):
     """D49: an assisted or environment-suspected Verdict is shown underneath, not silently dropped."""
-    from harness.shared.records import Event
+    from kullback.runner.records import Event
 
     data.runs[4].events = [Event(idx=0, type="tool_result", payload={"name": "search_products"}, assisted=True)]
     block = render(data).split("### Task t1", 1)[1]

@@ -8,21 +8,30 @@ from pathlib import Path
 import pytest
 from typer.testing import CliRunner
 
-from harness import cli
-from harness.shared.records import Environment, RunnerVersion, Task, Verdict, Verifier, as_dict
+from kullback import cli
+from kullback.runner.records import Environment, RunnerVersion, Task, Verdict, Verifier, as_dict
 
 runner = CliRunner()
 
 
 @pytest.fixture
 def fake_modules(monkeypatch):
-    """Replace the lazy entry-point lookup, so these tests do not depend on the other agents' modules."""
+    """Replace the lazy entry-point lookup with a recorder, for the commands whose forwarding is the
+    only thing on the wire.
+
+    Everything a real run leaves on disk is asserted on the real path instead (verdict, regrade and
+    report below). What is left is `build` and `run`, whose real work is a whole pipeline or a live
+    adapter, and the three verdict kwargs (write_tools, flagged_tools, schema) that the stored
+    Verdict does not carry. cli._score reads the regrade gate through getattr for this stub's sake.
+    """
     calls: dict[str, list] = {}
 
     def entry(path: str, name: str):
         def fn(*args, **kwargs):
             calls.setdefault(f"{path}.{name}", []).append({"args": args, "kwargs": kwargs})
-            return {"ok": True}
+            # search_for returns a provider the command closes, or None when there is nothing to
+            # search with; the stub answers None, which is the case a build without live or a memo hits.
+            return None if name == "search_for" else {"ok": True}
         return fn
 
     monkeypatch.setattr(cli, "_entry", entry)
@@ -52,23 +61,34 @@ def test_every_command_takes_a_workdir():
 # --- ingest and build -------------------------------------------------------
 
 def test_ingest_passes_each_file_to_the_ingest_module(tmp_path, workdir, fake_modules):
-    first = tmp_path / "a.json"
-    first.write_text("{}", encoding="utf-8")
-    result = invoke("ingest", str(first), "--workdir", str(workdir))
+    first, second = tmp_path / "a.json", tmp_path / "b.json"
+    for path in (first, second):
+        path.write_text("{}", encoding="utf-8")
+    result = invoke("ingest", str(first), str(second), "--workdir", str(workdir))
     assert result.exit_code == 0
-    assert len(fake_modules["harness.builder.ingest.ingest_file"]) == 1
+    calls = fake_modules["kullback.builder.ingest.ingest_file"]
+    assert [call["args"][0] for call in calls] == [first, second]
 
 
-def test_build_accepts_iterate(workdir, fake_modules):
-    result = invoke("build", "--workdir", str(workdir), "--iterate")
+@pytest.mark.parametrize("extra_args,iterate", [(["--iterate"], True), ([], False)])
+def test_build_passes_iterate_through_to_the_builder(workdir, fake_modules, extra_args, iterate):
+    result = invoke("build", "--workdir", str(workdir), *extra_args)
     assert result.exit_code == 0
-    call = fake_modules["harness.builder.build.build"][0]
-    assert call["kwargs"]["iterate"] is True
+    call = fake_modules["kullback.builder.agent.run_builder"][0]
+    assert call["kwargs"]["iterate"] is iterate
 
 
-def test_build_without_iterate_is_still_a_build(workdir, fake_modules):
+def test_build_is_driven_by_code_unless_agent_is_asked_for(workdir, fake_modules):
+    """`kullback build` issues build(target) itself, so the offline build stays deterministic; the
+    model drives only under --agent, and --agent without a model has nothing to drive with."""
+    assert invoke("build", "--workdir", str(workdir), "--target", "cluster").exit_code == 0
+    kwargs = fake_modules["kullback.builder.agent.run_builder"][0]["kwargs"]
+    assert kwargs["agent_model"] is None and kwargs["model"] is None and kwargs["target"] == "cluster"
+    assert kwargs["workers"] == 8
     assert invoke("build", "--workdir", str(workdir)).exit_code == 0
-    assert fake_modules["harness.builder.build.build"][0]["kwargs"]["iterate"] is False
+    assert fake_modules["kullback.builder.agent.run_builder"][1]["kwargs"]["target"] == "environment"
+    refused = invoke("build", "--workdir", str(workdir), "--agent")
+    assert refused.exit_code != 0 and "--agent needs --model" in refused.output
 
 
 def test_a_missing_entry_point_is_one_clear_message(capsys):
@@ -76,23 +96,25 @@ def test_a_missing_entry_point_is_one_clear_message(capsys):
     import typer
 
     with pytest.raises(typer.Exit) as stopped:
-        cli._entry("harness.runner.pipeline", "no_such_entry_point")
+        cli._entry("kullback.builder.pipeline", "no_such_entry_point")
     assert stopped.value.exit_code == 2
-    assert "harness.runner.pipeline.no_such_entry_point is not available yet" in capsys.readouterr().out
+    assert "kullback.builder.pipeline.no_such_entry_point is not available yet" in capsys.readouterr().out
 
 
 def test_build_and_run_reach_a_function_that_actually_exists():
     """cli build and cli run are the only path to a build; a missing entry point makes both dead ends.
 
-    The wiring lives in `harness.builder.build`, not in `runner/pipeline.py`: assembling the stage
+    The wiring lives in `kullback.builder.build`, not in `runner/pipeline.py`: assembling the stage
     graph means naming every Builder module, and the Runner never imports the Builder (design
     section 3, build brief rule 7, D89). `pipeline.py` stays the stage runner the graph runs on.
     """
     import inspect
 
-    from harness.builder import build as build_module
+    from kullback.builder import agent as agent_module
+    from kullback.builder import build as build_module
 
-    assert callable(getattr(build_module, "build", None)), "build.build is what cli build calls"
+    assert callable(getattr(build_module, "build", None)), "build.build is the whole graph, what run_builder drives"
+    assert callable(getattr(agent_module, "run_builder", None)), "agent.run_builder is what cli build calls"
     assert callable(getattr(build_module, "run_batch", None)), "build.run_batch is what cli run calls"
     build_args = inspect.signature(build_module.build).parameters
     assert {"workdir", "iterate"} <= set(build_args)
@@ -112,6 +134,10 @@ def test_freeze_runner_writes_after_a_yes(workdir):
     body = json.loads(version_file(workdir).read_text(encoding="utf-8"))
     assert body["runner_version"]
     assert set(body["file_hashes"]) >= {"loop.py", "route.py", "verdict.py"}
+    # The gates package is hashed beside the Runner, not into it (D122).
+    assert body["gates_version"] and body["gates_version"] != body["runner_version"]
+    assert set(body["gates_file_hashes"]) >= {"__init__.py", "artifacts.py", "verifier_suite.py"}
+    assert "gates version" in result.output
 
 
 def test_freeze_runner_writes_nothing_on_a_no(workdir):
@@ -132,6 +158,7 @@ def test_the_runner_version_is_the_hash_of_the_runner_files(workdir):
     first = json.loads(version_file(workdir).read_text(encoding="utf-8"))
     second = cli.runner_version()
     assert second.runner_version == first["runner_version"]
+    assert second.gates_version == first["gates_version"]
 
 
 def test_a_routing_config_changes_the_version(workdir, tmp_path):
@@ -145,15 +172,17 @@ def test_a_routing_config_changes_the_version(workdir, tmp_path):
 
 # --- run, verdict, regrade --------------------------------------------------
 
-def seed_task(workdir: Path) -> None:
+def seed_task(workdir: Path, task_id: str = "t1", run_id: str = "r1") -> None:
+    """One Task with its Verifier and one stored Run, the shape verdict and regrade read."""
     (workdir / "tasks").mkdir(exist_ok=True)
-    (workdir / "tasks" / "t1.json").write_text(json.dumps(as_dict(Task(id="t1", run_ids=["r1"]))), encoding="utf-8")
+    (workdir / "tasks" / f"{task_id}.json").write_text(
+        json.dumps(as_dict(Task(id=task_id, run_ids=[run_id]))), encoding="utf-8")
     (workdir / "verifiers").mkdir(exist_ok=True)
-    (workdir / "verifiers" / "t1.json").write_text(
-        json.dumps(as_dict(Verifier(task_id="t1", verifier_version="v1"))), encoding="utf-8")
-    (workdir / "runs" / "t1").mkdir(parents=True, exist_ok=True)
-    (workdir / "runs" / "t1" / "r1.jsonl").write_text(
-        json.dumps({"idx": 0, "type": "stop", "payload": {"run_id": "r1"}}) + "\n", encoding="utf-8")
+    (workdir / "verifiers" / f"{task_id}.json").write_text(
+        json.dumps(as_dict(Verifier(task_id=task_id, verifier_version="v1"))), encoding="utf-8")
+    (workdir / "runs" / task_id).mkdir(parents=True, exist_ok=True)
+    (workdir / "runs" / task_id / f"{run_id}.jsonl").write_text(
+        json.dumps({"idx": 0, "type": "stop", "payload": {"run_id": run_id}}) + "\n", encoding="utf-8")
     (workdir / "environment.json").write_text(json.dumps(as_dict(Environment(env_id="env-1"))), encoding="utf-8")
     # regrade_gate (D97) refuses a Verdict with no runner_version, so the real regrade path (the
     # one test below that does not fake cli._entry) needs a frozen RunnerVersion on disk too.
@@ -180,38 +209,48 @@ def test_run_asks_the_pipeline_for_a_batch(workdir, fake_modules):
     seed_task(workdir)
     result = invoke("run", "--workdir", str(workdir), "--task", "t1", "--model", "candidate-model", "--count", "2")
     assert result.exit_code == 0
-    call = fake_modules["harness.builder.build.run_batch"][0]
+    call = fake_modules["kullback.builder.build.run_batch"][0]
     assert call["kwargs"]["task_id"] == "t1"
     assert call["kwargs"]["count"] == 2
 
 
-def test_verdict_scores_the_stored_runs_of_a_task(workdir, fake_modules):
+def stored_verdicts(workdir: Path, task_id: str = "t1") -> list[dict]:
+    folder = workdir / "verdicts" / task_id
+    return [json.loads(p.read_text(encoding="utf-8")) for p in sorted(folder.glob("*.json"))]
+
+
+def test_verdict_scores_the_stored_runs_of_a_task(workdir):
     seed_task(workdir)
     result = invoke("verdict", "--workdir", str(workdir), "--task", "t1")
     assert result.exit_code == 0
-    call = fake_modules["harness.runner.regrade.regrade"][0]
-    assert [Path(p).name for p in call["args"][0]] == ["r1.jsonl"]
-    assert call["args"][1].task_id == "t1"
+    assert "task t1: scored 1 Runs" in result.output
+    assert [body["run_id"] for body in stored_verdicts(workdir)] == ["r1"]
 
 
-def test_verdict_without_a_task_scores_every_task(workdir, fake_modules):
+def test_verdict_without_a_task_scores_every_task(workdir):
     seed_task(workdir)
+    seed_task(workdir, "t2", "r2")
     assert invoke("verdict", "--workdir", str(workdir)).exit_code == 0
-    assert len(fake_modules["harness.runner.regrade.regrade"]) == 1
+    assert [body["run_id"] for body in stored_verdicts(workdir, "t1")] == ["r1"]
+    assert [body["run_id"] for body in stored_verdicts(workdir, "t2")] == ["r2"]
 
 
-def test_verdict_says_so_when_a_task_has_no_verifier(workdir, fake_modules):
+def test_verdict_says_so_when_a_task_has_no_verifier(workdir):
     (workdir / "tasks").mkdir()
     (workdir / "tasks" / "t2.json").write_text(json.dumps(as_dict(Task(id="t2"))), encoding="utf-8")
     result = invoke("verdict", "--workdir", str(workdir))
     assert "no Verifier" in result.output
 
 
-def test_regrade_re_scores_without_re_executing(workdir, fake_modules):
+def test_regrade_re_scores_without_re_executing(workdir):
+    """A Verdict is written and the stored Run is not touched: nothing was executed again."""
     seed_task(workdir)
+    run = workdir / "runs" / "t1" / "r1.jsonl"
+    before = run.read_bytes()
     result = invoke("regrade", "--workdir", str(workdir))
     assert result.exit_code == 0
-    assert fake_modules["harness.runner.regrade.regrade"]
+    assert [body["run_id"] for body in stored_verdicts(workdir)] == ["r1"]
+    assert run.read_bytes() == before
 
 
 # --- report -----------------------------------------------------------------
@@ -256,7 +295,7 @@ def test_a_batch_report_counts_only_the_runs_of_that_model(workdir):
 # --- the ToolSigs a Verdict needs (D70, side effects) -----------------------
 
 def seed_tool_sigs(workdir: Path) -> None:
-    from harness.shared.records import ToolSig
+    from kullback.runner.records import ToolSig
 
     (workdir / "tool_sigs.json").write_text(json.dumps([
         as_dict(ToolSig(name="cancel_order", kind="write", unclassified=False)),
@@ -270,16 +309,18 @@ def test_verdict_passes_the_write_tools_and_the_flagged_tools(workdir, fake_modu
     seed_task(workdir)
     seed_tool_sigs(workdir)
     assert invoke("verdict", "--workdir", str(workdir)).exit_code == 0
-    call = fake_modules["harness.runner.regrade.regrade"][0]
+    call = fake_modules["kullback.runner.regrade.regrade"][0]
     assert call["kwargs"]["write_tools"] == {"cancel_order"}
     assert call["kwargs"]["flagged_tools"] == {"mystery_tool"}
 
 
-def test_verdict_says_so_when_there_are_no_tool_sigs(workdir, fake_modules):
+def test_verdict_says_when_neither_tool_sigs_nor_a_schema_are_on_disk(workdir, fake_modules):
     seed_task(workdir)
     result = invoke("verdict", "--workdir", str(workdir))
     assert "side effects are not checked" in result.output
-    assert fake_modules["harness.runner.regrade.regrade"][0]["kwargs"]["write_tools"] is None
+    assert "no EntitySchema on disk" in result.output
+    kwargs = fake_modules["kullback.runner.regrade.regrade"][0]["kwargs"]
+    assert kwargs["write_tools"] is None and kwargs["schema"] is None
 
 
 def test_the_report_computes_task_coverage_when_no_stage_wrote_it(workdir):
@@ -294,53 +335,53 @@ def test_the_report_computes_task_coverage_when_no_stage_wrote_it(workdir):
 # --- house rules ------------------------------------------------------------
 
 def test_no_em_dashes_in_the_source():
-    source = (Path(__file__).resolve().parents[1] / "src" / "harness" / "cli.py").read_text(encoding="utf-8")
-    assert "—" not in source and "–" not in source
+    source = (Path(__file__).resolve().parents[1] / "kullback" / "cli.py").read_text(encoding="utf-8")
+    assert "\u2014" not in source and "\u2013" not in source
 
 
-def test_the_verdict_carries_the_environment_and_runner_versions(workdir, fake_modules):
+def test_the_verdict_carries_the_environment_and_runner_versions(workdir):
     seed_task(workdir)
     invoke("freeze-runner", "--workdir", str(workdir), "--yes")
-    invoke("verdict", "--workdir", str(workdir))
-    call = fake_modules["harness.runner.regrade.regrade"][0]
-    assert call["kwargs"]["environment"].env_id == "env-1"
-    assert call["kwargs"]["runner_version"]
+    frozen = json.loads((workdir / "runner_version.json").read_text(encoding="utf-8"))["runner_version"]
+    assert invoke("verdict", "--workdir", str(workdir)).exit_code == 0
+    body = stored_verdicts(workdir)[0]
+    assert body["env_id"] == "env-1"
+    assert body["runner_version"] == frozen
 
 
 # --- what the Verdict is actually given (D39, D73, D84) ---------------------
 
 def test_verdict_passes_the_entity_schema_so_exempt_columns_are_dropped(workdir, fake_modules):
     """D73: without the schema a forbidden atom over diff() fires on a column the customer exempted."""
-    from harness.shared.records import Column, EntitySchema
+    from kullback.runner.records import Column, EntitySchema
 
     seed_task(workdir)
     schema = EntitySchema(tables=["orders"], columns=[
         Column(table="orders", name="updated_at", **{"class": "exempt"})])
     (workdir / "schema.json").write_text(json.dumps(as_dict(schema)), encoding="utf-8")
     assert invoke("verdict", "--workdir", str(workdir)).exit_code == 0
-    call = fake_modules["harness.runner.regrade.regrade"][0]
+    call = fake_modules["kullback.runner.regrade.regrade"][0]
     assert [c.name for c in call["kwargs"]["schema"].columns] == ["updated_at"]
 
 
-def test_a_build_without_a_schema_says_the_diff_is_not_filtered(workdir, fake_modules):
-    seed_task(workdir)
-    result = invoke("verdict", "--workdir", str(workdir))
-    assert "no EntitySchema on disk" in result.output
-    assert fake_modules["harness.runner.regrade.regrade"][0]["kwargs"]["schema"] is None
-
-
-def test_regrade_hands_the_queue_dir_over_and_verdict_does_not(workdir, fake_modules):
+def test_regrade_reads_the_queue_and_verdict_leaves_it_alone(workdir):
     """D84: only regrade re-scores a Run whose equivalence entry a person overturned."""
+    from kullback.runner import canon
+
     seed_task(workdir)
-    invoke("regrade", "--workdir", str(workdir))
-    assert fake_modules["harness.runner.regrade.regrade"][0]["kwargs"]["queue_dir"] == workdir
-    invoke("verdict", "--workdir", str(workdir))
-    assert fake_modules["harness.runner.regrade.regrade"][1]["kwargs"]["queue_dir"] is None
+    assert invoke("verdict", "--workdir", str(workdir)).exit_code == 0
+    canon._append(workdir / canon.USES_FILE, {"run_id": "r1", "key": "k1", "task_id": "t1"})
+    assert canon.queue_regrade(workdir, "k1", "overturned by a reviewer") == ["r1"]
+
+    assert invoke("verdict", "--workdir", str(workdir)).exit_code == 0
+    assert canon.queued_regrades(workdir) == ["r1"], "verdict must not consume the regrade queue"
+    assert invoke("regrade", "--workdir", str(workdir)).exit_code == 0
+    assert canon.queued_regrades(workdir) == []
 
 
 def test_regrade_re_scores_a_queued_run_and_empties_the_queue(workdir):
     """The whole D84 path with the real regrade: queue a Run, regrade, the stale Verdict is gone."""
-    from harness.shared import canon
+    from kullback.runner import canon
 
     seed_task(workdir)
     assert invoke("verdict", "--workdir", str(workdir)).exit_code == 0
@@ -415,8 +456,8 @@ def test_a_replayed_run_covers_the_trace_it_replays(workdir):
 
 def _judge(name: str, verdict: str):
     """One agentic judge on a scripted model: a tool check, then its JSON answer."""
-    from harness.runner.judge import AgenticJudge
-    from harness.shared.provider import TestModel
+    from kullback.ai.provider import TestModel
+    from kullback.runner.judge import AgenticJudge
 
     def read_order(order_id: str = "o1") -> dict:
         """Read one order out of the End state."""
@@ -445,7 +486,7 @@ def _run_jsonl(folder: Path, run_id: str, wrote: bool) -> Path:
 
 
 def _judge_verifier() -> Verifier:
-    from harness.shared.records import Atom
+    from kullback.runner.records import Atom
 
     return Verifier(task_id="t1", atoms=[
         Atom(id="a_write", kind="required",
@@ -473,7 +514,7 @@ def test_no_judge_model_means_no_judge_results_and_no_model_call(tmp_path):
 
 def test_a_failure_code_left_unmarked_gets_a_cause_and_one_verdict_file(tmp_path):
     """D88: code marks the Run, the judge names the cause, and the Run keeps one Verdict, not two."""
-    from harness.runner.regrade import regrade, regrade_run
+    from kullback.runner.regrade import regrade, regrade_run
 
     verifier = _judge_verifier()
     paths = [_run_jsonl(tmp_path, "r1", True), _run_jsonl(tmp_path, "r2", False)]
@@ -511,5 +552,5 @@ def test_build_passes_grow_through(workdir, fake_modules):
     result = runner.invoke(cli.app, ["build", "--workdir", str(workdir), "--grow", "users=500",
                                      "--grow", "orders=1000", "--grow-seed", "7"])
     assert result.exit_code == 0, result.output
-    kwargs = fake_modules["harness.builder.build.build"][0]["kwargs"]
+    kwargs = fake_modules["kullback.builder.agent.run_builder"][0]["kwargs"]
     assert kwargs["grow"] == {"users": 500, "orders": 1000} and kwargs["grow_seed"] == 7
