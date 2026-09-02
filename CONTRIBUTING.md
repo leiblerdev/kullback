@@ -22,8 +22,8 @@ Python 3.11 or newer. The test suite runs in about ten seconds and never calls a
 ## The workflow
 
 1. Branch from `main`. Name it after the change, not after yourself.
-2. Write the failing test first, then the code. Every module has one test file, `tests/test_<module>.py`; new behaviour goes there.
-3. Run `uv run pytest` and paste the summary line in the pull request. If you touched `src/harness/runner/`, also run the import boundary check: `uv run python -c "import harness.runner.validate as v, pathlib; print(v.import_boundary_check(pathlib.Path('src')))"`.
+2. Write the failing test first, then the code. Every module has one test file, `tests/<package>/test_<module>.py` (the frontends' tests sit at `tests/` directly); new behaviour goes there.
+3. Run `uv run pytest` and paste the summary line in the pull request. Run `uv run lint-imports` too: the dependency direction between `kullback`'s packages is an import-linter contract in `pyproject.toml` (D121, D123, D129). If you touched `kullback/runner/`, also run the import boundary check: `uv run python -c "import kullback.runner.validate as v, pathlib; print(v.import_boundary_check(pathlib.Path('kullback')))"`.
 4. Open the pull request against `main`. Say what changed, why, and what you measured. `main` is protected: every pull request needs an approving review from the maintainer (`.github/CODEOWNERS`), every conversation resolved, and no force pushes.
 
 Mutation testing (`uv run mutmut run`) is not in CI because it takes long; run it when you touch verdict, canon, route or verifier, and mention survivors you looked at.
@@ -42,13 +42,13 @@ The Verdict is code. A judge can remove a run from the bar or widen a Verifier f
 
 Grader fields from benchmark traces (`reward_info`, `evaluation_criteria`, `action_checks`, `nl_assertions`, `trial`) live in the `grader/` sidecar and only Verdict comparison code reads them.
 
-Records are Pydantic models in `src/harness/shared/records.py`. Import them; do not redefine a record elsewhere. Outputs are content-addressed; state lives in files under a `workdir` passed in, never in module globals.
+Records are Pydantic models in `kullback/runner/records.py`. Import them; do not redefine a record elsewhere. Outputs are content-addressed; state lives in files under a `workdir` passed in, never in module globals.
 
 Errors from a customer's tools keep their verbatim payload beside the classified error class (D67).
 
 Every module is one file with one sentence of purpose at the top. Each has a size band in design section 10. If you cannot fit, say why in the pull request rather than growing silently.
 
-Model-written code (tool bodies, policy predicates) runs only through the paths in `compile_env.py` and `policy.py` that gate it. Do not add an `exec` or `eval` elsewhere.
+Model-written code (tool bodies, policy predicates, Verifier atoms) runs only through the four paths that gate it: `builder/compile_env.py` and `builder/policy.py` at build time, and `gates/artifacts.py`'s `_run_predicate` and `gates/verifier_suite.py`'s `_hard_holds` at ruling time. Each follows the same two rules: `confine()` certifies the source before it runs, and every `exec` gets its own copy of the builtins allowlist, so code that empties or edits `__builtins__` takes nothing from the next predicate. Do not add an `exec` or `eval` elsewhere.
 
 ## Writing
 

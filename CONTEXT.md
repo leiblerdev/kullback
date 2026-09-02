@@ -88,10 +88,19 @@ _Avoid_: good enough, passes, wins
 
 **Kullback**: the open-source name of the Builder and the Runner together, the code that turns traces into an Environment and grades Runs in it. The other half of Kullback-Leibler. Repository and Python package name.
 
-**Builder**: the part of the Harness that turns a customer's traces into an Environment (state, tools, Hard constraints, Simulated user) and the Verifiers for its Tasks. The environment creator.
+**Builder**: the part of the Harness that turns a customer's traces into an Environment (state, tools, Hard constraints, Simulated user) and repairs it from what the Gates and the Runner report. It never writes a Verifier.
 _Avoid_: generator, synthesizer, environment creator (in documents)
 
-**Runner**: the part of the Harness that re-executes Runs with a Candidate in an Environment and computes each Verdict.
+**Examiner**: the part of the Harness that writes the Verifiers and the probes for a Task from the traces, the Intents and the frontier's re-rolls, and examines the Environment by running things in it. It never edits the Environment; what it finds wrong there it reports to the Builder.
+_Avoid_: verifier (as the agent), judge (as the product's frame), grader
+
+**Gate**: a code check, with no model call in it, that accepts or rejects something the Builder or the Examiner made: the Environment against Replay fidelity, a Verifier against its validation checks, a tool body against confinement. Written by people, generic across customers, and never edited by an agent.
+_Avoid_: check (as a product term), test, validator
+
+**Probe**: a Run written to pass a Verifier without doing the Task. Produced by the Examiner; a Gate rules that it must score no pass.
+_Avoid_: attack, exploit, red team (in documents)
+
+**Runner**: the part of the Harness that re-executes Runs with a Candidate in an Environment and computes each Verdict. A tool of the Builder and the Examiner, never an agent.
 _Avoid_: orchestrator, executor, agent loop (as the product term)
 _Avoid_: platform, pipeline, gateway, proxy
 

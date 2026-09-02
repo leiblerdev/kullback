@@ -82,8 +82,8 @@ In rough order: the live build measured against the real system on every domain 
 ```
 uv sync
 uv run pytest
-uv run harness ingest path/to/traces.json --workdir work
-uv run harness build --workdir work --model provider/model --grow users=500 --grow orders=1000
+uv run kullback ingest path/to/traces.json --workdir work
+uv run kullback build --workdir work --model provider/model --grow users=500 --grow orders=1000
 ```
 
 Live model calls need `HARNESS_ALLOW_MODEL_REQUESTS=1` and an API key, both read from the environment or from a `.env` file in the working directory. `CONTRIBUTING.md` says how to get a change in. `DEVELOPING.md` covers the layout, the records, the offline test models and the fixtures. `docs/harness-design.md` is the spec; `docs/decision-log.md` is why.

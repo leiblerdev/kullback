@@ -12,7 +12,7 @@ import json
 import pytest
 from rich.console import Console
 
-from harness.tui import Board, Screen, _keys, banner
+from kullback.tui import Board, Screen, _keys, banner
 
 
 def _console():
@@ -54,6 +54,39 @@ def test_a_stage_that_starts_and_ends_keeps_its_order_and_its_last_word(tmp_path
     assert board.order == ["mine", "cluster"]
     assert board.status == {"mine": "ran", "cluster": "start"}
     assert board.seconds["mine"] >= 0
+
+
+def test_the_board_reads_the_typed_stage_events_of_the_agent_core_too(tmp_path):
+    """A subscriber on the Builder's harness can feed the board the StageStart and StageEnd events
+    the pipeline emits (phase 4); anything else on the stream is not for the board."""
+    from kullback.agent.events import AgentStart, StageEnd, StageStart
+
+    board = Board(tmp_path)
+    board.event(StageStart(name="mine"))
+    board.event(AgentStart())
+    board.event(StageEnd(name="mine", counts={"status": "cached", "attempts": 1, "rulings": ["mine"]}))
+    board.event(StageStart(name="cluster"))
+    board.event(StageEnd(name="cluster", counts={"status": "failed", "attempts": 3}))
+    assert board.order == ["mine", "cluster"]
+    assert board.status == {"mine": "cached", "cluster": "failed"} and board.attempts["cluster"] == 3
+    assert board.seconds["mine"] >= 0
+
+
+def test_the_screen_builds_through_the_builder_agent(tmp_path, monkeypatch):
+    """/build goes through run_builder, the same entry the CLI uses, with the dict events wired."""
+    from kullback.builder import agent as builder_agent
+
+    seen = {}
+
+    def fake(**kwargs):
+        seen.update(kwargs)
+        kwargs["on_event"]({"kind": "pipeline", "state": "complete"})
+        return {}
+
+    monkeypatch.setattr(builder_agent, "run_builder", fake)
+    screen = Screen(tmp_path, console=_console())
+    assert screen.command("/build --iterate") is True
+    assert seen["iterate"] is True and seen["workdir"] == tmp_path and seen["model"] is None
 
 
 def test_a_stage_is_only_timed_once_it_has_been_seen_to_start(tmp_path):
@@ -118,16 +151,14 @@ def test_provenance_shows_the_content_hash_each_stage_wrote(tmp_path):
 # --- the commands -----------------------------------------------------------
 
 class _Runner:
+    """The build the Screen was given, recording what it was asked for. What the board does with
+    a build's events is pinned directly on Board above, so this one emits none."""
+
     def __init__(self):
         self.calls = []
 
     def __call__(self, **kwargs):
         self.calls.append(kwargs)
-        on_event = kwargs.get("on_event")
-        if on_event:
-            on_event({"kind": "stage", "stage": "mine", "state": "start", "attempt": 1})
-            on_event({"kind": "stage", "stage": "mine", "state": "ran", "attempt": 1})
-            on_event({"kind": "pipeline", "state": "complete"})
         return {}
 
 
@@ -149,19 +180,17 @@ def test_an_unknown_command_says_so_rather_than_doing_something(tmp_path):
     assert screen.runner.calls == []
 
 
-def test_build_passes_the_flags_it_was_typed_and_no_model_by_default(tmp_path):
+@pytest.mark.parametrize("line,iterate,files", [
+    ("/build --iterate --file traces.json", True, ["traces.json"]),
+    ("/build", False, []),
+])
+def test_build_passes_the_flags_it_was_typed_and_no_model_by_default(tmp_path, line, iterate, files):
     screen = _screen(tmp_path)
-    screen.command("/build --iterate --file traces.json")
+    screen.command(line)
     call = screen.runner.calls[0]
-    assert call["iterate"] is True
-    assert [p.name for p in call["files"]] == ["traces.json"]
+    assert call["iterate"] is iterate
+    assert [p.name for p in call["files"]] == files
     assert call["model"] is None
-
-
-def test_a_build_without_iterate_does_not_claim_to_be_resuming(tmp_path):
-    screen = _screen(tmp_path)
-    screen.command("/build")
-    assert screen.runner.calls[0]["iterate"] is False
 
 
 def test_the_ceiling_the_screen_was_opened_with_reaches_the_build(tmp_path):
@@ -170,9 +199,10 @@ def test_the_ceiling_the_screen_was_opened_with_reaches_the_build(tmp_path):
     assert screen.runner.calls[0]["ceiling_usd"] == 2.5
 
 
-def test_run_needs_a_task_id_and_says_so_instead_of_guessing_one(tmp_path):
+@pytest.mark.parametrize("line", ["/run", "/run --count 3"])
+def test_run_needs_a_task_id_and_says_so_instead_of_guessing_one(tmp_path, line):
     screen = _screen(tmp_path)
-    screen.command("/run")
+    screen.command(line)
     assert "run needs a task id" in _text(screen.console)
     assert screen.runner.calls == []
 
@@ -202,15 +232,22 @@ def test_a_screen_with_a_model_named_refuses_to_call_it_with_live_calls_off(tmp_
 
 
 def test_status_reads_the_last_build_off_disk_and_runs_no_stage(tmp_path):
+    """The gates are written the way pipeline.py writes them, through as_dict, whose key for
+    GateResult.passed is the alias "pass"; reading "passed" there counts every gate as failed."""
+    from kullback.runner.records import GateResult, as_dict
+
     (tmp_path / "pipeline").mkdir()
     (tmp_path / "pipeline" / "state.json").write_text(json.dumps({
         "status": "failed", "statuses": {"mine": "ran", "compile_tools": "failed"},
         "attempts": {"mine": 1, "compile_tools": 3},
-        "gates": [{"stage": "compile_tools", "passed": False, "failures": ["bodies did not replay"]}]}))
+        "gates": [as_dict(GateResult(stage="mine", **{"pass": True})),
+                  as_dict(GateResult(stage="compile_tools", **{"pass": False},
+                                     failures=["bodies did not replay"]))]}))
     screen = _screen(tmp_path)
     screen.command("/status")
     out = _text(screen.console)
     assert "mine" in out and "compile_tools" in out and "failed" in out
+    assert "1 gates passed" in out and "1 failed" in out
     assert "bodies did not replay" in out
     assert screen.runner.calls == []
 
@@ -230,36 +267,20 @@ def test_keys_says_which_are_set_and_never_what_they_are():
 
 # --- a flag typed without its value is a usage message, not an IndexError (Greptile, PR 1) ---
 
-def test_a_flag_with_no_value_is_told_in_words_and_starts_nothing(tmp_path):
+@pytest.mark.parametrize("line", ["/build --file", "/build --file --iterate"])
+def test_a_flag_with_no_value_is_told_in_words_and_starts_nothing(tmp_path, line):
     screen = _screen(tmp_path)
-    screen.command("/build --file")
+    screen.command(line)
     assert "--file needs a value after it" in _text(screen.console)
     assert screen.runner.calls == []
 
 
-def test_a_flag_followed_by_another_flag_has_no_value(tmp_path):
+@pytest.mark.parametrize("line,message", [
+    ("/run task-7 --count lots", "--count takes a whole number, not 'lots'"),
+    ("/run task-7 --count 0", "--count takes a number of runs"),
+])
+def test_a_count_that_is_not_a_whole_number_of_runs_is_told_in_words(tmp_path, line, message):
     screen = _screen(tmp_path)
-    screen.command("/build --file --iterate")
-    assert "--file needs a value after it" in _text(screen.console)
-    assert screen.runner.calls == []
-
-
-def test_a_count_that_is_not_a_number_is_told_in_words(tmp_path):
-    screen = _screen(tmp_path)
-    screen.command("/run task-7 --count lots")
-    assert "--count takes a whole number, not 'lots'" in _text(screen.console)
-    assert screen.runner.calls == []
-
-
-def test_a_count_below_one_is_refused(tmp_path):
-    screen = _screen(tmp_path)
-    screen.command("/run task-7 --count 0")
-    assert "--count takes a number of runs" in _text(screen.console)
-    assert screen.runner.calls == []
-
-
-def test_run_with_only_a_flag_still_asks_for_the_task(tmp_path):
-    screen = _screen(tmp_path)
-    screen.command("/run --count 3")
-    assert "run needs a task id" in _text(screen.console)
+    screen.command(line)
+    assert message in _text(screen.console)
     assert screen.runner.calls == []

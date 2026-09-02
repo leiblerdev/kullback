@@ -1,5 +1,5 @@
 [project]
-name = "harness"
+name = "kullback"
 version = "0.1.0"
 description = "Leibler Harness: Builder turns customer traces into an Environment, Runner re-executes Runs and computes Verdicts."
 requires-python = ">=3.11"
@@ -11,10 +11,11 @@ dependencies = [
 ]
 
 [project.scripts]
-harness = "harness.cli:app"
+kullback = "kullback.cli:app"
 
 [dependency-groups]
 dev = [
+    "import-linter>=2.5",
     "mutmut>=3.7.0",
     "pre-commit>=4.6.2",
     "pytest>=8.0",
@@ -26,7 +27,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/harness"]
+packages = ["kullback"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -34,14 +35,52 @@ addopts = "-q"
 markers = ["slow: reads the full raw corpus in ../data/raw"]
 
 [tool.mutmut]
-source_paths = ["src/harness/"]
+source_paths = ["kullback/"]
 pytest_add_cli_args_test_selection = ["tests/"]
 
 [tool.ruff]
 target-version = "py311"
 line-length = 120
-src = ["src", "tests"]
+src = [".", "tests"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "B"]
 ignore = ["E501"]
+
+# The direction of D121/D123: ai imports nothing of ours; agent and runner each import only ai and
+# never each other; gates imports runner (never agent); builder and examiner both import agent,
+# gates, runner and ai, and never each other (D120, D122, D123, ADR-0007); nothing imports the three
+# frontends except themselves. Written for all six packages now, though agent, gates and examiner
+# are still empty, so phase 2 and phase 3 do not have to touch this file (D130).
+[tool.importlinter]
+root_package = "kullback"
+
+[[tool.importlinter.contracts]]
+name = "the Builder and the Examiner sit on gates, on the Runner and the agent core, on the provider layer"
+type = "layers"
+containers = ["kullback"]
+layers = [
+    "builder | examiner",
+    "gates",
+    "agent | runner",
+    "ai",
+]
+
+[[tool.importlinter.contracts]]
+name = "gates rules on the Runner's work; it never reaches into the agent core"
+type = "forbidden"
+source_modules = ["kullback.gates"]
+forbidden_modules = ["kullback.agent"]
+
+[[tool.importlinter.contracts]]
+name = "nothing imports the frontends except themselves"
+type = "forbidden"
+source_modules = [
+    "kullback.ai",
+    "kullback.agent",
+    "kullback.runner",
+    "kullback.gates",
+    "kullback.builder",
+    "kullback.examiner",
+]
+forbidden_modules = ["kullback.cli", "kullback.tui", "kullback.report"]

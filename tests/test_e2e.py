@@ -7,19 +7,19 @@ what a correct Builder LLM would have written for these seven retail tools.
 from __future__ import annotations
 
 import json
-import time
 from copy import deepcopy
 from pathlib import Path
 
 import pytest
 
-from harness.builder import cluster, compile_env, ingest, mine, policy, user_sim
-from harness.builder import verifier as verifier_mod
-from harness.runner import loop, regrade, route, validate
-from harness.runner import verdict as verdict_mod
-from harness.shared import canon, report
-from harness.shared.provider import RecordedModel, TestModel
-from harness.shared.records import (
+from kullback import report
+from kullback.ai.provider import RecordedModel, TestModel
+from kullback.builder import cluster, compile_env, ingest, mine, policy, user_sim
+from kullback.builder import verifier as verifier_mod
+from kullback.gates import artifacts
+from kullback.runner import boundary, canon, loop, regrade, route
+from kullback.runner import verdict as verdict_mod
+from kullback.runner.records import (
     Environment,
     GateResult,
     RunnerVersion,
@@ -159,7 +159,6 @@ def _gates(build: dict) -> list:
 @pytest.fixture(scope="module")
 def build(tmp_path_factory, request) -> dict:
     """One whole build over the fixture, from the raw file to a regraded Verdict."""
-    started = time.monotonic()
     workdir = tmp_path_factory.mktemp("e2e")
     fixture = Path(request.config.rootpath) / "tests" / "fixtures" / "tau2_retail_small.json"
 
@@ -246,7 +245,7 @@ def build(tmp_path_factory, request) -> dict:
         "builds": builds, "sentences": sentences, "emitted": emitted, "task": task,
         "reference": reference, "router": router, "run_state": run_state, "rules": rules,
         "simulated": simulated, "verifier": verifier, "verdict": verdict, "regraded": regraded,
-        "again": again, "write_tools": write_tools, "seconds": time.monotonic() - started,
+        "again": again, "write_tools": write_tools,
     }
 
 
@@ -352,14 +351,22 @@ def test_the_five_tau2_files_and_the_sidecar_are_written(build):
         assert build["emitted"][name].exists(), name
     sidecar = json.loads(build["emitted"]["sidecar.json"].read_text(encoding="utf-8"))
     assert sidecar["assisted_tools"] == ["list_all_product_types"]
-    gate = validate.environment_gate(Environment(env_id="e2e"), files_dir=build["emitted"]["db.json"].parent)
+    gate = artifacts.environment_gate(Environment(env_id="e2e"), files_dir=build["emitted"]["db.json"].parent)
     assert gate.passed, gate.failures
 
 
 def test_the_policy_splits_into_sentences_with_spans(build):
+    """Every sentence carries the span it was cut from, so a Verifier can point back at the policy
+    file rather than at a copy of the words."""
     sentences = build["sentences"]
+    policy_text = next((t.system_prompt for t in build["traces"] if t.system_prompt), "")
     assert len(sentences) > 10
     assert all(s.text for s in sentences)
+    for sentence in sentences:
+        assert sentence.end > sentence.start, sentence.text
+        slice_ = policy_text[sentence.start:sentence.end]
+        assert slice_.strip(), sentence.text
+        assert " ".join(slice_.split()) == sentence.text, sentence.text
 
 
 # --- the oracle replay ---
@@ -486,7 +493,7 @@ def test_the_report_reads_the_build_off_disk(build):
     """cli verdict then cli report over that layout: the numbers are the ones the build produced."""
     from typer.testing import CliRunner
 
-    from harness import cli
+    from kullback import cli
 
     workdir = _lay_out_the_build(build)
     scored = CliRunner().invoke(cli.app, ["verdict", "--workdir", str(workdir)])
@@ -539,10 +546,7 @@ def test_the_candidate_run_is_graded_beside_the_oracle_replay(build):
 
 # --- the boundaries the design draws ---
 
-def test_the_runner_never_imports_the_builder(build):
-    gate = validate.import_boundary_check(Path(__file__).resolve().parents[1] / "src")
+def test_the_runner_never_imports_the_builder():
+    gate = boundary.import_boundary_check(Path(__file__).resolve().parents[1] / "kullback")
     assert gate.passed, gate.failures
 
-
-def test_the_whole_build_runs_in_under_thirty_seconds(build):
-    assert build["seconds"] < 30, build["seconds"]

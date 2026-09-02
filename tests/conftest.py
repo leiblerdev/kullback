@@ -7,9 +7,9 @@ from pathlib import Path
 
 import pytest
 
-from harness.shared import provider as provider_module
-from harness.shared.provider import RecordedModel, TestModel
-from harness.shared.records import RawPtr
+from kullback.ai import provider as provider_module
+from kullback.ai.provider import RecordedModel, TestModel
+from kullback.runner.records import RawPtr
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
@@ -29,7 +29,7 @@ def isolated_price_catalog(tmp_path, monkeypatch):
     """No test reads or writes the real ~/.cache/harness/models.dev.json snapshot, and every
     test starts with budget's price-catalog cache unloaded rather than carrying over the
     previous test's snapshot."""
-    from harness.shared import budget as budget_module
+    from kullback.runner import budget as budget_module
 
     monkeypatch.setattr(budget_module, "_SNAPSHOT_PATH", tmp_path / "models.dev.json")
     monkeypatch.setattr(budget_module, "_CATALOG_LOADED", False)
@@ -65,8 +65,8 @@ def raw_dir() -> Path:
     Kullback keeps them at data/raw under the package root; the brain keeps them one level
     up, at monitoring-tool/data/raw (../data/raw from here). Try the kullback layout first.
     """
-    harness_root = Path(__file__).resolve().parents[1]
-    for candidate in (harness_root / "data" / "raw", harness_root.parent / "data" / "raw"):
+    repo_root = Path(__file__).resolve().parents[1]
+    for candidate in (repo_root / "data" / "raw", repo_root.parent / "data" / "raw"):
         if candidate.is_dir():
             return candidate
     pytest.skip("raw traces not present")
