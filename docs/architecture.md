@@ -1,6 +1,6 @@
 # Architecture
 
-Kullback is two agents, one runner and one set of gates on a layering inspired by huggingface/tau: a provider layer, an agent core that knows nothing about the application, and the applications as extensions on that core. This page is the map; the decisions are in `decision-log.md` and `adr/`, and each phase of the rebuild left a note in `tech/`.
+Kullback is two agents, one runner and one set of gates on a layering inspired by [huggingface/tau](https://github.com/huggingface/tau): a provider layer, an agent core that knows nothing about the application, and the applications as extensions on that core. This page is the map; the decisions are in `decision-log.md` and `adr/`, and each phase of the rebuild left a note in `tech/`.
 
 ## Packages
 
