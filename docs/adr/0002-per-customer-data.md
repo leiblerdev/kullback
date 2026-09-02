@@ -1,7 +1,11 @@
-# Customer data is per-customer and never pooled
+# ADR-0002: Customer data is per customer and never pooled
 
-When we train or optimize models from customer traces, each customer's data produces a model that only that customer runs and benefits from. We never pool traces across customers to train a shared model.
+Status: accepted.
 
-Why: our target customers are AI-native companies whose prompts and outputs are core IP, and the trust story that survives first contact is "your data → your model." Pooling would produce a stronger, cheaper model (more training data), but it is a hard trust/legal red line for this audience and would block adoption at the trust gate (H3).
+Context: models trained or optimized from traces could be stronger if traces from many customers were pooled.
 
-Consequence: the optimization layer is a per-customer service, not a data moat that compounds across customers. We accept a weaker model per customer in exchange for trust. This is permanent, not a temporary validation-time stance.
+Decision: each customer's traces produce a model only that customer runs. Traces are never pooled across customers.
+
+Why: the target customers treat prompts and outputs as core IP, and "your data, your model" is the trust story that survives first contact. Pooling is a hard trust and legal line for them.
+
+Consequence: the optimization layer is a per-customer service, not a data moat. A weaker model per customer is the accepted price, permanently.

@@ -62,4 +62,4 @@ uv run kullback report --workdir work
 
 The report opens with whether the Environment was built at all (gates passed, assisted tools, Tasks with too few runs), then gives per-Task numbers and a suggestion.
 
-`CONTRIBUTING.md` says how to get a change in. `DEVELOPING.md` covers the records, the offline models and the fixtures. `docs/harness-design.md` is the spec, `docs/decision-log.md` is why, `docs/todo.md` is what comes next.
+`CONTRIBUTING.md` says how to get a change in. `DEVELOPING.md` covers the records, the offline models and the fixtures. `docs/architecture.md` is the map, `docs/harness-design.md` is the spec, `docs/decision-log.md` and `docs/adr/` are why, `docs/todo.md` is what comes next.
