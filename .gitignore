@@ -11,3 +11,7 @@ work/
 vendor/
 *.part
 .work*/
+
+# Design documents that live in the private brain repo, never here
+CONTEXT.md
+BUILD_BRIEF.md

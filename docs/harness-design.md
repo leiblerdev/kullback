@@ -1,6 +1,6 @@
 # Harness design: Builder and Runner
 
-Status: proposal for grilling, 2026-08-27, revised after R25 (principles re-derived from environment-generation pipelines, D61). Terms come from `/CONTEXT.md` (Harness, Builder, Runner, Environment, Run, Verifier, Verdict, Simulated user, Provenance, Assisted). Decisions are cited as D-numbers from `decision-log.md`. Research is cited as R-numbers from `../research/`. This document answers "get back to me with design recommendations." Every section is open to challenge.
+Status: proposal for grilling, 2026-08-27, revised after R25 (principles re-derived from environment-generation pipelines, D61). Terms (Harness, Builder, Runner, Environment, Run, Verifier, Verdict, Simulated user, Provenance, Assisted) are used as the decision log defines them. Decisions are cited as D-numbers from `decision-log.md`. Research is cited as R-numbers from `../research/`. This document answers "get back to me with design recommendations." Every section is open to challenge.
 
 Founder's philosophy, verbatim: "it should be simple enough and gets the job done in high quality", "as efficient and simple as possible", "care much more about generalizability than the overfitting".
 

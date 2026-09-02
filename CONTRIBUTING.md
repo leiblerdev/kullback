@@ -1,6 +1,6 @@
 # Contributing to Kullback
 
-Thanks for looking. This file says how to get a change in and what a change has to respect. The design lives in `docs/harness-design.md`, the reasons in `docs/decision-log.md`, the words in `CONTEXT.md`; when this file and those disagree, those win.
+Thanks for looking. This file says how to get a change in and what a change has to respect. The design lives in `docs/harness-design.md` and the reasons in `docs/decision-log.md`; when this file and those disagree, those win.
 
 ## Ways to help
 
@@ -52,7 +52,7 @@ Model-written code (tool bodies, policy predicates, Verifier atoms) runs only th
 
 ## Writing
 
-Plain sentences. No em dashes or en dashes anywhere, in code, comments, docs or commit messages; use a comma, a colon, a period or parentheses. No emojis. Use the glossary's words (`CONTEXT.md`): a Run, a Task, a Verdict, an Environment mean specific things here and the code uses the same names.
+Plain sentences. No em dashes or en dashes anywhere, in code, comments, docs or commit messages; use a comma, a colon, a period or parentheses. No emojis. Use the design's words: a Run, a Task, a Verdict, an Environment mean specific things here and the code uses the same names.
 
 Commit messages say what changed and why in the first line, in the imperative, under 72 characters.
 

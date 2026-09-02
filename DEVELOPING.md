@@ -2,7 +2,7 @@
 
 The Builder turns a customer's traces into an Environment (state, tools, Hard constraints, Simulated user) and the Verifiers for its Tasks; the Runner re-executes Runs with a Candidate in that Environment and computes each Verdict.
 
-Spec: `docs/harness-design.md`. Reasoning: `docs/decision-log.md` (D01 to D97, then D120 onwards for the rebuild). Glossary, and the names used in code: `CONTEXT.md`. Rules for contributors, human or agent: `CONTRIBUTING.md`. The rebuild in phases, and the note each phase leaves: `docs/tech/rebuild-phases.md`.
+Spec: `docs/harness-design.md`. Reasoning: `docs/decision-log.md` (D01 to D97, then D120 onwards for the rebuild). Rules for contributors, human or agent: `CONTRIBUTING.md`. The rebuild in phases, and the note each phase leaves: `docs/tech/rebuild-phases.md`.
 
 ## Layout
 
