@@ -38,3 +38,4 @@ What we're trying to learn, and how.
 - `loop.md`: the learning loop (cycle + stop criteria + who does what)
 - `interview-guide.md`: the question script (Mom Test)
 - `progress.md`: call log
+- `competitors.md`: who else sells a world to test agents in, and where they overlap

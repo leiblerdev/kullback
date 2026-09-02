@@ -690,3 +690,27 @@ okay cool! we need to now segregrate stuff from the folders and organize to stre
 > okay if any of the above problems can be fixed with better mining please do that. [...] So the split is: confinement, missing import, result shape, error prefix are ours to fix and all have signal in hand; schema shape is the one that needs the customer's schema, and it should be reported as "outside what traces can show" rather than as a Builder miss. ( note please don't over fit, we will test this on multiple environments from the benchmarks you mined to verify whether this harness can generalize or not )
 
 > i would say we also need to focus on synthetic user generation and db generation as well, as described in tau forge where we just have a synthetic seed of user data - see the best practices to do that and then we need to do this as well.
+
+> we need the verifier  The Verifier stage produced zero confirmed verifiers on the first build because nothing converts a Trace into the Run it consumes, so the pass condition that makes an environment usable for grading has never been derived for real. as well, the harness should build thsi as well what is the problem ?
+
+> you don't need to build anything the harness needs to build everythign sir.
+
+> environment is one major step the next major step is good and accurate verifiers -> i think mostly the rsearch has converged them with llm as judges / reward models with rubrics, here we don't have reward models so we use llm as judges
+
+## 2026-08-29 (evening)
+
+> add this in the todo that model should be able to change its own system prompt and stuff and also loop over its environment run it figure out where the problem is and then solve it and stuff ( that gives us teh best environments ) it should be a loop, we need this add this in todo please with that we need to /grill-with-docs there has to be this loop of 1. build the environment 2. augment the environment 3. generate the tasks 4. harden the tasks and the loop to do this so that environments are very very good. add this we need to discuss that.
+
+> there has to be a loop which runs so that the harness can steer the creation of the environment..
+
+> add in todo that we also need synthetic ( verified data ) when we move from beign just an evaluatoin platform, also why is the environment creation taking so much time ?
+
+> kill the run and implement this and then restart the run pleas.e
+
+> also a dag graph based execution ? would be good right ? what would solve the independence problem.
+
+> it should be dag not on paper but quite good, also add in todo that we need to add that in todo about the workers and hwo it is launching the workers.
+
+> [GLM 5.3's post-training environment design, quoted at length: expert-work tasks with real resources, research agents converting workflow patterns into long-horizon environments, a judge agent checking solvability, a verifier generated without the reference solution, solver trajectories closing reward shortcuts, the three verifier checks] we also need to use this deisgn for glm 5.3 for environment generation add this in todo.
+
+> this judge agent which checks every environment is solvabale is important, also we need a judge as an agent as well. there are 3 checks 1. oracle checks ( must award reward ) 2. null run check ( agent did nothing -> must award none ) 4. incomplete check -> must aware none and then we should have a trusted verifier as well.

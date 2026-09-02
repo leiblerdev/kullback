@@ -2,17 +2,30 @@
 
 The Builder turns a customer's traces into an Environment (state, tools, Hard constraints, Simulated user) and the Verifiers for its Tasks; the Runner re-executes Runs with a Candidate in that Environment and computes each Verdict.
 
-Spec: `docs/harness-design.md`. Reasoning: `docs/decision-log.md` (D01 to D97). Glossary, and the names used in code: `CONTEXT.md`. Rules for contributors, human or agent: `CONTRIBUTING.md`.
+Spec: `docs/harness-design.md`. Reasoning: `docs/decision-log.md` (D01 to D97, then D120 onwards for the rebuild). Glossary, and the names used in code: `CONTEXT.md`. Rules for contributors, human or agent: `CONTRIBUTING.md`. The rebuild in phases, and the note each phase leaves: `docs/tech/rebuild-phases.md`.
 
 ## Layout
 
+The package is `kullback` at the repository root, no `src/` (D129). Each subpackage imports only what sits below it, and `uv run lint-imports` checks that (D121, D123).
+
 ```
-src/harness/
-  builder/    ingest, mine, cluster, intent, compile_env, policy, user_sim, verifier, memory
-  runner/     loop, route, verdict, judge, regrade, validate, pipeline
-  shared/     records, canon, provider, budget, report
-  cli.py
+kullback/
+  ai/         provider (the Model interface, the offline models, the adapters), stream, messages, pricing, usage
+  agent/      the shared agent core: messages, tools, events, loop, harness, extensions, session/,
+              context and context_tools (phases 2 and 7)
+  runner/     records, canon, confinement, budget, loop, route, verdict, validate, judge, regrade,
+              replay, state, scorecard, atom_context, gate_support, boundary (the D89 scan and RunnerVersion)
+  gates/      every accept-or-reject check and the registry: verifier_suite, artifacts, stages, tool_runs,
+              fidelity, confinement, scorecard (phase 3)
+  builder/    ingest, mine, cluster, intent, compile_env, policy, user_sim, verifier, memory, reference,
+              sandbox, synth, vocabulary, search, parallel, build (the stage graph), pipeline (the scheduler),
+              tools (the stages as tools), extension (the hooks), agent (the driver behind `kullback build`)
+  examiner/   the Verifier and probe agent; empty until phase 5
+  cli.py      the command line
+  tui/        the terminal screen
+  report.py   the customer-facing report
 tests/
+  ai/ runner/ builder/ ...   one directory per package, mirroring the layout above
   fixtures/   the small tau2 file and tau2-bench's retail domain files
   conftest.py shared fixtures
 ```
@@ -28,7 +41,7 @@ Python 3.11. Dependencies: pydantic v2, typer, httpx, pytest. Nothing heavier go
 
 ## Records
 
-`src/harness/shared/records.py` holds every record in design section 5. Import them, do not redefine them.
+`kullback/runner/records.py` holds every record in design section 5. Import them, do not redefine them. The one record defined elsewhere is `Usage`, the token count a model call returns, which lives in `kullback/ai/usage.py` because the provider layer imports nothing of ours and `verdict.py` may not import a provider (D76); `records.py` re-exports it.
 
 - Every model subclasses `Record`, whose config is `populate_by_name=True`. Two fields are named around Python keywords: `Verdict.passed` / `GateResult.passed` carry the alias `pass`, and `ToolCallError.class_` / `ErrorShape.class_` / `Column.class_` / `Verdict.class_` carry the alias `class`. Construct them either way (`Verdict(passed=True, class_="pass")` or `Verdict(**{"pass": True, "class": "pass"})`).
 - Serialize with `as_dict(record)` (which is `model_dump(mode="json", by_alias=True)`) so the aliases land in the JSON. Reading back with `Model.model_validate(payload)` accepts both spellings.
@@ -39,7 +52,7 @@ Python 3.11. Dependencies: pydantic v2, typer, httpx, pytest. Nothing heavier go
 
 ## Models in tests
 
-`src/harness/shared/provider.py` defines the interface and the two offline models. `ALLOW_MODEL_REQUESTS` is `False` and `tests/conftest.py` holds it there for every test.
+`kullback/ai/provider.py` defines the interface and the three offline models (`TestModel`, `RecordedModel`, `MemoModel`). `ALLOW_MODEL_REQUESTS` is `False` and `tests/conftest.py` holds it there for every test.
 
 ```python
 class Model:
@@ -64,4 +77,4 @@ Shape of a raw file: `{timestamp, info, tasks, simulations}`. A simulation is `{
 
 ## Mutation testing
 
-`uv run mutmut run` mutates `src/harness/` and runs the tests against each mutant; `uv run mutmut browse` shows survivors. A survivor is one of four things: a real gap (write the test that would have caught the bug), an equivalent mutant (the change cannot be observed), unreachable code (delete it), or something we do not care about (say so). Never write a test whose only purpose is to kill a mutant.
+`uv run mutmut run` mutates `kullback/` and runs the tests against each mutant; `uv run mutmut browse` shows survivors. A survivor is one of four things: a real gap (write the test that would have caught the bug), an equivalent mutant (the change cannot be observed), unreachable code (delete it), or something we do not care about (say so). Never write a test whose only purpose is to kill a mutant.

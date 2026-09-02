@@ -1,5 +1,7 @@
 # Build brief for the harness (read fully before writing code)
 
+Kept as written for the first build. The paths below name the layout of that build (`src/harness/` with `builder/`, `runner/` and `shared/`); since phase 1 of the rebuild the package is `kullback/` at the repository root, split as `docs/tech/rebuild-phases.md` describes and `docs/tech/phase-1-the-move.md` records. Read the rules here, and the paths there.
+
 This is the environment-generation harness designed in `../docs/harness-design.md`. The design is the spec; the decision log (`../docs/decision-log.md`, decisions D01 to D97) is the reasoning; `../../CONTEXT.md` is the glossary and its terms are the names used in code. When the design and this brief disagree, the design wins; say so in your return value.
 
 ## Where things are

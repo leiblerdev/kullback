@@ -1,0 +1,19 @@
+# Competitors and adjacent products
+
+One entry per company, kept short: what they sell, in their words where possible, and where it overlaps or does not with the Harness (an Environment plus Verifiers built from a customer's own traces, Verdicts computed by code). Add a line when a prospect names one.
+
+## Arga Labs (added 2026-08-29, founder: "they build digital testing environments")
+
+[argalabs.com](https://www.argalabs.com/): "Real world sandboxes for testing and training AI agents." Simulation environments made of "stateful twins of the APIs, CLIs, and MCPs your agents use" (Slack, GitHub, Gmail, Stripe and the like), "Scenarios" seeded with mock or production data, test runs that are graded, and evidence capture of "every provider call, response, latency, side effect, and service-state change." Use cases they name: RL training environments, enterprise agent sandboxes, code-change validation.
+
+Overlap: the same claim that an agent has to be tested in an executable, stateful, repeatable world rather than judged on transcripts, and the same three outputs (a world, graded runs, evidence). Difference: their world is a twin of third-party services the agent calls, built by them per service; ours is a twin of the customer's own system, built from the customer's traces by the Builder, with the Tasks and the Verifiers derived from those traces. They answer "does the agent behave against Stripe", we answer "does the agent do what this company's agents were recorded doing, under this company's policy". A customer whose agent lives on public SaaS APIs is theirs; one whose agent lives on its own tools and policy is ours; many are both, and the twin of a public API could be one of our tool bodies.
+
+## FinetuneDB (seen 2026-08-29)
+
+[finetunedb.com](https://finetunedb.com/): a fine-tuning platform. Log production requests, curate them into datasets in a collaborative editor, evaluate outputs with human and AI feedback, fine-tune, repeat. The loop improves the model; ours improves the Environment the model is measured in. Adjacent, not competing: Runs that pass a code Verifier are labelled training data (todo: verified synthetic data), which is what their loop consumes.
+
+## Agnost AI (YC, added 2026-08-29, founder's link)
+
+[YC launch](https://www.ycombinator.com/launches/SxK-agnost-ai-turn-your-agent-traces-into-a-faster-cheaper-more-accurate-custom-model): "Turn Your Agent Traces Into a Faster, Cheaper, & more Accurate Custom Model." Send existing traces through OpenTelemetry or their SDK; they "identify the recurring workflows your agent performs", "create an eval set from held-out production traces", "train a specialist model on the historical workload", and "benchmark it against your current model on success, latency, and cost." First customer's identifier-extraction agent: 22.9% relative task-success gain, 90.2% lower latency, 94.5% lower cost against Opus 4.8. Founders: Shubham Palriwala (Cisco, Formbricks), Parth (IIT Madras, Microsoft). The launch names no pricing, no RL, no simulated user, no environment.
+
+Overlap: the closest one yet on the input side. Same raw material (production agent traces), same first two steps (mine the recurring workflows, hold out traces as an eval set), same framing to the buyer (proven on your own traffic). Difference: their eval set is the held-out traces themselves, scored by comparing outputs, and the product is a distilled model. Ours is an executable Environment with Tasks, a Simulated user and code Verifiers, so a Candidate is scored by what it does in a world, on Tasks the traces only hint at (re-rolls, hardened Tasks), not by matching a recorded answer; the model stays the customer's. Their pitch is the one a prospect will compare us to first, and the answer is: they replace the model, we measure it, and a model they train is a Candidate for our Runner. The verified synthetic data item on the todo is where the two meet.
