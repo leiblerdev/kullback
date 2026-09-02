@@ -10,13 +10,16 @@ The package is `kullback` at the repository root, no `src/` (D129). Each subpack
 
 ```
 kullback/
-  ai/         provider (the Model interface, the offline models, the adapters), pricing, usage
-  agent/      the shared agent core; empty until phase 2
+  ai/         provider (the Model interface, the offline models, the adapters), stream, messages, pricing, usage
+  agent/      the shared agent core: messages, tools, events, loop, harness, extensions, session/,
+              context and context_tools (phases 2 and 7)
   runner/     records, canon, confinement, budget, loop, route, verdict, validate, judge, regrade,
               replay, state, scorecard, atom_context, gate_support, boundary (the D89 scan and RunnerVersion)
-  gates/      every accept-or-reject check; empty until phase 3
+  gates/      every accept-or-reject check and the registry: verifier_suite, artifacts, stages, tool_runs,
+              fidelity, confinement, scorecard (phase 3)
   builder/    ingest, mine, cluster, intent, compile_env, policy, user_sim, verifier, memory, reference,
-              sandbox, synth, vocabulary, build (the stage graph), pipeline (the stage runner), parallel, search
+              sandbox, synth, vocabulary, search, parallel, build (the stage graph), pipeline (the scheduler),
+              tools (the stages as tools), extension (the hooks), agent (the driver behind `kullback build`)
   examiner/   the Verifier and probe agent; empty until phase 5
   cli.py      the command line
   tui/        the terminal screen

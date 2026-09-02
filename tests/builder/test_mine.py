@@ -590,14 +590,16 @@ def test_schema_round_trips_through_json(fixture_traces):
 
 
 def retail_tool_names() -> set[str]:
-    # Kullback keeps vendor/ under the package root; the brain keeps it one level up,
-    # at monitoring-tool/vendor. Try the kullback layout first, same as raw_dir in conftest.
+    # Kullback keeps vendor/ under the package root; the brain keeps it one level up, at
+    # monitoring-tool/vendor; mutmut runs this file from a copy under mutants/tests. Walk up
+    # from here and take the first ancestor that has it, same idea as raw_dir in conftest.
     rel = Path("vendor") / "tau2-bench" / "src" / "tau2" / "domains" / "retail" / "tools.py"
-    tests_dir = Path(__file__).resolve().parent
-    for root in (tests_dir.parent, tests_dir.parents[1]):
+    for root in Path(__file__).resolve().parents:
         path = root / rel
         if path.is_file():
             break
+    else:
+        pytest.skip("vendor/tau2-bench not present")
     tree = ast.parse(path.read_text(encoding="utf-8"))
     names = set()
     for node in ast.walk(tree):

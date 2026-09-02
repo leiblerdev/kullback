@@ -37,6 +37,9 @@ markers = ["slow: reads the full raw corpus in ../data/raw"]
 [tool.mutmut]
 source_paths = ["kullback/"]
 pytest_add_cli_args_test_selection = ["tests/"]
+# mutmut runs the tests from a copy under mutants/; tests/test_env_fidelity.py imports
+# scripts/env_fidelity.py relative to its own file, so the scripts come along.
+also_copy = ["scripts/"]
 
 [tool.ruff]
 target-version = "py311"

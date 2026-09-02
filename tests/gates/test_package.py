@@ -117,6 +117,8 @@ def test_the_stages_the_build_records_outside_the_registry_are_none():
     import kullback.builder as builder
 
     builder_dir = Path(builder.__file__).resolve().parent
+    if "mutants" in builder_dir.parts:
+        pytest.skip("a source scan over mutmut's copy reads every mutant's literal, not the Builder's")
     recorded: set[str] = set()
     for path in sorted(builder_dir.rglob("*.py")):
         recorded |= _stage_literals(path, ("gate", "_gate"))
