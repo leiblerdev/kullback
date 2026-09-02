@@ -192,3 +192,30 @@ Task by the model in the Task's own world (`--probe-limit` caps it). On the offl
 three Tasks confirm and their Verifiers pass seven of eight checks, failing only the second path,
 because a single-Trace Task has none until the k re-runs of D78 exist. The third live build is the
 first with the stage in it; its numbers go below when it finishes.
+
+## Builds 7 and 8 (2026-08-29 and 2026-09-02): the first Tasks with a Verdict
+
+Build 7 was the last on the old layout, build 8 the first on the rebuilt one (`kullback build --iterate --workers 8`, same corpus, same model, runner frozen first). Build 8 took 44 minutes. The two builds answer the same question, "how many of the 205 Tasks can be graded", and the second is the first with an answer above zero.
+
+| | build 7 | build 8 |
+|---|---:|---:|
+| Traces that confirm their Reference | 316 of 456 | 343 of 456 |
+| Tasks with a confirmed Reference | 151 | 164 |
+| writes that replay exactly | 429 of 575 | 472 of 575 |
+| reads that differ in substance | 38 of 2,645 | 38 of 2,645 |
+| frontier re-rolls | 453 over 151 Tasks | 483 over 161 Tasks |
+| Verifiers derived | 76 | 131 |
+| Verifiers that pass the D79 suite | 0 | 20 |
+| Tasks covered | 0 of 205 | 20 of 205 (56 of 456 Runs) |
+
+The scorecard gate passes for the first time. Coverage is 9.8% of Tasks and 12.3% of Runs, and the 185 uncovered Tasks split into 74 with no confirmed Reference and 111 whose Verifier failed the suite. Three causes account for most of both halves.
+
+**Float noise is the largest fidelity miss.** Of the 102 write results that differed from the recording across the 36 Tasks blocked on `modify_pending_order_items`, 74 differ only past the sixth decimal: a refund of `30.180000000000007` recorded against `30.180000000000064` from our body, the same sum added in a different order. The canonicalization rules carry a `number_precision` knob and the canon stage left it null, so writes compare exactly and the gate calls the Trace unconfirmed. The remaining 28 are real: the body picks a different item variant (the options and the price differ, so the refund does), and `calculate` raises `NameError: name 'decimal' is not defined` on four Tasks because the body uses a module it never imports and the `executes_on_s0` gate never reached that branch.
+
+**The policy gate has never run a predicate.** `compile_policy` fails on every compiled constraint with `check() missing 2 required positional arguments: 'write_call' and 'transcript'`, in build 7 and in build 8. The compiled predicates take `(pre_state, write_call, transcript)`, as the stage's prompt and its own static check require; `gates/artifacts.py`'s `_run_predicate` calls `func(case)` with the whole case dict. The unit test passes because its fixture predicate takes `case`. So the 26 compiled constraints have never been exercised by the gate, only by the stage's own case runner, and the gate's ruling on policy has been a false fail on every live build.
+
+**Sixty-five Verifiers require nothing.** Every Verifier that passes the empty Run has exactly one required atom, "the Run makes at most 0 write calls": the Tasks where the frontier only read and answered. Under D43 the End state of such a Run is what the user was told, and no stage writes that atom yet, so the suite rejects all 65 and the loophole probe passes 58 of them. This is the Examiner's first job (phase 5): atoms over the user-facing effects, judged, so a read-only Task has a pass condition that an empty Run fails.
+
+The suite's failures by check, over the 131 Verifiers: `mutation_flips` 106, `unsolved_state_fails` 75, `empty_fails` 65, `plausible_wrong_fails` 65, `loophole_probe_fails` 58, `second_path_passes` 12, `leak_check_clean` 1. The 65 no-write Verifiers sit inside every one of the first five counts; 41 Verifiers with write atoms still fail `mutation_flips`, which is the next thing to read.
+
+Where the time goes: the re-roll stage is 3 model calls per Task, 7 per Run, with a fresh sample each time, so a rebuild whose Environment did not change still re-rolls every Task. Build 8 wrote 483 re-roll Runs in about 15 minutes at 8 workers. Caching re-rolls by (Task, Environment hash, seed) so `--iterate` reuses them when the Environment is unchanged is on the todo.
