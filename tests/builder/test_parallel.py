@@ -72,6 +72,8 @@ def test_the_ledger_counts_every_threaded_call_once_and_the_memo_hits_per_thread
 
 
 def test_the_ceiling_holds_under_concurrent_spend(tmp_path, monkeypatch):
+    # A price row for a model id no catalog carries, written into the table budget.py documents
+    # as its offline fallback. The row is input to the real pricing path, not a patched one.
     monkeypatch.setitem(budget.PRICES, "test/echo", {"input": 1_000_000.0, "output": 0.0,
                                                      "cache_read": 0.0, "cache_write": 0.0})
     ceiling = budget.Ceiling(usd=50.0, workdir=tmp_path)  # ten dollars a call; the sixth is over

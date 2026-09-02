@@ -492,7 +492,12 @@ def test_node_and_lesson_carry_the_fields_the_tree_and_the_gate_need(workdir):
 
 @pytest.fixture
 def node_parses(monkeypatch):
-    """Counts how many node files were parsed since the last call (D65: never the whole tree)."""
+    """Counts how many node files were parsed since the last call (D65: never the whole tree).
+
+    A count is the only way laziness is observable: the wrapper adds one to a tally and then
+    calls the real parser, so every test that reads it runs the shipped code and no behaviour
+    is replaced.
+    """
     count = {"n": 0}
     original = memory.Node.model_validate_json
 

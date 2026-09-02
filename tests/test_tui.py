@@ -73,7 +73,12 @@ def test_the_board_reads_the_typed_stage_events_of_the_agent_core_too(tmp_path):
 
 
 def test_the_screen_builds_through_the_builder_agent(tmp_path, monkeypatch):
-    """/build goes through run_builder, the same entry the CLI uses, with the dict events wired."""
+    """/build goes through run_builder, the same entry the CLI uses, with the dict events wired.
+
+    The one claim the `runner=` seam every other Screen test uses cannot make is which callable
+    the Screen reaches for when nothing is injected, so this test alone replaces that default.
+    The real run_builder would drive a full build off an empty workdir.
+    """
     from kullback.builder import agent as builder_agent
 
     seen = {}

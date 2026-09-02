@@ -29,7 +29,9 @@ def fake_modules(monkeypatch):
     def entry(path: str, name: str):
         def fn(*args, **kwargs):
             calls.setdefault(f"{path}.{name}", []).append({"args": args, "kwargs": kwargs})
-            return {"ok": True}
+            # search_for returns a provider the command closes, or None when there is nothing to
+            # search with; the stub answers None, which is the case a build without live or a memo hits.
+            return None if name == "search_for" else {"ok": True}
         return fn
 
     monkeypatch.setattr(cli, "_entry", entry)
