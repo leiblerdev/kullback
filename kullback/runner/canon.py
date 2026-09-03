@@ -624,3 +624,11 @@ def save_rules(rules: CanonRules, path: Union[str, Path]) -> Path:
     file.parent.mkdir(parents=True, exist_ok=True)
     file.write_text(json.dumps(rules.model_dump(), indent=2, ensure_ascii=False), encoding="utf-8")
     return file
+
+
+def rules_of(inputs: Any) -> CanonRules:
+    """The CanonRules a store holds under `canon_rules`, whatever shape they arrived in: the record
+    itself, its dict form, or nothing, which is the module defaults (D39). Read off the store rather
+    than off disk because the rules are learned inside the same build."""
+    rules = (inputs or {}).get("canon_rules")
+    return rules if isinstance(rules, CanonRules) else CanonRules.model_validate(rules or {})

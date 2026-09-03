@@ -48,9 +48,9 @@ MARKS = {
 }
 
 HELP = """\
-/build [--iterate] [--file PATH]   run the Builder over the ingested traces
+/build [--iterate] [--file PATH]   run the Builder and the Examiner in rounds over the ingested traces
 /run TASK [--count N]              run the Candidate against the built Environment
-/status                            the last build's stages, gates and spend
+/status                            the last build's stages, gates, rounds and spend
 /keys                              which provider keys this shell can see
 /help                              this
 /quit                              leave\
@@ -68,7 +68,8 @@ def banner(word: str = "kullback") -> Text:
 
 
 def _as_dict_event(event: Any) -> Optional[dict]:
-    """A typed stage event of the agent core as the dict the board reads; anything else is not for the board."""
+    """A typed stage, round or beat event of the agent core as the dict the board reads; anything else
+    is not for the board. The round and beat shapes are the ones rounds.emit sends to on_event."""
     kind = getattr(event, "type", None)
     if kind == "stage_start":
         return {"kind": "stage", "stage": event.name, "state": "start", "attempt": 1}
@@ -76,6 +77,12 @@ def _as_dict_event(event: Any) -> Optional[dict]:
         counts = dict(getattr(event, "counts", None) or {})
         return {"kind": "stage", "stage": event.name, "state": str(counts.get("status") or "ran"),
                 "attempt": int(counts.get("attempts") or 1)}
+    if kind in ("round_start", "round_end"):
+        return {"kind": "round", "state": "start" if kind == "round_start" else "end", "round": event.round,
+                "counts": dict(getattr(event, "counts", None) or {}), "exit": getattr(event, "exit", None)}
+    if kind in ("beat_start", "beat_end"):
+        return {"kind": "beat", "state": "start" if kind == "beat_start" else "end",
+                "agent": event.agent, "round": event.round}
     return None
 
 
@@ -93,6 +100,9 @@ class Board:
     gates: list[dict] = field(default_factory=list)
     outcome: str = ""
     ceiling: Optional[float] = None
+    round: int = 0
+    agent: str = ""
+    rounds: list[dict] = field(default_factory=list)
 
     def event(self, event: Any) -> None:
         if not isinstance(event, dict):
@@ -105,6 +115,17 @@ class Board:
             return
         if kind == "pipeline":
             self.outcome = str(event.get("state") or "")
+            return
+        if kind == "round":
+            self.round = int(event.get("round") or 0)
+            if event.get("state") == "end":
+                self.rounds.append({"round": self.round, "counts": dict(event.get("counts") or {}),
+                                    "exit": event.get("exit")})
+                self.agent = ""
+            return
+        if kind == "beat":
+            self.round = int(event.get("round") or self.round)
+            self.agent = str(event.get("agent") or "") if event.get("state") == "start" else ""
             return
         if stage not in self.order:
             self.order.append(stage)
@@ -179,13 +200,42 @@ class Board:
             out.append(f"\n{self.outcome}", style="bold" if self.outcome == "complete" else "bold red")
         return out
 
+    def beat(self) -> Text:
+        """Which round it is and who holds the stream (D128); nothing before the first round."""
+        if not self.round:
+            return Text("")
+        line = Text(f"round {self.round}", style="bold")
+        if self.agent:
+            line.append(f", {self.agent} beat", style="yellow")
+        return line
+
+    def rounds_table(self) -> Table:
+        """One row per finished round: the counts the gates reported and the exit if the round ended on one."""
+        table = Table.grid(padding=(0, 2))
+        for name in ("round", "fidelity", "trusted", "refused", "probes passing", "spend", "exit"):
+            table.add_column(justify="right" if name not in ("round", "exit") else "left")
+        table.add_row(*[Text(name, style="dim") for name in
+                        ("round", "fidelity", "trusted", "refused", "probes passing", "spend", "exit")])
+        for row in self.rounds:
+            counts = row.get("counts") or {}
+            spend = float((counts.get("spend") or {}).get("total") or 0.0)
+            table.add_row(Text(str(row.get("round"))),
+                          Text(f"{counts.get('fidelity', 0)}/{counts.get('tasks', 0)}"),
+                          Text(str(counts.get("trusted", 0))), Text(str(counts.get("refused_count", 0))),
+                          Text(str(counts.get("probes_passing", 0))), Text(f"${spend:,.4f}"),
+                          Text(str(row.get("exit") or ""), style="bold" if row.get("exit") else "dim"))
+        return table
+
     def render(self) -> Panel:
         body = Table.grid(padding=(0, 4))
         body.add_column()
         body.add_column()
         body.add_row(self.stages(), self.provenance())
-        return Panel(Group(body, Text(""), self.money(), self.verdict()),
-                     title=self.title, title_align="left", border_style="dim")
+        parts: list[Any] = [self.beat(), body] if self.round else [body]
+        if self.rounds:
+            parts += [Text(""), self.rounds_table()]
+        parts += [Text(""), self.money(), self.verdict()]
+        return Panel(Group(*parts), title=self.title, title_align="left", border_style="dim")
 
 
 def _values(words: list[str], flag: str) -> list[str]:
@@ -284,14 +334,20 @@ class Screen:
             live.update(board.render())
 
     def _build(self, on_event: Any, rest: list[str]) -> None:
-        from kullback.builder import agent as builder_agent
         files = [Path(value) for value in _values(rest, "--file")]
-        (self.runner or builder_agent.run_builder)(workdir=self.workdir, iterate="--iterate" in rest,
-                                                   model=self._adapter(), files=files, on_event=on_event,
-                                                   ceiling_usd=self.ceiling_usd)
+        runner = self.runner
+        if runner is None:
+            # the same entry the CLI uses: whole rounds, Builder then Examiner (D126)
+            from kullback import rounds
+            runner = rounds.run_rounds
+        runner(workdir=self.workdir, iterate="--iterate" in rest, model=self._adapter(), files=files,
+               on_event=on_event, ceiling_usd=self.ceiling_usd)
 
     def _run(self, on_event: Any, rest: list[str]) -> None:
-        from kullback.builder import build as builder
+        runner = self.runner
+        if runner is None:
+            from kullback.builder import build as builder
+            runner = builder.run_batch
         counts = _values(rest, "--count")
         try:
             count = int(counts[-1]) if counts else 1
@@ -300,9 +356,8 @@ class Screen:
         if count < 1:
             raise ValueError(f"--count takes a number of runs, not {count}")
         on_event({"kind": "stage", "stage": rest[0], "state": "start", "attempt": 1})
-        (self.runner or builder.run_batch)(workdir=self.workdir, task_id=rest[0],
-                                           model=self._adapter(), count=count,
-                                           ceiling_usd=self.ceiling_usd)
+        runner(workdir=self.workdir, task_id=rest[0], model=self._adapter(), count=count,
+               ceiling_usd=self.ceiling_usd)
         on_event({"kind": "stage", "stage": rest[0], "state": "ran", "attempt": 1})
         on_event({"kind": "pipeline", "state": "complete"})
 
@@ -325,6 +380,12 @@ class Screen:
         board.gates = [{"stage": g.get("stage"), "passed": g.get("pass", g.get("passed")),
                         "failures": g.get("failures") or []} for g in state.get("gates") or []]
         board.outcome = str(state.get("status") or "no build yet")
+        # rounds.json is the driver's record: one row per round, the exit on the last (D126).
+        rows = _read(self.workdir / "rounds.json", [])
+        board.rounds = [{"round": r.get("round"), "counts": r.get("counts") or {}, "exit": r.get("exit")}
+                        for r in rows if isinstance(r, dict)]
+        if board.rounds:
+            board.round = int(board.rounds[-1].get("round") or 0)
         self.console.print(board.render())
 
 

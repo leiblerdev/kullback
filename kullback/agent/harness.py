@@ -21,11 +21,18 @@ import asyncio
 import inspect
 from collections import deque
 from contextlib import suppress
-from typing import AsyncIterator, Awaitable, Callable, Iterable, Literal, Optional, Union
+from typing import Any, AsyncIterator, Awaitable, Callable, Iterable, Literal, Optional, Union
 
 from kullback.agent.context import ContextConfig, ContextManager, ContextStats
 from kullback.agent.events import AgentEvent, CustomMessage, MessageEnd, MessageStart
-from kullback.agent.loop import CancelToken, Hooks, LoopState, interrupted_tool_results, run_agent_loop
+from kullback.agent.loop import (
+    CancelToken,
+    Hooks,
+    LoopState,
+    execute_tool_call,
+    interrupted_tool_results,
+    run_agent_loop,
+)
 from kullback.agent.messages import Message, ToolCall, UserMessage
 from kullback.agent.session import SessionStore
 from kullback.agent.tools import AgentTool, ToolRegistry, ToolResult
@@ -289,3 +296,29 @@ class AgentHarness:
 
 async def _await(value: Awaitable[None]) -> None:
     await value
+
+
+class DriverModel(Model):
+    """The model of a harness no model drives: any call on it is a bug, not a request.
+
+    `label` names the application in the error (the Builder's driver, the Examiner's) and in
+    `name`, so a transcript says which driver held the harness.
+    """
+
+    def __init__(self, label: str = "code"):
+        self.label = label
+        self.name = f"{label.lower()}-driver"
+
+    def query(self, messages: list[dict], tools: Optional[list[dict]] = None, config: Any = None) -> Any:
+        raise RuntimeError(f"the {self.label} driver issues tool calls itself; no model turn was asked for")
+
+
+def drive_tool(harness: AgentHarness, name: str, arguments: dict, call_id: str = "driver") -> ToolResult:
+    """One tool call through the harness's hooks and registry, with no model turn.
+
+    `loop.execute_tool_call` is the call: a code driver issues a tool the same way the loop would,
+    so the hook order, what a raising hook does and the two execution events are the core's, stated
+    in one place rather than copied into each application.
+    """
+    call = ToolCall(id=call_id, name=name, arguments=dict(arguments))
+    return asyncio.run(execute_tool_call(call, harness.registry, harness.hooks, harness.emit))

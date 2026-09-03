@@ -12,7 +12,7 @@ import kullback.gates as gates
 from kullback.runner.records import GateResult
 
 GATES_DIR = Path(gates.__file__).resolve().parent
-FORBIDDEN_PACKAGES = ("kullback.ai", "kullback.agent", "kullback.builder", "kullback.examiner",
+FORBIDDEN_PACKAGES = ("kullback.ai", "kullback.agent", "kullback.builder", "kullback.examiner", "kullback.rounds",
                       "kullback.cli", "kullback.tui", "kullback.report")
 GATE_FILES = sorted(GATES_DIR.rglob("*.py"))
 
@@ -75,7 +75,8 @@ def test_the_registry_covers_every_stage_the_gates_package_rules_under():
     rulings = {stage for spec in gates.GATES for stage in spec.rulings}
     for stage in ("ingest", "mine", "compile_tools.parses", "compile_tools.replay_fidelity", "compile_policy",
                   "build_environment", "build_user_rules", "replay_reference", "derive_verifier", "leak_check",
-                  "budget", "scorecard", "confined", "verifier_oracle", "verifier_unfinished_run"):
+                  "budget", "scorecard", "confined", "verifier_oracle", "verifier_unfinished_run",
+                  "probe_pool", "probe_admission", "loosening", "false_rejection", "refuse", "trusted"):
         assert stage in rulings, stage
     assert set(gates.D79_STAGES) <= rulings
 
@@ -112,16 +113,19 @@ def test_the_stages_the_build_records_outside_the_registry_are_none():
     over the stage's artifact (gates/stages.py), so a new inline ruling cannot appear in the Builder
     without a registered gate behind it, and the tool_result hook can run any of them. The scan
     covers every module of the Builder, not only the two the rulings left, because a ruling can be
-    written anywhere in the package; what a whole build actually leaves on disk is pinned in
+    written anywhere in the package, and since phase 5 every module of the Examiner too, which rules
+    through the same ledger; what a whole build actually leaves on disk is pinned in
     tests/builder/test_extension.py, which is the same claim measured rather than read."""
     import kullback.builder as builder
 
     builder_dir = Path(builder.__file__).resolve().parent
     if "mutants" in builder_dir.parts:
         pytest.skip("a source scan over mutmut's copy reads every mutant's literal, not the Builder's")
+    scanned = [builder_dir, builder_dir.parent / "examiner"]
     recorded: set[str] = set()
-    for path in sorted(builder_dir.rglob("*.py")):
-        recorded |= _stage_literals(path, ("gate", "_gate"))
+    for package_dir in scanned:
+        for path in sorted(package_dir.rglob("*.py")) if package_dir.is_dir() else []:
+            recorded |= _stage_literals(path, ("gate", "_gate"))
     registered = {stage for spec in gates.GATES for stage in spec.rulings}
     assert recorded - registered == set()
     for stage in ("cluster", "compile_tools", "intent", "rerolls", "tau2_export", "vocabulary",
@@ -138,9 +142,11 @@ def test_the_artifact_bindings_name_artifacts_the_build_declares():
     declared = {"traces", "sigs", "schema", "categories", "tasks", "canon_rules", "db", "overlays", "assumptions",
                 "synthetic_rows", "bodies", "assisted_tools", "constraints", "policy_text", "lessons_applied",
                 "lessons_set_aside", "intents", "vocabulary", "user_rules", "environment", "replays", "rerolls",
-                "verifiers", "task_status"}
+                "verifiers", "task_status", "probes", "history", "task_runs", "refusals"}
     assert produced <= declared, produced - declared
     assert [spec.name for spec in gates.gates_over("tasks")] == ["cluster"]
+    # The Examiner's pool is watched by the two probe gates and the trusted ruling, in that order.
+    assert [spec.name for spec in gates.gates_over("probes")] == ["probe_pool", "probe_admission", "trusted"]
     assert gates.gates_over("no-such-artifact") == ()
 
 
@@ -155,6 +161,9 @@ def test_every_gate_returns_the_one_ruling_record():
         "tau2_export": ([],), "rerolls": ({}, 3), "derive_verifier.tasks": ({},),
         "parses": ("",), "executes_on_s0": ([], []), "deterministic": ([], [], []), "non_trivial": ([], []),
         "refuses_unknown": ([], []),
+        "probe_pool": ([], {}, None, []), "probe_admission": ({}, []),
+        "loosening": ({}, {}, {}, {}, None, []), "false_rejection": ([], {}, {}, {}, None, []),
+        "refuse": ({}, {}, {}), "trusted": ({}, [], {}, {}, {}, {}, {}, {}, None, []),
     }
     for name, args in over_nothing.items():
         out = gates.gate_named(name).fn(*args)

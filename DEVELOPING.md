@@ -16,11 +16,14 @@ kullback/
   runner/     records, canon, confinement, budget, loop, route, verdict, validate, judge, regrade,
               replay, state, scorecard, atom_context, gate_support, boundary (the D89 scan and RunnerVersion)
   gates/      every accept-or-reject check and the registry: verifier_suite, artifacts, stages, tool_runs,
-              fidelity, confinement, scorecard (phase 3)
-  builder/    ingest, mine, cluster, intent, compile_env, policy, user_sim, verifier, memory, reference,
-              sandbox, synth, vocabulary, search, parallel, build (the stage graph), pipeline (the scheduler),
-              tools (the stages as tools), extension (the hooks), agent (the driver behind `kullback build`)
-  examiner/   the Verifier and probe agent; empty until phase 5
+              fidelity, confinement, scorecard (phase 3); probes, loosening, trust, round_end and ledger
+              (the one gates.json writer both agents use) (phase 5)
+  builder/    ingest, mine, cluster, intent, compile_env, policy, user_sim, memory, sandbox, synth,
+              vocabulary, search, parallel, build (the stage graph), pipeline (the scheduler),
+              tools (the stages as tools), extension (the hooks), agent (the Builder's session driver)
+  examiner/   derive (the derivation), reference (D111 confirmation), stage (the derive stage outside the
+              pipeline), plan, tools (the seven verbs), skills (the probe skill), extension, agent (phase 5)
+  rounds.py   the round driver behind `kullback build`: Builder beat, Examiner beat, round_end, the exits
   cli.py      the command line
   tui/        the terminal screen
   report.py   the customer-facing report

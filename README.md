@@ -73,7 +73,8 @@ kullback/
               regrade, replay, scorecard
   gates/      every accept-or-reject check and the registry that names them; no model call
   builder/    the Environment agent: its stages, its tools, its extension on the agent core
-  examiner/   the Verifier and probe agent; empty until phase 5
+  examiner/   the Verifier and probe agent: derivation, probes, repairs, refusals, findings
+  rounds.py   the round driver: a Builder beat, an Examiner beat, round_end, the three exits
   cli.py      the command line
   tui/        the terminal screen
   report.py   the customer-facing report

@@ -72,26 +72,82 @@ def test_the_board_reads_the_typed_stage_events_of_the_agent_core_too(tmp_path):
     assert board.seconds["mine"] >= 0
 
 
-def test_the_screen_builds_through_the_builder_agent(tmp_path, monkeypatch):
-    """/build goes through run_builder, the same entry the CLI uses, with the dict events wired.
+def test_the_screen_builds_through_the_round_driver_the_cli_uses(tmp_path, monkeypatch):
+    """/build goes through rounds.run_rounds, the same entry the CLI uses, with the dict events wired.
 
     The one claim the `runner=` seam every other Screen test uses cannot make is which callable
     the Screen reaches for when nothing is injected, so this test alone replaces that default.
-    The real run_builder would drive a full build off an empty workdir.
+    The real run_rounds would drive whole rounds off an empty workdir.
     """
-    from kullback.builder import agent as builder_agent
+    from kullback import rounds
 
     seen = {}
 
     def fake(**kwargs):
         seen.update(kwargs)
+        kwargs["on_event"]({"kind": "round", "state": "end", "round": 1, "counts": {}, "exit": "done"})
         kwargs["on_event"]({"kind": "pipeline", "state": "complete"})
         return {}
 
-    monkeypatch.setattr(builder_agent, "run_builder", fake)
+    monkeypatch.setattr(rounds, "run_rounds", fake)
     screen = Screen(tmp_path, console=_console())
     assert screen.command("/build --iterate") is True
     assert seen["iterate"] is True and seen["workdir"] == tmp_path and seen["model"] is None
+
+
+def test_the_board_shows_the_round_and_the_beat_from_the_typed_events(tmp_path):
+    """The BeatStart and BeatEnd events of the driver name the agent that holds the stream (D128);
+    the board shows the round and the beat above the stages, and nothing before the first round."""
+    from kullback.agent.events import BeatEnd, BeatStart, RoundEnd, RoundStart
+
+    board = Board(tmp_path)
+    assert board.beat().plain == ""
+    board.event(RoundStart(round=1))
+    board.event(BeatStart(agent="builder", round=1))
+    assert board.beat().plain == "round 1, builder beat"
+    assert "round 1, builder beat" in _show(board.render())
+    board.event(BeatEnd(agent="builder", round=1))
+    assert board.beat().plain == "round 1"
+    board.event(BeatStart(agent="examiner", round=1))
+    assert board.beat().plain == "round 1, examiner beat"
+    board.event(BeatEnd(agent="examiner", round=1))
+    board.event(RoundEnd(round=1, counts={"fidelity": 1, "tasks": 2}, exit=None))
+    board.event({"kind": "beat", "state": "start", "agent": "builder", "round": 2})
+    assert board.beat().plain == "round 2, builder beat"
+    assert board.rounds == [{"round": 1, "counts": {"fidelity": 1, "tasks": 2}, "exit": None}]
+
+
+def test_the_round_table_lists_each_finished_round_with_its_counts_and_the_exit(tmp_path):
+    board = Board(tmp_path)
+    board.event({"kind": "round", "state": "end", "round": 1, "exit": None, "counts": {
+        "fidelity": 1, "tasks": 3, "trusted": 0, "refused_count": 0, "probes_passing": 2,
+        "spend": {"builder": 0.0, "examiner": 0.0, "total": 0.0}}})
+    board.event({"kind": "round", "state": "end", "round": 2, "exit": "done", "counts": {
+        "fidelity": 3, "tasks": 3, "trusted": 2, "refused_count": 1, "probes_passing": 5,
+        "spend": {"builder": 0.25, "examiner": 1.0, "total": 1.25}}})
+    rows = [line.split() for line in _show(board.rounds_table()).splitlines() if line.strip()]
+    assert rows[0] == ["round", "fidelity", "trusted", "refused", "probes", "passing", "spend", "exit"]
+    assert rows[1] == ["1", "1/3", "0", "0", "2", "$0.0000"]
+    assert rows[2] == ["2", "3/3", "2", "1", "5", "$1.2500", "done"]
+    assert "3/3" in _show(board.render())
+
+
+def test_status_prints_the_last_rounds_counts_beside_the_pipeline_state(tmp_path):
+    (tmp_path / "pipeline").mkdir()
+    (tmp_path / "pipeline" / "state.json").write_text(json.dumps({
+        "status": "complete", "statuses": {"mine": "ran"}, "attempts": {"mine": 1}, "gates": []}))
+    (tmp_path / "rounds.json").write_text(json.dumps([
+        {"round": 1, "exit": None, "counts": {"fidelity": 1, "tasks": 2, "trusted": 0, "refused_count": 0,
+                                               "probes_passing": 0, "spend": {"total": 0.0}}},
+        {"round": 2, "exit": "stalled", "counts": {"fidelity": 1, "tasks": 2, "trusted": 1, "refused_count": 1,
+                                                    "probes_passing": 3, "spend": {"total": 0.5}}},
+    ]))
+    screen = _screen(tmp_path)
+    screen.command("/status")
+    out = _text(screen.console)
+    assert "mine" in out and "complete" in out
+    assert "round 2" in out and "stalled" in out and "1/2" in out and "$0.5000" in out
+    assert screen.runner.calls == []
 
 
 def test_a_stage_is_only_timed_once_it_has_been_seen_to_start(tmp_path):
