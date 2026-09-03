@@ -66,13 +66,11 @@ The report opens with whether the Environment was built at all (gates passed, as
 
 ## Citation
 
-Related work by the same author, cited here because the Harness is meant to run against models people train themselves, not only against hosted ones.
-
 ```bibtex
-@misc{hindi-modernbert2026,
-  title  = {hindi-modernBERT: A Hindi ModernBERT Encoder with 8192 Context},
+@misc{kullback2026,
+  title  = {Kullback: Executable Environments Rebuilt from Agent Traces, and Verifiers That Grade on the End State},
   author = {Krrish Agarwalla},
   year   = {2026},
-  note   = {Checkpoint ba1157. Base MLM; trained from scratch on Hindi.}
+  note   = {Open-source Builder and Runner behind Leibler. https://github.com/leiblerdev/kullback}
 }
 ```
