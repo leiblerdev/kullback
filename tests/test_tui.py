@@ -506,3 +506,14 @@ def test_open_says_live_off_and_hides_zero_spend(tmp_path, monkeypatch):
     Screen(tmp_path, console=console).open()
     out = _text(console)
     assert "live off" in out and "spend" not in out
+
+
+def test_loop_marks_a_failed_round(tmp_path):
+    from kullback.tui import diagrams
+
+    (tmp_path / "rounds.json").write_text(json.dumps([
+        {"round": 1, "counts": {}, "exit": "stalled", "exit_note": "examiner failed: no derive",
+         "failed": True, "pending_findings": []},
+    ]), encoding="utf-8")
+    plain = diagrams.loop_text(diagrams.read_rounds_file(tmp_path)).plain
+    assert "exit: stalled (failed)" in plain and "examiner failed" in plain

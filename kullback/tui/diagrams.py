@@ -117,7 +117,9 @@ def loop_text(rounds: list[dict], current_round: int = 0, agent: str = "") -> Te
         out.append(f"  {_counts_line(counts)}\n", style="dim")
         pending = row.get("pending_findings") or []
         if row.get("exit"):
-            out.append(f"  exit: {row['exit']}\n", style="bold" if row["exit"] == "done" else "bold red")
+            style = "bold red" if (row["exit"] != "done" or row.get("failed")) else "bold"
+            out.append(f"  exit: {row['exit']}" + (" (failed)" if row.get("failed") else "") + "\n",
+                         style=style)
         elif pending:
             out.append(f"  {len(pending)} finding(s) owed the Builder a beat — the round continued\n",
                          style="yellow")
