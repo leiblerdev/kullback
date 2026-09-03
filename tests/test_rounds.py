@@ -731,3 +731,20 @@ def test_a_resumed_finding_reaches_the_model_on_round_one(tmp_path, request):
     # The beat failed (no build was ever called), so the finding stays queued for the retry even
     # though the model heard it: delivered, not dropped, at every level.
     assert [f.finding_id for f in loop.pending_findings] == ["f1"]
+
+
+def test_result_with_no_build_reports_the_stalled_round_without_crashing(tmp_path, request):
+    """Build 9 post-mortem: a first beat that fails leaves plan.last None, and result() must
+    report the recorded stalled round (failed, with the reason) instead of AttributeError."""
+    plan = BuildPlan(workdir=tmp_path / "work", model=Bodies(), files=[_fixture(request)], max_attempts=0)
+    loop = rounds.Loop(plan=plan, builder=builder_agent.build_harness(plan))
+    loop.allowance = {agent: None for agent in rounds.AGENTS}
+    loop.pending_findings = [_finding("t1", suggested="none")]
+    record = loop.close_round(1, {})
+    record.exit = "stalled"
+    record.failed = True
+    record.exit_note = "builder failed: boom"
+    out = loop.result()
+    assert out["exit"] == "stalled" and out["failed"] is True
+    assert out["trusted"] == [] and out["refused"] == {}
+    assert out["rounds"][0]["exit_note"] == "builder failed: boom"

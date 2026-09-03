@@ -483,10 +483,18 @@ class Loop:
     def result(self) -> dict:
         """run_builder's dict plus the rounds, the exit, the trusted Tasks, the refusals and the Examiner's say."""
         last = self.plan.last
-        out = build_module.result_of(self.plan.workdir, last, last.artifacts.get("environment"))
-        out["target"] = self.target
-        out["rulings"] = list(last.rulings)
-        out["tool_result"] = _tool_result(self.build_result)
+        if last is None:
+            # No stage ever built: the rounds carry the whole story (a first beat that failed
+            # records its stalled round). Same keys, empty build fields, never a traceback.
+            out: dict = {"status": "failed", "workdir": str(self.plan.workdir), "env_id": None,
+                           "failed_stage": None, "stopped": False, "gates": [], "tasks": [],
+                           "target": self.target, "rulings": [],
+                           "tool_result": _tool_result(self.build_result)}
+        else:
+            out = build_module.result_of(self.plan.workdir, last, last.artifacts.get("environment"))
+            out["target"] = self.target
+            out["rulings"] = list(last.rulings)
+            out["tool_result"] = _tool_result(self.build_result)
         out["rounds"] = [as_dict(r) for r in self.rounds]
         out["exit"] = self.rounds[-1].exit if self.rounds else None
         out["failed"] = bool(self.rounds and self.rounds[-1].failed)
