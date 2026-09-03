@@ -169,3 +169,42 @@ def test_an_unbound_name_inside_a_nested_scope_is_reported_against_the_method():
     source = _module("        return [decimal.Decimal(r) for r in self.db.orders]\n")
     assert unbound_names(source) == [
         "get_order names decimal, which nothing binds; put `import decimal` at the top of the body"]
+
+
+def test_a_global_declaration_without_an_assignment_does_not_bind_the_name():
+    """`global counter` says where an assignment would land, not that anything bound it."""
+    source = _module("        global counter\n        return counter + 1\n")
+    assert unbound_names(source) == ["get_order names counter, which nothing binds"]
+
+
+def test_a_body_that_declares_a_name_global_or_nonlocal_is_refused_by_name():
+    """Greptile on PR 4: a nested `global` resolves at module scope, not against the method's
+    locals. A tool body has no business keeping state that outlives its call, so the declaration
+    itself is the failure and the resolution question never arises."""
+    module_state = _module("        global counter\n        counter = 1\n        return counter\n")
+    assert source_confinement(module_state) == ["get_order declares global counter"]
+    assert gate_confined(module_state).passed is False
+    nested = _module("        total = 0\n"
+                     "        def helper():\n"
+                     "            global total\n"
+                     "            return total\n"
+                     "        return helper()\n")
+    assert source_confinement(nested) == ["get_order declares global total"]
+
+
+def test_a_method_of_a_nested_class_does_not_see_what_the_class_body_bound():
+    """Greptile on PR 4: Python resolves a class body's names in the class body alone, so a method
+    that loads one unqualified raises NameError however plainly it reads."""
+    source = _module("        class Row:\n"
+                     "            kind = 'order'\n"
+                     "            def label(self):\n"
+                     "                return kind\n"
+                     "        return Row().label()\n")
+    assert unbound_names(source) == ["get_order names kind, which nothing binds"]
+    qualified = _module("        class Row:\n"
+                        "            kind = 'order'\n"
+                        "            def label(self):\n"
+                        "                return Row.kind\n"
+                        "        return Row().label()\n")
+    assert unbound_names(qualified) == []
+

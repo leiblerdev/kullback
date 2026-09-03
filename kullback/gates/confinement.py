@@ -104,6 +104,14 @@ def _body_confinement(function: ast.AST) -> list[str]:
             out.append(f"touches {node.attr}")
         elif isinstance(node, ast.Name) and node.id in DENIED_BUILTINS:
             out.append(f"uses {node.id}")
+        elif isinstance(node, (ast.Global, ast.Nonlocal)):
+            # A tool body keeps its state in the customer's database and in its own locals. A name
+            # it declares global or nonlocal is state that outlives the call and is shared with
+            # every other call, which is the module-level mutation the Runner replays badly and
+            # the sandbox cannot see. Refused by name, which also settles where such a name would
+            # have been resolved from.
+            out += [f"declares {'global' if isinstance(node, ast.Global) else 'nonlocal'} {name}"
+                    for name in node.names]
     return out
 
 
@@ -170,9 +178,13 @@ def _unbound_in_scope(scope: ast.AST, outer: set[str]) -> set[str]:
     own = list(_own_nodes(scope))
     unbound = {node.id for node in own
                if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load) and node.id not in bound}
+    # A class body is not a closure scope: a method inside it does not see the names the class body
+    # bound, only the names around the class. Passing `bound` down here would accept a method that
+    # loads a class attribute unqualified, which raises NameError the moment it is called.
+    inherited = outer if isinstance(scope, ast.ClassDef) else bound
     for child in own:
         if isinstance(child, SCOPES):
-            unbound |= _unbound_in_scope(child, bound)
+            unbound |= _unbound_in_scope(child, inherited)
     return unbound
 
 
@@ -188,7 +200,13 @@ def _own_nodes(scope: ast.AST) -> Iterator[ast.AST]:
 
 def _scope_bindings(scope: ast.AST) -> set[str]:
     """What this one scope binds: parameters, assignment, loop, with and except targets,
-    comprehension variables, its own imports, and the functions and classes it defines by name."""
+    comprehension variables, its own imports, and the functions and classes it defines by name.
+
+    A `global x` or `nonlocal x` declaration binds nothing by itself: it says where a later
+    assignment lands. A body that declares one and then only loads the name still raises NameError,
+    so the declaration is not counted and the load is reported. An assignment after it is counted
+    the way any other Store name is.
+    """
     bound: set[str] = set()
     for node in _own_nodes(scope):
         if isinstance(node, ast.arg):
@@ -201,8 +219,6 @@ def _scope_bindings(scope: ast.AST) -> set[str]:
             bound.add(node.name)
         elif isinstance(node, ast.ExceptHandler) and node.name:
             bound.add(node.name)
-        elif isinstance(node, (ast.Global, ast.Nonlocal)):
-            bound |= set(node.names)
     return bound
 
 
