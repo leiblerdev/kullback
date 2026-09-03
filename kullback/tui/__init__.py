@@ -57,6 +57,9 @@ HELP = """\
 /loop                              the loop as beats: Builder, gates, Examiner, round ends
 /layers                            the kullback layering as a diagram
 /keys                              which provider keys this shell can see
+/login [provider/model] [--set KEY=VALUE ...] [--base-url URL]
+                                  use this model, with keys held in memory only
+/logout                            forget the keys set with /login
 /help                              this
 /quit                              leave\
 """
@@ -214,14 +217,20 @@ def _read(path: Path, fallback: Any) -> Any:
         return fallback
 
 
-def _keys(env: dict[str, str]) -> Text:
+def _keys(env: dict[str, str], session: set[str] = frozenset()) -> Text:
     """Which keys are visible, never what they are. A live run fails here first, so it is asked here."""
     out = Text()
     for name in ("OPENAI_API_KEY", "ANTHROPIC_API_KEY", "HARNESS_ALLOW_MODEL_REQUESTS"):
         value = env.get(name)
         shown = "set" if value else "missing"
+        if name in session and value:
+            shown += " (this session)"
         out.append(f"{name:<32}", style="dim")
         out.append(f"{shown}\n", style="green" if value else "red")
+    extra = sorted(session - {"OPENAI_API_KEY", "ANTHROPIC_API_KEY", "HARNESS_ALLOW_MODEL_REQUESTS"})
+    for name in extra:
+        out.append(f"{name:<32}", style="dim")
+        out.append("set (this session)\n", style="green")
     return out
 
 
@@ -235,6 +244,9 @@ class Screen:
         self.ceiling_usd = ceiling_usd
         self.console = console or Console()
         self.runner = runner  # injected in tests; nothing here builds a live adapter
+        # Keys handed over with /login --set, mapped to what the shell held before (None
+        # means it held nothing), so /logout restores the shell instead of just deleting.
+        self.session_keys: dict[str, Optional[str]] = {}
 
     def open(self) -> None:
         self.console.print(banner())
@@ -255,7 +267,11 @@ class Screen:
         if verb == "help":
             self.console.print(HELP)
         elif verb == "keys":
-            self.console.print(_keys(dict(os.environ)))
+            self.console.print(_keys(dict(os.environ), set(self.session_keys)))
+        elif verb == "login":
+            self._login(rest)
+        elif verb == "logout":
+            self._logout()
         elif verb == "status":
             self._status()
         elif verb == "map":
@@ -316,6 +332,111 @@ class Screen:
                                            ceiling_usd=self.ceiling_usd)
         on_event({"kind": "stage", "stage": rest[0], "state": "ran", "attempt": 1})
         on_event({"kind": "pipeline", "state": "complete"})
+
+    def _login(self, rest: list[str]) -> None:
+        """Use this model from here on, with keys held in memory only.
+
+        `/login` alone inspects: the current model, where its calls go, which variable
+        holds its key and whether that variable is set. `/login provider/model` resolves
+        the id the same way a build does (an adapter of its own, else the models.dev
+        snapshot, else the --base-url given here) and refuses in words when nothing
+        reaches it. `--set KEY=VALUE` puts keys into this process's environment so a
+        pasted key works without touching .env or the shell; values are never printed
+        and never written to the workdir, and /logout restores what the shell held.
+        """
+        sets = _values(rest, "--set")
+        base_urls = _values(rest, "--base-url")
+        model = next((word for word in rest if not word.startswith("--")), "")
+        applied = []
+        try:
+            for item in sets:
+                name, sep, value = item.partition("=")
+                if not sep or not name:
+                    raise ValueError(f"--set takes KEY=VALUE, not {item!r}")
+                if name not in self.session_keys:
+                    self.session_keys[name] = os.environ.get(name)
+                os.environ[name] = value
+                applied.append(name)
+            if model:
+                self._resolve(model, base_urls[-1] if base_urls else None)
+                self.model = model
+                if base_urls:
+                    self.base_url = base_urls[-1]
+        except ValueError as exc:
+            self.console.print(Text(str(exc), style="red"))
+            return
+        if applied:
+            self.console.print(Text(f"keys held for this session: {', '.join(applied)}", style="dim"))
+        self.console.print(self._login_status())
+
+    def _resolve(self, model: str, base_url: Optional[str]) -> None:
+        """The id reaches a model, or the reason it does not. Assigns nothing; reports everything."""
+        from kullback.ai import provider as pv
+
+        provider_name, _ = pv.split_model_id(model)  # the 'provider/model' shape, or words saying so
+        if provider_name in pv.ADAPTERS or base_url:
+            return
+        try:
+            endpoint = pv.registry_endpoint(model)
+        except Exception:
+            endpoint = None
+        if endpoint is None:
+            raise ValueError(
+                f"{model} has no adapter of its own and the models.dev snapshot names no host "
+                f"for {provider_name!r}; pass --base-url")
+        if not endpoint.openai_shaped:
+            raise ValueError(
+                f"models.dev serves {provider_name!r} through {endpoint.adapter}, which is not "
+                f"the OpenAI request shape this Harness builds; pass --base-url for one that is")
+
+    def _login_status(self) -> Text:
+        """The current model, where its calls go, and whether its key is set. Names only, never values."""
+        from kullback.ai import provider as pv
+
+        out = Text()
+        if not self.model:
+            return Text("no model: /login provider/model to use one", style="dim")
+        out.append(f"model {self.model}\n", style="bold")
+        provider_name, _ = pv.split_model_id(self.model)
+        key_var, host = "", self.base_url or ""
+        adapter_cls = pv.ADAPTERS.get(provider_name)
+        if adapter_cls is not None:
+            key_var = adapter_cls.key_env_var
+            host = host or "built-in adapter"
+        else:
+            try:
+                endpoint = pv.registry_endpoint(self.model)
+            except Exception:
+                endpoint = None
+            if endpoint is not None:
+                key_var = endpoint.key_env_var
+                host = host or endpoint.base_url
+        if host:
+            out.append(f"host {host}\n", style="dim")
+        if key_var:
+            out.append(f"{key_var:<32}", style="dim")
+            out.append("set\n" if os.environ.get(key_var) else "missing\n",
+                         style="green" if os.environ.get(key_var) else "red")
+        else:
+            out.append("no key variable: this endpoint takes none\n", style="dim")
+        try:
+            live = pv.enable_live_calls_from_env()
+        except Exception:
+            live = False
+        out.append("live calls on" if live else "live calls off (no model call will be made)",
+                   style="green" if live else "yellow")
+        return out
+
+    def _logout(self) -> None:
+        """Forget the keys set with /login: the shell gets back exactly what it held."""
+        for name, previous in self.session_keys.items():
+            if previous is None:
+                os.environ.pop(name, None)
+            else:
+                os.environ[name] = previous
+        count = len(self.session_keys)
+        self.session_keys.clear()
+        self.console.print(Text(f"cleared {count} session key(s)" + (f"; model still {self.model}" if self.model else ""), style="dim"))
 
     def _adapter(self) -> Any:
         """No model means no model. The screen refuses to guess one, the same as the CLI."""

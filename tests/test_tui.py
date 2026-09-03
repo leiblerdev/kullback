@@ -351,3 +351,117 @@ def test_map_loop_layers_commands_print(tmp_path):
     assert screen.command("/loop") is True
     out = _text(console)
     assert "mine" in out and "builder" in out and "single-pass" in out
+
+
+# --- /login and /logout -----------------------------------------------------
+
+LOGIN_CATALOG = {
+    "opencode-go": {"id": "opencode-go", "name": "OpenCode Go", "npm": "@ai-sdk/openai-compatible",
+                    "api": "https://opencode.ai/zen/go/v1", "env": ["OPENCODE_API_KEY"],
+                    "models": {"muse-spark": {"limit": {"context": 1048576, "output": 131072},
+                                              "cost": {"input": 3, "output": 15}}}},
+}
+
+
+def _snapshot(monkeypatch, tmp_path, catalog=LOGIN_CATALOG):
+    import datetime
+
+    from kullback.ai import provider as pv
+
+    path = tmp_path / "models.dev.json"
+    path.write_text(json.dumps({"fetched_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+                                "catalog": catalog}), encoding="utf-8")
+    monkeypatch.setattr(pv, "REGISTRY_SNAPSHOT_PATH", str(path))
+    monkeypatch.delenv("OPENCODE_API_KEY", raising=False)
+    return path
+
+
+def test_login_with_no_args_inspects_the_current_model(tmp_path, monkeypatch):
+    _snapshot(monkeypatch, tmp_path)
+    console = _console()
+    screen = Screen(tmp_path, model="opencode-go/muse-spark", console=console)
+    assert screen.command("/login") is True
+    out = _text(console)
+    assert "opencode-go/muse-spark" in out and "OPENCODE_API_KEY" in out and "missing" in out
+
+
+def test_login_with_no_model_says_so(tmp_path):
+    console = _console()
+    assert Screen(tmp_path, console=console).command("/login") is True
+    assert "no model" in _text(console)
+
+
+def test_login_to_an_id_without_a_slash_is_told_in_words(tmp_path):
+    console = _console()
+    screen = Screen(tmp_path, console=console)
+    assert screen.command("/login kthumb") is True
+    assert "provider/model" in _text(console) and screen.model is None
+
+
+def test_login_to_an_unknown_provider_refuses_and_keeps_the_old_model(tmp_path, monkeypatch):
+    _snapshot(monkeypatch, tmp_path, catalog={})
+    console = _console()
+    screen = Screen(tmp_path, model="openai/gpt-4", console=console)
+    assert screen.command("/login nope/nothing") is True
+    assert "no host" in _text(console) and screen.model == "openai/gpt-4"
+
+
+def test_login_sets_the_model_the_build_will_use(tmp_path, monkeypatch):
+    _snapshot(monkeypatch, tmp_path)
+    screen = Screen(tmp_path, console=_console())
+    assert screen.command("/login opencode-go/muse-spark") is True
+    assert screen.model == "opencode-go/muse-spark"
+
+
+def test_login_set_holds_the_key_in_memory_and_logout_forgets_it(tmp_path, monkeypatch):
+    import os
+
+    _snapshot(monkeypatch, tmp_path)
+    console = _console()
+    screen = Screen(tmp_path, console=console)
+    assert screen.command("/login opencode-go/muse-spark --set OPENCODE_API_KEY=sk-zen-123") is True
+    assert os.environ.get("OPENCODE_API_KEY") == "sk-zen-123"
+    out = _text(console)
+    assert "sk-zen-123" not in out and "set" in out
+    assert screen.command("/logout") is True
+    assert "OPENCODE_API_KEY" not in os.environ
+
+
+def test_logout_restores_what_the_shell_held(tmp_path, monkeypatch):
+    import os
+
+    _snapshot(monkeypatch, tmp_path)
+    monkeypatch.setenv("OPENCODE_API_KEY", "old-key")
+    screen = Screen(tmp_path, console=_console())
+    screen.command("/login opencode-go/muse-spark --set OPENCODE_API_KEY=new-key")
+    assert os.environ["OPENCODE_API_KEY"] == "new-key"
+    screen.command("/logout")
+    assert os.environ["OPENCODE_API_KEY"] == "old-key"
+
+
+def test_keys_marks_the_keys_this_session_set(tmp_path, monkeypatch):
+    _snapshot(monkeypatch, tmp_path)
+    console = _console()
+    screen = Screen(tmp_path, console=console)
+    screen.command("/login opencode-go/muse-spark --set OPENCODE_API_KEY=sk-zen-123")
+    screen.command("/keys")
+    out = _text(console)
+    assert "OPENCODE_API_KEY" in out and "this session" in out and "sk-zen-123" not in out
+    screen.command("/logout")
+
+
+def test_a_login_secret_reaches_no_file_and_no_line(tmp_path, monkeypatch):
+    _snapshot(monkeypatch, tmp_path)
+    console = _console()
+    screen = Screen(tmp_path, console=console)
+    screen.command("/login opencode-go/muse-spark --set OPENCODE_API_KEY=topsecret-value-9")
+    screen.command("/keys")
+    screen.command("/status")
+    screen.command("/map")
+    screen.command("/loop")
+    screen.command("/layers")
+    assert "topsecret-value-9" not in _text(console)
+    for path in tmp_path.rglob("*"):
+        if path.is_file():
+            assert "topsecret-value-9" not in path.read_text(encoding="utf-8", errors="replace")
+    screen.command("/logout")
