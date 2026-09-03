@@ -464,7 +464,25 @@ def tui(
     ceiling_usd: Optional[float] = typer.Option(None, "--ceiling-usd", help="Per-build spend ceiling (D86)."),
 ):
     """Open the kullback screen: one build, its stages, its gates and its spend, while it runs."""
-    _entry("kullback.tui", "loop")(workdir=workdir, model=model, base_url=base_url, ceiling_usd=ceiling_usd)
+    _entry("kullback.tui", "loop")(workdir=_default_workdir(workdir), model=model, base_url=base_url,
+                                       ceiling_usd=ceiling_usd)
+
+
+# A directory counts as a build's workdir when it holds any record a build writes. The screen
+# answers from files, so opening on an empty directory only ever says 'no build yet'.
+WORKDIR_RECORDS = ("budget.json", "rounds.json", "gates.json", "tasks.json", "db.json",
+                   "pipeline")
+
+
+def _default_workdir(workdir: Path) -> Path:
+    """The workdir the screen opens: the flag when given, else ./work when it holds a build,
+    else the current directory. `kullback tui` with no flag opens the build in front of you."""
+    if str(workdir) != ".":
+        return workdir
+    candidate = Path("work")
+    if candidate.is_dir() and any((candidate / record).exists() for record in WORKDIR_RECORDS):
+        return candidate
+    return workdir
 
 
 if __name__ == "__main__":
