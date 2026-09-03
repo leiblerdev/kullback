@@ -1097,3 +1097,12 @@ def test_other_hosts_see_no_opencode_headers(live, sleeps):
         client=transport_of(handler), sleep=sleeps.append, env={},
     )
     assert model.query([{"role": "user", "content": "hi"}]).content == "hi"
+
+def test_an_explicit_base_url_does_not_change_a_responses_model_shape(tmp_path, monkeypatch):
+    """Greptile P1: 1.3 with --base-url took the chat branch and posted chat bodies at a
+    Responses-only endpoint. The shape belongs to the model, not to how the host was found."""
+    registry_snapshot(tmp_path, monkeypatch, REGISTRY)
+    model = pv.model_for("opencode-go/muse-spark-1.3-contributor",
+                         base_url="http://127.0.0.1:8080/v1", env={})
+    assert isinstance(model, pv.OpenAIResponsesModel)
+    assert model.base_url == "http://127.0.0.1:8080/v1"

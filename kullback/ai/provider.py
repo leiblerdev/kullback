@@ -1116,6 +1116,10 @@ def model_for(model_id: str, base_url: Optional[str] = None, **kwargs) -> Model:
     adapter = ADAPTERS.get(provider)
     if adapter is not None:
         return adapter(model_id, base_url=base_url, **kwargs)
+    if model_id in RESPONSES_API_MODELS and base_url:
+        # An explicit endpoint never changes the wire shape: a Responses model speaks
+        # Responses wherever it lives, so this check sits before the base_url branch.
+        return OpenAIResponsesModel(model_id, base_url=base_url, **kwargs)
     if base_url:
         return OpenAICompatibleModel(model_id, base_url=base_url, **kwargs)
     endpoint = registry_endpoint(model_id, env=kwargs.get("env"))
