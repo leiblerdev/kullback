@@ -238,7 +238,7 @@ def test_quit_closes_the_screen_and_everything_else_keeps_it_open(tmp_path):
 def test_an_unknown_command_says_so_rather_than_doing_something(tmp_path):
     screen = _screen(tmp_path)
     screen.command("/deploy")
-    assert "no command deploy" in _text(screen.console)
+    assert "no command matches /deploy" in _text(screen.console)
     assert screen.runner.calls == []
 
 
@@ -561,7 +561,7 @@ def test_open_says_live_off_and_hides_zero_spend(tmp_path, monkeypatch):
     monkeypatch.delenv("HARNESS_ALLOW_MODEL_REQUESTS", raising=False)
     Screen(tmp_path, console=console).open()
     out = _text(console)
-    assert "live off" in out and "spend" not in out
+    assert "live off" in out and "$" not in out
 
 
 def test_loop_marks_a_failed_round(tmp_path):
@@ -573,3 +573,140 @@ def test_loop_marks_a_failed_round(tmp_path):
     ]), encoding="utf-8")
     plain = diagrams.loop_text(diagrams.read_rounds_file(tmp_path)).plain
     assert "exit: stalled (failed)" in plain and "examiner failed" in plain
+
+
+# --- the entry screen, the / menu, sessions, the login menu, loop-aware status ---
+
+def test_every_command_in_the_table_is_in_help(tmp_path):
+    from kullback import tui as tui_mod
+
+    HELP = tui_mod.HELP
+    for name, _, _ in tui_mod.COMMANDS:
+        assert f"/{name}" in HELP, name
+
+
+def test_the_gradient_is_the_brand_white_into_gray():
+    from kullback import tui as tui_mod
+
+    assert tui_mod.GRADIENT[0] == (255, 255, 255)
+    assert tui_mod.GRADIENT[-1] == (138, 138, 138)
+    assert tui_mod.GRADIENT == sorted(tui_mod.GRADIENT, reverse=True)
+
+
+def test_open_says_what_kullback_is_and_lists_commands_and_sessions(tmp_path, monkeypatch):
+    monkeypatch.setenv("KULLBACK_SESSIONS_DIR", str(tmp_path / "sessions"))
+    console = _console()
+    Screen(tmp_path, console=console).open()
+    out = _text(console)
+    assert "Rebuilds your environment from traces" in out
+    assert "01 commands" in out and "/status" in out
+    assert "02 sessions" in out and "none yet" in out
+
+
+def test_slash_alone_lists_every_command_and_waits_for_a_number(tmp_path):
+    screen = _screen(tmp_path)
+    assert screen.command("/") is True
+    out = _text(screen.console)
+    assert "pick a number" in out and "/status" in out and "/login" in out
+    assert screen._pending is not None and screen._pending[0] == "commands"
+
+
+def test_slash_fragment_with_one_match_runs_it(tmp_path):
+    screen = _screen(tmp_path)
+    assert screen.command("/layers") is True
+    assert screen._pending is None
+
+
+def test_slash_fragment_with_no_match_says_so(tmp_path):
+    screen = _screen(tmp_path)
+    assert screen.command("/zzz") is True
+    assert "no command matches /zzz" in _text(screen.console)
+
+
+def test_a_bare_number_picks_from_the_menu(tmp_path):
+    screen = _screen(tmp_path)
+    screen.command("/")
+    out_before = _text(screen.console)
+    assert screen.command("3") is True
+    assert screen._pending is None
+    assert _text(screen.console) != out_before
+
+
+def test_a_bare_number_outside_the_list_says_the_range(tmp_path):
+    screen = _screen(tmp_path)
+    screen.command("/")
+    assert screen.command("99") is True
+    assert "pick 1-" in _text(screen.console)
+
+
+def test_status_with_no_files_says_no_build_yet(tmp_path):
+    screen = _screen(tmp_path)
+    assert screen.command("/status") is True
+    assert "no build yet" in _text(screen.console)
+
+
+def test_status_reads_rounds_gates_and_spend_not_just_the_pipeline(tmp_path):
+    (tmp_path / "rounds.json").write_text(json.dumps([
+        {"round": 1, "exit": "stalled", "failed": True,
+         "exit_note": "builder failed: boom",
+         "counts": {"trusted_ids": ["t1"], "refused": {"t2": "r"}},
+         "pending_findings": [{"task_id": "t3"}]}]), encoding="utf-8")
+    (tmp_path / "gates.json").write_text(json.dumps([
+        {"stage": "mine", "pass": True}, {"stage": "compile", "pass": False,
+                                          "failures": ["tool x fails gate 2"]}]), encoding="utf-8")
+    (tmp_path / "budget.json").write_text(json.dumps(
+        {"total": {"usd": 0.42, "calls": 12, "input": 100, "output": 50}}), encoding="utf-8")
+    screen = _screen(tmp_path)
+    assert screen.command("/status") is True
+    out = _text(screen.console)
+    assert "round 1" in out and "stalled" in out and "builder failed: boom" in out
+    assert "mine ✔" in out and "compile ✘" in out
+    assert "1 passed, 1 failed" in out and "tool x fails gate 2" in out
+    assert "trusted 1" in out and "refused 1" in out
+    assert "1 finding(s) open" in out
+    assert "$0.4200" in out and "12 calls" in out
+    assert "no build yet" not in out
+
+
+def test_status_with_spend_but_no_rounds_says_the_build_started(tmp_path):
+    (tmp_path / "budget.json").write_text(json.dumps(
+        {"total": {"usd": 0.01, "calls": 3, "input": 10, "output": 5}}), encoding="utf-8")
+    screen = _screen(tmp_path)
+    assert screen.command("/status") is True
+    out = _text(screen.console)
+    assert "no round closed yet" in out and "no build yet" not in out
+
+
+def test_sessions_lists_a_running_build_and_watch_switches_to_it(tmp_path, monkeypatch):
+    from kullback.runner import heartbeat
+
+    monkeypatch.setenv("KULLBACK_SESSIONS_DIR", str(tmp_path / "sessions"))
+    other = tmp_path / "other"
+    other.mkdir()
+    heartbeat.beat(other, "opencode-go/glm-5.3-flash", "running", spend_usd=0.5)
+    from rich.console import Console
+
+    wide = Console(file=io.StringIO(), width=300, force_terminal=False, no_color=True)
+    screen = Screen(tmp_path, console=wide, runner=_screen(tmp_path).runner)
+    assert screen.command("/sessions") is True
+    out = _text(screen.console)
+    assert "●" in out and str(other) in out and "glm-5.3-flash" in out
+    assert screen.command("/watch 1") is True
+    assert screen.workdir == other
+
+
+def test_login_menu_walks_to_a_key_without_printing_it(tmp_path, monkeypatch):
+    import getpass
+
+    _snapshot(monkeypatch, tmp_path)
+    monkeypatch.setenv("KULLBACK_SESSIONS_DIR", str(tmp_path / "sessions"))
+    monkeypatch.setattr(getpass, "getpass", lambda prompt: "sk-menu-secret")
+    console = _console()
+    screen = Screen(tmp_path, console=console)
+    answers = iter(["3", ""])
+    screen._ask = lambda prompt: next(answers)
+    screen.command("/login")
+    out = _text(console)
+    assert "OPENCODE_API_KEY" in out and "sk-menu-secret" not in out
+    assert screen.model == "opencode-go/glm-5.3-flash"
+    assert "keys held for this session: OPENCODE_API_KEY" in out
