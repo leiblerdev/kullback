@@ -1,6 +1,6 @@
 # Decision log
 
-Chronological record of every design decision for the monitoring tool, with the reason, the alternative that was rejected, and where the decision now lives (glossary term in `/CONTEXT.md`, ADR in `/docs/adr/`, section of `eval-design.md`). Short quotes are my own words; the full, unedited messages are in `founder-words.md`, which is the primary source. This log is the index over them. Append one entry per decision, never rewrite history; if a decision is reversed, add a new entry that points back.
+Chronological record of every design decision for the monitoring tool, with the reason, the alternative that was rejected, and where the decision now lives (a glossary term, an ADR in `/docs/adr/`, a section of `eval-design.md`). "CONTEXT.md" in the entries below is the glossary; it lives in the private design repo, not here, and `docs/architecture.md` is the public map. Short quotes are my own words; the full, unedited messages are in `founder-words.md`, which is the primary source. This log is the index over them. Append one entry per decision, never rewrite history; if a decision is reversed, add a new entry that points back.
 
 Read this first if you want to know why the tool is the way it is. The principles at the top are distilled from the entries below.
 

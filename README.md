@@ -44,7 +44,7 @@ uv run kullback report --workdir work
 
 ## How It Works
 
-Traces go in, an Environment comes out, candidates run in it, code grades what they changed, you read the report. Two agents, one runner and one set of gates, on a layering borrowed from huggingface/tau.
+Traces go in, an Environment comes out, candidates run in it, code grades what they changed, you read the report. Two agents, one runner and one set of gates, on a layering inspired by [huggingface/tau](https://github.com/huggingface/tau).
 
 ```mermaid
 flowchart TB
