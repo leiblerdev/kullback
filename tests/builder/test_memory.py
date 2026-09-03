@@ -874,3 +874,15 @@ def test_judge_lessons_splits_applied_from_set_aside_for_the_report(workdir, mak
     assert [s.reason for s in set_aside] == ["no policy text says unless", "retired: no benefit"]
     assert all(s.reason for s in set_aside)
     assert len(model.calls) == 2
+
+
+def test_malformed_tool_lessons_are_discarded_not_crashed(tmp_path):
+    from kullback.builder import memory as memory_mod
+
+    path = memory_mod.tool_lessons_path(tmp_path)
+    path.write_text(json.dumps({"calc": "not-a-list",
+                                "ok": [["old failure"]],
+                                "mixed": [["good"], "bad-entry"]}), encoding="utf-8")
+    assert memory_mod.load_tool_lessons(tmp_path) == {"ok": [["old failure"]]}
+    memory_mod.record_lesson(tmp_path, "calc", ["new failure"])
+    assert memory_mod.lesson_for(tmp_path, "calc") != ""
