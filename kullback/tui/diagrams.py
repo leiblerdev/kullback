@@ -115,8 +115,14 @@ def loop_text(rounds: list[dict], current_round: int = 0, agent: str = "") -> Te
         counts = dict(row.get("counts") or {})
         out.append(f"round {n} ── [builder beat] ── gates ──▶ [examiner beat] ──▶ round_end\n", style="bold")
         out.append(f"  {_counts_line(counts)}\n", style="dim")
+        pending = row.get("pending_findings") or []
         if row.get("exit"):
             out.append(f"  exit: {row['exit']}\n", style="bold" if row["exit"] == "done" else "bold red")
+        elif pending:
+            out.append(f"  {len(pending)} finding(s) owed the Builder a beat — the round continued\n",
+                         style="yellow")
+        if row.get("exit_note"):
+            out.append(f"  note: {row['exit_note']}\n", style="dim")
     if current_round and (not rounds or current_round != rounds[-1].get("round")):
         beat = f", {agent} beat ●" if agent else ""
         out.append(f"round {current_round}{beat}\n", style="yellow")

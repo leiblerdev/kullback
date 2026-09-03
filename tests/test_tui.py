@@ -465,3 +465,17 @@ def test_a_login_secret_reaches_no_file_and_no_line(tmp_path, monkeypatch):
         if path.is_file():
             assert "topsecret-value-9" not in path.read_text(encoding="utf-8", errors="replace")
     screen.command("/logout")
+
+
+def test_loop_shows_pending_findings_and_exit_notes(tmp_path):
+    from kullback.tui import diagrams
+
+    (tmp_path / "rounds.json").write_text(json.dumps([
+        {"round": 1, "counts": {}, "exit": None, "exit_note": "2 finding(s) owe the Builder a beat; the round continues",
+         "pending_findings": [{"finding_id": "f1"}, {"finding_id": "f2"}]},
+        {"round": 2, "counts": {}, "exit": "ceiling", "exit_note": "the ceiling ended the run first",
+         "pending_findings": [{"finding_id": "f3"}]},
+    ]), encoding="utf-8")
+    plain = diagrams.loop_text(diagrams.read_rounds_file(tmp_path)).plain
+    assert "2 finding(s) owed the Builder a beat" in plain
+    assert "exit: ceiling" in plain and "the ceiling ended the run first" in plain
