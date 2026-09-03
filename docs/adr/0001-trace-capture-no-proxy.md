@@ -1,7 +1,11 @@
-# Capture traces via log-drain + fail-open SDK wrapper, not a proxy
+# ADR-0001: Capture traces by log drain and an in-process SDK wrapper, never a proxy
 
-We need to collect LLM API traces from customer applications without becoming a single point of failure or adding latency to their calls. We decided to capture traces through (1) a log drain for initial validation (customers send us traces they already have) and (2) an in-process SDK wrapper that logs fire-and-forget and forwards to the real provider. We explicitly rejected a proxy/gateway, even as a later phase.
+Status: accepted.
 
-Why not a proxy: a proxy sits in the hot path, adds a network hop, reintroduces the uptime/SPOF liability, and only sees flat calls (no Run tree). An in-process SDK wrapper logs as a side effect, so logging can fail without affecting the customer's call (fail-open), and it can capture the enclosing Run context.
+Context: we need LLM traces from customer applications without adding latency or becoming a point of failure in their request path.
 
-Consequence: if we ever ship Live Routing, it happens inside the SDK wrapper (in-process model choice), not in a network gateway, because we've committed to never being in the network path.
+Decision: traces come from a log drain (the customer sends traces they already have) and later from an in-process SDK wrapper that logs fire-and-forget and forwards to the real provider. No proxy or gateway, not even as a later phase.
+
+Why: a proxy sits in the hot path, adds a network hop and an uptime liability, and sees only flat calls. An in-process wrapper fails open and can capture the enclosing Run.
+
+Consequence: if live routing ever ships, it runs inside the SDK wrapper, not in a network gateway.

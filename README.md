@@ -12,7 +12,7 @@ Your traces already hold the tasks, the tool signatures, what the tools returned
 
 ## How it works
 
-Traces go in, an Environment comes out, candidates run in it, code grades what they changed, you read the report. Two agents, one runner and one set of gates, on a layering borrowed from huggingface/tau.
+Traces go in, an Environment comes out, candidates run in it, code grades what they changed, you read the report. Two agents, one runner and one set of gates, on a layering inspired by [huggingface/tau](https://github.com/huggingface/tau).
 
 ```mermaid
 flowchart TB
@@ -62,4 +62,4 @@ uv run kullback report --workdir work
 
 The report opens with whether the Environment was built at all (gates passed, assisted tools, Tasks with too few runs), then gives per-Task numbers and a suggestion.
 
-`CONTRIBUTING.md` says how to get a change in. `DEVELOPING.md` covers the records, the offline models and the fixtures. `docs/harness-design.md` is the spec, `docs/decision-log.md` is why, `docs/todo.md` is what comes next.
+`CONTRIBUTING.md` says how to get a change in. `DEVELOPING.md` covers the records, the offline models and the fixtures. `docs/architecture.md` is the map, `docs/harness-design.md` is the spec, `docs/decision-log.md` and `docs/adr/` are why, `docs/todo.md` is what comes next.

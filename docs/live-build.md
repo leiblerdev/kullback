@@ -192,3 +192,49 @@ Task by the model in the Task's own world (`--probe-limit` caps it). On the offl
 three Tasks confirm and their Verifiers pass seven of eight checks, failing only the second path,
 because a single-Trace Task has none until the k re-runs of D78 exist. The third live build is the
 first with the stage in it; its numbers go below when it finishes.
+
+## Builds 7 and 8 (2026-08-29 and 2026-09-02): the first Tasks with a Verdict
+
+Build 7 was the last on the old layout, build 8 the first on the rebuilt one (`kullback build --iterate --workers 8`, same corpus, same model, runner frozen first). Build 8 took 44 minutes. The two builds answer the same question, "how many of the 205 Tasks can be graded", and the second is the first with an answer above zero.
+
+| | build 7 | build 8 |
+|---|---:|---:|
+| Traces that confirm their Reference | 316 of 456 | 343 of 456 |
+| Tasks with a confirmed Reference | 151 | 164 |
+| writes that replay exactly | 429 of 575 | 472 of 575 |
+| reads that differ in substance | 38 of 2,645 | 38 of 2,645 |
+| frontier re-rolls | 453 over 151 Tasks | 483 over 161 Tasks |
+| Verifiers derived | 76 | 131 |
+| Verifiers that pass the D79 suite | 0 | 20 |
+| Tasks covered | 0 of 205 | 20 of 205 (56 of 456 Runs) |
+
+The scorecard gate passes for the first time. Coverage is 9.8% of Tasks and 12.3% of Runs, and the 185 uncovered Tasks split into 74 with no confirmed Reference and 111 whose Verifier failed the suite. Three causes account for most of both halves.
+
+**Float noise is the largest fidelity miss.** Of the 102 write results that differed from the recording across the 36 Tasks blocked on `modify_pending_order_items`, 74 differ only past the sixth decimal: a refund of `30.180000000000007` recorded against `30.180000000000064` from our body, the same sum added in a different order. The canonicalization rules carry a `number_precision` knob and the canon stage left it null, so writes compare exactly and the gate calls the Trace unconfirmed. The remaining 28 are real: the body picks a different item variant (the options and the price differ, so the refund does), and `calculate` raises `NameError: name 'decimal' is not defined` on four Tasks because the body uses a module it never imports and the `executes_on_s0` gate never reached that branch.
+
+**The policy gate has never run a predicate.** `compile_policy` fails on every compiled constraint with `check() missing 2 required positional arguments: 'write_call' and 'transcript'`, in build 7 and in build 8. The compiled predicates take `(pre_state, write_call, transcript)`, as the stage's prompt and its own static check require; `gates/artifacts.py`'s `_run_predicate` calls `func(case)` with the whole case dict. The unit test passes because its fixture predicate takes `case`. So the 26 compiled constraints have never been exercised by the gate, only by the stage's own case runner, and the gate's ruling on policy has been a false fail on every live build.
+
+**Sixty-five Verifiers require nothing.** Every Verifier that passes the empty Run has exactly one required atom, "the Run makes at most 0 write calls": the Tasks where the frontier only read and answered. Under D43 the End state of such a Run is what the user was told, and no stage writes that atom yet, so the suite rejects all 65 and the loophole probe passes 58 of them. This is the Examiner's first job (phase 5): atoms over the user-facing effects, judged, so a read-only Task has a pass condition that an empty Run fails.
+
+The suite's failures by check, over the 131 Verifiers: `mutation_flips` 106, `unsolved_state_fails` 75, `empty_fails` 65, `plausible_wrong_fails` 65, `loophole_probe_fails` 58, `second_path_passes` 12, `leak_check_clean` 1. The 65 no-write Verifiers sit inside every one of the first five counts; 41 Verifiers with write atoms still fail `mutation_flips`, which is the next thing to read.
+
+Where the time goes: the re-roll stage is 3 model calls per Task, 7 per Run, with a fresh sample each time, so a rebuild whose Environment did not change still re-rolls every Task. Build 8 wrote 483 re-roll Runs in about 15 minutes at 8 workers. Caching re-rolls by (Task, Environment hash, seed) so `--iterate` reuses them when the Environment is unchanged is on the todo.
+
+### Where build 8's Runs failed: the model's errors and ours
+
+Every failed Run, replay and re-roll in build 8, read and sorted. The split matters because a model error is evidence and a harness error is noise that hides evidence.
+
+**Ours, largest first.**
+
+1. The Simulated user cannot say yes and refuses facts it was never told. Of the 105 Tasks whose recording wrote something, 69 got three re-rolls that wrote nothing, and 247 of the re-rolls with a recorded write ended without one. The transcripts show why: the user opens with the zip alone, the agent asks for a name and the user answers "I do not have my name" (63 re-rolls never authenticated this way); the user gives the zip of the address it is moving to instead of the one on file (27); and when the agent asks the one question every write needs, "do you confirm", the user answers "I do not have an answer for that" (58 re-rolls, authenticated, every action listed, nothing confirmed). One user even answered an address question with an order id. D44 says facts the recorded user gave are repeated verbatim and unasked questions get a representative answer; a confirmation is the most representative answer there is, and the name is a fact in every recording. Until this is fixed the re-rolls corroborate nothing, the judge sees "B: no writes" on every Task, and D111 has no samples.
+2. The judge fails what it cannot see. Seventeen Tasks read "the judge failed every End state". In eleven the reason is "without evidence of the required authentication and explicit confirmation": the judge is handed the Intent, the verifier's output and the End state, with read-only tools over the state and no transcript, so that evidence is absent by construction and D93 says abstain, not fail. In three the judge grades the opening request instead of the Intent: the Intent says "exchange desk lamp only" because the recorded user changed their mind mid-conversation, the frontier did exactly that, and the judge writes "the user requested exchanges for both". Two or three of the seventeen look like real frontier errors (an extra exchange on an unrelated order, one order updated of three requested) and deserve the fail.
+3. Float noise on 74 of 102 differing writes (above).
+4. Three tool bodies. `calculate` raises `NameError: decimal` on 49 results and 33 replayed reads. `modify_pending_order_address` refuses with "Order is not pending" after an item modification on the same order, 11 writes, where the recording accepted; the corpus is the truth here, whatever rule the body inferred. `get_order_details` raises a bare `KeyError` on an unknown id, 155 results, where the corpus shows "Error: Order not found"; the miner recorded that error shape and the body ignored it.
+5. The policy gate's arity bug (above).
+6. Stale files. 111 re-roll files dated 2026-08-29 sit under `runs/` with a provider HTTP 400 ("messages: empty array") from a build that seeded re-rolls without a confirmed recording. Build 8 did not write them and its gate did not count them, but anything that globs `runs/` does.
+
+**The model's own, in the re-rolls.** The re-roll model drops the `#` from order ids: 132 lookups where the user had said "#W…" and the call went out as "W…", 1,204 recorded calls that never did, and 102 re-rolls that never recovered. It also calls the name lookup with empty names instead of asking, 122 of 410 calls. Both are what this model does with a tool schema that carries no description of the id format, so the second half of each belongs to us: the traces declare the descriptions and the sigs carry none.
+
+**The model's own, in the recordings.** 51 replayed reads are `both_refused`: the recorded frontier looked up a user by a wrong email or name and got "User not found", and our body said the same. 96 replays end in a transfer to a human because the recording did. These are the customer's real failures replayed faithfully, and the fidelity check treats them as agreement, which is right.
+
+In short: the Environment replays the customer's own Runs well (2,556 of 2,561 reads agree, 458 of 575 writes agree exactly and 74 more agree past the sixth decimal), and nearly every failure on the way to a Verdict is on our side of the line, in the Simulated user and the judge, before the model gets to make its own.

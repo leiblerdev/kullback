@@ -1,11 +1,13 @@
-# Step screening is agreement first, and the judge can only rule for the reference
+# ADR-0003: Step screening is agreement first, and the judge can only rule for the Reference
 
-Status: accepted. Scope narrowed 2026-08-26: this governs the Step-level Screen only. Verdicts come from re-executed Runs (ADR-0004).
+Status: accepted. Scope narrowed 2026-08-26: this governs the Step-level Screen only; Verdicts come from re-executed Runs (ADR-0004).
 
-When grading a Candidate model's Step against the frontier's Reference action from a production Run, we first check for a structural Match (same tool and required arguments, or the same decision to stop and answer). Only a mismatch goes to an LLM judge (the Appeal), and the judge may rule only "equivalent" or "reference wins"; it cannot rule that the Candidate did better. Final-answer steps always go through the Appeal under the same rule.
+Context: a Candidate's Step is compared to the frontier's recorded action. Some mismatches are valid alternatives, some are errors, and a judge that could favour the Candidate would make every result rest on judge quality.
 
-Why: the product promise is "nothing ships below the bar." A conservative error (keeping a Task on the frontier when the cheaper model was fine) costs the customer some savings; a liberal error (moving a Task that then regresses) costs us the customer. So the metric is built to make only the first kind of mistake. Letting the judge favor the Candidate would also make every verdict rest on judge quality, which is the weakest link, and would invite Goodharting the judge.
+Decision: check for a structural Match first (same tool and required arguments, or the same decision to stop and answer). Only a mismatch goes to a judge, and the judge may rule "equivalent" or "reference wins", never that the Candidate did better. Final-answer Steps always go to the judge under the same rule.
 
-Considered: adequacy-only judging (fairer to small models, but verdicts become judge-quality-bound); agreement-only (deterministic, but penalizes every valid alternative path and makes the report needlessly pessimistic).
+Why: the promise is "nothing ships below the bar". A conservative error costs the customer some savings; a liberal error costs the customer. The metric is built to make only the first kind.
 
-Consequence: reported savings are a floor, not an estimate. Any "Candidate is better than frontier" finding is out of scope for the routing plan and must come from a separate, explicitly labelled analysis if we ever want it.
+Considered: adequacy-only judging (fair to small models, judge-bound); agreement-only (deterministic, penalizes every valid alternative).
+
+Consequence: reported savings are a floor. A "Candidate beat the frontier" finding is out of scope for the routing plan.
