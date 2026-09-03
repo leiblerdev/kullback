@@ -68,7 +68,7 @@ The report opens with whether the Environment was built at all (gates passed, as
 
 ```bibtex
 @misc{kullback2026,
-  title  = {Kullback: Executable Environments Rebuilt from Agent Traces, and Verifiers That Grade on the End State},
+  title  = {Kullback: Executable Environments and Verifiers Rebuilt from Agent Traces},
   author = {Krrish Agarwalla},
   year   = {2026},
   note   = {Open-source Builder and Runner behind Leibler. https://github.com/leiblerdev/kullback}
