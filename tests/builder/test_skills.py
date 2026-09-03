@@ -44,3 +44,28 @@ def test_skill_gate_revert_and_demote():
     assert demote["decision"] == "demote"
     mixed = skills.skill_gate_decision([1.0, -1.0, 0.0, 1.0, -1.0, 0.0])
     assert mixed["decision"] == "tentative"
+
+
+def test_skill_name_traversal_raises_and_writes_nothing(tmp_path):
+    import pytest
+
+    for bad in ("../../evil", "a/b", "/abs", "..", "", "."):
+        with pytest.raises(ValueError):
+            skills.write_skill(tmp_path, bad, "evil")
+        with pytest.raises(ValueError):
+            skills.load_skill(tmp_path, bad)
+    assert list(tmp_path.iterdir()) == [] or skills.list_skills(tmp_path) == []
+    assert (tmp_path / "evil").exists() is False
+
+
+def test_skill_edits_skips_corrupt_lines(tmp_path):
+    skills.write_skill(tmp_path, "compile", "v1")
+    edits = tmp_path / "skills" / "edits.jsonl"
+    with edits.open("a", encoding="utf-8") as fh:
+        fh.write('{"name": "compile", "hash": "broken"\n')
+        fh.write('"just a string"\n')
+    skills.write_skill(tmp_path, "compile", "v2")
+    rows = skills.skill_edits(tmp_path)
+    assert [r["hash"] for r in rows if "hash" in r and r.get("name") == "compile"] == [
+        r["hash"] for r in rows if isinstance(r, dict) and r.get("name") == "compile"]
+    assert len([r for r in rows if isinstance(r, dict) and "hash" in r]) == 2

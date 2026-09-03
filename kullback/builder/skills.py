@@ -33,8 +33,31 @@ def skills_dir(workdir: Any) -> Path:
     return Path(workdir) / SKILLS_DIRNAME
 
 
+def check_skill_name(name: str) -> str:
+    """One skill name is one safe path component, or the reason it is not in words.
+
+    Skill names arrive from the model through `rewrite_skill`, so `../../target` must be
+    refused before it touches disk rather than resolved into a path outside the workdir.
+    """
+    if not name or name in (".", "..") or Path(name).name != name or "\\" in name:
+        raise ValueError(
+            f"skill name must be one path component (no separators, '..', or absolute paths), "
+            f"got {name!r}")
+    return name
+
+
 def skill_path(workdir: Any, name: str) -> Path:
-    return skills_dir(workdir) / name / SKILL_FILENAME
+    """The SKILL.md for one skill; the name is validated and the destination contained.
+
+    Validation rejects traversal before disk is touched; the resolve-and-contain check stays
+    as defense in depth against a skills directory the caller shaped by other means.
+    """
+    check_skill_name(name)
+    root = skills_dir(workdir).resolve()
+    dest = (skills_dir(workdir) / name / SKILL_FILENAME).resolve()
+    if dest.parent != root / name or root not in dest.parents:
+        raise ValueError(f"skill {name!r} escapes {skills_dir(workdir)}")
+    return dest
 
 
 def list_skills(workdir: Any) -> list[str]:
@@ -81,15 +104,25 @@ def write_skill(workdir: Any, name: str, content: str) -> dict:
 
 
 def skill_edits(workdir: Any) -> list[dict]:
-    """Every recorded skill edit in this workdir, oldest first."""
+    """Every recorded skill edit in this workdir, oldest first.
+
+    The log is append-only, so an interrupted write may leave a partial last line; invalid
+    lines (and valid JSON that is not an edit record) are skipped so listing never breaks.
+    """
     edits = skills_dir(workdir) / EDITS_FILENAME
     if not edits.is_file():
         return []
     out = []
     for line in edits.read_text(encoding="utf-8").splitlines():
         line = line.strip()
-        if line:
-            out.append(json.loads(line))
+        if not line:
+            continue
+        try:
+            row = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(row, dict):
+            out.append(row)
     return out
 
 

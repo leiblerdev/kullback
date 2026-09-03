@@ -1012,6 +1012,24 @@ def tool_lessons_path(workdir: Any) -> Path:
     return Path(workdir) / _TOOL_LESSONS_FILE
 
 
+def _valid_tool_lessons(data: Any) -> dict[str, list[list[str]]]:
+    """The well-shaped entries of a decoded tool_lessons file; malformed tools are discarded.
+
+    A hand-edited or half-written file may hold a non-list where a tool's sequences go, or
+    non-strings inside a sequence; letting those through crashes `record_lesson` on `.append()`
+    or `lesson_for` on `join`, so the loader drops them before anyone mutates or reads them.
+    """
+    if not isinstance(data, dict):
+        return {}
+    out: dict[str, list[list[str]]] = {}
+    for tool, sequences in data.items():
+        if not isinstance(tool, str) or not isinstance(sequences, list):
+            continue
+        if all(isinstance(seq, list) and all(isinstance(f, str) for f in seq) for seq in sequences):
+            out[tool] = [list(seq) for seq in sequences]
+    return out
+
+
 def load_tool_lessons(workdir: Any) -> dict[str, list[list[str]]]:
     """Every recorded gate-failure sequence per tool, oldest first; {} when none recorded."""
     path = tool_lessons_path(workdir)
@@ -1021,7 +1039,7 @@ def load_tool_lessons(workdir: Any) -> dict[str, list[list[str]]]:
         data = json.loads(path.read_text(encoding="utf-8"))
     except (ValueError, OSError):
         return {}
-    return data if isinstance(data, dict) else {}
+    return _valid_tool_lessons(data)
 
 
 def record_lesson(workdir: Any, tool: str, failures: list[str]) -> Path:

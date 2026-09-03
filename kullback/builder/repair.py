@@ -1,7 +1,9 @@
 """Phase 6 repair verbs: the five ways a round fixes what the gates refused (D130).
 
-Verbs: `recompile(name)`, `grow(table, count)`, `rewrite_skill(name, content)`,
-`refuse_task(task_id, reason)`, `escalate(task_id, queue)`. Each verb records its
+Verbs: `repair_recompile(name)`, `repair_grow(table, count)`, `repair_rewrite_skill(name, content)`,
+`repair_refuse_task(task_id, reason)`, `repair_escalate(task_id, queue)`. The `repair_`
+prefix keeps them clear of the Builder tools (`grow` already exists there, and the registry
+rejects duplicate names). Each verb records its
 request as JSONL under `workdir/repairs/` and returns a short `RepairResult`; the
 next round's driver picks the requests up. Nothing here calls a model or edits
 `kullback/gates` or `kullback/runner` (D122): the ratchet and the lesson are code
@@ -100,7 +102,7 @@ def _executor(workdir: Any, verb: str, target_of: Any) -> Any:
     async def execute(args: Any) -> RepairResult:
         target = target_of(args)
         extra: dict[str, Any] = {}
-        if verb == "rewrite_skill":
+        if verb == "repair_rewrite_skill":
             from kullback.builder import skills as skills_mod
             written = skills_mod.write_skill(workdir, args.name, args.content)
             extra = {"skill_hash": written["hash"]}
@@ -113,21 +115,21 @@ def _executor(workdir: Any, verb: str, target_of: Any) -> Any:
 def repair_tools(workdir: Any, sink: Optional[Sink] = None) -> list[AgentTool]:
     """The five repair verbs over one workdir; `sink` is accepted for symmetry with builder_tools."""
     return [
-        AgentTool("recompile", "Compile one tool's body again from its recorded calls.",
+        AgentTool("repair_recompile", "Compile one tool's body again from its recorded calls.",
                   RecompileArgs, RepairResult,
-                  _executor(workdir, "recompile", lambda a: a.name), render=_render),
-        AgentTool("grow", "Grow one table of the Starting state with synthetic rows (D107).",
+                  _executor(workdir, "repair_recompile", lambda a: a.name), render=_render),
+        AgentTool("repair_grow", "Grow one table of the Starting state with synthetic rows (D107).",
                   GrowRepairArgs, RepairResult,
-                  _executor(workdir, "grow", lambda a: a.table), render=_render),
-        AgentTool("rewrite_skill", "Rewrite one Builder skill; the edit is a memory-tree node with its content hash.",
+                  _executor(workdir, "repair_grow", lambda a: a.table), render=_render),
+        AgentTool("repair_rewrite_skill", "Rewrite one Builder skill; the edit is a memory-tree node with its content hash.",
                   RewriteSkillArgs, RepairResult,
-                  _executor(workdir, "rewrite_skill", lambda a: a.name), render=_render),
-        AgentTool("refuse_task", "Refuse a Task: no Verifier, no training signal from it.",
+                  _executor(workdir, "repair_rewrite_skill", lambda a: a.name), render=_render),
+        AgentTool("repair_refuse_task", "Refuse a Task: no Verifier, no training signal from it.",
                   RefuseTaskArgs, RepairResult,
-                  _executor(workdir, "refuse_task", lambda a: a.task_id), render=_render),
-        AgentTool("escalate", "Escalate a Task to a person on a named queue.",
+                  _executor(workdir, "repair_refuse_task", lambda a: a.task_id), render=_render),
+        AgentTool("repair_escalate", "Escalate a Task to a person on a named queue.",
                   EscalateArgs, RepairResult,
-                  _executor(workdir, "escalate", lambda a: a.task_id), render=_render),
+                  _executor(workdir, "repair_escalate", lambda a: a.task_id), render=_render),
     ]
 
 
@@ -157,7 +159,9 @@ def ratchet_bodies(prior: dict, new: dict, gate_passed: dict[str, bool]) -> dict
         return new
     merged = dict(new_bodies)
     for name, body in prior_bodies.items():
-        if name in gate_passed and gate_passed[name] is False and name in merged:
+        if name not in merged:
+            merged[name] = body  # the new build omits it; the last passing body stays
+        elif name in gate_passed and gate_passed[name] is False:
             merged[name] = body
     if isinstance(new, dict) and "bodies" in new:
         out = dict(new)
@@ -190,6 +194,7 @@ def ratchet_hook(workdir: Any) -> Any:
             return None
         details = dict(result.details)
         details["ratchet_restored"] = tool
+        details["ratchet_restored_body"] = bodies[tool]
         content = f"{result.content}\nratchet: kept prior passing body for {tool}"
         return ToolResult(content=content, details=details, is_error=False)
 
