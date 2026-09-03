@@ -481,19 +481,43 @@ def test_a_delivered_finding_is_closed_and_its_entry_unprotected_after_the_build
 
 # --- terminal rounds keep their findings, failed derives fail the round ------------------
 
-def test_close_round_never_reports_done_with_findings_pending(tmp_path):
-    """Greptile P1: a round that also reaches done must not drop the Examiner's findings. The
-    pending findings ride on the terminal record in rounds.json, and the exit is stalled, not done."""
+def test_close_round_with_findings_pending_clears_a_done_exit_and_continues(tmp_path):
+    """Greptile P1 (round 2): a round that reaches done with findings pending does not exit. The
+    findings owe the Builder a beat, so the exit is cleared, the findings ride on the record in
+    rounds.json, and the loop runs another round instead of reporting done with work open."""
     loop = _bare_loop(tmp_path)
     loop.pending_findings = [_finding("t1")]
     record = loop.close_round(1, _record(1, unfinished=[]).counts)
-    assert record.exit == "stalled"
-    assert "finding" in (record.exit_note or "")
+    assert record.exit is None
+    assert "owe the Builder a beat" in (record.exit_note or "")
     assert [f.finding_id for f in record.pending_findings] == ["f1"]
     body = json.loads((tmp_path / "work" / rounds.ROUNDS_NAME).read_text(encoding="utf-8"))
-    assert body[0]["exit"] == "stalled"
+    assert body[0]["exit"] is None
     assert body[0]["pending_findings"][0]["finding_id"] == "f1"
     assert rounds.load_rounds(tmp_path / "work")[0].pending_findings[0].finding_id == "f1"
+
+
+def test_close_round_with_findings_pending_clears_a_stalled_exit(tmp_path):
+    """Two rounds that move nothing would stall, but with a finding pending the second round
+    continues: the finding may be the way out of the stall, and the Builder has not acted yet."""
+    loop = _bare_loop(tmp_path)
+    loop.pending_findings = [_finding("t1")]
+    assert loop.close_round(1, _record(1).counts).exit is None
+    second = loop.close_round(2, _record(2).counts)
+    assert second.exit is None
+    assert "owe the Builder a beat" in (second.exit_note or "")
+
+
+def test_close_round_keeps_a_ceiling_exit_with_findings_pending(tmp_path):
+    """Only the ceiling ends a round with findings still open: no money left means no next beat
+    to owe, and the note says the findings never got one."""
+    loop = _bare_loop(tmp_path)
+    loop.ceiling_reached = lambda: True
+    loop.pending_findings = [_finding("t1")]
+    record = loop.close_round(1, _record(1, unfinished=[]).counts)
+    assert record.exit == "ceiling"
+    assert "ceiling ended the run first" in (record.exit_note or "")
+    assert [f.finding_id for f in record.pending_findings] == ["f1"]
 
 
 def test_close_round_persists_pending_findings_without_an_exit(tmp_path):
@@ -555,3 +579,31 @@ def test_a_broken_examiner_stalls_the_run_with_the_reason_on_the_record(tmp_path
     stored = rounds.load_rounds(workdir)
     assert len(stored) == 1
     assert stored[0].exit == "stalled" and "never called derive" in (stored[0].exit_note or "")
+
+
+def test_a_finding_filed_in_round_one_is_performed_in_round_two_then_the_run_exits(tmp_path, request):
+    """Greptile P1 (round 2), run level: the finding in round 1 clears the would-be exit, round 2's
+    Builder beat performs it, and the run exits only with nothing pending. The required follow-up
+    is performed, not just recorded."""
+    workdir = tmp_path / "finding-then-done"
+    agent_model = TestModel([
+        _reply(None, ("build", {"target": TARGET})),
+        _reply("built."),
+        _reply(None, ("finding", {"task_id": "1", "kind": "fidelity",
+                                  "text": "the replay diverges at the second call", "suggested": "replay"})),
+        _reply(None, ("derive", {"target": "all"})),
+        _reply("filed and derived."),
+        _reply("read the follow-up."),
+        _reply("acted on the finding."),
+        _reply(None, ("derive", {"target": "all"})),
+        _reply("re-derived clean."),
+    ])
+    result = rounds.run_rounds(workdir, model=Bodies(), agent_model=agent_model, files=[_fixture(request)],
+                               max_attempts=0)
+    stored = rounds.load_rounds(workdir)
+    assert len(stored) == 2
+    assert stored[0].exit is None and [f.finding_id for f in stored[0].pending_findings] != []
+    assert stored[1].exit == "done" and stored[1].pending_findings == []
+    assert result["exit"] == "done"
+    findings = json.loads((workdir / "examiner" / "findings.json").read_text(encoding="utf-8"))
+    assert [f["status"] for f in findings] == ["closed"]

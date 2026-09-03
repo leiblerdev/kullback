@@ -29,6 +29,7 @@ from kullback.agent.tools import AgentTool
 from kullback.examiner import stage as stage_mod
 from kullback.examiner.plan import ExaminerPlan
 from kullback.gates import Ruling, artifacts, ruling_line, ruling_of, verifier_suite
+from kullback.gates import scorecard as scorecard_mod
 from kullback.gates.loosening import loosening_gate
 from kullback.gates.probes import (
     consecutive_failed,
@@ -422,6 +423,7 @@ def _record_versions(plan: ExaminerPlan, verifiers: list, prior: dict) -> list[G
     history = plan.store.setdefault("history", {})
     rulings: list[GateResult] = []
     changed = False
+    rejected = False
     for record in verifiers:
         digest = version_hash(record)
         hist = history.get(record.task_id) or VerifierHistory(task_id=record.task_id)
@@ -446,11 +448,17 @@ def _record_versions(plan: ExaminerPlan, verifiers: list, prior: dict) -> list[G
                 plan.set_current(accepted[-1].verifier)
                 _restore_prior_row(plan, "task_status.json", "task_status", record.task_id, prior)
                 _restore_prior_row(plan, "references.json", None, record.task_id, prior)
+                rejected = True
         hist.versions.append(row)
         history[record.task_id] = hist
         changed = True
     if changed:
         plan.write_state()
+    if rejected:
+        # derive_all rewrote scorecard.json from the rejected rows before the gate ruled; recompute
+        # it from the restored files so the customer-facing report reads the version-consistent world.
+        # Recomputed, not snapshotted: other Tasks' accepted derivations stay counted.
+        write_json(plan.workdir / "scorecard.json", scorecard_mod.scorecard(plan.workdir))
     return rulings
 
 

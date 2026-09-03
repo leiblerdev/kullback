@@ -404,3 +404,35 @@ def test_a_rejected_derivation_restores_the_prior_task_status_and_references_row
     assert plan.store["task_status"] == status_marked
     on_disk = Verifier.model_validate(_read(world.workdir / "verifiers" / f"{T}.json"))
     assert version_hash(on_disk) == version_hash(plan.current(T))
+
+
+def test_a_rejected_derivation_recomputes_the_scorecard_from_the_restored_rows(tmp_path):
+    """Greptile P1 (round 2): derive_all rewrites scorecard.json from the rejected rows before the
+    loosening gate rules. After a rejection the file must read as computed from the restored
+    task_status.json: the marked row confirms nothing, so T is uncovered, where the rejected
+    derivation's scorecard would have counted it covered."""
+    from kullback.gates import scorecard as scorecard_mod
+
+    world = make_world(tmp_path, rerolls=("alt", "rr2"), terminations={"rr2": "max_steps"})
+    examiner_agent.run_examiner(world.workdir, inputs=world.inputs, probe_model=object(), run_probe=probe_runner_over())
+    plan, harness = _harness(world, round=2)
+    assert _reason_repair(harness, plan, "required", "require the reason").details["accepted"] is True
+    status_path = world.workdir / "task_status.json"
+    status_marked = _read(status_path)
+    status_marked[T] = {"_prior": "the accepted version's own row"}
+    status_path.write_text(json.dumps(status_marked), encoding="utf-8")
+    # A denominator for task coverage and one clean code-routed Run, so the status row decides:
+    # the marked row confirms nothing (T uncovered), the rejected row would confirm all (T covered).
+    (world.workdir / "tasks.json").write_text(json.dumps({"tasks": [{"id": T, "run_ids": ["ref"]}]}),
+                                                 encoding="utf-8")
+    (world.workdir / "runs.json").write_text(
+        json.dumps({"runs": [{"run_id": "ref", "task_id": T, "events": [], "route_counts": {}}]}),
+        encoding="utf-8")
+    result = drive(harness, "derive", {"target": T})
+    assert result.is_error is False and any(r["stage"] == "loosening" and not r["passed"]
+                                            for r in result.details["rulings"])
+    on_disk = _read(world.workdir / "scorecard.json")
+    assert on_disk == scorecard_mod.scorecard(world.workdir), \
+        "the scorecard must be recomputed from the restored rows, not left as the rejected derive wrote it"
+    uncovered_ids = {u["task_id"] for u in on_disk["task_coverage"]["uncovered"]}
+    assert T in uncovered_ids, "the restored row confirms nothing for T; a stale scorecard would count it covered"

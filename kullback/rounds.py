@@ -399,19 +399,23 @@ class Loop:
     def close_round(self, n: int, counts: dict) -> RoundRecord:
         """The round's record: whether an allowance was spent goes on the exhausted list, the exit is
         `exit_for` over every round so far, and rounds.json is rewritten with the record appended.
-        Findings filed but never delivered ride on the record, and `done` is downgraded to `stalled`
-        while any are pending: a terminal round never reports the work finished with required Builder
-        follow-ups still open."""
+        Findings filed but never delivered ride on the record, and a round that would exit `done`
+        or `stalled` while any are pending does not exit at all: the findings owe the Builder a beat,
+        so the exit is cleared and the loop runs another round. Only the ceiling (no money left)
+        ends a round with findings still open, and then the note says so."""
         self.exhausted.append(any(self.spent_allowance.values()))
         record = RoundRecord(round=n, counts=counts)
         record.exit = round_end.exit_for(self.rounds + [record], self.stall_rounds,
                                          ceiling_reached=self.ceiling_reached(), exhausted=self.exhausted)
         if self.pending_findings:
             record.pending_findings = list(self.pending_findings)
-            if record.exit == "done":
-                record.exit = "stalled"
+            if record.exit == "ceiling":
                 record.exit_note = (f"{len(self.pending_findings)} finding(s) still need the Builder; "
-                                    "done waits for the next round")
+                                    "the ceiling ended the run first")
+            elif record.exit is not None:
+                record.exit = None
+                record.exit_note = (f"{len(self.pending_findings)} finding(s) owe the Builder a beat; "
+                                    "the round continues")
         self.rounds.append(record)
         write_rounds(self.plan.workdir, self.rounds)
         return record
@@ -469,8 +473,11 @@ def run_rounds(workdir: Any, model: Any = None, *, agent_model: Optional[Model] 
             # never dies without a record. The round is stalled with the reason on it, so rounds.json
             # tells the whole story and the next session knows the Examiner needs fixing, not the Tasks.
             record = loop.close_round(n, {})
-            record.exit = "stalled"
+            record.exit = "stalled"  # the examiner is broken; another beat cannot fix it
             record.exit_note = f"examiner failed: {exc}"
+            if record.pending_findings:
+                record.exit_note += (f"; {len(record.pending_findings)} finding(s) "
+                                     "never got a Builder beat")
             write_rounds(plan.workdir, loop.rounds)
             loop.emit(RoundEnd(round=n, counts=record.counts, exit=record.exit))
             break
