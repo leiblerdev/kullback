@@ -169,3 +169,14 @@ def test_an_unbound_name_inside_a_nested_scope_is_reported_against_the_method():
     source = _module("        return [decimal.Decimal(r) for r in self.db.orders]\n")
     assert unbound_names(source) == [
         "get_order names decimal, which nothing binds; put `import decimal` at the top of the body"]
+
+
+def test_a_global_declaration_without_an_assignment_does_not_bind_the_name():
+    """`global counter` says where an assignment would land, not that anything bound it."""
+    source = _module("        global counter\n        return counter + 1\n")
+    assert unbound_names(source) == ["get_order names counter, which nothing binds"]
+
+
+def test_a_global_declaration_followed_by_an_assignment_binds_the_name():
+    source = _module("        global counter\n        counter = 1\n        return counter\n")
+    assert unbound_names(source) == []

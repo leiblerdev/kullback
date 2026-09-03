@@ -188,7 +188,13 @@ def _own_nodes(scope: ast.AST) -> Iterator[ast.AST]:
 
 def _scope_bindings(scope: ast.AST) -> set[str]:
     """What this one scope binds: parameters, assignment, loop, with and except targets,
-    comprehension variables, its own imports, and the functions and classes it defines by name."""
+    comprehension variables, its own imports, and the functions and classes it defines by name.
+
+    A `global x` or `nonlocal x` declaration binds nothing by itself: it says where a later
+    assignment lands. A body that declares one and then only loads the name still raises NameError,
+    so the declaration is not counted and the load is reported. An assignment after it is counted
+    the way any other Store name is.
+    """
     bound: set[str] = set()
     for node in _own_nodes(scope):
         if isinstance(node, ast.arg):
@@ -201,8 +207,6 @@ def _scope_bindings(scope: ast.AST) -> set[str]:
             bound.add(node.name)
         elif isinstance(node, ast.ExceptHandler) and node.name:
             bound.add(node.name)
-        elif isinstance(node, (ast.Global, ast.Nonlocal)):
-            bound |= set(node.names)
     return bound
 
 
