@@ -944,6 +944,129 @@ def test_an_older_model_is_left_alone_when_it_is_given_tools():
     assert "reasoning_effort" not in _body("openai/gpt-4.1-mini", tools=tools)
 
 
+def test_a_responses_model_posts_input_items_to_the_responses_path(live, sleeps):
+    """1.3 speaks /v1/responses, not chat completions: model, input items, function tools."""
+    seen = {}
+
+    def handler(request):
+        seen["url"] = str(request.url)
+        seen["body"] = json.loads(request.content.decode())
+        seen["ua"] = request.headers.get("user-agent")
+        seen["session"] = request.headers.get("x-opencode-session")
+        return httpx.Response(200, json={"status": "completed", "model": "muse-spark-1.3-contributor",
+                                         "output": [{"type": "message", "content": [
+                                             {"type": "output_text", "text": "hi"}]}],
+                                         "usage": {"input_tokens": 5, "completion_tokens": 0,
+                                                   "output_tokens": 3}})
+
+    model = pv.OpenAIResponsesModel(
+        model_id="opencode-go/muse-spark-1.3-contributor", base_url="https://opencode.ai/zen/go/v1",
+        key_env_var="OPENCODE_API_KEY", client=transport_of(handler),
+        sleep=sleeps.append, env={"OPENCODE_API_KEY": "sk-zen"},
+    )
+    reply = model.query([{"role": "user", "content": "hi"}],
+                        tools=[{"name": "lookup", "description": "look things up",
+                                "parameters": {"type": "object"}}],
+                        config=pv.ModelConfig(max_tokens=16))
+    assert seen["url"] == "https://opencode.ai/zen/go/v1/responses"
+    assert seen["body"]["model"] == "muse-spark-1.3-contributor"
+    assert seen["body"]["input"] == [{"role": "user", "content": "hi"}]
+    assert seen["body"]["tools"] == [{"type": "function", "name": "lookup",
+                                      "description": "look things up",
+                                      "parameters": {"type": "object"}}]
+    assert seen["body"]["max_output_tokens"] == 16
+    assert seen["ua"] == "kullback" and re.fullmatch(r"[0-9a-f]{32}", seen["session"] or "")
+    assert reply.content == "hi"
+    assert (reply.usage.input, reply.usage.output) == (5, 3)
+
+
+def test_a_responses_reply_parses_calls_and_skips_reasoning(live, sleeps):
+    """Reasoning blobs are read never echoed; function calls become tool calls; cached input
+    comes off the uncached count, the same convention as the chat adapter."""
+
+    def handler(request):
+        return httpx.Response(200, json={
+            "status": "completed", "model": "muse-spark-1.3-contributor",
+            "output": [{"type": "reasoning", "encrypted_content": "Q-PaD"},
+                       {"type": "message", "content": [
+                           {"type": "output_text", "text": "looking it up"}]},
+                       {"type": "function_call", "call_id": "call_1",
+                        "name": "lookup", "arguments": '{"q": "x"}'}],
+            "usage": {"input_tokens": 10, "output_tokens": 4,
+                      "input_tokens_details": {"cached_tokens": 6}}})
+
+    model = pv.OpenAIResponsesModel(
+        model_id="opencode-go/muse-spark-1.3-contributor", base_url="https://opencode.ai/zen/go/v1",
+        client=transport_of(handler), sleep=sleeps.append, env={},
+    )
+    reply = model.query([{"role": "user", "content": "hi"}])
+    assert reply.content == "looking it up"
+    assert [(c.id, c.name, c.arguments) for c in reply.tool_calls] == [
+        ("call_1", "lookup", {"q": "x"})]
+    assert (reply.usage.input, reply.usage.cache_read, reply.usage.output) == (4, 6, 4)
+
+
+def test_a_responses_history_round_trips_tool_traffic(live, sleeps):
+    """Follow-up turns replay prior calls and their outputs as call items, keeping the loop
+    coherent without ever echoing encrypted reasoning."""
+    seen = {}
+
+    def handler(request):
+        seen["body"] = json.loads(request.content.decode())
+        return httpx.Response(200, json={"status": "completed", "output": [], "usage": {}})
+
+    model = pv.OpenAIResponsesModel(
+        model_id="opencode-go/muse-spark-1.3-contributor", base_url="https://opencode.ai/zen/go/v1",
+        client=transport_of(handler), sleep=sleeps.append, env={},
+    )
+    model.query([{"role": "user", "content": "hi"},
+                 {"role": "assistant", "content": None,
+                  "tool_calls": [{"id": "call_1", "name": "lookup", "arguments": {"q": "x"}}]},
+                 {"role": "tool", "tool_call_id": "call_1", "content": "found"}])
+    assert seen["body"]["input"] == [
+        {"role": "user", "content": "hi"},
+        {"type": "function_call", "call_id": "call_1", "name": "lookup",
+         "arguments": '{"q": "x"}'},
+        {"type": "function_call_output", "call_id": "call_1", "output": "found"},
+    ]
+
+
+def test_a_failed_responses_call_raises_instead_of_parsing(live, sleeps):
+    def handler(request):
+        return httpx.Response(200, json={"status": "failed",
+                                         "error": {"message": "the model errored"}})
+
+    model = pv.OpenAIResponsesModel(
+        model_id="opencode-go/muse-spark-1.3-contributor", base_url="https://opencode.ai/zen/go/v1",
+        client=transport_of(handler), sleep=sleeps.append, env={},
+    )
+    with pytest.raises(pv.ProviderError) as raised:
+        model.query([{"role": "user", "content": "hi"}])
+    assert "failed" in str(raised.value) and "the model errored" in str(raised.value)
+
+
+def test_a_docs_named_responses_model_resolves_to_the_responses_adapter(tmp_path, monkeypatch):
+    """1.3 is not in the snapshot yet; the docs' Endpoints table is the source of truth."""
+    registry_snapshot(tmp_path, monkeypatch, REGISTRY)
+    model = pv.model_for("opencode-go/muse-spark-1.3-contributor", env={"OPENCODE_API_KEY": "sk-zen"})
+    assert isinstance(model, pv.OpenAIResponsesModel)
+    assert model.base_url == "https://opencode.ai/zen/go/v1"
+    assert model.wire_id == "muse-spark-1.3-contributor"
+    assert model.api_key == "sk-zen"
+
+
+def test_a_model_row_overriding_to_another_shape_is_refused_by_name(tmp_path, monkeypatch):
+    """minimax-m3 rides opencode-go but speaks the Anthropic shape; chat bodies must never go
+    at it (previously the provider-level npm sent exactly those)."""
+    catalog = dict(REGISTRY)
+    catalog["opencode-go"] = dict(REGISTRY["opencode-go"])
+    catalog["opencode-go"]["models"] = {"minimax-m3": {"provider": {"npm": "@ai-sdk/anthropic"}}}
+    registry_snapshot(tmp_path, monkeypatch, catalog)
+    with pytest.raises(ValueError) as raised:
+        pv.model_for("opencode-go/minimax-m3", env={})
+    assert "@ai-sdk/anthropic" in str(raised.value)
+
+
 def test_opencode_hosts_get_session_and_identity_headers(live, sleeps):
     """Go asks clients to identify (no broad user agents) and send x-opencode-session; without
     both, gateway traffic looks abusive and keys get blocked. Stable per process for caching."""
@@ -974,3 +1097,12 @@ def test_other_hosts_see_no_opencode_headers(live, sleeps):
         client=transport_of(handler), sleep=sleeps.append, env={},
     )
     assert model.query([{"role": "user", "content": "hi"}]).content == "hi"
+
+def test_an_explicit_base_url_does_not_change_a_responses_model_shape(tmp_path, monkeypatch):
+    """Greptile P1: 1.3 with --base-url took the chat branch and posted chat bodies at a
+    Responses-only endpoint. The shape belongs to the model, not to how the host was found."""
+    registry_snapshot(tmp_path, monkeypatch, REGISTRY)
+    model = pv.model_for("opencode-go/muse-spark-1.3-contributor",
+                         base_url="http://127.0.0.1:8080/v1", env={})
+    assert isinstance(model, pv.OpenAIResponsesModel)
+    assert model.base_url == "http://127.0.0.1:8080/v1"

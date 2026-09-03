@@ -38,6 +38,11 @@ PRICES: dict[str, dict[str, float]] = {
     # charge, so cache_write is 0 and cached input is billed at cache_read.
     "openai/gpt-4.1-mini": {"input": 0.40, "output": 1.60, "cache_read": 0.10, "cache_write": 0.0},
     "openai/o4-mini": {"input": 1.10, "output": 4.40, "cache_read": 0.275, "cache_write": 0.0},
+    # OpenCode Go's Muse Spark 1.3 speaks the Responses API and models.dev does not list it
+    # yet, so the fallback table carries the Go docs' price: without a row the spend ceiling
+    # cannot see the model at all.
+    "opencode-go/muse-spark-1.3-contributor": {"input": 0.10, "output": 0.20, "cache_read": 0.002,
+                                                "cache_write": 0.0},
 }
 
 # What fits in one call, per model, for the D65 cap. A model with no row uses the default.
