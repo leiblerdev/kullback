@@ -177,6 +177,16 @@ def test_a_global_declaration_without_an_assignment_does_not_bind_the_name():
     assert unbound_names(source) == ["get_order names counter, which nothing binds"]
 
 
-def test_a_global_declaration_followed_by_an_assignment_binds_the_name():
-    source = _module("        global counter\n        counter = 1\n        return counter\n")
-    assert unbound_names(source) == []
+def test_a_body_that_declares_a_name_global_or_nonlocal_is_refused_by_name():
+    """Greptile on PR 4: a nested `global` resolves at module scope, not against the method's
+    locals. A tool body has no business keeping state that outlives its call, so the declaration
+    itself is the failure and the resolution question never arises."""
+    module_state = _module("        global counter\n        counter = 1\n        return counter\n")
+    assert source_confinement(module_state) == ["get_order declares global counter"]
+    assert gate_confined(module_state).passed is False
+    nested = _module("        total = 0\n"
+                     "        def helper():\n"
+                     "            global total\n"
+                     "            return total\n"
+                     "        return helper()\n")
+    assert source_confinement(nested) == ["get_order declares global total"]

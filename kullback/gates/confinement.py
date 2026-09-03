@@ -104,6 +104,14 @@ def _body_confinement(function: ast.AST) -> list[str]:
             out.append(f"touches {node.attr}")
         elif isinstance(node, ast.Name) and node.id in DENIED_BUILTINS:
             out.append(f"uses {node.id}")
+        elif isinstance(node, (ast.Global, ast.Nonlocal)):
+            # A tool body keeps its state in the customer's database and in its own locals. A name
+            # it declares global or nonlocal is state that outlives the call and is shared with
+            # every other call, which is the module-level mutation the Runner replays badly and
+            # the sandbox cannot see. Refused by name, which also settles where such a name would
+            # have been resolved from.
+            out += [f"declares {'global' if isinstance(node, ast.Global) else 'nonlocal'} {name}"
+                    for name in node.names]
     return out
 
 
