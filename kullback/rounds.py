@@ -462,6 +462,18 @@ def run_rounds(workdir: Any, model: Any = None, *, agent_model: Optional[Model] 
     n = 0
     while True:
         n += 1
-        if loop.round(n).exit is not None:
+        try:
+            record = loop.round(n)
+        except ExaminerError as exc:
+            # A broken examiner contract fails the round; it never closes one on stale state and
+            # never dies without a record. The round is stalled with the reason on it, so rounds.json
+            # tells the whole story and the next session knows the Examiner needs fixing, not the Tasks.
+            record = loop.close_round(n, {})
+            record.exit = "stalled"
+            record.exit_note = f"examiner failed: {exc}"
+            write_rounds(plan.workdir, loop.rounds)
+            loop.emit(RoundEnd(round=n, counts=record.counts, exit=record.exit))
+            break
+        if record.exit is not None:
             break
     return loop.result()

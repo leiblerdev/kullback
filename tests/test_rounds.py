@@ -538,3 +538,20 @@ def test_an_examiner_whose_derive_errors_fails_the_round(tmp_path, request):
         loop.examiner_beat(1)
     assert loop.examiner_result is not None and loop.examiner_result.is_error
     assert loop.rounds == [], "a failed derivation closes no round"
+
+
+def test_a_broken_examiner_stalls_the_run_with_the_reason_on_the_record(tmp_path, request):
+    """Greptile P1, run level: a model that never derives must stall the run with a record, never
+    crash it without one. rounds.json tells the whole story for the next session."""
+    workdir = tmp_path / "broken-examiner"
+    agent_model = TestModel([
+        _reply(None, ("build", {"target": TARGET})),
+        _reply("built."),
+        _reply("I have read everything and all is well."),
+    ])
+    result = rounds.run_rounds(workdir, model=Bodies(), agent_model=agent_model, files=[_fixture(request)],
+                               max_attempts=0, allowance_usd=0.0)
+    assert result["exit"] == "stalled"
+    stored = rounds.load_rounds(workdir)
+    assert len(stored) == 1
+    assert stored[0].exit == "stalled" and "never called derive" in (stored[0].exit_note or "")
