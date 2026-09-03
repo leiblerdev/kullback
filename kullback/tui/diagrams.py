@@ -139,13 +139,9 @@ def layers_text() -> Text:
     out = Text()
     width = 34
     for i, (left, right, note) in enumerate(LAYERS):
-        top, bottom = (("┌", "┐", "─") if i == 0 else ("├", "┤", "─")) if i < len(LAYERS) - 1 or True else ("└", "┘", "─")
-        if i == len(LAYERS) - 1:
-            top, bottom = "└", "┘"
+        edge = ("┌", "┐") if i == 0 else (("└", "┘") if i == len(LAYERS) - 1 else ("├", "┤"))
         title = left if right is None else f"{left} + {right}"
-        bar = top + f" {title} " + bottom if False else None  # placeholder, replaced below
-        _ = bar
-        line = f"{top} {title} " + "─" * max(1, width - len(title) - 3) + bottom
+        line = f"{edge[0]} {title} " + "─" * max(1, width - len(title) - 3) + edge[1]
         out.append(line + f"  {note}\n", style="cyan" if i == 0 else ("yellow" if i == 1 else "dim"))
     out.append("build ──▶ gates ──▶ examine ──▶ round_end ──▶ follow-ups ──▶ build …\n", style="dim")
     out.append("(one agent holds the stream at a time; findings reach the Builder as follow-ups)", style="dim")

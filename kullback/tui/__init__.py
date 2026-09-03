@@ -30,6 +30,8 @@ from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
 
+from kullback.tui import diagrams
+
 GLYPHS = {
     "k": ("#  #", "# # ", "##  ", "# # ", "#  #"),
     "u": ("#  #", "#  #", "#  #", "#  #", " ## "),
@@ -51,6 +53,9 @@ HELP = """\
 /build [--iterate] [--file PATH]   run the Builder over the ingested traces
 /run TASK [--count N]              run the Candidate against the built Environment
 /status                            the last build's stages, gates and spend
+/map                               the pipeline as a diagram: stages, states, hashes
+/loop                              the loop as beats: Builder, gates, Examiner, round ends
+/layers                            the kullback layering as a diagram
 /keys                              which provider keys this shell can see
 /help                              this
 /quit                              leave\
@@ -253,6 +258,12 @@ class Screen:
             self.console.print(_keys(dict(os.environ)))
         elif verb == "status":
             self._status()
+        elif verb == "map":
+            self._map()
+        elif verb == "loop":
+            self._show_loop()
+        elif verb == "layers":
+            self.console.print(diagrams.layers_text())
         elif verb == "build":
             self._live("build", lambda emit: self._build(emit, rest))
         elif verb == "run":
@@ -312,6 +323,18 @@ class Screen:
             return None
         from kullback.ai import provider
         return provider.live_model(self.model, self.base_url)
+
+    def _map(self) -> None:
+        """The pipeline as a diagram, read back off disk like /status. Runs no stage."""
+        state = _read(self.workdir / "pipeline" / "state.json", {})
+        order = list(state.get("statuses") or {})
+        self.console.print(diagrams.dag_text(order, dict(state.get("statuses") or {}),
+                                             dict(state.get("attempts") or {}),
+                                             diagrams.newest_hashes(self.workdir, order)))
+
+    def _show_loop(self) -> None:
+        """The loop as beats, read back off disk like /status. No rounds.json is the single-pass Builder."""
+        self.console.print(diagrams.loop_text(diagrams.read_rounds_file(self.workdir)))
 
     def _status(self) -> None:
         """The last build, read back off disk. No stage runs to answer this."""

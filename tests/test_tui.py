@@ -289,3 +289,65 @@ def test_a_count_that_is_not_a_whole_number_of_runs_is_told_in_words(tmp_path, l
     screen.command(line)
     assert message in _text(screen.console)
     assert screen.runner.calls == []
+
+
+# --- diagrammatic views -----------------------------------------------------
+
+def test_map_draws_the_stages_in_order_with_states_and_hashes(tmp_path):
+    from kullback.tui import diagrams
+
+    out = diagrams.dag_text(["mine", "cluster"], {"mine": "ran", "cluster": "start"},
+                            {"mine": 1, "cluster": 2}, {"mine": "3cbbe2f24725"})
+    plain = out.plain
+    assert plain.index("mine") < plain.index("cluster")
+    assert "ran" in plain and "start ×2" in plain and "3cbbe2f2" in plain
+    assert plain.count("▼") == 1
+
+
+def test_map_before_any_build_says_there_is_none(tmp_path):
+    from kullback.tui import diagrams
+
+    assert "no stages yet" in diagrams.dag_text([], {}).plain
+
+
+def test_loop_without_rounds_says_single_pass(tmp_path):
+    from kullback.tui import diagrams
+
+    assert "single-pass" in diagrams.loop_text(diagrams.read_rounds_file(tmp_path)).plain
+
+
+def test_loop_draws_beats_counts_and_exit(tmp_path):
+    from kullback.tui import diagrams
+
+    (tmp_path / "rounds.json").write_text(json.dumps([
+        {"round": 1, "counts": {"fidelity": 12, "tasks": 20, "trusted": 8, "refused_count": 1,
+                                "probes_passing": 5, "spend": {"total": 0.4231}}, "exit": None},
+        {"round": 2, "counts": {"fidelity": 20, "tasks": 20, "trusted": 15, "refused_count": 1,
+                                "probes_passing": 9, "spend": {"total": 0.9}}, "exit": "done"},
+    ]), encoding="utf-8")
+    plain = diagrams.loop_text(diagrams.read_rounds_file(tmp_path)).plain
+    assert "round 1" in plain and "round 2" in plain
+    assert "12/20" in plain and "exit: done" in plain
+
+
+def test_layers_names_every_package(tmp_path):
+    from kullback.tui import diagrams
+
+    plain = diagrams.layers_text().plain
+    for name in ("builder", "examiner", "gates", "agent", "runner", "ai"):
+        assert name in plain
+
+
+def test_map_loop_layers_commands_print(tmp_path):
+    (tmp_path / "pipeline").mkdir()
+    (tmp_path / "pipeline" / "state.json").write_text(
+        json.dumps({"statuses": {"mine": "ran"}, "attempts": {"mine": 1}}), encoding="utf-8")
+    (tmp_path / "cache").mkdir()
+    (tmp_path / "cache" / "mine.3cbbe2f2.json").write_text("{}", encoding="utf-8")
+    console = _console()
+    screen = Screen(tmp_path, console=console)
+    assert screen.command("/map") is True
+    assert screen.command("/layers") is True
+    assert screen.command("/loop") is True
+    out = _text(console)
+    assert "mine" in out and "builder" in out and "single-pass" in out
