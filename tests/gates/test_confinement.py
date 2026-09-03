@@ -190,3 +190,21 @@ def test_a_body_that_declares_a_name_global_or_nonlocal_is_refused_by_name():
                      "            return total\n"
                      "        return helper()\n")
     assert source_confinement(nested) == ["get_order declares global total"]
+
+
+def test_a_method_of_a_nested_class_does_not_see_what_the_class_body_bound():
+    """Greptile on PR 4: Python resolves a class body's names in the class body alone, so a method
+    that loads one unqualified raises NameError however plainly it reads."""
+    source = _module("        class Row:\n"
+                     "            kind = 'order'\n"
+                     "            def label(self):\n"
+                     "                return kind\n"
+                     "        return Row().label()\n")
+    assert unbound_names(source) == ["get_order names kind, which nothing binds"]
+    qualified = _module("        class Row:\n"
+                        "            kind = 'order'\n"
+                        "            def label(self):\n"
+                        "                return Row.kind\n"
+                        "        return Row().label()\n")
+    assert unbound_names(qualified) == []
+

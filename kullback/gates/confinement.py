@@ -178,9 +178,13 @@ def _unbound_in_scope(scope: ast.AST, outer: set[str]) -> set[str]:
     own = list(_own_nodes(scope))
     unbound = {node.id for node in own
                if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load) and node.id not in bound}
+    # A class body is not a closure scope: a method inside it does not see the names the class body
+    # bound, only the names around the class. Passing `bound` down here would accept a method that
+    # loads a class attribute unqualified, which raises NameError the moment it is called.
+    inherited = outer if isinstance(scope, ast.ClassDef) else bound
     for child in own:
         if isinstance(child, SCOPES):
-            unbound |= _unbound_in_scope(child, bound)
+            unbound |= _unbound_in_scope(child, inherited)
     return unbound
 
 
