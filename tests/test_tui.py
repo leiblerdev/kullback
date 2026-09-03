@@ -7,6 +7,7 @@ covered without a build and without a key.
 
 from __future__ import annotations
 
+import io
 import json
 
 import pytest
@@ -491,14 +492,12 @@ def test_the_banner_is_a_gradient_styles_vary_plain_does_not(tmp_path):
 
 
 def test_open_prints_status_segments(tmp_path, monkeypatch):
-    # A short workdir: open() cuts absurdly long paths with an ellipsis rather than folding them.
-    workdir = tmp_path / "w"
-    workdir.mkdir()
-    console = _console()
+    # A wide console: open() cuts absurdly long workdirs with an ellipsis rather than folding them.
+    console = Console(file=io.StringIO(), width=300, force_terminal=False, no_color=True)
     monkeypatch.setenv("HARNESS_ALLOW_MODEL_REQUESTS", "1")
-    Screen(workdir, model="opencode-go/muse-spark", console=console).open()
+    Screen(tmp_path, model="opencode-go/muse-spark", console=console).open()
     out = _text(console)
-    assert "opencode-go/muse-spark" in out and "live on" in out and str(workdir) in out
+    assert "opencode-go/muse-spark" in out and "live on" in out and str(tmp_path) in out
 
 
 def test_open_says_live_off_and_hides_zero_spend(tmp_path, monkeypatch):
