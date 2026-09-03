@@ -208,3 +208,39 @@ def test_a_method_of_a_nested_class_does_not_see_what_the_class_body_bound():
                         "        return Row().label()\n")
     assert unbound_names(qualified) == []
 
+
+
+def test_a_nested_class_method_sees_the_tool_method_bindings_around_it():
+    """The reported false reject does not happen: a method of a class defined inside the tool
+    method closes over the method's locals like any nested scope, so valid generated code is
+    accepted and never forced into repair or assisted fallback for this."""
+    source = _module("        factor = order_id * 2\n"
+                     "        class Helper:\n"
+                     "            def run(self):\n"
+                     "                return factor + 1\n"
+                     "        return Helper().run()\n")
+    assert unbound_names(source) == []
+
+
+def test_a_nested_class_method_still_flags_what_nothing_binds():
+    """The other half of the same walk: threading the method's bindings through the class must
+    not blind the gate to a name nothing binds anywhere."""
+    source = _module("        factor = order_id * 2\n"
+                     "        class Helper:\n"
+                     "            def run(self):\n"
+                     "                return factor + missing\n"
+                     "        return Helper().run()\n")
+    assert unbound_names(source) == ["get_order names missing, which nothing binds"]
+
+
+def test_a_class_nested_in_a_nested_function_sees_both_scopes():
+    """One level deeper: the class sits in a nested function, and its method reads a local
+    from each enclosing scope."""
+    source = _module("        scale = 2\n"
+                     "        def make():\n"
+                     "            class Helper:\n"
+                     "                def run(self):\n"
+                     "                    return scale + order_id\n"
+                     "            return Helper()\n"
+                     "        return make().run()\n")
+    assert unbound_names(source) == []
