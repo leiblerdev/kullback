@@ -142,6 +142,27 @@ def endpoint_from_catalog(catalog: Optional[dict], model_id: Optional[str]) -> O
     return Endpoint(provider, base_url, key_env_var, adapter in OPENAI_SHAPED, adapter)
 
 
+def model_adapter_for(catalog: Optional[dict], model_id: Optional[str]) -> str:
+    """The npm adapter for one MODEL: its own row's provider.npm wins over the provider entry's.
+
+    The provider-level field cannot say that minimax-m3 rides opencode-go but speaks the
+    Anthropic shape; the model row can, and does. Empty when the catalog names neither."""
+    provider, _, wire = str(model_id or "").partition("/")
+    entry = (catalog or {}).get(provider)
+    if not isinstance(entry, dict):
+        return ""
+    models = entry.get("models")
+    row = models.get(wire) if isinstance(models, dict) else None
+    if isinstance(row, dict):
+        override = row.get("provider")
+        if isinstance(override, dict):
+            npm = override.get("npm")
+            if isinstance(npm, str) and npm:
+                return npm
+    npm = entry.get("npm")
+    return npm if isinstance(npm, str) else ""
+
+
 def window_from_catalog(catalog: Optional[dict], model_id: Optional[str]) -> Optional[int]:
     """The context window models.dev lists for a model, for the D65 cap."""
     provider, _, wire_id = str(model_id or "").partition("/")

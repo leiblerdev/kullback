@@ -246,3 +246,16 @@ def test_record_call_writes_price_source_onto_the_event_and_the_totals(tmp_path,
     totals = budget.load_totals(workdir)
     assert totals["stages"]["mine"]["models_dev_calls"] == 1
     assert totals["total"]["models_dev_calls"] == 1
+
+
+def test_model_adapter_prefers_the_model_row_over_the_provider_entry():
+    from kullback.ai import pricing
+
+    catalog = {"opencode-go": {"npm": "@ai-sdk/openai-compatible",
+                               "models": {"minimax-m3": {"provider": {"npm": "@ai-sdk/anthropic"}},
+                                          "kimi-k3": {}}}}
+    assert pricing.model_adapter_for(catalog, "opencode-go/minimax-m3") == "@ai-sdk/anthropic"
+    assert pricing.model_adapter_for(catalog, "opencode-go/kimi-k3") == "@ai-sdk/openai-compatible"
+    assert pricing.model_adapter_for(catalog, "opencode-go/absent") == "@ai-sdk/openai-compatible"
+    assert pricing.model_adapter_for(catalog, "nope/none") == ""
+    assert pricing.model_adapter_for(None, "opencode-go/kimi-k3") == ""
