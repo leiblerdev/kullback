@@ -122,3 +122,14 @@ Keys come from the environment or a `.env` in the working directory (see `.env.e
 - `docs/harness-design.md` - the spec
 - `docs/decision-log.md` - why
 - `docs/todo.md` - what comes next
+
+## Citation
+
+```bibtex
+@misc{kullback2026,
+  title  = {Kullback: Executable Environments and Verifiers Rebuilt from Agent Traces},
+  author = {Krrish Agarwalla},
+  year   = {2026},
+  note   = {Open-source Builder and Runner behind Leibler. https://github.com/leiblerdev/kullback}
+}
+```
