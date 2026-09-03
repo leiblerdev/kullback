@@ -10,6 +10,9 @@ import pytest
 
 from kullback.ai.provider import TestModel
 from kullback.builder import build as build_module
+from kullback.builder import pipeline
+from kullback.builder.build import BuildPlan
+from kullback.runner.records import Verifier
 from test_e2e import TOOL_BODIES
 
 
@@ -46,7 +49,7 @@ def built(tmp_path_factory, request) -> Path:
 def test_the_build_writes_the_records_the_report_reads(built):
     for name in ("schema.json", "tool_sigs.json", "tasks.json", "tasks_frozen.json", "anchor.json",
                  "canon-rules.json", "environment.json", "constraints.json", "policy_coverage.json",
-                 "task_status.json", "scorecard.json", "bodies.json"):
+                 "scorecard.json", "bodies.json"):
         assert (built / name).is_file(), name
     assert list((built / "tasks").glob("*.json"))
     assert (built / "env" / "db.json").is_file()
@@ -221,24 +224,72 @@ def test_an_iterated_build_with_nothing_to_ingest_keeps_the_ingest_record(tmp_pa
 
 
 def test_a_stage_that_delegates_to_a_module_carries_that_module_in_its_code_version():
-    """R42: `compile_policy:{model}` and `derive_verifier:1` never changed when policy.py or
-    verifier.py did, so an edited compiler was served its stale cache entry. compile_tools is the
-    stage with the most of its work somewhere else: a fix to sandbox.py left every body it had
-    already refused sitting in the cache for --iterate to reuse."""
+    """R42: `compile_policy:{model}` never changed when policy.py did, so an edited compiler was
+    served its stale cache entry. compile_tools is the stage with the most of its work somewhere
+    else: a fix to sandbox.py left every body it had already refused sitting in the cache for
+    --iterate to reuse. The derivation is the Examiner's now (phase 5) and has no stage here."""
     from kullback.builder import compile_env, memory, policy, sandbox
-    from kullback.builder import verifier as verifier_mod
     from kullback.gates import verifier_suite
     versions = {name: build_module._module_hash(mod)
-                for name, mod in (("policy", policy), ("memory", memory), ("verifier", verifier_mod),
-                                  ("suite", verifier_suite), ("compile_env", compile_env),
-                                  ("sandbox", sandbox))}
-    assert len(set(versions.values())) == 6
+                for name, mod in (("policy", policy), ("memory", memory), ("suite", verifier_suite),
+                                  ("compile_env", compile_env), ("sandbox", sandbox))}
+    assert len(set(versions.values())) == 5
     assert build_module._policy_stage(None).code_version.endswith(versions["policy"])
-    assert versions["verifier"] in build_module._verifier_stage().code_version
-    # The D79 suite moved to kullback.gates (phase 3); a gate that tightens has to re-derive too.
-    assert versions["suite"] in build_module._verifier_stage().code_version
     tools_version = build_module._tools_stage(None, 3).code_version
     assert versions["compile_env"] in tools_version and versions["sandbox"] in tools_version
+
+
+def test_the_dag_ends_at_rerolls_and_names_no_verifier_target(built):
+    plan = BuildPlan(workdir=built, iterate=True, model=Bodies(), max_attempts=0)
+    names = [stage.name for stage in build_module.stages(plan)]
+    assert names[-1] == "rerolls" and "derive_verifier" not in names
+    assert build_module.TARGET_ALL == "environment"
+    with pytest.raises(pipeline.GraphError):
+        build_module.execute(plan, target="derive_verifier")
+
+
+def _cached_plan(built: Path) -> BuildPlan:
+    """The fixture build's store read back through the cache: every stage served, nothing rebuilt."""
+    plan = BuildPlan(workdir=built, iterate=True, model=Bodies(), max_attempts=0)
+    build_module.execute(plan)
+    return plan
+
+
+def test_probe_runner_builds_one_run_in_the_task_world_under_probes_without_the_examiner(built):
+    plan = _cached_plan(built)
+    run_probe = build_module.probe_runner(plan)
+    task = plan.store["tasks"][0]
+    verifier = Verifier(task_id=task.id, atoms=[])
+    run = run_probe(Bodies(), verifier)
+    assert run.run_id == f"probe-{task.id}" and run.task_id == task.id and run.model.startswith("probe:")
+    written = list((built / "probes").rglob("*.jsonl"))
+    assert written and all(task.id in str(path) for path in written)
+    assert not list((built / "runs" / task.id).glob("probe-*")), "a probe is never a Run of the Task"
+    assert not (built / "verifiers").exists() and not (built / "task_status.json").exists()
+    source = Path(build_module.__file__).read_text(encoding="utf-8")
+    assert "from kullback.examiner" not in source and "import kullback.examiner" not in source, \
+        "the Builder hands the Runner over; it never imports the Examiner"
+
+
+def test_reroll_runner_writes_runs_under_the_task_with_the_prefix_given_and_leaves_rerolls_json_alone(built):
+    plan = _cached_plan(built)
+    run_rerolls = build_module.reroll_runner(plan)
+    task = plan.store["tasks"][0]
+    before = json.dumps(plan.store["rerolls"], sort_keys=True, default=str)
+    state_before = (built / "pipeline" / "state.json").read_bytes()
+    rows = run_rerolls(task.id, 2, "reroll-r1")
+    assert [row["run_id"] for row in rows] == [f"reroll-r1-{task.id}-0", f"reroll-r1-{task.id}-1"]
+    for row in rows:
+        assert Path(row["path"]).is_file() and Path(row["path"]).parent == built / "runs" / task.id
+        assert row["termination_reason"]
+    assert json.dumps(plan.store["rerolls"], sort_keys=True, default=str) == before, \
+        "the stage's rows are not the Examiner's to rewrite"
+    assert (built / "pipeline" / "state.json").read_bytes() == state_before
+    listed = json.loads((built / "runs.json").read_text(encoding="utf-8"))
+    ids = {r["run_id"] for r in (listed["runs"] if isinstance(listed, dict) else listed)}
+    assert {row["run_id"] for row in rows} <= ids
+    with pytest.raises(build_module.BuildError, match="no Task is named"):
+        run_rerolls("nobody", 1, "reroll-r1")
 
 
 # --- what a tool is gated on (D74) ---

@@ -1065,3 +1065,35 @@ def test_a_model_row_overriding_to_another_shape_is_refused_by_name(tmp_path, mo
     with pytest.raises(ValueError) as raised:
         pv.model_for("opencode-go/minimax-m3", env={})
     assert "@ai-sdk/anthropic" in str(raised.value)
+
+
+def test_opencode_hosts_get_session_and_identity_headers(live, sleeps):
+    """Go asks clients to identify (no broad user agents) and send x-opencode-session; without
+    both, gateway traffic looks abusive and keys get blocked. Stable per process for caching."""
+    seen = {}
+
+    def handler(request):
+        seen["headers"] = dict(request.headers)
+        return httpx.Response(200, json={"choices": [{"message": {"content": "hi"}}], "usage": {}})
+
+    model = pv.OpenAICompatibleModel(
+        model_id="opencode-go/kimi-k3", base_url="https://opencode.ai/zen/go/v1",
+        client=transport_of(handler), sleep=sleeps.append, env={},
+    )
+    assert model.query([{"role": "user", "content": "hi"}]).content == "hi"
+    assert seen["headers"]["user-agent"] == "kullback"
+    assert re.fullmatch(r"[0-9a-f]{32}", seen["headers"]["x-opencode-session"])
+    assert model.headers()["x-opencode-session"] == seen["headers"]["x-opencode-session"]
+
+
+def test_other_hosts_see_no_opencode_headers(live, sleeps):
+    def handler(request):
+        assert "x-opencode-session" not in request.headers
+        assert request.headers.get("user-agent", "").startswith("python-httpx")
+        return httpx.Response(200, json={"choices": [{"message": {"content": "hi"}}], "usage": {}})
+
+    model = pv.OpenAICompatibleModel(
+        model_id="local/llama", base_url="http://127.0.0.1:11434/v1",
+        client=transport_of(handler), sleep=sleeps.append, env={},
+    )
+    assert model.query([{"role": "user", "content": "hi"}]).content == "hi"

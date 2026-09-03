@@ -2,8 +2,9 @@
 
 The transcript is the source of truth and the events are its changelog: a frontend, a session store
 or a test reads the stream and never the loop's internals. The agent, turn, message and tool
-execution events are tau's; stage, round, compaction and custom_message are ours, carried now so
-later phases (the DAG scheduler in 4, rounds in 5, context tools in 7) add emitters, not types.
+execution events are tau's; stage, round, beat, compaction and custom_message are ours: the DAG
+scheduler (phase 4) emits the stage events, the round driver (phase 5) the round and beat events,
+the context tools (phase 7) the compaction.
 """
 
 from __future__ import annotations
@@ -101,11 +102,29 @@ class RoundStart(_Event):
 
 
 class RoundEnd(_Event):
-    """The counts are all from gates and none from a model (D126); later phases fill them."""
+    """The counts are all from gates and none from a model (D126); `exit` is set on the last round."""
 
     type: Literal["round_end"] = "round_end"
     round: int
     counts: dict[str, Any] = Field(default_factory=dict)
+    exit: Optional[Literal["done", "stalled", "ceiling"]] = None
+
+
+class BeatStart(_Event):
+    """One agent takes the stream: the Builder or the Examiner, one at a time (D128)."""
+
+    type: Literal["beat_start"] = "beat_start"
+    agent: Literal["builder", "examiner"]
+    round: int
+
+
+class BeatEnd(_Event):
+    """The agent hands the stream back; `spend` is what its beat cost, read off budget.json."""
+
+    type: Literal["beat_end"] = "beat_end"
+    agent: Literal["builder", "examiner"]
+    round: int
+    spend: float = 0.0
 
 
 class ErrorEvent(_Event):
@@ -155,6 +174,8 @@ AgentEvent = Annotated[
         StageEnd,
         RoundStart,
         RoundEnd,
+        BeatStart,
+        BeatEnd,
         ErrorEvent,
         Compaction,
         CustomMessage,
