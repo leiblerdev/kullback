@@ -13,6 +13,7 @@ from typing import Any, Optional
 import typer
 
 from kullback.report import coverage_rows, load, load_tool_sigs, write_report
+from kullback.runner import heartbeat
 from kullback.runner.records import (
     EntitySchema,
     Environment,
@@ -301,13 +302,22 @@ def build(
     if agent and adapter is None:
         raise typer.BadParameter("--agent needs --model: a model has to drive the session")
     search = _entry("kullback.builder.search", "search_for")(workdir)  # None unless live is on or a memo exists
-    # The provider owns an http client when it made one; close it on the way out rather than at exit.
-    with contextlib.closing(search) if search is not None else contextlib.nullcontext():
-        result = _entry("kullback.rounds", "run_rounds")(
-            workdir=workdir, iterate=iterate, model=adapter, files=list(files or []), ceiling_usd=ceiling_usd,
-            grow=_grow_targets(grow), grow_seed=grow_seed, probe_limit=probe_limit, rerolls=rerolls,
-            search=search, workers=workers, target=target, agent_model=adapter if agent else None,
-            stall_rounds=stall_rounds, allowance_usd=allowance_usd, subscribers=[_echo_round])
+    # The screen lists running builds from these heartbeats; the pid tells it who is alive.
+    heartbeat.beat(workdir, model, "running")
+    try:
+        # The provider owns an http client when it made one; close it on the way out rather than at exit.
+        with contextlib.closing(search) if search is not None else contextlib.nullcontext():
+            result = _entry("kullback.rounds", "run_rounds")(
+                workdir=workdir, iterate=iterate, model=adapter, files=list(files or []),
+                ceiling_usd=ceiling_usd, grow=_grow_targets(grow), grow_seed=grow_seed,
+                probe_limit=probe_limit, rerolls=rerolls, search=search, workers=workers, target=target,
+                agent_model=adapter if agent else None, stall_rounds=stall_rounds,
+                allowance_usd=allowance_usd, subscribers=[_echo_round])
+    except Exception:
+        heartbeat.beat(workdir, model, "failed")
+        raise
+    heartbeat.beat(workdir, model, "failed" if result.get("failed") else "done",
+                   exit=result.get("exit"))
     if isinstance(result, dict) and result.get("exit"):
         count = len(result.get("rounds") or [])
         typer.echo(f"exit: {result['exit']} after {count} round{'' if count == 1 else 's'}")
@@ -454,7 +464,25 @@ def tui(
     ceiling_usd: Optional[float] = typer.Option(None, "--ceiling-usd", help="Per-build spend ceiling (D86)."),
 ):
     """Open the kullback screen: one build, its stages, its gates and its spend, while it runs."""
-    _entry("kullback.tui", "loop")(workdir=workdir, model=model, base_url=base_url, ceiling_usd=ceiling_usd)
+    _entry("kullback.tui", "loop")(workdir=_default_workdir(workdir), model=model, base_url=base_url,
+                                       ceiling_usd=ceiling_usd)
+
+
+# A directory counts as a build's workdir when it holds any record a build writes. The screen
+# answers from files, so opening on an empty directory only ever says 'no build yet'.
+WORKDIR_RECORDS = ("budget.json", "rounds.json", "gates.json", "tasks.json", "db.json",
+                   "pipeline")
+
+
+def _default_workdir(workdir: Path) -> Path:
+    """The workdir the screen opens: the flag when given, else ./work when it holds a build,
+    else the current directory. `kullback tui` with no flag opens the build in front of you."""
+    if str(workdir) != ".":
+        return workdir
+    candidate = Path("work")
+    if candidate.is_dir() and any((candidate / record).exists() for record in WORKDIR_RECORDS):
+        return candidate
+    return workdir
 
 
 if __name__ == "__main__":

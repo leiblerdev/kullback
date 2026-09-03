@@ -636,3 +636,16 @@ def test_build_fails_when_the_run_failed_on_a_broken_agent(workdir, fake_modules
     monkeypatch.setattr(cli, "_entry", entry)
     result = invoke("build", "--workdir", str(workdir))
     assert result.exit_code == 1 and '"failed": true' in result.output
+
+
+def test_tui_defaults_to_work_when_it_holds_a_build(tmp_path, monkeypatch):
+    from kullback.cli import _default_workdir
+
+    monkeypatch.chdir(tmp_path)
+    assert _default_workdir(Path(".")) == Path(".")
+    work = tmp_path / "work"
+    work.mkdir()
+    assert _default_workdir(Path(".")) == Path(".")
+    (work / "budget.json").write_text("{}", encoding="utf-8")
+    assert _default_workdir(Path(".")) == Path("work")
+    assert _default_workdir(Path("/elsewhere")) == Path("/elsewhere")
