@@ -1000,3 +1000,64 @@ def judge_lessons(model, lessons: Any, toolsigs: Any = None, policy_spans: Any =
             set_aside.append(SetAsideLesson(id=lesson.id, pattern=lesson.pattern,
                                             reason=reason or _NO_REASON))
     return applied, set_aside
+
+
+# --- tool lessons (phase 6): gate-failure sequences per tool, workdir-scoped ---
+
+_TOOL_LESSONS_FILE = "tool_lessons.json"
+
+
+def tool_lessons_path(workdir: Any) -> Path:
+    """The workdir-scoped tool-lesson file (distinct from the cross-customer lessons.md, D87)."""
+    return Path(workdir) / _TOOL_LESSONS_FILE
+
+
+def _valid_tool_lessons(data: Any) -> dict[str, list[list[str]]]:
+    """The well-shaped entries of a decoded tool_lessons file; malformed tools are discarded.
+
+    A hand-edited or half-written file may hold a non-list where a tool's sequences go, or
+    non-strings inside a sequence; letting those through crashes `record_lesson` on `.append()`
+    or `lesson_for` on `join`, so the loader drops them before anyone mutates or reads them.
+    """
+    if not isinstance(data, dict):
+        return {}
+    out: dict[str, list[list[str]]] = {}
+    for tool, sequences in data.items():
+        if not isinstance(tool, str) or not isinstance(sequences, list):
+            continue
+        if all(isinstance(seq, list) and all(isinstance(f, str) for f in seq) for seq in sequences):
+            out[tool] = [list(seq) for seq in sequences]
+    return out
+
+
+def load_tool_lessons(workdir: Any) -> dict[str, list[list[str]]]:
+    """Every recorded gate-failure sequence per tool, oldest first; {} when none recorded."""
+    path = tool_lessons_path(workdir)
+    if not path.is_file():
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (ValueError, OSError):
+        return {}
+    return _valid_tool_lessons(data)
+
+
+def record_lesson(workdir: Any, tool: str, failures: list[str]) -> Path:
+    """Append one gate-failure sequence for this tool; returns the file it was written to."""
+    path = tool_lessons_path(workdir)
+    data = load_tool_lessons(workdir)
+    data.setdefault(tool, []).append(list(failures))
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(data, indent=2, sort_keys=True), encoding="utf-8")
+    return path
+
+
+def lesson_for(workdir: Any, tool: str) -> str:
+    """The failure sequences to inject into the next attempt's prompt; "" when the tool has none."""
+    sequences = load_tool_lessons(workdir).get(tool, [])
+    if not sequences:
+        return ""
+    lines = [f"Past gate failures for {tool} (do not repeat them):"]
+    for i, failures in enumerate(sequences[-3:], start=1):
+        lines.append(f"- attempt {i}: " + "; ".join(failures))
+    return "\n".join(lines)

@@ -228,8 +228,8 @@ def a_constraint(**kw) -> Constraint:
         id="c1",
         text="never cancel a delivered order",
         compiled=True,
-        predicate_src="def check(case):\n    return case['status'] != 'delivered'\n",
-        tests=ConstraintTests(pos=[{"status": "pending"}], neg=[{"status": "delivered"}]),
+        predicate_src="def check(pre_state, write_call, transcript):\n    return pre_state['status'] != 'delivered'\n",
+        tests=ConstraintTests(pos=[{"pre_state": {"status": "pending"}}], neg=[{"pre_state": {"status": "delivered"}}]),
     )
     base.update(kw)
     return Constraint(**base)
@@ -242,8 +242,26 @@ def test_policy_gate_runs_the_positive_and_negative_cases():
     assert out.metrics["compiled"] == 1
 
 
+def test_the_gate_runs_a_predicate_the_way_the_verdict_does_with_the_state_the_write_and_the_transcript():
+    """Build 8: the gate handed the case as one argument and every compiled constraint failed with a TypeError."""
+    reads_all_three = a_constraint(
+        predicate_src=("def check(pre_state, write_call, transcript):\n"
+                       "    return write_call.get('tool') != 'cancel_order' or pre_state.get('status') == 'pending'\n"),
+        tests=ConstraintTests(
+            pos=[{"pre_state": {"status": "pending"}, "write_call": {"tool": "cancel_order"}, "transcript": []},
+                 {"pre_state": {"status": "delivered"}, "write_call": {"tool": "get_order"}, "transcript": []}],
+            neg=[{"pre_state": {"status": "delivered"}, "write_call": {"tool": "cancel_order"}, "transcript": []}],
+        ),
+    )
+    assert policy_gate([reads_all_three]).passed is True
+    one_argument = a_constraint(predicate_src="def check(case):\n    return True\n")
+    out = policy_gate([one_argument])
+    assert out.passed is False
+    assert any("TypeError" in f for f in out.failures)
+
+
 def test_policy_gate_fails_when_a_negative_case_is_allowed():
-    bad = a_constraint(predicate_src="def check(case):\n    return True\n")
+    bad = a_constraint(predicate_src="def check(pre_state, write_call, transcript):\n    return True\n")
     out = policy_gate([bad])
     assert out.passed is False
     assert any("neg" in f for f in out.failures)
@@ -265,10 +283,12 @@ def test_a_predicate_that_reaches_for_the_builtins_mapping_takes_nothing_from_th
     """Naming `__builtins__` reaches every allowed builtin as data to edit, so the static check
     refuses the predicate, and the exec that does run gets its own copy of the mapping: either way
     the constraint checked next still has the allowlist it was certified against."""
-    reaching = a_constraint(id="c1", predicate_src="def check(case):\n    __builtins__.clear()\n    return True\n",
-                            tests=ConstraintTests(pos=[{"status": "pending"}]))
-    counts = a_constraint(id="c2", predicate_src="def check(case):\n    return len(case) > 0\n",
-                          tests=ConstraintTests(pos=[{"status": "pending"}]))
+    reaching = a_constraint(id="c1", predicate_src="def check(pre_state, write_call, transcript):\n"
+                                                 "    __builtins__.clear()\n    return True\n",
+                            tests=ConstraintTests(pos=[{"pre_state": {"status": "pending"}}]))
+    counts = a_constraint(id="c2", predicate_src="def check(pre_state, write_call, transcript):\n"
+                                               "    return len(pre_state) > 0\n",
+                          tests=ConstraintTests(pos=[{"pre_state": {"status": "pending"}}]))
     out = policy_gate([reaching, counts])
     assert out.passed is False
     assert any("c1" in f and "not confined" in f for f in out.failures)
@@ -281,7 +301,7 @@ def test_policy_gate_runs_every_pos_and_neg_case_through_the_evaluator_it_is_giv
 
     def evaluate(constraint, case):
         calls.append(case)
-        return case["status"] != "delivered"
+        return case["pre_state"]["status"] != "delivered"
 
     assert policy_gate([a_constraint()], evaluate=evaluate).passed is True
     assert len(calls) == 2

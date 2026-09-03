@@ -118,7 +118,7 @@ def _build(tmp_path_factory, request, workers: int) -> Path:
 def test_a_parallel_build_writes_the_same_environment_as_a_sequential_one(tmp_path_factory, request):
     one = _build(tmp_path_factory, request, workers=1)
     four = _build(tmp_path_factory, request, workers=4)
-    for name in ("bodies.json", "tool_builds.json", "constraints.json", "tasks.json", "task_status.json",
+    for name in ("bodies.json", "tool_builds.json", "constraints.json", "tasks.json", "schema.json",
                  "env/db.json"):
         assert (one / name).read_text() == (four / name).read_text(), name
     seq, par = budget.load_totals(one), budget.load_totals(four)

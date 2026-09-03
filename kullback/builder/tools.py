@@ -25,18 +25,9 @@ from pydantic import BaseModel, ConfigDict, Field
 from kullback.agent.tools import AgentTool, NoArgs
 from kullback.builder import build as build_module
 from kullback.builder.build import TARGET_ALL, BuildPlan
+from kullback.gates import Ruling, ruling_line, ruling_of
 
 Sink = Callable[[Any], Awaitable[None]]
-
-
-class Ruling(BaseModel):
-    """One gate's answer over what a tool produced, named and decided; the reasons in `failures`."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    stage: str
-    passed: bool
-    failures: list[str] = Field(default_factory=list)
 
 
 class StageReport(BaseModel):
@@ -73,13 +64,6 @@ class BuildResult(BaseModel):
     failed_stage: Optional[str] = None
     stopped: Optional[dict[str, Any]] = None
     payload: dict[str, Any] = Field(default_factory=dict)
-
-
-def ruling_line(label: str, rulings: Any) -> str:
-    """One ruling per name, pass or fail with the first reason: the line the model reads."""
-    return f"{label}: " + "; ".join(
-        f"{r.stage} {'pass' if r.passed else 'fail'}" + (f" ({r.failures[0]})" if r.failures and not r.passed else "")
-        for r in rulings)
 
 
 def render(result: BuildResult) -> str:
@@ -135,7 +119,7 @@ def result_of(plan: BuildPlan, target: str, result: Any, verb: str) -> BuildResu
     stages = [StageReport(name=r.name, status=r.status, cached=r.cached, attempts=r.attempts,
                           rulings=list(r.rulings), elapsed_ms=r.elapsed_ms, produced=list(r.produced))
               for r in result.reports.values()]
-    stage_gates = [Ruling(stage=g.stage, passed=bool(g.passed), failures=list(g.failures)) for g in result.gates]
+    stage_gates = [ruling_of(g) for g in result.gates]
     ran = [s for s in stages if s.status != "pending"]
     cached = sum(1 for s in ran if s.cached)
     summary = (f"{verb} {target}: {result.status}; {len(ran)} stages, {cached} from cache, "

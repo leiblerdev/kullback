@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any, Iterable, Optional
 
 from kullback.builder import parallel
+from kullback.gates.verifier_suite import HELPERS_SRC
 from kullback.runner.records import (
     Constraint,
     ConstraintTests,
@@ -45,57 +46,8 @@ _ALLOWED_ATTRS = frozenset({
 })
 _REFUSED_NODES = (ast.Lambda, ast.ClassDef, ast.Yield, ast.YieldFrom, ast.Await, ast.Global, ast.Nonlocal)
 
-# Every predicate runs with these helpers already defined, so a sequence rule stays one line.
-HELPERS_SRC = '''
-_YES = ("yes", "yeah", "yep", "confirm", "confirmed", "sure", "ok", "okay", "correct", "proceed")
-_YES_PHRASES = ("go ahead", "please do", "that is right", "that's right")
-_NO = ("no", "not", "never", "nope", "nah", "cannot", "cant", "dont", "stop", "wait", "wrong", "incorrect")
-
-def _plain_words(text):
-    return set("".join(c if (c.isalnum() or c.isspace()) else " " for c in text).split())
-
-def user_confirmed(transcript):
-    """True when the last user turn says yes to an action an assistant turn proposed (D43 case 3)."""
-    messages = list(transcript or [])
-    last = None
-    for pos in range(len(messages) - 1, -1, -1):
-        if messages[pos].get("role") == "user":
-            last = pos
-            break
-    if last is None:
-        return False
-    proposal = ""
-    for msg in reversed(messages[:last]):
-        if msg.get("role") == "assistant" and (msg.get("content") or "").strip():
-            proposal = msg.get("content") or ""
-            break
-    if "?" not in proposal:
-        return False  # nothing was proposed, so nothing was confirmed
-    text = (messages[last].get("content") or "").lower()
-    words = _plain_words(text)
-    if words & set(_NO) or "n't" in text:
-        return False  # a refusal that happens to carry a yes word is still a refusal
-    return bool(words & set(_YES)) or any(phrase in text for phrase in _YES_PHRASES)
-
-def called_before(transcript, *names):
-    """True when the transcript already holds a tool call with one of these names."""
-    wanted = set(names)
-    for msg in list(transcript or []):
-        for call in msg.get("tool_calls") or []:
-            if call.get("name") in wanted:
-                return True
-    return False
-
-def said_before(transcript, *needles):
-    """True when an assistant turn already contains one of these strings, case-insensitive."""
-    for msg in list(transcript or []):
-        if msg.get("role") != "assistant":
-            continue
-        text = (msg.get("content") or "").lower()
-        if any(needle.lower() in text for needle in needles):
-            return True
-    return False
-'''
+# Every predicate runs with these helpers already defined, so a sequence rule stays one line; the
+# text is the suite's, so the compiler and the derivation's Hard atoms read one source (phase 5).
 
 _ALLOWED_BLOCK = "_ALLOWED = (\n" + "\n".join(
     "    " + " ".join(f'"{name}",' for name in _SAFE_BUILTINS[i : i + 6])

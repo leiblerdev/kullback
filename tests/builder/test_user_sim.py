@@ -274,6 +274,58 @@ def test_an_order_id_stated_without_a_hash_is_recorded(tau2_small):
     assert facts_by_field(rules)["order_id"] == "#W2378156"
 
 
+def test_a_request_that_ends_in_a_colon_asks_for_the_fields_it_lists():
+    """Build 8: 'please provide me with: - your first name - your last name - your zip code' read as no ask
+    at all, and the Simulated user answered 'I do not have my name' on 63 re-rolls."""
+    listed = "Could you please provide me with:\n- Your first name\n- Your last name\n- Your ZIP code"
+    assert asked_fields(listed) == ["name", "zip"]
+    rules = derive_user_rules(make_trace([("assistant", listed), ("user", "Olivia Lopez, 76171.")]))
+    assert facts_by_field(rules)["name"] == "Olivia Lopez"
+    assert facts_by_field(rules)["zip"] == "76171"
+    assert field_values(rules, CHOICE) == []
+
+
+def test_a_list_after_a_statement_that_asks_nothing_is_not_an_ask():
+    assert asked_fields("Your order holds:\n- a lamp\n- a name tag with your name on it") == []
+
+
+def test_a_yes_that_also_names_the_order_is_still_the_recorded_confirmation():
+    """Build 8: the recorded yes carried the order id, so it was filed as the id alone and the re-rolls
+    answered 'I do not have an answer for that' when asked to confirm."""
+    yes = "Yes, please cancel order #W5995614 and refund it to the same card."
+    rules = derive_user_rules(make_trace([
+        ("assistant", "Hi! How can I help you today?"),
+        ("user", "I want to cancel an order."),
+        ("assistant", "I see two pending orders. Shall I cancel #W5995614? Please confirm."),
+        ("user", yes),
+    ]), RETAIL)
+    assert field_values(rules, CONFIRMATION) == [yes]
+    assert facts_by_field(rules)["order_id"] == "#W5995614"
+
+
+def test_a_yes_that_answers_a_field_ask_is_the_field_and_not_a_confirmation():
+    rules = derive_user_rules(make_trace([
+        ("assistant", "Hi! How can I help you today?"),
+        ("user", "I need help with an order."),
+        ("assistant", "Could you give me your zip code?"),
+        ("user", "Yes, my zip is 19122."),
+    ]))
+    assert facts_by_field(rules)["zip"] == "19122"
+    assert field_values(rules, CONFIRMATION) == []
+
+
+def test_an_asked_value_is_not_read_where_another_field_already_read_it():
+    """Build 8: the Simulated user answered an address question with the order id the same turn named."""
+    vocab = Vocabulary(domain="retail", fields=[f.model_copy(deep=True) for f in RETAIL.fields] + [
+        FieldSpec(field="address1", kind="value", asked_only=r"\b(?=[A-Za-z0-9]*\d)[A-Za-z0-9 ]+\b",
+                  cues=[r"\baddress\b"]),
+    ])
+    values = extracted_values("For order #W5056519, please update it to 380 Maple Drive.",
+                              asked=["address1"], vocab=vocab)
+    assert ("order_id", "#W5056519") in values
+    assert ("address1", "380 Maple Drive") in values
+
+
 def test_a_farewell_is_not_a_refusal_and_a_stop_marker_is_not_a_walk_away():
     rules = derive_user_rules(
         make_trace(
@@ -321,7 +373,8 @@ def test_a_mention_does_not_make_the_simulated_user_say_a_fact_is_unavailable():
     user = SimulatedUser(UserRules(), starting_state_reader=dict_reader({}))
     text = user.reply(ask("I see the order with the headphones. Shall I start the return?"))
     assert "do not have my phone" not in text
-    assert user.events[-1].payload["unavailable_fields"] == [CONFIRMATION]
+    assert user.events[-1].payload["unavailable_fields"] == []
+    assert user.events[-1].payload["sources"] == {CONFIRMATION: "generic_confirm"}
 
 
 def test_a_five_digit_number_is_only_a_zip_when_the_turn_says_so():
@@ -578,9 +631,19 @@ def test_a_confirmation_question_is_answered_with_the_recorded_confirmation(tau2
     assert user.events[-1].payload["sources"] == {CONFIRMATION: "rules"}
 
 
-def test_a_confirmation_the_trace_never_gave_is_unavailable_not_invented():
+def test_a_confirmation_the_trace_never_gave_gets_the_representative_yes():
+    """D44: the recorded user was never asked; a user who asked for the action says yes to doing it, and
+    the source names the yes as generic so a report can tell it from a recorded one."""
     user = SimulatedUser(UserRules(facts=[UserFact(field="zip", value="19122")]))
     text = user.reply(ask("Do you confirm the exchange? Please reply yes to proceed."))
+    assert text == "Yes, please go ahead."
+    assert user.events[-1].payload["sources"] == {CONFIRMATION: "generic_confirm"}
+    assert user.events[-1].payload["unavailable_fields"] == []
+
+
+def test_a_recorded_no_keeps_the_simulated_user_from_saying_yes():
+    user = SimulatedUser(UserRules(facts=[UserFact(field=CHOICE, value="No, do not cancel it yet.")]))
+    text = user.reply(ask("Shall I cancel the order? Please confirm."))
     assert "yes" not in text.lower()
     assert user.events[-1].payload["unavailable_fields"] == [CONFIRMATION]
 

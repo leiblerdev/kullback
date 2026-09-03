@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from gates.verifier_fixtures import assistant, call, make_run, result, user
 from kullback.ai.provider import TestModel
-from kullback.builder import reference as ref
+from kullback.examiner import reference as ref
 from kullback.runner.records import Constraint
 
 WRITES = {"cancel_pending_order", "exchange_delivered_order_items"}

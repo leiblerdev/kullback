@@ -38,6 +38,11 @@ PRICES: dict[str, dict[str, float]] = {
     # charge, so cache_write is 0 and cached input is billed at cache_read.
     "openai/gpt-4.1-mini": {"input": 0.40, "output": 1.60, "cache_read": 0.10, "cache_write": 0.0},
     "openai/o4-mini": {"input": 1.10, "output": 4.40, "cache_read": 0.275, "cache_write": 0.0},
+    # OpenCode Go's Muse Spark 1.3 speaks the Responses API and models.dev does not list it
+    # yet, so the fallback table carries the Go docs' price: without a row the spend ceiling
+    # cannot see the model at all.
+    "opencode-go/muse-spark-1.3-contributor": {"input": 0.10, "output": 0.20, "cache_read": 0.002,
+                                                "cache_write": 0.0},
 }
 
 # What fits in one call, per model, for the D65 cap. A model with no row uses the default.
@@ -183,8 +188,15 @@ def is_priced(model_id: Optional[str]) -> bool:
 
 
 def window_for(model_id: Optional[str]) -> int:
-    """The context window of a model, for the D65 cap."""
-    return _lookup(CONTEXT_WINDOWS, model_id) or DEFAULT_CONTEXT_WINDOW
+    """The context window of a model, for the D65 cap.
+
+    The hand table first, since two of its rows were measured against a live endpoint rather than
+    read off a page, then models.dev, then the default. A model the registry knows no longer takes
+    the 200,000 default and a cap four fifths smaller than the one it could have had.
+    """
+    return (_lookup(CONTEXT_WINDOWS, model_id)
+            or pricing_module.window_from_catalog(_price_catalog(), model_id)
+            or DEFAULT_CONTEXT_WINDOW)
 
 
 def call_cost(usage: Usage, model_id: Optional[str]) -> float:

@@ -1,8 +1,9 @@
-"""Tests for builder/verifier.py: derivation from re-runs on disk and the tau2 export.
+"""Tests for examiner/derive.py: derivation from re-runs on disk and the tau2 export.
 
-Reading a Run, scoring one against a Verifier and the D79 suite moved to kullback.gates.verifier_suite
-(phase 3, D122) and are tested in tests/gates/test_verifier_suite.py; the Runs both files use come
-from tests/gates/verifier_fixtures.py.
+The module moved here from builder/verifier.py in phase 5 (D123) with its behaviour unchanged, which
+the hash pin at the top holds. Reading a Run, scoring one against a Verifier and the D79 suite live in
+kullback.gates.verifier_suite (phase 3, D122) and are tested in tests/gates/test_verifier_suite.py; the
+Runs both files use come from tests/gates/verifier_fixtures.py.
 """
 
 from __future__ import annotations
@@ -31,19 +32,23 @@ from gates.verifier_fixtures import (
     user,
     write_events_jsonl,
 )
-from kullback.builder import verifier as V
+from kullback.examiner import derive as V
 from kullback.gates import verifier_suite as S
 from kullback.runner.canon import CanonRules, canon_value
-from kullback.runner.records import Constraint, Verifier, as_dict
+from kullback.runner.records import Constraint, Verifier, as_dict, content_hash
+
+# The derivation over verifier_fixtures.derive(tmp_path) on main at the commit the move started from
+# (a40812c): seven atoms, seeds ref, alt and rr2. The move changed no byte of the artifact (D130).
+DERIVATION_HASH_ON_MAIN = "77d497a99ac9e8c194e5116d7be8d5e420e158b71c2731edb560216bf1077a16"
 
 
-def test_module_never_imports_the_runner_and_never_runs_anything(tmp_path):
-    """D91: the Builder talks to the Runner through Run records on disk, in one direction only.
+def test_the_derivation_never_imports_the_builder_the_runner_internals_or_anything_that_runs(tmp_path):
+    """D91 and D123: the derivation reads Run records the Runner wrote and the suite's vocabulary, nothing else.
 
-    canon and records moved into kullback.runner with the rest of the Runner package (D121); this
-    module may still read them, so the check names the internal modules that stay out of reach
-    rather than the package prefix the two now happen to share. The suite it used to carry now sits
-    in kullback.gates (phase 3), which is the one package besides records it imports.
+    canon and records sit in kullback.runner with the rest of the Runner package (D121); this module
+    may read them, so the check names the internal modules that stay out of reach rather than the
+    package prefix. The Builder is off limits the other way: the Examiner is the one writer of
+    Verifiers and never reads what the Builder compiled.
     """
     import inspect
     import re
@@ -51,6 +56,8 @@ def test_module_never_imports_the_runner_and_never_runs_anything(tmp_path):
     source = Path(V.__file__).read_text(encoding="utf-8")
     assert re.search(r"kullback\.runner\.(?!records\b|canon\b)\w", source) is None
     assert "from kullback import runner" not in source
+    assert "kullback.builder" not in source
+    assert "from kullback import builder" not in source
     assert "subprocess" not in source and "os.system" not in source
     # Nothing in the module takes a way to execute a Run; re-runs arrive as paths the Runner wrote.
     taken = set(inspect.signature(V.derive_verifier).parameters)
@@ -60,7 +67,14 @@ def test_module_never_imports_the_runner_and_never_runs_anything(tmp_path):
     assert "run_probe" in set(inspect.signature(S.loophole_probe).parameters)
     assert not [line for line in source.splitlines()
                 if line.startswith(("import kullback.gates", "from kullback.gates"))
-                and "verifier_suite" not in line], "verifier.py reads the suite and nothing else in gates"
+                and "verifier_suite" not in line], "derive.py reads the suite and nothing else in gates"
+
+
+def test_the_derivation_over_the_fixture_runs_hashes_to_the_value_recorded_on_main(tmp_path):
+    """The move is a move: the same Runs derive the same atoms, byte for byte (D130)."""
+    verifier = derive(tmp_path)
+    assert len(verifier.atoms) == 7 and verifier.seed_run_ids == ["ref", "alt", "rr2"]
+    assert content_hash(as_dict(verifier)) == DERIVATION_HASH_ON_MAIN
 
 
 # --- write-set diff, agreement, provenance --------------------------------

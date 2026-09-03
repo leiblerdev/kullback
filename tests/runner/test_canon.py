@@ -56,6 +56,28 @@ def test_number_precision_is_a_rule():
     assert equal(25.004, 25.0, "hard", rules)
 
 
+def test_the_precision_is_learned_from_the_corpus_and_float_noise_is_not_a_precision():
+    """Build 8: 74 of 102 differing writes were float residue past the sixth decimal, while the corpus
+    itself never carries more than two decimals."""
+    from kullback.runner.canon import learn_rules
+    rows = [{"total": 1096.56, "items": [{"price": 25.1}]}, {"total": 3283.6799999999998}, {"count": 3}]
+    rules = learn_rules(None, rows)
+    assert rules.number_precision == 2
+    assert equal(3283.6799999999998, 3283.68, "hard", rules)
+    assert not equal(3283.67, 3283.68, "hard", rules)
+
+
+def test_a_corpus_without_floats_learns_no_precision():
+    from kullback.runner.canon import learn_rules
+    assert learn_rules(None, [{"count": 3}, {"name": "x"}, {"whole": 25.0}]).number_precision == 0
+    assert learn_rules(None, [{"count": 3}, {"name": "x"}]).number_precision is None
+
+
+def test_a_precision_set_by_hand_is_kept_over_the_learned_one():
+    from kullback.runner.canon import learn_rules
+    assert learn_rules(None, [{"total": 1.5}], base=CanonRules(number_precision=4)).number_precision == 4
+
+
 def test_currency_strings_canonicalize_the_amount_and_keep_the_currency():
     """Only the spelling of the amount is noise; the currency is part of the value (D39)."""
     assert canon_value("$25.00") == "25 usd"

@@ -150,3 +150,24 @@ def test_subscriber_exception_stops_the_run():
     with pytest.raises(OSError):
         collect(harness.prompt("go"))
     assert harness.is_running is False
+
+
+def test_beat_start_beat_end_and_the_exit_on_round_end_are_events_of_the_union_and_serialize_by_type():
+    """The round driver's beats (D128) and the exit on round_end (D126) travel the one typed stream
+    every subscriber reads, so a dict off the wire comes back as the typed event by its `type`."""
+    from pydantic import TypeAdapter
+
+    from kullback.agent.events import AgentEvent, BeatEnd, BeatStart, RoundEnd
+
+    events = TypeAdapter(AgentEvent)
+    start = events.validate_python({"type": "beat_start", "agent": "builder", "round": 1})
+    end = events.validate_python({"type": "beat_end", "agent": "examiner", "round": 1, "spend": 0.25})
+    finished = events.validate_python({"type": "round_end", "round": 1, "counts": {"trusted": 1}, "exit": "done"})
+    assert isinstance(start, BeatStart) and isinstance(end, BeatEnd) and isinstance(finished, RoundEnd)
+    assert (start.agent, start.round, end.spend, finished.exit) == ("builder", 1, 0.25, "done")
+    assert BeatEnd(agent="builder", round=2).model_dump()["spend"] == 0.0
+    assert RoundEnd(round=2).exit is None
+    with pytest.raises(ValueError):
+        events.validate_python({"type": "beat_start", "agent": "referee", "round": 1})
+    with pytest.raises(ValueError):
+        events.validate_python({"type": "round_end", "round": 1, "exit": "gave up"})

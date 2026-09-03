@@ -18,8 +18,9 @@ from kullback.runner.records import GateResult, RunnerVersion, content_hash
 # refused rather than their arguments inspected.
 SCANNED_PACKAGES = ("runner", "ai")
 # records and canon moved into runner/ from shared/ with nothing else about them changing (D121):
-# verifier.py may still read them, the same allowance it had when they sat outside the Runner
-# entirely. Every other runner/ module stays off limits under D91.
+# the derivation (examiner/derive.py, once builder/verifier.py) may still read them, the same
+# allowance it had when they sat outside the Runner entirely. Every other runner/ module stays off
+# limits under D91.
 RUNNER_DATA_MODULES = ("records", "canon")
 DYNAMIC_IMPORT_MODULES = ("importlib", "runpy", "pkgutil")
 DYNAMIC_IMPORT_CALLS = (
@@ -35,7 +36,7 @@ def _package_root(src_root: Union[str, Path]) -> Path:
 
 
 def import_boundary_check(src_root: Union[str, Path]) -> GateResult:
-    """Both directions of the D89 and D91 boundary, over runner/, ai/ and builder/verifier.py.
+    """Both directions of the D89 and D91 boundary, over runner/, ai/ and examiner/derive.py.
 
     Sites that run code from a value this scan cannot read (the Verifier atoms, the policy
     predicates) are listed in the metrics, not failed.
@@ -49,7 +50,7 @@ def import_boundary_check(src_root: Union[str, Path]) -> GateResult:
             found, seen = _import_failures(path, part)
             failures += found
             sites += seen
-    verifier = root / "builder" / "verifier.py"
+    verifier = root / "examiner" / "derive.py"
     if verifier.is_file():
         files += 1
         failures += _verifier_failures(verifier)
@@ -117,8 +118,8 @@ def _boundary_line(where: str, name: str, how: str) -> list[str]:
 
 
 def _verifier_failures(path: Path) -> list[str]:
-    """D91's other direction: verifier.py talks to the Runner through records and cli, never its internals."""
-    where = "builder/verifier.py"
+    """D91's other direction: derive.py talks to the Runner through records and cli, never its internals."""
+    where = "examiner/derive.py"
     try:
         tree = ast.parse(path.read_text(encoding="utf-8"), str(path))
     except (SyntaxError, ValueError, OSError) as exc:
@@ -127,7 +128,7 @@ def _verifier_failures(path: Path) -> list[str]:
     for node in ast.walk(tree):
         for name, _how in _imported_names(node):
             if _is_runner_internal(name):
-                out.append(f"{where} imports {name}; verifier.py asks the Runner for Runs through cli "
+                out.append(f"{where} imports {name}; derive.py asks the Runner for Runs through cli "
                            "and reads records back, it never imports Runner internals (D91)")
     return sorted(set(out))
 

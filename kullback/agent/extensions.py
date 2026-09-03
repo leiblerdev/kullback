@@ -16,10 +16,29 @@ from kullback.agent.context import ContextManager
 from kullback.agent.events import AgentEvent
 from kullback.agent.harness import AgentHarness
 from kullback.agent.loop import ToolCallHook, ToolResultHook
+from kullback.agent.messages import ToolCall
 from kullback.agent.tools import AgentTool
 
 Setup = Callable[["ExtensionAPI"], Any]
 Handler = Callable[[Any], Any]
+
+
+def refuse_paths(finder: Callable[[Any], Optional[str]], reason: str, hook_name: str) -> ToolCallHook:
+    """A `tool_call` hook that blocks any call whose arguments hold a string `finder` objects to.
+
+    `finder` walks the arguments and returns the first offending string, or None. The raise is what
+    the loop turns into an is_error result naming the hook, so the refusal is code the model reads
+    and never a line in the prompt: the D122 write block on the gates and the Runner and the D123
+    read block on the Builder's compiled side are two instances of this one hook.
+    """
+
+    def refuse(call: ToolCall) -> None:
+        found = finder(call.arguments)
+        if found is not None:
+            raise PermissionError(f"the arguments name {found!r}, {reason}")
+
+    refuse.hook_name = hook_name  # type: ignore[attr-defined]
+    return refuse
 
 
 class ExtensionAPI:

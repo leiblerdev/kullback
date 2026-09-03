@@ -1,16 +1,26 @@
 """Writes a Task's one-line Intent and refuses it unless every noun phrase points to a span in
-every member Run (D47, D83)."""
+every member Run (D47, D83). The Intent record, its spans and `apply_intent` live in
+kullback.runner.records so the Examiner reads an Intent without importing the Builder (D123); they
+are re-exported here under the names this module always had."""
 
 from __future__ import annotations
 
 import json
 import re
-from typing import Any, Iterable, Literal, Optional, Sequence
+from typing import Any, Iterable, Optional, Sequence
 
 from kullback.ai.provider import Model
 from kullback.builder.cluster import APOSTROPHE_RE, STOPWORDS
 from kullback.builder.cluster import first_line as _shared_first_line
-from kullback.runner.records import RawPtr, Record, Task, ToolCall, Trace
+from kullback.runner.records import (  # noqa: F401 - Intent, IntentSpan, SpanSource and apply_intent are re-exported
+    Intent,
+    IntentSpan,
+    SpanSource,
+    Task,
+    ToolCall,
+    Trace,
+    apply_intent,
+)
 
 MAX_INTENT_CHARS = 200
 MAX_PROMPT_RUNS = 5  # D65: the prompt samples the Task's Runs, the grounding still reads all of them
@@ -25,32 +35,6 @@ FRAME_RE = re.compile(r"^\s*(?:the\s+)?(?:user|customer|caller|client)?(?:'s)?\s
                       r"(?:\s+(?:help|to|for|with|about))*\s*", re.IGNORECASE)
 # A phrase the user ruled out in the same breath is not evidence that the user wanted it.
 NEGATIONS = frozenset("not no never dont cannot cant wont without nor neither".split())
-
-SpanSource = Literal["user_utterance", "tool_arg", "written_value"]
-
-
-class IntentSpan(Record):
-    """Where one noun phrase of the Intent is evidenced: a user utterance, a tool argument, or a written value."""
-    phrase: str = ""
-    trace_id: str
-    source: SpanSource
-    text: str
-    label: Optional[str] = None  # the tool and argument the text came from; shown, never matched against
-    raw_ptr: Optional[RawPtr] = None
-
-
-class Intent(Record):
-    """The one-line Intent of a Task with the span behind every noun phrase (D47); ungrounded means no Verdict."""
-    task_id: str
-    text: str = ""
-    spans: list[IntentSpan] = []
-    grounded: bool = False
-    unguarded: bool = False
-    ungrounded_phrases: list[str] = []
-    run_coverage: dict[str, list[str]] = {}  # phrase -> every member Run that evidences it
-    reason: Optional[str] = None
-    model: Optional[str] = None
-
 
 def noun_phrases(text: str) -> list[str]:
     """Runs of non-stopword tokens, in order, deduplicated. A cheap stand-in for a noun-phrase parser."""
@@ -326,17 +310,3 @@ def write_intent(
     else:
         intent.grounded = True
     return intent
-
-
-def apply_intent(task: Task, intent: Intent) -> Task:
-    """A copy of the Task carrying a grounded Intent as its name (D47); an ungrounded one is not applied."""
-    if not intent.grounded:
-        return task.model_copy(deep=True)
-    return task.model_copy(
-        deep=True,
-        update={
-            "intent": intent.text,
-            "name": task.name or intent.text,
-            "unguarded": task.unguarded or intent.unguarded,
-        },
-    )

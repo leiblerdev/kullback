@@ -66,6 +66,22 @@ def as_dict(obj: BaseModel) -> dict:
     return obj.model_dump(mode="json", by_alias=True)
 
 
+def write_json(path: Any, body: Any) -> Path:
+    """One JSON artifact on disk the way every workdir file is written: parents made, keys sorted,
+    two-space indent, anything JSON cannot carry rendered with str. The Builder and the Examiner
+    write their artifacts through this one function so the bytes agree (D130)."""
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(body, indent=2, sort_keys=True, default=str), encoding="utf-8")
+    return path
+
+
+def read_json(path: Any, default: Any = None) -> Any:
+    """The JSON a workdir file holds, or `default` when there is no such file."""
+    path = Path(path)
+    return json.loads(path.read_text(encoding="utf-8")) if path.is_file() else default
+
+
 class Record(BaseModel):
     """Base for every record: aliases work both ways so `class` and `pass` survive a round trip.
 
@@ -350,6 +366,51 @@ class Task(Record):
     name: Optional[str] = None
     anchor_run_ids: list[str] = Field(default_factory=list)
 
+# --- intent ---
+
+# The Intent record and the one function that applies it to a Task live here rather than in the
+# Builder's intent.py (which keeps the stage, the prompt and the grounding) so the Examiner can read
+# an Intent without importing the Builder (D123); builder/intent.py re-exports the three names.
+
+SpanSource = Literal["user_utterance", "tool_arg", "written_value"]
+
+
+class IntentSpan(Record):
+    """Where one noun phrase of the Intent is evidenced: a user utterance, a tool argument, or a written value."""
+    phrase: str = ""
+    trace_id: str
+    source: SpanSource
+    text: str
+    label: Optional[str] = None  # the tool and argument the text came from; shown, never matched against
+    raw_ptr: Optional[RawPtr] = None
+
+
+class Intent(Record):
+    """The one-line Intent of a Task with the span behind every noun phrase (D47); ungrounded means no Verdict."""
+    task_id: str
+    text: str = ""
+    spans: list[IntentSpan] = Field(default_factory=list)
+    grounded: bool = False
+    unguarded: bool = False
+    ungrounded_phrases: list[str] = Field(default_factory=list)
+    run_coverage: dict[str, list[str]] = Field(default_factory=dict)  # phrase -> every member Run that evidences it
+    reason: Optional[str] = None
+    model: Optional[str] = None
+
+
+def apply_intent(task: Task, intent: Intent) -> Task:
+    """A copy of the Task carrying a grounded Intent as its name (D47); an ungrounded one is not applied."""
+    if not intent.grounded:
+        return task.model_copy(deep=True)
+    return task.model_copy(
+        deep=True,
+        update={
+            "intent": intent.text,
+            "name": task.name or intent.text,
+            "unguarded": task.unguarded or intent.unguarded,
+        },
+    )
+
 # --- verifier ---
 
 class Atom(Record):
@@ -577,6 +638,92 @@ class GateResult(Record):
     passed: bool = Field(alias="pass")
     metrics: dict = Field(default_factory=dict)
     failures: list[str] = Field(default_factory=list)
+
+# --- the Examiner's records (phase 5) ---
+
+VersionBy = Literal["derive", "repair"]
+FindingKind = Literal["assisted_tool", "fidelity", "reference_disagreement", "environment", "other"]
+FindingVerb = Literal["compile_tool", "replay", "reroll", "none"]
+FindingStatus = Literal["open", "delivered", "closed"]
+
+
+class Probe(Record):
+    """One attack on a Task's Verifier: a Run the Examiner wrote that every version must score no pass (D127, D133).
+
+    `verifier_hash` is the content hash of the version the probe was written against and
+    `scored_pass` what that version said at the time; the probe_pool gate rescores every probe
+    against the current version, so those two fields are the record and never the ruling.
+    """
+    probe_id: str
+    task_id: str
+    bug_class: str
+    note: str = ""
+    base_run_id: Optional[str] = None
+    verifier_hash: str
+    round: int = 0
+    scored_pass: bool = False
+    run: Run
+
+
+class ProbePool(Record):
+    """Every probe ever written for a Task, append-only: a repair cannot drop the attack that found it (D127)."""
+    task_id: str
+    probes: list[Probe] = Field(default_factory=list)
+
+
+class VerifierVersion(Record):
+    """One attempt at a Task's Verifier, derived or repaired, accepted or rejected, named by its content hash."""
+    task_id: str
+    content_hash: str
+    verifier_version: str
+    parent_hash: Optional[str] = None
+    round: int = 0
+    by: VersionBy
+    reason: str = ""
+    accepted: bool
+    rejected_by: list[str] = Field(default_factory=list)
+    verifier: Verifier
+
+
+class VerifierHistory(Record):
+    """Every version of a Task's Verifier in order; the current one is the last accepted row (D127)."""
+    task_id: str
+    versions: list[VerifierVersion] = Field(default_factory=list)
+
+
+class Refusal(Record):
+    """The Examiner's refusal of a Task, admitted only when no frontier Run of it finished (D128)."""
+    task_id: str
+    reason: str
+    round: int = 0
+    admitted: bool = False
+    finished_runs: list[str] = Field(default_factory=list)
+
+
+class Finding(Record):
+    """What the Examiner found wrong on the Builder's side, delivered to the Builder as a follow-up (D123)."""
+    finding_id: str
+    task_id: Optional[str] = None
+    kind: FindingKind
+    text: str
+    run_id: Optional[str] = None
+    tool: Optional[str] = None
+    suggested: FindingVerb = "none"
+    about_entry_id: Optional[str] = None
+    round: int = 0
+    status: FindingStatus = "open"
+
+
+class RoundRecord(Record):
+    """One round's counts, all from gates and none from a model, and the exit it ended on if any (D126)."""
+    round: int
+    counts: dict[str, Any] = Field(default_factory=dict)
+    exit: Optional[str] = None
+    pending_findings: list[Finding] = Field(default_factory=list)  # filed but never delivered; the next
+    # Builder beat still owes them an action, so `done` is never reported while this is non-empty
+    exit_note: Optional[str] = None  # why the exit is what it is, when it needs saying (D126)
+    failed: bool = False  # the round ended on a broken agent contract (a Builder or Examiner error),
+    # not on the gates: the exit is stalled but the run failed, and the CLI exits non-zero on it
 
 
 # Every record in this module plus Usage, the one record the provider layer defines, so the

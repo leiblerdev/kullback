@@ -6,7 +6,9 @@ turn, which is what `kullback build` does: the same stages, the same gates, the 
 `build.build()`, plus the stage events on the harness's stream. With an agent model
 (`kullback build --agent`) the harness is sent one message asking for `build(target)` and the model
 drives; a scripted `TestModel` in a test takes the same path. Either way repair verbs are off:
-there is no repair tool and the prompt says so.
+there is no repair tool and the prompt says so. The build ends at the re-rolls: the Verifiers and
+the probes are the Examiner's (`kullback.examiner.agent.run_examiner`, D123), which reads what this
+session leaves. A harness given a `session` records its transcript there, the Builder's own file.
 
 Subscribers see every event the harness emits: the stage events the pipeline sends through the
 extension's sink, and in the model-driven path the loop's own. `on_event` is the dict stream the
@@ -21,9 +23,9 @@ from typing import Any, Callable, Iterable, Optional
 
 from kullback.agent.events import ToolExecutionEnd
 from kullback.agent.extensions import load_extensions
-from kullback.agent.harness import AgentHarness
-from kullback.agent.loop import execute_tool_call
-from kullback.agent.messages import ToolCall
+from kullback.agent.harness import AgentHarness, DriverModel
+from kullback.agent.harness import drive_tool as core_drive_tool
+from kullback.agent.session import SessionStore
 from kullback.agent.tools import ToolResult
 from kullback.ai.provider import Model
 from kullback.builder import build as build_module
@@ -34,19 +36,12 @@ DRIVER_CALL_ID = "builder-driver"
 MAX_TURNS = 8
 
 
-class DriverModel(Model):
-    """The model of a harness no model drives: any call on it is a bug, not a request."""
-
-    name = "builder-driver"
-
-    def query(self, messages: list[dict], tools: Optional[list[dict]] = None, config: Any = None) -> Any:
-        raise RuntimeError("the Builder driver issues tool calls itself; no model turn was asked for")
-
-
 def build_harness(plan: BuildPlan, agent_model: Optional[Model] = None,
-                  subscribers: Iterable[Callable[[Any], Any]] = (), max_turns: int = MAX_TURNS) -> AgentHarness:
-    """A harness with the Builder extension over this plan; subscribers attached before any event."""
-    harness = AgentHarness(model=agent_model or DriverModel(), max_turns=max_turns)
+                  subscribers: Iterable[Callable[[Any], Any]] = (), max_turns: int = MAX_TURNS,
+                  session: Optional[SessionStore] = None) -> AgentHarness:
+    """A harness with the Builder extension over this plan; subscribers attached before any event, the
+    session (when given) the Builder's own transcript, never the Examiner's (D128)."""
+    harness = AgentHarness(model=agent_model or DriverModel("Builder"), max_turns=max_turns, session=session)
     for subscriber in subscribers:
         harness.subscribe(subscriber)
     load_extensions(harness, [builder_extension(plan)])
@@ -54,14 +49,8 @@ def build_harness(plan: BuildPlan, agent_model: Optional[Model] = None,
 
 
 def drive_tool(harness: AgentHarness, name: str, arguments: dict, call_id: str = DRIVER_CALL_ID) -> ToolResult:
-    """One tool call through the harness's hooks and registry, with no model turn.
-
-    `loop.execute_tool_call` is the call: the driver issues the build the same way the loop would,
-    so the hook order, what a raising hook does and the two execution events are the core's, stated
-    in one place rather than copied here.
-    """
-    call = ToolCall(id=call_id, name=name, arguments=dict(arguments))
-    return asyncio.run(execute_tool_call(call, harness.registry, harness.hooks, harness.emit))
+    """The core's `drive_tool` under the Builder driver's call id."""
+    return core_drive_tool(harness, name, arguments, call_id)
 
 
 def run_builder(workdir: Any, model: Any = None, target: str = TARGET_ALL, *, agent_model: Optional[Model] = None,
@@ -73,8 +62,9 @@ def run_builder(workdir: Any, model: Any = None, target: str = TARGET_ALL, *, ag
                 subscribers: Iterable[Callable[[Any], Any]] = (), max_turns: int = MAX_TURNS) -> dict:
     """Build `target` in `workdir` through the Builder extension; the dict `build.build()` returns, plus the rulings.
 
-    `model` is the Builder's model for the stages that call one (the plan's), `agent_model` the model
-    that drives the session, None for the code driver. A tool result that is an error with nothing
+    The build ends at the re-rolls; no Verifier is derived here (D123). `model` is the Builder's model
+    for the stages that call one (the plan's), `agent_model` the model that drives the session, None
+    for the code driver. A tool result that is an error with nothing
     built is raised as a BuildError, so the CLI fails the way it did. The arguments are BuildPlan's,
     the same list `build.build()` takes, `emit` included: the extension puts its own sink in front of
     whatever a caller passes here, so a plan-level listener still sees every stage event.
@@ -93,22 +83,26 @@ def run_builder(workdir: Any, model: Any = None, target: str = TARGET_ALL, *, ag
     # reported with the first run's status, env_id and rulings.
     if plan.last is None or (result is not None and result.is_error):
         raise BuildError(result.content if result is not None else f"the model never called build({target!r})")
-    out = build_module._result(plan.workdir, plan.last, plan.last.artifacts.get("environment"))
+    out = build_module.result_of(plan.workdir, plan.last, plan.last.artifacts.get("environment"))
     out["target"] = target
     out["rulings"] = list(plan.last.rulings)
     out["tool_result"] = {"content": result.content, "is_error": result.is_error} if result is not None else None
     return out
 
 
+def builder_message(target: str) -> str:
+    """The one message a model-driven Builder is sent: here and in the round driver's first beat."""
+    return (f"Build the target {target!r}: call the build tool with target={target!r} and then answer "
+            "with one line saying whether every ruling passed.")
+
+
 def _model_driven(harness: AgentHarness, target: str) -> Optional[ToolResult]:
     """One prompt asking for build(target); the last build tool's result, or None when the model never called it."""
-    message = (f"Build the target {target!r}: call the build tool with target={target!r} and then answer "
-               "with one line saying whether every ruling passed.")
     last: Optional[ToolResult] = None
 
     async def go() -> None:
         nonlocal last
-        async for event in harness.prompt(message):
+        async for event in harness.prompt(builder_message(target)):
             if isinstance(event, ToolExecutionEnd) and event.tool_name == "build":
                 last = event.result
 

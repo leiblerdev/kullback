@@ -19,8 +19,11 @@ SPOKEN_FIELDS = (GOAL, CONFIRMATION, CHOICE, CLOSING)
 # A sentence is an ask only when it is a question or asks in so many words.
 REQUEST_CUE = re.compile(
     r"\b(please provide|provide me|could you|can you|would you|may i (?:have|get)|"
-    r"what(?:'s| is) your|let me know|tell me|confirm|share|send me|need your|give me)\b"
+    r"what(?:'s| is) your|let me know|tell me|confirm|share|send me|need your|give me|"
+    r"need the following)\b"
 )
+# A request that ends in a colon goes on to name what it asks for, one list item per line.
+LIST_ITEM = re.compile(r"^\s*(?:[-*\u2022]|\d+[.)])\s*")
 CONFIRM_REQUEST = re.compile(
     r"\b(confirm|reply yes|shall i|should i (?:proceed|go ahead)|would you like me to|"
     r"do you want me to|is (?:that|this) correct|are you sure|proceed\?|go ahead\?)", re.I
@@ -54,6 +57,11 @@ REFUSAL_CUES = (
 WALK_AWAY_CUES = ("never mind", "nevermind", "forget it", "do it myself", "cancel this chat")
 
 GENERIC_CLOSE = "No, that is all. Thank you."
+# D44: a question the recorded user was never asked gets a representative answer. For "do you
+# confirm" the representative answer of a user who asked for the action is yes, unless the
+# recording holds a no; the source names it so a report can tell the yes from a recorded one.
+GENERIC_CONFIRM = "Yes, please go ahead."
+NEGATIVE_CUE = re.compile(r"^(no|nope|don'?t|do not|not yet|hold on|wait|stop|cancel that)\b", re.I)
 
 
 def _norm(text: Optional[str]) -> str:
@@ -84,24 +92,50 @@ def extracted_values(text: Optional[str], asked: Iterable[str] = (),
                      vocab: Vocabulary = GENERIC) -> list[tuple[str, str]]:
     """Every (field, value) a user turn states; `asked` allows the bare values that answer an ask."""
     found: list[tuple[str, str]] = []
+    claimed: list[tuple[int, int]] = []
     body = (text or "").replace("’", "'")
     for spec in vocab.fields:
         if spec.pattern:
             for match in re.finditer(spec.pattern, body):
                 found.append((spec.field, _value_of(spec.prefix, _group(match))))
+                claimed.append(match.span())
     for field in asked:
         spec = vocab.get(field)
         if spec is None or not spec.asked_only or any(seen == field for seen, _ in found):
             continue
-        match = re.search(spec.asked_only, body)
-        if match is not None:
+        # A bare value is read only where no shaped field already read one: build 8's Simulated
+        # user answered an address question with the order id the same turn had named.
+        for match in re.finditer(spec.asked_only, body):
+            if any(start < match.end() and match.start() < end for start, end in claimed):
+                continue
             found.append((field, _value_of(spec.prefix, _group(match))))
+            break
     return found
+
+
+def _request_sentences(body: str) -> list[str]:
+    """The request sentences, and the list items a request that ends in a colon goes on to name.
+
+    "Could you please provide me with: - your first name - your last name - your zip code" asks for
+    three fields, and none of the three lines is a question on its own. Build 8's Simulated user
+    read the ask and not the list, and answered "I do not have my name" on 63 re-rolls.
+    """
+    out: list[str] = []
+    listing = False
+    for sentence in _sentences(body):
+        if _is_request(sentence):
+            out.append(sentence)
+            listing = sentence.endswith(":")
+        elif listing and LIST_ITEM.match(sentence):
+            out.append(sentence)
+        else:
+            listing = False
+    return out
 
 
 def asked_fields(text: Optional[str], vocab: Vocabulary = GENERIC) -> list[str]:
     """The fields an agent turn asks for: request sentences only, in vocabulary order."""
-    requests = [sentence for sentence in _sentences(_norm(text)) if _is_request(sentence)]
+    requests = _request_sentences(_norm(text))
     if not requests:
         return []
     return [spec.field for spec in vocab.fields
@@ -145,8 +179,9 @@ def derive_user_rules(trace: Trace, vocab: Vocabulary = GENERIC) -> UserRules:
                     condition=None if on_request else "volunteered",
                 ))
         refusing = bool(pending) and any(cue in said for cue in REFUSAL_CUES)
+        answered_ask = any(field in pending for field, _ in values)
         _spoken_fact(rules, turn, text, said, values, refusing,
-                     first=not saw_user_turn and not pending)
+                     first=not saw_user_turn and not pending, answered_ask=answered_ask)
         if refusing:
             for field in pending:
                 if field not in rules.refusals and field not in answered:
@@ -168,18 +203,22 @@ def derive_user_rules(trace: Trace, vocab: Vocabulary = GENERIC) -> UserRules:
 
 
 def _spoken_fact(rules: UserRules, turn: Any, text: str, said: str, values: list,
-                 refusing: bool, first: bool) -> None:
-    """The goal, a confirmation, a choice or the closing line, kept as the recorded sentence."""
+                 refusing: bool, first: bool, answered_ask: bool = False) -> None:
+    """The goal, a confirmation, a choice or the closing line, kept as the recorded sentence.
+
+    A yes that goes on to name the order or the item is still the yes the write needed; only a yes
+    that answers a field the agent asked for ("yes, my zip is 19122") is the field's answer alone.
+    """
     if not text:
         return
     if CLOSING_CUE.search(said):
         field = CLOSING
     elif first:
         field = GOAL
+    elif AFFIRM_CUE.search(said) and not (answered_ask or refusing):
+        field = CONFIRMATION
     elif values or refusing:
         return  # this turn answered a field ask, or refused it; both are recorded already
-    elif AFFIRM_CUE.search(said):
-        field = CONFIRMATION
     else:
         field = CHOICE
     if field in (GOAL, CLOSING) and any(fact.field == field for fact in rules.facts):
@@ -341,6 +380,9 @@ class SimulatedUser:
             if fact is not None:
                 spoken.append(str(fact.value))
                 sources[field] = "rules"
+            elif field == CONFIRMATION and not self._declined():
+                spoken.append(GENERIC_CONFIRM)  # D44: the representative answer to an ask never recorded
+                sources[field] = "generic_confirm"
             else:  # the trace holds no answer to this request, and nothing is invented (D77)
                 unavailable.append(field)
                 sources[field] = "unavailable"
@@ -350,6 +392,11 @@ class SimulatedUser:
             spoken.append(str(closing.value) if closing is not None else GENERIC_CLOSE)
             sources[CLOSING] = "rules" if closing is not None else "generic_close"
             self.done = True
+
+    def _declined(self) -> bool:
+        """The recording holds a no where a yes was asked for; then no yes is representative."""
+        return any(fact.field in (CONFIRMATION, CHOICE) and NEGATIVE_CUE.search(_norm(str(fact.value)))
+                   for fact in self.rules.facts)
 
     def _fact(self, field: str) -> Optional[UserFact]:
         for fact in self.rules.facts:

@@ -240,7 +240,10 @@ def _run_predicate(constraint: Any, case: dict) -> bool:
         (v for k, v in reversed(list(namespace.items())) if callable(v) and not k.startswith("__")), None)
     if func is None:
         raise ValueError("predicate_src defines no function")
-    return bool(func(case))
+    # The same three arguments `builder/policy.py`'s sandbox and `runner/verdict.py` hand a predicate:
+    # the state before the write, the write call, the transcript so far. Build 8 handed the whole
+    # case as one argument and every compiled constraint failed the gate with a TypeError.
+    return bool(func(case.get("pre_state") or {}, case.get("write_call") or {}, case.get("transcript") or []))
 
 
 def environment_gate(environment, files_dir=None, referenced_ids=(), db_ids=(), synthetic_rows=()) -> GateResult:

@@ -1,6 +1,6 @@
 """The hand-built Runs the Verifier tests share: one Reference, its re-runs and the Runs that must fail.
 
-`derive` reaches into the Builder for `derive_verifier` (the derivation stays there until phase 5);
+`derive` calls the Examiner's `derive_verifier` (the derivation moved there in phase 5, D123);
 everything else is a Run record and a way to put one on disk the way loop.py does.
 """
 
@@ -9,7 +9,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from kullback.builder import verifier as V
+from kullback.examiner import derive as V
 from kullback.gates import verifier_suite as S
 from kullback.runner.records import Atom, Event, Run, Task, Verifier, as_dict
 

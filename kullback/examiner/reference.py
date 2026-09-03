@@ -23,7 +23,7 @@ import re
 from dataclasses import dataclass, field
 from typing import Any, Callable, Iterable, Optional
 
-from kullback.builder import verifier as verifier_mod
+from kullback.examiner import derive as verifier_mod
 from kullback.gates import verifier_suite
 from kullback.runner.records import Atom, Constraint
 

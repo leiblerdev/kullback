@@ -139,7 +139,9 @@ class Router:
             result = _call(function, self.state, args)
             return RouteResult(result, "code", self._reads_synthetic(result, args), None, self._misses())
         except Exception as exc:  # the customer's tools answer with an error, they do not crash the Run
-            return self._error(name, _class_of(exc), _message_of(exc))
+            error_class = _class_of(exc)
+            sample = _corpus_error(self.sigs.get(name), error_class) if _is_pythons(exc) else None
+            return self._error(name, error_class, _message_of(exc), sample=sample)
 
     def _reads_synthetic(self, result: Any, args: dict) -> bool:
         """The call named or returned a synthetic row (D40): the Run is assisted (D49)."""
@@ -158,10 +160,19 @@ class Router:
         reply = self.stand_in.query([{"role": "user", "content": prompt}])
         return RouteResult(_parsed(reply.content), "llm", True, None, self._misses())
 
-    def _error(self, name: str, error_class: str, message: str) -> RouteResult:
-        """D45: answered in the customer's own error encoding, taken from ToolSig.error_shapes."""
+    def _error(self, name: str, error_class: str, message: str, sample: Any = None) -> RouteResult:
+        """D45: answered in the customer's own error encoding, taken from ToolSig.error_shapes.
+
+        `sample` is the corpus's own payload for this class on this tool, used in place of the
+        message when the body raised one of Python's exceptions: a KeyError's text is Python
+        talking, and the recorded system said "Order not found" in its own words. Build 8 answered
+        155 unknown-id lookups with `KeyError: '#W...'` beside recordings that said otherwise.
+        """
         encoding = _encoding_for(self.sigs.get(name), error_class)
-        payload: Any = message if encoding == "text" else {"error": message, "class": error_class}
+        if sample is not None:
+            payload: Any = sample
+        else:
+            payload = message if encoding == "text" else {"error": message, "class": error_class}
         error = ToolCallError(class_=error_class, payload=payload, encoding=encoding, classified_by="code")
         return RouteResult(payload, "code", False, error, self._misses())
 
@@ -212,6 +223,19 @@ def _call(function: Any, state: StateView, args: dict) -> Any:
     if parameters and parameters[0] in STATE_PARAMS:
         return function(state, **args)
     return function(**args)
+
+
+def _is_pythons(exc: Exception) -> bool:
+    """A builtin exception the classifier maps by type carries Python's message, not the customer's."""
+    return any(isinstance(exc, exc_type) for exc_type in EXCEPTION_CLASSES)
+
+
+def _corpus_error(sig: Optional[ToolSig], error_class: str) -> Any:
+    """The payload the corpus shows for this class on this tool, when the miner recorded one."""
+    for shape in (sig.error_shapes if sig is not None else []):
+        if shape.class_ == error_class and shape.sample_payload not in (None, ""):
+            return shape.sample_payload
+    return None
 
 
 def _class_of(exc: Exception) -> str:

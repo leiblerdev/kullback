@@ -3,9 +3,10 @@
 Nothing here executes a Run (D91): re-runs arrive as `Run` JSONL paths the Runner already wrote.
 The vocabulary the atoms are written in (reading Runs, write effects, provenance, questions and
 communicate facts, the predicate templates) and the nine D79 checks that rule on the result live
-in `kullback.gates.verifier_suite`; this module is the derivation, which phase 5 moves to the
-Examiner (D123). What it adds to the gates' `make_atom` is the one thing a gate must not know: the
-Builder's own transcript helpers (policy.py's `HELPERS_SRC`), which a compiled Hard rule may call.
+in `kullback.gates.verifier_suite`; this module is the derivation, moved here from
+`builder/verifier.py` in phase 5 because the Examiner is the one writer of Verifiers (D123). What
+it adds to the gates' `make_atom` is the transcript helpers a compiled Hard rule may call, which
+the suite holds as `HELPERS_SRC` so the policy compiler and this module read one text.
 """
 
 from __future__ import annotations
@@ -13,6 +14,7 @@ from __future__ import annotations
 from typing import Any, Iterable, Optional
 
 from kullback.gates.verifier_suite import (
+    HELPERS_SRC,
     SUCCESS_TERMINATIONS,
     as_run,
     atom_payload,
@@ -50,16 +52,12 @@ def successful(run: Run, successful_run_ids: Optional[Iterable[str]]) -> bool:
 
 
 def _helpers_src() -> str:
-    """policy.py's transcript helpers, so a compiled rule finds them at Verdict time."""
-    from kullback.builder import (
-        policy,  # builder to builder; the Runner imports neither (D89)
-    )
-
-    return policy.HELPERS_SRC
+    """The transcript helpers a compiled rule calls, so it finds them at Verdict time."""
+    return HELPERS_SRC
 
 
 def _atom(atom_id: str, kind: str, payload: dict, **fields: Any) -> Atom:
-    """One atom, its Hard predicate wrapped with the Builder's helpers (the gates' `make_atom` otherwise)."""
+    """One atom, its Hard predicate wrapped with the transcript helpers (the gates' `make_atom` otherwise)."""
     return make_atom(atom_id, kind, payload, helpers=_helpers_src(), **fields)
 
 

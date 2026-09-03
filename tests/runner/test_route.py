@@ -244,6 +244,44 @@ def test_text_encoding_when_the_traces_show_text_errors():
     assert isinstance(out.result, str)
 
 
+def test_a_python_exception_is_answered_in_the_words_the_corpus_shows_for_its_class():
+    """Build 8: 155 unknown-id lookups came back as `KeyError: '#W...'` beside recordings that said 'Order not found'."""
+    router = make_router(tool_sigs=[ToolSig(name="get_order_details", error_shapes=[
+        ErrorShape(class_="not_found_entity", sample_payload="Error: Order not found", encoding="text"),
+    ])])
+    out = router.route("get_order_details", {"order_id": "999"})
+    assert out.result == "Error: Order not found"
+    assert out.error.payload == "Error: Order not found"
+    assert out.error.class_ == "not_found_entity"
+
+
+def test_a_json_corpus_error_is_answered_as_the_corpus_shows_it():
+    out = make_router().route("get_order_details", {"order_id": "999"})
+    assert out.result == {"error": "no such order"}
+
+
+def test_a_class_the_corpus_never_showed_keeps_the_exception_text():
+    out = make_router().route("get_order_details", {"nope": 1})
+    assert out.error.class_ == "invalid_arguments"
+    assert "TypeError" in out.result["error"]
+
+
+def test_an_error_the_body_raised_in_its_own_words_keeps_them():
+    class Toolkit:
+        def __init__(self, db):
+            self.db = db
+
+        def cancel_order(self, order_id):
+            raise ValueError("Order is not pending")
+
+    router = make_router(env_tools_module=Toolkit({}), tool_sigs=[ToolSig(name="cancel_order", error_shapes=[
+        ErrorShape(class_="business_error", sample_payload="Error: Item not found", encoding="text"),
+    ])])
+    out = router.route("cancel_order", {"order_id": "123"})
+    assert out.error.class_ == "business_error"
+    assert out.result == "ValueError: Order is not pending"
+
+
 def test_encoding_falls_back_to_text_when_no_errors_were_observed():
     out = make_router(tool_sigs=[ToolSig(name="get_order_details")]).route("get_order_details", {"order_id": "999"})
     assert out.error.encoding == "text"

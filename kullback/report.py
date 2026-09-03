@@ -15,6 +15,7 @@ from kullback.runner.records import (
     Environment,
     GateResult,
     Record,
+    RoundRecord,
     Run,
     SetAsideLesson,
     Task,
@@ -25,7 +26,8 @@ from kullback.runner.records import (
     disagreement_stats,
 )
 
-SECTIONS = ("## Environment", "## Tasks", "## Disagreement queue", "## Lessons set aside")
+SECTIONS = ("## Environment", "## Rounds", "## Tasks", "## Disagreement queue", "## Lessons set aside")
+ENVIRONMENT, ROUNDS, TASKS, QUEUE, LESSONS = SECTIONS
 
 
 class ScorecardItem(Record):
@@ -88,9 +90,19 @@ class ReportData(BaseModel):
     disagreement_queue: list[dict] = Field(default_factory=list)
     tasks_aside: list[dict] = Field(default_factory=list)
     lessons_set_aside: list[SetAsideLesson] = Field(default_factory=list)
+    rounds: list[RoundRecord] = Field(default_factory=list)
+    trusted: Optional[GateResult] = None
 
 
 # --- numbers ---------------------------------------------------------------
+
+
+def false_rejection_by_task(data: ReportData) -> dict[str, Optional[float]]:
+    """Per Task, the share of held-out frontier Runs the required atoms reject (D133), off the trusted
+    ruling's metrics; None where a Task held nothing out."""
+    if data.trusted is None:
+        return {}
+    return {str(task_id): value for task_id, value in (data.trusted.metrics.get("false_rejection") or {}).items()}
 
 def _percent(value: Optional[float]) -> str:
     return "n/a" if value is None else f"{value:.0%}"
@@ -380,10 +392,54 @@ def _headline(data: ReportData) -> list[str]:
     if data.stopped_reason:
         lines.append(f"Stopped: {data.stopped_reason}.")
     lines += _stop_lines(data)
+    lines += _round_lines(data)
     if data.records_not_read:
         lines += ["", "### Records not read", "",
                   "These files are on disk and did not load, so every number below is counted without them."]
         lines += [f"- {name}" for name in data.records_not_read]
+    return lines
+
+
+def _round_lines(data: ReportData) -> list[str]:
+    """What the rounds left: how many Tasks have a trusted Verifier, with the false-rejection number
+    per Task beside it (D133), how many were refused and why, and what a stalled exit hands a person."""
+    if not data.rounds:
+        return []
+    last = data.rounds[-1].counts or {}
+    fractions = false_rejection_by_task(data)
+    per_task = ", ".join(f"{task_id} {_percent(value)}" for task_id, value in sorted(fractions.items()))
+    lines = [f"{last.get('trusted', 0)} Tasks with a trusted Verifier; false rejection: per Task below"
+             + (f" ({per_task})" if per_task else "") + "."]
+    refused = dict(last.get("refused") or {})
+    lines.append(f"{len(refused)} Tasks refused" + (": " + "; ".join(
+        f"{task_id} ({reason or 'no reason recorded'})" for task_id, reason in sorted(refused.items()))
+        if refused else "") + ".")
+    if data.rounds[-1].exit == "stalled":
+        unfinished = list(last.get("unfinished") or [])
+        lines.append("stalled: these Tasks need a person: " + (", ".join(unfinished) or "none named") + ".")
+    return lines
+
+
+def _rounds_table(data: ReportData) -> list[str]:
+    """One row per round: the counts the gates reported and the exit on the last (D126)."""
+    lines = ["| round | fidelity | trusted | refused | assisted runs | probes passing | spend | exit |",
+             "| --- | --- | --- | --- | --- | --- | --- | --- |"]
+    for record in data.rounds:
+        counts = record.counts or {}
+        spend = float((counts.get("spend") or {}).get("total") or 0.0)
+        lines.append(f"| {record.round} | {counts.get('fidelity', 0)}/{counts.get('tasks', 0)} | "
+                     f"{counts.get('trusted', 0)} | {counts.get('refused_count', 0)} | "
+                     f"{counts.get('assisted_runs', 0)} | {counts.get('probes_passing', 0)} | "
+                     f"${spend:.4f} | {_cell(record.exit or '')} |")
+    return lines
+
+
+def _rounds(data: ReportData) -> list[str]:
+    lines = [ROUNDS, ""]
+    if not data.rounds:
+        lines.append("No rounds recorded: this build ran no Builder and Examiner rounds, or rounds.json is missing.")
+        return lines
+    lines += _rounds_table(data)
     return lines
 
 
@@ -454,7 +510,7 @@ def _pipeline_lines(data: ReportData) -> list[str]:
 def _environment(data: ReportData) -> list[str]:
     """The Environment section, in the order a person reads it: what was built, what the gates and
     the scorecard said, what still needs a look, and what the pipeline did and cost."""
-    return ([SECTIONS[0], ""] + _headline(data) + _gates_table(data) + _scorecard_table(data)
+    return ([ENVIRONMENT, ""] + _headline(data) + _gates_table(data) + _scorecard_table(data)
             + _tool_notes(data) + _overlay_lines(data)
             + ["", "### Coverage", ""] + _coverage(data) + _pipeline_lines(data))
 
@@ -509,7 +565,8 @@ def _pending_review(data: ReportData) -> list[str]:
 
 def _tasks(data: ReportData) -> list[str]:
     aside = {str(row.get("task_id")): str(row.get("reason", "disputed")) for row in data.tasks_aside}
-    lines = [SECTIONS[1], ""]
+    fractions = false_rejection_by_task(data)
+    lines = [TASKS, ""]
     if data.kind == "batch":
         lines += ["These are the numbers for one Run batch against the Environment above.", ""]
     if not data.tasks:
@@ -525,8 +582,23 @@ def _tasks(data: ReportData) -> list[str]:
             lines.append(f"Not gradeable, Reference disputed ({aside[task.id]}).")
             lines.append("")
         lines += _task_numbers_lines(data, numbers)
+        if data.trusted is not None:
+            lines += _trust_lines(data, task.id, fractions)
         lines += ["", suggestion(numbers, data.built, aside.get(task.id)), ""]
     return lines
+
+
+def _trust_lines(data: ReportData, task_id: str, fractions: dict) -> list[str]:
+    """Whether this Task's Verifier is trusted, and the false-rejection number that stands beside it (D133)."""
+    metrics = data.trusted.metrics if data.trusted is not None else {}
+    if task_id in (metrics.get("trusted") or []):
+        standing = "trusted"
+    elif task_id in (metrics.get("untrusted") or {}):
+        standing = f"not trusted, {metrics['untrusted'][task_id]}"
+    else:
+        standing = "no Verifier ruled on"
+    return [f"- Verifier: {standing}",
+            f"- False rejection: {_percent(fractions.get(task_id))} of held-out frontier Runs rejected"]
 
 
 def _path_words(record: Verdict) -> str:
@@ -592,7 +664,7 @@ def _counts(counts: dict) -> str:
 
 
 def _queue(data: ReportData) -> list[str]:
-    lines = [SECTIONS[2], ""]
+    lines = [QUEUE, ""]
     pairs = data.judge_disagreement.get("pairs", 0)
     disagreements = data.judge_disagreement.get("disagreements", len(data.disagreement_queue))
     bound = (f" Audit rate {_percent(data.audit_rate)} from the queue items a person has resolved, "
@@ -674,7 +746,7 @@ def _cited_spans(row: dict) -> list[str]:
 
 
 def _lessons(data: ReportData) -> list[str]:
-    lines = [SECTIONS[3], ""]
+    lines = [LESSONS, ""]
     if not data.lessons_set_aside:
         lines.append("The Builder applied every lesson it carried: no lessons were set aside for this build.")
         return lines
@@ -689,6 +761,7 @@ def render(data: ReportData) -> str:
     """The whole report as Markdown, in the one order D85 fixes."""
     lines = [f"# {data.title}", ""]
     lines += _environment(data) + [""]
+    lines += _rounds(data) + [""]
     lines += _tasks(data) + [""]
     lines += _queue(data) + [""]
     lines += _lessons(data) + [""]
@@ -956,6 +1029,26 @@ def _list_of_bodies(body: Any, model: type) -> list:
     return out
 
 
+def _rounds_of(path: Path, unread: Optional[list] = None) -> list[RoundRecord]:
+    """rounds.json as records: a file that is there and is not a list of RoundRecord is named, since a
+    round that did not load would leave the trusted count and the exit unsaid."""
+    if not path.is_file():
+        return []
+    body = _json(path)
+    rows = body if isinstance(body, list) else None
+    out: list[RoundRecord] = []
+    for item in rows or []:
+        try:
+            out.append(RoundRecord.model_validate(item))
+        except ValidationError:
+            rows = None
+            break
+    if rows is None:
+        _note(unread, f"{path.name}: not a list of RoundRecord this report can read")
+        return []
+    return out
+
+
 def coverage_rows(tasks: list[Task], uncovered: dict[str, str]) -> list[TaskCoverage]:
     """The D96 rows from a Task list and the first failing reason per uncovered Task.
 
@@ -992,6 +1085,7 @@ def load(workdir: Any) -> ReportData:
     tasks = _records(root / "tasks", Task, unread)
     runs = load_runs(root / "runs", unread)
     gates = (_list_of(root / "gates.json", GateResult) + _list_of_bodies(state.get("gates"), GateResult))
+    trusted = next((g for g in reversed(_list_of(root / "gates.json", GateResult)) if g.stage == "trusted"), None)
     status = str(state.get("status", "complete"))
     data = ReportData(
         title=config.get("title") or ("Run batch report" if config.get("kind") == "batch" else "Harness build report"),
@@ -1020,6 +1114,8 @@ def load(workdir: Any) -> ReportData:
         disagreement_queue=_jsonl(root / "disagreement_queue.jsonl", unread),
         tasks_aside=_jsonl(root / "tasks_aside.jsonl", unread),
         lessons_set_aside=_list_of(root / "lessons_set_aside.json", SetAsideLesson),
+        rounds=_rounds_of(root / "rounds.json", unread),
+        trusted=trusted,
     )
     gate = environment_gate(data)
     if gate is not None and not gate.passed:

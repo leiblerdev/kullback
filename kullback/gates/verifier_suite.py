@@ -22,8 +22,8 @@ verdict.py evaluates it without importing anything from here (D89). The `kind` k
 The target and the predicate say the same thing on purpose: `check_run` here scores a Run off the
 target and verdict.py scores it off `predicate_src`, so a check one of them makes and the other does
 not is a hole no D79 gate can see. tests/gates/test_verifier_runner_agreement.py holds the two
-together. The derivation that writes atoms from Runs is `kullback.builder.verifier.derive_verifier`
-until phase 5 moves it to the Examiner; it builds its atoms with `make_atom` from here.
+together. The derivation that writes atoms from Runs is `kullback.examiner.derive.derive_verifier`;
+it builds its atoms with `make_atom` from here, wrapping a Hard predicate with `HELPERS_SRC`.
 """
 
 from __future__ import annotations
@@ -60,6 +60,61 @@ CURRENCY = "".join(CanonRules().currency_symbols)
 # What check 8 puts in an atom's place: a value no Run of the customer's world produced.
 _MUTANT = "harness_mutation_no_such_value"
 _NEVER_HOLDS = "def check(pre_state, write_call, transcript):\n    return False\n"
+
+# The transcript helpers a compiled Hard predicate may call, pasted into its source by `_predicate`
+# at derivation time and by the policy compiler's sandbox at build time. One text, read by both
+# sides: the Examiner's derivation and the Builder's policy.py (which re-exports it) sit above this
+# package and neither imports the other. Moved byte-for-byte from builder/policy.py in phase 5.
+HELPERS_SRC = '''
+_YES = ("yes", "yeah", "yep", "confirm", "confirmed", "sure", "ok", "okay", "correct", "proceed")
+_YES_PHRASES = ("go ahead", "please do", "that is right", "that's right")
+_NO = ("no", "not", "never", "nope", "nah", "cannot", "cant", "dont", "stop", "wait", "wrong", "incorrect")
+
+def _plain_words(text):
+    return set("".join(c if (c.isalnum() or c.isspace()) else " " for c in text).split())
+
+def user_confirmed(transcript):
+    """True when the last user turn says yes to an action an assistant turn proposed (D43 case 3)."""
+    messages = list(transcript or [])
+    last = None
+    for pos in range(len(messages) - 1, -1, -1):
+        if messages[pos].get("role") == "user":
+            last = pos
+            break
+    if last is None:
+        return False
+    proposal = ""
+    for msg in reversed(messages[:last]):
+        if msg.get("role") == "assistant" and (msg.get("content") or "").strip():
+            proposal = msg.get("content") or ""
+            break
+    if "?" not in proposal:
+        return False  # nothing was proposed, so nothing was confirmed
+    text = (messages[last].get("content") or "").lower()
+    words = _plain_words(text)
+    if words & set(_NO) or "n't" in text:
+        return False  # a refusal that happens to carry a yes word is still a refusal
+    return bool(words & set(_YES)) or any(phrase in text for phrase in _YES_PHRASES)
+
+def called_before(transcript, *names):
+    """True when the transcript already holds a tool call with one of these names."""
+    wanted = set(names)
+    for msg in list(transcript or []):
+        for call in msg.get("tool_calls") or []:
+            if call.get("name") in wanted:
+                return True
+    return False
+
+def said_before(transcript, *needles):
+    """True when an assistant turn already contains one of these strings, case-insensitive."""
+    for msg in list(transcript or []):
+        if msg.get("role") != "assistant":
+            continue
+        text = (msg.get("content") or "").lower()
+        if any(needle.lower() in text for needle in needles):
+            return True
+    return False
+'''
 
 
 # --- reading Runs off disk (D91) ------------------------------------------

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from kullback.builder import verifier as verifier_mod
+from kullback.examiner import derive as verifier_mod
 from kullback.gates import verifier_suite as suite
 from kullback.runner import replay
 from kullback.runner.records import Task, ToolCallError
