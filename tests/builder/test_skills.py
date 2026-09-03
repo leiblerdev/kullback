@@ -69,3 +69,21 @@ def test_skill_edits_skips_corrupt_lines(tmp_path):
     assert [r["hash"] for r in rows if "hash" in r and r.get("name") == "compile"] == [
         r["hash"] for r in rows if isinstance(r, dict) and r.get("name") == "compile"]
     assert len([r for r in rows if isinstance(r, dict) and "hash" in r]) == 2
+
+
+def test_a_symlinked_skills_root_refuses_every_write(tmp_path):
+    """Greptile P1 security: a `skills` symlink pointing outside the workdir must fail closed.
+    Resolving both sides through the same symlink once made containment vacuous; the anchor is
+    now the workdir itself, so nothing model-supplied lands outside it."""
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (tmp_path / "work").mkdir()
+    (tmp_path / "work" / "skills").symlink_to(outside, target_is_directory=True)
+    with pytest.raises(ValueError, match="escapes the workdir"):
+        skills.write_skill(tmp_path / "work", "compile", "# evil\nRules.")
+    with pytest.raises(ValueError, match="escapes the workdir"):
+        skills.load_skill(tmp_path / "work", "compile")
+    with pytest.raises(ValueError, match="escapes the workdir"):
+        skills.list_skills(tmp_path / "work")
+    assert list(outside.iterdir()) == [], "no skill content and no edit log may land outside"
+    assert list((tmp_path / "work").iterdir()) == [tmp_path / "work" / "skills"]

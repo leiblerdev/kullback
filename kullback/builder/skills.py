@@ -46,23 +46,39 @@ def check_skill_name(name: str) -> str:
     return name
 
 
+def _contained_root(workdir: Any) -> Path:
+    """The skills directory, contained in the workdir.
+
+    The anchor is the resolved workdir itself, never the resolved skills directory: resolving
+    both sides through a `skills` symlink pointing outside made the old check pass while the
+    write landed outside the workdir. A skills directory that is not a real directory inside
+    the workdir is refused before anything touches disk.
+    """
+    anchor = Path(workdir).resolve()
+    root = anchor / SKILLS_DIRNAME
+    if root.is_dir() and root.resolve() != root:
+        raise ValueError(f"skills directory escapes the workdir: {skills_dir(workdir)}")
+    return root
+
+
 def skill_path(workdir: Any, name: str) -> Path:
     """The SKILL.md for one skill; the name is validated and the destination contained.
 
     Validation rejects traversal before disk is touched; the resolve-and-contain check stays
-    as defense in depth against a skills directory the caller shaped by other means.
+    as defense in depth against a skill directory the caller shaped by other means (a `skills`
+    symlink is already refused by `_contained_root`, a per-skill symlink is refused here).
     """
     check_skill_name(name)
-    root = skills_dir(workdir).resolve()
-    dest = (skills_dir(workdir) / name / SKILL_FILENAME).resolve()
-    if dest.parent != root / name or root not in dest.parents:
+    root = _contained_root(workdir)
+    dest = root / name / SKILL_FILENAME
+    if root not in dest.resolve().parents:
         raise ValueError(f"skill {name!r} escapes {skills_dir(workdir)}")
     return dest
 
 
 def list_skills(workdir: Any) -> list[str]:
     """Every skill with a SKILL.md in this workdir, sorted."""
-    root = skills_dir(workdir)
+    root = _contained_root(workdir)
     if not root.is_dir():
         return []
     return sorted(p.name for p in root.iterdir() if (p / SKILL_FILENAME).is_file())
@@ -96,7 +112,7 @@ def write_skill(workdir: Any, name: str, content: str) -> dict:
     path.write_text(content, encoding="utf-8")
     digest = content_hash({"skill": name, "content": content})
     prev_digest = content_hash({"skill": name, "content": prev}) if prev is not None else None
-    edits = skills_dir(workdir) / EDITS_FILENAME
+    edits = _contained_root(workdir) / EDITS_FILENAME
     with edits.open("a", encoding="utf-8") as fh:
         fh.write(json.dumps({"name": name, "hash": digest, "prev": prev_digest, "at": time.time()},
                             sort_keys=True) + "\n")
@@ -109,7 +125,7 @@ def skill_edits(workdir: Any) -> list[dict]:
     The log is append-only, so an interrupted write may leave a partial last line; invalid
     lines (and valid JSON that is not an edit record) are skipped so listing never breaks.
     """
-    edits = skills_dir(workdir) / EDITS_FILENAME
+    edits = _contained_root(workdir) / EDITS_FILENAME
     if not edits.is_file():
         return []
     out = []
