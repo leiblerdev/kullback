@@ -59,10 +59,11 @@ ignore = ["E501"]
 root_package = "kullback"
 
 [[tool.importlinter.contracts]]
-name = "the Builder and the Examiner sit on gates, on the Runner and the agent core, on the provider layer"
+name = "the round driver sits on the Builder and the Examiner, they on gates, on the Runner and the agent core, on the provider layer"
 type = "layers"
 containers = ["kullback"]
 layers = [
+    "rounds",
     "builder | examiner",
     "gates",
     "agent | runner",
@@ -85,5 +86,6 @@ source_modules = [
     "kullback.gates",
     "kullback.builder",
     "kullback.examiner",
+    "kullback.rounds",
 ]
 forbidden_modules = ["kullback.cli", "kullback.tui", "kullback.report"]

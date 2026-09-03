@@ -17,9 +17,16 @@ from kullback.runner.records import (
     Cost,
     Environment,
     Event,
+    Finding,
     GateResult,
+    Intent,
+    IntentSpan,
+    Probe,
+    ProbePool,
     RawPtr,
     Record,
+    Refusal,
+    RoundRecord,
     Run,
     Task,
     TaskOverlay,
@@ -30,6 +37,9 @@ from kullback.runner.records import (
     Usage,
     Verdict,
     Verifier,
+    VerifierHistory,
+    VerifierVersion,
+    apply_intent,
     as_dict,
     canonical_json,
     content_hash,
@@ -297,3 +307,67 @@ def test_token_counts_and_costs_are_never_negative():
     with pytest.raises(ValueError):
         Cost(wall_ms=-1.0)
     assert Usage(input=0).input == 0
+
+
+# --- the Examiner's records (phase 5) ---
+
+
+def _examiner_records() -> list[Record]:
+    run = Run(run_id="probe-t1-1", task_id="t1", events=[Event(idx=0, type="stop", payload={"reason": "success"})])
+    verifier = Verifier(task_id="t1", atoms=[Atom(id="w0", kind="required", provenance="user_stated",
+                                                  target={"tool": "cancel", "entity": "order", "field": "status",
+                                                          "value": "cancelled"})])
+    probe = Probe(probe_id="probe-t1-1", task_id="t1", bug_class="extra_field_acceptance", verifier_hash="v1",
+                  round=1, scored_pass=False, run=run)
+    version = VerifierVersion(task_id="t1", content_hash=content_hash(verifier), verifier_version="1", by="derive",
+                              accepted=True, verifier=verifier)
+    return [probe, ProbePool(task_id="t1", probes=[probe]), version,
+            VerifierHistory(task_id="t1", versions=[version]),
+            Refusal(task_id="t1", reason="no frontier Run finished", round=1, admitted=True, finished_runs=[]),
+            Finding(finding_id="f1", task_id="t1", kind="assisted_tool", text="the tool never fails", run_id="probe-t1-1",
+                    tool="cancel", suggested="compile_tool", round=1),
+            RoundRecord(round=1, counts={"trusted": 1, "fidelity": 1}, exit="done")]
+
+
+def test_the_examiner_records_round_trip_through_as_dict_and_hash_by_content():
+    for record in _examiner_records():
+        payload = json.loads(json.dumps(as_dict(record)))
+        again = type(record).model_validate(payload)
+        assert again == record, type(record).__name__
+        assert content_hash(again) == content_hash(record)
+        # The hash reads content, not identity: a copy with a field changed hashes differently.
+        first = next(iter(payload))
+        changed = type(record).model_validate(dict(payload, **{first: "other" if isinstance(payload[first], str)
+                                                             else payload[first]}))
+        assert (content_hash(changed) == content_hash(record)) == (payload[first] == as_dict(changed)[first])
+    pool = _examiner_records()[1]
+    assert pool.probes[0].run.events[0].payload == {"reason": "success"}
+    assert {type(r) for r in _examiner_records()} <= set(ALL_RECORDS)
+
+
+def test_the_intent_record_and_apply_intent_live_in_records_and_the_builder_re_exports_them():
+    """The Intent moved into records.py in phase 5 because the Examiner reads it; the Builder keeps
+    naming it under its old path, and the names it re-exports are the records' own classes and
+    function, so an Intent built on either side is one record."""
+    from kullback.builder import intent as builder_intent
+
+    assert builder_intent.Intent is Intent and builder_intent.IntentSpan is IntentSpan
+    assert builder_intent.apply_intent is apply_intent
+    intent = Intent(task_id="t1", text="cancel the order", grounded=True,
+                    spans=[IntentSpan(phrase="the order", trace_id="tr1", source="user_utterance", text="the order")])
+    task = Task(id="t1", run_ids=["tr1"])
+    applied = apply_intent(task, intent)
+    assert applied.intent == "cancel the order" and applied.name == "cancel the order"
+    theirs = builder_intent.Intent.model_validate(as_dict(intent))
+    assert as_dict(theirs) == as_dict(intent)
+    assert as_dict(builder_intent.apply_intent(task, theirs)) == as_dict(applied)
+    assert Intent.model_validate(as_dict(theirs)) == intent
+
+
+def test_a_probe_pool_forbids_unknown_fields():
+    with pytest.raises(ValueError):
+        ProbePool.model_validate({"task_id": "t1", "probes": [], "closed": True})
+    with pytest.raises(ValueError):
+        Probe.model_validate({"probe_id": "p", "task_id": "t1", "bug_class": "other", "verifier_hash": "v",
+                              "run": {"run_id": "p"}, "passed": False})
+    assert ProbePool.model_validate({"task_id": "t1"}).probes == []

@@ -7,6 +7,7 @@ covered without a build and without a key.
 
 from __future__ import annotations
 
+import io
 import json
 
 import pytest
@@ -72,26 +73,82 @@ def test_the_board_reads_the_typed_stage_events_of_the_agent_core_too(tmp_path):
     assert board.seconds["mine"] >= 0
 
 
-def test_the_screen_builds_through_the_builder_agent(tmp_path, monkeypatch):
-    """/build goes through run_builder, the same entry the CLI uses, with the dict events wired.
+def test_the_screen_builds_through_the_round_driver_the_cli_uses(tmp_path, monkeypatch):
+    """/build goes through rounds.run_rounds, the same entry the CLI uses, with the dict events wired.
 
     The one claim the `runner=` seam every other Screen test uses cannot make is which callable
     the Screen reaches for when nothing is injected, so this test alone replaces that default.
-    The real run_builder would drive a full build off an empty workdir.
+    The real run_rounds would drive whole rounds off an empty workdir.
     """
-    from kullback.builder import agent as builder_agent
+    from kullback import rounds
 
     seen = {}
 
     def fake(**kwargs):
         seen.update(kwargs)
+        kwargs["on_event"]({"kind": "round", "state": "end", "round": 1, "counts": {}, "exit": "done"})
         kwargs["on_event"]({"kind": "pipeline", "state": "complete"})
         return {}
 
-    monkeypatch.setattr(builder_agent, "run_builder", fake)
+    monkeypatch.setattr(rounds, "run_rounds", fake)
     screen = Screen(tmp_path, console=_console())
     assert screen.command("/build --iterate") is True
     assert seen["iterate"] is True and seen["workdir"] == tmp_path and seen["model"] is None
+
+
+def test_the_board_shows_the_round_and_the_beat_from_the_typed_events(tmp_path):
+    """The BeatStart and BeatEnd events of the driver name the agent that holds the stream (D128);
+    the board shows the round and the beat above the stages, and nothing before the first round."""
+    from kullback.agent.events import BeatEnd, BeatStart, RoundEnd, RoundStart
+
+    board = Board(tmp_path)
+    assert board.beat().plain == ""
+    board.event(RoundStart(round=1))
+    board.event(BeatStart(agent="builder", round=1))
+    assert board.beat().plain == "round 1, builder beat"
+    assert "round 1, builder beat" in _show(board.render())
+    board.event(BeatEnd(agent="builder", round=1))
+    assert board.beat().plain == "round 1"
+    board.event(BeatStart(agent="examiner", round=1))
+    assert board.beat().plain == "round 1, examiner beat"
+    board.event(BeatEnd(agent="examiner", round=1))
+    board.event(RoundEnd(round=1, counts={"fidelity": 1, "tasks": 2}, exit=None))
+    board.event({"kind": "beat", "state": "start", "agent": "builder", "round": 2})
+    assert board.beat().plain == "round 2, builder beat"
+    assert board.rounds == [{"round": 1, "counts": {"fidelity": 1, "tasks": 2}, "exit": None}]
+
+
+def test_the_round_table_lists_each_finished_round_with_its_counts_and_the_exit(tmp_path):
+    board = Board(tmp_path)
+    board.event({"kind": "round", "state": "end", "round": 1, "exit": None, "counts": {
+        "fidelity": 1, "tasks": 3, "trusted": 0, "refused_count": 0, "probes_passing": 2,
+        "spend": {"builder": 0.0, "examiner": 0.0, "total": 0.0}}})
+    board.event({"kind": "round", "state": "end", "round": 2, "exit": "done", "counts": {
+        "fidelity": 3, "tasks": 3, "trusted": 2, "refused_count": 1, "probes_passing": 5,
+        "spend": {"builder": 0.25, "examiner": 1.0, "total": 1.25}}})
+    rows = [line.split() for line in _show(board.rounds_table()).splitlines() if line.strip()]
+    assert rows[0] == ["round", "fidelity", "trusted", "refused", "probes", "passing", "spend", "exit"]
+    assert rows[1] == ["1", "1/3", "0", "0", "2", "$0.0000"]
+    assert rows[2] == ["2", "3/3", "2", "1", "5", "$1.2500", "done"]
+    assert "3/3" in _show(board.render())
+
+
+def test_status_prints_the_last_rounds_counts_beside_the_pipeline_state(tmp_path):
+    (tmp_path / "pipeline").mkdir()
+    (tmp_path / "pipeline" / "state.json").write_text(json.dumps({
+        "status": "complete", "statuses": {"mine": "ran"}, "attempts": {"mine": 1}, "gates": []}))
+    (tmp_path / "rounds.json").write_text(json.dumps([
+        {"round": 1, "exit": None, "counts": {"fidelity": 1, "tasks": 2, "trusted": 0, "refused_count": 0,
+                                               "probes_passing": 0, "spend": {"total": 0.0}}},
+        {"round": 2, "exit": "stalled", "counts": {"fidelity": 1, "tasks": 2, "trusted": 1, "refused_count": 1,
+                                                    "probes_passing": 3, "spend": {"total": 0.5}}},
+    ]))
+    screen = _screen(tmp_path)
+    screen.command("/status")
+    out = _text(screen.console)
+    assert "mine" in out and "complete" in out
+    assert "round 2" in out and "stalled" in out and "1/2" in out and "$0.5000" in out
+    assert screen.runner.calls == []
 
 
 def test_a_stage_is_only_timed_once_it_has_been_seen_to_start(tmp_path):
@@ -289,3 +346,230 @@ def test_a_count_that_is_not_a_whole_number_of_runs_is_told_in_words(tmp_path, l
     screen.command(line)
     assert message in _text(screen.console)
     assert screen.runner.calls == []
+
+
+# --- diagrammatic views -----------------------------------------------------
+
+def test_map_draws_the_stages_in_order_with_states_and_hashes(tmp_path):
+    from kullback.tui import diagrams
+
+    out = diagrams.dag_text(["mine", "cluster"], {"mine": "ran", "cluster": "start"},
+                            {"mine": 1, "cluster": 2}, {"mine": "3cbbe2f24725"})
+    plain = out.plain
+    assert plain.index("mine") < plain.index("cluster")
+    assert "ran" in plain and "start ×2" in plain and "3cbbe2f2" in plain
+    assert plain.count("▼") == 1
+
+
+def test_map_before_any_build_says_there_is_none(tmp_path):
+    from kullback.tui import diagrams
+
+    assert "no stages yet" in diagrams.dag_text([], {}).plain
+
+
+def test_loop_without_rounds_says_single_pass(tmp_path):
+    from kullback.tui import diagrams
+
+    assert "single-pass" in diagrams.loop_text(diagrams.read_rounds_file(tmp_path)).plain
+
+
+def test_loop_draws_beats_counts_and_exit(tmp_path):
+    from kullback.tui import diagrams
+
+    (tmp_path / "rounds.json").write_text(json.dumps([
+        {"round": 1, "counts": {"fidelity": 12, "tasks": 20, "trusted": 8, "refused_count": 1,
+                                "probes_passing": 5, "spend": {"total": 0.4231}}, "exit": None},
+        {"round": 2, "counts": {"fidelity": 20, "tasks": 20, "trusted": 15, "refused_count": 1,
+                                "probes_passing": 9, "spend": {"total": 0.9}}, "exit": "done"},
+    ]), encoding="utf-8")
+    plain = diagrams.loop_text(diagrams.read_rounds_file(tmp_path)).plain
+    assert "round 1" in plain and "round 2" in plain
+    assert "12/20" in plain and "exit: done" in plain
+
+
+def test_layers_names_every_package(tmp_path):
+    from kullback.tui import diagrams
+
+    plain = diagrams.layers_text().plain
+    for name in ("builder", "examiner", "gates", "agent", "runner", "ai"):
+        assert name in plain
+
+
+def test_map_loop_layers_commands_print(tmp_path):
+    (tmp_path / "pipeline").mkdir()
+    (tmp_path / "pipeline" / "state.json").write_text(
+        json.dumps({"statuses": {"mine": "ran"}, "attempts": {"mine": 1}}), encoding="utf-8")
+    (tmp_path / "cache").mkdir()
+    (tmp_path / "cache" / "mine.3cbbe2f2.json").write_text("{}", encoding="utf-8")
+    console = _console()
+    screen = Screen(tmp_path, console=console)
+    assert screen.command("/map") is True
+    assert screen.command("/layers") is True
+    assert screen.command("/loop") is True
+    out = _text(console)
+    assert "mine" in out and "builder" in out and "single-pass" in out
+
+
+# --- /login and /logout -----------------------------------------------------
+
+LOGIN_CATALOG = {
+    "opencode-go": {"id": "opencode-go", "name": "OpenCode Go", "npm": "@ai-sdk/openai-compatible",
+                    "api": "https://opencode.ai/zen/go/v1", "env": ["OPENCODE_API_KEY"],
+                    "models": {"muse-spark": {"limit": {"context": 1048576, "output": 131072},
+                                              "cost": {"input": 3, "output": 15}}}},
+}
+
+
+def _snapshot(monkeypatch, tmp_path, catalog=LOGIN_CATALOG):
+    import datetime
+
+    from kullback.ai import provider as pv
+
+    path = tmp_path / "models.dev.json"
+    path.write_text(json.dumps({"fetched_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+                                "catalog": catalog}), encoding="utf-8")
+    monkeypatch.setattr(pv, "REGISTRY_SNAPSHOT_PATH", str(path))
+    monkeypatch.delenv("OPENCODE_API_KEY", raising=False)
+    return path
+
+
+def test_login_with_no_args_inspects_the_current_model(tmp_path, monkeypatch):
+    _snapshot(monkeypatch, tmp_path)
+    console = _console()
+    screen = Screen(tmp_path, model="opencode-go/muse-spark", console=console)
+    assert screen.command("/login") is True
+    out = _text(console)
+    assert "opencode-go/muse-spark" in out and "OPENCODE_API_KEY" in out and "missing" in out
+
+
+def test_login_with_no_model_says_so(tmp_path):
+    console = _console()
+    assert Screen(tmp_path, console=console).command("/login") is True
+    assert "no model" in _text(console)
+
+
+def test_login_to_an_id_without_a_slash_is_told_in_words(tmp_path):
+    console = _console()
+    screen = Screen(tmp_path, console=console)
+    assert screen.command("/login kthumb") is True
+    assert "provider/model" in _text(console) and screen.model is None
+
+
+def test_login_to_an_unknown_provider_refuses_and_keeps_the_old_model(tmp_path, monkeypatch):
+    _snapshot(monkeypatch, tmp_path, catalog={})
+    console = _console()
+    screen = Screen(tmp_path, model="openai/gpt-4", console=console)
+    assert screen.command("/login nope/nothing") is True
+    assert "no host" in _text(console) and screen.model == "openai/gpt-4"
+
+
+def test_login_sets_the_model_the_build_will_use(tmp_path, monkeypatch):
+    _snapshot(monkeypatch, tmp_path)
+    screen = Screen(tmp_path, console=_console())
+    assert screen.command("/login opencode-go/muse-spark") is True
+    assert screen.model == "opencode-go/muse-spark"
+
+
+def test_login_set_holds_the_key_in_memory_and_logout_forgets_it(tmp_path, monkeypatch):
+    import os
+
+    _snapshot(monkeypatch, tmp_path)
+    console = _console()
+    screen = Screen(tmp_path, console=console)
+    assert screen.command("/login opencode-go/muse-spark --set OPENCODE_API_KEY=sk-zen-123") is True
+    assert os.environ.get("OPENCODE_API_KEY") == "sk-zen-123"
+    out = _text(console)
+    assert "sk-zen-123" not in out and "set" in out
+    assert screen.command("/logout") is True
+    assert "OPENCODE_API_KEY" not in os.environ
+
+
+def test_logout_restores_what_the_shell_held(tmp_path, monkeypatch):
+    import os
+
+    _snapshot(monkeypatch, tmp_path)
+    monkeypatch.setenv("OPENCODE_API_KEY", "old-key")
+    screen = Screen(tmp_path, console=_console())
+    screen.command("/login opencode-go/muse-spark --set OPENCODE_API_KEY=new-key")
+    assert os.environ["OPENCODE_API_KEY"] == "new-key"
+    screen.command("/logout")
+    assert os.environ["OPENCODE_API_KEY"] == "old-key"
+
+
+def test_keys_marks_the_keys_this_session_set(tmp_path, monkeypatch):
+    _snapshot(monkeypatch, tmp_path)
+    console = _console()
+    screen = Screen(tmp_path, console=console)
+    screen.command("/login opencode-go/muse-spark --set OPENCODE_API_KEY=sk-zen-123")
+    screen.command("/keys")
+    out = _text(console)
+    assert "OPENCODE_API_KEY" in out and "this session" in out and "sk-zen-123" not in out
+    screen.command("/logout")
+
+
+def test_a_login_secret_reaches_no_file_and_no_line(tmp_path, monkeypatch):
+    _snapshot(monkeypatch, tmp_path)
+    console = _console()
+    screen = Screen(tmp_path, console=console)
+    screen.command("/login opencode-go/muse-spark --set OPENCODE_API_KEY=topsecret-value-9")
+    screen.command("/keys")
+    screen.command("/status")
+    screen.command("/map")
+    screen.command("/loop")
+    screen.command("/layers")
+    assert "topsecret-value-9" not in _text(console)
+    for path in tmp_path.rglob("*"):
+        if path.is_file():
+            assert "topsecret-value-9" not in path.read_text(encoding="utf-8", errors="replace")
+    screen.command("/logout")
+
+
+def test_loop_shows_pending_findings_and_exit_notes(tmp_path):
+    from kullback.tui import diagrams
+
+    (tmp_path / "rounds.json").write_text(json.dumps([
+        {"round": 1, "counts": {}, "exit": None, "exit_note": "2 finding(s) owe the Builder a beat; the round continues",
+         "pending_findings": [{"finding_id": "f1"}, {"finding_id": "f2"}]},
+        {"round": 2, "counts": {}, "exit": "ceiling", "exit_note": "the ceiling ended the run first",
+         "pending_findings": [{"finding_id": "f3"}]},
+    ]), encoding="utf-8")
+    plain = diagrams.loop_text(diagrams.read_rounds_file(tmp_path)).plain
+    assert "2 finding(s) owed the Builder a beat" in plain
+    assert "exit: ceiling" in plain and "the ceiling ended the run first" in plain
+
+
+def test_the_banner_is_a_gradient_styles_vary_plain_does_not(tmp_path):
+    from kullback.tui import banner
+
+    text = banner()
+    assert text.plain == banner("kullback").plain
+    styles = {span.style for span in text.spans if "█" in text.plain[span.start:span.end]}
+    assert len(styles) > 1, "one flat style is not a gradient"
+
+
+def test_open_prints_status_segments(tmp_path, monkeypatch):
+    # A wide console: open() cuts absurdly long workdirs with an ellipsis rather than folding them.
+    console = Console(file=io.StringIO(), width=300, force_terminal=False, no_color=True)
+    monkeypatch.setenv("HARNESS_ALLOW_MODEL_REQUESTS", "1")
+    Screen(tmp_path, model="opencode-go/muse-spark", console=console).open()
+    out = _text(console)
+    assert "opencode-go/muse-spark" in out and "live on" in out and str(tmp_path) in out
+
+
+def test_open_says_live_off_and_hides_zero_spend(tmp_path, monkeypatch):
+    console = _console()
+    monkeypatch.delenv("HARNESS_ALLOW_MODEL_REQUESTS", raising=False)
+    Screen(tmp_path, console=console).open()
+    out = _text(console)
+    assert "live off" in out and "spend" not in out
+
+
+def test_loop_marks_a_failed_round(tmp_path):
+    from kullback.tui import diagrams
+
+    (tmp_path / "rounds.json").write_text(json.dumps([
+        {"round": 1, "counts": {}, "exit": "stalled", "exit_note": "examiner failed: no derive",
+         "failed": True, "pending_findings": []},
+    ]), encoding="utf-8")
+    plain = diagrams.loop_text(diagrams.read_rounds_file(tmp_path)).plain
+    assert "exit: stalled (failed)" in plain and "examiner failed" in plain

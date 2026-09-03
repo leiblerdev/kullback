@@ -1,7 +1,7 @@
 """The one declaration of the Builder's stages as a DAG over named artifacts, the plan that runs any target of it,
 and the Candidate Run batch that follows a build.
 
-`stages(plan)` is the whole graph: fifteen stages, each naming what it reads and writes, handed to
+`stages(plan)` is the whole graph: fourteen stages, each naming what it reads and writes, handed to
 `pipeline.Pipeline`, which decides the order (D120: the scheduler decides, never a model). `build()`
 is the CLI's entry and runs every stage; `execute(plan, target)` runs one stage or artifact and what
 is upstream of it, which is what the Builder's tools (builder/tools.py) call. A tool that wants one
@@ -33,13 +33,12 @@ from kullback.builder import (
     user_sim,
     vocabulary,
 )
-from kullback.builder import reference as reference_mod
-from kullback.builder import verifier as verifier_mod
 from kullback.gates import artifacts, fidelity, verifier_suite
 from kullback.gates import scorecard as scorecard_mod
 from kullback.gates import stages as stage_gates
 from kullback.runner import budget, canon, loop, route
 from kullback.runner import replay as replay_mod
+from kullback.runner.canon import rules_of as _rules_of
 from kullback.runner.records import (
     EntitySchema,
     Environment,
@@ -51,29 +50,23 @@ from kullback.runner.records import (
     as_dict,
     content_hash,
 )
+from kullback.runner.records import read_json as _read_json
+from kullback.runner.records import write_json as _write_json
 
 # This module is the graph, not the runner: assembling the stages means naming ingest, mine, cluster,
-# compile_env, policy, user_sim and verifier, and the Runner never imports the Builder (design section
-# 3, build brief rule 7, D89), so the wiring has to live beside them in builder/ and not in
-# runner/. pipeline.py is the generic stage runner this graph is handed to.
+# compile_env, policy and user_sim, and the Runner never imports the Builder (design section 3, build
+# brief rule 7, D89), so the wiring has to live beside them in builder/ and not in runner/.
+# pipeline.py is the generic stage runner this graph is handed to. The graph ends at the re-rolls:
+# the Verifiers are the Examiner's (D123), derived by `kullback.examiner.stage.derive_all` over the
+# artifacts this graph leaves, and the two Runs the Examiner needs, check 6's probe and more
+# re-rolls, are `probe_runner` and `reroll_runner` below, the Runner as a callable over this plan's
+# store (D120).
 
 CANON_RULES = "canon-rules.json"
 
 
 class BuildError(RuntimeError):
     """The build cannot start: no traces, no Task, no Environment on disk."""
-
-
-# --- small file helpers -----------------------------------------------------
-
-def _write_json(path: Path, body: Any) -> Path:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(body, indent=2, sort_keys=True, default=str), encoding="utf-8")
-    return path
-
-
-def _read_json(path: Path, default: Any = None) -> Any:
-    return json.loads(path.read_text(encoding="utf-8")) if path.is_file() else default
 
 
 def record_gate(workdir: Path, result: GateResult) -> GateResult:
@@ -524,15 +517,6 @@ def _environment_stage(domain: str):
                           code_version=_version("environment", run, compile_env))
 
 
-def _rules_of(inputs: dict) -> canon.CanonRules:
-    """The CanonRules the canon stage learned from this customer's own corpus (D39).
-
-    Read off the pipeline rather than off disk: the rules are learned inside this same run, so a
-    value read before the pipeline started would be the module defaults on every first build.
-    """
-    return canon.CanonRules.model_validate(inputs.get("canon_rules") or {})
-
-
 def _replay_stage(only: Optional[Iterable[str]] = None):
     """Every Trace of every Task replayed through the built tools: the Reference Runs and Gate A (D108).
 
@@ -540,7 +524,7 @@ def _replay_stage(only: Optional[Iterable[str]] = None):
     Candidate's is and scored against the recorded result. A Trace whose writes all match after
     canonicalization and whose reads never differ in substance confirms its Reference. This is not a
     Builder stage: it replays the anchor too, so the report can say how the held-out Runs fare, and
-    the Verifier stage is what keeps the anchor out of what it derives from (D81).
+    the Examiner's derivation is what keeps the anchor out of what it derives from (D81).
     """
 
     only = sorted(only) if only is not None else None
@@ -581,7 +565,7 @@ def _replay_stage(only: Optional[Iterable[str]] = None):
         _write_json(ctx.workdir / "replays.json", replays)
         _write_runs_index(ctx.workdir)
         # Section 6: a Task none of whose Traces replay to their End state is rejected for that
-        # Task, which the Verifier stage turns into "not verdicted"; the build itself goes on.
+        # Task, which the Examiner's derivation turns into "not verdicted"; the build itself goes on.
         ctx.record_gate(fidelity.reference_replay_gate(replays))
         return {"replays": replays}
 
@@ -686,6 +670,7 @@ def _rerolls_stage(model: Any, rerolls: int, workers: int = 1, only: Optional[It
 
         def reroll(job):  # one Task's re-rolls, in its own world and run directory (D118)
             task, rules = job
+            _discard_runs(ctx.workdir / "runs" / task.id, f"reroll-{task.id}-")
             runs = _candidate_runs(ctx.workdir, task, model, count=rerolls, prefix="reroll", source=source,
                                    schema=inputs["schema"], sigs=inputs["sigs"], db=inputs["db"], env_id=env_id,
                                    canon_rules=canon_rules, rules=rules,
@@ -718,9 +703,9 @@ def _candidate_runs(workdir: Path, task: Task, model: Any, *, count: int, prefix
     the second retail build's re-rolls did.
     """
     overlay, overlay_rows = compile_env.load_overlay(workdir, task.id)
-    tools = _tool_definitions(sigs)
-    out = []
     vocab = _vocab_from(workdir)
+    tools = _tool_definitions(sigs, vocab)
+    out = []
     for number in range(count):
         run_id = f"{prefix}-{task.id}-{seed + number}" if prefix else f"{task.id}-{seed + number}"
         # The Task's own overlay goes inside the toolkit, or it stays dead for every code route (D74).
@@ -753,203 +738,31 @@ def _system_prompt_for(task: Task, traces: dict, policy_text: Optional[str] = No
     return policy_text or None
 
 
-def _request_text(task: Task, intents: dict, traces: dict) -> str:
-    """What the user asked, for the judge: the grounded Intent, else the Task's name, else the first user turn."""
-    record = intents.get(task.id)
-    if record is not None and record.grounded and record.text:
-        return record.text
-    if task.intent or task.name:
-        return task.intent or task.name or ""
-    for run_id in task.run_ids:
-        trace = traces.get(run_id)
-        for turn in (trace.turns if trace else []):
-            if turn.role == "user" and turn.content:
-                return turn.content
-    return ""
-
-
-def _final_constraints(ctx, inputs: dict, seed_replays: dict, write_tools: set, read_tools: set,
-                       fn: Any) -> tuple[list, list]:
-    """The constraints a Verifier may check, and the ones the recordings demoted (D76).
-
-    Every compiled constraint is run over the confirmed recordings corpus-wide first: the recordings
-    are the frontier under the customer's real policy, so a rule they mostly break is a miscompiled
-    rule, and it becomes a residual, reported in the setup review and checked in no Verdict. The
-    compile_policy gate is recorded again over the final list, after the recordings have had their
-    say, which is the order the reference check has to run in: on the second retail build 15 of 39
-    compiled rules fired on confirmed recordings and poisoned every Verifier.
-    """
-    compiled = [c for c in inputs["constraints"] if c.compiled or c.judge_atom]
-    rates = reference_mod.constraint_rates(compiled, [r["path"] for rows in seed_replays.values() for r in rows],
-                                           write_tools, fn, read_tools)
-    constraints, demoted = reference_mod.demote(compiled, rates)
-    by_id = {c.id: c for c in compiled}
-    residual = [by_id[row["id"]].model_copy(update={"compiled": False, "judge_atom": False,
-                                                    "residual_reason": row["reason"]})
-                for row in demoted]
-    untouched = [c for c in inputs["constraints"] if not (c.compiled or c.judge_atom)]
-    final = constraints + residual + untouched
-    ctx.record_gate(artifacts.policy_gate(final))
-    _write_json(ctx.workdir / "constraints_check.json",
-                {"rates": rates, "demoted": demoted, "constraints": [as_dict(c) for c in final]})
-    return constraints, demoted
-
-
-def _no_reference_status(ctx, task: Task, confirmation: Any, *, seed_replays: list, replays: dict,
-                         rerolls: dict, traces: dict, assisted_tools: set) -> dict:
-    """Why this Task has no Reference, in the words the setup review needs (D49): a Task with none is not verdicted."""
-    reason = confirmation.reason or "no Run to confirm"
-    if not seed_replays:
-        reason = ("no seed Trace was replayed" if not (replays.get(task.id) or {}) else
-                  fidelity.unconfirmed_reason({t: r for t, r in replays[task.id].items()
-                                               if t in _seed_ids(ctx, task)}))
-    # D49: the status names the blocking tool. A seed Trace that calls an assisted tool replays
-    # through a body that failed the fidelity gates, so its divergence is the tool's, and the setup
-    # review needs the tool's name, not the diff.
-    assisted_used = sorted({c.name for tid in _seed_ids(ctx, task) if tid in traces
-                            for c in traces[tid].tool_calls if c.name in assisted_tools})
-    if assisted_used:
-        reason = (f"the seed Trace calls {', '.join(assisted_used)}, an assisted tool whose body "
-                  f"failed the fidelity gates (D49); {reason}")
-    return {"reference_confirmed": False, "verifier_passed": False, "reason": reason,
-            "recordings": len(seed_replays), "rerolls": len(rerolls.get(task.id, [])),
-            "judged": confirmation.judged, "assisted_tools": assisted_used}
-
-
-def _verifier_for(ctx, task: Task, confirmation: Any, *, canon_rules: Any, write_tools: set, constraints: list,
-                  intents: dict, user_rules: dict, recordings: int, rerolls: int, probe: Any,
-                  probe_model: Any, may_probe: bool) -> tuple[Any, dict]:
-    """One Task's Verifier from its References, through the whole D79 suite, with its status row."""
-    paths = [r.path for r in confirmation.references]
-    first = confirmation.references[0]
-    task_for = intent.apply_intent(task, intents[task.id]) if task.id in intents else task
-    record = verifier_mod.derive_verifier(task_for, paths[0], paths[1:], canon_rules,
-                                          write_tools=write_tools, constraints=constraints,
-                                          successful_run_ids=[r.run_id for r in confirmation.references])
-    rules_trace = first.trace_id or next((r.trace_id for r in confirmation.references if r.trace_id), None)
-    gates = verifier_suite.validate_verifier(
-        record, paths[0], canon=canon_rules, write_tools=write_tools, seed_runs=paths[1:],
-        wrong_run=verifier_suite.wrong_run(record, paths[0], canon_rules),
-        alt_path_run=paths[1] if len(paths) > 1 else None,
-        intent_text=task_for.intent, user_rules=user_rules.get(rules_trace),
-        model=probe_model if may_probe else None, run_probe=probe)
-    results = verifier_suite.d79_results(gates)
-    passed = artifacts.verifier_gate(results).passed
-    _write_json(ctx.workdir / "verifiers" / f"{task.id}.json", as_dict(record))
-    status = {"reference_confirmed": True, "verifier_passed": bool(passed),
-              "references": len(confirmation.references), "reference_kind": first.kind,
-              "recordings": recordings, "rerolls": rerolls,
-              "failed_recordings": dict(confirmation.failed), "judged": confirmation.judged,
-              "checks": results,
-              "not_run": [g.stage for g in gates if g.metrics.get("skipped")]}
-    return record, status
-
-
-def _verifier_stage(probe_model: Any = None, probe_limit: Optional[int] = None, judge_model: Any = None):
-
-    """One Verifier per Task from its References by the D111 rule, through the whole D79 suite.
-
-    The References are the confirmed seed replays plus the finished re-rolls that agree on one End
-    state after the recordings that broke a Hard constraint are out; the judge is the residue when
-    two End states remain and fails at most one side (D110, D111). The Reference proper is the first
-    recording of that group, the rest are the re-runs whose agreement sets required against allowed
-    (D43) and the second path of check 5, and the anchor is never among them (D81). Before any of
-    that, every compiled constraint is checked against the confirmed recordings corpus-wide and the
-    ones they mostly break are demoted (D76). Check 4's wrong Run is built from the Reference by
-    code; check 6's loophole probe is the one Run per Task the model executes, and `probe_limit`
-    caps how many Tasks get one. A Task with no Reference is not verdicted.
-    """
-
-    def run(ctx, inputs):
-        canon_rules = _rules_of(inputs)
-        fn = verifier_suite.canon_fn(canon_rules)
-        write_tools = {s.name for s in inputs["sigs"] if s.kind == "write"}
-        read_tools = {s.name for s in inputs["sigs"] if s.kind != "write"}
-        replays = inputs.get("replays") or {}
-        rerolls = inputs.get("rerolls") or {}
-        intents = {t: intent.Intent.model_validate(d) for t, d in (inputs.get("intents") or {}).items()}
-        user_rules = inputs.get("user_rules") or {}
-        traces = {t.trace_id: t for t in inputs.get("traces") or []}
-        policy_lines = [c.text for c in inputs["constraints"]]
-        seed_replays = {task.id: [r for tid, r in sorted((replays.get(task.id) or {}).items())
-                                  if tid in _seed_ids(ctx, task) and r.get("confirmed") and r.get("path")]
-                        for task in inputs["tasks"]}
-        # D76, D111: a compiled rule the confirmed recordings mostly break is demoted before any
-        # Verifier is derived from them.
-        constraints, demoted = _final_constraints(ctx, inputs, seed_replays, write_tools, read_tools, fn)
-        assisted_tools = set(inputs.get("assisted_tools") or ())
-        atoms = reference_mod.hard_atoms(constraints, write_tools, read_tools)
-        probe = _probe_runner(ctx, inputs, write_tools, canon_rules) if probe_model is not None else None
-        probed = 0
-        verifiers, status, references = [], {}, {}
-        for task in inputs["tasks"]:
-            recordings = [reference_mod.load(r["path"], reference_mod.RECORDING, run_id=r["run_id"],
-                                             trace_id=r["trace_id"], write_tools=write_tools, fn=fn, atoms=atoms)
-                          for r in seed_replays[task.id]]
-            recordings += [reference_mod.load(r["path"], reference_mod.REROLL, run_id=r["run_id"],
-                                              write_tools=write_tools, fn=fn, atoms=atoms)
-                           for r in rerolls.get(task.id, [])
-                           if (r.get("termination_reason") or "") in verifier_suite.SUCCESS_TERMINATIONS]
-            confirmation = reference_mod.confirm(recordings, request=_request_text(task, intents, traces),
-                                                 policy_lines=policy_lines, judge=judge_model)
-            references[task.id] = confirmation.as_dict()
-            if not confirmation.references:
-                status[task.id] = _no_reference_status(ctx, task, confirmation,
-                                                       seed_replays=seed_replays[task.id], replays=replays,
-                                                       rerolls=rerolls, traces=traces,
-                                                       assisted_tools=assisted_tools)
-                continue
-            may_probe = probe is not None and (probe_limit is None or probed < probe_limit)
-            probed += int(may_probe)
-            record, status[task.id] = _verifier_for(
-                ctx, task, confirmation, canon_rules=canon_rules, write_tools=write_tools,
-                constraints=constraints, intents=intents, user_rules=user_rules,
-                recordings=len(seed_replays[task.id]), rerolls=len(rerolls.get(task.id, [])),
-                probe=probe, probe_model=probe_model, may_probe=may_probe)
-            verifiers.append(record)
-        _write_json(ctx.workdir / "task_status.json", status)
-        _write_json(ctx.workdir / "references.json", references)
-        # Section 6: a Task whose Verifier does not clear D79 is "not verdicted, Verifier
-        # immature", which is a Task the report leaves uncounted, not a failed build.
-        ctx.record_gate(stage_gates.task_verifiers_gate(
-            status,
-            verifiers=len(verifiers), references=sum(1 for r in status.values() if r["reference_confirmed"]),
-            passed=sum(1 for r in status.values() if r["verifier_passed"]), tasks=len(status),
-            probed=probed, constraints_demoted=len(demoted),
-            failed_recordings=sum(len(r.get("failed") or {}) for r in references.values()),
-            judged=sum(1 for r in references.values() if r.get("judged")),
-            disagreeing=sum(1 for r in references.values()
-                            if not r["references"] and (r.get("reason") or "").startswith("recordings disagree"))))
-        return {"verifiers": verifiers, "task_status": status}
-
-    return pipeline.Stage(name="derive_verifier", fn=run, builder=True,
-                          inputs=("tasks", "sigs", "constraints", "canon_rules", "replays", "rerolls", "intents",
-                                  "user_rules", "schema", "bodies", "db", "environment", "traces", "assisted_tools"),
-                          outputs=("verifiers", "task_status"), input_paths=("overlays",),
-                          code_version=f"{_version('derive_verifier', run, verifier_mod, verifier_suite, replay_mod, reference_mod, intent, helpers=(_final_constraints, _no_reference_status, _verifier_for))}:"
-                                       f"{getattr(probe_model, 'name', 'none')}:{probe_limit}:"
-                                       f"{getattr(judge_model, 'name', 'none')}")
-
-
-def _probe_runner(ctx: Any, inputs: dict, write_tools: set, canon_rules: Any):
-    """Check 6's Run: the model told to reach the Task's End state while skipping the policy step.
+def probe_runner(plan: BuildPlan):
+    """Check 6's Run as a callable for the Examiner: the model told to reach the Task's End state while
+    skipping the policy step (D120: the Runner is a tool of both agents, its inputs the Builder's).
 
     One Run per Task in the Task's own world, with the Simulated user of its Reference, at most
     PROBE_TURNS turns, written under probes/ so it never counts as a Run of the Task. The prompt names
     the End state the Verifier requires and tells the agent to get there without asking, verifying or
     explaining, which is the loophole tau3 kept finding by hand; a Verifier the probe passes is not tight.
+    The callable reads the plan's store (the schema, the signatures, the bodies, the Starting state), so
+    the Examiner that calls it never does (D123).
     """
-    schema, sigs, bodies, db = inputs["schema"], inputs["sigs"], inputs["bodies"], inputs["db"]
-    env_id = getattr(inputs["environment"], "env_id", None)
-    tasks = {t.id: t for t in inputs["tasks"]}
-    user_rules = inputs.get("user_rules") or {}
-    replays = inputs.get("replays") or {}
+    store = _runner_store(plan)
+    schema, sigs, bodies, db = store["schema"], store["sigs"], store["bodies"], store["db"]
+    env_id = getattr(store["environment"], "env_id", None)
+    tasks = {t.id: t for t in store["tasks"]}
+    user_rules = store.get("user_rules") or {}
+    replays = store.get("replays") or {}
+    canon_rules = _rules_of(store)
     source = compile_env.module_source(schema, sigs, bodies)
-    tools = _tool_definitions(sigs)
+    tools = _tool_definitions(sigs, _vocab_from(plan.workdir))
+    workdir = plan.workdir
 
     def run_probe(model: Any, verifier: Any):
         task = tasks[verifier.task_id]
-        overlay, overlay_rows = compile_env.load_overlay(ctx.workdir, task.id)
+        overlay, overlay_rows = compile_env.load_overlay(workdir, task.id)
         toolkit = compile_env.load_toolkit(source, json.loads(json.dumps(db)), overlay=overlay,
                                            overlay_values=overlay_rows)
         router = route.Router(env_tools_module=toolkit, starting_state=json.loads(json.dumps(db)),
@@ -958,8 +771,8 @@ def _probe_runner(ctx: Any, inputs: dict, write_tools: set, canon_rules: Any):
         reference = next((r for r in (replays.get(task.id) or {}).values() if r.get("confirmed")), None)
         rules = user_rules.get(reference["trace_id"]) if reference else None
         simulated = user_sim.SimulatedUser(rules, starting_state_reader=router.state,
-                                           vocab=_vocab_from(ctx.workdir)) if rules else None
-        state = loop.new_run_state(f"probe-{task.id}", workdir=ctx.workdir / "probes", env_id=env_id,
+                                           vocab=_vocab_from(workdir)) if rules else None
+        state = loop.new_run_state(f"probe-{task.id}", workdir=workdir / "probes", env_id=env_id,
                                    task_id=task.id, model=f"probe:{getattr(model, 'name', 'model')}",
                                    user=simulated, max_turns=PROBE_TURNS,
                                    system_prompt=_probe_prompt(task, verifier, sigs))
@@ -970,6 +783,57 @@ def _probe_runner(ctx: Any, inputs: dict, write_tools: set, canon_rules: Any):
         return state.run
 
     return run_probe
+
+
+def reroll_runner(plan: BuildPlan):
+    """More frontier Runs of one Task as a callable for the Examiner (D112, D133): `run_rerolls(task_id, count, prefix)`.
+
+    The same Runs the rerolls stage makes, in the Task's own world with the Simulated user of its
+    Reference, written under runs/<task>/ with the prefix given and returned as the stage's rows
+    (run_id, path, termination_reason). The stage's own rows, the `rerolls` artifact in the
+    pipeline's state, are left alone: the Examiner keeps its rows in its own file and merges the
+    two (D133). The model is the plan's re-roll model, a fresh
+    sample under the production setting; a plan without one cannot re-roll.
+    """
+    store = _runner_store(plan)
+    model = plan.models.get("reroll")
+    if model is None and plan.model is not None:
+        model = _wrap(plan.model, "reroll", plan.workdir, plan.ceiling, cap_context=False, memoize=False)
+    if model is None:
+        raise BuildError("the plan has no model to re-roll with")
+    schema, sigs, bodies, db = store["schema"], store["sigs"], store["bodies"], store["db"]
+    env_id = getattr(store["environment"], "env_id", None)
+    tasks = {t.id: t for t in store["tasks"]}
+    user_rules = store.get("user_rules") or {}
+    replays = store.get("replays") or {}
+    traces = {t.trace_id: t for t in store.get("traces") or []}
+    canon_rules = _rules_of(store)
+    source = compile_env.module_source(schema, sigs, bodies)
+    anchor = pipeline.load_anchor(plan.workdir)
+
+    def run_rerolls(task_id: str, count: int, prefix: str) -> list[dict]:
+        task = tasks.get(task_id)
+        if task is None:
+            raise BuildError(f"no Task is named {task_id}")
+        seeds = set(anchor.seed_runs(task.id, task.run_ids)) if anchor is not None else set(task.run_ids)
+        confirmed = [r for tid, r in sorted((replays.get(task.id) or {}).items())
+                     if tid in seeds and r.get("confirmed")]
+        rules = next((user_rules.get(r["trace_id"]) for r in confirmed if user_rules.get(r["trace_id"])), None)
+        runs = _candidate_runs(plan.workdir, task, model, count=count, prefix=prefix, source=source,
+                               schema=schema, sigs=sigs, db=db, env_id=env_id, canon_rules=canon_rules,
+                               rules=rules, system_prompt=_system_prompt_for(task, traces, store.get("policy_text")))
+        _write_runs_index(plan.workdir)
+        return [{"run_id": r.run_id, "path": p, "termination_reason": r.termination_reason} for r, p in runs]
+
+    return run_rerolls
+
+
+def _runner_store(plan: BuildPlan) -> dict:
+    """The plan's store with everything a Run needs, or the reason it cannot run yet."""
+    missing = [name for name in ("schema", "sigs", "bodies", "db", "environment", "tasks") if name not in plan.store]
+    if missing:
+        raise BuildError(f"the plan holds no {', '.join(missing)}; build the Environment first")
+    return plan.store
 
 
 def _probe_prompt(task: Task, verifier: Any, sigs: list) -> str:
@@ -989,19 +853,41 @@ _JSON_TYPES = {"str": "string", "int": "integer", "float": "number", "bool": "bo
                "list": "array", "NoneType": "null"}
 
 
-def _tool_definitions(sigs: list) -> list[dict]:
+def _tool_definitions(sigs: list, vocab: Optional[vocabulary.Vocabulary] = None) -> list[dict]:
     """The mined signatures in the shape provider.py sends to a model: name, description, parameters.
 
     mine.py records Python type names (`["str"]`); a model endpoint wants JSON Schema names, and
-    OpenAI refuses a tool whose parameter type it does not know.
+    OpenAI refuses a tool whose parameter type it does not know. An argument the Vocabulary knows
+    gets the values the corpus showed for it as its description: build 8's re-roll model dropped
+    the mark from 132 order ids over a schema that showed it nothing, and the traces declare no
+    tool descriptions of their own.
     """
     out = []
     for sig in sigs:
         schema = sig.args_schema if isinstance(sig.args_schema, dict) and "properties" in sig.args_schema else {
             "type": "object", "properties": {name: {"type": "string"} for name in (sig.args_schema or {})}}
+        parameters = _json_schema(schema)
+        for arg, prop in (parameters.get("properties") or {}).items():
+            spec = vocab.get(arg) if vocab is not None else None
+            if spec is not None and spec.examples and isinstance(prop, dict) and not prop.get("description"):
+                prop["description"] = "for example " + ", ".join(str(v) for v in spec.examples[:3])
         out.append({"name": sig.name, "description": sig.description or f"{sig.kind} tool {sig.name}",
-                    "parameters": _json_schema(schema)})
+                    "parameters": parameters})
     return out
+
+
+def _discard_runs(run_dir: Path, prefix: str) -> int:
+    """Drop the Run files an earlier build left under this name before the stage writes its own.
+
+    A re-run of the stage replaces a Task's re-rolls whole, and anything that globs runs/ counts
+    what it finds: build 8 found 111 re-roll files from a build four days older, every one a
+    provider error, sitting beside its own.
+    """
+    count = 0
+    for path in (sorted(run_dir.glob(f"{prefix}*.jsonl")) if run_dir.is_dir() else []):
+        path.unlink()
+        count += 1
+    return count
 
 
 def _json_schema(node: Any) -> Any:
@@ -1120,7 +1006,6 @@ def stages(plan: BuildPlan, *, tools: Optional[Iterable[str]] = None, replay_tas
         _replay_stage(only=replay_tasks),
         (_rerolls_stage(models["reroll"], plan.rerolls, plan.workers, only=reroll_tasks)
          if models["reroll"] is not None else None),
-        _verifier_stage(models["loophole_probe"], plan.probe_limit, models["reference_judge"]),
     ]
     return [stage for stage in declared if stage is not None]
 
@@ -1166,9 +1051,9 @@ def build(workdir: Any, iterate: bool = False, model: Any = None, files: Optiona
           grow: Optional[dict[str, int]] = None, grow_seed: int = 0,
           probe_limit: Optional[int] = None, rerolls: int = DEFAULT_REROLLS, search: Any = None,
           workers: int = 1, emit: Optional[Any] = None) -> dict:
-    """Read the ingested Traces and write the Environment, the Tasks and one Verifier each.
+    """Read the ingested Traces and write the Environment, the Tasks, their References and re-rolls.
 
-    The whole graph, as `kullback build` runs it. The arguments are `BuildPlan`'s; the default of one
+    The whole graph, as `kullback build` runs it; the Verifiers are the Examiner's (D123). The arguments are `BuildPlan`'s; the default of one
     worker is so a scripted model in a test answers in the order it was given, and every artifact is
     the same at any count.
     """
@@ -1177,7 +1062,7 @@ def build(workdir: Any, iterate: bool = False, model: Any = None, files: Optiona
                      grow=grow, grow_seed=grow_seed, probe_limit=probe_limit, rerolls=rerolls, search=search,
                      workers=workers, emit=emit)
     result = execute(plan, TARGET_ALL)
-    return _result(workdir, result, result.artifacts.get("environment"))
+    return result_of(workdir, result, result.artifacts.get("environment"))
 
 
 def run_batch(workdir: Any, task_id: str, model: Any, count: int = 1, seed: int = 0,
@@ -1272,7 +1157,8 @@ def _write_scorecard(workdir: Path) -> Path:
     return _write_json(workdir / "scorecard.json", scorecard_mod.scorecard(workdir))
 
 
-def _result(workdir: Path, result: Any, environment: Any) -> dict:
+def result_of(workdir: Path, result: Any, environment: Any) -> dict:
+    """The dict a build hands back: the status, the env_id, the rulings and the Task ids (what cli build prints)."""
     return {"status": result.status, "workdir": str(workdir),
             "env_id": getattr(environment, "env_id", None),
             "failed_stage": result.failed_stage, "stopped": result.stopped,

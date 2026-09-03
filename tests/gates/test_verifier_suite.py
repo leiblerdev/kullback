@@ -33,7 +33,7 @@ from gates.verifier_fixtures import (
     write_run_with_footer,
     wrong_run,
 )
-from kullback.builder import verifier as V
+from kullback.examiner import derive as V
 from kullback.gates import artifacts
 from kullback.gates import verifier_suite as S
 from kullback.runner.confinement import confine
@@ -478,3 +478,20 @@ def test_the_suite_runs_the_wrong_run_and_the_second_path(tmp_path):
         alt_path_run=second.path)}
     assert gates["verifier_wrong_run"].passed and gates["verifier_alt_path"].passed
     assert gates["verifier_loophole"].metrics.get("skipped")  # no model, so not known to be tight
+
+
+def test_the_transcript_helpers_are_one_text_the_derivation_and_the_policy_compiler_both_read(tmp_path):
+    """HELPERS_SRC lives in the gates package since phase 5: a Hard rule is scored there, so the helpers
+    it may call have to be there too, and the Builder's policy compiler reads the same text rather than
+    its own copy. A Hard atom derived for a Verifier runs against exactly these helpers."""
+    from kullback.builder import policy
+
+    assert policy.HELPERS_SRC is S.HELPERS_SRC
+    assert V._helpers_src() is S.HELPERS_SRC
+    namespace: dict = {}
+    exec(S.HELPERS_SRC, namespace)
+    for helper in ("user_confirmed", "called_before", "said_before"):
+        assert callable(namespace[helper]), helper
+    transcript = [{"role": "assistant", "content": "Shall I cancel the order?"}, {"role": "user", "content": "yes please"}]
+    assert namespace["user_confirmed"](transcript) and namespace["said_before"](transcript, "cancel")
+    assert not namespace["called_before"](transcript, "cancel_order")

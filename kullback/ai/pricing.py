@@ -12,7 +12,7 @@ from __future__ import annotations
 import json
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, NamedTuple, Optional
 
 import httpx
 
@@ -104,6 +104,78 @@ def refresh(
     if stored is not None:
         return stored.get("catalog")
     return None
+
+
+# The npm adapters models.dev names for providers that speak the OpenAI request shape. A provider
+# it lists under any other adapter (Google, Cohere, Vertex) takes a different body, so the registry
+# says so rather than posting chat completions at it and reading the 400.
+OPENAI_SHAPED = ("@ai-sdk/openai-compatible", "@ai-sdk/openai")
+
+
+class Endpoint(NamedTuple):
+    """How to reach one provider: its host, the environment variable holding its key, and whether
+    the request shape is one this Harness builds."""
+    provider: str
+    base_url: str
+    key_env_var: str
+    openai_shaped: bool
+    adapter: str
+
+
+def endpoint_from_catalog(catalog: Optional[dict], model_id: Optional[str]) -> Optional[Endpoint]:
+    """The endpoint models.dev lists for a 'provider/model' id, or None when it lists no such
+    provider or the provider names no host (Google and Vertex are reached through their own SDKs).
+
+    This is the registry side of the snapshot the prices already come from: one catalog answers
+    what a model costs, how much context it takes, and where to send the call.
+    """
+    provider, _, _wire = str(model_id or "").partition("/")
+    entry = (catalog or {}).get(provider)
+    if not isinstance(entry, dict):
+        return None
+    base_url = entry.get("api")
+    if not isinstance(base_url, str) or not base_url:
+        return None
+    keys = entry.get("env")
+    key_env_var = keys[0] if isinstance(keys, list) and keys and isinstance(keys[0], str) else ""
+    adapter = str(entry.get("npm") or "")
+    return Endpoint(provider, base_url, key_env_var, adapter in OPENAI_SHAPED, adapter)
+
+
+def model_adapter_for(catalog: Optional[dict], model_id: Optional[str]) -> str:
+    """The npm adapter for one MODEL: its own row's provider.npm wins over the provider entry's.
+
+    The provider-level field cannot say that minimax-m3 rides opencode-go but speaks the
+    Anthropic shape; the model row can, and does. Empty when the catalog names neither."""
+    provider, _, wire = str(model_id or "").partition("/")
+    entry = (catalog or {}).get(provider)
+    if not isinstance(entry, dict):
+        return ""
+    models = entry.get("models")
+    row = models.get(wire) if isinstance(models, dict) else None
+    if isinstance(row, dict):
+        override = row.get("provider")
+        if isinstance(override, dict):
+            npm = override.get("npm")
+            if isinstance(npm, str) and npm:
+                return npm
+    npm = entry.get("npm")
+    return npm if isinstance(npm, str) else ""
+
+
+def window_from_catalog(catalog: Optional[dict], model_id: Optional[str]) -> Optional[int]:
+    """The context window models.dev lists for a model, for the D65 cap."""
+    provider, _, wire_id = str(model_id or "").partition("/")
+    entry = (catalog or {}).get(provider) if wire_id else None
+    if not isinstance(entry, dict):
+        return None
+    model_entry = (entry.get("models") or {}).get(wire_id)
+    limit = model_entry.get("limit") if isinstance(model_entry, dict) else None
+    context = limit.get("context") if isinstance(limit, dict) else None
+    try:
+        return int(context) if context else None
+    except (TypeError, ValueError):
+        return None
 
 
 def _price_from_provider(provider_entry: Any, wire_id: str) -> Optional[dict[str, float]]:

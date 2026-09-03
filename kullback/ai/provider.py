@@ -10,9 +10,11 @@ import random
 import re
 import threading
 import time
+import uuid
 from email.utils import parsedate_to_datetime
 from pathlib import Path
 from typing import Any, Iterable, Optional
+from urllib.parse import urlparse
 
 import httpx
 from pydantic import BaseModel, ConfigDict, Field
@@ -887,6 +889,25 @@ class OpenAIModel(HttpModel):
         )
 
 
+# One session id per process for OpenCode's prompt-cache optimization. Stable across the whole
+# run on purpose: the same id on every call is what lets the gateway cache, and a fresh id per
+# call would look like the abusive traffic the Go docs ask clients not to generate.
+_OPENCODE_SESSION = uuid.uuid4().hex
+
+
+def opencode_headers(base_url: str, headers: dict) -> dict:
+    """Identify this client on OpenCode hosts, and only there.
+
+    Go asks clients to identify themselves (no broad user agents) and to send
+    `x-opencode-session`; without both, gateway traffic looks abusive and keys get blocked.
+    Every adapter that posts to an opencode.ai host calls this; no other provider ever sees
+    these headers."""
+    if "opencode.ai" in urlparse(base_url).netloc:
+        headers["user-agent"] = "kullback"
+        headers["x-opencode-session"] = _OPENCODE_SESSION
+    return headers
+
+
 class OpenAICompatibleModel(OpenAIModel):
     """A local or self-hosted endpoint that speaks the OpenAI shape. Base URL required, key optional."""
 
@@ -895,28 +916,232 @@ class OpenAICompatibleModel(OpenAIModel):
     def __init__(self, model_id: str, base_url: str, **kwargs):
         super().__init__(model_id, base_url=base_url, **kwargs)
 
+    def headers(self) -> dict:
+        return opencode_headers(self.base_url, super().headers())
+
     def reasoning_fields(self, config: ModelConfig) -> dict:
         """Reasoning branch three of three: a local endpoint gets none of it. Servers that do
         not know the field reject the whole request, and there is no effort table to guess from."""
         return {}
 
 
+class RegistryModel(OpenAICompatibleModel):
+    """A provider the models.dev registry names: its host and its key variable, the OpenAI shape.
+
+    This is how `opencode-go/kimi-k3` or `groq/llama-3.3-70b` runs without anyone writing an
+    adapter for it. The registry answers where to send the call and which variable holds the key;
+    the body is OpenAI's, because the registry is only asked for providers that speak that shape.
+    Reasoning fields stay off for the reason the local endpoint leaves them off: a gateway that
+    does not know a field refuses the whole request, and the registry lists no effort table.
+    """
+
+    def __init__(self, model_id: str, base_url: str, key_env_var: str = "", **kwargs):
+        self.key_env_var = key_env_var
+        self.key_required = bool(key_env_var)
+        super().__init__(model_id, base_url=base_url, **kwargs)
+
+
+# Models OpenCode serves through the Responses API (/v1/responses) rather than chat completions,
+# from its Go docs' Endpoints table. The models.dev snapshot carries no per-model shape field
+# (and does not list 1.3 at all yet), so the docs are the source of truth here. Delete an entry
+# when the snapshot carries that model with a shape the resolver can read; never add one the
+# docs' table does not name. gpt-5.6-luna is deliberately absent: it answers chat bodies live.
+RESPONSES_API_MODELS = frozenset({"opencode-go/muse-spark-1.3-contributor"})
+
+
+class OpenAIResponsesModel(HttpModel):
+    """OpenAI's Responses API: input items in, output items out, one round trip per query.
+
+    Built for the OpenCode Go models the docs serve through /v1/responses (Muse Spark 1.3).
+    The Harness above never sees the difference: query() takes messages and tools and returns
+    a ModelReply, and the agent loop re-queries with the tool results, exactly as on chat.
+    Reasoning items are read, never echoed: replaying encrypted reasoning we did not produce
+    would be fabrication, so follow-up turns carry the text and the tool calls, not the blob.
+    The body stays minimal for the reason the chat adapters stay minimal: a gateway that does
+    not know a field refuses the whole request."""
+
+    path = "/responses"
+    key_required = False
+
+    def __init__(self, model_id: str, base_url: str, key_env_var: str = "", **kwargs):
+        self.key_env_var = key_env_var
+        self.key_required = bool(key_env_var)
+        super().__init__(model_id, base_url=base_url, **kwargs)
+
+    def headers(self) -> dict:
+        headers = {"content-type": "application/json"}
+        if self.api_key:
+            headers["authorization"] = f"Bearer {self.api_key}"
+        return opencode_headers(self.base_url, headers)
+
+    def build_body(self, messages: list[dict], tools: Optional[list[dict]], config: ModelConfig) -> dict:
+        body: dict[str, Any] = {
+            "model": self.wire_id,
+            "input": _responses_input(strip_surrogates_deep(copy.deepcopy(messages))),
+        }
+        if tools:
+            body["tools"] = [_responses_tool(t) for t in tools]
+        if config.max_tokens is not None:
+            body["max_output_tokens"] = config.max_tokens
+        return body
+
+    def parse_reply(self, data: dict) -> ModelReply:
+        if data.get("status") not in (None, "completed", "in_progress"):
+            error = data.get("error") or {}
+            raise ProviderError(
+                f"{self.name}: the Responses API ended as {data.get('status')}: "
+                f"{error.get('message') or error or 'no reason given'}"
+            )
+        texts: list[str] = []
+        calls: list[ToolCallRequest] = []
+        for item in data.get("output") or []:
+            if not isinstance(item, dict):
+                continue
+            kind = item.get("type")
+            if kind == "message":
+                for part in item.get("content") or []:
+                    if isinstance(part, dict) and part.get("type") == "output_text":
+                        texts.append(part.get("text") or "")
+            elif kind == "function_call":
+                calls.append(
+                    ToolCallRequest(
+                        id=clean_tool_call_id(item.get("call_id") or item.get("id")),
+                        name=item.get("name") or "",
+                        arguments=_arguments_of({"arguments": item.get("arguments")}),
+                    )
+                )
+        usage = data.get("usage") or {}
+        details = usage.get("input_tokens_details") or {}
+        # Same convention as the chat adapter: Usage.input means uncached input everywhere,
+        # so the cached tokens come off here, at the adapter, and budget.py bills plain counts.
+        cached = int(details.get("cached_tokens", 0) or 0)
+        return ModelReply(
+            content="".join(texts) or None,
+            tool_calls=calls,
+            usage=Usage(
+                input=max(0, int(usage.get("input_tokens", 0) or 0) - cached),
+                output=int(usage.get("output_tokens", 0) or 0),
+                cache_read=cached,
+            ),
+            model=data.get("model") or self.wire_id,
+            stop_reason=data.get("status"),
+            raw=data,
+        )
+
+
+def _responses_tool(tool: dict) -> dict:
+    """One function tool in the Responses shape, which matches the chat shape field for field."""
+    out = _openai_tool(tool)
+    function = out.get("function") or {}
+    return {"type": "function", "name": function.get("name", ""),
+            "description": function.get("description") or "",
+            "parameters": function.get("parameters") or {"type": "object"}}
+
+
+def _responses_input(messages: list[dict]) -> list[dict]:
+    """History into Responses input items: text stays text, tool traffic becomes call items.
+
+    An assistant turn that called tools is replayed as its function_call items (so the model
+    sees what it did) plus its text, if any; tool results become function_call_output items
+    against the same call ids, which is what keeps a multi-turn tool loop coherent."""
+    items: list[dict] = []
+    for message in messages:
+        if not isinstance(message, dict):
+            continue
+        role = message.get("role")
+        if role == "tool":
+            items.append({"type": "function_call_output",
+                          "call_id": clean_tool_call_id(message.get("tool_call_id")),
+                          "output": _responses_text(message.get("content"))})
+            continue
+        calls = message.get("tool_calls") or []
+        text = _responses_text(message.get("content"))
+        for call in calls:
+            if not isinstance(call, dict):
+                continue
+            function = call.get("function") or {}
+            args = function.get("arguments", call.get("arguments"))
+            items.append({"type": "function_call",
+                          "call_id": clean_tool_call_id(call.get("id")),
+                          "name": function.get("name", call.get("name", "")),
+                          "arguments": args if isinstance(args, str) else json.dumps(args or {})})
+        if text or not calls:
+            items.append({"role": role if role in ("user", "assistant", "system", "developer") else "user",
+                          "content": text})
+    return items
+
+
+def _responses_text(content: Any) -> str:
+    if content is None:
+        return ""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return "".join(_responses_text(part) for part in content)
+    if isinstance(content, dict):
+        return str(content.get("text") or content.get("output_text") or "")
+    return str(content)
+
+
 ADAPTERS: dict[str, type] = {"anthropic": AnthropicModel, "openai": OpenAIModel}
+
+# The registry snapshot unknown providers are resolved against. None is the real default
+# (kullback.ai.pricing.snapshot_path()); tests point it at a tmp file, so no test reads the real one.
+REGISTRY_SNAPSHOT_PATH: Optional[str] = None
+
+
+def registry_endpoint(model_id: str, env: Optional[dict[str, str]] = None) -> Any:
+    """What the models.dev snapshot says about this id's provider, or None when it says nothing.
+
+    Imported inside the function because `pricing` reads the live switch from this module: the same
+    deferred import `budget.py` makes, for the same reason. No network unless live calls are
+    already on, and then the snapshot is refetched at most once a week.
+    """
+    from kullback.ai import pricing
+
+    catalog = pricing.refresh(path=REGISTRY_SNAPSHOT_PATH, env=env)
+    return pricing.endpoint_from_catalog(catalog, model_id)
 
 
 def model_for(model_id: str, base_url: Optional[str] = None, **kwargs) -> Model:
     """The one place a live adapter is built, from the 'provider/model' id.
 
-    A provider with no adapter of its own is treated as an OpenAI-compatible endpoint, which
-    needs a base URL: a local model has no default host to guess.
+    Three ways to reach a model, in order: an adapter of its own, the base URL the caller passed,
+    or the host the models.dev registry lists for that provider. The last is what puts a provider
+    nobody wrote code for (OpenCode Go, Groq, DeepSeek, OpenRouter) one `--model` away, from the
+    same snapshot `budget.py` prices the call from. A provider the registry does not list, or lists
+    behind a request shape this Harness does not build, still needs a base URL.
     """
     provider, _ = split_model_id(model_id)
     adapter = ADAPTERS.get(provider)
     if adapter is not None:
         return adapter(model_id, base_url=base_url, **kwargs)
-    if not base_url:
-        raise ValueError(f"{model_id} is not anthropic or openai, so it needs a base_url")
-    return OpenAICompatibleModel(model_id, base_url=base_url, **kwargs)
+    if model_id in RESPONSES_API_MODELS and base_url:
+        # An explicit endpoint never changes the wire shape: a Responses model speaks
+        # Responses wherever it lives, so this check sits before the base_url branch.
+        return OpenAIResponsesModel(model_id, base_url=base_url, **kwargs)
+    if base_url:
+        return OpenAICompatibleModel(model_id, base_url=base_url, **kwargs)
+    endpoint = registry_endpoint(model_id, env=kwargs.get("env"))
+    if endpoint is None:
+        raise ValueError(
+            f"{model_id} has no adapter of its own and the models.dev snapshot names no host for "
+            f"{provider!r}; pass base_url, or refresh the snapshot with live calls on"
+        )
+    if model_id in RESPONSES_API_MODELS:
+        return OpenAIResponsesModel(model_id, base_url=endpoint.base_url,
+                                     key_env_var=endpoint.key_env_var, **kwargs)
+    from kullback.ai import pricing
+
+    catalog = pricing.refresh(path=REGISTRY_SNAPSHOT_PATH, env=kwargs.get("env"))
+    per_model = pricing.model_adapter_for(catalog, model_id)
+    shape = per_model or endpoint.adapter
+    if shape not in pricing.OPENAI_SHAPED:
+        raise ValueError(
+            f"models.dev serves {model_id} through {shape}, which is not a request shape this "
+            f"Harness builds; pass base_url for an endpoint that is"
+        )
+    return RegistryModel(model_id, base_url=endpoint.base_url, key_env_var=endpoint.key_env_var, **kwargs)
 
 
 def live_model(model_id: str, base_url: Optional[str] = None, **kwargs) -> Model:
