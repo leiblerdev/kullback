@@ -479,3 +479,29 @@ def test_loop_shows_pending_findings_and_exit_notes(tmp_path):
     plain = diagrams.loop_text(diagrams.read_rounds_file(tmp_path)).plain
     assert "2 finding(s) owed the Builder a beat" in plain
     assert "exit: ceiling" in plain and "the ceiling ended the run first" in plain
+
+
+def test_the_banner_is_a_gradient_styles_vary_plain_does_not(tmp_path):
+    from kullback.tui import banner
+
+    text = banner()
+    assert text.plain == banner("kullback").plain
+    styles = {span.style for span in text.spans if "█" in text.plain[span.start:span.end]}
+    assert len(styles) > 1, "one flat style is not a gradient"
+
+
+def test_open_prints_status_segments(tmp_path, monkeypatch):
+    console = _console()
+    monkeypatch.setenv("HARNESS_ALLOW_MODEL_REQUESTS", "1")
+    Screen(tmp_path, model="opencode-go/muse-spark", console=console).open()
+    out = _text(console)
+    # The workdir line is cut with an ellipsis past width 100, so only its tail is asserted.
+    assert "opencode-go/muse-spark" in out and "live on" in out and tmp_path.name in out
+
+
+def test_open_says_live_off_and_hides_zero_spend(tmp_path, monkeypatch):
+    console = _console()
+    monkeypatch.delenv("HARNESS_ALLOW_MODEL_REQUESTS", raising=False)
+    Screen(tmp_path, console=console).open()
+    out = _text(console)
+    assert "live off" in out and "spend" not in out

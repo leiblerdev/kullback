@@ -65,13 +65,53 @@ HELP = """\
 """
 
 
+# The welcome gradient, Aura-style: dusty blue over teal, cream and pink into purple, one stop
+# per letter left to right. Style only: banner().plain is unchanged, so no test reads a color.
+GRADIENT = [(128, 159, 197), (149, 226, 227), (233, 213, 161), (239, 143, 172), (171, 112, 219)]
+
+
+def _gradient_at(position: float) -> str:
+    """A hex color on the gradient; 0.0 is the first letter, 1.0 the last."""
+    position = min(1.0, max(0.0, position))
+    scaled = position * (len(GRADIENT) - 1)
+    low, high = int(scaled), min(len(GRADIENT) - 1, int(scaled) + 1)
+    mix = scaled - low
+    rgb = tuple(round(a + (b - a) * mix) for a, b in zip(GRADIENT[low], GRADIENT[high], strict=True))
+    return f"#{rgb[0]:02x}{rgb[1]:02x}{rgb[2]:02x}"
+
+
 def banner(word: str = "kullback") -> Text:
     out = Text()
     for row in range(5):
-        for letter in word:
-            out.append(GLYPHS[letter][row].replace("#", "█"), style="bold")
+        for i, letter in enumerate(word):
+            colour = _gradient_at(i / max(1, len(word) - 1))
+            out.append(GLYPHS[letter][row].replace("#", "█"), style=f"bold {colour}")
             out.append(" ")
         out.append("\n")
+    return out
+
+
+def status_segments(workdir: Any, model: Optional[str]) -> Text:
+    """The status line under the banner, Aura-style segments: model, live switch, spend, workdir.
+
+    Everything is read, never asked: the live switch from the environment, the spend from the
+    budget file the runner wrote (absent before the first build), the workdir cut, not folded."""
+    try:
+        from kullback.ai.provider import enable_live_calls_from_env
+        live = enable_live_calls_from_env()
+    except Exception:
+        live = False
+    try:
+        from kullback.runner.budget import load_totals
+        spent = float(load_totals(workdir)["total"].get("usd") or 0.0)
+    except Exception:
+        spent = 0.0
+    out = Text()
+    out.append(f"model {model or 'none (no model calls)'}", style="bold")
+    out.append("  ·  live on" if live else "  ·  live off (no model call will be made)",
+                 style="green" if live else "yellow")
+    if spent > 0:
+        out.append(f"  ·  spend ${spent:,.4f}", style="dim")
     return out
 
 
@@ -250,10 +290,11 @@ class Screen:
 
     def open(self) -> None:
         self.console.print(banner())
+        self.console.print(status_segments(self.workdir, self.model))
         # A long workdir path wrapping over three lines is the first thing you would see, so it
         # is cut rather than folded; the whole path is on the panel border of every build anyway.
-        self.console.print(Text(f"  workdir {self.workdir}   model {self.model or 'none (no model calls)'}",
-                                style="dim"), no_wrap=True, overflow="ellipsis")
+        self.console.print(Text(f"  workdir {self.workdir}", style="dim"),
+                                no_wrap=True, overflow="ellipsis")
         self.console.print(Text("  /help for commands\n", style="dim"))
 
     def command(self, line: str) -> bool:
