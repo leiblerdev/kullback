@@ -321,9 +321,12 @@ class Loop:
             else:
                 self.builder.steer(f"round {n}: the Examiner's findings follow, one per message; act on each, "
                                    f"then build {self.target!r} again and read the rulings.")
-                for finding in delivered:
-                    self.builder.follow_up(finding_message(finding), {"finding": as_dict(finding)})
                 events = self.builder.continue_()
+            # Every beat, including round 1: a resumed finding that never reaches the model would be
+            # dequeued as delivered and later closed without ever being acted on. Queued follow-ups
+            # fire when the run would otherwise stop, inside the same watched stream.
+            for finding in delivered:
+                self.builder.follow_up(finding_message(finding), {"finding": as_dict(finding)})
             self.build_result = self._watched(self.builder, "builder", events, "build")
         result = self.build_result
         if self.plan.last is None or (result is not None and result.is_error):

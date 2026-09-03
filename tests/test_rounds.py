@@ -22,7 +22,7 @@ from kullback.ai.messages import UserMessage
 from kullback.ai.provider import ModelReply, TestModel, ToolCallRequest
 from kullback.builder import agent as builder_agent
 from kullback.builder import pipeline
-from kullback.builder.build import BuildPlan
+from kullback.builder.build import BuildError, BuildPlan
 from kullback.examiner import agent as examiner_agent
 from kullback.examiner.agent import examiner_message
 from kullback.examiner.plan import ExaminerPlan
@@ -710,3 +710,24 @@ def test_a_resumed_finding_is_closed_once_the_examiner_opens(tmp_path, request):
     assert [r["status"] for r in stored] == ["closed"]
     # And a second Loop over the workdir finds nothing to resume: no repeated remediation.
     assert rounds.Loop(plan=plan, builder=builder_agent.build_harness(plan)).pending_findings == []
+
+
+def test_a_resumed_finding_reaches_the_model_on_round_one(tmp_path, request):
+    """Greptile P1 (round 6): round 1 has no steer, only the prompt — but a resumed finding must
+    still reach the model as a follow-up in the same watched stream, not be dequeued unheard."""
+    from kullback.ai.messages import UserMessage
+
+    plan = BuildPlan(workdir=tmp_path / "work", model=Bodies(), files=[_fixture(request)], max_attempts=0)
+    finding = _finding("t1", suggested="none")
+    agent_model = TestModel([_reply("starting the build."), _reply("noted the finding.")])
+    harness = builder_agent.build_harness(plan, agent_model)
+    loop = rounds.Loop(plan=plan, builder=harness, agent_model=agent_model)
+    loop.allowance = {agent: None for agent in rounds.AGENTS}
+    loop.pending_findings = [finding]
+    with pytest.raises(BuildError, match="never called build"):
+        loop.builder_beat(1)
+    delivered = [m for m in harness.messages if isinstance(m, UserMessage) and m.details is not None]
+    assert {f["finding_id"] for m in delivered for f in [m.details["finding"]]} == {"f1"}
+    # The beat failed (no build was ever called), so the finding stays queued for the retry even
+    # though the model heard it: delivered, not dropped, at every level.
+    assert [f.finding_id for f in loop.pending_findings] == ["f1"]
