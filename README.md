@@ -63,3 +63,16 @@ uv run kullback report --workdir work
 The report opens with whether the Environment was built at all (gates passed, assisted tools, Tasks with too few runs), then gives per-Task numbers and a suggestion.
 
 `CONTRIBUTING.md` says how to get a change in. `DEVELOPING.md` covers the records, the offline models and the fixtures. `docs/architecture.md` is the map, `docs/harness-design.md` is the spec, `docs/decision-log.md` and `docs/adr/` are why, `docs/todo.md` is what comes next.
+
+## Citation
+
+Related work by the same author, cited here because the Harness is meant to run against models people train themselves, not only against hosted ones.
+
+```bibtex
+@misc{hindi-modernbert2026,
+  title  = {hindi-modernBERT: A Hindi ModernBERT Encoder with 8192 Context},
+  author = {Krrish Agarwalla},
+  year   = {2026},
+  note   = {Checkpoint ba1157. Base MLM; trained from scratch on Hindi.}
+}
+```
