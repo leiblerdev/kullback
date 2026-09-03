@@ -921,22 +921,69 @@ class OpenAICompatibleModel(OpenAIModel):
         return {}
 
 
+class RegistryModel(OpenAICompatibleModel):
+    """A provider the models.dev registry names: its host and its key variable, the OpenAI shape.
+
+    This is how `opencode-go/kimi-k3` or `groq/llama-3.3-70b` runs without anyone writing an
+    adapter for it. The registry answers where to send the call and which variable holds the key;
+    the body is OpenAI's, because the registry is only asked for providers that speak that shape.
+    Reasoning fields stay off for the reason the local endpoint leaves them off: a gateway that
+    does not know a field refuses the whole request, and the registry lists no effort table.
+    """
+
+    def __init__(self, model_id: str, base_url: str, key_env_var: str = "", **kwargs):
+        self.key_env_var = key_env_var
+        self.key_required = bool(key_env_var)
+        super().__init__(model_id, base_url=base_url, **kwargs)
+
+
 ADAPTERS: dict[str, type] = {"anthropic": AnthropicModel, "openai": OpenAIModel}
+
+# The registry snapshot unknown providers are resolved against. None is the real default
+# (kullback.ai.pricing.snapshot_path()); tests point it at a tmp file, so no test reads the real one.
+REGISTRY_SNAPSHOT_PATH: Optional[str] = None
+
+
+def registry_endpoint(model_id: str, env: Optional[dict[str, str]] = None) -> Any:
+    """What the models.dev snapshot says about this id's provider, or None when it says nothing.
+
+    Imported inside the function because `pricing` reads the live switch from this module: the same
+    deferred import `budget.py` makes, for the same reason. No network unless live calls are
+    already on, and then the snapshot is refetched at most once a week.
+    """
+    from kullback.ai import pricing
+
+    catalog = pricing.refresh(path=REGISTRY_SNAPSHOT_PATH, env=env)
+    return pricing.endpoint_from_catalog(catalog, model_id)
 
 
 def model_for(model_id: str, base_url: Optional[str] = None, **kwargs) -> Model:
     """The one place a live adapter is built, from the 'provider/model' id.
 
-    A provider with no adapter of its own is treated as an OpenAI-compatible endpoint, which
-    needs a base URL: a local model has no default host to guess.
+    Three ways to reach a model, in order: an adapter of its own, the base URL the caller passed,
+    or the host the models.dev registry lists for that provider. The last is what puts a provider
+    nobody wrote code for (OpenCode Go, Groq, DeepSeek, OpenRouter) one `--model` away, from the
+    same snapshot `budget.py` prices the call from. A provider the registry does not list, or lists
+    behind a request shape this Harness does not build, still needs a base URL.
     """
     provider, _ = split_model_id(model_id)
     adapter = ADAPTERS.get(provider)
     if adapter is not None:
         return adapter(model_id, base_url=base_url, **kwargs)
-    if not base_url:
-        raise ValueError(f"{model_id} is not anthropic or openai, so it needs a base_url")
-    return OpenAICompatibleModel(model_id, base_url=base_url, **kwargs)
+    if base_url:
+        return OpenAICompatibleModel(model_id, base_url=base_url, **kwargs)
+    endpoint = registry_endpoint(model_id, env=kwargs.get("env"))
+    if endpoint is None:
+        raise ValueError(
+            f"{model_id} has no adapter of its own and the models.dev snapshot names no host for "
+            f"{provider!r}; pass base_url, or refresh the snapshot with live calls on"
+        )
+    if not endpoint.openai_shaped:
+        raise ValueError(
+            f"models.dev serves {provider!r} through {endpoint.adapter}, which is not the OpenAI "
+            f"request shape this Harness builds; pass base_url for an endpoint that is"
+        )
+    return RegistryModel(model_id, base_url=endpoint.base_url, key_env_var=endpoint.key_env_var, **kwargs)
 
 
 def live_model(model_id: str, base_url: Optional[str] = None, **kwargs) -> Model:

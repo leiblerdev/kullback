@@ -552,6 +552,12 @@ def save_table(table: EquivalenceTable, path: Union[str, Path]) -> Path:
     return file
 
 
+# A stored value with more decimals than this is float64 arithmetic talking, not a precision the
+# customer's system keeps: build 8's corpus carried two decimals on 5,300 numbers and thirteen to
+# seventeen on 56, every one of them a sum the recorded system computed in floating point.
+FLOAT_NOISE_DECIMALS = 12
+
+
 def learn_rules(
     schema: Any = None,
     rows: Optional[Iterable[dict]] = None,
@@ -562,10 +568,17 @@ def learn_rules(
 
     The id patterns are the ones `mine.py` already found, and every id column is marked case
     sensitive so two ids that differ only in case stay two ids. A list column the traces show in
-    two orders is unordered. Save the result with `save_rules` and pass it to every caller; the
-    defaults are a starting point, not the customer's rules.
+    two orders is unordered. The number precision is the most decimals a stored value carries,
+    float noise aside, and stays unset for a corpus with no floats. Save the result with
+    `save_rules` and pass it to every caller; the defaults are a starting point, not the
+    customer's rules.
     """
     rules = (base or CanonRules()).model_copy(deep=True)
+    rows = list(rows or [])
+    if rules.number_precision is None:
+        decimals = [d for d in _decimals_of(rows) if d <= FLOAT_NOISE_DECIMALS]
+        if decimals:
+            rules.number_precision = max(decimals)
     patterns = dict(getattr(schema, "id_patterns", None) or {})
     rules.id_patterns = {**rules.id_patterns, **patterns}
     cased = list(rules.case_sensitive_paths)
@@ -578,7 +591,7 @@ def learn_rules(
                 cased.append(path)
     rules.case_sensitive_paths = cased
     unordered = list(rules.unordered_lists)
-    for name in _unordered_columns(rows or []):
+    for name in _unordered_columns(rows):
         path = _join(table or "", name)
         if path not in unordered:
             unordered.append(path)
@@ -593,6 +606,25 @@ def _looks_like_id(name: str, samples: Iterable[Any], patterns: dict[str, str]) 
         isinstance(sample, str) and any(re.fullmatch(p, sample) for p in patterns.values())
         for sample in samples
     )
+
+
+def _decimals_of(rows: Iterable[Any]) -> list[int]:
+    """How many decimals each float in the rows carries, nested values included; ints say nothing."""
+    out: list[int] = []
+
+    def walk(value: Any) -> None:
+        if isinstance(value, dict):
+            for inner in value.values():
+                walk(inner)
+        elif isinstance(value, (list, tuple)):
+            for inner in value:
+                walk(inner)
+        elif isinstance(value, float) and value == value and value not in (float("inf"), float("-inf")):
+            exponent = Decimal(repr(value)).normalize().as_tuple().exponent
+            out.append(max(0, -exponent) if isinstance(exponent, int) else 0)
+
+    walk(rows)
+    return out
 
 
 def _unordered_columns(rows: Iterable[dict]) -> list[str]:

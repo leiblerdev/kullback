@@ -236,6 +236,19 @@ def test_reference_judge_sees_the_intent_and_the_verifier_output(make_test_model
     assert "escalate" in prompt.lower()
 
 
+def test_the_reference_judge_is_told_the_transcript_is_not_in_evidence_and_to_grade_the_intent(make_test_model):
+    """Build 8: eleven Tasks failed 'without evidence of authentication and confirmation' the judge could not see,
+    and three were graded on the opening request after the user had changed their mind."""
+    model = make_test_model([call(), answer(verdict="abstain")])
+    judge = AgenticJudge(model, TOOLS)
+    judge.judge_reference({"run_id": "r1"}, "exchange the desk lamp only")
+    prompt = model.calls[0]["messages"][1]["content"].lower()
+    assert "transcript is not in evidence" in prompt
+    assert "authenticated" in prompt and "confirmation" in prompt
+    assert "not the opening request" in prompt
+    assert "end state" in prompt
+
+
 def test_a_verifier_output_passed_to_the_call_wins_over_the_one_on_the_judge(make_test_model):
     model = make_test_model([call(), answer(verdict="bad_reference")])
     judge = AgenticJudge(model, TOOLS, verifier_output={"pass": True})

@@ -521,6 +521,90 @@ def test_live_calls_turn_on_only_from_the_environment():
     assert pv.enable_live_calls_from_env({}) is False
 
 
+def registry_snapshot(tmp_path, monkeypatch, catalog):
+    """A models.dev snapshot on disk, and the provider module pointed at it."""
+    path = tmp_path / "models.dev.json"
+    path.write_text(json.dumps({"fetched_at": "2026-09-01T00:00:00+00:00", "catalog": catalog}),
+                    encoding="utf-8")
+    monkeypatch.setattr(pv, "REGISTRY_SNAPSHOT_PATH", str(path))
+    return path
+
+
+REGISTRY = {
+    "opencode-go": {"id": "opencode-go", "name": "OpenCode Go", "npm": "@ai-sdk/openai-compatible",
+                    "api": "https://opencode.ai/zen/go/v1", "env": ["OPENCODE_API_KEY"],
+                    "models": {"kimi-k3": {"limit": {"context": 1048576, "output": 131072},
+                                           "cost": {"input": 3, "output": 15}}}},
+    "google": {"id": "google", "name": "Google", "npm": "@ai-sdk/google", "env": ["GEMINI_API_KEY"],
+               "models": {"gemini-3-pro": {}}},
+    "vertex": {"id": "vertex", "name": "Vertex", "npm": "@ai-sdk/google-vertex",
+               "api": "https://aiplatform.googleapis.com/v1", "env": ["GOOGLE_VERTEX_PROJECT"],
+               "models": {"gemini-3-pro": {}}},
+}
+
+
+def test_a_provider_the_registry_names_needs_no_adapter_and_no_base_url(tmp_path, monkeypatch):
+    """The founder's ask: choose any model, the way OpenCode does, without code per provider."""
+    registry_snapshot(tmp_path, monkeypatch, REGISTRY)
+    model = pv.model_for("opencode-go/kimi-k3", env={"OPENCODE_API_KEY": "sk-zen"})
+    assert isinstance(model, pv.RegistryModel)
+    assert model.base_url == "https://opencode.ai/zen/go/v1"
+    assert model.wire_id == "kimi-k3"
+    assert model.api_key == "sk-zen"
+    assert model.headers()["authorization"] == "Bearer sk-zen"
+
+
+def test_the_registry_model_asks_for_the_key_variable_the_registry_names(tmp_path, monkeypatch, live):
+    registry_snapshot(tmp_path, monkeypatch, REGISTRY)
+    model = pv.model_for("opencode-go/kimi-k3", env={})
+    with pytest.raises(pv.ProviderError) as raised:
+        model.query([{"role": "user", "content": "hi"}])
+    assert "OPENCODE_API_KEY" in str(raised.value)
+
+
+def test_a_base_url_the_caller_passes_wins_over_the_registry(tmp_path, monkeypatch):
+    registry_snapshot(tmp_path, monkeypatch, REGISTRY)
+    model = pv.model_for("opencode-go/kimi-k3", base_url="http://127.0.0.1:8080/v1", env={})
+    assert isinstance(model, pv.OpenAICompatibleModel)
+    assert model.base_url == "http://127.0.0.1:8080/v1"
+
+
+def test_a_provider_the_registry_serves_in_another_request_shape_is_refused_by_name(tmp_path, monkeypatch):
+    registry_snapshot(tmp_path, monkeypatch, REGISTRY)
+    with pytest.raises(ValueError) as raised:
+        pv.model_for("vertex/gemini-3-pro", env={})
+    assert "@ai-sdk/google-vertex" in str(raised.value)
+    assert "base_url" in str(raised.value)
+
+
+def test_a_provider_with_no_host_in_the_registry_is_refused_like_an_unknown_one(tmp_path, monkeypatch):
+    registry_snapshot(tmp_path, monkeypatch, REGISTRY)
+    for model_id in ("google/gemini-3-pro", "nowhere/model-1"):
+        with pytest.raises(ValueError) as raised:
+            pv.model_for(model_id, env={})
+        assert "no host" in str(raised.value)
+
+
+def test_the_registry_is_read_from_disk_and_never_from_the_network_with_live_calls_off(tmp_path, monkeypatch):
+    monkeypatch.setattr(pv, "REGISTRY_SNAPSHOT_PATH", str(tmp_path / "absent.json"))
+
+    def refuse(*args, **kwargs):
+        raise AssertionError("the registry reached the network with live calls off")
+
+    monkeypatch.setattr(httpx, "Client", refuse)
+    with pytest.raises(ValueError):
+        pv.model_for("opencode-go/kimi-k3", env={})
+
+
+def test_the_registry_model_sends_no_reasoning_field_a_gateway_may_not_know(tmp_path, monkeypatch):
+    registry_snapshot(tmp_path, monkeypatch, REGISTRY)
+    model = pv.model_for("opencode-go/kimi-k3", env={"OPENCODE_API_KEY": "sk-zen"})
+    body = model.build_body([{"role": "user", "content": "hi"}], None,
+                            pv.ModelConfig(reasoning_effort="high"))
+    assert "reasoning_effort" not in body
+    assert body["model"] == "kimi-k3"
+
+
 def test_model_for_builds_one_adapter_per_provider():
     anthropic = pv.model_for("anthropic/claude-opus-5", api_key="k", env={})
     assert isinstance(anthropic, pv.AnthropicModel) and anthropic.wire_id == "claude-opus-5"

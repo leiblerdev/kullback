@@ -110,11 +110,17 @@ class AgenticJudge:
         checked = verifier_output if verifier_output is not None else self.verifier_output
         prompt = (
             "Trust or escalate. Decide whether this recorded Run is a good Reference for its Task.\n\n"
-            f"Intent of the Task:\n{_render(intent)}\n\n"
+            f"Intent of the Task, the outcome the recorded user finally asked for:\n{_render(intent)}\n\n"
             f"Deterministic verifier output on this Run, already decided by code:\n{_render(checked)}\n\n"
             f"Candidate Reference Run:\n{_render(reference_run)}\n\n"
-            "Judge only what code cannot check. A bad Reference sets a wrong bar for every later Verdict "
-            "on this Task, so escalate with abstain rather than guess."
+            "Grade the End state against the Intent, and only that. The transcript is not in evidence: "
+            "whether the agent authenticated the user, asked for confirmation or followed a procedure "
+            "cannot be seen through your tools and never decides the verdict. Judge the Intent, not the "
+            "opening request; a user who changed their mind during the Run wanted what the Intent says. "
+            "good_reference when the End state is what the Intent asks for, bad_reference when the End "
+            "state contradicts it, abstain when the evidence does not decide it. Judge only what code "
+            "cannot check. A bad Reference sets a wrong bar for every later Verdict on this Task, so "
+            "escalate with abstain rather than guess."
         )
         return self._ask("reference", prompt)
 

@@ -1,6 +1,6 @@
 # Evaluation design: from customer traces to routing-plan Verdicts
 
-Status: working design, 2026-08-27. Terms are defined in `/CONTEXT.md`; decisions with trade-offs are in `/docs/adr/`. Research behind each choice is in `../research/` (report numbers cited as R00 to R29).
+Status: working design, 2026-08-27. Terms are used as the decision log defines them; decisions with trade-offs are in `/docs/adr/`. Research behind each choice is in `../research/` (report numbers cited as R00 to R29).
 
 ## Principle
 

@@ -7,6 +7,7 @@ covered without a build and without a key.
 
 from __future__ import annotations
 
+import io
 import json
 
 import pytest
@@ -345,3 +346,230 @@ def test_a_count_that_is_not_a_whole_number_of_runs_is_told_in_words(tmp_path, l
     screen.command(line)
     assert message in _text(screen.console)
     assert screen.runner.calls == []
+
+
+# --- diagrammatic views -----------------------------------------------------
+
+def test_map_draws_the_stages_in_order_with_states_and_hashes(tmp_path):
+    from kullback.tui import diagrams
+
+    out = diagrams.dag_text(["mine", "cluster"], {"mine": "ran", "cluster": "start"},
+                            {"mine": 1, "cluster": 2}, {"mine": "3cbbe2f24725"})
+    plain = out.plain
+    assert plain.index("mine") < plain.index("cluster")
+    assert "ran" in plain and "start ×2" in plain and "3cbbe2f2" in plain
+    assert plain.count("▼") == 1
+
+
+def test_map_before_any_build_says_there_is_none(tmp_path):
+    from kullback.tui import diagrams
+
+    assert "no stages yet" in diagrams.dag_text([], {}).plain
+
+
+def test_loop_without_rounds_says_single_pass(tmp_path):
+    from kullback.tui import diagrams
+
+    assert "single-pass" in diagrams.loop_text(diagrams.read_rounds_file(tmp_path)).plain
+
+
+def test_loop_draws_beats_counts_and_exit(tmp_path):
+    from kullback.tui import diagrams
+
+    (tmp_path / "rounds.json").write_text(json.dumps([
+        {"round": 1, "counts": {"fidelity": 12, "tasks": 20, "trusted": 8, "refused_count": 1,
+                                "probes_passing": 5, "spend": {"total": 0.4231}}, "exit": None},
+        {"round": 2, "counts": {"fidelity": 20, "tasks": 20, "trusted": 15, "refused_count": 1,
+                                "probes_passing": 9, "spend": {"total": 0.9}}, "exit": "done"},
+    ]), encoding="utf-8")
+    plain = diagrams.loop_text(diagrams.read_rounds_file(tmp_path)).plain
+    assert "round 1" in plain and "round 2" in plain
+    assert "12/20" in plain and "exit: done" in plain
+
+
+def test_layers_names_every_package(tmp_path):
+    from kullback.tui import diagrams
+
+    plain = diagrams.layers_text().plain
+    for name in ("builder", "examiner", "gates", "agent", "runner", "ai"):
+        assert name in plain
+
+
+def test_map_loop_layers_commands_print(tmp_path):
+    (tmp_path / "pipeline").mkdir()
+    (tmp_path / "pipeline" / "state.json").write_text(
+        json.dumps({"statuses": {"mine": "ran"}, "attempts": {"mine": 1}}), encoding="utf-8")
+    (tmp_path / "cache").mkdir()
+    (tmp_path / "cache" / "mine.3cbbe2f2.json").write_text("{}", encoding="utf-8")
+    console = _console()
+    screen = Screen(tmp_path, console=console)
+    assert screen.command("/map") is True
+    assert screen.command("/layers") is True
+    assert screen.command("/loop") is True
+    out = _text(console)
+    assert "mine" in out and "builder" in out and "single-pass" in out
+
+
+# --- /login and /logout -----------------------------------------------------
+
+LOGIN_CATALOG = {
+    "opencode-go": {"id": "opencode-go", "name": "OpenCode Go", "npm": "@ai-sdk/openai-compatible",
+                    "api": "https://opencode.ai/zen/go/v1", "env": ["OPENCODE_API_KEY"],
+                    "models": {"muse-spark": {"limit": {"context": 1048576, "output": 131072},
+                                              "cost": {"input": 3, "output": 15}}}},
+}
+
+
+def _snapshot(monkeypatch, tmp_path, catalog=LOGIN_CATALOG):
+    import datetime
+
+    from kullback.ai import provider as pv
+
+    path = tmp_path / "models.dev.json"
+    path.write_text(json.dumps({"fetched_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+                                "catalog": catalog}), encoding="utf-8")
+    monkeypatch.setattr(pv, "REGISTRY_SNAPSHOT_PATH", str(path))
+    monkeypatch.delenv("OPENCODE_API_KEY", raising=False)
+    return path
+
+
+def test_login_with_no_args_inspects_the_current_model(tmp_path, monkeypatch):
+    _snapshot(monkeypatch, tmp_path)
+    console = _console()
+    screen = Screen(tmp_path, model="opencode-go/muse-spark", console=console)
+    assert screen.command("/login") is True
+    out = _text(console)
+    assert "opencode-go/muse-spark" in out and "OPENCODE_API_KEY" in out and "missing" in out
+
+
+def test_login_with_no_model_says_so(tmp_path):
+    console = _console()
+    assert Screen(tmp_path, console=console).command("/login") is True
+    assert "no model" in _text(console)
+
+
+def test_login_to_an_id_without_a_slash_is_told_in_words(tmp_path):
+    console = _console()
+    screen = Screen(tmp_path, console=console)
+    assert screen.command("/login kthumb") is True
+    assert "provider/model" in _text(console) and screen.model is None
+
+
+def test_login_to_an_unknown_provider_refuses_and_keeps_the_old_model(tmp_path, monkeypatch):
+    _snapshot(monkeypatch, tmp_path, catalog={})
+    console = _console()
+    screen = Screen(tmp_path, model="openai/gpt-4", console=console)
+    assert screen.command("/login nope/nothing") is True
+    assert "no host" in _text(console) and screen.model == "openai/gpt-4"
+
+
+def test_login_sets_the_model_the_build_will_use(tmp_path, monkeypatch):
+    _snapshot(monkeypatch, tmp_path)
+    screen = Screen(tmp_path, console=_console())
+    assert screen.command("/login opencode-go/muse-spark") is True
+    assert screen.model == "opencode-go/muse-spark"
+
+
+def test_login_set_holds_the_key_in_memory_and_logout_forgets_it(tmp_path, monkeypatch):
+    import os
+
+    _snapshot(monkeypatch, tmp_path)
+    console = _console()
+    screen = Screen(tmp_path, console=console)
+    assert screen.command("/login opencode-go/muse-spark --set OPENCODE_API_KEY=sk-zen-123") is True
+    assert os.environ.get("OPENCODE_API_KEY") == "sk-zen-123"
+    out = _text(console)
+    assert "sk-zen-123" not in out and "set" in out
+    assert screen.command("/logout") is True
+    assert "OPENCODE_API_KEY" not in os.environ
+
+
+def test_logout_restores_what_the_shell_held(tmp_path, monkeypatch):
+    import os
+
+    _snapshot(monkeypatch, tmp_path)
+    monkeypatch.setenv("OPENCODE_API_KEY", "old-key")
+    screen = Screen(tmp_path, console=_console())
+    screen.command("/login opencode-go/muse-spark --set OPENCODE_API_KEY=new-key")
+    assert os.environ["OPENCODE_API_KEY"] == "new-key"
+    screen.command("/logout")
+    assert os.environ["OPENCODE_API_KEY"] == "old-key"
+
+
+def test_keys_marks_the_keys_this_session_set(tmp_path, monkeypatch):
+    _snapshot(monkeypatch, tmp_path)
+    console = _console()
+    screen = Screen(tmp_path, console=console)
+    screen.command("/login opencode-go/muse-spark --set OPENCODE_API_KEY=sk-zen-123")
+    screen.command("/keys")
+    out = _text(console)
+    assert "OPENCODE_API_KEY" in out and "this session" in out and "sk-zen-123" not in out
+    screen.command("/logout")
+
+
+def test_a_login_secret_reaches_no_file_and_no_line(tmp_path, monkeypatch):
+    _snapshot(monkeypatch, tmp_path)
+    console = _console()
+    screen = Screen(tmp_path, console=console)
+    screen.command("/login opencode-go/muse-spark --set OPENCODE_API_KEY=topsecret-value-9")
+    screen.command("/keys")
+    screen.command("/status")
+    screen.command("/map")
+    screen.command("/loop")
+    screen.command("/layers")
+    assert "topsecret-value-9" not in _text(console)
+    for path in tmp_path.rglob("*"):
+        if path.is_file():
+            assert "topsecret-value-9" not in path.read_text(encoding="utf-8", errors="replace")
+    screen.command("/logout")
+
+
+def test_loop_shows_pending_findings_and_exit_notes(tmp_path):
+    from kullback.tui import diagrams
+
+    (tmp_path / "rounds.json").write_text(json.dumps([
+        {"round": 1, "counts": {}, "exit": None, "exit_note": "2 finding(s) owe the Builder a beat; the round continues",
+         "pending_findings": [{"finding_id": "f1"}, {"finding_id": "f2"}]},
+        {"round": 2, "counts": {}, "exit": "ceiling", "exit_note": "the ceiling ended the run first",
+         "pending_findings": [{"finding_id": "f3"}]},
+    ]), encoding="utf-8")
+    plain = diagrams.loop_text(diagrams.read_rounds_file(tmp_path)).plain
+    assert "2 finding(s) owed the Builder a beat" in plain
+    assert "exit: ceiling" in plain and "the ceiling ended the run first" in plain
+
+
+def test_the_banner_is_a_gradient_styles_vary_plain_does_not(tmp_path):
+    from kullback.tui import banner
+
+    text = banner()
+    assert text.plain == banner("kullback").plain
+    styles = {span.style for span in text.spans if "█" in text.plain[span.start:span.end]}
+    assert len(styles) > 1, "one flat style is not a gradient"
+
+
+def test_open_prints_status_segments(tmp_path, monkeypatch):
+    # A wide console: open() cuts absurdly long workdirs with an ellipsis rather than folding them.
+    console = Console(file=io.StringIO(), width=300, force_terminal=False, no_color=True)
+    monkeypatch.setenv("HARNESS_ALLOW_MODEL_REQUESTS", "1")
+    Screen(tmp_path, model="opencode-go/muse-spark", console=console).open()
+    out = _text(console)
+    assert "opencode-go/muse-spark" in out and "live on" in out and str(tmp_path) in out
+
+
+def test_open_says_live_off_and_hides_zero_spend(tmp_path, monkeypatch):
+    console = _console()
+    monkeypatch.delenv("HARNESS_ALLOW_MODEL_REQUESTS", raising=False)
+    Screen(tmp_path, console=console).open()
+    out = _text(console)
+    assert "live off" in out and "spend" not in out
+
+
+def test_loop_marks_a_failed_round(tmp_path):
+    from kullback.tui import diagrams
+
+    (tmp_path / "rounds.json").write_text(json.dumps([
+        {"round": 1, "counts": {}, "exit": "stalled", "exit_note": "examiner failed: no derive",
+         "failed": True, "pending_findings": []},
+    ]), encoding="utf-8")
+    plain = diagrams.loop_text(diagrams.read_rounds_file(tmp_path)).plain
+    assert "exit: stalled (failed)" in plain and "examiner failed" in plain

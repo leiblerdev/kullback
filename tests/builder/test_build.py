@@ -379,3 +379,29 @@ def test_tool_definitions_speak_json_schema():
     assert definition["parameters"]["properties"]["email"]["type"] == "string"
     assert definition["parameters"]["properties"]["n"]["type"] == ["integer", "null"]
     assert definition["parameters"]["required"] == ["email"]
+
+
+def test_tool_definitions_show_the_model_the_values_the_corpus_showed_for_an_argument():
+    """Build 8: the re-roll model dropped the '#' from 132 order ids over a schema that showed it nothing."""
+    from kullback.builder.vocabulary import FieldSpec, Vocabulary
+    from kullback.runner.records import ToolSig
+    sig = ToolSig(name="get_order_details", kind="read",
+                  args_schema={"properties": {"order_id": {"type": ["str"]}}, "required": ["order_id"],
+                               "type": "object"})
+    vocab = Vocabulary(domain="retail", fields=[
+        FieldSpec(field="order_id", kind="reference", examples=["#W5056519", "#W8277957"])])
+    [definition] = build_module._tool_definitions([sig], vocab)
+    assert definition["parameters"]["properties"]["order_id"]["description"] == "for example #W5056519, #W8277957"
+    [plain] = build_module._tool_definitions([sig])
+    assert "description" not in plain["parameters"]["properties"]["order_id"]
+
+
+def test_a_stage_drops_the_run_files_an_earlier_build_left_under_its_name(tmp_path):
+    """Build 8: 111 re-roll files from a build four days older sat beside its own, and runs.json counted them."""
+    run_dir = tmp_path / "runs" / "t1"
+    run_dir.mkdir(parents=True)
+    for name in ("reroll-t1-0.jsonl", "reroll-t1-1.jsonl", "replay-abc.jsonl", "reroll-t10-0.jsonl"):
+        (run_dir / name).write_text("{}\n")
+    assert build_module._discard_runs(run_dir, "reroll-t1-") == 2
+    assert sorted(p.name for p in run_dir.iterdir()) == ["replay-abc.jsonl", "reroll-t10-0.jsonl"]
+    assert build_module._discard_runs(tmp_path / "runs" / "missing", "reroll-") == 0
