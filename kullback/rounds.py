@@ -222,6 +222,9 @@ class Loop:
         seen = {finding.finding_id for finding in self.pending_findings}
         self.pending_findings = list(self.pending_findings) + [
             finding for finding in _open_findings(self.plan.workdir) if finding.finding_id not in seen]
+        # Findings the Builder performed before the Examiner opened: no plan to close them on yet.
+        # They flush into the store the moment _open_examiner runs, never dropped, never double-closed.
+        self._unclosed: list[str] = []
 
     # --- the stream ------------------------------------------------------------
 
@@ -327,8 +330,11 @@ class Loop:
             raise BuildError(result.content if result is not None
                              else f"the model never called build({self.target!r})")
         closed = [finding.finding_id for finding in delivered if finding.finding_id not in failed]
-        if closed and self.eplan is not None:
-            self.eplan.close_findings(closed)
+        if self.eplan is not None:
+            if closed:
+                self.eplan.close_findings(closed)
+        else:
+            self._unclosed.extend(closed)
         closed_ids = set(closed)
         self.pending_findings = [finding for finding in self.pending_findings
                                  if finding.finding_id not in closed_ids]
@@ -348,6 +354,17 @@ class Loop:
         self.examiner = examiner_agent.examiner_harness(
             self.eplan, self.agent_model, [*self.subscribers, self._collect_finding], max_turns=self.max_turns,
             session=_session(self.plan.workdir, EXAMINER_SESSION))
+        self._flush_closed_findings()
+
+    def _flush_closed_findings(self) -> None:
+        """Findings performed before the Examiner opened, closed now that a plan holds the store.
+
+        Round 1's Builder beat delivers (and dequeues) resumed findings while `eplan` is still None;
+        dropping the ids there would orphan them open on disk, so they wait here and close exactly
+        once, against the freshly loaded store."""
+        if self._unclosed and self.eplan is not None:
+            self.eplan.close_findings(self._unclosed)
+            self._unclosed = []
 
     def _collect_finding(self, event: Any) -> None:
         if not isinstance(event, ToolExecutionEnd) or event.tool_name != "finding" or event.is_error:

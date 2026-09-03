@@ -687,3 +687,26 @@ def test_a_new_loop_survives_a_half_written_findings_file(tmp_path):
     (workdir / "examiner").mkdir(parents=True)
     (workdir / "examiner" / "findings.json").write_text('[{"finding_id": "f1", ', encoding="utf-8")
     assert _bare_loop(tmp_path).pending_findings == []
+
+
+def test_a_resumed_finding_is_closed_once_the_examiner_opens(tmp_path, request):
+    """Greptile P1 (round 5): round 1's Builder beat delivers the resumed finding before eplan
+    exists, so it cannot close then — but it must close the moment the Examiner opens, exactly
+    once. Otherwise every later invocation would repeat the remediation with the entry still
+    protected."""
+    workdir = tmp_path / "work"
+    (workdir / "examiner").mkdir(parents=True)
+    rows = [{**as_dict(_finding("t1", suggested="none")), "status": "open"}]
+    (workdir / "examiner" / "findings.json").write_text(json.dumps(rows), encoding="utf-8")
+    plan = BuildPlan(workdir=workdir, model=Bodies(), files=[_fixture(request)], max_attempts=0)
+    loop = rounds.Loop(plan=plan, builder=builder_agent.build_harness(plan))
+    loop.allowance = {agent: None for agent in rounds.AGENTS}
+    assert [f.finding_id for f in loop.pending_findings] == ["f1"]
+    loop.builder_beat(1)
+    assert loop.pending_findings == [] and loop._unclosed == ["f1"]
+    loop.examiner_beat(1)
+    assert loop._unclosed == []
+    stored = json.loads((workdir / "examiner" / "findings.json").read_text(encoding="utf-8"))
+    assert [r["status"] for r in stored] == ["closed"]
+    # And a second Loop over the workdir finds nothing to resume: no repeated remediation.
+    assert rounds.Loop(plan=plan, builder=builder_agent.build_harness(plan)).pending_findings == []
