@@ -56,6 +56,8 @@ HELP = """\
 /map                               the pipeline as a diagram: stages, states, hashes
 /loop                              the loop as beats: Builder, gates, Examiner, round ends
 /layers                            the kullback layering as a diagram
+/sessions                          builds running now and before, and which to watch
+/watch N                           watch session N from the sessions list
 /keys                              which provider keys this shell can see
 /login [provider/model] [--set KEY=VALUE ...] [--base-url URL]
                                   use this model, with keys held in memory only
@@ -65,9 +67,43 @@ HELP = """\
 """
 
 
-# The welcome gradient, Aura-style: dusty blue over teal, cream and pink into purple, one stop
-# per letter left to right. Style only: banner().plain is unchanged, so no test reads a color.
-GRADIENT = [(128, 159, 197), (149, 226, 227), (233, 213, 161), (239, 143, 172), (171, 112, 219)]
+# The welcome gradient, in the brand: leibler.dev is black with white text, and its only
+# gradient is white fading into gray (site.css :root: --fg #fff, --fg-2 #a3a3a3, --fg-3
+# #8a8a8a). White into gray left to right, one stop per letter. Style only: banner().plain
+# is unchanged, so no test reads a color.
+GRADIENT = [(255, 255, 255), (163, 163, 163), (138, 138, 138)]
+
+# What kullback is, in one line on the entry screen. The leibler.dev wording, shortened:
+# the harness that rebuilds your environment from traces and checks the rebuild by replay.
+TAGLINE = "Rebuilds your environment from traces, checks the rebuild by replay, and grades any model inside it."
+
+# Every command in one table: name, usage, what it does. The entry screen and the / menu
+# are rendered from this, so a command added here appears in both; HELP stays a literal
+# beside it, and a test fails when a table name is missing from HELP, so the two cannot drift.
+COMMANDS = [
+    ("build", "/build [--iterate] [--file PATH]", "run the Builder over the ingested traces"),
+    ("run", "/run TASK [--count N]", "run the Candidate against the built Environment"),
+    ("status", "/status", "the last build's stages, gates, rounds and spend"),
+    ("map", "/map", "the pipeline as a diagram: stages, states, hashes"),
+    ("loop", "/loop", "the loop as beats: Builder, gates, Examiner, round ends"),
+    ("layers", "/layers", "the kullback layering as a diagram"),
+    ("sessions", "/sessions", "builds running now and before, and which to watch"),
+    ("watch", "/watch N", "watch session N from the sessions list"),
+    ("keys", "/keys", "which provider keys this shell can see"),
+    ("login", "/login [provider/model] [--set KEY=VALUE ...] [--base-url URL]",
+     "use this model, with keys held in memory only"),
+    ("logout", "/logout", "forget the keys set with /login"),
+    ("help", "/help", "this"),
+    ("quit", "/quit", "leave"),
+]
+
+
+def filter_commands(fragment: str) -> list[tuple[str, str, str]]:
+    """The / menu's matches: commands whose name holds the fragment, in table order.
+
+    Pure, so the menu is tested without a console: what you see when you type /frag."""
+    needle = fragment.strip().lower().lstrip("/")
+    return [row for row in COMMANDS if needle in row[0].lower()]
 
 
 def _gradient_at(position: float) -> str:
@@ -337,30 +373,63 @@ class Screen:
         # Keys handed over with /login --set, mapped to what the shell held before (None
         # means it held nothing), so /logout restores the shell instead of just deleting.
         self.session_keys: dict[str, Optional[str]] = {}
+        # The / menu's numbered list, waiting for a bare number: (kind, rows). Kind is
+        # "commands" (rows are COMMANDS entries) or "sessions" (rows are heartbeat dicts).
+        self._pending: Optional[tuple[str, list]] = None
 
     def open(self) -> None:
+        """The entry screen: what this is, how it stands, what you can do, what is running.
+
+        Brand order, leibler.dev style: the word, one line saying what it is, the live
+        numbers, then numbered sections (commands, sessions) in dim labels and white values."""
         self.console.print(banner())
+        self.console.print(Text(f"  {TAGLINE}", style="dim"))
         self.console.print(status_segments(self.workdir, self.model))
         # A long workdir path wrapping over three lines is the first thing you would see, so it
         # is cut rather than folded; the whole path is on the panel border of every build anyway.
         self.console.print(Text(f"  workdir {self.workdir}", style="dim"),
                                 no_wrap=True, overflow="ellipsis")
-        self.console.print(Text("  /help for commands\n", style="dim"))
+        self.console.print(Text("\n  01 commands", style="bold"))
+        for name, _, blurb in COMMANDS:
+            line = Text(f"    /{name:<10}", style="white")
+            line.append(blurb, style="dim")
+            self.console.print(line)
+        self.console.print(Text("    type / to filter", style="dim"))
+        self._print_sessions(limit=5)
+        self.console.print()
 
     def command(self, line: str) -> bool:
-        """One typed line. Returns False when the screen should close."""
-        parts = shlex.split(line.strip())
+        """One typed line. Returns False when the screen should close.
+
+        A line that is only "/" or "/fragment" opens the menu: one match runs it, several
+        print numbered and wait for a bare number, none says so. A bare number answers the
+        last numbered list (commands or sessions). Anything else clears the waiting list."""
+        stripped = line.strip()
+        if not stripped:
+            return True
+        if stripped.isdigit() and self._pending is not None:
+            return self._pick(int(stripped))
+        self._pending = None
+        parts = shlex.split(stripped)
         if not parts:
             return True
         verb, rest = parts[0].lstrip("/"), parts[1:]
         if verb in ("quit", "exit", "q"):
             return False
+        if parts[0].startswith("/") and (verb == "" or (verb not in self._verbs() and rest == [])):
+            return self._menu(parts[0][1:])
         if verb == "help":
             self.console.print(HELP)
         elif verb == "keys":
             self.console.print(_keys(dict(os.environ), set(self.session_keys)))
         elif verb == "login":
             self._login(rest)
+            if not rest:
+                self._login_menu()
+        elif verb == "sessions":
+            self._print_sessions(limit=None)
+        elif verb == "watch":
+            self._watch(rest)
         elif verb == "logout":
             self._logout()
         elif verb == "status":
@@ -381,6 +450,156 @@ class Screen:
         else:
             self.console.print(Text(f"no command {verb}; /help", style="red"))
         return True
+
+    @staticmethod
+    def _verbs() -> set[str]:
+        return {name for name, _, _ in COMMANDS}
+
+    def _menu(self, fragment: str) -> bool:
+        """Type / and pick: one match runs now, several wait for a bare number."""
+        matches = filter_commands(fragment)
+        if not matches:
+            self.console.print(Text(f"no command matches /{fragment}; /help", style="red"))
+            return True
+        if len(matches) == 1:
+            return self.command("/" + matches[0][0])
+        self.console.print(Text("  pick a number:", style="dim"))
+        for i, (name, _, blurb) in enumerate(matches, 1):
+            line = Text(f"    {i}  /{name:<10}", style="white")
+            line.append(blurb, style="dim")
+            self.console.print(line)
+        self._pending = ("commands", matches)
+        return True
+
+    def _pick(self, number: int) -> bool:
+        """A bare number answers the last numbered list, then the list is gone."""
+        kind, rows = self._pending or (None, [])
+        self._pending = None
+        if number < 1 or number > len(rows):
+            self.console.print(Text(f"pick 1-{len(rows)} from the list above", style="red"))
+            return True
+        if kind == "commands":
+            return self.command("/" + rows[number - 1][0])
+        return self._watch([str(number)], rows=rows)
+
+    def _print_sessions(self, limit: Optional[int]) -> None:
+        """Builds running now and before, newest first. Alive means its pid still runs."""
+        from kullback.runner import heartbeat
+
+        records = heartbeat.read_all()
+        self.console.print(Text("\n  02 sessions", style="bold"))
+        if not records:
+            self.console.print(Text("    none yet: /build starts one here", style="dim"))
+            return
+        shown = records if limit is None else records[:limit]
+        for i, record in enumerate(shown, 1):
+            mark = "●" if heartbeat.alive(record.get("pid")) else "○"
+            colour = "green" if heartbeat.alive(record.get("pid")) else "dim"
+            line = Text(f"    {i}  {mark} ", style=colour)
+            line.append(str(record.get("workdir") or "?"), style="white")
+            rest = " ".join(part for part in (
+                str(record.get("model") or "no model"),
+                str(record.get("exit") or record.get("status") or ""),
+                f"${float(record.get('spend_usd') or 0):,.4f}",
+            ) if part)
+            line.append(f"  {rest}", style="dim")
+            self.console.print(line, no_wrap=True, overflow="ellipsis")
+        self.console.print(Text("    /watch N to watch one here", style="dim"))
+        self._pending = ("sessions", shown)
+
+    def _watch(self, rest: list[str], rows: Optional[list] = None) -> bool:
+        """Watch session N: this screen now reads that build's workdir. The build itself
+        keeps running where it is; watching never touches it."""
+        from kullback.runner import heartbeat
+
+        records = rows if rows is not None else heartbeat.read_all()
+        if not rest or not rest[0].isdigit():
+            self.console.print(Text("watch which? /sessions lists them with numbers", style="red"))
+            if records:
+                self._pending = ("sessions", records)
+            return True
+        number = int(rest[0])
+        if number < 1 or number > len(records):
+            self.console.print(Text(f"pick 1-{len(records)} from /sessions", style="red"))
+            return True
+        self.workdir = Path(records[number - 1]["workdir"])
+        self.open()
+        return True
+
+    def _login_menu(self) -> None:
+        """Bare /login walks to a key: provider, model, key variable, secret, done.
+
+        The secret is read with getpass so it never echoes; names are printed, values never.
+        Every answer also works inline (/login provider/model --set KEY=VALUE), this menu
+        only asks the same questions one at a time."""
+        import getpass
+
+        providers = ["anthropic", "openai", "opencode-go"]
+        self.console.print(Text("  log in where?", style="bold"))
+        for i, name in enumerate(providers, 1):
+            self.console.print(Text(f"    {i}  {name}", style="white"))
+        choice = self._ask("    provider [1-3 or name]: ").strip().lower()
+        if choice.isdigit() and 1 <= int(choice) <= len(providers):
+            provider_name = providers[int(choice) - 1]
+        elif choice in providers:
+            provider_name = choice
+        else:
+            self.console.print(Text("pick 1-3 or a provider name", style="red"))
+            return
+        default_model = {"anthropic": "anthropic/claude-opus-5",
+                         "openai": "openai/gpt-4.1-mini",
+                         "opencode-go": "opencode-go/glm-5.3-flash"}[provider_name]
+        model = self._ask(f"    model [{default_model}]: ").strip() or default_model
+        key_var = self._key_var_for(provider_name, model)
+        self.console.print(Text(f"    {key_var} holds the key (names only, value stays hidden)",
+                                style="dim"))
+        try:
+            secret = getpass.getpass(f"    {key_var}: ")
+        except (EOFError, KeyboardInterrupt):
+            self.console.print()
+            return
+        if not secret:
+            self.console.print(Text("empty key: nothing held", style="red"))
+            return
+        self._apply_key(key_var, secret)
+        self.console.print(Text(f"keys held for this session: {key_var}", style="dim"))
+        try:
+            self._resolve(model, None)
+        except ValueError as exc:
+            self.console.print(Text(str(exc), style="red"))
+            return
+        self.model = model
+        self.console.print(self._login_status())
+
+    def _ask(self, prompt: str) -> str:
+        """One question to the person typing. A method so tests can answer without stdin."""
+        try:
+            return self.console.input(prompt)
+        except (EOFError, KeyboardInterrupt, OSError):
+            return ""
+
+    def _apply_key(self, name: str, value: str) -> None:
+        """Hold one key for this session: first sighting remembers what the shell held
+        (None means it held nothing) so /logout restores instead of deleting."""
+        if name not in self.session_keys:
+            self.session_keys[name] = os.environ.get(name)
+        os.environ[name] = value
+
+    @staticmethod
+    def _key_var_for(provider_name: str, model: str) -> str:
+        """Which variable holds this model's key: the adapter's, else the registry's."""
+        from kullback.ai import provider as pv
+
+        adapter_cls = pv.ADAPTERS.get(provider_name)
+        if adapter_cls is not None:
+            return adapter_cls.key_env_var
+        try:
+            endpoint = pv.registry_endpoint(model)
+        except Exception:
+            endpoint = None
+        if endpoint is not None and endpoint.key_env_var:
+            return endpoint.key_env_var
+        return f"{provider_name.upper().replace('-', '_')}_API_KEY"
 
     def _live(self, title: str, work: Any) -> None:
         board = Board(self.workdir, title=title, ceiling=self.ceiling_usd)
@@ -449,9 +668,7 @@ class Screen:
                 name, sep, value = item.partition("=")
                 if not sep or not name:
                     raise ValueError(f"--set takes KEY=VALUE, not {item!r}")
-                if name not in self.session_keys:
-                    self.session_keys[name] = os.environ.get(name)
-                os.environ[name] = value
+                self._apply_key(name, value)
                 applied.append(name)
             if model:
                 self._resolve(model, base_urls[-1] if base_urls else None)
@@ -554,24 +771,106 @@ class Screen:
         self.console.print(diagrams.loop_text(diagrams.read_rounds_file(self.workdir)))
 
     def _status(self) -> None:
-        """The last build, read back off disk. No stage runs to answer this."""
+        """The last build, read back off disk. No stage runs to answer this.
+
+        A loop build is rounds first (rounds.json), gates beside them (gates.json), spend
+        under both (budget.json); a single-pass build is the pipeline state. 'No build yet'
+        is said only when none of those files exist, never while a build is spending."""
+        rounds = _read(self.workdir / "rounds.json", [])
+        gates = _read(self.workdir / "gates.json", [])
+        totals = _read(self.workdir / "budget.json", {}).get("total") or {}
         state = _read(self.workdir / "pipeline" / "state.json", {})
-        board = Board(self.workdir, title="last build")
-        board.order = list(state.get("statuses") or {})
-        board.status = dict(state.get("statuses") or {})
-        board.attempts = dict(state.get("attempts") or {})
-        # pipeline.py writes each GateResult with as_dict, and GateResult.passed carries the
-        # alias "pass", so that is the key on disk; report.py reads the same file the same way.
-        board.gates = [{"stage": g.get("stage"), "passed": g.get("pass", g.get("passed")),
-                        "failures": g.get("failures") or []} for g in state.get("gates") or []]
-        board.outcome = str(state.get("status") or "no build yet")
-        # rounds.json is the driver's record: one row per round, the exit on the last (D126).
-        rows = _read(self.workdir / "rounds.json", [])
-        board.rounds = [{"round": r.get("round"), "counts": r.get("counts") or {}, "exit": r.get("exit")}
-                        for r in rows if isinstance(r, dict)]
-        if board.rounds:
-            board.round = int(board.rounds[-1].get("round") or 0)
-        self.console.print(board.render())
+        if isinstance(rounds, list) and rounds and not state:
+            self.console.print(self._rounds_status(rounds, gates, totals))
+            return
+        if state or gates or float(totals.get("usd") or 0.0) > 0:
+            board = Board(self.workdir, title="last build")
+            board.order = list(state.get("statuses") or {})
+            board.status = dict(state.get("statuses") or {})
+            board.attempts = dict(state.get("attempts") or {})
+            # pipeline.py writes each GateResult with as_dict, and GateResult.passed carries the
+            # alias "pass", so that is the key on disk; report.py reads the same file the same way.
+            board.gates = [{"stage": g.get("stage"), "passed": g.get("pass", g.get("passed")),
+                            "failures": g.get("failures") or []} for g in state.get("gates") or []]
+            # rounds.json is the driver's record: one row per round, the exit on the last (D126).
+            rows = _read(self.workdir / "rounds.json", [])
+            board.rounds = [{"round": r.get("round"), "counts": r.get("counts") or {}, "exit": r.get("exit")}
+                            for r in rows if isinstance(r, dict)]
+            if board.rounds:
+                board.round = int(board.rounds[-1].get("round") or 0)
+            board.outcome = str(state.get("status") or "build started, no round closed yet")
+            self.console.print(board.render())
+            return
+        self.console.print(Text("no build yet: /build starts one here", style="dim"))
+
+    def _rounds_status(self, rounds: list, gates: list, totals: dict) -> Text:
+        """One screenful for a loop build with no pipeline state: where the loop stands,
+        what the gates said, what the Examiner found, what it cost.
+
+        Dim labels, white values, leibler.dev style. Round counts come in two shapes -
+        the driver's flat counts (fidelity, tasks, trusted, refused_count, spend) and the
+        loop record's (trusted_ids, refused map, pending_findings) - and both read here."""
+        out = Text()
+        out.append(f"last build - {self.workdir.name}\n", style="bold")
+        last = rounds[-1] if isinstance(rounds[-1], dict) else {}
+        exit_word = str(last.get("exit") or "running")
+        line = Text(f"  round {last.get('round', len(rounds))}", style="white")
+        line.append(f" · {exit_word}", style="red" if last.get("failed") else "green")
+        if last.get("exit_note"):
+            line.append(f" - {str(last['exit_note'])[:120]}", style="dim")
+        out.append_text(line)
+        out.append("\n")
+        gate_list = gates if isinstance(gates, list) else []
+        if gate_list:
+            marks = []
+            for gate in gate_list:
+                if not isinstance(gate, dict):
+                    continue
+                passed = gate.get("pass", gate.get("passed", True))
+                marks.append(f"{gate.get('stage', '?')} {'✔' if passed else '✘'}")
+            staged = Text("  stages ", style="dim")
+            staged.append(" · ".join(marks), style="white")
+            out.append_text(staged)
+            out.append("\n")
+            failed = [g for g in gate_list
+                      if isinstance(g, dict) and not g.get("pass", g.get("passed", True))]
+            verdict = Text(f"  gates {len(gate_list) - len(failed)} passed", style="green")
+            if failed:
+                verdict.append(f", {len(failed)} failed", style="red")
+                reason = "; ".join(failed[-1].get("failures") or []) or "no reason given"
+                verdict.append(f"\n    {failed[-1].get('stage')}: {reason[:160]}", style="red")
+            out.append_text(verdict)
+            out.append("\n")
+        counts = last.get("counts") or {}
+        trusted = counts.get("trusted_ids")
+        trusted_n = len(trusted) if isinstance(trusted, list) else int(counts.get("trusted") or 0)
+        refused = counts.get("refused")
+        refused_n = len(refused) if isinstance(refused, dict) else int(
+            refused if isinstance(refused, int) else counts.get("refused_count") or 0)
+        fidelity = Text("  fidelity ", style="dim")
+        if counts.get("fidelity") is not None or counts.get("tasks") is not None:
+            fidelity.append(f"{counts.get('fidelity', 0)}/{counts.get('tasks', 0)} tasks", style="white")
+        else:
+            fidelity.append("no counts yet", style="white")
+        fidelity.append(f" · trusted {trusted_n}", style="white")
+        fidelity.append(f" · refused {refused_n}", style="white")
+        out.append_text(fidelity)
+        out.append("\n")
+        pending = last.get("pending_findings") or []
+        out.append_text(Text(f"  examiner {len(pending)} finding(s) open", style="dim"))
+        out.append("\n")
+        round_spend = float((counts.get("spend") or {}).get("total") or 0.0)
+        spent = round_spend or float(totals.get("usd") or 0.0)
+        spend = Text(f"  spend ${spent:,.4f}", style="bold")
+        if self.ceiling_usd:
+            spend.append(f" of ${self.ceiling_usd:,.2f}", style="dim")
+        calls = int(totals.get("calls") or 0)
+        if calls:
+            spend.append(f" · {calls} calls", style="dim")
+            spend.append(f" · {int(totals.get('input') or 0):,} in / "
+                         f"{int(totals.get('output') or 0):,} out", style="dim")
+        out.append_text(spend)
+        return out
 
 
 def loop(workdir: Path, model: Optional[str] = None, base_url: Optional[str] = None,
