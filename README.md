@@ -117,8 +117,8 @@ Keys come from the environment or a `.env` in the working directory (see `.env.e
 
 ## Explore
 
-- `CONTRIBUTING.md` — how to get a change in
-- `DEVELOPING.md` — the records, the offline models, the fixtures
-- `docs/harness-design.md` — the spec
-- `docs/decision-log.md` — why
-- `docs/todo.md` — what comes next
+- `CONTRIBUTING.md` - how to get a change in
+- `DEVELOPING.md` - the records, the offline models, the fixtures
+- `docs/harness-design.md` - the spec
+- `docs/decision-log.md` - why
+- `docs/todo.md` - what comes next
