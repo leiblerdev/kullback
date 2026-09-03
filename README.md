@@ -70,7 +70,7 @@ kullback/
   ai/         models, the provider stream, pricing
   agent/      the agent core: loop, tools, session, context
   builder/    the Environment agent
-  examiner/   the Verifier and probe agent (phase 5)
+  examiner/   the Verifier and probe agent: derivation, probes, repairs, refusals, findings
   runner/     the frozen loop and the Verdict; serves both agents
   gates/      every accept-or-reject check; serves both agents, no model call
   cli.py      the command line

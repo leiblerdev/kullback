@@ -431,6 +431,85 @@ def test_load_on_an_empty_workdir_still_renders(workdir: Path):
     assert headings == list(SECTIONS)
 
 
+def _rounds_rows() -> list[dict]:
+    spend = {"builder": 0.0, "examiner": 0.0, "total": 0.0}
+    return [
+        {"round": 1, "exit": None, "counts": {"fidelity": 1, "tasks": 2, "trusted": 0, "refused_count": 0,
+                                               "assisted_runs": 1, "probes_passing": 0, "spend": spend,
+                                               "unfinished": ["t1", "t2"], "refused": {}}},
+        {"round": 2, "exit": "done", "counts": {"fidelity": 2, "tasks": 2, "trusted": 1, "refused_count": 1,
+                                                 "assisted_runs": 1, "probes_passing": 3, "refused": {"t2": "no Reference"},
+                                                 "spend": {"builder": 0.5, "examiner": 0.25, "total": 0.75},
+                                                 "unfinished": []}},
+    ]
+
+
+def _trusted_row(**metrics) -> dict:
+    body = {"trusted": ["t1"], "untrusted": {"t2": "a probe passed"}, "probes_passing": 3,
+            "false_rejection": {"t1": 0.25, "t2": None}, "refused": {"t2": "no Reference"}}
+    body.update(metrics)
+    return as_dict(GateResult(stage="trusted", **{"pass": True}, metrics=body))
+
+
+def test_the_report_has_a_rounds_table_when_rounds_json_exists_and_none_otherwise(workdir: Path):
+    without = render(load(workdir))
+    assert "## Rounds" in without and "No rounds recorded" in block_of(without, "## Rounds")
+    (workdir / "rounds.json").write_text(json.dumps(_rounds_rows()), encoding="utf-8")
+    loaded = load(workdir)
+    assert [r.round for r in loaded.rounds] == [1, 2] and loaded.rounds[-1].exit == "done"
+    section = block_of(render(loaded), "## Rounds")
+    assert "| round | fidelity | trusted | refused | assisted runs | probes passing | spend | exit |" in section
+    assert "| 1 | 1/2 | 0 | 0 | 1 | 0 | $0.0000 |  |" in section
+    assert "| 2 | 2/2 | 1 | 1 | 1 | 3 | $0.7500 | done |" in section
+    headings = [line.strip() for line in render(loaded).splitlines() if line.startswith("## ")]
+    assert headings == list(SECTIONS) and headings.index("## Rounds") == headings.index("## Environment") + 1
+
+
+def test_the_false_rejection_number_stands_next_to_the_trusted_verifier_count(workdir: Path):
+    """D133: the trusted count and the false-rejection share are read together, in the headline and
+    again on each Task, off the last `trusted` ruling in gates.json and the last round's counts."""
+    (workdir / "rounds.json").write_text(json.dumps(_rounds_rows()), encoding="utf-8")
+    (workdir / "gates.json").write_text(json.dumps([
+        as_dict(GateResult(stage="ingest", **{"pass": True})), _trusted_row(false_rejection={"t1": 0.5, "t2": None}),
+        _trusted_row()]), encoding="utf-8")
+    (workdir / "tasks").mkdir()
+    for task_id in ("t1", "t2"):
+        (workdir / "tasks" / f"{task_id}.json").write_text(
+            json.dumps(as_dict(Task(id=task_id, name=task_id, intent="do it"))), encoding="utf-8")
+    loaded = load(workdir)
+    assert loaded.trusted is not None and loaded.trusted.metrics["false_rejection"] == {"t1": 0.25, "t2": None}
+    text = render(loaded)
+    head = block_of(text, "## Environment")
+    assert "1 Tasks with a trusted Verifier; false rejection: per Task below (t1 25%, t2 n/a)." in head
+    assert "1 Tasks refused: t2 (no Reference)." in head
+    assert text.index("trusted Verifier") < text.index("## Rounds") < text.index("## Tasks")
+    t1, t2 = block_of(text, "### Task t1"), block_of(text, "### Task t2")
+    assert "- Verifier: trusted" in t1 and "- False rejection: 25% of held-out frontier Runs rejected" in t1
+    assert "- Verifier: not trusted, a probe passed" in t2 and "- False rejection: n/a of held-out" in t2
+
+
+def test_a_stalled_exit_names_the_tasks_that_need_a_person(workdir: Path):
+    rows = _rounds_rows()
+    rows[-1]["exit"] = "stalled"
+    rows[-1]["counts"]["unfinished"] = ["t1", "t2"]
+    (workdir / "rounds.json").write_text(json.dumps(rows), encoding="utf-8")
+    text = render(load(workdir))
+    assert "stalled: these Tasks need a person: t1, t2." in block_of(text, "## Environment")
+    rows[-1]["exit"] = "done"
+    (workdir / "rounds.json").write_text(json.dumps(rows), encoding="utf-8")
+    assert "need a person" not in render(load(workdir))
+
+
+def test_a_malformed_rounds_file_is_listed_under_records_not_read(workdir: Path):
+    (workdir / "rounds.json").write_text(json.dumps({"round": "one"}), encoding="utf-8")
+    loaded = load(workdir)
+    assert loaded.rounds == []
+    assert "rounds.json: not a list of RoundRecord this report can read" in loaded.records_not_read
+    assert "rounds.json: not a list of RoundRecord this report can read" in render(loaded)
+    (workdir / "rounds.json").write_text(json.dumps([{"round": 1, "counts": "not a dict"}]), encoding="utf-8")
+    assert load(workdir).rounds == [] and load(workdir).records_not_read
+
+
 def test_write_report_returns_the_file_it_wrote_with_the_title_on_the_first_line(workdir: Path, data: ReportData):
     path = write_report(data, workdir)
     assert path.is_file()

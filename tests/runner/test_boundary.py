@@ -27,12 +27,12 @@ def test_import_boundary_check_accepts_the_repo_root_too():
 
 
 def _tree(root: Path, runner_src: str, ai_src: str = "x = 1\n") -> Path:
-    for part in ("runner", "ai", "builder"):
+    for part in ("runner", "ai", "builder", "examiner"):
         (root / part).mkdir(parents=True)
         (root / part / "__init__.py").write_text("", encoding="utf-8")
     (root / "runner" / "loop.py").write_text(runner_src, encoding="utf-8")
     (root / "ai" / "provider.py").write_text(ai_src, encoding="utf-8")
-    (root / "builder" / "verifier.py").write_text("x = 1\n", encoding="utf-8")
+    (root / "examiner" / "derive.py").write_text("x = 1\n", encoding="utf-8")
     return root
 
 
@@ -83,21 +83,30 @@ def test_import_boundary_check_leaves_the_predicate_exec_alone_and_lists_it(tmp_
     assert any("loop.py" in site and "exec" in site for site in out.metrics["dynamic_code_sites"])
 
 
-def test_import_boundary_check_catches_the_verifier_reaching_into_the_runner(tmp_path: Path):
+def test_import_boundary_check_catches_the_derivation_reaching_into_the_runner(tmp_path: Path):
     """D91's other direction, which D89 says the same test covers.
 
     records and canon moved into runner/ from the dissolved shared/ package (D121) and stay
-    readable to verifier.py, the same allowance it always had; every other runner/ module is still
-    off limits.
+    readable to the derivation, the same allowance it always had; every other runner/ module is
+    still off limits. The derivation is examiner/derive.py since phase 5 (D123), and the failure
+    names it there.
     """
+    root = _tree(tmp_path / "kullback", "x = 1\n")
+    (root / "examiner" / "derive.py").write_text("from kullback.runner.loop import run\n", encoding="utf-8")
+    out = import_boundary_check(root)
+    assert out.passed is False
+    assert any("examiner/derive.py" in f and "kullback.runner.loop" in f for f in out.failures)
+    (root / "examiner" / "derive.py").write_text(
+        "from kullback.runner.records import Run\nfrom kullback.gates import verifier_suite\n", encoding="utf-8")
+    assert import_boundary_check(root).passed is True
+
+
+def test_import_boundary_check_no_longer_scans_a_builder_verifier_module(tmp_path: Path):
+    """The old path is not the derivation any more: a file left there is an ordinary Builder module."""
     root = _tree(tmp_path / "kullback", "x = 1\n")
     (root / "builder" / "verifier.py").write_text("from kullback.runner.loop import run\n", encoding="utf-8")
     out = import_boundary_check(root)
-    assert out.passed is False
-    assert any("verifier.py" in f and "kullback.runner.loop" in f for f in out.failures)
-    (root / "builder" / "verifier.py").write_text(
-        "from kullback.runner.records import Run\nfrom kullback.builder import policy\n", encoding="utf-8")
-    assert import_boundary_check(root).passed is True
+    assert out.passed is True and out.failures == []
 
 
 def test_import_boundary_check_fails_a_file_that_does_not_parse_rather_than_raising(tmp_path: Path):

@@ -12,6 +12,7 @@ from pydantic import BaseModel, ConfigDict
 from test_build import Bodies
 
 from kullback.agent.events import StageEnd, StageStart, ToolExecutionEnd
+from kullback.agent.extensions import load_extensions
 from kullback.agent.harness import AgentHarness
 from kullback.agent.messages import ToolCall
 from kullback.agent.tools import AgentTool, ToolResult
@@ -22,8 +23,8 @@ from kullback.builder import extension as ext
 from kullback.builder import tools as builder_tools
 from kullback.builder.build import BuildPlan
 
-COMPARED = ("bodies.json", "constraints.json", "gates.json", "environment.json", "replays.json", "task_status.json",
-            "tasks.json", "schema.json", "tool_sigs.json", "user_facts.json", "vocabulary.json", "references.json")
+COMPARED = ("bodies.json", "constraints.json", "gates.json", "environment.json", "replays.json",
+            "tasks.json", "schema.json", "tool_sigs.json", "user_facts.json", "vocabulary.json")
 
 
 def _reply(content, *calls):
@@ -88,19 +89,20 @@ def test_the_driver_builds_the_environment_and_reports_the_rulings(driven):
     assert result["status"] == "complete" and result["env_id"] and result["target"] == "environment"
     assert result["tool_result"]["is_error"] is False
     assert {"ingest", "mine", "cluster", "compile_tools", "compile_policy", "intent", "vocabulary",
-            "build_user_rules", "tau2_export", "replay_reference", "rerolls", "derive_verifier"} <= set(result["rulings"])
+            "build_user_rules", "tau2_export", "replay_reference", "rerolls"} <= set(result["rulings"])
+    assert "derive_verifier" not in result["rulings"], "the Verifiers are the Examiner's (D123)"
     state = json.loads((driven["workdir"] / "pipeline" / "state.json").read_text(encoding="utf-8"))
     assert state["status"] == "complete" and state["statuses"]["build_environment"] == "ran"
     assert set(state["statuses"]) == {"ingest", "mine", "cluster", "canon_rules", "starting_state", "compile_tools",
                                       "compile_policy", "judge_lessons", "intent", "vocabulary", "user_rules",
-                                      "build_environment", "replay_reference", "rerolls", "derive_verifier"}
+                                      "build_environment", "replay_reference", "rerolls"}
 
 
 def test_stage_events_reach_the_subscribers_in_order_and_the_tool_end_comes_last(driven):
     events = driven["events"]
     starts = [e.name for e in events if isinstance(e, StageStart)]
     ends = [e.name for e in events if isinstance(e, StageEnd)]
-    assert starts == ends and starts[:3] == ["ingest", "mine", "cluster"] and starts[-1] == "derive_verifier"
+    assert starts == ends and starts[:3] == ["ingest", "mine", "cluster"] and starts[-1] == "rerolls"
     assert isinstance(events[-1], ToolExecutionEnd) and events[-1].tool_name == "build"
     compile_end = next(e for e in events if isinstance(e, StageEnd) and e.name == "compile_tools")
     assert compile_end.counts["status"] == "ran" and "parses" in compile_end.counts["rulings"]
@@ -287,7 +289,7 @@ def test_compile_tool_recompiles_one_body_and_releases_every_body(driven):
     assert after == before, "one tool recompiled by the same model, the rest read back: every body is still there"
     assert set(plan.store["bodies"]) == set(before)
     gates = {g["stage"] for g in json.loads((driven["workdir"] / "gates.json").read_text(encoding="utf-8"))}
-    assert {"parses", "intent", "derive_verifier"} <= gates, "the sandbox rulings were appended, the rest kept"
+    assert {"parses", "intent", "rerolls"} <= gates, "the sandbox rulings were appended, the rest kept"
 
 
 def test_replay_one_task_keeps_the_other_tasks_replays(driven):
@@ -353,6 +355,67 @@ def test_build_tools_render_the_summary_and_keep_the_payload_in_the_model(tmp_pa
     text = builder_tools.render(result)
     assert text.splitlines() == ["build x: complete; 1 stages", "stages: s (cached)", "rulings: g fail (why)"]
     assert "task_1" not in text
+
+
+def test_the_builder_has_no_tool_that_writes_a_verifier_or_a_probe(driven):
+    """D123: the Builder never writes a Verifier or a probe; a driven build leaves neither behind."""
+    workdir = driven["workdir"]
+    assert not (workdir / "verifiers").exists() and not (workdir / "probes").exists()
+    assert not (workdir / "task_status.json").exists() and not (workdir / "references.json").exists()
+    harness = builder_agent.build_harness(BuildPlan(workdir=workdir))
+    names = set(harness.registry.names())
+    assert not names & {"derive", "probe", "repair", "refuse", "finding"}
+    assert "Verifier" not in "".join(harness.registry.get(name).description for name in names)
+    assert "the Examiner" in harness.system and "Verifiers" in harness.system
+
+
+class ShapeArgs(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    note: str = ""
+
+
+class ShapeResult(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    summary: str
+    produced: list[str]
+
+
+def test_a_failed_ruling_protects_the_result_on_a_builder_with_a_session(tmp_path):
+    """D124 on the Builder: a result carrying a failed ruling stays in front of the model, under the name
+    of the artifact it produced, until a later result produces that artifact again."""
+    from kullback.agent.session import SessionStore
+    from kullback.runner.records import Task
+
+    plan = BuildPlan(workdir=tmp_path)
+    plan.store = {"tasks": [Task(id="t", run_ids=[])], "categories": []}
+
+    async def shape(args: ShapeArgs) -> ShapeResult:
+        return ShapeResult(summary=f"shaped {args.note}", produced=["tasks"])
+
+    def extra_tool(api):
+        api.register_tool(AgentTool("shape", "Reshape the Tasks.", ShapeArgs, ShapeResult, shape))
+
+    model = TestModel([ModelReply(content=None, tool_calls=[ToolCallRequest(id="s1", name="shape", arguments={"note": "one"})]),
+                       ModelReply(content=None, tool_calls=[ToolCallRequest(id="s2", name="shape", arguments={"note": "two"})]),
+                       _reply("read")])
+    harness = builder_agent.build_harness(plan, agent_model=model, session=SessionStore.load(tmp_path / "s.jsonl"))
+    load_extensions(harness, [extra_tool])
+    events = _collect(harness.prompt("shape the Tasks"))
+    ends = [e for e in events if isinstance(e, ToolExecutionEnd) and e.tool_name == "shape"]
+    assert len(ends) == 2 and all(not e.is_error for e in ends)
+    assert [r["stage"] for r in ends[0].result.details["gate_rulings"]] == ["cluster"]
+    assert ends[0].result.details["gate_rulings"][0]["pass"] is False
+    first, second = (harness.context.entry_id_for(e.tool_call_id) for e in ends)
+    assert first is not None and second is not None and first != second
+    assert first not in harness.context.protected, "the second result on the same artifact is the act on the first"
+    assert harness.context.protected[second] == "unacted ruling: cluster on tasks"
+    # Without a session there is nothing to protect and the hook only appends the rulings.
+    bare = builder_agent.build_harness(plan)
+    load_extensions(bare, [extra_tool])
+    result = builder_agent.drive_tool(bare, "shape", {"note": "three"})
+    assert "gate rulings: cluster fail" in result.content and bare.context.protected == {}
 
 
 def test_the_harness_of_the_driver_refuses_a_model_turn(tmp_path):

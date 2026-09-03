@@ -10,9 +10,11 @@ import random
 import re
 import threading
 import time
+import uuid
 from email.utils import parsedate_to_datetime
 from pathlib import Path
 from typing import Any, Iterable, Optional
+from urllib.parse import urlparse
 
 import httpx
 from pydantic import BaseModel, ConfigDict, Field
@@ -887,6 +889,12 @@ class OpenAIModel(HttpModel):
         )
 
 
+# One session id per process for OpenCode's prompt-cache optimization. Stable across the whole
+# run on purpose: the same id on every call is what lets the gateway cache, and a fresh id per
+# call would look like the abusive traffic the Go docs ask clients not to generate.
+_OPENCODE_SESSION = uuid.uuid4().hex
+
+
 class OpenAICompatibleModel(OpenAIModel):
     """A local or self-hosted endpoint that speaks the OpenAI shape. Base URL required, key optional."""
 
@@ -894,6 +902,18 @@ class OpenAICompatibleModel(OpenAIModel):
 
     def __init__(self, model_id: str, base_url: str, **kwargs):
         super().__init__(model_id, base_url=base_url, **kwargs)
+
+    def headers(self) -> dict:
+        """The OpenAI headers, plus OpenCode's identification on OpenCode hosts only.
+
+        Go asks clients to identify themselves (no broad user agents) and to send
+        `x-opencode-session`; without both, gateway traffic looks abusive and keys get blocked.
+        Gated on the host so no other provider ever sees these headers."""
+        headers = super().headers()
+        if "opencode.ai" in urlparse(self.base_url).netloc:
+            headers["user-agent"] = "kullback"
+            headers["x-opencode-session"] = _OPENCODE_SESSION
+        return headers
 
     def reasoning_fields(self, config: ModelConfig) -> dict:
         """Reasoning branch three of three: a local endpoint gets none of it. Servers that do

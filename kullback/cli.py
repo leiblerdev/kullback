@@ -282,14 +282,20 @@ def build(
                                                      "sentences, Intents and re-rolls (D118); 1 runs them in a line."),
     target: str = typer.Option("environment", "--target", help="What to build: environment (everything), "
                                                                  "or one stage or artifact by name."),
-    agent: bool = typer.Option(False, "--agent", help="Let the --model drive the Builder session by calling "
-                                                        "build(target) itself; without it code issues the call."),
+    agent: bool = typer.Option(False, "--agent", help="Let the --model drive both sessions, the Builder's and "
+                                                        "the Examiner's; without it code issues the tool calls."),
+    stall_rounds: int = typer.Option(1, "--stall-rounds", help="Rounds that move no gate count before the loop "
+                                                              "exits stalled (D126)."),
+    allowance_usd: Optional[float] = typer.Option(None, "--allowance-usd",
+                                                  help="Per-agent spend allowance per round; the default is "
+                                                       "each agent's own round-1 spend from round 2 on (D123)."),
 ):
-    """Run the Builder over the ingested Traces and write the Environment.
+    """Run the Builder and the Examiner in rounds over the ingested Traces and write the Environment.
 
-    The Builder is an extension on the agent core: the build is one `build(target)` tool call through
-    its hooks. By default code issues that call, so the build is deterministic and byte-identical
-    offline; `--agent` hands the call to the model.
+    Both agents are extensions on the agent core, driven in turns on one stream (D128): the Builder
+    builds the target, the Examiner derives and examines the Verifiers, and the round ends with the
+    counts the gates report. By default code issues the tool calls, so the build is deterministic and
+    byte-identical offline; `--agent` hands both sessions to the model.
     """
     adapter = _live_model(model, base_url) if model else None
     if agent and adapter is None:
@@ -297,11 +303,36 @@ def build(
     search = _entry("kullback.builder.search", "search_for")(workdir)  # None unless live is on or a memo exists
     # The provider owns an http client when it made one; close it on the way out rather than at exit.
     with contextlib.closing(search) if search is not None else contextlib.nullcontext():
-        result = _entry("kullback.builder.agent", "run_builder")(
+        result = _entry("kullback.rounds", "run_rounds")(
             workdir=workdir, iterate=iterate, model=adapter, files=list(files or []), ceiling_usd=ceiling_usd,
             grow=_grow_targets(grow), grow_seed=grow_seed, probe_limit=probe_limit, rerolls=rerolls,
-            search=search, workers=workers, target=target, agent_model=adapter if agent else None)
-    typer.echo(json.dumps(result, default=str))
+            search=search, workers=workers, target=target, agent_model=adapter if agent else None,
+            stall_rounds=stall_rounds, allowance_usd=allowance_usd, subscribers=[_echo_round])
+    if isinstance(result, dict) and result.get("exit"):
+        count = len(result.get("rounds") or [])
+        typer.echo(f"exit: {result['exit']} after {count} round{'' if count == 1 else 's'}")
+    typer.echo(json.dumps(result, indent=2, default=str))
+    if isinstance(result, dict) and result.get("failed"):
+        # A stalled exit on a broken agent contract is a failed run, not a quiet one: CI and
+        # scripts must see it. Plain stalled (the gates, no progress) still exits zero.
+        raise typer.Exit(1)
+
+
+def _round_line(counts: dict) -> str:
+    """One round's counts as one line, every number a gate's (D126)."""
+    compactions = counts.get("fallback_compactions") or {}
+    spend = counts.get("spend") or {}
+    return (f"fidelity {counts.get('fidelity', 0)}/{counts.get('tasks', 0)} tasks, "
+            f"trusted {counts.get('trusted', 0)}, refused {counts.get('refused_count', 0)}, "
+            f"assisted runs {counts.get('assisted_runs', 0)}, probes passing {counts.get('probes_passing', 0)}, "
+            f"compactions builder {compactions.get('builder', 0)} examiner {compactions.get('examiner', 0)}, "
+            f"spend ${float(spend.get('total') or 0.0):.4f}")
+
+
+def _echo_round(event: Any) -> None:
+    """The subscriber the build hands the driver: a line per round as each round ends."""
+    if getattr(event, "type", None) == "round_end":
+        typer.echo(f"round {event.round}: {_round_line(dict(event.counts or {}))}")
 
 
 def _grow_targets(pairs: Optional[list[str]]) -> dict[str, int]:

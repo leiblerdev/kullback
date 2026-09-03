@@ -15,7 +15,7 @@ import pytest
 from kullback import report
 from kullback.ai.provider import RecordedModel, TestModel
 from kullback.builder import cluster, compile_env, ingest, mine, policy, user_sim
-from kullback.builder import verifier as verifier_mod
+from kullback.examiner import derive as verifier_mod
 from kullback.gates import artifacts
 from kullback.runner import boundary, canon, loop, regrade, route
 from kullback.runner import verdict as verdict_mod
