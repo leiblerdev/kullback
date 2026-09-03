@@ -491,12 +491,14 @@ def test_the_banner_is_a_gradient_styles_vary_plain_does_not(tmp_path):
 
 
 def test_open_prints_status_segments(tmp_path, monkeypatch):
+    # A short workdir: open() cuts absurdly long paths with an ellipsis rather than folding them.
+    workdir = tmp_path / "w"
+    workdir.mkdir()
     console = _console()
     monkeypatch.setenv("HARNESS_ALLOW_MODEL_REQUESTS", "1")
-    Screen(tmp_path, model="opencode-go/muse-spark", console=console).open()
+    Screen(workdir, model="opencode-go/muse-spark", console=console).open()
     out = _text(console)
-    # The workdir line is cut with an ellipsis past width 100, so only its tail is asserted.
-    assert "opencode-go/muse-spark" in out and "live on" in out and tmp_path.name in out
+    assert "opencode-go/muse-spark" in out and "live on" in out and str(workdir) in out
 
 
 def test_open_says_live_off_and_hides_zero_spend(tmp_path, monkeypatch):
