@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import ast
 import builtins
+from typing import Iterator
 
 from kullback.runner.confinement import DENIED_NAMES, confine
 from kullback.runner.records import GateResult
@@ -123,6 +124,11 @@ def unbound_names(source: str, class_name: str = TOOLS_CLASS) -> list[str]:
     the recorded calls only see the lines those calls reach: build 8's `calculate` passed them and
     then raised `NameError: decimal` on 49 live results and 33 replayed reads, from a branch the
     shown calls never took. A module on the allowed list is named with the one-line fix.
+
+    Scopes are read the way Python reads them. A name bound inside a nested function, lambda, class
+    body or comprehension is not bound in the method around it, so a method that binds `total` only
+    inside a comprehension and then returns `total` is still a NameError; counting a child scope's
+    bindings as the parent's would let the gate pass the shape it exists to catch.
     """
     try:
         tree = ast.parse(source)
@@ -136,37 +142,55 @@ def unbound_names(source: str, class_name: str = TOOLS_CLASS) -> list[str]:
         for member in node.body:
             if not isinstance(member, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 continue
-            bound = known | _function_bindings(member)
-            loaded = {n.id for n in ast.walk(member) if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Load)}
-            for name in sorted(loaded - bound):
+            for name in sorted(_unbound_in_scope(member, known)):
                 hint = f"; put `import {name}` at the top of the body" if name in ALLOWED_IMPORTS else ""
                 out.append(f"{member.name} names {name}, which nothing binds{hint}")
     return out
 
 
+# A scope of its own: what it binds is invisible to the code around it.
+SCOPES = (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda, ast.ClassDef,
+          ast.ListComp, ast.SetComp, ast.DictComp, ast.GeneratorExp)
+
+
 def _module_bindings(tree: ast.Module) -> set[str]:
-    """Names bound at module level: imports, assignments, functions and classes.
+    """Names bound at module level, the classes and functions named but not entered.
 
-    A top-level statement's own body counts too: the generated skeleton binds `ToolType` and
-    `is_tool` from tau2 inside a try, and falls back to definitions in the except.
+    A top-level statement's own body counts, since a try is no scope of its own: the generated
+    skeleton binds `ToolType` and `is_tool` from tau2 inside a try and falls back to definitions of
+    its own in the except. What a method assigns does not count, or every name any body binds would
+    read as bound in every other body.
     """
-    bound: set[str] = set()
-    for statement in tree.body:
-        for node in ast.walk(statement):
-            if isinstance(node, (ast.Import, ast.ImportFrom)):
-                bound |= {(alias.asname or alias.name).split(".")[0] for alias in node.names}
-            elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
-                bound.add(node.name)
-            elif isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store):
-                bound.add(node.id)
-    return bound
+    return _scope_bindings(tree)
 
 
-def _function_bindings(function: ast.AST) -> set[str]:
-    """Names a function binds anywhere in it: parameters, targets, loop and with variables, handlers,
-    comprehension variables, inner imports, inner functions and classes."""
+def _unbound_in_scope(scope: ast.AST, outer: set[str]) -> set[str]:
+    """The names this scope, and the scopes inside it, load without anything binding them."""
+    bound = outer | _scope_bindings(scope)
+    own = list(_own_nodes(scope))
+    unbound = {node.id for node in own
+               if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load) and node.id not in bound}
+    for child in own:
+        if isinstance(child, SCOPES):
+            unbound |= _unbound_in_scope(child, bound)
+    return unbound
+
+
+def _own_nodes(scope: ast.AST) -> Iterator[ast.AST]:
+    """Every node of this scope, the nested scopes named but not entered."""
+    queue = list(ast.iter_child_nodes(scope))
+    while queue:
+        node = queue.pop(0)
+        yield node
+        if not isinstance(node, SCOPES):
+            queue += list(ast.iter_child_nodes(node))
+
+
+def _scope_bindings(scope: ast.AST) -> set[str]:
+    """What this one scope binds: parameters, assignment, loop, with and except targets,
+    comprehension variables, its own imports, and the functions and classes it defines by name."""
     bound: set[str] = set()
-    for node in ast.walk(function):
+    for node in _own_nodes(scope):
         if isinstance(node, ast.arg):
             bound.add(node.arg)
         elif isinstance(node, ast.Name) and isinstance(node.ctx, (ast.Store, ast.Del)):

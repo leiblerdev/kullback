@@ -183,8 +183,15 @@ def is_priced(model_id: Optional[str]) -> bool:
 
 
 def window_for(model_id: Optional[str]) -> int:
-    """The context window of a model, for the D65 cap."""
-    return _lookup(CONTEXT_WINDOWS, model_id) or DEFAULT_CONTEXT_WINDOW
+    """The context window of a model, for the D65 cap.
+
+    The hand table first, since two of its rows were measured against a live endpoint rather than
+    read off a page, then models.dev, then the default. A model the registry knows no longer takes
+    the 200,000 default and a cap four fifths smaller than the one it could have had.
+    """
+    return (_lookup(CONTEXT_WINDOWS, model_id)
+            or pricing_module.window_from_catalog(_price_catalog(), model_id)
+            or DEFAULT_CONTEXT_WINDOW)
 
 
 def call_cost(usage: Usage, model_id: Optional[str]) -> float:

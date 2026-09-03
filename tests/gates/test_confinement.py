@@ -142,3 +142,30 @@ def test_only_the_tool_methods_are_checked_for_unbound_names():
 
 def test_a_module_that_does_not_parse_has_no_unbound_names_because_the_parses_gate_rules_on_it():
     assert unbound_names("def broken(:\n") == []
+
+
+def test_a_name_bound_only_inside_a_nested_scope_is_still_unbound_around_it():
+    """Greptile on PR 4: reading a child scope's bindings as the parent's would pass the very shape
+    the check exists to catch."""
+    nested_function = _module("        def helper():\n"
+                              "            total = 1\n"
+                              "            return total\n"
+                              "        return helper() + total\n")
+    assert unbound_names(nested_function) == ["get_order names total, which nothing binds"]
+    comprehension = _module("        rows = [item for item in self.db.orders]\n"
+                            "        return {'rows': rows, 'last': item}\n")
+    assert unbound_names(comprehension) == ["get_order names item, which nothing binds"]
+    lambda_arg = _module("        pick = lambda row: row\n        return pick(order_id) or row\n")
+    assert unbound_names(lambda_arg) == ["get_order names row, which nothing binds"]
+
+
+def test_a_nested_scope_sees_what_the_method_around_it_bound():
+    source = _module("        prefix = str(order_id)\n"
+                     "        return [prefix + str(r) for r in self.db.orders]\n")
+    assert unbound_names(source) == []
+
+
+def test_an_unbound_name_inside_a_nested_scope_is_reported_against_the_method():
+    source = _module("        return [decimal.Decimal(r) for r in self.db.orders]\n")
+    assert unbound_names(source) == [
+        "get_order names decimal, which nothing binds; put `import decimal` at the top of the body"]

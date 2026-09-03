@@ -26,12 +26,14 @@ def no_live_models(monkeypatch):
 
 @pytest.fixture(autouse=True)
 def isolated_price_catalog(tmp_path, monkeypatch):
-    """No test reads or writes the real ~/.cache/harness/models.dev.json snapshot, and every
-    test starts with budget's price-catalog cache unloaded rather than carrying over the
-    previous test's snapshot."""
+    """No test reads or writes the real ~/.cache/harness/models.dev.json snapshot, for prices or
+    for the provider registry, and every test starts with budget's price-catalog cache unloaded
+    rather than carrying over the previous test's snapshot."""
+    from kullback.ai import provider as provider_module
     from kullback.runner import budget as budget_module
 
     monkeypatch.setattr(budget_module, "_SNAPSHOT_PATH", tmp_path / "models.dev.json")
+    monkeypatch.setattr(provider_module, "REGISTRY_SNAPSHOT_PATH", str(tmp_path / "models.dev.json"))
     monkeypatch.setattr(budget_module, "_CATALOG_LOADED", False)
     monkeypatch.setattr(budget_module, "_CATALOG", None)
 
