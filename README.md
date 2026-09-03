@@ -1,6 +1,6 @@
 <div align="center">
   <h1>Kullback</h1>
-  <p><strong>Find out how well a model performs in your own environment — then train one on it.</strong></p>
+  <p><strong>Generate synthetic evaluation and RL environment from your traces - then train a model on it.</strong></p>
   <p>
     <a href="#quick-start"><strong>Quick Start</strong></a> ·
     <a href="#why-kullback"><strong>Why Kullback</strong></a> ·
@@ -22,8 +22,14 @@ It is the open-source Builder and Runner behind [Leibler](https://leibler.dev). 
 
 ## Quick Start
 
+Start the screen, then run these in order:
+
 ```bash
 uv sync
+uv run kullback tui
+```
+
+```bash
 uv run kullback ingest path/to/traces.json --workdir work
 uv run kullback build --workdir work --model provider/model --grow users=500 --workers 8
 uv run kullback freeze-runner --workdir work --yes
@@ -32,14 +38,14 @@ uv run kullback verdict --workdir work
 uv run kullback report --workdir work
 ```
 
-`kullback tui` shows the build as it runs. `build --iterate` resumes from the cache, `--target` builds one stage and what it needs, `--agent` lets the model drive the Builder. Live model calls need `HARNESS_ALLOW_MODEL_REQUESTS=1` and an API key, from the environment or a `.env` in the working directory.
+The screen shows the build as it runs: stages, gates, rounds and spend. `build --iterate` resumes from the cache, `--target` builds one stage and what it needs, `--agent` lets the model drive the Builder. Live model calls need `HARNESS_ALLOW_MODEL_REQUESTS=1` and an API key, from the environment or a `.env` in the working directory.
 
 ## Why Kullback
 
 - **Grade what changed, not what was said.** The Verdict is a code-only pass over the End state: required writes present, forbidden writes absent, policy never broken, the user's questions answered. Where judgment is unavoidable, two judges each cite a span and a disagreement goes to a person; a judge can never award a pass.
-- **A stand-in is reported, never counted.** Tool calls go to code first, then to an exact recording, then to a model stand-in — and the route taken is on the event. A run served by a stand-in anywhere is excluded from every number.
+- **A stand-in is reported, never counted.** Tool calls go to code first, then to an exact recording, then to a model stand-in - and the route taken is on the event. A run served by a stand-in anywhere is excluded from every number.
 - **Use any model behind one id.** `provider/model` resolves through built-in adapters or the models.dev registry, so a provider nobody wrote code for is one flag away. Keys come from the environment, never from a command line.
-- **Rebuilds you can trust.** Every Builder stage ends in a code gate; the Runner freezes on a person's confirmation; every Verdict carries the hash of both. A hand-built eval takes weeks and drifts — this one replays your own traces.
+- **Rebuilds you can trust.** Every Builder stage ends in a code gate; the Runner freezes on a person's confirmation; every Verdict carries the hash of both. A hand-built eval takes weeks and drifts - this one replays your own traces.
 - **Synthetic rows that confess.** The database grows with rows composed by rules read off the observed ones, tagged as synthetic, so nothing built on them is mistaken for the real thing.
 
 ## How It Works
@@ -111,8 +117,8 @@ Keys come from the environment or a `.env` in the working directory (see `.env.e
 
 ## Explore
 
-- `CONTRIBUTING.md` — how to get a change in
-- `DEVELOPING.md` — the records, the offline models, the fixtures
-- `docs/harness-design.md` — the spec
-- `docs/decision-log.md` — why
-- `docs/todo.md` — what comes next
+- `CONTRIBUTING.md` - how to get a change in
+- `DEVELOPING.md` - the records, the offline models, the fixtures
+- `docs/harness-design.md` - the spec
+- `docs/decision-log.md` - why
+- `docs/todo.md` - what comes next
