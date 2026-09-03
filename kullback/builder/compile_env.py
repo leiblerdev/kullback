@@ -707,7 +707,54 @@ def _confinement_block(denied: Iterable[str] = DENIED_BUILTINS, allowed: Iterabl
             "customer's world. It may not use: " + ", ".join(sorted(denied)) + ". It may "
             "not touch a dunder attribute (`__dict__`, `__class__`, `__globals__` and the rest). "
             "It may import only: " + ", ".join(sorted(allowed)) + ". Read fields by name "
-            "(`order.status`) or by key (`self.db.orders[order_id]`), never through getattr.")
+            "(`order.status`) or by key (`self.db.orders[order_id]`), never through getattr. "
+            "Write ASCII only: no smart quotes, em dashes or other non-ASCII characters anywhere "
+            "in the body, not even in comments.")
+
+
+# Typographic characters a model emits that Python refuses outside strings: the live 1.3 build
+# stalled a whole round on an em dash in code. Replaced deterministically, outside string
+# literals only: inside a string the character may be the recorded behavior, and silently
+# changing a literal risks the replay the gates compare by. Anything else non-ASCII stays for
+# the model to rewrite, named in the note.
+CONFUSABLES = {"\u2014": "-", "\u2013": "-", "\u2012": "-", "\u201c": '"', "\u201d": '"',
+               "\u2018": "'", "\u2019": "'", "\u2026": "...", "\u00a0": " ",
+               "\u200b": "", "\u200c": "", "\u200d": "", "\ufeff": ""}
+
+
+def sanitize_body(body: str) -> tuple[str, Optional[str]]:
+    """Replace typographic confusables outside string literals, so a smart quote never costs
+    a model attempt. Returns the body and a note naming what changed, or None when the body
+    needed nothing. A body the tokenizer itself refuses, or non-ASCII no entry covers, is
+    returned unchanged with no note: the model rewrites those, told what and where."""
+    import io
+    import tokenize
+
+    if not body or all(ord(c) < 128 for c in body):
+        return body, None
+    try:
+        tokens = list(tokenize.generate_tokens(io.StringIO(body).readline))
+    except (tokenize.TokenError, IndentationError, SyntaxError):
+        return body, None
+    changed: list[str] = []
+    out: list = []
+    for token in tokens:
+        if token.type == tokenize.STRING:
+            out.append(token)
+            continue
+        fixed = "".join(CONFUSABLES.get(c, c) for c in token.string)
+        if fixed != token.string:
+            changed.append(f"{token.string!r} at line {token.start[0]}")
+        out.append(token._replace(string=fixed))
+    if not changed:
+        rest = sorted({c for t in out if t.type != tokenize.STRING for c in t.string
+                       if ord(c) >= 128})
+        if rest:
+            return body, "non-ASCII outside strings the sanitizer does not cover: " \
+                + ", ".join(f"U+{ord(c):04X}" for c in rest)
+        return body, None
+    return tokenize.untokenize(out), "replaced typographic characters outside strings: " \
+        + "; ".join(changed[:5])
 
 
 # D117: said once, only when compile_tool was asked to offer the two builder tools, so a caller
@@ -1225,6 +1272,12 @@ def compile_tool(model, toolsig: ToolSig, calls: Iterable[ToolCall], schema: Ent
             node["failures"] = ["no body was submitted"]
             build.nodes.append(node)
             continue
+        body, sanitized = sanitize_body(body)
+        if sanitized:
+            # Deterministic, free, and recorded on the node: a smart quote never costs an
+            # attempt, and the retry prompt carries what changed so the model stops emitting it.
+            node["sanitized"] = sanitized
+            reply_content = body
         source = module_source(schema, [toolsig], {toolsig.name: body})
         sandbox = Sandbox(source, db, workdir / f"attempt_{attempt}", timeout=timeout,
                           call_states=call_states)
@@ -1236,6 +1289,8 @@ def compile_tool(model, toolsig: ToolSig, calls: Iterable[ToolCall], schema: Ent
         if node["passed"]:
             break
         failure = "\n" + _failure_text(gates, held_out)
+        if node.get("sanitized"):
+            failure += "\n" + node["sanitized"]
         if any(g.stage == "non_trivial" and not g.passed for g in gates):
             failure += _constant_evidence_note(evidence)
     build.assisted = not build.nodes[-1]["passed"]
