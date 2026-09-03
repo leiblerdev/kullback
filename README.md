@@ -26,7 +26,7 @@ It is the open-source Builder and Runner behind [Leibler](https://leibler.dev). 
 uv sync
 uv run kullback ingest path/to/traces.json --workdir work
 uv run kullback build --workdir work --model provider/model --grow users=500 --workers 8
-uv run kullback freeze-runner --workdir work
+uv run kullback freeze-runner --workdir work --yes
 uv run kullback run --workdir work --task <task id> --model provider/candidate --count 3
 uv run kullback verdict --workdir work
 uv run kullback report --workdir work
@@ -84,7 +84,7 @@ kullback/
 | --- | --- |
 | `ingest FILES --workdir` | Load customer trace exports into the workdir |
 | `build --workdir --model` | Build the Environment (`--iterate` resumes, `--target` builds one stage, `--agent` lets the model drive, `--grow`/`--workers`/`--ceiling-usd` bound it) |
-| `freeze-runner --workdir` | Freeze the Runner on a person's confirmation (`--by`, `--yes`) |
+| `freeze-runner --workdir` | Freeze the Runner on a person's confirmation (`--by`; `--yes` skips the prompt, for CI) |
 | `run --workdir --task --model` | Run a candidate (`--count`, `--seed` for batches) |
 | `verdict --workdir` | Code-only Verdict over what changed (`--task` for one Task) |
 | `regrade --workdir` | Re-score stored Runs against a new Verifier |
@@ -98,7 +98,7 @@ kullback/
 | `HARNESS_ALLOW_MODEL_REQUESTS` | Set to `1` to allow live model calls (tests stay offline without it) |
 | `OPENAI_API_KEY` | Key for OpenAI models |
 | `ANTHROPIC_API_KEY` | Key for Anthropic models |
-| `<PROVIDER>_API_KEY` | Key for any other registry provider, named by the models.dev snapshot |
+| Provider-specific variable | Key for any other registry provider; use the exact variable named by the models.dev snapshot (`/login` reports it, `/keys` shows whether it is set) |
 
 Keys come from the environment or a `.env` in the working directory (see `.env.example`). They are never printed and never written to a workdir.
 
