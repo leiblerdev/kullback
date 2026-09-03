@@ -379,3 +379,28 @@ def test_the_examiner_store_never_holds_bodies_db_schema_or_the_environment(fixt
     with pytest.raises(ValueError):
         plan.refresh(full)
     assert [tool.name for tool in tools_mod.examiner_tools(plan)] == TOOL_NAMES
+
+
+def test_a_rejected_derivation_restores_the_prior_task_status_and_references_rows(tmp_path):
+    """Greptile P1: the loosening rejection restores a version-consistent artifact set. The on-disk
+    rows are marked before the rejected derive, so the test fails when the rejected derivation's
+    rows are kept against the restored Verifier."""
+    world = make_world(tmp_path, rerolls=("alt", "rr2"), terminations={"rr2": "max_steps"})
+    examiner_agent.run_examiner(world.workdir, inputs=world.inputs, probe_model=object(), run_probe=probe_runner_over())
+    plan, harness = _harness(world, round=2)
+    assert _reason_repair(harness, plan, "required", "require the reason").details["accepted"] is True
+    status_path, references_path = world.workdir / "task_status.json", world.workdir / "references.json"
+    status_marked = _read(status_path)
+    status_marked[T] = {"_prior": "the accepted version's own row"}
+    status_path.write_text(json.dumps(status_marked), encoding="utf-8")
+    references_marked = _read(references_path)
+    references_marked[T] = {"_prior": "the accepted version's own row"}
+    references_path.write_text(json.dumps(references_marked), encoding="utf-8")
+    result = drive(harness, "derive", {"target": T})
+    assert result.is_error is False and any(r["stage"] == "loosening" and not r["passed"]
+                                            for r in result.details["rulings"])
+    assert _read(status_path) == status_marked, "the rejected derivation's status row must not survive"
+    assert _read(references_path) == references_marked, "the rejected derivation's references row must not survive"
+    assert plan.store["task_status"] == status_marked
+    on_disk = Verifier.model_validate(_read(world.workdir / "verifiers" / f"{T}.json"))
+    assert version_hash(on_disk) == version_hash(plan.current(T))

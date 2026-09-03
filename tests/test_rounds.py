@@ -208,7 +208,7 @@ def model_examiner_loop(tmp_path_factory, request):
     workdir = tmp_path_factory.mktemp("examiner-agent")
     builder_model = TestModel([_reply(None, ("build", {"target": TARGET})), _reply("built.")])
     examiner_model = TestModel([_reply(None, ("derive", {"target": "all"})), _reply("read."),
-                                _reply("acted on round 2.")])
+                                _reply(None, ("derive", {"target": "all"})), _reply("re-derived on round 2.")])
     plan = BuildPlan(workdir=workdir, model=Bodies(), files=[_fixture(request)], max_attempts=0)
     loop = rounds.Loop(plan=plan, builder=builder_agent.build_harness(plan, builder_model), target=TARGET,
                        agent_model=examiner_model, allowance_usd=0.0)
@@ -222,16 +222,18 @@ def model_examiner_loop(tmp_path_factory, request):
 
 def test_the_examiner_is_one_session_across_rounds_prompted_once_then_steered_and_continued(model_examiner_loop):
     """D128 and D123: the Examiner has its own session and keeps it across rounds. Round 1 is the one
-    examiner message and a derive; round 2 is a `round 2:` steer on the same transcript, never a
-    second prompt, and the session file holds one session_info root."""
+    examiner message and a derive; round 2 is a `round 2:` steer and a re-derive on the same
+    transcript, never a second prompt, and the session file holds one session_info root."""
     loop = model_examiner_loop["loop"]
     messages = loop.examiner.messages
     first, second = messages[:model_examiner_loop["after_first"]], messages[model_examiner_loop["after_first"]:]
     assert [m.role for m in first] == ["user", "assistant", "tool", "user", "assistant"]
     assert first[0].content == examiner_message()
     assert first[3].content == rounds.ALLOWANCE_STEER, "an allowance of zero is spent at the first tool end"
-    assert [m.role for m in second] == ["user", "assistant"]
+    assert [m.role for m in second] == ["user", "assistant", "tool", "user", "assistant"]
     assert second[0].content.startswith("round 2:") and second[0].details is None
+    assert loop.examiner_result is not None and not loop.examiner_result.is_error, \
+        "the round-2 beat derived successfully"
     assert [m.content for m in messages if isinstance(m, UserMessage)].count(examiner_message()) == 1
     lines = (loop.plan.workdir / rounds.EXAMINER_SESSION).read_text(encoding="utf-8").splitlines()
     assert sum(1 for line in lines if json.loads(line).get("type") == "session_info") == 1
@@ -475,3 +477,64 @@ def test_a_delivered_finding_is_closed_and_its_entry_unprotected_after_the_build
     findings = json.loads((plan.workdir / "examiner" / "findings.json").read_text(encoding="utf-8"))
     assert [f["status"] for f in findings] == ["closed"]
     assert loop.pending_findings == []
+
+
+# --- terminal rounds keep their findings, failed derives fail the round ------------------
+
+def test_close_round_never_reports_done_with_findings_pending(tmp_path):
+    """Greptile P1: a round that also reaches done must not drop the Examiner's findings. The
+    pending findings ride on the terminal record in rounds.json, and the exit is stalled, not done."""
+    loop = _bare_loop(tmp_path)
+    loop.pending_findings = [_finding("t1")]
+    record = loop.close_round(1, _record(1, unfinished=[]).counts)
+    assert record.exit == "stalled"
+    assert "finding" in (record.exit_note or "")
+    assert [f.finding_id for f in record.pending_findings] == ["f1"]
+    body = json.loads((tmp_path / "work" / rounds.ROUNDS_NAME).read_text(encoding="utf-8"))
+    assert body[0]["exit"] == "stalled"
+    assert body[0]["pending_findings"][0]["finding_id"] == "f1"
+    assert rounds.load_rounds(tmp_path / "work")[0].pending_findings[0].finding_id == "f1"
+
+
+def test_close_round_persists_pending_findings_without_an_exit(tmp_path):
+    """Findings pending in a round that does not exit are still on the record, for the next round."""
+    loop = _bare_loop(tmp_path)
+    loop.pending_findings = [_finding("t1")]
+    record = loop.close_round(1, _record(1).counts)
+    assert record.exit is None
+    assert [f.finding_id for f in record.pending_findings] == ["f1"]
+
+
+def _model_driven_beat(tmp_path, request, examiner_replies, name):
+    """One Builder beat by code over the fixture, then the Examiner's beat on scripted replies."""
+    workdir = tmp_path / name
+    builder_model = TestModel([_reply(None, ("build", {"target": TARGET})), _reply("built.")])
+    plan = BuildPlan(workdir=workdir, model=Bodies(), files=[_fixture(request)], max_attempts=0)
+    loop = rounds.Loop(plan=plan, builder=builder_agent.build_harness(plan, builder_model), target=TARGET,
+                       agent_model=TestModel(examiner_replies))
+    loop.allowance = {agent: loop.allowance_for(agent) for agent in rounds.AGENTS}
+    loop.builder_beat(1)
+    return loop
+
+
+def test_an_examiner_that_never_derives_fails_the_round(tmp_path, request):
+    """Greptile P1: a model that chats without calling derive must fail the round, never close it."""
+    from kullback.examiner.agent import ExaminerError
+
+    loop = _model_driven_beat(tmp_path, request, [_reply("I have read everything and all is well.")], "no-derive")
+    with pytest.raises(ExaminerError, match="never called derive"):
+        loop.examiner_beat(1)
+    assert loop.examiner_result is None
+    assert loop.rounds == [], "a failed derivation closes no round"
+
+
+def test_an_examiner_whose_derive_errors_fails_the_round(tmp_path, request):
+    """Greptile P1: a derive that errors is the round failing on stale state, never done or stalled."""
+    from kullback.examiner.agent import ExaminerError
+
+    loop = _model_driven_beat(tmp_path, request, [_reply(None, ("derive", {"target": "no-such-task"}))],
+                              "bad-derive")
+    with pytest.raises(ExaminerError, match="no Task is named"):
+        loop.examiner_beat(1)
+    assert loop.examiner_result is not None and loop.examiner_result.is_error
+    assert loop.rounds == [], "a failed derivation closes no round"

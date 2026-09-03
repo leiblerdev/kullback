@@ -389,11 +389,11 @@ class Intent(Record):
     """The one-line Intent of a Task with the span behind every noun phrase (D47); ungrounded means no Verdict."""
     task_id: str
     text: str = ""
-    spans: list[IntentSpan] = []
+    spans: list[IntentSpan] = Field(default_factory=list)
     grounded: bool = False
     unguarded: bool = False
-    ungrounded_phrases: list[str] = []
-    run_coverage: dict[str, list[str]] = {}  # phrase -> every member Run that evidences it
+    ungrounded_phrases: list[str] = Field(default_factory=list)
+    run_coverage: dict[str, list[str]] = Field(default_factory=dict)  # phrase -> every member Run that evidences it
     reason: Optional[str] = None
     model: Optional[str] = None
 
@@ -719,6 +719,9 @@ class RoundRecord(Record):
     round: int
     counts: dict[str, Any] = Field(default_factory=dict)
     exit: Optional[str] = None
+    pending_findings: list[Finding] = Field(default_factory=list)  # filed but never delivered; the next
+    # Builder beat still owes them an action, so `done` is never reported while this is non-empty
+    exit_note: Optional[str] = None  # why the exit is what it is, when it needs saying (D126)
 
 
 # Every record in this module plus Usage, the one record the provider layer defines, so the

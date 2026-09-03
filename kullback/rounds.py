@@ -344,6 +344,10 @@ class Loop:
                 self.examiner.steer(f"round {n}: read the rulings and act")
                 events = self.examiner.continue_()
             self.examiner_result = self._watched(self.examiner, "examiner", events, "derive")
+            if self.examiner_result is None:
+                raise ExaminerError(f"the model never called derive({EXAMINER_TARGET!r})")
+            if self.examiner_result.is_error:
+                raise ExaminerError(self.examiner_result.content)
         self._beat_done("examiner", n, before)
 
     # --- the round ------------------------------------------------------------
@@ -394,11 +398,20 @@ class Loop:
 
     def close_round(self, n: int, counts: dict) -> RoundRecord:
         """The round's record: whether an allowance was spent goes on the exhausted list, the exit is
-        `exit_for` over every round so far, and rounds.json is rewritten with the record appended."""
+        `exit_for` over every round so far, and rounds.json is rewritten with the record appended.
+        Findings filed but never delivered ride on the record, and `done` is downgraded to `stalled`
+        while any are pending: a terminal round never reports the work finished with required Builder
+        follow-ups still open."""
         self.exhausted.append(any(self.spent_allowance.values()))
         record = RoundRecord(round=n, counts=counts)
         record.exit = round_end.exit_for(self.rounds + [record], self.stall_rounds,
                                          ceiling_reached=self.ceiling_reached(), exhausted=self.exhausted)
+        if self.pending_findings:
+            record.pending_findings = list(self.pending_findings)
+            if record.exit == "done":
+                record.exit = "stalled"
+                record.exit_note = (f"{len(self.pending_findings)} finding(s) still need the Builder; "
+                                    "done waits for the next round")
         self.rounds.append(record)
         write_rounds(self.plan.workdir, self.rounds)
         return record

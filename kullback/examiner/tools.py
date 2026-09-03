@@ -356,6 +356,10 @@ def _derive(plan: ExaminerPlan, sink: Optional[Sink]):
     async def derive(args: DeriveArgs) -> DeriveResult:
         only = None if args.target == "all" else args.target
         ctx = stage_mod.ExamContext(plan.workdir, plan.ledger, anchor=plan.anchor)
+        # derive_all rewrites task_status.json and references.json before the loosening gate rules:
+        # the pre-derivation rows, so a rejected version restores a version-consistent artifact set.
+        prior = {name: read_json(plan.workdir / name, {}) or {}
+                 for name in ("task_status.json", "references.json")}
         started = time.monotonic()
         await _emit(plan, sink, StageStart(name=STAGE))
         try:
@@ -373,7 +377,7 @@ def _derive(plan: ExaminerPlan, sink: Optional[Sink]):
                   "elapsed_ms": int((time.monotonic() - started) * 1000)}
         await _emit(plan, sink, StageEnd(name=STAGE, counts=counts))
         plan.load_state()
-        loosening = _record_versions(plan, out["verifiers"])
+        loosening = _record_versions(plan, out["verifiers"], prior)
         rulings = [ruling_of(r) for r in ctx.recorded] + [ruling_of(r) for r in loosening]
         plan.last_rulings = rulings
         failed = [r.stage for r in rulings if not r.passed]
@@ -385,14 +389,35 @@ def _derive(plan: ExaminerPlan, sink: Optional[Sink]):
     return derive
 
 
-def _record_versions(plan: ExaminerPlan, verifiers: list) -> list[GateResult]:
+def _restore_prior_row(plan: ExaminerPlan, filename: str, store_key: Optional[str], task_id: str,
+                       prior: dict) -> None:
+    """One Task's pre-derivation row back, in the store and on disk: a rejected version must leave
+    the artifact set version-consistent, the restored Verifier against its own metadata."""
+    rows = read_json(plan.workdir / filename, {}) or {}
+    before = (prior.get(filename) or {})
+    if task_id in before:
+        rows[task_id] = before[task_id]
+    else:
+        rows.pop(task_id, None)
+    write_json(plan.workdir / filename, rows)
+    if store_key is not None:
+        store_rows = dict(plan.store.get(store_key) or {})
+        if task_id in before:
+            store_rows[task_id] = before[task_id]
+        else:
+            store_rows.pop(task_id, None)
+        plan.store[store_key] = store_rows
+
+
+def _record_versions(plan: ExaminerPlan, verifiers: list, prior: dict) -> list[GateResult]:
     """One `derive` row per Task whose derived hash is not the history's last row (D127).
 
     A Task's first version is accepted as derived. A Task that already has an accepted version gets
     the derived one as a new version like any other: the loosening gate rules on it against the last
     accepted version, and when it fails (a derivation that would undo a repair's tightening) the row
-    is recorded rejected, the accepted version is put back on disk and the task status is left as
-    the derivation wrote it. The loosening rulings are recorded in gates.json and returned.
+    is recorded rejected and the accepted version is put back on disk together with its own
+    task_status.json and references.json rows, from `prior`. The loosening rulings are recorded in
+    gates.json and returned.
     """
     history = plan.store.setdefault("history", {})
     rulings: list[GateResult] = []
@@ -419,6 +444,8 @@ def _record_versions(plan: ExaminerPlan, verifiers: list) -> list[GateResult]:
             else:
                 row = row.model_copy(update={"rejected_by": ["loosening"]})
                 plan.set_current(accepted[-1].verifier)
+                _restore_prior_row(plan, "task_status.json", "task_status", record.task_id, prior)
+                _restore_prior_row(plan, "references.json", None, record.task_id, prior)
         hist.versions.append(row)
         history[record.task_id] = hist
         changed = True
