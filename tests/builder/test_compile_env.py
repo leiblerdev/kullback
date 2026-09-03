@@ -1612,3 +1612,26 @@ def test_builder_tools_false_sends_no_tools_and_keeps_the_old_behaviour(
     assert build.body.strip() == CORRECT_BODY.strip()
     assert build.assisted is False
     assert "tool_uses" not in build.nodes[0]
+
+
+def test_sanitize_body_replaces_confusables_outside_strings_only():
+    import ast
+
+    body = 'def f(x):\n    note = "keep — inside strings"\n    return x — 1  # trailing —\n'
+    fixed, note = ce.sanitize_body(body)
+    assert "outside strings" in (note or "")
+    ast.parse(fixed)
+    assert "—" not in fixed.replace('"keep — inside strings"', "")
+    assert '"keep — inside strings"' in fixed
+
+
+def test_sanitize_body_leaves_clean_and_unfixable_bodies_alone():
+    assert ce.sanitize_body("def f(x):\n    return x + 1\n") == (
+        "def f(x):\n    return x + 1\n", None)
+    # Non-ASCII outside strings with no confusable entry: named, not mangled.
+    _, note = ce.sanitize_body("def f(x):\n    return x ± 1\n")
+    assert note is not None and "U+00B1" in note
+
+
+def test_the_confinement_prompt_says_ascii_only():
+    assert "ASCII only" in ce._confinement_block()
