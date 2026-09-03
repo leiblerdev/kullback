@@ -9,6 +9,7 @@ from kullback.gates.confinement import (
     predicate_confinement,
     predicate_confinement_gate,
     source_confinement,
+    unbound_names,
 )
 from kullback.runner.records import Constraint, ConstraintTests
 
@@ -18,7 +19,7 @@ def a_constraint(**kw) -> Constraint:
         id="c1",
         text="never cancel a delivered order",
         compiled=True,
-        predicate_src="def check(case):\n    return case['status'] != 'delivered'\n",
+        predicate_src="def check(pre_state, write_call, transcript):\n    return pre_state['status'] != 'delivered'\n",
         tests=ConstraintTests(pos=[{"status": "pending"}], neg=[{"status": "delivered"}]),
     )
     base.update(kw)
@@ -66,7 +67,7 @@ def test_a_clean_tool_body_is_confined():
     assert source_confinement(source) == []
     out = gate_confined(source)
     assert out.stage == "confined" and out.passed is True
-    assert out.metrics == {"chars": len(source)}
+    assert out.metrics == {"chars": len(source), "unbound": 0}
 
 
 def test_a_tool_body_that_reaches_outside_the_world_is_refused_by_name():
@@ -96,3 +97,48 @@ def test_the_named_failures_are_capped_and_the_ruling_is_not():
     assert out.passed is False
     assert len(source_confinement(source)) == 8
     assert len(out.failures) == MAX_NAMED_FAILURES
+
+
+# --- a name the body loads that nothing binds ---
+
+def test_a_body_that_names_a_module_it_never_imported_is_refused_before_a_call_reaches_the_line():
+    """Build 8: `calculate` raised NameError: decimal on 49 live results and 33 replayed reads, past a
+    compile gate whose recorded calls never reached the line."""
+    source = _module("        if order_id == 'x':\n            return decimal.Decimal(1)\n        return {'id': order_id}\n")
+    assert unbound_names(source) == [
+        "get_order names decimal, which nothing binds; put `import decimal` at the top of the body"]
+    out = gate_confined(source)
+    assert out.stage == "confined" and out.passed is False
+    assert out.metrics == {"chars": len(source), "unbound": 1}
+    assert out.failures == unbound_names(source)
+
+
+def test_a_name_nothing_could_bind_is_refused_without_an_import_hint():
+    source = _module("        return helper(order_id)\n")
+    assert unbound_names(source) == ["get_order names helper, which nothing binds"]
+
+
+def test_names_the_body_the_module_or_python_bind_are_not_unbound():
+    body = ("        rows = [r for r in self.db.orders if r]\n"
+            "        total = sum(len(json.dumps(r)) for r in rows)\n"
+            "        for i, row in enumerate(rows):\n"
+            "            pass\n"
+            "        try:\n"
+            "            import math\n"
+            "        except KeyError as exc:\n"
+            "            return str(exc)\n"
+            "        with self.db.session() as handle:\n"
+            "            pass\n"
+            "        return {'n': total, 'i': i, 'row': row, 'pi': math.pi, 'h': handle, 'db': DomainDB}\n")
+    assert unbound_names(_module(body)) == []
+    assert gate_confined(_module(body)).passed is True
+
+
+def test_only_the_tool_methods_are_checked_for_unbound_names():
+    source = "class Other:\n    def f(self):\n        return nothing\n"
+    assert unbound_names(source) == []
+    assert unbound_names(source, class_name="Other") == ["f names nothing, which nothing binds"]
+
+
+def test_a_module_that_does_not_parse_has_no_unbound_names_because_the_parses_gate_rules_on_it():
+    assert unbound_names("def broken(:\n") == []

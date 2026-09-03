@@ -686,6 +686,7 @@ def _rerolls_stage(model: Any, rerolls: int, workers: int = 1, only: Optional[It
 
         def reroll(job):  # one Task's re-rolls, in its own world and run directory (D118)
             task, rules = job
+            _discard_runs(ctx.workdir / "runs" / task.id, f"reroll-{task.id}-")
             runs = _candidate_runs(ctx.workdir, task, model, count=rerolls, prefix="reroll", source=source,
                                    schema=inputs["schema"], sigs=inputs["sigs"], db=inputs["db"], env_id=env_id,
                                    canon_rules=canon_rules, rules=rules,
@@ -718,9 +719,9 @@ def _candidate_runs(workdir: Path, task: Task, model: Any, *, count: int, prefix
     the second retail build's re-rolls did.
     """
     overlay, overlay_rows = compile_env.load_overlay(workdir, task.id)
-    tools = _tool_definitions(sigs)
-    out = []
     vocab = _vocab_from(workdir)
+    tools = _tool_definitions(sigs, vocab)
+    out = []
     for number in range(count):
         run_id = f"{prefix}-{task.id}-{seed + number}" if prefix else f"{task.id}-{seed + number}"
         # The Task's own overlay goes inside the toolkit, or it stays dead for every code route (D74).
@@ -945,7 +946,7 @@ def _probe_runner(ctx: Any, inputs: dict, write_tools: set, canon_rules: Any):
     user_rules = inputs.get("user_rules") or {}
     replays = inputs.get("replays") or {}
     source = compile_env.module_source(schema, sigs, bodies)
-    tools = _tool_definitions(sigs)
+    tools = _tool_definitions(sigs, _vocab_from(ctx.workdir))
 
     def run_probe(model: Any, verifier: Any):
         task = tasks[verifier.task_id]
@@ -989,19 +990,41 @@ _JSON_TYPES = {"str": "string", "int": "integer", "float": "number", "bool": "bo
                "list": "array", "NoneType": "null"}
 
 
-def _tool_definitions(sigs: list) -> list[dict]:
+def _tool_definitions(sigs: list, vocab: Optional[vocabulary.Vocabulary] = None) -> list[dict]:
     """The mined signatures in the shape provider.py sends to a model: name, description, parameters.
 
     mine.py records Python type names (`["str"]`); a model endpoint wants JSON Schema names, and
-    OpenAI refuses a tool whose parameter type it does not know.
+    OpenAI refuses a tool whose parameter type it does not know. An argument the Vocabulary knows
+    gets the values the corpus showed for it as its description: build 8's re-roll model dropped
+    the mark from 132 order ids over a schema that showed it nothing, and the traces declare no
+    tool descriptions of their own.
     """
     out = []
     for sig in sigs:
         schema = sig.args_schema if isinstance(sig.args_schema, dict) and "properties" in sig.args_schema else {
             "type": "object", "properties": {name: {"type": "string"} for name in (sig.args_schema or {})}}
+        parameters = _json_schema(schema)
+        for arg, prop in (parameters.get("properties") or {}).items():
+            spec = vocab.get(arg) if vocab is not None else None
+            if spec is not None and spec.examples and isinstance(prop, dict) and not prop.get("description"):
+                prop["description"] = "for example " + ", ".join(str(v) for v in spec.examples[:3])
         out.append({"name": sig.name, "description": sig.description or f"{sig.kind} tool {sig.name}",
-                    "parameters": _json_schema(schema)})
+                    "parameters": parameters})
     return out
+
+
+def _discard_runs(run_dir: Path, prefix: str) -> int:
+    """Drop the Run files an earlier build left under this name before the stage writes its own.
+
+    A re-run of the stage replaces a Task's re-rolls whole, and anything that globs runs/ counts
+    what it finds: build 8 found 111 re-roll files from a build four days older, every one a
+    provider error, sitting beside its own.
+    """
+    count = 0
+    for path in (sorted(run_dir.glob(f"{prefix}*.jsonl")) if run_dir.is_dir() else []):
+        path.unlink()
+        count += 1
+    return count
 
 
 def _json_schema(node: Any) -> Any:
