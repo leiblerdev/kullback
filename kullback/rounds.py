@@ -38,7 +38,7 @@ from kullback.builder.agent import builder_message
 from kullback.builder.build import DEFAULT_REROLLS, TARGET_ALL, BuildError, BuildPlan
 from kullback.examiner import agent as examiner_agent
 from kullback.examiner.agent import ExaminerError, examiner_message
-from kullback.examiner.plan import ExaminerPlan
+from kullback.examiner.plan import STATE_DIR, ExaminerPlan
 from kullback.examiner.stage import DERIVE_INPUTS
 from kullback.gates import round_end
 from kullback.runner import budget
@@ -110,6 +110,25 @@ def _dict_sink(on_event: Optional[Callable[[dict], Any]]) -> Optional[Callable[[
             pass
 
     return sink
+
+
+def _open_findings(workdir: Any) -> list[Finding]:
+    """The findings an earlier invocation left open, oldest first; none when there are none.
+
+    Rows that do not validate are skipped, not fatal: a half-written findings file must not stop
+    the loop that would drain it."""
+    try:
+        rows = json.loads(Path(workdir, STATE_DIR, "findings.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+    out = []
+    for row in rows if isinstance(rows, list) else []:
+        if isinstance(row, dict) and row.get("status") == "open":
+            try:
+                out.append(Finding.model_validate(row))
+            except ValueError:
+                continue
+    return out
 
 
 def write_rounds(workdir: Any, rounds: Iterable[RoundRecord]) -> Path:
@@ -196,6 +215,14 @@ class Loop:
     spent_allowance: dict[str, bool] = field(default_factory=dict)
     compactions_seen: dict[str, int] = field(default_factory=dict)
 
+    def __post_init__(self) -> None:
+        """A new Loop resumes the workdir's unfinished business: findings an earlier invocation
+        left open join the pending queue, so a ceiling (or a crash) that ended that run strands no
+        finding without a Builder beat to answer it. A fresh workdir has no findings file: no-op."""
+        seen = {finding.finding_id for finding in self.pending_findings}
+        self.pending_findings = list(self.pending_findings) + [
+            finding for finding in _open_findings(self.plan.workdir) if finding.finding_id not in seen]
+
     # --- the stream ------------------------------------------------------------
 
     def emit(self, event: Any) -> None:
@@ -265,16 +292,25 @@ class Loop:
     # --- the Builder's beat ------------------------------------------------------------
 
     def builder_beat(self, n: int) -> None:
-        """The Builder holds the stream: the pending findings are acted on, then the target is built."""
+        """The Builder holds the stream: the pending findings are acted on, then the target is built.
+
+        Delivered, not dropped: the queue clears only with the beat's success below, so a Builder
+        error leaves every finding queued instead of orphaning it open and unqueued. On the code
+        path a suggested action that errors keeps its finding queued for the next beat; on the model
+        path the action is unobservable, so a successful beat closes what it delivered."""
         if self.examiner is not None and self.examiner.is_running:
             raise RuntimeError("the Examiner is still running; one agent at a time (D128)")
         self.emit(BeatStart(agent="builder", round=n))
         before = self.spend()
-        delivered, self.pending_findings = list(self.pending_findings), []
+        delivered = list(self.pending_findings)
+        failed: set[str] = set()
         if self.agent_model is None:
             for finding in delivered:
                 if finding.suggested != "none":
-                    builder_agent.drive_tool(self.builder, finding.suggested, finding_arguments(finding))
+                    action = builder_agent.drive_tool(self.builder, finding.suggested,
+                                                      finding_arguments(finding))
+                    if action.is_error:
+                        failed.add(finding.finding_id)
             self.build_result = builder_agent.drive_tool(self.builder, "build", {"target": self.target})
         else:
             if n == 1:
@@ -290,8 +326,12 @@ class Loop:
         if self.plan.last is None or (result is not None and result.is_error):
             raise BuildError(result.content if result is not None
                              else f"the model never called build({self.target!r})")
-        if delivered and self.eplan is not None:
-            self.eplan.close_findings([finding.finding_id for finding in delivered])
+        closed = [finding.finding_id for finding in delivered if finding.finding_id not in failed]
+        if closed and self.eplan is not None:
+            self.eplan.close_findings(closed)
+        closed_ids = set(closed)
+        self.pending_findings = [finding for finding in self.pending_findings
+                                 if finding.finding_id not in closed_ids]
         self._beat_done("builder", n, before)
 
     # --- the Examiner's beat ------------------------------------------------------------
@@ -429,6 +469,7 @@ class Loop:
         out["tool_result"] = _tool_result(self.build_result)
         out["rounds"] = [as_dict(r) for r in self.rounds]
         out["exit"] = self.rounds[-1].exit if self.rounds else None
+        out["failed"] = bool(self.rounds and self.rounds[-1].failed)
         counts = self.rounds[-1].counts if self.rounds else {}
         out["trusted"] = list(counts.get("trusted_ids") or [])
         out["refused"] = dict(counts.get("refused") or {})
@@ -468,13 +509,16 @@ def run_rounds(workdir: Any, model: Any = None, *, agent_model: Optional[Model] 
         n += 1
         try:
             record = loop.round(n)
-        except ExaminerError as exc:
-            # A broken examiner contract fails the round; it never closes one on stale state and
+        except (ExaminerError, BuildError) as exc:
+            # A broken agent contract fails the round; it never closes one on stale state and
             # never dies without a record. The round is stalled with the reason on it, so rounds.json
-            # tells the whole story and the next session knows the Examiner needs fixing, not the Tasks.
+            # tells the whole story, and findings still queued ride on the record (close_round
+            # persists them) instead of dying with the process.
             record = loop.close_round(n, {})
-            record.exit = "stalled"  # the examiner is broken; another beat cannot fix it
-            record.exit_note = f"examiner failed: {exc}"
+            record.exit = "stalled"  # a broken agent is not fixed by another beat
+            record.failed = True
+            record.exit_note = (f"examiner failed: {exc}" if isinstance(exc, ExaminerError)
+                                else f"builder failed: {exc}")
             if record.pending_findings:
                 record.exit_note += (f"; {len(record.pending_findings)} finding(s) "
                                      "never got a Builder beat")

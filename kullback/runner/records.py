@@ -722,6 +722,8 @@ class RoundRecord(Record):
     pending_findings: list[Finding] = Field(default_factory=list)  # filed but never delivered; the next
     # Builder beat still owes them an action, so `done` is never reported while this is non-empty
     exit_note: Optional[str] = None  # why the exit is what it is, when it needs saying (D126)
+    failed: bool = False  # the round ended on a broken agent contract (a Builder or Examiner error),
+    # not on the gates: the exit is stalled but the run failed, and the CLI exits non-zero on it
 
 
 # Every record in this module plus Usage, the one record the provider layer defines, so the

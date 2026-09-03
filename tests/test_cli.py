@@ -615,3 +615,24 @@ def test_build_passes_grow_through(workdir, fake_modules):
     assert result.exit_code == 0, result.output
     kwargs = fake_modules["kullback.rounds.run_rounds"][0]["kwargs"]
     assert kwargs["grow"] == {"users": 500, "orders": 1000} and kwargs["grow_seed"] == 7
+
+
+def test_build_fails_when_the_run_failed_on_a_broken_agent(workdir, fake_modules, monkeypatch):
+    """A stalled exit on a broken agent contract is a failed run: the command exits non-zero so CI
+    and scripts see it. A plain stalled exit (the gates, no progress) still exits zero."""
+    def failed_run(**kwargs):
+        return {"status": "complete", "rounds": [{"round": 1, "counts": {}, "exit": "stalled", "failed": True}],
+                "exit": "stalled", "failed": True, "trusted": [], "refused": {}}
+
+    def entry(path, name):
+        def fn(*args, **kwargs):
+            if name == "run_rounds":
+                return failed_run(**kwargs)
+            if name == "search_for":
+                return None
+            return {"ok": True}
+        return fn
+
+    monkeypatch.setattr(cli, "_entry", entry)
+    result = invoke("build", "--workdir", str(workdir))
+    assert result.exit_code == 1 and '"failed": true' in result.output

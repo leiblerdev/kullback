@@ -575,10 +575,11 @@ def test_a_broken_examiner_stalls_the_run_with_the_reason_on_the_record(tmp_path
     ])
     result = rounds.run_rounds(workdir, model=Bodies(), agent_model=agent_model, files=[_fixture(request)],
                                max_attempts=0, allowance_usd=0.0)
-    assert result["exit"] == "stalled"
+    assert result["exit"] == "stalled" and result["failed"] is True
     stored = rounds.load_rounds(workdir)
     assert len(stored) == 1
     assert stored[0].exit == "stalled" and "never called derive" in (stored[0].exit_note or "")
+    assert stored[0].failed is True
 
 
 def test_a_finding_filed_in_round_one_is_performed_in_round_two_then_the_run_exits(tmp_path, request):
@@ -604,6 +605,85 @@ def test_a_finding_filed_in_round_one_is_performed_in_round_two_then_the_run_exi
     assert len(stored) == 2
     assert stored[0].exit is None and [f.finding_id for f in stored[0].pending_findings] != []
     assert stored[1].exit == "done" and stored[1].pending_findings == []
-    assert result["exit"] == "done"
+    assert result["exit"] == "done" and result["failed"] is False
     findings = json.loads((workdir / "examiner" / "findings.json").read_text(encoding="utf-8"))
     assert [f["status"] for f in findings] == ["closed"]
+
+
+def test_a_builder_error_keeps_its_findings_queued(tmp_path, monkeypatch):
+    """Greptile P1 (round 3): the beat clears findings only on success. A Builder error leaves the
+    queue exactly as it found it, so the findings stay open and queued instead of orphaned."""
+    from kullback.agent.tools import ToolResult
+    from kullback.builder.build import BuildError
+
+    loop = _bare_loop(tmp_path)
+    loop.pending_findings = [_finding("t1", suggested="none")]
+    monkeypatch.setattr(builder_agent, "drive_tool",
+                        lambda *args, **kwargs: ToolResult(content="the build broke", is_error=True))
+    with pytest.raises(BuildError):
+        loop.builder_beat(1)
+    assert [f.finding_id for f in loop.pending_findings] == ["f1"]
+
+
+def test_a_builder_that_quits_in_round_two_stalls_with_the_finding_still_queued(tmp_path, request):
+    """Greptile P1 (round 3), run level: round 1 files a finding, round 2's Builder never builds.
+    The run stalls with the reason on the record and the unperformed finding still queued on it,
+    instead of crashing with the finding lost."""
+    workdir = tmp_path / "builder-quits"
+    agent_model = TestModel([
+        _reply(None, ("build", {"target": TARGET})),
+        _reply("built."),
+        _reply(None, ("finding", {"task_id": "1", "kind": "fidelity",
+                                  "text": "the replay diverges at the second call", "suggested": "replay"})),
+        _reply(None, ("derive", {"target": "all"})),
+        _reply("filed and derived."),
+        _reply(None, ("build", {"target": "no-such-target"})),
+    ])
+    result = rounds.run_rounds(workdir, model=Bodies(), agent_model=agent_model, files=[_fixture(request)],
+                               max_attempts=0)
+    stored = rounds.load_rounds(workdir)
+    assert len(stored) == 2
+    assert stored[0].exit is None and [f.finding_id for f in stored[0].pending_findings] != []
+    assert stored[1].exit == "stalled" and "builder failed" in (stored[1].exit_note or "")
+    assert [f.finding_id for f in stored[1].pending_findings] != []
+    assert result["exit"] == "stalled"
+
+
+def test_a_failed_suggested_action_keeps_its_finding_queued(tmp_path, monkeypatch):
+    """Greptile P1 (round 4): on the code path a suggested action that errors keeps its finding
+    queued for the next beat, while the finding with nothing to do is closed by the success."""
+    from kullback.agent.tools import ToolResult
+
+    loop = _bare_loop(tmp_path)
+    loop.plan.last = object()  # a previous build exists, so the beat may succeed
+    loop.pending_findings = [_finding("t1", suggested="replay"), _finding("t2", suggested="none",
+                                                                           finding_id="f2")]
+
+    def fake_drive(*args, **kwargs):
+        if args[1] == "build":
+            return ToolResult(content="built", is_error=False)
+        return ToolResult(content="the action broke", is_error=True)
+
+    monkeypatch.setattr(builder_agent, "drive_tool", fake_drive)
+    loop.builder_beat(1)
+    assert [f.finding_id for f in loop.pending_findings] == ["f1"]
+
+
+def test_a_new_loop_resumes_findings_an_earlier_run_left_open(tmp_path):
+    """Greptile P1 (round 4): a ceiling that ends a run with findings pending strands nothing. The
+    next Loop over the workdir re-queues what findings.json still holds open (and only that)."""
+    workdir = tmp_path / "work"
+    (workdir / "examiner").mkdir(parents=True)
+    rows = [{**as_dict(_finding("t1")), "status": "open"},
+            {**as_dict(_finding("t2", finding_id="f2")), "status": "closed"}]
+    (workdir / "examiner" / "findings.json").write_text(json.dumps(rows), encoding="utf-8")
+    assert [f.finding_id for f in _bare_loop(tmp_path).pending_findings] == ["f1"]
+
+
+def test_a_new_loop_survives_a_half_written_findings_file(tmp_path):
+    """A findings file cut mid-write resumes nothing and stops nothing: the loop that would drain
+    it must not die on it."""
+    workdir = tmp_path / "work"
+    (workdir / "examiner").mkdir(parents=True)
+    (workdir / "examiner" / "findings.json").write_text('[{"finding_id": "f1", ', encoding="utf-8")
+    assert _bare_loop(tmp_path).pending_findings == []

@@ -312,6 +312,10 @@ def build(
         count = len(result.get("rounds") or [])
         typer.echo(f"exit: {result['exit']} after {count} round{'' if count == 1 else 's'}")
     typer.echo(json.dumps(result, indent=2, default=str))
+    if isinstance(result, dict) and result.get("failed"):
+        # A stalled exit on a broken agent contract is a failed run, not a quiet one: CI and
+        # scripts must see it. Plain stalled (the gates, no progress) still exits zero.
+        raise typer.Exit(1)
 
 
 def _round_line(counts: dict) -> str:
