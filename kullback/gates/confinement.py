@@ -19,9 +19,12 @@ from __future__ import annotations
 
 import ast
 import builtins
-from typing import Iterator
+import importlib
+import re
+import types
+from typing import Iterator, Optional
 
-from kullback.runner.confinement import DENIED_NAMES, confine
+from kullback.runner.confinement import DENIED_ATTRS, DENIED_NAMES, confine
 from kullback.runner.records import GateResult
 
 TOOLS_CLASS = "DomainTools"
@@ -36,6 +39,11 @@ ALLOWED_IMPORTS = frozenset({"typing", "pydantic", "tau2", "data_model", "dateti
 DENIED_BUILTINS = DENIED_NAMES | frozenset({"exit", "quit", "memoryview"})
 # The dunders the code-owned skeleton itself writes; every other one is an object walk.
 ALLOWED_DUNDERS = frozenset({"__init__", "__tool_type__", "__doc__", "__name__"})
+# What a generated class may call while it is being created: pydantic's field declarations and the
+# empty containers their defaults are built from.
+DECLARATION_CALLS = frozenset({"Field", "ConfigDict", "dict", "list", "set", "tuple"})
+# A dunder spelled inside a string constant, which no attribute node reports.
+DUNDER_IN_TEXT = re.compile(r"__\w+__")
 # A ruling names the first few offences; the body's author reads them, not a ledger.
 MAX_NAMED_FAILURES = 5
 
@@ -82,26 +90,136 @@ def source_confinement(source: str, class_name: str = TOOLS_CLASS) -> list[str]:
         tree = ast.parse(source)
     except SyntaxError as exc:
         return [f"does not parse: {exc.msg}"]
-    bad: list[str] = []
+    bad: list[str] = module_shape(tree)
+    # The imports the generated module makes at the top are in scope inside every body, so a body
+    # can read `json.codecs` without importing json itself. The module's own aliases are collected
+    # once and handed to each body.
+    aliases = _module_aliases_at_top(tree)
     for node in ast.walk(tree):
         if not (isinstance(node, ast.ClassDef) and node.name == class_name):
             continue
         for member in node.body:
             if not isinstance(member, (ast.FunctionDef, ast.AsyncFunctionDef)) or member.name == "__init__":
                 continue
-            bad += [f"{member.name} {line}" for line in _body_confinement(member)]
+            bad += [f"{member.name} {line}" for line in _body_confinement(member, aliases)]
     return sorted(set(bad))
 
 
-def _body_confinement(function: ast.AST) -> list[str]:
+def module_shape(tree: ast.AST) -> list[str]:
+    """Everything in the module that is not a shape the Harness itself writes.
+
+    The name checks below read the tool methods, because those are what a model wrote. That left a
+    hole a review walked through: the module also carries mined table and column names, and a name
+    carrying a newline and a statement becomes a statement, at class-body or module level, where no
+    method is looked at. `compile_env.unsafe_names` stops that at the point the source is written;
+    this is the same rule stated where the source is about to be executed, so a module that arrives
+    by any other path is refused too.
+
+    The shapes the Harness writes are few: imports, class definitions, the two try/except blocks
+    that prefer tau2's own bases, annotated fields, methods and docstrings. Anything else, an
+    expression statement, a bare call, a loop, an assignment outside those blocks, is not something
+    this codebase emits, and is refused rather than executed.
+    """
+    bad: list[str] = []
+    for node in getattr(tree, "body", []):
+        if isinstance(node, (ast.Import, ast.ImportFrom, ast.ClassDef)) or _is_docstring(node):
+            pass
+        elif isinstance(node, ast.Try):
+            bad += _import_fallback_shape(node)
+        else:
+            bad.append(f"module runs {_shape_of(node)} outside any class")
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ClassDef):
+            for member in node.body:
+                if not _is_class_member(member):
+                    bad.append(f"{node.name} declares {_shape_of(member)} in its class body")
+                elif isinstance(member, (ast.Assign, ast.AnnAssign)):
+                    bad += [f"{node.name} computes a field: {line}" for line in _field_shape(member)]
+    return sorted(set(bad))
+
+
+def _field_shape(node: ast.AST) -> list[str]:
+    """A field of a generated class is a declaration, never a computation.
+
+    The module carries no `from __future__ import annotations`, on purpose, so both halves run when
+    the class is created: the annotation and the default. The Harness writes only
+    `name: Optional[Any] = Field(default=None)` and the dict of tables, so anything that is not a
+    literal, a name, a subscript of those or a call to Field is refused.
+    """
+    parts = [getattr(node, "annotation", None), node.value]
+    return [f"{ast.unparse(part)[:60]} is not a declaration"
+            for part in parts if part is not None and not _declaration(part)]
+
+
+def _declaration(node: ast.AST) -> bool:
+    if isinstance(node, ast.Constant) or isinstance(node, ast.Name):
+        return True
+    if isinstance(node, ast.Attribute):
+        return _declaration(node.value)
+    if isinstance(node, ast.Subscript):
+        return _declaration(node.value) and _declaration(node.slice)
+    if isinstance(node, (ast.Tuple, ast.List, ast.Set)):
+        return all(_declaration(item) for item in node.elts)
+    if isinstance(node, ast.Dict):
+        return all(_declaration(item) for item in list(node.keys) + list(node.values) if item is not None)
+    if isinstance(node, ast.Call):
+        named = node.func.id if isinstance(node.func, ast.Name) else None
+        return named in DECLARATION_CALLS \
+            and all(_declaration(arg) for arg in node.args) \
+            and all(_declaration(kw.value) for kw in node.keywords)
+    return False
+
+
+def _import_fallback_shape(node: ast.Try) -> list[str]:
+    """The `try: from tau2... except ImportError:` blocks the skeleton opens with, and nothing else."""
+    inside = list(node.body) + [stmt for handler in node.handlers for stmt in handler.body] \
+        + list(node.orelse) + list(node.finalbody)
+    allowed = (ast.Import, ast.ImportFrom, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef,
+               ast.Assign, ast.AnnAssign, ast.Pass)
+    return [f"module runs {_shape_of(stmt)} in a try block"
+            for stmt in inside if not isinstance(stmt, allowed)]
+
+
+def _is_class_member(node: ast.AST) -> bool:
+    return isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.AnnAssign, ast.Assign,
+                             ast.ClassDef, ast.Pass)) or _is_docstring(node)
+
+
+def _is_docstring(node: ast.AST) -> bool:
+    return isinstance(node, ast.Expr) and isinstance(node.value, ast.Constant) \
+        and isinstance(node.value.value, str)
+
+
+def _shape_of(node: ast.AST) -> str:
+    return type(node).__name__
+
+
+def _module_aliases_at_top(tree: ast.AST) -> dict[str, str]:
+    """The module's own top-level imports, which every body can name."""
+    top = [node for node in getattr(tree, "body", []) if isinstance(node, (ast.Import, ast.ImportFrom))]
+    out: dict[str, str] = {}
+    for node in top:
+        out.update(_module_aliases(node))
+    return out
+
+
+def _body_confinement(function: ast.AST, aliases: Optional[dict[str, str]] = None) -> list[str]:
     out: list[str] = []
+    aliases = dict(aliases or {})
+    aliases.update(_module_aliases(function))
+    docstring = _docstring_node(function)
     for node in ast.walk(function):
         for name in _imported(node):
             if name.split(".")[0] not in ALLOWED_IMPORTS:
                 out.append(f"imports {name}")
-        if isinstance(node, ast.Attribute) and node.attr.startswith("__") \
-                and node.attr not in ALLOWED_DUNDERS:
-            out.append(f"touches {node.attr}")
+        if isinstance(node, ast.Attribute):
+            out += _attribute_confinement(node, aliases)
+        elif isinstance(node, ast.Constant) and isinstance(node.value, str) and node is not docstring:
+            # A dunder written as text, not as an attribute node: "{0.__class__}".format(x) walks
+            # the object at runtime and the attribute rule above never sees it. `format` is refused
+            # a few lines up, so this is the second lock on the same door: nothing in a tool body
+            # has a reason to spell a dunder inside a string.
+            out += [f"names {name} inside a string" for name in _dunders_in(node.value)]
         elif isinstance(node, ast.Name) and node.id in DENIED_BUILTINS:
             out.append(f"uses {node.id}")
         elif isinstance(node, (ast.Global, ast.Nonlocal)):
@@ -113,6 +231,75 @@ def _body_confinement(function: ast.AST) -> list[str]:
             out += [f"declares {'global' if isinstance(node, ast.Global) else 'nonlocal'} {name}"
                     for name in node.names]
     return out
+
+
+def _attribute_confinement(node: ast.Attribute, aliases: dict[str, str]) -> list[str]:
+    """What one attribute access reaches: a dunder, a private name, a format walk, or a module.
+
+    The last is the one the first live builds never showed and a review found: `uuid`, `random`,
+    `statistics`, `typing` and `collections` are all on the import allowlist and every one of them
+    re-exports another module as a plain attribute, so `uuid.os` hands a body the operating system
+    through a name the allowlist blesses. Refusing the shape rather than the name closes the family:
+    an attribute of an allowed module that is itself a module is refused, whatever it is called.
+    """
+    if node.attr.startswith("__"):
+        return [] if node.attr in ALLOWED_DUNDERS else [f"touches {node.attr}"]
+    if node.attr.startswith("_"):
+        # The predicate check has refused single-underscore attributes since it was written. A tool
+        # body reads the customer's fields, which are public names, so it loses nothing by the rule.
+        return [f"touches {node.attr}"]
+    if node.attr in DENIED_ATTRS:
+        return [f"uses {node.attr}"]
+    module = _module_behind(node, aliases)
+    if module is not None:
+        return [f"reaches the {node.attr} module through {module}"]
+    return []
+
+
+def _module_behind(node: ast.Attribute, aliases: dict[str, str]) -> Optional[str]:
+    """The import this attribute reads another module out of, or None.
+
+    Only names bound by an import in this module are resolved, and only names on the allowlist are
+    imported to ask. A module the check cannot import (`tau2`, `data_model`, a missing extra)
+    answers None rather than refusing a body over the checker's own environment.
+    """
+    if not isinstance(node.value, ast.Name):
+        return None
+    imported = aliases.get(node.value.id)
+    if imported is None or imported.split(".")[0] not in ALLOWED_IMPORTS:
+        return None
+    try:
+        module = importlib.import_module(imported)
+    except Exception:
+        return None
+    return imported if isinstance(getattr(module, node.attr, None), types.ModuleType) else None
+
+
+def _module_aliases(tree: ast.AST) -> dict[str, str]:
+    """Every name an import binds here, mapped to the module it names."""
+    out: dict[str, str] = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                out[alias.asname or alias.name.split(".")[0]] = alias.name.split(".")[0] \
+                    if alias.asname is None else alias.name
+        elif isinstance(node, ast.ImportFrom) and node.module:
+            for alias in node.names:
+                out[alias.asname or alias.name] = f"{node.module}.{alias.name}"
+    return out
+
+
+def _docstring_node(function: ast.AST) -> Optional[ast.AST]:
+    body = getattr(function, "body", None) or []
+    first = body[0] if body else None
+    if isinstance(first, ast.Expr) and isinstance(first.value, ast.Constant) \
+            and isinstance(first.value.value, str):
+        return first.value
+    return None
+
+
+def _dunders_in(text: str) -> list[str]:
+    return sorted({name for name in DUNDER_IN_TEXT.findall(text) if name not in ALLOWED_DUNDERS})
 
 
 def _imported(node: ast.AST) -> list[str]:

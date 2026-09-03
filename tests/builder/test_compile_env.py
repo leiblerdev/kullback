@@ -1612,3 +1612,39 @@ def test_builder_tools_false_sends_no_tools_and_keeps_the_old_behaviour(
     assert build.body.strip() == CORRECT_BODY.strip()
     assert build.assisted is False
     assert "tool_uses" not in build.nodes[0]
+
+
+# --- mined names are text, not identifiers (2026-09-03 review, C2) ---
+
+def test_a_column_name_carrying_python_source_is_refused_before_it_is_written():
+    """Mining reads column names off JSON keys in the customer's traces. A key with a newline and a
+    statement in it used to render as a live class-body statement that `load_toolkit` executed with
+    every gate passing, because the confinement gate only reads the tool methods."""
+    schema = EntitySchema(tables=["orders"], columns=[
+        Column(table="orders", name="status", class_="hard"),
+        Column(table="orders", name='ok = 1\n    import os', class_="hard")])
+    assert ce.unsafe_names(schema) == [
+        "column 'ok = 1\\n    import os' of orders is not a Python name"]
+    with pytest.raises(ValueError) as raised:
+        ce.render_data_model(schema)
+    assert "cannot be written into the generated module" in str(raised.value)
+
+
+def test_a_name_that_is_a_keyword_or_carries_a_space_is_refused_by_name():
+    """The benign twin of the same defect: these used to fail the parse gate in the code-owned
+    skeleton, where no body could repair it and the message named no cause."""
+    schema = EntitySchema(tables=["order items"], columns=[
+        Column(table="order items", name="class", class_="hard")])
+    assert ce.unsafe_names(schema) == ["table 'order items' is not a Python name",
+                                       "column 'class' of order items is not a Python name"]
+
+
+def test_a_tool_or_argument_name_that_is_not_a_python_name_is_refused_too():
+    schema = EntitySchema(tables=["orders"], columns=[Column(table="orders", name="status", class_="hard")])
+    sig = ToolSig(name="get order", kind="read",
+                  args_fields=[FieldStat(name="order id", types=["str"])], result_schema=[])
+    assert ce.unsafe_names(schema, [sig]) == ["tool 'get order' is not a Python name",
+                                              "argument 'order id' of get order is not a Python name"]
+    with pytest.raises(ValueError):
+        ce.render_tools(schema, [sig], {})
+
