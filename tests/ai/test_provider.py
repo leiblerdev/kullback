@@ -1106,3 +1106,27 @@ def test_an_explicit_base_url_does_not_change_a_responses_model_shape(tmp_path, 
                          base_url="http://127.0.0.1:8080/v1", env={})
     assert isinstance(model, pv.OpenAIResponsesModel)
     assert model.base_url == "http://127.0.0.1:8080/v1"
+
+
+def test_the_chat_adapter_records_the_cache_write_tokens_the_endpoint_reports():
+    """A reply with cached_tokens 0 still carried cache_write_tokens 1339, billed at the model's
+    own cache_write rate; dropping it billed a build for less than it cost."""
+    model = pv.OpenAIModel(model_id="openai/gpt-5.6-luna", api_key="k", env={})
+    reply = model.parse_reply({
+        "choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}],
+        "usage": {"prompt_tokens": 1342, "completion_tokens": 286,
+                  "prompt_tokens_details": {"cached_tokens": 0, "cache_write_tokens": 1339}},
+    })
+    assert reply.usage.input == 1342 and reply.usage.cache_read == 0
+    assert reply.usage.cache_write == 1339
+
+
+def test_an_endpoint_that_reports_no_cache_write_records_none():
+    model = pv.OpenAIModel(model_id="openai/gpt-5.6-luna", api_key="k", env={})
+    reply = model.parse_reply({
+        "choices": [{"message": {"content": "ok"}}],
+        "usage": {"prompt_tokens": 900, "completion_tokens": 10,
+                  "prompt_tokens_details": {"cached_tokens": 400}},
+    })
+    assert reply.usage.cache_read == 400 and reply.usage.input == 500
+    assert reply.usage.cache_write == 0

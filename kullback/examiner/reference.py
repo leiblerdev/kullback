@@ -6,9 +6,11 @@ plus the policy say the End state should hold: a recording that broke a compiled
 a failed recording; the rest are grouped by End state, and the References are the one group that
 agrees. When more than one group is left, code cannot tell which of them carried out the request, so
 a judge may mark groups as failed, never as passed (D110); a Task whose groups still disagree gets
-no Reference and no Verdict. Re-rolls (D112) enter the same rule as recordings of a lower standing:
-the Reference is a recording whenever the agreeing group holds one, since the recording is the only
-Run that touched the customer's real system.
+no Reference and no Verdict. That judge is handed the Intent, the policy and the End states and no
+transcript, so a ruling of its that rests on anything else, authentication or a spoken confirmation
+or the opening request, is an abstention and fails nothing (D93). Re-rolls (D112) enter the same rule
+as recordings of a lower standing: the Reference is a recording whenever the agreeing group holds
+one, since the recording is the only Run that touched the customer's real system.
 
 A compiled constraint that fails on a large share of the confirmed recordings corpus-wide is demoted
 first. The recordings are the frontier under the customer's own policy, and a rule they break that
@@ -25,6 +27,7 @@ from typing import Any, Callable, Iterable, Optional
 
 from kullback.examiner import derive as verifier_mod
 from kullback.gates import verifier_suite
+from kullback.runner.judge import sources_not_given
 from kullback.runner.records import Atom, Constraint
 
 RECORDING = "recording"
@@ -39,6 +42,10 @@ MIN_RUNS_TO_DEMOTE = 3
 MAX_POLICY_LINES = 40  # D65: the judge prompt is bounded whatever the policy's length
 MAX_LINE_CHARS = 200
 MAX_REQUEST_CHARS = 600
+# What this judge is handed, and the whole of what a ruling of its may rest on. It sees the Intent,
+# the policy and the End states, and never a transcript, so authentication, a spoken confirmation and
+# the opening request are absent by construction; a ruling that rests on one of them abstains (D93).
+AVAILABLE_SOURCES = ("intent", "policy", "end_states")
 _LABELS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
 _JSON_RE = re.compile(r"\{.*\}", re.DOTALL)
 
@@ -63,6 +70,7 @@ class Confirmation:
     reason: Optional[str] = None  # why the Task has no Reference, when it has none
     judged: bool = False
     judge_reason: Optional[str] = None
+    judge_abstained: bool = False  # the judge rested on something it was not given, so it failed nothing
     recordings: list[Recording] = field(default_factory=list)  # every Run the rule saw
 
     def as_dict(self) -> dict:
@@ -71,7 +79,20 @@ class Confirmation:
                 "recordings": [{"run_id": r.run_id, "trace_id": r.trace_id, "kind": r.kind}
                                for r in self.recordings],
                 "failed": dict(self.failed), "groups": list(self.groups), "reason": self.reason,
-                "judged": self.judged, "judge_reason": self.judge_reason}
+                "judged": self.judged, "judge_reason": self.judge_reason,
+                "judge_abstained": self.judge_abstained}
+
+
+@dataclass
+class Judgement:
+    """One judge reply, read: the End states it failed, why, and any source it rested on and lacked."""
+    failed: set[str] = field(default_factory=set)
+    reason: str = ""
+    unavailable: list[str] = field(default_factory=list)
+
+    @property
+    def abstained(self) -> bool:
+        return bool(self.unavailable)
 
 
 # --- what a Run wrote -------------------------------------------------------
@@ -192,7 +213,7 @@ def group(recordings: Iterable[Recording]) -> list[dict]:
     return groups
 
 
-def confirm(recordings: Iterable[Recording], *, request: str = "", policy_lines: Iterable[str] = (),
+def confirm(recordings: Iterable[Recording], *, intent: str = "", policy_lines: Iterable[str] = (),
             judge: Any = None) -> Confirmation:
     """D111 over one Task's Runs: constraint violations out, then one agreeing End state, judge as residue."""
     out = Confirmation()
@@ -212,13 +233,15 @@ def confirm(recordings: Iterable[Recording], *, request: str = "", policy_lines:
     out.groups = [{k: v for k, v in g.items() if k != "members"} for g in groups]
     remaining = groups
     if len(groups) > 1 and judge is not None:
-        failed_labels, why = judge_groups(judge, request, policy_lines, groups)
-        out.judged, out.judge_reason = True, why
+        judgement = judge_groups(judge, intent, policy_lines, groups)
+        out.judged, out.judge_reason = True, judgement.reason
+        out.judge_abstained = judgement.abstained
         for g in groups:
-            if g["label"] in failed_labels:
+            if g["label"] in judgement.failed:
+                why = judgement.reason or "did not reach the End state the Intent and the policy require"
                 for rec in g["members"]:
-                    out.failed[rec.run_id] = f"judge: {why or 'did not reach the End state the request and the policy require'}"
-        remaining = [g for g in groups if g["label"] not in failed_labels]
+                    out.failed[rec.run_id] = f"judge: {why}"
+        remaining = [g for g in groups if g["label"] not in judgement.failed]
     if len(remaining) == 1:
         out.references = list(remaining[0]["members"])
     elif not remaining:
@@ -226,51 +249,72 @@ def confirm(recordings: Iterable[Recording], *, request: str = "", policy_lines:
     else:
         out.reason = (f"recordings disagree on the End state ({len(remaining)} states: "
                       + "; ".join(f"{g['label']} {g['state']}" for g in remaining) + ")")
+        if out.judge_abstained:
+            out.reason += f"; the judge abstained, {out.judge_reason}"
     return out
 
 
 # --- the judge: fails, never passes ----------------------------------------
 
-def judge_prompt(request: str, policy_lines: Iterable[str], groups: list[dict]) -> str:
-    lines = ["Recordings of one request ended in different states. Say which of the states did NOT do "
-             "what the user asked, or did something the policy does not allow.",
-             "", f"The user asked: {' '.join((request or '').split())[:MAX_REQUEST_CHARS] or '(not recorded)'}",
+def judge_prompt(intent: str, policy_lines: Iterable[str], groups: list[dict]) -> str:
+    lines = ["Recordings of one Task ended in different states. Say which of the states did NOT do what "
+             "the Intent asked, or did something the policy does not allow.",
+             "",
+             "You have three sources and your answer may rest on nothing else: "
+             + ", ".join(AVAILABLE_SOURCES) + ".",
+             "You do not have the transcript. Whether the agent authenticated the user, asked for and was "
+             "given a confirmation, said the right thing or called its tools in the right order cannot be "
+             "seen from here, and no state is ever failed for want of evidence you were not given.",
+             "",
+             "Intent, the ground truth of what the user wanted by the end of the Run: "
+             + (' '.join((intent or '').split())[:MAX_REQUEST_CHARS] or '(not recorded)'),
+             "The user may have revised the opening request during the Run, so judge the Intent and never "
+             "the opening request.",
              "", "Policy:"]
     lines += [f"- {' '.join(text.split())[:MAX_LINE_CHARS]}"
               for text in list(policy_lines)[:MAX_POLICY_LINES] if text and text.strip()]
     lines += ["", "End states:"]
     lines += [f"{g['label']} ({len(g['runs'])} run{'s' if len(g['runs']) != 1 else ''}): {g['state']}"
               for g in groups]
-    lines += ["", 'Reply with JSON only: {"failed": ["A"], "reason": "..."}. Mark a state failed only when '
-              'you are sure it did not do what was asked and allowed; when you cannot tell, reply '
-              '{"failed": [], "reason": "cannot tell"}.']
+    lines += ["", 'Reply with JSON only: {"failed": ["A"], "evidence": ["intent", "end_states"], '
+              '"reason": "..."}. Every name in evidence must be one of ' + ", ".join(AVAILABLE_SOURCES)
+              + '; when your answer needs anything else, name that instead and fail nothing. Mark a state '
+              'failed only when you are sure it did not do what the Intent asked and the policy allows; '
+              'when you cannot tell, reply {"failed": [], "reason": "cannot tell"}.']
     return "\n".join(lines)
 
 
-def judge_groups(model: Any, request: str, policy_lines: Iterable[str], groups: list[dict]) -> tuple[set[str], str]:
-    """The labels the judge failed and its reason; an unreadable reply fails nothing (D110)."""
+def judge_groups(model: Any, intent: str, policy_lines: Iterable[str], groups: list[dict]) -> Judgement:
+    """What the judge said about the End states; an unreadable reply fails nothing (D110)."""
     try:
-        reply = model.query([{"role": "user", "content": judge_prompt(request, policy_lines, groups)}])
+        reply = model.query([{"role": "user", "content": judge_prompt(intent, policy_lines, groups)}])
     except Exception as exc:
-        return set(), f"judge call failed: {type(exc).__name__}"
+        return Judgement(reason=f"judge call failed: {type(exc).__name__}")
     return parse_judgement(getattr(reply, "content", None) or "", {g["label"] for g in groups})
 
 
-def parse_judgement(text: str, labels: set[str]) -> tuple[set[str], str]:
+def parse_judgement(text: str, labels: set[str]) -> Judgement:
+    """The judge's reply as a ruling. A ruling resting on a source it was not handed fails nothing (D93)."""
     match = _JSON_RE.search(text or "")
     if not match:
-        return set(), "unreadable reply"
+        return Judgement(reason="unreadable reply")
     try:
         body = json.loads(match.group(0))
     except json.JSONDecodeError:
-        return set(), "unreadable reply"
+        return Judgement(reason="unreadable reply")
     failed = body.get("failed") if isinstance(body, dict) else None
     if not isinstance(failed, list):
-        return set(), "unreadable reply"
-    chosen = {str(x).strip().upper() for x in failed} & labels
-    return chosen, str(body.get("reason") or "")[:MAX_LINE_CHARS]
+        return Judgement(reason="unreadable reply")
+    said = str(body.get("reason") or "")[:MAX_LINE_CHARS]
+    missing = sources_not_given(body.get("evidence"), AVAILABLE_SOURCES)
+    if missing:
+        return Judgement(reason=f"the ruling rests on {', '.join(missing)}, which this judge was not given"
+                                + (f"; the judge said: {said}" if said else ""),
+                         unavailable=missing)
+    return Judgement(failed={str(x).strip().upper() for x in failed} & labels, reason=said)
 
 
-__all__ = ["RECORDING", "REROLL", "MISCOMPILED_SHARE", "Recording", "Confirmation", "end_state", "describe",
+__all__ = ["RECORDING", "REROLL", "MISCOMPILED_SHARE", "AVAILABLE_SOURCES", "Recording", "Confirmation",
+           "Judgement", "end_state", "describe",
            "hard_atoms", "violations", "load", "constraint_rates", "demote", "group", "confirm",
            "judge_prompt", "judge_groups", "parse_judgement"]

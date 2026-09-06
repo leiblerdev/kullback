@@ -8,7 +8,6 @@ import pytest
 
 from kullback.ai.provider import TestModel
 from kullback.builder.policy import (
-    HELPERS_SRC,
     accept_rewrite,
     compile_policy,
     compile_rule,
@@ -19,6 +18,7 @@ from kullback.builder.policy import (
     run_constraint_tests,
     split_policy,
 )
+from kullback.gates.verifier_suite import HELPERS_SRC
 from kullback.runner.records import Constraint, ConstraintTests, Event, Run
 
 # --- the three real retail policy sentences the module is exercised on ---

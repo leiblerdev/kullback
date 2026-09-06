@@ -13,7 +13,7 @@ from typing import Any, Optional
 import typer
 
 from kullback.report import coverage_rows, load, load_tool_sigs, write_report
-from kullback.runner import heartbeat
+from kullback.runner import feed, heartbeat
 from kullback.runner.records import (
     EntitySchema,
     Environment,
@@ -302,8 +302,13 @@ def build(
     if agent and adapter is None:
         raise typer.BadParameter("--agent needs --model: a model has to drive the session")
     search = _entry("kullback.builder.search", "search_for")(workdir)  # None unless live is on or a memo exists
-    # The screen lists running builds from these heartbeats; the pid tells it who is alive.
-    heartbeat.beat(workdir, model, "running")
+    # The screen lists running builds from these heartbeats; the pid tells it who is alive. The
+    # pulse keeps beating while the build runs so a screen watching from another directory sees
+    # the spend move, rather than a stale $0.0000 until the build is over.
+    # The feed is this build's story, opened here and appended to as it goes: /watch reads it to
+    # show the calls as they happen instead of a board that only moves when a stage ends.
+    feed.start(workdir, model=model, target=target, ceiling_usd=ceiling_usd)
+    pulse = heartbeat.pulse(workdir, model, "running")
     try:
         # The provider owns an http client when it made one; close it on the way out rather than at exit.
         with contextlib.closing(search) if search is not None else contextlib.nullcontext():
@@ -314,8 +319,10 @@ def build(
                 agent_model=adapter if agent else None, stall_rounds=stall_rounds,
                 allowance_usd=allowance_usd, subscribers=[_echo_round])
     except Exception:
+        pulse.stop()
         heartbeat.beat(workdir, model, "failed")
         raise
+    pulse.stop()
     heartbeat.beat(workdir, model, "failed" if result.get("failed") else "done",
                    exit=result.get("exit"))
     if isinstance(result, dict) and result.get("exit"):

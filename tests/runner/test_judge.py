@@ -249,6 +249,82 @@ def test_the_reference_judge_is_told_the_transcript_is_not_in_evidence_and_to_gr
     assert "end state" in prompt
 
 
+# --- a ruling may rest only on what the judge was handed (D93, build 8's hand fix 3) ---
+
+
+def test_the_system_prompt_names_the_sources_this_use_has_and_says_the_transcript_is_not_one(make_test_model):
+    model = make_test_model([call(), answer(verdict="good_reference")])
+    AgenticJudge(model, TOOLS).judge_reference({"run_id": "r1"}, "cancel order o1")
+    system = model.calls[0]["messages"][0]["content"]
+    assert "intent, verifier_output, end_state, state_tools" in system
+    assert "You do not have the transcript." in system
+    assert "authenticated the user" in system and "confirmation" in system
+    assert '"evidence"' in system
+
+
+@pytest.mark.parametrize("evidence", [["transcript"], "transcript", ["end_state", "the transcript"]],
+                         ids=["a_list", "one_string", "beside_a_source_it_does_have"])
+def test_a_reference_judge_that_rests_on_the_transcript_abstains_rather_than_failing_the_run(
+    make_test_model, evidence
+):
+    """Build 8: eleven Tasks were failed "without evidence of the required authentication and explicit
+    confirmation" by a judge that was handed no transcript, where D93 says a person decides."""
+    model = make_test_model([call(), answer(
+        verdict="bad_reference", evidence=evidence,
+        reason="no evidence of the required authentication and explicit confirmation")])
+    result = AgenticJudge(model, TOOLS).judge_reference({"run_id": "r1"}, "cancel order o1")
+    assert result.verdict == "abstain"
+    assert result.abstained is True
+    assert result.refused is False
+    assert result.evidence[-1].endswith("transcript")
+    assert "transcript" in (result.reason or "") and "was not given" in (result.reason or "")
+
+
+def test_a_run_that_matches_a_revised_intent_is_not_failed_for_the_opening_request(make_test_model):
+    """Build 8: the Intent said "exchange the desk lamp only" because the user changed their mind, the
+    frontier did exactly that, and the judge failed it on what the user had asked for first."""
+    model = make_test_model([call(), answer(
+        verdict="bad_reference", evidence=["opening_request"],
+        reason="the user requested exchanges for both items")])
+    result = AgenticJudge(model, TOOLS).judge_reference({"run_id": "r1"}, "exchange the desk lamp only")
+    assert result.verdict == "abstain"
+    assert "opening_request" in (result.reason or "")
+    prompt = model.calls[0]["messages"][1]["content"]
+    assert "ground truth of what the user wanted by the end of the Run" in prompt
+
+
+def test_a_reference_judge_that_rests_on_what_it_was_handed_still_fails_the_run(make_test_model):
+    model = make_test_model([call(), answer(
+        verdict="bad_reference", evidence=["Intent", "End states"],
+        reason="an order the Intent never names was exchanged")])
+    result = AgenticJudge(model, TOOLS).judge_reference({"run_id": "r1"}, "exchange the desk lamp only")
+    assert result.verdict == "bad_reference"
+    assert result.evidence == ["Intent", "End states"]
+
+
+def test_a_judge_handed_the_transcript_may_rest_its_verdict_on_it(make_test_model):
+    model = make_test_model([call(), answer(
+        verdict="pass", evidence=["transcript", "state_tools"], sub_answers=[yes()])])
+    result = judge_of(model).judge_policy_atom("confirm before cancelling", TRANSCRIPT)
+    assert result.verdict == "pass"
+    assert "transcript" not in (result.reason or "")
+
+
+def test_a_pass_shaped_ruling_that_rests_on_a_source_it_was_not_given_abstains_too(make_test_model):
+    """The rule never turns into a pass either: D110 holds in both directions."""
+    model = make_test_model([call(), answer(
+        verdict="pass", evidence=["crm_export"], sub_answers=[yes(), yes()])])
+    result = judge_of(model).judge_policy_atom("confirm before cancelling", TRANSCRIPT)
+    assert result.verdict == "abstain"
+    assert "crm_export" in (result.reason or "")
+
+
+def test_a_reply_with_no_evidence_field_is_read_as_it_was_before(make_test_model):
+    model = make_test_model([call(), answer(verdict="bad_reference", reason="nothing was written")])
+    result = AgenticJudge(model, TOOLS).judge_reference({"run_id": "r1"}, "cancel order o1")
+    assert result.verdict == "bad_reference" and result.evidence == []
+
+
 def test_a_verifier_output_passed_to_the_call_wins_over_the_one_on_the_judge(make_test_model):
     model = make_test_model([call(), answer(verdict="bad_reference")])
     judge = AgenticJudge(model, TOOLS, verifier_output={"pass": True})

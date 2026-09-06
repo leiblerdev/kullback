@@ -12,6 +12,9 @@
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-Apache_2.0-blue" alt="Apache License, Version 2.0"></a>
   <a href="https://www.python.org"><img src="https://img.shields.io/badge/python-%3E%3D3.11-blue" alt="Python 3.11 or newer"></a>
   <img src="https://img.shields.io/badge/tests-offline_first-green" alt="Offline-first tests">
+
+  <br><br>
+  <img src="docs/assets/kullback-tui.webp" alt="The kullback terminal screen: the commands, and the builds running now" width="820">
 </div>
 
 Your traces already hold the tasks, the tool signatures, what the tools returned, and the effect of every write. That is enough to rebuild an executable copy of your system and grade any model on what it changed in it. The grader is code, so it is cheap and has no opinions.

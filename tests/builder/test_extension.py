@@ -3,12 +3,14 @@ model-driven path, and that both leave the same artifacts as build.build()."""
 
 from __future__ import annotations
 
-import asyncio
 import json
-from pathlib import Path
 
 import pytest
 from pydantic import BaseModel, ConfigDict
+from session_fixtures import collect as _collect
+from session_fixtures import fixture_path as _fixture
+from session_fixtures import reply as _reply
+from session_fixtures import tree as _tree
 from test_build import Bodies
 
 from kullback.agent.events import StageEnd, StageStart, ToolExecutionEnd
@@ -22,24 +24,6 @@ from kullback.builder import build as build_module
 from kullback.builder import extension as ext
 from kullback.builder import tools as builder_tools
 from kullback.builder.build import BuildPlan
-
-COMPARED = ("bodies.json", "constraints.json", "gates.json", "environment.json", "replays.json",
-            "tasks.json", "schema.json", "tool_sigs.json", "user_facts.json", "vocabulary.json")
-
-
-def _reply(content, *calls):
-    return ModelReply(content=content, tool_calls=[ToolCallRequest(id=f"c{i}", name=n, arguments=a)
-                                                   for i, (n, a) in enumerate(calls)])
-
-
-def _collect(aiter):
-    async def go():
-        return [event async for event in aiter]
-    return asyncio.run(go())
-
-
-def _fixture(request) -> Path:
-    return Path(request.config.rootpath) / "tests" / "fixtures" / "tau2_retail_small.json"
 
 
 @pytest.fixture(scope="module")
@@ -61,25 +45,6 @@ def model_driven(tmp_path_factory, request):
     result = builder_agent.run_builder(workdir, model=Bodies(), files=[_fixture(request)], max_attempts=0,
                                        agent_model=agent_model, subscribers=[events.append])
     return {"workdir": workdir, "result": result, "events": events, "agent_model": agent_model, "tree": _tree(workdir)}
-
-
-def _tree(workdir: Path) -> dict:
-    """The build's artifacts by relative name, with the workdir's own absolute path (which replays.json
-    records for every Run) replaced, so two workdirs compare on what was built."""
-    def read(path: Path) -> bytes:
-        return path.read_bytes().replace(str(workdir.resolve()).encode(), b"<workdir>").replace(
-            str(workdir).encode(), b"<workdir>")
-    out = {}
-    for name in COMPARED:
-        path = workdir / name
-        if path.is_file():
-            out[name] = read(path)
-    for folder in ("intents", "tasks", "verifiers", "user_rules"):
-        for path in sorted((workdir / folder).glob("*.json")):
-            out[f"{folder}/{path.name}"] = read(path)
-    for path in sorted((workdir / "runs").rglob("*.jsonl")):
-        out[str(path.relative_to(workdir))] = read(path)
-    return out
 
 
 # --- the driver path ---------------------------------------------------------
@@ -233,12 +198,16 @@ def test_the_hook_looks_inside_lists_and_nested_dicts(tmp_path):
 
 # --- the prompt and the tools -------------------------------------------------
 
-def test_the_extension_registers_the_six_tools_and_the_three_sections_and_no_repair_verb(tmp_path):
+def test_the_extension_registers_every_stage_status_and_the_repair_verbs_with_four_sections(tmp_path):
     harness = builder_agent.build_harness(BuildPlan(workdir=tmp_path))
     assert isinstance(harness, AgentHarness), "the Builder is an extension on the core, not a harness of its own"
-    assert harness.registry.names() == ["build", "recluster", "grow", "compile_tool", "replay", "reroll"]
-    assert [s.name for s in harness.sections] == ["builder", "builder_rules", "builder_targets"]
-    assert "no repair verb" in harness.system and "kullback/gates" in harness.system
+    assert harness.registry.names() == ["status", "build", "recluster", "grow", "compile_tool", "replay",
+                                        "reroll", "repair_recompile", "repair_grow", "repair_refuse_task",
+                                        "repair_escalate"]
+    assert "repair_rewrite_skill" not in harness.registry.names(), "the GEPA caution: no unchecked prompt rewrite"
+    assert [s.name for s in harness.sections] == ["builder", "builder_rules", "builder_tools", "builder_targets"]
+    assert "make every gate pass" in harness.system and "kullback/gates" in harness.system
+    assert "Call status first" in harness.system
     assert "`environment` is the whole build" in harness.system
     assert "compile_tools" in harness.system and "bodies" in harness.system
     assert "repair" not in harness.registry.names()
@@ -313,7 +282,8 @@ def test_a_scripted_model_driving_the_session_calls_build_and_reads_the_rulings(
     assert result["status"] == "complete" and result["tool_result"]["is_error"] is False
     assert len(model.calls) == 2
     tools = [t["name"] for t in model.calls[0]["tools"]]
-    assert tools == ["build", "recluster", "grow", "compile_tool", "replay", "reroll"]
+    assert tools == ["status", "build", "recluster", "grow", "compile_tool", "replay", "reroll",
+                     "repair_recompile", "repair_grow", "repair_refuse_task", "repair_escalate"]
     system = model.calls[0]["messages"][0]
     assert "You are the Builder" in json.dumps(system)
     second = json.dumps(model.calls[1]["messages"])

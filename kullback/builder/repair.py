@@ -1,13 +1,17 @@
-"""Phase 6 repair verbs: the five ways a round fixes what the gates refused (D130).
+"""Phase 6 repair verbs: the five ways a round fixes what the gates refused (D130, D135, D138).
 
-Verbs: `repair_recompile(name)`, `repair_grow(table, count)`, `repair_rewrite_skill(name, content)`,
-`repair_refuse_task(task_id, reason)`, `repair_escalate(task_id, queue)`. The `repair_`
+Verbs: `repair_recompile(name, hint)`, `repair_grow(table, count)`, `repair_rewrite_skill(name,
+content)`, `repair_refuse_task(task_id, reason)`, `repair_escalate(task_id, queue)`. The `repair_`
 prefix keeps them clear of the Builder tools (`grow` already exists there, and the registry
-rejects duplicate names). Each verb records its
-request as JSONL under `workdir/repairs/` and returns a short `RepairResult`; the
-next round's driver picks the requests up. Nothing here calls a model or edits
-`kullback/gates` or `kullback/runner` (D122): the ratchet and the lesson are code
-over artifacts the pipeline already wrote.
+rejects duplicate names). Each verb records its request as JSONL under `workdir/repairs/` and
+returns a short `RepairResult`, which is the whole of what the two deciding verbs (refuse a Task,
+escalate it) do. The two acting verbs are registered from `builder/tools.py` instead, where the
+build plan is: they record the same request and then run the stage that repairs the artifact, so
+the gates rule on the new body or the grown table in the same tool result. `repair_rewrite_skill`
+is written here and registered nowhere: a model that rewrites its own prompt unchecked is the GEPA
+caution in `docs/todo.md`, and the verb waits for the gate that accepts an edit (D125, D132).
+Nothing here calls a model or edits `kullback/gates` or `kullback/runner` (D122): the ratchet and
+the lesson are code over artifacts the pipeline already wrote.
 """
 
 from __future__ import annotations
@@ -47,6 +51,8 @@ class RecompileArgs(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     name: str = Field(description="The mined tool whose body to compile again.")
+    hint: str = Field(default="", description="What went wrong with the last body and what to try "
+                                              "instead; kept as a lesson for this tool (D87).")
 
 
 class GrowRepairArgs(BaseModel):
@@ -86,7 +92,8 @@ def _repairs_dir(workdir: Any) -> Path:
     return path
 
 
-def _record(workdir: Any, verb: str, target: str, body: dict) -> Path:
+def record_request(workdir: Any, verb: str, target: str, body: dict) -> Path:
+    """One repair request appended to `repairs/<verb>.jsonl`; the file the round's report reads."""
     path = _repairs_dir(workdir) / f"{verb}.jsonl"
     with path.open("a", encoding="utf-8") as fh:
         fh.write(json.dumps({"verb": verb, "target": target, "at": time.time(), **body},
@@ -106,14 +113,19 @@ def _executor(workdir: Any, verb: str, target_of: Any) -> Any:
             from kullback.builder import skills as skills_mod
             written = skills_mod.write_skill(workdir, args.name, args.content)
             extra = {"skill_hash": written["hash"]}
-        path = _record(workdir, verb, target, {"arguments": args.model_dump(mode="json"), **extra})
+        path = record_request(workdir, verb, target, {"arguments": args.model_dump(mode="json"), **extra})
         return RepairResult(verb=verb, target=target, path=str(path),
                             detail=f"request in {path.name}")
     return execute
 
 
 def repair_tools(workdir: Any, sink: Optional[Sink] = None) -> list[AgentTool]:
-    """The five repair verbs over one workdir; `sink` is accepted for symmetry with builder_tools."""
+    """The five repair verbs over one workdir as request records; `sink` is accepted for symmetry.
+
+    A session registers the two deciding verbs from here (`repair_refuse_task`, `repair_escalate`)
+    and takes the two acting ones from `builder/tools.py`, which run the repairing stage as well as
+    recording the request. `repair_rewrite_skill` is registered nowhere yet (the GEPA caution).
+    """
     return [
         AgentTool("repair_recompile", "Compile one tool's body again from its recorded calls.",
                   RecompileArgs, RepairResult,
@@ -124,7 +136,8 @@ def repair_tools(workdir: Any, sink: Optional[Sink] = None) -> list[AgentTool]:
         AgentTool("repair_rewrite_skill", "Rewrite one Builder skill; the edit is a memory-tree node with its content hash.",
                   RewriteSkillArgs, RepairResult,
                   _executor(workdir, "repair_rewrite_skill", lambda a: a.name), render=_render),
-        AgentTool("repair_refuse_task", "Refuse a Task: no Verifier, no training signal from it.",
+        AgentTool("repair_refuse_task", "Refuse a Task: nothing is derived from it and it yields no "
+                  "training signal.",
                   RefuseTaskArgs, RepairResult,
                   _executor(workdir, "repair_refuse_task", lambda a: a.task_id), render=_render),
         AgentTool("repair_escalate", "Escalate a Task to a person on a named queue.",

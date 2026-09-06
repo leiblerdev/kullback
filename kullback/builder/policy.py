@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Any, Iterable, Optional
 
 from kullback.builder import parallel
-from kullback.gates.verifier_suite import HELPERS_SRC
+from kullback.gates.verifier_suite import HELPER_NAMES, predicate_args, predicate_source
 from kullback.runner.records import (
     Constraint,
     ConstraintTests,
@@ -38,7 +38,10 @@ _SAFE_BUILTINS = (
     "max", "min", "range", "repr", "reversed", "round", "set", "sorted", "str", "sum", "tuple", "zip",
     "Exception", "KeyError", "TypeError", "ValueError",
 )
-_HELPER_NAMES = frozenset({"user_confirmed", "called_before", "said_before"})
+# The transcript helpers a predicate may call, named off the one text that defines them
+# (`verifier_suite.HELPERS_SRC`), so a helper added there is a name this check knows. The
+# private ones a helper uses for itself stay unnameable by a rule.
+_HELPER_NAMES = frozenset(name for name in HELPER_NAMES if not name.startswith("_"))
 _ALLOWED_ATTRS = frozenset({
     "add", "append", "copy", "count", "endswith", "extend", "find", "get", "index", "isalnum",
     "isalpha", "isdigit", "items", "join", "keys", "lower", "replace", "split", "startswith",
@@ -46,8 +49,9 @@ _ALLOWED_ATTRS = frozenset({
 })
 _REFUSED_NODES = (ast.Lambda, ast.ClassDef, ast.Yield, ast.YieldFrom, ast.Await, ast.Global, ast.Nonlocal)
 
-# Every predicate runs with these helpers already defined, so a sequence rule stays one line; the
-# text is the suite's, so the compiler and the derivation's Hard atoms read one source (phase 5).
+# Every predicate runs with the transcript helpers already defined, so a sequence rule stays one
+# line. `predicate_source` prepends them, the suite owns the text, and the compiler, the
+# derivation's Hard atoms and the policy gate all read that one source (phase 5).
 
 _ALLOWED_BLOCK = "_ALLOWED = (\n" + "\n".join(
     "    " + " ".join(f'"{name}",' for name in _SAFE_BUILTINS[i : i + 6])
@@ -73,7 +77,9 @@ def main():
     for case in payload["cases"]:
         row = {"label": case["label"], "expect": bool(case["expect"])}
         try:
-            got = check(case.get("pre_state") or {}, case.get("write_call") or {}, case.get("transcript") or [])
+            # The arguments are split by `predicate_args` in the parent, so this runner and the
+            # policy gate call a predicate off one list and cannot drift apart again.
+            got = check(*case["args"])
             row["got"] = bool(got)
         except Exception as exc:
             row["error"] = type(exc).__name__ + ": " + str(exc)
@@ -272,7 +278,7 @@ def run_constraint_tests(constraint: Constraint, timeout_s: float = 5.0) -> Gate
     if failures:
         return GateResult(stage=STAGE, passed=False, metrics=metrics, failures=failures)
 
-    data = _sandbox(HELPERS_SRC + "\n" + src, cases, timeout_s)
+    data = _sandbox(src, cases, timeout_s)
     if data.get("error"):
         return GateResult(stage=STAGE, passed=False, metrics=metrics, failures=[data["error"]])
     for row in data.get("results", []):
@@ -347,13 +353,21 @@ def _static_check(src: str) -> list[str]:
     return sorted(set(bad))
 
 
-def _sandbox(src: str, cases: list[dict], timeout_s: float) -> dict:
+def _sandbox(predicate_src: str, cases: list[dict], timeout_s: float) -> dict:
+    """Run one predicate over its cases in a subprocess, assembled and called the one shared way.
+
+    `predicate_source` prepends the transcript helpers and `predicate_args` splits each case into
+    the three arguments, both in this process, so the runner script below and `gates/artifacts.py`'s
+    policy gate share the source and the argument list rather than each keeping a copy.
+    """
+    rows = [{"label": case.get("label"), "expect": bool(case.get("expect")),
+             "args": list(predicate_args(case))} for case in cases]
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
         script = root / "run_constraint.py"
         script.write_text(_RUNNER_SRC, encoding="utf-8")
         payload = root / "payload.json"
-        payload.write_text(json.dumps({"src": src, "cases": cases}), encoding="utf-8")
+        payload.write_text(json.dumps({"src": predicate_source(predicate_src), "cases": rows}), encoding="utf-8")
         try:
             done = subprocess.run(
                 [sys.executable, "-I", str(script), str(payload)],
@@ -520,7 +534,7 @@ def reference_violations(
         for run_id, cases in views:
             if not cases:
                 continue
-            data = _sandbox(HELPERS_SRC + "\n" + constraint.predicate_src, cases, timeout_s)
+            data = _sandbox(constraint.predicate_src, cases, timeout_s)
             if data.get("error"):
                 out.append({"run_id": run_id, "constraint_id": constraint.id, "tool": None,
                             "at": None, "reason": data["error"]})

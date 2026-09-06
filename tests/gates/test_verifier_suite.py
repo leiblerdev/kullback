@@ -486,7 +486,9 @@ def test_the_transcript_helpers_are_one_text_the_derivation_and_the_policy_compi
     its own copy. A Hard atom derived for a Verifier runs against exactly these helpers."""
     from kullback.builder import policy
 
-    assert policy.HELPERS_SRC is S.HELPERS_SRC
+    assert policy.predicate_source is S.predicate_source
+    assert S.predicate_source("def check(a, b, c):\n    return True\n").startswith(S.HELPERS_SRC)
+    assert set(S.HELPER_NAMES) >= {"user_confirmed", "called_before", "said_before"}
     assert V._helpers_src() is S.HELPERS_SRC
     namespace: dict = {}
     exec(S.HELPERS_SRC, namespace)

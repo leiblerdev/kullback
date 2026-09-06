@@ -547,21 +547,29 @@ def test_the_banner_is_a_gradient_styles_vary_plain_does_not(tmp_path):
     assert len(styles) > 1, "one flat style is not a gradient"
 
 
-def test_open_prints_status_segments(tmp_path, monkeypatch):
+def test_open_prints_the_workdir_it_is_reading(tmp_path, monkeypatch):
     # A wide console: open() cuts absurdly long workdirs with an ellipsis rather than folding them.
     console = Console(file=io.StringIO(), width=300, force_terminal=False, no_color=True)
     monkeypatch.setenv("HARNESS_ALLOW_MODEL_REQUESTS", "1")
     Screen(tmp_path, model="opencode-go/muse-spark", console=console).open()
+    assert str(tmp_path) in _text(console)
+
+
+def test_open_never_claims_a_model_or_a_live_switch_of_its_own(tmp_path, monkeypatch):
+    """The screen's own settings say nothing about the build it is watching, so it states neither:
+    a screen open on someone else's running build used to read 'model none, live off'."""
+    console = _console()
+    monkeypatch.setenv("HARNESS_ALLOW_MODEL_REQUESTS", "1")
+    Screen(tmp_path, model="opencode-go/muse-spark", console=console).open()
     out = _text(console)
-    assert "opencode-go/muse-spark" in out and "live on" in out and str(tmp_path) in out
+    assert "live on" not in out and "live off" not in out and "no model calls" not in out
 
 
-def test_open_says_live_off_and_hides_zero_spend(tmp_path, monkeypatch):
+def test_open_hides_zero_spend(tmp_path, monkeypatch):
     console = _console()
     monkeypatch.delenv("HARNESS_ALLOW_MODEL_REQUESTS", raising=False)
     Screen(tmp_path, console=console).open()
-    out = _text(console)
-    assert "live off" in out and "$" not in out
+    assert "$" not in _text(console)
 
 
 def test_loop_marks_a_failed_round(tmp_path):
@@ -677,22 +685,55 @@ def test_status_with_spend_but_no_rounds_says_the_build_started(tmp_path):
     assert "no round closed yet" in out and "no build yet" not in out
 
 
-def test_sessions_lists_a_running_build_and_watch_switches_to_it(tmp_path, monkeypatch):
+def _watched(tmp_path, monkeypatch, alive: list[bool]):
+    """A screen on `tmp_path` with one heartbeat for a build in `other`, whose liveness answers
+    off `alive` in order and False once the list runs out: that ends the follow loop."""
+    from kullback import tui as tui_module
     from kullback.runner import heartbeat
 
     monkeypatch.setenv("KULLBACK_SESSIONS_DIR", str(tmp_path / "sessions"))
+    monkeypatch.setattr(tui_module.time, "sleep", lambda _seconds: None)
     other = tmp_path / "other"
     other.mkdir()
-    heartbeat.beat(other, "opencode-go/glm-5.3-flash", "running", spend_usd=0.5)
-    from rich.console import Console
-
+    (other / "rounds.json").write_text(json.dumps(
+        [{"round": 1, "counts": {"fidelity": 2, "tasks": 3}, "exit": None}]), encoding="utf-8")
+    heartbeat.beat(other, "opencode-go/glm-5.3-flash", "running")
+    answers = iter(alive)
+    monkeypatch.setattr(heartbeat, "alive", lambda _pid: next(answers, False))
     wide = Console(file=io.StringIO(), width=300, force_terminal=False, no_color=True)
-    screen = Screen(tmp_path, console=wide, runner=_screen(tmp_path).runner)
+    return other, Screen(tmp_path, console=wide, runner=_screen(tmp_path).runner)
+
+
+def test_sessions_lists_a_running_build_and_watch_switches_to_it(tmp_path, monkeypatch):
+    other, screen = _watched(tmp_path, monkeypatch, alive=[True, True])
     assert screen.command("/sessions") is True
     out = _text(screen.console)
     assert "●" in out and str(other) in out and "glm-5.3-flash" in out
     assert screen.command("/watch 1") is True
     assert screen.workdir == other
+
+
+def test_watch_shows_the_build_and_not_the_entry_screen(tmp_path, monkeypatch):
+    """Watching a running build used to reprint the banner and the command list, which says
+    nothing about the build; it shows the build's own board now."""
+    other, screen = _watched(tmp_path, monkeypatch, alive=[True, True, True])
+    screen.command("/watch 1")
+    out = _text(screen.console)
+    assert f"watching {other}" in out and "round 1" in out
+    assert "run the Builder over the ingested traces" not in out
+
+
+def test_watch_follows_a_running_build_until_its_pid_goes(tmp_path, monkeypatch):
+    other, screen = _watched(tmp_path, monkeypatch, alive=[True, True, True, False])
+    screen.command("/watch 1")
+    assert "stopped watching" in _text(screen.console)
+
+
+def test_watch_shows_a_finished_build_once_without_following_it(tmp_path, monkeypatch):
+    other, screen = _watched(tmp_path, monkeypatch, alive=[False])
+    screen.command("/watch 1")
+    out = _text(screen.console)
+    assert "round 1" in out and "stopped watching" not in out
 
 
 def test_login_menu_walks_to_a_key_without_printing_it(tmp_path, monkeypatch):
@@ -710,3 +751,116 @@ def test_login_menu_walks_to_a_key_without_printing_it(tmp_path, monkeypatch):
     assert "OPENCODE_API_KEY" in out and "sk-menu-secret" not in out
     assert screen.model == "opencode-go/glm-5.3-flash"
     assert "keys held for this session: OPENCODE_API_KEY" in out
+
+
+def test_help_keeps_the_bracketed_arguments_a_command_takes(tmp_path):
+    """rich reads [provider/model] as a style tag and drops it, which left /login in the help
+    looking like it takes no model."""
+    screen = _screen(tmp_path)
+    screen.command("/help")
+    assert "[provider/model]" in _text(screen.console)
+
+
+def test_watching_shows_the_calls_off_the_builds_own_feed(tmp_path, monkeypatch):
+    """The board is the build's state; the feed is what it is doing right now. Watching shows
+    both, so a stage that takes twenty minutes is not twenty minutes of a still screen."""
+    from kullback.runner import feed
+
+    other, screen = _watched(tmp_path, monkeypatch, alive=[True, True, True])
+    feed.append(other, "model_call", stage="compile_tools", model="openai/gpt-5.6-luna",
+                input=12000, output=900, usd=0.0031, wall_ms=2400)
+    screen.command("/watch 1")
+    out = _text(screen.console)
+    assert "compile_tools" in out and "openai/gpt-5.6-luna" in out and "$0.0031" in out
+
+
+def test_watching_a_build_that_has_not_called_anything_yet_says_so(tmp_path, monkeypatch):
+    other, screen = _watched(tmp_path, monkeypatch, alive=[True, True])
+    screen.command("/watch 1")
+    assert "waiting for the build's next call" in _text(screen.console)
+
+
+def test_a_running_build_says_which_round_is_in_flight_not_the_pipelines_complete(tmp_path, monkeypatch):
+    """rounds.json only gets a row when a round closes and pipeline state says "complete" about
+    the Builder's stages, so an hour into round 2 the screen read "round 1, complete"."""
+    from kullback.runner import heartbeat
+
+    monkeypatch.setenv("KULLBACK_SESSIONS_DIR", str(tmp_path / "sessions"))
+    (tmp_path / "pipeline").mkdir()
+    (tmp_path / "pipeline" / "state.json").write_text(json.dumps(
+        {"status": "complete", "statuses": {"mine": "ran"}, "attempts": {}, "gates": []}))
+    (tmp_path / "rounds.json").write_text(json.dumps(
+        [{"round": 1, "exit": "stalled", "counts": {"spend": {"total": 2.0}}}]))
+    (tmp_path / "budget.json").write_text(json.dumps(
+        {"total": {"usd": 2.5, "calls": 1870},
+         "stages": {"mine": {"calls": 100}, "loophole_probe": {"calls": 68}}}))
+    heartbeat.beat(tmp_path, "openai/gpt-5.6-luna", "running")
+    screen = _screen(tmp_path)
+    screen.command("/status")
+    out = _text(screen.console)
+    assert "round 2 running" in out and "$0.5000 since round 1 closed" in out
+    assert "loophole_probe 68 calls" in out and "complete" not in out
+
+
+def test_a_stopped_build_still_reads_as_the_pipeline_left_it(tmp_path, monkeypatch):
+    monkeypatch.setenv("KULLBACK_SESSIONS_DIR", str(tmp_path / "sessions"))
+    (tmp_path / "pipeline").mkdir()
+    (tmp_path / "pipeline" / "state.json").write_text(json.dumps(
+        {"status": "complete", "statuses": {"mine": "ran"}, "attempts": {}, "gates": []}))
+    screen = _screen(tmp_path)
+    screen.command("/status")
+    assert "complete" in _text(screen.console)
+
+
+def test_a_round_that_ended_without_stopping_the_loop_still_counts_as_closed(tmp_path, monkeypatch):
+    """`exit` names the reason a round stopped the loop and is null for a round that just
+    finished, so reading it as "did this round close" hid every ordinary round."""
+    from kullback import tui as tui_module
+    from kullback.runner import heartbeat
+
+    monkeypatch.setenv("KULLBACK_SESSIONS_DIR", str(tmp_path / "sessions"))
+    (tmp_path / "rounds.json").write_text(json.dumps(
+        [{"round": 1, "exit": None, "failed": False, "counts": {"spend": {"total": 2.6}}}]))
+    (tmp_path / "budget.json").write_text(json.dumps({"total": {"usd": 3.2, "calls": 1899}}))
+    heartbeat.beat(tmp_path, "openai/gpt-5.6-luna", "running")
+    assert "round 2 running" in (tui_module.in_flight(tmp_path) or "")
+
+
+def test_a_build_with_no_pid_of_its_own_alive_here_is_not_described_as_in_flight(tmp_path, monkeypatch):
+    from kullback import tui as tui_module
+
+    monkeypatch.setenv("KULLBACK_SESSIONS_DIR", str(tmp_path / "sessions"))
+    assert tui_module.in_flight(tmp_path) is None
+
+
+def test_watching_a_build_that_writes_no_feed_shows_the_calls_from_its_reply_cache(tmp_path, monkeypatch):
+    """Every build running under code older than the feed is one of these, and watching one used
+    to show a board that never moved."""
+    from kullback.runner import feed
+
+    other, screen = _watched(tmp_path, monkeypatch, alive=[True, True])
+    cache = other / feed.CACHE_DIR
+    cache.mkdir()
+    (cache / "one.json").write_text(json.dumps(
+        {"model": "opencode-go/glm-5.3-flash", "usage": {"input": 676, "output": 193}}))
+    screen.command("/watch 1")
+    out = _text(screen.console)
+    assert not feed.path_for(other).exists()
+    assert "676 in / 193 out" in out and "glm-5.3-flash" in out
+    assert "waiting for the build's next call" not in out
+
+
+def test_the_spend_since_the_last_close_counts_every_closed_round_not_only_the_last(tmp_path, monkeypatch):
+    """A round record holds what that round spent, not the running total, so reading the last
+    row as "spent so far" charged round 3 with everything round 1 had spent."""
+    from kullback import tui as tui_module
+    from kullback.runner import heartbeat
+
+    monkeypatch.setenv("KULLBACK_SESSIONS_DIR", str(tmp_path / "sessions"))
+    (tmp_path / "rounds.json").write_text(json.dumps([
+        {"round": 1, "counts": {"spend": {"total": 2.0}}},
+        {"round": 2, "counts": {"spend": {"total": 0.5}}}]))
+    (tmp_path / "budget.json").write_text(json.dumps({"total": {"usd": 2.75, "calls": 10}}))
+    heartbeat.beat(tmp_path, "openai/gpt-5.6-luna", "running")
+    said = tui_module.in_flight(tmp_path) or ""
+    assert "round 3 running" in said and "$0.2500 since round 2 closed" in said

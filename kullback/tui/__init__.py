@@ -77,6 +77,10 @@ GRADIENT = [(255, 255, 255), (163, 163, 163), (138, 138, 138)]
 # the harness that rebuilds your environment from traces and checks the rebuild by replay.
 TAGLINE = "Rebuilds your environment from traces, checks the rebuild by replay, and grades any model inside it."
 
+# How many of a watched build's own events stay on screen under the board. Enough to see a stage's
+# calls going by, few enough that the board itself is never pushed off the top.
+FEED_LINES = 12
+
 # Every command in one table: name, usage, what it does. The entry screen and the / menu
 # are rendered from this, so a command added here appears in both; HELP stays a literal
 # beside it, and a test fails when a table name is missing from HELP, so the two cannot drift.
@@ -128,27 +132,69 @@ def banner(word: str = "kullback") -> Text:
 
 
 def status_segments(workdir: Any, model: Optional[str]) -> Text:
-    """The status line under the banner, Aura-style segments: model, live switch, spend, workdir.
+    """The status line under the banner: the spend of the workdir this screen is open on.
 
-    Everything is read, never asked: the live switch from the environment, the spend from the
-    budget file the runner wrote (absent before the first build), the workdir cut, not folded."""
-    try:
-        from kullback.ai.provider import enable_live_calls_from_env
-        live = enable_live_calls_from_env()
-    except Exception:
-        live = False
+    The model and the live switch used to sit here, and they lied: they are this shell's own
+    settings, not the settings of the build you are looking at, so a screen watching a live
+    build read 'model none, live off' while that build was spending. Each session names its
+    own model in the session list, which is where that belongs. Spend is read, never asked,
+    off the budget file the runner wrote (absent before the first build)."""
     try:
         from kullback.runner.budget import load_totals
         spent = float(load_totals(workdir)["total"].get("usd") or 0.0)
     except Exception:
         spent = 0.0
     out = Text()
-    out.append(f"model {model or 'none (no model calls)'}", style="bold")
-    out.append("  ·  live on" if live else "  ·  live off (no model call will be made)",
-                 style="green" if live else "yellow")
     if spent > 0:
-        out.append(f"  ·  spend ${spent:,.4f}", style="dim")
+        out.append(f"  spend ${spent:,.4f}", style="dim")
     return out
+
+
+def in_flight(workdir: Any) -> Optional[str]:
+    """What a build that has not stopped is doing now, or None when nothing is running here.
+
+    rounds.json gets a row when a round closes, and pipeline/state.json says "complete" about the
+    Builder's pipeline and nothing about the loop, so a build an hour into round 2 read "round 1,
+    complete" while both agents were still spending. Everything here is derived from files that do
+    move: the heartbeat's pid says the build is alive, rounds.json says which round last closed, and
+    the ledger says what has been spent since. Stages the pipeline does not name are work outside
+    it, which is the Examiner's beat; they are counted, not named as the Examiner, because the
+    screen states what it read rather than what it inferred."""
+    from kullback.runner import heartbeat
+
+    alive = [r for r in heartbeat.read_all()
+             if str(r.get("workdir")) == str(workdir) and heartbeat.alive(r.get("pid"))]
+    if not alive:
+        return None
+    rounds = _read(Path(workdir) / "rounds.json", [])
+    # A row lands here when the round ends, so the row is the close. `exit` is not the test: it
+    # names the reason a round stopped the loop and is null for a round that simply finished.
+    closed = [r for r in rounds if isinstance(r, dict) and r.get("round")]
+    totals = _read(Path(workdir) / "budget.json", {})
+    spent = float((totals.get("total") or {}).get("usd") or 0.0)
+    calls = int((totals.get("total") or {}).get("calls") or 0)
+    # Each row holds what its own round spent, not the running total (rounds.py resets beat_spend
+    # every round), so what the round in flight has spent is the ledger less all the closed ones.
+    before = sum(_round_spend(record) for record in closed)
+    parts = [f"round {len(closed) + 1} running"]
+    if closed:
+        parts.append(f"${spent - before:,.4f} since round {len(closed)} closed")
+    parts.append(f"${spent:,.4f} and {calls:,} calls in all")
+    named = set(_read(Path(workdir) / "pipeline" / "state.json", {}).get("statuses") or {})
+    outside = {stage: bucket for stage, bucket in (totals.get("stages") or {}).items()
+               if stage not in named and int(bucket.get("calls") or 0)}
+    if outside:
+        listed = ", ".join(f"{stage} {int(bucket['calls']):,}" for stage, bucket in sorted(outside.items()))
+        parts.append(f"off the pipeline: {listed} calls")
+    return " · ".join(parts)
+
+
+def _round_spend(record: dict) -> float:
+    spend = (record.get("counts") or {}).get("spend")
+    try:
+        return float(spend.get("total") if isinstance(spend, dict) else (spend or 0.0) or 0.0)
+    except (TypeError, ValueError):
+        return 0.0
 
 
 def _as_dict_event(event: Any) -> Optional[dict]:
@@ -384,7 +430,9 @@ class Screen:
         numbers, then numbered sections (commands, sessions) in dim labels and white values."""
         self.console.print(banner())
         self.console.print(Text(f"  {TAGLINE}", style="dim"))
-        self.console.print(status_segments(self.workdir, self.model))
+        segments = status_segments(self.workdir, self.model)
+        if segments.plain:
+            self.console.print(segments)
         # A long workdir path wrapping over three lines is the first thing you would see, so it
         # is cut rather than folded; the whole path is on the panel border of every build anyway.
         self.console.print(Text(f"  workdir {self.workdir}", style="dim"),
@@ -419,7 +467,9 @@ class Screen:
         if parts[0].startswith("/") and (verb == "" or (verb not in self._verbs() and rest == [])):
             return self._menu(parts[0][1:])
         if verb == "help":
-            self.console.print(HELP)
+            # markup off: rich reads a bracketed word as a style tag, so /login's own
+            # [provider/model] was swallowed and the help said less than the command takes.
+            self.console.print(HELP, markup=False)
         elif verb == "keys":
             self.console.print(_keys(dict(os.environ), set(self.session_keys)))
         elif verb == "login":
@@ -508,8 +558,13 @@ class Screen:
         self._pending = ("sessions", shown)
 
     def _watch(self, rest: list[str], rows: Optional[list] = None) -> bool:
-        """Watch session N: this screen now reads that build's workdir. The build itself
-        keeps running where it is; watching never touches it."""
+        """Watch session N: this screen reads that build's workdir and follows it while it runs.
+
+        Following is reading, on a timer: the board is rebuilt from the files the build writes,
+        so watching never touches the build and a watcher that dies loses nothing. It used to
+        reopen the entry screen instead, which showed the commands again and not the build, so
+        watching a running build looked like nothing had happened. A build whose pid is gone is
+        shown once, because there is nothing left to follow."""
         from kullback.runner import heartbeat
 
         records = rows if rows is not None else heartbeat.read_all()
@@ -522,9 +577,62 @@ class Screen:
         if number < 1 or number > len(records):
             self.console.print(Text(f"pick 1-{len(records)} from /sessions", style="red"))
             return True
-        self.workdir = Path(records[number - 1]["workdir"])
-        self.open()
+        record = records[number - 1]
+        self.workdir = Path(record["workdir"])
+        self.console.print(Text(f"  watching {self.workdir}", style="dim"), no_wrap=True,
+                           overflow="ellipsis")
+        if heartbeat.alive(record.get("pid")):
+            self._follow(record.get("pid"))
+        else:
+            self.console.print(self._status_renderable())
         return True
+
+    def _follow(self, pid: Any, every_seconds: float = 1.0) -> None:
+        """Re-read this build's files until its pid goes, or until the person stops watching.
+
+        Two things are read: the board, off the records the build writes, and the feed, which is
+        the build's own event stream (kullback.runner.feed) and is what makes the calls visible as
+        they happen rather than a stage at a time. Ctrl-C stops the watching, never the build:
+        they are different processes, and the build does not know anyone is here.
+
+        A build that writes no feed is still followed. The feed is new, so a build already running
+        under older code never opens it, and watching one showed a still board and nothing else;
+        for those the calls are read off the reply cache instead, which every build writes."""
+        from kullback.runner import feed, heartbeat
+
+        def since(offset: int, mtime: float, first: bool) -> tuple[list[str], int, float]:
+            if feed.path_for(self.workdir).is_file():
+                rows, offset = feed.read_since(self.workdir, offset)
+            else:
+                rows, mtime = feed.derived_since(
+                    self.workdir, mtime, limit=FEED_LINES if first else None)
+            return [feed.describe(row) for row in rows], offset, mtime
+
+        lines, offset, mtime = since(0, 0.0, True)
+        recent = lines[-FEED_LINES:]
+        with Live(self._watching(recent), console=self.console, refresh_per_second=4) as live:
+            try:
+                while heartbeat.alive(pid):
+                    time.sleep(every_seconds)
+                    lines, offset, mtime = since(offset, mtime, False)
+                    recent = (recent + lines)[-FEED_LINES:]
+                    live.update(self._watching(recent))
+                lines, offset, mtime = since(offset, mtime, False)
+                recent = (recent + lines)[-FEED_LINES:]
+                live.update(self._watching(recent))
+            except KeyboardInterrupt:
+                pass
+        self.console.print(Text("  stopped watching; the build is untouched", style="dim"))
+
+    def _watching(self, recent: list[str]) -> Any:
+        """The board with the build's last few events under it: state above, story below."""
+        board = self._status_renderable()
+        if not recent:
+            return Group(board, Text("  waiting for the build's next call", style="dim"))
+        lines = Text()
+        for line in recent:
+            lines.append(f"  {line}\n", style="dim")
+        return Group(board, lines)
 
     def _login_menu(self) -> None:
         """Bare /login walks to a key: provider, model, key variable, secret, done.
@@ -771,18 +879,23 @@ class Screen:
         self.console.print(diagrams.loop_text(diagrams.read_rounds_file(self.workdir)))
 
     def _status(self) -> None:
+        self.console.print(self._status_renderable())
+
+    def _status_renderable(self) -> Any:
         """The last build, read back off disk. No stage runs to answer this.
 
         A loop build is rounds first (rounds.json), gates beside them (gates.json), spend
         under both (budget.json); a single-pass build is the pipeline state. 'No build yet'
-        is said only when none of those files exist, never while a build is spending."""
+        is said only when none of those files exist, never while a build is spending.
+
+        Returned rather than printed because /watch renders the same thing on a timer: what
+        you see watching a build is exactly what /status says about it."""
         rounds = _read(self.workdir / "rounds.json", [])
         gates = _read(self.workdir / "gates.json", [])
         totals = _read(self.workdir / "budget.json", {}).get("total") or {}
         state = _read(self.workdir / "pipeline" / "state.json", {})
         if isinstance(rounds, list) and rounds and not state:
-            self.console.print(self._rounds_status(rounds, gates, totals))
-            return
+            return self._rounds_status(rounds, gates, totals)
         if state or gates or float(totals.get("usd") or 0.0) > 0:
             board = Board(self.workdir, title="last build")
             board.order = list(state.get("statuses") or {})
@@ -798,10 +911,12 @@ class Screen:
                             for r in rows if isinstance(r, dict)]
             if board.rounds:
                 board.round = int(board.rounds[-1].get("round") or 0)
-            board.outcome = str(state.get("status") or "build started, no round closed yet")
-            self.console.print(board.render())
-            return
-        self.console.print(Text("no build yet: /build starts one here", style="dim"))
+            # A build that is still running says what it is doing; the pipeline's own "complete"
+            # is about the Builder's stages and says nothing about the round in flight.
+            board.outcome = in_flight(self.workdir) or str(
+                state.get("status") or "build started, no round closed yet")
+            return board.render()
+        return Text("no build yet: /build starts one here", style="dim")
 
     def _rounds_status(self, rounds: list, gates: list, totals: dict) -> Text:
         """One screenful for a loop build with no pipeline state: where the loop stands,

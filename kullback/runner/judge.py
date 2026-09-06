@@ -4,8 +4,9 @@ before any verdict, two judges whose disagreement goes to a queue."""
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
-from typing import Any, Callable, Optional
+from typing import Any, Callable, Iterable, Optional
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -29,9 +30,58 @@ _USES: dict[str, tuple[tuple[str, ...], str]] = {
 }
 
 
+# One row per judge use: the sources that use hands its judge, in the words the judge is asked to
+# name them by. Nothing else is in evidence. The Reference judge is the case this row exists for: it
+# gets the Intent, the Verifier's output and the End state through its tools, and never a transcript,
+# so authentication, a spoken confirmation and the opening request cannot be seen from where it sits.
+_SOURCES: dict[str, tuple[str, ...]] = {
+    "policy_atom": ("policy_rule", "transcript", "end_state", "state_tools"),
+    "equivalence": ("value_a", "value_b", "state_tools"),
+    "reference": ("intent", "verifier_output", "end_state", "state_tools"),
+    "cause": ("failed_run", "reference_run", "end_state", "state_tools"),
+    "dispute": ("end_state", "required_set", "allowed_set", "state_tools"),
+}
+
+
 def abstain_verdict(use: str) -> str:
     """The verdict that means "this judge did not decide" for one judge use."""
     return _USES[use][1] if use in _USES else "abstain"
+
+
+def sources_of(use: str) -> tuple[str, ...]:
+    """The sources one judge use hands its judge; a ruling may rest on these and on nothing else."""
+    return _SOURCES.get(use, ())
+
+
+def sources_not_given(named: Any, available: Iterable[str]) -> list[str]:
+    """Of the sources a ruling names, the ones its judge was not handed, in the order it named them.
+
+    The rule is code over what the judge was given, not a keyword list over its prose: the judge is
+    told which sources it has, it names the ones its verdict rests on, and this compares that list
+    against them. A ruling that reaches for something absent by construction is an abstention (D93),
+    which is what build 8 needed: eleven Tasks were failed "without evidence of the required
+    authentication and explicit confirmation" by a judge that was never handed a transcript.
+    """
+    have = {_source_word(s) for s in available}
+    out: list[str] = []
+    for name in _names(named):
+        word = _source_word(name)
+        if word and word not in have and word not in out:
+            out.append(word)
+    return out
+
+
+def _names(value: Any) -> list[str]:
+    """A named-sources field, whether the judge wrote it as a list or as one string."""
+    if isinstance(value, str):
+        return [value] if value.strip() else []
+    return [str(s) for s in value] if isinstance(value, (list, tuple)) else []
+
+
+def _source_word(name: Any) -> str:
+    """One source name as the rule compares it: lower case, underscored, and singular."""
+    word = re.sub(r"[^a-z0-9]+", "_", str(name).strip().lower()).strip("_")
+    return word[:-1] if word.endswith("s") and not word.endswith("ss") else word
 
 
 class JudgeResult(BaseModel):
@@ -43,6 +93,7 @@ class JudgeResult(BaseModel):
     verdict: str
     judge: str = ""
     cited_spans: list[str] = Field(default_factory=list)
+    evidence: list[str] = Field(default_factory=list)  # the sources the judge said its verdict rests on
     tools_run: list[str] = Field(default_factory=list)
     tool_results: list[dict] = Field(default_factory=list)
     sub_answers: list[dict] = Field(default_factory=list)
@@ -110,13 +161,15 @@ class AgenticJudge:
         checked = verifier_output if verifier_output is not None else self.verifier_output
         prompt = (
             "Trust or escalate. Decide whether this recorded Run is a good Reference for its Task.\n\n"
-            f"Intent of the Task, the outcome the recorded user finally asked for:\n{_render(intent)}\n\n"
+            "Intent of the Task, the ground truth of what the user wanted by the end of the Run:\n"
+            f"{_render(intent)}\n\n"
             f"Deterministic verifier output on this Run, already decided by code:\n{_render(checked)}\n\n"
             f"Candidate Reference Run:\n{_render(reference_run)}\n\n"
             "Grade the End state against the Intent, and only that. The transcript is not in evidence: "
             "whether the agent authenticated the user, asked for confirmation or followed a procedure "
             "cannot be seen through your tools and never decides the verdict. Judge the Intent, not the "
-            "opening request; a user who changed their mind during the Run wanted what the Intent says. "
+            "opening request; the user may have revised the opening request during the Run, and what the "
+            "Intent says is what they wanted. "
             "good_reference when the End state is what the Intent asks for, bad_reference when the End "
             "state contradicts it, abstain when the evidence does not decide it. Judge only what code "
             "cannot check. A bad Reference sets a wrong bar for every later Verdict on this Task, so "
@@ -198,13 +251,27 @@ class AgenticJudge:
         ]
 
     def _system(self, use: str, verdicts: tuple[str, ...], abstain: str) -> str:
+        sources = sources_of(use)
         lines = [
             "You are one of two independent judges grading part of a recorded agent Run.",
             "Your tools are read-only views of the Task's Starting state and the Run's End state.",
             "Run at least one tool and check the state before you answer. A verdict with no tool check is refused.",
+            "The sources you have for this question, and the only ones your verdict may rest on: "
+            + ", ".join(sources) + ".",
+        ]
+        if "transcript" not in sources:
+            lines.append(
+                "You do not have the transcript. What the agent said, whether it authenticated the user, "
+                "whether it asked for and was given a confirmation, the order it called its tools in, and "
+                "what the user asked for at the start of the Run are all outside your evidence."
+            )
+        lines += [
             "Answer with one JSON object and nothing else: "
-            '{"verdict": one of ' + ", ".join(verdicts) + ', "cited_spans": [...], '
+            '{"verdict": one of ' + ", ".join(verdicts) + ', "cited_spans": [...], "evidence": [...], '
             '"sub_answers": [...], "flags": [...], "reason": "..."}.',
+            "evidence names the sources your verdict rests on, each one taken from the list above.",
+            f"A verdict that needs anything not on that list is not a verdict: answer {abstain}, and name "
+            "what you would have needed in evidence.",
             "cited_spans must quote the exact substrings or tool results that decide the verdict.",
             f"Answer {abstain} when the evidence does not decide it; abstaining is better than guessing.",
         ]
@@ -231,8 +298,18 @@ class AgenticJudge:
             return self._result(use, abstain, tools_run, results, reason="the reply was not a JSON verdict object")
         cited = {
             "cited_spans": [str(s) for s in _as_list(data.get("cited_spans"))],
+            "evidence": _names(data.get("evidence")),
             "sub_answers": [s for s in _as_list(data.get("sub_answers")) if isinstance(s, dict)],
         }
+        missing = sources_not_given(cited["evidence"], sources_of(use))
+        if missing:
+            # D93: a ruling that rests on something this judge was not handed did not decide the
+            # question, whatever verdict word came with it, so it abstains and a person sees it.
+            return self._result(
+                use, abstain, tools_run, results,
+                reason="the verdict rests on " + ", ".join(missing) + ", which this judge was not given",
+                **cited,
+            )
         verdict = str(data.get("verdict") or "").strip()
         reason = data.get("reason")
         if use == "policy_atom":

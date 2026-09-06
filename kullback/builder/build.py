@@ -458,8 +458,11 @@ def _user_rules_stage():
     def run(ctx, inputs):
         rules: dict[str, UserRules] = {}
         vocab = _vocab_of(inputs)
+        # The tools that change the world: a write the recording made after it asked the user to
+        # confirm is that user's agreement, whatever else the recording said (D44).
+        writes = {sig.name for sig in inputs["sigs"] if sig.kind == "write"}
         for trace in inputs["traces"]:
-            rules[trace.trace_id] = user_sim.derive_user_rules(trace, vocab)
+            rules[trace.trace_id] = user_sim.derive_user_rules(trace, vocab, writes=writes)
         for trace_id, record in rules.items():
             _write_json(ctx.workdir / "user_rules" / f"{trace_id}.json", as_dict(record))
         _write_json(ctx.workdir / "user_facts.json",
@@ -469,7 +472,7 @@ def _user_rules_stage():
         ctx.record_gate(artifacts.user_rules_gate(list(rules.values())))
         return {"user_rules": rules}
 
-    return pipeline.Stage(name="user_rules", fn=run, builder=True, inputs=("traces", "vocabulary"),
+    return pipeline.Stage(name="user_rules", fn=run, builder=True, inputs=("traces", "vocabulary", "sigs"),
                           outputs=("user_rules",), code_version=_version("user_rules", run, user_sim, vocabulary))
 
 

@@ -1,8 +1,9 @@
-"""The Builder as an extension on the agent core (D120, D123, ADR-0007).
+"""The Builder as an extension on the agent core (D120, D123, D135, D138, ADR-0007).
 
-`builder_extension(plan)` is a `setup(api)` the harness loads: it registers the six tools of
-builder/tools.py, adds three short sections to the system prompt (what the Builder is, what it may
-and may not do, the target vocabulary of this plan's graph), and installs two hooks. The
+`builder_extension(plan)` is a `setup(api)` the harness loads: it registers the stage tools and
+`status` from builder/tools.py and the four repair verbs beside them, adds four short sections to
+the system prompt (what the job is, what may and may not be repaired, the tools by name, the target
+vocabulary of this plan's graph), and installs two hooks. The
 `tool_result` hook runs every registered gate bound to an artifact a tool produced (`rulings_over`)
 over the plan's store and appends the rulings to the result, in the text the model reads and in
 `details`; the stages already recorded the same rulings in gates.json on their way, so the hook
@@ -22,21 +23,28 @@ from kullback.agent.messages import ToolCall
 from kullback.agent.tools import ToolResult
 from kullback.builder import build as build_module
 from kullback.builder.build import TARGET_ALL, BuildPlan
-from kullback.builder.tools import builder_tools
+from kullback.builder.tools import builder_tools, repair_verb_tools
 from kullback.gates import PROTECTED, names_protected_path, ruling_line, rulings_over
 from kullback.runner.records import as_dict
 
 WHAT = ("You are the Builder. From a customer's recorded traces you build an Environment: the tools "
         "with their bodies, the Starting state, the Tasks with a Reference Run each and the frontier's "
-        "re-rolls, the Simulated user's rules, and the policy as Constraints. Every step is a stage of "
-        "a fixed graph with a gate over what it made; the scheduler decides the order, you decide "
-        "which target to ask for. The Verifiers and the probes are the Examiner's, derived from what "
-        "you leave; what it finds wrong on your side comes back to you as a finding.")
-RULES = ("You may run any target through the build tools and read the rulings that come back. You "
-         "may not edit code: there is no repair verb here, and any call naming a path under "
-         "kullback/gates or kullback/runner is refused. You write no Verifier and no probe: there is "
-         "no tool for either. The gates are the standard, not something to argue with; a failed "
-         "ruling is reported as it is.")
+        "re-rolls, the Simulated user's rules, and the policy as Constraints. Your job is to make "
+        "every gate pass. Every step is a stage of a fixed graph with a gate over what it made; the "
+        "graph is there so that a target rebuilds whatever it reads that has gone stale, and which "
+        "target to ask for is yours to choose. The Verifiers and the probes are the Examiner's, "
+        "derived from what you leave; what it finds wrong on your side comes back to you as a finding.")
+RULES = ("Repair only what a model wrote: the tool bodies and the policy predicates. Never a gate, "
+         "the Runner, the judge or the Simulated user, and any call naming a path under "
+         "kullback/gates or kullback/runner is refused in code. You write no Verifier and no probe: "
+         "there is no tool for either. The gates are the standard, not something to argue with; a "
+         "failed ruling is reported as it is. Call status first and read the red lights. Stop when "
+         "every gate is green, or when a round changes nothing.")
+TOOLS = ("Tools: status() for the red lights and the verb that owns each; build(target) for any "
+         "target of the graph; recluster(), grow(table, count), compile_tool(name), replay(task) and "
+         "reroll(task) for one stage by name; and the repair verbs repair_recompile(name, hint), "
+         "repair_grow(table, count), repair_refuse_task(task_id, reason) and "
+         "repair_escalate(task_id, queue).")
 
 
 def target_vocabulary(plan: BuildPlan) -> str:
@@ -97,10 +105,12 @@ def builder_extension(plan: BuildPlan) -> Callable[[ExtensionAPI], None]:
     """The setup the harness loads: tools, prompt sections, the two hooks."""
 
     def setup(api: ExtensionAPI) -> None:
-        for tool in builder_tools(plan, sink=api.harness.emit):
+        for tool in [*builder_tools(plan, sink=api.harness.emit),
+                     *repair_verb_tools(plan, sink=api.harness.emit)]:
             api.register_tool(tool)
         api.add_prompt_section("builder", WHAT)
         api.add_prompt_section("builder_rules", RULES)
+        api.add_prompt_section("builder_tools", TOOLS)
         api.add_prompt_section("builder_targets", target_vocabulary(plan))
         api.tool_call(no_agent_writes_gates_or_runner)
         api.tool_result(gate_rulings_hook(plan, api))

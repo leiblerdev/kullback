@@ -11,6 +11,7 @@ from typing import Any, Optional
 
 from kullback.ai import pricing as pricing_module
 from kullback.ai.provider import Model, ModelConfig, ModelReply
+from kullback.runner import feed
 from kullback.runner.records import Cost, Event, Usage
 
 # --- price table -------------------------------------------------------------
@@ -199,6 +200,21 @@ def window_for(model_id: Optional[str]) -> int:
             or DEFAULT_CONTEXT_WINDOW)
 
 
+def priced_model_id(cost: Any) -> Optional[str]:
+    """The id a call's price is looked up under: 'provider/model' whenever the provider is known.
+
+    `Cost.model` is `reply.model`, the wire id the endpoint echoes back ('gpt-5.6-luna'), and a
+    wire id on its own is not a model: models.dev carries that same name under a dozen resellers
+    at their own prices, and the first one a scan meets billed a real build at five times
+    OpenAI's rate. The provider is recorded on the Cost beside the wire id, so it is used.
+    """
+    model = getattr(cost, "model", None)
+    provider = getattr(cost, "provider", None)
+    if model and provider and "/" not in model:
+        return f"{provider}/{model}"
+    return model
+
+
 def call_cost(usage: Usage, model_id: Optional[str]) -> float:
     """What one call cost.
 
@@ -268,8 +284,9 @@ def record_call(
     if event.cost is None:
         return event
     usage = event.cost.usage
-    event.cost.usd = call_cost(usage, event.cost.model)
-    source = price_source(event.cost.model)
+    priced_id = priced_model_id(event.cost)
+    event.cost.usd = call_cost(usage, priced_id)
+    source = price_source(priced_id)
     event.cost.price_source = source
     with _LEDGER_LOCK:
         return _record_locked(event, usage, source, stage, workdir, ceiling, item, items_left, memo_hit)
@@ -294,6 +311,14 @@ def _record_locked(event: Event, usage: Usage, source: Optional[str], stage: str
         if memo_hit:
             target["memo_hits"] += 1
     save_totals(workdir, totals)
+    # The same numbers, once as state and once as story: the ledger says what the build has spent,
+    # the feed says what it just did. Written here, under the ledger lock, so the feed's order is
+    # the order the calls were recorded in and a watcher can never read a call the ledger has not
+    # counted. feed.append never raises (see feed.py).
+    feed.append(workdir, "model_call", stage=stage, model=priced_model_id(event.cost),
+                input=usage.input, output=usage.output, cache_read=usage.cache_read,
+                usd=event.cost.usd, wall_ms=event.cost.wall_ms, item=item or None,
+                calls=totals["total"]["calls"], spend_usd=totals["total"]["usd"])
     if ceiling is not None:
         ceiling.charge_recorded(totals, stage, item or str(event.idx), items_left)
     return event

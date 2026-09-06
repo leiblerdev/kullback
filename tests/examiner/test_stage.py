@@ -18,7 +18,8 @@ from kullback.gates.ledger import GateLedger
 from kullback.runner.records import Task, Verifier
 
 STATUS_KEYS = {"reference_confirmed", "verifier_passed", "reason", "recordings", "rerolls", "judged", "assisted_tools"}
-REFERENCE_KEYS = {"references", "recordings", "failed", "groups", "reason", "judged", "judge_reason"}
+REFERENCE_KEYS = {"references", "recordings", "failed", "groups", "reason", "judged", "judge_reason",
+                  "judge_abstained"}
 
 
 def _read(path: Path):

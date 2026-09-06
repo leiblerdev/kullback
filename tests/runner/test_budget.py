@@ -431,3 +431,25 @@ def test_the_window_comes_from_the_model_id():
     assert budget.window_for("anthropic/claude-haiku-4-5") == 200_000
     assert budget.window_for("claude-opus-5") == 1_000_000
     assert budget.window_for("something/unknown") == budget.DEFAULT_CONTEXT_WINDOW
+
+
+def test_a_call_is_priced_under_its_provider_not_the_wire_id_the_endpoint_echoed(tmp_path, monkeypatch):
+    """The endpoint answers with the wire id alone ('gpt-5.6-luna'); the provider is recorded
+    beside it and has to be used, or the price comes off whichever reseller lists that name."""
+    from kullback.runner.records import Cost
+
+    seen = []
+    monkeypatch.setattr(budget, "price_for", lambda model_id: seen.append(model_id) or
+                        {"input": 0.2, "output": 1.2, "cache_read": 0.02, "cache_write": 0.0})
+    cost = Cost(provider="openai", model="gpt-5.6-luna", usage=Usage(input=1_000_000))
+    assert budget.priced_model_id(cost) == "openai/gpt-5.6-luna"
+    assert budget.call_cost(cost.usage, budget.priced_model_id(cost)) == 0.2
+    assert seen == ["openai/gpt-5.6-luna"]
+
+
+def test_an_already_qualified_model_id_is_left_alone(tmp_path):
+    from kullback.runner.records import Cost
+
+    assert budget.priced_model_id(Cost(provider="openai", model="openai/gpt-5.6-luna")) == \
+        "openai/gpt-5.6-luna"
+    assert budget.priced_model_id(Cost(model="gpt-5.6-luna")) == "gpt-5.6-luna"

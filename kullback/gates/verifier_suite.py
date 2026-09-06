@@ -28,6 +28,7 @@ it builds its atoms with `make_atom` from here, wrapping a Hard predicate with `
 
 from __future__ import annotations
 
+import ast
 import json
 import re
 from typing import Any, Callable, Iterable, Optional
@@ -115,6 +116,38 @@ def said_before(transcript, *needles):
             return True
     return False
 '''
+
+# The names HELPERS_SRC binds. A caller that has to guess which function in a namespace is the
+# predicate skips these, so a rule that defines no function of its own is still reported as such
+# rather than answered by a helper the caller pasted in itself.
+HELPER_NAMES = frozenset(
+    node.name for node in ast.parse(HELPERS_SRC).body if isinstance(node, ast.FunctionDef)
+)
+
+
+def predicate_source(predicate_src: Optional[str]) -> str:
+    """A compiled constraint as it is run anywhere: the transcript helpers, then the rule itself.
+
+    The compiler's prompt tells the model that `user_confirmed`, `called_before` and `said_before`
+    are already in scope, so a rule about a prior confirmation is one line. Whoever runs the rule
+    owes it those definitions. Build 10's gate execed the rule alone and three constraints failed
+    with `NameError: name 'called_before' is not defined`, a failure of ours reported against the
+    model, so the assembly is stated once here and both runners call it.
+    """
+    return HELPERS_SRC + "\n" + (predicate_src or "")
+
+
+def predicate_args(case: Any) -> tuple[dict, dict, list]:
+    """The three arguments a compiled constraint takes, read off one of its cases.
+
+    `def check(pre_state, write_call, transcript)` is the signature the compiler's contract states
+    and its static check enforces, and it is what `builder/policy.py`'s sandbox, this module's Hard
+    wrapper and `gates/artifacts.py`'s policy gate all hand a predicate. Build 8's gate handed the
+    whole case as one argument instead and every compiled constraint failed with a TypeError, so
+    the argument list lives here rather than at each call site.
+    """
+    row = dict(case or {})
+    return row.get("pre_state") or {}, row.get("write_call") or {}, row.get("transcript") or []
 
 
 # --- reading Runs off disk (D91) ------------------------------------------
