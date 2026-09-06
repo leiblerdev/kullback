@@ -347,6 +347,7 @@ class Loop:
     turns_seen: dict[str, int] = field(default_factory=dict)
     round_started: float = 0.0
     round_saved_start: float = 0.0
+    driver_built: list[int] = field(default_factory=list)  # rounds whose target the driver built itself
     builder_stop: dict = field(default_factory=dict)
     stall_told: int = 0
     started_hashes: dict[str, str] = field(default_factory=dict)
@@ -498,6 +499,13 @@ class Loop:
             for finding in delivered:
                 self.builder.follow_up(finding_message(finding), {"finding": as_dict(finding)})
             self.build_result = self._watched(self.builder, "builder", events, "build", BUILD_TOOLS)
+            if self.build_result is None:
+                # The model repaired and answered without building the target: the store then holds
+                # only what the repairs ran, and the Examiner's derive read an artifact that was not
+                # there (build 13, round 1: KeyError on the Constraints). The driver builds it, as the
+                # code path does; every stage the repairs left current comes from the cache.
+                self.build_result = builder_agent.drive_tool(self.builder, "build", {"target": self.target})
+                self.driver_built.append(n)
         result = self.build_result
         if self.plan.last is None or (result is not None and result.is_error):
             raise BuildError(result.content if result is not None
@@ -625,6 +633,7 @@ class Loop:
         return {
             "started_at": self.round_started, "ended_at": time.time(), "spend": spend,
             "turns": turns, "context_fill": fill,
+            "built_by_driver": self.plan.round in self.driver_built,
             "fallback_compactions": {
                 agent: self.compactions(agent) - self.compactions_seen.get(agent, 0) for agent in AGENTS},
             "findings": list(self.sent),

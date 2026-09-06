@@ -90,7 +90,9 @@ RULES = ("Choosing. Read the whole status once. Act first on the red light that 
          "as it is.")
 STOP = ("Stopping. Answer with no tool call, in one line, when every gate is green, or when two status "
         "reports in a row show the same red lights after your repairs, or when a repair answers "
-        "`nothing changed`. Say which red lights remain and what you tried on each.")
+        "`nothing changed`. Before that line, call build on the target once more, after your last "
+        "repair: the Examiner reads what that build leaves, and a repair alone leaves it nothing. "
+        "Say which red lights remain and what you tried on each.")
 
 
 def target_vocabulary(plan: BuildPlan) -> str:

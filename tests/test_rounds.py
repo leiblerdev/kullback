@@ -186,7 +186,9 @@ def test_an_exhausted_allowance_steers_a_model_driven_agent_once(model_loop):
     assert len(steers) == 1
     assert [m.role for m in first] == ["user", "assistant", "tool", "user", "assistant", "tool", "assistant"]
     assert loop.spent_allowance["builder"] is True
-    assert sum(1 for e in model_loop["events"] if isinstance(e, ToolExecutionEnd)) == 2
+    ends = [e for e in model_loop["events"] if isinstance(e, ToolExecutionEnd)]
+    assert len(ends) == 3, "two tool ends of the model's own, and the driver's build at the second beat, " \
+                           "where the model acted on the finding and never called build"
 
 
 def test_a_finding_from_the_examiner_is_a_follow_up_on_the_builder_at_the_next_beat_with_the_record_in_details(model_loop):
@@ -346,6 +348,21 @@ def _stalling_loop(tmp_path: Path, replies: list) -> rounds.Loop:
     _collect(loop.builder.prompt(builder_agent.builder_message(TARGET)))
     loop.rounds = [_record(1)]
     return loop
+
+
+def test_a_builder_that_repairs_and_answers_without_building_has_the_target_built_by_the_driver(tmp_path, request):
+    """Build 13, round 1: the model zoomed, repaired and answered with no build call, so the store held
+    only what the repairs ran and the Examiner's derive failed on a table that was never loaded. The
+    driver now builds the target itself in that case, as the code path does, and the round says so."""
+    plan = BuildPlan(workdir=tmp_path / "work", model=Bodies(), files=[_fixture(request)], max_attempts=0)
+    model = TestModel([_reply("nothing to repair; finishing.")])
+    loop = rounds.Loop(plan=plan, builder=builder_agent.build_harness(plan, agent_model=model),
+                       agent_model=model, target=TARGET)
+    loop.plan.round = 1
+    loop.builder_beat(1)
+    assert loop.build_result is not None and not loop.build_result.is_error
+    assert TARGET in plan.store or plan.last is not None, "the target was built, by the driver"
+    assert loop.driver_built == [1] and loop.driver_counts()["built_by_driver"] is True
 
 
 def test_a_round_that_moved_no_gate_count_tells_the_builder_once_and_ends_if_it_stops_again(tmp_path):
@@ -1095,13 +1112,12 @@ def test_a_resumed_finding_reaches_the_model_on_round_one(tmp_path, request):
     loop = rounds.Loop(plan=plan, builder=harness, agent_model=agent_model)
     loop.allowance = {agent: None for agent in rounds.AGENTS}
     loop.pending_findings = [finding]
-    with pytest.raises(BuildError, match="never called build"):
-        loop.builder_beat(1)
+    loop.builder_beat(1)
     delivered = [m for m in harness.messages if isinstance(m, UserMessage) and m.details is not None]
     assert {f["finding_id"] for m in delivered for f in [m.details["finding"]]} == {"f1"}
-    # The beat failed (no build was ever called), so the finding stays queued for the retry even
-    # though the model heard it: delivered, not dropped, at every level.
-    assert [f.finding_id for f in loop.pending_findings] == ["f1"]
+    # The model heard the finding and never called build; the driver built the target itself, so
+    # the beat succeeded and the finding it delivered is closed rather than queued again.
+    assert loop.pending_findings == [] and loop.driver_built == [1]
 
 
 def test_result_with_no_build_reports_the_stalled_round_without_crashing(tmp_path, request):
