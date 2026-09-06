@@ -245,7 +245,7 @@ def derive_all(ctx: ExamContext, inputs: dict, *, probe_model: Any = None, probe
                                           write_tools=write_tools, fn=fn, atoms=atoms)
                        for r in rerolls.get(task.id, [])
                        if (r.get("termination_reason") or "") in verifier_suite.SUCCESS_TERMINATIONS]
-        confirmation = reference_mod.confirm(recordings, request=request_text(task, intents, traces),
+        confirmation = reference_mod.confirm(recordings, intent=request_text(task, intents, traces),
                                              policy_lines=policy_lines, judge=judge_model)
         references[task.id] = confirmation.as_dict()
         if not confirmation.references:

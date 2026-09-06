@@ -259,3 +259,24 @@ def test_model_adapter_prefers_the_model_row_over_the_provider_entry():
     assert pricing.model_adapter_for(catalog, "opencode-go/absent") == "@ai-sdk/openai-compatible"
     assert pricing.model_adapter_for(catalog, "nope/none") == ""
     assert pricing.model_adapter_for(None, "opencode-go/kimi-k3") == ""
+
+
+def test_a_bare_wire_id_several_providers_price_differently_is_unpriced():
+    """models.dev carries 'gpt-5.6-luna' under OpenAI and under a dozen resellers at their own
+    rates. Taking whichever came first billed a real build at five times OpenAI's price, so a
+    disagreement is no price at all; the ledger counts that as an unpriced call."""
+    catalog = {
+        "openai": {"models": {"gpt-5.6-luna": {"cost": {"input": 0.2, "output": 1.2}}}},
+        "a-reseller": {"models": {"gpt-5.6-luna": {"cost": {"input": 1.0, "output": 6.0}}}},
+    }
+    assert pricing.price_from_catalog(catalog, "gpt-5.6-luna") is None
+    assert pricing.price_from_catalog(catalog, "openai/gpt-5.6-luna")["input"] == 0.2
+    assert pricing.price_from_catalog(catalog, "a-reseller/gpt-5.6-luna")["input"] == 1.0
+
+
+def test_a_bare_wire_id_every_provider_prices_the_same_still_prices():
+    catalog = {
+        "openai": {"models": {"gpt-5.6-luna": {"cost": {"input": 0.2, "output": 1.2}}}},
+        "a-mirror": {"models": {"gpt-5.6-luna": {"cost": {"input": 0.2, "output": 1.2}}}},
+    }
+    assert pricing.price_from_catalog(catalog, "gpt-5.6-luna")["input"] == 0.2

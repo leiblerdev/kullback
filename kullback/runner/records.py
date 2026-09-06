@@ -291,6 +291,9 @@ class UserFact(Record):
     field: str
     value: Any = None
     span: Optional[RawPtr] = None
+    # The recorded sentence this value was stated in. Two values of one field (the address on file
+    # and the address the user is moving to) are told apart by the words they were said with.
+    context: Optional[str] = None
 
 
 class DisclosureRule(Record):
@@ -308,6 +311,9 @@ class UserRules(Record):
     walk_away: list[str] = Field(default_factory=list)
     style_sample: list[str] = Field(default_factory=list)
     incomplete_reasons: list[str] = Field(default_factory=list)
+    # The recorded Run went on to a write after it was asked to confirm: the recorded user agreed,
+    # whatever else it said elsewhere, so a later confirmation question gets a yes (D44).
+    confirmed_by_write: bool = False
 
 
 class UserBehaviour(Record):

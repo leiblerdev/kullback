@@ -67,13 +67,54 @@ def test_two_end_states_and_no_judge_is_no_reference():
 
 def test_the_judge_can_fail_a_state_and_the_other_one_becomes_the_reference():
     judge = TestModel(['{"failed": ["B"], "reason": "the cancellation the user asked for never happened"}'])
-    out = ref.confirm([cancel_run("a"), empty_run("b")], request="cancel order #W123",
+    out = ref.confirm([cancel_run("a"), empty_run("b")], intent="cancel order #W123",
                       policy_lines=["pending orders may be cancelled"], judge=judge)
     assert [r.run_id for r in out.references] == ["a"]
     assert out.failed == {"b": "judge: the cancellation the user asked for never happened"}
-    assert out.judged
+    assert out.judged and not out.judge_abstained
     prompt = judge.calls[0]["messages"][0]["content"]
-    assert "The user asked: cancel order #W123" in prompt and "A (1 run): cancel_pending_order" in prompt
+    assert "cancel order #W123" in prompt and "A (1 run): cancel_pending_order" in prompt
+
+
+def test_the_judge_prompt_gives_the_intent_as_the_ground_truth_and_says_it_has_no_transcript():
+    prompt = ref.judge_prompt("exchange the desk lamp only", ["exchanges need a confirmation"],
+                              ref.group([cancel_run("a"), empty_run("b")]))
+    assert "intent, policy, end_states" in prompt
+    assert "You do not have the transcript." in prompt
+    assert "authenticated the user" in prompt and "confirmation" in prompt
+    assert "ground truth of what the user wanted by the end of the Run: exchange the desk lamp only" in prompt
+    assert "never the opening request" in prompt
+
+
+def test_a_judgement_that_rests_on_the_transcript_fails_no_state_and_is_recorded_as_an_abstention():
+    """Build 8 failed eleven Tasks "without evidence of the required authentication and explicit
+    confirmation", which no transcript was ever handed to the judge to show."""
+    judge = TestModel(['{"failed": ["A", "B"], "evidence": ["transcript"], "reason": '
+                       '"without evidence of the required authentication and explicit confirmation"}'])
+    out = ref.confirm([cancel_run("a"), empty_run("b")], intent="cancel order #W123", judge=judge)
+    assert out.failed == {} and out.references == []
+    assert out.judged and out.judge_abstained
+    assert "transcript" in out.judge_reason and "was not given" in out.judge_reason
+    assert out.reason.startswith("recordings disagree on the End state")
+    assert "the judge abstained" in out.reason
+
+
+def test_a_run_that_matches_a_revised_intent_is_not_failed_for_the_opening_request():
+    """The Intent is what the user wanted by the end of the Run; the opening request was not handed
+    to this judge and cannot fail the state that matches the Intent."""
+    judge = TestModel(['{"failed": ["A"], "evidence": ["opening_request"], "reason": '
+                       '"the user requested cancellations for both orders"}'])
+    out = ref.confirm([cancel_run("a"), cancel_run("b", order="#W999")],
+                      intent="cancel order #W123 only, leave #W999 alone", judge=judge)
+    assert out.failed == {} and out.judge_abstained
+    assert "opening_request" in out.judge_reason
+
+
+def test_a_judgement_that_rests_on_what_the_judge_was_given_still_fails_a_state():
+    judge = TestModel(['{"failed": ["B"], "evidence": ["Intent", "End states"], "reason": "nothing was written"}'])
+    out = ref.confirm([cancel_run("a"), empty_run("b")], intent="cancel order #W123", judge=judge)
+    assert [r.run_id for r in out.references] == ["a"]
+    assert out.failed == {"b": "judge: nothing was written"} and not out.judge_abstained
 
 
 def test_the_judge_never_awards_a_pass():
@@ -85,9 +126,12 @@ def test_the_judge_never_awards_a_pass():
 
 
 def test_an_unreadable_judge_reply_fails_nothing():
-    assert ref.parse_judgement("I think B is wrong", {"A", "B"}) == (set(), "unreadable reply")
-    assert ref.parse_judgement('{"failed": "B"}', {"A", "B"}) == (set(), "unreadable reply")
-    assert ref.parse_judgement('sure: {"failed": ["b", "Z"], "reason": "x"}', {"A", "B"}) == ({"B"}, "x")
+    for text in ("I think B is wrong", '{"failed": "B"}'):
+        unreadable = ref.parse_judgement(text, {"A", "B"})
+        assert unreadable.failed == set() and unreadable.reason == "unreadable reply"
+        assert not unreadable.abstained
+    read = ref.parse_judgement('sure: {"failed": ["b", "Z"], "reason": "x"}', {"A", "B"})
+    assert read.failed == {"B"} and read.reason == "x"
 
 
 def test_the_judge_is_not_called_when_the_recordings_agree():

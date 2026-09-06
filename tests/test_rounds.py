@@ -28,6 +28,7 @@ from kullback.examiner.agent import examiner_message
 from kullback.examiner.plan import ExaminerPlan
 from kullback.examiner.stage import DERIVE_INPUTS, FORBIDDEN_INPUTS
 from kullback.gates import round_end
+from kullback.runner import budget
 from kullback.runner.records import Finding, RoundRecord, as_dict
 
 TARGET = "environment"
@@ -300,6 +301,84 @@ def test_the_loop_exits_ceiling_when_the_builder_stopped_at_the_spend_ceiling(tm
     other.eplan = ExaminerPlan(workdir=tmp_path / "examiner", inputs={})
     other.eplan.ceiling_reached = True
     assert _exit_after(other, [_record(1, unfinished=[])]) == ["ceiling"]
+
+
+# --- the soft stop and the hard stop of a session with no turn cap (D135) -----------------
+
+def _stalling_loop(tmp_path: Path, replies: list) -> rounds.Loop:
+    """A model-driven Loop whose Builder has already had one run, so the round can be told it stalled."""
+    plan = BuildPlan(workdir=tmp_path / "work")
+    model = TestModel(replies)
+    loop = rounds.Loop(plan=plan, builder=builder_agent.build_harness(plan, agent_model=model),
+                       agent_model=model, target=TARGET)
+    _collect(loop.builder.prompt(builder_agent.builder_message(TARGET)))
+    loop.rounds = [_record(1)]
+    return loop
+
+
+def test_a_round_that_moved_no_gate_count_tells_the_builder_once_and_ends_if_it_stops_again(tmp_path):
+    """D126 as the soft stop of a Builder with no turn cap: the round that changed nothing sends one
+    follow-up asking it to finish with what it has, and a model that stops again ends the round."""
+    loop = _stalling_loop(tmp_path, [_reply("nothing to do."), _reply("finishing with what I have.")])
+    assert loop.moved_nothing(_record(2).counts) is True
+    loop.tell_the_builder_nothing_changed(2)
+    said = [m["content"] for m in loop.agent_model.calls[-1]["messages"] if m["role"] == "user"]
+    assert said.count(rounds.STALL_FOLLOW_UP) == 1
+    assert len(loop.agent_model.calls) == 2, "the model was asked once more, and it stopped again"
+    loop.tell_the_builder_nothing_changed(2)
+    assert len(loop.agent_model.calls) == 2, "one follow-up a round, however often the driver asks"
+
+
+def test_a_round_that_moved_a_gate_count_tells_the_builder_nothing(tmp_path):
+    loop = _stalling_loop(tmp_path, [_reply("nothing to do.")])
+    assert loop.moved_nothing(_record(2, trusted=1).counts) is False
+    fresh = _bare_loop(tmp_path / "fresh")
+    assert fresh.moved_nothing(_record(1).counts) is False, "round one has nothing to compare with"
+
+
+def test_the_code_driven_builder_is_never_told_anything_because_it_has_no_model(tmp_path):
+    plan = BuildPlan(workdir=tmp_path / "work")
+    loop = rounds.Loop(plan=plan, builder=builder_agent.build_harness(plan), target=TARGET)
+    loop.rounds = [_record(1)]
+    loop.tell_the_builder_nothing_changed(2)
+    assert loop.stall_told == 0 and loop.builder.messages == ()
+
+
+def test_the_ceiling_the_guard_caught_is_the_rounds_ceiling_exit(tmp_path):
+    """The session's guard cancels the run and hands the stop to the round, which is a ceiling exit
+    even though the pipeline result on the plan carries none."""
+    loop = _bare_loop(tmp_path)
+    assert loop.ceiling_reached() is False
+    loop.builder_stop = {"stage": "builder_session", "reason": "spend ceiling", "ceiling_usd": 1.0}
+    assert loop.ceiling_reached() is True
+    assert _exit_after(loop, [_record(1, unfinished=[])]) == ["ceiling"]
+
+
+class Priced(Bodies):
+    """The Builder's scripted model with tokens on every reply, so a ceiling in dollars is reachable."""
+
+    def query(self, messages, tools=None, config=None):
+        from kullback.ai.usage import Usage
+
+        return super().query(messages, tools=tools, config=config).model_copy(
+            update={"usage": Usage(input=1000)})
+
+
+def test_a_run_whose_builder_reached_the_ceiling_exits_ceiling_and_is_not_a_failed_round(tmp_path, request,
+                                                                                         monkeypatch):
+    """D86 with no turn cap: one call costs more than the ceiling, so the build stops, the Examiner
+    has nothing whole to derive from, and the run ends on the ceiling rather than on a broken agent."""
+    monkeypatch.setitem(budget.PRICES, "test", {"input": 1_000_000.0, "output": 0.0,
+                                                "cache_read": 0.0, "cache_write": 0.0})
+    workdir = tmp_path / "ceiling"
+    agent_model = TestModel([_reply(None, ("build", {"target": TARGET})), _reply("built."),
+                             _reply("I have read everything and all is well.")])
+    result = rounds.run_rounds(workdir, model=Priced(), agent_model=agent_model, files=[_fixture(request)],
+                               max_attempts=0, ceiling_usd=1.0)
+    assert result["exit"] == "ceiling"
+    stored = rounds.load_rounds(workdir)
+    assert len(stored) == 1 and stored[-1].exit == "ceiling"
+    assert stored[-1].failed is False, "no money left is a stop, not a failure"
 
 
 def test_the_loop_exits_ceiling_when_the_allowance_was_exhausted_two_rounds_in_a_row(tmp_path):

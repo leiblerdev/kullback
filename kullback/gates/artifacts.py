@@ -20,7 +20,12 @@ from typing import Any, Callable, Optional
 
 from kullback.gates.confinement import predicate_confinement
 from kullback.gates.fidelity import replay_fidelity_gate
-from kullback.gates.verifier_suite import D79_STAGES
+from kullback.gates.verifier_suite import (
+    D79_STAGES,
+    HELPER_NAMES,
+    predicate_args,
+    predicate_source,
+)
 from kullback.runner.confinement import SAFE_BUILTINS as SAFE_PREDICATE_BUILTINS
 from kullback.runner.gate_support import _checks_gate, _get, _n, _same, gate
 from kullback.runner.records import GateResult, canonical_json
@@ -228,6 +233,12 @@ def _run_predicate(constraint: Any, case: dict) -> bool:
     `__builtins__.clear()` (the name is not denied and `clear` is not a dunder), and handing the one
     module-level mapping to model-written code lets a predicate take the allowlist away from, or add
     a name to, every predicate and atom scored after it in this process.
+
+    What is run and what it is called with are `verifier_suite.predicate_source` and
+    `predicate_args`, the same two the stage's own sandbox uses, because a gate that runs a
+    predicate differently from the stage that compiled it fails constraints for its own reasons:
+    build 8 on the argument list, build 10 on the helpers. Only the model's own source is confined;
+    the helpers prepended to it are ours.
     """
     source = _get(constraint, "predicate_src") or ""
     cid = _get(constraint, "id", "?")
@@ -235,15 +246,13 @@ def _run_predicate(constraint: Any, case: dict) -> bool:
     if refused:
         raise ValueError(f"predicate is not confined and would run in this process: {'; '.join(refused)}")
     namespace: dict = {"__builtins__": dict(SAFE_PREDICATE_BUILTINS)}
-    exec(compile(source, f"<constraint {cid}>", "exec"), namespace)  # noqa: S102
+    exec(compile(predicate_source(source), f"<constraint {cid}>", "exec"), namespace)  # noqa: S102
     func = namespace.get("check") or next(
-        (v for k, v in reversed(list(namespace.items())) if callable(v) and not k.startswith("__")), None)
+        (v for k, v in reversed(list(namespace.items()))
+         if callable(v) and not k.startswith("__") and k not in HELPER_NAMES), None)
     if func is None:
         raise ValueError("predicate_src defines no function")
-    # The same three arguments `builder/policy.py`'s sandbox and `runner/verdict.py` hand a predicate:
-    # the state before the write, the write call, the transcript so far. Build 8 handed the whole
-    # case as one argument and every compiled constraint failed the gate with a TypeError.
-    return bool(func(case.get("pre_state") or {}, case.get("write_call") or {}, case.get("transcript") or []))
+    return bool(func(*predicate_args(case)))
 
 
 def environment_gate(environment, files_dir=None, referenced_ids=(), db_ids=(), synthetic_rows=()) -> GateResult:

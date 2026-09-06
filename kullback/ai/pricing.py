@@ -218,8 +218,13 @@ def price_from_catalog(catalog: Optional[dict], model_id: Optional[str]) -> Opti
         price = _price_from_provider(catalog.get(provider_id), wire_id)
         if price is not None:
             return price
-    for provider_entry in catalog.values():
-        price = _price_from_provider(provider_entry, model_id)
-        if price is not None:
-            return price
+    # A bare wire id is only a price when the catalog agrees on one. Resellers list the frontier
+    # models under their own names at their own rates ('gpt-5.6-luna' appears under ten of them,
+    # five times OpenAI's price), and taking whichever the scan met first made the harness report
+    # a build costing five times what it cost. Disagreement is unpriced, which the ledger already
+    # counts as unpriced_calls, because a wrong price is worse than a known missing one.
+    found = [price for provider_entry in catalog.values()
+             if (price := _price_from_provider(provider_entry, model_id)) is not None]
+    if found and all(price == found[0] for price in found):
+        return found[0]
     return None

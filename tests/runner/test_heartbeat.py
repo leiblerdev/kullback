@@ -20,6 +20,18 @@ def test_beat_writes_a_heartbeat_and_read_all_lists_newest_first(tmp_path, monke
     assert "started_at" in records[0] and "updated_at" in records[0]
 
 
+def test_a_relative_workdir_is_recorded_absolute_so_another_directory_can_watch_it(
+    tmp_path, monkeypatch
+):
+    """`kullback build --workdir work` names a directory only to the process that ran it; the
+    screen reading the heartbeat is started elsewhere and must still find the build."""
+    monkeypatch.setenv("KULLBACK_SESSIONS_DIR", str(tmp_path / "sessions"))
+    monkeypatch.chdir(tmp_path)
+    heartbeat.beat("work", "m/one", "running")
+    recorded = heartbeat.read_all()[0]["workdir"]
+    assert os.path.isabs(recorded) and os.path.basename(recorded) == "work"
+
+
 def test_beat_keeps_started_at_and_updates_status(tmp_path, monkeypatch):
     monkeypatch.setenv("KULLBACK_SESSIONS_DIR", str(tmp_path / "sessions"))
     path = heartbeat.beat(tmp_path, "m/one", "running")

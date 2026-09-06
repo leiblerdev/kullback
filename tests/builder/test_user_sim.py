@@ -10,6 +10,7 @@ from kullback.builder.user_sim import (
     CHOICE,
     CLOSING,
     CONFIRMATION,
+    GENERIC_CONFIRM,
     GOAL,
     FactLookup,
     SimulatedUser,
@@ -22,6 +23,7 @@ from kullback.builder.vocabulary import GENERIC_FIELDS, FieldSpec, Vocabulary
 from kullback.runner.records import (
     DisclosureRule,
     RawPtr,
+    ToolCall,
     Trace,
     Turn,
     UserFact,
@@ -40,8 +42,8 @@ RETAIL = Vocabulary(domain="retail", fields=[f.model_copy(deep=True) for f in GE
 ])
 
 
-def make_trace(pairs, trace_id: str = "t1") -> Trace:
-    """pairs is [(role, content), ...] in transcript order."""
+def make_trace(pairs, trace_id: str = "t1", calls=()) -> Trace:
+    """pairs is [(role, content), ...] in transcript order; calls is [(turn index, tool name), ...]."""
     turns = [
         Turn(
             idx=i,
@@ -51,12 +53,20 @@ def make_trace(pairs, trace_id: str = "t1") -> Trace:
         )
         for i, (role, content) in enumerate(pairs)
     ]
+    tool_calls = []
+    for i, (turn_index, name) in enumerate(calls):
+        call_id = f"c{i}"
+        turns[turn_index].tool_call_ids.append(call_id)
+        tool_calls.append(ToolCall(
+            id=call_id, name=name,
+            raw_ptr=RawPtr(file_hash="rawhash", sim_index=0, msg_index=turn_index)))
     return Trace(
         trace_id=trace_id,
         raw_hash="rawhash",
         ingest_version="0",
         source="tau2",
         turns=turns,
+        tool_calls=tool_calls,
         raw_ptr=RawPtr(file_hash="rawhash", sim_index=0),
     )
 
@@ -690,3 +700,176 @@ def test_the_reader_is_only_asked_for_fields_the_rules_lack(rules_with_zip):
     assert asked == []
     user.reply(ask("And your email address?"))
     assert asked == ["email"]
+
+
+# --- D136: the Simulated user confirms, and gives the fact the question names ---
+
+
+def test_a_confirmation_question_gets_the_sentence_the_recorded_user_said_word_for_word(tau2_small):
+    """D44: a confirmation is a whole sentence of the recording, repeated exactly as it was given."""
+    rules = rules_from_fixture(tau2_small, 2)
+    said = [message.get("content") for message in tau2_small["simulations"][2]["messages"]
+            if message["role"] == "user"]
+    user = SimulatedUser(rules, vocab=RETAIL)
+    user.reply(ask("Hi! How can I help you today?"))
+    text = user.reply(ask("Is this correct? Please confirm and I will process the exchange."))
+    assert text in said
+    assert user.events[-1].payload["sources"] == {CONFIRMATION: "rules"}
+
+
+def test_an_answer_to_a_confirmation_question_is_the_confirmation_even_without_the_word_yes():
+    rules = derive_user_rules(make_trace([
+        ("assistant", "Hi! How can I help you today?"),
+        ("user", "I need to cancel my order."),
+        ("assistant", "I can cancel it for you. Shall I proceed?"),
+        ("user", "Please do that now, the sooner the better."),
+    ]), RETAIL)
+    assert field_values(rules, CONFIRMATION) == ["Please do that now, the sooner the better."]
+    user = SimulatedUser(rules, vocab=RETAIL)
+    user.reply(ask("Hi! How can I help you today?"))
+    assert user.reply(ask("Do you confirm?")) == "Please do that now, the sooner the better."
+
+
+def test_a_closing_line_that_opens_with_no_does_not_refuse_a_later_confirmation():
+    """Build 8: 'No, that is it for today' was filed as a stated choice, and every later
+    'do you confirm' was answered 'I do not have an answer for that' (58 re-rolls)."""
+    rules = derive_user_rules(make_trace([
+        ("assistant", "Hi! How can I help you today?"),
+        ("user", "I want to cancel my order."),
+        ("assistant", "Anything else today?"),
+        ("user", "No, that is it for today."),
+    ]), RETAIL)
+    assert field_values(rules, CHOICE) == []
+    user = SimulatedUser(rules, vocab=RETAIL)
+    user.reply(ask("Hi! How can I help you today?"))
+    text = user.reply(ask("Shall I cancel order #W1234567? Please confirm."))
+    assert text == GENERIC_CONFIRM
+    assert user.events[-1].payload["unavailable_fields"] == []
+
+
+def test_the_write_the_recording_made_after_the_confirmation_question_is_the_users_agreement(
+        tau2_small_path, workdir):
+    """The recorded Run went on to the write, so the recorded user agreed; a read is not agreement."""
+    from kullback.builder import ingest
+
+    raw = ingest.store_raw(tau2_small_path, workdir)
+    trace = ingest.derive_traces(raw.raw_hash, workdir)[0]
+    agreed = derive_user_rules(trace, RETAIL, writes={"exchange_delivered_order_items"})
+    assert agreed.confirmed_by_write is True
+    read_only = derive_user_rules(trace, RETAIL, writes={"get_order_details"})
+    assert read_only.confirmed_by_write is False
+
+
+def test_a_no_the_user_said_about_something_else_does_not_outweigh_the_recorded_write():
+    trace = make_trace([
+        ("assistant", "Hi! How can I help you today?"),
+        ("user", "I want to cancel my order."),
+        ("assistant", "Which order id should I cancel? Please confirm the order id."),
+        ("user", "Order #W1234567."),
+        ("assistant", None),
+        ("assistant", "That is cancelled. Would you like a replacement ordered as well?"),
+        ("user", "No, do not order a replacement."),
+    ], calls=[(4, "cancel_order")])
+    rules = derive_user_rules(trace, RETAIL, writes={"cancel_order"})
+    assert rules.confirmed_by_write is True
+    user = SimulatedUser(rules, vocab=RETAIL)
+    user.reply(ask("Hi! How can I help you today?"))
+    assert user.reply(ask("Shall I cancel it? Please confirm.")) == GENERIC_CONFIRM
+
+
+@pytest.mark.parametrize("question, expected", [
+    ("What is the name on the account?", "Yusuf Rossi"),
+    ("Just so I have it right, what name is on file?", "Yusuf Rossi"),
+    ("May I take a name and a zip code, please?", "Yusuf Rossi"),
+    ("May I take a name and a zip code, please?", "19122"),
+    ("Could you give me the order id this is about?", "#W2378156"),
+])
+def test_a_fact_the_recording_holds_is_given_however_the_agent_worded_the_question(
+        tau2_small, question, expected):
+    """Build 8: the agent asked for the name in wording the cues did not carry and the Simulated
+    user answered 'I do not have my name', although the recording gave it (63 re-rolls)."""
+    user = SimulatedUser(rules_from_fixture(tau2_small, 2), vocab=RETAIL)
+    user.reply(ask("Hi! How can I help you today?"))
+    text = user.reply(ask(question))
+    assert expected in text
+    assert user.events[-1].payload["unavailable_fields"] == []
+
+
+def test_a_question_about_another_things_name_is_still_not_a_question_for_the_users_name(tau2_small):
+    user = SimulatedUser(rules_from_fixture(tau2_small, 2), vocab=RETAIL)
+    user.reply(ask("Hi! How can I help you today?"))
+    assert "Yusuf Rossi" not in user.reply(ask("What is the name of the product you want to exchange?"))
+
+
+def two_zip_rules() -> UserRules:
+    """A recorded user that states the zip on the account and then the zip it is moving to."""
+    return derive_user_rules(make_trace([
+        ("assistant", "Hi! How can I help you today?"),
+        ("user", "I want to change the shipping address on my order."),
+        ("assistant", "Sure. What is the zip code on the account?"),
+        ("user", "My zip code is 19122."),
+        ("assistant", "And where should it go instead?"),
+        ("user", "Please send it to my new address, zip code 78701."),
+    ]), RETAIL)
+
+
+@pytest.mark.parametrize("question, expected", [
+    ("Could you confirm the zip code on file for the account?", "19122"),
+    ("What is the zip code of the new address?", "78701"),
+])
+def test_the_value_the_question_names_is_the_one_given_when_the_recording_holds_two(question, expected):
+    """Build 8: the Simulated user gave the zip of the address it was moving to when the agent
+    asked for the one on file (27 re-rolls)."""
+    rules = two_zip_rules()
+    assert [fact.value for fact in rules.facts if fact.field == "zip"] == ["19122", "78701"]
+    user = SimulatedUser(rules, vocab=RETAIL)
+    user.reply(ask("Hi! How can I help you today?"))
+    assert expected in user.reply(ask(question))
+
+
+def test_the_recorded_turn_order_breaks_a_tie_between_two_values_of_one_field():
+    user = SimulatedUser(two_zip_rules(), vocab=RETAIL)
+    user.reply(ask("Hi! How can I help you today?"))
+    assert "19122" in user.reply(ask("What zip code should I use?"))
+
+
+def test_the_value_on_the_account_is_read_from_the_world_when_the_recording_holds_only_the_new_one(
+        tau2_retail_dir):
+    """D77: the account's own value is in the Starting state, and a user that has stated only the
+    value it is moving to still knows what is on file."""
+    from kullback.runner.route import StateView
+
+    db = json.loads((tau2_retail_dir / "db.json").read_text(encoding="utf-8"))
+    rules = derive_user_rules(make_trace([
+        ("assistant", "Hi! How can I help you today?"),
+        ("user", "I am moving. Please change my zip code to 78701."),
+        ("assistant", "Of course. What is your name?"),
+        ("user", "My name is Yusuf Rossi."),
+    ]), RETAIL)
+    user = SimulatedUser(rules, starting_state_reader=StateView(shared=db), vocab=RETAIL)
+    user.reply(ask("Hi! How can I help you today?"))
+    text = user.reply(ask("What is the zip code currently on file for the account?"))
+    assert "19122" in text and "78701" not in text
+    assert user.events[-1].payload["sources"] == {"zip": "world"}
+
+
+def test_each_user_turn_counts_the_asks_it_refused_and_the_running_total_for_the_run():
+    """The number the report reads: how many asks the Simulated user did not answer, per Run."""
+    rules = UserRules(facts=[UserFact(field="zip", value="19122")], refusals=["email"])
+    user = SimulatedUser(rules, starting_state_reader=dict_reader({}), vocab=RETAIL)
+    user.reply(ask("What is your email address and your zip code?"))
+    assert (user.events[-1].payload["refused"], user.events[-1].payload["refused_so_far"]) == (1, 1)
+    user.reply(ask("What are the last four digits of your card?"))
+    assert (user.events[-1].payload["refused"], user.events[-1].payload["refused_so_far"]) == (1, 2)
+    user.reply(ask("And your zip code again, please?"))
+    assert (user.events[-1].payload["refused"], user.events[-1].payload["refused_so_far"]) == (0, 2)
+
+
+def test_a_summary_that_names_the_order_and_asks_to_confirm_is_confirmed_and_not_read_back(tau2_small):
+    """Build 8: the agent listed the action, named the order in it and asked 'do you confirm'; the
+    Simulated user read the id out of the question and confirmed nothing (58 re-rolls)."""
+    user = SimulatedUser(rules_from_fixture(tau2_small, 2), vocab=RETAIL)
+    user.reply(ask("Hi! How can I help you today?"))
+    text = user.reply(ask("I will exchange the thermostat on order #W2378156. Do you confirm?"))
+    assert "#W2378156" not in text
+    assert user.events[-1].payload["sources"] == {CONFIRMATION: "rules"}

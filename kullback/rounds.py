@@ -12,6 +12,11 @@ reported the ceiling, or an agent spent its allowance two rounds in a row. The a
 agent and per round: `allowance_usd` when given, otherwise the agent's own round-1 spend from
 round 2 on. A model-driven agent that crosses it is steered once to finish with what it has.
 
+The Builder's session has no turn cap (D135): it runs until the model answers with no tool call.
+The ceiling is the hard stop, watched here and in `builder/agent.py` on every tool end. Stalled is
+the soft stop: a round that moved no gate count sends the model one follow-up saying so, and the
+round ends if it still stops.
+
 This module is the top of the layering: it imports both applications, and the Builder's artifacts
 reach the Examiner through `examiner.stage.DERIVE_INPUTS`, never bodies, the db, the schema or the
 Environment (D123).
@@ -36,18 +41,20 @@ from kullback.builder import build as build_module
 from kullback.builder import pipeline
 from kullback.builder.agent import builder_message
 from kullback.builder.build import DEFAULT_REROLLS, TARGET_ALL, BuildError, BuildPlan
+from kullback.builder.tools import BUILD_TOOLS
 from kullback.examiner import agent as examiner_agent
 from kullback.examiner.agent import ExaminerError, examiner_message
 from kullback.examiner.plan import STATE_DIR, ExaminerPlan
 from kullback.examiner.stage import DERIVE_INPUTS
 from kullback.gates import round_end
-from kullback.runner import budget
+from kullback.runner import budget, feed
 from kullback.runner.records import Finding, GateResult, RoundRecord, as_dict
 
 ROUNDS_NAME = "rounds.json"
 AGENTS = ("builder", "examiner")
-MAX_TURNS = 8
+MAX_TURNS = 8  # the Examiner's cap; the Builder runs with none (D135)
 ALLOWANCE_STEER = "Your allowance for this round is spent: finish with what you have (D123)"
+STALL_FOLLOW_UP = "nothing changed since the last round; finish with what you have"
 EXAMINER_TARGET = "all"
 BUILDER_SESSION = Path("builder") / "session.jsonl"
 EXAMINER_SESSION = Path("examiner") / "session.jsonl"
@@ -157,9 +164,9 @@ def _session(workdir: Path, name: Path) -> SessionStore:
     return SessionStore(path)
 
 
-def _builder_harness(plan: BuildPlan, agent_model: Optional[Model], subscribers: list, max_turns: int) -> AgentHarness:
-    """The Builder's harness with its own session file (D128)."""
-    return builder_agent.build_harness(plan, agent_model, subscribers, max_turns=max_turns,
+def _builder_harness(plan: BuildPlan, agent_model: Optional[Model], subscribers: list) -> AgentHarness:
+    """The Builder's harness with its own session file (D128) and no turn cap (D135)."""
+    return builder_agent.build_harness(plan, agent_model, subscribers,
                                        session=_session(plan.workdir, BUILDER_SESSION))
 
 
@@ -176,11 +183,12 @@ def _runners(plan: BuildPlan) -> tuple[Optional[Callable], Optional[Callable]]:
     return build_module.probe_runner(plan), build_module.reroll_runner(plan)
 
 
-async def _drain(events: AsyncIterator[Any], tool: str) -> Optional[ToolResult]:
-    """Run one harness run to its end; the last result of `tool`, or None when it was never called."""
+async def _drain(events: AsyncIterator[Any], tool: str, tools: tuple[str, ...] = ()) -> Optional[ToolResult]:
+    """Run one harness run to its end; the last result of `tool` (or of any of `tools`), else None."""
+    wanted = set(tools) | {tool}
     last: Optional[ToolResult] = None
     async for event in events:
-        if isinstance(event, ToolExecutionEnd) and event.tool_name == tool:
+        if isinstance(event, ToolExecutionEnd) and event.tool_name in wanted:
             last = event.result
     return last
 
@@ -201,7 +209,7 @@ class Loop:
     stall_rounds: int = 1
     subscribers: list = field(default_factory=list)
     on_event: Optional[Callable[[dict], Any]] = None
-    max_turns: int = MAX_TURNS
+    max_turns: int = MAX_TURNS  # the Examiner's; the Builder has none (D135)
     eplan: Optional[ExaminerPlan] = None
     examiner: Optional[AgentHarness] = None
     rounds: list[RoundRecord] = field(default_factory=list)
@@ -214,6 +222,8 @@ class Loop:
     beat_spend: dict[str, float] = field(default_factory=dict)
     spent_allowance: dict[str, bool] = field(default_factory=dict)
     compactions_seen: dict[str, int] = field(default_factory=dict)
+    builder_stop: dict = field(default_factory=dict)
+    stall_told: int = 0
 
     def __post_init__(self) -> None:
         """A new Loop resumes the workdir's unfinished business: findings an earlier invocation
@@ -259,9 +269,14 @@ class Loop:
         first = float((self.rounds[0].counts.get("spend") or {}).get(agent) or 0.0)
         return first if first > 0 else None
 
-    def _watched(self, harness: AgentHarness, agent: str, events: AsyncIterator[Any], tool: str) -> Optional[ToolResult]:
+    def _watched(self, harness: AgentHarness, agent: str, events: AsyncIterator[Any],
+                 tool: str, tools: tuple[str, ...] = ()) -> Optional[ToolResult]:
         """One model-driven run, with the allowance watched on every tool end: crossing it steers the
-        agent once and marks the beat exhausted; the Examiner's plan sees what is left as it goes."""
+        agent once and marks the beat exhausted; the Examiner's plan sees what is left as it goes.
+
+        `tools`, when given, widens what counts as the beat's result to every tool in it, which is
+        how a Builder beat that repaired without calling `build` still has one (D135).
+        """
         allowance = self.allowance.get(agent)
         before = self.spend()
         steered = False
@@ -279,10 +294,16 @@ class Loop:
                 harness.steer(ALLOWANCE_STEER)
 
         unsubscribe = harness.subscribe(watch)
+        # The spend ceiling is the hard stop of a session with no turn cap (D86, D135); the guard
+        # cancels the run on the tool call that reaches it, and the stop rides on the round's exit.
+        release, stop = ((lambda: None), {}) if agent != "builder" else builder_agent.ceiling_guard(harness, self.plan)
         try:
-            return asyncio.run(_drain(events, tool))
+            return asyncio.run(_drain(events, tool, tools))
         finally:
             unsubscribe()
+            release()
+            if stop:
+                self.builder_stop = dict(stop)
 
     def _beat_done(self, agent: str, n: int, before: float) -> None:
         spent = self.spend() - before
@@ -327,7 +348,7 @@ class Loop:
             # fire when the run would otherwise stop, inside the same watched stream.
             for finding in delivered:
                 self.builder.follow_up(finding_message(finding), {"finding": as_dict(finding)})
-            self.build_result = self._watched(self.builder, "builder", events, "build")
+            self.build_result = self._watched(self.builder, "builder", events, "build", BUILD_TOOLS)
         result = self.build_result
         if self.plan.last is None or (result is not None and result.is_error):
             raise BuildError(result.content if result is not None
@@ -442,7 +463,37 @@ class Loop:
 
     def ceiling_reached(self) -> bool:
         last = self.plan.last
-        return bool(last is not None and last.stopped) or bool(self.eplan is not None and self.eplan.ceiling_reached)
+        return (bool(last is not None and last.stopped) or bool(self.builder_stop)
+                or bool(self.eplan is not None and self.eplan.ceiling_reached))
+
+    # --- the soft stop (D126) ------------------------------------------------------------
+
+    def moved_nothing(self, counts: dict) -> bool:
+        """True when this round's counts match the last round's on every one of D126's gate counts."""
+        if not self.rounds:
+            return False
+        last = self.rounds[-1].counts or {}
+        return all(counts.get(key) == last.get(key) for key in round_end.GATE_COUNTS)
+
+    def tell_the_builder_nothing_changed(self, n: int) -> None:
+        """One follow-up, once per round, when the round moved no gate count (D126, D135).
+
+        Stalled is the soft stop: a model-driven Builder is told in one message that the round
+        changed nothing and asked to finish with what it has. The message rides the steering queue,
+        which drains before the next assistant turn, so the follow-up costs exactly one more turn
+        rather than a wasted one first; if the model stops again the round ends, and the exit is the
+        stalled exit `exit_for` was already going to give. The code driver gets none of this: it has
+        no model to tell.
+        """
+        if self.agent_model is None or self.stall_told == n:
+            return
+        self.stall_told = n
+        before = self.spend()
+        self.builder.steer(STALL_FOLLOW_UP)
+        result = self._watched(self.builder, "builder", self.builder.continue_(), "build", BUILD_TOOLS)
+        if result is not None:
+            self.build_result = result
+        self.beat_spend["builder"] = self.beat_spend.get("builder", 0.0) + (self.spend() - before)
 
     def round(self, n: int) -> RoundRecord:
         """One round: the Builder's beat, the Examiner's beat, the counts, the exit, rounds.json."""
@@ -452,7 +503,11 @@ class Loop:
         self.allowance = {agent: self.allowance_for(agent) for agent in AGENTS}
         self.builder_beat(n)
         self.examiner_beat(n)
-        record = self.close_round(n, self.counts())
+        counts = self.counts()
+        if self.moved_nothing(counts) and not self.ceiling_reached():
+            self.tell_the_builder_nothing_changed(n)
+            counts = self.counts()
+        record = self.close_round(n, counts)
         self.emit(RoundEnd(round=n, counts=record.counts, exit=record.exit))
         return record
 
@@ -528,8 +583,11 @@ def run_rounds(workdir: Any, model: Any = None, *, agent_model: Optional[Model] 
                      ceiling_usd=ceiling_usd, domain=domain, max_attempts=max_attempts, memory_dir=memory_dir,
                      on_event=on_event, grow=grow, grow_seed=grow_seed, probe_limit=probe_limit, rerolls=rerolls,
                      search=search, workers=workers)
-    shared = list(subscribers)
-    loop = Loop(plan=plan, builder=_builder_harness(plan, agent_model, shared, max_turns), target=target,
+    # The feed subscribes like anything else. Attaching here rather than inside the two harnesses
+    # means both agents' streams reach it through the one seam the harness already offers: the
+    # stages in either arm, and the messages and tool calls in the arm where a model drives.
+    shared = [*subscribers, lambda event: feed.from_event(plan.workdir, event)]
+    loop = Loop(plan=plan, builder=_builder_harness(plan, agent_model, shared), target=target,
                 agent_model=agent_model, allowance_usd=allowance_usd, stall_rounds=stall_rounds,
                 subscribers=shared, on_event=on_event, max_turns=max_turns)
     n = 0
@@ -543,8 +601,11 @@ def run_rounds(workdir: Any, model: Any = None, *, agent_model: Optional[Model] 
             # tells the whole story, and findings still queued ride on the record (close_round
             # persists them) instead of dying with the process.
             record = loop.close_round(n, {})
-            record.exit = "stalled"  # a broken agent is not fixed by another beat
-            record.failed = True
+            # A ceiling that ended the build left the other agent nothing to work on, and D86 says
+            # to stop and report as is; that is the ceiling exit, not a broken agent.
+            ceiling = loop.ceiling_reached()
+            record.exit = "ceiling" if ceiling else "stalled"  # a broken agent is not fixed by another beat
+            record.failed = not ceiling
             record.exit_note = (f"examiner failed: {exc}" if isinstance(exc, ExaminerError)
                                 else f"builder failed: {exc}")
             if record.pending_findings:

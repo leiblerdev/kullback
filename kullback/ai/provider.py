@@ -868,6 +868,10 @@ class OpenAIModel(HttpModel):
         # already reports. OpenAI's prompt_tokens includes the cached ones, so subtract here,
         # at the adapter, and let budget.py bill each count at its own rate with no arithmetic.
         cached = int(details.get("cached_tokens", 0) or 0)
+        # Endpoints that charge to write the cache report what they wrote, and this one does:
+        # a reply carrying cached_tokens 0 still carried cache_write_tokens 1339, billed at the
+        # model's own cache_write rate. Dropping it billed a build for less than it cost.
+        written = int(details.get("cache_write_tokens", 0) or 0)
         return ModelReply(
             content=message.get("content"),
             tool_calls=[
@@ -882,6 +886,7 @@ class OpenAIModel(HttpModel):
                 input=max(0, int(usage.get("prompt_tokens", 0) or 0) - cached),
                 output=int(usage.get("completion_tokens", 0) or 0),
                 cache_read=cached,
+                cache_write=written,
             ),
             model=data.get("model") or self.wire_id,
             stop_reason=(choices[0] or {}).get("finish_reason"),
@@ -1015,6 +1020,7 @@ class OpenAIResponsesModel(HttpModel):
         # Same convention as the chat adapter: Usage.input means uncached input everywhere,
         # so the cached tokens come off here, at the adapter, and budget.py bills plain counts.
         cached = int(details.get("cached_tokens", 0) or 0)
+        written = int(details.get("cache_write_tokens", 0) or 0)
         return ModelReply(
             content="".join(texts) or None,
             tool_calls=calls,
@@ -1022,6 +1028,7 @@ class OpenAIResponsesModel(HttpModel):
                 input=max(0, int(usage.get("input_tokens", 0) or 0) - cached),
                 output=int(usage.get("output_tokens", 0) or 0),
                 cache_read=cached,
+                cache_write=written,
             ),
             model=data.get("model") or self.wire_id,
             stop_reason=data.get("status"),

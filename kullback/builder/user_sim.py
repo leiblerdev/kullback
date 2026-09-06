@@ -46,7 +46,28 @@ AFFIRM_CUE = re.compile(
 CLOSING_CUE = re.compile(
     r"###stop###|\bthat'?s all\b|\bthat is all\b|\bthat covers everything\b|\bnothing else\b|"
     r"\bno other questions\b|\bgoodbye\b|\bhave a (?:great|nice|good) day\b|"
+    r"\bthat'?s it\b|\bthat is it\b|\ball set\b|\bnothing further\b|\bnothing more\b|"
     r"\bthanks? (?:you )?for (?:your help|all your help|making)\b|\bthank you for your help\b", re.I
+)
+
+# Two values of one field: the one the account holds and the one the user is moving to. A recorded
+# sentence that names a change states the second; a question that names the stored one asks for the
+# first. Both are the words any domain's users and agents use, not any one customer's.
+CHANGE_CUE = re.compile(
+    r"\b(new|newly|change|changed|changing|update|updated|updating|instead|different|another|"
+    r"moving|move|switch|switching|replace|ship it to|send it to)\b", re.I
+)
+STORED_CUE = re.compile(
+    r"\b(on file|on record|on the account|on my account|on your account|in our system|"
+    r"current|currently|existing|original|registered|already have|we have)\b", re.I
+)
+# A word that names a field points at something else when the next word re-points it: "the name of
+# the product" is not the user's name.
+REPOINT = r"(?!\s+of\b)"
+STOP_WORDS = frozenset(
+    "a an the my your our their this that these those is are was were do does did can could would "
+    "will shall may i you we it me us to for of on in at and or with please what which who whose "
+    "how thanks thank yes no ok okay so if be been am".split()
 )
 
 REFUSAL_CUES = (
@@ -142,8 +163,34 @@ def asked_fields(text: Optional[str], vocab: Vocabulary = GENERIC) -> list[str]:
             if any(re.search(cue, sentence) for sentence in requests for cue in spec.cues)]
 
 
-def derive_user_rules(trace: Trace, vocab: Vocabulary = GENERIC) -> UserRules:
-    """Facts, disclosure, refusals and walk-away for one Run, read off the trace's user turns (D44)."""
+def named_fields(text: Optional[str], fields: Iterable[str], vocab: Vocabulary = GENERIC) -> list[str]:
+    """The fields of `fields` a request names by their own words, for wording no cue carries.
+
+    The cues are the words this corpus and the web showed (D115); an agent that asks in words
+    neither showed still names the field itself ("the name on the account"), and a fact the
+    recording holds is answered whatever the wording (D44). Build 8's Simulated user answered
+    "I do not have my name" to 63 such asks, with the name in its own rules.
+    """
+    requests = _request_sentences(_norm(text))
+    if not requests:
+        return []
+    out: list[str] = []
+    for field in fields:
+        spec = vocab.get(field)
+        words = [_words(field)] + list(spec.aliases if spec is not None else [])
+        cues = [r"\b" + re.escape(word) + r"\b" + REPOINT for word in words if word]
+        if field not in out and any(re.search(cue, sentence) for sentence in requests for cue in cues):
+            out.append(field)
+    return out
+
+
+def derive_user_rules(trace: Trace, vocab: Vocabulary = GENERIC,
+                      writes: Iterable[str] = ()) -> UserRules:
+    """Facts, disclosure, refusals and walk-away for one Run, read off the trace's user turns (D44).
+
+    `writes` names the tools that change the world (`ToolSig.kind`). A write the recorded Run made
+    after it asked the user to confirm is the evidence that user agreed, whatever it said elsewhere.
+    """
     rules = UserRules(style_sample=[trace.trace_id])
     seen_values: set[tuple[str, str]] = set()
     disclosed: set[str] = set()
@@ -152,23 +199,29 @@ def derive_user_rules(trace: Trace, vocab: Vocabulary = GENERIC) -> UserRules:
     pending: list[str] = []
     saw_user_turn = False
     agent_refused = False
+    confirm_asked = False
+    confirmed_at: Optional[int] = None
     for turn in trace.turns:
         if turn.role == "assistant":
             stated = {field for field, _ in extracted_values(turn.content, vocab=vocab)}
             pending = [field for field in asked_fields(turn.content, vocab=vocab) if field not in stated]
             asked_anywhere += [field for field in pending if field not in asked_anywhere]
             agent_refused = bool(AGENT_REFUSAL.search(turn.content or ""))
+            confirm_asked = bool(CONFIRM_REQUEST.search(turn.content or ""))
             continue
         if turn.role != "user":
             continue
         text = (turn.content or "").strip()
         said = _norm(text)
         values = extracted_values(text, asked=pending, vocab=vocab)
+        if confirm_asked and confirmed_at is None and text and not NEGATIVE_CUE.search(said):
+            confirmed_at = turn.idx
         for field, value in values:
             if (field, value) in seen_values:
                 continue
             seen_values.add((field, value))
-            rules.facts.append(UserFact(field=field, value=value, span=turn.raw_ptr))
+            rules.facts.append(UserFact(field=field, value=value, span=turn.raw_ptr,
+                                        context=_stated_in(text, value)))
             answered.add(field)
             if field not in disclosed:
                 disclosed.add(field)
@@ -181,7 +234,8 @@ def derive_user_rules(trace: Trace, vocab: Vocabulary = GENERIC) -> UserRules:
         refusing = bool(pending) and any(cue in said for cue in REFUSAL_CUES)
         answered_ask = any(field in pending for field, _ in values)
         _spoken_fact(rules, turn, text, said, values, refusing,
-                     first=not saw_user_turn and not pending, answered_ask=answered_ask)
+                     first=not saw_user_turn and not pending, answered_ask=answered_ask,
+                     confirming=confirm_asked)
         if refusing:
             for field in pending:
                 if field not in rules.refusals and field not in answered:
@@ -190,6 +244,8 @@ def derive_user_rules(trace: Trace, vocab: Vocabulary = GENERIC) -> UserRules:
             rules.walk_away.append(text)
         saw_user_turn = True
         pending = []
+        confirm_asked = False
+    rules.confirmed_by_write = _wrote_after(trace, confirmed_at, writes)
     rules.refusals = [field for field in rules.refusals if field not in answered]
     if not saw_user_turn:
         rules.incomplete_reasons.append("no user turns in the trace")
@@ -203,11 +259,14 @@ def derive_user_rules(trace: Trace, vocab: Vocabulary = GENERIC) -> UserRules:
 
 
 def _spoken_fact(rules: UserRules, turn: Any, text: str, said: str, values: list,
-                 refusing: bool, first: bool, answered_ask: bool = False) -> None:
+                 refusing: bool, first: bool, answered_ask: bool = False,
+                 confirming: bool = False) -> None:
     """The goal, a confirmation, a choice or the closing line, kept as the recorded sentence.
 
     A yes that goes on to name the order or the item is still the yes the write needed; only a yes
     that answers a field the agent asked for ("yes, my zip is 19122") is the field's answer alone.
+    An answer to a question that asked the user to confirm is that question's confirmation whatever
+    words it opens with, so a re-roll asking the same question gets the sentence it was given.
     """
     if not text:
         return
@@ -215,7 +274,7 @@ def _spoken_fact(rules: UserRules, turn: Any, text: str, said: str, values: list
         field = CLOSING
     elif first:
         field = GOAL
-    elif AFFIRM_CUE.search(said) and not (answered_ask or refusing):
+    elif (confirming or AFFIRM_CUE.search(said)) and not (answered_ask or refusing):
         field = CONFIRMATION
     elif values or refusing:
         return  # this turn answered a field ask, or refused it; both are recorded already
@@ -223,7 +282,73 @@ def _spoken_fact(rules: UserRules, turn: Any, text: str, said: str, values: list
         field = CHOICE
     if field in (GOAL, CLOSING) and any(fact.field == field for fact in rules.facts):
         return
-    rules.facts.append(UserFact(field=field, value=text, span=turn.raw_ptr))
+    rules.facts.append(UserFact(field=field, value=text, span=turn.raw_ptr, context=text))
+
+
+def _stated_in(text: str, value: str) -> str:
+    """The recorded sentence a value was said in, which is how two values of one field are told
+    apart; the whole turn when no one sentence holds it."""
+    for sentence in _sentences(text):
+        if str(value) in sentence or _bare_value(str(value)) in sentence:
+            return sentence
+    return text
+
+
+def _bare_value(value: str) -> str:
+    return re.sub(r"^[^A-Za-z0-9]+", "", value)
+
+
+def _wrote_after(trace: Trace, confirmed_at: Optional[int], writes: Iterable[str]) -> bool:
+    """The recorded Run changed the world after the user answered a question that asked it to
+    confirm. That write is the evidence the recorded user agreed (D44)."""
+    names = set(writes)
+    if confirmed_at is None or not names:
+        return False
+    ids = {call.id for call in trace.tool_calls if call.name in names and call.id}
+    return any(turn.idx > confirmed_at and ids.intersection(turn.tool_call_ids or ())
+               for turn in trace.turns)
+
+
+def _names_change(text: Optional[str]) -> bool:
+    """This sentence states a value the user is moving to rather than the one it holds today."""
+    return bool(CHANGE_CUE.search(text or ""))
+
+
+def _intent(question: Optional[str]) -> Optional[str]:
+    """Which of two values of a kind a question names: the one being moved to, the one the account
+    holds today, or neither, when it names both or says nothing either way."""
+    said = _norm(question)
+    change, stored = CHANGE_CUE.search(said), STORED_CUE.search(said)
+    if change and not stored:
+        return "change"
+    if stored and not change:
+        return "stored"
+    return None
+
+
+def _asks_stored(question: Optional[str]) -> bool:
+    """This question asks for the value the account holds today, not the one being moved to."""
+    return _intent(question) == "stored"
+
+
+def _agrees(asked: str, context: Optional[str]) -> int:
+    """+1 when the question and the sentence a value was stated in agree about which value it is,
+    -1 when they disagree, 0 when the question names neither."""
+    intent = _intent(asked)
+    if intent is None:
+        return 0
+    changed = _names_change(context)
+    return 1 if (intent == "change") == changed else -1
+
+
+def _tokens(text: Optional[str]) -> list[str]:
+    return [word for word in re.findall(r"[a-z0-9]+", _norm(text)) if word not in STOP_WORDS]
+
+
+def _shared(asked: str, context: Optional[str], own: set) -> int:
+    """Words the question and the recorded sentence share, the field's own words apart: what the
+    question says about the value it wants ("the order with the lamp") picks between two of them."""
+    return len((set(_tokens(asked)) & set(_tokens(context))) - own)
 
 
 class FactLookup(NamedTuple):
@@ -310,12 +435,16 @@ class SimulatedUser:
         self.events: list[Event] = []
         self.done = False
         identity_fields = vocab.by_kind("identity")
+        # A value the recorded user stated as the one it is moving to is not the value the world
+        # keys its row by, so it never joins the identity a row is matched on.
         self.identity = dict(identity) if identity else {
-            fact.field: fact.value for fact in rules.facts if fact.field in identity_fields}
+            fact.field: fact.value for fact in rules.facts
+            if fact.field in identity_fields and not _names_change(fact.context)}
         self._row: Any = None
         self._row_read = False
         self._used: dict[str, int] = {CONFIRMATION: 0, CHOICE: 0}
         self._silent = 0
+        self._refused = 0
 
     def reply(self, transcript: list) -> str:
         question = ""
@@ -327,8 +456,14 @@ class SimulatedUser:
         spoken: list[str] = []
         unavailable: list[str] = []
         assisted = False
-        for field in asked_fields(question, vocab=self.vocab):
-            fact = self._fact(field)
+        for field in self._asked(question):
+            fact = self._fact(field, question)
+            if fact is not None and _asks_stored(question) and _names_change(fact.context):
+                found = self._from_world(field)  # the question asks for the value on the account
+                if found is not None:
+                    answers[field], sources[field] = found.value, "world"
+                    assisted = assisted or found.synthetic
+                    continue
             if fact is not None:
                 answers[field], sources[field] = fact.value, "rules"
                 continue
@@ -348,6 +483,10 @@ class SimulatedUser:
             self._respond(question, sources, spoken, unavailable)
         self._silent = 0 if (answers or unavailable or spoken) else self._silent + 1
         text = self._say(question, answers, sources, spoken, unavailable)
+        # How many of this turn's asks went unanswered, and how many the Run has left unanswered so
+        # far: the refusal rate a build reports, read off the Simulated user's own turns.
+        refused = sum(1 for source in sources.values() if source in ("refused", "unavailable"))
+        self._refused += refused
         self.events.append(Event(
             idx=len(self.events),
             type="user_turn",
@@ -357,10 +496,31 @@ class SimulatedUser:
                 "sources": sources,
                 "unavailable_fields": unavailable,
                 "tags": ["fact_unavailable"] if unavailable else [],
+                "refused": refused,
+                "refused_so_far": self._refused,
             },
             assisted=assisted,
         ))
         return text
+
+    def _asked(self, question: str) -> list[str]:
+        """The fields this question asks for: the vocabulary's cues, plus the facts the recording
+        holds that the question names in words no cue carries.
+
+        A field the question states itself is not an ask for it. An agent that lists the action it
+        is about to take and asks "do you confirm" names the order it is confirming, and answering
+        with that order id instead of confirming is what build 8's Simulated user did.
+        """
+        stated = {field for field, _ in extracted_values(question, vocab=self.vocab)}
+        fields = [field for field in asked_fields(question, vocab=self.vocab) if field not in stated]
+        if CONFIRM_REQUEST.search(question or ""):
+            return fields
+        held: list[str] = []
+        for fact in self.rules.facts:
+            if fact.field not in SPOKEN_FIELDS and fact.field not in stated and fact.field not in held:
+                held.append(fact.field)
+        return fields + [field for field in named_fields(question, held, vocab=self.vocab)
+                         if field not in fields]
 
     def _open(self, answers: dict, sources: dict, spoken: list) -> None:
         """The opening reply: the goal the recorded user stated, then what it volunteered (D44)."""
@@ -394,15 +554,30 @@ class SimulatedUser:
             self.done = True
 
     def _declined(self) -> bool:
-        """The recording holds a no where a yes was asked for; then no yes is representative."""
+        """The recording holds a no where a yes was asked for; then no yes is representative.
+
+        A recorded Run that went on to the write said yes with the write, whatever a later line
+        said no to: build 8 read one such no and refused every confirmation for the rest of the Run.
+        """
+        if self.rules.confirmed_by_write:
+            return False
         return any(fact.field in (CONFIRMATION, CHOICE) and NEGATIVE_CUE.search(_norm(str(fact.value)))
                    for fact in self.rules.facts)
 
-    def _fact(self, field: str) -> Optional[UserFact]:
-        for fact in self.rules.facts:
-            if fact.field == field:
-                return fact
-        return None
+    def _fact(self, field: str, question: str = "") -> Optional[UserFact]:
+        """The recorded value for this field, and where the recording holds more than one, the one
+        the agent's question names (D44)."""
+        facts = [fact for fact in self.rules.facts if fact.field == field]
+        if len(facts) <= 1:
+            return facts[0] if facts else None
+        asked = " ".join(_request_sentences(_norm(question))) or _norm(question)
+        own = set(_tokens(_words(field)))
+        best, score = facts[0], None
+        for order, fact in enumerate(facts):
+            here = (_agrees(asked, fact.context), _shared(asked, fact.context, own), -order)
+            if score is None or here > score:
+                best, score = fact, here
+        return best
 
     def _next(self, field: str, reuse_last: bool = False) -> Optional[UserFact]:
         """Recorded free-text answers are used in the order the recorded user gave them."""

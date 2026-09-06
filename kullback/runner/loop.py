@@ -222,6 +222,9 @@ def _user_payload(user: Any, answer: Optional[str], seen: int) -> tuple[dict, bo
     for key in ("unavailable_fields", "sources"):
         if carried.get(key):
             payload[key] = carried[key]
+    for key in ("refused", "refused_so_far"):  # counts, and a zero is a number the report reads
+        if key in carried:
+            payload[key] = carried[key]
     tags = list(carried.get("tags") or [])
     if tags:
         payload.update({"tags": tags}, **{tag: True for tag in tags})

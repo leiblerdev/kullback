@@ -25,6 +25,14 @@ def no_live_models(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def isolated_sessions_dir(tmp_path, monkeypatch):
+    """No test reads or writes the real ~/.kullback/sessions. Every build a test runs writes a
+    heartbeat, so without this a test run leaves a heartbeat per build behind in the person's own
+    session list, and a screen test reads whatever builds they happen to be running right now."""
+    monkeypatch.setenv("KULLBACK_SESSIONS_DIR", str(tmp_path / "sessions"))
+
+
+@pytest.fixture(autouse=True)
 def isolated_price_catalog(tmp_path, monkeypatch):
     """No test reads or writes the real ~/.cache/harness/models.dev.json snapshot, for prices or
     for the provider registry, and every test starts with budget's price-catalog cache unloaded

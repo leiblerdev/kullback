@@ -260,6 +260,55 @@ def test_the_gate_runs_a_predicate_the_way_the_verdict_does_with_the_state_the_w
     assert any("TypeError" in f for f in out.failures)
 
 
+def test_the_gate_runs_a_predicate_that_calls_the_transcript_helpers_the_compiler_puts_in_scope():
+    """Build 10: the gate execed the rule on its own, so `user_confirmed(transcript)`, which the
+    compiler's prompt says is already in scope and its sandbox defines, raised NameError and three
+    more constraints failed the gate for a reason that was ours and not the model's."""
+    asks_first = a_constraint(
+        predicate_src=("def check(pre_state, write_call, transcript):\n"
+                       "    return write_call.get('name') != 'cancel_order' or user_confirmed(transcript)\n"),
+        tests=ConstraintTests(
+            pos=[{"pre_state": {}, "write_call": {"name": "cancel_order"},
+                  "transcript": [{"role": "assistant", "content": "Shall I cancel order #W1?"},
+                                 {"role": "user", "content": "yes please"}]}],
+            neg=[{"pre_state": {}, "write_call": {"name": "cancel_order"},
+                  "transcript": [{"role": "assistant", "content": "Shall I cancel order #W1?"},
+                                 {"role": "user", "content": "no, leave it"}]}],
+        ),
+    )
+    assert policy_gate([asks_first]).passed is True
+
+
+def test_a_rule_that_defines_no_predicate_of_its_own_is_never_answered_by_a_transcript_helper():
+    """The helpers are pasted in beside the rule, so the fallback that looks for the predicate has
+    to skip them: a constraint with no function is a defect and not whatever helper was last defined."""
+    empty = a_constraint(predicate_src="allowed = True\n")
+    out = policy_gate([empty])
+    assert out.passed is False
+    assert any("defines no function" in f for f in out.failures)
+
+
+def test_the_gate_and_the_compilers_own_sandbox_rule_the_same_way_on_the_same_constraint():
+    """The stage compiles a constraint by running its cases in a subprocess and the gate runs the
+    same cases in this process. Two runners for one predicate is where builds 8 and 10 drifted, so
+    the two read one source assembly and one argument list."""
+    from kullback.builder.policy import run_constraint_tests
+
+    holds = a_constraint(
+        predicate_src=("def check(pre_state, write_call, transcript):\n"
+                       "    return called_before(transcript, 'get_order_details')\n"),
+        tests=ConstraintTests(
+            pos=[{"pre_state": {}, "write_call": {"name": "cancel_order"},
+                  "transcript": [{"role": "assistant", "content": None,
+                                  "tool_calls": [{"name": "get_order_details", "arguments": {}}]}]}],
+            neg=[{"pre_state": {}, "write_call": {"name": "cancel_order"}, "transcript": []}],
+        ),
+    )
+    breaks = a_constraint(predicate_src="def check(pre_state, write_call, transcript):\n    return True\n")
+    for constraint in (holds, breaks):
+        assert policy_gate([constraint]).passed is run_constraint_tests(constraint).passed
+
+
 def test_policy_gate_fails_when_a_negative_case_is_allowed():
     bad = a_constraint(predicate_src="def check(pre_state, write_call, transcript):\n    return True\n")
     out = policy_gate([bad])

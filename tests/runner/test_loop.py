@@ -206,6 +206,17 @@ def test_the_user_turn_names_the_field_the_world_could_not_give(workdir):
     assert payload["unavailable_fields"] == ["email"]
 
 
+def test_the_user_turn_carries_the_count_of_asks_the_simulated_user_refused(workdir):
+    """The refusal count the Simulated user keeps reaches the Run's JSONL, a zero included, which
+    is the line a build's report reads the refusal rate off."""
+    user = Answering(["My zip is 19122."], payload={"refused": 0, "refused_so_far": 2})
+    state = new_run_state("r1", workdir=workdir, user=user, max_turns=2)
+    run(state, TestModel([{"content": "What is your zip code?"}], loop=True), router=make_router())
+    payload = [e for e in state.run.events if e.type == "user_turn"][0].payload
+    assert payload["refused"] == 0
+    assert payload["refused_so_far"] == 2
+
+
 def test_a_tag_from_an_earlier_turn_is_not_copied_onto_this_one(workdir):
     """The turn carries what the user recorded for this turn, not what it recorded for the last one."""
     earlier = Event(idx=0, type="user_turn", payload={"tags": ["fact_unavailable"]})
