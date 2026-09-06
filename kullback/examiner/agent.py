@@ -29,6 +29,15 @@ from kullback.gates.trust import trusted_gate
 DRIVER_CALL_ID = "examiner-driver"
 MAX_TURNS = 8
 
+# The sentence both driver messages end on: a finding the Builder can act on names a verb and a hint.
+# The system prompt says the same at length (examiner/extension.py, FINDINGS); this is the reminder in
+# the message the model is actually answering, since build 11 filed every finding as `replay` and the
+# Builder replayed a cached result three times.
+FINDING_VERBS = ("A finding is only worth filing if it says what to do: suggest `repair_intent` with a hint "
+                 "saying what a Task's Runs evidence when its Intent is ungrounded, `repair_recompile` with a "
+                 "hint naming the tool and the differing columns when a body is wrong, and `replay`, `reroll` "
+                 "or `compile_tool` only when running the same thing again is what you mean.")
+
 
 class ExaminerError(RuntimeError):
     """The session left nothing to report: the driver's derive failed, or the model never derived."""
@@ -101,7 +110,7 @@ def examiner_message(target: str = "all") -> str:
     """The one message a model-driven Examiner is sent: here and in the round driver's first beat."""
     return (f"Derive the Verifiers for target {target!r}: call the derive tool with target={target!r}, read "
             "the rulings, then probe, repair, refuse or send a finding as they tell you; answer with one "
-            "line when nothing is left to do.")
+            "line when nothing is left to do. " + FINDING_VERBS)
 
 
 def examiner_round_message(round: int, target: str = "all") -> str:
@@ -116,7 +125,7 @@ def examiner_round_message(round: int, target: str = "all") -> str:
     """
     return (f"round {round}: call the derive tool with target={target!r} again, read the rulings, then "
             "probe, repair, refuse or send a finding as they tell you; answer with one line when "
-            "nothing is left to do.")
+            "nothing is left to do. " + FINDING_VERBS)
 
 
 def _model_driven(harness: AgentHarness, target: str) -> Optional[ToolResult]:

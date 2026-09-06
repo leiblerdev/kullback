@@ -68,11 +68,13 @@ def _tree(workdir: Path) -> dict:
     return out
 
 
-def test_the_extension_registers_the_seven_tools_the_three_sections_the_probe_skill_and_the_two_hooks(world):
+def test_the_extension_registers_the_seven_tools_the_four_sections_the_probe_skill_and_the_two_hooks(world):
     plan, harness = _harness(world)
     assert isinstance(harness, AgentHarness), "the Examiner is an extension on the core, not a harness of its own"
     assert harness.registry.names() == SEVEN
-    assert [s.name for s in harness.sections] == ["examiner", "examiner_rules", "examiner_tasks", "skill:probe"]
+    assert [s.name for s in harness.sections] == ["examiner", "examiner_tools", "examiner_examples",
+                                                  "examiner_rules", "examiner_findings", "examiner_tasks",
+                                                  "examiner_stop", "skill:probe"]
     assert "never edit the Environment" in harness.system and "kullback/gates" in harness.system
     assert f"{T}: 1 Runs" in harness.system and "`derive` takes `all`" in harness.system
     assert harness.context.catalog_skills == {"probe": skills.PROBE_SKILL} and harness.context.loaded_skills == {"probe"}

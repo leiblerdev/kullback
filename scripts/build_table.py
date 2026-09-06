@@ -594,7 +594,13 @@ def atom_line(build: Build, task_id: str) -> str:
 
 
 def round_rows(build: Build) -> list[dict]:
-    """One row per round: which of D126's counts moved, what the round spent, how many turns."""
+    """One row per round: which of D126's counts moved, which artifacts the round rewrote, what it
+    spent, how many turns.
+
+    The counts and the artifacts are two different answers to whether the round did anything: a
+    round that rewrote a tool body moved an artifact and no count, because the Examiner derives
+    over the new body in the round after (`rounds.round_moved`).
+    """
     rows = []
     previous: dict = {}
     turns = mechanic_calls(build.builder_session)[1] + mechanic_calls(build.examiner_session)[1]
@@ -608,6 +614,10 @@ def round_rows(build: Build) -> list[dict]:
             "round": record.get("round", pos + 1),
             "counts": ", ".join(f"{key} {counts.get(key)}" for key in GATE_COUNTS),
             "moved": "first round" if not previous else counted(moved),
+            "artifacts": ("first round" if not previous
+                          else counted(sorted(counts["artifacts_changed"]))
+                          if "artifacts_changed" in counts
+                          else na("rounds.json counts.artifacts_changed")),
             "spend": f"builder {money(float(spent.get('builder') or 0.0))}, "
                      f"examiner {money(float(spent.get('examiner') or 0.0))}, "
                      f"total {money(float(spent.get('total') or 0.0))}" if spent
@@ -863,10 +873,10 @@ def round_section(build: Build) -> list[str]:
     rows = round_rows(build)
     if not rows:
         return [na("rounds.json; this build ran no round driver") + "."]
-    body = [[str(row["round"]), row["counts"], row["moved"], row["spend"], row["turns"],
-             row["exit"], f"`{row['where']}`"] for row in rows]
-    return table(["round", "gate counts (D126)", "moved", "spend", "turns", "exit", "read from"],
-                 ["r", "l", "l", "l", "l", "l", "l"], body)
+    body = [[str(row["round"]), row["counts"], row["moved"], row["artifacts"], row["spend"],
+             row["turns"], row["exit"], f"`{row['where']}`"] for row in rows]
+    return table(["round", "gate counts (D126)", "moved", "artifacts changed", "spend", "turns",
+                  "exit", "read from"], ["r", "l", "l", "l", "l", "l", "l", "l"], body)
 
 
 def repair_section(build: Build) -> list[str]:

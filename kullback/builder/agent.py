@@ -153,21 +153,50 @@ NOTHING_CHANGED = ("nothing changed since the last round: no gate count moved. E
                    "again without a repair returns that same cached result.")
 
 
-def nothing_changed_message(plan: BuildPlan) -> str:
+def pending_line(findings: Iterable[Any] = (), repairs: Iterable[dict] = ()) -> str:
+    """What is still owed, in one line: the findings no beat has acted on with the verb each one
+    suggests, and the repairs this round did make with whether each changed its artifact.
+
+    A round that stalled with a finding open stalled for a reason, and a model cannot read either
+    list out of its own transcript: a repair verb answers with the stages it ran, not with whether
+    the bytes it wrote differ from the last ones. `findings` are Finding records and `repairs` the
+    dicts the round driver builds (`rounds.Loop.repairs_made`). Both empty is said as such, which is
+    itself the plainest reading of a stall.
+    """
+    parts = []
+    named = [f"{getattr(f, 'finding_id', '?')} suggests "
+             + (str(getattr(f, "suggested", "none")) if getattr(f, "suggested", "none") != "none"
+                else "no verb") for f in findings]
+    if named:
+        parts.append(f"{len(named)} finding(s) not acted on ({'; '.join(named)})")
+    made = [f"{row.get('verb')} on {row.get('target')} "
+            + (f"changed {row.get('artifact')}" if row.get("changed")
+               else (f"left {row.get('artifact')} as it was" if row.get("artifact")
+                     else "changed no artifact")) for row in repairs]
+    if made:
+        parts.append(f"{len(made)} repair(s) this round ({'; '.join(made)})")
+    return f"Pending: {', and '.join(parts)}." if parts else \
+        "Pending: no finding is open and this round called no repair verb."
+
+
+def nothing_changed_message(plan: BuildPlan, findings: Iterable[Any] = (),
+                            repairs: Iterable[dict] = ()) -> str:
     """The follow-up a model-driven Builder is sent when its round changed nothing (D126, D135).
 
     Build 9's round 2 answered each finding with replay and build, was served every stage from the
     cache, and moved no count: the beat had no way of knowing that, since a cached build reads like
-    any other. So the message says the plain fact first and then names the verbs of this session that
-    can change an artifact, each with what it changes. They come from the session's own registry
-    (`tools.repair_verb_tools`), so a verb this worktree does not have is never named at a model.
-    Finishing is still the way out when no verb answers what is left: stalled is the soft stop.
+    any other. So the message says the plain fact first, then what is still pending (`pending_line`),
+    and then names the verbs of this session that can change an artifact, each with what it changes.
+    They come from the session's own registry (`tools.repair_verb_tools`), so a verb this worktree
+    does not have is never named at a model. Finishing is still the way out when no verb answers
+    what is left: stalled is the soft stop.
     """
     verbs = "; ".join(f"{tool.name} ({tool.description.rstrip('.')})"
                       for tool in repair_verb_tools(plan))
-    return (f"{NOTHING_CHANGED} What changes an artifact is a repair verb: {verbs}. Call status to see "
-            "which red light is yours and the verb that answers it, and call that verb. If no verb "
-            "answers what is left, finish with what you have.")
+    return (f"{NOTHING_CHANGED} {pending_line(findings, repairs)} What changes an artifact is a "
+            f"repair verb: {verbs}. Call status to see which red light is yours and the verb that "
+            "answers it, and call that verb. If no verb answers what is left, finish with what you "
+            "have.")
 
 
 def _model_driven(harness: AgentHarness, plan: BuildPlan, target: str) -> tuple[Optional[ToolResult], dict]:

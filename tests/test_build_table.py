@@ -279,19 +279,37 @@ def test_the_round_row_says_which_of_the_gate_counts_moved_what_it_spent_and_the
     (workdir / "rounds.json").write_text(json.dumps([
         {"round": 1, "counts": {"fidelity": 1, "trusted": 0, "refused_count": 0, "assisted_runs": 0,
                                 "probes_passing": 0, "spend": {"builder": 0.5, "examiner": 0.25, "total": 0.75},
-                                "turns": {"builder": 6, "examiner": 2, "total": 8}},
+                                "turns": {"builder": 6, "examiner": 2, "total": 8},
+                                "artifacts": "aaaaaaaaaaaa", "artifacts_changed": []},
          "exit": None},
         {"round": 2, "counts": {"fidelity": 1, "trusted": 2, "refused_count": 0, "assisted_runs": 0,
                                 "probes_passing": 0, "spend": {"builder": 0.1, "examiner": 0.0, "total": 0.1},
-                                "turns": {"builder": 3, "examiner": 1, "total": 4}},
+                                "turns": {"builder": 3, "examiner": 1, "total": 4},
+                                "artifacts": "bbbbbbbbbbbb", "artifacts_changed": ["bodies", "intents"]},
          "exit": "stalled"}]), encoding="utf-8")
     first, second = [cells(row) for row in rows_of(B.render(B.Build(workdir)), "Per round")]
-    assert first[2] == "first round" and first[5] == "the round did not exit"
-    assert first[3] == "builder $0.50, examiner $0.25, total $0.75"
-    assert first[4] == "builder 6, examiner 2, total 8"
-    assert second[2] == "trusted 2 from 0" and second[5] == "stalled"
-    assert second[3] == "builder $0.10, examiner $0.00, total $0.10"
-    assert second[4] == "builder 3, examiner 1, total 4"
+    assert first[2] == "first round" and first[6] == "the round did not exit"
+    assert first[4] == "builder $0.50, examiner $0.25, total $0.75"
+    assert first[5] == "builder 6, examiner 2, total 8"
+    assert second[2] == "trusted 2 from 0" and second[6] == "stalled"
+    assert second[4] == "builder $0.10, examiner $0.00, total $0.10"
+    assert second[5] == "builder 3, examiner 1, total 4"
+
+
+def test_the_round_row_names_the_artifacts_the_round_rewrote(tmp_path):
+    """The artifacts column is the other half of whether a round did anything: a round that rewrote
+    a tool body and an Intent says so even where no gate count moved (`rounds.round_moved`)."""
+    workdir = tmp_path / "artifacts"
+    workdir.mkdir()
+    (workdir / "rounds.json").write_text(json.dumps([
+        {"round": 1, "counts": {"fidelity": 1, "artifacts_changed": []}, "exit": None},
+        {"round": 2, "counts": {"fidelity": 1, "artifacts_changed": ["bodies", "intents"],
+                                "moved": True}, "exit": None},
+        {"round": 3, "counts": {"fidelity": 1, "artifacts_changed": [], "moved": False},
+         "exit": "stalled"}]), encoding="utf-8")
+    rows = [cells(row) for row in rows_of(B.render(B.Build(workdir)), "Per round")]
+    assert [row[3] for row in rows] == ["first round", "bodies, intents", "none"]
+    assert rows[1][2] == "none", "no gate count moved in the round that rewrote the two artifacts"
 
 
 def test_a_round_that_kept_no_turn_count_names_the_record_it_would_need(tmp_path):
@@ -300,16 +318,20 @@ def test_a_round_that_kept_no_turn_count_names_the_record_it_would_need(tmp_path
     (workdir / "builder" / "session.jsonl").write_text(json.dumps(
         {"type": "message", "id": "e1", "message": {"role": "assistant", "content": "done"}}) + "\n",
         encoding="utf-8")
-    (workdir / "rounds.json").write_text(json.dumps([{"round": 1, "counts": {"fidelity": 1}}]), encoding="utf-8")
-    row = cells(rows_of(B.render(B.Build(workdir)), "Per round")[0])
-    assert row[3] == "n/a (needs rounds.json counts.spend)"
-    assert row[4] == "n/a (needs rounds.json counts.turns)"
+    (workdir / "rounds.json").write_text(json.dumps(
+        [{"round": 1, "counts": {"fidelity": 1}},
+         {"round": 2, "counts": {"fidelity": 1}}]), encoding="utf-8")
+    first, second = [cells(row) for row in rows_of(B.render(B.Build(workdir)), "Per round")]
+    assert first[4] == "n/a (needs rounds.json counts.spend)"
+    assert first[5] == "n/a (needs rounds.json counts.turns)"
+    assert second[3] == "n/a (needs rounds.json counts.artifacts_changed)", \
+        "a build from before the fingerprint names the record it would need"
 
 
 def test_a_round_that_moved_no_count_says_so(printed: str):
     row = cells(rows_of(printed, "Per round")[0])
-    assert row[0] == "1" and row[5] == "done"
-    assert row[4] == "builder 0, examiner 0, total 0"
+    assert row[0] == "1" and row[6] == "done"
+    assert row[5] == "builder 0, examiner 0, total 0"
 
 
 def _repaired(workdir: Path) -> Path:

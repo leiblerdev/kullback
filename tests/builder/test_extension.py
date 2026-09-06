@@ -198,16 +198,17 @@ def test_the_hook_looks_inside_lists_and_nested_dicts(tmp_path):
 
 # --- the prompt and the tools -------------------------------------------------
 
-def test_the_extension_registers_every_stage_status_and_the_repair_verbs_with_four_sections(tmp_path):
+def test_the_extension_registers_every_stage_status_and_the_repair_verbs_with_six_sections(tmp_path):
     harness = builder_agent.build_harness(BuildPlan(workdir=tmp_path))
     assert isinstance(harness, AgentHarness), "the Builder is an extension on the core, not a harness of its own"
     assert harness.registry.names() == ["status", "build", "recluster", "grow", "compile_tool", "replay",
                                         "reroll", "repair_recompile", "repair_grow", "repair_intent",
                                         "repair_refuse_task", "repair_escalate"]
     assert "repair_rewrite_skill" not in harness.registry.names(), "the GEPA caution: no unchecked prompt rewrite"
-    assert [s.name for s in harness.sections] == ["builder", "builder_rules", "builder_tools", "builder_targets"]
-    assert "make every gate pass" in harness.system and "kullback/gates" in harness.system
-    assert "Call status first" in harness.system
+    assert [s.name for s in harness.sections] == ["builder", "builder_tools", "builder_examples", "builder_rules",
+                                                  "builder_targets", "builder_stop"]
+    assert "turn red lights green" in harness.system and "kullback/gates" in harness.system
+    assert "Read the whole status once" in harness.system and "Stopping." in harness.system
     assert "`environment` is the whole build" in harness.system
     assert "compile_tools" in harness.system and "bodies" in harness.system
     assert "repair" not in harness.registry.names()
@@ -286,7 +287,7 @@ def test_a_scripted_model_driving_the_session_calls_build_and_reads_the_rulings(
                      "repair_recompile", "repair_grow", "repair_intent", "repair_refuse_task",
                      "repair_escalate"]
     system = model.calls[0]["messages"][0]
-    assert "You are the Builder" in json.dumps(system)
+    assert "turn red lights green" in json.dumps(system)
     second = json.dumps(model.calls[1]["messages"])
     assert "gate rulings:" in second and "build environment: complete" in second
     events = model_driven["events"]

@@ -920,6 +920,36 @@ Decided: one script prints the same table for any workdir, and the table goes in
 
 The layering the table reports against, as the founder named it the same day: `ai` is the providers, `agent` is the reusable brain, `builder` and `examiner` are the Environment-related extensions on the brain.
 
+### D140. The status report shows every red light, grouped, with a zoom; nothing is cut at a line count (2026-09-06)
+
+Build 11's mechanic read a status capped at 25 lines: it saw four broken tools and 13 of 184 Intent lines, repaired the four and never learned the other 171 existed. Founder: "but the tool only prints the first 25 lines, so it saw the four broken tools and 13 intent lines out of 184. okay damm, this is serious, we need to fix this."
+
+Decided: the cap is gone. The report opens with the headline (red lights, tools, Tasks), then one block per gate: every tool with its count and its shortest failure line, and the Tasks grouped by failure kind with up to five example phrases each and the count of the rest. A zoom line says how to see one gate or one target in full (`status(gate=..., target=...)`), so the whole picture is always one call and any detail one more. A number the model has not seen is a repair it cannot make.
+
+### D141. The Examiner's finding names the Builder verb and carries the hint; the Runner records grew for it on the founder's word (2026-09-06)
+
+The Examiner could see that an Intent grounded nothing and could only say `none` or `compile_tool`, because `FindingVerb` lives in the frozen Runner records. Founder: "it should say this please because it is the job of the examiner to do this you know."
+
+Decided: `FindingVerb` adds `repair_intent` and `repair_recompile`, and a Finding carries a `hint`, the one line the verb is given. The round driver renders the two as a callable line (`Suggested: repair_intent(task_id='...', hint='...')`), so the Builder's next turn can act on it as written. This changes a frozen module, so the Runner is re-frozen in every workdir that runs after it, with the founder named on the freeze (D110: never by the model, always by a person).
+
+### D142. A round has moved when a gate count, an artifact or a repair's ruling changed; a stall is none of the three (2026-09-06)
+
+Build 11 stalled on gate counts alone: forty-eight repair requests were recorded, none changed a byte, and the stall rule could not tell that from a round that changed everything and moved no count. Founder: "but stalling should also consider what are the fixes being suggested you know right ?"
+
+Decided: the round record carries a fingerprint of every model-written artifact (tool bodies, policy, Intents, Verifiers) and every repair with its target, hint, and the ruling before and after. A round moved when a gate count changed, an artifact changed, or a repair turned a ruling. The exit rule counts rounds since the last move, not rounds since the last count change. A repair that changes nothing answers `nothing changed` in its own result and in the next round's message, with the reason (every stage served from cache), so the model reads the stall before the driver declares it.
+
+### D143. Intents ground in two steps over a splitter that keeps numbers, money and ids whole (2026-09-06)
+
+Every build left 160 of 205 Intents ungrounded, and the reason was the splitter: it cut "$17.99 price difference" at the full stop and searched the transcript for "99 price difference". Founder: "The splitter cut "$17." off and looked for "99 price difference". No user ever said that. how is the splitter designed ? we need to make the splitter smart as well."
+
+Decided: one tokeniser for the Intent and the transcript, which keeps money, decimals, ids and order numbers as one token; a plural normaliser; clauses split on the action verbs the Intent itself uses; grounding tries the whole phrase as a span first and falls back to its content tokens. `write_intent` gets three tries, each fed the words that grounded and the words that did not, and `repair_intent(task_id, hint)` gives the mechanic the same lever. Measured on build 8's stored Intents without a model call: 37 grounded before, 137 after, of 205. Cross-Run disagreements rose from 21 to 49, which is the honest number the old splitter hid.
+
+### D144. Agent prompts follow the GEPA order and carry general examples; feedback is text, not a score (2026-09-06)
+
+Build 11's Builder read a three-paragraph rules prompt and picked an inert verb for every red light. Founder: "the builder prompt should contain examples ( but not overfitted examples, general examples which are applicable widely ). just learn from gepa on how to organize the prompt and remember the best practice ( leverage in context learning examples )."
+
+Decided: every agent system prompt is built in this order, each block its own section: what the model receives and must produce (no persona), one block per tool with its purpose and one example call, general in-context examples of a red light and the verb that answers it, the choosing rule, the shape of the feedback it will read, and the stop rule last, closest to generation. Examples hold for any customer's traces: invented domain names, generic tool shapes, never a case from the traces we test on (the harness stays general). Feedback the harness hands back says what was tried, what happened and why. The prompts are ours and versioned with the code; a model may propose a rewrite, never apply one (todo, GEPA caution).
+
 ## Pending (asked, not yet answered)
 
 - D71 provisional (user-side writes); I want more discussion: Simulated user tools, interaction with sequence Hard constraints, required vs allowed. Three questions, to take up when I'm ready.

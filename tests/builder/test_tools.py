@@ -79,6 +79,115 @@ def test_status_over_a_workdir_with_nothing_built_says_so(tmp_path):
     assert "the gates are green" in builder_tools.render_status(result)
 
 
+# --- status at the size a live build reaches ------------------------------------
+
+CROWDED_TASKS = [f"task_{i:04x}" for i in range(184)]
+CROWDED_TOOLS = [f"tool_{i:02d}" for i in range(30)]
+PHRASES = ["the refund", "the exchange", "the open order", "the tracking number"]
+
+
+def _crowded(workdir: Path) -> Path:
+    """A workdir holding the records of a build the size of the live one: 30 tools, 184 Tasks.
+
+    Nothing is mocked: these are `gates.json` and `tool_builds.json` in the shape the gates and the
+    compiler write them, which is the only thing `status` ever reads.
+    """
+    intent = [f"task {t}: noun phrases not evidenced in every Run: {PHRASES[i % 4]} (not in run_a, run_b)"
+              if i % 6 == 0 else f"task {t}: noun phrases with no span: {PHRASES[i % 4]}"
+              for i, t in enumerate(CROWDED_TASKS)]
+    compile_tools = [f"{name}: a recorded success call replays differently; D80 wants 100% on recorded calls"
+                     for j, name in enumerate(CROWDED_TOOLS) for _ in range(1 + j % 3)]
+    rows = [{"stage": "intent", "pass": False, "failures": intent},
+            {"stage": "compile_tools", "pass": False, "failures": compile_tools},
+            {"stage": "derive_verifier", "pass": False,
+             "failures": [f"task {t}: the D79 suite did not pass" for t in CROWDED_TASKS[:40]]},
+            {"stage": "rerolls", "pass": False,
+             "failures": ["no re-roll finished: 12 Runs and every one stopped on an error"]}]
+    rows += [{"stage": name, "pass": True, "failures": []}
+             for name in ("parses", "executes_on_s0", "deterministic", "non_trivial", "confined",
+                          "refuses_unknown", "cluster", "vocabulary", "starting_state", "ingest")]
+    (workdir / "gates.json").write_text(json.dumps(rows), encoding="utf-8")
+    (workdir / "tool_builds.json").write_text(
+        json.dumps({name: {"assisted": True} for name in CROWDED_TOOLS[:4]}), encoding="utf-8")
+    return workdir
+
+
+def _flat(text: str) -> str:
+    """The rendering with its wrapping undone, so a test can read a logical line as one string."""
+    return " ".join(text.split())
+
+
+def test_status_shows_every_gate_and_every_task_id_and_never_a_truncated_list(tmp_path):
+    """A live build rendered 380 red lights as 25 and "355 more, all in details"; the model never
+    asked for the details and repaired the four tools it could see."""
+    result = builder_tools.status_of(_crowded(tmp_path))
+    text = builder_tools.render_status(result)
+    flat = _flat(text)
+    assert len(result.red_lights) > 250, "the crowded workdir is the size the live build reached"
+    for stage in result.failing:
+        assert f"{stage}: " in text, f"{stage} is red and has no block"
+    for task_id in CROWDED_TASKS:
+        assert task_id in flat, f"{task_id} is red and unnamed"
+    for name in CROWDED_TOOLS:
+        assert name in flat, f"{name} is red and unnamed"
+    assert "more, all in details" not in flat and "..." not in flat
+    assert len(text) < 12000, "the whole picture still has to fit in what the model reads"
+    assert builder_tools.render_status(builder_tools.status_of(tmp_path)) == text, "not deterministic"
+
+
+def test_status_groups_task_failures_by_kind_and_shows_the_phrases_that_fail(tmp_path):
+    """The two ways an Intent is refused are two lines, each naming its Tasks and what their words were."""
+    flat = _flat(builder_tools.render_status(builder_tools.status_of(_crowded(tmp_path))))
+    with_no_span = [t for i, t in enumerate(CROWDED_TASKS) if i % 6]
+    assert f"noun phrases with no span: {len(with_no_span)} Tasks: " + ", ".join(with_no_span) in flat
+    assert f"noun phrases not evidenced in every Run: {184 - len(with_no_span)} Tasks: " in flat
+    examples = flat.split(f"what fails ({builder_tools.KIND_EXAMPLES} of {len(with_no_span)}): ")[1]
+    examples = examples.split("noun phrases not evidenced")[0]
+    assert examples.count("task_") == builder_tools.KIND_EXAMPLES
+    assert "the exchange" in examples, "the phrase that has no span is what tells the model what to fix"
+
+
+def test_status_zooms_on_one_gate_or_one_target_and_lists_its_red_lights_in_full(tmp_path):
+    """`status()` groups; `status(gate=...)` and `status(target=...)` print every line of one of them."""
+    workdir = _crowded(tmp_path)
+    plan = BuildPlan(workdir=workdir, iterate=True)
+    zoomed = _run(_tool(plan, "status"), {"gate": "intent"})
+    assert not zoomed.is_error and zoomed.content.startswith("status(gate=intent): 184 red lights of ")
+    assert zoomed.content.count("\n- ") == 184, "a zoom lists every red light of the gate, one per line"
+    assert all(t in zoomed.content for t in CROWDED_TASKS)
+    on_task = _run(_tool(plan, "status"), {"target": CROWDED_TASKS[0]})
+    assert {light["stage"] for light in on_task.details["red_lights"]} == {"intent", "derive_verifier"}
+    assert on_task.content.count("\n- ") == 2
+    assert on_task.details["failing"] == builder_tools.status_of(workdir).failing, (
+        "a zoom still says which gates are red")
+    nothing = _run(_tool(plan, "status"), {"gate": "no_such_gate"})
+    assert "no red light matches" in nothing.content and "intent" in nothing.content
+    assert _run(_tool(plan, "status"), {}).content == builder_tools.render_status(
+        builder_tools.status_of(workdir)), "no argument is still the whole grouped picture"
+
+
+def test_one_very_long_failure_is_shortened_in_the_grouped_view_and_whole_in_the_zoom(tmp_path):
+    """The list is never cut, but a single failure that dumps a table's every key would crowd the
+    picture out on its own, so the grouped view says how much is left and the zoom shows it."""
+    dump = "get_order: hard columns differ: keys differ: " + ", ".join(f"key_{i}" for i in range(200))
+    (tmp_path / "gates.json").write_text(
+        json.dumps([{"stage": "replay_fidelity", "pass": False, "failures": [dump]}]), encoding="utf-8")
+    grouped = builder_tools.render_status(builder_tools.status_of(tmp_path))
+    assert dump not in grouped and f"[+{len(dump) - builder_tools.FAILURE_CHARS} characters" in grouped
+    assert dump in builder_tools.render_status(builder_tools.status_of(tmp_path, target="get_order"))
+
+
+def test_the_headline_counts_the_gates_the_tasks_with_no_verdict_and_the_assisted_tools(tmp_path):
+    """The first line is the whole picture: how much is red, what it costs in Tasks, what is assisted."""
+    result = builder_tools.status_of(_crowded(tmp_path))
+    head = result.summary
+    assert head.startswith(f"status: {len(result.red_lights)} red lights; ")
+    assert "4 of 14 gates red" in head, "four gates red of the fourteen the records name"
+    assert "184 Tasks with no Verdict, most of them noun phrases with no span" in head
+    assert "4 tools assisted: " + ", ".join(CROWDED_TOOLS[:4]) in head
+    assert builder_tools.render_status(result).startswith(head + "\n")
+
+
 @pytest.mark.parametrize("failure,target,kind", [
     ("task task_7: no Trace of the Task was replayed", "task_7", "task"),
     ("get_order: a recorded success call replays differently", "get_order", "tool"),

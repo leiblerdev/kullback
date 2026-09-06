@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Literal, get_args, get_origin
 
 import pytest
+from pydantic import ValidationError
 
 from kullback.runner import records as records_module
 from kullback.runner.records import (
@@ -18,6 +19,7 @@ from kullback.runner.records import (
     Environment,
     Event,
     Finding,
+    FindingVerb,
     GateResult,
     Intent,
     IntentSpan,
@@ -326,6 +328,9 @@ def _examiner_records() -> list[Record]:
             Refusal(task_id="t1", reason="no frontier Run finished", round=1, admitted=True, finished_runs=[]),
             Finding(finding_id="f1", task_id="t1", kind="assisted_tool", text="the tool never fails", run_id="probe-t1-1",
                     tool="cancel", suggested="compile_tool", round=1),
+            Finding(finding_id="f2", task_id="t1", kind="fidelity", text="the Intent names what no Run says",
+                    suggested="repair_intent", hint="the Runs only cancel one order and never mention a refund",
+                    round=1),
             RoundRecord(round=1, counts={"trusted": 1, "fidelity": 1}, exit="done")]
 
 
@@ -343,6 +348,25 @@ def test_the_examiner_records_round_trip_through_as_dict_and_hash_by_content():
     pool = _examiner_records()[1]
     assert pool.probes[0].run.events[0].payload == {"reason": "success"}
     assert {type(r) for r in _examiner_records()} <= set(ALL_RECORDS)
+
+
+def test_a_finding_can_suggest_a_repair_verb_and_carry_the_hint_that_verb_needs():
+    """A finding's verb is a Builder tool name, and the two repair verbs are among them: an Examiner
+    that can only say `replay` asks for a cached result again. The hint is the line the verb is given
+    and defaults to empty, so a findings file written before the verbs existed still validates."""
+    from kullback.builder.tools import BUILD_TOOLS
+
+    verbs = set(get_args(FindingVerb))
+    assert {"repair_intent", "repair_recompile"} <= verbs
+    assert verbs - {"none"} <= set(BUILD_TOOLS), "every verb a finding suggests is a Builder tool"
+    finding = Finding(finding_id="f1", task_id="t1", kind="fidelity", text="the Intent names what no Run says",
+                      suggested="repair_intent", hint="the Runs only cancel one order")
+    assert finding.hint == "the Runs only cancel one order"
+    older = as_dict(finding)
+    older.pop("hint")
+    assert Finding.model_validate(older).hint == ""
+    with pytest.raises(ValidationError):
+        Finding(finding_id="f2", kind="fidelity", text="x", suggested="repair_everything")
 
 
 def test_the_intent_record_and_apply_intent_live_in_records_and_the_builder_re_exports_them():

@@ -15,7 +15,7 @@ from kullback.examiner import agent as examiner_agent
 from kullback.examiner import tools as tools_mod
 from kullback.examiner.plan import ExaminerPlan
 from kullback.gates.probes import version_hash
-from kullback.runner.records import Verifier, VerifierHistory, as_dict, content_hash
+from kullback.runner.records import Intent, Verifier, VerifierHistory, as_dict, content_hash
 
 TOOL_NAMES = ["read", "derive", "probe", "repair", "refuse", "reroll", "finding"]
 
@@ -336,6 +336,50 @@ def test_finding_returns_the_structured_record_in_details_and_files_it(derived):
     assert [f.finding_id for f in plan.open_findings()] == ["finding-1"]
     assert plan.close_findings(["finding-1"]) == ["finding-1"] and plan.open_findings() == []
     assert _read(derived.workdir / "examiner" / "findings.json")[0]["status"] == "closed"
+
+
+def test_a_finding_can_suggest_repair_intent_with_a_hint(derived):
+    """The Examiner names the Builder verb that answers the finding and the line that verb is given.
+    Build 11 could only say `replay`, so the Builder replayed a cached result three times."""
+    plan, harness = _harness(derived, round=2)
+    hint = "the Runs only ever cancel one order; nothing in them mentions a gift card"
+    result = drive(harness, "finding", {"task_id": T, "kind": "fidelity", "suggested": "repair_intent",
+                                        "hint": hint,
+                                        "text": "the Intent says gift card and no Run of this Task says it"})
+    assert result.is_error is False
+    record = result.details["finding"]
+    assert record["suggested"] == "repair_intent" and record["hint"] == hint
+    assert "suggested repair_intent" in result.content and "with a hint" in result.content
+    assert _read(derived.workdir / "examiner" / "findings.json")[-1]["hint"] == hint
+    again = drive(harness, "finding", {"task_id": T, "kind": "fidelity", "suggested": "repair_recompile",
+                                       "tool": "cancel_pending_order", "hint": "  the status column differs  ",
+                                       "text": "the body writes a different status on replay"},
+                  call_id="f2")
+    assert again.details["finding"]["hint"] == "the status column differs", "the hint is stored trimmed"
+    assert again.details["finding"]["suggested"] == "repair_recompile"
+    unknown = drive(harness, "finding", {"task_id": T, "kind": "fidelity", "text": "x",
+                                         "suggested": "repair_everything"}, call_id="f3")
+    assert unknown.is_error, "a verb the Builder has no tool for is refused by the schema"
+
+
+def test_an_examiner_reading_an_intent_record_sees_the_refused_phrases(derived):
+    """`read` with kind `intent` is where the Examiner learns what the intent gate refused: the
+    ungrounded phrases and, for the phrases that are grounded, the Runs that evidence them. Without
+    them a repair_intent hint would be a guess."""
+    derived.inputs["intents"] = {T: as_dict(Intent(
+        task_id=T, text="cancel the order and refund the gift card", grounded=False,
+        ungrounded_phrases=["gift card", "refund"],
+        run_coverage={"the order": ["ref", "alt"]},
+        reason="two noun phrases no Run of this Task says"))}
+    plan, harness = _harness(derived)
+    result = drive(harness, "read", {"kind": "intent", "id": T})
+    assert result.is_error is False
+    intent = json.loads(result.details["text"])
+    assert intent["ungrounded_phrases"] == ["gift card", "refund"]
+    assert intent["run_coverage"] == {"the order": ["ref", "alt"]}
+    assert intent["grounded"] is False and "gift card" in intent["text"]
+    schema = harness.registry.get("read").schema()["input_schema"]
+    assert "ungrounded_phrases" in schema["properties"]["kind"]["description"]
 
 
 def test_read_returns_a_run_a_trace_an_intent_a_verifier_and_the_pool_as_json(derived, fixture_build):
