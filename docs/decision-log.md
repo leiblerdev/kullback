@@ -980,6 +980,18 @@ Build 12's model arm counted 108 re-rolls that died on an empty transcript. Ever
 
 Decided: the stage discards a skipped Task's re-rolls under its own prefix too. The Examiner's re-rolls under another prefix stay.
 
+### D150. The Builder loads a triage skill written from where it kept failing (2026-09-06)
+
+Founder: "if you want to steer the agent in certain manner you can definitely write up a skill, just observe where the agent is failing repeatedly and write up a skill for the agent to follow the behaviour and then just see if the skill works." Build 12's model arm, call by call: every repair fired from the grouped status with a hint written from the grouped line ("match the recording exactly"), never a zoom first; the one tool whose crash blocked 49 Tasks was recompiled once, stayed assisted, and was then named as an "existing" red light in three closing lines and never called again; one Intent was repaired four times with hints that restated the failure instead of reading the Runs; "nothing changed" after a repair was read as the build being done.
+
+Decided: `kullback/builder/triage.py` holds the triage skill, catalogued loaded from the start of every Builder session and rendered in the `<skills>` block as the probe skill is for the Examiner. It says: zoom before every repair and put the failure's own words in the hint; rank by Tasks blocked, tools before Intents; read the first line of every result; stay on a tool until it clears or three hints have failed, then quote the last failure; an Intent gets two hints, from the zoom, in the Runs' words; "nothing changed" is a fact about the call; close only when the list is exhausted. The skill names no domain and only verbs the Builder has (a test checks both). Whether it works is build 13's evidence against build 12: the same corpus, the same model, the session read call by call.
+
+### D151. The Simulated user's facts are mined from the arguments the recorded agent used, not only from regexes over the user's words (2026-09-06)
+
+Build 12's model arm: 409 of 600 re-rolls made no write. 149 never authenticated, because the user rules held no name or email although the recorded user gave one ("my name is **Chen Johnson**", "look me up with my name and zip code: Noah Ito, 98187") and the recorded agent used it in a successful lookup; the regex miner read none of these phrasings. Regexes will never cover every phrasing; the trace already holds the ground truth in the arguments of the calls that succeeded.
+
+Decided: `derive_user_rules` also mines every scalar argument (and every string in a list argument) of a call that recorded no error, when the user said that value in a turn at or before the call, matched with emphasis and whitespace ignored and with or without a leading `#`, and records the value as the argument carries it. A value only the tool returned, a value the user said only after the call, and an argument of a failed call are not facts (D77: nothing invented). The field is the vocabulary's own for that argument (`first_name` and `last_name` of one call fold into the `name` the Simulated user answers with), else the argument name. Disclosure is on request when the agent's previous turn asked for it, else volunteered. On the retail corpus the name fact rises from 187 of 456 traces to 373 and zip from 243 to 365.
+
 ## Pending (asked, not yet answered)
 
 - D71 provisional (user-side writes); I want more discussion: Simulated user tools, interaction with sequence Hard constraints, required vs allowed. Three questions, to take up when I'm ready.

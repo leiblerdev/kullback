@@ -198,6 +198,21 @@ def test_the_hook_looks_inside_lists_and_nested_dicts(tmp_path):
 
 # --- the prompt and the tools -------------------------------------------------
 
+def test_the_triage_skill_names_only_verbs_the_builder_has_and_nothing_of_any_customer(tmp_path):
+    """A skill says how to use the tools, so every call it names must exist; and it holds for any
+    customer's traces, so it names no table, tool or Task of the fixture build (D150)."""
+    import re
+
+    from kullback.builder.triage import TRIAGE_SKILL
+    harness = builder_agent.build_harness(BuildPlan(workdir=tmp_path))
+    named = set(re.findall(r"\b([a-z_]+)\(", TRIAGE_SKILL))
+    assert named and named <= set(harness.registry.names()), named - set(harness.registry.names())
+    assert "still assisted:" in TRIAGE_SKILL and "still refused:" in TRIAGE_SKILL and "nothing changed" in TRIAGE_SKILL, \
+        "the skill reads the same words the repair results open with"
+    for fragment in ("order", "booking", "flight", "airline", "retail", "tau2", "task_"):
+        assert fragment not in TRIAGE_SKILL.lower(), fragment
+
+
 def test_the_extension_registers_every_stage_status_and_the_repair_verbs_with_six_sections(tmp_path):
     harness = builder_agent.build_harness(BuildPlan(workdir=tmp_path))
     assert isinstance(harness, AgentHarness), "the Builder is an extension on the core, not a harness of its own"
@@ -205,11 +220,14 @@ def test_the_extension_registers_every_stage_status_and_the_repair_verbs_with_si
                                         "reroll", "repair_recompile", "repair_grow", "repair_intent",
                                         "repair_refuse_task", "repair_escalate"]
     assert "repair_rewrite_skill" not in harness.registry.names(), "the GEPA caution: no unchecked prompt rewrite"
-    assert [s.name for s in harness.sections] == ["builder", "builder_tools", "skills", "builder_examples",
+    assert [s.name for s in harness.sections] == ["builder", "builder_tools", "skills", "skill:triage", "builder_examples",
                                                   "builder_rules", "builder_targets", "builder_stop"]
     assert harness.system.startswith("<task>\n") and harness.system.rstrip().endswith("</stop>")
     assert "<tools>\n" in harness.system and "<examples>\n" in harness.system and "<rules>\n" in harness.system
-    assert "<skills>\nSkills are texts" in harness.system and "No skills are catalogued" in harness.system
+    assert "<skills>\nSkills are texts" in harness.system
+    assert "- triage (loaded, its text is the <skill> block below)" in harness.system
+    assert '<skill name="triage">' in harness.system and "Zoom before you repair" in harness.system
+    assert harness.system.index("<skills>") < harness.system.index('<skill name="triage">') < harness.system.index("<examples>")
     assert "turn red lights green" in harness.system and "kullback/gates" in harness.system
     assert "Read the whole status once" in harness.system and "Stopping." in harness.system
     assert "`environment` is the whole build" in harness.system
