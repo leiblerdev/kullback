@@ -100,6 +100,7 @@ def test_a_differing_answer_records_which_keys_parted_and_both_answers_whole(tmp
     assert json.loads(difference["ours"])["status"] == "canceled"
     assert json.loads(difference["theirs"])["status"] == "cancelled"
     assert difference["ours_errored"] is False and difference["ours_error"] == ""
+    assert difference["leaf"] == 'status: ours "canceled", recorded "cancelled"', "the leaf, not only the key"
 
 
 def test_a_refusal_on_one_side_records_the_error_message_in_full(tmp_path):

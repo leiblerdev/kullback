@@ -18,7 +18,7 @@ from typing import Any, Iterable, Optional
 
 from kullback.ai.provider import Model, ModelConfig, ModelReply, ToolCallRequest
 from kullback.runner import loop
-from kullback.runner.canon import canonicalize
+from kullback.runner.canon import canonicalize, first_difference
 from kullback.runner.records import ToolCall, Trace, Turn, as_dict, plain
 
 RECORDED = "recorded"
@@ -142,7 +142,7 @@ class ScoredRouter:
         if verdict not in AGREES and verdict != UNRECORDED:
             # A call that agreed needs nothing beyond the preview; a call that parted has to say
             # what parted, and 160 characters is not enough to say it (D66).
-            check["difference"] = difference(outcome.result, outcome.error, recorded)
+            check["difference"] = difference(outcome.result, outcome.error, recorded, self.canon_rules)
         self.checks.append(check)
         return outcome
 
@@ -209,7 +209,7 @@ def _kept(value: Any, errored: bool) -> tuple[str, bool, str]:
     return text[:DIFFERENCE_LIMIT], len(text) > DIFFERENCE_LIMIT, "error" if errored else type(plain(value)).__name__
 
 
-def difference(result: Any, error: Any, recorded: Optional[ToolCall]) -> dict:
+def difference(result: Any, error: Any, recorded: Optional[ToolCall], rules: Any = None) -> dict:
     """Why one routed call parted from its recording, in a form the cause can be read off.
 
     The two preview fields are cut at 160 characters, which is enough to see an answer and not
@@ -217,7 +217,9 @@ def difference(result: Any, error: Any, recorded: Optional[ToolCall]) -> dict:
     unreadable. This is written for the calls that did not agree and for those only: each side's
     error message, the type each answer had, the keys only one side has and the keys both have
     with different values, and each answer up to `DIFFERENCE_LIMIT` characters with a flag saying
-    whether that was all of it. The preview fields keep the bytes they always kept.
+    whether that was all of it. The preview fields keep the bytes they always kept. `leaf` names
+    the first place the two answers part under the canon rules (D154): the key list says `items`
+    changed, the leaf says which item, which field, and both values.
     """
     ours_errored = error is not None
     theirs_errored = recorded is not None and recorded.error is not None
@@ -238,6 +240,8 @@ def difference(result: Any, error: Any, recorded: Optional[ToolCall]) -> dict:
                                      if _dumps(ours[key]) != _dumps(theirs[key]))
     if isinstance(ours, list) and isinstance(theirs, list):
         out["lengths"] = [len(ours), len(theirs)]
+    if not ours_errored and not theirs_errored:
+        out["leaf"] = first_difference(_norm(result), _norm(recorded.result) if recorded else None, rules)
     return out
 
 

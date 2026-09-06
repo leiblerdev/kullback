@@ -16,6 +16,7 @@ from kullback.runner.canon import (
     canon_value,
     compare,
     equal,
+    first_difference,
     load_rules,
     load_table,
     lookup,
@@ -883,3 +884,36 @@ def test_canon_record_honours_a_table_qualified_unordered_rule():
     assert canon_record({"items": ["b", "a"]}, table="tickets", rules=rules) != canon_record(
         {"items": ["a", "b"]}, table="tickets", rules=rules
     )
+
+
+# --- the first place two answers part ---
+
+def test_the_first_difference_names_the_leaf_inside_a_list_of_rows_and_both_values():
+    """A ruling that names the column sends a reader into two dumps; the leaf is the repair."""
+    ours = {"id": "#B1", "items": [{"sku": 1, "options": {"size": "S"}}, {"sku": 2, "options": {"size": "L"}}]}
+    recorded = {"id": "#B1", "items": [{"sku": 1, "options": {"size": "S"}}, {"sku": 2, "options": {"size": "M"}}]}
+    assert first_difference(ours, recorded) == 'items[1].options.size: ours "L", recorded "M"'
+    assert first_difference(ours, ours) is None
+
+
+def test_the_first_difference_walks_past_noise_the_learned_precision_absorbs():
+    rules = CanonRules(number_precision=2)
+    ours = {"paid": [{"amount": 30.180000000000064}], "status": "shipped"}
+    recorded = {"paid": [{"amount": 30.180000000000007}], "status": "packed"}
+    assert first_difference(ours, recorded, rules) == 'status: ours "shipped", recorded "packed"'
+    assert first_difference(ours["paid"], recorded["paid"], rules, "paid") is None
+    assert first_difference(ours["paid"], recorded["paid"], None, "paid") == (
+        "paid[0].amount: ours 30.180000000000064, recorded 30.180000000000007")
+
+
+def test_the_first_difference_reports_shapes_before_leaves_and_cuts_long_values():
+    assert first_difference({"a": 1, "b": 2}, {"a": 1}, path="row") == "row: keys differ: ['b']"
+    assert first_difference([1, 2, 3], [1, 2], path="tags") == "tags: list of 3 against 2 recorded"
+    long = "x" * 100
+    assert first_difference(long, "y", limit=10) == 'value: ours "xxxxxxxxx..., recorded "y"'
+
+
+def test_an_unordered_list_compares_as_one_value():
+    rules = CanonRules(unordered_lists=["tags"])
+    assert first_difference({"tags": ["b", "a"]}, {"tags": ["a", "b"]}, rules) is None
+    assert first_difference({"tags": ["b", "a"]}, {"tags": ["a", "b"]}) == 'tags[0]: ours "b", recorded "a"'
