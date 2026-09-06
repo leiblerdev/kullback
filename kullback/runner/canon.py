@@ -424,6 +424,48 @@ def equal(
     return compare(a, b, column_class, rules, judge, table, column, judge_version).equal
 
 
+def first_difference(
+    ours: Any, recorded: Any, rules: Optional[CanonRules] = None, path: str = "", limit: int = 60
+) -> Optional[str]:
+    """Where two answers first part under canon, or None when canon calls them the same.
+
+    `canonicalize` says whether two answers agree; this says where they stop agreeing, which is what
+    a reader repairing a body needs: a ruling that names the column (`items`) leaves the leaf to be
+    dug out of two dumps by hand, and `items[1].options.size: ours "large", recorded "small"` does
+    not. Dicts are walked by key and lists by position, a list the rules hold unordered compares as
+    one value, and the first leaf whose canonical strings differ is reported with both sides as
+    they were answered, each cut at `limit` characters. Float noise that a learned precision
+    absorbs is walked past, so the leaf named is one the fidelity ruling turns on.
+    """
+    rules = _rules(rules)
+    where = path or "value"
+    if isinstance(ours, dict) and isinstance(recorded, dict):
+        if set(ours) != set(recorded):
+            return f"{where}: keys differ: {sorted(set(ours) ^ set(recorded))}"
+        for key in sorted(ours):
+            found = first_difference(ours[key], recorded[key], rules, _join(path, str(key)), limit)
+            if found is not None:
+                return found
+        return None
+    unordered = rules.unordered_all or _named(path, rules.unordered_lists)
+    if isinstance(ours, (list, tuple)) and isinstance(recorded, (list, tuple)) and not unordered:
+        if len(ours) != len(recorded):
+            return f"{where}: list of {len(ours)} against {len(recorded)} recorded"
+        for index, (one, other) in enumerate(zip(ours, recorded, strict=False)):
+            found = first_difference(one, other, rules, f"{path}[{index}]", limit)
+            if found is not None:
+                return found
+        return None
+    if _canon(ours, rules, path) == _canon(recorded, rules, path):
+        return None
+    return f"{where}: ours {_shown(ours, limit)}, recorded {_shown(recorded, limit)}"
+
+
+def _shown(value: Any, limit: int) -> str:
+    text = json.dumps(value, ensure_ascii=False, default=str, separators=(",", ":"))
+    return text if len(text) <= limit else text[:limit] + "..."
+
+
 # --- the equivalence table as a file ---
 
 def pair_key(column: str, a: str, b: str) -> str:

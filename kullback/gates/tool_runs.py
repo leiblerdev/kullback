@@ -21,6 +21,7 @@ import re
 from typing import Any, Iterable, Optional
 
 from kullback.runner.canon import canonicalize as canon
+from kullback.runner.canon import first_difference
 from kullback.runner.records import EntitySchema, GateResult, ToolCall, content_hash
 
 CRASH_ERRORS = frozenset({"NameError", "AttributeError", "TypeError", "ImportError",
@@ -224,9 +225,12 @@ def compare_results(schema: EntitySchema, expected: Any, got: Any, rules: Any = 
             ok, notes = ok and key_ok, notes + key_notes
         return ok, notes
     if not found or not isinstance(got, dict):
-        return canon(expected, rules) == canon(got, rules), []
-    differs = [n for n in columns_of(schema, found[0], "hard")
-               if canon(expected.get(n), rules) != canon(got.get(n), rules)]
+        found_at = first_difference(got, expected, rules)
+        return found_at is None, [found_at] if found_at else []
+    # The leaf is named, not only the column: `items` sends a reader into two dumps, and
+    # `items[1].options.size: ours "large", recorded "small"` is the repair (D154).
+    differs = [found_at for n in columns_of(schema, found[0], "hard")
+               for found_at in [first_difference(got.get(n), expected.get(n), rules, n)] if found_at]
     semantic = [f"semantic:{n}" for n in columns_of(schema, found[0], "semantic")
                 if canon(expected.get(n), rules) != canon(got.get(n), rules)]
     return not differs, differs + semantic
@@ -261,7 +265,7 @@ def body_replay_fidelity_gate(calls: Iterable[ToolCall], results: Optional[list[
             hits["success_matches"] += 1
         else:
             failures.append(f"{call.name}({args_text(call)}): hard columns differ: "
-                            f"{', '.join(differing) or 'value'}")
+                            f"{'; '.join(n for n in differing if not n.startswith('semantic:')) or 'value'}")
     success = hits["success_matches"] / hits["success_calls"] if hits["success_calls"] else 1.0
     errors = hits["error_matches"] / hits["error_calls"] if hits["error_calls"] else 1.0
     metrics = dict(hits, split=label, success_fidelity=success, error_fidelity=errors,

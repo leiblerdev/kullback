@@ -60,7 +60,7 @@ TOOLS = ("Tools, one example call each.\n"
          "queue=\"review\"): record a decision for the round report; they move no gate and change no "
          "artifact.")
 EXAMPLES = ("Examples of a red light and the call that answers it.\n"
-            "1. `replay_fidelity: update_booking (12): hard columns differ: total` -> "
+            "1. `replay_fidelity: update_booking (12): hard columns differ: total: ours 118.0, recorded 120.0` -> "
             "repair_recompile(name=\"update_booking\", hint=\"keep the total the recording shows; do not "
             "recompute it\").\n"
             "2. `executes_on_s0: price_quote({...}) raised NameError: name 'math' is not defined` -> "

@@ -1004,6 +1004,12 @@ Build 13, round 1, the first with the triage skill: the Builder zoomed on every 
 
 Decided: after a model beat that produced no build result, the driver calls `build(target)` itself through the same registry, as the code path always did; a stage the repairs left current comes from the cache, so it costs nothing but the rulings. The round records `built_by_driver`, and the Builder's stop rule now says to build the target once more after the last repair before answering. A beat still fails only when the build itself errors.
 
+### D154. A fidelity ruling names the leaf where two answers part, not only the column (2026-09-06)
+
+Reading the 92 `modify_pending_order_items` calls the base records mark `differs`: every ruling said `hard columns differ: items` or `payment_history`, and what differed was found by diffing the two answers by hand. 75 were float noise in one amount (30.180000000000064 against 30.180000000000007) that the learned `number_precision: 2` already absorbs; 17 were the recorded system giving every replaced item the options and price of the last new item, which our body did not reproduce. The Builder, reading `items`, has no way to tell those apart, and the replay record's `keys_changed` stops at the same key. The only general tool is to say where: which item, which field, both values.
+
+Decided: `first_difference(ours, recorded, rules, path)` in the canon module walks two answers under the canon rules, dicts by key and lists by position (a list the rules hold unordered compares as one value), and returns the first leaf whose canonical strings differ with both sides as they were answered, cut at 60 characters; it walks past noise the precision absorbs, so the leaf named is one the ruling turns on. The fidelity gate's `compare_results` reports that string for every differing hard column (`items[1].options.size: ours "large", recorded "small"`), the ruling joins them with semicolons, and the replay record's `difference` carries it as `leaf`. Nothing about any customer's tools enters: the walk knows JSON and the rules the corpus taught it. The Builder prompt's first example shows the new shape. Runner and gates re-frozen by Krrish.
+
 ## Pending (asked, not yet answered)
 
 - D71 provisional (user-side writes); I want more discussion: Simulated user tools, interaction with sequence Hard constraints, required vs allowed. Three questions, to take up when I'm ready.
