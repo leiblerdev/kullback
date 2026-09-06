@@ -337,6 +337,16 @@ def round_counts(build: Build) -> list[dict]:
     return [record.get("counts") or {} for record in build.rounds]
 
 
+def cache_line(total: dict) -> str:
+    """What the provider's cache did to the dollars, off the ledger's own fields: paid plus saved is
+    what the same calls would have cost with no cache (budget.py cache_effect)."""
+    saved = float(total.get("cache_saved_usd") or 0.0)
+    paid = float(total.get("usd") or 0.0)
+    return (f"the cache saved {money(saved)}: {int(total.get('cache_read') or 0):,} cache-read tokens at "
+            f"the cache rate, {int(total.get('memo_hits') or 0):,} memo hits sent nothing; without it "
+            f"{money(paid + saved)}")
+
+
 def build_duration(build: Build) -> tuple[str, str]:
     """How long the build took: the first round's start to the last round's end."""
     starts = [c["started_at"] for c in round_counts(build)
@@ -410,7 +420,8 @@ def headline_rows(build: Build) -> list[tuple[str, str, str]]:
     if total:
         priced = int(total.get("calls") or 0) - int(total.get("unpriced_calls") or 0)
         rows += [
-            ("Dollars", f"{money(float(total.get('usd') or 0.0))}", "budget.json total.usd"),
+            ("Dollars", f"{money(float(total.get('usd') or 0.0))}; {cache_line(total)}",
+             "budget.json total.usd, total.cache_saved_usd"),
             ("Model calls", f"{int(total.get('calls') or 0):,} ({priced:,} priced, "
                             f"{int(total.get('unpriced_calls') or 0):,} unpriced, "
                             f"{int(total.get('memo_hits') or 0):,} memo hits)",
@@ -620,7 +631,9 @@ def round_rows(build: Build) -> list[dict]:
                           else na("rounds.json counts.artifacts_changed")),
             "spend": f"builder {money(float(spent.get('builder') or 0.0))}, "
                      f"examiner {money(float(spent.get('examiner') or 0.0))}, "
-                     f"total {money(float(spent.get('total') or 0.0))}" if spent
+                     f"total {money(float(spent.get('total') or 0.0))}"
+                     + (f", cache saved {money(float(spent['cache_saved']))}"
+                        if spent.get("cache_saved") is not None else "") if spent
                      else na("rounds.json counts.spend"),
             "turns": (f"builder {int(took.get('builder') or 0)}, "
                       f"examiner {int(took.get('examiner') or 0)}, "

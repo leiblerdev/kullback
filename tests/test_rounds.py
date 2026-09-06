@@ -631,7 +631,7 @@ def test_round_end_carries_every_count_d126_lists_and_none_comes_from_a_model(dr
     assert set(round_end.GATE_COUNTS) <= set(counts)
     assert counts["tasks"] == len(driven["result"]["tasks"]) == 3
     assert counts["fallback_compactions"] == {"builder": 0, "examiner": 0}
-    assert set(counts["spend"]) == {"builder", "examiner", "total"} and counts["findings"] == []
+    assert set(counts["spend"]) == {"builder", "examiner", "total", "cache_saved"} and counts["findings"] == []
     assert rounds.load_rounds(driven["workdir"])[-1].counts == counts
     assert [d for d in driven["dicts"] if d.get("kind") == "round"][-1]["counts"] == counts
 
@@ -644,7 +644,7 @@ def test_a_rounds_counts_carry_its_clock_its_spend_its_turns_and_its_context_fil
     assert counts["ended_at"] - counts["started_at"] < 3600
     assert counts["turns"] == {"builder": 0, "examiner": 0, "total": 0}, "the code driver takes no turn"
     assert counts["context_fill"] == {"builder": 0.0, "examiner": 0.0}
-    assert set(counts["spend"]) == {"builder", "examiner", "total"}
+    assert set(counts["spend"]) == {"builder", "examiner", "total", "cache_saved"}
 
 
 def test_every_rounds_gate_rulings_are_kept_beside_gates_json_round_by_round(driven):
@@ -692,7 +692,7 @@ def test_a_round_that_failed_still_records_its_clock_its_spend_and_its_turns(tmp
     assert counts["turns"]["builder"] == 2 and counts["turns"]["total"] == counts["turns"]["builder"] + \
         counts["turns"]["examiner"]
     assert counts["context_fill"]["builder"] > 0.0
-    assert set(counts["spend"]) == {"builder", "examiner", "total"}
+    assert set(counts["spend"]) == {"builder", "examiner", "total", "cache_saved"}
     assert "fidelity" not in counts, "a round that failed computed no gate count"
     assert json.loads((workdir / "gates_by_round.json").read_text(encoding="utf-8"))[-1]["round"] == 1
 

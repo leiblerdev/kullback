@@ -992,6 +992,12 @@ Build 12's model arm: 409 of 600 re-rolls made no write. 149 never authenticated
 
 Decided: `derive_user_rules` also mines every scalar argument (and every string in a list argument) of a call that recorded no error, when the user said that value in a turn at or before the call, matched with emphasis and whitespace ignored and with or without a leading `#`, and records the value as the argument carries it. A value only the tool returned, a value the user said only after the call, and an argument of a failed call are not facts (D77: nothing invented). The field is the vocabulary's own for that argument (`first_name` and `last_name` of one call fold into the `name` the Simulated user answers with), else the argument name. Disclosure is on request when the agent's previous turn asked for it, else volunteered. On the retail corpus the name fact rises from 187 of 456 traces to 373 and zip from 243 to 365.
 
+### D152. Spend is reported with the cache's effect beside it (2026-09-06)
+
+Founder: "update the spend to reflect the cache effect please." The ledger already billed cache-read tokens at the cache rate (D-series budget rule: each count at its own rate), so the dollars were right, but nothing said what the cache had done to them: build 12's model arm read 62 million tokens from the provider's cache against 9.7 million uncached, and the report showed one number.
+
+Decided: every ledger bucket carries `cache_saved_usd`, the cache-read tokens at the input rate less what they cost at the cache rate, less the premium cache writes carry over plain input where a vendor charges one (a cache written and never read shows as a cost). Paid plus saved is what the same calls would have cost with no cache. Memo hits stay a count: nothing was sent, so nothing is known about their price. The figure rides on the feed's model_call rows, on each round's `spend` as `cache_saved` (the ledger's delta over the round), on the build's round line, on the report's rounds table, and on the build table's Dollars row with the cache-read tokens and memo hits it rests on. Rounds and ledgers written before this carry no figure and print none rather than a zero.
+
 ## Pending (asked, not yet answered)
 
 - D71 provisional (user-side writes); I want more discussion: Simulated user tools, interaction with sequence Hard constraints, required vs allowed. Three questions, to take up when I'm ready.

@@ -427,10 +427,12 @@ def _rounds_table(data: ReportData) -> list[str]:
     for record in data.rounds:
         counts = record.counts or {}
         spend = float((counts.get("spend") or {}).get("total") or 0.0)
+        saved = (counts.get("spend") or {}).get("cache_saved")  # rounds before D152 carry none
+        cache = f" (cache saved ${float(saved):.4f})" if saved is not None else ""
         lines.append(f"| {record.round} | {counts.get('fidelity', 0)}/{counts.get('tasks', 0)} | "
                      f"{counts.get('trusted', 0)} | {counts.get('refused_count', 0)} | "
                      f"{counts.get('assisted_runs', 0)} | {counts.get('probes_passing', 0)} | "
-                     f"${spend:.4f} | {_cell(record.exit or '')} |")
+                     f"${spend:.4f}{cache} | {_cell(record.exit or '')} |")
     return lines
 
 

@@ -439,7 +439,7 @@ def _rounds_rows() -> list[dict]:
                                                "unfinished": ["t1", "t2"], "refused": {}}},
         {"round": 2, "exit": "done", "counts": {"fidelity": 2, "tasks": 2, "trusted": 1, "refused_count": 1,
                                                  "assisted_runs": 1, "probes_passing": 3, "refused": {"t2": "no Reference"},
-                                                 "spend": {"builder": 0.5, "examiner": 0.25, "total": 0.75},
+                                                 "spend": {"builder": 0.5, "examiner": 0.25, "total": 0.75, "cache_saved": 0.25},
                                                  "unfinished": []}},
     ]
 
@@ -460,7 +460,7 @@ def test_the_report_has_a_rounds_table_when_rounds_json_exists_and_none_otherwis
     section = block_of(render(loaded), "## Rounds")
     assert "| round | fidelity | trusted | refused | assisted runs | probes passing | spend | exit |" in section
     assert "| 1 | 1/2 | 0 | 0 | 1 | 0 | $0.0000 |  |" in section
-    assert "| 2 | 2/2 | 1 | 1 | 1 | 3 | $0.7500 | done |" in section
+    assert "| 2 | 2/2 | 1 | 1 | 1 | 3 | $0.7500 (cache saved $0.2500) | done |" in section
     headings = [line.strip() for line in render(loaded).splitlines() if line.startswith("## ")]
     assert headings == list(SECTIONS) and headings.index("## Rounds") == headings.index("## Environment") + 1
 

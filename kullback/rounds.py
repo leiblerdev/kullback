@@ -346,6 +346,7 @@ class Loop:
     compactions_seen: dict[str, int] = field(default_factory=dict)
     turns_seen: dict[str, int] = field(default_factory=dict)
     round_started: float = 0.0
+    round_saved_start: float = 0.0
     builder_stop: dict = field(default_factory=dict)
     stall_told: int = 0
     started_hashes: dict[str, str] = field(default_factory=dict)
@@ -384,6 +385,10 @@ class Loop:
     def spend(self) -> float:
         """What the workdir has spent so far, off the file budget.py writes."""
         return float(budget.load_totals(self.plan.workdir)["total"].get("usd") or 0.0)
+
+    def cache_saved(self) -> float:
+        """What the provider's cache has taken off the workdir's bill so far, off the same file."""
+        return float(budget.load_totals(self.plan.workdir)["total"].get("cache_saved_usd") or 0.0)
 
     def compactions(self, agent: str) -> int:
         harness = self.builder if agent == "builder" else self.examiner
@@ -606,6 +611,9 @@ class Loop:
         """
         spend = {agent: round(self.beat_spend.get(agent, 0.0), 6) for agent in AGENTS}
         spend["total"] = round(sum(spend.values()), 6)
+        # What the cache took off this round's bill: the ledger's figure now less the figure at the
+        # round's start, so a round's spend reads with the cache's effect beside it.
+        spend["cache_saved"] = round(self.cache_saved() - self.round_saved_start, 6)
         turns: dict[str, int] = {}
         fill: dict[str, float] = {}
         for agent in AGENTS:
@@ -779,6 +787,7 @@ class Loop:
     def round(self, n: int) -> RoundRecord:
         """One round: the Builder's beat, the Examiner's beat, the counts, the exit, rounds.json."""
         self.round_started = time.time()
+        self.round_saved_start = self.cache_saved()
         self.plan.round = n  # the round a repair request records itself under (D126)
         self.emit(RoundStart(round=n))
         self.sent, self.beat_spend, self.spent_allowance = [], {}, {}

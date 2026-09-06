@@ -72,8 +72,13 @@ _LEDGER_LOCK = threading.RLock()
 # fields; this is only the count, so a stage's cache effectiveness is a number, not a feeling.
 # models_dev_calls: how many priced calls got their price from the models.dev snapshot rather
 # than the PRICES table below, so a stale table is visible in the totals file, not just guessed.
+# cache_saved_usd: what the provider's prompt cache took off the bill, net: the cache-read tokens
+# at the input rate minus what they cost at the cache rate, less the premium cache writes carry
+# over plain input where a vendor charges one. usd is what was paid; usd + cache_saved_usd is
+# what the same calls would have cost with no cache. A memo hit is a count only: nothing was
+# sent, so nothing is known about what it would have cost.
 BUCKET_FIELDS = ("calls", "input", "output", "cache_read", "cache_write", "usd", "wall_ms",
-                 "unpriced_calls", "memo_hits", "models_dev_calls")
+                 "unpriced_calls", "memo_hits", "models_dev_calls", "cache_saved_usd")
 CONTEXT_CAP_FRACTION = 0.40
 # Tokens are estimated from characters before a call, because the count endpoint is itself a
 # call. Four characters per token is the usual English ratio and errs on the low side.
@@ -234,6 +239,33 @@ def call_cost(usage: Usage, model_id: Optional[str]) -> float:
     ) / 1_000_000
 
 
+def cache_effect(usage: Usage, model_id: Optional[str]) -> float:
+    """What the cache changed on this call's bill, in dollars, positive when it saved money.
+
+    Cache-read tokens are billed at the cache rate instead of the input rate; cache-write tokens
+    are billed at the write rate, which some vendors set above input. The two together are the
+    cache's effect, so a call that wrote a cache nobody read shows as a cost, not a saving.
+    An unpriced model has no rates, so its effect is 0.0 like its cost.
+    """
+    price = price_for(model_id)
+    if price is None:
+        return 0.0
+    return (
+        usage.cache_read * (price["input"] - price["cache_read"])
+        - usage.cache_write * (price["cache_write"] - price["input"])
+    ) / 1_000_000
+
+
+def cache_line(bucket: dict) -> str:
+    """One line a report prints beside the dollars: what the cache did to them."""
+    saved = float(bucket.get("cache_saved_usd") or 0.0)
+    paid = float(bucket.get("usd") or 0.0)
+    reads = int(bucket.get("cache_read") or 0)
+    hits = int(bucket.get("memo_hits") or 0)
+    return (f"the cache saved ${saved:,.4f}: {reads:,} cache-read tokens at the cache rate, "
+            f"{hits:,} memo hits sent nothing; without it ${paid + saved:,.4f}")
+
+
 def empty_bucket() -> dict[str, float]:
     return {field: 0 for field in BUCKET_FIELDS}
 
@@ -288,12 +320,15 @@ def record_call(
     event.cost.usd = call_cost(usage, priced_id)
     source = price_source(priced_id)
     event.cost.price_source = source
+    saved = cache_effect(usage, priced_id)
     with _LEDGER_LOCK:
-        return _record_locked(event, usage, source, stage, workdir, ceiling, item, items_left, memo_hit)
+        return _record_locked(event, usage, source, stage, workdir, ceiling, item, items_left, memo_hit,
+                              saved)
 
 
 def _record_locked(event: Event, usage: Usage, source: Optional[str], stage: str, workdir: str | Path,
-                   ceiling: Optional["Ceiling"], item: str, items_left: int, memo_hit: bool) -> Event:
+                   ceiling: Optional["Ceiling"], item: str, items_left: int, memo_hit: bool,
+                   saved: float = 0.0) -> Event:
     totals = load_totals(workdir)
     bucket = totals["stages"].setdefault(stage, empty_bucket())
     for target in (bucket, totals["total"]):
@@ -303,6 +338,7 @@ def _record_locked(event: Event, usage: Usage, source: Optional[str], stage: str
         target["cache_read"] += usage.cache_read
         target["cache_write"] += usage.cache_write
         target["usd"] += event.cost.usd
+        target["cache_saved_usd"] += saved
         target["wall_ms"] += event.cost.wall_ms
         if source is None:
             target["unpriced_calls"] += 1
@@ -318,7 +354,8 @@ def _record_locked(event: Event, usage: Usage, source: Optional[str], stage: str
     feed.append(workdir, "model_call", stage=stage, model=priced_model_id(event.cost),
                 input=usage.input, output=usage.output, cache_read=usage.cache_read,
                 usd=event.cost.usd, wall_ms=event.cost.wall_ms, item=item or None,
-                calls=totals["total"]["calls"], spend_usd=totals["total"]["usd"])
+                calls=totals["total"]["calls"], spend_usd=totals["total"]["usd"],
+                cache_saved_usd=totals["total"]["cache_saved_usd"])
     if ceiling is not None:
         ceiling.charge_recorded(totals, stage, item or str(event.idx), items_left)
     return event
