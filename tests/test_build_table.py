@@ -278,7 +278,7 @@ def test_the_round_row_says_which_of_the_gate_counts_moved_what_it_spent_and_the
     workdir.mkdir()
     (workdir / "rounds.json").write_text(json.dumps([
         {"round": 1, "counts": {"fidelity": 1, "trusted": 0, "refused_count": 0, "assisted_runs": 0,
-                                "probes_passing": 0, "spend": {"builder": 0.5, "examiner": 0.25, "total": 0.75},
+                                "probes_passing": 0, "spend": {"builder": 0.5, "examiner": 0.25, "total": 0.75, "cache_saved": 0.3},
                                 "turns": {"builder": 6, "examiner": 2, "total": 8},
                                 "artifacts": "aaaaaaaaaaaa", "artifacts_changed": []},
          "exit": None},
@@ -289,7 +289,7 @@ def test_the_round_row_says_which_of_the_gate_counts_moved_what_it_spent_and_the
          "exit": "stalled"}]), encoding="utf-8")
     first, second = [cells(row) for row in rows_of(B.render(B.Build(workdir)), "Per round")]
     assert first[2] == "first round" and first[6] == "the round did not exit"
-    assert first[4] == "builder $0.50, examiner $0.25, total $0.75"
+    assert first[4] == "builder $0.50, examiner $0.25, total $0.75, cache saved $0.30"
     assert first[5] == "builder 6, examiner 2, total 8"
     assert second[2] == "trusted 2 from 0" and second[6] == "stalled"
     assert second[4] == "builder $0.10, examiner $0.00, total $0.10"

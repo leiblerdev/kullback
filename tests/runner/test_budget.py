@@ -113,6 +113,31 @@ def test_record_call_writes_per_stage_and_per_build_totals(workdir):
     )
 
 
+def test_the_cache_effect_is_what_reads_saved_over_the_input_rate_less_the_write_premium():
+    price = budget.PRICES["anthropic/claude-opus-5"]
+    reads = budget.cache_effect(Usage(cache_read=1_000_000), "anthropic/claude-opus-5")
+    assert reads == pytest.approx(price["input"] - price["cache_read"])
+    writes = budget.cache_effect(Usage(cache_write=1_000_000), "anthropic/claude-opus-5")
+    assert writes == pytest.approx(price["input"] - price["cache_write"]) and writes < 0, \
+        "a cache written and never read costs more than plain input, and the ledger says so"
+    assert budget.cache_effect(Usage(input=1_000_000), "anthropic/claude-opus-5") == 0.0
+    assert budget.cache_effect(Usage(cache_read=1_000_000), "openai/mystery") == 0.0
+
+
+def test_the_ledger_carries_what_the_cache_saved_beside_what_was_paid(workdir):
+    budget.record_call(call_event(input=1_000_000, cache_read=1_000_000), stage="reroll", workdir=workdir)
+    totals = budget.load_totals(workdir)
+    price = budget.PRICES["anthropic/claude-opus-5"]
+    bucket = totals["stages"]["reroll"]
+    assert bucket["usd"] == pytest.approx(price["input"] + price["cache_read"])
+    assert bucket["cache_saved_usd"] == pytest.approx(price["input"] - price["cache_read"])
+    assert totals["total"]["cache_saved_usd"] == pytest.approx(bucket["cache_saved_usd"])
+    assert bucket["usd"] + bucket["cache_saved_usd"] == pytest.approx(2 * price["input"]), \
+        "paid plus saved is the bill with no cache"
+    line = budget.cache_line(totals["total"])
+    assert "the cache saved $" in line and "1,000,000 cache-read tokens" in line and "without it $" in line
+
+
 def test_totals_record_wall_time_and_unpriced_calls(workdir):
     budget.record_call(call_event(model="openai/mystery", input=100), stage="mine", workdir=workdir)
     totals = budget.load_totals(workdir)

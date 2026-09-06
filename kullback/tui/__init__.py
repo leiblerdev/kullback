@@ -551,6 +551,8 @@ class Screen:
                 str(record.get("model") or "no model"),
                 str(record.get("exit") or record.get("status") or ""),
                 f"${float(record.get('spend_usd') or 0):,.4f}",
+                (f"cache saved ${float(record.get('cache_saved_usd') or 0):,.4f}"
+                 if record.get("cache_saved_usd") is not None else ""),
             ) if part)
             line.append(f"  {rest}", style="dim")
             self.console.print(line, no_wrap=True, overflow="ellipsis")

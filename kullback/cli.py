@@ -343,7 +343,7 @@ def _round_line(counts: dict) -> str:
             f"trusted {counts.get('trusted', 0)}, refused {counts.get('refused_count', 0)}, "
             f"assisted runs {counts.get('assisted_runs', 0)}, probes passing {counts.get('probes_passing', 0)}, "
             f"compactions builder {compactions.get('builder', 0)} examiner {compactions.get('examiner', 0)}, "
-            f"spend ${float(spend.get('total') or 0.0):.4f}")
+            f"spend ${float(spend.get('total') or 0.0):.4f}, cache saved ${float(spend.get('cache_saved') or 0.0):.4f}")
 
 
 def _echo_round(event: Any) -> None:
