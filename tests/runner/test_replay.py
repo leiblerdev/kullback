@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+
 from kullback.examiner import derive as verifier_mod
 from kullback.gates import verifier_suite as suite
 from kullback.runner import replay
@@ -65,6 +67,65 @@ def test_compare_call_names_every_way_two_answers_part():
     refused = call("x", "t", {}, None, error=ToolCallError(**{"class": "not_found_entity"}))
     assert replay.compare_call(refused, {"a": 1}, None) == replay.THEIRS_REFUSED
     assert replay.compare_call(refused, None, ToolCallError(**{"class": "unknown"})) == replay.BOTH_REFUSED
+
+
+def _checks(out, verdict: str) -> list[dict]:
+    return [check for check in out.checks if check["verdict"] == verdict]
+
+
+def test_a_check_that_agreed_carries_no_difference_record(tmp_path):
+    """The record is written for the calls that parted and for those only, so a replay that agreed
+    all the way writes the same bytes it always did."""
+    out = do_replay(tmp_path)
+    assert out.confirmed and out.checks
+    assert all("difference" not in check for check in out.checks)
+    assert all(set(check) == {"tool", "kind", "verdict", "route", "call_id", "ours", "recorded"}
+               for check in out.checks)
+
+
+def test_a_differing_answer_records_which_keys_parted_and_both_answers_whole(tmp_path):
+    """The two preview fields keep their 160 characters; the difference record is what a report
+    reads the cause off, so it says the types, the keys and the answers themselves."""
+    class Misspelt(Toolkit):
+        cancelled = "canceled"
+
+    out = do_replay(tmp_path, Misspelt)
+    parted = _checks(out, replay.DIFFERS)
+    assert [check["tool"] for check in parted] == ["cancel_order"]
+    difference = parted[0]["difference"]
+    assert difference["keys_changed"] == ["status"]
+    assert difference["keys_only_ours"] == [] and difference["keys_only_theirs"] == []
+    assert difference["type_mismatch"] is False and difference["ours_type"] == "dict"
+    assert not difference["ours_truncated"] and not difference["theirs_truncated"]
+    assert json.loads(difference["ours"])["status"] == "canceled"
+    assert json.loads(difference["theirs"])["status"] == "cancelled"
+    assert difference["ours_errored"] is False and difference["ours_error"] == ""
+
+
+def test_a_refusal_on_one_side_records_the_error_message_in_full(tmp_path):
+    """160 characters is not always enough to reach the message inside a refusal, and the message is
+    the whole of what says whose error it was."""
+    class Broken(Toolkit):
+        def get_order_details(self, order_id):
+            raise KeyError("x" * 300)
+
+    out = do_replay(tmp_path, Broken)
+    difference = _checks(out, replay.OURS_REFUSED)[0]["difference"]
+    assert difference["ours_errored"] is True and difference["theirs_errored"] is False
+    assert "x" * 300 in difference["ours_error"] and difference["theirs_error"] == ""
+    assert difference["ours_type"] == "error" and difference["type_mismatch"] is True
+
+
+def test_an_answer_too_long_to_keep_is_marked_as_cut_with_the_keys_still_named(tmp_path):
+    class Wordy(Toolkit):
+        def get_order_details(self, order_id):
+            return {"id": order_id, "essay": "x" * 6000}
+
+    out = do_replay(tmp_path, Wordy)
+    difference = _checks(out, replay.DIFFERS)[0]["difference"]
+    assert difference["ours_truncated"] is True and len(difference["ours"]) == replay.DIFFERENCE_LIMIT
+    assert difference["theirs_truncated"] is False
+    assert difference["keys_only_ours"] == ["essay"] and difference["keys_only_theirs"] == ["status", "total"]
 
 
 def test_a_tool_the_user_called_is_routed_under_the_users_name(tmp_path):

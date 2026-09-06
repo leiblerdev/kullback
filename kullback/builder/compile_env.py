@@ -121,6 +121,7 @@ class ToolBuild:
     nodes: list[dict] = field(default_factory=list)
     gates: list[GateResult] = field(default_factory=list)
     assisted: bool = False
+    kept_attempt: Optional[int] = None  # which attempt's body this is, when no attempt passed
 
 # --- reading rows out of recorded tool results ---
 
@@ -753,7 +754,8 @@ def _tool_block(toolsig: ToolSig, examples: Iterable[ToolCall], error_prefix: Op
 
 def body_messages(toolsig: ToolSig, examples: Iterable[ToolCall], schema: Optional[EntitySchema] = None,
                   failure: str = "", tool_names: Iterable[str] = (),
-                  error_prefix: Optional[str] = None, builder_tools: bool = False) -> list[dict]:
+                  error_prefix: Optional[str] = None, builder_tools: bool = False,
+                  lesson: str = "") -> list[dict]:
     """The whole message list one body request sends, so its size can be checked before it goes.
 
     The system message carries the fixed instructions plus what is the same for every tool in
@@ -762,8 +764,14 @@ def body_messages(toolsig: ToolSig, examples: Iterable[ToolCall], schema: Option
     one-shot request outside the repair loop) the failure of a previous attempt. `builder_tools`
     (D117) adds the one paragraph naming lookup_rows and test_body to the stable prefix; it is the
     same value on every call of one compile_tool, so the cached bytes never move mid-build.
+
+    `lesson` is what earlier attempts at this one tool already failed on (memory.lesson_for): it
+    belongs to this tool and not to the build, so it goes in the user turn and leaves the stable
+    prefix alone. Empty, the messages are the same bytes they were before there was a lesson.
     """
     user = _tool_block(toolsig, examples, error_prefix)
+    if lesson:
+        user += "\n\n" + lesson
     if failure:
         user += "\n\nThe previous body failed these gates:\n" + failure
     return [{"role": "system", "content": _stable_system(schema, tool_names, builder_tools)},
@@ -1090,6 +1098,21 @@ def _evidence_for(attempt: int, shown: list[ToolCall], gates: list[GateResult]) 
     return failing[:1] if attempt == 1 else (failing if attempt == 2 else shown)
 
 
+def attempt_score(gates: Iterable[GateResult]) -> tuple[int, int]:
+    """How far one attempt's body got, as the key the kept body is chosen by.
+
+    `run_gates` runs the gates in one order (parses, confined, executes_on_s0, deterministic,
+    non_trivial, replay_fidelity, refuses_unknown) and stops at the first failure, so the count of
+    gates a body passed is how far down that order it reached. The tie-break is how many recorded
+    calls its replay actually matched, which separates two bodies that fell at the same gate.
+    """
+    gates = list(gates)
+    passed = sum(1 for gate in gates if gate.passed)
+    matched = sum(int(gate.metrics.get("success_matches") or 0)
+                  for gate in gates if gate.stage == "replay_fidelity")
+    return passed, matched
+
+
 def _evidence_label(attempt: int, gates: list[GateResult]) -> str:
     """The node's own name for its evidence, honest about the held-out case."""
     if attempt and _held_out_only(gates):
@@ -1115,7 +1138,7 @@ def compile_tool(model, toolsig: ToolSig, calls: Iterable[ToolCall], schema: Ent
                  max_evidence_chars: Optional[int] = MAX_EVIDENCE_CHARS, timeout: float = 30.0,
                  call_states: Optional[dict] = None, rules: Any = None,
                  tool_names: Iterable[str] = (), error_prefix: Optional[str] = None,
-                 builder_tools: bool = True) -> ToolBuild:
+                 builder_tools: bool = True, lesson: str = "") -> ToolBuild:
     """Write one tool body, gate it, and repair it at most three times with growing evidence (D75).
 
     Attempt 1 sees the failing call, attempt 2 every failing call, attempt 3 the full call table, and
@@ -1134,12 +1157,18 @@ def compile_tool(model, toolsig: ToolSig, calls: Iterable[ToolCall], schema: Ent
     and failure as a new user turn, so the first two messages of every call in the loop are the
     same bytes a cache can reuse.
     Each attempt is a node dict; after the last miss the tool is marked assisted (D49) and the nodes
-    are written under the workdir.
+    are written under the workdir. When no attempt passes, the body kept is the best attempt's, not
+    the last one's (`attempt_score`, `ToolBuild.kept_attempt`).
 
     `builder_tools` (D117, on by default) lets the model call `lookup_rows` and `test_body` while
     it drafts this attempt's reply, inside `_reply_with_tools`'s own bounded loop
     (`MAX_TOOL_ROUNDS`), before the reply it settles on is gated the same way an old, tool-less
     reply always was. Turn it off for a caller that wants the old one-call-per-attempt behaviour.
+
+    `lesson` is what this tool already failed on in an earlier build or an earlier recompile
+    request (`memory.lesson_for`, written by `repair.record_tool_lesson`). It is carried into the
+    first user turn, so it is in the prefix every retry of this attempt chain keeps; without it the
+    recompile asks the same question again and the model has no way to know it was asked before.
     """
     workdir, calls = Path(workdir), list(calls)
     if error_prefix is None:  # build.py passes the corpus-wide prefix; alone, this tool's own calls
@@ -1149,6 +1178,10 @@ def compile_tool(model, toolsig: ToolSig, calls: Iterable[ToolCall], schema: Ent
     skeleton = gate_parses(module_source(schema, [toolsig], {toolsig.name: "pass"}))
     messages: list[dict] = []
     reply_content = ""
+    # The loop grows its evidence off the attempt that just ran, not off the best one so far, so
+    # the two are kept apart: `latest` drives the next prompt, `build` holds what is kept.
+    latest: list[GateResult] = []
+    best: Optional[tuple[int, int]] = None
     for attempt in range(max_attempts + 1):
         if not skeleton.passed:  # code owns the skeleton, so no model call can repair it
             build.gates = [skeleton]
@@ -1157,12 +1190,13 @@ def compile_tool(model, toolsig: ToolSig, calls: Iterable[ToolCall], schema: Ent
                                 "failures": [f"the code-owned skeleton does not parse: {f}"
                                              for f in skeleton.failures]})
             break
-        evidence = _evidence_for(attempt, shown, build.gates)
-        node = {"attempt": attempt, "tool": toolsig.name, "evidence": _evidence_label(attempt, build.gates),
+        evidence = _evidence_for(attempt, shown, latest)
+        node = {"attempt": attempt, "tool": toolsig.name, "evidence": _evidence_label(attempt, latest),
                 "evidence_calls": len(evidence), "passed": False, "refused": False}
         if attempt == 0:
             messages = body_messages(toolsig, evidence, schema=schema, tool_names=tool_names,
-                                     error_prefix=error_prefix, builder_tools=builder_tools)
+                                     error_prefix=error_prefix, builder_tools=builder_tools,
+                                     lesson=lesson)
         else:
             messages = _append_retry(messages, reply_content, evidence, failure, error_prefix)
         # Fewer whole calls, never a shortened one. `_example_block` refuses to cut a call in
@@ -1175,7 +1209,8 @@ def compile_tool(model, toolsig: ToolSig, calls: Iterable[ToolCall], schema: Ent
             evidence = evidence[:-1]
             node["evidence_calls"] = len(evidence)
             messages = (body_messages(toolsig, evidence, schema=schema, tool_names=tool_names,
-                                      error_prefix=error_prefix, builder_tools=builder_tools)
+                                      error_prefix=error_prefix, builder_tools=builder_tools,
+                                      lesson=lesson)
                         if attempt == 0
                         else _append_retry(messages[:-2], reply_content, evidence, failure, error_prefix))
         size = prompt_chars(messages)
@@ -1232,17 +1267,29 @@ def compile_tool(model, toolsig: ToolSig, calls: Iterable[ToolCall], schema: Ent
         node.update(body_hash=content_hash(body), gates=[as_dict(g) for g in gates],
                     passed=all(g.passed for g in gates))
         build.nodes.append(node)
-        build.body, build.gates = body, gates
+        latest = gates
+        # The last attempt is not the best attempt. A live build's fourth attempt at one write tool
+        # crashed on all 67 of its calls where the third had replayed 44 of 44 and failed only the
+        # refusal probe; keeping the last one cost 94 replay misses and 38 Tasks. So the body kept
+        # is the one that got furthest through the gates (`attempt_score`), and a later attempt
+        # replaces it only by beating it. A passing attempt ends the loop, so it is always the best.
+        score = attempt_score(gates)
+        if best is None or score > best:
+            best, build.body, build.gates, build.kept_attempt = score, body, gates, attempt
         if node["passed"]:
             break
         failure = "\n" + _failure_text(gates, held_out)
         if any(g.stage == "non_trivial" and not g.passed for g in gates):
             failure += _constant_evidence_note(evidence)
-    build.assisted = not build.nodes[-1]["passed"]
+    build.assisted = not (build.gates and all(g.passed for g in build.gates))
+    for record in build.nodes:
+        if record["attempt"] == build.kept_attempt:
+            record["kept"] = True
     directory = workdir / NODE_DIR
     directory.mkdir(parents=True, exist_ok=True)
     (directory / f"{toolsig.name}.json").write_text(
-        json.dumps({"tool": toolsig.name, "assisted": build.assisted, "nodes": build.nodes},
+        json.dumps({"tool": toolsig.name, "assisted": build.assisted,
+                    "kept_attempt": build.kept_attempt, "nodes": build.nodes},
                    indent=2, default=str) + "\n", encoding="utf-8")
     return build
 

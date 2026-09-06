@@ -246,3 +246,58 @@ Neither was written up when it ran; both were found in worktrees under `/private
 Build 9, retail, `opencode-go/glm-5.3-flash`, 14:17. Crashed in `compile_tools` after five attempts each ended in a read timeout on the provider (`RetryExhausted`). Eight calls, no tool body written, the intent gate red with 0 of 86 Tasks grounded because nothing downstream ran. It says nothing about the harness beyond the fact that a provider timeout kills a build instead of marking the tool assisted.
 
 Build 10, airline, `openai/gpt-5.6-luna`, 18:18, 200 traces, 86 Tasks, two rounds. 1,899 calls, 0.65 dollars after repricing (the file `budget.json.mispriced` beside it is the same ledger at the reseller's rate). Round 1: 32 Tasks with a Reference, 2 trusted Verifiers, 41 fidelity rulings. Round 2 moved no count and the loop exited stalled. The red lights are build 8's: one tool body crashes on 20 of 24 calls, one answers every call the same way, three tools miss the replay bar (`payment_methods` and `available_seats, prices` differ; one write tool at 0 of 33), the tau2 export finds 86 overlay conflicts, `compile_policy` still fails every predicate (the arity was fixed on 3 September; the gate then raised `NameError: called_before` because it ran the rule without the helpers the compiler's sandbox prepends, fixed 6 September; the 118 stored constraints now pass the gate with 78 compiled), and the D79 suite passes 2 of 32 Verifiers. Nothing in the loop could act on any of it: round 2 was the same build again. That is the evidence behind D135 and D136.
+
+## Build 11 (2026-09-06): the D135 experiment, code driver against the model driving
+
+D135 to D138 call this "build 9"; the number moved once the worktree builds of 3 September above were found and written up as 9 and 10. Both arms ran on retail with `openai/gpt-5.6-luna`, on two copies of build 8's workdir (`.work-b9-code`, `.work-b9-agent`), so the caches were equally warm, under a 25 dollar ceiling with eight workers, on commit a011af6 with the Runner re-frozen (runner version 28d8274). Both tables were printed by `scripts/build_table.py` and the numbers below are copied from them; dollars are this build's spend on top of build 8's 6.49.
+
+| | build 8 (code driver) | build 11, code driver | build 11, model driving |
+|---|---:|---:|---:|
+| Tasks covered | 20 of 205 (9.8%) | 48 of 205 (23.4%) | 61 of 205 (29.8%) |
+| Traces confirming their Reference | 343 of 456 (75.2%) | 347 of 456 (76.1%) | 423 of 456 (92.8%) |
+| Writes replaying exactly | 472 of 575 (82.1%) | 452 of 575 (78.6%) | 546 of 575 (95.0%) |
+| Gates green | 9 of 15 | 9 of 15 | 10 of 15 |
+| Rounds | 2, stalled | 2, stalled | 2, stalled |
+| Dollars | 6.49 | 1.61 | 1.92 |
+| Mechanic calls | none | none | 65 over 25 turns: repair_refuse_task 41, repair_recompile 7, status 6, build 6, replay 4, compile_tool 1 |
+
+**What moved coverage from 20 to 48 on the same driver** is the three hand fixes of D136 (the policy gate running predicates like the sandbox, the Simulated user answering confirmations and known facts from the recording, the judge abstaining on evidence it was not given): `compile_policy` went green, and the Tasks with a confirmed Reference more than doubled. None of that is the driver.
+
+**What the model driving bought on top** is one tool body. Both arms recompiled every tool (the compiler module hash changed, so the cache did not serve build 8's bodies). The compiler's fourth attempt at `exchange_delivered_order_items` in the code arm crashed on all 67 calls (`AttributeError: 'dict' object has no attribute 'available'`), and the compiler kept it anyway: `compile_env.compile_tool` keeps the last attempt's body when none passes, not the best one, and the third attempt had passed 44 of 44 replayed writes. That one body cost the code arm 94 replay misses and 38 Tasks whose seed Trace calls it ("an assisted tool whose body..." in `task_status.json`). The model arm's compiler got a passing body on its fourth attempt, and the tool replays 95 of 95. The 13 point gap between the arms is that body, not the mechanic: every one of the mechanic's 48 repair requests changed nothing (below).
+
+**Why both arms stalled after two rounds.** Five things on our side, none of them a gate being wrong:
+
+1. The recompile hint goes nowhere. `repair_recompile(name, hint)` writes the hint to `tool_lessons.json` and reruns `compile_tools` narrowed to the tool, but nothing reads the lesson into the compiler prompt (`memory.lesson_for` has no caller) and the stage's cache identity does not include it, so all seven recompiles printed "5 stages, 5 from cache".
+2. The refuse verb is inert. `repair_refuse_task` appends to `repairs/repair_refuse_task.jsonl` and nothing reads that file; `rounds.json` ends with `"refused": {}`. The status tool suggested it for every `intent` red light, so the mechanic called it 41 times.
+3. Intents are one shot. 160 of 205 Tasks fail the intent gate in build 8 and in both arms (145 "noun phrases with no span", 22 "not evidenced in every Run"), and an ungrounded Intent is a Task with no Verdict. `write_intent` queries once and records the ungrounded phrases as the reason; nothing feeds them back for a second try.
+4. The Examiner's round 2 nudge says "read the rulings and act" while the code requires a derive call every round. The model did what the nudge said (read the rulings, filed one finding, answered), so round 2 was recorded as "examiner failed: the model never called derive('all')".
+5. The compiler keeps the last failing attempt instead of the best one (the exchange body above).
+
+The table's own blind spots showed too: build duration, context fill, per-round spend after round 1 and the cause of 22 "unreadable" replay misses (a 160 character preview in `replays.json`) all printed `n/a`, as `docs/todo.md` predicted.
+
+**Read as an experiment.** The driver did not decide this build; the fixes before it and one compiler coin flip did. The mechanic read the red lights correctly (it asked for exactly the recompiles and the intent repairs the gates named) and had no verb that worked. So the comparison D135 asks for is not yet made: it needs the five fixes above, then the same two arms again. Nothing here says the graph was the problem, and nothing yet says the model driving is worth its extra 0.31 dollars.
+
+### The mechanic's session in the model arm, call by call
+
+Read from `.work-b9-agent/builder/session.jsonl` and `examiner/session.jsonl`. Times are seconds from the first Builder message.
+
+| when | who | what | what came back |
+|---:|---|---|---|
+| 3s | Builder | `status` | 380 red lights over 30 tools and 184 Tasks (build 8's rulings, copied in); the first 25 shown: `calculate` NameError on every call, `exchange_delivered_order_items` accepts an unknown payment method, `get_user_details` and `modify_pending_order_items` differ on hard columns, 13 intent lines |
+| 5s | Builder | `repair_recompile` x4 (calculate, exchange, get_user_details, modify_pending_order_items), each with a hint | compile_tools ran (first compile in this workdir), the hint reached nothing |
+| 83s | Builder | `status` | 372 red lights |
+| 91s | Builder | `build environment` and 25 `repair_refuse_task` in one batch | the build ran the pipeline (intent, replay, rerolls); every refuse: "recorded (request in repair_refuse_task.jsonl)" |
+| 1182s | Builder | `status` | 191 red lights over 3 tools and 169 Tasks: `calculate` 4 replay misses, `get_user_details` 1, `modify_pending_order_items` 5, and 169 intent lines of which 25 shown |
+| 1187s | Builder | `repair_recompile` x3 with new hints, `repair_refuse_task` x15 | compile_tools ran again without the hint; the same bodies came back; every refuse recorded |
+| 1204s | Builder | `build`, `replay task_2e134f9291e5`, `status`, one more refuse, `status` | 13 of 13 stages from cache; 186 red lights; 186 red lights |
+| 1217s | Builder | answered with no tool call | round 1 Builder beat ends |
+| 0s | Examiner | `derive all` | 175 Verifiers over 205 Tasks, 61 passed the D79 suite |
+| 829s | Examiner | `read rerolls`, `read gates`, three `finding`s | each finding says the intent grounding is too strict; each carries `suggested: replay`, because `Finding.suggested` only allows compile_tool, replay, reroll or none |
+| 837s | Examiner | answered "no verifier action remains until Builder replay repairs" | round 1 ends: fidelity 194, trusted 61 |
+| 2060s | Builder | round 2 steer, then `status`, `build` | 439 red lights (the Examiner's rulings now included); 13 of 13 stages from cache |
+| 2066s | Builder | finding 1: `replay`, `build` | 7 of 8 and 13 of 13 from cache |
+| 2078s | Builder | finding 2: `replay`, `build` | same |
+| 2090s | Builder | finding 3: `replay`, `compile_tool modify_pending_order_items`, `build` | 8 of 8, 5 of 5, 13 of 13 from cache |
+| 887s | Examiner | round 2 steer "read the rulings and act", `read gates`, one `finding` | never called derive; the round is recorded as failed and the loop exits stalled |
+
+Nothing the mechanic did could change an artifact: the recompile hint never reached the compiler, refusing a Task reached no gate, the intent red lights pointed at refusing, the Examiner's finding vocabulary had no word for "rewrite the Intent", and the round-2 steer to the Examiner did not ask for the one call the code required. The model read the lights right every time.

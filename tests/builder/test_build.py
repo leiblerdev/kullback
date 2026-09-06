@@ -94,6 +94,32 @@ def test_a_second_build_is_served_from_the_cache(built, tmp_path):
     assert statuses["ingest"] == "ran"
 
 
+def test_a_new_tool_lesson_makes_compile_tools_run_again_instead_of_hitting_the_cache(built, tmp_path):
+    """The live build asked for the same recompile seven times and was answered "5 stages, 5 from
+    cache" every time: the lesson the request had recorded was in nothing the stage declared, so
+    the key never moved and the narrowed rerun handed back the body it already had. The lesson file
+    is a declared input path now, and the lesson itself reaches that tool's prompt."""
+    from kullback.builder import memory
+
+    workdir = tmp_path / "lesson"
+    shutil.copytree(built, workdir)
+    name = sorted(json.loads((workdir / "bodies.json").read_text(encoding="utf-8")))[0]
+    model = Bodies()
+    plan = BuildPlan(workdir=workdir, iterate=True, model=model, max_attempts=0)
+    build_module.execute(plan, "compile_tools", tools=[name])
+    again = build_module.execute(plan, "compile_tools", tools=[name])
+    assert again.reports["compile_tools"].cached is True, "nothing changed, so the cache is right to answer"
+
+    memory.record_lesson(workdir, name, ["executes: the body raised KeyError on every recorded call"])
+    after = build_module.execute(plan, "compile_tools", tools=[name])
+    assert after.status == "complete"
+    assert after.reports["compile_tools"].cached is False, "a new lesson is a new question for the stage"
+    sent = [" ".join(str(m.get("content") or "") for m in call["messages"]) for call in model.calls]
+    assert any("raised KeyError on every recorded call" in text for text in sent), \
+        "the lesson has to reach the compiler prompt, or the recompile asks the failed question again"
+    assert all(f"Tool: {name}" in text for text in sent), "the narrowed rerun compiles that tool alone"
+
+
 def test_wrap_sets_a_prompt_cache_key_scoped_to_the_build_and_stage(tmp_path):
     """docs/prompt-caching.md item 4: one short string per build and stage."""
     model = build_module._wrap(TestModel(["hi"]), "compile_tools", tmp_path, None, model_id="anthropic/claude-opus-5")

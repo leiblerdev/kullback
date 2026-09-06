@@ -18,6 +18,7 @@ import argparse
 import json
 import sys
 from collections import Counter, defaultdict
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable, Optional
 
@@ -32,11 +33,12 @@ from env_fidelity import cause as fidelity_cause  # noqa: E402
 AGREES = ("same", "cosmetic", "both_refused")
 PARTS = ("differs", "ours_refused", "theirs_refused", "unrecorded")
 
-# replay.py stores a preview of each answer, not the answer, so a cause read off two long results
-# would be read off two cut strings. Those calls are counted under this cause instead of guessed at.
+# A call that missed and kept neither its two answers whole nor a difference the cause can be read
+# off. replay.py writes a `difference` record for every check that did not agree, so this is what is
+# left for a build recorded before it did: a 160 character preview of each answer and nothing else.
 UNREADABLE = "unreadable"
-UNREADABLE_OWNER = ("n/a: replays.json keeps a 160 character preview of each answer, "
-                    "which is not enough to name the cause")
+UNREADABLE_OWNER = ("n/a: this check kept only a 160 character preview of each answer and no "
+                    "replays.json checks[].difference record, which is not enough to name the cause")
 
 # The counts D126 lets a round move, in the order the round table prints them (gates/round_end.py).
 GATE_COUNTS = ("fidelity", "trusted", "refused_count", "assisted_runs", "probes_passing")
@@ -53,6 +55,11 @@ BODY_EXCEPTIONS = ("NameError", "AttributeError", "KeyError", "TypeError", "Inde
 PROVIDER_MARKS = ("ProviderError", "HTTP ", "RetryExhausted", "Timeout", "timed out")
 # A Run that ended either of these ways ended the way the recording did, so it is not a failure.
 FINISHED = ("user_stop", "transfer")
+
+
+def _int(value: Any) -> Optional[int]:
+    """A whole number a record holds, or None when it holds none."""
+    return int(value) if isinstance(value, int) and not isinstance(value, bool) else None
 
 
 def na(record: str) -> str:
@@ -77,6 +84,11 @@ def duration(ms: float) -> str:
 
 def counted(rows: Iterable[str]) -> str:
     return ", ".join(rows) if rows else "none"
+
+
+def clock(stamp: float) -> str:
+    """One epoch second as the time a reader can compare with a log line, in UTC."""
+    return datetime.fromtimestamp(float(stamp), tz=timezone.utc).isoformat(timespec="seconds")
 
 
 class Records:
@@ -125,6 +137,7 @@ class Build:
         self.files = Records(workdir)
         self.workdir = self.files.workdir
         self.gates: list[dict] = self.files.read("gates.json", []) or []
+        self.gate_history: list[dict] = self.files.read("gates_by_round.json", []) or []
         self.budget: dict = self.files.read("budget.json", {}) or {}
         self.rounds: list[dict] = self.files.read("rounds.json", []) or []
         self.status: dict = self.files.read("task_status.json", {}) or {}
@@ -152,6 +165,18 @@ class Build:
         """The last ruling a stage recorded in the ledger."""
         found = [row for row in self.gates if row.get("stage") == stage]
         return found[-1] if found else None
+
+    def rulings_at(self, round_no: int) -> Optional[dict[str, bool]]:
+        """Every gate's ruling as one round left it, by stage name; None when no round kept it.
+
+        gates.json holds the last ruling per stage and nothing else, so this reads the per-round
+        rows `rounds.py` keeps in gates_by_round.json.
+        """
+        for row in self.gate_history:
+            if _int(row.get("round")) == round_no:
+                return {str(ruling.get("stage")): bool(ruling.get("pass"))
+                        for ruling in row.get("rulings") or []}
+        return None
 
     def checks(self) -> list[dict]:
         """Every replayed call, with the Task, the Trace and its position carried along (D66)."""
@@ -239,6 +264,43 @@ def mechanic_row(build: Build) -> tuple[str, str]:
     return f"{sum(verbs.values())} over {turns} model turns: {listed}", "builder/session.jsonl"
 
 
+REPAIR_GAP = ("the round on a repair request and the rulings of both the round before it and its "
+              "own; repairs/*.jsonl records round and gates_by_round.json the rulings per round")
+
+
+def repair_moves(build: Build) -> list[dict]:
+    """Every repair request with the gates as they stood before its round and after it.
+
+    A repair acts inside its round, so the rulings before it are the ones the round before left and
+    the rulings after it are the ones its own round left. Repairs of the same round share what that
+    round moved: this says the round turned a red gate green, not which of its repairs did. A repair
+    of round 1 has no round before it to compare with, so it moved nothing that can be read here and
+    `turned` is None, the same as a request that recorded no round at all.
+    """
+    rows = []
+    for row in build.repairs:
+        round_no = _int(row.get("round"))
+        before = build.rulings_at(round_no - 1) if round_no is not None and round_no > 1 else None
+        after = build.rulings_at(round_no) if round_no is not None else None
+        turned = ([name for name, green in after.items() if green and before.get(name) is False]
+                  if before is not None and after is not None else None)
+        rows.append({"verb": str(row.get("verb") or "?"), "target": str(row.get("target") or "?"),
+                     "round": round_no, "before": before, "after": after, "turned": turned,
+                     "where": str(row.get("file") or "repairs/")})
+    return rows
+
+
+def _reds(rulings: Optional[dict[str, bool]], round_no: Optional[int], when: str) -> str:
+    """One round's rulings in a cell: the red gates it left, or that no round left any."""
+    if rulings is None:
+        if round_no == 1 and when == "before":
+            return "no round ran before this one"
+        return na(f"gates_by_round.json round {round_no}" if round_no is not None
+                  else "repairs/*.jsonl round, which would say which round to read")
+    reds = sorted(name for name, green in rulings.items() if not green)
+    return f"red: {counted(reds)}" if reds else f"all {len(rulings)} green"
+
+
 def repair_rows(build: Build) -> tuple[str, str, str]:
     """What the repair verbs did: the count, then the two rulings D139 asks for, or the gap."""
     if not build.repairs:
@@ -247,24 +309,69 @@ def repair_rows(build: Build) -> tuple[str, str, str]:
         return "0; the workdir has no repairs/ directory (D135)", none, none
     verbs = Counter(str(row.get("verb") or "?") for row in build.repairs)
     listed = ", ".join(f"{verb} {count}" for verb, count in verbs.most_common())
-    gap = na("the round on a repair request and a gate ruling per round; repairs/*.jsonl records "
-             "the verb, the target and a timestamp, and rounds.json carries no timestamp")
-    return f"{len(build.repairs)} requested: {listed}", gap, gap
+    moves = repair_moves(build)
+    unplaced = [row for row in moves if row["turned"] is None]
+    green = [row for row in moves if row["turned"]]
+    red = [row for row in moves if row["turned"] == []]
+
+    def said(rows: list[dict], what: str) -> str:
+        tail = f"; {len(unplaced)} not placed: " + na(REPAIR_GAP) if unplaced else ""
+        if not rows:
+            return f"0 of {len(moves)}{tail}"
+        named = ", ".join(f"{row['verb']} on {row['target']} (round {row['round']}"
+                          + (f", {counted(sorted(row['turned']))} {what}" if row["turned"] else "") + ")"
+                          for row in rows[:5])
+        more = f", and {len(rows) - 5} more" if len(rows) > 5 else ""
+        return f"{len(rows)} of {len(moves)}: {named}{more}{tail}"
+
+    return (f"{len(build.repairs)} requested: {listed}",
+            said(green, "went red to green"), said(red, ""))
 
 
 def spend(build: Build) -> dict:
     return dict((build.budget or {}).get("total") or {})
 
 
+def round_counts(build: Build) -> list[dict]:
+    """The counts of every round, in order; the driver writes its own numbers among them."""
+    return [record.get("counts") or {} for record in build.rounds]
+
+
+def build_duration(build: Build) -> tuple[str, str]:
+    """How long the build took: the first round's start to the last round's end."""
+    starts = [c["started_at"] for c in round_counts(build)
+              if isinstance(c.get("started_at"), (int, float)) and c["started_at"]]
+    ends = [c["ended_at"] for c in round_counts(build)
+            if isinstance(c.get("ended_at"), (int, float)) and c["ended_at"]]
+    if not starts or not ends:
+        return na("rounds.json counts.started_at and counts.ended_at; pipeline/state.json records "
+                  "the stage statuses and no clock"), "rounds.json"
+    rounds = len(build.rounds)
+    return (f"{duration((max(ends) - min(starts)) * 1000)} over {rounds} round"
+            f"{'' if rounds == 1 else 's'}, {clock(min(starts))} to {clock(max(ends))}",
+            "rounds.json counts.started_at, counts.ended_at")
+
+
 def context_row(build: Build, session: list[dict], name: str) -> tuple[str, str]:
-    """The peak context fill for one agent, or the largest input the session does record."""
+    """The peak context fill for one agent: the driver's own record, else what the session shows."""
+    fills = [float(c["context_fill"][name]) for c in round_counts(build)
+             if isinstance(c.get("context_fill"), dict) and name in c["context_fill"]]
+    turns = [int(c["turns"][name]) for c in round_counts(build)
+             if isinstance(c.get("turns"), dict) and isinstance(c["turns"].get(name), int)]
+    if fills:
+        if not max(fills) and not sum(turns):
+            return ("0.0%; the agent took no model turn, which is the code driver (D135)",
+                    "rounds.json counts.context_fill, counts.turns")
+        return (f"{max(fills):.1%} of the window at a turn end, over "
+                f"{sum(turns) if turns else len(fills)} turns in {len(fills)} rounds",
+                "rounds.json counts.context_fill")
     peak = 0
     for entry in session:
         if entry.get("type") != "message":
             continue
         usage = (entry.get("message") or {}).get("usage") or {}
         peak = max(peak, int(usage.get("input") or 0) + int(usage.get("cache_read") or 0))
-    record = "ContextStats.fill_at_turn_end, which no stage writes into the workdir"
+    record = "rounds.json counts.context_fill, which this build's rounds do not carry"
     if not session:
         return na(f"{name}/session.jsonl and {record}"), f"{name}/session.jsonl"
     if peak:
@@ -297,8 +404,8 @@ def headline_rows(build: Build) -> list[tuple[str, str, str]]:
          "gates.json"),
         ("What the mechanic called", mechanic, mechanic_source),
         ("Repairs requested", requested, "repairs/"),
-        ("Repairs that turned a red gate green", turned_green, "repairs/, gates.json"),
-        ("Repairs that did not", stayed_red, "repairs/, gates.json"),
+        ("Repairs that turned a red gate green", turned_green, "repairs/ round, gates_by_round.json"),
+        ("Repairs that did not", stayed_red, "repairs/ round, gates_by_round.json"),
     ]
     if total:
         priced = int(total.get("calls") or 0) - int(total.get("unpriced_calls") or 0)
@@ -316,8 +423,8 @@ def headline_rows(build: Build) -> list[tuple[str, str, str]]:
         rows += [("Dollars", na("budget.json total"), "budget.json"),
                  ("Model calls", na("budget.json total"), "budget.json"),
                  ("Model call wall time", na("budget.json total"), "budget.json")]
-    rows.append(("Build duration", na("a start and an end timestamp; pipeline/state.json records "
-                                      "the stage statuses and no clock"), "pipeline/state.json"))
+    took, took_where = build_duration(build)
+    rows.append(("Build duration", took, took_where))
     for name, session in (("Builder", build.builder_session), ("Examiner", build.examiner_session)):
         value, where = context_row(build, session, name.lower())
         rows.append((f"Peak context fill, {name}", value, where))
@@ -334,19 +441,46 @@ def check_cause(check: dict) -> str:
     splits two refusals whose wording differs into `error_prefix` and `error_message`, and the
     preview replays.json keeps is not always long enough to tell, so that split lives with the
     tool that can read the whole answer and not here.
+
+    A check that did not agree carries a `difference` record (runner/replay.py): each side's error
+    message, each answer up to 4,000 characters with a flag saying whether that was all of it, and
+    the keys and types that parted. The whole answers name the cause the way env_fidelity names it;
+    where an answer was too long for even that, the keys and types still name a shape or a value.
     """
     verdict = str(check.get("verdict") or "")
     ours, theirs = str(check.get("ours") or ""), str(check.get("recorded") or "")
+    detail = check.get("difference") if isinstance(check.get("difference"), dict) else {}
     if verdict not in PARTS or verdict == "unrecorded":
         return "none"
     if verdict == "theirs_refused":
-        return fidelity_cause("only_theirs_errored", {}, {"error": theirs})
+        return fidelity_cause("only_theirs_errored", {}, {"error": detail.get("theirs_error") or theirs})
     if verdict == "ours_refused":
-        return fidelity_cause("only_ours_errored", {"error": _message(ours)}, {"result": theirs})
-    mine, real = _value(ours), _value(theirs)
+        return fidelity_cause("only_ours_errored",
+                              {"error": str(detail.get("ours_error") or "") or _message(ours)},
+                              {"result": theirs})
+    mine, real = _whole(detail, "ours", ours), _whole(detail, "theirs", theirs)
     if mine is None or real is None:
-        return UNREADABLE
+        return _shape_cause(detail)
     return fidelity_cause("result_differs", {"result": mine}, {"result": real})
+
+
+def _whole(detail: dict, side: str, preview: str) -> Any:
+    """One side's answer whole: the difference record's copy when it kept it all, else the preview
+    when the preview was not cut, else None, which is the table saying it cannot read the answer."""
+    if detail and not detail.get(f"{side}_truncated", True):
+        return _value(str(detail.get(side) or "null"))
+    return _value(preview)
+
+
+def _shape_cause(detail: dict) -> str:
+    """The cause of a difference too long to read whole, off the keys and types it did record."""
+    if not detail:
+        return UNREADABLE
+    if detail.get("type_mismatch") or detail.get("keys_only_ours") or detail.get("keys_only_theirs"):
+        return "result_shape"
+    if detail.get("keys_changed") or detail.get("lengths"):
+        return "value"
+    return UNREADABLE
 
 
 def _message(preview: str) -> str:
@@ -469,6 +603,7 @@ def round_rows(build: Build) -> list[dict]:
         moved = [f"{key} {counts.get(key)} from {previous.get(key)}" for key in GATE_COUNTS
                  if previous and counts.get(key) != previous.get(key)]
         spent = counts.get("spend") or {}
+        took = counts.get("turns")
         rows.append({
             "round": record.get("round", pos + 1),
             "counts": ", ".join(f"{key} {counts.get(key)}" for key in GATE_COUNTS),
@@ -477,8 +612,11 @@ def round_rows(build: Build) -> list[dict]:
                      f"examiner {money(float(spent.get('examiner') or 0.0))}, "
                      f"total {money(float(spent.get('total') or 0.0))}" if spent
                      else na("rounds.json counts.spend"),
-            "turns": "0, no model turn recorded" if turns == 0
-                     else na("the round on a session entry; session.jsonl marks no round"),
+            "turns": (f"builder {int(took.get('builder') or 0)}, "
+                      f"examiner {int(took.get('examiner') or 0)}, "
+                      f"total {int(took.get('total') or 0)}") if isinstance(took, dict)
+                     else ("0, no model turn recorded" if turns == 0
+                           else na("rounds.json counts.turns")),
             "exit": str(record.get("exit") or "the round did not exit"),
             "where": f"rounds.json[{pos}]",
         })
@@ -487,10 +625,18 @@ def round_rows(build: Build) -> list[dict]:
 
 
 def repair_detail(build: Build) -> list[dict]:
-    gap = na("a gate ruling per round; gates.json holds the last round only")
-    return [{"verb": str(row.get("verb") or "?"), "target": str(row.get("target") or "?"),
-             "before": gap, "after": gap, "where": str(row.get("file") or "repairs/")}
-            for row in build.repairs]
+    """One row per repair request: the round it was made in and the gates either side of that round."""
+    rows = []
+    for row in repair_moves(build):
+        rows.append({"verb": row["verb"], "target": row["target"],
+                     "round": str(row["round"]) if row["round"] is not None
+                              else na("repairs/*.jsonl round"),
+                     "before": _reds(row["before"], row["round"], "before"),
+                     "after": _reds(row["after"], row["round"], "after"),
+                     "turned": counted(sorted(row["turned"])) if row["turned"] is not None
+                               else na("gates_by_round.json"),
+                     "where": row["where"]})
+    return rows
 
 
 # --- the detail: whose error a failing Run carries -------------------------------
@@ -728,10 +874,13 @@ def repair_section(build: Build) -> list[str]:
     if not rows:
         return ["No repair verb was called: the workdir has no `repairs/` directory, which is what "
                 "a build under the code driver leaves (D135)."]
-    return table(["verb", "called on", "ruling before", "ruling after", "read from"],
-                 ["l", "l", "l", "l", "l"],
-                 [[f"`{row['verb']}`", f"`{row['target']}`", row["before"], row["after"],
-                   f"`{row['where']}`"] for row in rows])
+    lines = table(["verb", "called on", "round", "ruling before", "ruling after", "turned green",
+                   "read from"], ["l", "l", "r", "l", "l", "l", "l"],
+                  [[f"`{row['verb']}`", f"`{row['target']}`", row["round"], row["before"],
+                    row["after"], row["turned"], f"`{row['where']}`"] for row in rows])
+    return lines + ["", "The rulings are the ones the round before this repair's round left and the "
+                        "ones its own round left (`gates_by_round.json`); repairs made in the same "
+                        "round share what that round moved."]
 
 
 def run_section(build: Build, limit: int) -> list[str]:

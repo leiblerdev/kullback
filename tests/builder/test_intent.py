@@ -6,6 +6,7 @@ import pytest
 
 from conftest import PTR
 from kullback.builder.intent import (
+    MAX_INTENT_ATTEMPTS,
     MAX_PROMPT_RUNS,
     Intent,
     apply_intent,
@@ -189,12 +190,71 @@ def test_write_intent_is_one_grounded_line(make_test_model):
     assert intent.grounded is True
     assert intent.ungrounded_phrases == []
     assert intent.task_id == "task_1"
-    assert len(model.calls) == 1
+    assert len(model.calls) == 1, "a grounded line is the answer; nothing is asked twice"
+
+
+# --- the rewrite loop ---
+
+
+def test_an_intent_with_an_ungrounded_phrase_is_rewritten_with_the_phrases_named(make_test_model):
+    """The first live builds refused 160 of 205 Tasks and never told the model which words were the
+    problem. The second prompt names them and asks for a line the evidence supports."""
+    task, traces = two_run_task()
+    model = make_test_model(["refund the order to a gift card",
+                             "cancel the order because the delivery was late"])
+    intent = write_intent(model, task, traces, write_tools=WRITES)
+    second = model.calls[1]["messages"][-1]["content"]
+    assert "gift card" in second and "no span in the evidence" in second
+    assert 'Your last line was: "refund the order to a gift card"' in second
+    assert "only words that appear in the evidence" in second
+    assert intent.grounded is True and intent.text == "cancel the order because the delivery was late"
+    assert len(model.calls) == 2, "the rewrite grounded, so no third attempt"
+
+
+def test_a_phrase_missing_from_one_run_is_named_with_the_run_that_lacks_it(make_test_model):
+    traces = [cancel_trace("t1", "W1"), make_trace("t2", ["please change shipping address on order W2"], [])]
+    task = Task(id="task_1", run_ids=["t1", "t2"])
+    model = make_test_model(["cancel order and change shipping address"], loop=True)
+    write_intent(model, task, traces, write_tools=WRITES)
+    second = model.calls[1]["messages"][-1]["content"]
+    assert "not evidenced in every run" in second
+    assert "cancel order (not in t2)" in second
+
+
+def test_the_best_of_three_attempts_is_kept(make_test_model):
+    """Three refused lines: the one with the fewest phrases the evidence cannot show is the Intent."""
+    task, traces = two_run_task()
+    model = make_test_model(["refund the order to a gift card by paypal",  # gift card, paypal
+                             "cancel the order to a gift card",           # gift card
+                             "refund the order to a gift card by paypal"])
+    intent = write_intent(model, task, traces, write_tools=WRITES)
+    assert len(model.calls) == MAX_INTENT_ATTEMPTS
+    assert intent.grounded is False
+    assert intent.text == "cancel the order to a gift card"
+    assert intent.ungrounded_phrases == ["gift card"]
+
+
+def test_a_line_at_all_beats_an_empty_reply(make_test_model):
+    """An empty reply grounds nothing and has no phrase to be ungrounded, so it must not win on count."""
+    task, traces = two_run_task()
+    model = make_test_model(["refund to a gift card", "   ", "  "])
+    intent = write_intent(model, task, traces, write_tools=WRITES)
+    assert intent.text == "refund to a gift card"
+    assert intent.reason and "gift card" in intent.reason
+
+
+def test_a_repair_hint_is_in_every_attempt_of_the_prompt(make_test_model):
+    task, traces = two_run_task()
+    model = make_test_model(["refund to a gift card"], loop=True)
+    write_intent(model, task, traces, write_tools=WRITES, hint="say what the user asked for, not the refund method")
+    prompts = [call["messages"][-1]["content"] for call in model.calls]
+    assert len(prompts) == MAX_INTENT_ATTEMPTS
+    assert all("A repair asks for this: say what the user asked for, not the refund method" in p for p in prompts)
 
 
 def test_the_prompt_shows_the_member_runs_evidence(make_test_model):
     task, traces = two_run_task()
-    model = make_test_model(["cancel the late order"])
+    model = make_test_model(["cancel the late order"], loop=True)
     write_intent(model, task, traces, write_tools=WRITES)
     prompt = model.calls[0]["messages"][-1]["content"]
     assert "t1" in prompt and "t2" in prompt
@@ -203,7 +263,7 @@ def test_the_prompt_shows_the_member_runs_evidence(make_test_model):
 
 def test_an_ungrounded_noun_phrase_refuses_the_intent(make_test_model):
     task, traces = two_run_task()
-    model = make_test_model(["refund the order to a gift card"])
+    model = make_test_model(["refund the order to a gift card"], loop=True)
     intent = write_intent(model, task, traces, write_tools=WRITES)
     assert intent.grounded is False
     assert "gift card" in intent.ungrounded_phrases
@@ -213,7 +273,7 @@ def test_an_ungrounded_noun_phrase_refuses_the_intent(make_test_model):
 def test_spans_from_one_run_only_refuse_a_multi_run_intent(make_test_model):
     traces = [cancel_trace("t1", "W1"), make_trace("t2", ["hello there"], [])]
     task = Task(id="task_1", run_ids=["t1", "t2"])
-    model = make_test_model(["cancel order W1 because of the late delivery"])
+    model = make_test_model(["cancel order W1 because of the late delivery"], loop=True)
     intent = write_intent(model, task, traces, write_tools=WRITES)
     assert intent.grounded is False
     assert intent.reason and "cancel order w1" in intent.reason and "t2" in intent.reason
@@ -243,7 +303,7 @@ def test_an_intent_that_is_the_union_of_two_runs_is_refused(make_test_model):
     traces = [cancel_trace("t1", "W1"), make_trace("t2", ["please change shipping address on order W2"], [])]
     task = Task(id="task_1", run_ids=["t1", "t2"])
     intent = write_intent(
-        make_test_model(["cancel order and change shipping address"]), task, traces, write_tools=WRITES
+        make_test_model(["cancel order and change shipping address"], loop=True), task, traces, write_tools=WRITES
     )
     assert intent.ungrounded_phrases == []  # each half is evidenced, in one Run each
     assert intent.run_coverage == {"cancel order": ["t1"], "change shipping address": ["t2"]}
@@ -280,7 +340,7 @@ def test_the_prompt_is_bounded_while_the_grounding_reads_every_run(make_test_mod
 
 def test_an_empty_model_reply_is_not_grounded(make_test_model):
     task, traces = two_run_task()
-    intent = write_intent(make_test_model(["  "]), task, traces, write_tools=WRITES)
+    intent = write_intent(make_test_model(["  "], loop=True), task, traces, write_tools=WRITES)
     assert intent.text == ""
     assert intent.grounded is False
     assert intent.reason == "the model returned no intent"
@@ -327,7 +387,7 @@ def test_apply_intent_sets_the_task_name_and_intent(make_test_model):
 
 def test_apply_intent_leaves_an_ungrounded_intent_off_the_task(make_test_model):
     task, traces = two_run_task()
-    intent = write_intent(make_test_model(["refund to a gift card"]), task, traces, write_tools=WRITES)
+    intent = write_intent(make_test_model(["refund to a gift card"], loop=True), task, traces, write_tools=WRITES)
     updated = apply_intent(task, intent)
     assert updated.intent is None
     assert updated.name is None

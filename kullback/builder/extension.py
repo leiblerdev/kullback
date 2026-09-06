@@ -1,7 +1,7 @@
 """The Builder as an extension on the agent core (D120, D123, D135, D138, ADR-0007).
 
 `builder_extension(plan)` is a `setup(api)` the harness loads: it registers the stage tools and
-`status` from builder/tools.py and the four repair verbs beside them, adds four short sections to
+`status` from builder/tools.py and the five repair verbs beside them, adds four short sections to
 the system prompt (what the job is, what may and may not be repaired, the tools by name, the target
 vocabulary of this plan's graph), and installs two hooks. The
 `tool_result` hook runs every registered gate bound to an artifact a tool produced (`rulings_over`)
@@ -34,7 +34,7 @@ WHAT = ("You are the Builder. From a customer's recorded traces you build an Env
         "graph is there so that a target rebuilds whatever it reads that has gone stale, and which "
         "target to ask for is yours to choose. The Verifiers and the probes are the Examiner's, "
         "derived from what you leave; what it finds wrong on your side comes back to you as a finding.")
-RULES = ("Repair only what a model wrote: the tool bodies and the policy predicates. Never a gate, "
+RULES = ("Repair only what a model wrote: the tool bodies, the policy predicates and the Intents. Never a gate, "
          "the Runner, the judge or the Simulated user, and any call naming a path under "
          "kullback/gates or kullback/runner is refused in code. You write no Verifier and no probe: "
          "there is no tool for either. The gates are the standard, not something to argue with; a "
@@ -43,8 +43,10 @@ RULES = ("Repair only what a model wrote: the tool bodies and the policy predica
 TOOLS = ("Tools: status() for the red lights and the verb that owns each; build(target) for any "
          "target of the graph; recluster(), grow(table, count), compile_tool(name), replay(task) and "
          "reroll(task) for one stage by name; and the repair verbs repair_recompile(name, hint), "
-         "repair_grow(table, count), repair_refuse_task(task_id, reason) and "
-         "repair_escalate(task_id, queue).")
+         "repair_grow(table, count), repair_intent(task_id, hint), repair_refuse_task(task_id, reason) "
+         "and repair_escalate(task_id, queue). A Task the intent gate names is repaired with "
+         "repair_intent, whose hint says what that Task's Runs actually evidence; refusing a Task "
+         "records a decision and moves no gate.")
 
 
 def target_vocabulary(plan: BuildPlan) -> str:

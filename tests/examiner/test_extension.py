@@ -266,6 +266,20 @@ def test_a_model_that_never_calls_derive_is_an_examiner_error(world):
         examiner_agent.run_examiner(world.workdir, inputs=world.inputs, agent_model=broken)
 
 
+def test_the_round_n_examiner_steer_asks_for_derive_again():
+    """A beat that never calls derive is an ExaminerError (the test above), and from round 2 on the
+    round steer is the only message the Examiner gets: so the steer has to ask for that call, not
+    only for the rulings. Build 9's round 2 was told to read the rulings and act, did exactly that,
+    and the round failed for a derive it was never asked to make."""
+    steer = examiner_agent.examiner_round_message(2)
+    assert steer.startswith("round 2:")
+    assert "call the derive tool with target='all'" in steer
+    for what in ("read the rulings", "probe, repair, refuse or send a finding", "one line"):
+        assert what in steer, what
+    assert examiner_agent.examiner_round_message(3, "t1").startswith("round 3:")
+    assert "target='t1'" in examiner_agent.examiner_round_message(3, "t1")
+
+
 def test_the_probe_skill_names_the_eight_bug_classes():
     assert len(skills.BUG_CLASSES) == 8 and len(set(skills.BUG_CLASSES)) == 8
     for bug_class in skills.BUG_CLASSES:

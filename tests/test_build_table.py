@@ -91,11 +91,45 @@ def test_every_row_a_workdir_cannot_answer_names_the_record_it_would_need(tmp_pa
     assert "`gates.json`" in text and "`scorecard.json`" in text
 
 
-def test_the_peak_context_fill_is_n_a_because_no_stage_writes_the_fill_into_the_workdir(printed: str):
+def test_the_peak_context_fill_is_the_fill_each_round_recorded_for_that_agent(printed: str, built: Path):
+    counts = json.loads((built / "rounds.json").read_text(encoding="utf-8"))[0]["counts"]
+    assert counts["context_fill"] == {"builder": 0.0, "examiner": 0.0}
     values = {cells(row)[0]: cells(row)[1] for row in rows_of(printed, "")}
     for agent in ("Builder", "Examiner"):
-        assert values[f"Peak context fill, {agent}"].startswith("n/a (needs")
-        assert "ContextStats.fill_at_turn_end" in values[f"Peak context fill, {agent}"]
+        assert values[f"Peak context fill, {agent}"] == \
+            "0.0%; the agent took no model turn, which is the code driver (D135)"
+
+
+def test_the_peak_context_fill_is_the_largest_a_round_recorded_over_the_rounds(tmp_path):
+    workdir = tmp_path / "filled"
+    workdir.mkdir()
+    (workdir / "rounds.json").write_text(json.dumps([
+        {"round": 1, "counts": {"context_fill": {"builder": 0.41, "examiner": 0.12},
+                                "turns": {"builder": 3, "examiner": 1, "total": 4}}},
+        {"round": 2, "counts": {"context_fill": {"builder": 0.62, "examiner": 0.08},
+                                "turns": {"builder": 2, "examiner": 1, "total": 3}}}]), encoding="utf-8")
+    values = {cells(row)[0]: cells(row)[1] for row in rows_of(B.render(B.Build(workdir)), "")}
+    assert values["Peak context fill, Builder"] == "62.0% of the window at a turn end, over 5 turns in 2 rounds"
+    assert values["Peak context fill, Examiner"] == "12.0% of the window at a turn end, over 2 turns in 2 rounds"
+
+
+def test_the_build_duration_is_the_first_rounds_start_to_the_last_rounds_end(printed: str, built: Path):
+    counts = [record["counts"] for record in
+              json.loads((built / "rounds.json").read_text(encoding="utf-8"))]
+    assert counts[0]["started_at"] > 0 and counts[-1]["ended_at"] >= counts[0]["started_at"]
+    value = {cells(row)[0]: cells(row)[1] for row in rows_of(printed, "")}["Build duration"]
+    assert value.endswith(f"{B.clock(counts[0]['started_at'])} to {B.clock(counts[-1]['ended_at'])}")
+    assert value.startswith(B.duration((counts[-1]["ended_at"] - counts[0]["started_at"]) * 1000))
+    assert "over 1 round," in value
+
+
+def test_the_build_duration_names_the_record_when_no_round_kept_a_clock(tmp_path):
+    workdir = tmp_path / "clockless"
+    workdir.mkdir()
+    (workdir / "rounds.json").write_text(json.dumps([{"round": 1, "counts": {"fidelity": 1}}]), encoding="utf-8")
+    value = {cells(row)[0]: cells(row)[1] for row in rows_of(B.render(B.Build(workdir)), "")}["Build duration"]
+    assert value == ("n/a (needs rounds.json counts.started_at and counts.ended_at; pipeline/state.json "
+                     "records the stage statuses and no clock)")
 
 
 def test_the_mechanic_row_says_no_model_turn_was_recorded_under_the_code_driver(printed: str):
@@ -159,8 +193,35 @@ def test_a_cause_is_one_env_fidelity_already_names_or_the_word_for_a_preview_it_
                           "recorded": '{"payload": "no"}'}) == "none"
     assert B.check_cause({"verdict": "differs", "ours": '{"value": 3}', "recorded": "3"}) == "result_shape"
     cut = {"verdict": "differs", "ours": '{"a": "' + "x" * 150 + "...", "recorded": '{"a": "y"}'}
-    assert B.check_cause(cut) == B.UNREADABLE
+    assert B.check_cause(cut) == B.UNREADABLE, "a build recorded before the difference record"
     assert B.UNREADABLE not in CAUSE_OWNER, "the cause a preview hides is this file's word, not env_fidelity's"
+
+
+def test_a_cut_preview_is_read_off_the_difference_the_check_recorded_instead():
+    """runner/replay.py keeps the two answers of a differing call, so the cause of a long answer is
+    the one env_fidelity would give the whole answer, not the word for an unreadable preview."""
+    cut = {"verdict": "differs", "ours": '{"a": "' + "x" * 150 + "...", "recorded": '{"a": "y"}',
+           "difference": {"ours": '{"value": 3}', "ours_truncated": False, "ours_type": "dict",
+                          "theirs": "3", "theirs_truncated": False, "theirs_type": "int",
+                          "type_mismatch": True}}
+    assert B.check_cause(cut) == "result_shape"
+    refused = {"verdict": "ours_refused", "ours": '{"payload": "NameError: ' + "y" * 140 + '...',
+               "recorded": '"27.4"',
+               "difference": {"ours_errored": True, "ours_error": "NameError: name 'decimal' is not defined"}}
+    assert B.check_cause(refused) == "missing_import"
+
+
+def test_an_answer_too_long_even_for_the_difference_is_named_off_its_keys_and_types():
+    both_cut = {"verdict": "differs", "ours": '{"a": "' + "x" * 150 + "...", "recorded": '{"a": "y"}',
+                "difference": {"ours_truncated": True, "theirs_truncated": True, "type_mismatch": False,
+                               "keys_only_ours": ["extra"], "keys_only_theirs": [], "keys_changed": []}}
+    assert B.check_cause(both_cut) == "result_shape"
+    both_cut["difference"] = {"ours_truncated": True, "theirs_truncated": True, "type_mismatch": False,
+                              "keys_only_ours": [], "keys_only_theirs": [], "keys_changed": ["status"]}
+    assert B.check_cause(both_cut) == "value"
+    both_cut["difference"] = {"ours_truncated": True, "theirs_truncated": True, "type_mismatch": False,
+                              "keys_only_ours": [], "keys_only_theirs": [], "keys_changed": []}
+    assert B.check_cause(both_cut) == B.UNREADABLE, "nothing in the record names this one"
 
 
 def test_the_cause_table_names_the_builder_stage_that_owns_each_miss(printed: str):
@@ -172,6 +233,17 @@ def test_the_cause_table_names_the_builder_stage_that_owns_each_miss(printed: st
         else:
             assert cause == B.UNREADABLE and "160 character preview" in owner
         assert where == "`replays.json`"
+
+
+def test_no_miss_on_the_fixture_is_unreadable_now_that_the_checks_record_their_difference(printed: str,
+                                                                                          built: Path):
+    """Every check that did not agree carries a difference record, so a cause is nameable even where
+    the two 160 character previews were cut."""
+    misses = [cells(row)[0] for row in rows_of(printed, "Where the misses come from")]
+    assert misses and B.UNREADABLE not in misses
+    parted = [check for check in B.Build(built).checks() if check["verdict"] in B.PARTS]
+    assert parted and all("difference" in check for check in parted)
+    assert all(B.check_cause(check) != B.UNREADABLE for check in parted)
 
 
 # --- per Task, per round, per repair ------------------------------------------
@@ -201,39 +273,111 @@ def test_a_task_whose_verifier_the_suite_refused_carries_the_checks_that_failed_
     assert row[5] == "1 required of 2: the Run makes at most 0 write calls"
 
 
-def test_the_round_row_says_which_of_the_gate_counts_moved_and_what_the_round_spent(tmp_path):
+def test_the_round_row_says_which_of_the_gate_counts_moved_what_it_spent_and_the_turns_it_took(tmp_path):
     workdir = tmp_path / "rounds"
     workdir.mkdir()
     (workdir / "rounds.json").write_text(json.dumps([
         {"round": 1, "counts": {"fidelity": 1, "trusted": 0, "refused_count": 0, "assisted_runs": 0,
-                                "probes_passing": 0, "spend": {"builder": 0.5, "examiner": 0.25, "total": 0.75}},
+                                "probes_passing": 0, "spend": {"builder": 0.5, "examiner": 0.25, "total": 0.75},
+                                "turns": {"builder": 6, "examiner": 2, "total": 8}},
          "exit": None},
         {"round": 2, "counts": {"fidelity": 1, "trusted": 2, "refused_count": 0, "assisted_runs": 0,
-                                "probes_passing": 0, "spend": {"builder": 0.1, "examiner": 0.0, "total": 0.1}},
+                                "probes_passing": 0, "spend": {"builder": 0.1, "examiner": 0.0, "total": 0.1},
+                                "turns": {"builder": 3, "examiner": 1, "total": 4}},
          "exit": "stalled"}]), encoding="utf-8")
     first, second = [cells(row) for row in rows_of(B.render(B.Build(workdir)), "Per round")]
     assert first[2] == "first round" and first[5] == "the round did not exit"
     assert first[3] == "builder $0.50, examiner $0.25, total $0.75"
+    assert first[4] == "builder 6, examiner 2, total 8"
     assert second[2] == "trusted 2 from 0" and second[5] == "stalled"
+    assert second[3] == "builder $0.10, examiner $0.00, total $0.10"
+    assert second[4] == "builder 3, examiner 1, total 4"
+
+
+def test_a_round_that_kept_no_turn_count_names_the_record_it_would_need(tmp_path):
+    workdir = tmp_path / "turnless"
+    (workdir / "builder").mkdir(parents=True)
+    (workdir / "builder" / "session.jsonl").write_text(json.dumps(
+        {"type": "message", "id": "e1", "message": {"role": "assistant", "content": "done"}}) + "\n",
+        encoding="utf-8")
+    (workdir / "rounds.json").write_text(json.dumps([{"round": 1, "counts": {"fidelity": 1}}]), encoding="utf-8")
+    row = cells(rows_of(B.render(B.Build(workdir)), "Per round")[0])
+    assert row[3] == "n/a (needs rounds.json counts.spend)"
+    assert row[4] == "n/a (needs rounds.json counts.turns)"
 
 
 def test_a_round_that_moved_no_count_says_so(printed: str):
     row = cells(rows_of(printed, "Per round")[0])
     assert row[0] == "1" and row[5] == "done"
-    assert row[4] == "0, no model turn recorded"
+    assert row[4] == "builder 0, examiner 0, total 0"
 
 
-def test_a_repair_request_is_listed_with_the_ruling_the_records_cannot_place(tmp_path):
-    workdir = tmp_path / "repaired"
+def _repaired(workdir: Path) -> Path:
+    """A workdir with a repair in round 2, one in round 3, and the rulings each round left."""
+    (workdir / "repairs").mkdir(parents=True)
+    (workdir / "repairs" / "repair_recompile.jsonl").write_text(
+        json.dumps({"verb": "repair_recompile", "target": "calculate", "at": 1.0, "round": 2}) + "\n",
+        encoding="utf-8")
+    (workdir / "repairs" / "repair_escalate.jsonl").write_text(
+        json.dumps({"verb": "repair_escalate", "target": "task_a", "at": 2.0, "round": 3}) + "\n",
+        encoding="utf-8")
+    (workdir / "gates_by_round.json").write_text(json.dumps([
+        {"round": 1, "rulings": [{"stage": "replay_fidelity", "pass": False}, {"stage": "intent", "pass": False}]},
+        {"round": 2, "rulings": [{"stage": "replay_fidelity", "pass": True}, {"stage": "intent", "pass": False}]},
+        {"round": 3, "rulings": [{"stage": "replay_fidelity", "pass": True}, {"stage": "intent", "pass": False}]},
+    ]), encoding="utf-8")
+    return workdir
+
+
+def test_a_repair_is_listed_with_the_rulings_before_and_after_its_own_round(tmp_path):
+    text = B.render(B.Build(_repaired(tmp_path / "repaired")))
+    escalate, recompile = [cells(row) for row in rows_of(text, "Per repair verb")]
+    assert recompile[:3] == ["`repair_recompile`", "`calculate`", "2"]
+    assert recompile[3] == "red: intent, replay_fidelity" and recompile[4] == "red: intent"
+    assert recompile[5] == "replay_fidelity"
+    assert escalate[3] == "red: intent" and escalate[4] == "red: intent" and escalate[5] == "none"
+
+
+def test_the_headline_counts_the_repairs_whose_round_turned_a_red_gate_green(tmp_path):
+    values = {cells(row)[0]: cells(row)[1]
+              for row in rows_of(B.render(B.Build(_repaired(tmp_path / "repaired"))), "")}
+    assert values["Repairs requested"] == "2 requested: repair_escalate 1, repair_recompile 1"
+    assert values["Repairs that turned a red gate green"] == \
+        "1 of 2: repair_recompile on calculate (round 2, replay_fidelity went red to green)"
+    assert values["Repairs that did not"] == "1 of 2: repair_escalate on task_a (round 3)"
+
+
+def test_a_repair_request_with_no_round_names_the_record_that_would_place_it(tmp_path):
+    workdir = tmp_path / "unplaced"
     (workdir / "repairs").mkdir(parents=True)
     (workdir / "repairs" / "repair_recompile.jsonl").write_text(
         json.dumps({"verb": "repair_recompile", "target": "calculate", "at": 1.0}) + "\n", encoding="utf-8")
     text = B.render(B.Build(workdir))
     row = cells(rows_of(text, "Per repair verb")[0])
     assert row[0] == "`repair_recompile`" and row[1] == "`calculate`"
-    assert row[2].startswith("n/a (needs") and row[3] == row[2]
+    assert row[2] == "n/a (needs repairs/*.jsonl round)"
+    assert row[3].startswith("n/a (needs") and row[4] == row[3]
     values = {cells(line)[0]: cells(line)[1] for line in rows_of(text, "")}
     assert values["Repairs requested"] == "1 requested: repair_recompile 1"
+    assert values["Repairs that turned a red gate green"] == \
+        "0 of 1; 1 not placed: n/a (needs " + B.REPAIR_GAP + ")"
+
+
+def test_a_repair_of_round_one_has_no_earlier_ruling_to_be_read_against(tmp_path):
+    """A repair acts inside its round, and round 1 has no round before it, so nothing in the records
+    says what the gate said before it: that is a gap, not a repair that moved nothing."""
+    workdir = _repaired(tmp_path / "first-round")
+    (workdir / "repairs" / "repair_grow.jsonl").write_text(
+        json.dumps({"verb": "repair_grow", "target": "orders", "at": 0.5, "round": 1}) + "\n",
+        encoding="utf-8")
+    text = B.render(B.Build(workdir))
+    grow = [cells(row) for row in rows_of(text, "Per repair verb") if cells(row)[0] == "`repair_grow`"][0]
+    assert grow[2] == "1" and grow[3] == "no round ran before this one"
+    assert grow[4] == "red: intent, replay_fidelity" and grow[5] == "n/a (needs gates_by_round.json)"
+    values = {cells(row)[0]: cells(row)[1] for row in rows_of(text, "")}
+    assert values["Repairs that turned a red gate green"].endswith(
+        "; 1 not placed: n/a (needs " + B.REPAIR_GAP + ")")
+    assert values["Repairs that did not"].startswith("1 of 3: repair_escalate on task_a (round 3)")
 
 
 def test_no_repair_verb_leaves_the_section_saying_the_code_driver_files_none(printed: str):

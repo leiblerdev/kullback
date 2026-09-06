@@ -1,13 +1,15 @@
-"""Phase 6 repair verbs: the five ways a round fixes what the gates refused (D130, D135, D138).
+"""Phase 6 repair verbs: the ways a round fixes what the gates refused (D130, D135, D136, D138).
 
-Verbs: `repair_recompile(name, hint)`, `repair_grow(table, count)`, `repair_rewrite_skill(name,
-content)`, `repair_refuse_task(task_id, reason)`, `repair_escalate(task_id, queue)`. The `repair_`
+Verbs: `repair_recompile(name, hint)`, `repair_grow(table, count)`, `repair_intent(task_id, hint)`,
+`repair_rewrite_skill(name, content)`, `repair_refuse_task(task_id, reason)`,
+`repair_escalate(task_id, queue)`. The `repair_`
 prefix keeps them clear of the Builder tools (`grow` already exists there, and the registry
 rejects duplicate names). Each verb records its request as JSONL under `workdir/repairs/` and
 returns a short `RepairResult`, which is the whole of what the two deciding verbs (refuse a Task,
-escalate it) do. The two acting verbs are registered from `builder/tools.py` instead, where the
-build plan is: they record the same request and then run the stage that repairs the artifact, so
-the gates rule on the new body or the grown table in the same tool result. `repair_rewrite_skill`
+escalate it) do, and their descriptions say so: a decision moves no gate. The acting verbs are
+registered from `builder/tools.py` instead, where the build plan is: they record the same request
+and then run the stage that repairs the artifact, so the gates rule on the new body, the grown table
+or the rewritten Intent in the same tool result. `repair_rewrite_skill`
 is written here and registered nowhere: a model that rewrites its own prompt unchecked is the GEPA
 caution in `docs/todo.md`, and the verb waits for the gate that accepts an edit (D125, D132).
 Nothing here calls a model or edits `kullback/gates` or `kullback/runner` (D122): the ratchet and
@@ -62,6 +64,14 @@ class GrowRepairArgs(BaseModel):
     count: int = Field(ge=1, description="How many rows the table should hold after growing (D107).")
 
 
+class IntentRepairArgs(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    task_id: str = Field(description="The Task whose Intent to write again.")
+    hint: str = Field(default="", description="What the new Intent should say or avoid, in one line; "
+                                              "it goes into the prompt for this Task and nowhere else.")
+
+
 class RewriteSkillArgs(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -92,12 +102,18 @@ def _repairs_dir(workdir: Any) -> Path:
     return path
 
 
-def record_request(workdir: Any, verb: str, target: str, body: dict) -> Path:
-    """One repair request appended to `repairs/<verb>.jsonl`; the file the round's report reads."""
+def record_request(workdir: Any, verb: str, target: str, body: dict, round_no: int = 1) -> Path:
+    """One repair request appended to `repairs/<verb>.jsonl`; the file the round's report reads.
+
+    `round` is the round the request was made in (D126). The timestamp says when, and rounds.json
+    carries no clock of its own, so the round number is what places a repair against the rulings
+    that round left in `gates_by_round.json`: that is how a report says whether a repair turned a
+    red gate green. A build with no round driver is one pass, which is round 1.
+    """
     path = _repairs_dir(workdir) / f"{verb}.jsonl"
     with path.open("a", encoding="utf-8") as fh:
-        fh.write(json.dumps({"verb": verb, "target": target, "at": time.time(), **body},
-                            sort_keys=True) + "\n")
+        fh.write(json.dumps({"verb": verb, "target": target, "at": time.time(),
+                             "round": int(round_no), **body}, sort_keys=True) + "\n")
     return path
 
 
@@ -105,7 +121,8 @@ def _render(result: RepairResult) -> str:
     return f"{result.verb} {result.target}: {result.status}" + (f" ({result.detail})" if result.detail else "")
 
 
-def _executor(workdir: Any, verb: str, target_of: Any) -> Any:
+def _executor(workdir: Any, verb: str, target_of: Any, round_of: Optional[Callable[[], int]] = None,
+              detail: Optional[str] = None) -> Any:
     async def execute(args: Any) -> RepairResult:
         target = target_of(args)
         extra: dict[str, Any] = {}
@@ -113,36 +130,46 @@ def _executor(workdir: Any, verb: str, target_of: Any) -> Any:
             from kullback.builder import skills as skills_mod
             written = skills_mod.write_skill(workdir, args.name, args.content)
             extra = {"skill_hash": written["hash"]}
-        path = record_request(workdir, verb, target, {"arguments": args.model_dump(mode="json"), **extra})
+        path = record_request(workdir, verb, target, {"arguments": args.model_dump(mode="json"), **extra},
+                              round_no=int(round_of()) if round_of is not None else 1)
         return RepairResult(verb=verb, target=target, path=str(path),
-                            detail=f"request in {path.name}")
+                            detail=detail or f"request in {path.name}")
     return execute
 
 
-def repair_tools(workdir: Any, sink: Optional[Sink] = None) -> list[AgentTool]:
+def repair_tools(workdir: Any, sink: Optional[Sink] = None,
+                 round_of: Optional[Callable[[], int]] = None) -> list[AgentTool]:
     """The five repair verbs over one workdir as request records; `sink` is accepted for symmetry.
 
     A session registers the two deciding verbs from here (`repair_refuse_task`, `repair_escalate`)
     and takes the two acting ones from `builder/tools.py`, which run the repairing stage as well as
     recording the request. `repair_rewrite_skill` is registered nowhere yet (the GEPA caution).
+
+    `round_of` is asked, at the moment a verb is called, which round the driver is in; the verbs are
+    registered once and the round moves under them, so the round cannot be bound here. Without it
+    every request is round 1, which is what a build with no round driver is.
     """
     return [
         AgentTool("repair_recompile", "Compile one tool's body again from its recorded calls.",
                   RecompileArgs, RepairResult,
-                  _executor(workdir, "repair_recompile", lambda a: a.name), render=_render),
+                  _executor(workdir, "repair_recompile", lambda a: a.name, round_of), render=_render),
         AgentTool("repair_grow", "Grow one table of the Starting state with synthetic rows (D107).",
                   GrowRepairArgs, RepairResult,
-                  _executor(workdir, "repair_grow", lambda a: a.table), render=_render),
+                  _executor(workdir, "repair_grow", lambda a: a.table, round_of), render=_render),
         AgentTool("repair_rewrite_skill", "Rewrite one Builder skill; the edit is a memory-tree node with its content hash.",
                   RewriteSkillArgs, RepairResult,
-                  _executor(workdir, "repair_rewrite_skill", lambda a: a.name), render=_render),
-        AgentTool("repair_refuse_task", "Refuse a Task: nothing is derived from it and it yields no "
-                  "training signal.",
+                  _executor(workdir, "repair_rewrite_skill", lambda a: a.name, round_of), render=_render),
+        AgentTool("repair_refuse_task", "Record that a Task is not worth deriving anything from. This "
+                  "repairs nothing and moves no gate: it writes one row for the round report, and "
+                  "whether the Task is refused is the Examiner's under the refuse gate. An Intent the "
+                  "evidence does not support is repaired with repair_intent, not refused here.",
                   RefuseTaskArgs, RepairResult,
-                  _executor(workdir, "repair_refuse_task", lambda a: a.task_id), render=_render),
+                  _executor(workdir, "repair_refuse_task", lambda a: a.task_id, round_of,
+                            detail="one row for the round report; no gate moves and no artifact changes"),
+                  render=_render),
         AgentTool("repair_escalate", "Escalate a Task to a person on a named queue.",
                   EscalateArgs, RepairResult,
-                  _executor(workdir, "repair_escalate", lambda a: a.task_id), render=_render),
+                  _executor(workdir, "repair_escalate", lambda a: a.task_id, round_of), render=_render),
     ]
 
 

@@ -280,7 +280,10 @@ def _tools_stage(model: Any, max_attempts: int, workers: int = 1, only: Optional
                                             ctx.workdir / "tools" / sig.name,
                                             max_attempts=max_attempts, call_states=states,
                                             rules=rules, tool_names=tool_names,
-                                            error_prefix=error_prefix)
+                                            error_prefix=error_prefix,
+                                            # What this tool already failed on, so a recompile asks
+                                            # a different question than the one that failed.
+                                            lesson=memory.lesson_for(ctx.workdir, sig.name))
 
         for sig, build in zip(sigs, parallel.each(sigs, compile_one, workers), strict=True):
             bodies[sig.name] = build.body
@@ -306,10 +309,17 @@ def _tools_stage(model: Any, max_attempts: int, workers: int = 1, only: Optional
     # sandbox left every broken body in the cache and `--iterate` handed them straight back.
     version = (f"compile_tools:{getattr(model, 'name', 'none')}:"
                f"{_module_hash(compile_env)}:{_module_hash(sandbox)}")
+    # The tool lessons are an input of this stage: they reach the compiler prompt (compile_one
+    # above), so a new lesson is a new question and the old answer is not an answer to it. Left
+    # undeclared, a recompile asked for after a lesson was recorded was served the cached bodies
+    # and the stage reported "from cache" however often it was asked; the file's bytes are in the
+    # key, which is what makes the narrowed rerun actually recompile that tool.
+    paths = (memory.TOOL_LESSONS_FILE,)
+    if only is not None:
+        paths += ("bodies.json", "tool_builds.json")
     return pipeline.Stage(name="compile_tools", fn=run, builder=True,
                           inputs=("traces", "tasks", "sigs", "schema", "db", "overlays", "canon_rules"),
-                          outputs=("bodies", "assisted_tools"), gate=gate,
-                          input_paths=("bodies.json", "tool_builds.json") if only is not None else (),
+                          outputs=("bodies", "assisted_tools"), gate=gate, input_paths=paths,
                           code_version=version if only is None else f"{version}:only={','.join(only)}")
 
 
@@ -605,34 +615,73 @@ PROBE_TURNS = 6
 DEFAULT_REROLLS = 3  # D112
 
 
-def _intent_stage(model: Any, workers: int = 1):
+def _read_intents(workdir: Path, task_ids: Iterable[str]) -> dict:
+    """The Intents an earlier run of the stage left under `intents/`, for the Tasks a narrowed run keeps.
+
+    A Task whose file is missing or unreadable is not dropped: it comes back ungrounded with the
+    reason, so the artifact still names every Task and the gate still rules on it.
+    """
+    out: dict[str, Any] = {}
+    for task_id in sorted(task_ids):
+        body = _read_json(workdir / "intents" / f"{task_id}.json", None)
+        try:
+            out[task_id] = (intent.Intent.model_validate(body) if isinstance(body, dict)
+                            else intent.Intent(task_id=task_id, reason="no Intent is recorded for this Task"))
+        except ValueError as exc:
+            out[task_id] = intent.Intent(task_id=task_id, reason=f"the recorded Intent could not be read: {exc}")
+    return out
+
+
+def _intent_stage(model: Any, workers: int = 1, only: Optional[Iterable[str]] = None,
+                  hints: Optional[dict] = None):
     """D47: one grounded Intent per Task; the request the D111 rule, the probe and the leak check read.
 
     The live builds before this stage existed ran with `Task.intent` empty on every Task, so the
     leak check had nothing to check against and the probe prompt named the Task by its id.
+
+    With `only` the same stage is narrowed to those Tasks and the rest of the Intents are read back
+    off disk, so the artifact it releases is still every Task's (the tool `repair_intent(task_id,
+    hint)`). `hints` is what the repair asked for, per Task: it reaches the prompt and the stage's
+    code version, so the same repair asked twice with two hints is two runs and not one cache hit.
     """
+    only = sorted(only) if only is not None else None
+    hints = {task_id: text for task_id, text in sorted((hints or {}).items()) if text}
 
     def run(ctx, inputs):
         write_tools = {s.name for s in inputs["sigs"] if s.kind == "write"}
+        tasks = list(inputs["tasks"])
+        kept: dict[str, Any] = {}
+        if only is not None:
+            unknown = sorted(set(only) - {task.id for task in tasks})
+            if unknown:
+                raise BuildError(f"no Task is named {', '.join(unknown)}")
+            kept = _read_intents(ctx.workdir, {task.id for task in tasks} - set(only))
+            tasks = [task for task in tasks if task.id in only]
 
         def write_one(task):
             try:
-                record = intent.write_intent(model, task, inputs["traces"], write_tools=write_tools)
+                record = intent.write_intent(model, task, inputs["traces"], write_tools=write_tools,
+                                             hint=hints.get(task.id))
             except Exception as exc:  # one Task's Intent failing is that Task ungrounded, not a dead build
                 record = intent.Intent(task_id=task.id, reason=f"{type(exc).__name__}: {exc}")
             _write_json(ctx.workdir / "intents" / f"{task.id}.json", as_dict(record))
             return record
 
-        intents = {task.id: record
-                   for task, record in zip(inputs["tasks"], parallel.each(inputs["tasks"], write_one, workers), strict=True)}
+        intents = dict(kept)
+        intents.update({task.id: record
+                        for task, record in zip(tasks, parallel.each(tasks, write_one, workers), strict=True)})
         # Section 6: an ungrounded Intent is a Task with no Verdict, never a failed build.
         ctx.record_gate(stage_gates.intent_gate(intents))
         # Intent lives in intent.py, not records.py, so it crosses the cache as a dict.
-        return {"intents": {t: as_dict(r) for t, r in intents.items()}}
+        return {"intents": {t: as_dict(r) for t, r in sorted(intents.items())}}
 
+    version = f"{_version('intent', run, intent)}:{getattr(model, 'name', 'none')}"
+    if only is not None:
+        version += f":only={','.join(only)}:hints={content_hash(hints)[:16]}"
     return pipeline.Stage(name="intent", fn=run, builder=True, inputs=("tasks", "traces", "sigs"),
                           outputs=("intents",),
-                          code_version=f"{_version('intent', run, intent)}:{getattr(model, 'name', 'none')}")
+                          input_paths=("intents",) if only is not None else (),
+                          code_version=version)
 
 
 rerolls_gate = stage_gates.rerolls_gate  # the ruling moved to kullback.gates in phase 4; the name stays
@@ -947,6 +996,9 @@ class BuildPlan:
     search: Any = None
     workers: int = 1
     emit: Optional[Any] = None
+    # Which round the driver is in, so a repair request records the round it was made in (D126);
+    # a build with no round driver is one pass, which is round 1. `rounds.py` moves it.
+    round: int = field(init=False, default=1)
     fresh: bool = field(init=False, default=False)
     ceiling: Any = field(init=False, default=None)
     models: dict = field(init=False, default_factory=dict)
@@ -983,14 +1035,16 @@ class BuildPlan:
 
 
 def stages(plan: BuildPlan, *, tools: Optional[Iterable[str]] = None, replay_tasks: Optional[Iterable[str]] = None,
-           reroll_tasks: Optional[Iterable[str]] = None, grow: Optional[dict] = None) -> list:
+           reroll_tasks: Optional[Iterable[str]] = None, intent_tasks: Optional[Iterable[str]] = None,
+           intent_hints: Optional[dict] = None, grow: Optional[dict] = None) -> list:
     """The Builder's DAG: every stage with what it reads and writes, in the order a reader meets them.
 
     The scheduler, not this list, decides what runs when: a stage starts when the artifacts it reads
     are complete. ingest runs only when the plan has files to ingest; the Intent and re-roll stages
-    only when there is a model to ask, since both are model Runs. `tools`, `replay_tasks` and
-    `reroll_tasks` narrow one stage to the named tools or Tasks (the Builder's compile_tool, replay
-    and reroll tools); `grow` overrides the plan's growth targets (the grow tool).
+    only when there is a model to ask, since both are model Runs. `tools`, `replay_tasks`,
+    `reroll_tasks` and `intent_tasks` narrow one stage to the named tools or Tasks (the Builder's
+    compile_tool, replay, reroll and repair_intent tools); `intent_hints` carries what a repair asked
+    for, per Task; `grow` overrides the plan's growth targets (the grow tool).
     """
     models = plan.models
     declared = [
@@ -1002,7 +1056,8 @@ def stages(plan: BuildPlan, *, tools: Optional[Iterable[str]] = None, replay_tas
         _tools_stage(models["compile_tools"], plan.max_attempts, plan.workers, only=tools),
         _policy_stage(models["compile_policy"], plan.workers),
         _lessons_stage(models["judge_lessons"], plan.memory_dir),
-        _intent_stage(models["intent"], plan.workers) if models["intent"] is not None else None,
+        (_intent_stage(models["intent"], plan.workers, only=intent_tasks, hints=intent_hints)
+         if models["intent"] is not None else None),
         _vocabulary_stage(models["vocabulary"], plan.search),
         _user_rules_stage(),
         _environment_stage(plan.domain),

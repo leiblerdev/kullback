@@ -38,7 +38,7 @@ from kullback.ai.provider import Model
 from kullback.builder import build as build_module
 from kullback.builder.build import DEFAULT_REROLLS, TARGET_ALL, BuildError, BuildPlan
 from kullback.builder.extension import builder_extension
-from kullback.builder.tools import BUILD_TOOLS
+from kullback.builder.tools import BUILD_TOOLS, repair_verb_tools
 from kullback.runner import budget
 
 DRIVER_CALL_ID = "builder-driver"
@@ -146,6 +146,28 @@ def builder_message(target: str) -> str:
     return (f"Begin on the target {target!r}. Call status first and read the red lights, then use the "
             "tools to make every gate pass. Answer with no tool call when every gate is green, or "
             "when nothing is changing.")
+
+
+NOTHING_CHANGED = ("nothing changed since the last round: no gate count moved. Every stage of a build "
+                   "over a graph nothing moved is served from the cache, so calling build or replay "
+                   "again without a repair returns that same cached result.")
+
+
+def nothing_changed_message(plan: BuildPlan) -> str:
+    """The follow-up a model-driven Builder is sent when its round changed nothing (D126, D135).
+
+    Build 9's round 2 answered each finding with replay and build, was served every stage from the
+    cache, and moved no count: the beat had no way of knowing that, since a cached build reads like
+    any other. So the message says the plain fact first and then names the verbs of this session that
+    can change an artifact, each with what it changes. They come from the session's own registry
+    (`tools.repair_verb_tools`), so a verb this worktree does not have is never named at a model.
+    Finishing is still the way out when no verb answers what is left: stalled is the soft stop.
+    """
+    verbs = "; ".join(f"{tool.name} ({tool.description.rstrip('.')})"
+                      for tool in repair_verb_tools(plan))
+    return (f"{NOTHING_CHANGED} What changes an artifact is a repair verb: {verbs}. Call status to see "
+            "which red light is yours and the verb that answers it, and call that verb. If no verb "
+            "answers what is left, finish with what you have.")
 
 
 def _model_driven(harness: AgentHarness, plan: BuildPlan, target: str) -> tuple[Optional[ToolResult], dict]:

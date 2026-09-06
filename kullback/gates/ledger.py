@@ -15,6 +15,8 @@ from typing import Iterable
 
 from kullback.runner.records import GateResult, as_dict
 
+HISTORY_NAME = "gates_by_round.json"
+
 
 class GateLedger:
     """gates.json under one lock, with every write remembered per stage.
@@ -23,10 +25,14 @@ class GateLedger:
     reads the file), or overwrites the file with a list of its own. Two stages on two threads would
     race for the file, so each write goes through here, and when stages ran side by side the writes
     are replayed in stage order at the end, so the file reads the same as a one-worker build wrote it.
+
+    `snapshot` keeps what gates.json held at the end of one round in `gates_by_round.json`; the
+    round driver calls it, and gates.json itself is untouched by it.
     """
 
     def __init__(self, workdir: Path):
         self.path = Path(workdir) / "gates.json"
+        self.history = Path(workdir) / HISTORY_NAME
         self.lock = threading.Lock()
         self.ops: dict[str, list[tuple[str, list]]] = {}
         self.initial: list = []
@@ -76,6 +82,34 @@ class GateLedger:
                     body = self._apply(body, op, rows)
             if any(self.ops.values()):
                 self._write(body)
+
+    def snapshot(self, round_no: int) -> list:
+        """This round's rulings kept in gates_by_round.json, so an earlier round can be read again.
+
+        gates.json holds one ruling per stage, the last one, which is the state the report reads and
+        which nothing here changes. A round that repairs an artifact rules again under the same
+        stage names, so without this file a ruling that went from red to green leaves no trace of
+        ever having been red, and no repair can be said to have moved a gate. One row per round,
+        holding gates.json as it stood when the round ended; a round recorded twice replaces its row.
+        """
+        with self.lock:
+            rulings = self._read()
+            rows = [row for row in self._read_history() if row.get("round") != round_no]
+            rows.append({"round": round_no, "rulings": rulings})
+            rows.sort(key=lambda row: int(row.get("round") or 0))
+            self.history.parent.mkdir(parents=True, exist_ok=True)
+            self.history.write_text(json.dumps(rows, indent=2, sort_keys=True, default=str),
+                                    encoding="utf-8")
+        return rulings
+
+    def _read_history(self) -> list:
+        if not self.history.is_file():
+            return []
+        try:
+            body = json.loads(self.history.read_text(encoding="utf-8"))
+        except ValueError:
+            return []
+        return [row for row in body if isinstance(row, dict)] if isinstance(body, list) else []
 
     def rulings(self, stage_name: str) -> list[str]:
         """The distinct ruling names this stage recorded, in order."""

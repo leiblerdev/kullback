@@ -202,8 +202,8 @@ def test_the_extension_registers_every_stage_status_and_the_repair_verbs_with_fo
     harness = builder_agent.build_harness(BuildPlan(workdir=tmp_path))
     assert isinstance(harness, AgentHarness), "the Builder is an extension on the core, not a harness of its own"
     assert harness.registry.names() == ["status", "build", "recluster", "grow", "compile_tool", "replay",
-                                        "reroll", "repair_recompile", "repair_grow", "repair_refuse_task",
-                                        "repair_escalate"]
+                                        "reroll", "repair_recompile", "repair_grow", "repair_intent",
+                                        "repair_refuse_task", "repair_escalate"]
     assert "repair_rewrite_skill" not in harness.registry.names(), "the GEPA caution: no unchecked prompt rewrite"
     assert [s.name for s in harness.sections] == ["builder", "builder_rules", "builder_tools", "builder_targets"]
     assert "make every gate pass" in harness.system and "kullback/gates" in harness.system
@@ -283,7 +283,8 @@ def test_a_scripted_model_driving_the_session_calls_build_and_reads_the_rulings(
     assert len(model.calls) == 2
     tools = [t["name"] for t in model.calls[0]["tools"]]
     assert tools == ["status", "build", "recluster", "grow", "compile_tool", "replay", "reroll",
-                     "repair_recompile", "repair_grow", "repair_refuse_task", "repair_escalate"]
+                     "repair_recompile", "repair_grow", "repair_intent", "repair_refuse_task",
+                     "repair_escalate"]
     system = model.calls[0]["messages"][0]
     assert "You are the Builder" in json.dumps(system)
     second = json.dumps(model.calls[1]["messages"])

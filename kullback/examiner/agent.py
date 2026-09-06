@@ -104,6 +104,21 @@ def examiner_message(target: str = "all") -> str:
             "line when nothing is left to do.")
 
 
+def examiner_round_message(round: int, target: str = "all") -> str:
+    """The steer a model-driven Examiner is sent from round 2 on: the round driver's later beats.
+
+    It asks for what the driver requires. A beat keeps the result of the derive the model called,
+    and a beat that never called derive fails the round, so the steer names that call rather than
+    leaving the model to infer it: build 9's round 2 was steered to read the rulings and act, the
+    model read them, filed a finding and answered in one line, and the round failed for the derive
+    it was never asked for. The rest is the round-1 message's, since the work after the derivation
+    is the same work every round.
+    """
+    return (f"round {round}: call the derive tool with target={target!r} again, read the rulings, then "
+            "probe, repair, refuse or send a finding as they tell you; answer with one line when "
+            "nothing is left to do.")
+
+
 def _model_driven(harness: AgentHarness, target: str) -> Optional[ToolResult]:
     """One prompt asking for the derivation; the last derive tool's result, or None when the model never called it."""
     last: Optional[ToolResult] = None
