@@ -998,6 +998,12 @@ Founder: "update the spend to reflect the cache effect please." The ledger alrea
 
 Decided: every ledger bucket carries `cache_saved_usd`, the cache-read tokens at the input rate less what they cost at the cache rate, less the premium cache writes carry over plain input where a vendor charges one (a cache written and never read shows as a cost). Paid plus saved is what the same calls would have cost with no cache. Memo hits stay a count: nothing was sent, so nothing is known about their price. The figure rides on the feed's model_call rows, on each round's `spend` as `cache_saved` (the ledger's delta over the round), on the build's round line, on the report's rounds table, and on the build table's Dollars row with the cache-read tokens and memo hits it rests on. Rounds and ledgers written before this carry no figure and print none rather than a zero.
 
+### D153. The driver builds the target when the model repaired and never called build (2026-09-06)
+
+Build 13, round 1, the first with the triage skill: the Builder zoomed on every target, wrote hints in the failures' words, cleared `calculate`, grounded 11 Intents, and answered without one `build` call. The store then held only what the repairs had run, the Examiner's derive failed on a Constraints table that was never loaded, and the round closed with 0 of 0 Tasks. The beat's own check (`plan.last` is None) did not fire, because the repairs had set it.
+
+Decided: after a model beat that produced no build result, the driver calls `build(target)` itself through the same registry, as the code path always did; a stage the repairs left current comes from the cache, so it costs nothing but the rulings. The round records `built_by_driver`, and the Builder's stop rule now says to build the target once more after the last repair before answering. A beat still fails only when the build itself errors.
+
 ## Pending (asked, not yet answered)
 
 - D71 provisional (user-side writes); I want more discussion: Simulated user tools, interaction with sequence Hard constraints, required vs allowed. Three questions, to take up when I'm ready.
