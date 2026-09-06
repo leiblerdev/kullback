@@ -23,8 +23,9 @@ from kullback.ai.provider import ModelReply, TestModel, ToolCallRequest
 from kullback.builder import agent as builder_agent
 from kullback.builder import pipeline
 from kullback.builder.build import BuildError, BuildPlan
+from kullback.builder.tools import repair_verb_tools
 from kullback.examiner import agent as examiner_agent
-from kullback.examiner.agent import examiner_message
+from kullback.examiner.agent import examiner_message, examiner_round_message
 from kullback.examiner.plan import ExaminerPlan
 from kullback.examiner.stage import DERIVE_INPUTS, FORBIDDEN_INPUTS
 from kullback.gates import round_end
@@ -240,6 +241,35 @@ def test_the_examiner_is_one_session_across_rounds_prompted_once_then_steered_an
     assert sum(1 for line in lines if json.loads(line).get("type") == "session_info") == 1
 
 
+def test_the_round_n_examiner_steer_asks_for_derive_again(model_examiner_loop):
+    """Build 9: round 2 was steered to `read the rulings and act`, the model read them, filed a
+    finding and answered in one line, and the round failed for the derive the beat requires. The
+    steer now asks for the call the beat checks for, in the words examiner/agent.py holds."""
+    loop = model_examiner_loop["loop"]
+    steer = loop.examiner.messages[model_examiner_loop["after_first"]]
+    assert steer.content == examiner_round_message(2, rounds.EXAMINER_TARGET)
+    assert f"call the derive tool with target={rounds.EXAMINER_TARGET!r}" in steer.content
+
+
+def test_an_examiner_that_derives_in_round_two_does_not_fail_the_round(tmp_path, request):
+    """The other half of the same bug: a round-2 beat that does what the steer asks (derive again,
+    then file what the rulings call for and answer with one line) closes the beat. What failed the
+    live round was the missing derive, not the finding or the one-line answer."""
+    loop = _model_driven_beat(tmp_path, request, [
+        _reply(None, ("derive", {"target": "all"})),
+        _reply("derived; the rulings are read."),
+        _reply(None, ("derive", {"target": "all"})),
+        _reply(None, ("finding", {"task_id": "1", "kind": "fidelity",
+                                  "text": "the replay diverges at the second call", "suggested": "replay"})),
+        _reply("rulings remain blocked; filed the finding."),
+    ], "derives-in-round-two")
+    loop.examiner_beat(1)
+    loop.examiner_beat(2)
+    assert loop.examiner_result is not None and not loop.examiner_result.is_error
+    assert [f.task_id for f in loop.pending_findings] == ["1"], "the round-2 finding is queued, not lost"
+    assert loop.close_round(2, loop.counts()).failed is False
+
+
 def test_the_examiner_plan_sees_its_allowance_shrink_at_every_tool_end(model_examiner_loop):
     """rounds.py hands the Examiner's plan what is left of the round's allowance after each tool, so the
     reroll tool refuses at the right moment; under an allowance of zero nothing is left after derive."""
@@ -323,10 +353,35 @@ def test_a_round_that_moved_no_gate_count_tells_the_builder_once_and_ends_if_it_
     assert loop.moved_nothing(_record(2).counts) is True
     loop.tell_the_builder_nothing_changed(2)
     said = [m["content"] for m in loop.agent_model.calls[-1]["messages"] if m["role"] == "user"]
-    assert said.count(rounds.STALL_FOLLOW_UP) == 1
+    assert sum(1 for line in said if line.startswith(rounds.STALL_FOLLOW_UP)) == 1
     assert len(loop.agent_model.calls) == 2, "the model was asked once more, and it stopped again"
     loop.tell_the_builder_nothing_changed(2)
     assert len(loop.agent_model.calls) == 2, "one follow-up a round, however often the driver asks"
+
+
+def test_a_builder_round_with_every_stage_cached_is_told_that_nothing_changed_and_which_verbs_change_something(
+        tmp_path, request):
+    """Build 9's round 2: the findings came in, the model answered each with replay and build, every
+    stage was served from the cache and the round moved no count. A cached build reads like any
+    other, so the tool result now says which it was in its first line, and the follow-up says the
+    same in words and names the verbs of this session that can change an artifact."""
+    plan = BuildPlan(workdir=tmp_path / "cached", model=Bodies(), files=[_fixture(request)], max_attempts=0)
+    harness = builder_agent.build_harness(plan)
+    for _ in range(2):  # the second build re-ingests the file; the third has nothing left to run
+        builder_agent.drive_tool(harness, "build", {"target": TARGET})
+    third = builder_agent.drive_tool(harness, "build", {"target": TARGET})
+    assert not third.is_error and "nothing changed: all" in third.content.splitlines()[0]
+    assert all(stage["cached"] for stage in third.details["stages"] if stage["status"] != "pending")
+
+    loop = _stalling_loop(tmp_path, [_reply("nothing to do."), _reply("finishing with what I have.")])
+    loop.tell_the_builder_nothing_changed(2)
+    told = [m["content"] for m in loop.agent_model.calls[-1]["messages"] if m["role"] == "user"][-1]
+    assert told.startswith(rounds.STALL_FOLLOW_UP)
+    assert "without a repair returns that same cached result" in told
+    verbs = [tool.name for tool in repair_verb_tools(loop.plan)]
+    assert "repair_recompile" in verbs and "hint" in told, "the recompile is offered with its hint"
+    assert all(f"{name} (" in told for name in verbs)
+    assert "build (" not in told, "build is what was served from the cache, not a way out of it"
 
 
 def test_a_round_that_moved_a_gate_count_tells_the_builder_nothing(tmp_path):
@@ -448,6 +503,85 @@ def test_round_end_carries_every_count_d126_lists_and_none_comes_from_a_model(dr
     assert set(counts["spend"]) == {"builder", "examiner", "total"} and counts["findings"] == []
     assert rounds.load_rounds(driven["workdir"])[-1].counts == counts
     assert [d for d in driven["dicts"] if d.get("kind") == "round"][-1]["counts"] == counts
+
+
+def test_a_rounds_counts_carry_its_clock_its_spend_its_turns_and_its_context_fill(driven):
+    """A build's duration is read from these and from nothing else: pipeline/state.json records the
+    stage statuses and no clock, and a repair's timestamp has no round to sit against without them."""
+    counts = rounds.load_rounds(driven["workdir"])[-1].counts
+    assert counts["started_at"] > 0 and counts["ended_at"] >= counts["started_at"]
+    assert counts["ended_at"] - counts["started_at"] < 3600
+    assert counts["turns"] == {"builder": 0, "examiner": 0, "total": 0}, "the code driver takes no turn"
+    assert counts["context_fill"] == {"builder": 0.0, "examiner": 0.0}
+    assert set(counts["spend"]) == {"builder", "examiner", "total"}
+
+
+def test_every_rounds_gate_rulings_are_kept_beside_gates_json_round_by_round(driven):
+    """gates.json holds the last ruling per stage, so the next round overwrites it; the per-round
+    rows are what lets a repair be read against the rulings before and after its round."""
+    workdir = driven["workdir"]
+    history = json.loads((workdir / "gates_by_round.json").read_text(encoding="utf-8"))
+    assert [row["round"] for row in history] == [r["round"] for r in driven["result"]["rounds"]]
+    assert history[-1]["rulings"] == json.loads((workdir / "gates.json").read_text(encoding="utf-8"))
+    assert any(not ruling["pass"] for ruling in history[-1]["rulings"]), "the fixture leaves red gates"
+
+
+def test_the_driver_counts_the_turns_of_the_beat_alone_and_how_full_the_context_got(tmp_path):
+    """The turns and the fill are the harness's own counters (D131), read as a delta over the beat,
+    so round 2 reports the turns round 2 took and not the turns of the session so far."""
+    plan = BuildPlan(workdir=tmp_path / "work")
+    loop = rounds.Loop(plan=plan, builder=builder_agent.build_harness(
+        plan, TestModel([_reply("built."), _reply("built again.")])))
+    loop.turns_seen = {agent: len(loop.fills(agent)) for agent in rounds.AGENTS}
+    _collect(loop.builder.prompt("build"))
+    first = loop.driver_counts()
+    assert first["turns"] == {"builder": 1, "examiner": 0, "total": 1}
+    assert 0.0 < first["context_fill"]["builder"] <= 1.0
+    assert first["context_fill"]["examiner"] == 0.0, "no Examiner harness took a turn"
+    loop.turns_seen = {agent: len(loop.fills(agent)) for agent in rounds.AGENTS}
+    _collect(loop.builder.prompt("build again"))
+    assert loop.driver_counts()["turns"] == {"builder": 1, "examiner": 0, "total": 1}
+    assert len(loop.fills("builder")) == 2, "the session kept both turns; the beat counted one"
+
+
+def test_a_round_that_failed_still_records_its_clock_its_spend_and_its_turns(tmp_path, request):
+    """The round that broke is the one a reader most wants the numbers of, and it closes with no
+    gate counts at all, so the driver's own numbers are put on the record there too."""
+    workdir = tmp_path / "broken-examiner"
+    agent_model = TestModel([
+        _reply(None, ("build", {"target": TARGET})),
+        _reply("built."),
+        _reply("I have read everything and all is well."),
+    ])
+    result = rounds.run_rounds(workdir, model=Bodies(), agent_model=agent_model, files=[_fixture(request)],
+                               max_attempts=0, allowance_usd=0.0)
+    assert result["failed"] is True
+    counts = rounds.load_rounds(workdir)[-1].counts
+    assert counts["started_at"] > 0 and counts["ended_at"] >= counts["started_at"]
+    assert counts["turns"]["builder"] == 2 and counts["turns"]["total"] == counts["turns"]["builder"] + \
+        counts["turns"]["examiner"]
+    assert counts["context_fill"]["builder"] > 0.0
+    assert set(counts["spend"]) == {"builder", "examiner", "total"}
+    assert "fidelity" not in counts, "a round that failed computed no gate count"
+    assert json.loads((workdir / "gates_by_round.json").read_text(encoding="utf-8"))[-1]["round"] == 1
+
+
+def test_the_round_the_driver_is_in_is_on_the_plan_before_the_first_beat(tmp_path):
+    """A repair verb is registered once and the round moves under it, so the round a request records
+    is the one the plan carries when the verb is called (repairs/*.jsonl round). The round driver is
+    what moves it, and it moves it before the Builder beat that may call a verb."""
+    plan = BuildPlan(workdir=tmp_path / "work")
+    loop = rounds.Loop(plan=plan, builder=builder_agent.build_harness(plan))
+    verbs = {tool.name: tool for tool in repair_verb_tools(plan)}
+    assert plan.round == 1, "a build with no round driver is one pass"
+    for n in (1, 2, 3):
+        with pytest.raises(BuildError):  # nothing to build in this workdir; the round is set first
+            loop.round(n)
+        assert plan.round == n
+        asyncio.run(verbs["repair_escalate"].run({"task_id": f"t{n}"}))
+    rows = [json.loads(line) for line in
+            (plan.workdir / "repairs" / "repair_escalate.jsonl").read_text(encoding="utf-8").splitlines()]
+    assert [(row["target"], row["round"]) for row in rows] == [("t1", 1), ("t2", 2), ("t3", 3)]
 
 
 def test_the_loop_exits_done_when_the_state_holds_after_a_round_over_the_fixture(driven):

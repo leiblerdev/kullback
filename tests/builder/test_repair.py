@@ -30,6 +30,46 @@ def test_verbs_record_requests(tmp_path):
     assert (tmp_path / "repairs" / "repair_recompile.jsonl").is_file()
 
 
+def _requests(workdir, verb) -> list[dict]:
+    lines = (workdir / "repairs" / f"{verb}.jsonl").read_text(encoding="utf-8").splitlines()
+    return [json.loads(line) for line in lines if line.strip()]
+
+
+def test_a_request_records_the_round_it_was_made_in(tmp_path):
+    """The request carries a timestamp and rounds.json carries none, so the round number is the only
+    thing that places a repair against the rulings that round left (gates_by_round.json)."""
+    at_round = {"n": 1}
+    tools = {t.name: t for t in repair.repair_tools(tmp_path, round_of=lambda: at_round["n"])}
+    _run(tools["repair_recompile"], {"name": "get_order"})
+    at_round["n"] = 3
+    _run(tools["repair_recompile"], {"name": "get_order"})
+    _run(tools["repair_escalate"], {"task_id": "t1", "queue": "review"})
+    assert [row["round"] for row in _requests(tmp_path, "repair_recompile")] == [1, 3]
+    assert [row["round"] for row in _requests(tmp_path, "repair_escalate")] == [3]
+
+
+def test_a_request_made_outside_a_round_driver_is_round_one(tmp_path):
+    tools = {t.name: t for t in repair.repair_tools(tmp_path)}
+    _run(tools["repair_refuse_task"], {"task_id": "t1", "reason": "no frontier run finishes"})
+    row = _requests(tmp_path, "repair_refuse_task")[0]
+    assert row["round"] == 1 and row["target"] == "t1" and row["at"] > 0
+
+
+def test_an_acting_verb_records_the_round_the_build_plan_is_in(tmp_path):
+    """The two acting verbs are registered from builder/tools.py against the plan, and the round
+    moves under a session that was registered once, so the plan is asked at call time."""
+    from kullback.builder.build import BuildPlan
+    from kullback.builder.tools import repair_verb_tools
+    plan = BuildPlan(workdir=tmp_path, max_attempts=0)
+    tools = {t.name: t for t in repair_verb_tools(plan)}
+    plan.round = 4
+    _run(tools["repair_recompile"], {"name": "get_order", "hint": "it never imported decimal"})
+    _run(tools["repair_escalate"], {"task_id": "t1"})
+    assert [row["round"] for row in _requests(tmp_path, "repair_recompile")] == [4]
+    assert _requests(tmp_path, "repair_recompile")[0]["lesson"] == "it never imported decimal"
+    assert [row["round"] for row in _requests(tmp_path, "repair_escalate")] == [4]
+
+
 def test_verbs_reject_bad_args(tmp_path):
     tools = {t.name: t for t in repair.repair_tools(tmp_path)}
     out = _run(tools["repair_grow"], {"table": "orders", "count": 0})

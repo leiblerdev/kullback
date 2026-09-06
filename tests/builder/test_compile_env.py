@@ -438,6 +438,64 @@ def test_a_retry_keeps_the_first_two_messages_byte_identical(
         assert len(call["messages"]) > 2
 
 
+def test_a_later_attempt_that_crashes_does_not_replace_an_earlier_one_that_replays(
+    make_test_model, schema, sigs, db0, workdir, order_calls
+):
+    """A live build's fourth attempt at one write tool crashed on all 67 of its calls where the
+    third had replayed 44 of 44 and failed only the refusal probe. The last attempt was the one
+    kept, which cost 94 replay misses and 38 Tasks; the best attempt is kept now."""
+    model = make_test_model([WRONG_BODY] + [CRASHING_BODY] * 3)
+    build = ce.compile_tool(model, sigs[0], order_calls, schema, db0, workdir)
+    assert build.assisted is True and all(not node["passed"] for node in build.nodes)
+    assert build.kept_attempt == 0
+    assert build.body.strip() == WRONG_BODY.strip()
+    assert [gate.stage for gate in build.gates if gate.passed][:3] == ["parses", "confined", "executes_on_s0"]
+    written = json.loads((workdir / ce.NODE_DIR / "get_order_details.json").read_text(encoding="utf-8"))
+    assert written["kept_attempt"] == 0
+    assert [node["attempt"] for node in written["nodes"] if node.get("kept")] == [0]
+
+
+def test_the_kept_attempt_is_the_one_that_got_furthest_through_the_gates():
+    """The gates run in one order and stop at the first failure, so how many passed is how far the
+    body got; two bodies that fell at the same gate are separated by what their replay matched."""
+    from kullback.runner.records import GateResult
+
+    def gates(passed: int, matches: int) -> list:
+        names = ["parses", "confined", "executes_on_s0", "deterministic", "non_trivial", "replay_fidelity"]
+        return [GateResult(stage=name, **{"pass": True},
+                           metrics={"success_matches": matches} if name == "replay_fidelity" else {})
+                for name in names[:passed]]
+
+    assert ce.attempt_score(gates(6, 44)) > ce.attempt_score(gates(2, 0))
+    assert ce.attempt_score(gates(6, 44)) > ce.attempt_score(gates(6, 12))
+    assert ce.attempt_score([]) == (0, 0)
+
+
+def test_a_recompile_hint_reaches_the_compiler_prompt_for_that_tool(
+    make_test_model, schema, sigs, db0, workdir, order_calls
+):
+    """A hint nothing reads changes nothing. The lesson `repair.record_tool_lesson` wrote is what
+    the next attempt at this one tool is shown; without it the live build asked for the same
+    recompile seven times and was handed the same body every time."""
+    from kullback.builder import repair
+
+    repair.record_tool_lesson(workdir, sigs[0].name, ["executes: the body raised KeyError on every call"])
+    model = make_test_model([CORRECT_BODY])
+    ce.compile_tool(model, sigs[0], order_calls, schema, db0, workdir,
+                    lesson=repair.lesson_for_tool(workdir, sigs[0].name))
+    system, user = model.calls[0]["messages"][0]["content"], model.calls[0]["messages"][-1]["content"]
+    assert "raised KeyError on every call" in user
+    assert f"Past gate failures for {sigs[0].name}" in user
+    assert "KeyError" not in system, "one tool's lesson must not move the prefix every tool shares"
+
+
+def test_with_no_lesson_the_compile_prompt_is_unchanged(schema, sigs, order_calls):
+    """The offline builds are deterministic byte for byte, so a tool with no lesson has to send
+    exactly the messages it sent before there was such a thing as a lesson."""
+    assert (ce.body_messages(sigs[0], order_calls[:3], schema=schema, lesson="")
+            == ce.body_messages(sigs[0], order_calls[:3], schema=schema))
+
+
 def test_an_attempt_over_the_evidence_cap_is_refused_not_truncated(
     make_test_model, schema, sigs, db0, workdir, order_calls
 ):

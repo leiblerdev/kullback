@@ -14,11 +14,13 @@ fixed configuration, `grow(table, count)` grows one table of the Starting state 
 `status()` is where a round starts: it reads the red lights off what code wrote (gates.json, the
 fidelity records in replays.json, the assisted tools in tool_builds.json) and never off a model,
 and names for each the stage, the tool or Task, the failure in the gate's own words and the repair
-verb that owns it. The repair verbs are `repair_recompile(name, hint)` and `repair_grow(table,
-count)`, which record the request and then run the stage that repairs the artifact, and
-`repair_refuse_task` and `repair_escalate` from `builder/repair.py`, which record a decision and
-change no artifact. `repair_rewrite_skill` is deliberately not registered (the GEPA caution in
-docs/todo.md).
+verb that owns it. The repair verbs are `repair_recompile(name, hint)`, `repair_grow(table, count)`
+and `repair_intent(task_id, hint)`, which record the request and then run the stage that repairs the
+artifact, and `repair_refuse_task` and `repair_escalate` from `builder/repair.py`, which record a
+decision and change no artifact. A ruling is mapped to a deciding verb only where nothing can be
+repaired: an Intent is a line a model wrote, so the intent gate leads to `repair_intent` (D136), and
+`derive_verifier` leads to neither, because the Examiner owns it (D123). `repair_rewrite_skill` is
+deliberately not registered (the GEPA caution in docs/todo.md).
 
 A result is what the model reads plus what it does not. The rendered text is a few lines: the
 status, the stages that ran, and the ruling names with pass or fail. Everything else (the Task
@@ -46,7 +48,7 @@ Sink = Callable[[Any], Awaitable[None]]
 
 # The tools that run the graph, so a driver can tell a build from a reading or a decision.
 BUILD_TOOLS: tuple[str, ...] = ("build", "recluster", "grow", "compile_tool", "replay", "reroll",
-                                "repair_recompile", "repair_grow")
+                                "repair_recompile", "repair_grow", "repair_intent")
 
 
 class StageReport(BaseModel):
@@ -135,8 +137,14 @@ class RerollArgs(BaseModel):
 
 # --- the red lights: what is failing, and which verb owns it ------------------
 
-# Which repair verb answers which ruling. The ruling names are the registry's (kullback/gates),
-# so the map is over the harness's own vocabulary and holds for any customer's traces.
+# A ruling no Builder verb answers because another agent owns the artifact; the red light says so
+# rather than naming a verb that changes nothing.
+EXAMINER_OWNS = "the Examiner owns it"
+
+# Which verb answers which ruling. The ruling names are the registry's (kullback/gates), so the map
+# is over the harness's own vocabulary and holds for any customer's traces. Every entry is a verb
+# that changes the artifact the ruling is about: a verb that only records a decision belongs here
+# only where nothing can be repaired.
 REPAIR_VERB_FOR: dict[str, str] = {
     "parses": "repair_recompile",
     "executes_on_s0": "repair_recompile",
@@ -155,17 +163,22 @@ REPAIR_VERB_FOR: dict[str, str] = {
     "replay_reference": "repair_recompile",
     # A row the Traces name that the built world does not hold is a table to grow (D107).
     "build_environment": "repair_grow",
-    # A Task the frontier cannot finish, or that has no grounded Intent, has no training signal.
-    "rerolls": "repair_refuse_task",
-    "intent": "repair_refuse_task",
-    "derive_verifier": "repair_refuse_task",
+    # An Intent is a line a model wrote, so it is repaired, not refused: the phrases the Runs do not
+    # evidence go back to the model with the hint (D136). Refusing was the answer here for one live
+    # build, and repair_refuse_task moved no gate 41 times.
+    "intent": "repair_intent",
+    # Re-rolls that all died on a provider error say nothing about the Task; the Builder re-rolls it
+    # again rather than refusing a Task on the strength of an error.
+    "rerolls": "reroll",
+    # The Verifier is derived by the Examiner (D123): no Builder verb touches it.
+    "derive_verifier": EXAMINER_OWNS,
 }
 DEFAULT_REPAIR_VERB = "repair_escalate"
 NO_BODY = " has no body"
 
 
 def verb_for(stage: str) -> str:
-    """The repair verb that owns a ruling; anything the Builder cannot repair goes to a person."""
+    """The verb that owns a ruling; anything the Builder cannot act on goes to a person or its owner."""
     return REPAIR_VERB_FOR.get(stage, DEFAULT_REPAIR_VERB)
 
 
@@ -295,8 +308,11 @@ def result_of(plan: BuildPlan, target: str, result: Any, verb: str) -> BuildResu
     stage_gates = [ruling_of(g) for g in result.gates]
     ran = [s for s in stages if s.status != "pending"]
     cached = sum(1 for s in ran if s.cached)
-    summary = (f"{verb} {target}: {result.status}; {len(ran)} stages, {cached} from cache, "
-               f"{len(result.rulings)} rulings recorded")
+    # A run whose every stage came from the cache rewrote no artifact, so no ruling can have moved.
+    # The first line the model reads says so, rather than leaving two counts to be compared.
+    served = (f"nothing changed: all {len(ran)} stages from cache" if ran and cached == len(ran)
+              else f"{len(ran)} stages, {cached} from cache")
+    summary = f"{verb} {target}: {result.status}; {served}, {len(result.rulings)} rulings recorded"
     environment = result.artifacts.get("environment")
     return BuildResult(
         summary=summary, target=target, status=result.status,
@@ -372,7 +388,8 @@ def _repair_executor(plan: BuildPlan, sink: Optional[Sink], verb: str, target_of
     async def execute(args: Any) -> BuildResult:
         extra = before(args) if before is not None else {}
         repair_module.record_request(plan.workdir, verb, target_of(args),
-                                     {"arguments": args.model_dump(mode="json"), **extra})
+                                     {"arguments": args.model_dump(mode="json"), **extra},
+                                     round_no=plan.round)
         return await run_stage(args)
 
     return execute
@@ -391,15 +408,16 @@ def _keep_hint(plan: BuildPlan) -> Callable[[Any], dict]:
 
 
 def repair_verb_tools(plan: BuildPlan, sink: Optional[Sink] = None) -> list[AgentTool]:
-    """The four repair verbs a Builder session may call (D135, D138).
+    """The five repair verbs a Builder session may call (D135, D136, D138).
 
-    Two act: they record the request and run the stage that repairs the artifact, so the gates rule
-    on what came out in the same tool result. Two decide: `repair_refuse_task` and
+    Three act: they record the request and run the stage that repairs the artifact, so the gates
+    rule on what came out in the same tool result. Two decide: `repair_refuse_task` and
     `repair_escalate` come straight from `builder/repair.py`, record their request and change no
     artifact. `repair_rewrite_skill` is not here: a model rewriting its own prompt stays proposed,
     gated and versioned, and no gate accepts an edit yet (the GEPA caution in docs/todo.md).
     """
-    recording = {tool.name: tool for tool in repair_module.repair_tools(plan.workdir, sink)}
+    recording = {tool.name: tool for tool in
+                 repair_module.repair_tools(plan.workdir, sink, round_of=lambda: plan.round)}
     return [
         AgentTool("repair_recompile",
                   "Repair one tool body: compile it again from its recorded calls, with a hint saying "
@@ -414,6 +432,15 @@ def repair_verb_tools(plan: BuildPlan, sink: Optional[Sink] = None) -> list[Agen
                   _repair_executor(plan, sink, "repair_grow", lambda a: a.table,
                                    lambda a: {"grow": {**dict(plan.grow or {}), a.table: a.count}},
                                    "starting_state"), render=render),
+        AgentTool("repair_intent",
+                  "Repair one Task's Intent: write it again with a hint saying what the Task's Runs "
+                  "evidence. An Intent with a noun phrase no Run says in those words leaves the Task "
+                  "with no Verdict; the hint is how you say what the words should be.",
+                  repair_module.IntentRepairArgs, BuildResult,
+                  _repair_executor(plan, sink, "repair_intent", lambda a: a.task_id,
+                                   lambda a: {"intent_tasks": [a.task_id],
+                                              "intent_hints": {a.task_id: a.hint}},
+                                   "intent"), render=render),
         recording["repair_refuse_task"],
         recording["repair_escalate"],
     ]

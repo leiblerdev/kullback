@@ -1004,12 +1004,12 @@ def judge_lessons(model, lessons: Any, toolsigs: Any = None, policy_spans: Any =
 
 # --- tool lessons (phase 6): gate-failure sequences per tool, workdir-scoped ---
 
-_TOOL_LESSONS_FILE = "tool_lessons.json"
+TOOL_LESSONS_FILE = "tool_lessons.json"
 
 
 def tool_lessons_path(workdir: Any) -> Path:
     """The workdir-scoped tool-lesson file (distinct from the cross-customer lessons.md, D87)."""
-    return Path(workdir) / _TOOL_LESSONS_FILE
+    return Path(workdir) / TOOL_LESSONS_FILE
 
 
 def _valid_tool_lessons(data: Any) -> dict[str, list[list[str]]]:

@@ -133,12 +133,17 @@ class ScoredRouter:
         recorded = recorded if recorded is not None else self._take(name)
         verdict = UNRECORDED if recorded is None else compare_call(
             recorded, outcome.result, outcome.error, self.canon_rules)
-        self.checks.append({
+        check = {
             "tool": name, "kind": "write" if name in self.write_tools else "read", "verdict": verdict,
             "route": outcome.route, "call_id": recorded.id if recorded is not None else None,
             "ours": _preview(outcome.error if outcome.error is not None else outcome.result),
             "recorded": _preview(recorded.error if recorded is not None and recorded.error is not None
-                                 else (recorded.result if recorded is not None else None))})
+                                 else (recorded.result if recorded is not None else None))}
+        if verdict not in AGREES and verdict != UNRECORDED:
+            # A call that agreed needs nothing beyond the preview; a call that parted has to say
+            # what parted, and 160 characters is not enough to say it (D66).
+            check["difference"] = difference(outcome.result, outcome.error, recorded)
+        self.checks.append(check)
         return outcome
 
     def _take(self, name: str) -> Optional[ToolCall]:
@@ -183,6 +188,57 @@ def _dumps(value: Any) -> str:
 def _preview(value: Any, limit: int = 160) -> str:
     text = _dumps(plain(value))
     return text if len(text) <= limit else text[:limit] + "..."
+
+
+# What a check that did not agree keeps of each side, against the 160 characters of the preview.
+DIFFERENCE_LIMIT = 4000
+ERROR_LIMIT = 1000
+
+
+def _error_text(error: Any) -> str:
+    """The message inside a tool error, which is the part that says why that side refused."""
+    if error is None:
+        return ""
+    payload = error.get("payload") if isinstance(error, dict) else getattr(error, "payload", None)
+    return str(payload if payload is not None else _dumps(plain(error)))[:ERROR_LIMIT]
+
+
+def _kept(value: Any, errored: bool) -> tuple[str, bool, str]:
+    """One side's answer as text, whether that was the whole of it, and the type it had."""
+    text = _dumps(plain(value))
+    return text[:DIFFERENCE_LIMIT], len(text) > DIFFERENCE_LIMIT, "error" if errored else type(plain(value)).__name__
+
+
+def difference(result: Any, error: Any, recorded: Optional[ToolCall]) -> dict:
+    """Why one routed call parted from its recording, in a form the cause can be read off.
+
+    The two preview fields are cut at 160 characters, which is enough to see an answer and not
+    enough to say what about it differs, so a report reading them alone has to call the cause
+    unreadable. This is written for the calls that did not agree and for those only: each side's
+    error message, the type each answer had, the keys only one side has and the keys both have
+    with different values, and each answer up to `DIFFERENCE_LIMIT` characters with a flag saying
+    whether that was all of it. The preview fields keep the bytes they always kept.
+    """
+    ours_errored = error is not None
+    theirs_errored = recorded is not None and recorded.error is not None
+    ours = plain(error if ours_errored else result)
+    theirs = plain(recorded.error if theirs_errored else recorded.result) if recorded is not None else None
+    ours_text, ours_cut, ours_type = _kept(ours, ours_errored)
+    theirs_text, theirs_cut, theirs_type = _kept(theirs, theirs_errored)
+    out = {"ours": ours_text, "ours_truncated": ours_cut, "ours_type": ours_type,
+           "ours_errored": ours_errored, "ours_error": _error_text(error),
+           "theirs": theirs_text, "theirs_truncated": theirs_cut, "theirs_type": theirs_type,
+           "theirs_errored": theirs_errored,
+           "theirs_error": _error_text(recorded.error if recorded is not None else None),
+           "type_mismatch": ours_type != theirs_type}
+    if isinstance(ours, dict) and isinstance(theirs, dict):
+        out["keys_only_ours"] = sorted(set(ours) - set(theirs))
+        out["keys_only_theirs"] = sorted(set(theirs) - set(ours))
+        out["keys_changed"] = sorted(key for key in set(ours) & set(theirs)
+                                     if _dumps(ours[key]) != _dumps(theirs[key]))
+    if isinstance(ours, list) and isinstance(theirs, list):
+        out["lengths"] = [len(ours), len(theirs)]
+    return out
 
 
 @dataclass
@@ -257,4 +313,4 @@ def _score(trace: Trace, state: Any, scored: ScoredRouter, model: TraceModel, us
 
 # The per-Task ruling over these records (some Trace confirmed, or why none did) is
 # `kullback.gates.fidelity.reference_replay_gate`; this module scores one replay and stops.
-__all__ = ["Replay", "ScoredRouter", "TraceModel", "TraceUser", "compare_call", "replay_trace"]
+__all__ = ["Replay", "ScoredRouter", "TraceModel", "TraceUser", "compare_call", "difference", "replay_trace"]

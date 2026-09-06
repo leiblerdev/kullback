@@ -14,8 +14,9 @@ round 2 on. A model-driven agent that crosses it is steered once to finish with 
 
 The Builder's session has no turn cap (D135): it runs until the model answers with no tool call.
 The ceiling is the hard stop, watched here and in `builder/agent.py` on every tool end. Stalled is
-the soft stop: a round that moved no gate count sends the model one follow-up saying so, and the
-round ends if it still stops.
+the soft stop: a round that moved no gate count sends the model one follow-up saying so and naming
+the verbs that can change an artifact, and the round ends if it still stops. The Examiner's later
+rounds are steered with `examiner_round_message`, which asks for the derive this beat requires.
 
 This module is the top of the layering: it imports both applications, and the Builder's artifacts
 reach the Examiner through `examiner.stage.DERIVE_INPUTS`, never bodies, the db, the schema or the
@@ -27,6 +28,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 import json
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, AsyncIterator, Callable, Iterable, Optional
@@ -43,10 +45,11 @@ from kullback.builder.agent import builder_message
 from kullback.builder.build import DEFAULT_REROLLS, TARGET_ALL, BuildError, BuildPlan
 from kullback.builder.tools import BUILD_TOOLS
 from kullback.examiner import agent as examiner_agent
-from kullback.examiner.agent import ExaminerError, examiner_message
+from kullback.examiner.agent import ExaminerError, examiner_message, examiner_round_message
 from kullback.examiner.plan import STATE_DIR, ExaminerPlan
 from kullback.examiner.stage import DERIVE_INPUTS
 from kullback.gates import round_end
+from kullback.gates.ledger import GateLedger
 from kullback.runner import budget, feed
 from kullback.runner.records import Finding, GateResult, RoundRecord, as_dict
 
@@ -54,7 +57,9 @@ ROUNDS_NAME = "rounds.json"
 AGENTS = ("builder", "examiner")
 MAX_TURNS = 8  # the Examiner's cap; the Builder runs with none (D135)
 ALLOWANCE_STEER = "Your allowance for this round is spent: finish with what you have (D123)"
-STALL_FOLLOW_UP = "nothing changed since the last round; finish with what you have"
+# The first sentence of the stall follow-up; the rest names the verbs that can change an artifact,
+# which only the plan's own registry knows (builder.agent.nothing_changed_message).
+STALL_FOLLOW_UP = builder_agent.NOTHING_CHANGED
 EXAMINER_TARGET = "all"
 BUILDER_SESSION = Path("builder") / "session.jsonl"
 EXAMINER_SESSION = Path("examiner") / "session.jsonl"
@@ -139,7 +144,12 @@ def _open_findings(workdir: Any) -> list[Finding]:
 
 
 def write_rounds(workdir: Any, rounds: Iterable[RoundRecord]) -> Path:
-    """rounds.json: one RoundRecord per round, the exit on the last."""
+    """rounds.json: one RoundRecord per round, the exit on the last.
+
+    A record's `counts` carry D126's gate counts and, beside them, what only the driver saw:
+    `started_at` and `ended_at` (the round's clock, which is where a build's duration is read from),
+    `spend`, `turns` and `context_fill` per agent, the compactions and the findings (`driver_counts`).
+    """
     path = Path(workdir) / ROUNDS_NAME
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps([as_dict(r) for r in rounds], indent=2, sort_keys=True, default=str) + "\n",
@@ -222,6 +232,8 @@ class Loop:
     beat_spend: dict[str, float] = field(default_factory=dict)
     spent_allowance: dict[str, bool] = field(default_factory=dict)
     compactions_seen: dict[str, int] = field(default_factory=dict)
+    turns_seen: dict[str, int] = field(default_factory=dict)
+    round_started: float = 0.0
     builder_stop: dict = field(default_factory=dict)
     stall_told: int = 0
 
@@ -256,6 +268,14 @@ class Loop:
     def compactions(self, agent: str) -> int:
         harness = self.builder if agent == "builder" else self.examiner
         return int(harness.context_stats.fallback_compactions) if harness is not None else 0
+
+    def fills(self, agent: str) -> list[float]:
+        """How full this agent's context was at the end of each turn it has taken (D131, D124).
+
+        One entry per model turn, appended by the context manager as the turn ends, so the length
+        is the turns the agent took and the largest entry is how close it came to the line."""
+        harness = self.builder if agent == "builder" else self.examiner
+        return list(harness.context_stats.fill_at_turn_end) if harness is not None else []
 
     # --- the allowance ------------------------------------------------------------
 
@@ -422,7 +442,7 @@ class Loop:
             if n == 1:
                 events = self.examiner.prompt(examiner_message())
             else:
-                self.examiner.steer(f"round {n}: read the rulings and act")
+                self.examiner.steer(examiner_round_message(n, EXAMINER_TARGET))
                 events = self.examiner.continue_()
             self.examiner_result = self._watched(self.examiner, "examiner", events, "derive")
             if self.examiner_result is None:
@@ -445,21 +465,50 @@ class Loop:
             return
         self.eplan.ledger.record("round_end", ruling)
 
+    def driver_counts(self) -> dict:
+        """What only the driver knows about the round in hand: when it ran, what each beat spent,
+        how many turns each agent took and how full its context got, the compactions code had to
+        make for it, and the findings it filed.
+
+        These ride on the round's counts rather than on a record of their own, so a round that
+        failed carries them too (`close_round` is given empty counts there) and rounds.json is the
+        one file a report reads a round's clock and turns from.
+        """
+        spend = {agent: round(self.beat_spend.get(agent, 0.0), 6) for agent in AGENTS}
+        spend["total"] = round(sum(spend.values()), 6)
+        turns: dict[str, int] = {}
+        fill: dict[str, float] = {}
+        for agent in AGENTS:
+            beat = self.fills(agent)[self.turns_seen.get(agent, 0):]
+            turns[agent] = len(beat)
+            fill[agent] = max(beat) if beat else 0.0
+        turns["total"] = sum(turns[agent] for agent in AGENTS)
+        return {
+            "started_at": self.round_started, "ended_at": time.time(), "spend": spend,
+            "turns": turns, "context_fill": fill,
+            "fallback_compactions": {
+                agent: self.compactions(agent) - self.compactions_seen.get(agent, 0) for agent in AGENTS},
+            "findings": list(self.sent),
+        }
+
     def counts(self) -> dict:
-        """D126's counts off the gates, plus what only the driver knows: compactions, spend, findings."""
+        """D126's counts off the gates, plus what only the driver knows (`driver_counts`)."""
         store = self.eplan.store if self.eplan is not None else {}
         counts = round_end.round_counts(
             store.get("task_status") or {}, store.get("verifiers") or [], store.get("probes") or {},
             store.get("history") or {}, store.get("refusals") or {}, store.get("task_runs") or {},
             store.get("replays") or {}, store.get("rerolls") or {}, store.get("canon_rules"),
             store.get("sigs") or [], record=self._land)
-        counts["fallback_compactions"] = {
-            agent: self.compactions(agent) - self.compactions_seen.get(agent, 0) for agent in AGENTS}
-        spend = {agent: round(self.beat_spend.get(agent, 0.0), 6) for agent in AGENTS}
-        spend["total"] = round(sum(spend.values()), 6)
-        counts["spend"] = spend
-        counts["findings"] = list(self.sent)
+        counts.update(self.driver_counts())
         return counts
+
+    def keep_gate_history(self, n: int) -> None:
+        """gates.json as this round leaves it, kept per round in gates_by_round.json.
+
+        gates.json holds the last ruling per stage, so the next round overwrites it; a repair can
+        only be said to have turned a red gate green if the round before it is still readable."""
+        ledger = self.eplan.ledger if self.eplan is not None else GateLedger(self.plan.workdir)
+        ledger.snapshot(n)
 
     def ceiling_reached(self) -> bool:
         last = self.plan.last
@@ -479,17 +528,19 @@ class Loop:
         """One follow-up, once per round, when the round moved no gate count (D126, D135).
 
         Stalled is the soft stop: a model-driven Builder is told in one message that the round
-        changed nothing and asked to finish with what it has. The message rides the steering queue,
-        which drains before the next assistant turn, so the follow-up costs exactly one more turn
-        rather than a wasted one first; if the model stops again the round ends, and the exit is the
-        stalled exit `exit_for` was already going to give. The code driver gets none of this: it has
-        no model to tell.
+        changed nothing, which verbs can change an artifact and that a build or a replay without a
+        repair comes back from the cache, and that finishing is the way out when none of them
+        answers what is left (`builder.agent.nothing_changed_message`). The message rides the
+        steering queue, which drains before the next assistant turn, so the follow-up costs exactly
+        one more turn rather than a wasted one first; if the model stops again the round ends, and
+        the exit is the stalled exit `exit_for` was already going to give. The code driver gets none
+        of this: it has no model to tell.
         """
         if self.agent_model is None or self.stall_told == n:
             return
         self.stall_told = n
         before = self.spend()
-        self.builder.steer(STALL_FOLLOW_UP)
+        self.builder.steer(builder_agent.nothing_changed_message(self.plan))
         result = self._watched(self.builder, "builder", self.builder.continue_(), "build", BUILD_TOOLS)
         if result is not None:
             self.build_result = result
@@ -497,9 +548,12 @@ class Loop:
 
     def round(self, n: int) -> RoundRecord:
         """One round: the Builder's beat, the Examiner's beat, the counts, the exit, rounds.json."""
+        self.round_started = time.time()
+        self.plan.round = n  # the round a repair request records itself under (D126)
         self.emit(RoundStart(round=n))
         self.sent, self.beat_spend, self.spent_allowance = [], {}, {}
         self.compactions_seen = {agent: self.compactions(agent) for agent in AGENTS}
+        self.turns_seen = {agent: len(self.fills(agent)) for agent in AGENTS}
         self.allowance = {agent: self.allowance_for(agent) for agent in AGENTS}
         self.builder_beat(n)
         self.examiner_beat(n)
@@ -519,7 +573,9 @@ class Loop:
         so the exit is cleared and the loop runs another round. Only the ceiling (no money left)
         ends a round with findings still open, and then the note says so."""
         self.exhausted.append(any(self.spent_allowance.values()))
-        record = RoundRecord(round=n, counts=counts)
+        # The driver's own numbers last and freshest: a round that failed comes here with no counts
+        # at all, and its clock, spend and turns are as true as a round that finished.
+        record = RoundRecord(round=n, counts={**counts, **self.driver_counts()})
         record.exit = round_end.exit_for(self.rounds + [record], self.stall_rounds,
                                          ceiling_reached=self.ceiling_reached(), exhausted=self.exhausted)
         if self.pending_findings:
@@ -533,6 +589,7 @@ class Loop:
                                     "the round continues")
         self.rounds.append(record)
         write_rounds(self.plan.workdir, self.rounds)
+        self.keep_gate_history(n)
         return record
 
     def result(self) -> dict:

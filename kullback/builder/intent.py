@@ -1,7 +1,9 @@
 """Writes a Task's one-line Intent and refuses it unless every noun phrase points to a span in
-every member Run (D47, D83). The Intent record, its spans and `apply_intent` live in
-kullback.runner.records so the Examiner reads an Intent without importing the Builder (D123); they
-are re-exported here under the names this module always had."""
+every member Run (D47, D83). A refused line is not the end of it: the phrases with no span are read
+back to the model and it writes again, up to MAX_INTENT_ATTEMPTS times, and the best attempt is
+kept. The Intent record, its spans and `apply_intent` live in kullback.runner.records so the
+Examiner reads an Intent without importing the Builder (D123); they are re-exported here under the
+names this module always had."""
 
 from __future__ import annotations
 
@@ -24,6 +26,8 @@ from kullback.runner.records import (  # noqa: F401 - Intent, IntentSpan, SpanSo
 
 MAX_INTENT_CHARS = 200
 MAX_PROMPT_RUNS = 5  # D65: the prompt samples the Task's Runs, the grounding still reads all of them
+MAX_INTENT_ATTEMPTS = 3  # the first write plus two rewrites with the ungrounded phrases named
+MAX_LISTED_PHRASES = 5
 MAX_PROMPT_SPAN_CHARS = 300
 PHRASE_RE = re.compile(r"[a-z0-9_]+")
 MATCH_RE = re.compile(r"[a-z0-9]+")  # splits credit_card_1234 into credit, card, 1234, so a phrase can reach it
@@ -222,8 +226,13 @@ def ground_phrases(
     return _choose_spans(_matching_spans(phrases, traces, write_tools))
 
 
-def _intent_prompt(traces: Sequence[Trace], write_tools: Optional[set[str]]) -> str:
-    """The evidence from a bounded sample of the Task's Runs (D65: no call may grow with the corpus)."""
+def _intent_prompt(traces: Sequence[Trace], write_tools: Optional[set[str]], *,
+                   hint: Optional[str] = None, feedback: Optional[str] = None) -> str:
+    """The evidence from a bounded sample of the Task's Runs (D65: no call may grow with the corpus).
+
+    `hint` is what a repair asked for, `feedback` what the last attempt got wrong; both are short
+    lines beside the same evidence, never more of it.
+    """
     shown = list(traces[:MAX_PROMPT_RUNS])
     lines = [
         "Write one line saying what the user wanted, common to all these runs.",
@@ -232,12 +241,16 @@ def _intent_prompt(traces: Sequence[Trace], write_tools: Optional[set[str]]) -> 
     ]
     if len(traces) > len(shown):
         lines.append(f"These are {len(shown)} of the task's {len(traces)} runs; say only what all of them show.")
+    if hint:
+        lines.append(f"A repair asks for this: {hint}")
     lines.append("")
     for trace in shown:
         for span in span_candidates(trace, write_tools):
             text = " ".join(span.text.split())[:MAX_PROMPT_SPAN_CHARS]
             label = f" {span.label}" if span.label else ""
             lines.append(f"{trace.trace_id} {span.source}{label}: {text}")
+    if feedback:
+        lines += ["", feedback]
     lines += ["", "Reply with the one line only."]
     return "\n".join(lines)
 
@@ -252,40 +265,26 @@ def _first_line(text: Optional[str]) -> str:
     return strip_frame(_shared_first_line(text, MAX_INTENT_CHARS) or "")
 
 
-def write_intent(
-    model: Model,
-    task: Task,
-    traces: Iterable[Trace],
-    *,
-    write_tools: Optional[set[str]] = None,
-) -> Intent:
-    """The Task's Intent, grounded phrase by phrase; a single-Run Task skips the cross-run check (D97).
-
-    The cross-run check asks whether the Task's Runs all show the Intent, which is what makes it the
-    Task's Intent (D83), not whether the spans the chooser picked happen to name two Runs. That
-    counted spans, so one phrase both Runs said was refused, while the union of two Runs' different
-    intents was accepted because it had one span from each.
-    """
-    wanted = list(task.run_ids)
-    members = [t for t in traces if t.trace_id in set(wanted)]
-    if not members:
-        raise ValueError(f"task {task.id} has no member traces among the traces given")
-    missing_traces = [rid for rid in wanted if rid not in {t.trace_id for t in members}]
-    if missing_traces:
-        raise ValueError(f"task {task.id} is missing the traces for {', '.join(missing_traces)}")
-    members.sort(key=lambda t: wanted.index(t.trace_id))
-
-    reply = model.query([{"role": "user", "content": _intent_prompt(members, write_tools)}])
-    text = _first_line(reply.content)
-    found = _matching_spans(noun_phrases(text), members, write_tools)
-    spans, ungrounded = _choose_spans(found)
-    coverage = {phrase: sorted(s.trace_id for s in matches) for phrase, matches in found.items() if matches}
-    member_ids = sorted(t.trace_id for t in members)
-    gaps = {
+def _gaps(coverage: dict[str, list[str]], member_ids: Sequence[str]) -> dict[str, list[str]]:
+    """Per phrase, the member Runs that do not evidence it; a phrase every Run shows is not in here."""
+    return {
         phrase: [rid for rid in member_ids if rid not in set(runs)]
         for phrase, runs in coverage.items()
         if len(runs) < len(member_ids)
     }
+
+
+def _graded(task: Task, text: str, members: Sequence[Trace], write_tools: Optional[set[str]],
+            model: Model) -> Intent:
+    """One line as an Intent record: the spans behind its phrases and the reason it is refused, if it is.
+
+    Nothing here asks the model anything; it is the grounding `write_intent` runs on each attempt.
+    """
+    found = _matching_spans(noun_phrases(text), members, write_tools)
+    spans, ungrounded = _choose_spans(found)
+    coverage = {phrase: sorted(s.trace_id for s in matches) for phrase, matches in found.items() if matches}
+    member_ids = sorted(t.trace_id for t in members)
+    gaps = _gaps(coverage, member_ids)
 
     intent = Intent(
         task_id=task.id,
@@ -301,12 +300,89 @@ def write_intent(
         intent.reason = "noun phrases with no span: " + ", ".join(ungrounded)
     elif not spans:
         intent.reason = "no noun phrase to ground"
-    elif len(wanted) == 1:
+    elif len(member_ids) == 1:
         intent.grounded = True
         intent.unguarded = True  # D81: one Run cannot cross-check itself
     elif gaps:
-        listed = [f"{phrase} (not in {', '.join(runs[:3])})" for phrase, runs in list(gaps.items())[:5]]
+        listed = [f"{phrase} (not in {', '.join(runs[:3])})"
+                  for phrase, runs in list(gaps.items())[:MAX_LISTED_PHRASES]]
         intent.reason = "noun phrases not evidenced in every Run: " + "; ".join(listed)
     else:
         intent.grounded = True
     return intent
+
+
+def _score(intent: Intent, member_ids: Sequence[str]) -> tuple:
+    """How good one attempt is, smallest first: a line at all, then fewest ungrounded phrases, then grounded.
+
+    An empty reply grounds nothing and has no phrase to be ungrounded, so it would otherwise score
+    better than a line with one phrase out of place.
+    """
+    return (0 if intent.text else 1,
+            len(intent.ungrounded_phrases),
+            0 if intent.grounded else 1,
+            len(_gaps(intent.run_coverage, member_ids)))
+
+
+def _feedback(intent: Intent, member_ids: Sequence[str]) -> str:
+    """What to tell the model about the attempt it just made: the phrases that are not evidenced, named.
+
+    The first live builds refused 160 of 205 Tasks on phrases like "99 price difference" that no Run
+    says in those words, and the model was never told: it was asked once and its answer graded in
+    silence.
+    """
+    lines = [f'Your last line was: "{intent.text}"' if intent.text else "Your last reply held no line."]
+    if intent.ungrounded_phrases:
+        lines.append("These phrases have no span in the evidence: "
+                     + ", ".join(intent.ungrounded_phrases[:MAX_LISTED_PHRASES]) + ".")
+    gaps = _gaps(intent.run_coverage, member_ids)
+    if gaps:
+        listed = [f"{phrase} (not in {', '.join(runs[:3])})"
+                  for phrase, runs in list(gaps.items())[:MAX_LISTED_PHRASES]]
+        lines.append("These phrases are not evidenced in every run: " + "; ".join(listed) + ".")
+    lines.append("Rewrite the intent using only words that appear in the evidence, for every run.")
+    return "\n".join(lines)
+
+
+def write_intent(
+    model: Model,
+    task: Task,
+    traces: Iterable[Trace],
+    *,
+    write_tools: Optional[set[str]] = None,
+    hint: Optional[str] = None,
+) -> Intent:
+    """The Task's Intent, grounded phrase by phrase; a single-Run Task skips the cross-run check (D97).
+
+    The cross-run check asks whether the Task's Runs all show the Intent, which is what makes it the
+    Task's Intent (D83), not whether the spans the chooser picked happen to name two Runs. That
+    counted spans, so one phrase both Runs said was refused, while the union of two Runs' different
+    intents was accepted because it had one span from each.
+
+    An attempt that grounds is the answer. One that does not is fed back to the model with its
+    unevidenced phrases named, up to `MAX_INTENT_ATTEMPTS` writes in all, and the best of them is
+    kept: a line at all before none, then the fewest phrases with no span. `hint` is what a repair
+    asked for and rides on every attempt's prompt.
+    """
+    wanted = list(task.run_ids)
+    members = [t for t in traces if t.trace_id in set(wanted)]
+    if not members:
+        raise ValueError(f"task {task.id} has no member traces among the traces given")
+    missing_traces = [rid for rid in wanted if rid not in {t.trace_id for t in members}]
+    if missing_traces:
+        raise ValueError(f"task {task.id} is missing the traces for {', '.join(missing_traces)}")
+    members.sort(key=lambda t: wanted.index(t.trace_id))
+    member_ids = sorted(t.trace_id for t in members)
+
+    best: Optional[Intent] = None
+    feedback: Optional[str] = None
+    for _ in range(MAX_INTENT_ATTEMPTS):
+        prompt = _intent_prompt(members, write_tools, hint=hint, feedback=feedback)
+        reply = model.query([{"role": "user", "content": prompt}])
+        intent = _graded(task, _first_line(reply.content), members, write_tools, model)
+        if best is None or _score(intent, member_ids) < _score(best, member_ids):
+            best = intent
+        if intent.grounded:
+            break
+        feedback = _feedback(intent, member_ids)
+    return best
