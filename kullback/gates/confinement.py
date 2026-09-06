@@ -36,6 +36,16 @@ ALLOWED_IMPORTS = frozenset({"typing", "pydantic", "tau2", "data_model", "dateti
 DENIED_BUILTINS = DENIED_NAMES | frozenset({"exit", "quit", "memoryview"})
 # The dunders the code-owned skeleton itself writes; every other one is an object walk.
 ALLOWED_DUNDERS = frozenset({"__init__", "__tool_type__", "__doc__", "__name__"})
+# Code-owned functions both loaders bind into the generated module's namespace, so a body may call
+# one by name with no import. They are not a loosening: `ast`, `eval`, `exec` and `compile` stay
+# refused, and the point of the list is that a body no longer needs them. `evaluate_arithmetic`
+# (runner/arith.py) is here because a recorded tool that evaluates an expression string left the
+# model hand-writing a parser on every build, and every parser it wrote was wrong.
+#
+# Named here rather than where they are bound because this is the gate that would otherwise reject
+# them: `unbound_names` counts them as bound, the way it counts a builtin. builder/sandbox.py's
+# `HELPERS` reads this list to decide what to bind, so a name here and a function there stay one set.
+PROVIDED_HELPERS = frozenset({"evaluate_arithmetic"})
 # A ruling names the first few offences; the body's author reads them, not a ledger.
 MAX_NAMED_FAILURES = 5
 
@@ -137,12 +147,15 @@ def unbound_names(source: str, class_name: str = TOOLS_CLASS) -> list[str]:
     body or comprehension is not bound in the method around it, so a method that binds `total` only
     inside a comprehension and then returns `total` is still a NameError; counting a child scope's
     bindings as the parent's would let the gate pass the shape it exists to catch.
+
+    `PROVIDED_HELPERS` counts as bound the same way a builtin does, because both loaders put those
+    functions in the module's namespace before the module runs.
     """
     try:
         tree = ast.parse(source)
     except SyntaxError:
         return []  # the parses gate rules on that
-    known = set(dir(builtins)) | {"__builtins__"} | _module_bindings(tree)
+    known = set(dir(builtins)) | {"__builtins__"} | PROVIDED_HELPERS | _module_bindings(tree)
     out: list[str] = []
     for node in ast.walk(tree):
         if not (isinstance(node, ast.ClassDef) and node.name == class_name):

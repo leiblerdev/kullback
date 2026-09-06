@@ -8,11 +8,12 @@ from pathlib import Path
 
 import pytest
 
+from conftest import PTR
 from kullback.ai.provider import TestModel
 from kullback.builder import build as build_module
 from kullback.builder import pipeline
 from kullback.builder.build import BuildPlan
-from kullback.runner.records import Verifier
+from kullback.runner.records import Task, ToolCall, ToolSig, Trace, Turn, Verifier
 from test_e2e import TOOL_BODIES
 
 
@@ -77,9 +78,14 @@ def test_the_canonicalizer_rules_are_learned_and_saved(built):
 
 def test_a_second_build_is_served_from_the_cache(built, tmp_path):
     """The stage cache is what makes `build --iterate` cheap (design section 8): with no new file
-    and no code change, every stage but the two that first ran before the anchor existed comes
-    back from the cache. mine and cluster ran on the first build with no anchor.json on disk, and
-    the anchor is part of every stage's key (D81), so those two are the ones that run once more.
+    and no code change, every stage but the three that could not yet have a settled key comes back
+    from the cache. mine and cluster ran on the first build with no anchor.json on disk, and the
+    anchor is part of every stage's key (D81), so those two are the ones that run once more.
+
+    intent is the third, and for a different reason: it declares `intents/` as an input path so a
+    repair_intent is seen by the next full build, and the first build wrote that folder, so the
+    second build's key has moved. It settles on the run after, which is what the third build here
+    shows: the stage reads the same records back, writes the same bytes, and the key stops moving.
 
     The rebuild goes into a copy of the built workdir, so the module's shared fixture is left as
     the first build wrote it and the tests that read it do not depend on running after this one."""
@@ -90,8 +96,14 @@ def test_a_second_build_is_served_from_the_cache(built, tmp_path):
     statuses = json.loads((workdir / "pipeline" / "state.json").read_text(encoding="utf-8"))["statuses"]
     # ingest is the previous build's own record, carried over because this build had no file to
     # ingest and so ran no ingest stage at all.
-    assert {name for name, status in statuses.items() if status != "cached"} == {"ingest", "mine", "cluster"}
+    assert {name for name, status in statuses.items() if status != "cached"} == {"ingest", "mine", "cluster",
+                                                                                "intent"}
     assert statuses["ingest"] == "ran"
+
+    third = build_module.build(workdir, iterate=True, model=Bodies())
+    assert third["status"] == "complete"
+    statuses = json.loads((workdir / "pipeline" / "state.json").read_text(encoding="utf-8"))["statuses"]
+    assert {name for name, status in statuses.items() if status != "cached"} == {"ingest"}
 
 
 def test_a_new_tool_lesson_makes_compile_tools_run_again_instead_of_hitting_the_cache(built, tmp_path):
@@ -118,6 +130,109 @@ def test_a_new_tool_lesson_makes_compile_tools_run_again_instead_of_hitting_the_
     assert any("raised KeyError on every recorded call" in text for text in sent), \
         "the lesson has to reach the compiler prompt, or the recompile asks the failed question again"
     assert all(f"Tool: {name}" in text for text in sent), "the narrowed rerun compiles that tool alone"
+
+
+# --- the Intent stage's ratchet, and the folder it declares ---
+
+
+def _clinic_inputs(run_ids: list[str]) -> dict:
+    """One Task in an invented clinic domain, with a Trace per Run and the signatures the stage reads."""
+    traces = [
+        Trace(trace_id=run_id, raw_hash="raw", ingest_version="0", source="test",
+              turns=[Turn(idx=0, role="user", content="please reschedule appointment a1", raw_ptr=PTR)],
+              tool_calls=[ToolCall(id=f"{run_id}-0", name="reschedule_appointment",
+                                   args={"appointment_id": "a1"}, result={"status": "moved"}, raw_ptr=PTR)],
+              raw_ptr=PTR)
+        for run_id in run_ids
+    ]
+    return {"tasks": [Task(id="task_1", category_id="cat_1", run_ids=list(run_ids))],
+            "traces": traces,
+            "sigs": [ToolSig(name="reschedule_appointment", kind="write")]}
+
+
+def _record_intent(workdir: Path, task_id: str, text: str, run_ids: list[str], grounded: bool = True) -> None:
+    """Put one Intent under intents/ the way an earlier run of the stage, or a repair, would leave it."""
+    path = workdir / "intents" / f"{task_id}.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"task_id": task_id, "text": text, "grounded": grounded,
+                                "run_coverage": {text: sorted(run_ids)}}), encoding="utf-8")
+
+
+def _run_intent_stage(stage, workdir: Path, inputs: dict) -> dict:
+    ctx = pipeline.StageContext(stage, workdir, None, lambda usd, item="": None)
+    return stage.fn(ctx, inputs)
+
+
+def test_a_full_intent_run_keeps_a_grounded_record_and_never_asks_the_model_for_it(tmp_path):
+    """The ratchet: a stage never replaces a passing artifact with a failing one. A repaired Intent
+    has to survive the next full build, and an iterated build must not pay to write a line again
+    that already grounds on every one of its Task's Runs."""
+    inputs = _clinic_inputs(["r1", "r2"])
+    _record_intent(tmp_path, "task_1", "reschedule appointment a1", ["r1", "r2"])
+    model = TestModel([])  # any call is recorded before it raises, so calls is the evidence either way
+    out = _run_intent_stage(build_module._intent_stage(model), tmp_path, inputs)
+    assert model.calls == []
+    assert out["intents"]["task_1"]["text"] == "reschedule appointment a1"
+    assert out["intents"]["task_1"]["grounded"] is True
+
+
+def test_a_full_intent_run_writes_again_for_a_task_whose_member_runs_changed(tmp_path):
+    """A grounded line says what every member Run showed at the time. A Task that has gained or
+    lost a Run is a different question of the evidence, so the record no longer stands for it."""
+    inputs = _clinic_inputs(["r1", "r2", "r3"])
+    _record_intent(tmp_path, "task_1", "reschedule appointment a1", ["r1", "r2"])
+    model = TestModel(["reschedule appointment a1 to friday"], loop=True)
+    out = _run_intent_stage(build_module._intent_stage(model), tmp_path, inputs)
+    assert model.calls, "the Task's members changed, so its Intent is written again"
+    assert out["intents"]["task_1"]["text"] == "reschedule appointment a1 to friday"
+
+
+def test_a_full_intent_run_writes_again_for_a_record_that_never_grounded(tmp_path):
+    """The ratchet holds a passing artifact, not a failing one: an ungrounded line is a Task with no
+    Verdict, and every build gets another go at it."""
+    inputs = _clinic_inputs(["r1", "r2"])
+    _record_intent(tmp_path, "task_1", "collect the parking fee", ["r1", "r2"], grounded=False)
+    model = TestModel(["reschedule appointment a1"], loop=True)
+    out = _run_intent_stage(build_module._intent_stage(model), tmp_path, inputs)
+    assert model.calls, "nothing grounded, so there is nothing to keep"
+    assert out["intents"]["task_1"]["text"] == "reschedule appointment a1"
+    assert out["intents"]["task_1"]["grounded"] is True
+
+
+def test_a_narrowed_intent_run_writes_its_target_again_even_when_the_record_grounds(tmp_path):
+    """repair_intent(task_id, hint) is an explicit ask. If the ratchet applied to it, a mechanic
+    who read a grounded line and disagreed with it would be answered with that same line."""
+    inputs = _clinic_inputs(["r1", "r2"])
+    _record_intent(tmp_path, "task_1", "reschedule appointment a1", ["r1", "r2"])
+    model = TestModel(["reschedule appointment a1 to friday"], loop=True)
+    stage = build_module._intent_stage(model, only=["task_1"], hints={"task_1": "name the day"})
+    out = _run_intent_stage(stage, tmp_path, inputs)
+    assert model.calls, "the repair's target is written again however well it grounded"
+    prompts = [" ".join(str(m.get("content") or "") for m in call["messages"]) for call in model.calls]
+    assert all("A repair asks for this: name the day" in prompt for prompt in prompts)
+    assert out["intents"]["task_1"]["text"] == "reschedule appointment a1 to friday"
+
+
+def test_a_repaired_intent_file_moves_the_full_builds_key_and_reaches_the_artifact(built, tmp_path):
+    """Build 12: the Builder repaired six Intents, then asked for the whole build. The intent stage
+    declared intents/ only on a narrowed run, so the full run's key had not moved, the stage came
+    back from the cache, and the intents the Examiner derives its Verifiers from were the lines from
+    before the repair. The folder is declared on every run now."""
+    workdir = tmp_path / "repaired"
+    shutil.copytree(built, workdir)
+    tasks = json.loads((workdir / "tasks.json").read_text(encoding="utf-8"))["tasks"]
+    task = sorted(tasks, key=lambda t: t["id"])[0]
+    line = "reschedule appointment a1"
+    _record_intent(workdir, task["id"], line, task["run_ids"])
+
+    plan = BuildPlan(workdir=workdir, iterate=True, model=Bodies(), max_attempts=0)
+    result = build_module.execute(plan, "intent")
+    assert result.reports["intent"].cached is False, "a changed file under intents/ has to move the key"
+    assert result.artifacts["intents"][task["id"]]["text"] == line
+
+    again = build_module.execute(plan, "intent")
+    assert again.reports["intent"].cached is True, "nothing changed this time, so the cache may answer"
+    assert again.artifacts["intents"][task["id"]]["text"] == line
 
 
 def test_wrap_sets_a_prompt_cache_key_scoped_to_the_build_and_stage(tmp_path):
@@ -316,6 +431,28 @@ def test_reroll_runner_writes_runs_under_the_task_with_the_prefix_given_and_leav
     assert {row["run_id"] for row in rows} <= ids
     with pytest.raises(build_module.BuildError, match="no Task is named"):
         run_rerolls("nobody", 1, "reroll-r1")
+
+
+def test_a_task_the_rerolls_stage_skips_loses_the_rerolls_an_earlier_build_left_it(built):
+    """A Task with no confirmed re-play is not re-rolled, and its re-rolls from an earlier build go too:
+    the second retail build's dead re-rolls sat under 36 Tasks a later build skipped, every one a
+    provider error, and every count that globs runs/ read them as this build's."""
+    plan = _cached_plan(built)
+    task = plan.store["tasks"][0]
+    stale = built / "runs" / task.id / f"reroll-{task.id}-7.jsonl"
+    stale.parent.mkdir(parents=True, exist_ok=True)
+    stale.write_text('{"idx": 0, "type": "error", "payload": {"class": "env_error"}}\n', encoding="utf-8")
+    replays = {tid: {run_id: {**row, "confirmed": False} for run_id, row in rows.items()}
+               for tid, rows in plan.store["replays"].items()}
+    inputs = {**{name: plan.store[name] for name in ("tasks", "user_rules", "schema", "sigs", "bodies", "db",
+                                                     "environment", "canon_rules", "traces", "policy_text")},
+              "replays": replays}
+    stage = build_module._rerolls_stage(Bodies(), 1)
+    out = _run_intent_stage(stage, built, inputs)
+    assert out == {"rerolls": {}}, "nothing confirmed, so nothing re-rolled"
+    assert not stale.exists()
+    assert not list((built / "runs" / task.id).glob(f"reroll-{task.id}-*")), \
+        "only the stage's own prefix goes; the Examiner's re-rolls under another prefix stay"
 
 
 # --- what a tool is gated on (D74) ---

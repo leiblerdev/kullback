@@ -5,6 +5,7 @@ from __future__ import annotations
 from kullback.gates.artifacts import policy_gate
 from kullback.gates.confinement import (
     MAX_NAMED_FAILURES,
+    PROVIDED_HELPERS,
     gate_confined,
     predicate_confinement,
     predicate_confinement_gate,
@@ -116,6 +117,33 @@ def test_a_body_that_names_a_module_it_never_imported_is_refused_before_a_call_r
 def test_a_name_nothing_could_bind_is_refused_without_an_import_hint():
     source = _module("        return helper(order_id)\n")
     assert unbound_names(source) == ["get_order names helper, which nothing binds"]
+
+
+def test_a_body_that_calls_a_provided_helper_is_confined_and_the_name_counts_as_bound():
+    """Both loaders put `evaluate_arithmetic` in the module's namespace, so a body that calls it
+    without importing anything is not a NameError waiting for the first call."""
+    source = _module("        return float(evaluate_arithmetic('(3.5 + 1.25) * 2'))\n")
+    assert PROVIDED_HELPERS == {"evaluate_arithmetic"}
+    assert unbound_names(source) == []
+    assert source_confinement(source) == []
+    assert gate_confined(source).passed is True
+
+
+def test_a_helper_the_loaders_do_not_bind_is_still_a_name_nothing_binds():
+    """The list is what is bound, not a way of waving names through: a helper that only sounds like
+    one is refused the way any other unbound name is."""
+    source = _module("        return evaluate_arithmetically('1 + 1')\n")
+    assert unbound_names(source) == ["get_order names evaluate_arithmetically, which nothing binds"]
+
+
+def test_the_names_the_helper_replaces_are_refused_as_they_were_before():
+    """Providing an evaluator loosens nothing: eval, exec, compile and ast stay out."""
+    for body, failure in (("        return eval('1 + 1')\n", "get_order uses eval"),
+                          ("        return exec('x = 1')\n", "get_order uses exec"),
+                          ("        return compile('1', '<x>', 'eval')\n", "get_order uses compile"),
+                          ("        import ast\n        return ast.parse('1 + 1')\n", "get_order imports ast")):
+        assert failure in source_confinement(_module(body))
+        assert gate_confined(_module(body)).passed is False
 
 
 def test_names_the_body_the_module_or_python_bind_are_not_unbound():

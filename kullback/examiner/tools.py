@@ -26,10 +26,10 @@ from typing import Any, Awaitable, Callable, Literal, Optional
 from pydantic import BaseModel, ConfigDict, Field
 
 from kullback.agent.events import StageEnd, StageStart
-from kullback.agent.tools import AgentTool
+from kullback.agent.tools import AgentTool, counted_ruling_line
 from kullback.examiner import stage as stage_mod
 from kullback.examiner.plan import ExaminerPlan
-from kullback.gates import Ruling, artifacts, ruling_line, ruling_of, verifier_suite
+from kullback.gates import Ruling, artifacts, ruling_of, verifier_suite
 from kullback.gates import scorecard as scorecard_mod
 from kullback.gates.loosening import loosening_gate
 from kullback.gates.probes import (
@@ -72,11 +72,15 @@ BugClass = Literal["loose answer extraction", "missing final-answer markers", "n
 
 
 def render(result: BaseModel) -> str:
-    """The summary line, then the rulings on one line; everything else stays in details."""
+    """The summary line, then the rulings on one line; everything else stays in details.
+
+    A gate rules over every target at once, so a gate failing on more than one says how many and
+    names the first as an example (`counted_ruling_line`), the same way the Builder's results read.
+    """
     lines = [getattr(result, "summary", None) or getattr(result, "text", "") or ""]
     rulings = getattr(result, "rulings", None)
     if rulings:
-        lines.append(ruling_line("rulings", rulings))
+        lines.append(counted_ruling_line("rulings", rulings))
     return "\n".join(line for line in lines if line)
 
 

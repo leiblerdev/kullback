@@ -948,7 +948,37 @@ Decided: one tokeniser for the Intent and the transcript, which keeps money, dec
 
 Build 11's Builder read a three-paragraph rules prompt and picked an inert verb for every red light. Founder: "the builder prompt should contain examples ( but not overfitted examples, general examples which are applicable widely ). just learn from gepa on how to organize the prompt and remember the best practice ( leverage in context learning examples )."
 
-Decided: every agent system prompt is built in this order, each block its own section: what the model receives and must produce (no persona), one block per tool with its purpose and one example call, general in-context examples of a red light and the verb that answers it, the choosing rule, the shape of the feedback it will read, and the stop rule last, closest to generation. Examples hold for any customer's traces: invented domain names, generic tool shapes, never a case from the traces we test on (the harness stays general). Feedback the harness hands back says what was tried, what happened and why. The prompts are ours and versioned with the code; a model may propose a rewrite, never apply one (todo, GEPA caution).
+Decided: every agent system prompt is built in this order, each block its own section: what the model receives and must produce (no persona), one block per tool with its purpose and one example call, general in-context examples of a red light and the verb that answers it, the choosing rule, the shape of the feedback it will read, and the stop rule last, closest to generation. Examples hold for any customer's traces: invented domain names, generic tool shapes, never a case from the traces we test on (the harness stays general). Feedback the harness hands back says what was tried, what happened and why. The prompts are ours and versioned with the code; a model may propose a rewrite, never apply one (todo, GEPA caution). Same evening, on the founder's question ("the builders system prompt should have tools and skills it has access to using <skills> and <tools> right ?"): every block is a tagged section (`<task>`, `<tools>`, `<skills>`, `<examples>`, `<rules>`, `<targets>` or `<tasks>`, `<stop>`), and the `<skills>` block is rendered by the context manager from the skill catalog, naming each skill, whether its text is in the prompt now as a `<skill name=...>` block, and the `load` call that brings one in; the Builder's says plainly that none are catalogued.
+
+### D145. A repair result opens with its own target's ruling, and a request records whether the target's artifact moved (2026-09-06)
+
+Build 12, round 1: `repair_recompile modify_pending_order_items` answered with the compile gate's first failure, which was another tool's, so the Builder read a repair that worked as one that failed. And round 1 read every repair as "changed nothing" because the round driver compared the artifacts against a fingerprint taken after the repairs ran.
+
+Decided: a repair result's first line is the ruling of the target it named, read off that target's own artifact (the Intent record, the tool's build node, the table's rows): `grounded`, `passes the gates`, `still assisted: <its own last failure>`, `N rows, the N asked for`. A gate that fails over many targets says how many and names the first as an example. Every repair request records `changed` with the target's hash either side of the call, and the round driver reads the change off the requests, with the fingerprint it started with as round 1's "before". The counting line lives in the agent core (`kullback/agent/tools.py`), not in the gates package, so the gates hash stays.
+
+### D146. The Intent stage ratchets: a grounded record is kept, a repaired file moves the cache key (2026-09-06)
+
+Build 12, round 1: `repair_intent` grounded 6 of 7 Intents, then the next full build served the intent stage from cache and the Examiner derived from the pre-repair records; the intents/ folder was not in the stage's cache key.
+
+Decided: the intent stage declares `intents/` as an input path always, so a repaired file re-runs it, and the full run rewrites only records that do not ground for the Task's Runs today (`still_grounds`: grounded, and the coverage names exactly the current members). A narrowed repair rewrites its targets regardless. The price: the build right after one that wrote intents/ re-runs the stage once more (same bytes, key settles), documented in the cache test.
+
+### D147. The compiler names the shape of what a column holds, and an attempt that raises what the last one raised is told so (2026-09-06)
+
+Build 12: one `modify_pending_order_items` body read a nested plain dict by attribute, crashed on every re-play, and blocked 49 Tasks; the compiler rule said only "rows are models, never dict methods", which contradicts a column whose value is a list or a dict, and the retry repeated the same exception three times without being told.
+
+Decided: the compiler prompt says both halves (a row is a model read by attribute; what a column holds is a plain list or dict read by key), and the schema block prints the access form for every list or dict column from the mined sample (`row.entries[0]["amount"]`, never `.amount`). An attempt whose gate quotes the same `raised <Class>: <message>` as the attempt before gets that line back and is told the body must change where it raised. A repair lesson carries the last attempt's exception beside the mechanic's hint.
+
+### D148. Arithmetic in a body goes through a code-owned evaluator, never a parser the body writes (2026-09-06)
+
+Build 12: a compiled `calculate` split on spaces and could not read parentheses (8 replay and fidelity misses). Founder: "use packages from the internet to build those tools rather than building it yourself (obviously verify those packages)". The packages were checked (simpleeval, asteval, py-expression-eval, numexpr): each is either a sandbox escape surface, unmaintained, or float-only, and a body may not import them under the confinement gate anyway.
+
+Decided: `kullback/runner/arith.py` owns `evaluate_arithmetic(expression) -> Decimal` over the stdlib `ast` (numbers, + - * / // % **, unary sign, parentheses; caps on length, exponent and digits; a fixed decimal context so the answer does not depend on the calling process). The loaders bind it into every generated module and the sandbox child, `PROVIDED_HELPERS` in the confinement gate names it as a bound name, and the compiler prompt says to call it and never to write a parser. `eval`, `exec`, `compile` and `ast` stay refused to bodies. Runner and gates re-frozen.
+
+### D149. A Task the re-rolls stage skips loses the re-rolls an earlier build left it (2026-09-06)
+
+Build 12's model arm counted 108 re-rolls that died on an empty transcript. Every one was a file build 8 wrote under 36 Tasks this build skipped (no confirmed re-play, so no Simulated user to drive one); the stage discarded old files only for the Tasks it re-rolled, and the build table read the leftovers as this build's.
+
+Decided: the stage discards a skipped Task's re-rolls under its own prefix too. The Examiner's re-rolls under another prefix stay.
 
 ## Pending (asked, not yet answered)
 

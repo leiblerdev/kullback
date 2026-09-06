@@ -21,12 +21,13 @@ import re
 from typing import Any, Callable, Optional
 
 from kullback.agent.extensions import ExtensionAPI, refuse_paths
+from kullback.agent.harness import prompt_block
 from kullback.agent.messages import ToolCall
-from kullback.agent.tools import ToolResult
+from kullback.agent.tools import ToolResult, counted_ruling_line
 from kullback.examiner.plan import ExaminerPlan
 from kullback.examiner.skills import PROBE_SKILL, PROBE_SKILL_NAME
 from kullback.examiner.tools import examiner_tools
-from kullback.gates import PROTECTED, PROTECTED_PATH, first_string, ruling_line, rulings_over
+from kullback.gates import PROTECTED, PROTECTED_PATH, first_string, rulings_over
 from kullback.runner.records import as_dict
 
 # What the Examiner never reads: the Builder's compiled side (D123). A path segment equal to one of
@@ -195,7 +196,7 @@ def guard_hooks(plan: ExaminerPlan, api: Optional[ExtensionAPI]) -> tuple[Callab
                 guards[key] = entry
         if not rulings:
             return None
-        line = ruling_line("gate rulings", rulings)
+        line = counted_ruling_line("gate rulings", rulings)
         details["gate_rulings"] = [as_dict(r) for r in rulings]
         return ToolResult(content=f"{result.content}\n{line}", details=details, is_error=False)
 
@@ -214,14 +215,15 @@ def examiner_extension(plan: ExaminerPlan) -> Callable[[ExtensionAPI], None]:
     def setup(api: ExtensionAPI) -> None:
         for tool in examiner_tools(plan, sink=api.harness.emit):
             api.register_tool(tool)
-        api.add_prompt_section("examiner", WHAT)
-        api.add_prompt_section("examiner_tools", TOOLS)
-        api.add_prompt_section("examiner_examples", EXAMPLES)
-        api.add_prompt_section("examiner_rules", RULES)
-        api.add_prompt_section("examiner_findings", FINDINGS)
-        api.add_prompt_section("examiner_tasks", task_vocabulary(plan))
-        api.add_prompt_section("examiner_stop", STOP)
+        api.add_prompt_section("examiner", prompt_block("task", WHAT))
+        api.add_prompt_section("examiner_tools", prompt_block("tools", TOOLS))
+        api.add_prompt_section("skills", api.context.skills_section())
         api.catalog_skill(PROBE_SKILL_NAME, PROBE_SKILL, loaded=True)
+        api.add_prompt_section("examiner_examples", prompt_block("examples", EXAMPLES))
+        api.add_prompt_section("examiner_rules", prompt_block("rules", RULES))
+        api.add_prompt_section("examiner_findings", prompt_block("findings", FINDINGS))
+        api.add_prompt_section("examiner_tasks", prompt_block("tasks", task_vocabulary(plan)))
+        api.add_prompt_section("examiner_stop", prompt_block("stop", STOP))
         repair_guard, gate_rulings = guard_hooks(plan, api)
         api.tool_call(examiner_reads_only_its_surface)
         api.tool_call(repair_guard)

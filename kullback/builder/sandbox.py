@@ -9,6 +9,10 @@ in-process blocks cannot stop that and this module does not claim to. What is cl
 forgery: the parent hands the child a nonce on stdin, the child reads and closes stdin before it
 executes any generated code, and a result file without that nonce is refused, so a body cannot write
 its own answers and exit.
+
+The child's namespace for the generated module holds one thing beside `__name__`: the code-owned
+helpers of `HELPERS`, the same ones `compile_env.load_toolkit` binds in the Runner's own process, so
+a body that passes the gates here behaves the same way there.
 """
 
 from __future__ import annotations
@@ -24,7 +28,7 @@ from typing import Any, Iterable, Optional
 # other pure gates in kullback.gates (D122); the two names the five gates below need stay imported
 # here. Everything else the callers read straight out of kullback.gates.
 from kullback.gates import tool_runs
-from kullback.gates.confinement import TOOLS_CLASS, gate_confined
+from kullback.gates.confinement import PROVIDED_HELPERS, TOOLS_CLASS, gate_confined
 from kullback.gates.tool_runs import (
     body_deterministic_gate,
     body_executes_gate,
@@ -33,9 +37,28 @@ from kullback.gates.tool_runs import (
     body_refuses_unknown_gate,
     body_replay_fidelity_gate,
 )
+from kullback.runner import arith
 from kullback.runner.records import EntitySchema, GateResult, ToolCall, content_hash
 
 DB_CLASS = "DomainDB"
+
+# What both loaders put in the generated module's namespace beside `__name__`, and nothing else:
+# code-owned functions a tool body may call by name without importing anything. Only
+# `evaluate_arithmetic` so far, for the reason runner/arith.py gives: a recorded tool that evaluates
+# an expression string cannot be written without a parser, `ast`, `eval`, `exec` and `compile` are
+# refused, and the parser the model writes instead is wrong in a new way on every build.
+#
+# Keyed off the confinement gate's own `PROVIDED_HELPERS` rather than written out again, so the two
+# cannot drift: a name the gate counts as bound with no function behind it fails at import here, and
+# a function the gate has never heard of is never bound into a body's namespace, where it would have
+# been refused as a name nothing binds.
+_HELPER_FUNCTIONS = {"evaluate_arithmetic": arith.evaluate_arithmetic}
+HELPERS = {name: _HELPER_FUNCTIONS[name] for name in sorted(PROVIDED_HELPERS)}
+# The child runs under `python -I` with the environment cleared, so it cannot be relied on to import
+# kullback at all. It gets the evaluator's own bytes instead, prepended to the runner script, and the
+# job names which of them to bind, so the body in the subprocess calls exactly the function the body
+# in the Runner's process calls.
+_ARITH_SOURCE = Path(arith.__file__).read_text(encoding="utf-8")
 
 
 class SandboxError(RuntimeError):
@@ -50,7 +73,7 @@ args_text = tool_runs.args_text
 
 # --- the minimal sandbox (see the module docstring) ---
 
-_RUNNER = '''
+_RUNNER_BODY = '''
 import collections, datetime, importlib.abc, inspect, json, math, re, socket, sys, typing
 import pydantic
 
@@ -92,8 +115,16 @@ def main():
     # calls that leave the machine are cut.
     socket.socket.connect = socket.socket.connect_ex = socket.socket.bind = _cut
     socket.create_connection = _cut
+    # The code-owned helpers named by the job, defined by the source prepended to this file. A name
+    # the job asks for and the prefix does not define is a KeyError here, which the parent reads back
+    # as a module that did not load; a body may not shadow one, because it is bound before the module
+    # runs and the confinement gate already counts it as bound.
     namespace = {"__name__": "generated_tools"}
-    exec(compile(job["source"], "<generated>", "exec"), namespace)
+    namespace.update({name: globals()[name] for name in job["helpers"]})
+    # dont_inherit for the reason compile_env.load_toolkit gives: this file carries a
+    # `from __future__ import annotations` of its own, and a postponed annotation leaves pydantic
+    # with no module globals to resolve DomainDB's fields against.
+    exec(compile(job["source"], "<generated>", "exec", dont_inherit=True), namespace)
     toolkit, db_class = namespace[job["class_name"]], namespace[job["db_class"]]
     results = []
     for call in job["calls"]:
@@ -117,6 +148,9 @@ def main():
 
 main()
 '''
+
+# What the child actually runs: the evaluator's own source, then the runner above.
+_RUNNER = _ARITH_SOURCE + _RUNNER_BODY
 
 
 class Sandbox:
@@ -188,7 +222,7 @@ class Sandbox:
             indexes.append(at[key])
         nonce = secrets.token_hex(16)
         job.write_text(json.dumps({"source": self.source, "dbs": states, "db_class": self.db_class,
-                                   "class_name": self.class_name,
+                                   "class_name": self.class_name, "helpers": sorted(HELPERS),
                                    "calls": [{"name": c.name, "args": c.args, "db": i}
                                              for c, i in zip(calls, indexes, strict=False)]},
                                   default=str), encoding="utf-8")

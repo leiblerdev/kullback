@@ -344,3 +344,121 @@ def test_a_repair_verb_with_bad_arguments_is_an_error_result_not_a_crash(tmp_pat
     plan = BuildPlan(workdir=tmp_path)
     out = _run(_tool(plan, "repair_grow"), {"table": "users", "count": 0})
     assert out.is_error and "count" in out.content
+
+
+# --- the target's own ruling, first, before anything a gate says ----------------
+
+def _requests(workdir: Path, verb: str) -> list[dict]:
+    lines = (workdir / "repairs" / f"{verb}.jsonl").read_text(encoding="utf-8").splitlines()
+    return [json.loads(line) for line in lines if line.strip()]
+
+
+def _copy(built: Path, tmp_path: Path, name: str) -> Path:
+    """A workdir of this test's own, so the lessons and bodies it writes are nobody else's."""
+    workdir = tmp_path / name
+    shutil.copytree(built, workdir)
+    return workdir
+
+
+def test_a_repair_intent_result_opens_with_that_tasks_own_ruling(built):
+    """The live build repaired seven Intents, six of them grounded, and every result led with the
+    intent gate's first failure, which was about a Task nobody had touched; the model read all
+    seven as refused and stopped."""
+    plan = BuildPlan(workdir=built, iterate=True, model=Bodies(), max_attempts=0)
+    task = sorted(_intents(built))[0]
+    out = _run(_tool(plan, "repair_intent"), {"task_id": task, "hint": "say what every run of it shows"})
+    assert not out.is_error, out.content
+    record = _intents(built)[task]
+    first, second = out.content.splitlines()[:2]
+    assert first == out.details["target_ruling"]
+    assert first.startswith(f"repair_intent {task}: ")
+    assert ("grounded" in first) is bool(record["grounded"])
+    if not record["grounded"]:
+        assert first.endswith(f"still refused: {record['reason']}")
+    assert second.startswith("repair_intent intent: "), "the stage summary still follows it"
+
+
+def test_a_repair_recompile_result_says_whether_that_tool_cleared_the_gates(built, tmp_path):
+    """`rulings: compile_tools pass` is what the stage gate says while a tool stays assisted: the
+    gate rules that every tool has a body, and an assisted tool has the best failing one."""
+    workdir = _copy(built, tmp_path, "recompile_ruling")
+    plan = BuildPlan(workdir=workdir, iterate=True, model=Bodies(), max_attempts=0)
+    out = _run(_tool(plan, "repair_recompile"), {"name": ASSISTED, "hint": "import decimal first"})
+    assert not out.is_error, out.content
+    assisted = json.loads((workdir / "tool_builds.json").read_text(encoding="utf-8"))[ASSISTED]["assisted"]
+    first = out.content.splitlines()[0]
+    assert first.startswith(f"repair_recompile {ASSISTED}: ")
+    assert ("still assisted: " in first) is bool(assisted)
+    assert ("cleared the gates" in first) is (not assisted)
+    gate_line = next(line for line in out.content.splitlines() if line.startswith("rulings: "))
+    assert "compile_tools" in gate_line, "the gate-wide line stays, after the target's own"
+
+
+def test_a_repair_grow_result_says_how_many_rows_the_table_holds(built, tmp_path):
+    workdir = _copy(built, tmp_path, "grow_ruling")
+    plan = BuildPlan(workdir=workdir, iterate=True, model=Bodies(), max_attempts=0)
+    out = _run(_tool(plan, "repair_grow"), {"table": "users", "count": 4})
+    assert not out.is_error, out.content
+    assert out.content.splitlines()[0] == "repair_grow users: 4 rows, the 4 asked for"
+
+
+def test_a_gate_that_fails_over_many_tasks_says_how_many_and_names_the_first_as_an_example():
+    """One line read `intent fail (task <another Task>: ...)` after every repair, so it could be
+    read as the verdict on the Task just repaired. It now counts, and the target's own ruling
+    is above it."""
+    ruling = builder_tools.Ruling(stage="intent", passed=False, failures=[
+        f"task task_{i:02d}: noun phrases with no span: the late fee" for i in range(12)])
+    result = builder_tools.BuildResult(
+        summary="repair_intent intent: complete; 3 stages, 0 from cache", target="intent",
+        status="complete", passed=False, stage_gates=[ruling],
+        target_ruling='repair_intent task_99: grounded: "renew the overdue loan"')
+    lines = builder_tools.render(result).splitlines()
+    assert lines[0] == 'repair_intent task_99: grounded: "renew the overdue loan"'
+    assert lines[-1] == ("rulings: intent fail (12 Tasks, first task_00: noun phrases with no span: "
+                         "the late fee)")
+    one = builder_tools.Ruling(stage="intent", passed=False, failures=["task task_00: no span"])
+    assert builder_tools.render(result.model_copy(update={"stage_gates": [one]})).splitlines()[-1] == (
+        "rulings: intent fail (task task_00: no span)"), "one failing target is its own verdict"
+
+
+def test_both_agents_read_one_gates_ruling_in_the_same_words():
+    """The counting lives in one function both agents' hooks and both agents' renderings call."""
+    from kullback.examiner import tools as examiner_tools
+
+    ruling = builder_tools.Ruling(stage="derive_verifier", passed=False, failures=[
+        f"task task_{i:02d}: the D79 suite did not pass" for i in range(4)])
+    builder_line = builder_tools.render(builder_tools.BuildResult(
+        summary="build environment: complete", target="environment", status="complete", passed=False,
+        stage_gates=[ruling])).splitlines()[-1]
+    examiner_line = examiner_tools.render(examiner_tools.DeriveResult(
+        summary="derive all: complete", target="all", status="complete", rulings=[ruling])).splitlines()[-1]
+    assert builder_line == examiner_line
+    assert builder_line == ("rulings: derive_verifier fail (4 Tasks, first task_00: the D79 suite "
+                            "did not pass)")
+
+
+# --- what one repair changed, measured on its own target ------------------------
+
+def test_a_repair_request_carries_the_hash_of_its_own_target_either_side_of_the_call(built, tmp_path):
+    """Whether one repair changed anything is the repair's own answer. The round's fingerprint said
+    `intents` changed and every request of that round read as having changed it."""
+    workdir = _copy(built, tmp_path, "own_target")
+    plan = BuildPlan(workdir=workdir, iterate=True, model=Bodies(), max_attempts=0)
+    tool = _tool(plan, "repair_intent")
+    task = sorted(_intents(workdir))[0]
+    _run(tool, {"task_id": task, "hint": "one hint"})
+    again = _run(tool, {"task_id": task, "hint": "one hint"})
+    assert _cached(again, "intent") is True, "the same hint twice is the same question"
+    rows = _requests(workdir, "repair_intent")
+    assert all(row["changed"] == (row["hash_before"] != row["hash_after"]) for row in rows)
+    assert rows[-1]["changed"] is False, "a stage served from the cache rewrote nothing"
+
+
+def test_a_repair_whose_stage_failed_still_records_the_request_it_was_asked(built, tmp_path):
+    """The row is what the round's report reads; a repair that errored is a repair that was made."""
+    workdir = _copy(built, tmp_path, "failed_stage")
+    plan = BuildPlan(workdir=workdir, iterate=True, model=Bodies(), max_attempts=0)
+    out = _run(_tool(plan, "repair_intent"), {"task_id": "task_nobody_mined", "hint": "x"})
+    assert out.is_error and "no Task is named" in out.content
+    row = _requests(workdir, "repair_intent")[-1]
+    assert row["target"] == "task_nobody_mined" and row["changed"] is False

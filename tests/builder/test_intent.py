@@ -15,6 +15,7 @@ from kullback.builder.intent import (
     noun_phrases,
     span_candidates,
     span_mode,
+    still_grounds,
     write_intent,
 )
 from kullback.runner.records import Task, ToolCall, Trace, Turn
@@ -486,6 +487,39 @@ def test_write_intent_round_trips_through_json(make_test_model):
         make_test_model(["cancel the order because the delivery was late"]), task, traces, write_tools=WRITES
     )
     assert Intent.model_validate(intent.model_dump(mode="json", by_alias=True)) == intent
+
+
+# --- whether a recorded Intent still holds for its Task ---
+
+
+def test_a_grounded_intent_still_holds_for_the_runs_it_was_written_over(make_test_model):
+    task, traces = two_run_task()
+    intent = write_intent(
+        make_test_model(["cancel the order because the delivery was late"]), task, traces, write_tools=WRITES
+    )
+    assert intent.grounded
+    assert still_grounds(intent, task.run_ids) is True
+
+
+def test_an_intent_stops_holding_when_its_task_gains_or_loses_a_run(make_test_model):
+    """A grounded line says what every member Run showed. A Run that has joined the Task since was
+    never read for it, and a Run that has left took its share of the evidence with it, so either
+    way the line has to be written again rather than kept."""
+    task, traces = two_run_task()
+    intent = write_intent(
+        make_test_model(["cancel the order because the delivery was late"]), task, traces, write_tools=WRITES
+    )
+    assert still_grounds(intent, ["t1", "t2", "t3"]) is False
+    assert still_grounds(intent, ["t1"]) is False
+
+
+def test_an_ungrounded_intent_never_holds_however_wide_its_coverage():
+    """Coverage alone is not the answer: a refused line can still name every Run for the phrases it
+    did place, and keeping it would be a build ratcheting onto a Task with no Verdict."""
+    refused = Intent(task_id="task_1", text="refund to a gift card", grounded=False,
+                     run_coverage={"a refund": ["t1", "t2"]},
+                     ungrounded_phrases=["a gift card"])
+    assert still_grounds(refused, ["t1", "t2"]) is False
 
 
 # --- applying the Intent to the Task ---

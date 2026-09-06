@@ -14,6 +14,14 @@ is written here and registered nowhere: a model that rewrites its own prompt unc
 caution in `docs/todo.md`, and the verb waits for the gate that accepts an edit (D125, D132).
 Nothing here calls a model or edits `kullback/gates` or `kullback/runner` (D122): the ratchet and
 the lesson are code over artifacts the pipeline already wrote.
+
+This module also owns what one target of one verb is made of, which is the answer to two questions
+a gate cannot answer. `target_hash` and `change_of` hash that one artifact either side of the call,
+so a request records whether it moved anything of its own: a round-wide fingerprint says `intents`
+changed and cannot say which of seven repaired Tasks it was. `target_ruling` reads the same artifact
+back as the line the result opens with (`repair_intent task_x: grounded: "..."`), because a gate
+rules over every target at once and its first failure names whichever target sorts first, not the
+one that was just repaired.
 """
 
 from __future__ import annotations
@@ -27,6 +35,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from kullback.agent.tools import AgentTool, ToolResult
 from kullback.builder import memory as memory_mod
+from kullback.runner.records import content_hash
 
 Sink = Callable[[Any], Awaitable[None]]
 
@@ -93,6 +102,157 @@ class EscalateArgs(BaseModel):
     queue: str = Field(default="review", description="The queue the Task is escalated to.")
 
 
+# --- the one target a repair verb acts on -------------------------------------
+
+# The artifact each acting verb rewrites, under the name a round's counts give it (`rounds.py`).
+# The deciding verbs are absent on purpose: refusing a Task and escalating one write a row for the
+# report and change no artifact, which is what their own descriptions say.
+REPAIR_ARTIFACT: dict[str, str] = {
+    "repair_recompile": "bodies",
+    "repair_grow": "starting_state",
+    "repair_intent": "intents",
+}
+NO_ATTEMPT = "the compiler recorded no attempt"
+NO_FAILURE = "the gates recorded no failure"
+NO_INTENT = "no Intent is recorded for this Task"
+
+
+def _json_at(workdir: Any, relative: Any, default: Any) -> Any:
+    """One record file of a workdir, or the default when it is missing or half written."""
+    try:
+        return json.loads((Path(workdir) / relative).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return default
+
+
+def intent_record(workdir: Any, task_id: str) -> dict:
+    """The Intent the intent stage last wrote for one Task, or {} where it wrote none."""
+    body = _json_at(workdir, Path("intents") / f"{task_id}.json", {})
+    return body if isinstance(body, dict) else {}
+
+
+def tool_body(workdir: Any, name: str) -> Optional[str]:
+    """One tool's compiled body out of `bodies.json`, or None where the build wrote none."""
+    bodies = _json_at(workdir, "bodies.json", {})
+    bodies = bodies.get("bodies", bodies) if isinstance(bodies, dict) else {}
+    body = bodies.get(name) if isinstance(bodies, dict) else None
+    return body if isinstance(body, str) else None
+
+
+def tool_build(workdir: Any, name: str) -> dict:
+    """What `tool_builds.json` recorded for one tool: whether it ended assisted, and its attempts."""
+    builds = _json_at(workdir, "tool_builds.json", {})
+    row = builds.get(name) if isinstance(builds, dict) else None
+    return row if isinstance(row, dict) else {}
+
+
+def table_rows(workdir: Any, table: str) -> Optional[dict]:
+    """One table of the Starting state out of `db.json`, or None where the world holds no such table."""
+    db = _json_at(workdir, "db.json", {})
+    rows = db.get(table) if isinstance(db, dict) else None
+    return rows if isinstance(rows, dict) else None
+
+
+def target_artifact(workdir: Any, verb: str, target: str) -> Any:
+    """What one call of a repair verb is about: this Task's Intent, this tool's body, this table's rows.
+
+    A deciding verb owns no artifact, so it is None here and `changed` can only ever be False for it.
+    """
+    if verb == "repair_intent":
+        return intent_record(workdir, target)
+    if verb == "repair_recompile":
+        return tool_body(workdir, target)
+    if verb == "repair_grow":
+        return table_rows(workdir, target)
+    return None
+
+
+def target_hash(workdir: Any, verb: str, target: str) -> Optional[str]:
+    """A short hex over the one artifact this call is about; None for a verb that owns none."""
+    if verb not in REPAIR_ARTIFACT:
+        return None
+    return content_hash(target_artifact(workdir, verb, target))[:12]
+
+
+def change_of(workdir: Any, verb: str, target: str, before: Optional[str]) -> dict:
+    """What one repair did to its own target: the hash either side of the call and whether it moved.
+
+    `before` is `target_hash` taken before the stage ran. A round-wide fingerprint cannot answer
+    this: a round that rewrote six Intents and left a seventh refused changed `intents` once, and
+    every one of the seven requests would read as having changed it.
+    """
+    after = target_hash(workdir, verb, target)
+    return {"changed": before != after, "hash_before": before, "hash_after": after}
+
+
+# --- the target's own ruling, off the artifact the stage just wrote -----------
+
+
+def _first_failure(node: Any) -> str:
+    """The first thing that went wrong in one compile attempt, in the gate's own words.
+
+    An attempt that never reached the sandbox (a refusal, an empty reply) carries `failures`; one
+    that ran carries the gates it was put through, whose rulings use the record alias `pass`.
+    """
+    if not isinstance(node, dict):
+        return ""
+    for failure in node.get("failures") or []:
+        return str(failure)
+    for ruling in node.get("gates") or []:
+        if isinstance(ruling, dict) and not ruling.get("pass"):
+            failures = ruling.get("failures") or []
+            return f"{ruling.get('stage')}: {failures[0]}" if failures else f"{ruling.get('stage')} failed"
+    return ""
+
+
+def intent_ruling(workdir: Any, task_id: str) -> str:
+    """Whether this Task's Intent grounded, off the file the intent stage just wrote."""
+    record = intent_record(workdir, task_id)
+    if record.get("grounded"):
+        return f'repair_intent {task_id}: grounded: "{record.get("text") or ""}"'
+    return f"repair_intent {task_id}: still refused: {record.get('reason') or NO_INTENT}"
+
+
+def recompile_ruling(workdir: Any, name: str) -> str:
+    """Whether this tool's new body cleared the gates, off `tool_builds.json`.
+
+    A tool that ended assisted is a body no attempt got through (D49), so the line carries the first
+    failure of its last attempt: that is what the next hint has to answer.
+    """
+    build = tool_build(workdir, name)
+    if not build:
+        return f"repair_recompile {name}: {NO_ATTEMPT}"
+    if not build.get("assisted"):
+        return f"repair_recompile {name}: cleared the gates"
+    failures = [text for text in (_first_failure(node) for node in build.get("nodes") or []) if text]
+    return f"repair_recompile {name}: still assisted: {failures[-1] if failures else NO_FAILURE}"
+
+
+def grow_ruling(workdir: Any, table: str, count: int) -> str:
+    """How many rows the grown table holds now, against the count the call asked for (D107)."""
+    rows = table_rows(workdir, table)
+    if rows is None:
+        return f"repair_grow {table}: the Starting state holds no table of that name"
+    if len(rows) >= count:
+        return f"repair_grow {table}: {len(rows)} rows, the {count} asked for"
+    return f"repair_grow {table}: {len(rows)} rows, short of the {count} asked for"
+
+
+def target_ruling(workdir: Any, verb: str, args: Any) -> str:
+    """The line a repair result opens with: how the one target it was called on came out.
+
+    Read off the artifact the stage just wrote, never off a gate's failure list, because a gate
+    rules over every target at once and its first failure is about whichever target sorts first.
+    """
+    if verb == "repair_intent":
+        return intent_ruling(workdir, args.task_id)
+    if verb == "repair_recompile":
+        return recompile_ruling(workdir, args.name)
+    if verb == "repair_grow":
+        return grow_ruling(workdir, args.table, args.count)
+    return ""
+
+
 # --- request log ------------------------------------------------------------
 
 
@@ -109,6 +269,11 @@ def record_request(workdir: Any, verb: str, target: str, body: dict, round_no: i
     carries no clock of its own, so the round number is what places a repair against the rulings
     that round left in `gates_by_round.json`: that is how a report says whether a repair turned a
     red gate green. A build with no round driver is one pass, which is round 1.
+
+    An acting verb puts `change_of` in `body`, so the row also carries `changed` with the hash of
+    the one target's artifact either side of the call (`hash_before`, `hash_after`). That is what
+    says whether this repair moved anything; a round-wide fingerprint cannot, because six Intents
+    rewritten in one round and one left alone share it.
     """
     path = _repairs_dir(workdir) / f"{verb}.jsonl"
     with path.open("a", encoding="utf-8") as fh:
@@ -126,11 +291,16 @@ def _executor(workdir: Any, verb: str, target_of: Any, round_of: Optional[Callab
     async def execute(args: Any) -> RepairResult:
         target = target_of(args)
         extra: dict[str, Any] = {}
+        before = target_hash(workdir, verb, target)
         if verb == "repair_rewrite_skill":
             from kullback.builder import skills as skills_mod
             written = skills_mod.write_skill(workdir, args.name, args.content)
             extra = {"skill_hash": written["hash"]}
-        path = record_request(workdir, verb, target, {"arguments": args.model_dump(mode="json"), **extra},
+        # Every request carries the same change fields, so a report reads one shape whether the verb
+        # decided something (no artifact, never changed) or acted (the hash either side of the call).
+        path = record_request(workdir, verb, target,
+                              {"arguments": args.model_dump(mode="json"), **extra,
+                               **change_of(workdir, verb, target, before)},
                               round_no=int(round_of()) if round_of is not None else 1)
         return RepairResult(verb=verb, target=target, path=str(path),
                             detail=detail or f"request in {path.name}")
@@ -244,9 +414,51 @@ def ratchet_hook(workdir: Any) -> Any:
 
 # --- lesson --------------------------------------------------------------------
 
+def gate_exception_line(workdir: Any, tool: str) -> str:
+    """The exception this tool's latest failing gate reports, as `ExceptionClass: message`.
+
+    Read off `tool_builds.json`, which the compile_tools stage writes with every attempt's rulings;
+    the latest attempt is asked first, so the line is the one the tool crashed on last. "" when the
+    file is missing, unreadable, or names no exception for this tool.
+    """
+    # Local: repair.py is imported by the session tools, and compile_env pulls the sandbox and the
+    # gates behind it. Nothing here needs them until a lesson is actually written.
+    from kullback.builder.compile_env import exception_in
+
+    path = Path(workdir) / "tool_builds.json"
+    if not path.is_file():
+        return ""
+    try:
+        builds = json.loads(path.read_text(encoding="utf-8"))
+    except (ValueError, OSError):
+        return ""
+    row = builds.get(tool) if isinstance(builds, dict) else None
+    nodes = row.get("nodes") if isinstance(row, dict) else None
+    for node in reversed(nodes if isinstance(nodes, list) else []):
+        rulings = node.get("gates") if isinstance(node, dict) else None
+        for ruling in rulings if isinstance(rulings, list) else []:
+            if not isinstance(ruling, dict) or ruling.get("pass"):
+                continue
+            for failure in ruling.get("failures") or []:
+                found = exception_in(str(failure))
+                if found:
+                    return found
+    return ""
+
+
 def record_tool_lesson(workdir: Any, tool: str, failures: list[str]) -> Path:
-    """Write one gate-failure sequence to the Builder memory for this workdir."""
-    return memory_mod.record_lesson(workdir, tool, list(failures))
+    """Write one gate-failure sequence to the Builder memory for this workdir.
+
+    The mechanic's hint says what it thinks went wrong; the gate says what the body actually raised,
+    and the two are not the same sentence. Both go into the lesson, so the compiler's next prompt
+    (`memory.lesson_for`, read by `compile_tool`) carries the error line it must not raise again and
+    not only the advice. The line is added once and only when the hint does not already quote it.
+    """
+    failures = list(failures)
+    error = gate_exception_line(workdir, tool)
+    if error and not any(error in failure for failure in failures):
+        failures.append(f"the last attempt raised {error}; do not raise it again")
+    return memory_mod.record_lesson(workdir, tool, failures)
 
 
 def lesson_for_tool(workdir: Any, tool: str) -> str:

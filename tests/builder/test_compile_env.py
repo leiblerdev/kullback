@@ -11,6 +11,7 @@ import pytest
 from conftest import PTR
 from kullback.builder import compile_env as ce
 from kullback.builder import sandbox as sandbox_mod
+from kullback.gates.confinement import PROVIDED_HELPERS, gate_confined
 from kullback.runner.records import (
     Atom,
     Column,
@@ -469,6 +470,72 @@ def test_the_kept_attempt_is_the_one_that_got_furthest_through_the_gates():
     assert ce.attempt_score(gates(6, 44)) > ce.attempt_score(gates(2, 0))
     assert ce.attempt_score(gates(6, 44)) > ce.attempt_score(gates(6, 12))
     assert ce.attempt_score([]) == (0, 0)
+
+
+# --- an attempt that raises what the attempt before raised is told so ---
+
+LOANS_BY_ATTRIBUTE = """
+member = self.db.members[member_id]
+return {"member_id": member_id, "copy_id": member.loans[0].copy_id}
+"""
+
+LOANS_BY_ANOTHER_ATTRIBUTE = """
+member = self.db.members[member_id]
+return {"member_id": member_id, "due": member.loans[0].due}
+"""
+
+
+def _library_world():
+    """A lending library, its schema, the tool that reads one member and four recorded calls."""
+    db = {"members": {f"m-{i}": {"member_id": f"m-{i}",
+                                 "loans": [{"copy_id": f"c-{i}", "due": "2026-01-02"}]}
+                      for i in range(1, 5)},
+          "titles": {}}
+    sig = ToolSig(name="get_member", description="Read one member and their loans.",
+                  args_fields=[FieldStat(name="member_id", types=["str"], optional=False)],
+                  kind="read", unclassified=False)
+    calls = [_call("get_member", {"member_id": member_id},
+                   result={"member_id": member_id, "copy_id": row["loans"][0]["copy_id"]}, idx=i)
+             for i, (member_id, row) in enumerate(sorted(db["members"].items()))]
+    return db, _library_schema(), sig, calls
+
+
+def test_an_attempt_that_raises_what_the_attempt_before_raised_is_told_so_with_the_exception(
+    make_test_model, workdir
+):
+    """One write tool of a live build crashed on all four attempts with the same AttributeError at
+    the same call. Each retry showed the crash and none said the error had not moved."""
+    db, schema, sig, calls = _library_world()
+    model = make_test_model([LOANS_BY_ATTRIBUTE] * 4)
+    build = ce.compile_tool(model, sig, calls, schema, db, workdir)
+    assert build.assisted is True and len(model.calls) == 4
+    third_turn = model.calls[2]["messages"][-1]["content"]
+    assert "The same error as the attempt before, at the same call" in third_turn
+    assert "AttributeError: 'dict' object has no attribute 'copy_id'" in third_turn
+    assert model.calls[2]["messages"][:2] == model.calls[0]["messages"][:2]
+
+
+def test_an_attempt_that_raises_a_different_exception_is_not_told_it_is_the_same_error(
+    make_test_model, workdir
+):
+    db, schema, sig, calls = _library_world()
+    model = make_test_model([LOANS_BY_ATTRIBUTE, LOANS_BY_ANOTHER_ATTRIBUTE,
+                             LOANS_BY_ATTRIBUTE, LOANS_BY_ANOTHER_ATTRIBUTE])
+    ce.compile_tool(model, sig, calls, schema, db, workdir)
+    assert len(model.calls) == 4
+    for call in model.calls[1:]:
+        assert "The same error as the attempt before" not in call["messages"][-1]["content"]
+
+
+def test_the_exception_a_failing_gate_quotes_is_read_off_its_failure_line():
+    from kullback.runner.records import GateResult
+
+    crash = GateResult(stage="executes_on_s0", **{"pass": False}, failures=[
+        "get_member(member_id='m-1') raised AttributeError: 'dict' object has no attribute 'copy_id'"])
+    green = GateResult(stage="parses", **{"pass": True})
+    assert ce.exception_line([green, crash]) == "AttributeError: 'dict' object has no attribute 'copy_id'"
+    assert ce.exception_line([green]) == ""
+    assert ce.exception_in("get_member(member_id='m-1') answered differently on a second run") == ""
 
 
 def test_a_recompile_hint_reaches_the_compiler_prompt_for_that_tool(
@@ -1226,6 +1293,79 @@ def test_the_rules_in_the_prompt_are_generated_from_the_gate_not_copied():
     assert "summon_a_demon" in ce._confinement_block(denied=frozenset({"summon_a_demon"}))
 
 
+# --- the code-owned helpers both loaders bind (runner/arith.py) ---
+#
+# An invented world of its own, because what is under test is a body calling a function nobody
+# imported, not any customer's tools.
+
+QUOTES_SCHEMA = EntitySchema(
+    tables=["quotes"],
+    columns=[Column(table="quotes", name="quote_id", **{"class": "hard"}, classified_by="rule"),
+             Column(table="quotes", name="formula", **{"class": "hard"}, classified_by="rule")],
+    id_patterns={"quotes": r"^q\d+$"},
+)
+QUOTES_SIG = ToolSig(
+    name="settle_quote",
+    description="Work out what the quote's formula comes to.",
+    args_fields=[FieldStat(name="quote_id", types=["str"], optional=False)],
+    kind="read",
+    unclassified=False,
+)
+QUOTES_DB = {"quotes": {"q1": {"quote_id": "q1", "formula": "(18.25 * 3) - (7.5 + 2.25)"}}}
+ARITH_BODY = ("quote = self.db.quotes[quote_id]\n"
+              "return {'quote_id': quote_id, 'total': float(evaluate_arithmetic(quote.formula))}\n")
+
+
+def _quotes_source(body: str) -> str:
+    return ce.module_source(QUOTES_SCHEMA, [QUOTES_SIG], {QUOTES_SIG.name: body})
+
+
+def test_a_body_that_evaluates_an_expression_passes_the_gate_and_runs_in_the_runners_process():
+    """Nothing imports the helper and nothing binds it in the module, so the gate has to know it."""
+    source = _quotes_source(ARITH_BODY)
+    assert ce.source_confinement(source) == []
+    assert gate_confined(source).passed is True
+    toolkit = ce.load_toolkit(source, QUOTES_DB)
+    assert toolkit.settle_quote("q1") == {"quote_id": "q1", "total": 45.0}
+
+
+def test_the_same_body_gives_the_same_answer_in_the_sandbox_subprocess(workdir):
+    """The subprocess is started with the environment cleared and cannot import the harness, so it
+    carries the evaluator's own bytes; a body that agrees here and disagrees there would pass the
+    gates and then answer differently on a Run."""
+    source = _quotes_source(ARITH_BODY)
+    box = ce.Sandbox(source, QUOTES_DB, workdir)
+    call = ToolCall(id="c1", name="settle_quote", args={"quote_id": "q1"}, raw_ptr=PTR)
+    assert box.run([call]) == [{"ok": True, "value": {"quote_id": "q1", "total": 45.0}}]
+
+
+def test_the_helper_is_the_only_name_the_loaders_add_and_the_gate_knows_that_name():
+    """One list, read by the gate and by whatever binds the functions, so neither can grow alone."""
+    assert set(sandbox_mod.HELPERS) == set(PROVIDED_HELPERS)
+    assert PROVIDED_HELPERS == {"evaluate_arithmetic"}
+
+
+def test_a_body_that_reaches_for_eval_or_for_ast_is_refused_as_it_was_before():
+    """The helper is not a loosening: the names it exists to replace stay refused."""
+    with_eval = _quotes_source("return eval(self.db.quotes[quote_id].formula)\n")
+    assert "settle_quote uses eval" in ce.source_confinement(with_eval)
+    with pytest.raises(ce.SandboxError):
+        ce.load_toolkit(with_eval, QUOTES_DB)
+    with_ast = _quotes_source("import ast\nreturn ast.parse(self.db.quotes[quote_id].formula)\n")
+    assert "settle_quote imports ast" in ce.source_confinement(with_ast)
+    with pytest.raises(ce.SandboxError):
+        ce.load_toolkit(with_ast, QUOTES_DB)
+
+
+def test_the_prompt_names_the_helper_so_no_body_has_to_write_a_parser():
+    """Four attempts of build 12 went on a hand-written parser nobody had told the model about."""
+    block = ce._confinement_block()
+    for name in PROVIDED_HELPERS:
+        assert name in block, f"the loaders bind {name} and the prompt never says so"
+    assert "never write a parser" in block
+    assert "evaluate_arithmetic" in ce.body_messages(QUOTES_SIG, [], schema=QUOTES_SCHEMA)[0]["content"]
+
+
 def test_evidence_shrinks_by_whole_calls_rather_than_giving_up(
     make_test_model, schema, sigs, db0, workdir, order_calls
 ):
@@ -1289,6 +1429,78 @@ def test_the_schema_block_shows_a_sample_of_a_dict_shaped_column():
                samples=['{"9612497925":{"item_id":"9612497925","price":50.88}}'])])
     block = ce._schema_block(schema)
     assert 'products.variants looks like: {"9612497925":{"item_id":"9612497925","price":50.88}}' in block
+
+
+# --- what a column holds is a plain list or dict, and the prompt says so ---
+
+
+def _library_schema():
+    """A lending library: a member's loans are a list of dicts, a title's copies a dict of dicts."""
+    return EntitySchema(
+        tables=["members", "titles"],
+        columns=[
+            Column(table="members", name="member_id", **{"class": "hard"}, classified_by="rule",
+                   evidence={"types": ["str"]}, samples=["m-1"]),
+            Column(table="members", name="loans", **{"class": "hard"}, classified_by="rule",
+                   evidence={"types": ["list"]},
+                   samples=['[{"copy_id": "c-1", "due": "2026-01-02"}]']),
+            Column(table="titles", name="copies", **{"class": "hard"}, classified_by="rule",
+                   evidence={"types": ["dict"]},
+                   samples=['{"c-1": {"shelf": "A3", "copy_id": "c-1"}}']),
+        ],
+        id_patterns={"members": r"^m-\d+$", "titles": r"^t-\d+$"},
+    )
+
+
+def test_the_schema_block_names_the_access_form_of_a_list_column_and_of_a_dict_column():
+    """The data model types every column Optional[Any], so a column holding a list holds a plain
+    list whatever the row around it is. One write tool crashed on all four of its compile attempts
+    reading such a column by attribute, as the system rule told it to."""
+    block = ce._schema_block(_library_schema())
+    assert "members.loans is a list of plain dicts, not model rows" in block
+    assert '{"copy_id": "c-1", "due": "2026-01-02"}' in block
+    assert 'read element["copy_id"], never element.copy_id' in block
+    assert "titles.copies is a dict of plain dicts keyed by copy_id" in block
+    assert 'read copies[key]["shelf"], never copies[key].shelf' in block
+
+
+def test_the_access_form_names_no_field_when_the_mined_sample_does_not_parse():
+    """Mining cuts a long nested sample at a length, so the text beside the column is not always
+    JSON. What it is stays true, so the line is still said, with no field named."""
+    schema = EntitySchema(tables=["members"], columns=[
+        Column(table="members", name="loans", **{"class": "hard"}, classified_by="rule",
+               evidence={"types": ["list"]}, samples=['[{"copy_id": "c-1", "du...'])])
+    block = ce._schema_block(schema)
+    assert "members.loans is a plain list, not a model row" in block
+    assert "never by attribute" in block
+
+
+def test_the_system_rule_says_a_row_is_a_model_and_that_what_a_column_holds_is_not():
+    """Both halves, or the first one alone sends a body to read a list of dicts by attribute."""
+    sig = ToolSig(name="get_member", kind="read", unclassified=False,
+                  args_fields=[FieldStat(name="member_id", types=["str"], optional=False)])
+    system = ce.body_messages(sig, [])[0]["content"]
+    assert "pydantic model rows" in system and ".get(" in system
+    assert "read or write a row's field by attribute" in system
+    assert "is a plain Python list or dict" in system
+    assert "write them by plain assignment" in system
+
+
+def test_the_stable_prefix_is_the_same_bytes_for_two_tools_of_one_build():
+    """D65: the access forms live in the schema block, which is the prefix every tool of a build
+    shares, so adding them may not make one tool's prompt differ from another's."""
+    schema = _library_schema()
+    names = ["get_member", "return_copy"]
+    reader = ToolSig(name="get_member", kind="read", unclassified=False,
+                     args_fields=[FieldStat(name="member_id", types=["str"], optional=False)])
+    writer = ToolSig(name="return_copy", kind="write", unclassified=False,
+                     args_fields=[FieldStat(name="copy_id", types=["str"], optional=False)])
+    first = ce.body_messages(reader, [_call("get_member", {"member_id": "m-1"}, result={})],
+                             schema=schema, tool_names=names)[0]["content"]
+    second = ce.body_messages(writer, [_call("return_copy", {"copy_id": "c-1"}, result={})],
+                              schema=schema, tool_names=names)[0]["content"]
+    assert first == second
+    assert "members.loans is a list of plain dicts, not model rows" in first
 
 
 def test_the_schema_block_stays_quiet_for_a_column_with_no_dict_samples():
