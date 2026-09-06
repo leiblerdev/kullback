@@ -301,3 +301,16 @@ Read from `.work-b9-agent/builder/session.jsonl` and `examiner/session.jsonl`. T
 | 887s | Examiner | round 2 steer "read the rulings and act", `read gates`, one `finding` | never called derive; the round is recorded as failed and the loop exits stalled |
 
 Nothing the mechanic did could change an artifact: the recompile hint never reached the compiler, refusing a Task reached no gate, the intent red lights pointed at refusing, the Examiner's finding vocabulary had no word for "rewrite the Intent", and the round-2 steer to the Examiner did not ask for the one call the code required. The model read the lights right every time.
+
+### Before build 12: what the grill of the same evening changed (2026-09-06)
+
+Read back from the session above, six harness changes, all on our side (D136), none a model wrote:
+
+1. `status` shows every red light, grouped by gate and failure kind, with a zoom (D140). The build 11 mechanic saw 25 lines of 380.
+2. The Examiner's finding names the Builder verb and carries the hint, `repair_intent` and `repair_recompile` included (D141). The Runner is re-frozen for it.
+3. The stall rule counts artifact changes and repair effects, not gate counts alone; a repair that changes nothing says so, with the reason (D142).
+4. The Intent splitter keeps numbers, money and ids whole and grounds in two steps; `write_intent` gets three tries with feedback (D143). On build 8's stored Intents: 37 grounded before, 137 after, of 205.
+5. The Builder and Examiner prompts are in the GEPA order with general examples (D144).
+6. The table's three blind spots have records now: round timestamps for the duration, the context fill per round, and a `difference` record on every replay miss, so "unreadable" is gone from the causes (D139: the record first, then the number).
+
+Build 12 runs both arms again on fresh copies of build 8's workdir.

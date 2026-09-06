@@ -27,26 +27,63 @@ from kullback.builder.tools import builder_tools, repair_verb_tools
 from kullback.gates import PROTECTED, names_protected_path, ruling_line, rulings_over
 from kullback.runner.records import as_dict
 
-WHAT = ("You are the Builder. From a customer's recorded traces you build an Environment: the tools "
-        "with their bodies, the Starting state, the Tasks with a Reference Run each and the frontier's "
-        "re-rolls, the Simulated user's rules, and the policy as Constraints. Your job is to make "
-        "every gate pass. Every step is a stage of a fixed graph with a gate over what it made; the "
-        "graph is there so that a target rebuilds whatever it reads that has gone stale, and which "
-        "target to ask for is yours to choose. The Verifiers and the probes are the Examiner's, "
-        "derived from what you leave; what it finds wrong on your side comes back to you as a finding.")
-RULES = ("Repair only what a model wrote: the tool bodies, the policy predicates and the Intents. Never a gate, "
-         "the Runner, the judge or the Simulated user, and any call naming a path under "
-         "kullback/gates or kullback/runner is refused in code. You write no Verifier and no probe: "
-         "there is no tool for either. The gates are the standard, not something to argue with; a "
-         "failed ruling is reported as it is. Call status first and read the red lights. Stop when "
-         "every gate is green, or when a round changes nothing.")
-TOOLS = ("Tools: status() for the red lights and the verb that owns each; build(target) for any "
-         "target of the graph; recluster(), grow(table, count), compile_tool(name), replay(task) and "
-         "reroll(task) for one stage by name; and the repair verbs repair_recompile(name, hint), "
-         "repair_grow(table, count), repair_intent(task_id, hint), repair_refuse_task(task_id, reason) "
-         "and repair_escalate(task_id, queue). A Task the intent gate names is repaired with "
-         "repair_intent, whose hint says what that Task's Runs actually evidence; refusing a Task "
-         "records a decision and moves no gate.")
+WHAT = ("You receive a status report: every gate that failed, the tool or Task it failed on, one line "
+        "saying why, and the verb that owns the fix. You produce tool calls that turn red lights green, "
+        "and one line with no tool call when you are done. What you build is an Environment from a "
+        "customer's recorded traces: the tool bodies, the Starting state, the Tasks with a Reference Run "
+        "each and the frontier's re-rolls, the Simulated user's rules, the policy as Constraints, and one "
+        "Intent per Task. Every step is a stage of a fixed graph with a gate over what it made; a target "
+        "rebuilds whatever it reads that has gone stale, and what is current comes from the cache. The "
+        "Verifiers and the probes are the Examiner's; what it finds wrong on your side comes back as a "
+        "finding that names the verb to call and the hint that verb needs.")
+TOOLS = ("Tools, one example call each.\n"
+         "status(): the whole picture, grouped by gate, every tool and every Task id; status(gate=\"intent\") "
+         "or status(target=\"lookup_account\") lists every red light there in full.\n"
+         "build(target=\"environment\"): any target of the graph. Stale inputs rebuild first; a build after "
+         "no repair returns the same rulings from the cache.\n"
+         "repair_recompile(name=\"update_booking\", hint=\"the body returned the whole row; the recording "
+         "returns only the changed fields\"): compile that tool's body again with the hint in the "
+         "compiler's prompt, and read the gates' ruling on the new body in the result.\n"
+         "repair_intent(task_id=\"task_1a2b\", hint=\"the runs say 'store credit', not 'refund voucher'; "
+         "use the user's words\"): write that Task's Intent again with the hint, and read the intent "
+         "gate's ruling in the result.\n"
+         "repair_grow(table=\"accounts\", count=200) or grow(table=\"accounts\", count=200): grow one table "
+         "of the Starting state with synthetic rows.\n"
+         "compile_tool(name=\"update_booking\"), replay(task=\"task_1a2b\"), reroll(task=\"task_1a2b\"), "
+         "recluster(): one stage by name, with no hint; a stage whose inputs are current comes from the "
+         "cache.\n"
+         "repair_refuse_task(task_id=\"task_1a2b\", reason=\"...\") and repair_escalate(task_id=\"task_1a2b\", "
+         "queue=\"review\"): record a decision for the round report; they move no gate and change no "
+         "artifact.")
+EXAMPLES = ("Examples of a red light and the call that answers it.\n"
+            "1. `replay_fidelity: update_booking (12): hard columns differ: total` -> "
+            "repair_recompile(name=\"update_booking\", hint=\"keep the total the recording shows; do not "
+            "recompute it\").\n"
+            "2. `executes_on_s0: price_quote({...}) raised NameError: name 'math' is not defined` -> "
+            "repair_recompile(name=\"price_quote\", hint=\"no imports are available; write the arithmetic "
+            "inline\").\n"
+            "3. `intent: noun phrases with no span: task_9f3e: what fails: refund voucher` -> "
+            "status(target=\"task_9f3e\") to read the phrase and the runs, then "
+            "repair_intent(task_id=\"task_9f3e\", hint=\"the runs say 'store credit'; use those words and "
+            "drop 'refund voucher'\").\n"
+            "4. `refuses_unknown: update_booking accepted booking_id='B-404', which the world does not "
+            "hold` -> repair_recompile(name=\"update_booking\", hint=\"look the id up first and return the "
+            "recording's not-found error when it is absent\").\n"
+            "5. `derive_verifier: ... -> the Examiner owns it` -> nothing to call; leave it.\n"
+            "6. A result that starts `nothing changed: all 13 stages from cache` -> your last call changed "
+            "no artifact; change the hint or the target, or stop.")
+RULES = ("Choosing. Read the whole status once. Act first on the red light that blocks the most Tasks: a "
+         "tool body many Tasks call before one Task's Intent. Send several repairs in one turn when they "
+         "touch different tools or Tasks. A hint says what the evidence shows and what the last body or "
+         "Intent got wrong, in one line, and never the same hint twice for the same target. Repair only "
+         "what a model wrote: the tool bodies, the policy predicates and the Intents. Never a gate, the "
+         "Runner, the judge or the Simulated user, and any call naming a path under kullback/gates or "
+         "kullback/runner is refused in code. You write no Verifier and no probe: there is no tool for "
+         "either. The gates are the standard, not something to argue with; a failed ruling is reported "
+         "as it is.")
+STOP = ("Stopping. Answer with no tool call, in one line, when every gate is green, or when two status "
+        "reports in a row show the same red lights after your repairs, or when a repair answers "
+        "`nothing changed`. Say which red lights remain and what you tried on each.")
 
 
 def target_vocabulary(plan: BuildPlan) -> str:
@@ -111,9 +148,11 @@ def builder_extension(plan: BuildPlan) -> Callable[[ExtensionAPI], None]:
                      *repair_verb_tools(plan, sink=api.harness.emit)]:
             api.register_tool(tool)
         api.add_prompt_section("builder", WHAT)
-        api.add_prompt_section("builder_rules", RULES)
         api.add_prompt_section("builder_tools", TOOLS)
+        api.add_prompt_section("builder_examples", EXAMPLES)
+        api.add_prompt_section("builder_rules", RULES)
         api.add_prompt_section("builder_targets", target_vocabulary(plan))
+        api.add_prompt_section("builder_stop", STOP)
         api.tool_call(no_agent_writes_gates_or_runner)
         api.tool_result(gate_rulings_hook(plan, api))
 

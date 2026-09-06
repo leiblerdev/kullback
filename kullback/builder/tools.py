@@ -14,7 +14,13 @@ fixed configuration, `grow(table, count)` grows one table of the Starting state 
 `status()` is where a round starts: it reads the red lights off what code wrote (gates.json, the
 fidelity records in replays.json, the assisted tools in tool_builds.json) and never off a model,
 and names for each the stage, the tool or Task, the failure in the gate's own words and the repair
-verb that owns it. The repair verbs are `repair_recompile(name, hint)`, `repair_grow(table, count)`
+verb that owns it. It shows all of them. A build with hundreds of red lights used to be rendered as
+the first twenty-five and "and 355 more, all in details", and a model that never asked for the
+details acted on the four tools it could see; so the rendering groups instead of cutting: a headline,
+then one block per failing gate holding every tool it names with a count and one failure, and every
+Task id it names on a wrapped line grouped by the kind of failure. `status(gate=...)` and
+`status(target=...)` zoom on one of those and list its red lights in full, uncut and unclamped. The
+repair verbs are `repair_recompile(name, hint)`, `repair_grow(table, count)`
 and `repair_intent(task_id, hint)`, which record the request and then run the stage that repairs the
 artifact, and `repair_refuse_task` and `repair_escalate` from `builder/repair.py`, which record a
 decision and change no artifact. A ruling is mapped to a deciding verb only where nothing can be
@@ -32,6 +38,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import textwrap
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Optional
 
@@ -175,6 +182,9 @@ REPAIR_VERB_FOR: dict[str, str] = {
 }
 DEFAULT_REPAIR_VERB = "repair_escalate"
 NO_BODY = " has no body"
+# A tool that ended assisted is the one red light no ruling names, so it is written here and read
+# back here; the headline counts the assisted tools off this wording and off nothing else.
+ASSISTED = " is assisted: no generated body cleared the gates (D49)"
 
 
 def verb_for(stage: str) -> str:
@@ -195,7 +205,13 @@ class RedLight(BaseModel):
 
 
 class StatusResult(BaseModel):
-    """Every red light the workdir holds, with the rulings that are passing beside them."""
+    """Every red light the workdir holds, with the rulings that are passing beside them.
+
+    `red_lights` is the whole set for a plain `status()` and the matching set for a zoom; `passing`
+    and `failing` are the whole picture either way, so a zoom never hides which gates are red.
+    `zoom` is the filter in the words the model passed it, empty when there was none, and it is
+    what tells the rendering to list every red light in full instead of grouping them.
+    """
 
     model_config = ConfigDict(extra="forbid")
 
@@ -203,6 +219,18 @@ class StatusResult(BaseModel):
     red_lights: list[RedLight] = Field(default_factory=list)
     passing: list[str] = Field(default_factory=list)
     failing: list[str] = Field(default_factory=list)
+    zoom: str = ""
+
+
+class StatusArgs(BaseModel):
+    """How to zoom `status`: no argument is the whole grouped picture, either one narrows it."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    gate: str = Field(default="", description="Only the red lights of this gate, each in full "
+                                              "(a stage or ruling name off the grouped status).")
+    target: str = Field(default="", description="Only the red lights about this tool or Task, each "
+                                                "in full (a name or Task id off the grouped status).")
 
 
 def _read_json(path: Path, default: Any) -> Any:
@@ -264,39 +292,185 @@ def red_lights(workdir: Any) -> list[RedLight]:
     for name, row in sorted((_read_json(workdir / "tool_builds.json", {}) or {}).items()):
         if isinstance(row, dict) and row.get("assisted"):
             out.append(RedLight(stage="compile_tools", kind="tool", target=name,
-                                failure=f"{name} is assisted: no generated body cleared the gates (D49)",
-                                verb="repair_recompile"))
+                                failure=f"{name}{ASSISTED}", verb="repair_recompile"))
     return out
 
 
-def status_of(workdir: Any) -> StatusResult:
-    """The red lights and the rulings that are passing, as the status tool returns them."""
+def _kinded(light: RedLight) -> tuple[str, str]:
+    """One failure split into the kind two targets can share and the detail that tells them apart.
+
+    The gates write `task <id>: <kind>: <detail>`, so cutting the id off the front and taking the
+    head before the next colon leaves the kind ("noun phrases with no span") and the detail that
+    varies (the ungrounded phrases themselves). A reason with no colon left is its own kind. This
+    reads the gates' own wording and holds for any customer's traces: nothing here knows a domain.
+    """
+    text = " ".join(light.failure.split())
+    prefix = f"task {light.target}:"
+    if light.target and text.startswith(prefix):
+        text = text[len(prefix):].strip()
+    kind, _, detail = text.partition(":")
+    kind = kind.strip()
+    return (kind or text), detail.strip()
+
+
+def _no_verdict(lights: list[RedLight]) -> tuple[list[str], str]:
+    """The Tasks a red light leaves without a Verdict, and the kind of failure most of them share.
+
+    Every gate whose failures name Tasks (intent, replay_reference, derive_verifier) leaves those
+    Tasks uncounted rather than failing the build (design section 6), so the Tasks a status is about
+    are exactly the targets of its Task-shaped red lights.
+    """
+    tasks = sorted({light.target for light in lights if light.kind == "task" and light.target})
+    kinds = [_kinded(light)[0] for light in lights if light.kind == "task"]
+    top = max(sorted(set(kinds)), key=kinds.count) if kinds else ""
+    return tasks, top
+
+
+def _assisted(lights: list[RedLight]) -> list[str]:
+    """The tools that ended assisted, off the wording `red_lights` wrote for them (D49)."""
+    return sorted({light.target for light in lights if light.target and ASSISTED in light.failure})
+
+
+def _count(n: int, noun: str, plural: str = "s") -> str:
+    return f"{n} {noun}{'' if n == 1 else plural}"
+
+
+def _headline(lights: list[RedLight], passing: list[str], failing: list[str]) -> str:
+    """The one line the model reads first: how much is red, how many Tasks it costs, what is assisted."""
+    tasks, top = _no_verdict(lights)
+    assisted = _assisted(lights)
+    gates = len(set(passing) | set(failing))
+    parts = [_count(len(lights), "red light"), f"{len(failing)} of {_count(gates, 'gate')} red"]
+    parts.append(f"{_count(len(tasks), 'Task')} with no Verdict" + (f", most of them {top}" if top else "")
+                 if tasks else "no Task left without a Verdict")
+    parts.append(f"{_count(len(assisted), 'tool')} assisted: " + ", ".join(assisted)
+                 if assisted else "no assisted tool")
+    return "status: " + "; ".join(parts)
+
+
+# How the grouped picture is shaped. It is grouped rather than cut: every gate, every tool and every
+# Task id is in it, and only a single failure text is ever shortened, which the zoom then shows whole.
+STATUS_WIDTH = 100  # where a wrapped line of Task ids or examples folds
+FAILURE_CHARS = 240  # how much of one representative failure the grouped view carries
+KIND_EXAMPLES = 5  # how many Tasks of one kind show what their failure actually says
+ZOOM_HINT = ('zoom: status(gate="<gate>") or status(target="<tool or Task>") lists every red light '
+             'there in full.')
+
+
+def _clamped(text: str) -> str:
+    """One failure on one line; a very long one says how much of it the zoom would add."""
+    text = " ".join(text.split())
+    if len(text) <= FAILURE_CHARS:
+        return text
+    return f"{text[:FAILURE_CHARS].rstrip()} [+{len(text) - FAILURE_CHARS} characters, zoom for all of it]"
+
+
+def _wrapped(prefix: str, items: list[str], indent: str, sep: str = ", ") -> list[str]:
+    """One long enumeration folded onto as many lines as it takes; nothing is dropped."""
+    lines = textwrap.wrap(prefix + sep.join(items), width=STATUS_WIDTH, initial_indent=indent,
+                          subsequent_indent=indent + "  ", break_long_words=False,
+                          break_on_hyphens=False)
+    return lines or [indent + prefix.rstrip()]
+
+
+def _task_lines(lights: list[RedLight]) -> list[str]:
+    """The Task-shaped red lights of one gate: every id listed, grouped by the kind of failure."""
+    groups: dict[str, list[tuple[str, str]]] = {}
+    for light in lights:
+        kind, detail = _kinded(light)
+        groups.setdefault(kind, []).append((light.target, detail))
+    lines: list[str] = []
+    for kind in sorted(groups, key=lambda k: (-len(groups[k]), k)):
+        rows = sorted(groups[kind])
+        lines += _wrapped(f"{kind}: {_count(len(rows), 'Task')}: ", [t for t, _ in rows], "  ")
+        shown = [f"{t}: {d}" for t, d in rows if d][:KIND_EXAMPLES]
+        if shown:
+            seen = f" ({len(shown)} of {len(rows)})" if len(rows) > len(shown) else ""
+            lines += _wrapped(f"what fails{seen}: ", shown, "    ", sep="; ")
+    return lines
+
+
+def _gate_block(stage: str, lights: list[RedLight]) -> list[str]:
+    """One failing gate: what it is about, then a line per tool and every Task id it names."""
+    tasks = [light for light in lights if light.kind == "task"]
+    rest = [light for light in lights if light.kind != "task"]
+    kinds = {light.kind for light in lights if light.target}
+    noun = {"task": "Task", "tool": "tool"}.get(next(iter(kinds)), "target") if len(kinds) == 1 else "target"
+    targets = len({light.target for light in lights if light.target})
+    verbs = list(dict.fromkeys(light.verb for light in lights))
+    over = f" over {_count(targets, noun)}" if targets else ""
+    head = f"{stage}: {_count(len(lights), 'red light')}{over} -> {', '.join(verbs)}"
+    lines = [head, *_task_lines(tasks)]
+    by_target: dict[str, list[RedLight]] = {}
+    for light in rest:
+        if light.target:
+            by_target.setdefault(light.target, []).append(light)
+    for target in sorted(by_target):
+        rows = by_target[target]
+        # The shortest failure is the representative: it is the one a long dump of differing keys
+        # cannot crowd out, and `min` keeps the first of equals, so the choice never moves.
+        owner = f" -> {rows[0].verb}" if len(verbs) > 1 else ""
+        lines.append(f"  {target} ({len(rows)}): {_clamped(min((r.failure for r in rows), key=len))}{owner}")
+    for light in rest:
+        if not light.target:
+            owner = f" -> {light.verb}" if len(verbs) > 1 else ""
+            lines.append(f"  {_clamped(light.failure)}{owner}")
+    return lines
+
+
+def status_of(workdir: Any, gate: str = "", target: str = "") -> StatusResult:
+    """The red lights and the rulings that are passing, as the status tool returns them.
+
+    `gate` and `target` narrow which red lights come back; the rulings passing and the gates failing
+    are the whole picture either way, so a zoom answers about one gate without hiding the rest.
+    """
     lights = red_lights(workdir)
     rows = [r for r in (_read_json(Path(workdir) / "gates.json", []) or []) if isinstance(r, dict)]
     passing = sorted({str(r.get("stage") or "") for r in rows if r.get("pass")})
     failing = list(dict.fromkeys(light.stage for light in lights))
-    tools = len({light.target for light in lights if light.kind == "tool" and light.target})
-    tasks = len({light.target for light in lights if light.kind == "task" and light.target})
-    summary = (f"status: {len(lights)} red light{'' if len(lights) == 1 else 's'} over "
-               f"{tools} tool{'' if tools == 1 else 's'} and {tasks} task{'' if tasks == 1 else 's'}; "
-               f"{len(passing)} ruling{'' if len(passing) == 1 else 's'} passing")
-    return StatusResult(summary=summary, red_lights=lights, passing=passing, failing=failing)
+    asked = [part for part in (f"gate={gate}" if gate else "", f"target={target}" if target else "") if part]
+    shown = [light for light in lights
+             if (not gate or light.stage == gate) and (not target or light.target == target)]
+    summary = _headline(lights, passing, failing)
+    if asked:
+        summary = (f"status({', '.join(asked)}): {_count(len(shown), 'red light')} "
+                   f"of {len(lights)} in all, each in full")
+    return StatusResult(summary=summary, red_lights=shown, passing=passing, failing=failing,
+                        zoom=", ".join(asked))
 
 
-STATUS_LINES = 25
+def _in_full(result: StatusResult) -> list[str]:
+    """A zoom: one line per red light, nothing grouped, nothing shortened, nothing left out."""
+    if not result.red_lights:
+        where = ", ".join(result.failing) or "none"
+        return [f"no red light matches; the gates that are red: {where}"]
+    lines = []
+    for light in result.red_lights:
+        where = f" {light.target}" if light.target else ""
+        lines.append(f"- {light.stage}{where}: {light.failure} -> {light.verb}")
+    return lines
 
 
 def render_status(result: StatusResult) -> str:
-    """The summary, then one line per red light: the stage, what it is about, why, and the verb."""
-    lines = [result.summary]
-    for light in result.red_lights[:STATUS_LINES]:
-        where = f" {light.target}" if light.target else ""
-        lines.append(f"- {light.stage}{where}: {light.failure} -> {light.verb}")
-    left = len(result.red_lights) - STATUS_LINES
-    if left > 0:
-        lines.append(f"and {left} more, all in details")
+    """The headline, then every gate grouped; a zoom prints its red lights one by one instead.
+
+    Nothing is cut from the grouped picture: every failing gate is a block, every tool it names is a
+    line and every Task id it names is on a wrapped line under the kind of failure it shares. The
+    one thing that is shortened is a single very long failure text, which says how much is left and
+    is shown whole by the zoom the last line names. The order is the order the records were read in
+    and then alphabetical, so two runs over one workdir render the same text.
+    """
+    if result.zoom:
+        return "\n".join([result.summary, *_in_full(result)])
     if not result.red_lights:
-        lines.append("nothing is failing; the gates are green")
+        return "\n".join([result.summary, "nothing is failing; the gates are green"])
+    by_gate: dict[str, list[RedLight]] = {}
+    for light in result.red_lights:
+        by_gate.setdefault(light.stage, []).append(light)
+    lines = [result.summary]
+    for stage, lights in by_gate.items():
+        lines += _gate_block(stage, lights)
+    lines.append(ZOOM_HINT)
     return "\n".join(lines)
 
 
@@ -367,10 +541,10 @@ def _executor(plan: BuildPlan, sink: Optional[Sink], verb: str, target_of: Calla
 
 
 def _status_executor(plan: BuildPlan) -> Callable[[Any], Awaitable[StatusResult]]:
-    """`status()`: the workdir's records read on a worker thread, so the event loop stays free."""
+    """`status(gate, target)`: the workdir's records read on a worker thread, so the loop stays free."""
 
-    async def execute(_args: Any) -> StatusResult:
-        return await asyncio.to_thread(status_of, plan.workdir)
+    async def execute(args: Any) -> StatusResult:
+        return await asyncio.to_thread(status_of, plan.workdir, args.gate.strip(), args.target.strip())
 
     return execute
 
@@ -449,9 +623,12 @@ def repair_verb_tools(plan: BuildPlan, sink: Optional[Sink] = None) -> list[Agen
 def builder_tools(plan: BuildPlan, sink: Optional[Sink] = None) -> list[AgentTool]:
     """The stage tools and `status` over one plan; `sink` is where the stage events go (`harness.emit`)."""
     return [
-        AgentTool("status", "The red lights: every failing gate with the tool or Task it is about, why it "
-                  "failed and the repair verb that answers it. Read off the records, never off a model.",
-                  NoArgs, StatusResult, _status_executor(plan), render=render_status),
+        AgentTool("status", "The red lights, all of them: a headline, then one block per failing gate "
+                  "holding every tool it names with a count and one failure, and every Task id it names "
+                  "grouped by the kind of failure, with the repair verb that answers it. Nothing is cut "
+                  "from the list. Pass `gate` or `target` to zoom: that one gate's or that one tool's or "
+                  "Task's red lights, each in full. Read off the records, never off a model.",
+                  StatusArgs, StatusResult, _status_executor(plan), render=render_status),
         AgentTool("build", "Build a target of the Environment: `environment` for everything, or one stage "
                   "or artifact by name; whatever it reads that is stale is rebuilt first.",
                   BuildArgs, BuildResult,

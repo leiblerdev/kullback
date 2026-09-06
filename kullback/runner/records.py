@@ -649,7 +649,7 @@ class GateResult(Record):
 
 VersionBy = Literal["derive", "repair"]
 FindingKind = Literal["assisted_tool", "fidelity", "reference_disagreement", "environment", "other"]
-FindingVerb = Literal["compile_tool", "replay", "reroll", "none"]
+FindingVerb = Literal["compile_tool", "replay", "reroll", "repair_intent", "repair_recompile", "none"]
 FindingStatus = Literal["open", "delivered", "closed"]
 
 
@@ -707,7 +707,12 @@ class Refusal(Record):
 
 
 class Finding(Record):
-    """What the Examiner found wrong on the Builder's side, delivered to the Builder as a follow-up (D123)."""
+    """What the Examiner found wrong on the Builder's side, delivered to the Builder as a follow-up (D123).
+
+    `suggested` is the Builder verb that answers it and `hint` the one line that verb is given: the
+    repair verbs take a hint, so a finding that names one without a hint asks for the same repair
+    again with nothing new to go on. The round driver renders the two together as a callable line.
+    """
     finding_id: str
     task_id: Optional[str] = None
     kind: FindingKind
@@ -715,6 +720,7 @@ class Finding(Record):
     run_id: Optional[str] = None
     tool: Optional[str] = None
     suggested: FindingVerb = "none"
+    hint: str = ""
     about_entry_id: Optional[str] = None
     round: int = 0
     status: FindingStatus = "open"

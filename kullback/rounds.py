@@ -7,16 +7,24 @@ then `BeatEnd`), hands it to the Examiner the same way, and ends with `RoundEnd`
 off its `ToolExecutionEnd` events and delivered to the Builder at its next beat as follow-ups with
 the record in `details` (D123); the code driver acts on them itself by calling the Builder tool the
 finding names. Three exits: `done` when D126's state holds, `stalled` after `stall_rounds` rounds
-that moved no gate count, `ceiling` when the Builder stopped at the spend ceiling, the Examiner
+that moved nothing, `ceiling` when the Builder stopped at the spend ceiling, the Examiner
 reported the ceiling, or an agent spent its allowance two rounds in a row. The allowance is per
 agent and per round: `allowance_usd` when given, otherwise the agent's own round-1 spend from
 round 2 on. A model-driven agent that crosses it is steered once to finish with what it has.
 
 The Builder's session has no turn cap (D135): it runs until the model answers with no tool call.
 The ceiling is the hard stop, watched here and in `builder/agent.py` on every tool end. Stalled is
-the soft stop: a round that moved no gate count sends the model one follow-up saying so and naming
-the verbs that can change an artifact, and the round ends if it still stops. The Examiner's later
-rounds are steered with `examiner_round_message`, which asks for the derive this beat requires.
+the soft stop: a round that moved nothing sends the model one follow-up saying so, naming what is
+still pending and which verbs change an artifact, and the round ends if it still stops. The
+Examiner's later rounds are steered with `examiner_round_message`, which asks for the derive this
+beat requires.
+
+A round moved when a gate count moved, when a model-written artifact changed (`MODEL_ARTIFACTS`,
+fingerprinted into the round's counts as `artifacts` and `artifacts_changed`), or when a repair
+this round made left the gates ruling differently from the round before (`round_moved`). The
+artifact and the repair are there because a round in which the mechanic rewrote a tool body or
+grew a table did something the Examiner has not derived over yet: no count could have moved for it
+by the time the round ends, and calling that a stall stops a build that was working.
 
 This module is the top of the layering: it imports both applications, and the Builder's artifacts
 reach the Examiner through `examiner.stage.DERIVE_INPUTS`, never bodies, the db, the schema or the
@@ -49,11 +57,12 @@ from kullback.examiner.agent import ExaminerError, examiner_message, examiner_ro
 from kullback.examiner.plan import STATE_DIR, ExaminerPlan
 from kullback.examiner.stage import DERIVE_INPUTS
 from kullback.gates import round_end
-from kullback.gates.ledger import GateLedger
+from kullback.gates.ledger import HISTORY_NAME, GateLedger
 from kullback.runner import budget, feed
-from kullback.runner.records import Finding, GateResult, RoundRecord, as_dict
+from kullback.runner.records import Finding, GateResult, RoundRecord, as_dict, content_hash
 
 ROUNDS_NAME = "rounds.json"
+GATES_NAME = "gates.json"
 AGENTS = ("builder", "examiner")
 MAX_TURNS = 8  # the Examiner's cap; the Builder runs with none (D135)
 ALLOWANCE_STEER = "Your allowance for this round is spent: finish with what you have (D123)"
@@ -64,23 +73,124 @@ EXAMINER_TARGET = "all"
 BUILDER_SESSION = Path("builder") / "session.jsonl"
 EXAMINER_SESSION = Path("examiner") / "session.jsonl"
 
+# The artifacts a model writes and a repair verb rewrites, by the name a round's counts call them.
+# Each is a stage output of `builder.build`: `compile_tools` writes bodies.json, `starting_state`
+# writes db.json, the `policy` stage writes constraints.json (the compiled predicates; policy.json
+# and policy_coverage.json beside it are counts of that file), and the `intent` stage writes one
+# file per Task under intents/. The Simulated user rules are deliberately not here: `user_sim`
+# derives them from the trace's own user turns in code, no repair verb rewrites them, and a hash
+# over them would only ever move when the traces did.
+MODEL_ARTIFACTS: dict[str, str] = {
+    "bodies": "bodies.json",
+    "intents": "intents",
+    "policy": "constraints.json",
+    "starting_state": "db.json",
+}
+# The artifact each acting repair verb rewrites (`builder.tools.repair_verb_tools`). The two
+# deciding verbs are absent on purpose: refusing a Task and escalating one write a row for the
+# report and change no artifact, which is what their own descriptions say.
+REPAIR_ARTIFACT: dict[str, str] = {
+    "repair_recompile": "bodies",
+    "repair_grow": "starting_state",
+    "repair_intent": "intents",
+}
+
+
+def _read_json(path: Path, fallback: Any) -> Any:
+    """One JSON file the driver reads for a decision; a missing or half-written file is the fallback."""
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return fallback
+
+
+def _artifact_body(path: Path) -> Any:
+    """What one artifact holds: a directory is its *.json children by name, a file its text, a
+    workdir that has not written it yet is None."""
+    if path.is_dir():
+        return {child.name: _text(child) for child in sorted(path.glob("*.json"))}
+    return _text(path)
+
+
+def _text(path: Path) -> Optional[str]:
+    try:
+        return path.read_text(encoding="utf-8")
+    except OSError:
+        return None
+
+
+def artifact_hashes(workdir: Any) -> dict[str, str]:
+    """A short hex per model-written artifact, over the bytes this workdir holds (`MODEL_ARTIFACTS`).
+
+    An artifact the build never wrote hashes as None rather than being left out, so the map has the
+    same keys every round and a first write reads as a change like any other.
+    """
+    return {name: content_hash(_artifact_body(Path(workdir) / relative))[:12]
+            for name, relative in MODEL_ARTIFACTS.items()}
+
+
+def artifact_fingerprint(workdir: Any) -> tuple[str, dict[str, str]]:
+    """The one short hex that stands for every model-written artifact, and the hash of each."""
+    per = artifact_hashes(workdir)
+    return content_hash(per)[:12], per
+
+
+def _stage_rulings(rows: Any) -> dict[str, bool]:
+    """A gates.json body as `{stage: passed}`, which is what two rounds are compared on."""
+    return {str(row.get("stage")): bool(row.get("pass"))
+            for row in (rows if isinstance(rows, list) else []) if isinstance(row, dict)}
+
+
+def _since_last_move(records: list[RoundRecord]) -> list[RoundRecord]:
+    """The rounds from the last one that moved something onward, which is what `exit_for` is given.
+
+    `gates.round_end` is frozen and its `stalled` reads a window of D126's gate counts: it cannot
+    see an artifact that changed or a ruling a repair moved. Handing it the tail that begins at the
+    last round that moved says the same thing in the terms it has. The tail is one round that moved
+    followed by the rounds that moved nothing, so `len(tail) > stall_rounds` is exactly
+    `stall_rounds` rounds that moved nothing; every round in the tail carries the same gate counts,
+    since a round whose counts moved moved; and `done` and `ceiling`, which read the last record,
+    see the record they would have seen anyway.
+    """
+    moved = [i for i, record in enumerate(records) if (record.counts or {}).get("moved")]
+    return records[moved[-1]:] if moved else records
+
 
 def finding_message(finding: Finding) -> str:
-    """A finding as the Builder reads it; the record itself rides in the message's details."""
+    """A finding as the Builder reads it; the record itself rides in the message's details.
+
+    The suggestion is rendered as the call the Builder can make, arguments and all, so a hint the
+    Examiner wrote reaches the verb verbatim instead of being paraphrased back out of the prose.
+    """
     text = f"Finding {finding.finding_id} ({finding.kind}): {finding.text}"
     if finding.task_id:
         text += f" Task {finding.task_id}."
     if finding.tool:
         text += f" Tool {finding.tool}."
     if finding.suggested != "none":
-        text += f" Suggested: {finding.suggested}."
+        text += f" Suggested: {suggested_call(finding)}"
     return text
 
 
+def suggested_call(finding: Finding) -> str:
+    """The Builder tool a finding suggests, written as the call: `repair_intent(task_id='t1', hint='...')`."""
+    arguments = ", ".join(f"{name}={value!r}" for name, value in finding_arguments(finding).items())
+    return f"{finding.suggested}({arguments})"
+
+
 def finding_arguments(finding: Finding) -> dict:
-    """The arguments of the Builder tool a finding suggests: the tool by name, or the Task."""
+    """The arguments of the Builder tool a finding suggests.
+
+    The repair verbs take the hint the Examiner wrote (`repair_intent(task_id, hint)`,
+    `repair_recompile(name, hint)`, builder/repair.py); the rebuild verbs take the tool by name, or
+    the Task, and have nothing to be told.
+    """
     if finding.suggested == "compile_tool":
         return {"name": finding.tool or ""}
+    if finding.suggested == "repair_recompile":
+        return {"name": finding.tool or "", "hint": finding.hint}
+    if finding.suggested == "repair_intent":
+        return {"task_id": finding.task_id or "", "hint": finding.hint}
     return {"task": finding.task_id or ""}
 
 
@@ -148,7 +258,9 @@ def write_rounds(workdir: Any, rounds: Iterable[RoundRecord]) -> Path:
 
     A record's `counts` carry D126's gate counts and, beside them, what only the driver saw:
     `started_at` and `ended_at` (the round's clock, which is where a build's duration is read from),
-    `spend`, `turns` and `context_fill` per agent, the compactions and the findings (`driver_counts`).
+    `spend`, `turns` and `context_fill` per agent, the compactions and the findings
+    (`driver_counts`), the artifact fingerprint with the artifacts this round changed, the repairs
+    it made, and `moved`, which is the whole of why it did or did not count toward a stall.
     """
     path = Path(workdir) / ROUNDS_NAME
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -341,7 +453,11 @@ class Loop:
         Delivered, not dropped: the queue clears only with the beat's success below, so a Builder
         error leaves every finding queued instead of orphaning it open and unqueued. On the code
         path a suggested action that errors keeps its finding queued for the next beat; on the model
-        path the action is unobservable, so a successful beat closes what it delivered."""
+        path the action is unobservable, so a successful beat closes what it delivered.
+
+        The code path calls the suggested verb through the same registry the model has, so
+        `repair_intent` runs the narrowed intent stage and `repair_recompile` the narrowed
+        compile_tools stage (builder/tools.py, `repair_verb_tools`) with the Examiner's hint."""
         if self.examiner is not None and self.examiner.is_running:
             raise RuntimeError("the Examiner is still running; one agent at a time (D128)")
         self.emit(BeatStart(agent="builder", round=n))
@@ -473,6 +589,12 @@ class Loop:
         These ride on the round's counts rather than on a record of their own, so a round that
         failed carries them too (`close_round` is given empty counts there) and rounds.json is the
         one file a report reads a round's clock and turns from.
+
+        `artifacts` is the fingerprint of everything a model wrote, `artifact_hashes` the hash per
+        artifact (which is how the next round has something to compare against) and
+        `artifacts_changed` the artifacts this round rewrote. They sit beside the gate counts
+        because a round that rewrote a tool body did something, whether or not a count has caught
+        up with it yet.
         """
         spend = {agent: round(self.beat_spend.get(agent, 0.0), 6) for agent in AGENTS}
         spend["total"] = round(sum(spend.values()), 6)
@@ -483,12 +605,14 @@ class Loop:
             turns[agent] = len(beat)
             fill[agent] = max(beat) if beat else 0.0
         turns["total"] = sum(turns[agent] for agent in AGENTS)
+        fingerprint, per, changed = self.artifacts_now()
         return {
             "started_at": self.round_started, "ended_at": time.time(), "spend": spend,
             "turns": turns, "context_fill": fill,
             "fallback_compactions": {
                 agent: self.compactions(agent) - self.compactions_seen.get(agent, 0) for agent in AGENTS},
             "findings": list(self.sent),
+            "artifacts": fingerprint, "artifact_hashes": per, "artifacts_changed": changed,
         }
 
     def counts(self) -> dict:
@@ -515,6 +639,70 @@ class Loop:
         return (bool(last is not None and last.stopped) or bool(self.builder_stop)
                 or bool(self.eplan is not None and self.eplan.ceiling_reached))
 
+    # --- what the round in hand changed ------------------------------------------------------
+
+    def artifacts_now(self) -> tuple[str, dict[str, str], list[str]]:
+        """This workdir's artifact fingerprint, the hash of each artifact, and which of them changed
+        since the round before. A first round has nothing to compare with, so nothing changed in it.
+        """
+        fingerprint, per = artifact_fingerprint(self.plan.workdir)
+        before = dict((self.rounds[-1].counts or {}).get("artifact_hashes") or {}) if self.rounds else {}
+        changed = sorted(name for name, digest in per.items() if before and before.get(name) != digest)
+        return fingerprint, per, changed
+
+    def repairs_in(self, n: int) -> list[dict]:
+        """The repair requests recorded under round `n`, oldest first.
+
+        Every verb appends its request to `repairs/<verb>.jsonl` with the round it was made in
+        (`builder.repair.record_request`), so this is what the mechanic asked for this round. A row
+        that does not parse is skipped: a half-written line must not decide whether a round stalled.
+        """
+        folder = Path(self.plan.workdir) / "repairs"
+        if not folder.is_dir():
+            return []
+        rows = []
+        for path in sorted(folder.glob("*.jsonl")):
+            try:
+                lines = path.read_text(encoding="utf-8").splitlines()
+            except OSError:
+                continue
+            for line in lines:
+                try:
+                    row = json.loads(line)
+                except ValueError:
+                    continue
+                if isinstance(row, dict) and int(row.get("round") or 0) == n:
+                    rows.append(row)
+        return rows
+
+    def repairs_made(self, n: int, changed: Iterable[str] = ()) -> list[dict]:
+        """This round's repair requests, each with the artifact its verb owns and whether that
+        artifact changed. A deciding verb owns no artifact and never changed one."""
+        moved = set(changed)
+        out = []
+        for row in self.repairs_in(n):
+            verb = str(row.get("verb") or "?")
+            artifact = REPAIR_ARTIFACT.get(verb)
+            out.append({"verb": verb, "target": str(row.get("target") or "?"), "artifact": artifact,
+                        "changed": bool(artifact is not None and artifact in moved)})
+        return out
+
+    def rulings_moved(self, n: int) -> bool:
+        """True when the rulings this round leaves differ from the ones the round before it left.
+
+        gates.json holds the last ruling per stage, which is round `n`'s: `keep_gate_history` has
+        not snapshotted it yet when this is asked. The round before is read back out of
+        gates_by_round.json, the file that snapshot writes. A first round has no round before it,
+        so nothing can be said to have moved.
+        """
+        history = _read_json(Path(self.plan.workdir) / HISTORY_NAME, [])
+        rows = [row for row in (history if isinstance(history, list) else [])
+                if isinstance(row, dict) and int(row.get("round") or 0) == n - 1]
+        if not rows:
+            return False
+        before = _stage_rulings(rows[-1].get("rulings"))
+        return _stage_rulings(_read_json(Path(self.plan.workdir) / GATES_NAME, [])) != before
+
     # --- the soft stop (D126) ------------------------------------------------------------
 
     def moved_nothing(self, counts: dict) -> bool:
@@ -524,8 +712,26 @@ class Loop:
         last = self.rounds[-1].counts or {}
         return all(counts.get(key) == last.get(key) for key in round_end.GATE_COUNTS)
 
+    def round_moved(self, n: int, counts: dict) -> bool:
+        """Whether this round moved anything, which is what the stalled exit counts (D126).
+
+        A gate count moving is one way. So is an artifact: a round in which the mechanic rewrote a
+        tool body, wrote an Intent again or grew a table did something, and the Examiner has not
+        derived over the new artifact yet, so no count could have moved for it. So is a repair
+        request whose round left the gates ruling differently from the round before: the repair
+        acted, even where the artifact it rewrote came out byte for byte the same. A first round
+        has no round to be compared with and always moved.
+        """
+        if not self.rounds:
+            return True
+        if not self.moved_nothing(counts):
+            return True
+        if counts.get("artifacts_changed"):
+            return True
+        return bool(self.repairs_in(n)) and self.rulings_moved(n)
+
     def tell_the_builder_nothing_changed(self, n: int) -> None:
-        """One follow-up, once per round, when the round moved no gate count (D126, D135).
+        """One follow-up, once per round, when the round moved nothing (D126, D135).
 
         Stalled is the soft stop: a model-driven Builder is told in one message that the round
         changed nothing, which verbs can change an artifact and that a build or a replay without a
@@ -535,12 +741,19 @@ class Loop:
         one more turn rather than a wasted one first; if the model stops again the round ends, and
         the exit is the stalled exit `exit_for` was already going to give. The code driver gets none
         of this: it has no model to tell.
+
+        The message also says what is still pending: the findings no beat has acted on with the
+        verb each suggests, and the repair requests this round did make with whether each one's
+        artifact changed. A round that stalled with a finding open stalled for a reason, and the
+        model cannot see either list from inside its own transcript.
         """
         if self.agent_model is None or self.stall_told == n:
             return
         self.stall_told = n
         before = self.spend()
-        self.builder.steer(builder_agent.nothing_changed_message(self.plan))
+        _, _, changed = self.artifacts_now()
+        self.builder.steer(builder_agent.nothing_changed_message(
+            self.plan, findings=self.pending_findings, repairs=self.repairs_made(n, changed)))
         result = self._watched(self.builder, "builder", self.builder.continue_(), "build", BUILD_TOOLS)
         if result is not None:
             self.build_result = result
@@ -558,7 +771,7 @@ class Loop:
         self.builder_beat(n)
         self.examiner_beat(n)
         counts = self.counts()
-        if self.moved_nothing(counts) and not self.ceiling_reached():
+        if not self.round_moved(n, counts) and not self.ceiling_reached():
             self.tell_the_builder_nothing_changed(n)
             counts = self.counts()
         record = self.close_round(n, counts)
@@ -571,12 +784,19 @@ class Loop:
         Findings filed but never delivered ride on the record, and a round that would exit `done`
         or `stalled` while any are pending does not exit at all: the findings owe the Builder a beat,
         so the exit is cleared and the loop runs another round. Only the ceiling (no money left)
-        ends a round with findings still open, and then the note says so."""
+        ends a round with findings still open, and then the note says so.
+
+        Whether the round moved (`round_moved`: a gate count, an artifact, or a ruling under one of
+        its own repairs) rides on the counts, and the tail from the last round that moved is what
+        `exit_for` is given, so `stall_rounds` counts only the rounds that moved nothing
+        (`_since_last_move`)."""
         self.exhausted.append(any(self.spent_allowance.values()))
         # The driver's own numbers last and freshest: a round that failed comes here with no counts
         # at all, and its clock, spend and turns are as true as a round that finished.
         record = RoundRecord(round=n, counts={**counts, **self.driver_counts()})
-        record.exit = round_end.exit_for(self.rounds + [record], self.stall_rounds,
+        record.counts["moved"] = self.round_moved(n, record.counts)
+        record.counts["repairs"] = self.repairs_made(n, record.counts.get("artifacts_changed") or ())
+        record.exit = round_end.exit_for(_since_last_move(self.rounds + [record]), self.stall_rounds,
                                          ceiling_reached=self.ceiling_reached(), exhausted=self.exhausted)
         if self.pending_findings:
             record.pending_findings = list(self.pending_findings)

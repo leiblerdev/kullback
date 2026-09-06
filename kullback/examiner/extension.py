@@ -1,9 +1,10 @@
 """The Examiner as an extension on the agent core (D120, D123, D124, ADR-0007).
 
 `examiner_extension(plan)` is a `setup(api)` the harness loads: it registers the seven tools of
-examiner/tools.py, adds three short sections to the system prompt (what the Examiner is, what it may
-and may not do, the Tasks of this build), catalogs the probe skill loaded from the start, and installs
-the hooks. The `tool_call` hook raises on any call whose arguments name a path the Examiner never
+examiner/tools.py, adds four short sections to the system prompt (what the Examiner is, what it may
+and may not do, which Builder verb a finding should suggest and with what hint, the Tasks of this
+build), catalogs the probe skill loaded from the start, and installs the hooks. The `tool_call`
+hook raises on any call whose arguments name a path the Examiner never
 reads (a tool body, the db, the schema, the Environment, the sandbox, the overlays) or a path under
 kullback/gates or kullback/runner (D122); the loop turns the raise into an is_error result. The
 `tool_result` hook runs every registered gate bound to an artifact a tool produced over the plan's
@@ -33,15 +34,64 @@ from kullback.runner.records import as_dict
 FORBIDDEN_READS = ("bodies.json", "env", "sandbox", "environment.json", "db.json", "schema.json", "overlays", "tools")
 _SEPARATORS = re.compile(r"[/\\]")
 
-WHAT = ("You are the Examiner. From the traces, the Intents and the frontier's re-rolls you derive one "
-        "Verifier per Task and try to break it with probes; gates rule on everything you make. You never "
-        "edit the Environment: what you find wrong there you report to the Builder as a finding.")
-RULES = ("You may derive, probe, repair, refuse, reroll and file findings, and read the rulings that come "
-         "back. You never read a tool body, the Starting state, the schema, the Environment or the sandbox: "
-         "any call naming one is refused, and so is any path under kullback/gates or kullback/runner. A "
-         "probe stays in its pool forever; a repair is accepted only when the D79 suite, the pool and the "
-         "loosening gate all pass; a refusal is admitted only when no frontier Run finished. The gates are "
-         "the standard, not something to argue with; a failed ruling is reported as it is.")
+WHAT = ("You receive the rulings of a derivation: one Verifier per Task from its References through the "
+        "D79 suite, with the checks that failed on each. You produce probes that try to break a Verifier, "
+        "repairs of a Verifier's atoms, refusals of Tasks no frontier Run finished, re-rolls, and findings "
+        "for the Builder that name the verb it should call. Gates rule on everything you make. You never "
+        "edit the Environment: what you find wrong there is a finding, not a fix.")
+TOOLS = ("Tools, one example call each.\n"
+         "derive(target=\"all\"): every Task, or derive(target=\"task_1a2b\") for one; every round starts "
+         "with it.\n"
+         "read(kind=\"intent\", id=\"task_1a2b\"): one record as JSON; kinds are task, trace, intent, run, "
+         "verifier, probes, task_status, gates, rerolls, replays, references. The intent record lists "
+         "`ungrounded_phrases` and `run_coverage`.\n"
+         "probe(task_id=\"task_1a2b\", bug_class=\"extra-field acceptance\", note=\"writes the change "
+         "and also a refund the user never asked for\", events=[...]): a hand-written Run the Verifier "
+         "should reject, kept in the Task's pool forever.\n"
+         "repair(task_id=\"task_1a2b\", reason=\"the Verifier accepts a Run that never confirms the new "
+         "date\", drop=[\"atom-3\"], add=[{...}]): a new Verifier version; the D79 suite, the pool and "
+         "the loosening gate decide.\n"
+         "refuse(task_id=\"task_1a2b\", reason=\"no frontier Run finishes it\"): admitted only when no "
+         "frontier Run finished.\n"
+         "reroll(task_id=\"task_1a2b\", count=2): more frontier Runs of a Task.\n"
+         "finding(task_id=\"task_1a2b\", kind=\"fidelity\", text=\"the Intent says 'refund voucher'; both "
+         "runs say 'store credit'\", suggested=\"repair_intent\", hint=\"the runs say 'store credit'; use "
+         "those words\"): what is wrong on the Builder's side, as the call the Builder can make.")
+EXAMPLES = ("Examples of a ruling and the call that answers it.\n"
+            "1. `derive_verifier: task_1a2b: the D79 suite did not pass: plausible_wrong_fails` -> read the "
+            "Verifier, then repair(task_id=\"task_1a2b\", reason=\"the required write atom names no "
+            "value, so a write to the wrong record passes\", drop=[\"atom-2\"], add=[{...}]).\n"
+            "2. `intent: task_9f3e: noun phrases with no span: refund voucher` -> "
+            "read(kind=\"intent\", id=\"task_9f3e\"), then finding(task_id=\"task_9f3e\", kind=\"fidelity\", "
+            "text=\"...\", suggested=\"repair_intent\", hint=\"the runs say 'store credit'; use those "
+            "words\").\n"
+            "3. `replay_reference: task_1a2b: update_booking write: differs` -> "
+            "read(kind=\"replays\", id=\"task_1a2b\"), then finding(task_id=\"task_1a2b\", "
+            "kind=\"fidelity\", text=\"...\", suggested=\"repair_recompile\", hint=\"update_booking "
+            "returns the whole row; the recording returns total and status only\").\n"
+            "4. `refuse: task_1a2b is not refused: a frontier Run finished` -> the Task stays; probe or "
+            "repair its Verifier instead.\n"
+            "5. A Verifier that passed the suite and every probe in its pool -> nothing to call for that "
+            "Task.")
+RULES = ("Choosing. Derive first, every round. Act first on the Tasks with a confirmed Reference whose "
+         "Verifier failed the suite, then on the Tasks with no Verdict, and say in each finding which "
+         "Builder verb answers it. You never read a tool body, the Starting state, the schema, the "
+         "Environment or the sandbox: any call naming one is refused, and so is any path under "
+         "kullback/gates or kullback/runner. A probe stays in its pool forever; a repair is accepted only "
+         "when the D79 suite, the pool and the loosening gate all pass; a refusal is admitted only when "
+         "no frontier Run finished. The gates are the standard, not something to argue with; a failed "
+         "ruling is reported as it is.")
+FINDINGS = ("A finding names the Builder verb that answers it and the one line that verb needs. When a Task "
+            "has no Verdict because its Intent says something no Run says, read the Intent "
+            "(`read` with kind `intent`), which lists the phrases the intent gate refused in "
+            "`ungrounded_phrases` and what each grounded phrase is evidenced by in `run_coverage`, and "
+            "suggest `repair_intent` with a hint saying what the Task's Runs actually evidence. When a tool's "
+            "body comes out different on replay, suggest `repair_recompile` with a hint naming the tool and "
+            "the columns whose values differ. Suggest `replay`, `reroll` or `compile_tool` only when running "
+            "the same thing again with nothing new to say is what you mean; those take no hint.")
+STOP = ("Stopping. Answer with one line and no tool call when every Task is trusted or refused, or when "
+        "the rulings after your repairs and findings are the ones you already answered. Say which Tasks "
+        "remain and what you filed for each.")
 
 
 def task_vocabulary(plan: ExaminerPlan) -> str:
@@ -165,8 +215,12 @@ def examiner_extension(plan: ExaminerPlan) -> Callable[[ExtensionAPI], None]:
         for tool in examiner_tools(plan, sink=api.harness.emit):
             api.register_tool(tool)
         api.add_prompt_section("examiner", WHAT)
+        api.add_prompt_section("examiner_tools", TOOLS)
+        api.add_prompt_section("examiner_examples", EXAMPLES)
         api.add_prompt_section("examiner_rules", RULES)
+        api.add_prompt_section("examiner_findings", FINDINGS)
         api.add_prompt_section("examiner_tasks", task_vocabulary(plan))
+        api.add_prompt_section("examiner_stop", STOP)
         api.catalog_skill(PROBE_SKILL_NAME, PROBE_SKILL, loaded=True)
         repair_guard, gate_rulings = guard_hooks(plan, api)
         api.tool_call(examiner_reads_only_its_surface)

@@ -8,7 +8,8 @@ Task's pool forever. `repair` proposes a new Verifier version and the gates deci
 accepted: the D79 suite, the pool, one-directional loosening. `refuse` asks to give a Task up and
 the refuse gate admits it only when no frontier Run finished. `reroll` buys more frontier Runs
 through the Runner callable the Builder handed over. `finding` files what is wrong on the
-Builder's side. Nothing here writes a tool body, a table or the Environment, and no tool decides a
+Builder's side, with the Builder verb that answers it and the one-line hint that verb needs.
+Nothing here writes a tool body, a table or the Environment, and no tool decides a
 ruling: each one calls a registered gate and reports what it said.
 
 A result is what the model reads plus what it does not: the rendered text is the summary and the
@@ -44,6 +45,7 @@ from kullback.runner import budget
 from kullback.runner.records import (
     Event,
     Finding,
+    FindingVerb,
     GateResult,
     Intent,
     Probe,
@@ -84,7 +86,10 @@ class ReadArgs(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     kind: ReadKind = Field(description="What to read: task, trace, intent, run, verifier, probes, task_status, "
-                                       "gates, rerolls, replays or references.")
+                                       "gates, rerolls, replays or references. `intent` is the whole Intent "
+                                       "record of one Task, including `ungrounded_phrases` (the noun phrases "
+                                       "the intent gate refused) and `run_coverage` (phrase to the Runs that "
+                                       "evidence it): read it before suggesting repair_intent.")
     id: Optional[str] = Field(default=None, description="The Task, Trace, Run or ruling name; every row when "
                                                         "omitted where the kind allows it.")
 
@@ -208,7 +213,17 @@ class FindingArgs(BaseModel):
     text: str
     run_id: Optional[str] = None
     tool: Optional[str] = None
-    suggested: Literal["compile_tool", "replay", "reroll", "none"] = "none"
+    suggested: FindingVerb = Field(default="none",
+                                   description="The Builder verb that answers this finding. `repair_intent` for "
+                                               "an Intent the Runs do not evidence, `repair_recompile` for a tool "
+                                               "body that is wrong, `compile_tool`, `replay` or `reroll` when a "
+                                               "rebuild with nothing new to say is enough, `none` when there is "
+                                               "no verb for it.")
+    hint: str = Field(default="", description="The one line the suggested verb is given: for repair_intent, what "
+                                              "the Task's Runs actually evidence (name the refused phrases and "
+                                              "what the Runs say instead); for repair_recompile, the tool and the "
+                                              "columns whose values differ on replay. A repair verb suggested "
+                                              "with no hint asks for the same repair again with nothing new.")
     about_call_id: Optional[str] = Field(default=None, description="The tool call whose result the finding is about.")
 
 
@@ -650,13 +665,14 @@ def _finding(plan: ExaminerPlan):
         finding_id = f"finding-{len(rows) + 1}"
         about = plan.entry_id_for(args.about_call_id) if args.about_call_id else None
         record = Finding(finding_id=finding_id, task_id=args.task_id, kind=args.kind, text=args.text,
-                         run_id=args.run_id, tool=args.tool, suggested=args.suggested, about_entry_id=about,
-                         round=plan.round, status="open")
+                         run_id=args.run_id, tool=args.tool, suggested=args.suggested,
+                         hint=args.hint.strip(), about_entry_id=about, round=plan.round, status="open")
         rows.append(as_dict(record))
         plan.write_state()
         summary = f"finding {finding_id} ({args.kind}) filed for the Builder" + \
                   (f" on task {args.task_id}" if args.task_id else "") + \
-                  (f", suggested {args.suggested}" if args.suggested != "none" else "")
+                  (f", suggested {args.suggested}" if args.suggested != "none" else "") + \
+                  (" with a hint" if record.hint else "")
         return FindingResult(summary=summary, finding_id=finding_id, finding=as_dict(record))
 
     return finding
@@ -680,6 +696,8 @@ def examiner_tools(plan: ExaminerPlan, sink: Optional[Sink] = None) -> list[Agen
         AgentTool("reroll", "Buy more frontier Runs of a Task through the Runner (D112, D133).",
                   RerollArgs, RerollResult, _reroll(plan), render=render),
         AgentTool("finding", "File what is wrong on the Builder's side: an assisted tool, a fidelity gap, a "
-                  "Reference disagreement, the Environment.", FindingArgs, FindingResult, _finding(plan),
+                  "Reference disagreement, the Environment. Name the Builder verb that answers it in "
+                  "`suggested` and what that verb needs to know in `hint`; the Builder is handed the two "
+                  "as a line it can call.", FindingArgs, FindingResult, _finding(plan),
                   render=render),
     ]

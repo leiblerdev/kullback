@@ -96,10 +96,10 @@ def test_the_opening_message_asks_it_to_begin_with_status(built):
                        "then use the tools to make every gate pass. Answer with no tool call when "
                        "every gate is green, or when nothing is changing.")
     harness = builder_agent.build_harness(BuildPlan(workdir=built, iterate=True))
-    assert "make every gate pass" in harness.system
-    assert "Repair only what a model wrote" in harness.system
+    assert "turn red lights green" in harness.system
+    assert "Repair only what a model wrote" in " ".join(harness.system.split())
     assert "Never a gate, the Runner, the judge or the Simulated user" in harness.system
-    assert "repair_recompile(name, hint)" in harness.system
+    assert "repair_recompile(name=" in harness.system
     assert "—" not in harness.system and "–" not in harness.system
 
 

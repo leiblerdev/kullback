@@ -11,6 +11,7 @@ import asyncio
 import hashlib
 import json
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -21,7 +22,7 @@ from kullback.agent.harness import AgentHarness
 from kullback.ai.messages import UserMessage
 from kullback.ai.provider import ModelReply, TestModel, ToolCallRequest
 from kullback.builder import agent as builder_agent
-from kullback.builder import pipeline
+from kullback.builder import pipeline, repair
 from kullback.builder.build import BuildError, BuildPlan
 from kullback.builder.tools import repair_verb_tools
 from kullback.examiner import agent as examiner_agent
@@ -29,8 +30,9 @@ from kullback.examiner.agent import examiner_message, examiner_round_message
 from kullback.examiner.plan import ExaminerPlan
 from kullback.examiner.stage import DERIVE_INPUTS, FORBIDDEN_INPUTS
 from kullback.gates import round_end
+from kullback.gates.ledger import GateLedger
 from kullback.runner import budget
-from kullback.runner.records import Finding, RoundRecord, as_dict
+from kullback.runner.records import Finding, GateResult, RoundRecord, as_dict
 
 TARGET = "environment"
 # sha256 of task_status.json from the full offline build over the fixture made before this phase, through
@@ -382,6 +384,103 @@ def test_a_builder_round_with_every_stage_cached_is_told_that_nothing_changed_an
     assert "repair_recompile" in verbs and "hint" in told, "the recompile is offered with its hint"
     assert all(f"{name} (" in told for name in verbs)
     assert "build (" not in told, "build is what was served from the cache, not a way out of it"
+
+
+# --- what a round changed: the artifacts and the repairs, beside the gate counts ---------
+
+def _write(path: Path, body: Any) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(body), encoding="utf-8")
+
+
+def test_a_round_that_rewrote_a_tool_body_is_not_stalled_even_when_no_count_moved(tmp_path):
+    """The founder's point: the mechanic repaired an artifact, so the Examiner has not derived over
+    the new body yet and no gate count could have moved for it. That round moved and is not counted
+    toward the stall; the round after it, which rewrites nothing, is."""
+    loop = _bare_loop(tmp_path)
+    workdir = loop.plan.workdir
+    _write(workdir / "bodies.json", {"get_order": "def get_order(db, order_id): return None"})
+    assert loop.close_round(1, _record(1).counts).exit is None
+    _write(workdir / "bodies.json", {"get_order": "def get_order(db, order_id): return db['orders']"})
+    second = loop.close_round(2, _record(2).counts)
+    assert second.counts["artifacts_changed"] == ["bodies"]
+    assert second.counts["moved"] is True
+    assert second.exit is None, "the counts are the round before's, but a tool body was rewritten"
+    third = loop.close_round(3, _record(3).counts)
+    assert third.counts["artifacts_changed"] == [] and third.counts["moved"] is False
+    assert third.exit == "stalled", "nothing moved in this one, and stall_rounds is one"
+
+
+def test_a_round_with_no_count_and_no_artifact_change_is_stalled(tmp_path):
+    """The plain stall, unchanged by any of this: the counts stand still, every artifact hashes the
+    same as the round before, and the round is one the stall counts."""
+    loop = _bare_loop(tmp_path)
+    _write(loop.plan.workdir / "bodies.json", {"get_order": "def get_order(): return None"})
+    assert _exit_after(loop, [_record(1), _record(2)]) == [None, "stalled"]
+    stored = rounds.load_rounds(loop.plan.workdir)
+    assert [record.counts["moved"] for record in stored] == [True, False]
+    assert stored[1].counts["artifacts_changed"] == []
+    assert stored[1].counts["artifacts"] == stored[0].counts["artifacts"] != ""
+    assert set(stored[1].counts["artifact_hashes"]) == set(rounds.MODEL_ARTIFACTS)
+
+
+def test_a_round_whose_repair_moved_a_gate_ruling_is_not_stalled(tmp_path):
+    """The third way a round moves: a repair whose round left the gates ruling differently from the
+    round before, which holds even where the artifact it rewrote came out byte for byte the same."""
+    loop = _bare_loop(tmp_path)
+    workdir = loop.plan.workdir
+    ledger = GateLedger(workdir)
+    ledger.record("compile_tools", GateResult(stage="compile_tools", **{"pass": False}))
+    assert loop.close_round(1, _record(1).counts).exit is None
+    repair.record_request(workdir, "repair_recompile", "get_order", {}, round_no=2)
+    ledger.record("compile_tools", GateResult(stage="compile_tools", **{"pass": True}))
+    second = loop.close_round(2, _record(2).counts)
+    assert second.counts["moved"] is True and second.exit is None
+    assert second.counts["repairs"] == [{"verb": "repair_recompile", "target": "get_order",
+                                         "artifact": "bodies", "changed": False}]
+    assert loop.close_round(3, _record(3).counts).exit == "stalled", "no repair, no ruling, no count"
+
+
+def test_a_round_whose_only_repair_decided_something_is_stalled(tmp_path):
+    """`repair_refuse_task` and `repair_escalate` write a row for the report and change no artifact,
+    which their own descriptions say. A round that called nothing else moved nothing."""
+    loop = _bare_loop(tmp_path)
+    assert loop.close_round(1, _record(1).counts).exit is None
+    repair.record_request(loop.plan.workdir, "repair_refuse_task", "t2", {}, round_no=2)
+    second = loop.close_round(2, _record(2).counts)
+    assert second.counts["repairs"] == [{"verb": "repair_refuse_task", "target": "t2",
+                                         "artifact": None, "changed": False}]
+    assert second.counts["moved"] is False and second.exit == "stalled"
+
+
+def test_the_stall_follow_up_names_the_pending_findings_and_the_repairs_made(tmp_path):
+    """What is pending is what the model cannot read out of its own transcript: a finding no beat
+    acted on, and whether each repair it called actually changed the artifact that verb owns."""
+    loop = _stalling_loop(tmp_path, [_reply("nothing to do."), _reply("finishing with what I have.")])
+    workdir = loop.plan.workdir
+    _write(workdir / "bodies.json", {"get_order": "def get_order(): return None"})
+    # The round before saw every artifact as it stands now except the bodies, which a repair rewrote.
+    loop.rounds[-1].counts["artifact_hashes"] = {**rounds.artifact_hashes(workdir), "bodies": "stale"}
+    loop.pending_findings = [_finding("t2", suggested="compile_tool", finding_id="f7")]
+    repair.record_request(workdir, "repair_recompile", "get_order", {}, round_no=2)
+    repair.record_request(workdir, "repair_intent", "t2", {}, round_no=2)
+    repair.record_request(workdir, "repair_refuse_task", "t3", {}, round_no=2)
+    loop.tell_the_builder_nothing_changed(2)
+
+    told = [m["content"] for m in loop.agent_model.calls[-1]["messages"] if m["role"] == "user"][-1]
+    assert told.startswith(rounds.STALL_FOLLOW_UP)
+    assert "1 finding(s) not acted on (f7 suggests compile_tool)" in told
+    assert "repair_recompile on get_order changed bodies" in told
+    assert "repair_intent on t2 left intents as it was" in told
+    assert "repair_refuse_task on t3 changed no artifact" in told
+    assert "What changes an artifact is a repair verb" in told, "the verbs are still named"
+
+
+def test_the_stall_follow_up_says_so_plainly_when_nothing_is_pending(tmp_path):
+    loop = _stalling_loop(tmp_path, [_reply("nothing to do."), _reply("finishing with what I have.")])
+    loop.tell_the_builder_nothing_changed(2)
+    told = [m["content"] for m in loop.agent_model.calls[-1]["messages"] if m["role"] == "user"][-1]
+    assert "Pending: no finding is open and this round called no repair verb." in told
 
 
 def test_a_round_that_moved_a_gate_count_tells_the_builder_nothing(tmp_path):
@@ -860,6 +959,33 @@ def test_a_builder_that_quits_in_round_two_stalls_with_the_finding_still_queued(
     assert stored[1].exit == "stalled" and "builder failed" in (stored[1].exit_note or "")
     assert [f.finding_id for f in stored[1].pending_findings] != []
     assert result["exit"] == "stalled"
+
+
+def test_the_builder_is_handed_the_finding_with_the_verb_and_hint_as_a_callable_line(tmp_path):
+    """The suggestion reaches the Builder as the call it can make, hint and all, and the arguments
+    the code driver passes are the ones that verb's tool takes: the Examiner's line is not a
+    paraphrase the Builder has to reconstruct."""
+    harness = builder_agent.build_harness(BuildPlan(workdir=tmp_path / "work"))
+    intent = Finding(finding_id="finding-1", task_id="task_x", kind="fidelity", suggested="repair_intent",
+                     hint="the Runs only ever cancel one order", round=2,
+                     text="the Intent says gift card and no Run says it")
+    message = rounds.finding_message(intent)
+    assert message == ("Finding finding-1 (fidelity): the Intent says gift card and no Run says it "
+                       "Task task_x. Suggested: repair_intent(task_id='task_x', "
+                       "hint='the Runs only ever cancel one order')")
+    recompile = Finding(finding_id="finding-2", kind="fidelity", suggested="repair_recompile",
+                        tool="cancel_pending_order", hint="the status column differs on replay",
+                        text="the body writes a different status")
+    assert rounds.finding_message(recompile).endswith(
+        "Suggested: repair_recompile(name='cancel_pending_order', hint='the status column differs on replay')")
+    # The rebuild verbs are unchanged and take no hint.
+    assert rounds.finding_message(_finding("t1")).endswith("Suggested: replay(task='t1')")
+    for finding in (intent, recompile):
+        arguments = rounds.finding_arguments(finding)
+        tool = harness.registry.get(finding.suggested)
+        assert tool is not None, f"the Builder has no {finding.suggested} tool"
+        assert tool.args_model.model_validate(arguments).hint == finding.hint
+        assert rounds.suggested_call(finding) in rounds.finding_message(finding)
 
 
 def test_a_failed_suggested_action_keeps_its_finding_queued(tmp_path, monkeypatch):
