@@ -6,6 +6,7 @@ import json
 
 import pytest
 
+from conftest import PTR
 from kullback.builder.user_sim import (
     CHOICE,
     CLOSING,
@@ -24,6 +25,7 @@ from kullback.runner.records import (
     DisclosureRule,
     RawPtr,
     ToolCall,
+    ToolCallError,
     Trace,
     Turn,
     UserFact,
@@ -873,3 +875,174 @@ def test_a_summary_that_names_the_order_and_asks_to_confirm_is_confirmed_and_not
     text = user.reply(ask("I will exchange the thermostat on order #W2378156. Do you confirm?"))
     assert "#W2378156" not in text
     assert user.events[-1].payload["sources"] == {CONFIRMATION: "rules"}
+
+
+# --- facts mined from the arguments of the recorded calls ---
+
+# A library help desk, so none of this leans on the shape of any one recorded domain.
+LIBRARY = Vocabulary(domain="library", fields=[f.model_copy(deep=True) for f in GENERIC_FIELDS] + [
+    FieldSpec(field="member_id", kind="identity", pattern=r"(?:\#)?\bM\d{6}\b", prefix="#",
+              cues=[r"\bmember (?:id|number|card)\b"], aliases=["member id"]),
+])
+
+
+def made(turn: int, name: str, args: dict, result=None, error=None) -> dict:
+    """One recorded call, tied to the turn that made it."""
+    return {"turn": turn, "name": name, "args": args, "result": result, "error": error}
+
+
+def library_trace(pairs, calls=()) -> Trace:
+    """pairs is [(role, content), ...] in transcript order; calls are rows from `made`."""
+    turns = [
+        Turn(idx=i, role=role, content=content,
+             raw_ptr=RawPtr(file_hash=PTR.file_hash, sim_index=0, msg_index=i))
+        for i, (role, content) in enumerate(pairs)
+    ]
+    tool_calls = []
+    for i, row in enumerate(calls):
+        call_id = f"lc{i}"
+        turns[row["turn"]].tool_call_ids.append(call_id)
+        tool_calls.append(ToolCall(
+            id=call_id, name=row["name"], args=row["args"], result=row["result"], error=row["error"],
+            raw_ptr=RawPtr(file_hash=PTR.file_hash, sim_index=0, msg_index=row["turn"])))
+    return Trace(trace_id="lib-1", raw_hash=PTR.file_hash, ingest_version="0", source="tau2",
+                 turns=turns, tool_calls=tool_calls, raw_ptr=PTR)
+
+
+BOLD_NAME = ("Sure, let's do that. I do not remember the email on the account, but my name is "
+             "**Ada Whitfield** and my zip code is 30318 (Atlanta, GA).")
+
+
+def bold_name_trace() -> Trace:
+    """The recorded user gave a name the cues cannot read, and the agent looked it up with it."""
+    return library_trace(
+        [
+            ("assistant", "Hi! How can I help you today?"),
+            ("user", "I would like to renew a book."),
+            ("assistant", "Of course. What is the email address on your library card?"),
+            ("user", BOLD_NAME),
+            ("assistant", None),
+        ],
+        calls=[made(4, "find_member_by_name_zip",
+                    {"first_name": "Ada", "last_name": "Whitfield", "zip": "30318"},
+                    result={"member_id": "M400318"})],
+    )
+
+
+def test_a_name_written_in_bold_is_mined_from_the_call_that_looked_the_user_up():
+    """Build 12: 108 of 456 traces gave a name the cues missed, and 149 of 600 re-rolls never
+    authenticated because the rules held no name fact."""
+    trace = bold_name_trace()
+    rules = derive_user_rules(trace, LIBRARY)
+    assert facts_by_field(rules)["name"] == "Ada Whitfield"
+    name = next(fact for fact in rules.facts if fact.field == "name")
+    assert name.span == trace.turns[3].raw_ptr
+    assert "Ada Whitfield" in name.context
+    assert rules.incomplete_reasons == []
+
+
+def test_the_first_and_last_name_of_one_call_are_one_name_fact():
+    rules = derive_user_rules(bold_name_trace(), LIBRARY)
+    assert field_values(rules, "name") == ["Ada Whitfield"]
+    assert "first_name" not in facts_by_field(rules)
+    assert "last_name" not in facts_by_field(rules)
+
+
+def test_a_value_only_the_tool_returned_is_not_a_fact_the_user_gave():
+    """D77: the member id came back from the lookup, so the recorded user never had it to give."""
+    rules = derive_user_rules(
+        library_trace(
+            [
+                ("assistant", "Hi! How can I help you today?"),
+                ("user", "My name is **Ada Whitfield**, zip 30318."),
+                ("assistant", None),
+                ("assistant", None),
+            ],
+            calls=[
+                made(2, "find_member_by_name_zip",
+                     {"first_name": "Ada", "last_name": "Whitfield", "zip": "30318"},
+                     result={"member_id": "M400318"}),
+                made(3, "get_member", {"member_id": "M400318"}, result={"loans": []}),
+            ],
+        ),
+        LIBRARY,
+    )
+    assert "member_id" not in facts_by_field(rules)
+    assert "M400318" not in [str(fact.value) for fact in rules.facts]
+
+
+def test_a_value_the_user_said_only_after_the_call_is_not_a_fact_of_that_call():
+    """The user may be repeating what the agent just read out, so later turns do not count."""
+    rules = derive_user_rules(
+        library_trace(
+            [
+                ("assistant", "Hi! How can I help you today?"),
+                ("user", "I would like to put a book on hold."),
+                ("assistant", None),
+                ("user", "Yes, Tidewater is the one I want."),
+            ],
+            calls=[made(2, "search_catalog", {"title": "Tidewater"}, result={"items": ["B7781"]})],
+        ),
+        LIBRARY,
+    )
+    assert "title" not in facts_by_field(rules)
+    assert "Tidewater" not in [str(fact.value) for fact in rules.facts]
+
+
+def test_an_argument_of_a_call_that_failed_is_not_a_fact():
+    """The world refused the call, so its arguments are what the agent tried, not what it knew."""
+    rules = derive_user_rules(
+        library_trace(
+            [
+                ("assistant", "Hi! How can I help you today?"),
+                ("user", "I am **Ada Whitfield** and I need to renew a book."),
+                ("assistant", None),
+            ],
+            calls=[made(2, "find_member_by_name_zip",
+                        {"first_name": "Ada", "last_name": "Whitfield"},
+                        error=ToolCallError(**{"class": "not_found_entity"}, payload="No such member"))],
+        ),
+        LIBRARY,
+    )
+    assert "name" not in facts_by_field(rules)
+
+
+def test_the_members_of_a_list_argument_the_user_named_are_mined_one_by_one():
+    rules = derive_user_rules(
+        library_trace(
+            [
+                ("assistant", "Hi! How can I help you today?"),
+                ("user", "Please put B7781 and B4402 on hold for me."),
+                ("assistant", None),
+            ],
+            calls=[made(2, "place_holds", {"item_ids": ["B7781", "B4402"]}, result={"held": 2})],
+        ),
+        LIBRARY,
+    )
+    assert field_values(rules, "item_ids") == ["B7781", "B4402"]
+
+
+def test_a_mined_id_keeps_the_mark_the_argument_carries():
+    """The user says the bare id and the tools store it with a '#'; the fact is the stored form."""
+    rules = derive_user_rules(
+        library_trace(
+            [
+                ("assistant", "Hi! How can I help you today?"),
+                ("user", "Could you renew loan L2201 for me?"),
+                ("assistant", None),
+            ],
+            calls=[made(2, "renew_loan", {"loan_id": "#L2201"}, result={"due": "2026-10-01"})],
+        ),
+        LIBRARY,
+    )
+    assert facts_by_field(rules)["loan_id"] == "#L2201"
+
+
+def test_a_simulated_user_built_from_the_mined_rules_answers_the_name_and_zip_ask():
+    """End to end: the ask 149 re-rolls of build 12 could not answer is answered."""
+    user = SimulatedUser(derive_user_rules(bold_name_trace(), LIBRARY), vocab=LIBRARY)
+    user.reply(ask("Hi! How can I help you today?"))
+    text = user.reply(ask("Could you give me your name and zip code so I can find the account?"))
+    assert "Ada Whitfield" in text
+    assert "30318" in text
+    assert user.events[-1].payload["unavailable_fields"] == []

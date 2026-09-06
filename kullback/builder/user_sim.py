@@ -77,6 +77,14 @@ REFUSAL_CUES = (
 )
 WALK_AWAY_CUES = ("never mind", "nevermind", "forget it", "do it myself", "cancel this chat")
 
+# Markdown emphasis and the runs of whitespace a recorded turn wraps its values in: what the eye
+# skips over when it reads "my name is **Chen Johnson**" and a regex does not.
+EMPHASIS = re.compile(r"[*_`~]+")
+# The two parts of a name a customer's tools take separately. An agent asking for "your name" is
+# answered from one `name` fact, so the parts of one call are joined, in this order.
+NAME_PARTS = ("first_name", "last_name")
+NAME_ASK = "What is your full name?"
+
 GENERIC_CLOSE = "No, that is all. Thank you."
 # D44: a question the recorded user was never asked gets a representative answer. For "do you
 # confirm" the representative answer of a user who asked for the action is yes, unless the
@@ -184,12 +192,110 @@ def named_fields(text: Optional[str], fields: Iterable[str], vocab: Vocabulary =
     return out
 
 
+def _flattened(text: Optional[str]) -> str:
+    """A turn as the eye reads it: emphasis marks dropped, runs of whitespace one space, lower case,
+    so "**Chen Johnson**" and a name broken over two lines both read as "chen johnson"."""
+    plain = EMPHASIS.sub("", (text or "").replace("’", "'"))
+    return re.sub(r"\s+", " ", plain).strip().lower()
+
+
+def _said_in(text: Optional[str], value: str) -> bool:
+    """This turn said this value: whole word, however it was emphasised or wrapped, and with or
+    without the leading mark an id carries, since users drop the '#' their orders are stored with."""
+    body = _flattened(text)
+    for form in (value, _bare_value(value)):
+        needle = _flattened(form)
+        if needle and re.search(r"(?<![0-9a-z])" + re.escape(needle) + r"(?![0-9a-z])", body):
+            return True
+    return False
+
+
+def _field_for(arg: str, vocab: Vocabulary) -> str:
+    """The field an argument name states, and where the vocabulary knows no such argument, the
+    argument's own name, which is the name `vocabulary.derive` would have given it (D115)."""
+    return vocab.field_for(arg) or arg
+
+
+def _name_field(vocab: Vocabulary) -> str:
+    """The field an ask for a name reaches. The Simulated user looks up the field `asked_fields`
+    returns, so a mined name filed under anything else is a name it will never find."""
+    fields = asked_fields(NAME_ASK, vocab=vocab)
+    return fields[0] if fields else "name"
+
+
+def _spoken_args(call: Any) -> list[tuple[str, str]]:
+    """The (argument, value) pairs of one call a user could have said out loud: strings and whole
+    numbers, and the strings inside a list argument, since a basket of item ids is a list of facts."""
+    out: list[tuple[str, str]] = []
+    for arg, value in (call.args or {}).items():
+        for item in value if isinstance(value, list) else [value]:
+            if isinstance(item, bool) or not isinstance(item, (str, int)):
+                continue
+            text = str(item).strip()
+            if text:
+                out.append((arg, text))
+    return out
+
+
+def _name_rows(parts: dict[str, tuple[str, Any]], vocab: Vocabulary) -> list[tuple[str, str, Any]]:
+    """A first and a last name said in one user turn, as the one name fact an agent's ask reaches.
+
+    Two facts of one field are told apart by the sentence they were said in, and the identity a
+    world row is matched on takes one value per field, so "Chen" and "Johnson" filed separately
+    would authenticate as neither. Parts said in different turns stay the facts they are.
+    """
+    first, last = parts.get("first_name"), parts.get("last_name")
+    if first and last and first[1].idx == last[1].idx:
+        return [(_name_field(vocab), f"{first[0]} {last[0]}", first[1])]
+    return [(_field_for(arg, vocab), value, turn) for arg, (value, turn) in parts.items()]
+
+
+def _argument_facts(trace: Trace, vocab: Vocabulary) -> list[tuple[str, str, Any]]:
+    """Every (field, value, user turn) the recorded calls show the user gave, in call order.
+
+    The cues will never cover every phrasing, and the trace already holds the ground truth: a
+    scalar argument of a call that returned no error, said by the user in a turn at or before that
+    call, is a fact that user gave, whatever words it was said in. A value only the tools knew (the
+    user id a lookup returned, the payment method the agent read off the account) never appears in a
+    user turn, so it is never mined (D77: nothing invented); a value a user turn holds only after
+    the call may be the user repeating what the agent just told it, so later turns do not count.
+    Build 12: 108 of 456 traces gave a first and last name the recorded agent authenticated with,
+    in wording no cue carried ("my name is **Chen Johnson**"), no name fact was mined, and 149 of
+    600 re-rolls ended without authentication and made no write.
+    """
+    user_turns = [turn for turn in trace.turns if turn.role == "user"]
+    found: list[tuple[str, str, Any]] = []
+    for call in trace.tool_calls:
+        if call.error is not None:
+            continue  # the call the world refused carries whatever the agent guessed, not a fact
+        # A call the trace ties to no turn is ordered by nothing, so every user turn can hold it.
+        cut = next((turn.idx for turn in trace.turns
+                    if call.id and call.id in (turn.tool_call_ids or [])), None)
+        before = [turn for turn in user_turns if cut is None or turn.idx <= cut]
+        rows: list[tuple[str, str, Any]] = []
+        parts: dict[str, tuple[str, Any]] = {}
+        for arg, value in _spoken_args(call):
+            turn = next((turn for turn in before if _said_in(turn.content, value)), None)
+            if turn is None:
+                continue
+            if arg in NAME_PARTS:
+                parts.setdefault(arg, (value, turn))
+                continue
+            rows.append((_field_for(arg, vocab), value, turn))
+        found += _name_rows(parts, vocab) + rows
+    return found
+
+
 def derive_user_rules(trace: Trace, vocab: Vocabulary = GENERIC,
                       writes: Iterable[str] = ()) -> UserRules:
     """Facts, disclosure, refusals and walk-away for one Run, read off the trace's user turns (D44).
 
     `writes` names the tools that change the world (`ToolSig.kind`). A write the recorded Run made
     after it asked the user to confirm is the evidence that user agreed, whatever it said elsewhere.
+
+    The user turns are read twice: once for the values the vocabulary's patterns state, then once
+    for the values the recorded agent's own successful calls carry (`_argument_facts`). The second
+    pass only ever appends, so the facts the patterns found keep their order and their spans.
     """
     rules = UserRules(style_sample=[trace.trace_id])
     seen_values: set[tuple[str, str]] = set()
@@ -197,6 +303,7 @@ def derive_user_rules(trace: Trace, vocab: Vocabulary = GENERIC,
     asked_anywhere: list[str] = []
     answered: set[str] = set()
     pending: list[str] = []
+    asks: dict[int, list[str]] = {}
     saw_user_turn = False
     agent_refused = False
     confirm_asked = False
@@ -243,8 +350,10 @@ def derive_user_rules(trace: Trace, vocab: Vocabulary = GENERIC,
         if any(cue in said for cue in WALK_AWAY_CUES) or (agent_refused and CLOSING_CUE.search(said)):
             rules.walk_away.append(text)
         saw_user_turn = True
+        asks[turn.idx] = pending
         pending = []
         confirm_asked = False
+    _add_argument_facts(rules, trace, vocab, asks, disclosed, answered)
     rules.confirmed_by_write = _wrote_after(trace, confirmed_at, writes)
     rules.refusals = [field for field in rules.refusals if field not in answered]
     if not saw_user_turn:
@@ -256,6 +365,33 @@ def derive_user_rules(trace: Trace, vocab: Vocabulary = GENERIC,
             if field not in answered and field not in rules.refusals
         ]
     return rules
+
+
+def _add_argument_facts(rules: UserRules, trace: Trace, vocab: Vocabulary,
+                        asks: dict[int, list[str]], disclosed: set[str], answered: set[str]) -> None:
+    """Append the facts the recorded calls show, with the disclosure the pattern pass would give.
+
+    A fact the patterns already hold is left alone, so this never doubles a value or moves one; a
+    field first given here is disclosed on request when the agent turn before that user turn asked
+    for it, and volunteered otherwise, and counts as answered so it is neither a refusal nor a
+    reason the rules are incomplete.
+    """
+    held = {(fact.field, _flattened(str(fact.value))) for fact in rules.facts}
+    for field, value, turn in _argument_facts(trace, vocab):
+        key = (field, _flattened(str(value)))
+        if key in held:
+            continue
+        held.add(key)
+        text = (turn.content or "").strip()
+        rules.facts.append(UserFact(field=field, value=value, span=turn.raw_ptr,
+                                    context=_stated_in(text, value)))
+        answered.add(field)
+        if field in disclosed:
+            continue
+        disclosed.add(field)
+        on_request = field in asks.get(turn.idx, ())
+        rules.disclosure.append(DisclosureRule(field=field, on_request=on_request,
+                                               condition=None if on_request else "volunteered"))
 
 
 def _spoken_fact(rules: UserRules, turn: Any, text: str, said: str, values: list,

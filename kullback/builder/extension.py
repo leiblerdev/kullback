@@ -25,6 +25,7 @@ from kullback.agent.tools import ToolResult, counted_ruling_line
 from kullback.builder import build as build_module
 from kullback.builder.build import TARGET_ALL, BuildPlan
 from kullback.builder.tools import builder_tools, repair_verb_tools
+from kullback.builder.triage import TRIAGE_SKILL, TRIAGE_SKILL_NAME
 from kullback.gates import PROTECTED, names_protected_path, rulings_over
 from kullback.runner.records import as_dict
 
@@ -63,8 +64,8 @@ EXAMPLES = ("Examples of a red light and the call that answers it.\n"
             "repair_recompile(name=\"update_booking\", hint=\"keep the total the recording shows; do not "
             "recompute it\").\n"
             "2. `executes_on_s0: price_quote({...}) raised NameError: name 'math' is not defined` -> "
-            "repair_recompile(name=\"price_quote\", hint=\"no imports are available; write the arithmetic "
-            "inline\").\n"
+            "repair_recompile(name=\"price_quote\", hint=\"no imports are available; call the "
+            "evaluate_arithmetic helper the loaders bind, never a parser of your own\").\n"
             "3. `intent: noun phrases with no span: task_9f3e: what fails: refund voucher` -> "
             "status(target=\"task_9f3e\") to read the phrase and the runs, then "
             "repair_intent(task_id=\"task_9f3e\", hint=\"the runs say 'store credit'; use those words and "
@@ -147,7 +148,7 @@ def gate_rulings_hook(plan: BuildPlan, api: Optional[ExtensionAPI] = None) -> Ca
 
 
 def builder_extension(plan: BuildPlan) -> Callable[[ExtensionAPI], None]:
-    """The setup the harness loads: tools, prompt sections, the two hooks."""
+    """The setup the harness loads: tools, prompt sections, the triage skill, the two hooks."""
 
     def setup(api: ExtensionAPI) -> None:
         for tool in [*builder_tools(plan, sink=api.harness.emit),
@@ -156,6 +157,7 @@ def builder_extension(plan: BuildPlan) -> Callable[[ExtensionAPI], None]:
         api.add_prompt_section("builder", prompt_block("task", WHAT))
         api.add_prompt_section("builder_tools", prompt_block("tools", TOOLS))
         api.add_prompt_section("skills", api.context.skills_section())
+        api.catalog_skill(TRIAGE_SKILL_NAME, TRIAGE_SKILL, loaded=True)
         api.add_prompt_section("builder_examples", prompt_block("examples", EXAMPLES))
         api.add_prompt_section("builder_rules", prompt_block("rules", RULES))
         api.add_prompt_section("builder_targets", prompt_block("targets", target_vocabulary(plan)))

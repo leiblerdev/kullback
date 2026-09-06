@@ -67,6 +67,17 @@ class Vocabulary(Record):
     def get(self, field: str) -> Optional[FieldSpec]:
         return next((f for f in self.fields if f.field == field), None)
 
+    def field_for(self, arg: str) -> Optional[str]:
+        """The field a tool argument states: its own FieldSpec, else the generic field whose words
+        already ask for it, else None.
+
+        `derive` names a derived field after the argument it came from and folds the rest into the
+        generic core (`first_name` into `name`), so this is that same mapping read the other way
+        round: what a reader of a recorded call should call the value it carries.
+        """
+        spec = self.get(arg) or _folds_into(arg, self.fields)
+        return spec.field if spec is not None else None
+
 
 def _cue(words: str) -> str:
     return r"\b" + re.escape(words) + r"\b"
