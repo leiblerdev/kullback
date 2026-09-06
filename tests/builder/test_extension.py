@@ -205,8 +205,11 @@ def test_the_extension_registers_every_stage_status_and_the_repair_verbs_with_si
                                         "reroll", "repair_recompile", "repair_grow", "repair_intent",
                                         "repair_refuse_task", "repair_escalate"]
     assert "repair_rewrite_skill" not in harness.registry.names(), "the GEPA caution: no unchecked prompt rewrite"
-    assert [s.name for s in harness.sections] == ["builder", "builder_tools", "builder_examples", "builder_rules",
-                                                  "builder_targets", "builder_stop"]
+    assert [s.name for s in harness.sections] == ["builder", "builder_tools", "skills", "builder_examples",
+                                                  "builder_rules", "builder_targets", "builder_stop"]
+    assert harness.system.startswith("<task>\n") and harness.system.rstrip().endswith("</stop>")
+    assert "<tools>\n" in harness.system and "<examples>\n" in harness.system and "<rules>\n" in harness.system
+    assert "<skills>\nSkills are texts" in harness.system and "No skills are catalogued" in harness.system
     assert "turn red lights green" in harness.system and "kullback/gates" in harness.system
     assert "Read the whole status once" in harness.system and "Stopping." in harness.system
     assert "`environment` is the whole build" in harness.system

@@ -19,12 +19,13 @@ from __future__ import annotations
 from typing import Callable, Optional
 
 from kullback.agent.extensions import ExtensionAPI, refuse_paths
+from kullback.agent.harness import prompt_block
 from kullback.agent.messages import ToolCall
-from kullback.agent.tools import ToolResult
+from kullback.agent.tools import ToolResult, counted_ruling_line
 from kullback.builder import build as build_module
 from kullback.builder.build import TARGET_ALL, BuildPlan
 from kullback.builder.tools import builder_tools, repair_verb_tools
-from kullback.gates import PROTECTED, names_protected_path, ruling_line, rulings_over
+from kullback.gates import PROTECTED, names_protected_path, rulings_over
 from kullback.runner.records import as_dict
 
 WHAT = ("You receive a status report: every gate that failed, the tool or Task it failed on, one line "
@@ -43,10 +44,12 @@ TOOLS = ("Tools, one example call each.\n"
          "no repair returns the same rulings from the cache.\n"
          "repair_recompile(name=\"update_booking\", hint=\"the body returned the whole row; the recording "
          "returns only the changed fields\"): compile that tool's body again with the hint in the "
-         "compiler's prompt, and read the gates' ruling on the new body in the result.\n"
+         "compiler's prompt. The result opens with that tool's own ruling, `cleared the gates` or "
+         "`still assisted:` with the failure to answer next.\n"
          "repair_intent(task_id=\"task_1a2b\", hint=\"the runs say 'store credit', not 'refund voucher'; "
-         "use the user's words\"): write that Task's Intent again with the hint, and read the intent "
-         "gate's ruling in the result.\n"
+         "use the user's words\"): write that Task's Intent again with the hint. The result opens "
+         "with that Task's own ruling, `grounded:` with the line it settled on or `still refused:` "
+         "with the reason.\n"
          "repair_grow(table=\"accounts\", count=200) or grow(table=\"accounts\", count=200): grow one table "
          "of the Starting state with synthetic rows.\n"
          "compile_tool(name=\"update_booking\"), replay(task=\"task_1a2b\"), reroll(task=\"task_1a2b\"), "
@@ -70,8 +73,11 @@ EXAMPLES = ("Examples of a red light and the call that answers it.\n"
             "hold` -> repair_recompile(name=\"update_booking\", hint=\"look the id up first and return the "
             "recording's not-found error when it is absent\").\n"
             "5. `derive_verifier: ... -> the Examiner owns it` -> nothing to call; leave it.\n"
-            "6. A result that starts `nothing changed: all 13 stages from cache` -> your last call changed "
-            "no artifact; change the hint or the target, or stop.")
+            "6. A result that says `nothing changed: all 13 stages from cache` -> your last call changed "
+            "no artifact; change the hint or the target, or stop.\n"
+            "7. `repair_intent task_9f3e: still refused: ...` over `rulings: intent fail (12 Tasks, "
+            "first task_0a1b: ...)` -> the first line is the Task you repaired and the second is the "
+            "gate over every Task; a gate still red says nothing about the one you called.")
 RULES = ("Choosing. Read the whole status once. Act first on the red light that blocks the most Tasks: a "
          "tool body many Tasks call before one Task's Intent. Send several repairs in one turn when they "
          "touch different tools or Tasks. A hint says what the evidence shows and what the last body or "
@@ -131,7 +137,7 @@ def gate_rulings_hook(plan: BuildPlan, api: Optional[ExtensionAPI] = None) -> Ca
                                      f"{', '.join(produced)}")
         if not rulings:
             return None
-        line = ruling_line("gate rulings", rulings)
+        line = counted_ruling_line("gate rulings", rulings)
         details = dict(result.details)
         details["gate_rulings"] = [as_dict(r) for r in rulings]
         return ToolResult(content=f"{result.content}\n{line}", details=details, is_error=False)
@@ -147,12 +153,13 @@ def builder_extension(plan: BuildPlan) -> Callable[[ExtensionAPI], None]:
         for tool in [*builder_tools(plan, sink=api.harness.emit),
                      *repair_verb_tools(plan, sink=api.harness.emit)]:
             api.register_tool(tool)
-        api.add_prompt_section("builder", WHAT)
-        api.add_prompt_section("builder_tools", TOOLS)
-        api.add_prompt_section("builder_examples", EXAMPLES)
-        api.add_prompt_section("builder_rules", RULES)
-        api.add_prompt_section("builder_targets", target_vocabulary(plan))
-        api.add_prompt_section("builder_stop", STOP)
+        api.add_prompt_section("builder", prompt_block("task", WHAT))
+        api.add_prompt_section("builder_tools", prompt_block("tools", TOOLS))
+        api.add_prompt_section("skills", api.context.skills_section())
+        api.add_prompt_section("builder_examples", prompt_block("examples", EXAMPLES))
+        api.add_prompt_section("builder_rules", prompt_block("rules", RULES))
+        api.add_prompt_section("builder_targets", prompt_block("targets", target_vocabulary(plan)))
+        api.add_prompt_section("builder_stop", prompt_block("stop", STOP))
         api.tool_call(no_agent_writes_gates_or_runner)
         api.tool_result(gate_rulings_hook(plan, api))
 

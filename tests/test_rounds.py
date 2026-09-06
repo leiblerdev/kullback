@@ -453,17 +453,49 @@ def test_a_round_whose_only_repair_decided_something_is_stalled(tmp_path):
     assert second.counts["moved"] is False and second.exit == "stalled"
 
 
+def test_round_one_compares_the_artifacts_against_the_fingerprint_the_driver_started_with(tmp_path):
+    """A first round had no round before it to compare with, so it reported that nothing changed
+    however much it wrote, and every repair of round 1 read as having changed nothing."""
+    loop = _bare_loop(tmp_path)
+    assert loop.started_hashes == rounds.artifact_hashes(loop.plan.workdir)
+    _write(loop.plan.workdir / "bodies.json", {"renew_loan": "def renew_loan(db): return db"})
+    first = loop.close_round(1, _record(1).counts)
+    assert first.counts["artifacts_changed"] == ["bodies"]
+    assert loop.close_round(2, _record(2).counts).counts["artifacts_changed"] == []
+
+
+def test_a_first_round_over_a_workdir_that_already_held_its_artifacts_changed_none_of_them(tmp_path):
+    """The other half of the same rule: `--iterate` starts on a workdir that already holds bodies
+    and Intents, and a round that rewrote none of them says so."""
+    plan = BuildPlan(workdir=tmp_path / "work")
+    _write(plan.workdir / "bodies.json", {"renew_loan": "def renew_loan(db): return db"})
+    loop = rounds.Loop(plan=plan, builder=builder_agent.build_harness(plan))
+    assert loop.close_round(1, _record(1).counts).counts["artifacts_changed"] == []
+
+
+def test_a_round_records_the_change_each_repair_measured_on_its_own_target(tmp_path):
+    """Six Intents written again and a seventh still refused change `intents` once, so the round's
+    own fingerprint cannot tell the seven repairs apart; each verb hashed the one file it wrote."""
+    loop = _bare_loop(tmp_path)
+    workdir = loop.plan.workdir
+    repair.record_request(workdir, "repair_intent", "task_a",
+                          {"changed": True, "hash_before": "aaa", "hash_after": "bbb"}, round_no=1)
+    repair.record_request(workdir, "repair_intent", "task_b",
+                          {"changed": False, "hash_before": "ccc", "hash_after": "ccc"}, round_no=1)
+    assert loop.close_round(1, _record(1).counts).counts["repairs"] == [
+        {"verb": "repair_intent", "target": "task_a", "artifact": "intents", "changed": True},
+        {"verb": "repair_intent", "target": "task_b", "artifact": "intents", "changed": False}]
+
+
 def test_the_stall_follow_up_names_the_pending_findings_and_the_repairs_made(tmp_path):
     """What is pending is what the model cannot read out of its own transcript: a finding no beat
-    acted on, and whether each repair it called actually changed the artifact that verb owns."""
+    acted on, and whether each repair it called actually changed the artifact that verb owns. Each
+    repair answers for its own target, which is what its request recorded when the verb ran."""
     loop = _stalling_loop(tmp_path, [_reply("nothing to do."), _reply("finishing with what I have.")])
     workdir = loop.plan.workdir
-    _write(workdir / "bodies.json", {"get_order": "def get_order(): return None"})
-    # The round before saw every artifact as it stands now except the bodies, which a repair rewrote.
-    loop.rounds[-1].counts["artifact_hashes"] = {**rounds.artifact_hashes(workdir), "bodies": "stale"}
     loop.pending_findings = [_finding("t2", suggested="compile_tool", finding_id="f7")]
-    repair.record_request(workdir, "repair_recompile", "get_order", {}, round_no=2)
-    repair.record_request(workdir, "repair_intent", "t2", {}, round_no=2)
+    repair.record_request(workdir, "repair_recompile", "get_order", {"changed": True}, round_no=2)
+    repair.record_request(workdir, "repair_intent", "t2", {"changed": False}, round_no=2)
     repair.record_request(workdir, "repair_refuse_task", "t3", {}, round_no=2)
     loop.tell_the_builder_nothing_changed(2)
 

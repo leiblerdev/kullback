@@ -28,10 +28,15 @@ repaired: an Intent is a line a model wrote, so the intent gate leads to `repair
 `derive_verifier` leads to neither, because the Examiner owns it (D123). `repair_rewrite_skill` is
 deliberately not registered (the GEPA caution in docs/todo.md).
 
-A result is what the model reads plus what it does not. The rendered text is a few lines: the
-status, the stages that ran, and the ruling names with pass or fail. Everything else (the Task
-ids, the environment id, each stage's report) is in the result model and reaches the transcript's
-`details`, which never enters the context.
+A result is what the model reads plus what it does not. The rendered text is a few lines: for a
+repair verb the target's own ruling first, then the status, the stages that ran, and the ruling
+names with pass or fail. The target's ruling is there because a gate rules over every target at
+once: a live build repaired seven Intents, six of them grounded, and every result carried the
+intent gate's first failure, which was about a Task nobody had touched, so the model read all seven
+as refused and stopped. The gate-wide line stays underneath and now counts, so a gate failing over
+many targets says how many and names its first as an example rather than as a verdict. Everything
+else (the Task ids, the environment id, each stage's report) is in the result model and reaches the
+transcript's `details`, which never enters the context.
 """
 
 from __future__ import annotations
@@ -44,11 +49,11 @@ from typing import Any, Awaitable, Callable, Optional
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from kullback.agent.tools import AgentTool, NoArgs
+from kullback.agent.tools import AgentTool, NoArgs, counted_ruling_line
 from kullback.builder import build as build_module
 from kullback.builder import repair as repair_module
 from kullback.builder.build import TARGET_ALL, BuildPlan
-from kullback.gates import Ruling, ruling_line, ruling_of
+from kullback.gates import Ruling, ruling_of
 from kullback.gates.fidelity import unconfirmed_reason
 
 Sink = Callable[[Any], Awaitable[None]]
@@ -86,6 +91,9 @@ class BuildResult(BaseModel):
     target: str
     status: str
     passed: bool
+    # How the one Task, tool or table a repair verb was called on came out, read off the artifact
+    # the stage just wrote (`repair.target_ruling`). Empty for a tool that has no single target.
+    target_ruling: str = ""
     stage_gates: list[Ruling] = Field(default_factory=list)
     stages: list[StageReport] = Field(default_factory=list)
     produced: list[str] = Field(default_factory=list)
@@ -95,14 +103,21 @@ class BuildResult(BaseModel):
 
 
 def render(result: BuildResult) -> str:
-    """The lines the model reads: status, stages, rulings. The payload stays in details."""
-    lines = [result.summary]
+    """The lines the model reads: the target's own ruling, the status, the stages, the rulings.
+
+    A repair verb's result opens with what happened to the one target it was called on, before
+    anything a gate says. The gate-wide line still follows, and a gate failing over many targets
+    now says how many and names its first as an example (`counted_ruling_line`), so neither line
+    can be read as a verdict on the target the other one is about. The payload stays in details.
+    """
+    lines = [result.target_ruling] if result.target_ruling else []
+    lines.append(result.summary)
     # status is already "cached" for a stage the cache served, so the flag would only say it twice.
     ran = [f"{s.name} ({s.status})" for s in result.stages if s.status != "pending"]
     if ran:
         lines.append("stages: " + ", ".join(ran))
     if result.stage_gates:
-        lines.append(ruling_line("rulings", result.stage_gates))
+        lines.append(counted_ruling_line("rulings", result.stage_gates))
     if result.failed_stage:
         lines.append(f"failed stage: {result.failed_stage}")
     if result.stopped:
@@ -552,19 +567,31 @@ def _status_executor(plan: BuildPlan) -> Callable[[Any], Awaitable[StatusResult]
 def _repair_executor(plan: BuildPlan, sink: Optional[Sink], verb: str, target_of: Callable[[Any], str],
                      narrowing_of: Callable[[Any], dict], stage: str,
                      before: Optional[Callable[[Any], dict]] = None) -> Callable[[Any], Awaitable[BuildResult]]:
-    """A repair verb that acts: the request is recorded, then the stage that repairs the artifact runs.
+    """A repair verb that acts: the stage that repairs the artifact runs, and the request is recorded.
 
     `before` runs first and returns what else the request carries (the hint kept as a lesson), so a
-    repair leaves a record of what was asked for as well as the artifact it produced.
+    repair leaves a record of what was asked for as well as the artifact it produced. The one
+    target's artifact is hashed either side of the stage, so the request says whether this call
+    moved anything of its own (D142); the record is written in a `finally`, so a stage that raises
+    still leaves the row the round's report reads. The result then opens with that target's own
+    ruling, read back off the artifact the stage just wrote.
     """
     run_stage = _executor(plan, sink, verb, lambda _a: stage, narrowing_of)
 
     async def execute(args: Any) -> BuildResult:
         extra = before(args) if before is not None else {}
-        repair_module.record_request(plan.workdir, verb, target_of(args),
-                                     {"arguments": args.model_dump(mode="json"), **extra},
-                                     round_no=plan.round)
-        return await run_stage(args)
+        target = target_of(args)
+        hash_before = repair_module.target_hash(plan.workdir, verb, target)
+        try:
+            result = await run_stage(args)
+        finally:
+            repair_module.record_request(
+                plan.workdir, verb, target,
+                {"arguments": args.model_dump(mode="json"), **extra,
+                 **repair_module.change_of(plan.workdir, verb, target, hash_before)},
+                round_no=plan.round)
+        result.target_ruling = repair_module.target_ruling(plan.workdir, verb, args)
+        return result
 
     return execute
 
@@ -595,13 +622,16 @@ def repair_verb_tools(plan: BuildPlan, sink: Optional[Sink] = None) -> list[Agen
     return [
         AgentTool("repair_recompile",
                   "Repair one tool body: compile it again from its recorded calls, with a hint saying "
-                  "what was wrong with the last one. The hint is kept as a lesson for that tool.",
+                  "what was wrong with the last one. The hint is kept as a lesson for that tool. The "
+                  "result opens with that tool's own ruling: `cleared the gates`, or `still assisted` "
+                  "with the failure the next hint has to answer.",
                   repair_module.RecompileArgs, BuildResult,
                   _repair_executor(plan, sink, "repair_recompile", lambda a: a.name,
                                    lambda a: {"tools": [a.name]}, "compile_tools",
                                    before=_keep_hint(plan)), render=render),
         AgentTool("repair_grow",
-                  "Repair the Starting state: grow one table to a row count with synthetic rows (D107).",
+                  "Repair the Starting state: grow one table to a row count with synthetic rows (D107). "
+                  "The result opens with how many rows that table holds now.",
                   repair_module.GrowRepairArgs, BuildResult,
                   _repair_executor(plan, sink, "repair_grow", lambda a: a.table,
                                    lambda a: {"grow": {**dict(plan.grow or {}), a.table: a.count}},
@@ -609,7 +639,9 @@ def repair_verb_tools(plan: BuildPlan, sink: Optional[Sink] = None) -> list[Agen
         AgentTool("repair_intent",
                   "Repair one Task's Intent: write it again with a hint saying what the Task's Runs "
                   "evidence. An Intent with a noun phrase no Run says in those words leaves the Task "
-                  "with no Verdict; the hint is how you say what the words should be.",
+                  "with no Verdict; the hint is how you say what the words should be. The result "
+                  "opens with that Task's own ruling: `grounded` with the line it settled on, or "
+                  "`still refused` with the reason.",
                   repair_module.IntentRepairArgs, BuildResult,
                   _repair_executor(plan, sink, "repair_intent", lambda a: a.task_id,
                                    lambda a: {"intent_tasks": [a.task_id],

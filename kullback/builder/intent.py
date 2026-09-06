@@ -435,6 +435,21 @@ def _gaps(coverage: dict[str, list[str]], member_ids: Sequence[str]) -> dict[str
     }
 
 
+def still_grounds(record: Intent, run_ids: Iterable[str]) -> bool:
+    """Whether a recorded Intent is still this Task's answer, so the model need not be asked again.
+
+    A grounded record evidences every one of its phrases in every member Run, so the Runs named
+    across `run_coverage` are exactly the Task's members at the moment it was written. Comparing
+    that set with the Task's Runs today is how a caller tells a record that still holds from one
+    whose Task has since gained or lost a Run: the second is a different question of the evidence
+    and its line has to be written again. An ungrounded record never holds, whatever its coverage.
+    """
+    if not record.grounded:
+        return False
+    evidenced = {run_id for runs in record.run_coverage.values() for run_id in runs}
+    return evidenced == set(run_ids)
+
+
 def _graded(task: Task, text: str, members: Sequence[Trace], write_tools: Optional[set[str]],
             model: Model) -> Intent:
     """One line as an Intent record: the spans behind its phrases and the reason it is refused, if it is.

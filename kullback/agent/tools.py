@@ -152,3 +152,43 @@ class TextResult(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     text: str = Field(default="")
+
+
+# --- how a gate's ruling reads in a tool result -------------------------------
+
+TASK_PREFIX = "task "
+
+
+def counted_failure(ruling: Any) -> str:
+    """One ruling as a tool result carries it: the name, pass or fail, and how wide a failure is.
+
+    A gate rules over every target at once, so its first failure is about whichever target sorts
+    first and not about the one the call was for. Printed bare, that line reads as a verdict on the
+    target just repaired: a live build repaired seven Intents, six of them grounded, and every
+    result still said `intent fail (task <another Task>: ...)`, so the model read all seven as
+    refused and stopped. A gate that fails on more than one target therefore says how many and
+    names the first as an example, never as the answer. Failures that all name a Task are counted
+    in Tasks and the `task ` prefix is folded into that word.
+    """
+    if ruling.passed:
+        return f"{ruling.stage} pass"
+    failures = [str(f) for f in (ruling.failures or [])]
+    if not failures:
+        return f"{ruling.stage} fail"
+    if len(failures) == 1:
+        return f"{ruling.stage} fail ({failures[0]})"
+    tasks = all(f.startswith(TASK_PREFIX) for f in failures)
+    first = failures[0][len(TASK_PREFIX):] if tasks else failures[0]
+    return f"{ruling.stage} fail ({len(failures)} {'Tasks' if tasks else 'failures'}, first {first})"
+
+
+def counted_ruling_line(label: str, rulings: Any) -> str:
+    """One ruling per name on one line, each counted by `counted_failure`.
+
+    This is what both agents' `tool_result` hooks and both agents' tool renderings print, so a
+    ruling reads the same wherever it reaches a model. It lives here rather than beside
+    `gates.ruling_line` because `kullback/gates` is hashed per release (`gates_version`) and a
+    rendering is no reason to move that hash; it takes anything with `stage`, `passed` and
+    `failures`, which is what `gates.Ruling` and `runner.records.GateResult` both are.
+    """
+    return f"{label}: " + "; ".join(counted_failure(r) for r in rulings)

@@ -616,7 +616,10 @@ DEFAULT_REROLLS = 3  # D112
 
 
 def _read_intents(workdir: Path, task_ids: Iterable[str]) -> dict:
-    """The Intents an earlier run of the stage left under `intents/`, for the Tasks a narrowed run keeps.
+    """The Intents an earlier run of the stage left under `intents/`, for the named Tasks.
+
+    A narrowed run reads back the Tasks it is not rewriting; a full run reads every Task, because
+    the ratchet in `_intent_stage` decides Task by Task which recorded line still holds.
 
     A Task whose file is missing or unreadable is not dropped: it comes back ungrounded with the
     reason, so the artifact still names every Task and the gate still rules on it.
@@ -643,6 +646,21 @@ def _intent_stage(model: Any, workers: int = 1, only: Optional[Iterable[str]] = 
     off disk, so the artifact it releases is still every Task's (the tool `repair_intent(task_id,
     hint)`). `hints` is what the repair asked for, per Task: it reaches the prompt and the stage's
     code version, so the same repair asked twice with two hints is two runs and not one cache hit.
+    A narrowed run rewrites its Tasks however well they already ground: a repair is an explicit ask.
+
+    A full run ratchets (todo: a stage never replaces a passing artifact with a failing one). A Task
+    whose recorded Intent grounded and whose member Runs are unchanged keeps that record and is not
+    put to the model again; only the rest are written. The artifact still names every Task. Two
+    things follow: a repaired Intent survives the next full build instead of being written over by
+    a fresh line that may ground worse, and an `--iterate` build does not pay to rewrite what
+    already grounds.
+
+    `intents/` is a declared input path on every run, narrowed or not. Declared only for a narrowed
+    run, a live build repaired six Intents and then rebuilt: the full run's key had not moved, the
+    stage was served from the cache, and the `intents` the Examiner derives its Verifiers from were
+    the lines from before the repair. The cost of declaring it is that the stage's own output moves
+    its own key, so the build after one that wrote `intents/` re-runs rather than hits; the ratchet
+    is what makes that re-run cost nothing for every Task that already grounds.
     """
     only = sorted(only) if only is not None else None
     hints = {task_id: text for task_id, text in sorted((hints or {}).items()) if text}
@@ -650,13 +668,16 @@ def _intent_stage(model: Any, workers: int = 1, only: Optional[Iterable[str]] = 
     def run(ctx, inputs):
         write_tools = {s.name for s in inputs["sigs"] if s.kind == "write"}
         tasks = list(inputs["tasks"])
-        kept: dict[str, Any] = {}
+        recorded = _read_intents(ctx.workdir, [task.id for task in tasks])
         if only is not None:
             unknown = sorted(set(only) - {task.id for task in tasks})
             if unknown:
                 raise BuildError(f"no Task is named {', '.join(unknown)}")
-            kept = _read_intents(ctx.workdir, {task.id for task in tasks} - set(only))
-            tasks = [task for task in tasks if task.id in only]
+            kept = {task.id: recorded[task.id] for task in tasks if task.id not in set(only)}
+        else:
+            kept = {task.id: recorded[task.id] for task in tasks
+                    if intent.still_grounds(recorded[task.id], task.run_ids)}
+        tasks = [task for task in tasks if task.id not in kept]
 
         def write_one(task):
             try:
@@ -679,9 +700,7 @@ def _intent_stage(model: Any, workers: int = 1, only: Optional[Iterable[str]] = 
     if only is not None:
         version += f":only={','.join(only)}:hints={content_hash(hints)[:16]}"
     return pipeline.Stage(name="intent", fn=run, builder=True, inputs=("tasks", "traces", "sigs"),
-                          outputs=("intents",),
-                          input_paths=("intents",) if only is not None else (),
-                          code_version=version)
+                          outputs=("intents",), input_paths=("intents",), code_version=version)
 
 
 rerolls_gate = stage_gates.rerolls_gate  # the ruling moved to kullback.gates in phase 4; the name stays
@@ -715,8 +734,11 @@ def _rerolls_stage(model: Any, rerolls: int, workers: int = 1, only: Optional[It
             seeds = _seed_ids(ctx, task)
             confirmed = [r for tid, r in sorted((replays.get(task.id) or {}).items())
                          if tid in seeds and r.get("confirmed")]
-            if not confirmed:
-                continue  # nothing to compare a re-roll with, and no Simulated user to drive it
+            if not confirmed:  # nothing to compare a re-roll with, and no Simulated user to drive it
+                # Its re-rolls from an earlier build go too: the second retail build's dead re-rolls
+                # sat under 36 Tasks a later build skipped, and every count that globs runs/ read them.
+                _discard_runs(ctx.workdir / "runs" / task.id, f"reroll-{task.id}-")
+                continue
             rules = next((user_rules.get(r["trace_id"]) for r in confirmed if user_rules.get(r["trace_id"])), None)
             jobs.append((task, rules))
 

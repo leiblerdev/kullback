@@ -298,6 +298,13 @@ def entry_text(entry: SessionEntry) -> str:
     return ""
 
 
+def prompt_block(tag: str, text: str, **attrs: str) -> str:
+    """One tagged block of a system prompt: `<tools>` ... `</tools>`. The tag names what the block is
+    (task, tools, skills, examples, rules, stop) so the model can point at it and a reader can find it."""
+    attributes = "".join(f' {key}="{value}"' for key, value in attrs.items())
+    return f"<{tag}{attributes}>\n{text}\n</{tag}>"
+
+
 def first_line(text: str, width: int = 80) -> str:
     for line in text.splitlines():
         line = line.strip()
@@ -597,15 +604,33 @@ class ContextManager:
             if self.session is not None:
                 self.session.append(ToolSetChangeEntry(id=self.next_entry_id(), loaded=[tool.name]))
 
+    SKILLS_SECTION = "skills"
+
     def catalog_skill(self, name: str, text: str, loaded: bool = False) -> None:
         """Make a skill's text available to `load`; with `loaded`, put it in the prompt now."""
         self.catalog_skills[name] = text
         if loaded and name not in self.loaded_skills:
             self._put_skill(name, text)
+        self.refresh_skills_section()
+
+    def skills_section(self) -> str:
+        """The `<skills>` block: every catalogued skill, whether its text is in the prompt now, and how
+        to bring one in. An extension places it by adding a section named `skills`; this keeps it current."""
+        lines = []
+        for name, text in self.catalog_skills.items():
+            state = "loaded, its text is the <skill> block below" if name in self.loaded_skills else \
+                f"not loaded; load(name={name!r}, kind=\"skill\") puts its text in this prompt"
+            lines.append(f"- {name} ({state}): {first_line(text)}")
+        body = "\n".join(lines) if lines else "No skills are catalogued for this session."
+        return prompt_block("skills", "Skills are texts that teach one way of working; the tools stay the same.\n" + body)
+
+    def refresh_skills_section(self) -> None:
+        if any(section.name == self.SKILLS_SECTION for section in self.harness.sections):
+            self.harness.add_prompt_section(self.SKILLS_SECTION, self.skills_section())
 
     def _put_skill(self, name: str, text: str) -> str:
         self.loaded_skills.add(name)
-        self.harness.add_prompt_section(f"skill:{name}", text)
+        self.harness.add_prompt_section(f"skill:{name}", prompt_block("skill", text, name=name))
         digest = content_hash(text)
         if self.session is not None:
             self.session.append(SkillChangeEntry(id=self.next_entry_id(), name=name, action="load", content_hash=digest))
@@ -645,6 +670,7 @@ class ContextManager:
         if name in self.loaded_skills:
             self._refuse("already_loaded", f"skill {name} is loaded already")
         digest = self._put_skill(name, text)
+        self.refresh_skills_section()
         self.refresh()
         return self._tool_set_result(name, kind, "load", digest)
 
@@ -668,6 +694,7 @@ class ContextManager:
         text = self.catalog_skills.get(name, "")
         self.loaded_skills.discard(name)
         self.harness.remove_prompt_section(f"skill:{name}")
+        self.refresh_skills_section()
         digest = content_hash(text)
         if self.session is not None:
             self.session.append(SkillChangeEntry(id=self.next_entry_id(), name=name, action="unload", content_hash=digest))

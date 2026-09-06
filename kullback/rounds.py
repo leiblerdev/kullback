@@ -24,7 +24,10 @@ fingerprinted into the round's counts as `artifacts` and `artifacts_changed`), o
 this round made left the gates ruling differently from the round before (`round_moved`). The
 artifact and the repair are there because a round in which the mechanic rewrote a tool body or
 grew a table did something the Examiner has not derived over yet: no count could have moved for it
-by the time the round ends, and calling that a stall stops a build that was working.
+by the time the round ends, and calling that a stall stops a build that was working. Round 1 is
+compared against the fingerprint the driver takes as it starts, so `artifacts_changed` says the
+same thing in a first round as in a fifth. Whether one repair changed anything is the repair's own
+answer, hashed on its own target when it ran (`builder.repair.change_of`) and read back here.
 
 This module is the top of the layering: it imports both applications, and the Builder's artifacts
 reach the Examiner through `examiner.stage.DERIVE_INPUTS`, never bodies, the db, the schema or the
@@ -49,6 +52,7 @@ from kullback.ai.provider import Model
 from kullback.builder import agent as builder_agent
 from kullback.builder import build as build_module
 from kullback.builder import pipeline
+from kullback.builder import repair as repair_module
 from kullback.builder.agent import builder_message
 from kullback.builder.build import DEFAULT_REROLLS, TARGET_ALL, BuildError, BuildPlan
 from kullback.builder.tools import BUILD_TOOLS
@@ -86,14 +90,10 @@ MODEL_ARTIFACTS: dict[str, str] = {
     "policy": "constraints.json",
     "starting_state": "db.json",
 }
-# The artifact each acting repair verb rewrites (`builder.tools.repair_verb_tools`). The two
-# deciding verbs are absent on purpose: refusing a Task and escalating one write a row for the
-# report and change no artifact, which is what their own descriptions say.
-REPAIR_ARTIFACT: dict[str, str] = {
-    "repair_recompile": "bodies",
-    "repair_grow": "starting_state",
-    "repair_intent": "intents",
-}
+# The artifact each acting repair verb rewrites (`builder.tools.repair_verb_tools`). The map lives
+# in builder/repair.py, where the verbs hash that artifact either side of their own call, so the
+# name a round's counts give an artifact and the bytes a repair is measured on cannot drift apart.
+REPAIR_ARTIFACT: dict[str, str] = repair_module.REPAIR_ARTIFACT
 
 
 def _read_json(path: Path, fallback: Any) -> Any:
@@ -348,11 +348,19 @@ class Loop:
     round_started: float = 0.0
     builder_stop: dict = field(default_factory=dict)
     stall_told: int = 0
+    started_hashes: dict[str, str] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         """A new Loop resumes the workdir's unfinished business: findings an earlier invocation
         left open join the pending queue, so a ceiling (or a crash) that ended that run strands no
-        finding without a Builder beat to answer it. A fresh workdir has no findings file: no-op."""
+        finding without a Builder beat to answer it. A fresh workdir has no findings file: no-op.
+
+        The artifacts are fingerprinted here too, before any beat runs, and that is what round 1 is
+        compared against. Without it a first round said no artifact changed however much it wrote,
+        because there was no round before it to hold the hashes: `--iterate` over a workdir that
+        already holds bodies and Intents is exactly the run where round 1 rewrites the most.
+        """
+        self.started_hashes = artifact_hashes(self.plan.workdir)
         seen = {finding.finding_id for finding in self.pending_findings}
         self.pending_findings = list(self.pending_findings) + [
             finding for finding in _open_findings(self.plan.workdir) if finding.finding_id not in seen]
@@ -643,10 +651,15 @@ class Loop:
 
     def artifacts_now(self) -> tuple[str, dict[str, str], list[str]]:
         """This workdir's artifact fingerprint, the hash of each artifact, and which of them changed
-        since the round before. A first round has nothing to compare with, so nothing changed in it.
+        since the round before, or since the driver started when this is the first round.
+
+        A first round used to have nothing to compare with and so reported that nothing changed in
+        it, whatever it rewrote. The driver takes the fingerprint once as it starts (`__post_init__`)
+        and that is round 1's before, so `artifacts_changed` means the same thing in every round.
         """
         fingerprint, per = artifact_fingerprint(self.plan.workdir)
-        before = dict((self.rounds[-1].counts or {}).get("artifact_hashes") or {}) if self.rounds else {}
+        before = (dict((self.rounds[-1].counts or {}).get("artifact_hashes") or {}) if self.rounds
+                  else dict(self.started_hashes))
         changed = sorted(name for name, digest in per.items() if before and before.get(name) != digest)
         return fingerprint, per, changed
 
@@ -675,16 +688,21 @@ class Loop:
                     rows.append(row)
         return rows
 
-    def repairs_made(self, n: int, changed: Iterable[str] = ()) -> list[dict]:
-        """This round's repair requests, each with the artifact its verb owns and whether that
-        artifact changed. A deciding verb owns no artifact and never changed one."""
-        moved = set(changed)
+    def repairs_made(self, n: int) -> list[dict]:
+        """This round's repair requests, each with the artifact its verb owns and whether this call
+        changed it, as the verb itself measured on its own target (`repair.change_of`).
+
+        The round's fingerprint cannot answer that. A round that wrote six Intents again and left a
+        seventh refused changed `intents` once, and every one of the seven requests read as having
+        changed it; the verb hashed the one file it wrote, so each request answers for itself. A
+        deciding verb owns no artifact and never changed one. A request an older build recorded
+        carries no `changed`, and reads as False, since nothing measured it at the time.
+        """
         out = []
         for row in self.repairs_in(n):
             verb = str(row.get("verb") or "?")
-            artifact = REPAIR_ARTIFACT.get(verb)
-            out.append({"verb": verb, "target": str(row.get("target") or "?"), "artifact": artifact,
-                        "changed": bool(artifact is not None and artifact in moved)})
+            out.append({"verb": verb, "target": str(row.get("target") or "?"),
+                        "artifact": REPAIR_ARTIFACT.get(verb), "changed": bool(row.get("changed"))})
         return out
 
     def rulings_moved(self, n: int) -> bool:
@@ -751,9 +769,8 @@ class Loop:
             return
         self.stall_told = n
         before = self.spend()
-        _, _, changed = self.artifacts_now()
         self.builder.steer(builder_agent.nothing_changed_message(
-            self.plan, findings=self.pending_findings, repairs=self.repairs_made(n, changed)))
+            self.plan, findings=self.pending_findings, repairs=self.repairs_made(n)))
         result = self._watched(self.builder, "builder", self.builder.continue_(), "build", BUILD_TOOLS)
         if result is not None:
             self.build_result = result
@@ -795,7 +812,7 @@ class Loop:
         # at all, and its clock, spend and turns are as true as a round that finished.
         record = RoundRecord(round=n, counts={**counts, **self.driver_counts()})
         record.counts["moved"] = self.round_moved(n, record.counts)
-        record.counts["repairs"] = self.repairs_made(n, record.counts.get("artifacts_changed") or ())
+        record.counts["repairs"] = self.repairs_made(n)
         record.exit = round_end.exit_for(_since_last_move(self.rounds + [record]), self.stall_rounds,
                                          ceiling_reached=self.ceiling_reached(), exhausted=self.exhausted)
         if self.pending_findings:

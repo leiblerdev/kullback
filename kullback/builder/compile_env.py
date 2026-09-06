@@ -21,6 +21,7 @@ from kullback.builder import synth
 from kullback.builder.mine import is_assistant_call, is_scalar_result
 from kullback.builder.sandbox import (
     DB_CLASS,
+    HELPERS,
     Sandbox,
     SandboxError,
     args_text,
@@ -52,6 +53,7 @@ from kullback.runner.canon import (
 )
 from kullback.runner.records import (
     Atom,
+    Column,
     EntitySchema,
     Environment,
     GateResult,
@@ -570,6 +572,13 @@ def load_toolkit(source: str, db: dict, class_name: str = TOOLS_CLASS, db_class:
     dont_inherit keeps a caller's `from __future__ import annotations` out of the generated module:
     a postponed annotation has no module globals for pydantic to resolve against. This is the loader
     the Runner's router is given; the gates use the subprocess Sandbox instead.
+
+    `evaluate_arithmetic` is put in the namespace, not imported by the body: `ast`, `eval`, `exec`
+    and `compile` stay refused, and a recorded tool that evaluates an expression string is served by
+    the one code-owned evaluator instead of a parser the model writes again on every build (see
+    runner/arith.py). `PROVIDED_HELPERS` is what the confinement gate reads it under, so the two
+    cannot drift: a name bound here that the gate does not know is a body refused for a NameError it
+    would never have raised.
     """
     if overlay is not None:
         db = merge_overlays(db, [overlay], overlay_values or {})
@@ -577,7 +586,7 @@ def load_toolkit(source: str, db: dict, class_name: str = TOOLS_CLASS, db_class:
     if refused:
         raise SandboxError("the generated module is not confined and would run in this process: "
                            + "; ".join(refused))
-    namespace: dict = {"__name__": "generated_tools"}
+    namespace: dict = {"__name__": "generated_tools", **HELPERS}
     exec(compile(source, "<generated>", "exec", dont_inherit=True), namespace)  # noqa: S102
     return namespace[class_name](namespace[db_class].model_validate(db))
 
@@ -633,7 +642,12 @@ _SYSTEM = ("You write the body of one Python method of a tool class rebuilt from
            "Return only the body: no signature, no fences, no explanation. The body may read and write "
            "self.db, a pydantic model with one dict per table. Each dict's values are pydantic model rows, "
            "not plain dicts: read or write a row's field by attribute, as in order.status or "
-           "order.status = \"cancelled\", never with .get(...) or any other dict method. Raise ValueError "
+           "order.status = \"cancelled\", never with .get(...) or any other dict method. That holds for the "
+           "row and stops there: what a column of a row holds is not a model. A column whose value is a "
+           "list or a dict is a plain Python list or dict, so index it, read its parts by key, as in "
+           "row.entries[0][\"amount\"], and write them by plain assignment, as in "
+           "row.entries[0][\"amount\"] = 0; row.entries[0].amount raises AttributeError. Where a column "
+           "holds one, the tables below say so and show the form that reads it. Raise ValueError "
            "with the customer's own message where the traces show an error. Where every recorded error "
            "in this corpus begins with the same transport prefix, it is shown with that prefix removed, "
            "so write the message exactly as shown and do not put a prefix of your own in front of it.")
@@ -658,18 +672,75 @@ def _example_block(calls: Iterable[ToolCall], error_prefix: Optional[str] = None
     return "\n".join(lines)
 
 
+def _sample_value(column: Column) -> Any:
+    """One mined sample of a column as a Python value, or None when there is none to read.
+
+    Mining stores a nested sample as JSON text and cuts it at a length (`mine._short`), so a long
+    one does not parse; a sample that does not parse is no sample, and the caller falls back to the
+    form that names no field.
+    """
+    sample = column.samples[0] if column.samples else None
+    if isinstance(sample, (list, dict)):
+        return sample
+    if isinstance(sample, str):
+        try:
+            return json.loads(sample)
+        except ValueError:
+            return None
+    return None
+
+
+def _column_access(table: str, column: Column) -> str:
+    """How a column that holds a list or a dict is read, in one line, off its own mined sample.
+
+    The data model types a nested column as `Optional[Any]`, so the value inside it is a plain
+    Python list or dict however the row around it is typed. A body that took `_SYSTEM` at its word
+    and read a row's field by attribute all the way down crashed on every attempt of one live
+    build, at the same call, with the same AttributeError, and the retry could not help because the
+    instruction that caused it was still true of the row and false of what the column held. The
+    sample already beside the column says which it is and what one part is called, so the form that
+    reads it is derived here rather than left to the model to infer.
+
+    Everything is read off the schema: no name here comes from a domain.
+    """
+    types = (column.evidence or {}).get("types") or []
+    sample = _sample_value(column)
+    name = f"{table}.{column.name}"
+    if "list" in types:
+        element = next((v for v in sample if isinstance(v, dict)), None) if isinstance(sample, list) else None
+        if element:
+            key = next(iter(element))
+            return (f"{name} is a list of plain dicts, not model rows; one element looks like: "
+                    f"{json.dumps(element, default=str)}; read element[\"{key}\"], "
+                    f"never element.{key}")
+        return (f"{name} is a plain list, not a model row: index it, and read anything it holds by "
+                "key, never by attribute")
+    if "dict" in types:
+        rows = sample if isinstance(sample, dict) else {}
+        key, inner = next(((k, v) for k, v in rows.items() if isinstance(v, dict)), ("", None))
+        if inner:
+            keyed_by = next((f for f, v in inner.items() if v == key), "its own key")
+            field = next(iter(inner))
+            return (f"{name} is a dict of plain dicts keyed by {keyed_by}; read "
+                    f"{column.name}[key][\"{field}\"], never {column.name}[key].{field}")
+        return (f"{name} is a plain dict, not a model row: read it by key, as in "
+                f"{column.name}[\"key\"], never by attribute")
+    return ""
+
+
 def _schema_block(schema: EntitySchema) -> str:
     """Tables and columns of the customer's world: the same for every tool in this build (D65's
     stable prefix, docs/prompt-caching.md item 1).
 
-    A column mined as a dict gets one sample beside it. Mining cannot tell a customer's real table
-    from a stand-in built out of a value nested inside another table's column: retail's
-    get_item_details answers with an item-shaped dict, so mining proposes an "items" table for it,
-    and get_product_details answers with a product whose "variants" column holds dicts of exactly
-    that shape. Both are real observations and nothing here decides which is the customer's real
-    storage; the sample is what lets the model notice the second on its own, instead of trusting
-    the "items" table alone and raising "not found" on a database that only fills it through the
-    nesting. That is what happened on the first live build, nine calls out of nine.
+    A column mined as a dict gets one sample beside it, and a column that holds a list or a dict
+    gets the form that reads it (`_column_access`). Mining cannot tell a customer's real table from
+    a stand-in built out of a value nested inside another table's column: a tool that answers with
+    one nested row makes mining propose a table for it, while the table that stores those rows
+    keeps them in a column of its own. Both are real observations and nothing here decides which is
+    the customer's real storage; the sample is what lets the model notice the second on its own,
+    instead of trusting the proposed table alone and raising "not found" on a database that only
+    fills it through the nesting. That is what happened on the first live build, nine calls out of
+    nine.
     """
     lines = ["Tables on self.db:"]
     for table in sorted(schema.tables):
@@ -688,6 +759,9 @@ def _schema_block(schema: EntitySchema) -> str:
         for column in columns:
             if "dict" in (column.evidence or {}).get("types", []) and column.samples:
                 lines.append(f"    {table}.{column.name} looks like: {column.samples[0]}")
+            access = _column_access(table, column)
+            if access:
+                lines.append(f"    {access}")
     return "\n".join(lines)
 
 
@@ -703,12 +777,21 @@ def _confinement_block(denied: Iterable[str] = DENIED_BUILTINS, allowed: Iterabl
     the prompt says so on the next build without anyone remembering to edit it. The two lists are
     parameters defaulting to the gate's own constants, so a caller can show a reader (or a test)
     what a different gate would render without reaching into this module.
+
+    The helper sentence sits here rather than in a per-tool message because it is the same for every
+    tool of every build, so it is read out of the provider's cache and costs nothing. Build 12 spent
+    four attempts on one tool watching the model write an arithmetic parser by hand, each one worse
+    than the last, because nothing had said there was one already.
     """
     return ("The body is checked before it runs and is refused if it names anything outside the "
             "customer's world. It may not use: " + ", ".join(sorted(denied)) + ". It may "
             "not touch a dunder attribute (`__dict__`, `__class__`, `__globals__` and the rest). "
             "It may import only: " + ", ".join(sorted(allowed)) + ". Read fields by name "
-            "(`order.status`) or by key (`self.db.orders[order_id]`), never through getattr.")
+            "(`order.status`) or by key (`self.db.orders[order_id]`), never through getattr. "
+            "evaluate_arithmetic(expression) is provided in the body's namespace: it evaluates "
+            "+ - * / // % ** with parentheses over a decimal and returns a Decimal, so never write "
+            "a parser and never reach for eval; for example `float(evaluate_arithmetic(expression))` "
+            "or round it to the places the recording shows.")
 
 
 # D117: said once, only when compile_tool was asked to offer the two builder tools, so a caller
@@ -1067,6 +1150,39 @@ def _failure_text(gates: list[GateResult], held_out: Iterable[ToolCall] = ()) ->
     return "\n".join(lines)
 
 
+_RAISED = re.compile(r"\braised ([A-Za-z_][A-Za-z0-9_.]*): (.+)")
+
+
+def exception_in(failure: str) -> str:
+    """The exception a gate's failure line quotes, as `ExceptionClass: message`; "" when it quotes none.
+
+    The executes gate writes `<tool>(<args>) raised <class>: <message>` (gates/tool_runs.py), so the
+    class and the message are what is left when the call in front of them is dropped. Two attempts
+    that crashed the same way then compare equal whatever calls their failures named.
+    """
+    match = _RAISED.search(failure)
+    return f"{match.group(1)}: {match.group(2).strip()}" if match else ""
+
+
+def exception_line(gates: Iterable[GateResult]) -> str:
+    """The first exception the failing gates report; "" when none of them reports one."""
+    for gate in gates:
+        if gate.passed:
+            continue
+        for failure in gate.failures:
+            found = exception_in(failure)
+            if found:
+                return found
+    return ""
+
+
+# Said only when the attempt that just ran raised what the attempt before it raised. One live build
+# spent all four attempts at one write tool on the same AttributeError at the same call: the retry
+# showed the crash each time and the model rewrote around it each time, because nothing said the
+# error had not moved. This goes in the new user turn, never in the cached prefix (D65).
+_SAME_ERROR = ("\nThe same error as the attempt before, at the same call. The body must change "
+               "where it raised: {error}")
+
 _UNDEFINED_NAME = re.compile(r"NameError: name '(\w+)' is not defined")
 
 
@@ -1155,7 +1271,9 @@ def compile_tool(model, toolsig: ToolSig, calls: Iterable[ToolCall], schema: Ent
     Attempt 0 sends the system and the first user turn; a retry (docs/prompt-caching.md item 2)
     never rewrites either: it appends the previous reply as an assistant turn and the new evidence
     and failure as a new user turn, so the first two messages of every call in the loop are the
-    same bytes a cache can reuse.
+    same bytes a cache can reuse. An attempt that raised what the attempt before it raised is told
+    so in that new turn (`_SAME_ERROR`), with the exception quoted, since a rewrite that lands on
+    the same crash is not a rewrite of the line that crashed.
     Each attempt is a node dict; after the last miss the tool is marked assisted (D49) and the nodes
     are written under the workdir. When no attempt passes, the body kept is the best attempt's, not
     the last one's (`attempt_score`, `ToolBuild.kept_attempt`).
@@ -1182,6 +1300,7 @@ def compile_tool(model, toolsig: ToolSig, calls: Iterable[ToolCall], schema: Ent
     # the two are kept apart: `latest` drives the next prompt, `build` holds what is kept.
     latest: list[GateResult] = []
     best: Optional[tuple[int, int]] = None
+    last_error = ""  # the exception the attempt before raised, so a repeat can be named as one
     for attempt in range(max_attempts + 1):
         if not skeleton.passed:  # code owns the skeleton, so no model call can repair it
             build.gates = [skeleton]
@@ -1257,6 +1376,7 @@ def compile_tool(model, toolsig: ToolSig, calls: Iterable[ToolCall], schema: Ent
             # stage gate reads an empty body as a tool the Builder could not write.
             failure = "\nno body was submitted: every round asked for a tool; send the body as your reply"
             reply_content = "(no body was submitted)"
+            last_error = ""  # nothing ran, so the next attempt's error follows no error of ours
             node["failures"] = ["no body was submitted"]
             build.nodes.append(node)
             continue
@@ -1281,6 +1401,10 @@ def compile_tool(model, toolsig: ToolSig, calls: Iterable[ToolCall], schema: Ent
         failure = "\n" + _failure_text(gates, held_out)
         if any(g.stage == "non_trivial" and not g.passed for g in gates):
             failure += _constant_evidence_note(evidence)
+        error = exception_line(gates)
+        if error and error == last_error:
+            failure += _SAME_ERROR.format(error=error)
+        last_error = error
     build.assisted = not (build.gates and all(g.passed for g in build.gates))
     for record in build.nodes:
         if record["attempt"] == build.kept_attempt:

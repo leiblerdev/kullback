@@ -23,7 +23,7 @@ from collections import deque
 from contextlib import suppress
 from typing import Any, AsyncIterator, Awaitable, Callable, Iterable, Literal, Optional, Union
 
-from kullback.agent.context import ContextConfig, ContextManager, ContextStats
+from kullback.agent.context import ContextConfig, ContextManager, ContextStats, prompt_block
 from kullback.agent.events import AgentEvent, CustomMessage, MessageEnd, MessageStart
 from kullback.agent.loop import (
     CancelToken,
@@ -39,6 +39,9 @@ from kullback.agent.tools import AgentTool, ToolRegistry, ToolResult
 from kullback.ai.provider import Model, ModelConfig
 
 Subscriber = Callable[[AgentEvent], Union[None, Awaitable[None]]]
+
+
+__all__ = ["AgentHarness", "PromptSection", "prompt_block"]
 
 
 class PromptSection:
