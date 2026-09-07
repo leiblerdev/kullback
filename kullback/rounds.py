@@ -337,6 +337,8 @@ class Loop:
     agent_model: Optional[Model] = None
     allowance_usd: Optional[float] = None
     stall_rounds: int = 1
+    fidelity_stall: int = 0  # rounds without a rise in fidelity before the stalled exit; 0 is off (D169)
+    max_rounds: int = 0  # rounds after which the loop exits max_rounds; 0 is no cap (D169)
     subscribers: list = field(default_factory=list)
     on_event: Optional[Callable[[dict], Any]] = None
     max_turns: int = MAX_TURNS  # the Examiner's; the Builder has none (D135)
@@ -628,6 +630,10 @@ class Loop:
         failed carries them too (`close_round` is given empty counts there) and rounds.json is the
         one file a report reads a round's clock and turns from.
 
+        `built` is whether this round left a target built: a pipeline ran and no stage of it failed.
+        A round whose build failed has no Task with a Reference, so the gate counts alone read as
+        finished, and D166 makes the build itself the first condition of a round being done.
+
         `artifacts` is the fingerprint of everything a model wrote, `artifact_hashes` the hash per
         artifact (which is how the next round has something to compare against) and
         `artifacts_changed` the artifacts this round rewrote. They sit beside the gate counts
@@ -650,6 +656,7 @@ class Loop:
         return {
             "started_at": self.round_started, "ended_at": time.time(), "spend": spend,
             "turns": turns, "context_fill": fill,
+            "built": self.plan.last is not None and getattr(self.plan.last, "failed_stage", None) is None,
             "built_by_driver": self.plan.round in self.driver_built,
             "fallback_compactions": {
                 agent: self.compactions(agent) - self.compactions_seen.get(agent, 0) for agent in AGENTS},
@@ -848,13 +855,20 @@ class Loop:
         record = RoundRecord(round=n, counts={**counts, **self.driver_counts()})
         record.counts["moved"] = self.round_moved(n, record.counts)
         record.counts["repairs"] = self.repairs_made(n)
-        record.exit = round_end.exit_for(_since_last_move(self.rounds + [record]), self.stall_rounds,
-                                         ceiling_reached=self.ceiling_reached(), exhausted=self.exhausted)
+        history = self.rounds + [record]
+        record.exit = round_end.exit_for(_since_last_move(history), self.stall_rounds,
+                                         ceiling_reached=self.ceiling_reached(), exhausted=self.exhausted,
+                                         all_rounds=history, fidelity_stall=self.fidelity_stall or None,
+                                         max_rounds=self.max_rounds or None)
+        if record.exit == "stalled" and not round_end.stalled(_since_last_move(history), self.stall_rounds):
+            record.exit_note = f"fidelity did not rise in {self.fidelity_stall} rounds"
+        elif record.exit == "max_rounds":
+            record.exit_note = f"round cap of {self.max_rounds} reached"
         if self.pending_findings:
             record.pending_findings = list(self.pending_findings)
-            if record.exit == "ceiling":
+            if record.exit in ("ceiling", "max_rounds"):
                 record.exit_note = (f"{len(self.pending_findings)} finding(s) still need the Builder; "
-                                    "the ceiling ended the run first")
+                                    f"the {'ceiling' if record.exit == 'ceiling' else 'round cap'} ended the run first")
             elif record.exit is not None:
                 record.exit = None
                 record.exit_note = (f"{len(self.pending_findings)} finding(s) owe the Builder a beat; "
@@ -916,7 +930,8 @@ def _read_config(path: Path) -> dict:
 def run_rounds(workdir: Any, model: Any = None, *, agent_model: Optional[Model] = None, files: Optional[list] = None,
                judge_model: Any = None, second_judge_model: Any = None,
                iterate: bool = False, ceiling_usd: Optional[float] = None, allowance_usd: Optional[float] = None,
-               stall_rounds: int = 1, target: str = TARGET_ALL, domain: str = "domain", max_attempts: int = 3,
+               stall_rounds: int = 1, fidelity_stall: int = 0, max_rounds: int = 0,
+               target: str = TARGET_ALL, domain: str = "domain", max_attempts: int = 3,
                memory_dir: Any = None, grow: Optional[dict] = None, grow_seed: int = 0,
                probe_limit: Optional[int] = None, rerolls: int = DEFAULT_REROLLS, search: Any = None,
                workers: int = 1, on_event: Optional[Any] = None, subscribers: Iterable[Callable[[Any], Any]] = (),
@@ -942,6 +957,7 @@ def run_rounds(workdir: Any, model: Any = None, *, agent_model: Optional[Model] 
     shared = [*subscribers, lambda event: feed.from_event(plan.workdir, event)]
     loop = Loop(plan=plan, builder=_builder_harness(plan, agent_model, shared), target=target,
                 agent_model=agent_model, allowance_usd=allowance_usd, stall_rounds=stall_rounds,
+                fidelity_stall=fidelity_stall, max_rounds=max_rounds,
                 subscribers=shared, on_event=on_event, max_turns=max_turns)
     n = 0
     while True:

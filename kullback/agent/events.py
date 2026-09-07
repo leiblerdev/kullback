@@ -107,7 +107,7 @@ class RoundEnd(_Event):
     type: Literal["round_end"] = "round_end"
     round: int
     counts: dict[str, Any] = Field(default_factory=dict)
-    exit: Optional[Literal["done", "stalled", "ceiling"]] = None
+    exit: Optional[Literal["done", "stalled", "ceiling", "max_rounds"]] = None
 
 
 class BeatStart(_Event):

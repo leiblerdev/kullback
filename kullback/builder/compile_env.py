@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Any, Callable, Iterable, Optional
 
 from kullback.builder import synth
+from kullback.builder.body_skill import BODY_SKILL
 from kullback.builder.mine import is_assistant_call, is_scalar_result
 from kullback.builder.sandbox import (
     DB_CLASS,
@@ -812,7 +813,9 @@ def _stable_system(schema: Optional[EntitySchema] = None, tool_names: Iterable[s
                    builder_tools: bool = False) -> str:
     """`_SYSTEM` plus what every tool in this build shares: one prefix, sent unchanged on every
     call of the stage, long enough on a real customer to clear a provider's cache minimum."""
-    parts = [_SYSTEM, _confinement_block()]
+    # The body skill (D168) sits in the prefix too: it is the same bytes for every tool of a build,
+    # and it is read before the tables, which is where a body's mistakes are made.
+    parts = [_SYSTEM, BODY_SKILL, _confinement_block()]
     if schema is not None:
         parts.append(_schema_block(schema))
     names = sorted(set(tool_names))

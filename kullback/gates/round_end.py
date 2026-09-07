@@ -3,9 +3,11 @@
 `round_counts` is the state of a workdir at the end of a round, read off the rulings: Tasks clearing
 fidelity from the replay_reference ruling, Tasks with a trusted Verifier and the refusals from the
 trusted ruling, assisted Runs from the Run records, probes that scored a pass from the pool. The
-driver adds what only it knows (fallback compactions per agent, spend, findings). `done` is D126's
-state taken literally, `stalled` is `stall_rounds` consecutive rounds that moved no gate count in
-either direction, and `exit_for` applies the three exits in the order ceiling, done, stalled.
+driver adds what only it knows (fallback compactions per agent, spend, findings, and whether the
+target was built at all). `done` is D126's state taken literally over a round that built its target
+(D166), `stalled` is `stall_rounds` consecutive rounds that moved no gate count in either direction,
+and `exit_for` applies the exits in the order ceiling, done, stalled (gate counts still, or
+fidelity flat for `fidelity_stall` rounds, D169), max_rounds.
 """
 
 from __future__ import annotations
@@ -66,9 +68,17 @@ def _counts(entry: Any) -> dict:
 
 
 def done(counts: dict) -> bool:
-    """D126's state, literal: every Task with a Reference is trusted and clears fidelity or is refused,
-    and no probe passes."""
+    """D126's state, literal, over a round that built its target (D166): every Task with a Reference
+    is trusted and clears fidelity or is refused, and no probe passes.
+
+    A round whose build failed a stage holds no Task with a Reference at all, so `unfinished` is
+    empty and the literal reading calls it done. That closed a build whose compile_tools stage had
+    failed three times, on the exit "done", with fidelity 0 of 183. `built` False is never done,
+    whatever the rest of the counts say; a round that does not carry the count reads as before.
+    """
     counts = _counts(counts)
+    if counts.get("built") is False:
+        return False
     return not counts.get("unfinished") and int(counts.get("probes_passing", 0)) == 0
 
 
@@ -82,15 +92,41 @@ def stalled(rounds: list[dict], stall_rounds: int) -> bool:
     return all(len({counts.get(key) for counts in window}) == 1 for key in GATE_COUNTS)
 
 
+def fidelity_flat(rounds: list[dict], flat_rounds: int) -> bool:
+    """True when the last `flat_rounds` rounds lifted fidelity above nothing the rounds before them
+    had reached (D169). Fidelity is the count the Builder's repairs move first, and a build whose
+    fidelity has not risen in that many rounds is spending on repairs that land nowhere, whatever the
+    other counts do: build 12's model arm sat at fidelity 153 for six rounds while trusted wobbled
+    between 48 and 50, which kept every count from being still and the stalled exit from firing."""
+    flat_rounds = max(1, int(flat_rounds))
+    if len(rounds) <= flat_rounds:
+        return False
+    counts = [_counts(r) for r in rounds]
+    before = max(int(c.get("fidelity") or 0) for c in counts[:-flat_rounds])
+    recent = max(int(c.get("fidelity") or 0) for c in counts[-flat_rounds:])
+    return recent <= before
+
+
 def exit_for(rounds: list[dict], stall_rounds: int, *, ceiling_reached: bool,
-             exhausted: list[bool]) -> Optional[str]:
+             exhausted: list[bool], all_rounds: Optional[list[dict]] = None,
+             fidelity_stall: Optional[int] = None, max_rounds: Optional[int] = None) -> Optional[str]:
     """ceiling when the build ceiling was reached or the allowance was exhausted two rounds in a row,
-    else done, else stalled, else None."""
+    else done, else stalled (no gate count moved, or fidelity flat for `fidelity_stall` rounds), else
+    max_rounds when `all_rounds` holds that many, else None.
+
+    `rounds` is the tail since the last round that moved, which is what the gate-count stall reads;
+    `all_rounds` is every round so far, which is what the fidelity window and the round cap read,
+    since a round that moved a count sideways still counts against both (D169)."""
     exhausted = list(exhausted or [])
+    history = list(all_rounds) if all_rounds is not None else list(rounds)
     if ceiling_reached or (len(exhausted) >= 2 and exhausted[-1] and exhausted[-2]):
         return "ceiling"
     if rounds and done(rounds[-1]):
         return "done"
     if stalled(rounds, stall_rounds):
         return "stalled"
+    if fidelity_stall and fidelity_flat(history, fidelity_stall):
+        return "stalled"
+    if max_rounds and len(history) >= max_rounds:
+        return "max_rounds"
     return None

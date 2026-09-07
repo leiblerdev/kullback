@@ -98,6 +98,20 @@ def test_a_workdir_with_no_task_with_a_reference_is_done_after_its_first_round(t
     assert R.exit_for([counts], 1, ceiling_reached=False, exhausted=[False]) == "done"
 
 
+def test_a_round_whose_build_failed_a_stage_is_not_done_and_has_no_exit(tmp_path):
+    """D166: a build that failed a stage leaves no Task with a Reference, so `unfinished` is empty
+    and the literal reading of D126 called it done. One build closed on the exit "done" with its
+    compile_tools stage failed three times over and fidelity 0 of 183."""
+    world = _world(tmp_path, task_status={TASK: status(verifier_passed=False, reference_confirmed=False)},
+                   verifiers=[], probes={}, history={})
+    counts = R.round_counts(**world)
+    assert counts["unfinished"] == [] and R.done(counts), "the gate counts alone read as finished"
+    unbuilt = dict(counts, built=False)
+    assert not R.done(unbuilt)
+    assert R.exit_for([unbuilt], 1, ceiling_reached=False, exhausted=[False]) is None
+    assert R.done(dict(counts, built=True)), "a round that built its target reads as before"
+
+
 def _round(**counts) -> dict:
     return dict({"fidelity": 1, "trusted": 1, "refused_count": 0, "assisted_runs": 0, "probes_passing": 0,
                  "unfinished": ["t9"]}, **counts)
@@ -147,3 +161,45 @@ def test_ceiling_wins_over_done_and_done_wins_over_stalled():
     assert R.exit_for([_round(), finished], 1, ceiling_reached=False, exhausted=[]) == "done"
     assert R.exit_for([finished, finished], 1, ceiling_reached=False, exhausted=[]) == "done"
     assert R.exit_for([_round(), _round()], 1, ceiling_reached=False, exhausted=[]) == "stalled"
+
+
+# --- D169: fidelity flat for k rounds, and the round cap ---
+
+def test_fidelity_that_has_not_risen_in_k_rounds_is_stalled_even_while_trusted_wobbles():
+    """Build 12's model arm: fidelity sat at one value for six rounds while trusted moved between
+    48 and 50, so no count was still and the stalled exit never fired (D169)."""
+    history = [_round(fidelity=153, trusted=49), _round(fidelity=153, trusted=48),
+               _round(fidelity=153, trusted=50), _round(fidelity=153, trusted=49)]
+    assert R.fidelity_flat(history, 3)
+    assert not R.stalled(history, 1)
+    assert R.exit_for(history[-1:], 1, ceiling_reached=False, exhausted=[], all_rounds=history,
+                      fidelity_stall=3) == "stalled"
+
+
+def test_a_rise_in_fidelity_inside_the_window_is_not_flat():
+    history = [_round(fidelity=150), _round(fidelity=150), _round(fidelity=151), _round(fidelity=151)]
+    assert not R.fidelity_flat(history, 3)
+    assert R.fidelity_flat(history, 1)
+    assert R.exit_for(history[-1:], 1, ceiling_reached=False, exhausted=[], all_rounds=history,
+                      fidelity_stall=3) is None
+
+
+def test_the_fidelity_window_needs_more_rounds_than_it_is_wide():
+    assert not R.fidelity_flat([_round(fidelity=5), _round(fidelity=5), _round(fidelity=5)], 3)
+    assert not R.fidelity_flat([], 3)
+
+
+def test_the_round_cap_exits_max_rounds_when_that_many_rounds_have_run():
+    history = [_round(fidelity=n, trusted=n) for n in range(1, 5)]
+    assert R.exit_for(history[-1:], 1, ceiling_reached=False, exhausted=[], all_rounds=history,
+                      max_rounds=4) == "max_rounds"
+    assert R.exit_for(history[-1:], 1, ceiling_reached=False, exhausted=[], all_rounds=history,
+                      max_rounds=5) is None
+    assert R.exit_for(history[-1:], 1, ceiling_reached=False, exhausted=[], all_rounds=history,
+                      max_rounds=0) is None
+
+
+def test_ceiling_done_and_stalled_come_before_the_round_cap():
+    history = [_round(fidelity=1), _round(fidelity=1)]
+    assert R.exit_for(history, 1, ceiling_reached=True, exhausted=[], all_rounds=history, max_rounds=1) == "ceiling"
+    assert R.exit_for(history, 1, ceiling_reached=False, exhausted=[], all_rounds=history, max_rounds=1) == "stalled"

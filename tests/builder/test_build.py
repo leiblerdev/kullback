@@ -514,6 +514,26 @@ def test_a_refused_write_changes_nothing_so_nothing_follows_it():
     assert build_module.after_write_calls([trace], {"cancel_pending_order"}) == set()
 
 
+def test_only_a_callers_own_call_is_evidence_for_the_body_of_a_tool():
+    """D164: the compile stage writes a body against the calls of the callers the tool answers. A
+    call the recording refused says nothing about what the body does."""
+    from conftest import PTR
+    from kullback.runner.records import ToolCall, ToolSig
+
+    sigs = [ToolSig(name="get_loan_details"),
+            ToolSig(name="read_shelf_lamp", callers=["user"], refused_callers=["assistant"])]
+    callers = build_module.callers_by_tool(sigs)
+    assert callers == {"get_loan_details": {"assistant"}, "read_shelf_lamp": {"user"}}
+
+    def a_call(name, requestor):
+        return ToolCall(name=name, args={}, requestor=requestor, raw_ptr=PTR)
+
+    assert build_module.is_evidence_call(a_call("read_shelf_lamp", "user"), callers) is True
+    assert build_module.is_evidence_call(a_call("read_shelf_lamp", "assistant"), callers) is False
+    assert build_module.is_evidence_call(a_call("get_loan_details", "assistant"), callers) is True
+    assert build_module.is_evidence_call(a_call("get_loan_details", "user"), callers) is False
+
+
 def test_the_rerolls_gate_is_not_green_over_runs_that_all_died():
     dead = {"t1": [{"termination_reason": "env_error"}] * 3, "t2": [{"termination_reason": "env_error"}]}
     gate = build_module.rerolls_gate(dead, 3)

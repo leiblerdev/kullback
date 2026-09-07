@@ -222,6 +222,29 @@ def test_unknown_tool_is_answered_not_raised():
     assert out.assisted is False
 
 
+def test_a_caller_the_tool_never_answered_is_refused_and_the_world_is_untouched():
+    """D164: the recording answered `cancel_order` for the assistant and never for the simulated
+    user, so a call from the user is refused in the same class, before any code runs."""
+    router = make_router(tool_sigs=[ToolSig(name="get_order_details"),
+                                    ToolSig(name="cancel_order", callers=["assistant"],
+                                            refused_callers=["user"])])
+    before = router.state_hash()
+    out = router.route("cancel_order", {"order_id": "123"}, requestor="user")
+    assert out.error is not None and out.error.class_ == "tool_not_found"
+    assert "for the user" in str(out.error.payload)
+    assert router.state_hash() == before
+    assert router.world()["orders"]["123"]["status"] == "delivered"
+
+
+def test_the_same_call_from_a_caller_the_tool_answers_runs():
+    """The other side of D164: a tool of the user's own toolkit answers the user."""
+    router = make_router(tool_sigs=[ToolSig(name="get_order_details", callers=["user"])])
+    out = router.route("get_order_details", {"order_id": "123"}, requestor="user")
+    assert out.error is None and out.route == "code"
+    assert out.result["status"] == "delivered"
+    assert router.route("get_order_details", {"order_id": "123"}).error.class_ == "tool_not_found"
+
+
 def test_invalid_arguments_keep_the_customers_encoding():
     out = make_router().route("get_order_details", {"nope": 1})
     assert out.error.class_ == "invalid_arguments"

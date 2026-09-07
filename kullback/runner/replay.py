@@ -106,7 +106,7 @@ class TraceUser:
             return
         args = dict(call.args or {})
         loop.emit(self.state, "tool_call", {"id": call.id, "name": call.name, "args": args, "requestor": "user"})
-        outcome = self.router.route(call.name, args, recorded=call)
+        outcome = self.router.route(call.name, args, recorded=call, requestor="user")
         payload: dict = {"id": call.id, "name": call.name, "result": outcome.result, "requestor": "user"}
         if outcome.error is not None:
             payload["error"] = as_dict(outcome.error)
@@ -128,8 +128,10 @@ class ScoredRouter:
     def __getattr__(self, name: str) -> Any:  # state_hash, world, start_world, state: the loop's reads
         return getattr(self.inner, name)
 
-    def route(self, name: str, args: Optional[dict] = None, recorded: Optional[ToolCall] = None) -> Any:
-        outcome = self.inner.route(name, args)
+    def route(self, name: str, args: Optional[dict] = None, recorded: Optional[ToolCall] = None,
+              requestor: str = "assistant") -> Any:
+        # D164: the caller goes through, so the inner Router can refuse a tool this caller never had.
+        outcome = self.inner.route(name, args, requestor=requestor)
         recorded = recorded if recorded is not None else self._take(name)
         verdict = UNRECORDED if recorded is None else compare_call(
             recorded, outcome.result, outcome.error, self.canon_rules)

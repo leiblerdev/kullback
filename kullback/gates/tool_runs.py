@@ -162,6 +162,22 @@ def body_deterministic_gate(calls: Iterable[ToolCall], first: Optional[list[dict
                    [f"{name} answered differently on a second run" for name in differing])
 
 
+def _arg_sets_varying(calls: list[ToolCall], rules: Any = None) -> int:
+    """How many argument sets the recording answered in more than one way (D165).
+
+    A tool that gave two answers to one argument set answers by the world and not by its arguments:
+    a write earlier in the recording moved what a later read returns. This gate runs every call on
+    one world, so a right body can only give one answer there, and counting distinct answers over
+    all calls would fail it for being right.
+    """
+    answers: dict[str, set[str]] = {}
+    for call in calls:
+        if call.error is None:
+            answers.setdefault(content_hash(call.args), set()).add(
+                content_hash(canon(parse_result(call.result), rules)))
+    return sum(1 for seen in answers.values() if len(seen) > 1)
+
+
 def body_non_trivial_gate(calls: Iterable[ToolCall], results: Optional[list[dict]], rules: Any = None,
                           error: Optional[str] = None) -> GateResult:
     """4. Different arguments do not all give one constant answer, unless the recorded tool answered them that way.
@@ -169,6 +185,11 @@ def body_non_trivial_gate(calls: Iterable[ToolCall], results: Optional[list[dict
     The recording is the standard: a hand-off tool that acknowledged 32 argument sets with the same
     line is faithfully constant, and a body that matches it is right. The second retail build failed
     `transfer_to_human_agents` here for doing what the real tool did, 25 of 25 replays agreeing.
+
+    A state-driven tool is passed on to replay_fidelity, which runs the calls in sequence and is the
+    only ruling that can judge one (D165): when the recording answered one argument set in more than
+    one way, the answer came from the world and this gate, running on a single world, cannot ask for
+    two answers. The ruling then carries `state_driven` and how many argument sets varied.
     """
     calls = list(calls)
     if error is not None:
@@ -177,6 +198,9 @@ def body_non_trivial_gate(calls: Iterable[ToolCall], results: Optional[list[dict
                "distinct_answers": len({content_hash(canon(r, rules)) for r in results or []}),
                "recorded_answers": len({content_hash(canon(parse_result(c.result), rules))
                                         for c in calls if c.error is None})}
+    varying = _arg_sets_varying(calls, rules)
+    if varying:
+        return _ruling("non_trivial", True, dict(metrics, state_driven=True, arg_sets_varying=varying))
     if metrics["arg_sets"] < 2:
         return _ruling("non_trivial", True, dict(metrics, insufficient_evidence=True))
     if metrics["recorded_answers"] < 2:
@@ -326,9 +350,19 @@ MIN_LITERAL_CHARS = 3
 MIN_LITERAL_NUMBER = 10
 # An id pattern that accepts an ordinary word describes no shape at all: `mine.id_pattern` falls
 # back to a bare character class when a column's values share nothing, and reading that as an id
-# shape would refuse every alphanumeric literal a body writes. The probes are plain English words
-# no customer owns; a pattern that accepts one of them is not asked rule (a).
-SHAPELESS_PROBES = ("value", "name", "text")
+# shape would refuse every alphanumeric literal a body writes. A pattern that accepts one of the
+# probes is not asked rule (a).
+#
+# The probes are a plain lowercase word and a Capitalised word at every length a literal reaches
+# (D167). Three fixed words of four and five letters missed `^.{6}$`, the pattern one build's miner
+# gave a table whose id values share nothing: six characters of any kind is no shape, and reading it
+# as one refused a six-letter dict key, a six-letter status word and two Capitalised place names as
+# memorised ids, leaving five tools assisted for four attempts on that alone. A word of any length,
+# either case, is what a shapeless pattern takes. No probe is digits only, because a pattern that
+# takes ten digits and nothing else is a real id shape and has to stay one.
+SHAPELESS_PROBE_LENGTHS = range(1, 25)
+SHAPELESS_PROBES = tuple(
+    probe for n in SHAPELESS_PROBE_LENGTHS for probe in ("a" * n, "A" + "a" * (n - 1)))
 
 
 def _scopes(tree: ast.AST, class_name: str) -> list[ast.AST]:
@@ -517,7 +551,12 @@ def signature_values(sig: Any = None) -> set[str]:
 
 
 def _shaped(pattern: str) -> bool:
-    """An id pattern that accepts an ordinary word describes no id shape and is not asked about."""
+    """An id pattern that accepts an ordinary word describes no id shape and is not asked about.
+
+    Any length of word, and Capitalised as well as lowercase (D167): a pattern that takes a word of
+    six characters takes a status word and a city name too, so it tells a memorised id from nothing.
+    A pattern that only takes digits is a shape and stays one.
+    """
     try:
         return not any(re.fullmatch(pattern, probe) for probe in SHAPELESS_PROBES)
     except re.error:

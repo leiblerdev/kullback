@@ -282,6 +282,8 @@ def test_trace_hash_covers_the_content(small_file, workdir):
         ("Error: Insufficient gift card balance to pay for the price difference", "business_error"),
         ("Unknown tool: frobnicate", "tool_not_found"),
         ("Tool 'x' not found", "tool_not_found"),
+        ("Error: Tool '$SHELF_ACTION' not found.", "tool_not_found"),
+        ("Error: Tool '$LIBRARY_FUNCTION{check_shelf}' not found.", "tool_not_found"),
         ("Invalid arguments: zip must be a string", "invalid_arguments"),
         ("get_user() missing 1 required positional argument: 'uid'", "invalid_arguments"),
         ("Permission denied for user u1", "permission_denied"),

@@ -165,6 +165,19 @@ def test_mine_gate_fails_a_missing_required_arg():
     assert any("order_id" in f for f in out.failures)
 
 
+def test_mine_gate_reports_the_unknown_tool_names_and_does_not_fail_on_them():
+    """D164: a name the recording refused on every call, and a name that is no identifier, are
+    counted and named. Having no such tool is the Environment being right, not a gate failure."""
+    unknown = [{"name": "renew_every_loan", "calls": 4, "requestors": ["assistant"],
+                "reason": "refused on every call"},
+               {"name": "$LOAN_ACTION", "calls": 1, "requestors": ["assistant"], "reason": "not a tool name"}]
+    out = mine_gate([a_sig()], unknown=unknown)
+    assert out.passed is True
+    assert out.metrics["unknown_tools"] == 2
+    assert out.metrics["unknown_tool_names"] == ["renew_every_loan", "$LOAN_ACTION"]
+    assert mine_gate([a_sig()]).metrics["unknown_tools"] == 0
+
+
 # --- the five compile-tool gates, in order ---
 
 def test_the_parses_gate_names_the_tool_whose_body_does_not_parse():

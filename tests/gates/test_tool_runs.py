@@ -1,9 +1,13 @@
-"""The replay comparison: hard columns after canon, and the ruling names where they part."""
+"""The replay comparison: hard columns after canon, and the ruling names where they part.
+
+The non_trivial ruling is here too, for the one thing only the recording can settle: whether a tool
+answers by its arguments or by the world (D165).
+"""
 from __future__ import annotations
 
 import json
 
-from kullback.gates.tool_runs import body_replay_fidelity_gate, compare_results
+from kullback.gates.tool_runs import body_non_trivial_gate, body_replay_fidelity_gate, compare_results
 from kullback.runner.canon import CanonRules
 from kullback.runner.records import Column, EntitySchema, ToolCall
 from runner.replay_fixtures import PTR
@@ -48,3 +52,32 @@ def test_the_fidelity_ruling_carries_the_leaf_and_not_the_semantic_note():
     assert result.passed is False
     assert result.failures == ['get_booking({"booking_id": "#B1"}): hard columns differ: rooms[1].bed: ours "king", recorded "twin"']
     assert result.metrics["semantic_differences"] == 1
+
+
+# --- gate 4: non_trivial, and the state-driven tool it may not judge (D165) ---
+
+
+def _door_call(index: int, answer: str, args: dict) -> ToolCall:
+    return ToolCall(id=f"c{index}", name="shutter_state", args=args, raw_ptr=PTR, result=answer)
+
+
+def test_a_tool_whose_recorded_answer_changed_under_the_same_arguments_is_left_to_replay_fidelity():
+    """An argument-free reading of the garage shutter answered "closed" twice and "open" once, because
+    a call between them opened it. The gate runs every call on one world, so a right body can only
+    answer one way there; the sequence is replay_fidelity's to judge."""
+    calls = [_door_call(1, "closed", {}), _door_call(2, "closed", {}), _door_call(3, "open", {})]
+    result = body_non_trivial_gate(calls, [{"ok": True, "value": "closed"}] * 3)
+    assert result.passed is True
+    assert result.metrics["state_driven"] is True and result.metrics["arg_sets_varying"] == 1
+    assert "insufficient_evidence" not in result.metrics
+
+
+def test_a_constant_body_still_fails_when_each_argument_set_had_one_answer_of_its_own():
+    """Two argument sets, each answered one way and the two ways differing: the answer comes from the
+    arguments, and a body that says the same thing to both is trivial."""
+    calls = [_door_call(1, "closed", {"bay": "north"}), _door_call(2, "open", {"bay": "south"})]
+    result = body_non_trivial_gate(calls, [{"ok": True, "value": "closed"}] * 2)
+    assert result.passed is False
+    assert result.failures == ["the body answers every call the same way"]
+    assert "state_driven" not in result.metrics
+    assert result.metrics["arg_sets"] == 2 and result.metrics["recorded_answers"] == 2
