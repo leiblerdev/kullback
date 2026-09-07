@@ -7,15 +7,25 @@ in `kullback.gates.verifier_suite`; this module is the derivation, moved here fr
 `builder/verifier.py` in phase 5 because the Examiner is the one writer of Verifiers (D123). What
 it adds to the gates' `make_atom` is the transcript helpers a compiled Hard rule may call, which
 the suite holds as `HELPERS_SRC` so the policy compiler and this module read one text.
+
+D43 sets an atom's kind by agreement across the good Runs, and for a fact the answer states that is
+not the whole rule: agreement says every good Run mentioned the number, not that the Task turned on
+it. A stated fact is required only when the request asked the agent about it, and reported without
+rejecting anything when it did not.
 """
 
 from __future__ import annotations
 
+import re
 from typing import Any, Iterable, Optional
 
 from kullback.gates.verifier_suite import (
     HELPERS_SRC,
     SUCCESS_TERMINATIONS,
+    _key,
+    _token_in,
+    _tokens,
+    _user_text,
     as_run,
     atom_payload,
     canon_fn,
@@ -34,6 +44,11 @@ from kullback.runner.records import Atom, Constraint, Run, Task, Verifier
 # A write value is required only when it is agreed across the good Runs *and* the customer or their
 # world is where it came from; a value the Candidate invented is never required of it.
 REQUIRED_PROVENANCE = ("user_stated", "system_derived")
+# The payload kind of a communicate atom the request never asked for. It carries the same value and
+# the same predicate as a required one, so the Verdict and the report can still say whether the Run
+# stated the fact, and it is not the kind the scorers read as a demand, so it rejects nothing.
+REPORTED_COMMUNICATE = "communicate_reported"
+_WORDS = re.compile(r"[A-Za-z0-9]+")
 
 
 def load_runs(paths: Iterable[Any]) -> list[Run]:
@@ -61,12 +76,98 @@ def _atom(atom_id: str, kind: str, payload: dict, **fields: Any) -> Atom:
     return make_atom(atom_id, kind, payload, helpers=_helpers_src(), **fields)
 
 
+# --- what the request asked for (D43) ---------------------------------------
+
+def request_phrases(intent: Any) -> list[str]:
+    """The request in the customer's own words: an Intent record's line and every grounded span, a
+    Task's Intent line and name, or a plain string.
+
+    Both records are read by attribute rather than by type so the derivation keeps taking a Task, an
+    Intent or a string, and so it never has to import the Builder to know what an Intent is (D123).
+    """
+    if intent is None:
+        return []
+    if isinstance(intent, str):
+        return [intent]
+    out = [str(getattr(intent, "text", "") or ""), str(getattr(intent, "intent", "") or ""),
+           str(getattr(intent, "name", "") or "")]
+    for span in getattr(intent, "spans", None) or []:
+        out += [str(getattr(span, "phrase", "") or ""), str(getattr(span, "text", "") or "")]
+    return [phrase for phrase in out if phrase.strip()]
+
+
+def _words(text: str) -> set[str]:
+    return {word.lower() for word in _WORDS.findall(text or "")}
+
+
+def asked_facts(intents: Iterable[Any], run: Run, fn: Any) -> tuple[set[str], set[str]]:
+    """What this Task's request asks the answer to state: the facts it names, and its words.
+
+    The facts are keyed the way `communicate_values` keys them, so a value the user spelled one way
+    and a tool result another are one key (D39). The words are everything the request and the Run's
+    own user turns are written in, which is how a fact asked for by the name of the field it lives
+    under ("the total") is recognised without the user having said the number.
+    """
+    texts = [phrase for intent in intents for phrase in request_phrases(intent)]
+    texts += [_user_text(event) for event in run.events if event.type == "user_turn"]
+    keys = {_key(fn, token) for text in texts for token in _tokens(text)}
+    return keys, {word for text in texts for word in _words(text)}
+
+
+def source_fields(run: Run, span: Any, token: str) -> set[str]:
+    """The field names the tool result this fact was read from held it under.
+
+    A fact the user never spelled out is still one the request asked for when the request names the
+    field it came from, so the field is read off the very result `communicate_values` found the fact
+    in, and never off the whole world.
+    """
+    idx = getattr(span, "msg_index", None)
+    event = next((e for e in run.events if e.idx == idx and e.type == "tool_result"), None)
+    if event is None:
+        return set()
+    found: set[str] = set()
+    _walk_fields((event.payload or {}).get("result"), token, None, found)
+    return found
+
+
+def _walk_fields(value: Any, token: str, field: Optional[str], found: set[str]) -> None:
+    if isinstance(value, dict):
+        for name, item in value.items():
+            _walk_fields(item, token, str(name), found)
+    elif isinstance(value, (list, tuple)):
+        for item in value:
+            _walk_fields(item, token, field, found)
+    elif field and _token_in(text_of(value), token):
+        found.add(field)
+
+
+def communicate_kind(fact: dict, key: str, run: Run, asked: tuple[set[str], set[str]]) -> bool:
+    """Is this stated fact one the request asked for, so that the answer has to repeat it?
+
+    D43 makes a fact stated by every good Run an atom, which is right for the fact the user asked
+    about and wrong for the ones the recorded agent volunteered beside it: a price, a total, a
+    duration nobody requested. On the first two corpora about seven in ten derived answer facts are
+    of the second kind, and a held-out Run that solved the Task without repeating the recorded
+    agent's number was rejected for it. Asked for means the request or a user turn of this Run names
+    the fact itself, or names the field of the tool result it was read from.
+    """
+    keys, words = asked
+    if key in keys:
+        return True
+    for field in source_fields(run, fact.get("span"), fact["text"]):
+        named = _words(field)
+        if named and named <= words:
+            return True
+    return False
+
+
 # --- derivation ------------------------------------------------------------
 
 def derive_verifier(task: Any, reference_run: Any, rerun_paths: Optional[list[str]] = None, canon: Any = None, *,
                     write_tools: Optional[Iterable[str]] = None,
                     constraints: Optional[Iterable[Constraint]] = None,
                     successful_run_ids: Optional[Iterable[str]] = None,
+                    intent: Any = None,
                     verifier_version: str = "1") -> Verifier:
     """The atoms for one Task: write-set diff over the Reference and its successful re-runs (D42, D43)."""
     fn = canon_fn(canon)
@@ -120,12 +221,23 @@ def derive_verifier(task: Any, reference_run: Any, rerun_paths: Optional[list[st
                            description=f"the agent asks the user about {key.split(':', 1)[-1]}"))
 
     said = [communicate_values(r, fn) for r in good]
+    request = asked_facts([intent, task], reference, fn)
     for number, key in enumerate(sorted(set.intersection(*[set(s) for s in said]) if said else set())):
         fact = said[0][key]
-        atoms.append(_atom(f"c{number}", "communicate",
-                           {"kind": "communicate", "value": key, "text": fact["text"]},
-                           provenance="system_derived", spans=[fact["span"]],
-                           description=f"the final answer states {fact['text']}"))
+        payload = {"kind": "communicate", "value": key, "text": fact["text"]}
+        if communicate_kind(fact, key, reference, request):
+            atoms.append(_atom(f"c{number}", "communicate", payload,
+                               provenance="system_derived", spans=[fact["span"]],
+                               description=f"the final answer states {fact['text']}, "
+                                           "which the request asked the agent about"))
+            continue
+        # Same value, same predicate, reported and never a rejection: the request did not ask for
+        # this fact, so a Run that solved the Task without repeating it has done the job.
+        reported = _atom(f"c{number}", "allowed", payload, provenance="system_derived",
+                         spans=[fact["span"]],
+                         description=f"the final answer may state {fact['text']}; the request did not ask "
+                                     "the agent about it, so it is reported and rejects no Run")
+        atoms.append(reported.model_copy(update={"target": dict(payload, kind=REPORTED_COMMUNICATE)}))
 
     for rule in constraints or []:
         if not (rule.compiled or rule.judge_atom):

@@ -210,13 +210,18 @@ def no_reference_status(ctx, task: Task, confirmation: Any, *, seed_replays: lis
 
 
 def derive_for(task_for: Task, confirmation: Any, *, canon_rules: Any, write_tools: set, constraints: list,
-               verifier_version: str = "1") -> Verifier:
-    """The derivation over the References: the first is the Reference, the rest its re-runs."""
+               intent: Any = None, verifier_version: str = "1") -> Verifier:
+    """The derivation over the References: the first is the Reference, the rest its re-runs.
+
+    The Task's Intent record goes in beside the Task itself: which facts the answer must state is
+    settled by what the request asked about, and the record carries the grounded span behind every
+    phrase of it, which the Intent line alone does not.
+    """
     paths = [r.path for r in confirmation.references]
     return verifier_mod.derive_verifier(task_for, paths[0], paths[1:], canon_rules,
                                         write_tools=write_tools, constraints=constraints,
                                         successful_run_ids=[r.run_id for r in confirmation.references],
-                                        verifier_version=verifier_version)
+                                        intent=intent, verifier_version=verifier_version)
 
 
 def suite_for(task_for: Task, verifier: Verifier, paths: list, *, canon_rules: Any, write_tools: set,
@@ -244,7 +249,8 @@ def verifier_for(ctx, task: Task, confirmation: Any, *, canon_rules: Any, write_
     first = confirmation.references[0]
     task_for = apply_intent(task, intents[task.id]) if task.id in intents else task
     record = derive_for(task_for, confirmation, canon_rules=canon_rules, write_tools=write_tools,
-                        constraints=constraints, verifier_version=verifier_version)
+                        constraints=constraints, intent=intents.get(task.id),
+                        verifier_version=verifier_version)
     rules_trace = first.trace_id or next((r.trace_id for r in confirmation.references if r.trace_id), None)
     gates = suite_for(task_for, record, paths, canon_rules=canon_rules, write_tools=write_tools,
                       user_rules=user_rules, rules_trace=rules_trace, probe_model=probe_model,
