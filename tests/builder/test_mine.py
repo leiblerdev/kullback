@@ -1379,3 +1379,121 @@ def test_the_retail_shaped_names_keep_their_old_answer():
     ])]
     schema = mine_schema(traces)
     assert schema.tables == ["orders"]
+
+
+# --- rows whose identity is more than one column (composite row keys) ---------
+
+def a_dock(dock_id: str, seats: int, shift=None, zone: str = "north") -> dict:
+    """One row of an invented `docks` table: a workshop dock, which is let out per shift."""
+    return {"dock_id": dock_id, "shift": shift, "seats": seats, "zone": zone}
+
+
+def dock_traces(calls: list[dict]) -> list[Trace]:
+    return [one_trace("t1", calls)]
+
+
+def test_a_table_whose_rows_repeat_an_id_gets_a_composite_key_naming_the_column():
+    traces = dock_traces([
+        {"name": "list_docks", "args": {"shift": "early", "zone": "north"},
+         "result": json.dumps([a_dock("dock_1", 4), a_dock("dock_2", 6)])},
+        {"name": "list_docks", "args": {"shift": "late", "zone": "north"},
+         "result": json.dumps([a_dock("dock_1", 1), a_dock("dock_2", 2)])},
+    ])
+    schema = mine_schema(traces)
+    assert schema.composite_keys == {"docks": ["dock_id", "shift"]}
+    assert schema.key_separator
+
+
+def test_an_argument_both_calls_agree_on_does_not_join_the_key():
+    """`zone` is an argument of both calls and never tells two sightings apart, so it is not identity."""
+    traces = dock_traces([
+        {"name": "list_docks", "args": {"shift": "early", "zone": "north"},
+         "result": json.dumps([a_dock("dock_1", 4)])},
+        {"name": "list_docks", "args": {"shift": "late", "zone": "north"},
+         "result": json.dumps([a_dock("dock_1", 1)])},
+    ])
+    assert mine_schema(traces).composite_keys == {"docks": ["dock_id", "shift"]}
+
+
+def test_a_table_with_one_version_per_id_keeps_its_single_key():
+    traces = dock_traces([
+        {"name": "list_docks", "args": {"shift": "early", "zone": "north"},
+         "result": json.dumps([a_dock("dock_1", 4), a_dock("dock_2", 6)])},
+        {"name": "list_docks", "args": {"shift": "late", "zone": "north"},
+         "result": json.dumps([a_dock("dock_1", 4), a_dock("dock_2", 6)])},
+    ])
+    assert mine_schema(traces).composite_keys == {}
+
+
+def test_a_change_after_a_write_is_not_a_second_version():
+    """The same two sightings that would name a key, with the write that explains them in between."""
+    traces = dock_traces([
+        {"name": "list_docks", "args": {"shift": "early", "zone": "north"},
+         "result": json.dumps([a_dock("dock_1", 4)])},
+        {"name": "update_dock_seats", "args": {"dock_id": "dock_1", "seats": 1},
+         "result": json.dumps(a_dock("dock_1", 1))},
+        {"name": "list_docks", "args": {"shift": "late", "zone": "north"},
+         "result": json.dumps([a_dock("dock_1", 1)])},
+    ])
+    assert mine_schema(traces).composite_keys == {}
+    assert mine_schema(traces, write_tools=["update_dock_seats"]).composite_keys == {}
+
+
+def test_the_key_column_must_be_an_argument_of_the_call_that_returned_the_rows():
+    """The rows say which shift they are, and no argument does; the corpus has not shown the tool
+    being asked for one version rather than the other, so nothing joins the key."""
+    traces = dock_traces([
+        {"name": "list_docks", "args": {"zone": "north"},
+         "result": json.dumps([a_dock("dock_1", 4, shift="early")])},
+        {"name": "list_docks", "args": {"zone": "north"},
+         "result": json.dumps([a_dock("dock_1", 1, shift="late")])},
+    ])
+    assert mine_schema(traces).composite_keys == {}
+
+
+def test_a_soft_column_does_not_join_the_key():
+    """`updated_at` is exempt under D73, so it is neither a difference nor a key column."""
+    early = dict(a_dock("dock_1", 4), updated_at="2020-01-01T00:00:00")
+    late = dict(a_dock("dock_1", 4), updated_at="2020-01-02T00:00:00")
+    traces = dock_traces([
+        {"name": "list_docks", "args": {"updated_at": "2020-01-01T00:00:00"}, "result": json.dumps([early])},
+        {"name": "list_docks", "args": {"updated_at": "2020-01-02T00:00:00"}, "result": json.dumps([late])},
+    ])
+    schema = mine_schema(traces)
+    assert col(schema, "docks", "updated_at").class_ == "exempt"
+    assert schema.composite_keys == {}
+
+
+def test_the_key_is_the_columns_every_conflicting_pair_agrees_on():
+    """One pair whose calls also disagree on `zone` cannot add `zone` to the key the others name."""
+    traces = [
+        one_trace("t1", [
+            {"name": "list_docks", "args": {"shift": "early", "zone": "north"},
+             "result": json.dumps([a_dock("dock_1", 4)])},
+            {"name": "list_docks", "args": {"shift": "late", "zone": "south"},
+             "result": json.dumps([a_dock("dock_1", 1)])},
+        ]),
+        one_trace("t2", [
+            {"name": "list_docks", "args": {"shift": "early", "zone": "north"},
+             "result": json.dumps([a_dock("dock_1", 4)])},
+            {"name": "list_docks", "args": {"shift": "late", "zone": "north"},
+             "result": json.dumps([a_dock("dock_1", 1)])},
+        ]),
+    ]
+    assert mine_schema(traces).composite_keys == {"docks": ["dock_id", "shift"]}
+
+
+def test_one_id_repeated_across_two_traces_is_not_a_composite_key():
+    """Two traces can start in two worlds (D74); only a repeat inside one trace names a key."""
+    traces = [
+        one_trace("t1", [{"name": "list_docks", "args": {"shift": "early", "zone": "north"},
+                          "result": json.dumps([a_dock("dock_1", 4)])}]),
+        one_trace("t2", [{"name": "list_docks", "args": {"shift": "late", "zone": "north"},
+                          "result": json.dumps([a_dock("dock_1", 1)])}]),
+    ]
+    assert mine_schema(traces).composite_keys == {}
+
+
+def test_the_retail_shaped_fixture_needs_no_composite_key(fixture_traces):
+    """The rule must be silent on a corpus whose ids stand for one row each."""
+    assert mine_schema(fixture_traces).composite_keys == {}

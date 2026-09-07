@@ -154,7 +154,9 @@ def _mine_stage():
     def run(ctx, inputs):
         traces = inputs["traces"]
         sigs = mine.mine_tools(traces)
-        schema = mine.mine_schema(traces)
+        # The write tools are the sigs' own, so the composite-key rule reads the same kinds the rest
+        # of the build does rather than classifying the tools a second time.
+        schema = mine.mine_schema(traces, write_tools=sorted(s.name for s in sigs if s.kind == "write"))
         # D164: the names the recording refused on every call, and the ones a recorded agent
         # invented, are no tool of this customer. They are written beside the sigs so a build can
         # see them, and they are never a failure: a Run refuses them as the recording did.

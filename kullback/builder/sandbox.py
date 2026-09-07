@@ -70,6 +70,8 @@ class SandboxError(RuntimeError):
 # stay importable from here for compile_env.py and synth.py.
 parse_result, id_pattern_for, id_field, match_table = (
     tool_runs.parse_result, tool_runs.id_pattern_for, tool_runs.id_field, tool_runs.match_table)
+key_fields, key_separator, row_key, partial_key = (
+    tool_runs.key_fields, tool_runs.key_separator, tool_runs.row_key, tool_runs.partial_key)
 args_text = tool_runs.args_text
 
 # --- the minimal sandbox (see the module docstring) ---
