@@ -24,6 +24,7 @@ from pathlib import Path
 from typing import Any, Iterable, Optional
 
 from kullback.examiner import derive as verifier_mod
+from kullback.examiner import judge as judge_mod
 from kullback.examiner import reference as reference_mod
 from kullback.gates import artifacts, fidelity, verifier_suite
 from kullback.gates import scorecard as scorecard_mod
@@ -45,17 +46,21 @@ from kullback.runner.records import (
 
 DERIVE_INPUTS = ("tasks", "sigs", "constraints", "canon_rules", "replays", "rerolls", "intents", "user_rules",
                  "traces", "assisted_tools", "tool_fidelity")
+# The inputs the derivation reads without a default: a store short of any of them is a build that
+# stopped before the stage that releases it, and the Examiner has nothing to derive from rather
+# than a KeyError halfway through (`missing_inputs`).
+REQUIRED_INPUTS = ("tasks", "sigs", "constraints")
 FORBIDDEN_INPUTS = ("bodies", "db", "schema", "environment", "overlays", "synthetic_rows", "policy_text",
                     "lessons_applied", "lessons_set_aside")
 STAGE = "derive_verifier"
 # The per-Task cache under the workdir (D163). Bumped when the entry's shape changes, so an old entry
 # is a miss rather than a row read with the wrong meaning.
 CACHE_DIR = ("examiner", "cache")
-CACHE_FORMAT = 2  # D171 added the per-Task fidelity fields to every status row
+CACHE_FORMAT = 3  # the reference record carries what the judge looked at, and the status row the pool
 # The modules a Task's derivation runs through, hashed into every key: an edit to any of them is a
 # different derivation and must not be served a stale entry (the Builder's stages hash the same way,
 # build.py's `_version`).
-CODE_MODULES = (verifier_mod, reference_mod, verifier_suite)
+CODE_MODULES = (verifier_mod, reference_mod, judge_mod, verifier_suite)
 
 
 class ExamContext:
@@ -78,6 +83,16 @@ class ExamContext:
         """One ruling into gates.json under this stage's name, remembered for the tool result."""
         self.recorded.append(result)
         return self.ledger.record(self.stage, result)
+
+
+def missing_inputs(store: dict) -> list[str]:
+    """The derivation inputs a store does not hold, in `REQUIRED_INPUTS` order; empty when it can derive.
+
+    A `--target` naming a stage before compile_policy leaves the store without the artifacts the
+    derivation reads with no default, and the Examiner used to open on it and fail on the first one
+    it reached. The driver asks this before the beat and ends the round on the build instead.
+    """
+    return [name for name in REQUIRED_INPUTS if name not in store]
 
 
 def inputs_from(store: dict) -> dict:
@@ -106,6 +121,21 @@ def request_text(task: Task, intents: dict, traces: dict) -> str:
             if turn.role == "user" and turn.content:
                 return turn.content
     return ""
+
+
+def grounded_phrases(intent: Optional[Intent]) -> list[str]:
+    """The noun phrases of a grounded Intent, in order, without repeats, for the judge's `intent` tool.
+
+    An ungrounded Intent has no phrase the Runs evidence (D47), so it offers none: the judge would
+    otherwise read a phrase the intent gate has already refused as if the Runs stood behind it.
+    """
+    if intent is None or not intent.grounded:
+        return []
+    out: list[str] = []
+    for span in intent.spans:
+        if span.phrase and span.phrase not in out:
+            out.append(span.phrase)
+    return out
 
 
 # --- the moved helpers ---------------------------------------------------------
@@ -425,6 +455,10 @@ def derive_all(ctx: ExamContext, inputs: dict, *, probe_model: Any = None, probe
     assisted_tools = set(inputs.get("assisted_tools") or ())
     tool_fidelity = inputs.get("tool_fidelity") or {}
     atoms = reference_mod.hard_atoms(constraints, write_tools, read_tools)
+    # D12: the residue judge is an agent with a bounded look over the same Task, and the one-shot
+    # judge it wraps is its fallback. Built once for the build, asked once per disagreeing Task.
+    judge = None if judge_model is None else judge_mod.AgentJudge(
+        judge_model, constraints=constraints, write_tools=write_tools, read_tools=read_tools, fn=fn)
     probe = run_probe if probe_model is not None else None
     tasks = list(inputs["tasks"])
     if only is not None:
@@ -455,7 +489,8 @@ def derive_all(ctx: ExamContext, inputs: dict, *, probe_model: Any = None, probe
         if entry is not None:
             return _Job(task=task, key=key, entry=entry)
         confirmation = reference_mod.confirm(recordings, intent=request_text(task, intents, traces),
-                                             policy_lines=policy_lines, judge=judge_model)
+                                             policy_lines=policy_lines, judge=judge,
+                                             phrases=grounded_phrases(intents.get(task.id)))
         return _Job(task=task, key=key, confirmation=confirmation)
 
     jobs = parallel.each(tasks, prepare, workers)

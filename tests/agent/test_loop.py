@@ -6,7 +6,13 @@ import asyncio
 from collections import deque
 
 from kullback.agent.events import AgentEnd, ToolExecutionEnd, TurnEnd
-from kullback.agent.loop import Hooks, LoopState, interrupted_tool_results, run_agent_loop
+from kullback.agent.loop import (
+    EMPTY_TURN_ASK,
+    Hooks,
+    LoopState,
+    interrupted_tool_results,
+    run_agent_loop,
+)
 from kullback.agent.messages import AssistantMessage, ToolResultMessage, UserMessage
 from kullback.agent.tools import AgentTool, ToolRegistry, ToolResult
 from kullback.ai.provider import TestModel
@@ -313,3 +319,19 @@ def test_no_prompts_and_empty_queues_still_asks_the_model_once():
     events, state = run(TestModel(["hi"]), prompts=[])
     assert [m.role for m in state.messages] == ["assistant"]
     assert types_of(events).count("turn_start") == 1
+
+
+def test_an_empty_last_turn_is_asked_once_for_the_summary_and_a_second_one_ends_the_run():
+    """On one build, two of the Examiner's three no-tool turns were empty strings right after a
+    code compaction, so the round ended with no account of what was left. The loop asks once."""
+    events, state = run(TestModel([reply(""), reply("")]))
+    asks = [m for m in state.messages if m.role == "user" and m.content == EMPTY_TURN_ASK]
+    assert len(asks) == 1, "asked once, not twice"
+    assert [m.role for m in state.messages] == ["user", "assistant", "user", "assistant"]
+    assert types_of(events).count("turn_end") == 2
+
+
+def test_a_last_turn_that_says_something_is_not_asked_again():
+    events, state = run(TestModel(["nothing left to do."]))
+    assert [m.role for m in state.messages] == ["user", "assistant"]
+    assert not [m for m in state.messages if m.role == "user" and m.content == EMPTY_TURN_ASK]
