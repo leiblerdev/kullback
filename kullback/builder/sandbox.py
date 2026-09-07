@@ -202,6 +202,14 @@ class Sandbox:
         """The world this call runs on: its own Task's, or the shared one."""
         return self.call_states.get(call.id, self.db) if call.id else self.db
 
+    def state_key(self, call: ToolCall) -> str:
+        """A comparable key for the world this call runs on, memoised per world, never per call.
+
+        Two calls with the same arguments on two different worlds are two different inputs, and a
+        body that answers them alike answered without looking at either.
+        """
+        return self._state_hash(self.state_for(call))
+
     def _state_hash(self, state: dict) -> str:
         key = self._state_hashes.get(id(state))
         if key is None:

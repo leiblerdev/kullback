@@ -20,6 +20,7 @@ from __future__ import annotations
 import re
 from typing import Any, Callable, Optional
 
+from kullback import round_delta
 from kullback.agent.extensions import ExtensionAPI, refuse_paths
 from kullback.agent.harness import prompt_block
 from kullback.agent.messages import ToolCall
@@ -233,13 +234,24 @@ def gate_rulings_hook(plan: ExaminerPlan, api: Optional[ExtensionAPI] = None) ->
     return guard_hooks(plan, api)[1]
 
 
+def what_section(plan: ExaminerPlan) -> str:
+    """What the Examiner is, and what the round before this one moved (`round_delta.delta_line`).
+
+    A round opened on the artifacts as they stand and on nothing else. One live build's Examiner
+    filed fewer findings every round while the trusted count fell by a third, and no round was ever
+    told that the round before it had made things worse.
+    """
+    delta = round_delta.delta_line(plan.workdir)
+    return WHAT + (f"\nThe round before this one: {delta}." if delta else "")
+
+
 def examiner_extension(plan: ExaminerPlan) -> Callable[[ExtensionAPI], None]:
     """The setup the harness loads: tools, prompt sections, the probe skill, the hooks, the plan's context calls."""
 
     def setup(api: ExtensionAPI) -> None:
         for tool in examiner_tools(plan, sink=api.harness.emit):
             api.register_tool(tool)
-        api.add_prompt_section("examiner", prompt_block("task", WHAT))
+        api.add_prompt_section("examiner", prompt_block("task", what_section(plan)))
         api.add_prompt_section("examiner_tools", prompt_block("tools", TOOLS))
         api.add_prompt_section("skills", api.context.skills_section())
         api.catalog_skill(PROBE_SKILL_NAME, PROBE_SKILL, loaded=True)

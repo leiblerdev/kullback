@@ -320,6 +320,17 @@ def _state_stage(grow: Optional[dict] = None, grow_seed: int = 0):
                           code_version=_version("starting_state", fn, compile_env, synth, readers))
 
 
+def _record_hardcoded_lesson(workdir: Any, name: str) -> None:
+    """Tell the next attempt what the gates do not say: this body never read its arguments.
+
+    Written once. The lessons file is an input of this stage, so appending the same sentence on
+    every run would change the stage's key on every run and recompile every tool that carries it.
+    """
+    if [compile_env.HARDCODED_LESSON] in memory.load_tool_lessons(workdir).get(name, []):
+        return
+    memory.record_lesson(workdir, name, [compile_env.HARDCODED_LESSON])
+
+
 def _tools_stage(model: Any, max_attempts: int, workers: int = 1, only: Optional[Iterable[str]] = None):
     """compile_tools, or with `only` the same stage narrowed to those tools: the rest of the bodies
     are read back from bodies.json, so the artifact it releases is still every body (the tool
@@ -419,9 +430,12 @@ def _tools_stage(model: Any, max_attempts: int, workers: int = 1, only: Optional
                     assisted.append(sig.name)
                 declined.append(sig.name)
                 continue
-            bodies[sig.name] = build.body
-            builds[sig.name] = {"assisted": build.assisted, "nodes": build.nodes,
+            bodies[sig.name] = compile_env.mark_hardcoded(build.body) if build.hardcoded else build.body
+            builds[sig.name] = {"assisted": build.assisted, "hardcoded": build.hardcoded,
+                                "nodes": build.nodes,
                                 "after_write_skipped": skipped.get(sig.name, 0), "score": score}
+            if build.hardcoded:
+                _record_hardcoded_lesson(ctx.workdir, sig.name)
             outcomes[sig.name] = build.call_outcomes
             if build.assisted:
                 assisted.append(sig.name)
