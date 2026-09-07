@@ -26,7 +26,7 @@ import json
 import re
 import time
 from pathlib import Path
-from typing import Any, Awaitable, Callable, Iterator, Literal, Optional
+from typing import Any, Awaitable, Callable, Iterable, Iterator, Literal, Optional, get_args
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -75,6 +75,84 @@ SearchKind = Literal["trace", "run", "intent", "task_status", "verifier"]
 SEARCH_KINDS: tuple[str, ...] = ("trace", "run", "intent", "task_status", "verifier")
 SEARCH_LINE = 200  # about one line of the record around a match, the match inside it
 SEARCH_LIMIT = 50
+# --- what a finding is about, and the names a model reaches for instead ---
+#
+# One live build's Examiner made 28 `finding` calls and 17 of them were refused for passing a ruling
+# name (`replay_reference`) where the kind enum was wanted; 13 of the 17 were about real replay
+# differences on four tools and none was retried, so the round lost them. The kinds are what the
+# record has (`FindingKind`); the names below are what the Examiner is looking at when it files one,
+# and each maps to the kind it is about. Nothing here knows a domain: the left column is the gates'
+# own ruling and stage vocabulary, and a name that is neither a kind nor a ruling is refused with
+# both lists rather than with pydantic's enum line.
+FINDING_KINDS: tuple[str, ...] = get_args(FindingKind)
+KIND_OF_RULING: dict[str, str] = {
+    # the fidelity rulings: a body's answer to a recorded call parts from the recording, at any grain
+    "replay_reference": "fidelity",
+    "replay_fidelity": "fidelity",
+    "compile_tools.replay_fidelity": "fidelity",
+    "gate_a_oracle_replay": "fidelity",
+    # the tool-body stages: the tool has no body that cleared its gates
+    "compile_tools": "assisted_tool",
+    "compile_tools.parses": "assisted_tool",
+    "compile_tools.executes": "assisted_tool",
+    "compile_tools.deterministic": "assisted_tool",
+    "compile_tools.non_trivial": "assisted_tool",
+    "compile_tools.memorised_values": "assisted_tool",
+    "compile_tools.bodies": "assisted_tool",
+    "assisted": "assisted_tool",
+    # the reference rulings: the recordings of a Task do not settle on one End state
+    "reference": "reference_disagreement",
+    "references": "reference_disagreement",
+    "reference_agreement": "reference_disagreement",
+    "disagreement": "reference_disagreement",
+    # the Verifier's own rulings
+    "derive_verifier": "suite",
+    "verifier_suite": "suite",
+    "loosening": "false_rejection",
+    # the world itself
+    "build_environment": "environment",
+    "starting_state": "environment",
+    "intent": "other",
+}
+# The D79 checks and the stages they report under are all one kind: a check of the suite.
+KIND_OF_RULING.update({name: "suite" for name in verifier_suite.D79_STAGES})
+KIND_OF_RULING.update({check: "suite" for check in verifier_suite.D79_STAGES.values()})
+
+
+def finding_kind(name: str, tools: Iterable[str] = ()) -> str:
+    """The finding kind a model's `kind` argument means: itself, a ruling's, or a tool's.
+
+    A kind is taken as it is; a ruling or stage name is mapped to the kind that ruling is about; a
+    name of a tool of this build is `assisted_tool`, since a finding filed under a tool's own name
+    is a finding about that tool's body. Anything else raises with both lists, so the answer the
+    model reads says what to send instead rather than only what was wrong.
+    """
+    text = (name or "").strip()
+    if text in FINDING_KINDS:
+        return text
+    mapped = KIND_OF_RULING.get(text)
+    if mapped is not None:
+        return mapped
+    if text in set(tools):
+        return "assisted_tool"
+    raise ValueError(f"{text!r} is not a finding kind. The kinds are: {', '.join(FINDING_KINDS)}. "
+                     f"A ruling name is taken as the kind it is about ({ruling_mapping()}), and the "
+                     f"name of a tool of this build is taken as assisted_tool.")
+
+
+def ruling_mapping() -> str:
+    """The ruling-to-kind map as one line per kind, which is how the refusal states it."""
+    grouped: dict[str, list[str]] = {}
+    for ruling, kind in sorted(KIND_OF_RULING.items()):
+        grouped.setdefault(kind, []).append(ruling)
+    return "; ".join(f"{kind} <- {', '.join(rulings)}" for kind, rulings in sorted(grouped.items()))
+
+
+def _tool_names(plan: ExaminerPlan) -> list[str]:
+    """Every tool of this build, off the mined signatures the plan carries."""
+    return [str(getattr(sig, "name", "")) for sig in (plan.store.get("sigs") or [])]
+
+
 # The eight classes of skills.BUG_CLASSES, spelled out so the tool schema names them; the test pins the two.
 BugClass = Literal["loose answer extraction", "missing final-answer markers", "numeric-tolerance abuse",
                    "schema-only validation", "extra-field acceptance", "visible-test overfitting",
@@ -256,12 +334,14 @@ class FindingArgs(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     task_id: Optional[str] = None
-    kind: FindingKind = Field(description="What the finding is about: `assisted_tool` a tool no body "
-                                          "cleared the gates for, `fidelity` a body that replays "
-                                          "differently, `reference_disagreement` a Task whose recordings do "
-                                          "not settle on an End state, `suite` a D79 check, "
-                                          "`false_rejection` a Verifier that rejects every held-out Run, "
-                                          "`environment` the world itself.")
+    kind: str = Field(description="What the finding is about, one of: assisted_tool (a tool no body "
+                                  "cleared the gates for), fidelity (a body that replays "
+                                  "differently), reference_disagreement (a Task whose recordings do "
+                                  "not settle on an End state), suite (a D79 check), "
+                                  "false_rejection (a Verifier that rejects every held-out Run), "
+                                  "environment (the world itself), other. The name of the ruling you "
+                                  "are answering is taken as the kind it is about, and so is the name "
+                                  "of a tool of this build; anything else is refused with the list.")
     text: str
     run_id: Optional[str] = None
     tool: Optional[str] = None
@@ -958,23 +1038,26 @@ def _reroll(plan: ExaminerPlan):
 
 def _finding(plan: ExaminerPlan):
     async def finding(args: FindingArgs) -> FindingResult:
+        # The kind a ruling name means, so a finding filed under the ruling it answers lands instead
+        # of being refused; an unknown name raises with the kinds and the mapping.
+        kind = finding_kind(args.kind, _tool_names(plan))
         # D170: one loss is one finding. A key already open is refused with the id of the finding
         # that holds it, so a model that files the same thing twenty-four times to get seven on the
         # list is told which one it already has instead of being counted again.
-        key = findings_mod.finding_key(args.kind, args.tool or "", args.task_id or "")
+        key = findings_mod.finding_key(kind, args.tool or "", args.task_id or "")
         existing = findings_mod.open_by_key(plan).get(key)
         if existing is not None:
-            raise ValueError(f"{existing} already says this ({args.kind}"
+            raise ValueError(f"{existing} already says this ({kind}"
                              + (f" on {args.tool}" if args.tool else "")
                              + (f" on task {args.task_id}" if args.task_id else "")
                              + "); it is open and the Builder has not answered it yet. Act on it, or file "
                                "a finding that says something else.")
         about = plan.entry_id_for(args.about_call_id) if args.about_call_id else None
         record = findings_mod.file_finding(
-            plan, kind=args.kind, text=args.text, key=key, suggested=args.suggested, hint=args.hint,
+            plan, kind=kind, text=args.text, key=key, suggested=args.suggested, hint=args.hint,
             task_id=args.task_id, task_ids=[args.task_id] if args.task_id else (), tool=args.tool,
             run_id=args.run_id, about_entry_id=about)
-        summary = f"finding {record.finding_id} ({args.kind}) filed for the Builder" + \
+        summary = f"finding {record.finding_id} ({kind}) filed for the Builder" + \
                   (f" on task {args.task_id}" if args.task_id else "") + \
                   (f", suggested {args.suggested}" if args.suggested != "none" else "") + \
                   (" with a hint" if record.hint else "")

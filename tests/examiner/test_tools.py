@@ -539,3 +539,25 @@ def test_a_whole_file_read_is_an_index_of_one_line_per_id_and_a_long_read_is_cut
     long = examiner_tools._clamped_text({"rows": ["x" * 100] * 1000})
     assert len(long) < examiner_tools.READ_CHARS + 120 and "characters cut" in long.splitlines()[-1]
     assert examiner_tools._clamped_text({"a": 1}) == examiner_tools._text({"a": 1})
+
+
+def test_a_finding_filed_under_a_ruling_name_lands_with_the_kind_that_ruling_is_about(derived):
+    """One live build's Examiner filed 17 of its 28 findings under a ruling name (`replay_reference`)
+    and every one was refused by the enum, 13 of them about real replay differences that were never
+    retried. A ruling name is what the Examiner is reading when it files, so it is taken as the kind
+    that ruling is about; a name that is neither is refused with the kinds and the mapping."""
+    plan, harness = _harness(derived, round=1)
+    filed = drive(harness, "finding", {"task_id": T, "kind": "replay_reference",
+                                       "text": "the body answers a recorded call differently",
+                                       "suggested": "repair_recompile", "hint": "the status differs"})
+    assert filed.is_error is False
+    assert filed.details["finding"]["kind"] == "fidelity", "the fidelity ruling maps to the fidelity kind"
+    assert "(fidelity)" in filed.content
+    suite = drive(harness, "finding", {"task_id": T, "kind": "mutation_flips", "text": "no atom names a value",
+                                       "suggested": "repair"}, call_id="f2")
+    assert suite.is_error is False and suite.details["finding"]["kind"] == "suite"
+    unknown = drive(harness, "finding", {"task_id": T, "kind": "not_a_ruling", "text": "x"}, call_id="f3")
+    assert unknown.is_error
+    assert "assisted_tool, fidelity, reference_disagreement" in unknown.content, "the kinds are listed"
+    assert "fidelity <- " in unknown.content, "and the mapping the model may use instead"
+    assert tools_mod.finding_kind("ledger_rebalance", ["ledger_rebalance"]) == "assisted_tool"
