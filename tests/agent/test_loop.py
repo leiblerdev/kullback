@@ -322,7 +322,7 @@ def test_no_prompts_and_empty_queues_still_asks_the_model_once():
 
 
 def test_an_empty_last_turn_is_asked_once_for_the_summary_and_a_second_one_ends_the_run():
-    """Retail build 14: two of the Examiner's three no-tool turns were empty strings right after a
+    """On one build, two of the Examiner's three no-tool turns were empty strings right after a
     code compaction, so the round ended with no account of what was left. The loop asks once."""
     events, state = run(TestModel([reply(""), reply("")]))
     asks = [m for m in state.messages if m.role == "user" and m.content == EMPTY_TURN_ASK]
