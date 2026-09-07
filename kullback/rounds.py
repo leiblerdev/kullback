@@ -55,7 +55,8 @@ from kullback.builder import pipeline
 from kullback.builder import repair as repair_module
 from kullback.builder.agent import builder_message
 from kullback.builder.build import DEFAULT_REROLLS, TARGET_ALL, BuildError, BuildPlan
-from kullback.builder.tools import BUILD_TOOLS
+from kullback.builder.readers import GATE_DECLARED as READERS_GATE
+from kullback.builder.tools import BUILD_TOOLS, EXAMINER_OWNS
 from kullback.examiner import agent as examiner_agent
 from kullback.examiner.agent import ExaminerError, examiner_message, examiner_round_message
 from kullback.examiner.plan import STATE_DIR, ExaminerPlan
@@ -82,6 +83,14 @@ ALLOWANCE_STEER = "Your allowance for this round is spent: finish with what you 
 # which only the plan's own registry knows (builder.agent.nothing_changed_message).
 STALL_FOLLOW_UP = builder_agent.NOTHING_CHANGED
 EXAMINER_TARGET = "all"
+# The verbs a Builder beat can actually call: the stage tools plus the two deciding verbs of
+# `builder/repair.py`. A finding suggesting anything else names an artifact the Builder does not own
+# (the Examiner's `repair` over a Verifier, D123); it is delivered as a report and never driven.
+BUILDER_VERBS: frozenset = frozenset(BUILD_TOOLS) | {"repair_refuse_task", "repair_escalate"}
+# The Examiner's own two, which a finding may suggest and the Builder is never driven at: `repair`
+# rewrites a Verifier (D123), and `reroll_then_derive` is the Examiner's `reroll` of a Task followed
+# by `derive`, which is what a D79 check with no second Run to score asks for (D173).
+EXAMINER_VERBS: frozenset = frozenset({"repair", "reroll_then_derive"})
 BUILDER_SESSION = Path("builder") / "session.jsonl"
 EXAMINER_SESSION = Path("examiner") / "session.jsonl"
 
@@ -168,16 +177,38 @@ def finding_message(finding: Finding) -> str:
     """A finding as the Builder reads it; the record itself rides in the message's details.
 
     The suggestion is rendered as the call the Builder can make, arguments and all, so a hint the
-    Examiner wrote reaches the verb verbatim instead of being paraphrased back out of the prose.
+    Examiner wrote reaches the verb verbatim instead of being paraphrased back out of the prose. A
+    finding whose answer is a verb the Builder does not have is a report, not a call: the Verifier
+    is the Examiner's (D123), and rendering `repair(...)` for it would send the Builder after an
+    artifact it cannot touch. What the finding costs is in the first line, because that is what the
+    Builder ranks its round on (D170).
     """
-    text = f"Finding {finding.finding_id} ({finding.kind}): {finding.text}"
+    cost = f", {task_count(finding.cost)}" if finding.cost else ""
+    text = f"Finding {finding.finding_id} ({finding.kind}{cost}): {finding.text}"
     if finding.task_id:
         text += f" Task {finding.task_id}."
     if finding.tool:
         text += f" Tool {finding.tool}."
-    if finding.suggested != "none":
+    if finding.suggested in BUILDER_VERBS:
         text += f" Suggested: {suggested_call(finding)}"
+    elif finding.suggested != "none":
+        text += f" Answered by {finding.suggested}, and {EXAMINER_OWNS}: nothing here for you to call."
     return text
+
+
+def task_count(n: int) -> str:
+    """`3 Tasks`, `1 Task`: the count of Tasks a finding costs, which the Builder reads it by (D170)."""
+    return f"{n} Task{'' if n == 1 else 's'}"
+
+
+def leading_finding(findings: Iterable[Finding]) -> Optional[Finding]:
+    """The finding a Builder beat opens on: the costliest one that names a verb the Builder can call.
+
+    Three model-driven builds opened every round on an Intent worth one Task while an assisted tool
+    blocked fifty; the Builder followed the list it was handed and no Task became trusted (D170).
+    """
+    return max((f for f in findings if f.cost and f.suggested in BUILDER_VERBS),
+               key=lambda f: f.cost, default=None)
 
 
 def suggested_call(finding: Finding) -> str:
@@ -199,6 +230,8 @@ def finding_arguments(finding: Finding) -> dict:
         return {"name": finding.tool or "", "hint": finding.hint}
     if finding.suggested == "repair_intent":
         return {"task_id": finding.task_id or "", "hint": finding.hint}
+    if finding.suggested == "repair_refuse_task":
+        return {"task_id": finding.task_id or "", "reason": finding.hint or finding.text}
     return {"task": finding.task_id or ""}
 
 
@@ -486,11 +519,13 @@ class Loop:
             raise RuntimeError("the Examiner is still running; one agent at a time (D128)")
         self.emit(BeatStart(agent="builder", round=n))
         before = self.spend()
-        delivered = list(self.pending_findings)
+        # Most costly first (D170): the order the findings are acted on and delivered in is the
+        # order of the Tasks they cost, so a tool blocking fifty Tasks is worked before an Intent.
+        delivered = sorted(self.pending_findings, key=lambda f: -f.cost)
         failed: set[str] = set()
         if self.agent_model is None:
             for finding in delivered:
-                if finding.suggested != "none":
+                if finding.suggested in BUILDER_VERBS:
                     action = builder_agent.drive_tool(self.builder, finding.suggested,
                                                       finding_arguments(finding))
                     if action.is_error:
@@ -500,8 +535,14 @@ class Loop:
             if n == 1:
                 events = self.builder.prompt(builder_message(self.target))
             else:
-                self.builder.steer(f"round {n}: the Examiner's findings follow, one per message; act on each, "
-                                   f"then build {self.target!r} again and read the rulings.")
+                # D170: the steer names the finding that costs the most Tasks and how many, so the
+                # Environment is repaired before the Intents rather than after them.
+                lead = leading_finding(delivered)
+                head = (f"round {n}: start with {lead.finding_id}, which costs "
+                        f"{task_count(lead.cost)}: "
+                        f"{suggested_call(lead)}. " if lead is not None else f"round {n}: ")
+                self.builder.steer(head + "the Examiner's findings follow, one per message, the costliest "
+                                   f"first; act on each, then build {self.target!r} again and read the rulings.")
                 events = self.builder.continue_()
             # Every beat, including round 1: a resumed finding that never reaches the model would be
             # dequeued as delivered and later closed without ever being acted on. Queued follow-ups
@@ -567,11 +608,22 @@ class Loop:
             self._unclosed = []
 
     def _collect_finding(self, event: Any) -> None:
-        if not isinstance(event, ToolExecutionEnd) or event.tool_name != "finding" or event.is_error:
+        """Every finding an Examiner tool filed, whoever chose it.
+
+        `finding` is the model's one at a time; `derive` carries the ones the round's records filed
+        by rule before the model chose anything (D170), which is what makes the list exist on a
+        code-driven beat and on a beat where the model files nothing.
+        """
+        if not isinstance(event, ToolExecutionEnd) or event.is_error:
             return
-        body = (event.result.details or {}).get("finding")
-        if body:
+        details = event.result.details or {}
+        bodies = [details["finding"]] if event.tool_name == "finding" and details.get("finding") else []
+        bodies += list(details.get("findings") or []) if event.tool_name == "derive" else []
+        seen = {finding.finding_id for finding in self.pending_findings}
+        for body in bodies:
             finding = Finding.model_validate(body)
+            if finding.finding_id in seen:
+                continue
             self.pending_findings.append(finding)
             self.sent.append(finding.finding_id)
 
@@ -935,7 +987,7 @@ def run_rounds(workdir: Any, model: Any = None, *, agent_model: Optional[Model] 
                memory_dir: Any = None, grow: Optional[dict] = None, grow_seed: int = 0,
                probe_limit: Optional[int] = None, rerolls: int = DEFAULT_REROLLS, search: Any = None,
                workers: int = 1, on_event: Optional[Any] = None, subscribers: Iterable[Callable[[Any], Any]] = (),
-               max_turns: int = MAX_TURNS) -> dict:
+               max_turns: int = MAX_TURNS, readers_gate: str = READERS_GATE) -> dict:
     """Rounds over one workdir until an exit: what `kullback build` runs and the screen's /build calls.
 
     `model` is the Builder's model for the stages that call one, and through the plan's wrapped models
@@ -949,7 +1001,7 @@ def run_rounds(workdir: Any, model: Any = None, *, agent_model: Optional[Model] 
                      second_judge_model=second_judge_model, files=list(files or []),
                      ceiling_usd=ceiling_usd, domain=domain, max_attempts=max_attempts, memory_dir=memory_dir,
                      on_event=on_event, grow=grow, grow_seed=grow_seed, probe_limit=probe_limit, rerolls=rerolls,
-                     search=search, workers=workers)
+                     search=search, workers=workers, readers_gate=readers_gate)
     _record_judge_models(plan)
     # The feed subscribes like anything else. Attaching here rather than inside the two harnesses
     # means both agents' streams reach it through the one seam the harness already offers: the

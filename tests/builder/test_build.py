@@ -97,8 +97,8 @@ def test_a_second_build_is_served_from_the_cache(built, tmp_path):
     statuses = json.loads((workdir / "pipeline" / "state.json").read_text(encoding="utf-8"))["statuses"]
     # ingest is the previous build's own record, carried over because this build had no file to
     # ingest and so ran no ingest stage at all.
-    assert {name for name, status in statuses.items() if status != "cached"} == {"ingest", "mine", "cluster",
-                                                                                "intent"}
+    assert {name for name, status in statuses.items() if status != "cached"} == {"ingest", "mine", "readers",
+                                                                                "cluster", "intent"}
     assert statuses["ingest"] == "ran"
 
     third = build_module.build(workdir, iterate=True, model=Bodies())
