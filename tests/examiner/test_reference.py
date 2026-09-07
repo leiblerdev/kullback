@@ -321,13 +321,13 @@ def test_too_few_recordings_demote_nothing():
 
 
 def _read_only_runs(n: int):
-    return [make_run(f"read{i}", [call("get_order_status", {"order_id": "#W1"}, kind="read"),
-                                  result({"status": "delivered"})]) for i in range(n)]
+    return [make_run(f"read{i}", [call("look_up_ticket", {"ticket_id": "T-1"}, kind="read"),
+                                  result({"status": "open"})]) for i in range(n)]
 
 
 def test_a_rule_that_judged_no_call_is_not_counted_as_one_the_recordings_upheld():
     rates = ref.constraint_rates([_rule("quiet", NEVER)], _read_only_runs(4), WRITES, _canon,
-                                 read_tools={"get_order_status"})
+                                 read_tools={"look_up_ticket"})
     assert rates["quiet"]["failed"] == 0 and rates["quiet"]["runs"] == 4
     assert rates["quiet"]["judged"] == 0
     assert rates["quiet"]["skipped"] == "no recording made a call this rule judges"
