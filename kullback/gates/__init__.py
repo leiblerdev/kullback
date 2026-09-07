@@ -89,6 +89,7 @@ from kullback.gates.fidelity import (
 from kullback.gates.ledger import GateLedger
 from kullback.gates.loosening import (
     accepted_versions,
+    discarded_runs,
     false_rejection,
     false_rejection_gate,
     legitimate_runs,
@@ -285,7 +286,8 @@ GATES: tuple[GateSpec, ...] = (
     _spec("loosening", "a new Verifier version newly passes only the Reference, a frontier re-roll or a production Run",
           loosening_gate, artifacts=("history", "task_runs", "replays", "rerolls", "canon_rules", "sigs")),
     _spec("false_rejection", "the held-out frontier Runs the required atoms wrongly fail, per Task",
-          false_rejection_gate, artifacts=("verifiers", "task_runs", "replays", "rerolls", "canon_rules", "sigs")),
+          false_rejection_gate, artifacts=("verifiers", "task_runs", "replays", "rerolls", "canon_rules", "sigs",
+                                           "task_status")),
     _spec("refuse", "a Task is refused only when no frontier Run of it finished", refuse_gate,
           artifacts=("refusals", "replays", "rerolls")),
     _spec("trusted", "a Verifier is trusted when it passed the suite, rejects every probe, is an accepted version "
@@ -325,7 +327,8 @@ __all__ = [
     "body_memorised_values_gate", "body_non_trivial_gate",
     "body_parses_gate", "body_refuses_unknown_gate", "body_replay_fidelity_gate", "budget_gate",
     "candidate_runs_gate", "check_run", "cluster_gate", "compile_tools_gate", "compile_tools_gates",
-    "confinement", "consecutive_failed", "d79_results", "deterministic_gate", "done", "environment_gate",
+    "confinement", "consecutive_failed", "d79_results", "deterministic_gate", "discarded_runs", "done",
+    "environment_gate",
     "executes_gate", "exit_for", "false_rejection", "false_rejection_gate", "fidelity", "finished_runs", "first_string",
     "freeze_tasks", "gate_confined", "gate_named", "gates_over", "ingest_gate", "intent_gate", "leak_gate",
     "ledger", "legitimate_runs", "load_run", "loophole_probe", "loosening", "loosening_gate", "mine_gate", "names_protected_path",
