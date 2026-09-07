@@ -405,6 +405,53 @@ def test_the_leak_check_finds_a_system_derived_constant_in_the_intent_or_the_use
         assert leaked in " ".join(gates["verifier_leak"].failures)
 
 
+def _garage_events(said: str) -> list[dict]:
+    """A booking whose price the garage read off the vehicle record and never asked the driver for."""
+    return [
+        user(said),
+        call("get_vehicle", {"plate": "KP19TRX"}, kind="read", cid="c0"),
+        result({"plate": "KP19TRX", "quote": 240.0}, cid="c0"),
+        call("book_service", {"plate": "KP19TRX", "quote": 240.0}, cid="c1"),
+        result({"booked": True}, cid="c1"),
+        assistant("Booked."),
+    ]
+
+
+def _garage_verifier() -> Verifier:
+    task = Task(id="g1", intent="book the car in for its service")
+    verifier = V.derive_verifier(task, make_run("ref", _garage_events("please book my car in for its service")),
+                                 [], None, write_tools={"book_service"})
+    quote = [a for a in verifier.atoms if S.atom_payload(a).get("field") == "quote"][0]
+    assert quote.provenance == "system_derived"  # the driver was never told the price
+    return verifier
+
+
+def test_a_value_a_user_said_in_another_seed_recording_is_no_leak():
+    """The Intent is mined from every recording of the Task, so check 7 has to read every one of them.
+
+    Reading the user turns off the Reference alone made this check stricter than the miner it
+    polices: on the last build 18 of 24 leaked values were spoken by a user in another recording of
+    the same Task, and the 14 Tasks carrying them were blocked for nothing.
+    """
+    gates = {g.stage: g for g in S.validate_verifier(
+        _garage_verifier(), make_run("ref", _garage_events("please book my car in for its service")),
+        intent_text="book the 240.0 service", user_rules=UserRules(),
+        seed_runs=[make_run("seed", _garage_events("book the service, i was quoted 240.0 last month"))])}
+    assert gates["verifier_leak"].passed is True
+    assert gates["verifier_leak"].failures == []
+
+
+def test_a_value_no_recorded_user_said_still_leaks_when_the_intent_carries_it():
+    """Widening the check to the other seed recordings does not weaken it: a price no driver of any
+    recording spoke is still the Verifier's own knowledge, and the Intent must not carry it."""
+    gates = {g.stage: g for g in S.validate_verifier(
+        _garage_verifier(), make_run("ref", _garage_events("please book my car in for its service")),
+        intent_text="book the 240.0 service", user_rules=UserRules(),
+        seed_runs=[make_run("seed", _garage_events("book my car in, the brakes are grinding"))])}
+    assert gates["verifier_leak"].passed is False
+    assert "intent leaks 240.0" in " ".join(gates["verifier_leak"].failures)
+
+
 def test_a_loophole_probe_that_did_not_run_is_not_a_pass(tmp_path):
     """D79 check 6 skipped is 'we do not know', which the suite has to say out loud."""
     verifier = derive(tmp_path)

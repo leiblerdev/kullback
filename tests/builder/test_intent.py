@@ -9,6 +9,7 @@ from kullback.builder.intent import (
     MAX_INTENT_ATTEMPTS,
     MAX_PROMPT_RUNS,
     Intent,
+    _word_evidence,
     apply_intent,
     ground_phrases,
     normalise,
@@ -130,10 +131,15 @@ def test_a_plural_and_its_singular_are_the_same_word():
 
 
 def test_an_underscored_id_is_reached_by_the_words_it_spells():
-    trace = make_trace("t1", ["cancel it"],
-                       [{"name": "cancel_order", "args": {"row": "gift_card_4471"}}])
-    assert ground_phrases(["gift card"], [trace], WRITES)[1] == []
-    assert ground_phrases(["gift_card_4471"], [trace], WRITES)[1] == []
+    """The run whose user only said "cancel it" still evidences the words its tool argument spells,
+    because a user of the other run of the Task spoke them."""
+    spoken = make_trace("t1", ["cancel the gift card 4471 i bought"], [])
+    passed_along = make_trace("t2", ["cancel it"],
+                              [{"name": "cancel_order", "args": {"row": "gift_card_4471"}}])
+    spans, ungrounded = ground_phrases(["gift card", "gift_card_4471"], [spoken, passed_along], WRITES)
+    assert ungrounded == []
+    by_run = {s.trace_id: s for s in spans}
+    assert by_run["t2"].source == "tool_arg"
 
 
 # --- spans ---
@@ -265,11 +271,59 @@ def test_a_phrase_the_user_ruled_out_is_not_evidence():
 
 
 def test_a_span_names_the_run_and_the_text_it_points_at():
-    _, traces = two_run_task()
+    """The first run wrote the status without its user naming it, and the second run's user asked for
+    it, so the span the record keeps points at the write."""
+    traces = [cancel_trace("t1", "W1"),
+              make_trace("t2", ["cancel order W2 and tell me the status"],
+                         [{"name": "cancel_order", "args": {"order_id": "W2"},
+                           "result": {"status": "cancelled"}}])]
     spans, _ = ground_phrases(["status"], traces, WRITES)
     assert spans[0].trace_id == "t1"
     assert spans[0].source == "written_value"
     assert "cancelled" in spans[0].text
+
+
+# --- a span that is not the user's words ---
+
+
+def test_an_id_only_a_tool_argument_carries_does_not_ground_an_intent_phrase():
+    """The librarian looked the loan up and passed its number on; no reader ever spoke it, so an
+    Intent carrying it would hand the Simulated user a value only the system knew (D47)."""
+    trace = make_trace("t1", ["please renew the book i borrowed last week"],
+                       [{"name": "renew_loan", "args": {"loan_id": "LN88213"},
+                         "result": {"status": "renewed"}}])
+    assert any(s.source == "tool_arg" and "LN88213" in s.text
+               for s in span_candidates(trace, {"renew_loan"})), "the argument is still a candidate"
+    spans, ungrounded = ground_phrases(["ln88213"], [trace], {"renew_loan"})
+    assert ungrounded == ["ln88213"]
+    assert spans == []
+
+
+def test_a_tool_argument_grounds_a_phrase_when_some_user_utterance_says_it_too():
+    """One reader read the loan number out and the next did not, so the argument still evidences the
+    run that only passed it along: every run of the Task has to evidence the Intent (D47)."""
+    spoke = make_trace("t1", ["renew loan LN88213 for me please"],
+                       [{"name": "renew_loan", "args": {"loan_id": "LN88213"},
+                         "result": {"status": "renewed"}}])
+    silent = make_trace("t2", ["renew the one i have out"],
+                        [{"name": "renew_loan", "args": {"loan_id": "LN88213"},
+                          "result": {"status": "renewed"}}])
+    spans, ungrounded = ground_phrases(["renew", "ln88213"], [spoke, silent], {"renew_loan"})
+    assert ungrounded == []
+    by_phrase = {s.phrase: s for s in spans}
+    assert by_phrase["ln88213"].trace_id == "t2"
+    assert by_phrase["ln88213"].source == "tool_arg"
+
+
+def test_a_word_only_a_tool_argument_carries_is_named_to_the_rewrite_as_one_no_run_says():
+    """The rewrite prompt has to name the word the grounding will refuse. Telling the model the
+    evidence shows a word it cannot use leaves the rewrite with nothing to change."""
+    trace = make_trace("t1", ["please renew the book i borrowed last week"],
+                       [{"name": "renew_loan", "args": {"loan_id": "LN88213"},
+                         "result": {"status": "renewed"}}])
+    shown, missing = _word_evidence(["renew ln88213"], [trace], {"renew_loan"})["renew ln88213"]
+    assert shown == ["renew"]
+    assert missing == ["ln88213"]
 
 
 # --- write_intent ---
