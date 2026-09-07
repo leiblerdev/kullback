@@ -356,11 +356,45 @@ def fold_into_homes(db: dict, schema: EntitySchema) -> list[tuple[str, str, str]
     return folded
 
 
+def argument_ids(args: Any) -> list[tuple[str, str, dict]]:
+    """(the name it sat under, the value, the object it sat in) for every string in a call's arguments.
+
+    Lists and dicts are walked to any depth, because a call names the rows it acts on wherever its
+    own shape puts them: at the top level under the column's name, or inside a list of objects one
+    or more levels down. The object a value sat in is carried back with it so the other parts of a
+    composite key can be read from beside it, which is where a call that names several rows states
+    each row's own date or shift; a string inside a list keeps the name of the key the list sat
+    under and the object that key belongs to.
+    """
+    out: list[tuple[str, str, dict]] = []
+
+    def walk(name: Optional[str], value: Any, scope: dict) -> None:
+        if isinstance(value, str):
+            if name is not None:
+                out.append((name, value, scope))
+        elif isinstance(value, dict):
+            for key, item in value.items():
+                walk(str(key), item, value)
+        elif isinstance(value, (list, tuple)):
+            for item in value:
+                walk(name, item, scope)
+
+    walk(None, args if isinstance(args, dict) else {}, {})
+    return out
+
+
 def referenced_ids(traces: Iterable[Trace], schema: EntitySchema) -> list[tuple[str, str]]:
     """(table, id) pairs a call that succeeded named in its arguments, by the table's own id column.
 
     Public: build.py's build_environment gate wires these ids into validate.environment_gate, to
     check db.json actually holds every id a trace referenced.
+
+    Arguments are walked to any depth (`argument_ids`), because reading the top level alone missed
+    the shape a write takes when it acts on several rows at once: the rows are a list of objects
+    under one argument, each object naming its row by the table's own key columns, so the call owed
+    the world rows nothing counted and the body refused them as not found. The name of the key a
+    value sits under is what names the table, at any depth; the pattern the miner recorded is the
+    guard it always was.
     """
     keys = {table: key_fields(schema, table) for table in schema.tables}
     out: set[tuple[str, str]] = set()
@@ -369,18 +403,22 @@ def referenced_ids(traces: Iterable[Trace], schema: EntitySchema) -> list[tuple[
             if call.error is not None:  # an id the customer's tool refused is not a row we owe
                 continue
             args = call.args or {}
-            for table, fields in keys.items():
-                if not fields or not isinstance(args.get(fields[0]), str):
-                    continue
-                pattern = id_pattern_for(schema, table, fields[0])
-                if pattern and not re.match(pattern, args[fields[0]]):
-                    continue
-                # A composite key the call does not complete names no row: a partial id would be a
-                # row of its own, which is exactly what the composite key exists to prevent.
-                if any(args.get(name) is None for name in fields[1:]):
-                    continue
-                out.add((table, key_separator(schema).join(
-                    [args[fields[0]]] + [str(args[name]) for name in fields[1:]])))
+            for name, value, scope in argument_ids(args):
+                for table, fields in keys.items():
+                    if not fields or name != fields[0]:
+                        continue
+                    pattern = id_pattern_for(schema, table, fields[0])
+                    if pattern and not re.match(pattern, value):
+                        continue
+                    # A composite key the call does not complete names no row: a partial id would be
+                    # a row of its own, which is exactly what the composite key exists to prevent.
+                    # Each part is read from beside the id first and from the top level second, so a
+                    # list of rows that each carry their own date completes each row's own key, and
+                    # a call that states one date for every row it names still completes them all.
+                    parts = [scope.get(part, args.get(part)) for part in fields[1:]]
+                    if any(part is None for part in parts):
+                        continue
+                    out.add((table, key_separator(schema).join([value] + [str(p) for p in parts])))
     return sorted(out)
 
 
