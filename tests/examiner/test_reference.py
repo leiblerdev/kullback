@@ -303,7 +303,8 @@ def _runs(n: int):
 def test_a_rule_the_confirmed_recordings_mostly_break_is_demoted_and_the_rest_kept():
     rules = [_rule("ok", ALWAYS), _rule("bad", NEVER)]
     rates = ref.constraint_rates(rules, _runs(4), WRITES, _canon)
-    assert rates == {"ok": {"failed": 0, "runs": 4}, "bad": {"failed": 4, "runs": 4}}
+    assert rates == {"ok": {"failed": 0, "runs": 4, "judged": 4},
+                     "bad": {"failed": 4, "runs": 4, "judged": 4}}
     kept, demoted = ref.demote(rules, rates)
     assert [c.id for c in kept] == ["ok"]
     assert demoted[0]["id"] == "bad" and "4 of 4" in demoted[0]["reason"]
@@ -314,6 +315,42 @@ def test_too_few_recordings_demote_nothing():
     rates = ref.constraint_rates(rules, _runs(2), WRITES, _canon)
     kept, demoted = ref.demote(rules, rates)
     assert [c.id for c in kept] == ["bad"] and demoted == []
+
+
+# A rule with code that was never asked about anything read as a rule the recordings had upheld.
+
+
+def _read_only_runs(n: int):
+    return [make_run(f"read{i}", [call("get_order_status", {"order_id": "#W1"}, kind="read"),
+                                  result({"status": "delivered"})]) for i in range(n)]
+
+
+def test_a_rule_that_judged_no_call_is_not_counted_as_one_the_recordings_upheld():
+    rates = ref.constraint_rates([_rule("quiet", NEVER)], _read_only_runs(4), WRITES, _canon,
+                                 read_tools={"get_order_status"})
+    assert rates["quiet"]["failed"] == 0 and rates["quiet"]["runs"] == 4
+    assert rates["quiet"]["judged"] == 0
+    assert rates["quiet"]["skipped"] == "no recording made a call this rule judges"
+
+
+def test_a_rule_whose_own_tests_failed_is_still_run_against_the_recordings():
+    rules = [_rule("ok", ALWAYS), Constraint(id="uncompiled", text="rule uncompiled", compiled=False,
+                                             predicate_src=NEVER)]
+    rates = ref.constraint_rates(rules, _runs(4), WRITES, _canon)
+    assert rates["uncompiled"]["failed"] == 4 and rates["uncompiled"]["judged"] == 4
+    assert rates["uncompiled"]["gates"] is False and "gates" not in rates["ok"]
+
+
+def test_a_rule_that_compiled_to_no_code_says_so_rather_than_reading_as_checked():
+    rates = ref.constraint_rates([Constraint(id="prose", text="rule prose")], _runs(4), WRITES, _canon)
+    assert rates["prose"] == {"failed": 0, "runs": 0, "judged": 0, "skipped": "the rule compiled to no code",
+                              "gates": False}
+
+
+def test_a_judge_atom_is_not_run_against_the_recordings():
+    rule = Constraint(id="asked", text="rule asked", compiled=True, judge_atom=True, predicate_src=ALWAYS)
+    rates = ref.constraint_rates([rule], _runs(4), WRITES, _canon)
+    assert rates["asked"]["skipped"] == "the rule is a judge atom"
 
 
 def test_violations_name_the_constraints_a_run_breaks():
@@ -327,7 +364,7 @@ def test_a_rule_broken_by_a_few_percent_of_the_recordings_is_demoted():
     rules = [_rule("rare", "def check(pre_state, write_call, transcript):\n    return write_call['arguments']['order_id'] != '#W1'\n")]
     runs = _runs(39) + [make_run("odd", [call("cancel_pending_order", {"order_id": "#W2"}), result({"status": "cancelled"})])]
     rates = ref.constraint_rates(rules, runs, WRITES, _canon)
-    assert rates["rare"] == {"failed": 39, "runs": 40}
+    assert rates["rare"] == {"failed": 39, "runs": 40, "judged": 40}
     one_in_forty = {"rare": {"failed": 1, "runs": 40}}
     assert ref.demote(rules, one_in_forty)[1][0]["id"] == "rare"
     assert ref.demote(rules, {"rare": {"failed": 1, "runs": 80}})[1] == []

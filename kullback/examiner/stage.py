@@ -122,8 +122,10 @@ def final_constraints(ctx, inputs: dict, seed_replays: dict, write_tools: set, r
     compiled rules fired on confirmed recordings and poisoned every Verifier.
     """
     compiled = [c for c in inputs["constraints"] if c.compiled or c.judge_atom]
-    rates = reference_mod.constraint_rates(compiled, [r["path"] for rows in seed_replays.values() for r in rows],
-                                           write_tools, fn, read_tools)
+    paths = [r["path"] for rows in seed_replays.values() for r in rows]
+    # Every rule with code is asked, so a rule that gates nothing still says how it fares against the
+    # frontier and a rule that judged nothing is not read as a rule that held.
+    rates = reference_mod.constraint_rates(list(inputs["constraints"]), paths, write_tools, fn, read_tools)
     constraints, demoted = reference_mod.demote(compiled, rates)
     by_id = {c.id: c for c in compiled}
     residual = [by_id[row["id"]].model_copy(update={"compiled": False, "judge_atom": False,

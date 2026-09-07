@@ -268,18 +268,56 @@ def load(path: str, kind: str, *, run_id: Optional[str] = None, trace_id: Option
 
 # --- constraints against the corpus ---------------------------------------
 
+def coded_atoms(constraints: Iterable[Constraint], write_tools: Iterable[str],
+                read_tools: Iterable[str] = ()) -> list[Atom]:
+    """Every constraint that has code, whether or not its own tests passed, as an atom to run.
+
+    `hard_atoms` is what a Verdict may check and holds the compiled rules only. This is what the
+    recordings are asked about, and a rule whose tests failed is asked too: its rate against the
+    frontier is the evidence that says whether the code is wrong or the tests were.
+    """
+    return [verifier_mod._atom(f"hard.{c.id}", "hard",
+                               {"kind": "hard", "constraint_id": c.id, "judge": False,
+                                "predicate_src": c.predicate_src, "write_tools": sorted(write_tools),
+                                "read_tools": sorted(read_tools)}, description=c.text)
+            for c in constraints if c.predicate_src and not c.judge_atom]
+
+
 def constraint_rates(constraints: Iterable[Constraint], runs: Iterable[Any], write_tools: Iterable[str],
                      fn: Callable, read_tools: Iterable[str] = ()) -> dict[str, dict]:
-    """Per compiled constraint: how many of the given Runs it fails on, and how many it saw."""
-    atoms = hard_atoms(constraints, write_tools, read_tools)
-    rates = {atom.target["constraint_id"]: {"failed": 0, "runs": 0} for atom in atoms}
+    """Per constraint with code: how many Runs it fails on, how many it saw, and how many it judged.
+
+    A rule that judged nothing read as a rule the frontier passed, because `failed` stayed 0 while
+    `runs` counted every recording; on two builds a quarter to a third of the rules with code had no
+    rate at all and the rest could not be told apart from rules that had been checked and held. So
+    each row now says how many Runs the rule actually answered about, and a rule that answered about
+    none, or that has no code to run, carries the reason it was not checked.
+    """
+    atoms = coded_atoms(constraints, write_tools, read_tools)
+    compiled = {c.id for c in constraints if c.compiled}
+    rates = {atom.target["constraint_id"]: {"failed": 0, "runs": 0, "judged": 0} for atom in atoms}
     for run in runs:
         loaded = verifier_suite.as_run(run)
         for atom in atoms:
             row = rates[atom.target["constraint_id"]]
             row["runs"] += 1
-            if verifier_suite.hard_holds(atom, loaded, set(write_tools), fn) is False:
+            held = verifier_suite.hard_holds(atom, loaded, set(write_tools), fn)
+            if held is None:
+                continue
+            row["judged"] += 1
+            if held is False:
                 row["failed"] += 1
+    for rule in constraints:
+        row = rates.get(rule.id)
+        if row is None:
+            rates[rule.id] = {"failed": 0, "runs": 0, "judged": 0,
+                              "skipped": "the rule is a judge atom" if rule.judge_atom
+                                         else "the rule compiled to no code"}
+        elif not row["judged"]:
+            row["skipped"] = ("no recording made a call this rule judges"
+                              if row["runs"] else "there was no confirmed recording to check it against")
+        if rule.id in rates and rule.id not in compiled:
+            rates[rule.id]["gates"] = False  # the rate is reported; a rule whose tests failed gates nothing
     return rates
 
 
@@ -471,5 +509,6 @@ def parse_judgement(text: str, labels: set[str]) -> Judgement:
 __all__ = ["RECORDING", "REROLL", "ANSWERED", "MISCOMPILED_SHARE", "AVAILABLE_SOURCES", "Recording", "Confirmation",
            "Judgement", "end_state", "settled_state", "describe", "stated_facts", "transferred",
            "told_line",
-           "hard_atoms", "violations", "load", "constraint_rates", "demote", "group", "confirm",
+           "hard_atoms", "coded_atoms", "violations", "load", "constraint_rates", "demote", "group",
+           "confirm",
            "judge_prompt", "judge_groups", "parse_judgement"]
