@@ -17,7 +17,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Iterable, Optional
 
-from kullback.builder import synth
+from kullback.builder import mine, synth
 from kullback.builder.body_skill import BODY_SKILL
 from kullback.builder.mine import is_assistant_call, is_scalar_result
 from kullback.builder.sandbox import (
@@ -259,6 +259,12 @@ def build_starting_state(
             assumptions.append(f"{table} row {row_id} was only ever seen after a write; "
                                "its post-state is kept as the starting value")
         db.setdefault(table, {})[row_id] = chosen.row
+
+    # The constants of the world (mine.world_constants): one row of values the corpus pinned, which
+    # no sighting of a row can carry because the results they came from are not rows.
+    constants_table = mine.constants_table_of(schema)
+    if constants_table:
+        db.setdefault(constants_table, {})[mine.CONSTANTS_ROW] = mine.constants_row(schema)
 
     assumptions += [f"{table} row {row_id} was seen without every part of its key; it was folded "
                     f"into the {count} rows whose known key columns match and is not a row of its own"
@@ -890,6 +896,13 @@ def _schema_block(schema: EntitySchema) -> str:
                          f"took the value from the call's arguments; the key is what says which row "
                          f"this is. Split a key on {separator!r} to read its parts back, and answer "
                          f"rows whose key parts match the arguments you were given.")
+        if table == mine.constants_table_of(schema):
+            lines.append(f"    self.db.{table} holds one row of the world's constants: every "
+                         f"recorded call of the tool a column is named after answered that column's "
+                         f"value, whatever it was asked. Read the row with "
+                         f"next(iter(self.db.{table}.values())), never by key, and let such a tool "
+                         f"answer its own column whole rather than assembling the answer out of "
+                         f"other tables' rows.")
         home = (schema.homes or {}).get(table)
         if home:
             parent, column = home.split(".", 1)
