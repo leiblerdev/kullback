@@ -71,7 +71,7 @@ def test_stage_events_reach_the_subscribers_in_order_and_the_tool_end_comes_last
     assert isinstance(events[-1], ToolExecutionEnd) and events[-1].tool_name == "build"
     compile_end = next(e for e in events if isinstance(e, StageEnd) and e.name == "compile_tools")
     assert compile_end.counts["status"] == "ran" and "parses" in compile_end.counts["rulings"]
-    assert compile_end.counts["produced"] == ["bodies", "assisted_tools"]
+    assert compile_end.counts["produced"] == ["bodies", "assisted_tools", "tool_fidelity"]
 
 
 def test_the_tool_result_carries_a_short_text_and_the_payload_in_details(driven):

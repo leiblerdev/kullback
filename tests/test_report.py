@@ -201,6 +201,20 @@ def test_the_assisted_share_per_tool_is_shown_when_it_is_known(data):
     assert "- search_products: 12% of its calls stood in" in render(data)
 
 
+def test_an_assisted_tool_shows_its_corpus_fidelity_beside_the_tasks_its_own_calls_block(data):
+    """D171: the two numbers part company. A body can miss one call of the corpus and cost one Task
+    a Reference while every other Task that calls it is answered the way the recording did."""
+    data.tool_fidelity = {
+        "tools": {"search_products": {"calls": 40, "replayed": 39, "differing": 1, "assisted": True}},
+        "tasks": {"t1": {"search_products": {"replayed": 7, "differing": 0, "reasons": []}},
+                  "t2": {"search_products": {"replayed": 5, "differing": 1, "reasons": ["price differs"]}},
+                  "t3": {"search_products": {"replayed": 2, "differing": 0, "reasons": []}}},
+    }
+    line = block_of(render(data), "### Assisted tools")
+    assert "39 of 40 recorded calls replayed" in line
+    assert "3 Tasks call it, 1 blocked by their own differing calls" in line
+
+
 def test_task_coverage_gives_both_numbers(data):
     text = render(data)
     assert "0 of 1 Tasks" in text

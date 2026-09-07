@@ -1932,3 +1932,76 @@ def test_builder_tools_false_sends_no_tools_and_keeps_the_old_behaviour(
     assert build.body.strip() == CORRECT_BODY.strip()
     assert build.assisted is False
     assert "tool_uses" not in build.nodes[0]
+
+
+# --- per-call replay outcomes, the per-Task grain of the fidelity ruling (D171) ---
+
+LIBRARY_DB = {
+    "loans": {
+        "L1": {"loan_id": "L1", "member_id": "m_ada_1", "due_on": "2026-01-05"},
+        "L2": {"loan_id": "L2", "member_id": "m_bo_2", "due_on": "2026-02-11"},
+        "L3": {"loan_id": "L3", "member_id": "m_cy_3", "due_on": "2026-03-19"},
+    }
+}
+LIBRARY_SCHEMA = EntitySchema(
+    tables=["loans"],
+    columns=[Column(table="loans", name=name, **{"class": "hard"}, classified_by="rule")
+             for name in ("loan_id", "member_id", "due_on")],
+    id_patterns={"loans": r"^L\d+$"},
+)
+LIBRARY_SIG = ToolSig(
+    name="get_loan_details",
+    description="Get one loan by its id.",
+    args_fields=[FieldStat(name="loan_id", types=["str"], optional=False)],
+    kind="read",
+    unclassified=False,
+)
+# Right on every loan but one, which is the shape a corpus-wide fidelity number hides: the tool is
+# assisted, and only the Task whose Trace asked for that loan is answered differently.
+ONE_LOAN_WRONG = """
+loan = self.db.loans[loan_id]
+if loan_id == "L2":
+    return {"loan_id": loan.loan_id, "member_id": loan.member_id, "due_on": "2099-12-31"}
+return loan
+"""
+
+
+def _loan_calls():
+    return [_call("get_loan_details", {"loan_id": loan_id}, result=row, idx=index)
+            for index, (loan_id, row) in enumerate(sorted(LIBRARY_DB["loans"].items()))]
+
+
+def test_replay_outcomes_names_the_one_recorded_call_a_body_answers_differently(workdir):
+    rows = ce.replay_outcomes(LIBRARY_SIG, ONE_LOAN_WRONG, _loan_calls(), LIBRARY_SCHEMA, LIBRARY_DB, workdir)
+    assert [(row["call_id"], row["replayed"]) for row in rows] == [("c0", True), ("c1", False), ("c2", True)]
+    assert "due_on" in rows[1]["detail"] and rows[0]["detail"] == ""
+
+
+def test_a_call_replay_outcomes_counts_replayed_is_a_call_the_corpus_gate_counts_matched(workdir, tmp_path):
+    """The two grains are the same ruling: what the per-call rows say has to add up to the gate's
+    own success count, or a Task could be cleared by a call the corpus gate failed."""
+    calls = _loan_calls()
+    source = ce.module_source(LIBRARY_SCHEMA, [LIBRARY_SIG], {LIBRARY_SIG.name: ONE_LOAN_WRONG})
+    box = ce.Sandbox(source, LIBRARY_DB, tmp_path / "corpus")
+    corpus = ce.gate_replay_fidelity(box, calls, LIBRARY_SCHEMA)
+    rows = ce.replay_outcomes(LIBRARY_SIG, ONE_LOAN_WRONG, calls, LIBRARY_SCHEMA, LIBRARY_DB, workdir)
+    assert corpus.passed is False
+    assert sum(1 for row in rows if row["replayed"]) == corpus.metrics["success_matches"]
+
+
+def test_a_tool_with_no_body_replays_none_of_its_recorded_calls(workdir):
+    rows = ce.replay_outcomes(LIBRARY_SIG, "", _loan_calls(), LIBRARY_SCHEMA, LIBRARY_DB, workdir)
+    assert [row["replayed"] for row in rows] == [False, False, False]
+    assert all("no body" in row["detail"] for row in rows)
+
+
+def test_a_compiled_tool_carries_one_call_outcome_per_recorded_call(
+    make_test_model, schema, sigs, db0, workdir, order_calls
+):
+    """D171: every build carries the rows, and a build that cleared the gates replayed every call."""
+    build = ce.compile_tool(make_test_model([CORRECT_BODY]), sigs[0], order_calls, schema, db0, workdir)
+    assert build.assisted is False
+    assert [row["call_id"] for row in build.call_outcomes] == [c.id for c in order_calls]
+    assert all(row["replayed"] for row in build.call_outcomes)
+    written = json.loads((workdir / ce.NODE_DIR / "get_order_details.json").read_text(encoding="utf-8"))
+    assert written["call_outcomes"] == build.call_outcomes

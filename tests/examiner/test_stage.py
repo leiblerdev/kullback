@@ -6,18 +6,21 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
+from conftest import PTR
 from examiner.worlds import anchor_of, make_world, probe_runner_over
 from gates import verifier_fixtures as VF
 from kullback.builder.pipeline import Anchor
 from kullback.examiner import stage
 from kullback.gates.artifacts import D79_CHECKS, D79_STAGES
 from kullback.gates.ledger import GateLedger
-from kullback.runner.records import Task, Verifier
+from kullback.runner.records import Task, ToolCall, Trace, Verifier
 
-STATUS_KEYS = {"reference_confirmed", "verifier_passed", "reason", "recordings", "rerolls", "judged", "assisted_tools"}
+STATUS_KEYS = {"reference_confirmed", "verifier_passed", "reason", "recordings", "rerolls", "judged",
+               "assisted_tools", "blocking_tools", "tool_calls_replayed", "tool_calls_differing"}
 REFERENCE_KEYS = {"references", "recordings", "failed", "groups", "reason", "judged", "judge_reason",
                   "judge_abstained"}
 
@@ -69,7 +72,8 @@ def test_derive_for_one_task_leaves_the_other_tasks_rows_untouched(fixture_build
         _derive(workdir, inputs, only="no-such-task")
 
 
-def test_a_task_without_a_reference_gets_no_verifier_and_its_reason_names_the_assisted_tool(fixture_build, tmp_path):
+def test_a_task_without_a_reference_gets_no_verifier_and_names_only_the_tools_its_own_calls_differ_on(
+        fixture_build, tmp_path):
     workdir = fixture_build.copy(tmp_path)
     inputs = fixture_build.inputs_for(workdir)
     assisted = set(inputs["assisted_tools"])
@@ -80,8 +84,60 @@ def test_a_task_without_a_reference_gets_no_verifier_and_its_reason_names_the_as
     for row in named.values():
         assert row["reference_confirmed"] is False and row["verifier_passed"] is False
         assert set(row["assisted_tools"]) <= assisted
-        assert "assisted tool" in row["reason"] and all(tool in row["reason"] for tool in row["assisted_tools"])
+        # D171: the corpus fact stays on the row, and only a tool one of this Task's own recorded
+        # calls parts from blocks it; the reason names those tools and no others.
+        assert set(row["blocking_tools"]) <= assisted
+        assert set(row["blocking_tools"]) == set(row["tool_calls_differing"])
+        assert all(tool in row["reason"] for tool in row["blocking_tools"])
+        if not row["blocking_tools"]:
+            assert "do not replay" not in row["reason"]
     assert not (workdir / "verifiers").exists()
+
+
+def _library_trace(trace_id: str, tools: list) -> Trace:
+    """One Trace of a library agent, for the rows that read which tools a Task's Runs called."""
+    return Trace(trace_id=trace_id, raw_hash="h", ingest_version="1", source="test", raw_ptr=PTR,
+                 tool_calls=[ToolCall(name=name, args={}, raw_ptr=PTR) for name in tools])
+
+
+def _no_reference_row(tmp_path, fidelity_row: dict, reason: str = "recordings disagree on the End state") -> dict:
+    ctx = stage.ExamContext(tmp_path, GateLedger(tmp_path))
+    return stage.no_reference_status(
+        ctx, Task(id="t1", run_ids=["r1"]), SimpleNamespace(reason=reason, judged=False),
+        seed_replays=[{"path": "p"}], replays={}, rerolls={},
+        traces={"r1": _library_trace("r1", ["get_loan_details"])},
+        assisted_tools={"get_loan_details"}, fidelity_row=fidelity_row)
+
+
+def test_a_task_whose_own_calls_all_replay_is_not_blocked_by_a_miss_on_another_tasks_call(tmp_path):
+    """D171: assisted is a corpus ruling over every recorded call of a tool. A Task the body answers
+    the way the recording did is not blocked by it, and its row keeps the real reason it failed."""
+    row = _no_reference_row(tmp_path, {"get_loan_details": {"replayed": 4, "differing": 0, "reasons": []}})
+    assert row["assisted_tools"] == ["get_loan_details"] and row["blocking_tools"] == []
+    assert row["reason"] == "recordings disagree on the End state"
+    assert row["tool_calls_replayed"] == {"get_loan_details": 4} and row["tool_calls_differing"] == {}
+
+
+def test_a_task_with_a_differing_own_call_stays_blocked_and_its_reason_names_the_call(tmp_path):
+    differs = "get_loan_details({'loan_id': 'L9'}): hard columns differ: due_on: ours 2099-12-31, recorded 2026-01-05"
+    row = _no_reference_row(tmp_path, {"get_loan_details": {"replayed": 3, "differing": 1, "reasons": [differs]}})
+    assert row["blocking_tools"] == ["get_loan_details"]
+    assert "get_loan_details" in row["reason"] and "due_on" in row["reason"]
+    assert row["reason"].endswith("recordings disagree on the End state")
+    assert row["tool_calls_differing"] == {"get_loan_details": 1}
+
+
+def test_a_task_gets_its_reference_on_the_body_of_a_tool_that_is_assisted_over_the_corpus(tmp_path):
+    """The Reference is built on the body, not a stand-in, when the Task's own calls all replay; the
+    row records which calls the body was exercised on, and the D79 suite still judges the Verifier."""
+    world = make_world(tmp_path)
+    fidelity = {"tools": {"get_loan_details": {"calls": 4, "replayed": 3, "differing": 1, "assisted": True}},
+                "tasks": {"t1": {"get_loan_details": {"replayed": 3, "differing": 0, "reasons": []}}}}
+    out = _derive(world.workdir, dict(world.inputs, tool_fidelity=fidelity, assisted_tools=["get_loan_details"]),
+                  probe_model=object(), run_probe=probe_runner_over())
+    row = out["task_status"]["t1"]
+    assert row["reference_confirmed"] is True and row["verifier_passed"] is True
+    assert row["tool_calls_replayed"] == {"get_loan_details": 3} and row["tool_calls_differing"] == {}
 
 
 def test_the_suite_for_a_repaired_verifier_runs_every_d79_check_the_derivation_ran(derived):

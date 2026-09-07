@@ -534,6 +534,34 @@ def test_only_a_callers_own_call_is_evidence_for_the_body_of_a_tool():
     assert build_module.is_evidence_call(a_call("get_loan_details", "user"), callers) is False
 
 
+def _outcome(call_id, replayed, detail="", tool="get_loan_details"):
+    return {"tool": tool, "call_id": call_id, "replayed": replayed, "detail": detail}
+
+
+DIFFERS = "get_loan_details({'loan_id': 'L9'}): hard columns differ: due_on: ours 2099-12-31, recorded 2026-01-05"
+
+
+def test_a_task_whose_own_calls_all_replay_is_not_blocked_by_a_miss_on_another_tasks_call():
+    """D171: the corpus counts every recorded call of the tool, a Task only the calls its own
+    Traces made, and a tool assisted over the corpus differs on nobody else's Task."""
+    outcomes = {"get_loan_details": [_outcome("c1", True), _outcome("c2", True),
+                                     _outcome("c3", False, DIFFERS)]}
+    out = build_module.attribute_fidelity(outcomes, {"c1": "t1", "c2": "t1", "c3": "t2"},
+                                          ["get_loan_details"])
+    assert out["tools"]["get_loan_details"] == {"calls": 3, "replayed": 2, "differing": 1, "assisted": True}
+    assert out["tasks"]["t1"]["get_loan_details"] == {"replayed": 2, "differing": 0, "reasons": []}
+    assert out["tasks"]["t2"]["get_loan_details"]["differing"] == 1
+    assert "due_on" in out["tasks"]["t2"]["get_loan_details"]["reasons"][0]
+
+
+def test_a_recorded_call_no_task_claims_is_evidence_about_the_body_and_about_no_task():
+    """A Trace outside every Task still says whether the body is right; it costs no Task a Reference."""
+    outcomes = {"get_loan_details": [_outcome("c1", False, DIFFERS), _outcome("c2", True)]}
+    out = build_module.attribute_fidelity(outcomes, {"c2": "t1"}, ["get_loan_details"])
+    assert out["tools"]["get_loan_details"]["differing"] == 1
+    assert out["tasks"] == {"t1": {"get_loan_details": {"replayed": 1, "differing": 0, "reasons": []}}}
+
+
 def test_the_rerolls_gate_is_not_green_over_runs_that_all_died():
     dead = {"t1": [{"termination_reason": "env_error"}] * 3, "t2": [{"termination_reason": "env_error"}]}
     gate = build_module.rerolls_gate(dead, 3)

@@ -56,8 +56,24 @@ def test_status_names_every_failing_gate_with_its_tool_or_task_and_the_verb_that
     assert "parses" in result.passing and "intent" in result.failing
 
 
+def test_an_assisted_tools_red_light_says_how_many_tasks_its_own_differing_calls_block(tmp_path):
+    """D171: assisted is a corpus ruling, so the light says what a recompile buys in Tasks, not
+    how many Tasks happen to call the tool."""
+    (tmp_path / "tool_builds.json").write_text(
+        json.dumps({"get_loan_details": {"assisted": True}}), encoding="utf-8")
+    (tmp_path / "tool_fidelity.json").write_text(json.dumps({
+        "tools": {"get_loan_details": {"calls": 40, "replayed": 39, "differing": 1, "assisted": True}},
+        "tasks": {"t1": {"get_loan_details": {"replayed": 7, "differing": 0, "reasons": []}},
+                  "t2": {"get_loan_details": {"replayed": 5, "differing": 1, "reasons": ["due_on differs"]}}},
+    }), encoding="utf-8")
+    light = next(light for light in builder_tools.red_lights(tmp_path) if light.stage == "compile_tools")
+    assert "39 of 40 recorded calls replay" in light.failure
+    assert "2 Tasks call it, 1 blocked by their own differing calls" in light.failure
+
+
 def test_status_reads_the_records_and_asks_no_model(built):
-    """Every red light comes off gates.json, replays.json and tool_builds.json; nothing else is read."""
+    """Every red light comes off gates.json, replays.json, tool_builds.json and tool_fidelity.json;
+    nothing else is read."""
     lights = builder_tools.red_lights(built)
     recorded = json.loads((built / "gates.json").read_text(encoding="utf-8"))
     failing = {row["stage"] for row in recorded if not row["pass"]}
