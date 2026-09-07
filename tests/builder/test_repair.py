@@ -15,7 +15,7 @@ def _run(tool, arguments):
 
 def test_verbs_record_requests(tmp_path):
     tools = {t.name: t for t in repair.repair_tools(tmp_path)}
-    assert sorted(tools) == ["repair_escalate", "repair_grow", "repair_recompile",
+    assert sorted(tools) == ["repair_escalate", "repair_grow", "repair_recompile", "repair_record_finding",
                               "repair_refuse_task", "repair_rewrite_skill"]
     out = _run(tools["repair_recompile"], {"name": "get_order"})
     assert not out.is_error and "repair_recompile get_order" in out.content
@@ -258,3 +258,18 @@ def test_a_workdir_with_no_tool_builds_records_the_hint_alone(tmp_path):
     assert repair.gate_exception_line(tmp_path, "get_member") == ""
     repair.record_tool_lesson(tmp_path, "get_member", ["read the loans column by key"])
     assert "raised" not in repair.lesson_for_tool(tmp_path, "get_member")
+
+
+def test_a_finding_records_the_tool_the_leaf_and_the_calls_it_rests_on_and_moves_nothing(tmp_path):
+    """D155: the recording is the standard, so the body reproduces what several recorded calls agree
+    on, and the finding is how the customer reads what was reproduced."""
+    tools = {t.name: t for t in repair.repair_tools(tmp_path)}
+    out = _run(tools["repair_record_finding"], {
+        "tool": "update_booking", "evidence": ["call_12", "call_40"],
+        "finding": "rooms[*].rate: on a call that changes several rooms the recording writes the last "
+                   "new room's rate on every changed row; the body reproduces it"})
+    assert not out.is_error and "no gate moves" in out.content
+    row = _requests(tmp_path, "repair_record_finding")[0]
+    assert row["target"] == "update_booking" and row["changed"] is False
+    assert row["arguments"]["evidence"] == ["call_12", "call_40"]
+    assert row["arguments"]["finding"].startswith("rooms[*].rate:")

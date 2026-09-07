@@ -102,6 +102,16 @@ class EscalateArgs(BaseModel):
     queue: str = Field(default="review", description="The queue the Task is escalated to.")
 
 
+class RecordFindingArgs(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    tool: str = Field(description="The tool whose recorded calls show the behaviour.")
+    finding: str = Field(description="The behaviour, as the recorded calls show it and the tool's description "
+                                     "does not say: the leaf where they part and what the recording does there.")
+    evidence: list[str] = Field(default_factory=list,
+                                description="The recorded call ids that agree with each other on it.")
+
+
 # --- the one target a repair verb acts on -------------------------------------
 
 # The artifact each acting verb rewrites, under the name a round's counts give it (`rounds.py`).
@@ -309,9 +319,10 @@ def _executor(workdir: Any, verb: str, target_of: Any, round_of: Optional[Callab
 
 def repair_tools(workdir: Any, sink: Optional[Sink] = None,
                  round_of: Optional[Callable[[], int]] = None) -> list[AgentTool]:
-    """The five repair verbs over one workdir as request records; `sink` is accepted for symmetry.
+    """The repair verbs over one workdir as request records; `sink` is accepted for symmetry.
 
-    A session registers the two deciding verbs from here (`repair_refuse_task`, `repair_escalate`)
+    A session registers the three deciding verbs from here (`repair_refuse_task`, `repair_escalate`,
+    `repair_record_finding`)
     and takes the two acting ones from `builder/tools.py`, which run the repairing stage as well as
     recording the request. `repair_rewrite_skill` is registered nowhere yet (the GEPA caution).
 
@@ -340,6 +351,15 @@ def repair_tools(workdir: Any, sink: Optional[Sink] = None,
         AgentTool("repair_escalate", "Escalate a Task to a person on a named queue.",
                   EscalateArgs, RepairResult,
                   _executor(workdir, "repair_escalate", lambda a: a.task_id, round_of), render=_render),
+        AgentTool("repair_record_finding", "Record a behaviour of the recorded system that its tool's "
+                  "description does not say and the body reproduces (D155): the leaf where the recorded "
+                  "calls agree with each other and part from the description, with the call ids as "
+                  "evidence. The recording is the standard a Candidate is graded against, so the body "
+                  "reproduces it; the row is what the customer reads. Moves no gate, changes no artifact.",
+                  RecordFindingArgs, RepairResult,
+                  _executor(workdir, "repair_record_finding", lambda a: a.tool, round_of,
+                            detail="one row for the customer's report; no gate moves and no artifact changes"),
+                  render=_render),
     ]
 
 

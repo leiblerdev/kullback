@@ -891,3 +891,14 @@ def test_a_queue_row_with_no_reason_is_still_read_as_a_split(data):
     block = render(data).split("## Disagreement queue", 1)[1]
     assert "### Items a person may resolve" in block
     assert "### Items the judges did not decide" not in block
+
+
+def test_a_finding_the_builder_recorded_is_printed_for_the_customer_with_its_calls(data):
+    """D155: the body reproduces what several recorded calls agree on; the report says what and where."""
+    assert "### Findings" not in render(data), "no section when nothing was found"
+    data.findings = [{"verb": "repair_record_finding", "target": "update_booking", "arguments": {
+        "tool": "update_booking", "evidence": ["call_12", "call_40"],
+        "finding": "rooms[*].rate: the recording writes the last new room's rate on every changed row"}}]
+    block = block_of(render(data), "### Findings")
+    assert "update_booking: rooms[*].rate: the recording writes" in block
+    assert "recorded calls: call_12, call_40" in block

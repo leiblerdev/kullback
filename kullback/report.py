@@ -92,6 +92,7 @@ class ReportData(BaseModel):
     lessons_set_aside: list[SetAsideLesson] = Field(default_factory=list)
     rounds: list[RoundRecord] = Field(default_factory=list)
     trusted: Optional[GateResult] = None
+    findings: list[dict] = Field(default_factory=list)  # repairs/repair_record_finding.jsonl (D155)
 
 
 # --- numbers ---------------------------------------------------------------
@@ -489,6 +490,24 @@ def _tool_notes(data: ReportData) -> list[str]:
     return lines
 
 
+def _finding_lines(data: ReportData) -> list[str]:
+    """What the recorded system does that its tool descriptions do not say (D155).
+
+    The Builder records one when several recorded calls agree with each other and part from the
+    description at one leaf; the body reproduces the recording, because that is what a Candidate is
+    graded against, and this is where the customer reads what was reproduced and on which calls.
+    """
+    if not data.findings:
+        return []
+    lines = ["", "### Findings, what the recorded system does that its descriptions do not say", ""]
+    for row in data.findings:
+        args = row.get("arguments") or {}
+        evidence = [str(e) for e in (args.get("evidence") or [])]
+        cited = f" (recorded calls: {', '.join(evidence)})" if evidence else ""
+        lines.append(f"- {args.get('tool') or row.get('target')}: {args.get('finding') or ''}{cited}")
+    return lines
+
+
 def _overlay_lines(data: ReportData) -> list[str]:
     rows = sum(len(o.rows) for o in data.overlays)
     return ["", "### Overlays", "",
@@ -513,7 +532,7 @@ def _environment(data: ReportData) -> list[str]:
     """The Environment section, in the order a person reads it: what was built, what the gates and
     the scorecard said, what still needs a look, and what the pipeline did and cost."""
     return ([ENVIRONMENT, ""] + _headline(data) + _gates_table(data) + _scorecard_table(data)
-            + _tool_notes(data) + _overlay_lines(data)
+            + _tool_notes(data) + _finding_lines(data) + _overlay_lines(data)
             + ["", "### Coverage", ""] + _coverage(data) + _pipeline_lines(data))
 
 
@@ -1118,6 +1137,7 @@ def load(workdir: Any) -> ReportData:
         lessons_set_aside=_list_of(root / "lessons_set_aside.json", SetAsideLesson),
         rounds=_rounds_of(root / "rounds.json", unread),
         trusted=trusted,
+        findings=_jsonl(root / "repairs" / "repair_record_finding.jsonl", unread),
     )
     gate = environment_gate(data)
     if gate is not None and not gate.passed:
