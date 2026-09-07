@@ -482,6 +482,132 @@ def test_a_task_the_rerolls_stage_skips_loses_the_rerolls_an_earlier_build_left_
         "only the stage's own prefix goes; the Examiner's re-rolls under another prefix stay"
 
 
+# --- a Task's re-rolls are keyed on that Task's own inputs ---
+
+REROLL_INPUTS = ("tasks", "replays", "user_rules", "schema", "sigs", "bodies", "db",
+                 "environment", "canon_rules", "traces", "policy_text")
+
+
+class Rulings:
+    """A ledger that keeps what a stage ruled instead of writing it, so a test can read the counts."""
+
+    def __init__(self) -> None:
+        self.results: list = []
+
+    def record(self, stage, result):
+        self.results.append(result)
+        return result
+
+    def write(self, stage, results):
+        self.results.extend(results)
+
+    def rulings(self, stage):
+        return [result.stage for result in self.results]
+
+
+def _run_rerolls(workdir: Path, inputs: dict, model, only=None) -> tuple[dict, dict]:
+    """The re-rolls stage over this workdir as a build runs it: its rows, and its ruling's metrics."""
+    stage = build_module._rerolls_stage(model, build_module.DEFAULT_REROLLS, only=only)
+    ledger = Rulings()
+    ctx = pipeline.StageContext(stage, workdir, None, lambda usd, item="": None, ledger=ledger)
+    rows = stage.fn(ctx, inputs)["rerolls"]
+    return rows, ledger.results[-1].metrics
+
+
+@pytest.fixture
+def rerolled(built, tmp_path) -> tuple[Path, dict, dict]:
+    """A copy of the fixture build with every Task's re-rolls settled: the workdir, the store the
+    stage reads, and the rows the settling run left."""
+    workdir = tmp_path / "keyed"
+    shutil.copytree(built, workdir)
+    inputs = {name: _cached_plan(built).store[name] for name in REROLL_INPUTS}
+    rows, _ = _run_rerolls(workdir, inputs, Bodies())
+    assert len(rows) >= 2, "the fixture has to re-roll more than one Task for these tests to say anything"
+    return workdir, inputs, rows
+
+
+def test_a_second_run_of_the_rerolls_stage_re_rolls_no_task_when_nothing_moved(rerolled):
+    """Re-rolls were 75 to 82 percent of every live build's spend because one changed body or one
+    repaired Intent re-ran every Task's Runs: the stage's key covers the whole toolkit and every
+    Task. Keyed per Task, a repeat over the same inputs buys nothing and so runs nothing."""
+    workdir, inputs, before = rerolled
+    silent = TestModel([])  # a call is recorded before it raises, so calls is the evidence either way
+    rows, metrics = _run_rerolls(workdir, inputs, silent)
+    assert silent.calls == [], "nothing moved, so no Task is put to the model again"
+    assert metrics["rerolled"] == 0 and metrics["reused"] == len(rows)
+    assert metrics["rerolled_because"] == {}
+    assert rows == before, "a reused Task lists the Runs it already has"
+    assert all(Path(row["path"]).is_file() for task_rows in rows.values() for row in task_rows)
+
+
+def test_a_changed_tool_body_re_rolls_only_the_tasks_whose_recordings_call_it(rerolled):
+    """The key holds the bodies of the tools this Task's own recordings call (D171's grain). A body
+    no recording of the Task calls may move without the Task's Runs going stale: the Run on disk is
+    a sample already taken against the toolkit as it stood."""
+    workdir, inputs, before = rerolled
+    by_id = {trace.trace_id: trace for trace in inputs["traces"]}
+    tasks = {task.id: task for task in inputs["tasks"] if task.id in before}
+    called = {task_id: set(build_module._tools_called(task, by_id)) for task_id, task in tasks.items()}
+    caller, keeper = sorted(tasks)[0], sorted(tasks)[1]
+    target = sorted(called[caller] & called[keeper])[0]
+    # The fixture's two re-rolled Tasks call the same tools, so the keeper is given a recording that
+    # never makes the call; which tool that is comes from the store, never from a name written here.
+    kept_runs = set(tasks[keeper].run_ids)
+    traces = [trace if trace.trace_id not in kept_runs
+              else trace.model_copy(update={"tool_calls": [call for call in trace.tool_calls
+                                                           if call.name != target]})
+              for trace in inputs["traces"]]
+    settled = {**inputs, "traces": traces}
+    _run_rerolls(workdir, settled, Bodies())
+
+    bodies = {**inputs["bodies"], target: f"{inputs['bodies'][target]}\n# a body written another way"}
+    rows, metrics = _run_rerolls(workdir, {**settled, "bodies": bodies}, Bodies())
+    assert metrics["rerolled"] == 1 and metrics["reused"] == len(rows) - 1
+    assert metrics["rerolled_because"] == {caller: f"body of tool {target}"}
+    assert keeper in rows, "the keeper still lists the Runs it already had"
+
+
+def test_a_task_whose_user_rules_changed_is_the_only_one_re_rolled(rerolled):
+    """The Simulated user drives the Run, so its rules are the Task's own input. The Intent is not:
+    nothing on the re-roll path reads it, and keying on it would buy re-rolls that change nothing."""
+    workdir, inputs, before = rerolled
+    target = sorted(before)[0]
+    task = next(task for task in inputs["tasks"] if task.id == target)
+    trace_id = next(run_id for run_id in task.run_ids if run_id in inputs["user_rules"])
+    rules = inputs["user_rules"][trace_id]
+    changed = {**inputs["user_rules"],
+               trace_id: rules.model_copy(update={"style_sample": ["a turn the recording never had"]})}
+    rows, metrics = _run_rerolls(workdir, {**inputs, "user_rules": changed}, Bodies())
+    assert metrics["rerolled"] == 1 and metrics["reused"] == len(rows) - 1
+    assert metrics["rerolled_because"] == {target: "user rules"}
+
+
+def test_an_explicit_reroll_re_rolls_the_task_it_names_however_settled_its_key_is(rerolled):
+    """The Builder's `reroll` tool and an `--iterate` naming a Task are explicit asks, the way a
+    recompile is: a mechanic who wanted another sample must not be answered with the last one."""
+    workdir, inputs, before = rerolled
+    target = sorted(before)[0]
+    rows, metrics = _run_rerolls(workdir, inputs, Bodies(), only=[target])
+    assert set(rows) == {target}
+    assert metrics["rerolled"] == 1 and metrics["reused"] == 0
+    assert metrics["rerolled_because"] == {target: "an explicit re-roll was asked for"}
+    assert [row["run_id"] for row in rows[target]] == [row["run_id"] for row in before[target]], \
+        "the stage's re-rolls keep their names; the Examiner's rotate the prefix instead"
+
+
+def test_a_task_whose_run_files_are_gone_is_re_rolled_however_settled_its_key_is(rerolled):
+    """The key alone is not evidence the Runs exist: a workdir a build was killed in half way, or
+    one whose Run files were cleared, has to buy them again rather than list files that are not there."""
+    workdir, inputs, before = rerolled
+    target = sorted(before)[0]
+    for row in before[target]:
+        Path(row["path"]).unlink()
+    rows, metrics = _run_rerolls(workdir, inputs, Bodies())
+    assert metrics["rerolled"] == 1
+    assert metrics["rerolled_because"] == {target: "the Run files the key names are gone"}
+    assert all(Path(row["path"]).is_file() for row in rows[target])
+
+
 # --- what a tool is gated on (D74) ---
 
 def _trace(trace_id, calls):
