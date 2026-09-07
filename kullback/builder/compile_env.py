@@ -133,6 +133,9 @@ class ToolBuild:
     # D171: one row per recorded call of this tool, so the miss can be attributed to the Task whose
     # Trace made the call. The corpus gate keeps one fidelity number; this keeps which call it was.
     call_outcomes: list[dict] = field(default_factory=list)
+    # A kept assisted body that answers every recorded call the same way while the recordings differ:
+    # not a body with a bug in it, a body that never read its arguments (`hardcoded_body`).
+    hardcoded: bool = False
 
 # --- reading rows out of recorded tool results ---
 
@@ -1485,8 +1488,75 @@ def replay_outcomes(toolsig: ToolSig, body: str, calls: Iterable[ToolCall], sche
         ruling = body_replay_fidelity_gate([call], [results[index]], schema, label="per_call", rules=rules)
         detail = "" if ruling.passed else (ruling.failures[0] if ruling.failures else "differs")
         rows.append({"tool": toolsig.name, "call_id": call.id, "replayed": bool(ruling.passed),
-                     "detail": _clamped_detail(detail)})
+                     "detail": _clamped_detail(detail), "answer": answer_digest(results[index]),
+                     "world": sandbox.state_key(call)})
     return rows
+
+
+def answer_digest(result: Any) -> str:
+    """One sandbox answer as a comparable key: the canonicalized value, or the class it raised.
+
+    Values themselves are never kept here. What the digest is for is telling two answers apart, and
+    a hash does that without a customer's row travelling into an artifact that is read as a summary.
+    """
+    if isinstance(result, dict) and not result.get("ok"):
+        return f"error:{result.get('error') or 'unknown'}"
+    value = result.get("value") if isinstance(result, dict) else result
+    return content_hash(canon(value))
+
+
+def recorded_digest(call: ToolCall) -> str:
+    """The same key for what the recording answered, so the two can be compared."""
+    if call.error is not None:
+        return f"error:{getattr(call.error, 'class_', '') or 'unknown'}"
+    return content_hash(canon(parse_result(call.result)))
+
+
+HARDCODED_MARK = "# hardcoded: this body answered every recorded call alike; read what it is given"
+HARDCODED_LESSON = ("the body kept answered every recorded call the same way whatever arguments and "
+                    "whatever world it was given, while the recordings answered them differently; the "
+                    "next body has to answer out of its arguments and the rows in front of it")
+
+
+def mark_hardcoded(body: str) -> str:
+    """The body as it is kept, with one comment line saying what is wrong with it.
+
+    bodies.json holds source, and source is what the next reader of it sees: the Builder asking for
+    the body back, the module the Runner loads, a person opening the file. A comment says it in all
+    three without changing what the body does, which a kept body must not do.
+    """
+    body = body or ""
+    return body if body.lstrip().startswith(HARDCODED_MARK) else f"{HARDCODED_MARK}\n{body.lstrip()}"
+
+
+def hardcoded_body(calls: Iterable[ToolCall], rows: Iterable[dict]) -> bool:
+    """True when the body answered differing inputs identically and the recordings did not.
+
+    A kept assisted body is a body no attempt got through the gates, and the gates say which one it
+    fell at; none of them says the body never read what it was given. One live build kept a body
+    that picked the first row of a table and raised one fixed refusal on every call, and the round
+    after it, and the round after that: assisted was all anyone was told, and a hint written against
+    a single failing call cannot reach a body that reads nothing. Three things have to hold
+    together: the recorded calls carry more than one input, the body gave them all one answer, and
+    the recordings did not.
+
+    An input is the arguments and the world the call ran on, not the arguments alone. A tool that
+    takes no arguments at all is answered out of the Starting state of the Task that called it, and
+    that is exactly the tool the live build kept: every call carried `{}`, the recordings answered
+    two different ways, and the body answered one way whatever world it stood on. Where the
+    recordings themselves answer everything the same way, that is what the tool does
+    (`_constant_evidence_note`), and this stays quiet.
+    """
+    by_id = {row["call_id"]: row for row in rows if row.get("call_id")}
+    inputs, body_answers, recorded = set(), set(), set()
+    for call in calls:
+        row = by_id.get(call.id) or {}
+        if not call.id or row.get("answer") is None:
+            continue
+        inputs.add((args_text(call), str(row.get("world") or "")))
+        body_answers.add(row["answer"])
+        recorded.add(recorded_digest(call))
+    return len(inputs) > 1 and len(body_answers) == 1 and len(recorded) > 1
 
 
 def _clamped_detail(text: str) -> str:
@@ -1682,10 +1752,12 @@ def compile_tool(model, toolsig: ToolSig, calls: Iterable[ToolCall], schema: Ent
                         rules=rules, timeout=timeout)
         if build.assisted else
         [{"tool": toolsig.name, "call_id": call.id, "replayed": True, "detail": ""} for call in calls])
+    build.hardcoded = build.assisted and hardcoded_body(calls, build.call_outcomes)
     directory = workdir / NODE_DIR
     directory.mkdir(parents=True, exist_ok=True)
     (directory / f"{toolsig.name}.json").write_text(
         json.dumps({"tool": toolsig.name, "assisted": build.assisted,
+                    "hardcoded": build.hardcoded,
                     "kept_attempt": build.kept_attempt, "nodes": build.nodes,
                     "call_outcomes": build.call_outcomes},
                    indent=2, default=str) + "\n", encoding="utf-8")

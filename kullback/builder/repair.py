@@ -271,7 +271,10 @@ def recompile_ruling(workdir: Any, name: str) -> str:
     if not build.get("assisted"):
         return f"repair_recompile {name}: cleared the gates"
     failures = [text for text in (_failure_detail(node) for node in build.get("nodes") or []) if text]
-    return f"repair_recompile {name}: still assisted: {failures[-1] if failures else NO_FAILURE}"
+    # A body that never read its arguments is a different repair from a body with a defect in it, so
+    # the line says which one this is before it says what the gates saw.
+    stood = "still assisted and hardcoded" if build.get("hardcoded") else "still assisted"
+    return f"repair_recompile {name}: {stood}: {failures[-1] if failures else NO_FAILURE}"
 
 
 def grow_ruling(workdir: Any, table: str, count: int) -> str:

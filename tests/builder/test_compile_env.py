@@ -537,6 +537,57 @@ def test_a_body_that_does_not_raise_gets_no_table_note(make_test_model, workdir)
     assert "holds" not in retry and "look like" not in retry
 
 
+CONSTANT_MEMBER_BODY = """
+return {"member_id": "none", "copy_id": "none"}
+"""
+
+
+def test_a_body_that_answers_one_constant_to_calls_with_different_arguments_is_marked_hardcoded(
+    make_test_model, workdir
+):
+    """One live build kept a body that picked the first row and raised one fixed refusal on every
+    call, round after round: assisted was all anyone was told, and no hint reaches a body with no
+    argument in it."""
+    db, schema, sig, calls = _library_world()
+    model = make_test_model([CONSTANT_MEMBER_BODY] * 4)
+    build = ce.compile_tool(model, sig, calls, schema, db, workdir)
+    assert build.assisted is True and build.hardcoded is True
+    written = json.loads((workdir / ce.NODE_DIR / "get_member.json").read_text(encoding="utf-8"))
+    assert written["hardcoded"] is True
+    assert ce.mark_hardcoded(build.body).splitlines()[0] == ce.HARDCODED_MARK
+    assert ce.mark_hardcoded(ce.mark_hardcoded(build.body)).count(ce.HARDCODED_MARK) == 1
+
+
+def test_a_body_that_answers_per_argument_is_assisted_but_not_hardcoded(make_test_model, workdir):
+    db, schema, sig, calls = _library_world()
+    model = make_test_model([WRONG_MEMBER_BODY] * 4)
+    build = ce.compile_tool(model, sig, calls, schema, db, workdir)
+    assert build.assisted is True and build.hardcoded is False
+
+
+def test_a_tool_whose_own_recordings_answer_alike_is_not_called_hardcoded():
+    """Where the recorded calls share one answer, one answer is what the tool does."""
+    calls = [_call("close_ticket", {"ticket_id": f"t-{i}"}, result={"status": "closed"}, idx=i)
+             for i in range(3)]
+    rows = [{"call_id": call.id, "answer": "one", "world": "w"} for call in calls]
+    assert ce.hardcoded_body(calls, rows) is False
+    differing = [_call("close_ticket", {"ticket_id": f"t-{i}"}, result={"status": f"s-{i}"}, idx=i)
+                 for i in range(3)]
+    rows = [{"call_id": c.id, "answer": "one", "world": "w"} for c in differing]
+    assert ce.hardcoded_body(differing, rows) is True
+    assert ce.hardcoded_body(differing[:1], rows[:1]) is False
+
+
+def test_a_tool_with_no_arguments_is_hardcoded_when_it_answers_two_worlds_the_same_way():
+    """The live build's own case: every recorded call carried no arguments at all, the recordings
+    answered two ways out of the Task's own world, and the body answered one way on both."""
+    calls = [_call("current_balance", {}, result={"balance": f"{i}"}, idx=i) for i in range(4)]
+    worlds = [{"call_id": call.id, "answer": "one", "world": f"w-{i}"} for i, call in enumerate(calls)]
+    assert ce.hardcoded_body(calls, worlds) is True
+    one_world = [dict(row, world="w") for row in worlds]
+    assert ce.hardcoded_body(calls, one_world) is False, "one input, so one answer says nothing"
+
+
 def test_the_shape_of_an_id_generalizes_its_characters_and_keeps_the_rest():
     assert ce.value_shape("m-14") == "a-##"
     assert ce.value_shape("AB_9") == "AA_#"

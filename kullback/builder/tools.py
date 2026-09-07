@@ -203,6 +203,9 @@ NO_BODY = " has no body"
 # A tool that ended assisted is the one red light no ruling names, so it is written here and read
 # back here; the headline counts the assisted tools off this wording and off nothing else.
 ASSISTED = " is assisted: no generated body cleared the gates (D49)"
+# Read back the same way, off `tool_builds.json`: an assisted body that answered every recorded call
+# the same way whatever its arguments were, which a hint written against one failing call cannot reach.
+HARDCODED = " and hardcoded: it answers every recorded call alike, whatever it is given"
 
 
 def verb_for(stage: str) -> str:
@@ -316,7 +319,9 @@ def red_lights(workdir: Any) -> list[RedLight]:
     for name, row in sorted((_read_json(workdir / "tool_builds.json", {}) or {}).items()):
         if isinstance(row, dict) and row.get("assisted"):
             out.append(RedLight(stage="compile_tools", kind="tool", target=name,
-                                failure=f"{name}{ASSISTED}{_blocked_note(fidelity, name)}"
+                                failure=f"{name}{ASSISTED}"
+                                        f"{HARDCODED if row.get('hardcoded') else ''}"
+                                        f"{_blocked_note(fidelity, name)}"
                                         f"{_declined_note(row)}",
                                 verb="repair_recompile"))
     return out
@@ -387,6 +392,11 @@ def _assisted(lights: list[RedLight]) -> list[str]:
     return sorted({light.target for light in lights if light.target and ASSISTED in light.failure})
 
 
+def _hardcoded(lights: list[RedLight]) -> list[str]:
+    """The assisted tools whose kept body never read its arguments, off the same wording."""
+    return sorted({light.target for light in lights if light.target and HARDCODED in light.failure})
+
+
 def _count(n: int, noun: str, plural: str = "s") -> str:
     return f"{n} {noun}{'' if n == 1 else plural}"
 
@@ -394,13 +404,19 @@ def _count(n: int, noun: str, plural: str = "s") -> str:
 def _headline(lights: list[RedLight], passing: list[str], failing: list[str]) -> str:
     """The one line the model reads first: how much is red, how many Tasks it costs, what is assisted."""
     tasks, top = _no_verdict(lights)
-    assisted = _assisted(lights)
+    hardcoded = _hardcoded(lights)
+    # Listed apart, because they are not the same repair: an assisted body has a defect a hint can
+    # name, and a hardcoded one has no argument in it at all.
+    assisted = [name for name in _assisted(lights) if name not in hardcoded]
     gates = len(set(passing) | set(failing))
     parts = [_count(len(lights), "red light"), f"{len(failing)} of {_count(gates, 'gate')} red"]
     parts.append(f"{_count(len(tasks), 'Task')} with no Verdict" + (f", most of them {top}" if top else "")
                  if tasks else "no Task left without a Verdict")
     parts.append(f"{_count(len(assisted), 'tool')} assisted: " + ", ".join(assisted)
                  if assisted else "no assisted tool")
+    if hardcoded:
+        parts.append(f"{_count(len(hardcoded), 'tool')} hardcoded, answering alike whatever they are "
+                     f"given: " + ", ".join(hardcoded))
     return "status: " + "; ".join(parts)
 
 

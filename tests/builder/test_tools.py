@@ -219,6 +219,19 @@ def test_the_headline_counts_the_gates_the_tasks_with_no_verdict_and_the_assiste
     assert builder_tools.render_status(result).startswith(head + "\n")
 
 
+def test_a_hardcoded_tool_is_listed_apart_from_the_assisted_ones(tmp_path):
+    """A body that never read its arguments is not the repair an assisted body is: a hint written
+    against one failing call cannot reach it, so the headline does not file the two together."""
+    workdir = _crowded(tmp_path)
+    builds = json.loads((workdir / "tool_builds.json").read_text(encoding="utf-8"))
+    builds[CROWDED_TOOLS[0]]["hardcoded"] = True
+    (workdir / "tool_builds.json").write_text(json.dumps(builds), encoding="utf-8")
+    head = builder_tools.status_of(workdir).summary
+    assert "3 tools assisted: " + ", ".join(CROWDED_TOOLS[1:4]) in head
+    assert f"1 tool hardcoded, answering alike whatever they are given: {CROWDED_TOOLS[0]}" in head
+    assert CROWDED_TOOLS[0] not in head.split("assisted: ")[1].split(";")[0]
+
+
 @pytest.mark.parametrize("failure,target,kind", [
     ("task task_7: no Trace of the Task was replayed", "task_7", "task"),
     ("get_order: a recorded success call replays differently", "get_order", "tool"),
