@@ -37,7 +37,10 @@ from kullback.runner.records import Finding, GateResult, RoundRecord, as_dict
 TARGET = "environment"
 # sha256 of task_status.json from the full offline build over the fixture made before this phase, through
 # run_builder with derive_verifier still a Builder stage (D130): the rounds must leave the same bytes.
-TASK_STATUS_SHA256_BEFORE_THE_PHASE = "e6ec7ca50f375163805c0651745c411d39d45bfa8dfe9a2e59ba5bcea335cd73"
+# Re-pinned once when `reference.describe` began saying, of a Run that wrote nothing, whether its answer
+# stated facts read from the world: the same two groups and the same verdicts, one longer state sentence
+# inside the reason. Every other byte of the three rows is the pre-phase build's.
+TASK_STATUS_SHA256_BEFORE_THE_PHASE = "afe53bac43085dd27b0fcbe57e032438a63ed7cd80cad46f131f6591c8dbde7f"
 
 
 def _fixture(request) -> Path:

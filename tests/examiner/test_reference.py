@@ -41,7 +41,82 @@ def test_two_runs_that_wrote_the_same_thing_share_an_end_state():
 def test_describe_names_the_tool_the_entity_and_the_values():
     text = ref.describe(cancel_run("a").end_state)
     assert text.startswith("cancel_pending_order on #W123") and "reason=no longer needed" in text
-    assert ref.describe(()) == "no writes"
+    assert ref.describe(()) == "no writes; the answer states nothing read from the world"
+    assert ref.describe(ref.ANSWERED) == "no writes; the answer states facts read from the world"
+
+
+# --- End states of a Run that wrote nothing ---------------------------------
+# A public library: the reader asks about a loan, the agent looks it up and either states what it
+# read or refuses. Neither Run writes, and before this the two were one group.
+
+LIBRARY_WRITES = {"renew_loan"}
+LOAN = {"loan_id": "LB-4412", "title": "The Long Ships", "due": "2026-09-20", "fine": 0}
+
+
+def _library_recording(run_id: str, answer: str, *, renewed: bool = False,
+                       kind: str = ref.RECORDING) -> ref.Recording:
+    events = [user("When is my copy of The Long Ships due back?"),
+              call("get_loan", {"loan_id": "LB-4412"}, kind="read", cid="c0"),
+              result(LOAN, cid="c0")]
+    if renewed:
+        events += [call("renew_loan", {"loan_id": "LB-4412", "weeks": 2}, cid="c1"),
+                   result({"loan_id": "LB-4412", "due": "2026-10-04"}, cid="c1")]
+    events.append(assistant(answer))
+    run = make_run(run_id, events)
+    return ref.Recording(run_id=run_id, path=run_id, kind=kind,
+                         trace_id=run_id if kind == ref.RECORDING else None,
+                         end_state=ref.end_state(run, LIBRARY_WRITES, _canon))
+
+
+def answered(run_id: str, answer: str = "Loan LB-4412 is due on 2026-09-20.", **kw) -> ref.Recording:
+    return _library_recording(run_id, answer, **kw)
+
+
+def refused(run_id: str, **kw) -> ref.Recording:
+    return _library_recording(run_id, "I am unable to verify your library card, so I cannot look that up.", **kw)
+
+
+def test_a_no_write_recording_that_stated_facts_and_one_that_stated_nothing_are_two_end_states():
+    assert answered("a").end_state == ref.ANSWERED
+    assert refused("b").end_state == ()
+    assert len(ref.group([answered("a"), refused("b")])) == 2
+
+
+def test_two_answered_no_write_recordings_share_one_end_state():
+    """The state says facts were stated, never which ones: which facts are common is derive's question."""
+    other = answered("b", answer="It is due back on 2026-09-20; nothing is owed on LB-4412.")
+    assert answered("a").end_state == other.end_state == ref.ANSWERED
+    assert len(ref.group([answered("a"), other])) == 1
+
+
+def test_a_recording_that_read_nothing_and_a_refusal_after_a_read_share_the_stated_nothing_state():
+    read_nothing = ref.Recording(run_id="c", path="c", end_state=ref.end_state(
+        make_run("c", [user("Is the library open on Sunday?"), assistant("I cannot check that.")]),
+        LIBRARY_WRITES, _canon))
+    assert read_nothing.end_state == refused("b").end_state == ()
+
+
+def test_a_recording_with_writes_keeps_its_write_state_whatever_it_said():
+    stated = answered("a", renewed=True)
+    silent = refused("b", renewed=True)
+    assert stated.end_state == silent.end_state != ref.ANSWERED
+    assert ref.describe(stated.end_state).startswith("renew_loan on LB-4412")
+
+
+def test_the_judge_fails_the_refusal_and_the_answered_recordings_are_the_references():
+    """26 Tasks on the last build had no-write recordings in one group, so the judge was never called
+    and refusals stayed References; the two states now reach it."""
+    judge = TestModel(['{"failed": ["B"], "evidence": ["intent", "end_states"], '
+                       '"reason": "the reader was never told when the book is due"}'])
+    out = ref.confirm([answered("a"), answered("b"), refused("c")],
+                      intent="tell the reader when loan LB-4412 is due",
+                      policy_lines=["a reader may be told the due date of their own loan"], judge=judge)
+    assert [r.run_id for r in out.references] == ["a", "b"]
+    assert out.failed == {"c": "judge: the reader was never told when the book is due"}
+    assert out.judged and not out.judge_abstained
+    prompt = judge.calls[0]["messages"][0]["content"]
+    assert "A (2 runs): no writes; the answer states facts read from the world" in prompt
+    assert "B (1 run): no writes; the answer states nothing read from the world" in prompt
 
 
 # --- the rule ---------------------------------------------------------------
