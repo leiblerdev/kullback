@@ -20,7 +20,6 @@ from kullback.runner.records import EntitySchema, RawPtr, ToolCall, Trace, Turn,
 
 PTR = RawPtr(file_hash="testfile", sim_index=0)
 CARETAKER = "caretaker"
-WRITES = ("open_vent",)
 
 VENT_READER = """
 def read(result):
@@ -71,6 +70,26 @@ def two_traces():
     ]
 
 
+def credit_traces():
+    """Twelve recordings: the vent moves when the caretaker opens it, and not otherwise.
+
+    The climate check restates the whole greenhouse, so it sits inside intervals where the vent
+    moved and intervals where it did not; the warmth moves in every interval, so nothing is credited
+    with it. That is the shape the association rule has to tell apart.
+    """
+    out = []
+    for index in range(4):
+        out.append(trace(f"open_{index}", [call("check_climate", "Vent: CLOSED\nWarmth: 20 units"),
+                                           call("open_vent", "Vent opened."),
+                                           call("check_climate", "Vent: OPEN\nWarmth: 22 units")]))
+        out.append(trace(f"quiet_{index}", [call("check_climate", "Vent: OPEN\nWarmth: 20 units"),
+                                            call("check_climate", "Vent: OPEN\nWarmth: 21 units")]))
+        out.append(trace(f"vent_{index}", [call("check_vent", "Vent: CLOSED"),
+                                           call("open_vent", "Vent opened."),
+                                           call("check_vent", "Vent: OPEN")]))
+    return out
+
+
 def proposal_json(*, vent=VENT_READER, climate=CLIMATE_READER, open_reader=OPEN_READER,
                   columns=("vent", "warmth")):
     return json.dumps({
@@ -82,15 +101,20 @@ def proposal_json(*, vent=VENT_READER, climate=CLIMATE_READER, open_reader=OPEN_
     })
 
 
-def gated(tmp_path, reply_json, traces=None):
-    """One proposal parsed out of a reply, run through the gate over these recordings."""
+def gated(tmp_path, reply_json, traces=None, effects=None):
+    """One proposal parsed out of a reply, run through the gate over these recordings.
+
+    `effects` stands in for the credits where a test is about what closing a column does rather than
+    about which tool the corpus credits with it.
+    """
     traces = two_traces() if traces is None else traces
     by_requestor = readers.prose_calls(traces)
     proposal = readers._parse_reply(ModelReply(content=reply_json), CARETAKER)
     assert proposal is not None
     ruling = readers.gate_proposal(proposal, by_requestor[CARETAKER], tmp_path)
     readers.absorb_columns(proposal, ruling.parsed)
-    proposal.effects = readers.write_effects(traces, proposal, ruling.parsed, WRITES)
+    proposal.effects = (readers.write_effects(traces, proposal, ruling.parsed)
+                        if effects is None else dict(effects))
     return proposal, ruling
 
 
@@ -163,32 +187,79 @@ def test_a_column_that_reads_as_an_id_is_refused_because_code_owns_the_rows_key(
     assert any("greenhouse_id" in line and "code owns its key" in line for line in ruling.failures)
 
 
-# --- what the requestor's writes change --------------------------------------
+# --- which tool the corpus credits with a column -----------------------------
 
-def test_a_write_tool_is_credited_with_a_column_two_readings_around_it_disagree_on(tmp_path):
-    proposal, ruling = gated(tmp_path, proposal_json())
-    assert proposal.effects == {"open_vent": ["vent"]}, "warmth was never read before that call"
+def test_a_tool_the_column_mostly_moves_around_is_credited_with_changing_it(tmp_path):
+    proposal, _ruling = gated(tmp_path, proposal_json(), traces=credit_traces())
+    assert proposal.effects == {"open_vent": ["vent"]}
 
 
-def test_a_tool_the_miner_calls_a_read_is_never_credited_with_a_change(tmp_path):
-    """The world moving around a read is not evidence that the read moved it (D68)."""
-    traces = two_traces()
-    proposal = readers._parse_reply(ModelReply(content=proposal_json()), CARETAKER)
-    ruling = readers.gate_proposal(proposal, readers.prose_calls(traces)[CARETAKER], tmp_path)
-    assert readers.write_effects(traces, proposal, ruling.parsed, ()) == {}
-    assert readers.write_effects(traces, proposal, ruling.parsed, ("check_vent",)) == {}
+def test_a_check_that_restates_the_whole_state_is_credited_with_nothing_it_only_reports(tmp_path):
+    """It sits inside changing and unchanging intervals alike, so its presence says nothing."""
+    proposal, _ruling = gated(tmp_path, proposal_json(), traces=credit_traces())
+    assert "check_climate" not in proposal.effects and "check_vent" not in proposal.effects
+
+
+def test_a_column_that_moves_in_every_interval_is_credited_to_nobody(tmp_path):
+    """The warmth moves whatever was called, so no call explains it."""
+    proposal, _ruling = gated(tmp_path, proposal_json(), traces=credit_traces())
+    assert all("warmth" not in columns for columns in proposal.effects.values())
+
+
+def test_a_tool_the_corpus_never_runs_without_is_not_credited_for_want_of_a_contrast(tmp_path):
+    """Four recordings, all of them opening the vent: nothing says the vent would have stayed shut."""
+    traces = [trace(f"run_{i}", [call("check_vent", "Vent: CLOSED"),
+                                 call("open_vent", "Vent opened."),
+                                 call("check_vent", "Vent: OPEN")]) for i in range(4)]
+    proposal, _ruling = gated(tmp_path, proposal_json(), traces=traces)
+    assert proposal.effects == {}
+
+
+def test_a_change_seen_two_or_three_times_is_too_little_to_credit_a_tool_with(tmp_path):
+    traces = ([trace("open_0", [call("check_vent", "Vent: CLOSED"),
+                                call("open_vent", "Vent opened."),
+                                call("check_vent", "Vent: OPEN")])]
+              + [trace(f"quiet_{i}", [call("check_vent", "Vent: OPEN"),
+                                      call("check_vent", "Vent: OPEN")]) for i in range(4)])
+    proposal, _ruling = gated(tmp_path, proposal_json(), traces=traces)
+    assert proposal.effects == {}, "one changing interval is not a corpus saying anything"
 
 
 def test_a_write_that_reports_its_own_new_value_is_read_as_evidence_of_the_change(tmp_path):
     """A write whose result states the new state is the commonest evidence a corpus has."""
-    traces = [trace("run_a", [call("check_vent", "Vent: CLOSED"),
-                              call("open_vent", "Vent: OPEN")])]
+    traces = ([trace(f"open_{i}", [call("check_vent", "Vent: CLOSED"),
+                                   call("open_vent", "Vent opened.")]) for i in range(4)]
+              + [trace(f"quiet_{i}", [call("check_vent", "Vent: OPEN"),
+                                      call("check_vent", "Vent: OPEN")]) for i in range(4)])
     proposal, _ = gated(tmp_path, proposal_json(open_reader=OPEN_REPORTING_READER), traces=traces)
-    assert proposal.effects == {"open_vent": ["vent"]}
+    assert proposal.effects == {"open_vent": ["vent"]}, "its own result is the reading after the call"
 
+
+# --- what those credits settle ------------------------------------------------
+
+def test_a_prose_tool_is_a_write_when_it_is_credited_with_a_column_and_a_read_when_it_is_not(tmp_path):
+    proposal, _ruling = gated(tmp_path, proposal_json(), traces=credit_traces())
+    assert readers.kinds_for(proposal) == {"check_climate": "read", "check_vent": "read",
+                                           "open_vent": "write"}
+
+
+def test_only_the_kind_of_a_tool_the_proposal_reads_is_overridden_and_the_reason_is_recorded(tmp_path):
+    from kullback.runner.records import ToolSig
+
+    proposal, _ruling = gated(tmp_path, proposal_json(), traces=credit_traces())
+    mined = [ToolSig(name="check_climate", kind="write"), ToolSig(name="open_vent", kind="read"),
+             ToolSig(name="look_up_plot", kind="read")]
+    out = {sig.name: sig for sig in readers.apply_to_sigs(mined, [proposal])}
+    assert out["check_climate"].kind == "read" and out["open_vent"].kind == "write"
+    assert out["look_up_plot"] is mined[2], "a tool with no prose results is handed on untouched"
+    assert "credited with changing" in (out["open_vent"].kind_reason or "")
+    assert out["open_vent"].classified_by == "observed"
+
+
+# --- what closing a column does to the starting row --------------------------
 
 def test_the_starting_row_is_what_was_read_before_the_write_and_not_after_it(tmp_path):
-    proposal, ruling = gated(tmp_path, proposal_json())
+    proposal, ruling = gated(tmp_path, proposal_json(), effects={"open_vent": ["vent"]})
     rows = readers.starting_rows(two_traces(), proposal, ruling.parsed)
     assert rows["run_a"] == {"vent": "closed", "warmth": 21}, "the vent was open only after the write"
     assert rows["run_b"] == {"vent": "open", "warmth": 12}
@@ -196,15 +267,14 @@ def test_the_starting_row_is_what_was_read_before_the_write_and_not_after_it(tmp
 
 def test_a_column_read_only_after_the_write_of_another_column_still_stands(tmp_path):
     """Only the columns that tool is seen to change close at it; the rest keep the first reading."""
-    proposal, ruling = gated(tmp_path, proposal_json())
+    proposal, ruling = gated(tmp_path, proposal_json(), effects={"open_vent": ["vent"]})
     only_after = trace("run_c", [call("open_vent", "Vent opened."),
                                  call("check_climate", "Vent: OPEN\nWarmth: 21 units")])
     assert readers.starting_row(only_after, proposal, ruling.parsed) == {"warmth": 21}
 
 
 def test_with_no_write_seen_to_change_it_the_first_reading_of_a_column_stands(tmp_path):
-    proposal, ruling = gated(tmp_path, proposal_json())
-    proposal.effects = {}
+    proposal, ruling = gated(tmp_path, proposal_json(), effects={})
     rows = readers.starting_rows(two_traces(), proposal, ruling.parsed)
     assert rows["run_a"] == {"vent": "closed", "warmth": 21}
 
@@ -219,7 +289,7 @@ def three_traces():
 
 def test_a_column_a_recording_never_read_before_writing_is_filled_from_the_corpus(tmp_path):
     traces = three_traces()
-    proposal, ruling = gated(tmp_path, proposal_json(), traces=traces)
+    proposal, ruling = gated(tmp_path, proposal_json(), traces=traces, effects={"open_vent": ["vent"]})
     rows = readers.starting_rows(traces, proposal, ruling.parsed)
     assert "vent" not in rows["run_c"], "that recording opened the vent before it ever read it"
     fills, assumptions, unset = readers.fills_for(rows, proposal)
@@ -231,7 +301,7 @@ def test_a_column_a_recording_never_read_before_writing_is_filled_from_the_corpu
 
 def test_the_fill_is_the_value_the_most_recordings_showed_before_their_first_write(tmp_path):
     traces = three_traces() + [trace("run_d", [call("check_vent", "Vent: OPEN")])]
-    proposal, ruling = gated(tmp_path, proposal_json(), traces=traces)
+    proposal, ruling = gated(tmp_path, proposal_json(), traces=traces, effects={"open_vent": ["vent"]})
     rows = readers.starting_rows(traces, proposal, ruling.parsed)
     fills, _assumptions, _unset = readers.fills_for(rows, proposal)
     assert fills["vent"] == "open", "two recordings started open against one closed"
@@ -249,7 +319,7 @@ def test_a_column_the_corpus_never_shows_before_a_write_is_left_unset_and_named(
 
 def test_the_fills_reach_the_world_and_the_split_is_left_to_what_was_read(tmp_path):
     traces = three_traces()
-    proposal, ruling = gated(tmp_path, proposal_json(), traces=traces)
+    proposal, ruling = gated(tmp_path, proposal_json(), traces=traces, effects={"open_vent": ["vent"]})
     rows = readers.starting_rows(traces, proposal, ruling.parsed)
     fills, assumptions, _unset = readers.fills_for(rows, proposal)
     artifact = {"proposals": {CARETAKER: proposal.to_dict()}, "rows": {CARETAKER: rows},
@@ -280,7 +350,7 @@ def test_the_columns_carry_the_requestor_that_revealed_them_and_the_export_flags
 
 def test_a_body_is_told_to_read_the_one_row_without_naming_its_key_and_what_the_writes_change(tmp_path):
     """The row's key is the requestor's name, and a literal id in a body is refused by D162."""
-    proposal, _ = gated(tmp_path, proposal_json())
+    proposal, _ = gated(tmp_path, proposal_json(), effects={"open_vent": ["vent"]})
     note = readers.body_note([proposal])
     assert "next(iter(self.db.greenhouse.values()))" in note and "never by key" in note
     assert "The recording shows open_vent changing: vent." in note
@@ -292,9 +362,9 @@ def test_a_body_is_told_to_read_the_one_row_without_naming_its_key_and_what_the_
 def test_a_failing_proposal_is_handed_back_the_shapes_that_failed_and_the_next_attempt_is_gated(tmp_path):
     model = TestModel([proposal_json(vent="def read(result):\n    return {'vent': result[99]}"),
                        proposal_json()])
-    traces = two_traces()
+    traces = credit_traces()
     proposal, nodes, parsed = readers.propose(model, CARETAKER, readers.prose_calls(traces)[CARETAKER],
-                                              traces, tmp_path, write_tools=WRITES)
+                                              traces, tmp_path)
     assert proposal.assisted is False and proposal.attempts == 2
     assert [n["passed"] for n in nodes] == [False, True]
     retry = model.calls[1]["messages"][-1]["content"]
@@ -310,7 +380,7 @@ def test_after_the_last_attempt_the_proposal_with_the_fewest_failing_shapes_is_k
     model = TestModel([worse, better, worse, worse])
     traces = two_traces()
     proposal, nodes, _ = readers.propose(model, CARETAKER, readers.prose_calls(traces)[CARETAKER],
-                                         traces, tmp_path, write_tools=WRITES)
+                                         traces, tmp_path)
     assert len(nodes) == readers.MAX_ATTEMPTS and proposal.assisted is True
     assert [n["failing_shapes"] for n in nodes] == [3, 2, 3, 3]
     assert proposal.reader_for("check_climate").source.strip() == CLIMATE_READER.strip()
@@ -322,11 +392,13 @@ def test_the_stage_ruling_reports_the_silent_shapes_and_the_fills_and_fails_no_b
                             silent={"open_vent": 2}, effects={"open_vent": ["vent"]},
                             failures=["check_vent shape 'Vent: N': the reader raised KeyError"])
     ruling = readers_gate([kept.to_dict()], 1, assumptions=["one column was filled"],
-                          unset={CARETAKER: ["warmth"]})
+                          unset={CARETAKER: ["warmth"]},
+                          kinds={CARETAKER: {"open_vent": "write", "check_vent": "read"}})
     assert ruling.passed is False and ruling.metrics["assisted"] == 1
     assert ruling.metrics["silent_shapes"] == 2 and ruling.metrics["silent_by_tool"] == {"open_vent": 2}
     assert ruling.metrics["changed_columns"] == 1 and ruling.metrics["filled_columns"] == 1
     assert ruling.metrics["unset_columns"] == {CARETAKER: ["warmth"]}
+    assert ruling.metrics["write_tools"] == ["open_vent"] and ruling.metrics["read_tools"] == ["check_vent"]
     assert CARETAKER in ruling.failures[0]
     assert readers_gate([], 0).passed is True
 
@@ -348,6 +420,7 @@ def test_a_corpus_with_no_prose_results_records_the_note_and_asks_no_model(tmp_p
     result = execute(plan, "readers")
     assert result.artifacts["readers"]["note"] == readers.NO_PROSE
     assert result.artifacts["schema"] is result.artifacts["mined_schema"]
+    assert result.artifacts["sigs"] is result.artifacts["mined_sigs"]
     assert json.loads((tmp_path / readers.READERS_FILE).read_text(encoding="utf-8")) == {
         "note": readers.NO_PROSE}
 

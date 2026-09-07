@@ -261,7 +261,8 @@ def test_a_stage_target_after_the_build_is_served_from_the_cache_and_only_runs_u
     # The first build mined and clustered before the anchor existed; the anchor is in every key now
     # (D81), so the two run once more, without a model, and are served from the cache from then on.
     assert not any(s["cached"] for s in stages.values())
-    assert result.details["produced"] == ["sigs", "mined_schema", "schema", "readers", "categories", "tasks"]
+    assert result.details["produced"] == ["mined_sigs", "mined_schema", "schema", "sigs", "readers",
+                                          "categories", "tasks"]
     assert "gate rulings: cluster pass" in result.content
     again = builder_agent.drive_tool(harness, "build", {"target": "cluster"})
     assert all(s["cached"] for s in again.details["stages"])

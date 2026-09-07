@@ -167,12 +167,13 @@ def _mine_stage():
         # "flag, do not synthesize": a tool the corpus barely shows stays in the build, named in
         # the gate, rather than being invented or dropped (design section 6).
         ctx.record_gate(artifacts.mine_gate(sigs, calls, unknown=unknown))
-        return {"sigs": sigs, "mined_schema": schema}
+        return {"mined_sigs": sigs, "mined_schema": schema}
 
-    # The artifact is `mined_schema`, not `schema`: the readers stage is what releases `schema`,
-    # because a requestor's prose results add tables to it and every stage downstream reads the
-    # schema with those tables on it. With no prose results the readers stage passes this through.
-    return pipeline.Stage(name="mine", fn=run, inputs=("traces",), outputs=("sigs", "mined_schema"),
+    # The artifacts are `mined_schema` and `mined_sigs`, not `schema` and `sigs`: the readers stage
+    # is what releases both, because a requestor's prose results add tables to the schema and settle
+    # the kind of the tools that answer with prose, and every stage downstream reads them settled.
+    # With no prose results the readers stage passes both through untouched.
+    return pipeline.Stage(name="mine", fn=run, inputs=("traces",), outputs=("mined_sigs", "mined_schema"),
                           code_version=_version("mine", run, mine))
 
 
@@ -183,31 +184,31 @@ def _readers_stage(model: Any, max_attempts: int = readers.MAX_ATTEMPTS):
     of. Where a corpus has none, the stage records "no prose results", passes the mined schema
     through unchanged and calls no model at all.
 
-    What that requestor's writes change is mined here, from the miner's own verdict on which of its
-    tools are writes, and closes a column at those calls so a value read only after a write is not
-    the recording's starting value. A column no recording read before a write is filled with the
-    commonest pre-write value the corpus shows, and the fill is recorded as an assumption.
+    What a tool of that requestor changes is mined here by association over the corpus, not read off
+    the miner's kind, and closes a column at that tool's calls so a value read only after a write is
+    not the recording's starting value. Those credits then settle the kind of every tool whose
+    results are prose: a write when it is credited with a column, a read when it is not. A column no
+    recording read before a write is filled with the commonest pre-write value the corpus shows, and
+    the fill is recorded as an assumption.
     """
 
     def run(ctx, inputs):
-        traces, schema, sigs = inputs["traces"], inputs["mined_schema"], inputs["sigs"]
+        traces, schema, sigs = inputs["traces"], inputs["mined_schema"], inputs["mined_sigs"]
         by_requestor = readers.prose_calls(traces)
         if not by_requestor:
             _write_json(ctx.workdir / readers.READERS_FILE, {"note": readers.NO_PROSE})
             ctx.record_gate(stage_gates.readers_gate([], 0))
-            return {"schema": schema, "readers": {"note": readers.NO_PROSE, "proposals": {}, "rows": {}}}
+            return {"schema": schema, "sigs": sigs,
+                    "readers": {"note": readers.NO_PROSE, "proposals": {}, "rows": {}}}
         if model is None:
             raise BuildError("this corpus has prose results from a requestor of its own and the "
                              "readers stage has no model to propose them with; pass --model")
-        # D68 again: what a tool changes is evidence, not a declaration, and only a tool the miner
-        # calls a write is ever credited with a change.
-        write_tools = {s.name for s in sigs if getattr(s, "kind", "") == "write"}
         proposals, rows, nodes, values = {}, {}, [], {}
         fills, assumptions, unset = {}, [], {}
         for requestor in sorted(by_requestor):
             proposal, attempts, parsed = readers.propose(
                 model, requestor, by_requestor[requestor], traces, ctx.workdir / "readers",
-                write_tools=write_tools, max_attempts=max_attempts)
+                max_attempts=max_attempts)
             read_rows = readers.starting_rows(traces, proposal, parsed)
             filled, sentences, missing = readers.fills_for(read_rows, proposal)
             proposals[requestor] = proposal.to_dict()
@@ -219,18 +220,22 @@ def _readers_stage(model: Any, max_attempts: int = readers.MAX_ATTEMPTS):
             nodes += attempts
         artifact = {"proposals": proposals, "rows": rows, "fills": fills,
                     "assumptions": assumptions, "unset": unset}
-        readers.apply_to_schema(schema, readers.proposals_from(artifact), values)
+        kept = readers.proposals_from(artifact)
+        readers.apply_to_schema(schema, kept, values)
+        sigs = readers.apply_to_sigs(sigs, kept)
         _write_json(ctx.workdir / readers.READERS_FILE, {**artifact, "attempts": nodes})
         _write_json(ctx.workdir / "schema.json", as_dict(schema))
+        _write_json(ctx.workdir / "tool_sigs.json", [as_dict(s) for s in sigs])
         # Section 6: a proposal the gate could not satisfy is flagged and kept, never a failed build.
         ctx.record_gate(stage_gates.readers_gate(proposals.values(), len(by_requestor),
-                                                 assumptions=assumptions, unset=unset))
-        return {"schema": schema, "readers": artifact}
+                                                 assumptions=assumptions, unset=unset,
+                                                 kinds={p.requestor: readers.kinds_for(p) for p in kept}))
+        return {"schema": schema, "sigs": sigs, "readers": artifact}
 
     version = (f"readers:{getattr(model, 'name', 'none')}:{max_attempts}:"
                f"{_module_hash(readers)}:{_module_hash(sandbox)}")
-    return pipeline.Stage(name="readers", fn=run, inputs=("traces", "mined_schema", "sigs"),
-                          outputs=("schema", "readers"), code_version=version)
+    return pipeline.Stage(name="readers", fn=run, inputs=("traces", "mined_schema", "mined_sigs"),
+                          outputs=("schema", "sigs", "readers"), code_version=version)
 
 
 def _cluster_stage():

@@ -64,6 +64,10 @@ MAX_SEQUENCE_CALLS = 24
 MAX_FEEDBACK_LINES = 40  # failures carried into the next attempt, one line per masked shape
 MAX_VALUE_CHARS = 120  # a value quoted back inside a failure line
 SANDBOX_TIMEOUT = 300.0
+CREDIT_ODDS = 3.0  # how much likelier a column's change is when a tool was called, for a credit
+CREDIT_CHANGES = 3  # changing intervals the tool was called in, at least
+CREDIT_ABSENT = 3  # intervals it was not called in, at least, so there is a contrast to read
+CREDIT_SHARE = 0.5  # the column's changes it has to be in, so a credit explains them
 
 _DIGITS = re.compile(r"\d+")
 _PTR = RawPtr(file_hash="readers")  # every ToolCall cites a raw location (D66); these are not recorded calls
@@ -138,8 +142,9 @@ class ToolReader:
 class Proposal:
     """One requestor's world as the model proposed it, and how the gate ruled on it.
 
-    `effects` is not the model's: it is mined from the recording after the gate has run, per write
-    tool of this requestor, as the columns its calls are seen to change (`write_effects`).
+    `effects` is not the model's: it is mined from the recording after the gate has run, per tool of
+    this requestor, as the columns the corpus credits its calls with changing (`write_effects`), and
+    those credits are what say which of these tools is a write (`kinds_for`).
     """
     requestor: str
     table: str
@@ -472,31 +477,100 @@ def _walk(trace: Trace, proposal: Proposal, parsed: dict) -> list[tuple[str, str
     return out
 
 
-def write_effects(traces: Iterable[Trace], proposal: Proposal, parsed: dict,
-                  write_tools: Iterable[str]) -> dict[str, list[str]]:
-    """Per write tool of this requestor, the columns its calls are seen to change (D68's evidence).
+def _intervals(steps: list[tuple[str, str, Optional[dict]]], column: str):
+    """Per reading interval of one column: whether it changed, and which tools were called in it.
 
-    Mined, not declared, the way `mine.observed_effects` credits the assistant's writes: a column is
-    credited to a tool when some recording reads it one way before one of that tool's calls and
-    another way at or after it. The tool's own result counts as a reading after the call, because a
-    write that reports the new state is the commonest evidence there is that it changed it.
-
-    `write_tools` is the miner's own verdict (`ToolSig.kind`), so nothing here decides what a write
-    is; a read tool is never credited with a change, however the world moved around it.
+    An interval runs from the last reading of the column before a stretch of calls to the first
+    reading after it, the reading's own call included in the stretch, because a tool that answers
+    the new value is a candidate for having set it.
     """
-    writes = set(write_tools)
+    reads = [(index, values[column]) for index, (_t, _x, values) in enumerate(steps)
+             if values and column in values]
+    for (start, before), (end, after) in zip(reads, reads[1:], strict=False):
+        yield canon(before) != canon(after), {steps[k][0] for k in range(start + 1, end + 1)}
+
+
+def write_effects(traces: Iterable[Trace], proposal: Proposal, parsed: dict) -> dict[str, list[str]]:
+    """Per tool of this requestor, the columns the corpus credits its calls with changing.
+
+    Credit is by association, not by which call happens to sit in the interval. A tool that
+    restates the whole world is inside changing and unchanging intervals alike, so its presence
+    says nothing; a tool that sets a column is inside changing ones and almost nowhere else. So per
+    column and tool the four counts are taken over every reading interval of the corpus (tool
+    called and the column changed, called and unchanged, absent and changed, absent and unchanged),
+    and the tool is credited when calling it makes a change likelier by a clear margin and the
+    column's changes are mostly its:
+
+        changed share with the tool >= CREDIT_ODDS * changed share without it, and
+        the changing intervals it was called in >= CREDIT_SHARE of all of them,
+
+    on at least `CREDIT_CHANGES` changing intervals it was called in and `CREDIT_ABSENT` intervals
+    it was not, because a tool the corpus never runs without offers no contrast to read. The share
+    is what separates a cause from a passenger: a tool that rides along with a repair is in some of
+    a column's changes, the tool that sets it is in most of them.
+
+    Nothing here consults the miner's `kind`: this is what decides it for these tools (`kinds_for`).
+    """
+    walks = [_walk(trace, proposal, parsed) for trace in traces]
+    counts: dict[tuple[str, str], list[int]] = {}
+    totals: dict[str, list[int]] = {}
+    for column in proposal.columns:
+        for steps in walks:
+            for changed, present in _intervals(steps, column):
+                totals.setdefault(column, [0, 0])[0 if changed else 1] += 1
+                for tool in present:
+                    counts.setdefault((tool, column), [0, 0])[0 if changed else 1] += 1
     found: dict[str, set] = {}
-    for trace in traces:
-        steps = _walk(trace, proposal, parsed)
-        for index, (tool, _text, _values) in enumerate(steps):
-            if tool not in writes:
-                continue
-            for column in proposal.columns:
-                before = next((v[column] for _n, _t, v in reversed(steps[:index]) if v and column in v), None)
-                after = next((v[column] for _n, _t, v in steps[index:] if v and column in v), None)
-                if before is not None and after is not None and canon(before) != canon(after):
-                    found.setdefault(tool, set()).add(column)
+    for (tool, column), (with_changed, with_same) in counts.items():
+        changed, same = totals[column]
+        without_changed, without_same = changed - with_changed, same - with_same
+        without = without_changed + without_same
+        if with_changed < CREDIT_CHANGES or without < CREDIT_ABSENT:
+            continue
+        if with_changed < CREDIT_SHARE * changed:
+            continue
+        share_with = with_changed / (with_changed + with_same)
+        share_without = without_changed / without
+        if share_with >= CREDIT_ODDS * share_without:
+            found.setdefault(tool, set()).add(column)
     return {tool: sorted(columns) for tool, columns in sorted(found.items())}
+
+
+def kinds_for(proposal: Proposal) -> dict[str, str]:
+    """The kind of every tool this proposal reads: a write when the corpus credits it with a column.
+
+    The miner rules on a tool by what its results are seen to do to the rebuilt world's rows
+    (`mine.observed_effects`), and a tool whose result is prose touches no row, so its kind there is
+    read off the shape of the string and the words in it. That is what put four device checks of one
+    customer corpus in the write column on 2026-09-07: a check that restates the whole state looks
+    like a tool that sets it. Here the row exists, so the kind follows the credits.
+    """
+    return {reader.tool: ("write" if proposal.changes_of(reader.tool) else "read")
+            for reader in proposal.readers}
+
+
+def apply_to_sigs(sigs: Iterable[Any], proposals: Iterable[Proposal]) -> list[Any]:
+    """The mined sigs with the kind of every prose-result tool of a requestor set by its credits.
+
+    Only those tools move, and only their `kind`, `kind_reason` and how it was classified; every
+    other sig is handed on as it came.
+    """
+    kinds: dict[str, str] = {}
+    for proposal in proposals:
+        kinds.update(kinds_for(proposal))
+    out = []
+    for sig in sigs:
+        want = kinds.get(getattr(sig, "name", ""))
+        if want is None or getattr(sig, "kind", "") == want:
+            out.append(sig)
+            continue
+        out.append(sig.model_copy(update={
+            "kind": want, "kind_confidence": "medium", "classified_by": "observed",
+            "kind_reason": ("the results of this tool are prose, and over the recorded readings of "
+                            "the row it reveals its calls are " +
+                            ("credited with changing " if want == "write" else "not credited with changing ") +
+                            "a column of that row")}))
+    return out
 
 
 def starting_row(trace: Trace, proposal: Proposal, parsed: dict) -> dict:
@@ -540,8 +614,7 @@ def column_values(proposal: Proposal, parsed: dict) -> dict[str, list]:
 # --- the stage's own loop ---------------------------------------------------
 
 def propose(model: Any, requestor: str, calls_by_tool: dict[str, list[ToolCall]], traces: Iterable[Trace],
-            workdir: Path | str, *, write_tools: Iterable[str] = (),
-            max_attempts: int = MAX_ATTEMPTS) -> tuple[Proposal, list[dict], dict]:
+            workdir: Path | str, *, max_attempts: int = MAX_ATTEMPTS) -> tuple[Proposal, list[dict], dict]:
     """Ask for one requestor's proposal, gate it, and retry with the failures at most `max_attempts` times.
 
     The prompt is two messages: a system prefix that is the same bytes for every attempt and every
@@ -554,11 +627,10 @@ def propose(model: Any, requestor: str, calls_by_tool: dict[str, list[ToolCall]]
     over the same results never reaches the network.
 
     After the last attempt the proposal with the fewest failing shapes is kept, marked assisted, and
-    its reasons are recorded, the way a kept assisted body is. Whichever proposal is kept, what its
-    requestor's writes change is mined from the recording before it is handed back.
+    its reasons are recorded, the way a kept assisted body is. Whichever proposal is kept, the
+    columns the corpus credits each of its tools with changing are mined before it is handed back.
     """
     traces, workdir = list(traces), Path(workdir)
-    write_tools = sorted(write_tools)
     messages = [{"role": "system", "content": system_prompt()},
                 {"role": "user", "content": json.dumps(evidence_payload(requestor, calls_by_tool, traces),
                                                        default=str, sort_keys=True)}]
@@ -571,7 +643,7 @@ def propose(model: Any, requestor: str, calls_by_tool: dict[str, list[ToolCall]]
     def finish(proposal: Proposal, parsed: dict, silent: dict) -> tuple[Proposal, list[dict], dict]:
         proposal.silent = dict(silent)
         proposal = absorb_columns(proposal, parsed)
-        proposal.effects = write_effects(traces, proposal, parsed, write_tools)
+        proposal.effects = write_effects(traces, proposal, parsed)
         return proposal, nodes, parsed
 
     for attempt in range(max_attempts):

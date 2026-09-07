@@ -45,7 +45,7 @@ def intent_gate(intents: dict) -> GateResult:
 
 
 def readers_gate(proposals: Iterable[Any], requestors: int = 0, assumptions: Iterable[Any] = (),
-                 unset: Any = None) -> GateResult:
+                 unset: Any = None, kinds: Any = None) -> GateResult:
     """A proposal the readers gate could not satisfy is flagged and kept, never a failed build.
 
     Section 6 again: a requestor whose readers stayed assisted still leaves a world, and what that
@@ -56,11 +56,14 @@ def readers_gate(proposals: Iterable[Any], requestors: int = 0, assumptions: Ite
     of, per tool, which is the strictness one arm of the 2026-09-07 experiment refused on and this
     one only counts; the columns filled from the corpus because no recording read them before a
     write, one assumption each; and the columns left unset because no recording read them before any
-    write, which are named so a reader of the build can see what the world is guessing at.
+    write, which are named so a reader of the build can see what the world is guessing at. The kind
+    these credits give each prose-result tool is reported beside them, because it overrides the
+    miner's own.
     """
     proposals = list(proposals)
     assisted = [p for p in proposals if _get(p, "assisted")]
     unset = dict(unset or {})
+    kinds = dict(kinds or {})
     failures = [f"{_get(p, 'requestor')}: kept after {_get(p, 'attempts')} attempts with "
                 f"{len(_get(p, 'failures') or [])} shape(s) still failing: "
                 f"{(_get(p, 'failures') or ['no reason recorded'])[0]}"
@@ -77,7 +80,11 @@ def readers_gate(proposals: Iterable[Any], requestors: int = 0, assumptions: Ite
                 readers=sum(len(_get(p, "readers") or []) for p in proposals),
                 silent_shapes=sum(silent.values()), silent_by_tool=silent,
                 changed_columns=effects, filled_columns=len(list(assumptions)),
-                unset_columns={str(k): sorted(v or []) for k, v in unset.items()})
+                unset_columns={str(k): sorted(v or []) for k, v in unset.items()},
+                write_tools=sorted(name for per in kinds.values()
+                                   for name, kind in (per or {}).items() if kind == "write"),
+                read_tools=sorted(name for per in kinds.values()
+                                  for name, kind in (per or {}).items() if kind != "write"))
 
 
 def rerolls_gate(rerolls: dict, per_task: int) -> GateResult:
