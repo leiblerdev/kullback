@@ -654,8 +654,15 @@ class GateResult(Record):
 # --- the Examiner's records (phase 5) ---
 
 VersionBy = Literal["derive", "repair"]
-FindingKind = Literal["assisted_tool", "fidelity", "reference_disagreement", "environment", "other"]
-FindingVerb = Literal["compile_tool", "replay", "reroll", "repair_intent", "repair_recompile", "none"]
+# `suite` and `false_rejection` name the two losses the findings never used to reach: a D79 check
+# that failed across many Tasks, and a Verifier whose required atoms reject every held-out Run
+# (D170). A corpus disagreement keeps the name it already had rather than gaining a second one.
+FindingKind = Literal["assisted_tool", "fidelity", "reference_disagreement", "suite", "false_rejection",
+                      "environment", "other"]
+# `repair` is the Examiner's own verb, the one answer to a Verifier the Builder cannot touch (D123);
+# `repair_refuse_task` is the Builder's, for a Task the corpus itself does not settle.
+FindingVerb = Literal["compile_tool", "replay", "reroll", "repair_intent", "repair_recompile",
+                      "repair_refuse_task", "repair", "none"]
 FindingStatus = Literal["open", "delivered", "closed"]
 
 
@@ -718,6 +725,11 @@ class Finding(Record):
     `suggested` is the Builder verb that answers it and `hint` the one line that verb is given: the
     repair verbs take a hint, so a finding that names one without a hint asks for the same repair
     again with nothing new to go on. The round driver renders the two together as a callable line.
+
+    `task_ids` is every Task the finding costs and `task_id` the first of them, so one loss that
+    blocks fifty Tasks is one finding with a count rather than fifty (D170). `key` is what makes two
+    findings the same finding: the kind and the thing they are about. Both default, so a findings
+    file written before D170 still validates.
     """
     finding_id: str
     task_id: Optional[str] = None
@@ -730,6 +742,13 @@ class Finding(Record):
     about_entry_id: Optional[str] = None
     round: int = 0
     status: FindingStatus = "open"
+    task_ids: list[str] = Field(default_factory=list)
+    key: str = ""
+
+    @property
+    def cost(self) -> int:
+        """How many Tasks this finding costs: what the list is ranked on and what the Builder is told."""
+        return len(self.task_ids) or (1 if self.task_id else 0)
 
 
 class RoundRecord(Record):

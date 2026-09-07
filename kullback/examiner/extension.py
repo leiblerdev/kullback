@@ -89,7 +89,12 @@ FINDINGS = ("A finding names the Builder verb that answers it and the one line t
             "suggest `repair_intent` with a hint saying what the Task's Runs actually evidence. When a tool's "
             "body comes out different on replay, suggest `repair_recompile` with a hint naming the tool and "
             "the columns whose values differ. Suggest `replay`, `reroll` or `compile_tool` only when running "
-            "the same thing again with nothing new to say is what you mean; those take no hint.")
+            "the same thing again with nothing new to say is what you mean; those take no hint. "
+            "`derive` has already filed the findings its own records show, ranked by the Tasks they cost: "
+            "the assisted tools blocking Tasks with no Reference, the D79 checks that failed, the Verifiers "
+            "that reject every held-out Run, the Tasks whose recordings disagree. File what those do not say. "
+            "A finding whose kind and subject is already open is refused with the id of the one that holds "
+            "it: act on that one instead of filing it again.")
 STOP = ("Stopping. Answer with one line and no tool call when every Task is trusted or refused, or when "
         "the rulings after your repairs and findings are the ones you already answered. Say which Tasks "
         "remain and what you filed for each.")

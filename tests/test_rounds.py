@@ -90,7 +90,9 @@ def code_loop(tmp_path_factory, request):
     loop.builder_beat(1)
     first = len(events)
     task_id = plan.last.artifacts["tasks"][0].id
-    loop.pending_findings = [_finding(task_id)]
+    # The second finding's verb is the Examiner's own (D170): the Builder has no such tool, so the
+    # driver must deliver it and not call it.
+    loop.pending_findings = [_finding(task_id), _finding(task_id, suggested="repair", finding_id="f2")]
     loop.builder_beat(2)
     return {"loop": loop, "plan": plan, "events": events, "dicts": dicts, "first": first, "task_id": task_id}
 
@@ -108,9 +110,11 @@ def test_beat_events_name_the_agent_and_the_round_and_the_dict_stream_sees_them_
     assert all(isinstance(e.spend, float) for e in events if isinstance(e, BeatEnd))
 
 
-def test_the_code_driver_acts_on_a_finding_by_calling_the_builder_tool_it_names(code_loop):
+def test_the_code_driver_calls_the_builder_tool_a_finding_names_and_skips_a_verb_the_builder_has_not(code_loop):
     """A finding that suggests `replay` for a Task is a replay(task) call through the Builder's hooks,
-    before the build of the target; the code driver never asks a model what to do with it."""
+    before the build of the target; the code driver never asks a model what to do with it. A finding
+    whose answer is the Examiner's own `repair` names an artifact the Builder cannot touch (D123), so
+    it is delivered and not called: driving it would only ever be an error result (D170)."""
     second = code_loop["events"][code_loop["first"]:]
     starts = [e for e in second if isinstance(e, ToolExecutionStart)]
     assert [(e.tool_name, e.arguments) for e in starts] == [
@@ -208,6 +212,31 @@ def test_a_finding_from_the_examiner_is_a_follow_up_on_the_builder_at_the_next_b
     assert users[1].details == {"finding": as_dict(finding)}
     assert finding.finding_id in users[1].content and finding.text in users[1].content
     assert model_loop["loop"].pending_findings == []
+
+
+def test_the_builder_is_handed_the_finding_that_costs_the_most_tasks_and_a_verb_it_has(model_loop):
+    """D170: three builds opened every round on one Task's Intent while an assisted tool blocked
+    fifty. The lead is the costliest finding naming a verb the Builder can call; a finding answered
+    by the Examiner's own `repair` is delivered as a report, since rendering `repair(...)` would send
+    the Builder after the one artifact D123 keeps out of its hands."""
+    tool = Finding(finding_id="f1", kind="assisted_tool", tool="renew_loan", suggested="repair_recompile",
+                   hint="the due_date column differs", text="renew_loan is assisted",
+                   task_ids=["t1", "t2", "t3"])
+    verifier = Finding(finding_id="f2", kind="suite", suggested="repair", text="mutation_flips failed",
+                       task_ids=["t1", "t2", "t3", "t4"])
+    intent = Finding(finding_id="f3", kind="fidelity", task_id="t9", suggested="repair_intent",
+                     hint="the Runs say renewal", text="the Intent says extension")
+    assert rounds.leading_finding([intent, verifier, tool]) is tool, "costliest of the ones it can call"
+    assert rounds.leading_finding([verifier]) is None and rounds.leading_finding([]) is None
+    assert [f.finding_id for f in sorted([intent, tool, verifier], key=lambda f: -f.cost)] == ["f2", "f1", "f3"]
+    message = rounds.finding_message(tool)
+    assert message.startswith("Finding f1 (assisted_tool, 3 Tasks):")
+    assert "repair_recompile(name='renew_loan', hint='the due_date column differs')" in message
+    owned = rounds.finding_message(verifier)
+    assert "Answered by repair, and the Examiner owns it" in owned and "repair(" not in owned
+    # The steer of a real beat says the order the messages after it come in.
+    steer = model_loop["harness"].messages[model_loop["after_first"]].content
+    assert steer.startswith("round 2: ") and "the costliest first" in steer
 
 
 # --- the Examiner's side of a round, driven by a model ----------------------------------------

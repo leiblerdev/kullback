@@ -27,6 +27,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from kullback.agent.events import StageEnd, StageStart
 from kullback.agent.tools import AgentTool, counted_ruling_line
+from kullback.examiner import findings as findings_mod
 from kullback.examiner import stage as stage_mod
 from kullback.examiner.plan import ExaminerPlan
 from kullback.gates import Ruling, artifacts, ruling_of, verifier_suite
@@ -44,7 +45,7 @@ from kullback.gates.verifier_suite import check_run, make_atom
 from kullback.runner import budget
 from kullback.runner.records import (
     Event,
-    Finding,
+    FindingKind,
     FindingVerb,
     GateResult,
     Intent,
@@ -121,6 +122,9 @@ class DeriveResult(BaseModel):
     verifiers: list[str] = Field(default_factory=list)
     passed: int = 0
     rulings: list[Ruling] = Field(default_factory=list)
+    # The findings the round's records filed by themselves, ranked by the Tasks they cost (D170);
+    # the round driver reads them off here, the way it reads a model's finding off its tool result.
+    findings: list[dict] = Field(default_factory=list)
     produced: list[str] = Field(default_factory=lambda: ["verifiers", "task_status", "history"])
 
 
@@ -213,7 +217,12 @@ class FindingArgs(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     task_id: Optional[str] = None
-    kind: Literal["assisted_tool", "fidelity", "reference_disagreement", "environment", "other"]
+    kind: FindingKind = Field(description="What the finding is about: `assisted_tool` a tool no body "
+                                          "cleared the gates for, `fidelity` a body that replays "
+                                          "differently, `reference_disagreement` a Task whose recordings do "
+                                          "not settle on an End state, `suite` a D79 check, "
+                                          "`false_rejection` a Verifier that rejects every held-out Run, "
+                                          "`environment` the world itself.")
     text: str
     run_id: Optional[str] = None
     tool: Optional[str] = None
@@ -404,10 +413,17 @@ def _derive(plan: ExaminerPlan, sink: Optional[Sink]):
         rulings = [ruling_of(r) for r in ctx.recorded] + [ruling_of(r) for r in loosening]
         plan.last_rulings = rulings
         failed = [r.stage for r in rulings if not r.passed]
+        # D170: the losses the records show are filed here, before the model has chosen anything, so
+        # the list exists on a code-driven beat too and the ranking is what the Builder is handed.
+        filed = findings_mod.file_rule_findings(plan)
+        ranked = "; ".join(f"{f.kind} {f.tool or f.task_id or ''} costs {f.cost} Tasks" for f in filed[:3])
         summary = (f"derive {args.target}: {len(out['verifiers'])} Verifiers over {len(status)} Tasks, "
-                   f"{passed} passed the D79 suite" + (f"; failed rulings: {', '.join(failed)}" if failed else ""))
+                   f"{passed} passed the D79 suite" + (f"; failed rulings: {', '.join(failed)}" if failed else "")
+                   + (f"; {len(filed)} findings filed from the records, most costly first: {ranked}"
+                      if filed else ""))
         return DeriveResult(summary=summary, target=args.target, status="ran",
-                            verifiers=[v.task_id for v in out["verifiers"]], passed=passed, rulings=rulings)
+                            verifiers=[v.task_id for v in out["verifiers"]], passed=passed, rulings=rulings,
+                            findings=[as_dict(f) for f in filed])
 
     return derive
 
@@ -668,19 +684,27 @@ def _reroll(plan: ExaminerPlan):
 
 def _finding(plan: ExaminerPlan):
     async def finding(args: FindingArgs) -> FindingResult:
-        rows = plan.store.setdefault("findings", [])
-        finding_id = f"finding-{len(rows) + 1}"
+        # D170: one loss is one finding. A key already open is refused with the id of the finding
+        # that holds it, so a model that files the same thing twenty-four times to get seven on the
+        # list is told which one it already has instead of being counted again.
+        key = findings_mod.finding_key(args.kind, args.tool or "", args.task_id or "")
+        existing = findings_mod.open_by_key(plan).get(key)
+        if existing is not None:
+            raise ValueError(f"{existing} already says this ({args.kind}"
+                             + (f" on {args.tool}" if args.tool else "")
+                             + (f" on task {args.task_id}" if args.task_id else "")
+                             + "); it is open and the Builder has not answered it yet. Act on it, or file "
+                               "a finding that says something else.")
         about = plan.entry_id_for(args.about_call_id) if args.about_call_id else None
-        record = Finding(finding_id=finding_id, task_id=args.task_id, kind=args.kind, text=args.text,
-                         run_id=args.run_id, tool=args.tool, suggested=args.suggested,
-                         hint=args.hint.strip(), about_entry_id=about, round=plan.round, status="open")
-        rows.append(as_dict(record))
-        plan.write_state()
-        summary = f"finding {finding_id} ({args.kind}) filed for the Builder" + \
+        record = findings_mod.file_finding(
+            plan, kind=args.kind, text=args.text, key=key, suggested=args.suggested, hint=args.hint,
+            task_id=args.task_id, task_ids=[args.task_id] if args.task_id else (), tool=args.tool,
+            run_id=args.run_id, about_entry_id=about)
+        summary = f"finding {record.finding_id} ({args.kind}) filed for the Builder" + \
                   (f" on task {args.task_id}" if args.task_id else "") + \
                   (f", suggested {args.suggested}" if args.suggested != "none" else "") + \
                   (" with a hint" if record.hint else "")
-        return FindingResult(summary=summary, finding_id=finding_id, finding=as_dict(record))
+        return FindingResult(summary=summary, finding_id=record.finding_id, finding=as_dict(record))
 
     return finding
 

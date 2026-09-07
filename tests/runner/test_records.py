@@ -356,14 +356,15 @@ def test_the_examiner_records_round_trip_through_as_dict_and_hash_by_content():
 
 
 def test_a_finding_can_suggest_a_repair_verb_and_carry_the_hint_that_verb_needs():
-    """A finding's verb is a Builder tool name, and the two repair verbs are among them: an Examiner
-    that can only say `replay` asks for a cached result again. The hint is the line the verb is given
-    and defaults to empty, so a findings file written before the verbs existed still validates."""
-    from kullback.builder.tools import BUILD_TOOLS
+    """A finding's verb is a verb some agent has: a Builder tool, or the Examiner's own `repair` for
+    the Verifier no Builder tool touches (D123, D170). An Examiner that can only say `replay` asks
+    for a cached result again. The hint is the line the verb is given and defaults to empty, so a
+    findings file written before the verbs existed still validates."""
+    from kullback.rounds import BUILDER_VERBS
 
     verbs = set(get_args(FindingVerb))
     assert {"repair_intent", "repair_recompile"} <= verbs
-    assert verbs - {"none"} <= set(BUILD_TOOLS), "every verb a finding suggests is a Builder tool"
+    assert verbs - {"none", "repair"} <= BUILDER_VERBS, "every verb a finding suggests is a Builder tool"
     finding = Finding(finding_id="f1", task_id="t1", kind="fidelity", text="the Intent names what no Run says",
                       suggested="repair_intent", hint="the Runs only cancel one order")
     assert finding.hint == "the Runs only cancel one order"
