@@ -10,7 +10,7 @@ narrowed, so its cache key and its gates are the stage's own.
 
 The re-rolls stage keys a second time inside itself, per Task. The pipeline's key is one key for the
 whole stage, so a build that repaired one Intent or recompiled one body re-ran every Task's Runs:
-three retail rounds re-rolled at the scale of the whole corpus and re-rolls were four fifths of the
+three rounds of one build re-rolled at the scale of the whole corpus and re-rolls were four fifths of the
 build's spend. `_reroll_key` is what one Task's Runs were sampled under (its overlay and the
 Starting state under it, the schema, the bodies of the tools its own recordings call, the
 canonicalizer rules, its user rules, the Vocabulary, the policy text, the system prompt it opens
