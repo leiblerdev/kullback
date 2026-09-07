@@ -1032,6 +1032,11 @@ class BuildPlan:
     models: dict = field(init=False, default_factory=dict)
     store: dict = field(init=False, default_factory=dict)
     last: Optional[pipeline.PipelineResult] = field(init=False, default=None)
+    # What the last `execute` ran: its target and its narrowing. A narrowed run (a repair verb's
+    # one stage) leaves `store` holding only what that run resolved, and the round driver reads
+    # these to know the store is partial and the target has to be built again (D161).
+    last_target: Optional[str] = field(init=False, default=None)
+    last_narrowing: dict = field(init=False, default_factory=dict)
 
     def __post_init__(self) -> None:
         self.workdir = Path(self.workdir)
@@ -1128,6 +1133,7 @@ def execute(plan: BuildPlan, target: str = TARGET_ALL, **narrowing: Any) -> pipe
     _merge_pipeline_state(workdir, prior_ingest)
     _write_scorecard(workdir)
     plan.store, plan.last = dict(result.artifacts), result
+    plan.last_target, plan.last_narrowing = target, dict(narrowing)
     return result
 
 

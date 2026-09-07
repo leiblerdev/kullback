@@ -499,11 +499,13 @@ class Loop:
             for finding in delivered:
                 self.builder.follow_up(finding_message(finding), {"finding": as_dict(finding)})
             self.build_result = self._watched(self.builder, "builder", events, "build", BUILD_TOOLS)
-            if self.build_result is None:
-                # The model repaired and answered without building the target: the store then holds
-                # only what the repairs ran, and the Examiner's derive read an artifact that was not
-                # there (build 13, round 1: KeyError on the Constraints). The driver builds it, as the
-                # code path does; every stage the repairs left current comes from the cache.
+            if self.build_result is None or self._store_is_partial():
+                # The model repaired and answered without building the target (build 13, round 1),
+                # or built it and then repaired again on a follow-up finding (build 13, round 2): the
+                # store then holds only what the last repair's stage ran, and the Examiner's derive
+                # read an artifact that was not there (KeyError on the Constraints, both times). The
+                # driver builds the target, as the code path does; every stage the repairs left
+                # current comes from the cache (D153, D161).
                 self.build_result = builder_agent.drive_tool(self.builder, "build", {"target": self.target})
                 self.driver_built.append(n)
         result = self.build_result
@@ -520,6 +522,12 @@ class Loop:
         self.pending_findings = [finding for finding in self.pending_findings
                                  if finding.finding_id not in closed_ids]
         self._beat_done("builder", n, before)
+
+    def _store_is_partial(self) -> bool:
+        """Whether the last `execute` was anything but the round's target in full: a narrowed stage
+        (a repair verb) or another target leaves `plan.store` short of what the Examiner reads (D161)."""
+        plan = self.plan
+        return plan.last is None or bool(plan.last_narrowing) or plan.last_target != self.target
 
     # --- the Examiner's beat ------------------------------------------------------------
 

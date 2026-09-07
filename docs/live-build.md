@@ -314,3 +314,34 @@ Read back from the session above, six harness changes, all on our side (D136), n
 6. The table's three blind spots have records now: round timestamps for the duration, the context fill per round, and a `difference` record on every replay miss, so "unreadable" is gone from the causes (D139: the record first, then the number).
 
 Build 12 runs both arms again on fresh copies of build 8's workdir.
+
+## Build 13 (2026-09-06 to 2026-09-07): the model driving on the D145 to D153 code, 16 hours, dead in round 2
+
+Launched on a fresh copy of the retail workdir with `--agent`, `openai/gpt-5.6-luna` driving both sessions, eight workers, a 25 dollar ceiling, on the working tree after D153 (the triage skill, the fact miner, the cache effect, the driver's build) and before D154. D154 to D158 were committed while it ran; the process kept its imports, so what follows is the D153 code. The table is `docs/builds/build-13-model-driving.md`; build 12's code arm (`docs/builds/build-12-code-driver.md`) is the comparison, the model arm of build 12 was still running when this was written.
+
+| | build 12, code driver | build 13, model driving |
+|---|---:|---:|
+| Tasks covered (trusted) | 75 of 205 (36.6%) | 73 of 205 (35.6%) |
+| Traces confirming their Reference | 432 of 456 (94.7%) | 334 of 456 (73.2%) |
+| Writes replaying exactly | 550 of 575 (95.7%) | 430 of 575 (74.8%) |
+| Rounds | 2, stalled | 2, died (D161) |
+| Dollars | 8.65 | 11.96 (the cache saved 8.97) |
+| Model calls | 17,952 | 27,549 |
+| Build duration | 49m 27s | 16h 0m 21s |
+| Mechanic calls | none | 127 over 132 turns: status 75, repair_recompile 27, repair_intent 16, replay 6, build 3 |
+
+**The trust funnel, round 1.** 205 Tasks, 156 with every replayed Trace matching its recording, 142 with a confirmed Reference, 73 past the D79 suite, 73 trusted. The three stages lose Tasks for different reasons and only the first is the model's:
+
+- Fidelity, 150 differing calls of 2,977 replayed: 126 are one `KeyError` in the body of the tool that replaces items on an order, 22 more are the same failure read back later in the Trace (the order still holding the old item), one is a balance off by 72 downstream of the same missed write, and none is float noise. The body memorised three literal item ids from the recorded calls into a dict instead of reading the products table. The mechanic asked for 19 recompiles of that one tool and none converged. Build 12's compiler drew a body that reads the table, which is the whole gap in the fidelity rows above: the same coin flip as build 11's exchange body. D162 makes it a gate: a body may not hold a literal that matches an id pattern, a Starting state row id, or a recorded argument value.
+- Reference confirmation, 63 Tasks without one: 29 where the recordings disagree on the End state, 16 where the judge failed every candidate, 9 blocked by the crash above, 8 stale rows (the replays confirm on disk, `task_status.json` was not refreshed after the repair that fixed the read), one with every recording breaking a Hard constraint.
+- The suite, 69 confirmed and not trusted: `mutation_flips` 30, `leak_check_clean` 26, `second_path_passes` 21 (never run: every re-roll failed, the D158 closing rule is not in this build), `unsolved_state_fails` 17, and 8 read-only Tasks failing five checks at once because their Verifier says only "no writes" and mines no answer atom. D156 and D157 address the state and the leak; the answer atom for a read-only Task is still open.
+
+**Where 16 hours went.** The Builder's round 1 beat took 25 minutes (280 seconds of status and repairs, then a 20 minute build). The Examiner's `derive` took 3 hours 6 minutes on its first call and 10 hours 36 minutes on its second, the same `derive all` over the same artifacts: `derive_all` runs the Tasks one after another, the suite's loophole probe is one model Run per Task (173 probe Runs on disk) and nothing is memoised between two calls in the same round. That is 13.7 of the 16 hours in one serial function while eight workers sat idle; the fix is per-Task derivation in parallel under `--workers` with a cache keyed by the Verifier's inputs, listed in the todo.
+
+**What the triage skill changed.** Build 12's model arm called `status` 4 times in 59 calls and repaired blind; this mechanic called it 75 times in 127, once per Task before every repair, zooming on the tool or Task the finding named (D150). The repairs it then asked for were the right ones (`repair_recompile` on the tools with red replay lights, `repair_intent` on the Tasks the intent gate named) and two Intents grounded in round 2 (`task_03d78b3f5cea` after four tries, `task_b72a88c48881` on the first). The other 27 repairs changed nothing they were asked to change, 19 of them the one body above: a right diagnosis and a verb whose only lever is another sample from the same model, which is what D162 replaces with a rule. The fact miner's effect on re-rolls cannot be read from this build: 438 of 468 re-rolls finished (93.6%) against 564 of 582 (96.9%) in build 12's model arm, but the runs ended on the D77 closing rule and the D151 name facts are not what stopped them.
+
+**How it died.** Round 2's Builder beat built the target, then acted on the follow-up findings with narrowed recompiles and answered. `execute` replaces the store with the last run's artifacts, so the Examiner's handover lacked the Constraints and `derive` raised `KeyError: 'constraints'`; the round is recorded as failed and the loop exited "stalled". D153 had covered the beat with no build call; this is the beat with a build followed by repairs. D161 has the driver build the target whenever the last run was narrowed or aimed elsewhere.
+
+**Also found.** The Examiner's context fill is recorded at 608.9 percent of the window at a turn end, with 5 fallback compactions: its `read` tool returns a whole record unclamped (`read gates` came back as the full rulings list), so one result can exceed the window six times over. And the table's "repairs that turned a red gate green" row still cannot place 16 of the 43 requests, the blind spot `docs/todo.md` records.
+
+**Read as an experiment.** The model driving cost 3.31 dollars and 15 hours more than the code driver for two fewer trusted Tasks, and none of the difference is the driver: one memorised body, one serial stage, one partial store. What the mechanic did right, the triage before every repair and the Intent repairs, is now the harness's; what it could not do, write a body that generalises when its own model keeps memorising, becomes a gate. The next build runs on D155 to D162 and the parallel derive.
