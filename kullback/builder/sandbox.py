@@ -95,6 +95,21 @@ def _cut(*args, **kwargs):
     raise OSError("the network is blocked in the tool sandbox")
 
 
+def _source_line(exc, source):
+    # The last line of the generated module the traceback stood on. The parent cannot see the
+    # child's traceback, and a bare "KeyError: 'x'" says nothing about what the body was reading;
+    # the line does, and it is the body's own text, which the parent already has.
+    lines = source.splitlines()
+    out, tb = "", exc.__traceback__
+    while tb is not None:
+        if tb.tb_frame.f_code.co_filename == "<generated>":
+            index = tb.tb_lineno - 1
+            if 0 <= index < len(lines):
+                out = lines[index].strip()
+        tb = tb.tb_next
+    return out
+
+
 def _plain(value):
     if isinstance(value, pydantic.BaseModel):
         return value.model_dump(mode="json")
@@ -144,7 +159,8 @@ def main():
         try:
             results.append({"ok": True, "value": _plain(function(**call["args"]))})
         except Exception as exc:
-            results.append({"ok": False, "error": type(exc).__name__, "message": str(exc)})
+            results.append({"ok": False, "error": type(exc).__name__, "message": str(exc),
+                            "line": _source_line(exc, job["source"])})
     with open(sys.argv[2], "w", encoding="utf-8") as handle:
         json.dump({"nonce": nonce, "results": results}, handle, default=str)
 
@@ -185,6 +201,14 @@ class Sandbox:
     def state_for(self, call: ToolCall) -> dict:
         """The world this call runs on: its own Task's, or the shared one."""
         return self.call_states.get(call.id, self.db) if call.id else self.db
+
+    def state_key(self, call: ToolCall) -> str:
+        """A comparable key for the world this call runs on, memoised per world, never per call.
+
+        Two calls with the same arguments on two different worlds are two different inputs, and a
+        body that answers them alike answered without looking at either.
+        """
+        return self._state_hash(self.state_for(call))
 
     def _state_hash(self, state: dict) -> str:
         key = self._state_hashes.get(id(state))

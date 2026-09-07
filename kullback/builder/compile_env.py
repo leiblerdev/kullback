@@ -133,6 +133,9 @@ class ToolBuild:
     # D171: one row per recorded call of this tool, so the miss can be attributed to the Task whose
     # Trace made the call. The corpus gate keeps one fidelity number; this keeps which call it was.
     call_outcomes: list[dict] = field(default_factory=list)
+    # A kept assisted body that answers every recorded call the same way while the recordings differ:
+    # not a body with a bug in it, a body that never read its arguments (`hardcoded_body`).
+    hardcoded: bool = False
 
 # --- reading rows out of recorded tool results ---
 
@@ -1315,6 +1318,90 @@ def _import_hints(gates: list[GateResult]) -> list[str]:
             f"`import {name}` at the top of the body" for name in names if name in ALLOWED_IMPORTS]
 
 
+RAISED_KINDS = ("KeyError", "AttributeError")
+RAISED_SAMPLES = 3
+RAISED_LINES = 2
+_TABLE_READ = re.compile(r"self\.db\.([A-Za-z_][A-Za-z0-9_]*)")
+
+
+def value_shape(value: str) -> str:
+    """One value with its characters generalized: digits `#`, lowercase `a`, uppercase `A`, the rest itself.
+
+    The shape of an id is what the next attempt needs (an id of this table looks like this); the id
+    itself is a customer value and there is no reason to hand back three of them.
+    """
+    return "".join("#" if c.isdigit() else "a" if c.islower() else "A" if c.isupper() else c
+                   for c in str(value))
+
+
+def table_read(line: str) -> str:
+    """The world table a crashing source line reads, from `self.db.<table>`; "" when it reads none."""
+    found = _TABLE_READ.findall(line or "")
+    return found[0] if found else ""
+
+
+def missing_key(result: dict) -> str:
+    """The key a KeyError names, without its quotes; "" for any other exception."""
+    if result.get("error") != "KeyError":
+        return ""
+    message = (result.get("message") or "").strip()
+    quoted = len(message) > 1 and message[0] == message[-1] and message[0] in "'\""
+    return message[1:-1] if quoted else message
+
+
+def table_note(state: dict, table: str, key: str) -> str:
+    """What the world says about the table the body was reading, and about the key it asked for."""
+    rows = state.get(table) if isinstance(state, dict) else None
+    if not isinstance(rows, dict):
+        return f"the world holds no table `{table}`"
+    ids = sorted(str(k) for k in rows)
+    note = f"`{table}` holds {len(ids)} rows"
+    if key:
+        note += f" and not `{key}`" if key not in rows else f", `{key}` among them"
+    if ids:
+        shapes = ", ".join(dict.fromkeys(value_shape(i) for i in ids[:RAISED_SAMPLES]))
+        note += f"; its ids look like {shapes}"
+    return note
+
+
+def raised_detail(sandbox: Sandbox, calls: Iterable[ToolCall], limit: int = RAISED_LINES) -> str:
+    """What the world says about a KeyError or an AttributeError the body raised, a line per crash.
+
+    A body that reads a row nobody holds is told `KeyError: 'x'` and nothing else, so the next
+    attempt guesses: it wraps the read in a try, or reaches for another table, or invents a
+    fallback answer. The sandbox knows more than it was saying. The crashing source line names the
+    table the body was reading (`self.db.<table>`), and the world in front of it says how many rows
+    that table holds, whether the key asked for is one of them, and what the ids it does hold look
+    like. That is the difference between "your read raised" and "you read the wrong table".
+
+    Only the calls given here are named, so the caller passes the shown split and the held-out
+    calls stay out of it (D51, D75). The sandbox memo makes this free: these calls have already run
+    for the gate that failed.
+    """
+    calls = list(calls)
+    try:
+        results = sandbox.run(calls)
+    except SandboxError:
+        return ""
+    lines: list[str] = []
+    seen: set[tuple[str, str]] = set()
+    for call, result in zip(calls, results, strict=False):
+        if result.get("ok") or result.get("error") not in RAISED_KINDS:
+            continue
+        line = (result.get("line") or "").strip()
+        table = table_read(line)
+        key = (table, result.get("error") or "")
+        if not table or key in seen:
+            continue
+        seen.add(key)
+        note = table_note(sandbox.state_for(call), table, missing_key(result))
+        lines.append(f"- `{call.name}({args_text(call)})` raised {result['error']} at `{line}`: "
+                     f"{note}; read the arguments that call was given, not another table.")
+        if len(lines) >= limit:
+            break
+    return "\n".join(lines)
+
+
 def _evidence_for(attempt: int, shown: list[ToolCall], gates: list[GateResult]) -> list[ToolCall]:
     """Evidence grows per attempt: the failing call, then all failing calls, then the full table.
 
@@ -1409,8 +1496,75 @@ def replay_outcomes(toolsig: ToolSig, body: str, calls: Iterable[ToolCall], sche
         ruling = body_replay_fidelity_gate([call], [results[index]], schema, label="per_call", rules=rules)
         detail = "" if ruling.passed else (ruling.failures[0] if ruling.failures else "differs")
         rows.append({"tool": toolsig.name, "call_id": call.id, "replayed": bool(ruling.passed),
-                     "detail": _clamped_detail(detail)})
+                     "detail": _clamped_detail(detail), "answer": answer_digest(results[index]),
+                     "world": sandbox.state_key(call)})
     return rows
+
+
+def answer_digest(result: Any) -> str:
+    """One sandbox answer as a comparable key: the canonicalized value, or the class it raised.
+
+    Values themselves are never kept here. What the digest is for is telling two answers apart, and
+    a hash does that without a customer's row travelling into an artifact that is read as a summary.
+    """
+    if isinstance(result, dict) and not result.get("ok"):
+        return f"error:{result.get('error') or 'unknown'}"
+    value = result.get("value") if isinstance(result, dict) else result
+    return content_hash(canon(value))
+
+
+def recorded_digest(call: ToolCall) -> str:
+    """The same key for what the recording answered, so the two can be compared."""
+    if call.error is not None:
+        return f"error:{getattr(call.error, 'class_', '') or 'unknown'}"
+    return content_hash(canon(parse_result(call.result)))
+
+
+HARDCODED_MARK = "# hardcoded: this body answered every recorded call alike; read what it is given"
+HARDCODED_LESSON = ("the body kept answered every recorded call the same way whatever arguments and "
+                    "whatever world it was given, while the recordings answered them differently; the "
+                    "next body has to answer out of its arguments and the rows in front of it")
+
+
+def mark_hardcoded(body: str) -> str:
+    """The body as it is kept, with one comment line saying what is wrong with it.
+
+    bodies.json holds source, and source is what the next reader of it sees: the Builder asking for
+    the body back, the module the Runner loads, a person opening the file. A comment says it in all
+    three without changing what the body does, which a kept body must not do.
+    """
+    body = body or ""
+    return body if body.lstrip().startswith(HARDCODED_MARK) else f"{HARDCODED_MARK}\n{body.lstrip()}"
+
+
+def hardcoded_body(calls: Iterable[ToolCall], rows: Iterable[dict]) -> bool:
+    """True when the body answered differing inputs identically and the recordings did not.
+
+    A kept assisted body is a body no attempt got through the gates, and the gates say which one it
+    fell at; none of them says the body never read what it was given. One live build kept a body
+    that picked the first row of a table and raised one fixed refusal on every call, and the round
+    after it, and the round after that: assisted was all anyone was told, and a hint written against
+    a single failing call cannot reach a body that reads nothing. Three things have to hold
+    together: the recorded calls carry more than one input, the body gave them all one answer, and
+    the recordings did not.
+
+    An input is the arguments and the world the call ran on, not the arguments alone. A tool that
+    takes no arguments at all is answered out of the Starting state of the Task that called it, and
+    that is exactly the tool the live build kept: every call carried `{}`, the recordings answered
+    two different ways, and the body answered one way whatever world it stood on. Where the
+    recordings themselves answer everything the same way, that is what the tool does
+    (`_constant_evidence_note`), and this stays quiet.
+    """
+    by_id = {row["call_id"]: row for row in rows if row.get("call_id")}
+    inputs, body_answers, recorded = set(), set(), set()
+    for call in calls:
+        row = by_id.get(call.id) or {}
+        if not call.id or row.get("answer") is None:
+            continue
+        inputs.add((args_text(call), str(row.get("world") or "")))
+        body_answers.add(row["answer"])
+        recorded.add(recorded_digest(call))
+    return len(inputs) > 1 and len(body_answers) == 1 and len(recorded) > 1
 
 
 def _clamped_detail(text: str) -> str:
@@ -1451,6 +1605,9 @@ def compile_tool(model, toolsig: ToolSig, calls: Iterable[ToolCall], schema: Ent
     same bytes a cache can reuse. An attempt that raised what the attempt before it raised is told
     so in that new turn (`_SAME_ERROR`), with the exception quoted, since a rewrite that lands on
     the same crash is not a rewrite of the line that crashed.
+    An attempt whose body raised a KeyError or an AttributeError also gets `raised_detail`: the
+    line it crashed on, the table that line reads and what the world says about that table, since
+    the bare exception says nothing a rewrite can aim at.
     Each attempt is a node dict; after the last miss the tool is marked assisted (D49) and the nodes
     are written under the workdir. When no attempt passes, the body kept is the best attempt's, not
     the last one's (`attempt_score`, `ToolBuild.kept_attempt`).
@@ -1583,6 +1740,10 @@ def compile_tool(model, toolsig: ToolSig, calls: Iterable[ToolCall], schema: Ent
         failure = "\n" + _failure_text(gates, held_out)
         if any(g.stage == "non_trivial" and not g.passed for g in gates):
             failure += _constant_evidence_note(evidence)
+        # Only when the sandbox has already run these calls, so the note costs no subprocess: a
+        # body that never parsed has nothing for the world to say about it anyway.
+        detail = raised_detail(sandbox, shown) if sandbox.cache else ""
+        failure += ("\n" + detail) if detail else ""
         error = exception_line(gates)
         if error and error == last_error:
             failure += _SAME_ERROR.format(error=error)
@@ -1599,10 +1760,12 @@ def compile_tool(model, toolsig: ToolSig, calls: Iterable[ToolCall], schema: Ent
                         rules=rules, timeout=timeout)
         if build.assisted else
         [{"tool": toolsig.name, "call_id": call.id, "replayed": True, "detail": ""} for call in calls])
+    build.hardcoded = build.assisted and hardcoded_body(calls, build.call_outcomes)
     directory = workdir / NODE_DIR
     directory.mkdir(parents=True, exist_ok=True)
     (directory / f"{toolsig.name}.json").write_text(
         json.dumps({"tool": toolsig.name, "assisted": build.assisted,
+                    "hardcoded": build.hardcoded,
                     "kept_attempt": build.kept_attempt, "nodes": build.nodes,
                     "call_outcomes": build.call_outcomes},
                    indent=2, default=str) + "\n", encoding="utf-8")
