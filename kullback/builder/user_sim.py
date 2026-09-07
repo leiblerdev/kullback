@@ -86,6 +86,9 @@ NAME_PARTS = ("first_name", "last_name")
 NAME_ASK = "What is your full name?"
 
 GENERIC_CLOSE = "No, that is all. Thank you."
+# The source name a restated goal carries, so a report can tell the opening request from the same
+# sentence said a second time because the agent had not acted on it.
+GOAL_RESTATED = "goal_restated"
 # D44: a question the recorded user was never asked gets a representative answer. For "do you
 # confirm" the representative answer of a user who asked for the action is yes, unless the
 # recording holds a no; the source names it so a report can tell the yes from a recorded one.
@@ -512,6 +515,12 @@ def _field_of(message: Any, key: str) -> str:
     return getattr(message, key, "") or ""
 
 
+def _calls_of(message: Any) -> list:
+    """The tool calls one transcript message carries, whichever shape the caller builds it in."""
+    calls = message.get("tool_calls") if isinstance(message, dict) else getattr(message, "tool_calls", None)
+    return list(calls or [])
+
+
 def _flatten(row: Any) -> dict[str, list]:
     """Every leaf value seen under each key, nested dicts included, so 'zip' inside 'address' is
     found. A key seen more than once (two payment methods that both carry 'source') keeps every
@@ -563,11 +572,17 @@ class SimulatedUser:
     """Replies as the recorded user: facts from the rules, then the Starting state, then nothing (D77)."""
 
     def __init__(self, rules: UserRules, starting_state_reader: Any = None, model: Any = None,
-                 identity: Optional[dict] = None, vocab: Vocabulary = GENERIC):
+                 identity: Optional[dict] = None, vocab: Vocabulary = GENERIC,
+                 write_tools: Iterable[str] = ()):
         self.rules = rules
         self.reader = starting_state_reader
         self.model = model
         self.vocab = vocab
+        # The tools that change the world (`ToolSig.kind`), so this user can tell a Run that has
+        # done what it came for from one that has not. The transcript `reply` is handed already
+        # carries the calls and their results, so nothing new has to be plumbed to the user; the
+        # vocabulary knows fields and not tool kinds, which is why the names are passed in here.
+        self.write_tools = frozenset(write_tools or ())
         self.events: list[Event] = []
         self.done = False
         identity_fields = vocab.by_kind("identity")
@@ -581,6 +596,7 @@ class SimulatedUser:
         self._used: dict[str, int] = {CONFIRMATION: 0, CHOICE: 0}
         self._silent = 0
         self._refused = 0
+        self._restated = False
 
     def reply(self, transcript: list) -> str:
         question = ""
@@ -616,7 +632,7 @@ class SimulatedUser:
         if not self.events:
             self._open(answers, sources, spoken)
         if not (answers or unavailable or spoken):
-            self._respond(question, sources, spoken, unavailable)
+            self._respond(question, sources, spoken, unavailable, self._saw_write(transcript))
         self._silent = 0 if (answers or unavailable or spoken) else self._silent + 1
         text = self._say(question, answers, sources, spoken, unavailable)
         # How many of this turn's asks went unanswered, and how many the Run has left unanswered so
@@ -666,8 +682,19 @@ class SimulatedUser:
             sources[GOAL] = "rules"
         self._volunteer(answers, sources)
 
-    def _respond(self, question: str, sources: dict, spoken: list, unavailable: list) -> None:
-        """Nothing was asked by name: a confirmation, a stated choice, or the close of the Run."""
+    def _respond(self, question: str, sources: dict, spoken: list, unavailable: list,
+                 wrote: bool = False) -> None:
+        """Nothing was asked by name: a confirmation, a stated choice, the goal again, or the close.
+
+        A real user whose request has not been acted on says it again before it leaves. Build 12's
+        Simulated user left instead: of 381 re-rolls that made no write, 261 ended on the user's
+        closing line, 248 of those after a turn where nothing was asked of it and it had nothing to
+        say, and the dead turn came second of all its turns in 140 of them. So the first dead turn,
+        and a "was there anything else" asked while the Run has not written yet, get the goal the
+        recording opened with, once (D44: the recorded sentence, D77: nothing invented). The second
+        such turn closes, which is why the close is gated on `self._restated` and not on `_silent`
+        alone: the restatement speaks, so it resets the silence counter the turn it happens.
+        """
         for field, reuse_last, cue in ((CONFIRMATION, True, CONFIRM_REQUEST),
                                        (CHOICE, False, OPEN_REQUEST)):
             if not cue.search(question or ""):
@@ -683,11 +710,33 @@ class SimulatedUser:
                 unavailable.append(field)
                 sources[field] = "unavailable"
             return
-        if CLOSE_CUE.search(question or "") or self._silent >= 1:
+        goal = self._fact(GOAL)
+        if goal is not None and not self._restated and not wrote:
+            spoken.append(str(goal.value))
+            sources[GOAL] = GOAL_RESTATED
+            self._restated = True
+            return
+        if self._restated or CLOSE_CUE.search(question or "") or self._silent >= 1:
             closing = self._fact(CLOSING)
             spoken.append(str(closing.value) if closing is not None else GENERIC_CLOSE)
             sources[CLOSING] = "rules" if closing is not None else "generic_close"
             self.done = True
+
+    def _saw_write(self, transcript: list) -> bool:
+        """This Run has already changed the world, so a "was there anything else" is the real end.
+
+        Read off the transcript `reply` is handed, which holds the assistant turns with their tool
+        calls and the tool results by name; no other state is kept, so a caller that passes no
+        `write_tools` gets a user that restates its goal once whatever the Run has done.
+        """
+        if not self.write_tools:
+            return False
+        for message in transcript or []:
+            if _field_of(message, "name") in self.write_tools:
+                return True
+            if any(_field_of(call, "name") in self.write_tools for call in _calls_of(message)):
+                return True
+        return False
 
     def _declined(self) -> bool:
         """The recording holds a no where a yes was asked for; then no yes is representative.
