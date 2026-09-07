@@ -394,3 +394,180 @@ trade one measured number (the split, 393 to 221) against another (requestor-sid
 3,036 to 2,421). Whichever way D176 is recorded, the `kind` classifier is the next thing to look
 at: as long as a read-only check can be labelled a write, any rule that lets writes close columns
 will close too many.
+
+## 9. Follow-up: a lookup's row is homed by the id the call asked for
+
+Section 3's worst line was the assistant-side lookup at 0.0% of 1,153 recorded calls, and section
+8 left it there. The cause was in the miner, not in the readers stage: a row that comes back with
+several `_id` columns and a tool name that names no entity got no home, so `extract_rows` dropped
+it, the world held none of those rows, and every recorded call of the tool replayed as a
+`KeyError` on the id it was given.
+
+Three rules were added.
+
+1. **Homing by the id the call asked for** (`mine._home_of`). A row a call answered is homed in
+   the entity whose id column holds one of the values the call passed. Where several of the row's
+   ids were passed, the column whose name equals the argument's name wins, else the first in the
+   row's own order. Two narrowings keep the rule from taking a table nothing names: an id the tool
+   name says is only the address is ignored (`_address_of`, the entity after the first preposition
+   in the name), so a call that lists a parent's children still homes the children; and a column
+   whose name carries no id suffix is ignored, so a search filter that `id_columns` happens to call
+   an id cannot name a table after itself. The noun rule, the distinct-across-siblings rule and the
+   only-id rule stay as fallbacks, unchanged and in that order. Composite keys keep working: homing
+   picks the table, keying picks the row.
+2. **Revealed columns are classed the way mined ones are, and only hard columns split a Task.**
+   Revealed columns already ran through `propose_column_class`; what did not hold was the other
+   half, that `compile_env.trace_worlds` and `readers.merge_worlds` hashed every column of a row
+   rather than its `hard` ones. Both now consult the classes (`merge_worlds` with no schema still
+   counts every column, which is what a caller with no classes to hand can say). One class rule was
+   added for any corpus: a numeric column whose sightings never repeat a value (distinct equals
+   sampled, sampled at least `MIN_UNIQUE_VALUES`, 5) is a reading the world takes when it is asked,
+   not a fact it stores, so it is exempt at low confidence and the setup review sees it.
+3. **An early `--target` stops without the Examiner.** `examiner.stage.missing_inputs` names the
+   derivation inputs a target did not build (`tasks`, `sigs`, `constraints`); when any is missing
+   the Examiner beat returns before opening a session and the round exits `target_built` with a
+   note saying so, instead of `derive failed: KeyError: 'constraints'`. A ceiling still reports as
+   `ceiling`, because that is the reason that has to be reported (D86).
+
+Where each tool's rows were homed and by which rule is written to `row_homes.json` by the mine
+stage, per tool: the tables, the rule's own sentence, the rows homed by it, and the rows left
+unhomed.
+
+Re-run on a fresh copy of the base workdir with the same command, model and ceiling as before
+(`--target replay_reference --max-rounds 1 --workers 8 --ceiling-usd 10`). The before column is the
+previous workdir as it stands on disk, which is a later run than the table in section 8.
+
+### Tasks at replay fidelity
+
+| | before | after |
+|---|---|---|
+| Tasks confirmed | 0 | 8 |
+| frozen denominator | 183 | 183 |
+| Tasks after clustering | 371 | 373 |
+| recordings replayed | 456 | 456 |
+| writes matched | 1,121 of 2,466 (45.5%) | 1,307 of 2,264 (57.7%) |
+| reads scored in substance | 2,396 of 5,266 | 1,777 of 5,468 |
+
+The headline number the experiment set out to move is moved: the corpus goes from no Task at
+replay fidelity to 8 of 373, against a frozen denominator of 183.
+
+### Per tool, recorded calls matched
+
+Same source and rule as sections 3 and 8: `replays.json`, a call counts as matched when the Runner
+ruled `same`, `cosmetic` or `both_refused`, and the call counts are the recording's own.
+
+| tool | side | calls | before | after |
+|---|---|---|---|---|
+| get_details_by_id | assistant | 1153 | 0.0% | 79.3% |
+| get_customer_by_phone | assistant | 459 | 100.0% | 100.0% |
+| enable_roaming | assistant | 164 | 100.0% | 100.0% |
+| refuel_data | assistant | 146 | 100.0% | 100.0% |
+| transfer_to_human_agents | assistant | 124 | 100.0% | 100.0% |
+| get_data_usage | assistant | 121 | 100.0% | 0.0% |
+| get_bills_for_customer | assistant | 79 | 0.0% | 0.0% |
+| send_payment_request | assistant | 67 | 100.0% | 100.0% |
+| resume_line | assistant | 53 | 0.0% | 0.0% |
+| can_send_mms | user | 714 | 81.7% | 81.7% |
+| check_network_status | user | 462 | 43.5% | 56.9% |
+| run_speed_test | user | 424 | 52.1% | 46.0% |
+| check_status_bar | user | 403 | 34.0% | 76.7% |
+| reboot_device | user | 337 | 7.1% | 39.2% |
+| check_apn_settings | user | 319 | 96.6% | 58.3% |
+| toggle_roaming | user | 248 | 11.7% | 23.4% |
+| toggle_airplane_mode | user | 245 | 0.0% | 51.0% |
+| set_network_mode_preference | user | 223 | 73.5% | 7.2% |
+| check_app_permissions | user | 198 | 92.4% | 92.4% |
+| toggle_data | user | 197 | 1.0% | 38.6% |
+| grant_app_permission | user | 188 | 0.5% | 0.5% |
+| check_wifi_calling_status | user | 163 | 98.8% | 98.8% |
+| reset_apn_settings | user | 154 | 85.1% | 30.5% |
+| reseat_sim_card | user | 147 | 30.6% | 25.2% |
+| check_sim_status | user | 135 | 74.8% | 74.8% |
+| check_network_mode_preference | user | 126 | 98.4% | 100.0% |
+| check_installed_apps | user | 111 | 100.0% | 100.0% |
+| toggle_wifi_calling | user | 98 | 100.0% | 100.0% |
+| check_payment_request | user | 91 | 33.0% | 74.7% |
+| toggle_data_saver_mode | user | 75 | 0.0% | 45.3% |
+| check_data_restriction_status | user | 64 | 96.9% | 98.4% |
+| disconnect_vpn | user | 63 | 39.7% | 60.3% |
+| make_payment | user | 62 | 91.9% | 0.0% |
+| check_vpn_status | user | 57 | 100.0% | 100.0% |
+| check_wifi_status | user | 21 | 100.0% | 100.0% |
+| check_app_status | user | 8 | 12.5% | 25.0% |
+
+Totals: assistant side 1,081 of 2,366 (45.7%) to 1,874 (79.2%); the requestor's own 27 tools 2,877
+of 5,333 (53.9%) to 3,091 (58.0%); over everything 3,991 of 7,732 (51.6%) to 4,998 (64.6%). The 33
+calls of malformed or invented tool names match in both.
+
+`compile_tools`' own replay (`tool_fidelity.json`) agrees on the lookup: 881 of 1,055 evidence
+calls, against 0 of 1,057 before. 23 of 36 bodies stayed assisted, the same count as before.
+
+Three tools move the other way, and none of the three is homing. Two assistant-side lookups that
+read the customer's own tables went 100% to 0% and a payment tool 91.9% to 0%: their bodies were
+rewritten in this run (`tool_fidelity.json` has them at 0 of 49 and 0 of 57 evidence calls, so the
+body is wrong before any world question), and two requestor-side tools that lost ground, the
+network mode preference at 73.5% to 7.2% and the APN reset at 85.1% to 30.5%, are the same
+body-writing variance section 8 saw in the other direction. That is the noise floor of one round
+of body writing on this corpus, and it is large.
+
+### What the lookup still misses
+
+Of the 239 calls of the lookup that still differ, all 239 are the Starting state not holding the id
+the call asks for: the world holds 4 rows of one table, 2 of another and 1 of a third, and the
+recordings ask for ids outside that set, so the tool answers `not_found_entity` where the recording
+answered a row. That is D40 and `--grow` territory, not homing. The two assistant-side tools still
+at 0% are the same shape: one is skipped whole by D74's after-write rule (53 of 53 recorded calls,
+`tool_builds.json` `after_write_skipped`), so it gets no evidence calls and no per-call fidelity
+rows at all, and the other reads a table the world holds one row of.
+
+### Schema and the split
+
+| | before | after |
+|---|---|---|
+| mined columns of the table the lookup homes into | 5 | 14 |
+| rows of that table in the Starting state | 1 | 2 |
+| revealed columns, hard of the proposal's 29 | 29 | 28 |
+| frozen Tasks whose recordings disagree on a hard column of a mined row | 0 of 183 | 0 of 183 |
+| frozen Tasks whose recordings disagree on a revealed hard column | 85 of 183 | 86 of 183 |
+| distinct revealed columns that split a Task | 19 | 17 |
+
+The Task count does not fall to 183, and the reason is worth stating plainly, because the brief
+expected it to. Hashing only hard columns changes nothing on the mined rows: no frozen Task's
+recordings disagree on a hard column of a mined row, before or after. Every split on this corpus
+comes from the revealed row, and 17 of its 28 hard columns still split a Task, led by the cellular
+signal (51 Tasks), airplane mode (48), the mobile data switch (47), the cellular network type (40),
+the network mode preference (35), the cellular connection (31) and the SIM card status (29). Those
+are genuine disagreements: two recordings of one frozen Task really did start with the device in
+different states, and one world with a per-Task overlay can pin one of them (D74). The new class
+rule removes exactly the columns it was written to remove, a measured reading that never repeats a
+value, which was splitting 20 Tasks before and splits none now; the rest of the movement between 19
+and 17 columns is the readers proposal naming its columns slightly differently in the two runs.
+
+So the split is not a classification bug that a rule can close. Either the revealed row stays out
+of `trace_worlds`, or a Task is allowed to hold recordings that started in different device states,
+or the frozen denominator carries the comparison, which is what section 6 already said and what
+this run does not change.
+
+### Cost and wall time
+
+| | before | after |
+|---|---|---|
+| wall time | not recorded | 8m 53s |
+| spend, this build over the copy | $1.226 | $0.702 |
+| of which compile_tools | $0.801 | $0.276 |
+| of which compile_policy | $0.411 | $0.407 |
+| of which the readers stage | $0.015, 1 attempt | $0.015, 1 attempt |
+
+Neither run came near the $10 ceiling. The round exited `max_rounds` with 10 findings still open,
+the largest of them the three assisted tools above.
+
+### How to reproduce
+
+    cp -R .work-telecom .work-readers-c
+    uv run kullback build -w .work-readers-c --target replay_reference \
+        --model openai/gpt-5.6-luna --workers 8 --ceiling-usd 10 --max-rounds 1
+
+Numbers above are read from `row_homes.json` (the homing decisions), `replays.json` (per tool, per
+call verdicts and Task confirmation), `tool_fidelity.json` (compile_tools' own replay), `gates.json`
+(the stage rulings), `schema.json` and `db.json` (the tables), `readers.json` (the proposal) and
+`budget.json` (spend, against the copied workdir's totals).

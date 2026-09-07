@@ -149,7 +149,7 @@ def test_an_intent_still_refused_reads_back_with_the_reason_its_own_record_carri
         f"repair_intent task_none: still refused: {repair.NO_INTENT}")
 
 
-def test_a_tool_that_cleared_the_gates_says_so_and_an_assisted_one_carries_every_failing_shape(tmp_path):
+def test_a_tool_that_cleared_the_gates_says_so_and_an_assisted_one_carries_its_last_failure(tmp_path):
     """A tool that ends assisted leaves the compile_tools stage gate passing, so the gate-wide line
     said `compile_tools pass` while the body the mechanic asked for was never written."""
     (tmp_path / "tool_builds.json").write_text(json.dumps({
@@ -166,39 +166,12 @@ def test_a_tool_that_cleared_the_gates_says_so_and_an_assisted_one_carries_every
     }), encoding="utf-8")
     assert repair.recompile_ruling(tmp_path, "renew_loan") == "repair_recompile renew_loan: cleared the gates"
     assert repair.recompile_ruling(tmp_path, "find_branch") == (
-        "repair_recompile find_branch: still assisted: executes_on_s0: 2 calls failed in 2 shapes: "
-        "find_branch({}) raised NameError: name 'decimal' is not defined (1 call); "
-        "find_branch({'city': 'x'}) raised the same (1 call)")
+        "repair_recompile find_branch: still assisted: executes_on_s0: find_branch({}) raised "
+        "NameError: name 'decimal' is not defined")
     assert repair.recompile_ruling(tmp_path, "no_reply") == (
         "repair_recompile no_reply: still assisted: no body was submitted")
     assert repair.recompile_ruling(tmp_path, "nothing_compiled") == (
         f"repair_recompile nothing_compiled: {repair.NO_ATTEMPT}")
-
-
-def test_calls_that_failed_the_same_way_are_one_shape_with_a_count_and_only_three_are_shown(tmp_path):
-    """A gate that ruled over sixty calls left sixty sentences and the mechanic saw one of them, so
-    its hint answered one example and the next recompile met the rest."""
-    same = [f"find_branch({{'city': 'c-{i}'}}) answered nothing, the recording answered a branch"
-            for i in range(60)]
-    others = [f"find_branch({{'city': 'c-{i}'}}) raised KeyError: 'c-{i}'" for i in range(4)]
-    (tmp_path / "tool_builds.json").write_text(json.dumps({
-        "find_branch": {"assisted": True, "nodes": [{"attempt": 0, "gates": [
-            {"stage": "replay_fidelity", "pass": False, "failures": same + others}]}]}}),
-        encoding="utf-8")
-    ruling = repair.recompile_ruling(tmp_path, "find_branch")
-    assert "64 calls failed in 2 shapes" in ruling
-    assert "(60 calls)" in ruling and "(4 calls)" in ruling
-
-
-def test_only_the_first_three_shapes_are_shown_and_the_rest_are_counted(tmp_path):
-    ways = ["answered nothing", "answered another branch", "raised", "answered a list", "timed out"]
-    failures = [f"find_branch({{'city': 'c-{i}'}}) {way}" for i, way in enumerate(ways)]
-    (tmp_path / "tool_builds.json").write_text(json.dumps({
-        "find_branch": {"assisted": True, "nodes": [{"attempt": 0, "gates": [
-            {"stage": "replay_fidelity", "pass": False, "failures": failures}]}]}}),
-        encoding="utf-8")
-    ruling = repair.recompile_ruling(tmp_path, "find_branch")
-    assert ruling.count(" call)") == 3 and ruling.endswith("; 2 more shapes")
 
 
 def test_a_grown_table_says_how_many_rows_it_holds_against_the_count_that_was_asked_for(tmp_path):

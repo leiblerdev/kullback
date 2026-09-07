@@ -685,6 +685,24 @@ def test_rounds_json_holds_one_record_per_round_with_the_exit_on_the_last(tmp_pa
     assert rounds.load_rounds(tmp_path / "nowhere") == []
 
 
+# --- a target earlier than the derivation's inputs ----------------------------------------
+
+def test_a_target_earlier_than_the_derivation_inputs_stops_without_the_examiner(tmp_path, request):
+    """`--target mine` builds no Tasks, no ToolSigs the Examiner reads and no Constraints.
+
+    The beat used to open on that store and fail on the first input it reached, which read as a
+    broken Examiner rather than as a build asked for less than a Verifier is derived from.
+    """
+    events: list = []
+    result = rounds.run_rounds(tmp_path / "work", model=Bodies(), files=[_fixture(request)],
+                               target="mine", max_attempts=0, subscribers=[events.append])
+    assert [beat for beat in _beats(events) if beat[1] == "examiner"] == []
+    assert result["exit"] == "target_built" and not result["failed"]
+    note = result["rounds"][-1]["exit_note"]
+    assert "constraints" in note and "mine" in note
+    assert (tmp_path / "work" / "schema.json").is_file(), "the target it was asked for was built"
+
+
 # --- whole rounds, Builder then Examiner --------------------------------------------------
 
 @pytest.fixture(scope="module")

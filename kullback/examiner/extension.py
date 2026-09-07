@@ -20,7 +20,6 @@ from __future__ import annotations
 import re
 from typing import Any, Callable, Optional
 
-from kullback import round_delta
 from kullback.agent.extensions import ExtensionAPI, refuse_paths
 from kullback.agent.harness import prompt_block
 from kullback.agent.messages import ToolCall
@@ -94,12 +93,8 @@ RULES = ("Choosing. Derive first, every round. Act first on the Tasks with a con
          "Environment or the sandbox: any call naming one is refused, and so is any path under "
          "kullback/gates or kullback/runner. A probe stays in its pool forever; a repair is accepted only "
          "when the D79 suite, the pool and the loosening gate all pass; a refusal is admitted only when "
-         "no frontier Run finished. When one check has rejected one Task's repairs twice in a session, a "
-         "third against that check is refused: file a finding, refuse the Task, or reroll_then_derive. "
-         "A finding's `kind` is one of assisted_tool, fidelity, "
-         "reference_disagreement, suite, false_rejection, environment, other; the name of the ruling you "
-         "are answering is taken as the kind it is about, and so is the name of a tool. The gates are "
-         "the standard, not something to argue with; a failed ruling is reported as it is.")
+         "no frontier Run finished. The gates are the standard, not something to argue with; a failed "
+         "ruling is reported as it is.")
 FINDINGS = ("A finding names the Builder verb that answers it and the one line that verb needs. When a Task "
             "has no Verdict because its Intent says something no Run says, read the Intent "
             "(`read` with kind `intent`), which lists the phrases the intent gate refused in "
@@ -234,24 +229,13 @@ def gate_rulings_hook(plan: ExaminerPlan, api: Optional[ExtensionAPI] = None) ->
     return guard_hooks(plan, api)[1]
 
 
-def what_section(plan: ExaminerPlan) -> str:
-    """What the Examiner is, and what the round before this one moved (`round_delta.delta_line`).
-
-    A round opened on the artifacts as they stand and on nothing else. One live build's Examiner
-    filed fewer findings every round while the trusted count fell by a third, and no round was ever
-    told that the round before it had made things worse.
-    """
-    delta = round_delta.delta_line(plan.workdir)
-    return WHAT + (f"\nThe round before this one: {delta}." if delta else "")
-
-
 def examiner_extension(plan: ExaminerPlan) -> Callable[[ExtensionAPI], None]:
     """The setup the harness loads: tools, prompt sections, the probe skill, the hooks, the plan's context calls."""
 
     def setup(api: ExtensionAPI) -> None:
         for tool in examiner_tools(plan, sink=api.harness.emit):
             api.register_tool(tool)
-        api.add_prompt_section("examiner", prompt_block("task", what_section(plan)))
+        api.add_prompt_section("examiner", prompt_block("task", WHAT))
         api.add_prompt_section("examiner_tools", prompt_block("tools", TOOLS))
         api.add_prompt_section("skills", api.context.skills_section())
         api.catalog_skill(PROBE_SKILL_NAME, PROBE_SKILL, loaded=True)

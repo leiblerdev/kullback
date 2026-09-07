@@ -138,23 +138,6 @@ def test_the_examiner_has_no_tool_that_writes_a_body_a_table_or_the_environment(
     assert produced == {"verifiers", "task_status", "history", "probes", "refusals", "rerolls", "task_runs", "findings"}
 
 
-def test_the_examiners_opening_prompt_says_what_the_round_before_it_moved(tmp_path):
-    """The Examiner filed fewer findings every round while the trusted count fell, and no round was
-    ever told the round before it had made things worse."""
-    plan = ext.ExaminerPlan(workdir=tmp_path, inputs={})
-    assert ext.what_section(plan) == ext.WHAT, "one round has nothing to compare itself against"
-    (tmp_path / "rounds.json").write_text(json.dumps([
-        {"round": 1, "counts": {"trusted": 99, "fidelity": 188, "tasks_with_reference": 135,
-                                "artifacts_changed": ["intents"]}},
-        {"round": 2, "counts": {"trusted": 66, "fidelity": 147, "tasks_with_reference": 101,
-                                "artifacts_changed": ["bodies"]}},
-    ]), encoding="utf-8")
-    section = ext.what_section(plan)
-    assert section.startswith(ext.WHAT) and section.count("\n") == ext.WHAT.count("\n") + 1
-    assert ("The round before this one: round 2 against round 1: trusted 66, down 33; "
-            "fidelity 147, down 41; References 101, down 34; it changed bodies.") in section
-
-
 def test_the_tool_result_hook_runs_the_gates_bound_to_what_the_tool_produced(derived):
     plan, harness = _harness(derived)
     result = drive(harness, "probe", {"task_id": T, "bug_class": "other", "events": events_of(VF.wrong_run())})

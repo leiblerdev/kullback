@@ -1052,32 +1052,12 @@ def record_lesson(workdir: Any, tool: str, failures: list[str]) -> Path:
     return path
 
 
-LESSON_CHARS = 4000
-
-
 def lesson_for(workdir: Any, tool: str) -> str:
-    """Every failure sequence recorded for this tool, oldest first; "" when it has none.
-
-    They accumulate. One live build recompiled a single tool six times in one round and each hint
-    answered one recorded call, because the prompt carried only the last three sequences and the
-    question the first hints had already answered came back. Every sequence is kept, in the order it
-    was recorded, so the next attempt reads what it has already been told; an exact repeat is
-    dropped, since a hint asked for twice is one hint. `LESSON_CHARS` is the only limit: past it the
-    oldest sequences fall away and the count of what fell away is said, so a long session degrades
-    to what it used to be rather than to a prompt nothing fits in.
-    """
-    sequences: list[list[str]] = []
-    for failures in load_tool_lessons(workdir).get(tool, []):
-        if failures not in sequences:
-            sequences.append(failures)
+    """The failure sequences to inject into the next attempt's prompt; "" when the tool has none."""
+    sequences = load_tool_lessons(workdir).get(tool, [])
     if not sequences:
         return ""
-    head = f"Past gate failures for {tool} (do not repeat them):"
-    rendered = [f"- attempt {i}: " + "; ".join(failures) for i, failures in enumerate(sequences, start=1)]
-    dropped = 0
-    while len(rendered) > 1 and len(head) + sum(len(line) + 1 for line in rendered) > LESSON_CHARS:
-        rendered.pop(0)
-        dropped += 1
-    if dropped:
-        head += f" {dropped} earlier ones are not repeated here."
-    return "\n".join([head] + rendered)
+    lines = [f"Past gate failures for {tool} (do not repeat them):"]
+    for i, failures in enumerate(sequences[-3:], start=1):
+        lines.append(f"- attempt {i}: " + "; ".join(failures))
+    return "\n".join(lines)
