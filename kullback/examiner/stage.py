@@ -24,6 +24,7 @@ from pathlib import Path
 from typing import Any, Iterable, Optional
 
 from kullback.examiner import derive as verifier_mod
+from kullback.examiner import judge as judge_mod
 from kullback.examiner import reference as reference_mod
 from kullback.gates import artifacts, fidelity, verifier_suite
 from kullback.gates import scorecard as scorecard_mod
@@ -55,11 +56,11 @@ STAGE = "derive_verifier"
 # The per-Task cache under the workdir (D163). Bumped when the entry's shape changes, so an old entry
 # is a miss rather than a row read with the wrong meaning.
 CACHE_DIR = ("examiner", "cache")
-CACHE_FORMAT = 2  # D171 added the per-Task fidelity fields to every status row
+CACHE_FORMAT = 3  # the reference record carries what the judge looked at, and the status row the pool
 # The modules a Task's derivation runs through, hashed into every key: an edit to any of them is a
 # different derivation and must not be served a stale entry (the Builder's stages hash the same way,
 # build.py's `_version`).
-CODE_MODULES = (verifier_mod, reference_mod, verifier_suite)
+CODE_MODULES = (verifier_mod, reference_mod, judge_mod, verifier_suite)
 
 
 class ExamContext:
@@ -120,6 +121,21 @@ def request_text(task: Task, intents: dict, traces: dict) -> str:
             if turn.role == "user" and turn.content:
                 return turn.content
     return ""
+
+
+def grounded_phrases(intent: Optional[Intent]) -> list[str]:
+    """The noun phrases of a grounded Intent, in order, without repeats, for the judge's `intent` tool.
+
+    An ungrounded Intent has no phrase the Runs evidence (D47), so it offers none: the judge would
+    otherwise read a phrase the intent gate has already refused as if the Runs stood behind it.
+    """
+    if intent is None or not intent.grounded:
+        return []
+    out: list[str] = []
+    for span in intent.spans:
+        if span.phrase and span.phrase not in out:
+            out.append(span.phrase)
+    return out
 
 
 # --- the moved helpers ---------------------------------------------------------
@@ -439,6 +455,10 @@ def derive_all(ctx: ExamContext, inputs: dict, *, probe_model: Any = None, probe
     assisted_tools = set(inputs.get("assisted_tools") or ())
     tool_fidelity = inputs.get("tool_fidelity") or {}
     atoms = reference_mod.hard_atoms(constraints, write_tools, read_tools)
+    # D12: the residue judge is an agent with a bounded look over the same Task, and the one-shot
+    # judge it wraps is its fallback. Built once for the build, asked once per disagreeing Task.
+    judge = None if judge_model is None else judge_mod.AgentJudge(
+        judge_model, constraints=constraints, write_tools=write_tools, read_tools=read_tools, fn=fn)
     probe = run_probe if probe_model is not None else None
     tasks = list(inputs["tasks"])
     if only is not None:
@@ -469,7 +489,8 @@ def derive_all(ctx: ExamContext, inputs: dict, *, probe_model: Any = None, probe
         if entry is not None:
             return _Job(task=task, key=key, entry=entry)
         confirmation = reference_mod.confirm(recordings, intent=request_text(task, intents, traces),
-                                             policy_lines=policy_lines, judge=judge_model)
+                                             policy_lines=policy_lines, judge=judge,
+                                             phrases=grounded_phrases(intents.get(task.id)))
         return _Job(task=task, key=key, confirmation=confirmation)
 
     jobs = parallel.each(tasks, prepare, workers)
