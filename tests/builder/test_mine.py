@@ -1494,6 +1494,6 @@ def test_one_id_repeated_across_two_traces_is_not_a_composite_key():
     assert mine_schema(traces).composite_keys == {}
 
 
-def test_the_retail_shaped_fixture_needs_no_composite_key(fixture_traces):
+def test_the_fixture_needs_no_composite_key(fixture_traces):
     """The rule must be silent on a corpus whose ids stand for one row each."""
     assert mine_schema(fixture_traces).composite_keys == {}
