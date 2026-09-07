@@ -13,6 +13,7 @@ from kullback.runner.judge import (
     abstain_verdict,
     confirm_reference,
     disagreement_rate,
+    judge_name,
     read_disagreement_queue,
     set_task_aside,
     tasks_set_aside,
@@ -388,7 +389,9 @@ def test_two_judges_that_agree_report_no_disagreement(make_test_model, workdir):
     assert [entry["verdict"] for entry in result.pair] == ["acceptable", "acceptable"]
     assert read_disagreement_queue(workdir) == []
     assert disagreement_rate(workdir) == {"pairs": 1, "disagreements": 0, "rate": 0.0,
-                                          "abstains": 0, "abstain_rate": 0.0}
+                                          "abstains": 0, "abstain_rate": 0.0,
+                                          "by_pair": {"a vs b": {"pairs": 1, "disagreements": 0,
+                                                                 "rate": 0.0}}}
 
 
 def test_two_judges_that_disagree_queue_both_verdicts_and_abstain(make_test_model, workdir):
@@ -407,6 +410,10 @@ def test_two_judges_that_disagree_queue_both_verdicts_and_abstain(make_test_mode
     assert queue[0]["verdict_b"] == "unacceptable"
     assert queue[0]["judge_a"]["cited_spans"] == ["by a"]
     assert queue[0]["judge_b"]["cited_spans"] == ["by b"]
+    # D160: the row says which two judges these verdicts came from, and names the pair the
+    # by-pair rate counts them under.
+    assert queue[0]["judge_a_name"] == "a" and queue[0]["judge_b_name"] == "b"
+    assert queue[0]["judges"] == "a vs b"
     assert queue[0]["reason"] == "split"
     assert queue[0]["disagreement"] is True
     assert disagreement_rate(workdir)["rate"] == 1.0
@@ -441,10 +448,17 @@ def test_the_disagreement_rate_can_be_read_for_one_use(make_test_model, workdir)
     d = named_judge(make_test_model, "d", "environment")
     two_judges(c, d, "judge_cause", {}, {}, workdir=workdir)
     assert disagreement_rate(workdir) == {"pairs": 2, "disagreements": 1, "rate": 0.5,
-                                          "abstains": 0, "abstain_rate": 0.0}
+                                          "abstains": 0, "abstain_rate": 0.0,
+                                          "by_pair": {"a vs b": {"pairs": 1, "disagreements": 1,
+                                                                 "rate": 1.0},
+                                                      "c vs d": {"pairs": 1, "disagreements": 0,
+                                                                 "rate": 0.0}}}
     assert disagreement_rate(workdir, use="cause") == {"pairs": 1, "disagreements": 0,
                                                        "rate": 0.0, "abstains": 0,
-                                                       "abstain_rate": 0.0}
+                                                       "abstain_rate": 0.0,
+                                                       "by_pair": {"c vs d": {"pairs": 1,
+                                                                              "disagreements": 0,
+                                                                              "rate": 0.0}}}
 
 
 def test_a_third_sample_settles_a_split_on_a_non_reference_atom(make_test_model, workdir):
@@ -458,6 +472,28 @@ def test_a_third_sample_settles_a_split_on_a_non_reference_atom(make_test_model,
     assert result.verdict == "unacceptable"
     assert [entry["verdict"] for entry in result.pair] == ["acceptable", "unacceptable", "unacceptable"]
     assert read_disagreement_queue(workdir) == []
+
+
+def test_two_judge_models_name_themselves_and_the_pair_they_disagreed_as(make_test_model, workdir):
+    """D160: a ruling names the model it ran on, so a split is between two named models, not two personas."""
+    a = named_judge(make_test_model, judge_name("vendor/large", "a"), "acceptable")
+    b = named_judge(make_test_model, judge_name("other/small", "b"), "unacceptable")
+    result, disagreement = two_judges(a, b, "judge_dispute", {}, [], [], workdir=workdir,
+                                      item_id="run1", third_sample=False)
+    assert disagreement is True
+    assert [entry["judge"] for entry in result.pair] == ["vendor/large:a", "other/small:b"]
+    assert result.judge == "vendor/large:a+other/small:b"
+    assert disagreement_rate(workdir)["by_pair"] == {
+        "vendor/large:a vs other/small:b": {"pairs": 1, "disagreements": 1, "rate": 1.0}}
+
+
+def test_a_row_written_before_the_judges_were_named_joins_no_pair(workdir):
+    """An older build's rows say nothing about which two models ran, so they count in no pair."""
+    (workdir / "judge_pairs.jsonl").write_text(
+        json.dumps({"use": "dispute", "disagreement": True}) + "\n", encoding="utf-8")
+    stats = disagreement_rate(workdir)
+    assert stats["pairs"] == 1 and stats["rate"] == 1.0
+    assert stats["by_pair"] == {}
 
 
 def test_a_three_way_split_still_abstains_to_the_queue(make_test_model, workdir):
@@ -487,6 +523,9 @@ def test_the_default_third_sample_reuses_judge_a_under_another_persona(make_test
     assert third.model is a.model
     assert third.tools == a.tools
     assert third.name == "a#3"
+    # cli.py builds its default second judge this way, and names it, so the tie-breaker that
+    # reuses judge A's model is not the same name as judge B (D160).
+    assert third_judge(a, name=judge_name("a", "b")).name == "a:b"
     assert third.persona and third.persona != a.persona
 
     # and it runs: judge A's model is scripted for two turns of its own plus two for the third sample
@@ -565,7 +604,7 @@ def test_queues_are_empty_before_anything_is_written(workdir):
     assert read_disagreement_queue(workdir) == []
     assert tasks_set_aside(workdir) == []
     assert disagreement_rate(workdir) == {"pairs": 0, "disagreements": 0, "rate": 0.0,
-                                          "abstains": 0, "abstain_rate": 0.0}
+                                          "abstains": 0, "abstain_rate": 0.0, "by_pair": {}}
 
 
 # --- helpers ---
@@ -595,7 +634,9 @@ def test_two_judges_that_agree_on_abstain_are_queued_as_such(make_test_model, wo
     assert queue[0]["reason"] == "agreed_abstain"
     assert queue[0]["item_id"] == "r2"
     assert disagreement_rate(workdir) == {"pairs": 1, "disagreements": 0, "rate": 0.0,
-                                          "abstains": 1, "abstain_rate": 1.0}
+                                          "abstains": 1, "abstain_rate": 1.0,
+                                          "by_pair": {"a vs b": {"pairs": 1, "disagreements": 0,
+                                                                 "rate": 0.0}}}
 
 
 def test_two_refused_judges_are_queued_as_refused(make_test_model, workdir):

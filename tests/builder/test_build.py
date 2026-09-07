@@ -279,6 +279,32 @@ def test_a_second_build_in_the_same_workdir_serves_stage_calls_from_the_memo(bui
     assert totals["total"]["memo_hits"] > 0, "the rerun's stage calls should have hit the memo"
 
 
+def test_the_judge_runs_on_the_model_it_was_named_with_and_the_build_model_otherwise(tmp_path):
+    """D160: the model that writes the Environment need not be the one that rules on it."""
+    plan = BuildPlan(workdir=tmp_path / "own", model=TestModel(["hi"], name="vendor/large"))
+    assert plan.models["reference_judge"].model_id == "vendor/large"
+    assert plan.models["second_judge"] is None
+    assert plan.judge_model_ids() == {"build": "vendor/large"}
+
+    named = BuildPlan(workdir=tmp_path / "named", model=TestModel(["hi"], name="vendor/large"),
+                      judge_model=TestModel(["hi"], name="other/small"),
+                      second_judge_model=TestModel(["hi"], name="third/tiny"))
+    assert named.models["reference_judge"].model_id == "other/small"
+    assert named.models["second_judge"].model_id == "third/tiny"
+    assert named.judge_model_ids() == {"build": "vendor/large", "judge": "other/small",
+                                       "second_judge": "third/tiny"}
+    # every stage model goes through budget.py, judges included (D65, D86)
+    assert named.models["reference_judge"].stage == "reference_judge"
+
+
+def test_a_build_with_no_model_has_no_judge_unless_one_is_named(tmp_path):
+    """The judge is a model call: without a model there is none, and naming one gives a build that
+    judges without a Builder model of its own."""
+    assert BuildPlan(workdir=tmp_path / "none").models["reference_judge"] is None
+    judged = BuildPlan(workdir=tmp_path / "judge-only", judge_model=TestModel(["hi"], name="other/small"))
+    assert judged.models["reference_judge"].model_id == "other/small"
+
+
 def test_wrap_refuses_an_unpriced_model_before_building_the_wrapper(tmp_path):
     """D86: an unpriced model under a ceiling must be refused in _wrap itself, not handed
     ceiling=None and left to run completely unmetered."""

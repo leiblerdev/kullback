@@ -30,6 +30,9 @@ WORKDIR = typer.Option(Path("."), "--workdir", "-w", help="Directory every recor
 JUDGE_MODEL = typer.Option(None, "--judge-model",
                           help="Model id for the two agentic judges, as provider/model. Without it, judge atoms "
                                "are left unevaluated and a failure keeps no cause.")
+SECOND_JUDGE_MODEL = typer.Option(None, "--second-judge-model",
+                                 help="Model id for the second judge, as provider/model (D160). Without it the "
+                                      "second judge is --judge-model's own model under a second persona (D97).")
 BASE_URL = typer.Option(None, "--base-url", help="Endpoint for an OpenAI-compatible model.")
 
 
@@ -74,19 +77,25 @@ def _schema(workdir: Path):
     return _load(path, EntitySchema) if path.is_file() else None
 
 
-def _judges(model_id: Optional[str], base_url: Optional[str] = None):
+def _judges(model_id: Optional[str], base_url: Optional[str] = None,
+            second_model_id: Optional[str] = None):
     """The two agentic judges of D92, or None when the caller named no judge model.
 
     Both are constructed here and never inside the Runner: `verdict.py` takes judge answers as data
-    and calls no model itself (D76, build brief rule 2). The second judge is the same adapter under
-    judge.py's own second persona, which is the D97 default; a second model id would be better and is
-    what `--judge-model` should grow when a customer has two providers configured.
+    and calls no model itself (D76, build brief rule 2). With `--second-judge-model` the second judge
+    is a judge of its own on that model (D160), which is what makes a disagreement a disagreement
+    between two models rather than between two personas; without it the second judge is the same
+    adapter under judge.py's own second persona, the D97 default. Either way each judge is named
+    `<provider/model>:<persona letter>`, so every ruling says which model it ran on.
     """
     if not model_id:
         return None
-    first = _entry("kullback.runner.judge", "AgenticJudge")(_live_model(model_id, base_url),
-                                                           name=f"{model_id}:a")
-    return first, _entry("kullback.runner.judge", "third_judge")(first)
+    build_judge = _entry("kullback.runner.judge", "AgenticJudge")
+    name = _entry("kullback.runner.judge", "judge_name")
+    first = build_judge(_live_model(model_id, base_url), name=name(model_id, "a"))
+    if second_model_id:
+        return first, build_judge(_live_model(second_model_id, base_url), name=name(second_model_id, "b"))
+    return first, _entry("kullback.runner.judge", "third_judge")(first, name=name(model_id, "b"))
 
 
 def _judged_atoms(verifier: Verifier, paths: list, judges, workdir: Path) -> dict:
@@ -161,19 +170,21 @@ def _rescorer(score_one, verifier: Verifier, canon_value, out_dir: Path, judge_v
 
 
 def _score(workdir: Path, task_id: Optional[str], what: str, use_queue: bool = False,
-           judge_model: Optional[str] = None, base_url: Optional[str] = None) -> None:
+           judge_model: Optional[str] = None, base_url: Optional[str] = None,
+           second_judge_model: Optional[str] = None) -> None:
     """Score stored Runs against their Task's Verifier. Nothing is re-executed; the version cache makes a repeat free.
 
     With `--judge-model` the judge atoms of each Verifier are answered before the Verdict and the
     cause of each unexplained failure after it (D76, D88). Without one, a judge atom stays
     unevaluated and a failure keeps `cause_pending_judge`; both are said out loud rather than
-    silently passing.
+    silently passing. `--second-judge-model` puts a second model on the other side of every question
+    (D160); without it the second judge is the same model under a second persona.
     """
     score = _entry("kullback.runner.regrade", "regrade")
     score_one = _entry("kullback.runner.regrade", "regrade_run")
     regrade_gate = _entry("kullback.gates.artifacts", "regrade_gate")
     judge_version = _entry("kullback.runner.judge", "JUDGE_VERSION") if judge_model else None
-    judges = _judges(judge_model, base_url)
+    judges = _judges(judge_model, base_url, second_judge_model)
     canon_value = _entry("kullback.runner.canon", "canon_value")
     env_path, version_path = Path(workdir) / "environment.json", Path(workdir) / "runner_version.json"
     environment = _load(env_path, Environment) if env_path.is_file() else None
@@ -266,6 +277,13 @@ def build(
     workdir: Path = WORKDIR,
     iterate: bool = typer.Option(False, "--iterate", help="Resume the content-addressed build and keep improving."),
     model: Optional[str] = typer.Option(None, "--model", help="Builder model id, as provider/model."),
+    judge_model: Optional[str] = typer.Option(None, "--judge-model",
+                                              help="Model id for the build's judge, as provider/model (D160); "
+                                                   "the default is --model."),
+    second_judge_model: Optional[str] = typer.Option(None, "--second-judge-model",
+                                                     help="Model id for the second judge, as provider/model "
+                                                          "(D160); the default is the judge's own model under "
+                                                          "a second persona."),
     base_url: Optional[str] = typer.Option(None, "--base-url", help="Endpoint for an OpenAI-compatible model."),
     files: Optional[list[Path]] = typer.Option(None, "--file", help="Customer export to ingest first."),  # noqa: B008
     ceiling_usd: Optional[float] = typer.Option(None, "--ceiling-usd", help="Per-build spend ceiling (D86)."),
@@ -296,11 +314,17 @@ def build(
     Both agents are extensions on the agent core, driven in turns on one stream (D128): the Builder
     builds the target, the Examiner derives and examines the Verifiers, and the round ends with the
     counts the gates report. By default code issues the tool calls, so the build is deterministic and
-    byte-identical offline; `--agent` hands both sessions to the model.
+    byte-identical offline; `--agent` hands both sessions to the model. The judge is a model of its
+    own when `--judge-model` names one (D160), so the model that writes the Environment need not be
+    the one that rules on it.
     """
     adapter = _live_model(model, base_url) if model else None
     if agent and adapter is None:
         raise typer.BadParameter("--agent needs --model: a model has to drive the session")
+    if second_judge_model and not (judge_model or model):
+        raise typer.BadParameter("--second-judge-model needs a first judge: name --judge-model or --model")
+    judge_adapter = _live_model(judge_model, base_url) if judge_model else None
+    second_judge_adapter = _live_model(second_judge_model, base_url) if second_judge_model else None
     search = _entry("kullback.builder.search", "search_for")(workdir)  # None unless live is on or a memo exists
     # The screen lists running builds from these heartbeats; the pid tells it who is alive. The
     # pulse keeps beating while the build runs so a screen watching from another directory sees
@@ -313,7 +337,8 @@ def build(
         # The provider owns an http client when it made one; close it on the way out rather than at exit.
         with contextlib.closing(search) if search is not None else contextlib.nullcontext():
             result = _entry("kullback.rounds", "run_rounds")(
-                workdir=workdir, iterate=iterate, model=adapter, files=list(files or []),
+                workdir=workdir, iterate=iterate, model=adapter, judge_model=judge_adapter,
+                second_judge_model=second_judge_adapter, files=list(files or []),
                 ceiling_usd=ceiling_usd, grow=_grow_targets(grow), grow_seed=grow_seed,
                 probe_limit=probe_limit, rerolls=rerolls, search=search, workers=workers, target=target,
                 agent_model=adapter if agent else None, stall_rounds=stall_rounds,
@@ -399,20 +424,24 @@ def run(
 
 @app.command()
 def verdict(workdir: Path = WORKDIR, task: Optional[str] = typer.Option(None, "--task", help="One Task id."),
-            judge_model: Optional[str] = JUDGE_MODEL, base_url: Optional[str] = BASE_URL):
+            judge_model: Optional[str] = JUDGE_MODEL, base_url: Optional[str] = BASE_URL,
+            second_judge_model: Optional[str] = SECOND_JUDGE_MODEL):
     """Score the stored Runs of one Task, or of every Task, on their End state."""
-    _score(Path(workdir), task, "scored", judge_model=judge_model, base_url=base_url)
+    _score(Path(workdir), task, "scored", judge_model=judge_model, base_url=base_url,
+           second_judge_model=second_judge_model)
 
 
 @app.command()
 def regrade(workdir: Path = WORKDIR, task: Optional[str] = typer.Option(None, "--task", help="One Task id."),
-            judge_model: Optional[str] = JUDGE_MODEL, base_url: Optional[str] = BASE_URL):
+            judge_model: Optional[str] = JUDGE_MODEL, base_url: Optional[str] = BASE_URL,
+            second_judge_model: Optional[str] = SECOND_JUDGE_MODEL):
     """Re-score stored Runs against the current Environment and Verifier versions, without re-executing them.
 
     A Run whose equivalence entry a person overturned is in canon.py's regrade queue (D84): its
     versions have not moved, so only the queue makes it score again.
     """
-    _score(Path(workdir), task, "regraded", use_queue=True, judge_model=judge_model, base_url=base_url)
+    _score(Path(workdir), task, "regraded", use_queue=True, judge_model=judge_model, base_url=base_url,
+           second_judge_model=second_judge_model)
 
 
 def _coverage_runs(runs: list) -> list:

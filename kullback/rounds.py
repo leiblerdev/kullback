@@ -63,7 +63,15 @@ from kullback.examiner.stage import DERIVE_INPUTS
 from kullback.gates import round_end
 from kullback.gates.ledger import HISTORY_NAME, GateLedger
 from kullback.runner import budget, feed
-from kullback.runner.records import Finding, GateResult, RoundRecord, as_dict, content_hash
+from kullback.runner.records import (
+    Finding,
+    GateResult,
+    RoundRecord,
+    as_dict,
+    content_hash,
+    read_json,
+    write_json,
+)
 
 ROUNDS_NAME = "rounds.json"
 GATES_NAME = "gates.json"
@@ -885,7 +893,27 @@ def _tool_result(result: Optional[ToolResult]) -> Optional[dict]:
     return {"content": result.content, "is_error": result.is_error} if result is not None else None
 
 
+def _record_judge_models(plan: BuildPlan) -> None:
+    """Write which model each side of the judging ran on into report_config.json (D160).
+
+    Only when a judge model was named: a build that judges with its own model writes nothing here,
+    so its records are what they were before this, byte for byte.
+    """
+    if plan.judge_model is None and plan.second_judge_model is None:
+        return
+    path = plan.workdir / "report_config.json"
+    config = dict(_read_config(path))
+    config["judge_models"] = plan.judge_model_ids()
+    write_json(path, config)
+
+
+def _read_config(path: Path) -> dict:
+    body = read_json(path, {}) or {}
+    return body if isinstance(body, dict) else {}
+
+
 def run_rounds(workdir: Any, model: Any = None, *, agent_model: Optional[Model] = None, files: Optional[list] = None,
+               judge_model: Any = None, second_judge_model: Any = None,
                iterate: bool = False, ceiling_usd: Optional[float] = None, allowance_usd: Optional[float] = None,
                stall_rounds: int = 1, target: str = TARGET_ALL, domain: str = "domain", max_attempts: int = 3,
                memory_dir: Any = None, grow: Optional[dict] = None, grow_seed: int = 0,
@@ -896,13 +924,17 @@ def run_rounds(workdir: Any, model: Any = None, *, agent_model: Optional[Model] 
 
     `model` is the Builder's model for the stages that call one, and through the plan's wrapped models
     the Examiner's too; `agent_model` drives both sessions when given, and with None code issues the
-    tool calls (build for the Builder, derive for the Examiner). The dict is run_builder's plus the
-    rounds, the exit, the trusted Tasks, the refusals and the Examiner's rulings.
+    tool calls (build for the Builder, derive for the Examiner). `judge_model` is the model the
+    build's judge runs on and `model` when it is None; `second_judge_model` is the other side of a
+    two-judge question (D160). The dict is run_builder's plus the rounds, the exit, the trusted
+    Tasks, the refusals and the Examiner's rulings.
     """
-    plan = BuildPlan(workdir=Path(workdir), iterate=iterate, model=model, files=list(files or []),
+    plan = BuildPlan(workdir=Path(workdir), iterate=iterate, model=model, judge_model=judge_model,
+                     second_judge_model=second_judge_model, files=list(files or []),
                      ceiling_usd=ceiling_usd, domain=domain, max_attempts=max_attempts, memory_dir=memory_dir,
                      on_event=on_event, grow=grow, grow_seed=grow_seed, probe_limit=probe_limit, rerolls=rerolls,
                      search=search, workers=workers)
+    _record_judge_models(plan)
     # The feed subscribes like anything else. Attaching here rather than inside the two harnesses
     # means both agents' streams reach it through the one seam the harness already offers: the
     # stages in either arm, and the messages and tool calls in the arm where a model drives.

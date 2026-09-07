@@ -11,7 +11,8 @@ from typing import Any, Callable, Iterable, Optional
 from pydantic import BaseModel, ConfigDict, Field
 
 from kullback.ai.provider import Model, ModelConfig
-from kullback.runner.records import as_dict, canonical_json, disagreement_stats, read_jsonl
+from kullback.runner.records import as_dict, canonical_json, read_jsonl
+from kullback.runner.records import disagreement_stats as _pair_counts
 
 JUDGE_VERSION = "0"
 QUEUE_FILE = "disagreement_queue.jsonl"
@@ -338,9 +339,24 @@ THIRD_PERSONA = ("a third reader brought in because the first two split; weigh t
                  "and do not defer to either of them")
 
 
-def third_judge(judge: AgenticJudge, persona: str = THIRD_PERSONA) -> AgenticJudge:
-    """D97's third sample: one of the two models again, under a different persona, same tools."""
-    return AgenticJudge(judge.model, judge.tools, judge.verifier_output, name=f"{judge.name}#3",
+def judge_name(model_id: str, persona: str = "a") -> str:
+    """`<provider/model>:<persona letter>`, which is how every ruling names the model it ran on (D160).
+
+    Two judges may now be two different models, so a name that says only which persona spoke leaves
+    the by-pair disagreement rate unable to say which two models parted.
+    """
+    return f"{model_id}:{persona}"
+
+
+def third_judge(judge: AgenticJudge, persona: str = THIRD_PERSONA,
+                name: Optional[str] = None) -> AgenticJudge:
+    """D97's third sample: one of the two models again, under a different persona, same tools.
+
+    `name` is for the caller that uses this to build the second judge out of one model (cli.py's
+    default pair): it names that judge `<model>:b` rather than leaving it with the third sample's
+    own name, which the tie-breaker would then collide with in the pair rows.
+    """
+    return AgenticJudge(judge.model, judge.tools, judge.verifier_output, name=name or f"{judge.name}#3",
                         persona=persona, max_steps=judge.max_steps, judge_version=judge.judge_version)
 
 
@@ -413,12 +429,20 @@ def two_judges(
             "item_id": item_id,
             "verdict_a": first.verdict,
             "verdict_b": second.verdict,
+            # Which two judges these verdicts came from, by the name that carries their model id
+            # (D160): without it no row on disk says which two models disagreed. `judges` is the
+            # pair as the by-pair rate names it, written here so every reader of these rows counts
+            # under the same name without formatting one of its own.
+            "judge_a_name": first.judge,
+            "judge_b_name": second.judge,
+            "judges": pair_name(first.judge, second.judge),
             "disagreement": disagreement,
             "abstain": bool(reason) and not disagreement,
             "reason": reason,
         }
         if third is not None:
             row["verdict_c"] = third.verdict
+            row["judge_c_name"] = third.judge
         _append(Path(workdir) / PAIRS_FILE, row)
         if reason:
             _append(Path(workdir) / QUEUE_FILE, dict(row, judge_a=pair[0], judge_b=pair[1]))
@@ -522,6 +546,37 @@ def read_disagreement_queue(workdir: Path) -> list[dict]:
 def tasks_set_aside(workdir: Path) -> list[dict]:
     """Every Task the report must list as not gradeable, Reference disputed (D93)."""
     return read_jsonl(Path(workdir) / ASIDE_FILE)
+
+
+def pair_name(judge_a: str, judge_b: str) -> str:
+    """`"<judge a> vs <judge b>"`: the name the by-pair disagreement rate counts this pair under."""
+    return f"{judge_a} vs {judge_b}"
+
+
+def by_pair(rows: Iterable[dict]) -> dict:
+    """The pairs, disagreements and rate of each pair of judges over judge_pairs rows (D160).
+
+    Rows written before D160 name no pair: they join none rather than being counted under an
+    invented name, so an older build reads as having no by-pair numbers instead of wrong ones.
+    """
+    grouped: dict[str, list[dict]] = {}
+    for row in rows:
+        name = str(row.get("judges") or "")
+        if name:
+            grouped.setdefault(name, []).append(row)
+    return {name: {key: _pair_counts(group)[key] for key in ("pairs", "disagreements", "rate")}
+            for name, group in sorted(grouped.items())}
+
+
+def disagreement_stats(rows: Iterable[dict]) -> dict:
+    """records.disagreement_stats over every row, plus `by_pair`: the same counts per pair of judges (D160).
+
+    The two judges can now be two different models, and one rate over every pair cannot say which
+    two of them parted; `by_pair` is that rate per pair, so two models disagreeing is a number a
+    reader can point at.
+    """
+    rows = list(rows)
+    return dict(_pair_counts(rows), by_pair=by_pair(rows))
 
 
 def disagreement_rate(workdir: Path, use: Optional[str] = None) -> dict:

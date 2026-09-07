@@ -288,6 +288,26 @@ def test_the_examiner_plan_sees_its_allowance_shrink_at_every_tool_end(model_exa
     assert loop.spent_allowance["examiner"] is True
 
 
+# --- which models judged the build (D160) -------------------------------------------------
+
+def test_a_build_records_the_judge_models_only_when_one_was_named(tmp_path):
+    """The report names the judge models beside the build model; a build that judges with its own
+    model records nothing, so its files are what they were before this."""
+    own = BuildPlan(workdir=tmp_path / "own", model=TestModel(["hi"], name="vendor/large"))
+    rounds._record_judge_models(own)
+    assert not (own.workdir / "report_config.json").exists()
+
+    named = BuildPlan(workdir=tmp_path / "named", model=TestModel(["hi"], name="vendor/large"),
+                      judge_model=TestModel(["hi"], name="other/small"),
+                      second_judge_model=TestModel(["hi"], name="third/tiny"))
+    (named.workdir / "report_config.json").write_text(json.dumps({"audit_rate": 0.5}), encoding="utf-8")
+    rounds._record_judge_models(named)
+    body = json.loads((named.workdir / "report_config.json").read_text(encoding="utf-8"))
+    assert body["judge_models"] == {"build": "vendor/large", "judge": "other/small",
+                                    "second_judge": "third/tiny"}
+    assert body["audit_rate"] == 0.5, "what the file already said is kept"
+
+
 # --- the allowance and the exits, decided by the driver -----------------------------------
 
 def test_the_allowance_defaults_to_round_ones_spend_per_agent(tmp_path):
