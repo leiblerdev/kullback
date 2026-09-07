@@ -17,6 +17,7 @@ from typing import Any, Optional
 from kullback.gates.loosening import (
     accepted_versions,
     as_history,
+    discarded_runs,
     false_rejection,
     finished_run_ids,
     legitimate_runs,
@@ -29,8 +30,13 @@ from kullback.gates.probes import (
     version_hash,
     write_tools_of,
 )
+from kullback.gates.verifier_suite import ALT_PATH_NOT_RUN, D79_STAGES
 from kullback.runner.gate_support import _get, gate
 from kullback.runner.records import GateResult, ProbePool, Run, Verifier, VerifierHistory
+
+# A check the suite could not run, and why it had no input. The stage names the status row carries
+# are the suite's; the trusted ruling speaks the D79 check names a person reads (D173).
+NOT_RUN_REASON = {"second_path_passes": ALT_PATH_NOT_RUN}
 
 
 def finished_runs(task_id: str, replays: dict, rerolls: dict) -> list[str]:
@@ -55,6 +61,26 @@ def refuse_gate(refusals: dict[str, dict], replays: dict, rerolls: dict) -> Gate
 
 def _reason_of(refusal: Any) -> str:
     return str(_get(refusal, "reason", "") or "")
+
+
+def _suite_reason(row: Any, skipped: list[str]) -> str:
+    """Why the suite did not pass, saying which checks had no input rather than treating a check
+    nobody could run as a check the Verifier failed (D173).
+
+    A single-Reference Task fails `second_path_passes` because there is no second path to score, not
+    because the Verifier turned one away, and the two ask for different repairs: more Runs of the
+    Task (the Examiner's `reroll`, then `derive`) against a looser Verifier. The rule is unchanged
+    either way, so a single-path Task is still untrusted; what changes is what the reason says and
+    what `checks_not_run` in the metrics lets a reader act on.
+    """
+    checks = _get(row, "checks", None) or {}
+    failed = sorted(name for name, ok in checks.items() if not ok and name not in skipped)
+    if not skipped:
+        return "the D79 suite did not pass"
+    named = ", ".join(f"{name} not run" + (f" ({NOT_RUN_REASON[name]})" if name in NOT_RUN_REASON else "")
+                      for name in skipped)
+    line = f"the D79 suite did not pass: {named}"
+    return f"{line}; {', '.join(failed)} failed" if failed else line
 
 
 def _is_accepted_version(verifier: Verifier, history: Optional[Any]) -> bool:
@@ -84,12 +110,15 @@ def trusted_gate(task_status: dict, verifiers: list[Verifier], probes: dict[str,
                  replays: dict, rerolls: dict, canon_rules: Any, sigs: list) -> GateResult:
     """A failure per Task with a Verifier that is not trusted, with the first reason that holds."""
     write_tools = write_tools_of(sigs)
-    legitimate = legitimate_runs(replays, rerolls)
+    # D133's number is over the Runs that did the job, so the discarded recordings are out of the
+    # pool (D173); the loosening rule below reads the whole pool, which is a different question.
+    legitimate = legitimate_runs(replays, rerolls, discarded_runs(task_status))
     admitted = refuse_gate(refusals, replays, rerolls).metrics["refused"]
     refused = {task_id: _reason_of((refusals or {})[task_id]) for task_id in admitted}
     trusted: list[str] = []
     untrusted: dict[str, str] = {}
     fractions: dict[str, Optional[float]] = {}
+    not_run: dict[str, list[str]] = {}
     probes_passing = 0
     failures: list[str] = []
     for verifier in sorted(map(as_verifier, verifiers or ()), key=lambda v: v.task_id):
@@ -101,8 +130,11 @@ def trusted_gate(task_status: dict, verifiers: list[Verifier], probes: dict[str,
         fractions[task_id] = false_rejection(verifier, (task_runs or {}).get(task_id, []),
                                              legitimate.get(task_id, set()), canon_rules, write_tools)["fraction"]
         row = (task_status or {}).get(task_id) or {}
+        skipped = [D79_STAGES.get(stage, stage) for stage in (_get(row, "not_run", None) or [])]
+        if skipped:
+            not_run[task_id] = skipped
         if not _get(row, "verifier_passed", False):
-            reason = "the D79 suite did not pass"
+            reason = _suite_reason(row, skipped)
         elif passing:
             reason = f"probe {passing[0]} scores a pass"
         elif not _is_accepted_version(verifier, (history or {}).get(task_id)):
@@ -118,4 +150,4 @@ def trusted_gate(task_status: dict, verifiers: list[Verifier], probes: dict[str,
         untrusted[task_id] = reason
         failures.append(f"task {task_id}: {reason}")
     return gate("trusted", failures, trusted=trusted, untrusted=untrusted, probes_passing=probes_passing,
-                false_rejection=fractions, refused=refused)
+                false_rejection=fractions, refused=refused, checks_not_run=not_run)
