@@ -12,6 +12,7 @@ from conftest import PTR
 from kullback.ai.provider import TestModel
 from kullback.builder import build as build_module
 from kullback.builder import pipeline
+from kullback.builder import tools as builder_tools
 from kullback.builder.build import BuildPlan
 from kullback.runner.records import Task, ToolCall, ToolSig, Trace, Turn, Verifier
 from test_e2e import TOOL_BODIES
@@ -534,6 +535,34 @@ def test_only_a_callers_own_call_is_evidence_for_the_body_of_a_tool():
     assert build_module.is_evidence_call(a_call("get_loan_details", "user"), callers) is False
 
 
+def _outcome(call_id, replayed, detail="", tool="get_loan_details"):
+    return {"tool": tool, "call_id": call_id, "replayed": replayed, "detail": detail}
+
+
+DIFFERS = "get_loan_details({'loan_id': 'L9'}): hard columns differ: due_on: ours 2099-12-31, recorded 2026-01-05"
+
+
+def test_a_task_whose_own_calls_all_replay_is_not_blocked_by_a_miss_on_another_tasks_call():
+    """D171: the corpus counts every recorded call of the tool, a Task only the calls its own
+    Traces made, and a tool assisted over the corpus differs on nobody else's Task."""
+    outcomes = {"get_loan_details": [_outcome("c1", True), _outcome("c2", True),
+                                     _outcome("c3", False, DIFFERS)]}
+    out = build_module.attribute_fidelity(outcomes, {"c1": "t1", "c2": "t1", "c3": "t2"},
+                                          ["get_loan_details"])
+    assert out["tools"]["get_loan_details"] == {"calls": 3, "replayed": 2, "differing": 1, "assisted": True}
+    assert out["tasks"]["t1"]["get_loan_details"] == {"replayed": 2, "differing": 0, "reasons": []}
+    assert out["tasks"]["t2"]["get_loan_details"]["differing"] == 1
+    assert "due_on" in out["tasks"]["t2"]["get_loan_details"]["reasons"][0]
+
+
+def test_a_recorded_call_no_task_claims_is_evidence_about_the_body_and_about_no_task():
+    """A Trace outside every Task still says whether the body is right; it costs no Task a Reference."""
+    outcomes = {"get_loan_details": [_outcome("c1", False, DIFFERS), _outcome("c2", True)]}
+    out = build_module.attribute_fidelity(outcomes, {"c2": "t1"}, ["get_loan_details"])
+    assert out["tools"]["get_loan_details"]["differing"] == 1
+    assert out["tasks"] == {"t1": {"get_loan_details": {"replayed": 1, "differing": 0, "reasons": []}}}
+
+
 def test_the_rerolls_gate_is_not_green_over_runs_that_all_died():
     dead = {"t1": [{"termination_reason": "env_error"}] * 3, "t2": [{"termination_reason": "env_error"}]}
     gate = build_module.rerolls_gate(dead, 3)
@@ -614,3 +643,51 @@ def test_a_stage_drops_the_run_files_an_earlier_build_left_under_its_name(tmp_pa
     assert build_module._discard_runs(run_dir, "reroll-t1-") == 2
     assert sorted(p.name for p in run_dir.iterdir()) == ["replay-abc.jsonl", "reroll-t10-0.jsonl"]
     assert build_module._discard_runs(tmp_path / "runs" / "missing", "reroll-") == 0
+
+
+# --- D174: a recompile keeps the better body ---
+
+
+def test_a_recompile_that_scores_no_higher_than_the_kept_body_leaves_it_in_place_and_says_so(built, tmp_path):
+    """One live build's third round recompiled a write tool from 65 percent of its recorded calls
+    matched to none of them, and lost 41 Tasks of fidelity in the round: the narrowed rerun took
+    whatever its attempts produced as the tool's body. A recompile is an attempt at a better body;
+    it replaces the kept one only by beating it on the compiler's own key."""
+    workdir = tmp_path / "declined"
+    shutil.copytree(built, workdir)
+    name = sorted(json.loads((workdir / "bodies.json").read_text(encoding="utf-8")))[0]
+    good = json.loads((workdir / "bodies.json").read_text(encoding="utf-8"))[name]
+    plan = BuildPlan(workdir=workdir, iterate=True, model=Bodies(), max_attempts=0)
+    build_module.execute(plan, "compile_tools", tools=[name])  # writes the kept body's score
+    row = json.loads((workdir / "tool_builds.json").read_text(encoding="utf-8"))[name]
+    assert isinstance(row.get("score"), list) and len(row["score"]) == 2
+
+    from kullback.builder import memory
+
+    # A repair records the lesson it acts on, which is what makes the narrowed rerun recompile
+    # rather than answer from the cache; the attempt it then makes crashes on every call.
+    memory.record_lesson(workdir, name, ["replay_fidelity: one recorded call differs"])
+    worse = TestModel(["raise KeyError('no such row')"], loop=True)
+    result = build_module.execute(BuildPlan(workdir=workdir, iterate=True, model=worse, max_attempts=0),
+                                  "compile_tools", tools=[name])
+    assert result.status == "complete" and result.reports["compile_tools"].cached is False
+    assert json.loads((workdir / "bodies.json").read_text(encoding="utf-8"))[name] == good, \
+        "the body that crashes on every call must not replace the one that replayed"
+    row = json.loads((workdir / "tool_builds.json").read_text(encoding="utf-8"))[name]
+    assert row["recompile_declined"]["kept_score"] == row["score"]
+    assert row["recompile_declined"]["attempt_score"] < row["score"]
+    assert row.get("assisted") is False, "the kept body's assisted ruling stands with it"
+    light = next((r for r in builder_tools.red_lights(workdir)
+                  if r.target == name and r.stage == "compile_tools"), None)
+    assert light is None, "a body that passed every gate is no red light, declined attempt or not"
+
+
+def test_a_declined_recompile_is_named_on_the_assisted_tools_red_light(tmp_path):
+    workdir = tmp_path / "lights"
+    workdir.mkdir()
+    (workdir / "tool_builds.json").write_text(json.dumps({
+        "lookup_shelf": {"assisted": True, "score": [5, 9],
+                         "recompile_declined": {"attempt_score": [2, 0], "kept_score": [5, 9]}}}),
+        encoding="utf-8")
+    light = next(r for r in builder_tools.red_lights(workdir) if r.target == "lookup_shelf")
+    assert "scored [2, 0] against the kept body's [5, 9]" in light.failure and "declined" in light.failure

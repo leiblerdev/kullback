@@ -94,8 +94,9 @@ class ReadArgs(BaseModel):
                                        "record of one Task, including `ungrounded_phrases` (the noun phrases "
                                        "the intent gate refused) and `run_coverage` (phrase to the Runs that "
                                        "evidence it): read it before suggesting repair_intent.")
-    id: Optional[str] = Field(default=None, description="The Task, Trace, Run or ruling name; every row when "
-                                                        "omitted where the kind allows it.")
+    id: Optional[str] = Field(default=None, description="The Task, Trace, Run or ruling name. Omitted, the "
+                                                        "whole-file kinds answer an index (one line per id), "
+                                                        "not the file; no read is longer than READ_CHARS.")
 
 
 class ReadResult(BaseModel):
@@ -260,6 +261,54 @@ def _text(body: Any) -> str:
     return json.dumps(body, indent=2, sort_keys=True, default=str, ensure_ascii=False)
 
 
+READ_CHARS = 60000  # the most one `read` hands the model (D175): one row of any kind fits, no whole file does
+WHOLE_FILE_KINDS = ("task_status", "gates", "rerolls", "replays", "references")
+
+
+def _clamped_text(body: Any) -> str:
+    """One read's text, cut at READ_CHARS with the cut named (D175).
+
+    A read with no id of task_status, gates or references handed the Examiner the whole file: on
+    one live build its context fill reached 899 percent of the window in the first round, with
+    four compactions in the second, and the beat that followed read nothing it had read before.
+    A read that does not fit says how much was cut and what to read instead.
+    """
+    text = _text(body)
+    if len(text) <= READ_CHARS:
+        return text
+    return (f"{text[:READ_CHARS].rstrip()}\n[+{len(text) - READ_CHARS} characters cut: read one id at a time, "
+            f"or a narrower kind]")
+
+
+def _index(kind: str, rows: Any) -> dict:
+    """What a read with no id answers for a whole-file kind: one line per id, not the file (D175)."""
+    if kind == "task_status":
+        out = {}
+        for task_id, row in sorted((rows or {}).items()):
+            row = row or {}
+            parts = ["reference confirmed" if row.get("reference_confirmed") else "no reference",
+                     "verifier passed" if row.get("verifier_passed") else "verifier not passed"]
+            checks = row.get("checks") or {}
+            failed = sorted(name for name, ok in checks.items() if ok is False) if isinstance(checks, dict) else []
+            if failed:
+                parts.append("failed " + ", ".join(failed))
+            if row.get("blocking_tools"):
+                parts.append("blocked by " + ", ".join(row["blocking_tools"]))
+            out[task_id] = "; ".join(parts)
+        return {"tasks": len(out), "rows": out, "note": "read task_status with an id for the whole row"}
+    if kind == "gates":
+        stages: dict[str, dict] = {}
+        for row in rows or []:
+            if not isinstance(row, dict):
+                continue
+            entry = stages.setdefault(str(row.get("stage")), {"rulings": 0, "failing": 0})
+            entry["rulings"] += 1
+            entry["failing"] += 0 if row.get("pass", row.get("passed")) else 1
+        return {"stages": stages, "note": "read gates with a stage name for its rulings"}
+    counts = {key: (len(value) if isinstance(value, (dict, list)) else 1) for key, value in sorted((rows or {}).items())}
+    return {"ids": counts, "note": f"read {kind} with an id for its rows"}
+
+
 def _find_run_path(plan: ExaminerPlan, run_id: str) -> Optional[str]:
     for rows in (plan.store.get("replays") or {}).values():
         for row in (rows or {}).values():
@@ -354,20 +403,21 @@ def _read(plan: ExaminerPlan):
             body = as_dict(pool) if pool is not None else as_dict(ProbePool(task_id=key or ""))
         elif kind == "task_status":
             status = store.get("task_status") or {}
-            body = status if key is None else {key: status.get(key)}
+            body = _index(kind, status) if key is None else {key: status.get(key)}
         elif kind == "gates":
             rows = read_json(plan.workdir / "gates.json", []) or []
-            body = rows if key is None else [row for row in rows if row.get("stage") == key]
+            body = _index(kind, rows) if key is None else [row for row in rows if row.get("stage") == key]
         elif kind == "rerolls":
             rows = store.get("rerolls") or {}
-            body = rows if key is None else {key: rows.get(key, [])}
+            body = _index(kind, rows) if key is None else {key: rows.get(key, [])}
         elif kind == "replays":
             rows = store.get("replays") or {}
-            body = rows if key is None else {key: rows.get(key, {})}
+            body = _index(kind, rows) if key is None else {key: rows.get(key, {})}
         else:
             rows = read_json(plan.workdir / "references.json", {}) or {}
-            body = rows if key is None else {key: rows.get(key)}
-        return ReadResult(kind=kind, id=key, text=_text(body))
+            body = _index(kind, rows) if key is None else {key: rows.get(key)}
+        # D175: a whole-file read is an index, and no read is longer than READ_CHARS.
+        return ReadResult(kind=kind, id=key, text=_clamped_text(body))
 
     return read
 

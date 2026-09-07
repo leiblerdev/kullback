@@ -394,7 +394,9 @@ def test_read_returns_a_run_a_trace_an_intent_a_verifier_and_the_pool_as_json(de
     probe_run = json.loads(drive(harness, "read", {"kind": "run", "id": f"probe-{T}-1"}).details["text"])
     assert probe_run["model"] == "probe:examiner"
     status = json.loads(drive(harness, "read", {"kind": "task_status"}).details["text"])
-    assert set(status) == {T}
+    assert set(status["rows"]) == {T} and status["tasks"] == 1, "a read with no id is an index (D175)"
+    whole = json.loads(drive(harness, "read", {"kind": "task_status", "id": T}).details["text"])
+    assert set(whole[T]) >= {"reference_confirmed", "verifier_passed"}
     missing = drive(harness, "read", {"kind": "run", "id": "nowhere"})
     assert missing.is_error and "nowhere" in missing.content
     # Traces and Intents come from a Builder store: the fixture build's.
@@ -480,3 +482,22 @@ def test_a_rejected_derivation_recomputes_the_scorecard_from_the_restored_rows(t
         "the scorecard must be recomputed from the restored rows, not left as the rejected derive wrote it"
     uncovered_ids = {u["task_id"] for u in on_disk["task_coverage"]["uncovered"]}
     assert T in uncovered_ids, "the restored row confirms nothing for T; a stale scorecard would count it covered"
+
+
+def test_a_whole_file_read_is_an_index_of_one_line_per_id_and_a_long_read_is_cut_with_the_cut_named(derived):
+    """One live build's Examiner reached 899 percent of its window in round 1 reading task_status,
+    gates and references whole (D175)."""
+    from kullback.examiner import tools as examiner_tools
+
+    plan, harness = _harness(derived)
+    gates = json.loads(drive(harness, "read", {"kind": "gates"}).details["text"])
+    assert set(gates) == {"stages", "note"} and all(set(v) == {"rulings", "failing"} for v in gates["stages"].values())
+    index = examiner_tools._index("task_status", {
+        "t1": {"reference_confirmed": True, "verifier_passed": False,
+               "checks": {"mutation_flips": False, "empty_fails": True}},
+        "t2": {"reference_confirmed": False, "blocking_tools": ["lookup_shelf"]}})
+    assert index["rows"] == {"t1": "reference confirmed; verifier not passed; failed mutation_flips",
+                             "t2": "no reference; verifier not passed; blocked by lookup_shelf"}
+    long = examiner_tools._clamped_text({"rows": ["x" * 100] * 1000})
+    assert len(long) < examiner_tools.READ_CHARS + 120 and "characters cut" in long.splitlines()[-1]
+    assert examiner_tools._clamped_text({"a": 1}) == examiner_tools._text({"a": 1})

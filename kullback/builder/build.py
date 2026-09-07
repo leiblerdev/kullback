@@ -273,6 +273,7 @@ def _tools_stage(model: Any, max_attempts: int, workers: int = 1, only: Optional
         error_prefix = compile_env.shared_error_prefix(
             call for calls in calls_by_tool.values() for call in calls)
         bodies, gates, assisted, builds = {}, [], [], {}
+        outcomes: dict[str, list[dict]] = {}  # D171: per tool, one row per recorded call
         rules = _rules_of(inputs)
         sigs = list(inputs["sigs"])
         if only is not None:
@@ -282,6 +283,13 @@ def _tools_stage(model: Any, max_attempts: int, workers: int = 1, only: Optional
             bodies = dict(_read_json(ctx.workdir / "bodies.json", {}) or {})
             builds = dict(_read_json(ctx.workdir / "tool_builds.json", {}) or {})
             assisted = [name for name, row in builds.items() if row.get("assisted") and name not in only]
+            # D171: the tools this run does not recompile keep the per-call rows the last run left,
+            # so the artifact it releases still attributes every tool's fidelity, not only these.
+            all_outcomes = _read_json(ctx.workdir / "tool_call_outcomes.json", {}) or {}
+            outcomes = {name: list(rows) for name, rows in all_outcomes.items() if name not in only}
+            # D174: what the recompiled tools had before this run, so a worse attempt cannot replace it.
+            previous = {name: (bodies[name], builds.get(name) or {}, list(all_outcomes.get(name) or []))
+                        for name in only if name in bodies}
             sigs = [sig for sig in sigs if sig.name in only]
 
         def compile_one(sig):  # one tool, its own directory and nodes; independent of every other (D118)
@@ -295,11 +303,34 @@ def _tools_stage(model: Any, max_attempts: int, workers: int = 1, only: Optional
                                             # a different question than the one that failed.
                                             lesson=memory.lesson_for(ctx.workdir, sig.name))
 
+        declined: list[str] = []
         for sig, build in zip(sigs, parallel.each(sigs, compile_one, workers), strict=True):
-            bodies[sig.name] = build.body
             gates.extend(build.gates)
+            score = list(compile_env.attempt_score(build.gates))
+            kept = previous.get(sig.name) if only is not None else None
+            kept_score = list(kept[1]["score"]) if kept is not None and kept[1].get("score") is not None else None
+            if kept_score is not None and kept_score >= score:
+                # D174: a recompile is an attempt at a better body, not a replacement for the one
+                # kept. The body it produced scored no higher on the same key the compiler ranks its
+                # own attempts by (gates passed, then recorded calls matched), so the kept body
+                # stands. A lower score is written on the row for the Builder to read; a tie leaves
+                # the row as it was, so a request that changed nothing leaves the stage's files
+                # unchanged and the next identical request is answered from the cache. One live
+                # build's third round recompiled a write tool from 65 percent of its calls matched
+                # to none of them and lost 41 Tasks of fidelity that round.
+                body, row, rows = kept
+                bodies[sig.name] = body
+                builds[sig.name] = row if kept_score == score else dict(
+                    row, recompile_declined={"attempt_score": score, "kept_score": kept_score})
+                outcomes[sig.name] = rows
+                if row.get("assisted"):
+                    assisted.append(sig.name)
+                declined.append(sig.name)
+                continue
+            bodies[sig.name] = build.body
             builds[sig.name] = {"assisted": build.assisted, "nodes": build.nodes,
-                                "after_write_skipped": skipped.get(sig.name, 0)}
+                                "after_write_skipped": skipped.get(sig.name, 0), "score": score}
+            outcomes[sig.name] = build.call_outcomes
             if build.assisted:
                 assisted.append(sig.name)
         if only is None:
@@ -309,7 +340,13 @@ def _tools_stage(model: Any, max_attempts: int, workers: int = 1, only: Optional
                 ctx.record_gate(result)
         _write_json(ctx.workdir / "bodies.json", bodies)
         _write_json(ctx.workdir / "tool_builds.json", builds)
-        return {"bodies": bodies, "assisted_tools": sorted(assisted)}
+        # D171: the per-call rows are kept whole on disk, so a narrowed rerun can read back the
+        # tools it did not touch; the artifact the stages pass on is the attribution over them.
+        _write_json(ctx.workdir / "tool_call_outcomes.json", outcomes)
+        fidelity_by_task = attribute_fidelity(outcomes, call_tasks, assisted)
+        _write_json(ctx.workdir / "tool_fidelity.json", fidelity_by_task)
+        return {"bodies": bodies, "assisted_tools": sorted(assisted),
+                "tool_fidelity": fidelity_by_task, "recompile_declined": declined}
 
     def gate(ctx, outputs):
         return stage_gates.compile_tools_gate(outputs["bodies"], outputs["assisted_tools"])
@@ -318,7 +355,10 @@ def _tools_stage(model: Any, max_attempts: int, workers: int = 1, only: Optional
     # compile_env and sandbox, and until the first live build it hashed neither: a fix to the
     # sandbox left every broken body in the cache and `--iterate` handed them straight back.
     version = (f"compile_tools:{getattr(model, 'name', 'none')}:"
-               f"{_module_hash(compile_env)}:{_module_hash(sandbox)}:{_module_hash(body_skill)}")
+               f"{_module_hash(compile_env)}:{_module_hash(sandbox)}:{_module_hash(body_skill)}:"
+               # The attribution is this file's own function, so its bytes are not in any module
+               # hash above; an edit to it is a different artifact and must not hit the cache.
+               f"{content_hash(pipeline._fn_identity(attribute_fidelity, 'compile_tools'))[:16]}")
     # The tool lessons are an input of this stage: they reach the compiler prompt (compile_one
     # above), so a new lesson is a new question and the old answer is not an answer to it. Left
     # undeclared, a recompile asked for after a lesson was recorded was served the cached bodies
@@ -326,10 +366,10 @@ def _tools_stage(model: Any, max_attempts: int, workers: int = 1, only: Optional
     # key, which is what makes the narrowed rerun actually recompile that tool.
     paths = (memory.TOOL_LESSONS_FILE,)
     if only is not None:
-        paths += ("bodies.json", "tool_builds.json")
+        paths += ("bodies.json", "tool_builds.json", "tool_call_outcomes.json")
     return pipeline.Stage(name="compile_tools", fn=run, builder=True,
                           inputs=("traces", "tasks", "sigs", "schema", "db", "overlays", "canon_rules"),
-                          outputs=("bodies", "assisted_tools"), gate=gate, input_paths=paths,
+                          outputs=("bodies", "assisted_tools", "tool_fidelity"), gate=gate, input_paths=paths,
                           code_version=version if only is None else f"{version}:only={','.join(only)}")
 
 
@@ -381,6 +421,53 @@ def is_evidence_call(call: Any, callers: dict[str, set[str]]) -> bool:
 
 def _task_of(tasks, trace_id: str) -> Optional[str]:
     return next((t.id for t in tasks if trace_id in t.run_ids), None)
+
+
+# How many differing calls of one tool a Task's row spells out. The count is always whole; the
+# sentences are what a person and the repair verb read, and three of them say what one says.
+FIDELITY_REASONS = 3
+
+
+def attribute_fidelity(outcomes: dict[str, list[dict]], call_tasks: dict[str, str],
+                       assisted: Iterable[str]) -> dict:
+    """Replay fidelity at both grains: per tool over the corpus, per Task over that Task's own calls (D171).
+
+    A tool's fidelity is one number for the corpus, and it is the number the Builder repairs
+    against: a body that misses one recorded call is assisted, whatever else it answers. That number
+    says nothing about a Task that never made the call that missed. One live build measured it:
+    one body replayed 239 of its 240 recorded calls and stayed assisted, and of the 64 Task rows
+    that named an assisted tool as their blocker, 51 make no call any assisted body answers
+    differently.
+
+    `outcomes` is `ToolBuild.call_outcomes` per tool, `call_tasks` maps a recorded call's id to the
+    Task whose Trace made it (the same map `call_starting_states` uses for D74). The result has both
+    grains and neither replaces the other: `tools` is the corpus ruling as it stands, `tasks` is per
+    Task per tool how many of its own calls replayed, how many differed, and what the first few
+    differences were, in the corpus gate's own words.
+
+    A call whose id no Task claims (a Trace outside every Task, a call the recording left unnamed)
+    counts for the corpus and for no Task: it is evidence about the body and evidence about nobody's
+    Run.
+    """
+    assisted = set(assisted)
+    tools: dict[str, dict] = {}
+    tasks: dict[str, dict] = {}
+    for name, rows in sorted(outcomes.items()):
+        per_tool = {"calls": 0, "replayed": 0, "differing": 0, "assisted": name in assisted}
+        for row in rows:
+            key = "replayed" if row.get("replayed") else "differing"
+            per_tool["calls"] += 1
+            per_tool[key] += 1
+            task_id = call_tasks.get(str(row.get("call_id") or ""))
+            if not task_id:
+                continue
+            slot = tasks.setdefault(task_id, {}).setdefault(
+                name, {"replayed": 0, "differing": 0, "reasons": []})
+            slot[key] += 1
+            if key == "differing" and row.get("detail") and len(slot["reasons"]) < FIDELITY_REASONS:
+                slot["reasons"].append(str(row["detail"]))
+        tools[name] = per_tool
+    return {"tools": tools, "tasks": tasks}
 
 
 def _policy_stage(model: Any, workers: int = 1):
