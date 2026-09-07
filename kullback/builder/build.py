@@ -888,7 +888,7 @@ def _reroll_reason(recorded: Any, current: dict) -> str:
         if name != "bodies":
             return label
         before, after = recorded.get("bodies") or {}, current.get("bodies") or {}
-        moved = sorted(name for name in set(before) | set(after) if before.get(name) != after.get(name))
+        moved = sorted(tool for tool in set(before) | set(after) if before.get(tool) != after.get(tool))
         rest = f" and {len(moved) - 1} more" if len(moved) > 1 else ""
         return f"body of tool {moved[0]}{rest}" if moved else label
     return ""
@@ -1011,8 +1011,8 @@ def _rerolls_stage(model: Any, rerolls: int, workers: int = 1, only: Optional[It
 
         rolled = {task.id: rows for (task, _, _, _), rows
                   in zip(jobs, parallel.each(jobs, reroll, workers), strict=True)}
-        out = {task.id: rolled.get(task.id) or reused[task.id] for task in tasks
-               if task.id in rolled or task.id in reused}
+        out = {task.id: rolled[task.id] if task.id in rolled else reused[task.id]
+               for task in tasks if task.id in rolled or task.id in reused}
         _write_runs_index(ctx.workdir)
         ruling = rerolls_gate(out, rerolls)
         ctx.record_gate(ruling.model_copy(update={"metrics": {
