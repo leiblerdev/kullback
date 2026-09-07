@@ -801,9 +801,8 @@ def fills_for(rows: dict[str, dict], proposal: Proposal) -> tuple[dict, list[str
     return fills, assumptions, unset
 
 
-def merge_worlds(worlds: dict[str, dict], artifact: Any,
-                 schema: Optional[EntitySchema] = None) -> dict[str, dict]:
-    """Add the revealed row's pre-write `hard` columns to `compile_env.trace_worlds`, one key per column.
+def merge_worlds(worlds: dict[str, dict], artifact: Any) -> dict[str, dict]:
+    """Add the revealed row's pre-write columns to `compile_env.trace_worlds`, one key per column.
 
     A row assembled column by column out of many calls is not seen whole the way a returned row is,
     so two recordings contradict each other only on a column they both read and read differently
@@ -811,21 +810,11 @@ def merge_worlds(worlds: dict[str, dict], artifact: Any,
     recording read before a write are here: a column filled from the corpus is the same value in
     every recording and would split nothing, and the recordings that did not read it never
     contradicted anyone.
-
-    And only the `hard` columns (D73), the same classes `trace_worlds` consults for a returned row.
-    A revealed column is classified by the same rules as a mined one (`apply_to_schema`), so a
-    reading the requestor's device takes when it is asked is exempt and does not make two Tasks out
-    of one; a toggle the recordings show in two states is hard and still does. Without a schema
-    every column counts, which is what a caller with no classes to hand can say.
     """
-    hard = ({(column.table, column.name) for column in schema.columns if column.class_ == "hard"}
-            if schema is not None else None)
     for proposal in proposals_from(artifact):
         rows = (rows_from(artifact).get(proposal.requestor) or {})
         for trace_id, row in rows.items():
             for name, value in (row or {}).items():
-                if hard is not None and (proposal.table, str(name)) not in hard:
-                    continue
                 worlds.setdefault(trace_id, {})[(proposal.table, proposal.requestor, name)] = content_hash(value)
     return worlds
 

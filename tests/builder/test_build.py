@@ -133,39 +133,6 @@ def test_a_new_tool_lesson_makes_compile_tools_run_again_instead_of_hitting_the_
     assert all(f"Tool: {name}" in text for text in sent), "the narrowed rerun compiles that tool alone"
 
 
-def test_a_kept_body_that_ignores_its_arguments_is_marked_hardcoded_where_the_next_round_reads_it(
-    built, tmp_path
-):
-    """A body no attempt got through is assisted, and the gates say which one it fell at; none of
-    them says the body never read its arguments, so a hint reaches nothing."""
-    from kullback.builder import compile_env, memory
-
-    workdir = tmp_path / "hardcoded"
-    shutil.copytree(built, workdir)
-    outcomes = json.loads((workdir / "tool_call_outcomes.json").read_text(encoding="utf-8"))
-    name = max(sorted(outcomes), key=lambda tool: len(outcomes[tool]))
-    bodies = json.loads((workdir / "bodies.json").read_text(encoding="utf-8"))
-    bodies.pop(name)  # so D174 has no kept body to decline this one against
-    (workdir / "bodies.json").write_text(json.dumps(bodies), encoding="utf-8")
-    plan = BuildPlan(workdir=workdir, iterate=True, max_attempts=0,
-                     model=TestModel(['return {"answer": "the same one every time"}'], loop=True))
-    build_module.execute(plan, "compile_tools", tools=[name])
-
-    builds = json.loads((workdir / "tool_builds.json").read_text(encoding="utf-8"))
-    written = json.loads((workdir / "bodies.json").read_text(encoding="utf-8"))
-    assert builds[name]["hardcoded"] is True
-    assert written[name].startswith(compile_env.HARDCODED_MARK)
-    assert compile_env.HARDCODED_LESSON in memory.lesson_for(workdir, name)
-
-
-def test_the_hardcoded_lesson_is_written_once_so_the_stage_key_does_not_move_on_every_run(tmp_path):
-    from kullback.builder import compile_env, memory
-
-    build_module._record_hardcoded_lesson(tmp_path, "post_entry")
-    build_module._record_hardcoded_lesson(tmp_path, "post_entry")
-    assert memory.load_tool_lessons(tmp_path)["post_entry"] == [[compile_env.HARDCODED_LESSON]]
-
-
 # --- the Intent stage's ratchet, and the folder it declares ---
 
 

@@ -178,10 +178,6 @@ def _mine_stage():
         unknown = mine.unknown_tools(traces)
         _write_json(ctx.workdir / "tool_sigs.json", [as_dict(s) for s in sigs])
         _write_json(ctx.workdir / "unknown_tools.json", unknown)
-        # Where each tool's result rows were homed and by which rule, with the rows no rule could
-        # home. A lookup whose rows reach no table is the whole of its replay fidelity, and this is
-        # where that is readable before a single body has been written.
-        _write_json(ctx.workdir / "row_homes.json", mine.row_homes(traces))
         _write_json(ctx.workdir / "schema.json", as_dict(schema))  # cli._score reads it (D39, D73)
         calls = [c for t in traces for c in t.tool_calls]
         # "flag, do not synthesize": a tool the corpus barely shows stays in the build, named in
@@ -266,7 +262,7 @@ def _cluster_stage():
                                           cluster.write_tool_names(inputs["sigs"]))
         # A row another requestor revealed splits Tasks the same way (D74): two recordings that read
         # one of its columns differently before either wrote started in different worlds.
-        readers.merge_worlds(worlds, inputs["readers"], inputs["schema"])
+        readers.merge_worlds(worlds, inputs["readers"])
         categories, tasks = cluster.cluster_runs(inputs["traces"], inputs["sigs"], worlds=worlds)
         for task in tasks:
             _write_json(ctx.workdir / "tasks" / f"{task.id}.json", as_dict(task))
@@ -322,17 +318,6 @@ def _state_stage(grow: Optional[dict] = None, grow_seed: int = 0):
                           inputs=("traces", "schema", "tasks", "sigs", "readers"),
                           outputs=("db", "overlays", "assumptions", "synthetic_rows"),
                           code_version=_version("starting_state", fn, compile_env, synth, readers))
-
-
-def _record_hardcoded_lesson(workdir: Any, name: str) -> None:
-    """Tell the next attempt what the gates do not say: this body never read its arguments.
-
-    Written once. The lessons file is an input of this stage, so appending the same sentence on
-    every run would change the stage's key on every run and recompile every tool that carries it.
-    """
-    if [compile_env.HARDCODED_LESSON] in memory.load_tool_lessons(workdir).get(name, []):
-        return
-    memory.record_lesson(workdir, name, [compile_env.HARDCODED_LESSON])
 
 
 def _tools_stage(model: Any, max_attempts: int, workers: int = 1, only: Optional[Iterable[str]] = None):
@@ -434,12 +419,9 @@ def _tools_stage(model: Any, max_attempts: int, workers: int = 1, only: Optional
                     assisted.append(sig.name)
                 declined.append(sig.name)
                 continue
-            bodies[sig.name] = compile_env.mark_hardcoded(build.body) if build.hardcoded else build.body
-            builds[sig.name] = {"assisted": build.assisted, "hardcoded": build.hardcoded,
-                                "nodes": build.nodes,
+            bodies[sig.name] = build.body
+            builds[sig.name] = {"assisted": build.assisted, "nodes": build.nodes,
                                 "after_write_skipped": skipped.get(sig.name, 0), "score": score}
-            if build.hardcoded:
-                _record_hardcoded_lesson(ctx.workdir, sig.name)
             outcomes[sig.name] = build.call_outcomes
             if build.assisted:
                 assisted.append(sig.name)

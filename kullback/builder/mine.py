@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any, NamedTuple, Optional, Sequence
 
 from kullback.ai.provider import Model
-from kullback.gates.tool_runs import SHAPELESS_PROBES, id_field, match_table
+from kullback.gates.tool_runs import id_field, match_table
 from kullback.runner.records import (
     Column,
     EffectObservation,
@@ -31,9 +31,6 @@ UNKNOWN_ERROR_SHARE = 0.20  # D67: unknown above a small share on any tool is a 
 MAX_SAMPLES = 5
 MAX_VALUES = 400
 MIN_COUNTER_VALUES = 5
-# The floor under which "every number differs" says nothing: fewer sightings than this and a column
-# of distinct numbers is what a small sample of anything looks like (`_never_repeats`).
-MIN_UNIQUE_VALUES = 5
 JSON_TYPES = {"string": "str", "integer": "int", "number": "float", "boolean": "bool",
               "object": "dict", "array": "list", "null": "NoneType"}
 # System time and counters only: a name that merely contains a date or a version is not enough (D73).
@@ -984,92 +981,29 @@ def _noun_of(tool_name: str) -> Optional[str]:
     return _singular(nouns[-1]) if nouns else None
 
 
-def _address_of(tool_name: str) -> set[str]:
-    """The entities a tool name says a row is only addressed by: the tokens after the first preposition.
+def _table_of(tool_name: str, row: dict, id_names: Sequence[str] = (), siblings: Sequence[dict] = ()) -> Optional[str]:
+    """The entity a result row is about, from the id columns it carries and the tool's own noun.
 
-    A name of the shape `get_invoices_for_tenant` is about invoices and addressed by a tenant, so
-    `tenant` is here and `invoice` is not. It is the same reading `_noun_of` makes of the same
-    name, from the other side of the preposition, and it is what keeps the asked-for-id rule
-    below from filing a child row under the parent whose id the call happened to pass.
-    """
-    tokens = [t for t in re.split(r"[^a-z0-9]+", tool_name.lower()) if t]
-    for index, token in enumerate(tokens):
-        if token in PREPOSITIONS:
-            return {_singular(t) for t in tokens[index + 1:]}
-    return set()
-
-
-def _asked_for(row: dict, ids: Sequence[str], args: Optional[dict]) -> Optional[str]:
-    """The row's id column holding a value the call passed as an argument, or None.
-
-    The call asked for that id and the customer's tool answered this row, so the row is that
-    entity, whatever the tool is called. Where several of the row's ids were passed, the column
-    whose name is the argument's name wins, because the caller named it; otherwise the first in
-    the row's own order, so the answer does not depend on how a dict happens to be ordered
-    elsewhere. Only scalars are compared: an argument holding a list or an object is a filter, not
-    an id, and a blank value addresses nothing.
-    """
-    if not args:
-        return None
-    wanted = {canonical_json(value) for value in args.values()
-              if isinstance(value, (str, int, float)) and not isinstance(value, bool) and value != ""}
-    matched = [key for key in ids
-               if row.get(key) not in (None, "") and canonical_json(row[key]) in wanted]
-    if not matched:
-        return None
-    named = [key for key in matched if key in args]
-    return (named or matched)[0]
-
-
-def _home_of(tool_name: str, row: dict, id_names: Sequence[str] = (), siblings: Sequence[dict] = (),
-             args: Optional[dict] = None) -> tuple[Optional[str], str]:
-    """The entity a result row is about and the rule that says so; (None, reason) when nothing does.
-
-    In order: the id the call asked for, which is the strongest evidence a corpus can give, since
-    the customer's tool was handed that id and answered this row; the id whose entity is what the
-    tool is about; the id whose values are distinct across the rows this one came back with, which
-    is what an id does and a foreign key does not; the only id there is. A row whose only id is
-    `id`, which is how support, CRM and ticketing APIs return rows (D52), takes its table from the
-    tool name instead of being dropped.
-
-    The asked-for rule is narrower than the rest in two ways, and both are what keep it from taking
-    a table nothing names. It ignores an id the tool name says is only the address (`_address_of`):
-    a call that lists a parent's children is handed the parent's id and answers the children, and
-    homing those rows under the parent is the fault `_noun_of` was written to fix. And it ignores a
-    column whose name carries no id suffix, because the entity of such a column is the column
-    itself: a search filter the corpus happens to see one value of per row is an id by
-    `id_columns` and would otherwise name a table after itself. Everything the asked-for rule
-    cannot decide falls through to the rules that were here before it, unchanged.
+    In order: the id whose entity is what the tool is about; the id whose values are distinct across
+    the rows this one came back with, which is what an id does and a foreign key does not; the only
+    id there is. A row whose only id is `id`, which is how support, CRM and ticketing APIs return
+    rows (D52), takes its table from the tool name instead of being dropped.
     """
     ids = [key for key in row if isinstance(key, str) and key != "id"
            and (key.endswith("_id") and len(key) > 3 or key in id_names)]
     noun = _noun_of(tool_name)
-    address = _address_of(tool_name)
-    named_entities = [key for key in ids if _entity_of(key) != key and _entity_of(key) not in address]
-    asked = _asked_for(row, named_entities, args)
-    if asked is not None:
-        return _plural(_entity_of(asked)), f"the call passed the value of {asked}, so the row is that entity"
     for key in ids:
         if _entity_of(key) == noun:
-            return _plural(_entity_of(key)), f"the tool name is about {noun}, which {key} names"
+            return _plural(_entity_of(key))
     if len(ids) > 1:
         distinct = [key for key in ids if _distinct_across(key, siblings)]
         if len(distinct) == 1:
-            return (_plural(_entity_of(distinct[0])),
-                    f"{distinct[0]} is the one id distinct across the rows the call answered")
+            return _plural(_entity_of(distinct[0]))
     if len(ids) == 1:
-        return _plural(_entity_of(ids[0])), f"{ids[0]} is the row's only id"
+        return _plural(_entity_of(ids[0]))
     if not ids and any(key == "id" for key in row):
-        if noun:
-            return _plural(noun), f"the row's only id is `id`, so the table is the tool's noun {noun}"
-        return None, "the row's only id is `id` and the tool name names no entity"
-    return None, "no id of the row names an entity, and the call passed none of its values"
-
-
-def _table_of(tool_name: str, row: dict, id_names: Sequence[str] = (), siblings: Sequence[dict] = (),
-              args: Optional[dict] = None) -> Optional[str]:
-    """The entity a result row is about; `_home_of` without its reason."""
-    return _home_of(tool_name, row, id_names, siblings, args)[0]
+        return _plural(noun) if noun else None
+    return None
 
 
 def _distinct_across(column: str, rows: Sequence[dict]) -> bool:
@@ -1126,7 +1060,7 @@ def nested_rows(traces: list[Trace], id_names: Sequence[str] = ()) -> list[tuple
                 continue
             rows = _result_rows(_parse(call.result))
             for row in rows:
-                parent = _table_of(call.name, row, id_names, rows, call.args)
+                parent = _table_of(call.name, row, id_names, rows)
                 if parent is None:
                     continue
                 for column, value in row.items():
@@ -1157,32 +1091,6 @@ def nested_homes(traces: list[Trace], id_names: Sequence[str] = ()) -> dict[str,
         place = homes.setdefault(child, {})
         place[f"{parent}.{column}"] = place.get(f"{parent}.{column}", 0) + 1
     return homes
-
-
-def row_homes(traces: list[Trace], id_names: Optional[Sequence[str]] = None) -> dict[str, dict]:
-    """Per tool, where the miner homed its result rows, by which rule, and how many it could not home.
-
-    The decision `_home_of` makes per row, counted per tool, so a corpus where a lookup's rows reach
-    no table says so on the record instead of only in the size of a table that was never written. A
-    tool that answers rows of two kinds gets both, and the reason is the rule's own sentence.
-    """
-    names = id_columns(traces) if id_names is None else list(id_names)
-    out: dict[str, dict] = {}
-    for trace in traces:
-        for call in trace.tool_calls:
-            if not is_assistant_call(call) or call.error is not None or call.result is None:
-                continue
-            rows = _result_rows(_parse(call.result))
-            for row in rows:
-                table, reason = _home_of(call.name, row, names, rows, call.args)
-                entry = out.setdefault(call.name, {"homed": {}, "unhomed": 0, "unhomed_reason": ""})
-                if table is None:
-                    entry["unhomed"] += 1
-                    entry["unhomed_reason"] = reason
-                    continue
-                place = entry["homed"].setdefault(table, {"rule": reason, "rows": 0})
-                place["rows"] += 1
-    return out
 
 
 def _result_rows(parsed: Any) -> list[dict]:
@@ -1221,18 +1129,6 @@ def _counter_like(values: list) -> bool:
             and all(b > a for a, b in zip(numbers, numbers[1:], strict=False)))
 
 
-def _never_repeats(values: list) -> bool:
-    """Numbers, enough of them, and no two sightings alike: a reading taken, not a fact stored.
-
-    A stored number is read back the same way twice; a number the world measures when it is asked
-    is different every time it is asked. Enough of them is `MIN_UNIQUE_VALUES`: under that floor a
-    column of two or three different numbers is what any small sample looks like, so the rule waits
-    rather than exempting a price the corpus happened to show once each.
-    """
-    numbers = [v for v in values if isinstance(v, (int, float)) and not isinstance(v, bool)]
-    return len(numbers) >= MIN_UNIQUE_VALUES and len(set(numbers)) == len(numbers)
-
-
 def propose_column_class(table: str, name: str, values: list, count: Optional[int] = None) -> ClassProposal:
     """The code rule of D73: timestamps and counters exempt, ids and enums hard, long strings semantic."""
     sample = list(values[:MAX_VALUES])
@@ -1264,14 +1160,6 @@ def propose_column_class(table: str, name: str, values: list, count: Optional[in
     if _counter_like(present):
         return ClassProposal("exempt", "low", "whole numbers that only increase, so it may be a counter; "
                                               "low confidence so the review sees it", evidence)
-    if _never_repeats(present):
-        # A reading the world takes when it is asked (a measured rate, a duration) is a different
-        # number on every sighting, so comparing it exactly fails every Run and, worse, splits one
-        # Task into as many Tasks as it was read in (`compile_env.trace_worlds`). Low confidence,
-        # so the setup review sees a column the corpus simply never showed twice.
-        return ClassProposal("exempt", "low", "numbers with no value repeated over enough sightings, so a "
-                                              "reading taken rather than a fact stored; low confidence so "
-                                              "the review sees it", evidence)
     if texts and len(texts) == len(present):
         if evidence["max_len"] > 60 and evidence["distinct"] > 3:
             return ClassProposal("semantic", "medium", "long free text with many distinct values", evidence)
@@ -1387,27 +1275,11 @@ def _shape_pattern(texts: list[str]) -> Optional[str]:
     return "^" + shapes.pop() + "$" if len(shapes) == 1 else None
 
 
-def _shaped(pattern: str) -> bool:
-    """An id shape an ordinary word cannot match (D167), by the probes the gates refuse one with."""
-    try:
-        return not any(re.fullmatch(pattern, probe) for probe in SHAPELESS_PROBES)
-    except re.error:
-        return False
-
-
 def id_pattern(values: list) -> Optional[str]:
     """A regex for an id column, from the shape its values share; None when they share nothing.
 
     The pattern is read off a sample and then checked against every value, because `canon.py`
     fullmatches real ids against it and a shape that first appears late must not be rejected.
-
-    The last resort is "every character is alphanumeric or one of these", and that one is refused
-    when an ordinary word matches it (`_shaped`, D167). It is not a shape the values share; it is
-    what is left when they share none, and `canon._as_id` fullmatches every string of the world
-    against every mined pattern and upper-cases a hit before any other rule runs, so one such
-    pattern reads every status, name and free-text value in the corpus as an id. A learned shape is
-    kept whatever the probes say, because a customer whose ids really are six lowercase letters has
-    that shape and the tables keyed by it are found through this pattern (`tool_runs.id_field`).
     """
     texts = [v for v in values if isinstance(v, str) and v]
     if not texts:
@@ -1417,7 +1289,7 @@ def id_pattern(values: list) -> Optional[str]:
         return pattern
     others = sorted({c for t in texts for c in t if not (c.isalnum() and c.isascii())})
     wide = "^[A-Za-z0-9" + "".join(re.escape(c) for c in others) + "]+$"
-    return wide if _shaped(wide) and all(re.fullmatch(wide, t) for t in texts) else None
+    return wide if all(re.fullmatch(wide, t) for t in texts) else None
 
 
 def composite_keys(traces: list[Trace], schema: EntitySchema,
@@ -1524,7 +1396,7 @@ def mine_schema(traces: list[Trace], db_json_path: Optional[Path] = None,
                 continue
             rows = _result_rows(_parse(call.result))
             for row in rows:
-                table = _table_of(call.name, row, id_names, rows, call.args)
+                table = _table_of(call.name, row, id_names, rows)
                 if table is None:
                     continue
                 for name, value in row.items():

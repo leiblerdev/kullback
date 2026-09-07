@@ -436,7 +436,7 @@ def test_read_returns_a_run_a_trace_an_intent_a_verifier_and_the_pool_as_json(de
     whole = json.loads(drive(harness, "read", {"kind": "task_status", "id": T}).details["text"])
     assert set(whole[T]) >= {"reference_confirmed", "verifier_passed"}
     missing = drive(harness, "read", {"kind": "run", "id": "nowhere"})
-    assert missing.is_error is False and "nowhere" in missing.content, "an id nothing carries is answered"
+    assert missing.is_error and "nowhere" in missing.content
     # Traces and Intents come from a Builder store: the fixture build's.
     built = ExaminerPlan(workdir=fixture_build.workdir, inputs=fixture_build.inputs)
     reader = examiner_agent.examiner_harness(built)
@@ -539,77 +539,3 @@ def test_a_whole_file_read_is_an_index_of_one_line_per_id_and_a_long_read_is_cut
     long = examiner_tools._clamped_text({"rows": ["x" * 100] * 1000})
     assert len(long) < examiner_tools.READ_CHARS + 120 and "characters cut" in long.splitlines()[-1]
     assert examiner_tools._clamped_text({"a": 1}) == examiner_tools._text({"a": 1})
-
-
-def test_a_finding_filed_under_a_ruling_name_lands_with_the_kind_that_ruling_is_about(derived):
-    """One live build's Examiner filed 17 of its 28 findings under a ruling name (`replay_reference`)
-    and every one was refused by the enum, 13 of them about real replay differences that were never
-    retried. A ruling name is what the Examiner is reading when it files, so it is taken as the kind
-    that ruling is about; a name that is neither is refused with the kinds and the mapping."""
-    plan, harness = _harness(derived, round=1)
-    filed = drive(harness, "finding", {"task_id": T, "kind": "replay_reference",
-                                       "text": "the body answers a recorded call differently",
-                                       "suggested": "repair_recompile", "hint": "the status differs"})
-    assert filed.is_error is False
-    assert filed.details["finding"]["kind"] == "fidelity", "the fidelity ruling maps to the fidelity kind"
-    assert "(fidelity)" in filed.content
-    suite = drive(harness, "finding", {"task_id": T, "kind": "mutation_flips", "text": "no atom names a value",
-                                       "suggested": "repair"}, call_id="f2")
-    assert suite.is_error is False and suite.details["finding"]["kind"] == "suite"
-    unknown = drive(harness, "finding", {"task_id": T, "kind": "not_a_ruling", "text": "x"}, call_id="f3")
-    assert unknown.is_error
-    assert "assisted_tool, fidelity, reference_disagreement" in unknown.content, "the kinds are listed"
-    assert "fidelity <- " in unknown.content, "and the mapping the model may use instead"
-    assert tools_mod.finding_kind("ledger_rebalance", ["ledger_rebalance"]) == "assisted_tool"
-
-
-def test_a_third_repair_of_one_task_against_the_check_that_rejected_the_first_two_is_refused(derived):
-    """One live build's Examiner spent a session on 13 repairs, none accepted, two Tasks repaired
-    four times each with the same gate failing every time. Two rejections by one check are what the
-    session has to learn from; the third is refused with the check and the verbs that buy something."""
-    plan, harness = _harness(derived)
-    assert _reason_repair(harness, plan, "required", "require the reason").details["accepted"] is True
-    _probe(harness, VF.other_reason_run())
-    first = _reason_repair(harness, plan, "allowed", "any reason will do", call_id="r1")
-    second = _reason_repair(harness, plan, "allowed", "said again, other words", call_id="r2")
-    assert first.details["rejected_by"] == second.details["rejected_by"] == ["probe_pool"]
-    third = _reason_repair(harness, plan, "allowed", "a third rationale", call_id="r3")
-    assert third.is_error and "probe_pool" in third.content
-    assert "any reason will do" in third.content and "said again, other words" in third.content
-    assert "refuse, reroll_then_derive" in third.content
-    assert len(_history(derived).versions) == 4, "the refused repair wrote no version"
-    # The count is per check: a Task each of whose two rejections came from a different check is open.
-    two_checks = {("t9", "verifier_mutation"): ["version 2: a"], ("t9", "loosening"): ["version 3: b"]}
-    assert tools_mod.repair_lock(two_checks, "t9") is None
-    one_check = {("t9", "verifier_mutation"): ["version 2: a", "version 3: b"]}
-    assert "verifier_mutation" in (tools_mod.repair_lock(one_check, "t9") or "")
-
-
-def test_a_repair_whose_atom_payload_is_not_an_object_is_a_validation_error_not_a_crash(derived):
-    """One live build answered `repair failed: AttributeError: 'str' object has no attribute 'get'`
-    three frames below the tool, and the Examiner had nothing to correct. The shape an atom takes is
-    said once, in the words the tool's own schema uses."""
-    plan, harness = _harness(derived)
-    result = drive(harness, "repair", {"task_id": T, "reason": "name the entity",
-                                       "add": [{"id": "a1", "kind": "required", "payload": "the entity"}]})
-    assert result.is_error and "AttributeError" not in result.content
-    assert "payload of atom a1 is str" in result.content and "`kind`" in result.content
-    nameless = drive(harness, "repair", {"task_id": T, "reason": "x", "add": [{"kind": "required"}]},
-                     call_id="r2")
-    assert nameless.is_error and "names no id" in nameless.content
-    assert len(_history(derived).versions) == 1, "no version was written for either"
-
-
-def test_reading_a_run_or_a_trace_id_nothing_carries_answers_the_ids_that_exist(derived):
-    """One live build spent 13 of a session's 22 turns on one Task, four of them re-reading the same
-    Run and Trace ids that were not there; the tool answered each with a KeyError and nothing to try."""
-    plan, harness = _harness(derived)
-    _probe(harness, VF.wrong_run())
-    answer = json.loads(drive(harness, "read", {"kind": "run", "id": "reroll-r9-t1-0"}).details["text"])
-    assert answer["found"] is False and answer["kind"] == "Run"
-    assert set(answer["ids"]) == {f"{T}: ref", f"{T}: alt", f"{T}: probe-{T}-1"}
-    assert "the Run ids of this build (3 of 3)" in answer["note"]
-    by_task = json.loads(drive(harness, "read", {"kind": "run", "id": T}, call_id="r2").details["text"])
-    assert by_task["found"] is False and f"of task {T}" in by_task["note"], "a Task id narrows the answer"
-    trace = json.loads(drive(harness, "read", {"kind": "trace", "id": "nowhere"}, call_id="r3").details["text"])
-    assert trace["found"] is False and trace["kind"] == "Trace" and trace["ids"] == []

@@ -57,7 +57,6 @@ from kullback.builder.agent import builder_message
 from kullback.builder.build import DEFAULT_REROLLS, TARGET_ALL, BuildError, BuildPlan
 from kullback.builder.tools import BUILD_TOOLS, EXAMINER_OWNS
 from kullback.examiner import agent as examiner_agent
-from kullback.examiner import stage as examiner_stage
 from kullback.examiner.agent import ExaminerError, examiner_message, examiner_round_message
 from kullback.examiner.plan import STATE_DIR, ExaminerPlan
 from kullback.examiner.stage import DERIVE_INPUTS
@@ -394,7 +393,6 @@ class Loop:
     driver_built: list[int] = field(default_factory=list)  # rounds whose target the driver built itself
     builder_stop: dict = field(default_factory=dict)
     stall_told: int = 0
-    examiner_skipped: list[str] = field(default_factory=list)  # the derivation inputs the target never built
     started_hashes: dict[str, str] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
@@ -636,18 +634,9 @@ class Loop:
             self.sent.append(finding.finding_id)
 
     def examiner_beat(self, n: int) -> None:
-        """The Examiner holds the stream: it reads the Builder's artifacts as they stand and derives.
-
-        A `--target` naming a stage before the ones that release the derivation's inputs leaves it
-        nothing to derive from, so the beat does not happen and the round ends on the build. The
-        beat used to open on such a store and fail on the first input it reached, which read as a
-        broken Examiner rather than as a build that was asked for less than a Verifier needs.
-        """
+        """The Examiner holds the stream: it reads the Builder's artifacts as they stand and derives."""
         if self.builder.is_running:
             raise RuntimeError("the Builder is still running; one agent at a time (D128)")
-        self.examiner_skipped = examiner_stage.missing_inputs(self.plan.store)
-        if self.examiner_skipped:
-            return
         self.emit(BeatStart(agent="examiner", round=n))
         before = self.spend()
         if self.eplan is None:
@@ -680,19 +669,15 @@ class Loop:
 
     def _land(self, ruling: GateResult) -> None:
         """A round_end ruling into gates.json unless an equal row is already there: the Builder's own
-        fidelity ruling stays where its stage wrote it, so the file reads as the single pipeline wrote it.
-
-        A round the Examiner never opened on (a target earlier than the derivation's inputs) has no
-        Examiner plan, so the ledger is the workdir's own, the same one `keep_gate_history` falls
-        back to."""
-        ledger = self.eplan.ledger if self.eplan is not None else GateLedger(self.plan.workdir)
+        fidelity ruling stays where its stage wrote it, so the file reads as the single pipeline wrote it."""
+        path = self.eplan.ledger.path
         try:
-            rows = json.loads(ledger.path.read_text(encoding="utf-8")) if ledger.path.is_file() else []
+            rows = json.loads(path.read_text(encoding="utf-8")) if path.is_file() else []
         except ValueError:
             rows = []
         if as_dict(ruling) in rows:
             return
-        ledger.record("round_end", ruling)
+        self.eplan.ledger.record("round_end", ruling)
 
     def driver_counts(self) -> dict:
         """What only the driver knows about the round in hand: when it ran, what each beat spent,
@@ -935,27 +920,15 @@ class Loop:
                                          ceiling_reached=self.ceiling_reached(), exhausted=self.exhausted,
                                          all_rounds=history, fidelity_stall=self.fidelity_stall or None,
                                          max_rounds=self.max_rounds or None)
-        if self.examiner_skipped and record.exit != "ceiling":
-            # The build was asked for less than a Verifier is derived from, so no count the loop
-            # runs on can move and another round would rebuild the same target. The round ends on
-            # what was asked for, and the note names what a Verifier would still need. A build that
-            # ran out of money left the same store short for a different reason, and the ceiling is
-            # the reason that has to be reported (D86), so it keeps its exit.
-            record.exit = "target_built"
-            record.exit_note = (f"the target {self.target!r} built no "
-                                f"{', '.join(self.examiner_skipped)}, so the Examiner had nothing to "
-                                "derive from and the run ends on the build")
-        elif record.exit == "stalled" and not round_end.stalled(_since_last_move(history), self.stall_rounds):
+        if record.exit == "stalled" and not round_end.stalled(_since_last_move(history), self.stall_rounds):
             record.exit_note = f"fidelity did not rise in {self.fidelity_stall} rounds"
         elif record.exit == "max_rounds":
             record.exit_note = f"round cap of {self.max_rounds} reached"
         if self.pending_findings:
             record.pending_findings = list(self.pending_findings)
-            if record.exit in ("ceiling", "max_rounds", "target_built"):
-                ended = {"ceiling": "ceiling", "max_rounds": "round cap",
-                         "target_built": "target the run was asked for"}[record.exit]
+            if record.exit in ("ceiling", "max_rounds"):
                 record.exit_note = (f"{len(self.pending_findings)} finding(s) still need the Builder; "
-                                    f"the {ended} ended the run first")
+                                    f"the {'ceiling' if record.exit == 'ceiling' else 'round cap'} ended the run first")
             elif record.exit is not None:
                 record.exit = None
                 record.exit_note = (f"{len(self.pending_findings)} finding(s) owe the Builder a beat; "

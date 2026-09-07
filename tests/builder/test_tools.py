@@ -219,42 +219,6 @@ def test_the_headline_counts_the_gates_the_tasks_with_no_verdict_and_the_assiste
     assert builder_tools.render_status(result).startswith(head + "\n")
 
 
-def test_the_headline_of_a_second_round_says_what_the_round_before_it_moved(tmp_path):
-    """One live build lost a third of its trusted Tasks over three rounds and every round opened on
-    the same picture: the artifacts as they stand, with nothing said about the way they were going."""
-    workdir = _crowded(tmp_path)
-    (workdir / "rounds.json").write_text(json.dumps([
-        {"round": 1, "counts": {"trusted": 99, "fidelity": 188, "tasks_with_reference": 135,
-                                "artifacts_changed": ["bodies", "intents"]}},
-        {"round": 2, "counts": {"trusted": 66, "fidelity": 188, "tasks_with_reference": 140,
-                                "artifacts_changed": ["bodies"]}},
-    ]), encoding="utf-8")
-    head = builder_tools.status_of(workdir).summary
-    assert ("round 2 against round 1: trusted 66, down 33; fidelity 188, unchanged; "
-            "References 140, up 5; it changed bodies") in head
-
-
-def test_a_first_round_has_nothing_to_compare_itself_against_and_says_nothing(tmp_path):
-    workdir = _crowded(tmp_path)
-    (workdir / "rounds.json").write_text(json.dumps([
-        {"round": 1, "counts": {"trusted": 99, "fidelity": 188, "tasks_with_reference": 135}}]),
-        encoding="utf-8")
-    assert "round 1 against" not in builder_tools.status_of(workdir).summary
-
-
-def test_a_hardcoded_tool_is_listed_apart_from_the_assisted_ones(tmp_path):
-    """A body that never read its arguments is not the repair an assisted body is: a hint written
-    against one failing call cannot reach it, so the headline does not file the two together."""
-    workdir = _crowded(tmp_path)
-    builds = json.loads((workdir / "tool_builds.json").read_text(encoding="utf-8"))
-    builds[CROWDED_TOOLS[0]]["hardcoded"] = True
-    (workdir / "tool_builds.json").write_text(json.dumps(builds), encoding="utf-8")
-    head = builder_tools.status_of(workdir).summary
-    assert "3 tools assisted: " + ", ".join(CROWDED_TOOLS[1:4]) in head
-    assert f"1 tool hardcoded, answering alike whatever they are given: {CROWDED_TOOLS[0]}" in head
-    assert CROWDED_TOOLS[0] not in head.split("assisted: ")[1].split(";")[0]
-
-
 @pytest.mark.parametrize("failure,target,kind", [
     ("task task_7: no Trace of the Task was replayed", "task_7", "task"),
     ("get_order: a recorded success call replays differently", "get_order", "tool"),

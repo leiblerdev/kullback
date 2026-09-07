@@ -8,7 +8,10 @@ agrees. When more than one group is left, code cannot tell which of them carried
 a judge may mark groups as failed, never as passed (D110); a Task whose groups still disagree gets
 no Reference and no Verdict. That judge is handed the Intent, the policy and the End states and no
 transcript, so a ruling of its that rests on anything else, authentication or a spoken confirmation
-or the opening request, is an abstention and fails nothing (D93). Re-rolls (D112) enter the same rule
+or the opening request, is an abstention and fails nothing (D93). The End state it is handed has two
+halves, what the Runs wrote and what their answers told the user (D43): with the second half missing
+a Task the recorded agent resolved by answering read as a Task nobody acted on, and the judge failed
+the recordings the corpus itself had rewarded. Re-rolls (D112) enter the same rule
 as recordings of a lower standing: the Reference is a recording whenever the agreeing group holds
 one, since the recording is the only Run that touched the customer's real system.
 
@@ -27,8 +30,10 @@ from typing import Any, Callable, Iterable, Optional
 
 from kullback.examiner import derive as verifier_mod
 from kullback.gates import verifier_suite
+from kullback.gates.verifier_suite import _key
 from kullback.runner.judge import sources_not_given
 from kullback.runner.records import Atom, Constraint
+from kullback.runner.verdict import TRANSFER_HINTS
 
 RECORDING = "recording"
 REROLL = "reroll"
@@ -46,6 +51,7 @@ MIN_RUNS_TO_DEMOTE = 3
 MAX_POLICY_LINES = 40  # D65: the judge prompt is bounded whatever the policy's length
 MAX_LINE_CHARS = 200
 MAX_REQUEST_CHARS = 600
+MAX_FACTS = 12  # how many of a group's stated facts the prompt lists before it says how many are left
 # What this judge is handed, and the whole of what a ruling of its may rest on. It sees the Intent,
 # the policy and the End states, and never a transcript, so authentication, a spoken confirmation and
 # the opening request are absent by construction; a ruling that rests on one of them abstains (D93).
@@ -56,13 +62,17 @@ _JSON_RE = re.compile(r"\{.*\}", re.DOTALL)
 
 @dataclass
 class Recording:
-    """One Run the D111 rule sees: where it is, what it wrote, and which Hard constraints it broke."""
+    """One Run the D111 rule sees: where it is, what it wrote, what it told the user, and which Hard
+    constraints it broke."""
     run_id: str
     path: str
     kind: str = RECORDING
     trace_id: Optional[str] = None
     end_state: tuple = ()
     violated: list[str] = field(default_factory=list)
+    stated: tuple = ()          # the facts read from the world this Run's answers stated back
+    transferred: bool = False   # it handed the conversation on rather than finishing it
+    settled: tuple = ()         # the same writes with list arguments in order, beside what they answered
 
 
 @dataclass
@@ -126,6 +136,68 @@ def end_state(run: Any, write_tools: Iterable[str], fn: Callable) -> tuple:
                         for e in effects.values()))
 
 
+def _ordered(values: Iterable[tuple], fn: Callable) -> tuple:
+    """One write's arguments with the members of every list-valued one put in order.
+
+    A list argument is a set of things the user named, and the order the recorded agent happened to
+    list them in is not part of what the Run did to the world.
+    """
+    out = []
+    for name, key in values:
+        value = _decoded(key)
+        if isinstance(value, list):
+            key = json.dumps(sorted(_key(fn, item) for item in value), sort_keys=True)
+        out.append((name, key))
+    return tuple(out)
+
+
+def _decoded(key: str) -> Any:
+    """The value behind a canonical key. A customer's canon rules may render a list as text, so the
+    key is read again while it still reads as JSON and the list inside it is not missed."""
+    value: Any = key
+    for _ in range(2):
+        if not isinstance(value, str):
+            break
+        try:
+            value = json.loads(value)
+        except (TypeError, ValueError):
+            break
+    return value
+
+
+def _results(run: Any, fn: Callable) -> dict[int, str]:
+    """What each tool call was answered with, by the position of the call in the Run."""
+    out: dict[int, str] = {}
+    pending: list[tuple[int, Any]] = []
+    for pos, event in enumerate(run.events):
+        payload = dict(getattr(event, "payload", None) or {})
+        if event.type == "tool_call":
+            pending.append((pos, payload.get("id")))
+        elif event.type == "tool_result":
+            for at, call_id in reversed(pending):
+                if payload.get("id") in (None, call_id) and at not in out:
+                    out[at] = _key(fn, payload.get("result"))
+                    break
+    return out
+
+
+def settled_state(run: Any, write_tools: Iterable[str], fn: Callable) -> tuple:
+    """The End state with list arguments in order, each write beside what the tool answered.
+
+    Two Runs that made the same call with the same items in another order reached the same state
+    when the tool answered them the same way; when the answers differ the order mattered to the
+    world and the two states stay apart. On the second retail build 12 of 25 Tasks whose recordings
+    disagreed differed by nothing else, and each of them lost its Reference over it.
+    """
+    loaded = verifier_suite.as_run(run)
+    effects = verifier_suite.write_effects(loaded, set(write_tools), fn)
+    if not effects:
+        return ()
+    answers = _results(loaded, fn)
+    return tuple(sorted((e["tool"], e["entity"] or "", _ordered(sorted(e["values"].items()), fn),
+                         answers.get(e["pos"], "")) for e in effects.values()))
+
+
 def describe(state: tuple) -> str:
     if state == ANSWERED:
         return "no writes; the answer states facts read from the world"
@@ -164,28 +236,88 @@ def violations(run: Any, atoms: Iterable[Atom], write_tools: Iterable[str], fn: 
             if verifier_suite.hard_holds(atom, loaded, set(write_tools), fn) is False]
 
 
+def stated_facts(run: Any, fn: Callable) -> tuple:
+    """The values this Run's answers stated back to the user, sorted, as the judge should read them.
+
+    Part of the End state and not of the transcript (D43): what the user was told is an effect of the
+    Run the same way a write is, and it is the half of the End state a Task resolved by an answer
+    lives in. The values alone, never the sentences they were said in, so the judge still cannot read
+    what the agent said.
+    """
+    return tuple(sorted(fact["text"] for fact in
+                        verifier_suite.communicate_values(verifier_suite.as_run(run), fn).values()))
+
+
+def transferred(run: Any) -> bool:
+    """Did the Run hand the conversation on instead of finishing it? The hints are verdict.py's, so
+    the rule that reads a Run as given up and the one that describes it to the judge agree."""
+    loaded = verifier_suite.as_run(run)
+    names = [call["name"].lower() for call in verifier_suite.run_calls(loaded)]
+    return any(hint in name for name in names for hint in TRANSFER_HINTS)
+
+
 def load(path: str, kind: str, *, run_id: Optional[str] = None, trace_id: Optional[str] = None,
          write_tools: Iterable[str], fn: Callable, atoms: Iterable[Atom] = ()) -> Recording:
     run = verifier_suite.as_run(path)
     return Recording(run_id=run_id or run.run_id, path=str(path), kind=kind, trace_id=trace_id,
                      end_state=end_state(run, write_tools, fn),
-                     violated=violations(run, atoms, write_tools, fn))
+                     violated=violations(run, atoms, write_tools, fn),
+                     stated=stated_facts(run, fn), transferred=transferred(run),
+                     settled=settled_state(run, write_tools, fn))
 
 
 # --- constraints against the corpus ---------------------------------------
 
+def coded_atoms(constraints: Iterable[Constraint], write_tools: Iterable[str],
+                read_tools: Iterable[str] = ()) -> list[Atom]:
+    """Every constraint that has code, whether or not its own tests passed, as an atom to run.
+
+    `hard_atoms` is what a Verdict may check and holds the compiled rules only. This is what the
+    recordings are asked about, and a rule whose tests failed is asked too: its rate against the
+    frontier is the evidence that says whether the code is wrong or the tests were.
+    """
+    return [verifier_mod._atom(f"hard.{c.id}", "hard",
+                               {"kind": "hard", "constraint_id": c.id, "judge": False,
+                                "predicate_src": c.predicate_src, "write_tools": sorted(write_tools),
+                                "read_tools": sorted(read_tools)}, description=c.text)
+            for c in constraints if c.predicate_src and not c.judge_atom]
+
+
 def constraint_rates(constraints: Iterable[Constraint], runs: Iterable[Any], write_tools: Iterable[str],
                      fn: Callable, read_tools: Iterable[str] = ()) -> dict[str, dict]:
-    """Per compiled constraint: how many of the given Runs it fails on, and how many it saw."""
-    atoms = hard_atoms(constraints, write_tools, read_tools)
-    rates = {atom.target["constraint_id"]: {"failed": 0, "runs": 0} for atom in atoms}
+    """Per constraint with code: how many Runs it fails on, how many it saw, and how many it judged.
+
+    A rule that judged nothing read as a rule the frontier passed, because `failed` stayed 0 while
+    `runs` counted every recording; on two builds a quarter to a third of the rules with code had no
+    rate at all and the rest could not be told apart from rules that had been checked and held. So
+    each row now says how many Runs the rule actually answered about, and a rule that answered about
+    none, or that has no code to run, carries the reason it was not checked.
+    """
+    atoms = coded_atoms(constraints, write_tools, read_tools)
+    compiled = {c.id for c in constraints if c.compiled}
+    rates = {atom.target["constraint_id"]: {"failed": 0, "runs": 0, "judged": 0} for atom in atoms}
     for run in runs:
         loaded = verifier_suite.as_run(run)
         for atom in atoms:
             row = rates[atom.target["constraint_id"]]
             row["runs"] += 1
-            if verifier_suite.hard_holds(atom, loaded, set(write_tools), fn) is False:
+            held = verifier_suite.hard_holds(atom, loaded, set(write_tools), fn)
+            if held is None:
+                continue
+            row["judged"] += 1
+            if held is False:
                 row["failed"] += 1
+    for rule in constraints:
+        row = rates.get(rule.id)
+        if row is None:
+            rates[rule.id] = {"failed": 0, "runs": 0, "judged": 0,
+                              "skipped": "the rule is a judge atom" if rule.judge_atom
+                                         else "the rule compiled to no code"}
+        elif not row["judged"]:
+            row["skipped"] = ("no recording made a call this rule judges"
+                              if row["runs"] else "there was no confirmed recording to check it against")
+        if rule.id in rates and rule.id not in compiled:
+            rates[rule.id]["gates"] = False  # the rate is reported; a rule whose tests failed gates nothing
     return rates
 
 
@@ -222,18 +354,30 @@ def _label(index: int) -> str:
 
 
 def group(recordings: Iterable[Recording]) -> list[dict]:
-    """The Runs by End state, recordings before re-rolls, in order of first appearance."""
+    """The Runs by End state, recordings before re-rolls, in order of first appearance.
+
+    Two states the settled state cannot tell apart are one state: the writes are the same and the
+    order of a list argument is the only difference, and the tool answered both the same way.
+    """
     ordered = sorted(recordings, key=lambda r: (r.kind != RECORDING, r.run_id))
     groups: list[dict] = []
     by_state: dict[tuple, dict] = {}
+    by_settled: dict[tuple, dict] = {}
     for rec in ordered:
         row = by_state.get(rec.end_state)
+        if row is None and rec.settled:
+            row = by_settled.get(rec.settled)  # the same writes in another order, answered the same
         if row is None:
-            row = by_state[rec.end_state] = {"label": _label(len(groups)),
-                                             "state": describe(rec.end_state), "runs": [], "members": []}
+            row = {"label": _label(len(groups)), "state": describe(rec.end_state),
+                   "runs": [], "members": []}
             groups.append(row)
+        by_state.setdefault(rec.end_state, row)
+        by_settled.setdefault(rec.settled, row)
         row["runs"].append(rec.run_id)
         row["members"].append(rec)
+    for row in groups:
+        row["told"] = sorted({fact for rec in row["members"] for fact in rec.stated})
+        row["transferred"] = sum(1 for rec in row["members"] if rec.transferred)
     return groups
 
 
@@ -280,6 +424,24 @@ def confirm(recordings: Iterable[Recording], *, intent: str = "", policy_lines: 
 
 # --- the judge: fails, never passes ----------------------------------------
 
+def told_line(group: dict) -> str:
+    """One group's answer side: the facts its Runs stated back, and how many gave the Run away.
+
+    Without it a Task the recorded agent resolved by answering reads as a Task nobody did anything
+    about: the judge saw "no writes" and failed the state, and on two builds it failed 15 of 59 and
+    18 of 22 recordings the corpus itself had rewarded.
+    """
+    facts = list(group.get("told") or [])
+    shown = ", ".join(str(f) for f in facts[:MAX_FACTS])
+    more = f" and {len(facts) - MAX_FACTS} more" if len(facts) > MAX_FACTS else ""
+    said = f"told the user: {shown}{more}" if facts else "told the user no fact read from the world"
+    handed = int(group.get("transferred") or 0)
+    total = len(group.get("runs") or [])
+    if handed:
+        return f"{said}; {handed} of {total} handed the conversation on"
+    return f"{said}; none handed the conversation on"
+
+
 def judge_prompt(intent: str, policy_lines: Iterable[str], groups: list[dict]) -> str:
     lines = ["Recordings of one Task ended in different states. Say which of the states did NOT do what "
              "the Intent asked, or did something the policy does not allow.",
@@ -297,9 +459,15 @@ def judge_prompt(intent: str, policy_lines: Iterable[str], groups: list[dict]) -
              "", "Policy:"]
     lines += [f"- {' '.join(text.split())[:MAX_LINE_CHARS]}"
               for text in list(policy_lines)[:MAX_POLICY_LINES] if text and text.strip()]
-    lines += ["", "End states:"]
-    lines += [f"{g['label']} ({len(g['runs'])} run{'s' if len(g['runs']) != 1 else ''}): {g['state']}"
-              for g in groups]
+    lines += ["", "End states. Each says what the state's Runs wrote, what their answers told the user "
+              "and whether they handed the conversation on. What the user was told is an effect of the "
+              "Run and part of the End state (D43); the values are given without the sentences they "
+              "were said in, and you still do not have the transcript. A state that told the user no "
+              "value read from the world may still have answered in words that carry none, so that "
+              "on its own is not a state failed."]
+    for g in groups:
+        lines.append(f"{g['label']} ({len(g['runs'])} run{'s' if len(g['runs']) != 1 else ''}): {g['state']}")
+        lines.append("    " + told_line(g))
     lines += ["", 'Reply with JSON only: {"failed": ["A"], "evidence": ["intent", "end_states"], '
               '"reason": "..."}. Every name in evidence must be one of ' + ", ".join(AVAILABLE_SOURCES)
               + '; when your answer needs anything else, name that instead and fail nothing. Mark a state '
@@ -339,6 +507,8 @@ def parse_judgement(text: str, labels: set[str]) -> Judgement:
 
 
 __all__ = ["RECORDING", "REROLL", "ANSWERED", "MISCOMPILED_SHARE", "AVAILABLE_SOURCES", "Recording", "Confirmation",
-           "Judgement", "end_state", "describe",
-           "hard_atoms", "violations", "load", "constraint_rates", "demote", "group", "confirm",
+           "Judgement", "end_state", "settled_state", "describe", "stated_facts", "transferred",
+           "told_line",
+           "hard_atoms", "coded_atoms", "violations", "load", "constraint_rates", "demote", "group",
+           "confirm",
            "judge_prompt", "judge_groups", "parse_judgement"]

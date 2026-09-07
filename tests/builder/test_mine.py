@@ -20,7 +20,6 @@ from kullback.builder.mine import (
     mine_tools,
     propose_column_class,
     propose_kind,
-    row_homes,
     unknown_tools,
 )
 from kullback.runner.records import RawPtr, ToolCall, ToolCallError, Trace, as_dict
@@ -1180,23 +1179,6 @@ def test_a_money_column_that_happens_to_increase_is_not_exempt():
     assert counter.confidence == "low", "a counter found by shape alone still goes to review"
 
 
-def test_a_number_no_two_sightings_repeat_is_a_reading_and_is_not_compared():
-    """A rate a probe measures when it is asked is a different number every time it is asked.
-
-    Held to a hard comparison it fails every Run and, worse, makes as many Tasks out of one as it
-    was read in, since a starting world is what a recording read before it wrote.
-    """
-    reading = propose_column_class("probes", "throughput", [11.2, 8.4, 19.7, 3.1, 14.6, 9.9])
-    assert reading.column_class == "exempt"
-    assert reading.confidence == "low", "found by shape alone, so the review still sees it"
-
-
-def test_too_few_sightings_to_repeat_leave_a_number_compared():
-    """Four different numbers are what any small sample looks like, so the rule waits for evidence."""
-    assert propose_column_class("probes", "throughput", [11.2, 8.4, 19.7, 3.1]).column_class == "hard"
-    assert propose_column_class("berths", "fee", [10.0, 25.5, 10.0, 25.5, 10.0, 25.5]).column_class == "hard"
-
-
 def test_business_dates_and_versions_are_not_high_confidence_exempt():
     for name in ["date_of_birth", "time_zone", "delivery_date", "version"]:
         proposal = propose_column_class("users", name, ["1990-01-01", "1985-05-05", "2000-02-02"])
@@ -1225,19 +1207,14 @@ def test_rows_keyed_by_a_plain_id_still_get_a_table():
 
 def test_an_id_shape_that_appears_late_is_still_matched_by_the_pattern():
     """canon.py fullmatches ids against these patterns, so a pattern read off the first 200 values
-    must not reject a real id that comes later.
-
-    Where the late id leaves the column with no shape at all, the answer is no pattern rather than
-    one that takes any word (`id_pattern`): nothing rejects the late id either way, and a pattern
-    every word matches would have read every word of the corpus as an id.
-    """
+    must not reject a real id that comes later."""
     from kullback.builder.mine import id_pattern
 
     values = [f"u_{i}" for i in range(200)] + ["u-x-9"]
-    assert id_pattern(values) is None
+    pattern = id_pattern(values)
+    assert all(re.fullmatch(pattern, v) for v in values)
     tight = id_pattern([f"u_{i}" for i in range(200)])
     assert tight == r"^[A-Za-z]+_\d+$"
-    assert all(re.fullmatch(tight, v) for v in values[:200])
 
 
 def test_a_position_that_mixes_letters_and_digits_is_that_class_and_not_any_character():
@@ -1402,84 +1379,6 @@ def test_the_retail_shaped_names_keep_their_old_answer():
     ])]
     schema = mine_schema(traces)
     assert schema.tables == ["orders"]
-
-
-# --- a row is homed by the id the call asked for ------------------------------
-
-# The domain is an invented marina: berths a vessel ties up at, and the tariff each berth is let on.
-
-def test_a_row_carrying_several_ids_is_homed_in_the_table_of_the_id_the_call_was_given():
-    """The tool name says nothing about an entity, so only the call says which row this is.
-
-    The customer's tool was handed one id and answered this row, so the row is that entity. Before
-    this the row had no home, was dropped by the row extractor, and every column it carried was
-    lost along with every replay of the tool that answered it.
-    """
-    berth = '{"berth_id": "b7", "vessel_id": "v3", "tariff_id": "t1", "state": "occupied"}'
-    vessel = '{"vessel_id": "v3", "berth_id": "b7", "hull": "wood"}'
-    traces = [one_trace("t1", [
-        {"name": "get_record_by_id", "args": {"id": "b7"}, "result": berth},
-        {"name": "get_record_by_id", "args": {"id": "v3"}, "result": vessel},
-    ])]
-    schema = mine_schema(traces)
-    assert "berths" in schema.tables and "vessels" in schema.tables
-    assert {c.name for c in schema.columns if c.table == "berths"} == {
-        "berth_id", "vessel_id", "tariff_id", "state"}
-    assert {c.name for c in schema.columns if c.table == "vessels"} == {"vessel_id", "berth_id", "hull"}
-
-
-def test_where_two_of_a_row_ids_were_passed_the_one_the_argument_names_wins():
-    traces = [one_trace("t1", [
-        {"name": "load_record", "args": {"vessel_id": "v3", "near": "b7"},
-         "result": '{"berth_id": "b7", "vessel_id": "v3", "hull": "wood"}'},
-    ])]
-    assert mine_schema(traces).tables == ["vessels"]
-
-
-def test_the_noun_rule_still_homes_a_row_when_no_argument_names_one_of_its_ids():
-    """A search is given filters, not ids, so nothing it was handed is an id of the rows it answers."""
-    rows = json.dumps([{"berth_id": "b7", "tariff_id": "t1", "depth_m": 3},
-                       {"berth_id": "b8", "tariff_id": "t1", "depth_m": 4}])
-    traces = [one_trace("t1", [
-        {"name": "search_berth", "args": {"marina": "north", "depth_m": 3}, "result": rows},
-    ])]
-    assert mine_schema(traces).tables == ["berths"]
-
-
-def test_the_id_of_the_parent_a_call_lists_children_by_does_not_home_the_children():
-    """`for` says the customer is the address and the bill is the row, whichever id was passed."""
-    row = '{"lease_id": "l1", "vessel_id": "v3", "state": "open"}'
-    traces = [one_trace("t1", [
-        {"name": "get_leases_for_vessel", "args": {"vessel_id": "v3"}, "result": f"[{row}]"},
-    ])]
-    assert mine_schema(traces).tables == ["leases"]
-
-
-def test_an_id_column_whose_values_share_no_shape_gets_no_pattern():
-    """A pattern an ordinary word matches is no id shape (D167), and one leaks into every comparison.
-
-    `canon._as_id` fullmatches every string of the world against every mined pattern and upper-cases
-    a hit before any other rule runs, so one shapeless pattern turns every status and name in the
-    corpus into an id. Homing a write's answer put such a column in front of the miner for the first
-    time, which is where this was found.
-    """
-    from kullback.builder.mine import id_pattern
-
-    assert id_pattern(["card_9513926", "paypal_7644869", "gift"]) is None
-    assert id_pattern(["b7", "b8"]) == "^b\\d$", "a shape the values share is kept whatever a word does"
-
-
-def test_where_each_tool_row_was_homed_and_by_which_rule_is_on_the_record():
-    traces = [one_trace("t1", [
-        {"name": "get_record_by_id", "args": {"id": "b7"},
-         "result": '{"berth_id": "b7", "vessel_id": "v3"}'},
-        {"name": "describe", "args": {}, "result": '{"state": "open"}'},
-    ])]
-    homes = row_homes(traces)
-    assert homes["get_record_by_id"]["homed"]["berths"]["rows"] == 1
-    assert "berth_id" in homes["get_record_by_id"]["homed"]["berths"]["rule"]
-    assert homes["get_record_by_id"]["unhomed"] == 0
-    assert homes["describe"]["unhomed"] == 1 and homes["describe"]["unhomed_reason"]
 
 
 # --- rows whose identity is more than one column (composite row keys) ---------
