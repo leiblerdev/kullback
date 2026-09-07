@@ -48,6 +48,15 @@ differently must get different answers from the body (non_trivial); identical ar
 recording answered differently were answered from a world an earlier write changed, and the body
 reads that state rather than a constant.
 
+Where a render is given, the render is the answer. A tool whose results are prose carries one
+function of the row beside its table, checked against every one of that tool's recorded results by
+round trip: the row goes in and the result the recording holds comes out. A read tool's body answers
+that function of the row as it stands; a write tool's body applies its effect to the row first and
+then answers that function of the row it left. Reproduce what the function does, line for line and
+value for value, rather than composing the sentence again from the columns: a word the sentence
+states that no column holds follows from the columns the function reads, and that is where it is
+worked out.
+
 Names in a refused call's payload are not names. A recorded error that names a tool, a function or
 a placeholder is a message to raise, not a symbol to bind; the confined gate refuses a body that
 names anything the module does not define.
