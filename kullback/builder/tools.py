@@ -49,6 +49,7 @@ from typing import Any, Awaitable, Callable, Optional
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from kullback import round_delta
 from kullback.agent.tools import AgentTool, NoArgs, counted_ruling_line
 from kullback.builder import build as build_module
 from kullback.builder import repair as repair_module
@@ -401,8 +402,13 @@ def _count(n: int, noun: str, plural: str = "s") -> str:
     return f"{n} {noun}{'' if n == 1 else plural}"
 
 
-def _headline(lights: list[RedLight], passing: list[str], failing: list[str]) -> str:
-    """The one line the model reads first: how much is red, how many Tasks it costs, what is assisted."""
+def _headline(lights: list[RedLight], passing: list[str], failing: list[str], delta: str = "") -> str:
+    """The one line the model reads first: how much is red, how many Tasks it costs, what is assisted.
+
+    `delta` is what the round before moved (`round_delta.delta_line`). Without it the picture is of
+    the artifacts as they stand, and one live build lost a third of its trusted Tasks over three
+    rounds with every round reading the same as the last.
+    """
     tasks, top = _no_verdict(lights)
     hardcoded = _hardcoded(lights)
     # Listed apart, because they are not the same repair: an assisted body has a defect a hint can
@@ -417,6 +423,8 @@ def _headline(lights: list[RedLight], passing: list[str], failing: list[str]) ->
     if hardcoded:
         parts.append(f"{_count(len(hardcoded), 'tool')} hardcoded, answering alike whatever they are "
                      f"given: " + ", ".join(hardcoded))
+    if delta:
+        parts.append(delta)
     return "status: " + "; ".join(parts)
 
 
@@ -514,7 +522,7 @@ def status_of(workdir: Any, gate: str = "", target: str = "") -> StatusResult:
     asked = [part for part in (f"gate={gate}" if gate else "", f"target={target}" if target else "") if part]
     shown = [light for light in lights
              if (not gate or light.stage == gate) and (not target or light.target == target)]
-    summary = _headline(lights, passing, failing)
+    summary = _headline(lights, passing, failing, round_delta.delta_line(workdir))
     if unbuilt:
         summary = UNBUILT_SUMMARY
     elif asked:
