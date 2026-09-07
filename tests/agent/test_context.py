@@ -3,10 +3,14 @@ the floor at the line with the model's summary and with the mechanical one, prot
 
 from __future__ import annotations
 
+import pytest
+from pydantic import BaseModel, ConfigDict
+
 from kullback.agent.context import (
     SUMMARY_PROMPT,
     ContextConfig,
     ContextEstimate,
+    Refused,
     estimate_context,
     mechanical_summary,
     text_tokens,
@@ -15,7 +19,7 @@ from kullback.agent.extensions import ExtensionAPI, load_extensions
 from kullback.agent.harness import AgentHarness
 from kullback.agent.messages import AssistantMessage, ToolResultMessage, UserMessage
 from kullback.agent.session import CompactionEntry, MessageEntry, SessionInfoEntry, SessionStore
-from kullback.agent.tools import ToolResult
+from kullback.agent.tools import AgentTool, ToolResult
 from kullback.ai.provider import ModelReply, TestModel
 from kullback.ai.usage import Usage
 from tests.agent.conftest import call, collect, reply, types_of
@@ -329,3 +333,87 @@ def test_the_fill_is_counted_at_every_turn_end_without_a_session():
     collect(harness.prompt("again"))
     fills = harness.context_stats.fill_at_turn_end
     assert len(fills) == 2 and all(0 < f < 1 for f in fills)
+
+
+# --- the floor's cut of one result that is over the line on its own ---
+
+
+class BulkArgs(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    size: int
+
+
+class BulkResult(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    text: str
+
+
+async def _bulk(args: BulkArgs) -> BulkResult:
+    return BulkResult(text="y" * args.size)
+
+
+def bulk_harness(tmp_path, replies, **config):
+    """A harness whose one tool answers a large result to a small call, which is the shape the cut
+    is for: the assistant's call is cheap and the result alone is over the line."""
+    tool = AgentTool("bulk", "Answer with a block of text.", BulkArgs, BulkResult, _bulk, render=lambda r: r.text)
+    defaults = dict(window=1500, line=0.4, recent_tool_turns=1, arm="code_only")
+    defaults.update(config)
+    return harness_with_session(tmp_path, TestModel(replies), [tool], **defaults)
+
+
+def test_floor_cuts_one_guarded_tool_result_that_is_over_the_line_on_its_own(tmp_path):
+    """D124's floor drops only what is unguarded, so one protected result larger than the line holds
+    the context over it whatever else goes; that result is read shorter in place instead."""
+    harness = bulk_harness(tmp_path, [reply(None, call("bulk", {"size": 6000}, "c1")), "done"])
+    events = collect(harness.prompt("go"))
+    compactions = [e for e in events if e.type == "compaction"]
+    assert len(compactions) == 1 and compactions[0].by == "code_fallback"
+    # the whole turn is guarded, so nothing was dropped and nothing claims a prefix
+    assert compactions[0].replaces_entry_ids == [] and compactions[0].first_kept_entry_id is None
+    assert "nothing dropped, so nothing summarized" in compactions[0].note
+    assert "cut entry e4 from 1518 to 405 tokens" in compactions[0].note
+    stats = harness.context_stats
+    assert stats.cuts == 1 and stats.tokens_cut == 1518 - 405 and stats.fallback_compactions == 1
+    assert stats.fill_at_turn_end[-1] < 0.4
+
+
+def test_a_cut_keeps_the_entry_paired_with_its_call_and_whole_on_the_file(tmp_path):
+    harness = bulk_harness(tmp_path, [reply(None, call("bulk", {"size": 6000}, "c1")), "done"])
+    collect(harness.prompt("go"))
+    # the pair stands where it stood: the call, its result, and every id still on the path
+    assert [e.id for e in harness.session.active_path()] == ["e1", "e2", "e3", "e4", "e5", "e6"]
+    # the cut-only compaction (e5) is a line of the record and adds no message of its own
+    assert [m.role for m in harness.messages] == ["user", "assistant", "tool", "assistant"]
+    entry = harness.session.get("e4")
+    assert isinstance(entry, MessageEntry) and entry.message.content == "y" * 6000
+    cut = harness.messages[2].content
+    assert cut.startswith("y" * 1200 + "\n[mechanical summary: entry e4 is over the line on its own]")
+    assert cut.splitlines()[2].startswith("- e4 tool result bulk: " + "y" * 77)
+    assert 'recall(entry_id="e4") reads back' in cut and "y" * 1300 not in cut
+
+
+def test_recall_of_a_cut_entry_answers_the_whole_result(tmp_path):
+    harness = bulk_harness(tmp_path, [reply(None, call("bulk", {"size": 6000}, "c1")), "done"])
+    collect(harness.prompt("go"))
+    result = harness.context.recall("e4")
+    assert result.entry_id == "e4" and result.kind == "tool result bulk" and result.content == "y" * 6000
+    # an entry standing whole in the context is still refused: only a cut one may be read back
+    with pytest.raises(Refused) as refusal:
+        harness.context.recall("e3")
+    assert refusal.value.rule == "in_context"
+
+
+def test_floor_leaves_a_guarded_result_that_fits_inside_the_line_whole(tmp_path):
+    harness = bulk_harness(tmp_path, [reply(None, call("bulk", {"size": 1200}, "c1")), "done",
+                                      "the prompt was long"])
+    harness.follow_up("next")
+    events = collect(harness.prompt("x" * 3000))
+    compactions = [e for e in events if e.type == "compaction"]
+    # the prompt is dropped whole; the result is guarded tool output and fits inside the line
+    assert len(compactions) == 1 and compactions[0].replaces_entry_ids == ["e2"]
+    assert "cut entry" not in compactions[0].note
+    assert harness.session.get("e4").message.content == "y" * 1200
+    assert harness.messages[2].content == "y" * 1200
+    assert harness.context_stats.cuts == 0 and harness.context_stats.tokens_cut == 0
