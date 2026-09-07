@@ -1307,6 +1307,90 @@ def _import_hints(gates: list[GateResult]) -> list[str]:
             f"`import {name}` at the top of the body" for name in names if name in ALLOWED_IMPORTS]
 
 
+RAISED_KINDS = ("KeyError", "AttributeError")
+RAISED_SAMPLES = 3
+RAISED_LINES = 2
+_TABLE_READ = re.compile(r"self\.db\.([A-Za-z_][A-Za-z0-9_]*)")
+
+
+def value_shape(value: str) -> str:
+    """One value with its characters generalized: digits `#`, lowercase `a`, uppercase `A`, the rest itself.
+
+    The shape of an id is what the next attempt needs (an id of this table looks like this); the id
+    itself is a customer value and there is no reason to hand back three of them.
+    """
+    return "".join("#" if c.isdigit() else "a" if c.islower() else "A" if c.isupper() else c
+                   for c in str(value))
+
+
+def table_read(line: str) -> str:
+    """The world table a crashing source line reads, from `self.db.<table>`; "" when it reads none."""
+    found = _TABLE_READ.findall(line or "")
+    return found[0] if found else ""
+
+
+def missing_key(result: dict) -> str:
+    """The key a KeyError names, without its quotes; "" for any other exception."""
+    if result.get("error") != "KeyError":
+        return ""
+    message = (result.get("message") or "").strip()
+    quoted = len(message) > 1 and message[0] == message[-1] and message[0] in "'\""
+    return message[1:-1] if quoted else message
+
+
+def table_note(state: dict, table: str, key: str) -> str:
+    """What the world says about the table the body was reading, and about the key it asked for."""
+    rows = state.get(table) if isinstance(state, dict) else None
+    if not isinstance(rows, dict):
+        return f"the world holds no table `{table}`"
+    ids = sorted(str(k) for k in rows)
+    note = f"`{table}` holds {len(ids)} rows"
+    if key:
+        note += f" and not `{key}`" if key not in rows else f", `{key}` among them"
+    if ids:
+        shapes = ", ".join(dict.fromkeys(value_shape(i) for i in ids[:RAISED_SAMPLES]))
+        note += f"; its ids look like {shapes}"
+    return note
+
+
+def raised_detail(sandbox: Sandbox, calls: Iterable[ToolCall], limit: int = RAISED_LINES) -> str:
+    """What the world says about a KeyError or an AttributeError the body raised, a line per crash.
+
+    A body that reads a row nobody holds is told `KeyError: 'x'` and nothing else, so the next
+    attempt guesses: it wraps the read in a try, or reaches for another table, or invents a
+    fallback answer. The sandbox knows more than it was saying. The crashing source line names the
+    table the body was reading (`self.db.<table>`), and the world in front of it says how many rows
+    that table holds, whether the key asked for is one of them, and what the ids it does hold look
+    like. That is the difference between "your read raised" and "you read the wrong table".
+
+    Only the calls given here are named, so the caller passes the shown split and the held-out
+    calls stay out of it (D51, D75). The sandbox memo makes this free: these calls have already run
+    for the gate that failed.
+    """
+    calls = list(calls)
+    try:
+        results = sandbox.run(calls)
+    except SandboxError:
+        return ""
+    lines: list[str] = []
+    seen: set[tuple[str, str]] = set()
+    for call, result in zip(calls, results, strict=False):
+        if result.get("ok") or result.get("error") not in RAISED_KINDS:
+            continue
+        line = (result.get("line") or "").strip()
+        table = table_read(line)
+        key = (table, result.get("error") or "")
+        if not table or key in seen:
+            continue
+        seen.add(key)
+        note = table_note(sandbox.state_for(call), table, missing_key(result))
+        lines.append(f"- `{call.name}({args_text(call)})` raised {result['error']} at `{line}`: "
+                     f"{note}; read the arguments that call was given, not another table.")
+        if len(lines) >= limit:
+            break
+    return "\n".join(lines)
+
+
 def _evidence_for(attempt: int, shown: list[ToolCall], gates: list[GateResult]) -> list[ToolCall]:
     """Evidence grows per attempt: the failing call, then all failing calls, then the full table.
 
@@ -1443,6 +1527,9 @@ def compile_tool(model, toolsig: ToolSig, calls: Iterable[ToolCall], schema: Ent
     same bytes a cache can reuse. An attempt that raised what the attempt before it raised is told
     so in that new turn (`_SAME_ERROR`), with the exception quoted, since a rewrite that lands on
     the same crash is not a rewrite of the line that crashed.
+    An attempt whose body raised a KeyError or an AttributeError also gets `raised_detail`: the
+    line it crashed on, the table that line reads and what the world says about that table, since
+    the bare exception says nothing a rewrite can aim at.
     Each attempt is a node dict; after the last miss the tool is marked assisted (D49) and the nodes
     are written under the workdir. When no attempt passes, the body kept is the best attempt's, not
     the last one's (`attempt_score`, `ToolBuild.kept_attempt`).
@@ -1575,6 +1662,10 @@ def compile_tool(model, toolsig: ToolSig, calls: Iterable[ToolCall], schema: Ent
         failure = "\n" + _failure_text(gates, held_out)
         if any(g.stage == "non_trivial" and not g.passed for g in gates):
             failure += _constant_evidence_note(evidence)
+        # Only when the sandbox has already run these calls, so the note costs no subprocess: a
+        # body that never parsed has nothing for the world to say about it anyway.
+        detail = raised_detail(sandbox, shown) if sandbox.cache else ""
+        failure += ("\n" + detail) if detail else ""
         error = exception_line(gates)
         if error and error == last_error:
             failure += _SAME_ERROR.format(error=error)

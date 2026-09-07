@@ -876,6 +876,41 @@ def test_judge_lessons_splits_applied_from_set_aside_for_the_report(workdir, mak
     assert len(model.calls) == 2
 
 
+def test_a_second_recompile_of_one_tool_sees_the_hint_the_first_one_left_as_well_as_its_own(tmp_path):
+    """One live build recompiled a tool six times in one round and each hint answered one recorded
+    call, because the prompt carried only the last few and the answered question came back."""
+    from kullback.builder import memory as memory_mod
+
+    for hint in ["read the ledger table, not the postings one", "the id argument is not the row key",
+                 "a refused posting answers with an error, not with an empty row",
+                 "the amount is a string in the recordings"]:
+        memory_mod.record_lesson(tmp_path, "post_entry", [hint])
+    lesson = memory_mod.lesson_for(tmp_path, "post_entry")
+    assert "read the ledger table" in lesson and "the amount is a string" in lesson
+    assert lesson.index("read the ledger table") < lesson.index("the amount is a string")
+    assert [line.split(":")[0] for line in lesson.splitlines()[1:]] == [
+        f"- attempt {i}" for i in range(1, 5)]
+
+
+def test_the_same_hint_asked_for_twice_is_carried_once(tmp_path):
+    from kullback.builder import memory as memory_mod
+
+    memory_mod.record_lesson(tmp_path, "post_entry", ["the id argument is not the row key"])
+    memory_mod.record_lesson(tmp_path, "post_entry", ["the id argument is not the row key"])
+    assert memory_mod.lesson_for(tmp_path, "post_entry").count("the row key") == 1
+
+
+def test_past_the_character_budget_the_oldest_hints_fall_away_and_are_counted(tmp_path):
+    from kullback.builder import memory as memory_mod
+
+    for i in range(40):
+        memory_mod.record_lesson(tmp_path, "post_entry", [f"hint number {i} " + "x" * 200])
+    lesson = memory_mod.lesson_for(tmp_path, "post_entry")
+    assert len(lesson) <= memory_mod.LESSON_CHARS + 200
+    assert "earlier ones are not repeated here" in lesson
+    assert "hint number 39" in lesson and "hint number 0 " not in lesson
+
+
 def test_malformed_tool_lessons_are_discarded_not_crashed(tmp_path):
     from kullback.builder import memory as memory_mod
 

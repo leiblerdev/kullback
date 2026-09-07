@@ -454,6 +454,50 @@ def _find_run_path(plan: ExaminerPlan, run_id: str) -> Optional[str]:
     return None
 
 
+READ_IDS = 20  # how many ids an unknown id is answered with; a build has hundreds of Runs
+
+
+def _task_id_of(plan: ExaminerPlan, key: Optional[str]) -> Optional[str]:
+    """The Task this id names, when it names one: a model reaching for a Run often passes a Task id."""
+    return key if any(task.id == key for task in plan.inputs.get("tasks") or []) else None
+
+
+def _run_ids(plan: ExaminerPlan) -> list[str]:
+    """Every Run id the Examiner can reach, as `task: run`, so an unknown id is answered with what exists."""
+    out: list[str] = []
+    for task, rows in sorted((plan.store.get("replays") or {}).items()):
+        out += [f"{task}: {row.get('run_id')}" for row in (rows or {}).values() if row.get("run_id")]
+    for task, rows in sorted((plan.store.get("rerolls") or {}).items()):
+        out += [f"{task}: {row.get('run_id')}" for row in rows or [] if row.get("run_id")]
+    for task, pool in sorted((plan.store.get("probes") or {}).items()):
+        out += [f"{task}: {probe.probe_id}" for probe in pool.probes]
+    return out
+
+
+def _trace_ids(plan: ExaminerPlan) -> list[str]:
+    """Every Trace id, as `task: trace` where a Task owns it."""
+    task_of = _task_of_trace(plan)
+    return [f"{task_of.get(trace.trace_id, 'no task')}: {trace.trace_id}"
+            for trace in plan.inputs.get("traces") or []]
+
+
+def _unknown_id(kind: str, key: Optional[str], ids: list[str], task_id: Optional[str] = None) -> dict:
+    """What a read of an id no record carries answers: the ids that do exist, not a KeyError.
+
+    One live build's Examiner read the same missing Run three times and the same missing Trace once,
+    and the tool answered each with the exception and nothing to try instead. The ids of the Task
+    when the id names one, else the first `READ_IDS` of the build, with the count, so the next read
+    is a read of something that is there.
+    """
+    narrowed = [row for row in ids if task_id and row.startswith(f"{task_id}: ")] if task_id else []
+    shown = (narrowed or ids)[:READ_IDS]
+    where = f"of task {task_id}" if narrowed else "of this build"
+    return {"kind": kind, "id": key, "found": False,
+            "note": f"no {kind} is named {key!r}; the {kind} ids {where} ({len(shown)} of "
+                    f"{len(narrowed or ids)})",
+            "ids": shown}
+
+
 def _find_run(plan: ExaminerPlan, run_id: str) -> Run:
     path = _find_run_path(plan, run_id)
     if path is not None:
@@ -495,10 +539,28 @@ def _may_probe(plan: ExaminerPlan) -> bool:
         (plan.probe_limit is None or plan.probe_limit > 0)
 
 
+ATOM_SHAPE = ("an atom is an object with `id`, `kind` (required, allowed, question, communicate, hard) "
+              "and `payload`, an object naming the atom's target")
+
+
 def _atom_of(row: dict):
+    """One `add` row as an Atom, with a validation error rather than a crash on a row of the wrong shape.
+
+    A live build's Examiner sent a payload as a string; nothing here checked, and the predicate
+    writer asked it for a key three frames down, so the whole tool answered `AttributeError: 'str'
+    object has no attribute 'get'` and the model spent thirteen of that session's twenty-two turns
+    on the Task without landing anything. What the row must be is said once, here, in the words the
+    tool's own schema uses.
+    """
     body = dict(row)
+    missing = [name for name in ("id", "kind") if not body.get(name)]
+    if missing:
+        raise ValueError(f"the atom {row!r} names no {', '.join(missing)}: {ATOM_SHAPE}")
     atom_id, kind = body.pop("id"), body.pop("kind")
     payload = body.pop("payload", None) or body.pop("target", None) or {}
+    if not isinstance(payload, dict):
+        raise ValueError(f"the payload of atom {atom_id} is {type(payload).__name__}, not an object: "
+                         f"{ATOM_SHAPE}")
     return make_atom(atom_id, kind, payload, helpers=verifier_suite.HELPERS_SRC, **body)
 
 
@@ -519,16 +581,18 @@ def _read(plan: ExaminerPlan):
             body = as_dict(_task(plan, key or ""))
         elif kind == "trace":
             trace = next((t for t in plan.inputs.get("traces") or [] if t.trace_id == key), None)
-            if trace is None:
-                raise KeyError(f"no Trace is named {key}")
-            body = as_dict(trace)
+            body = (as_dict(trace) if trace is not None
+                    else _unknown_id("Trace", key, _trace_ids(plan), _task_id_of(plan, key)))
         elif kind == "intent":
             intents = plan.inputs.get("intents") or {}
             if key not in intents:
                 raise KeyError(f"no Intent for task {key}")
             body = as_dict(Intent.model_validate(intents[key]))
         elif kind == "run":
-            body = as_dict(_find_run(plan, key or ""))
+            try:
+                body = as_dict(_find_run(plan, key or ""))
+            except KeyError:
+                body = _unknown_id("Run", key, _run_ids(plan), _task_id_of(plan, key))
         elif kind == "verifier":
             body = as_dict(_current(plan, key or ""))
         elif kind == "probes":
