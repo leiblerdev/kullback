@@ -32,6 +32,10 @@ from kullback.runner.records import Atom, Constraint
 
 RECORDING = "recording"
 REROLL = "reroll"
+# The End state of a Run that wrote nothing and whose answer stated facts it had read from the world.
+# It is shaped like a write effect so `group()` and `describe()` need no second kind of state, and it
+# carries no fact of its own: which facts were stated is derive's business, this only says some were.
+ANSWERED = (("answer", "", (("stated", "facts read from the world"),)),)
 # A rule the confirmed recordings break at this share is miscompiled, not violated. Calibrated once on
 # the second retail build against tau2's reward (D112 scaffolding, D114): the recordings failed by
 # rules firing at 2.7% and up carried reward 1 at 82 to 93%, above the corpus rate of 72%, so those
@@ -98,15 +102,35 @@ class Judgement:
 # --- what a Run wrote -------------------------------------------------------
 
 def end_state(run: Any, write_tools: Iterable[str], fn: Callable) -> tuple:
-    """The Run's writes as one comparable value: tool, entity and canonical argument values, sorted."""
-    effects = verifier_suite.write_effects(verifier_suite.as_run(run), set(write_tools), fn)
+    """The Run's writes as one comparable value: tool, entity and canonical argument values, sorted.
+
+    A Run that wrote nothing still has an outcome, and reducing every such Run to the same empty
+    value hides it. When the user asked a question, what the Run did is whether its answer stated
+    facts it had read from the world; a refusal such as "I'm unable to authenticate your account"
+    read the world and stated none of it back. On the last build, 26 Tasks had recordings that made
+    no writes, and every one of them landed in a single group: an answered recording and a refusal
+    agreed, `confirm()` never called the judge, the refusals stayed References, and `derive`'s
+    intersection of `communicate_values` over them came out empty, so those Verifiers were hard
+    constraints plus "at most 0 writes" that an empty Run passes, and five of the nine D79 checks
+    failed together. Of the 122 recordings behind those Tasks, 68 read something and stated none of
+    it back, 11 read nothing, 43 stated facts. So a no-write Run whose answer states facts read from
+    the world gets the ANSWERED state, a no-write Run that states nothing keeps the empty state, the
+    two are separate groups, and the judge decides which of them the Intent asked for. A Run that
+    wrote something is untouched: its writes are its outcome, whatever it said.
+    """
+    loaded = verifier_suite.as_run(run)
+    effects = verifier_suite.write_effects(loaded, set(write_tools), fn)
+    if not effects:
+        return ANSWERED if verifier_suite.communicate_values(loaded, fn) else ()
     return tuple(sorted((e["tool"], e["entity"] or "", tuple(sorted(e["values"].items())))
                         for e in effects.values()))
 
 
 def describe(state: tuple) -> str:
+    if state == ANSWERED:
+        return "no writes; the answer states facts read from the world"
     if not state:
-        return "no writes"
+        return "no writes; the answer states nothing read from the world"
     parts = []
     for tool, entity, values in state:
         args = ", ".join(f"{k}={_plain(v)}" for k, v in values if k != "")
@@ -314,7 +338,7 @@ def parse_judgement(text: str, labels: set[str]) -> Judgement:
     return Judgement(failed={str(x).strip().upper() for x in failed} & labels, reason=said)
 
 
-__all__ = ["RECORDING", "REROLL", "MISCOMPILED_SHARE", "AVAILABLE_SOURCES", "Recording", "Confirmation",
+__all__ = ["RECORDING", "REROLL", "ANSWERED", "MISCOMPILED_SHARE", "AVAILABLE_SOURCES", "Recording", "Confirmation",
            "Judgement", "end_state", "describe",
            "hard_atoms", "violations", "load", "constraint_rates", "demote", "group", "confirm",
            "judge_prompt", "judge_groups", "parse_judgement"]
