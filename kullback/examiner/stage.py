@@ -5,8 +5,10 @@ references.json and constraints_check.json (D130).
 The stage used three things of its context: `workdir`, `seed_runs` (the anchor, D81) and
 `record_gate` (the ledger); `ExamContext` is those three. What the stage reads is the Builder's
 store filtered by `DERIVE_INPUTS`: the Tasks, the mined signatures, the Constraints, the canon
-rules, the replays, the re-rolls, the Intents, the Simulated user's rules, the Traces and the
-assisted tools. The tool bodies, the Starting state, the schema and the Environment are not on the
+rules, the replays, the re-rolls, the Intents, the Simulated user's rules, the Traces, the assisted
+tools and the replay fidelity attributed per tool and per Task (D171, counts and tool names, the
+same kind of summary `assisted_tools` already was and never a body). The tool bodies, the Starting
+state, the schema and the Environment are not on the
 list and `inputs_from` refuses a store that names them: the Examiner never reads what the Builder
 compiled (D123). The one Run the old stage executed, check 6's loophole probe, reads bodies and so
 stays in the Builder as `build.probe_runner(plan)`; it arrives here as the `run_probe` callable, the
@@ -42,14 +44,14 @@ from kullback.runner.records import (
 )
 
 DERIVE_INPUTS = ("tasks", "sigs", "constraints", "canon_rules", "replays", "rerolls", "intents", "user_rules",
-                 "traces", "assisted_tools")
+                 "traces", "assisted_tools", "tool_fidelity")
 FORBIDDEN_INPUTS = ("bodies", "db", "schema", "environment", "overlays", "synthetic_rows", "policy_text",
                     "lessons_applied", "lessons_set_aside")
 STAGE = "derive_verifier"
 # The per-Task cache under the workdir (D163). Bumped when the entry's shape changes, so an old entry
 # is a miss rather than a row read with the wrong meaning.
 CACHE_DIR = ("examiner", "cache")
-CACHE_FORMAT = 1
+CACHE_FORMAT = 2  # D171 added the per-Task fidelity fields to every status row
 # The modules a Task's derivation runs through, hashed into every key: an edit to any of them is a
 # different derivation and must not be served a stale entry (the Builder's stages hash the same way,
 # build.py's `_version`).
@@ -135,25 +137,76 @@ def final_constraints(ctx, inputs: dict, seed_replays: dict, write_tools: set, r
     return constraints, demoted
 
 
+def task_fidelity(tool_fidelity: Any, task_id: str) -> dict:
+    """One Task's replay fidelity over its own recorded calls, per tool (D171).
+
+    `tool_fidelity` is the compile_tools artifact: `tools` is the corpus ruling per tool, `tasks` is
+    per Task per tool how many of that Task's own recorded calls the kept body replayed and how many
+    differed. A Task the artifact does not name made no evidence call of any tool.
+    """
+    return dict(((tool_fidelity or {}).get("tasks") or {}).get(task_id) or {})
+
+
+def fidelity_fields(row: dict) -> dict:
+    """The two count maps every status row carries (D171).
+
+    `tool_calls_replayed` names every tool this Task made a recorded call of, whatever the outcome;
+    `tool_calls_differing` names only the tools some own call parted from, so a row with an empty
+    map is a Task whose every own call replayed exactly.
+    """
+    return {"tool_calls_replayed": {tool: int(counts.get("replayed") or 0)
+                                    for tool, counts in sorted(row.items())},
+            "tool_calls_differing": {tool: int(counts.get("differing") or 0)
+                                     for tool, counts in sorted(row.items()) if counts.get("differing")}}
+
+
+def blocking_tools(row: dict) -> list[str]:
+    """The tools one of this Task's own recorded calls parts from: the only tools that block it (D171)."""
+    return sorted(tool for tool, counts in row.items() if int(counts.get("differing") or 0))
+
+
+def _differing_call_text(row: dict, tools: Iterable[str]) -> str:
+    """The differing calls themselves, in the corpus gate's own words, so the repair has a target."""
+    named = [f"{tool}: {reason}" for tool in tools
+             for reason in (row.get(tool, {}).get("reasons") or ["a recorded call replays differently"])[:1]]
+    return "; ".join(named)
+
+
 def no_reference_status(ctx, task: Task, confirmation: Any, *, seed_replays: list, replays: dict,
-                        rerolls: dict, traces: dict, assisted_tools: set) -> dict:
-    """Why this Task has no Reference, in the words the setup review needs (D49): a Task with none is not verdicted."""
+                        rerolls: dict, traces: dict, assisted_tools: set, fidelity_row: dict) -> dict:
+    """Why this Task has no Reference, in the words the setup review needs (D49): a Task with none is not verdicted.
+
+    D171 narrows which tool the row names. A tool is assisted when it misses one of the corpus's
+    recorded calls, and the wording here used to hand that verdict to every Task whose seed Traces
+    call the tool: on one live build a body replayed 239 of its 240 recorded calls and stayed
+    assisted, and of the 64 rows that named an assisted tool as their blocker, 51 make no call any
+    assisted body answers differently. That sent the repair at bodies that answer those Tasks
+    correctly and hid the reason they actually failed. Only a tool one of this Task's own recorded
+    calls parts from is named now, with that call quoted; the corpus-level fact stays on the row as
+    `assisted_tools`, so nothing is lost, and the tools that block are `blocking_tools`.
+
+    This is sound because the body is exercised on exactly the calls this Task's Run makes: the
+    per-call rows come from replaying the kept body against those very calls and comparing under the
+    same ruling the corpus gate uses. What confirms the Reference is still the replay reaching the
+    End state, and above it the D79 suite and the held-out check still judge the Verifier that is
+    derived. "Confirmed" therefore means right on this Task's calls, not right on every call in the
+    corpus, and the suite above it is what keeps that honest.
+    """
     reason = confirmation.reason or "no Run to confirm"
     if not seed_replays:
         reason = ("no seed Trace was replayed" if not (replays.get(task.id) or {}) else
                   fidelity.unconfirmed_reason({t: r for t, r in replays[task.id].items()
                                                if t in seed_ids(ctx, task)}))
-    # D49: the status names the blocking tool. A seed Trace that calls an assisted tool replays
-    # through a body that failed the fidelity gates, so its divergence is the tool's, and the setup
-    # review needs the tool's name, not the diff.
     assisted_used = sorted({c.name for tid in seed_ids(ctx, task) if tid in traces
                             for c in traces[tid].tool_calls if c.name in assisted_tools})
-    if assisted_used:
-        reason = (f"the seed Trace calls {', '.join(assisted_used)}, an assisted tool whose body "
-                  f"failed the fidelity gates (D49); {reason}")
+    blocking = blocking_tools(fidelity_row)
+    if blocking:
+        reason = (f"this Task's own recorded calls of {', '.join(blocking)} do not replay "
+                  f"({_differing_call_text(fidelity_row, blocking)}) (D49, D171); {reason}")
     return {"reference_confirmed": False, "verifier_passed": False, "reason": reason,
             "recordings": len(seed_replays), "rerolls": len(rerolls.get(task.id, [])),
-            "judged": confirmation.judged, "assisted_tools": assisted_used}
+            "judged": confirmation.judged, "assisted_tools": assisted_used,
+            "blocking_tools": blocking, **fidelity_fields(fidelity_row)}
 
 
 def derive_for(task_for: Task, confirmation: Any, *, canon_rules: Any, write_tools: set, constraints: list,
@@ -180,8 +233,13 @@ def suite_for(task_for: Task, verifier: Verifier, paths: list, *, canon_rules: A
 
 def verifier_for(ctx, task: Task, confirmation: Any, *, canon_rules: Any, write_tools: set, constraints: list,
                  intents: dict, user_rules: dict, recordings: int, rerolls: int, probe: Any,
-                 probe_model: Any, may_probe: bool, verifier_version: str = "1") -> tuple[Verifier, dict]:
-    """One Task's Verifier from its References, through the whole D79 suite, with its status row."""
+                 probe_model: Any, may_probe: bool, fidelity_row: Optional[dict] = None,
+                 verifier_version: str = "1") -> tuple[Verifier, dict]:
+    """One Task's Verifier from its References, through the whole D79 suite, with its status row.
+
+    The row carries this Task's own replay fidelity too (D171), so a confirmed Reference says on
+    which of the Task's calls the bodies were exercised and not only that the Reference stands.
+    """
     paths = [r.path for r in confirmation.references]
     first = confirmation.references[0]
     task_for = apply_intent(task, intents[task.id]) if task.id in intents else task
@@ -199,7 +257,8 @@ def verifier_for(ctx, task: Task, confirmation: Any, *, canon_rules: Any, write_
               "recordings": recordings, "rerolls": rerolls,
               "failed_recordings": dict(confirmation.failed), "judged": confirmation.judged,
               "checks": results,
-              "not_run": [g.stage for g in gates if g.metrics.get("skipped")]}
+              "not_run": [g.stage for g in gates if g.metrics.get("skipped")],
+              **fidelity_fields(fidelity_row or {})}
     return record, status
 
 
@@ -227,7 +286,7 @@ def model_name(model: Any) -> Optional[str]:
 
 
 def cache_key(task: Task, recordings: list, common: dict, *, intents: dict, user_rules: dict,
-              traces: dict) -> str:
+              traces: dict, fidelity_row: Optional[dict] = None) -> str:
     """The content hash of everything this Task's derivation reads.
 
     The Runs are in by id and by the hash of what they wrote, which is what the D111 rule groups on
@@ -237,12 +296,15 @@ def cache_key(task: Task, recordings: list, common: dict, *, intents: dict, user
     rules are in for every Trace its recordings name, since which of them the leak check reads is
     settled by the References, inside the derivation. `common` is what every Task of the call shares:
     the constraints after D76's demotion, the policy lines, the canon rules, the write tools, the
-    probe's model and limit, the judge's name and the code hash.
+    probe's model and limit, the judge's name and the code hash. `fidelity_row` is this Task's own
+    replay fidelity (D171): it decides which tools the row names as blocking, so a recompile that
+    moves it has to move the key with it.
     """
     return content_hash({
         "task": {"id": task.id, "name": task.name, "intent": task.intent, "run_ids": list(task.run_ids)},
         "intent_record": as_dict(intents[task.id]) if task.id in intents else None,
         "request": request_text(task, intents, traces),
+        "fidelity": fidelity_row or {},
         "runs": [{"run_id": r.run_id, "trace_id": r.trace_id, "kind": r.kind,
                   "end_state": content_hash(r.end_state), "violated": sorted(r.violated)}
                  for r in recordings],
@@ -305,6 +367,11 @@ def derive_all(ctx: ExamContext, inputs: dict, *, probe_model: Any = None, probe
     code; check 6's loophole probe is the one Run per Task `run_probe` executes, and `probe_limit`
     caps how many Tasks get one. A Task with no Reference is not verdicted.
 
+    An assisted tool is a corpus-level ruling and it blocks no Task on its own (D171): a Task is
+    blocked by a tool only when one of the Task's own recorded calls of it differs, which is what
+    `blocking_tools` on the row names. Every row carries the Task's own replay fidelity per tool,
+    confirmed or not.
+
     With `only` one Task is derived and its rows are merged into the task_status.json and
     references.json already on disk; without it the whole build is derived and the files are the
     stage's, byte for byte. Either way scorecard.json is rewritten last, so it reads as it did when
@@ -335,6 +402,7 @@ def derive_all(ctx: ExamContext, inputs: dict, *, probe_model: Any = None, probe
     # Verifier is derived from them.
     constraints, demoted = final_constraints(ctx, inputs, seed_replays, write_tools, read_tools, fn)
     assisted_tools = set(inputs.get("assisted_tools") or ())
+    tool_fidelity = inputs.get("tool_fidelity") or {}
     atoms = reference_mod.hard_atoms(constraints, write_tools, read_tools)
     probe = run_probe if probe_model is not None else None
     tasks = list(inputs["tasks"])
@@ -360,7 +428,8 @@ def derive_all(ctx: ExamContext, inputs: dict, *, probe_model: Any = None, probe
                                           write_tools=write_tools, fn=fn, atoms=atoms)
                        for r in rerolls.get(task.id, [])
                        if (r.get("termination_reason") or "") in verifier_suite.SUCCESS_TERMINATIONS]
-        key = cache_key(task, recordings, common, intents=intents, user_rules=user_rules, traces=traces)
+        key = cache_key(task, recordings, common, intents=intents, user_rules=user_rules, traces=traces,
+                        fidelity_row=task_fidelity(tool_fidelity, task.id))
         entry = read_entry(ctx.workdir, task.id, key)
         if entry is not None:
             return _Job(task=task, key=key, entry=entry)
@@ -387,17 +456,19 @@ def derive_all(ctx: ExamContext, inputs: dict, *, probe_model: Any = None, probe
                 write_json(ctx.workdir / "verifiers" / f"{task.id}.json", job.entry["verifier"])
             return job.entry
         confirmation = job.confirmation
+        fidelity_row = task_fidelity(tool_fidelity, task.id)
         if not confirmation.references:
             row = no_reference_status(ctx, task, confirmation, seed_replays=seed_replays[task.id],
                                       replays=replays, rerolls=rerolls, traces=traces,
-                                      assisted_tools=assisted_tools)
+                                      assisted_tools=assisted_tools, fidelity_row=fidelity_row)
             verifier = None
         else:
             record, row = verifier_for(
                 ctx, task, confirmation, canon_rules=canon_rules, write_tools=write_tools,
                 constraints=constraints, intents=intents, user_rules=user_rules,
                 recordings=len(seed_replays[task.id]), rerolls=len(rerolls.get(task.id, [])),
-                probe=probe, probe_model=probe_model, may_probe=job.may_probe)
+                probe=probe, probe_model=probe_model, may_probe=job.may_probe,
+                fidelity_row=fidelity_row)
             verifier = as_dict(record)
         entry = {"format": CACHE_FORMAT, "task_id": task.id, "key": job.key, "status": row,
                  "references": confirmation.as_dict(), "verifier": verifier, "probed": job.may_probe}
@@ -424,6 +495,8 @@ def derive_all(ctx: ExamContext, inputs: dict, *, probe_model: Any = None, probe
         verifiers=len(verifiers), references=sum(1 for r in status.values() if r["reference_confirmed"]),
         passed=sum(1 for r in status.values() if r["verifier_passed"]), tasks=len(status),
         probed=probed, constraints_demoted=len(demoted),
+        # D171: how many Tasks a tool actually blocks, which is how many have a differing own call.
+        blocked_by_own_calls=sum(1 for r in status.values() if r.get("blocking_tools")),
         failed_recordings=sum(len(r.get("failed") or {}) for r in references.values()),
         judged=sum(1 for r in references.values() if r.get("judged")),
         disagreeing=sum(1 for r in references.values()

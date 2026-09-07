@@ -92,6 +92,9 @@ class ReportData(BaseModel):
     disagreement_queue: list[dict] = Field(default_factory=list)
     tasks_aside: list[dict] = Field(default_factory=list)
     lessons_set_aside: list[SetAsideLesson] = Field(default_factory=list)
+    # D171: tool_fidelity.json, the compile_tools artifact: `tools` per tool over the corpus,
+    # `tasks` per Task per tool over that Task's own recorded calls.
+    tool_fidelity: dict = Field(default_factory=dict)
     rounds: list[RoundRecord] = Field(default_factory=list)
     trusted: Optional[GateResult] = None
     findings: list[dict] = Field(default_factory=list)  # repairs/repair_record_finding.jsonl (D155)
@@ -468,17 +471,45 @@ def _scorecard_table(data: ReportData) -> list[str]:
     return lines if data.scorecard else lines + ["| none recorded |  |  |  |"]
 
 
+def tool_fidelity_counts(data: ReportData, name: str) -> dict:
+    """Both grains of one tool's replay fidelity, off tool_fidelity.json (D171).
+
+    `calls` and `replayed` are the corpus number the compile_tools gate ruled on and the Builder
+    repairs against. `tasks` is how many Tasks made a recorded call of the tool at all, and `blocked`
+    how many of them have an own call the body answers differently, which is the only count that
+    costs a Reference. The two part company: a tool can miss one call in the corpus and block one
+    Task while forty others call it and are answered correctly.
+    """
+    tools = (data.tool_fidelity or {}).get("tools") or {}
+    tasks = (data.tool_fidelity or {}).get("tasks") or {}
+    per_tool = tools.get(name) or {}
+    calling = [row for row in tasks.values() if name in (row or {})]
+    return {"calls": int(per_tool.get("calls") or 0), "replayed": int(per_tool.get("replayed") or 0),
+            "tasks": len(calling), "blocked": sum(1 for row in calling if row[name].get("differing"))}
+
+
+def assisted_tool_note(data: ReportData, name: str) -> str:
+    """The sentence beside one assisted tool: what it stood in for, and what it actually costs (D171)."""
+    parts = []
+    if name in data.assisted_share:
+        parts.append(f"{_percent(data.assisted_share[name])} of its calls stood in")
+    counts = tool_fidelity_counts(data, name)
+    if counts["calls"]:
+        parts.append(f"{counts['replayed']} of {counts['calls']} recorded calls replayed")
+    if counts["tasks"]:
+        parts.append(f"{counts['tasks']} Tasks call it, {counts['blocked']} blocked by their own "
+                     f"differing calls")
+    return f": {'; '.join(parts)}" if parts else ""
+
+
 def _tool_notes(data: ReportData) -> list[str]:
     """What a person has to look at before trusting the numbers: tools that stood in, Tasks with
     no anchor, tools nobody classed read or write (D70), and the Environment's open flags."""
     env = data.environment
     assisted = list(env.assisted_tools) if env is not None else []
     lines = ["", "### Assisted tools", ""]
-    lines += _bullets(
-        [f"- {name}" + (f": {_percent(data.assisted_share[name])} of its calls stood in"
-                        if name in data.assisted_share else "")
-         for name in assisted],
-        "No assisted tools: every tool here is real code.")
+    lines += _bullets([f"- {name}{assisted_tool_note(data, name)}" for name in assisted],
+                      "No assisted tools: every tool here is real code.")
 
     lines += ["", "### Unguarded Tasks", ""]
     lines += _bullets([f"- {t.id}: {t.name or t.intent or 'no name yet'}" for t in data.tasks if t.unguarded],
@@ -1150,6 +1181,7 @@ def load(workdir: Any) -> ReportData:
     unread: list[str] = []
     env_body = _json(root / "environment.json")
     environment = Environment.model_validate(env_body) if isinstance(env_body, dict) else None
+    fidelity_body = _json(root / "tool_fidelity.json")
     state = _json(root / "pipeline" / "state.json")
     state = state if isinstance(state, dict) else {}
     stopped = state.get("stopped") if isinstance(state.get("stopped"), dict) else {}
@@ -1190,6 +1222,7 @@ def load(workdir: Any) -> ReportData:
         disagreement_queue=_jsonl(root / "disagreement_queue.jsonl", unread),
         tasks_aside=_jsonl(root / "tasks_aside.jsonl", unread),
         lessons_set_aside=_list_of(root / "lessons_set_aside.json", SetAsideLesson),
+        tool_fidelity=fidelity_body if isinstance(fidelity_body, dict) else {},
         rounds=_rounds_of(root / "rounds.json", unread),
         trusted=trusted,
         findings=_jsonl(root / "repairs" / "repair_record_finding.jsonl", unread),

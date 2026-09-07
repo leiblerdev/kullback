@@ -39,8 +39,11 @@ TARGET = "environment"
 # run_builder with derive_verifier still a Builder stage (D130): the rounds must leave the same bytes.
 # Re-pinned once when `reference.describe` began saying, of a Run that wrote nothing, whether its answer
 # stated facts read from the world: the same two groups and the same verdicts, one longer state sentence
-# inside the reason. Every other byte of the three rows is the pre-phase build's.
-TASK_STATUS_SHA256_BEFORE_THE_PHASE = "afe53bac43085dd27b0fcbe57e032438a63ed7cd80cad46f131f6591c8dbde7f"
+# inside the reason. Re-pinned again for D171: every row gained the Task's own replay fidelity
+# (`blocking_tools`, `tool_calls_replayed`, `tool_calls_differing`) and the reason names a tool only
+# where one of the Task's own recorded calls differs. Every other byte of the three rows is the
+# pre-phase build's.
+TASK_STATUS_SHA256_BEFORE_THE_PHASE = "a6186b51b650951ec677399bf4e71f19a753423400b93593ba263c747199d8b2"
 
 
 def _fixture(request) -> Path:
