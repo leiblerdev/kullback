@@ -39,10 +39,11 @@ from kullback.runner.records import Constraint, Task, Verifier, as_dict, content
 
 # The derivation over verifier_fixtures.derive(tmp_path): seven atoms, seeds ref, alt and rr2. It was
 # pinned at the commit the phase 5 move started from (a40812c, 77d497a99ac9e8c1) to hold that the
-# move changed no byte of the artifact (D130), and moved once since, when a stated fact the request
-# never asked about stopped being a demand. A change to this value is a change to every Verifier of
-# every build, so it is moved deliberately or not at all.
-DERIVATION_HASH = "1ab069c910d3ce1195ae0d1ac0014d90ce99481e055a26717a29a2c63af953c4"
+# move changed no byte of the artifact (D130). It has moved twice since: when a stated fact the
+# request never asked about stopped being a demand, and when the write cap moved to the end of the
+# atom list so the rule on a cap of 0 could see what else the Verifier demands. A change to this
+# value is a change to every Verifier of every build, so it is moved deliberately or not at all.
+DERIVATION_HASH = "ab18f441cf7e5e3790ca3f78b67ea2e7a7ffa06879c66318156d607d39537fa3"
 
 
 def test_the_derivation_never_imports_the_builder_the_runner_internals_or_anything_that_runs(tmp_path):
@@ -429,9 +430,10 @@ SHOP_TOOLS = {"open_repair_ticket"}
 
 
 def pump_run(run_id: str = "shop-ref",
-             final: str = "Pump P-2044 has 36 warranty months left and lists at 249.0.") -> object:
+             final: str = "Pump P-2044 has 36 warranty months left and lists at 249.0.",
+             asked: str = "How long is the warranty on pump P-2044?") -> object:
     return make_run(run_id, [
-        user("How long is the warranty on pump P-2044?"),
+        user(asked),
         call("get_part_record", {"part_id": "P-2044"}, kind="read", cid="r0"),
         result(PUMP, cid="r0"),
         assistant(final),
@@ -482,3 +484,33 @@ def test_a_reported_fact_keeps_the_value_the_span_and_a_predicate_that_can_answe
     assert price.predicate_src and "249.0" in price.predicate_src
     assert price.spans and price.spans[0].msg_index == 2
     assert "rejects no Run" in (price.description or "")
+
+
+# --- the write cap on a Task whose Reference wrote nothing -----------------
+
+def cap_atoms(verifier: Verifier) -> list[str]:
+    return [a.id for a in verifier.atoms if S.atom_payload(a)["kind"] == "entity_count"]
+
+
+def test_a_reference_that_wrote_nothing_caps_writes_at_zero(tmp_path):
+    """Nothing else of this Task wrote, so "do not write" is what its Runs say."""
+    verifier = pump_verifier("tell the caller how many warranty months the pump has left")
+    assert cap_atoms(verifier) == ["entity_count"]
+    assert S.atom_payload(atom_by_id(verifier, "entity_count"))["count"] == 0
+
+
+def test_a_cap_of_zero_is_not_written_when_another_run_of_the_task_wrote_and_nothing_else_is_asked(tmp_path):
+    """The Task's own Runs contradict the cap, and a Verifier of that cap alone falsifies nothing."""
+    vague = pump_run(asked="Can you look into my pump for me?")
+    verifier = V.derive_verifier(Task(id="shop", intent="look into the pump the caller asked about"),
+                                 vague, [], None, write_tools=SHOP_TOOLS, writes_elsewhere=True)
+    assert cap_atoms(verifier) == []
+    assert [a.kind for a in verifier.atoms] == ["allowed", "allowed", "allowed"]
+
+
+def test_the_cap_stays_when_the_verifier_asks_for_something_else(tmp_path):
+    """It is only the Verifier that is nothing but the cap that the writing Run contradicts."""
+    verifier = V.derive_verifier(Task(id="shop", intent="tell the caller how many warranty months are left"),
+                                 pump_run(), [], None, write_tools=SHOP_TOOLS, writes_elsewhere=True)
+    assert cap_atoms(verifier) == ["entity_count"]
+    assert [a.id for a in verifier.atoms if a.kind == "communicate"] == ["c1", "c2"]

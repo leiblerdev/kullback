@@ -8,7 +8,10 @@ agrees. When more than one group is left, code cannot tell which of them carried
 a judge may mark groups as failed, never as passed (D110); a Task whose groups still disagree gets
 no Reference and no Verdict. That judge is handed the Intent, the policy and the End states and no
 transcript, so a ruling of its that rests on anything else, authentication or a spoken confirmation
-or the opening request, is an abstention and fails nothing (D93). Re-rolls (D112) enter the same rule
+or the opening request, is an abstention and fails nothing (D93). The End state it is handed has two
+halves, what the Runs wrote and what their answers told the user (D43): with the second half missing
+a Task the recorded agent resolved by answering read as a Task nobody acted on, and the judge failed
+the recordings the corpus itself had rewarded. Re-rolls (D112) enter the same rule
 as recordings of a lower standing: the Reference is a recording whenever the agreeing group holds
 one, since the recording is the only Run that touched the customer's real system.
 
@@ -29,6 +32,7 @@ from kullback.examiner import derive as verifier_mod
 from kullback.gates import verifier_suite
 from kullback.runner.judge import sources_not_given
 from kullback.runner.records import Atom, Constraint
+from kullback.runner.verdict import TRANSFER_HINTS
 
 RECORDING = "recording"
 REROLL = "reroll"
@@ -46,6 +50,7 @@ MIN_RUNS_TO_DEMOTE = 3
 MAX_POLICY_LINES = 40  # D65: the judge prompt is bounded whatever the policy's length
 MAX_LINE_CHARS = 200
 MAX_REQUEST_CHARS = 600
+MAX_FACTS = 12  # how many of a group's stated facts the prompt lists before it says how many are left
 # What this judge is handed, and the whole of what a ruling of its may rest on. It sees the Intent,
 # the policy and the End states, and never a transcript, so authentication, a spoken confirmation and
 # the opening request are absent by construction; a ruling that rests on one of them abstains (D93).
@@ -56,13 +61,16 @@ _JSON_RE = re.compile(r"\{.*\}", re.DOTALL)
 
 @dataclass
 class Recording:
-    """One Run the D111 rule sees: where it is, what it wrote, and which Hard constraints it broke."""
+    """One Run the D111 rule sees: where it is, what it wrote, what it told the user, and which Hard
+    constraints it broke."""
     run_id: str
     path: str
     kind: str = RECORDING
     trace_id: Optional[str] = None
     end_state: tuple = ()
     violated: list[str] = field(default_factory=list)
+    stated: tuple = ()          # the facts read from the world this Run's answers stated back
+    transferred: bool = False   # it handed the conversation on rather than finishing it
 
 
 @dataclass
@@ -164,12 +172,33 @@ def violations(run: Any, atoms: Iterable[Atom], write_tools: Iterable[str], fn: 
             if verifier_suite.hard_holds(atom, loaded, set(write_tools), fn) is False]
 
 
+def stated_facts(run: Any, fn: Callable) -> tuple:
+    """The values this Run's answers stated back to the user, sorted, as the judge should read them.
+
+    Part of the End state and not of the transcript (D43): what the user was told is an effect of the
+    Run the same way a write is, and it is the half of the End state a Task resolved by an answer
+    lives in. The values alone, never the sentences they were said in, so the judge still cannot read
+    what the agent said.
+    """
+    return tuple(sorted(fact["text"] for fact in
+                        verifier_suite.communicate_values(verifier_suite.as_run(run), fn).values()))
+
+
+def transferred(run: Any) -> bool:
+    """Did the Run hand the conversation on instead of finishing it? The hints are verdict.py's, so
+    the rule that reads a Run as given up and the one that describes it to the judge agree."""
+    loaded = verifier_suite.as_run(run)
+    names = [call["name"].lower() for call in verifier_suite.run_calls(loaded)]
+    return any(hint in name for name in names for hint in TRANSFER_HINTS)
+
+
 def load(path: str, kind: str, *, run_id: Optional[str] = None, trace_id: Optional[str] = None,
          write_tools: Iterable[str], fn: Callable, atoms: Iterable[Atom] = ()) -> Recording:
     run = verifier_suite.as_run(path)
     return Recording(run_id=run_id or run.run_id, path=str(path), kind=kind, trace_id=trace_id,
                      end_state=end_state(run, write_tools, fn),
-                     violated=violations(run, atoms, write_tools, fn))
+                     violated=violations(run, atoms, write_tools, fn),
+                     stated=stated_facts(run, fn), transferred=transferred(run))
 
 
 # --- constraints against the corpus ---------------------------------------
@@ -234,6 +263,9 @@ def group(recordings: Iterable[Recording]) -> list[dict]:
             groups.append(row)
         row["runs"].append(rec.run_id)
         row["members"].append(rec)
+    for row in groups:
+        row["told"] = sorted({fact for rec in row["members"] for fact in rec.stated})
+        row["transferred"] = sum(1 for rec in row["members"] if rec.transferred)
     return groups
 
 
@@ -280,6 +312,24 @@ def confirm(recordings: Iterable[Recording], *, intent: str = "", policy_lines: 
 
 # --- the judge: fails, never passes ----------------------------------------
 
+def told_line(group: dict) -> str:
+    """One group's answer side: the facts its Runs stated back, and how many gave the Run away.
+
+    Without it a Task the recorded agent resolved by answering reads as a Task nobody did anything
+    about: the judge saw "no writes" and failed the state, and on two builds it failed 15 of 59 and
+    18 of 22 recordings the corpus itself had rewarded.
+    """
+    facts = list(group.get("told") or [])
+    shown = ", ".join(str(f) for f in facts[:MAX_FACTS])
+    more = f" and {len(facts) - MAX_FACTS} more" if len(facts) > MAX_FACTS else ""
+    said = f"told the user: {shown}{more}" if facts else "told the user no fact read from the world"
+    handed = int(group.get("transferred") or 0)
+    total = len(group.get("runs") or [])
+    if handed:
+        return f"{said}; {handed} of {total} handed the conversation on"
+    return f"{said}; none handed the conversation on"
+
+
 def judge_prompt(intent: str, policy_lines: Iterable[str], groups: list[dict]) -> str:
     lines = ["Recordings of one Task ended in different states. Say which of the states did NOT do what "
              "the Intent asked, or did something the policy does not allow.",
@@ -297,9 +347,15 @@ def judge_prompt(intent: str, policy_lines: Iterable[str], groups: list[dict]) -
              "", "Policy:"]
     lines += [f"- {' '.join(text.split())[:MAX_LINE_CHARS]}"
               for text in list(policy_lines)[:MAX_POLICY_LINES] if text and text.strip()]
-    lines += ["", "End states:"]
-    lines += [f"{g['label']} ({len(g['runs'])} run{'s' if len(g['runs']) != 1 else ''}): {g['state']}"
-              for g in groups]
+    lines += ["", "End states. Each says what the state's Runs wrote, what their answers told the user "
+              "and whether they handed the conversation on. What the user was told is an effect of the "
+              "Run and part of the End state (D43); the values are given without the sentences they "
+              "were said in, and you still do not have the transcript. A state that told the user no "
+              "value read from the world may still have answered in words that carry none, so that "
+              "on its own is not a state failed."]
+    for g in groups:
+        lines.append(f"{g['label']} ({len(g['runs'])} run{'s' if len(g['runs']) != 1 else ''}): {g['state']}")
+        lines.append("    " + told_line(g))
     lines += ["", 'Reply with JSON only: {"failed": ["A"], "evidence": ["intent", "end_states"], '
               '"reason": "..."}. Every name in evidence must be one of ' + ", ".join(AVAILABLE_SOURCES)
               + '; when your answer needs anything else, name that instead and fail nothing. Mark a state '
@@ -339,6 +395,6 @@ def parse_judgement(text: str, labels: set[str]) -> Judgement:
 
 
 __all__ = ["RECORDING", "REROLL", "ANSWERED", "MISCOMPILED_SHARE", "AVAILABLE_SOURCES", "Recording", "Confirmation",
-           "Judgement", "end_state", "describe",
+           "Judgement", "end_state", "describe", "stated_facts", "transferred", "told_line",
            "hard_atoms", "violations", "load", "constraint_rates", "demote", "group", "confirm",
            "judge_prompt", "judge_groups", "parse_judgement"]

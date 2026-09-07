@@ -168,8 +168,13 @@ def derive_verifier(task: Any, reference_run: Any, rerun_paths: Optional[list[st
                     constraints: Optional[Iterable[Constraint]] = None,
                     successful_run_ids: Optional[Iterable[str]] = None,
                     intent: Any = None,
+                    writes_elsewhere: bool = False,
                     verifier_version: str = "1") -> Verifier:
-    """The atoms for one Task: write-set diff over the Reference and its successful re-runs (D42, D43)."""
+    """The atoms for one Task: write-set diff over the Reference and its successful re-runs (D42, D43).
+
+    `writes_elsewhere` is the caller saying that a Run of this Task the D111 rule saw, and that is
+    not one of these References, wrote something; it decides whether a cap of 0 is written (below).
+    """
     fn = canon_fn(canon)
     reference = as_run(reference_run)
     reruns = load_runs(rerun_paths or [])
@@ -206,11 +211,6 @@ def derive_verifier(task: Any, reference_run: Any, rerun_paths: Optional[list[st
                                provenance=provenance, spans=[span] if span else [],
                                description=f"{effect['tool']} {field} is {text_of(value)}"))
 
-    if good_effects:
-        cap = max(len(e) for e in good_effects)
-        atoms.append(_atom("entity_count", "required", {"kind": "entity_count", "count": cap},
-                           description=f"the Run makes at most {cap} write calls"))
-
     asked = [question_keys(r, e, fn) for r, e in zip(good, good_effects, strict=False)]
     for key in sorted(set.intersection(*[set(a) for a in asked]) if asked else set()):
         seen = asked[0][key]
@@ -239,6 +239,26 @@ def derive_verifier(task: Any, reference_run: Any, rerun_paths: Optional[list[st
                                      "the agent about it, so it is reported and rejects no Run")
         atoms.append(reported.model_copy(update={"target": dict(payload, kind=REPORTED_COMMUNICATE)}))
 
+    # The cap comes last so the rule can see whether the Verifier demands anything else.
+    #
+    # A cap of 0 is what the Reference did, and on a Task whose other Runs wrote it is also a claim
+    # the Task's own evidence contradicts. Where it would be the whole of what the Verifier asks
+    # (nothing else required, no question, no fact the request asked for), it is not written: an
+    # atom no Run can fail but a writing one is not a bar, it is the shape D173 names, an empty Run
+    # and the wrong Run both satisfy it, and every held-out Run that took the writing path is
+    # rejected by it. The D133 route is taken rather than a cap widened to the writing group: those
+    # Runs are held out as evidence that the Task has more than one path, the false-rejection number
+    # counts them, and the D79 suite says a Verifier with nothing in it that can be falsified is not
+    # trusted, which is the honest reading and the one that sends the Examiner to re-roll and repair.
+    # Widening the cap instead would pass a path the D111 rule had just set aside, on the strength of
+    # a Run no rule ruled good, and it would still not admit the writing Run: with no write atom
+    # covering it the Verdict's extra-write check rejects it whatever the cap says.
+    if good_effects:
+        cap = max(len(e) for e in good_effects)
+        if cap or not writes_elsewhere or _demands_something(atoms):
+            atoms.append(_atom("entity_count", "required", {"kind": "entity_count", "count": cap},
+                               description=f"the Run makes at most {cap} write calls"))
+
     for rule in constraints or []:
         if not (rule.compiled or rule.judge_atom):
             continue  # a residual constraint is reported, never verdicted (D76)
@@ -252,6 +272,11 @@ def derive_verifier(task: Any, reference_run: Any, rerun_paths: Optional[list[st
     task_id = task if isinstance(task, str) else (task.id if isinstance(task, Task) else str(task))
     return Verifier(task_id=task_id, atoms=atoms, verifier_version=verifier_version,
                     seed_run_ids=[r.run_id for r in good])
+
+
+def _demands_something(atoms: Iterable[Atom]) -> bool:
+    """Does this Verifier already ask the Run for anything, cap aside? (the kinds a Verdict must hold)."""
+    return any(atom.kind in ("required", "question", "communicate") for atom in atoms)
 
 
 def _first_with(runs: list[Run], effects: list[dict], key: str):

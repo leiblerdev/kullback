@@ -22,12 +22,14 @@ def cancel_run(run_id: str, order: str = "#W123", kind: str = ref.RECORDING) -> 
         assistant("Done."),
     ])
     return ref.Recording(run_id=run_id, path=run_id, kind=kind, trace_id=run_id if kind == ref.RECORDING else None,
-                         end_state=ref.end_state(run, WRITES, _canon))
+                         end_state=ref.end_state(run, WRITES, _canon),
+                         stated=ref.stated_facts(run, _canon), transferred=ref.transferred(run))
 
 
 def empty_run(run_id: str, kind: str = ref.RECORDING) -> ref.Recording:
     run = make_run(run_id, [user("Please cancel my order #W123."), assistant("I cannot do that.")])
-    return ref.Recording(run_id=run_id, path=run_id, kind=kind, end_state=ref.end_state(run, WRITES, _canon))
+    return ref.Recording(run_id=run_id, path=run_id, kind=kind, end_state=ref.end_state(run, WRITES, _canon),
+                         stated=ref.stated_facts(run, _canon), transferred=ref.transferred(run))
 
 
 # --- End states -------------------------------------------------------------
@@ -53,7 +55,7 @@ LIBRARY_WRITES = {"renew_loan"}
 LOAN = {"loan_id": "LB-4412", "title": "The Long Ships", "due": "2026-09-20", "fine": 0}
 
 
-def _library_recording(run_id: str, answer: str, *, renewed: bool = False,
+def _library_recording(run_id: str, answer: str, *, renewed: bool = False, handed_on: bool = False,
                        kind: str = ref.RECORDING) -> ref.Recording:
     events = [user("When is my copy of The Long Ships due back?"),
               call("get_loan", {"loan_id": "LB-4412"}, kind="read", cid="c0"),
@@ -61,11 +63,15 @@ def _library_recording(run_id: str, answer: str, *, renewed: bool = False,
     if renewed:
         events += [call("renew_loan", {"loan_id": "LB-4412", "weeks": 2}, cid="c1"),
                    result({"loan_id": "LB-4412", "due": "2026-10-04"}, cid="c1")]
+    if handed_on:
+        events += [call("transfer_to_librarian", {"loan_id": "LB-4412"}, kind="read", cid="c2"),
+                   result({"queued": True}, cid="c2")]
     events.append(assistant(answer))
     run = make_run(run_id, events)
     return ref.Recording(run_id=run_id, path=run_id, kind=kind,
                          trace_id=run_id if kind == ref.RECORDING else None,
-                         end_state=ref.end_state(run, LIBRARY_WRITES, _canon))
+                         end_state=ref.end_state(run, LIBRARY_WRITES, _canon),
+                         stated=ref.stated_facts(run, _canon), transferred=ref.transferred(run))
 
 
 def answered(run_id: str, answer: str = "Loan LB-4412 is due on 2026-09-20.", **kw) -> ref.Recording:
@@ -117,6 +123,33 @@ def test_the_judge_fails_the_refusal_and_the_answered_recordings_are_the_referen
     prompt = judge.calls[0]["messages"][0]["content"]
     assert "A (2 runs): no writes; the answer states facts read from the world" in prompt
     assert "B (1 run): no writes; the answer states nothing read from the world" in prompt
+
+
+def test_the_judge_is_told_which_facts_each_end_state_stated_back():
+    """A Task the agent resolved by answering reads as an abandoned one when the judge sees only "no
+    writes"; the values the answers stated are the other half of the End state (D43)."""
+    judge = TestModel(['{"failed": ["B"], "evidence": ["intent", "end_states"], "reason": "no due date"}'])
+    ref.confirm([answered("a"), refused("b")], intent="tell the reader when loan LB-4412 is due",
+                policy_lines=["a reader may be told the due date of their own loan"], judge=judge)
+    prompt = judge.calls[0]["messages"][0]["content"]
+    assert "told the user: 2026-09-20, LB-4412; none handed the conversation on" in prompt
+    assert "told the user no fact read from the world" in prompt
+    assert "you still do not have the transcript" in prompt
+
+
+def test_a_state_whose_runs_handed_the_conversation_on_says_so():
+    judge = TestModel(['{"failed": [], "evidence": ["end_states"], "reason": "cannot tell"}'])
+    ref.confirm([answered("a"), refused("b", handed_on=True)],
+                intent="tell the reader when loan LB-4412 is due", judge=judge)
+    prompt = judge.calls[0]["messages"][0]["content"]
+    assert "1 of 1 handed the conversation on" in prompt
+
+
+def test_the_facts_of_a_state_are_the_ones_all_its_runs_stated_between_them():
+    """One state, two Runs, and the judge is told everything that state's Runs told the user."""
+    both = ref.group([answered("a"), answered("b", answer="Nothing is owed on LB-4412.")])
+    assert both[0]["told"] == ["2026-09-20", "LB-4412"]
+    assert ref.told_line(both[0]).startswith("told the user: 2026-09-20, LB-4412")
 
 
 # --- the rule ---------------------------------------------------------------

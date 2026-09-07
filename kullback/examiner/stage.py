@@ -221,7 +221,20 @@ def derive_for(task_for: Task, confirmation: Any, *, canon_rules: Any, write_too
     return verifier_mod.derive_verifier(task_for, paths[0], paths[1:], canon_rules,
                                         write_tools=write_tools, constraints=constraints,
                                         successful_run_ids=[r.run_id for r in confirmation.references],
-                                        intent=intent, verifier_version=verifier_version)
+                                        intent=intent, writes_elsewhere=wrote_outside(confirmation),
+                                        verifier_version=verifier_version)
+
+
+def wrote_outside(confirmation: Any) -> bool:
+    """Did a Run of this Task that is not one of its References write something?
+
+    The D111 rule saw every one of them, and a Reference group that wrote nothing beside a Run that
+    did is the Task saying it has more than one path. What the derivation does with that is its own
+    rule; this only reports the fact, off the End states the rule already grouped on.
+    """
+    references = {r.run_id for r in confirmation.references}
+    return any(r.end_state and r.end_state != reference_mod.ANSWERED
+               for r in confirmation.recordings if r.run_id not in references)
 
 
 def suite_for(task_for: Task, verifier: Verifier, paths: list, *, canon_rules: Any, write_tools: set,
