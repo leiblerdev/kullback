@@ -303,3 +303,52 @@ def test_derive_all_rewrites_the_scorecard_after_the_task_status(tmp_path):
     coverage = _read(world.workdir / "scorecard.json")["task_coverage"]
     assert coverage["tasks_covered"] == 1 and coverage["uncovered"] == [], \
         "the card counts the Task the status just verdicted"
+
+
+# --- the false-rejection pool: only the Runs that did the Task (D133) -----------------
+
+def _answering_run(run_id: str = "held"):
+    """A finished Run that read nothing and wrote nothing: it did not do a Task that asks for a write."""
+    return VF.make_run(run_id, [VF.user("Please cancel it."), VF.assistant("I am not able to do that.")])
+
+
+def _world_with_a_held_out_run(tmp_path, run):
+    """The one-Task world with a second recording of it, held out as the Task's anchor (D81)."""
+    world = make_world(tmp_path, rerolls=("alt",))
+    path = VF.write_events_jsonl(run, world.workdir / "runs" / "t1" / f"{run.run_id}.jsonl")
+    world.inputs["replays"]["t1"][run.run_id] = {"trace_id": run.run_id, "run_id": run.run_id,
+                                                 "confirmed": True, "path": path, "reasons": []}
+    world.inputs["tasks"] = [Task(id="t1", intent=VF.TASK.intent, run_ids=["ref", run.run_id])]
+    return world, Anchor(held_out={"t1": [run.run_id]}, unguarded=[])
+
+
+def _ruling(workdir: Path, stage_name: str = "derive_verifier") -> dict:
+    return [row for row in _read(workdir / "gates.json") if row["stage"] == stage_name][-1]
+
+
+def test_the_pool_leaves_out_a_held_out_run_that_wrote_nothing_on_a_task_that_asks_for_a_write(tmp_path):
+    """D133 counted a held-out Run legitimate on its success termination alone, so a Run that answered
+    and stopped made the Verifier that caught it read as over-strict."""
+    world, anchor = _world_with_a_held_out_run(tmp_path, _answering_run())
+    out = _derive(world.workdir, world.inputs, anchor=anchor)
+    row = out["task_status"]["t1"]
+    assert row["did_not_reach_reference"] == ["held"]
+    assert row["failed_recordings"]["held"] == stage.WROTE_NOTHING
+    assert _ruling(world.workdir)["metrics"]["did_not_reach_reference"] == 1
+
+
+def test_the_pool_keeps_a_held_out_run_whose_settled_end_state_is_the_references(tmp_path):
+    """The same writes by another route (D46) are the same End state, and that Run is what the number
+    is measured over."""
+    world, anchor = _world_with_a_held_out_run(tmp_path, VF.alt_path_run().model_copy(
+        update={"run_id": "held"}))
+    out = _derive(world.workdir, world.inputs, anchor=anchor)
+    row = out["task_status"]["t1"]
+    assert row["did_not_reach_reference"] == [] and "held" not in row["failed_recordings"]
+    assert _ruling(world.workdir)["metrics"]["did_not_reach_reference"] == 0
+
+
+def test_a_held_out_run_that_wrote_to_another_entity_is_left_out_with_its_own_reason(tmp_path):
+    world, anchor = _world_with_a_held_out_run(tmp_path, VF.wrong_run())
+    row = _derive(world.workdir, world.inputs, anchor=anchor)["task_status"]["t1"]
+    assert row["failed_recordings"]["wrong"] == stage.WROTE_OTHERWISE

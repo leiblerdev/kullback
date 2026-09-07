@@ -21,7 +21,7 @@ import hashlib
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
-from typing import Any, Iterable, Optional
+from typing import Any, Callable, Iterable, Optional
 
 from kullback.examiner import derive as verifier_mod
 from kullback.examiner import judge as judge_mod
@@ -169,6 +169,64 @@ def final_constraints(ctx, inputs: dict, seed_replays: dict, write_tools: set, r
     return constraints, demoted
 
 
+# The false-rejection pool (D133) asks how strict the required atoms are over Runs that did the Task,
+# and a Run that did not do it is not evidence about that. These are the two ways to miss.
+WROTE_NOTHING = "did not reach the Reference's End state: it wrote nothing"
+WROTE_OTHERWISE = "did not reach the Reference's End state: it wrote something else"
+
+
+def not_at_reference(confirmation: Any, pool_runs: Iterable[tuple[str, str]], write_tools: set,
+                     fn: Callable) -> dict[str, str]:
+    """The pool Runs whose settled End state is not the Reference's, and why each is left out (D133).
+
+    The D133 pool counts a held-out Run as legitimate on its success termination alone, so a Run that
+    answered and stopped is in it whatever the Task asked for. On two corpora every write rejection
+    was a Run like that: of 124 on the first, 85 wrote nothing, 8 used another tool and 31 made some
+    of the writes; on the second, 43 of 43 wrote nothing. Counted as false rejections they say the
+    Verifier is over-strict, when what the Verifier did was catch a Run that did not do the Task, and
+    the number gates a Verifier for catching it.
+
+    So a Run enters the pool when its settled End state (D182: the writes in order, with the values
+    and what the tool answered) is the Reference's. One comparison covers both halves of the rule: a
+    Reference that wrote nothing has the empty settled state, and so has every Run that wrote nothing.
+    What false rejection then measures is the atoms that are not writes, the stated facts, the
+    questions and the caps, against Runs that did the Task, which is what the number is for.
+    """
+    if not confirmation.references:
+        return {}
+    target = confirmation.references[0].settled
+    known = {rec.run_id: rec.settled for rec in confirmation.recordings}
+    out: dict[str, str] = {}
+    for run_id, path in pool_runs:
+        settled = known.get(run_id)
+        if settled is None:
+            settled = reference_mod.settled_state(path, write_tools, fn)
+        if settled != target:
+            out[run_id] = WROTE_NOTHING if not settled else WROTE_OTHERWISE
+    return out
+
+
+def pool_runs_of(task_id: str, replays: dict, rerolls: dict) -> list[tuple[str, str]]:
+    """The Runs D133's pool holds for one Task, as (run id, path): the confirmed replays, the anchor
+    among them (D81), and the re-rolls of any round that reached a success termination.
+
+    The same two sources `loosening.finished_run_ids` reads, off the same rows, so what is filtered
+    here is what the gate would otherwise count.
+    """
+    out: list[tuple[str, str]] = []
+    seen: set[str] = set()
+    for _trace_id, row in sorted((replays.get(task_id) or {}).items()):
+        if row.get("confirmed") and row.get("run_id") and row.get("path") and row["run_id"] not in seen:
+            seen.add(row["run_id"])
+            out.append((str(row["run_id"]), str(row["path"])))
+    for row in rerolls.get(task_id) or []:
+        if (row.get("termination_reason") or "") in verifier_suite.SUCCESS_TERMINATIONS \
+                and row.get("run_id") and row.get("path") and row["run_id"] not in seen:
+            seen.add(row["run_id"])
+            out.append((str(row["run_id"]), str(row["path"])))
+    return out
+
+
 def task_fidelity(tool_fidelity: Any, task_id: str) -> dict:
     """One Task's replay fidelity over its own recorded calls, per tool (D171).
 
@@ -284,11 +342,17 @@ def suite_for(task_for: Task, verifier: Verifier, paths: list, *, canon_rules: A
 def verifier_for(ctx, task: Task, confirmation: Any, *, canon_rules: Any, write_tools: set, constraints: list,
                  intents: dict, user_rules: dict, recordings: int, rerolls: int, probe: Any,
                  probe_model: Any, may_probe: bool, fidelity_row: Optional[dict] = None,
+                 pool_runs: Iterable[tuple[str, str]] = (), fn: Optional[Callable] = None,
                  verifier_version: str = "1") -> tuple[Verifier, dict]:
     """One Task's Verifier from its References, through the whole D79 suite, with its status row.
 
     The row carries this Task's own replay fidelity too (D171), so a confirmed Reference says on
     which of the Task's calls the bodies were exercised and not only that the Reference stands.
+
+    `failed_recordings` is what the false-rejection pool subtracts (D173), and it now carries the
+    held-out Runs that did not reach the Reference's End state beside the recordings the D111 rule
+    discarded; `did_not_reach_reference` names that half on its own, so a reader can tell the two
+    apart and the ruling can count them.
     """
     paths = [r.path for r in confirmation.references]
     first = confirmation.references[0]
@@ -303,10 +367,13 @@ def verifier_for(ctx, task: Task, confirmation: Any, *, canon_rules: Any, write_
     results = verifier_suite.d79_results(gates)
     passed = artifacts.verifier_gate(results).passed
     write_json(ctx.workdir / "verifiers" / f"{task.id}.json", as_dict(record))
+    left_out = not_at_reference(confirmation, pool_runs, write_tools,
+                                fn or verifier_suite.canon_fn(canon_rules))
     status = {"reference_confirmed": True, "verifier_passed": bool(passed),
               "references": len(confirmation.references), "reference_kind": first.kind,
               "recordings": recordings, "rerolls": rerolls,
-              "failed_recordings": dict(confirmation.failed), "judged": confirmation.judged,
+              "failed_recordings": {**dict(confirmation.failed), **left_out},
+              "did_not_reach_reference": sorted(left_out), "judged": confirmation.judged,
               "checks": results,
               "not_run": [g.stage for g in gates if g.metrics.get("skipped")],
               **fidelity_fields(fidelity_row or {})}
@@ -524,7 +591,7 @@ def derive_all(ctx: ExamContext, inputs: dict, *, probe_model: Any = None, probe
                 constraints=constraints, intents=intents, user_rules=user_rules,
                 recordings=len(seed_replays[task.id]), rerolls=len(rerolls.get(task.id, [])),
                 probe=probe, probe_model=probe_model, may_probe=job.may_probe,
-                fidelity_row=fidelity_row)
+                fidelity_row=fidelity_row, pool_runs=pool_runs_of(task.id, replays, rerolls), fn=fn)
             verifier = as_dict(record)
         entry = {"format": CACHE_FORMAT, "task_id": task.id, "key": job.key, "status": row,
                  "references": confirmation.as_dict(), "verifier": verifier, "probed": job.may_probe}
@@ -555,6 +622,9 @@ def derive_all(ctx: ExamContext, inputs: dict, *, probe_model: Any = None, probe
         blocked_by_own_calls=sum(1 for r in status.values() if r.get("blocking_tools")),
         failed_recordings=sum(len(r.get("failed") or {}) for r in references.values()),
         judged=sum(1 for r in references.values() if r.get("judged")),
+        # D133: the held-out Runs the pool leaves out because they did not reach the Reference's
+        # End state, named per Task on the status row and counted here for the Examiner.
+        did_not_reach_reference=sum(len(r.get("did_not_reach_reference") or ()) for r in status.values()),
         disagreeing=sum(1 for r in references.values()
                         if not r["references"] and (r.get("reason") or "").startswith("recordings disagree"))))
     write_json(ctx.workdir / "scorecard.json", scorecard_mod.scorecard(ctx.workdir))
