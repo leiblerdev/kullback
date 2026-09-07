@@ -55,7 +55,6 @@ from kullback.builder import pipeline
 from kullback.builder import repair as repair_module
 from kullback.builder.agent import builder_message
 from kullback.builder.build import DEFAULT_REROLLS, TARGET_ALL, BuildError, BuildPlan
-from kullback.builder.readers import GATE_DECLARED as READERS_GATE
 from kullback.builder.tools import BUILD_TOOLS, EXAMINER_OWNS
 from kullback.examiner import agent as examiner_agent
 from kullback.examiner.agent import ExaminerError, examiner_message, examiner_round_message
@@ -987,7 +986,7 @@ def run_rounds(workdir: Any, model: Any = None, *, agent_model: Optional[Model] 
                memory_dir: Any = None, grow: Optional[dict] = None, grow_seed: int = 0,
                probe_limit: Optional[int] = None, rerolls: int = DEFAULT_REROLLS, search: Any = None,
                workers: int = 1, on_event: Optional[Any] = None, subscribers: Iterable[Callable[[Any], Any]] = (),
-               max_turns: int = MAX_TURNS, readers_gate: str = READERS_GATE) -> dict:
+               max_turns: int = MAX_TURNS) -> dict:
     """Rounds over one workdir until an exit: what `kullback build` runs and the screen's /build calls.
 
     `model` is the Builder's model for the stages that call one, and through the plan's wrapped models
@@ -1001,7 +1000,7 @@ def run_rounds(workdir: Any, model: Any = None, *, agent_model: Optional[Model] 
                      second_judge_model=second_judge_model, files=list(files or []),
                      ceiling_usd=ceiling_usd, domain=domain, max_attempts=max_attempts, memory_dir=memory_dir,
                      on_event=on_event, grow=grow, grow_seed=grow_seed, probe_limit=probe_limit, rerolls=rerolls,
-                     search=search, workers=workers, readers_gate=readers_gate)
+                     search=search, workers=workers)
     _record_judge_models(plan)
     # The feed subscribes like anything else. Attaching here rather than inside the two harnesses
     # means both agents' streams reach it through the one seam the harness already offers: the

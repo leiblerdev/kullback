@@ -313,11 +313,6 @@ def build(
     allowance_usd: Optional[float] = typer.Option(None, "--allowance-usd",
                                                   help="Per-agent spend allowance per round; the default is "
                                                        "each agent's own round-1 spend from round 2 on (D123)."),
-    readers_gate: str = typer.Option("declared", "--readers-gate",
-                                     help="How a readers proposal is gated where a requestor of its own "
-                                          "answers with prose: declared holds its stored-or-derived and "
-                                          "acknowledgement declarations to the recording, replay leaves "
-                                          "everything but running to replay fidelity."),
 ):
     """Run the Builder and the Examiner in rounds over the ingested Traces and write the Environment.
 
@@ -353,7 +348,7 @@ def build(
                 probe_limit=probe_limit, rerolls=rerolls, search=search, workers=workers, target=target,
                 agent_model=adapter if agent else None, stall_rounds=stall_rounds,
                 fidelity_stall=fidelity_stall, max_rounds=max_rounds,
-                allowance_usd=allowance_usd, readers_gate=readers_gate, subscribers=[_echo_round])
+                allowance_usd=allowance_usd, subscribers=[_echo_round])
     except Exception:
         pulse.stop()
         heartbeat.beat(workdir, model, "failed")

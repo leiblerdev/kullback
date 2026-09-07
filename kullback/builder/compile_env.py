@@ -154,23 +154,11 @@ class _Obs:
     after_write: bool
 
 
-def _observations(traces: list[Trace], schema: EntitySchema, write_tools: set[str],
-                  revealed_rows: Optional[dict] = None) -> list[_Obs]:
-    """Every row sighting in corpus order; a write marks the rows it returned or named in its args.
-
-    `revealed_rows` are the rows another requestor's own prose results revealed (builder/readers.py),
-    as (table, row id) to trace to row: one sighting per trace, already walked to the version that
-    trace started in, so it sits before that trace's own calls and no write has touched it. R33 is
-    unchanged for everything else: only the assistant's calls describe the customer's system, and a
-    row that came from another requestor is marked as that requestor's on the schema.
-    """
+def _observations(traces: list[Trace], schema: EntitySchema, write_tools: set[str]) -> list[_Obs]:
+    """Every row sighting in corpus order; a write marks the rows it returned or named in its args."""
     out: list[_Obs] = []
     for trace_index, trace in enumerate(traces):
         written: set[str] = set()
-        for (table, row_id), by_trace in sorted((revealed_rows or {}).items()):
-            row = by_trace.get(trace.trace_id)
-            if row:
-                out.append(_Obs(table, row_id, dict(row), trace.trace_id, (trace_index, -1), False))
         for call_index, call in enumerate(trace.tool_calls):
             # A call the simulated user made through its own tools (telecom's phone tools) is not a
             # sighting of the customer's system; only the assistant's calls describe it (R33).
@@ -211,7 +199,6 @@ def build_starting_state(
     synthetic: bool = True,
     grow: Optional[dict[str, int]] = None,
     grow_seed: int = 0,
-    revealed_rows: Optional[dict] = None,
 ) -> StartingState:
     """One shared db.json for the customer, plus one TaskOverlay per Task (D33, D74).
 
@@ -221,15 +208,12 @@ def build_starting_state(
     keyed by wall-clock time (design section 8). Ids the traces asked for but never showed are then
     filled with tagged synthetic rows (D40), unless `synthetic` is off. `grow` names a row count per
     table to reach with rows composed from the observed ones (D107, `synth.grow`); what was added,
-    the rules it followed and the checks it passed are written to synthetic.json. `revealed_rows`
-    are the rows another requestor's prose results revealed (`builder/readers.py`), which take the
-    same inverse replay as any other row: one sighting per trace, marked on the schema by the
-    requestor that revealed them and never part of the customer's own system.
+    the rules it followed and the checks it passed are written to synthetic.json.
     """
     traces, workdir = list(traces), Path(workdir)
     workdir.mkdir(parents=True, exist_ok=True)
     write_tools = {s.name for s in (tool_sigs or []) if s.kind == "write"}
-    observations = _observations(traces, schema, write_tools, revealed_rows)
+    observations = _observations(traces, schema, write_tools)
     by_row: dict[tuple[str, str], list[_Obs]] = {}
     for obs in observations:
         by_row.setdefault((obs.table, obs.row_id), []).append(obs)
@@ -831,22 +815,14 @@ _BUILDER_TOOLS_PARAGRAPH = (
 
 
 def _stable_system(schema: Optional[EntitySchema] = None, tool_names: Iterable[str] = (),
-                   builder_tools: bool = False, world_note: str = "") -> str:
+                   builder_tools: bool = False) -> str:
     """`_SYSTEM` plus what every tool in this build shares: one prefix, sent unchanged on every
-    call of the stage, long enough on a real customer to clear a provider's cache minimum.
-
-    `world_note` is what a table another requestor revealed needs said about it
-    (`builder/readers.py`): how to reach its one row, and the derivations of the columns nothing
-    stores. It is the same bytes for every tool of a build, so it belongs in this prefix and not in
-    the per-tool turn.
-    """
+    call of the stage, long enough on a real customer to clear a provider's cache minimum."""
     # The body skill (D168) sits in the prefix too: it is the same bytes for every tool of a build,
     # and it is read before the tables, which is where a body's mistakes are made.
     parts = [_SYSTEM, BODY_SKILL, _confinement_block()]
     if schema is not None:
         parts.append(_schema_block(schema))
-    if world_note:
-        parts.append(world_note)
     names = sorted(set(tool_names))
     if names:
         parts.append("Tools in this build: " + ", ".join(names))
@@ -873,7 +849,7 @@ def _tool_block(toolsig: ToolSig, examples: Iterable[ToolCall], error_prefix: Op
 def body_messages(toolsig: ToolSig, examples: Iterable[ToolCall], schema: Optional[EntitySchema] = None,
                   failure: str = "", tool_names: Iterable[str] = (),
                   error_prefix: Optional[str] = None, builder_tools: bool = False,
-                  lesson: str = "", world_note: str = "") -> list[dict]:
+                  lesson: str = "") -> list[dict]:
     """The whole message list one body request sends, so its size can be checked before it goes.
 
     The system message carries the fixed instructions plus what is the same for every tool in
@@ -892,7 +868,7 @@ def body_messages(toolsig: ToolSig, examples: Iterable[ToolCall], schema: Option
         user += "\n\n" + lesson
     if failure:
         user += "\n\nThe previous body failed these gates:\n" + failure
-    return [{"role": "system", "content": _stable_system(schema, tool_names, builder_tools, world_note)},
+    return [{"role": "system", "content": _stable_system(schema, tool_names, builder_tools)},
             {"role": "user", "content": user}]
 
 
@@ -1351,7 +1327,7 @@ def compile_tool(model, toolsig: ToolSig, calls: Iterable[ToolCall], schema: Ent
                  max_evidence_chars: Optional[int] = MAX_EVIDENCE_CHARS, timeout: float = 30.0,
                  call_states: Optional[dict] = None, rules: Any = None,
                  tool_names: Iterable[str] = (), error_prefix: Optional[str] = None,
-                 builder_tools: bool = True, lesson: str = "", world_note: str = "") -> ToolBuild:
+                 builder_tools: bool = True, lesson: str = "") -> ToolBuild:
     """Write one tool body, gate it, and repair it at most three times with growing evidence (D75).
 
     Attempt 1 sees the failing call, attempt 2 every failing call, attempt 3 the full call table, and
@@ -1416,7 +1392,7 @@ def compile_tool(model, toolsig: ToolSig, calls: Iterable[ToolCall], schema: Ent
         if attempt == 0:
             messages = body_messages(toolsig, evidence, schema=schema, tool_names=tool_names,
                                      error_prefix=error_prefix, builder_tools=builder_tools,
-                                     lesson=lesson, world_note=world_note)
+                                     lesson=lesson)
         else:
             messages = _append_retry(messages, reply_content, evidence, failure, error_prefix)
         # Fewer whole calls, never a shortened one. `_example_block` refuses to cut a call in
@@ -1430,7 +1406,7 @@ def compile_tool(model, toolsig: ToolSig, calls: Iterable[ToolCall], schema: Ent
             node["evidence_calls"] = len(evidence)
             messages = (body_messages(toolsig, evidence, schema=schema, tool_names=tool_names,
                                       error_prefix=error_prefix, builder_tools=builder_tools,
-                                      lesson=lesson, world_note=world_note)
+                                      lesson=lesson)
                         if attempt == 0
                         else _append_retry(messages[:-2], reply_content, evidence, failure, error_prefix))
         size = prompt_chars(messages)
@@ -1647,11 +1623,6 @@ def emit_tau2_shape(env: EnvBundle, workdir: Path | str, files: Optional[dict] =
         "synthetic_rows": list(env.schema.synthetic_rows),
         "overlays": [as_dict(o) for o in env.overlays],
         "atoms": {v.task_id: [as_dict(a) for a in v.atoms] for v in env.verifiers},
-        # Which tables another requestor's own tools revealed rather than the assistant's (R33). A
-        # reader who takes db.json for the customer's system has to be able to see which rows are not.
-        "revealed_by": {c.table: str((c.evidence or {}).get("revealed_by"))
-                        for c in sorted(env.schema.columns, key=lambda c: (c.table, c.name))
-                        if (c.evidence or {}).get("revealed_by")},
     }
     paths["sidecar.json"] = workdir / "sidecar.json"
     paths["sidecar.json"].write_text(json.dumps(sidecar, indent=2, default=str) + "\n", encoding="utf-8")

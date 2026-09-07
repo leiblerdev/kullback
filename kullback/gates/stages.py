@@ -44,25 +44,6 @@ def intent_gate(intents: dict) -> GateResult:
     return gate("intent", failures, tasks=len(intents), grounded=sum(1 for r in intents.values() if _get(r, "grounded")))
 
 
-def readers_gate(proposals: Iterable[Any], requestors: int = 0) -> GateResult:
-    """A proposal the readers gate could not satisfy is flagged and kept, never a failed build.
-
-    Section 6 again: a requestor whose readers stayed assisted still leaves a world, and what that
-    world is worth is replay fidelity's to say, not this gate's. Each proposal is the plain dict the
-    stage wrote to readers.json, so nothing in the gates package has to know the Builder's records.
-    """
-    proposals = list(proposals)
-    assisted = [p for p in proposals if _get(p, "assisted")]
-    failures = [f"{_get(p, 'requestor')}: kept after {_get(p, 'attempts')} attempts with "
-                f"{len(_get(p, 'failures') or [])} shape(s) still failing: "
-                f"{(_get(p, 'failures') or ['no reason recorded'])[0]}"
-                for p in assisted]
-    return gate("readers", failures, requestors=requestors, proposals=len(proposals),
-                assisted=len(assisted),
-                columns=sum(len(_get(p, "columns") or []) for p in proposals),
-                readers=sum(len(_get(p, "readers") or []) for p in proposals))
-
-
 def rerolls_gate(rerolls: dict, per_task: int) -> GateResult:
     """Green only when some re-roll finished: a Run the frontier cannot complete says nothing about the Task (D112)."""
     total = sum(len(rows) for rows in rerolls.values())

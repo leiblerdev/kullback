@@ -7,6 +7,20 @@ is the CLI's entry and runs every stage; `execute(plan, target)` runs one stage 
 is upstream of it, which is what the Builder's tools (builder/tools.py) call. A tool that wants one
 tool body recompiled or one Task replayed gets a variant of the same declaration with that stage
 narrowed, so its cache key and its gates are the stage's own.
+
+The re-rolls stage keys a second time inside itself, per Task. The pipeline's key is one key for the
+whole stage, so a build that repaired one Intent or recompiled one body re-ran every Task's Runs:
+three retail rounds re-rolled at the scale of the whole corpus and re-rolls were four fifths of the
+build's spend. `_reroll_key` is what one Task's Runs were sampled under (its overlay and the
+Starting state under it, the schema, the bodies of the tools its own recordings call, the
+canonicalizer rules, its user rules, the Vocabulary, the policy text, the system prompt it opens
+with, and the count, seed, model, turn cap and code version), recorded beside its Runs in
+`runs/<task>/rerolls.json`; a Task whose key has not moved and whose Run files are still there keeps
+them. The assumption: a body of a tool the Task's recordings never call may change without the
+Task's re-rolls going stale. A Run on disk is a sample already taken against the toolkit as it stood,
+and nothing re-scores it against the current bodies (the D79 suite reads the Run file: the second
+path and the false-rejection number score the recorded End state, they do not re-execute it). A
+Candidate could call that tool in a live Run; this Run did not.
 """
 
 from __future__ import annotations
@@ -29,7 +43,6 @@ from kullback.builder import (
     parallel,
     pipeline,
     policy,
-    readers,
     sandbox,
     synth,
     user_sim,
@@ -167,54 +180,10 @@ def _mine_stage():
         # "flag, do not synthesize": a tool the corpus barely shows stays in the build, named in
         # the gate, rather than being invented or dropped (design section 6).
         ctx.record_gate(artifacts.mine_gate(sigs, calls, unknown=unknown))
-        return {"sigs": sigs, "mined_schema": schema}
+        return {"sigs": sigs, "schema": schema}
 
-    # The artifact is `mined_schema`, not `schema`: the readers stage is what releases `schema`,
-    # because a requestor's prose results add tables to it and every stage downstream reads the
-    # schema with those tables on it. With no prose results the readers stage passes this through.
-    return pipeline.Stage(name="mine", fn=run, inputs=("traces",), outputs=("sigs", "mined_schema"),
+    return pipeline.Stage(name="mine", fn=run, inputs=("traces",), outputs=("sigs", "schema"),
                           code_version=_version("mine", run, mine))
-
-
-def _readers_stage(model: Any, gate: str, max_attempts: int = readers.MAX_ATTEMPTS):
-    """The rows a requestor other than the assistant reveals through prose results (D176 candidate).
-
-    It runs per requestor whose own tools answer with strings the row extractor reads nothing out
-    of. Where a corpus has none, the stage records "no prose results", passes the mined schema
-    through unchanged and calls no model at all.
-    """
-
-    def run(ctx, inputs):
-        traces, schema = inputs["traces"], inputs["mined_schema"]
-        by_requestor = readers.prose_calls(traces)
-        if not by_requestor:
-            _write_json(ctx.workdir / readers.READERS_FILE, {"note": readers.NO_PROSE})
-            ctx.record_gate(stage_gates.readers_gate([], 0))
-            return {"schema": schema, "readers": {"note": readers.NO_PROSE, "proposals": {}, "rows": {}}}
-        if model is None:
-            raise BuildError("this corpus has prose results from a requestor of its own and the "
-                             "readers stage has no model to propose them with; pass --model")
-        proposals, rows, nodes, values = {}, {}, [], {}
-        for requestor in sorted(by_requestor):
-            proposal, attempts, parsed = readers.propose(
-                model, requestor, by_requestor[requestor], traces, ctx.workdir / "readers",
-                gate=gate, max_attempts=max_attempts)
-            proposals[requestor] = proposal.to_dict()
-            rows[requestor] = readers.starting_rows(traces, proposal, parsed)
-            values[requestor] = readers.column_values(proposal, parsed)
-            nodes += attempts
-        artifact = {"gate": gate, "proposals": proposals, "rows": rows}
-        readers.apply_to_schema(schema, readers.proposals_from(artifact), values)
-        _write_json(ctx.workdir / readers.READERS_FILE, {**artifact, "attempts": nodes})
-        _write_json(ctx.workdir / "schema.json", as_dict(schema))
-        # Section 6: a proposal the gate could not satisfy is flagged and kept, never a failed build.
-        ctx.record_gate(stage_gates.readers_gate(proposals.values(), len(by_requestor)))
-        return {"schema": schema, "readers": artifact}
-
-    version = (f"readers:{getattr(model, 'name', 'none')}:{gate}:{max_attempts}:"
-               f"{_module_hash(readers)}:{_module_hash(sandbox)}")
-    return pipeline.Stage(name="readers", fn=run, inputs=("traces", "mined_schema"),
-                          outputs=("schema", "readers"), code_version=version)
 
 
 def _cluster_stage():
@@ -223,9 +192,6 @@ def _cluster_stage():
         # worlds, and a Task's overlay can pin only one, so they are different Tasks.
         worlds = compile_env.trace_worlds(inputs["traces"], inputs["schema"],
                                           cluster.write_tool_names(inputs["sigs"]))
-        # A row another requestor revealed splits Tasks the same way (D74): two recordings that read
-        # one of its columns differently before either wrote started in different worlds.
-        readers.merge_worlds(worlds, inputs["readers"])
         categories, tasks = cluster.cluster_runs(inputs["traces"], inputs["sigs"], worlds=worlds)
         for task in tasks:
             _write_json(ctx.workdir / "tasks" / f"{task.id}.json", as_dict(task))
@@ -235,9 +201,9 @@ def _cluster_stage():
         ctx.record_gate(stage_gates.cluster_gate(tasks, categories))
         return {"categories": categories, "tasks": tasks}
 
-    return pipeline.Stage(name="cluster", fn=run, inputs=("traces", "sigs", "schema", "readers"),
+    return pipeline.Stage(name="cluster", fn=run, inputs=("traces", "sigs", "schema"),
                           outputs=("categories", "tasks"),
-                          code_version=_version("cluster", run, cluster, intent, compile_env, readers))
+                          code_version=_version("cluster", run, cluster, intent, compile_env))
 
 
 def _canon_stage():
@@ -265,8 +231,7 @@ def _state_stage(grow: Optional[dict] = None, grow_seed: int = 0):
     def run(ctx, inputs, grow=None, grow_seed=0):
         state = compile_env.build_starting_state(inputs["traces"], inputs["schema"], ctx.workdir,
                                                  inputs["tasks"], inputs["sigs"], grow=grow,
-                                                 grow_seed=grow_seed,
-                                                 revealed_rows=readers.reader_rows(inputs["readers"]))
+                                                 grow_seed=grow_seed)
         # The synthetic ids live on the schema (D40); run_batch reads them back from schema.json.
         _write_json(ctx.workdir / "schema.json", as_dict(inputs["schema"]))
         return {"db": state.db, "overlays": list(state.overlays),
@@ -275,10 +240,9 @@ def _state_stage(grow: Optional[dict] = None, grow_seed: int = 0):
     # A partial, so the grow targets are in the stage's cache key: the same traces grown to two
     # sizes are two Starting states, not one served twice (pipeline._fn_identity).
     fn = functools.partial(run, grow=dict(grow or {}), grow_seed=grow_seed)
-    return pipeline.Stage(name="starting_state", fn=fn,
-                          inputs=("traces", "schema", "tasks", "sigs", "readers"),
+    return pipeline.Stage(name="starting_state", fn=fn, inputs=("traces", "schema", "tasks", "sigs"),
                           outputs=("db", "overlays", "assumptions", "synthetic_rows"),
-                          code_version=_version("starting_state", fn, compile_env, synth, readers))
+                          code_version=_version("starting_state", fn, compile_env, synth))
 
 
 def _tools_stage(model: Any, max_attempts: int, workers: int = 1, only: Optional[Iterable[str]] = None):
@@ -322,9 +286,6 @@ def _tools_stage(model: Any, max_attempts: int, workers: int = 1, only: Optional
         # every recorded call, so a tool with a single error still has it peeled.
         error_prefix = compile_env.shared_error_prefix(
             call for calls in calls_by_tool.values() for call in calls)
-        # What a body has to know about a table another requestor's own tools revealed: how to reach
-        # its one row, and the derivations of the columns nothing stores. Same bytes for every tool.
-        world_note = readers.body_note(readers.proposals_from(inputs["readers"]))
         bodies, gates, assisted, builds = {}, [], [], {}
         outcomes: dict[str, list[dict]] = {}  # D171: per tool, one row per recorded call
         rules = _rules_of(inputs)
@@ -351,7 +312,7 @@ def _tools_stage(model: Any, max_attempts: int, workers: int = 1, only: Optional
                                             ctx.workdir / "tools" / sig.name,
                                             max_attempts=max_attempts, call_states=states,
                                             rules=rules, tool_names=tool_names,
-                                            error_prefix=error_prefix, world_note=world_note,
+                                            error_prefix=error_prefix,
                                             # What this tool already failed on, so a recompile asks
                                             # a different question than the one that failed.
                                             lesson=memory.lesson_for(ctx.workdir, sig.name))
@@ -409,9 +370,6 @@ def _tools_stage(model: Any, max_attempts: int, workers: int = 1, only: Optional
     # sandbox left every broken body in the cache and `--iterate` handed them straight back.
     version = (f"compile_tools:{getattr(model, 'name', 'none')}:"
                f"{_module_hash(compile_env)}:{_module_hash(sandbox)}:{_module_hash(body_skill)}:"
-               # The readers' own source reaches the body writer through `world_note`, and the
-               # module that renders it is not one of the three above.
-               f"{_module_hash(readers)}:"
                # The attribution is this file's own function, so its bytes are not in any module
                # hash above; an edit to it is a different artifact and must not hit the cache.
                f"{content_hash(pipeline._fn_identity(attribute_fidelity, 'compile_tools'))[:16]}")
@@ -424,8 +382,7 @@ def _tools_stage(model: Any, max_attempts: int, workers: int = 1, only: Optional
     if only is not None:
         paths += ("bodies.json", "tool_builds.json", "tool_call_outcomes.json")
     return pipeline.Stage(name="compile_tools", fn=run, builder=True,
-                          inputs=("traces", "tasks", "sigs", "schema", "db", "overlays", "canon_rules",
-                                  "readers"),
+                          inputs=("traces", "tasks", "sigs", "schema", "db", "overlays", "canon_rules"),
                           outputs=("bodies", "assisted_tools", "tool_fidelity"), gate=gate, input_paths=paths,
                           code_version=version if only is None else f"{version}:only={','.join(only)}")
 
@@ -671,9 +628,6 @@ def _environment_stage(domain: str):
         environment = compile_env.build_environment(
             inputs["schema"], inputs["sigs"], inputs["bodies"], inputs["policy_text"], files=files,
             assisted_tools=inputs.get("assisted_tools") or ())
-        # A table another requestor's own tools revealed is in the world because the Runner needs it,
-        # and it is not the customer's system: the export marks it rather than passing it off as one.
-        environment.flags = sorted(set(environment.flags) | set(readers.environment_flags(inputs["schema"])))
         bundle.environment = environment
         compile_env.emit_tau2_shape(bundle, ctx.workdir / "env", files=files)
         _write_json(ctx.workdir / "environment.json", as_dict(environment))
@@ -878,6 +832,106 @@ def _intent_stage(model: Any, workers: int = 1, only: Optional[Iterable[str]] = 
 
 rerolls_gate = stage_gates.rerolls_gate  # the ruling moved to kullback.gates in phase 4; the name stays
 
+REROLL_RECORD = "rerolls.json"  # beside the Task's Runs, under runs/<task>/; never inside a Run file
+REROLL_KEY_FORMAT = 1
+REROLL_SEED = 0  # the stage's own seed; the Examiner's reroll verb rotates its prefix instead (D133)
+REROLL_TURNS = 30  # the loop's cap for a re-roll, the same as a Candidate batch's default
+REROLL_KEY_NOTE = (
+    "a Task keeps its re-rolls while its own inputs hold. A body of a tool its recordings never call "
+    "may move without them going stale: a Run on disk is a sample already taken against the toolkit "
+    "as it stood, and nothing re-scores it against the current bodies")
+# The parts of a Task's key, in the order a re-rolled Task is asked what moved, and how each is said.
+REROLL_KEY_PARTS: tuple[tuple[str, str], ...] = (
+    ("bodies", "a tool body"), ("overlay", "overlay"), ("starting_state", "Starting state"),
+    ("schema", "schema"), ("canon_rules", "canonicalizer rules"), ("user_rules", "user rules"),
+    ("vocabulary", "vocabulary"), ("policy_text", "policy text"), ("system_prompt", "system prompt"),
+    ("settings", "re-roll settings"), ("format", "the shape of the key itself"),
+)
+
+
+def _tools_called(task: Task, traces: dict) -> list[str]:
+    """The tools this Task's own recordings call, sorted (D171's grain: the Task's calls, not the corpus's)."""
+    names: set[str] = set()
+    for run_id in task.run_ids:
+        trace = traces.get(run_id)
+        for call in getattr(trace, "tool_calls", None) or ():
+            names.add(call.name)
+    return sorted(names)
+
+
+def _reroll_key(task: Task, *, traces: dict, bodies: dict, rules: Any, system_prompt: Optional[str],
+                workdir: Path, shared: dict) -> dict:
+    """What one Task's re-rolls were sampled under, part by part, so a repeat can name what moved.
+
+    Kept as named parts rather than one hash because the ruling has to say which input moved for
+    each Task it re-rolled, and "a tool body" is not the same message as "overlay". Only the bodies
+    of the tools this Task's recordings call are in it; the module docstring carries why.
+    """
+    overlay, overlay_rows = compile_env.load_overlay(workdir, task.id)
+    return {
+        "format": REROLL_KEY_FORMAT,
+        "bodies": {name: content_hash((bodies or {}).get(name)) for name in _tools_called(task, traces)},
+        "overlay": content_hash([as_dict(overlay), overlay_rows]),
+        "user_rules": content_hash(rules),
+        "system_prompt": content_hash(system_prompt),
+        **shared,
+    }
+
+
+def _reroll_reason(recorded: Any, current: dict) -> str:
+    """Which of the Task's inputs moved, in a few words; the empty string when none did."""
+    if not isinstance(recorded, dict):
+        return "no key is recorded for this Task"
+    for name, label in REROLL_KEY_PARTS:
+        if recorded.get(name) == current.get(name):
+            continue
+        if name != "bodies":
+            return label
+        before, after = recorded.get("bodies") or {}, current.get("bodies") or {}
+        moved = sorted(name for name in set(before) | set(after) if before.get(name) != after.get(name))
+        rest = f" and {len(moved) - 1} more" if len(moved) > 1 else ""
+        return f"body of tool {moved[0]}{rest}" if moved else label
+    return ""
+
+
+def _reroll_rows(workdir: Path, rows: Iterable[dict], relative: bool) -> list[dict]:
+    """The stage's rows with their paths under the workdir or absolute again.
+
+    Recorded relative so a workdir copied elsewhere reuses its own Run files rather than the
+    originals', and handed back absolute because that is what the artifact has always carried.
+    """
+    out = []
+    for row in rows:
+        path = Path(str(row.get("path") or ""))
+        if relative:
+            try:
+                path = path.resolve().relative_to(Path(workdir).resolve())
+            except ValueError:  # a Run written outside this workdir keeps the path it has
+                pass
+        else:
+            path = Path(workdir) / path
+        out.append({"run_id": row.get("run_id"), "path": path.as_posix() if relative else str(path),
+                    "termination_reason": row.get("termination_reason")})
+    return out
+
+
+def _reroll_record(workdir: Path, task_id: str) -> dict:
+    """What the last run of the stage recorded beside this Task's Runs, or an empty record."""
+    record = _read_json(Path(workdir) / "runs" / task_id / REROLL_RECORD, None)
+    return record if isinstance(record, dict) else {}
+
+
+def _reroll_reuse(workdir: Path, task_id: str, key: dict) -> Optional[list[dict]]:
+    """This Task's recorded re-rolls as the stage's own rows, when the key holds and every file is there."""
+    record = _reroll_record(workdir, task_id)
+    if record.get("key") != key:
+        return None
+    rows = record.get("runs")
+    if not isinstance(rows, list) or not rows:
+        return None
+    out = _reroll_rows(workdir, rows, relative=False)
+    return out if all(Path(row["path"]).is_file() for row in out) else None
+
 
 def _rerolls_stage(model: Any, rerolls: int, workers: int = 1, only: Optional[Iterable[str]] = None):
     """D112: `rerolls` Candidate-shaped Runs of the frontier per Task, inside the built Environment.
@@ -885,6 +939,10 @@ def _rerolls_stage(model: Any, rerolls: int, workers: int = 1, only: Optional[It
     A customer's traces mostly hold one recording per Task, and one recording cannot be checked
     against anything; the re-rolls give the D111 rule Runs to compare it with. They run in the built
     Environment, not the customer's system, so they corroborate only as far as fidelity does.
+
+    Each Task is re-rolled only when its own key moved (`_reroll_key`, the module docstring). A
+    narrowed run is an explicit ask, the Builder's `reroll` tool or an `--iterate` naming a Task, and
+    re-rolls whatever the key says, the way an explicit recompile does.
     """
 
     only = sorted(only) if only is not None else None
@@ -896,7 +954,19 @@ def _rerolls_stage(model: Any, rerolls: int, workers: int = 1, only: Optional[It
         source = compile_env.module_source(inputs["schema"], inputs["sigs"], inputs["bodies"])
         traces = {t.trace_id: t for t in inputs.get("traces") or []}
         canon_rules = _rules_of(inputs)
-        jobs = []
+        # Everything every Task's key shares, hashed once. `version` is the stage's own code version,
+        # bound below this function and read when the stage runs, so an edit here re-rolls everything
+        # once and nothing after that.
+        shared = {
+            "starting_state": content_hash(inputs["db"]),
+            "schema": content_hash(inputs["schema"]),
+            "canon_rules": content_hash(canon_rules),
+            "vocabulary": content_hash(as_dict(_vocab_from(ctx.workdir))),
+            "policy_text": content_hash(inputs.get("policy_text")),
+            "settings": content_hash({"count": rerolls, "seed": REROLL_SEED, "turns": REROLL_TURNS,
+                                      "model": getattr(model, "name", "none"), "code": version}),
+        }
+        jobs, reused, reasons = [], {}, {}
         tasks = list(inputs["tasks"])
         if only is not None:
             unknown = sorted(set(only) - {task.id for task in tasks})
@@ -911,22 +981,43 @@ def _rerolls_stage(model: Any, rerolls: int, workers: int = 1, only: Optional[It
                 # Its re-rolls from an earlier build go too: the second retail build's dead re-rolls
                 # sat under 36 Tasks a later build skipped, and every count that globs runs/ read them.
                 _discard_runs(ctx.workdir / "runs" / task.id, f"reroll-{task.id}-")
+                (ctx.workdir / "runs" / task.id / REROLL_RECORD).unlink(missing_ok=True)
                 continue
             rules = next((user_rules.get(r["trace_id"]) for r in confirmed if user_rules.get(r["trace_id"])), None)
-            jobs.append((task, rules))
+            prompt = _system_prompt_for(task, traces, inputs.get("policy_text"))
+            key = _reroll_key(task, traces=traces, bodies=inputs["bodies"], rules=rules,
+                              system_prompt=prompt, workdir=ctx.workdir, shared=shared)
+            rows = None if only is not None else _reroll_reuse(ctx.workdir, task.id, key)
+            if rows is not None:
+                reused[task.id] = rows
+                continue
+            reasons[task.id] = ("an explicit re-roll was asked for" if only is not None
+                                else _reroll_reason(_reroll_record(ctx.workdir, task.id).get("key"), key)
+                                or "the Run files the key names are gone")
+            jobs.append((task, rules, prompt, key))
 
         def reroll(job):  # one Task's re-rolls, in its own world and run directory (D118)
-            task, rules = job
+            task, rules, prompt, key = job
             _discard_runs(ctx.workdir / "runs" / task.id, f"reroll-{task.id}-")
             runs = _candidate_runs(ctx.workdir, task, model, count=rerolls, prefix="reroll", source=source,
                                    schema=inputs["schema"], sigs=inputs["sigs"], db=inputs["db"], env_id=env_id,
-                                   canon_rules=canon_rules, rules=rules,
-                                   system_prompt=_system_prompt_for(task, traces, inputs.get("policy_text")))
-            return [{"run_id": r.run_id, "path": p, "termination_reason": r.termination_reason} for r, p in runs]
+                                   canon_rules=canon_rules, rules=rules, seed=REROLL_SEED,
+                                   max_turns=REROLL_TURNS, system_prompt=prompt)
+            rows = [{"run_id": r.run_id, "path": p, "termination_reason": r.termination_reason} for r, p in runs]
+            _write_json(ctx.workdir / "runs" / task.id / REROLL_RECORD,
+                        {"task_id": task.id, "key": key,
+                         "runs": _reroll_rows(ctx.workdir, rows, relative=True)})
+            return rows
 
-        out = {task.id: rows for (task, _), rows in zip(jobs, parallel.each(jobs, reroll, workers), strict=True)}
+        rolled = {task.id: rows for (task, _, _, _), rows
+                  in zip(jobs, parallel.each(jobs, reroll, workers), strict=True)}
+        out = {task.id: rolled.get(task.id) or reused[task.id] for task in tasks
+               if task.id in rolled or task.id in reused}
         _write_runs_index(ctx.workdir)
-        ctx.record_gate(rerolls_gate(out, rerolls))
+        ruling = rerolls_gate(out, rerolls)
+        ctx.record_gate(ruling.model_copy(update={"metrics": {
+            **ruling.metrics, "reused": len(reused), "rerolled": len(rolled),
+            "rerolled_because": dict(sorted(reasons.items())), "note": REROLL_KEY_NOTE}}))
         return {"rerolls": out}
 
     version = (f"{_version('rerolls', run, loop, route, user_sim, provider)}:"
@@ -1205,10 +1296,6 @@ class BuildPlan:
     search: Any = None
     workers: int = 1
     emit: Optional[Any] = None
-    # Which gate the readers stage holds a proposal to: `declared` also holds the stored-or-derived
-    # and acknowledgement declarations to the recording, `replay` leaves everything but "it parses,
-    # it runs and it answers a dict or None" to replay fidelity.
-    readers_gate: str = readers.GATE_DECLARED
     # Which round the driver is in, so a repair request records the round it was made in (D126);
     # a build with no round driver is one pass, which is round 1. `rounds.py` moves it.
     round: int = field(init=False, default=1)
@@ -1231,9 +1318,6 @@ class BuildPlan:
         # at it; the default keeps them in this workdir, where a first build has none to carry.
         self.memory_dir = Path(self.memory_dir) if self.memory_dir is not None else self.workdir / "memory"
         self.fresh = not self.iterate
-        if self.readers_gate not in readers.GATES:
-            raise ValueError(f"unknown readers gate {self.readers_gate!r}; it is one of "
-                             + ", ".join(readers.GATES))
         self.ceiling = _ceiling(self.workdir, self.ceiling_usd)
         self.models = self._wrap_models()
 
@@ -1247,7 +1331,6 @@ class BuildPlan:
         # The loophole probe and the re-rolls are Candidate-shaped Runs: fresh samples, production
         # setting (D65, D112); the Intent and the judge are Builder calls.
         return {
-            "readers": _wrap(model, "readers", workdir, ceiling),
             "compile_tools": _wrap(model, "compile_tools", workdir, ceiling),
             "compile_policy": _wrap(model, "compile_policy", workdir, ceiling),
             "judge_lessons": _wrap(model, "judge_lessons", workdir, ceiling),
@@ -1289,7 +1372,6 @@ def stages(plan: BuildPlan, *, tools: Optional[Iterable[str]] = None, replay_tas
     declared = [
         _ingest_stage(plan.workdir, plan.files) if plan.files else None,
         _mine_stage(),
-        _readers_stage(models["readers"], plan.readers_gate),
         _cluster_stage(),
         _canon_stage(),
         _state_stage(plan.grow if grow is None else grow, plan.grow_seed),
@@ -1349,8 +1431,7 @@ def build(workdir: Any, iterate: bool = False, model: Any = None, files: Optiona
           max_attempts: int = 3, memory_dir: Any = None, on_event: Optional[Any] = None,
           grow: Optional[dict[str, int]] = None, grow_seed: int = 0,
           probe_limit: Optional[int] = None, rerolls: int = DEFAULT_REROLLS, search: Any = None,
-          workers: int = 1, emit: Optional[Any] = None,
-          readers_gate: str = readers.GATE_DECLARED) -> dict:
+          workers: int = 1, emit: Optional[Any] = None) -> dict:
     """Read the ingested Traces and write the Environment, the Tasks, their References and re-rolls.
 
     The whole graph, as `kullback build` runs it; the Verifiers are the Examiner's (D123). The arguments are `BuildPlan`'s; the default of one
@@ -1360,7 +1441,7 @@ def build(workdir: Any, iterate: bool = False, model: Any = None, files: Optiona
     plan = BuildPlan(workdir=workdir, iterate=iterate, model=model, files=list(files or []), ceiling_usd=ceiling_usd,
                      domain=domain, max_attempts=max_attempts, memory_dir=memory_dir, on_event=on_event,
                      grow=grow, grow_seed=grow_seed, probe_limit=probe_limit, rerolls=rerolls, search=search,
-                     workers=workers, emit=emit, readers_gate=readers_gate)
+                     workers=workers, emit=emit)
     result = execute(plan, TARGET_ALL)
     return result_of(workdir, result, result.artifacts.get("environment"))
 
