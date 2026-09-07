@@ -1,6 +1,6 @@
 """The Examiner as an extension on the agent core (D120, D123, D124, ADR-0007).
 
-`examiner_extension(plan)` is a `setup(api)` the harness loads: it registers the seven tools of
+`examiner_extension(plan)` is a `setup(api)` the harness loads: it registers the eight tools of
 examiner/tools.py, adds four short sections to the system prompt (what the Examiner is, what it may
 and may not do, which Builder verb a finding should suggest and with what hint, the Tasks of this
 build), catalogs the probe skill loaded from the start, and installs the hooks. The `tool_call`
@@ -46,6 +46,12 @@ TOOLS = ("Tools, one example call each.\n"
          "read(kind=\"intent\", id=\"task_1a2b\"): one record as JSON; kinds are task, trace, intent, run, "
          "verifier, probes, task_status, gates, rerolls, replays, references. The intent record lists "
          "`ungrounded_phrases` and `run_coverage`.\n"
+         "search(text=\"priority handling\", kinds=[\"intent\", \"run\"]): where one phrase appears across "
+         "the records, without reading any of them. Kinds are trace, run, intent, task_status, verifier; "
+         "it answers a count per kind and one line per match saying the record, the Task and where in it "
+         "the phrase is. `regex=true` reads the text as a regular expression, `tool=\"renew_membership\"` "
+         "narrows to one tool's calls, `task_id` to one Task. Search before you read: a count over every "
+         "Task costs one call, and reading the records that hold it costs one call each.\n"
          "probe(task_id=\"task_1a2b\", bug_class=\"extra-field acceptance\", note=\"writes the change "
          "and also a refund the user never asked for\", events=[...]): a hand-written Run the Verifier "
          "should reject, kept in the Task's pool forever.\n"
@@ -73,7 +79,14 @@ EXAMPLES = ("Examples of a ruling and the call that answers it.\n"
             "4. `refuse: task_1a2b is not refused: a frontier Run finished` -> the Task stays; probe or "
             "repair its Verifier instead.\n"
             "5. A Verifier that passed the suite and every probe in its pool -> nothing to call for that "
-            "Task.")
+            "Task.\n"
+            "6. Grounding a claim across Tasks before filing it: search(text=\"priority handling\", "
+            "kinds=[\"intent\", \"run\"]) answers `4 matches (intent 4, run 0)` and four lines, each an "
+            "Intent whose text holds the phrase -> the phrase is in four Intents and in no Run of any "
+            "Task, so finding(task_id=\"task_9f3e\", kind=\"fidelity\", text=\"the Intent of 4 Tasks "
+            "says 'priority handling'; no Run of any of them says it\", suggested=\"repair_intent\", "
+            "hint=\"the Runs say 'same day pickup'; use those words\"). Search first, then read the one "
+            "record you are going to quote.")
 RULES = ("Choosing. Derive first, every round. Act first on the Tasks with a confirmed Reference whose "
          "Verifier failed the suite, then on the Tasks with no Verdict, and say in each finding which "
          "Builder verb answers it. You never read a tool body, the Starting state, the schema, the "

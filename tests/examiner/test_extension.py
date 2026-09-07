@@ -26,7 +26,7 @@ from kullback.examiner.extension import examiner_extension
 from kullback.gates import gates_over
 from kullback.runner import budget
 
-SEVEN = ["read", "derive", "probe", "repair", "refuse", "reroll", "finding"]
+EIGHT = ["read", "search", "derive", "probe", "repair", "refuse", "reroll", "finding"]
 COMPARED = ("task_status.json", "references.json", "constraints_check.json", "gates.json", "scorecard.json")
 
 
@@ -69,10 +69,10 @@ def _tree(workdir: Path) -> dict:
     return out
 
 
-def test_the_extension_registers_the_seven_tools_the_tagged_sections_the_probe_skill_and_the_two_hooks(world):
+def test_the_extension_registers_the_eight_tools_the_tagged_sections_the_probe_skill_and_the_two_hooks(world):
     plan, harness = _harness(world)
     assert isinstance(harness, AgentHarness), "the Examiner is an extension on the core, not a harness of its own"
-    assert harness.registry.names() == SEVEN
+    assert harness.registry.names() == EIGHT
     assert [s.name for s in harness.sections] == ["examiner", "examiner_tools", "skills", "skill:probe",
                                                   "examiner_examples", "examiner_rules", "examiner_findings",
                                                   "examiner_tasks", "examiner_stop"]
@@ -130,7 +130,7 @@ def test_the_examiner_has_no_tool_that_writes_a_body_a_table_or_the_environment(
     assert after == before
     assert sorted(str(p.relative_to(workdir)) for p in (workdir / "env").rglob("*") if p.is_file()) == env_before
     names = [tool.name for tool in tools_mod.examiner_tools(ext.ExaminerPlan(workdir=workdir, inputs=inputs))]
-    assert names == SEVEN and not {"build", "compile_tool", "grow", "recluster", "replay"} & set(names)
+    assert names == EIGHT and not {"build", "compile_tool", "grow", "recluster", "replay"} & set(names)
     produced = {name for tool in tools_mod.examiner_tools(ext.ExaminerPlan(workdir=workdir, inputs=inputs))
                 for name in (tool.result_model.model_fields["produced"].default_factory() if "produced"
                              in tool.result_model.model_fields else [])}

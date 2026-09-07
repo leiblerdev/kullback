@@ -1,4 +1,4 @@
-"""The seven Examiner tools, driven through the harness's registry and hooks with no model turn: what each
+"""The eight Examiner tools, driven through the harness's registry and hooks with no model turn: what each
 writes, what the gates say about it, and what is refused (D120, D123, D127, D128, D133)."""
 
 from __future__ import annotations
@@ -17,7 +17,7 @@ from kullback.examiner.plan import ExaminerPlan
 from kullback.gates.probes import version_hash
 from kullback.runner.records import Intent, Verifier, VerifierHistory, as_dict, content_hash
 
-TOOL_NAMES = ["read", "derive", "probe", "repair", "refuse", "reroll", "finding"]
+TOOL_NAMES = ["read", "search", "derive", "probe", "repair", "refuse", "reroll", "finding"]
 
 
 def _read(path: Path):
