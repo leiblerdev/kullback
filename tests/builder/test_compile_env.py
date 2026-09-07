@@ -504,6 +504,46 @@ def _library_world():
     return db, _library_schema(), sig, calls
 
 
+MEMBER_BY_A_KEY_NOBODY_HOLDS = """
+return self.db.members[member_id + "-x"]
+"""
+
+WRONG_MEMBER_BODY = """
+member = self.db.members[member_id]
+return {"member_id": member.member_id}
+"""
+
+
+def test_a_body_that_raises_on_a_missing_row_is_told_the_table_and_that_the_id_is_absent(
+    make_test_model, workdir
+):
+    """A bare KeyError says nothing about what the body was reading, so the next attempt guesses.
+    The crashing line names the table and the world in front of it answers for the id."""
+    db, schema, sig, calls = _library_world()
+    model = make_test_model([MEMBER_BY_A_KEY_NOBODY_HOLDS] * 4)
+    ce.compile_tool(model, sig, calls, schema, db, workdir)
+    retry = model.calls[1]["messages"][-1]["content"]
+    assert "raised KeyError at `return self.db.members[member_id + \"-x\"]`" in retry
+    assert "`members` holds 4 rows and not `m-1-x`" in retry
+    assert "its ids look like a-#" in retry, retry
+    assert "m-2" not in retry.split("holds 4 rows")[1], "the other ids are shapes, not values"
+
+
+def test_a_body_that_does_not_raise_gets_no_table_note(make_test_model, workdir):
+    db, schema, sig, calls = _library_world()
+    model = make_test_model([WRONG_MEMBER_BODY] * 4)
+    ce.compile_tool(model, sig, calls, schema, db, workdir)
+    retry = model.calls[1]["messages"][-1]["content"]
+    assert "holds" not in retry and "look like" not in retry
+
+
+def test_the_shape_of_an_id_generalizes_its_characters_and_keeps_the_rest():
+    assert ce.value_shape("m-14") == "a-##"
+    assert ce.value_shape("AB_9") == "AA_#"
+    assert ce.table_read("row = self.db.members[member_id]") == "members"
+    assert ce.table_read("return {}") == ""
+
+
 def test_an_attempt_that_raises_what_the_attempt_before_raised_is_told_so_with_the_exception(
     make_test_model, workdir
 ):
