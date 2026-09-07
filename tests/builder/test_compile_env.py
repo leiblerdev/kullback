@@ -11,6 +11,7 @@ import pytest
 from conftest import PTR
 from kullback.builder import compile_env as ce
 from kullback.builder import sandbox as sandbox_mod
+from kullback.builder import tools as builder_tools
 from kullback.gates.confinement import PROVIDED_HELPERS, gate_confined
 from kullback.runner.records import (
     Atom,
@@ -24,6 +25,7 @@ from kullback.runner.records import (
     ToolSig,
     Trace,
     Verifier,
+    as_dict,
 )
 
 # --- hand-written tool bodies, standing in for what a model would write ---
@@ -334,8 +336,9 @@ def test_a_correct_body_passes_all_five_gates(schema, sigs, db0, workdir, order_
     # "confined" is the gate that stands in for the deferred sandbox: the same module is exec'd
     # in the Runner's process by load_toolkit, so a body that reaches past the customer's world
     # is refused before it ever executes anywhere.
-    assert [g.stage for g in gates][:5] == [
-        "parses", "confined", "executes_on_s0", "deterministic", "non_trivial"]
+    assert [g.stage for g in gates][:6] == [
+        "parses", "confined", "compile_tools.memorised_values", "executes_on_s0", "deterministic",
+        "non_trivial"]
     assert all(g.passed for g in gates), [g.failures for g in gates if not g.passed]
 
 
@@ -450,7 +453,8 @@ def test_a_later_attempt_that_crashes_does_not_replace_an_earlier_one_that_repla
     assert build.assisted is True and all(not node["passed"] for node in build.nodes)
     assert build.kept_attempt == 0
     assert build.body.strip() == WRONG_BODY.strip()
-    assert [gate.stage for gate in build.gates if gate.passed][:3] == ["parses", "confined", "executes_on_s0"]
+    assert [gate.stage for gate in build.gates if gate.passed][:4] == [
+        "parses", "confined", "compile_tools.memorised_values", "executes_on_s0"]
     written = json.loads((workdir / ce.NODE_DIR / "get_order_details.json").read_text(encoding="utf-8"))
     assert written["kept_attempt"] == 0
     assert [node["attempt"] for node in written["nodes"] if node.get("kept")] == [0]
@@ -976,8 +980,8 @@ def test_a_body_that_is_nondeterministic_on_a_later_call_fails_the_deterministic
     orders = list(sample["orders"].values())
     db = {"orders": {o["order_id"]: o for o in orders}, "users": {}, "products": {}}
     schema = _schema_for(db)
-    third = orders[2]["order_id"]
-    body = (f"import random\nif order_id == {third!r}:\n"
+    third = orders[2]["status"]
+    body = (f"import random\nif self.db.orders[order_id].status == {third!r}:\n"
             "    return {'order_id': order_id, 'status': str(random.random())}\n"
             "return self.db.orders[order_id]\n")
     calls = [_call("get_order_details", {"order_id": o["order_id"]}, result=o, idx=i)
@@ -1081,9 +1085,18 @@ def test_load_toolkit_puts_the_tasks_overlay_inside_the_toolkit(sample, schema, 
 # --- the held-out split stays hidden through the whole repair loop (D51, D75) ---
 
 
-def _held_out_body(shown_ids):
-    return ("if order_id in %r:\n    return self.db.orders[order_id]\n"
-            "raise ValueError('Order not found')\n" % (shown_ids,))
+def _held_out_body(refused_status):
+    """A body that reads the world for every id and gets only the held-out call wrong.
+
+    It refuses the one status the shown calls never carry, so the shown split replays whole and the
+    hidden call does not. It names no id of its own: a body that memorised the shown ids is refused
+    by the memorised_values gate before any call replays (D162), and this fixture is about the
+    held-out split staying hidden, not about memorisation.
+    """
+    return (f"order = self.db.orders.get(order_id)\n"
+            f"if order is None or order.status == {refused_status!r}:\n"
+            "    raise ValueError('Order not found')\n"
+            "return order\n")
 
 
 @pytest.fixture
@@ -1104,7 +1117,7 @@ def test_no_held_out_call_reaches_the_model_through_the_repair_prompts(
 ):
     db, schema, calls = split_world
     shown, held_out = ce.split_calls(calls)
-    body = _held_out_body([c.args["order_id"] for c in shown if c.error is None])
+    body = _held_out_body(held_out[0].result["status"])
     model = make_test_model([body] * 4)
     build = ce.compile_tool(model, sigs[0], calls, schema, db, workdir)
 
@@ -1122,7 +1135,7 @@ def test_the_node_says_so_when_only_the_held_out_split_failed(
 ):
     db, schema, calls = split_world
     shown, held_out = ce.split_calls(calls)
-    body = _held_out_body([c.args["order_id"] for c in shown if c.error is None])
+    body = _held_out_body(held_out[0].result["status"])
     model = make_test_model([body] * 4)
     build = ce.compile_tool(model, sigs[0], calls, schema, db, workdir)
     assert build.nodes[0]["evidence"] == "initial"
@@ -1745,6 +1758,43 @@ def test_a_constant_body_passes_non_trivial_when_the_recorded_tool_was_constant(
     result = ce.gate_non_trivial(box, constant)
     assert result.passed is True and result.metrics["recorded_constant"] is True
     assert result.metrics["recorded_answers"] == 1 and result.metrics["arg_sets"] == 3
+
+
+# --- gate 7: a body may not memorise the recordings (D162) ---
+
+
+MEMORISING_BODY = """
+statuses = {"#W1006327": "pending", "#W2611340": "processed"}
+return {"order_id": order_id, "status": statuses[order_id]}
+"""
+
+
+def test_the_compile_stage_retries_a_memorising_body_and_its_red_light_asks_for_a_recompile(
+    make_test_model, schema, sigs, db0, workdir, order_calls
+):
+    """Build 13's tool that replaces items on an order held three recorded item ids in a dict, so
+    every other id raised KeyError: 126 of the 150 replay calls that differed. A body like it is
+    refused before a subprocess runs, every attempt, and the red light names the verb that owns it."""
+    model = make_test_model([MEMORISING_BODY] * 4)
+    build = ce.compile_tool(model, sigs[0], order_calls, schema, db0, workdir)
+
+    assert len(model.calls) == 4, "the stage retried the refused body up to max_attempts"
+    assert build.assisted is True
+    ruling = next(g for g in build.gates if g.stage == "compile_tools.memorised_values")
+    assert ruling.passed is False
+    assert any("'#W1006327'" in f for f in ruling.failures)
+    assert all("does not execute" not in f for f in ruling.failures), "refused before it ran anywhere"
+    assert [g.stage for g in build.gates][-1] == "compile_tools.memorised_values", \
+        "no later gate ran on a body the memorised_values gate refused"
+    failure_shown = model.calls[1]["messages"][-1]["content"]
+    assert "gate compile_tools.memorised_values" in failure_shown
+
+    (workdir / "gates.json").write_text(json.dumps([as_dict(g) for g in build.gates]), encoding="utf-8")
+    lights = [light for light in builder_tools.red_lights(workdir)
+              if light.stage == "compile_tools.memorised_values"]
+    assert lights, "a refused body leaves no red light"
+    assert {light.verb for light in lights} == {"repair_recompile"}
+    assert {light.target for light in lights} == {"get_order_details"}
 
 
 def test_reference_args_are_the_arguments_whose_values_the_world_holds(schema, sigs, db0, workdir, sample):

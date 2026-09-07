@@ -116,13 +116,19 @@ from kullback.gates.stages import (
     vocabulary_gate,
 )
 from kullback.gates.tool_runs import (
+    MEMORISED_LESSON,
+    MEMORISED_STAGE,
     TOOL_RUN_STAGES,
     body_deterministic_gate,
     body_executes_gate,
+    body_literals,
+    body_memorised_values_gate,
     body_non_trivial_gate,
     body_parses_gate,
     body_refuses_unknown_gate,
     body_replay_fidelity_gate,
+    recorded_argument_values,
+    starting_state_ids,
 )
 from kullback.gates.trust import finished_runs, refuse_gate, trusted_gate
 from kullback.gates.verifier_suite import (
@@ -244,6 +250,9 @@ GATES: tuple[GateSpec, ...] = (
           body_replay_fidelity_gate),
     _spec("refuses_unknown", "the sandbox's answers to a reference the world does not hold",
           body_refuses_unknown_gate),
+    _spec(MEMORISED_STAGE, "one generated tool body's own literals, against the mined id shapes, the "
+          "Starting state's row ids and the values the recorded calls passed (D162)",
+          body_memorised_values_gate),
     _spec("compile_tools", "the evidence a compiled tool body produced, five gates in order", compile_tools_gates,
           "compile_tools.parses", "compile_tools.executes", "compile_tools.deterministic",
           "compile_tools.non_trivial", "compile_tools.replay_fidelity"),
@@ -309,9 +318,11 @@ def gates_over(artifact: str) -> tuple[GateSpec, ...]:
 
 __all__ = [
     "D79_CHECKS", "D79_STAGES", "FROZEN_TASKS_NAME", "GATES", "GATE_COUNTS", "GRADER_FIELDS", "HELPERS_SRC",
-    "LEAK_MIN_LENGTH", "PROBE_STOP", "PROTECTED", "PROTECTED_PATH", "TAU2_FILES", "TOOL_RUN_STAGES", "VERDICT_GOLDEN_CHECKS",
+    "LEAK_MIN_LENGTH", "MEMORISED_LESSON", "MEMORISED_STAGE", "PROBE_STOP", "PROTECTED", "PROTECTED_PATH",
+    "TAU2_FILES", "TOOL_RUN_STAGES", "VERDICT_GOLDEN_CHECKS",
     "VERDICT_VERSIONS", "GateLedger", "GateResult", "GateSpec", "Ruling", "accepted_versions",
-    "artifacts", "audit_gate", "body_deterministic_gate", "body_executes_gate", "body_non_trivial_gate",
+    "artifacts", "audit_gate", "body_deterministic_gate", "body_executes_gate", "body_literals",
+    "body_memorised_values_gate", "body_non_trivial_gate",
     "body_parses_gate", "body_refuses_unknown_gate", "body_replay_fidelity_gate", "budget_gate",
     "candidate_runs_gate", "check_run", "cluster_gate", "compile_tools_gate", "compile_tools_gates",
     "confinement", "consecutive_failed", "d79_results", "deterministic_gate", "done", "environment_gate",
@@ -320,9 +331,11 @@ __all__ = [
     "ledger", "legitimate_runs", "load_run", "loophole_probe", "loosening", "loosening_gate", "mine_gate", "names_protected_path",
     "newly_passed", "non_trivial_gate", "oracle_replay_gate", "parses_gate", "policy_gate",
     "predicate_confinement", "predicate_confinement_gate", "probe_admission_gate", "probe_pool_gate",
-    "probe_scores", "probes", "reference_replay_gate", "refuse_gate", "regrade_gate", "replay_fidelity_gate",
+    "probe_scores", "probes", "recorded_argument_values", "reference_replay_gate", "refuse_gate",
+    "regrade_gate", "replay_fidelity_gate",
     "replay_match", "rerolls_gate", "round_counts", "round_end", "ruling_line", "ruling_of", "rulings_over", "scorecard", "scorecard_gate",
-    "setup_review_gate", "source_confinement", "stages", "stalled", "summarize", "task_coverage",
+    "setup_review_gate", "source_confinement", "stages", "stalled", "starting_state_ids", "summarize",
+    "task_coverage",
     "task_verifiers_gate", "tau2_export_gate", "tool_runs", "trust", "trusted_gate", "unconfirmed_reason",
     "unfinished_run", "user_rules_gate", "validate_verifier", "verdict_golden_gate", "verifier_gate",
     "verifier_suite", "version_hash", "vocabulary_gate", "wrong_run",

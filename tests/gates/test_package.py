@@ -160,7 +160,7 @@ def test_every_gate_returns_the_one_ruling_record():
         "cluster": ([],), "compile_tools.bodies": ({},), "intent": ({},), "vocabulary": ({},),
         "tau2_export": ([],), "rerolls": ({}, 3), "derive_verifier.tasks": ({},),
         "parses": ("",), "executes_on_s0": ([], []), "deterministic": ([], [], []), "non_trivial": ([], []),
-        "refuses_unknown": ([], []),
+        "refuses_unknown": ([], []), "compile_tools.memorised_values": ("",),
         "probe_pool": ([], {}, None, []), "probe_admission": ({}, []),
         "loosening": ({}, {}, {}, {}, None, []), "false_rejection": ([], {}, {}, {}, None, []),
         "refuse": ({}, {}, {}), "trusted": ({}, [], {}, {}, {}, {}, {}, {}, None, []),

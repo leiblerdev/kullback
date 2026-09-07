@@ -29,10 +29,11 @@ from __future__ import annotations
 import json
 import time
 from pathlib import Path
-from typing import Any, Awaitable, Callable, Optional
+from typing import Any, Awaitable, Callable, Iterable, Optional
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from kullback import gates
 from kullback.agent.tools import AgentTool, ToolResult
 from kullback.builder import memory as memory_mod
 from kullback.runner.records import content_hash
@@ -376,19 +377,28 @@ def load_prior_bodies(workdir: Any) -> dict:
         return {}
 
 
-def ratchet_bodies(prior: dict, new: dict, gate_passed: dict[str, bool]) -> dict:
+def ratchet_bodies(prior: dict, new: dict, gate_passed: dict[str, bool],
+                   refused: Iterable[str] = ()) -> dict:
     """Never replace a passing artifact with a failing one: keep the prior body where the new gate failed.
 
     `gate_passed` names, per tool, whether the new body cleared its gates; a tool absent from the
     map keeps its new body. Tools only in `prior` stay; tools only in `new` are kept.
+
+    `refused` names the tools whose prior body is itself refused today, and those are not kept: a
+    body cleared the gates of the build it was written in, and a build that adds a gate (D162's
+    `compile_tools.memorised_values` is the first) can hold a prior body no gate accepts any more.
+    Ratcheting onto it would keep a body every later round has to repair and never can.
     """
     out = dict(new)
+    refused = set(refused)
     prior_bodies = prior.get("bodies", prior) if isinstance(prior, dict) else {}
     new_bodies = new.get("bodies", new) if isinstance(new, dict) else {}
     if not isinstance(prior_bodies, dict) or not isinstance(new_bodies, dict):
         return new
     merged = dict(new_bodies)
     for name, body in prior_bodies.items():
+        if name in refused:
+            continue  # the prior body fails a gate of this build; there is nothing to ratchet onto
         if name not in merged:
             merged[name] = body  # the new build omits it; the last passing body stays
         elif name in gate_passed and gate_passed[name] is False:
@@ -400,13 +410,19 @@ def ratchet_bodies(prior: dict, new: dict, gate_passed: dict[str, bool]) -> dict
     return merged
 
 
-def apply_ratchet(workdir: Any, new_bodies: dict, gate_passed: dict[str, bool]) -> dict:
+def apply_ratchet(workdir: Any, new_bodies: dict, gate_passed: dict[str, bool],
+                  refused: Iterable[str] = ()) -> dict:
     """`ratchet_bodies` against this workdir's last `bodies.json`."""
-    return ratchet_bodies(load_prior_bodies(workdir), new_bodies, gate_passed)
+    return ratchet_bodies(load_prior_bodies(workdir), new_bodies, gate_passed, refused)
 
 
-def ratchet_hook(workdir: Any) -> Any:
-    """A `tool_result` handler: a `compile_tool` failure restores the prior passing body in details."""
+def ratchet_hook(workdir: Any, refused: Iterable[str] = ()) -> Any:
+    """A `tool_result` handler: a `compile_tool` failure restores the prior passing body in details.
+
+    `refused` is `ratchet_bodies`' own: a tool whose prior body fails a gate of this build is not
+    restored, because there is nothing there to ratchet onto (D162).
+    """
+    refused = set(refused)
 
     def on_result(call: Any, result: ToolResult) -> Optional[ToolResult]:
         name = getattr(call, "name", None)
@@ -418,6 +434,8 @@ def ratchet_hook(workdir: Any) -> Any:
             return None
         args = getattr(call, "arguments", {}) or {}
         tool = args.get("name", "")
+        if tool in refused:
+            return None
         prior = load_prior_bodies(workdir)
         bodies = prior.get("bodies", prior) if isinstance(prior, dict) else {}
         if not isinstance(bodies, dict) or tool not in bodies:
@@ -434,6 +452,27 @@ def ratchet_hook(workdir: Any) -> Any:
 
 # --- lesson --------------------------------------------------------------------
 
+def _rulings_of(workdir: Any, tool: str) -> list[dict]:
+    """This tool's recorded rulings off `tool_builds.json`, the latest attempt's first.
+
+    The compile_tools stage writes every attempt's rulings there, so a lesson is read off what code
+    wrote and never off a model. An empty list when the file is missing, unreadable or silent about
+    this tool.
+    """
+    path = Path(workdir) / "tool_builds.json"
+    if not path.is_file():
+        return []
+    try:
+        builds = json.loads(path.read_text(encoding="utf-8"))
+    except (ValueError, OSError):
+        return []
+    row = builds.get(tool) if isinstance(builds, dict) else None
+    nodes = row.get("nodes") if isinstance(row, dict) else None
+    return [ruling for node in reversed(nodes if isinstance(nodes, list) else [])
+            for ruling in (node.get("gates") if isinstance(node, dict) else None) or []
+            if isinstance(ruling, dict)]
+
+
 def gate_exception_line(workdir: Any, tool: str) -> str:
     """The exception this tool's latest failing gate reports, as `ExceptionClass: message`.
 
@@ -445,24 +484,27 @@ def gate_exception_line(workdir: Any, tool: str) -> str:
     # gates behind it. Nothing here needs them until a lesson is actually written.
     from kullback.builder.compile_env import exception_in
 
-    path = Path(workdir) / "tool_builds.json"
-    if not path.is_file():
-        return ""
-    try:
-        builds = json.loads(path.read_text(encoding="utf-8"))
-    except (ValueError, OSError):
-        return ""
-    row = builds.get(tool) if isinstance(builds, dict) else None
-    nodes = row.get("nodes") if isinstance(row, dict) else None
-    for node in reversed(nodes if isinstance(nodes, list) else []):
-        rulings = node.get("gates") if isinstance(node, dict) else None
-        for ruling in rulings if isinstance(rulings, list) else []:
-            if not isinstance(ruling, dict) or ruling.get("pass"):
-                continue
-            for failure in ruling.get("failures") or []:
-                found = exception_in(str(failure))
-                if found:
-                    return found
+    for ruling in _rulings_of(workdir, tool):
+        if ruling.get("pass"):
+            continue
+        for failure in ruling.get("failures") or []:
+            found = exception_in(str(failure))
+            if found:
+                return found
+    return ""
+
+
+def memorised_values_lesson(workdir: Any, tool: str) -> str:
+    """The one sentence a body refused for memorising the recordings leaves behind (D162).
+
+    Read off `tool_builds.json` the same way `gate_exception_line` is: the latest attempt first, so
+    a tool that has since been written properly leaves nothing. The gate's own failures name the
+    literals, which belong to one attempt; this is the lesson, which belongs to the tool, and it
+    says the one thing every such failure is repaired by.
+    """
+    for ruling in _rulings_of(workdir, tool):
+        if ruling.get("stage") == gates.MEMORISED_STAGE and not ruling.get("pass"):
+            return gates.MEMORISED_LESSON
     return ""
 
 
@@ -473,11 +515,16 @@ def record_tool_lesson(workdir: Any, tool: str, failures: list[str]) -> Path:
     and the two are not the same sentence. Both go into the lesson, so the compiler's next prompt
     (`memory.lesson_for`, read by `compile_tool`) carries the error line it must not raise again and
     not only the advice. The line is added once and only when the hint does not already quote it.
+    The memorised-values lesson (D162) is added the same way: a body refused for holding an id out
+    of a recorded call is repaired by one sentence, and the hint rarely says it.
     """
     failures = list(failures)
     error = gate_exception_line(workdir, tool)
     if error and not any(error in failure for failure in failures):
         failures.append(f"the last attempt raised {error}; do not raise it again")
+    memorised = memorised_values_lesson(workdir, tool)
+    if memorised and not any(memorised in failure for failure in failures):
+        failures.append(memorised)
     return memory_mod.record_lesson(workdir, tool, failures)
 
 

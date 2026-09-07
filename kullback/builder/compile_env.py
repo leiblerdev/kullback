@@ -647,7 +647,10 @@ _SYSTEM = ("You write the body of one Python method of a tool class rebuilt from
            "list or a dict is a plain Python list or dict, so index it, read its parts by key, as in "
            "row.entries[0][\"amount\"], and write them by plain assignment, as in "
            "row.entries[0][\"amount\"] = 0; row.entries[0].amount raises AttributeError. Where a column "
-           "holds one, the tables below say so and show the form that reads it. Raise ValueError "
+           "holds one, the tables below say so and show the form that reads it. The body reads the "
+           "world's tables for every id and every value it works with: an id or a value copied out "
+           "of a recorded call and written into the body as a literal is refused by the "
+           "memorised_values gate, however well it replays the calls you were shown. Raise ValueError "
            "with the customer's own message where the traces show an error. Where every recorded error "
            "in this corpus begins with the same transport prefix, it is shown with that prefix removed, "
            "so write the message exactly as shown and do not put a prefix of your own in front of it.")
@@ -1017,7 +1020,8 @@ def _build_tools_impl(schema: EntitySchema, toolsig: ToolSig, shown: list[ToolCa
         source = module_source(schema, [toolsig], {toolsig.name: body or ""})
         sandbox = Sandbox(source, db, workdir / f"attempt_{attempt}_probe_{probes['n']}", timeout=timeout,
                           call_states=call_states)
-        gates = run_gates(source, sandbox, shown, [], schema, rules, probe_refusals=toolsig.kind == "write")
+        gates = run_gates(source, sandbox, shown, [], schema, rules,
+                          probe_refusals=toolsig.kind == "write", sig=toolsig)
         if all(g.passed for g in gates):
             return "passed every gate: " + ", ".join(g.stage for g in gates)
         return _failure_text(gates)
@@ -1383,7 +1387,8 @@ def compile_tool(model, toolsig: ToolSig, calls: Iterable[ToolCall], schema: Ent
         source = module_source(schema, [toolsig], {toolsig.name: body})
         sandbox = Sandbox(source, db, workdir / f"attempt_{attempt}", timeout=timeout,
                           call_states=call_states)
-        gates = run_gates(source, sandbox, shown, held_out, schema, rules, probe_refusals=toolsig.kind == "write")
+        gates = run_gates(source, sandbox, shown, held_out, schema, rules,
+                          probe_refusals=toolsig.kind == "write", sig=toolsig)
         node.update(body_hash=content_hash(body), gates=[as_dict(g) for g in gates],
                     passed=all(g.passed for g in gates))
         build.nodes.append(node)
