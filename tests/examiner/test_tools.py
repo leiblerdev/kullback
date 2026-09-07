@@ -436,7 +436,7 @@ def test_read_returns_a_run_a_trace_an_intent_a_verifier_and_the_pool_as_json(de
     whole = json.loads(drive(harness, "read", {"kind": "task_status", "id": T}).details["text"])
     assert set(whole[T]) >= {"reference_confirmed", "verifier_passed"}
     missing = drive(harness, "read", {"kind": "run", "id": "nowhere"})
-    assert missing.is_error and "nowhere" in missing.content
+    assert missing.is_error is False and "nowhere" in missing.content, "an id nothing carries is answered"
     # Traces and Intents come from a Builder store: the fixture build's.
     built = ExaminerPlan(workdir=fixture_build.workdir, inputs=fixture_build.inputs)
     reader = examiner_agent.examiner_harness(built)
@@ -583,3 +583,33 @@ def test_a_third_repair_of_one_task_against_the_check_that_rejected_the_first_tw
     assert tools_mod.repair_lock(two_checks, "t9") is None
     one_check = {("t9", "verifier_mutation"): ["version 2: a", "version 3: b"]}
     assert "verifier_mutation" in (tools_mod.repair_lock(one_check, "t9") or "")
+
+
+def test_a_repair_whose_atom_payload_is_not_an_object_is_a_validation_error_not_a_crash(derived):
+    """One live build answered `repair failed: AttributeError: 'str' object has no attribute 'get'`
+    three frames below the tool, and the Examiner had nothing to correct. The shape an atom takes is
+    said once, in the words the tool's own schema uses."""
+    plan, harness = _harness(derived)
+    result = drive(harness, "repair", {"task_id": T, "reason": "name the entity",
+                                       "add": [{"id": "a1", "kind": "required", "payload": "the entity"}]})
+    assert result.is_error and "AttributeError" not in result.content
+    assert "payload of atom a1 is str" in result.content and "`kind`" in result.content
+    nameless = drive(harness, "repair", {"task_id": T, "reason": "x", "add": [{"kind": "required"}]},
+                     call_id="r2")
+    assert nameless.is_error and "names no id" in nameless.content
+    assert len(_history(derived).versions) == 1, "no version was written for either"
+
+
+def test_reading_a_run_or_a_trace_id_nothing_carries_answers_the_ids_that_exist(derived):
+    """One live build spent 13 of a session's 22 turns on one Task, four of them re-reading the same
+    Run and Trace ids that were not there; the tool answered each with a KeyError and nothing to try."""
+    plan, harness = _harness(derived)
+    _probe(harness, VF.wrong_run())
+    answer = json.loads(drive(harness, "read", {"kind": "run", "id": "reroll-r9-t1-0"}).details["text"])
+    assert answer["found"] is False and answer["kind"] == "Run"
+    assert set(answer["ids"]) == {f"{T}: ref", f"{T}: alt", f"{T}: probe-{T}-1"}
+    assert "the Run ids of this build (3 of 3)" in answer["note"]
+    by_task = json.loads(drive(harness, "read", {"kind": "run", "id": T}, call_id="r2").details["text"])
+    assert by_task["found"] is False and f"of task {T}" in by_task["note"], "a Task id narrows the answer"
+    trace = json.loads(drive(harness, "read", {"kind": "trace", "id": "nowhere"}, call_id="r3").details["text"])
+    assert trace["found"] is False and trace["kind"] == "Trace" and trace["ids"] == []
