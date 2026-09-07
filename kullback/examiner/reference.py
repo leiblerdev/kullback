@@ -186,7 +186,7 @@ def settled_state(run: Any, write_tools: Iterable[str], fn: Callable) -> tuple:
 
     Two Runs that made the same call with the same items in another order reached the same state
     when the tool answered them the same way; when the answers differ the order mattered to the
-    world and the two states stay apart. On the second retail build 12 of 25 Tasks whose recordings
+    world and the two states stay apart. On one build 12 of 25 Tasks whose recordings
     disagreed differed by nothing else, and each of them lost its Reference over it.
     """
     loaded = verifier_suite.as_run(run)
