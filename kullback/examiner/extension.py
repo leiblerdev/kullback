@@ -93,7 +93,9 @@ RULES = ("Choosing. Derive first, every round. Act first on the Tasks with a con
          "Environment or the sandbox: any call naming one is refused, and so is any path under "
          "kullback/gates or kullback/runner. A probe stays in its pool forever; a repair is accepted only "
          "when the D79 suite, the pool and the loosening gate all pass; a refusal is admitted only when "
-         "no frontier Run finished. A finding's `kind` is one of assisted_tool, fidelity, "
+         "no frontier Run finished. When one check has rejected one Task's repairs twice in a session, a "
+         "third against that check is refused: file a finding, refuse the Task, or reroll_then_derive. "
+         "A finding's `kind` is one of assisted_tool, fidelity, "
          "reference_disagreement, suite, false_rejection, environment, other; the name of the ruling you "
          "are answering is taken as the kind it is about, and so is the name of a tool. The gates are "
          "the standard, not something to argue with; a failed ruling is reported as it is.")

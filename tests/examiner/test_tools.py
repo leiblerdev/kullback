@@ -561,3 +561,25 @@ def test_a_finding_filed_under_a_ruling_name_lands_with_the_kind_that_ruling_is_
     assert "assisted_tool, fidelity, reference_disagreement" in unknown.content, "the kinds are listed"
     assert "fidelity <- " in unknown.content, "and the mapping the model may use instead"
     assert tools_mod.finding_kind("ledger_rebalance", ["ledger_rebalance"]) == "assisted_tool"
+
+
+def test_a_third_repair_of_one_task_against_the_check_that_rejected_the_first_two_is_refused(derived):
+    """One live build's Examiner spent a session on 13 repairs, none accepted, two Tasks repaired
+    four times each with the same gate failing every time. Two rejections by one check are what the
+    session has to learn from; the third is refused with the check and the verbs that buy something."""
+    plan, harness = _harness(derived)
+    assert _reason_repair(harness, plan, "required", "require the reason").details["accepted"] is True
+    _probe(harness, VF.other_reason_run())
+    first = _reason_repair(harness, plan, "allowed", "any reason will do", call_id="r1")
+    second = _reason_repair(harness, plan, "allowed", "said again, other words", call_id="r2")
+    assert first.details["rejected_by"] == second.details["rejected_by"] == ["probe_pool"]
+    third = _reason_repair(harness, plan, "allowed", "a third rationale", call_id="r3")
+    assert third.is_error and "probe_pool" in third.content
+    assert "any reason will do" in third.content and "said again, other words" in third.content
+    assert "refuse, reroll_then_derive" in third.content
+    assert len(_history(derived).versions) == 4, "the refused repair wrote no version"
+    # The count is per check: a Task each of whose two rejections came from a different check is open.
+    two_checks = {("t9", "verifier_mutation"): ["version 2: a"], ("t9", "loosening"): ["version 3: b"]}
+    assert tools_mod.repair_lock(two_checks, "t9") is None
+    one_check = {("t9", "verifier_mutation"): ["version 2: a", "version 3: b"]}
+    assert "verifier_mutation" in (tools_mod.repair_lock(one_check, "t9") or "")

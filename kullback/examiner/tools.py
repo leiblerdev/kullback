@@ -894,8 +894,44 @@ def _probe(plan: ExaminerPlan):
     return probe
 
 
+# How many times one check may reject one Task's repairs in a session before the tool stops taking
+# them. The probe skill already stops after three consecutive probes against one version (D133,
+# `PROBE_STOP`); a repair had no such stop, and one live build's Examiner spent a whole session on
+# 13 repair calls of which none was accepted, two Tasks repaired four times each with the same gate
+# failing every time. Two rejections by one check say the check is not what the rewrite can move.
+REPAIR_STOP = 2
+# The two verbs that buy what a third repair cannot: a Task no frontier Run finished is refused
+# (D128), and a check that never had a second finished Run to score is bought with a re-roll and a
+# derivation (D170's `reroll_then_derive`), not with another version of the atoms.
+REPAIR_ALTERNATIVES = "refuse, reroll_then_derive"
+
+
+def repair_lock(rejections: dict[tuple[str, str], list[str]], task_id: str,
+                limit: int = REPAIR_STOP) -> Optional[str]:
+    """Why a further repair of this Task is refused, or None when it is still open.
+
+    The count is per Task and per check, so a Task rejected once by one check and once by another
+    is still open: two different checks are two different things to answer, and the next version can
+    answer both. A check that has rejected the same Task `limit` times is the one that says the
+    rewrite is not what moves it, and the message names it, both rejections and the two verbs that
+    do buy something.
+    """
+    for (task, check), rejected in sorted(rejections.items()):
+        if task == task_id and len(rejected) >= limit:
+            return (f"task {task_id} has already been rejected {len(rejected)} times by {check} in this "
+                    f"session ({'; '.join(rejected)}); a further repair against the same check is "
+                    f"refused. What buys something instead: {REPAIR_ALTERNATIVES}.")
+    return None
+
+
 def _repair(plan: ExaminerPlan):
+    # One session's rejections, per Task and per check, in the order they happened (REPAIR_STOP).
+    rejections: dict[tuple[str, str], list[str]] = {}
+
     async def repair(args: RepairArgs) -> RepairResult:
+        locked = repair_lock(rejections, args.task_id)
+        if locked is not None:
+            raise PermissionError(f"repair refused: {locked}")
         task = _task(plan, args.task_id)
         current = _current(plan, args.task_id)
         history = plan.store.setdefault("history", {})
@@ -960,6 +996,9 @@ def _repair(plan: ExaminerPlan):
                                                     plan.store.get("rerolls") or {}, canon_rules, sigs))
         rulings = [ruling_of(d79), ruling_of(pool_gate), ruling_of(loosening)]
         plan.last_rulings = rulings
+        for check in rejected_by:
+            rejections.setdefault((args.task_id, check), []).append(
+                f"version {candidate.verifier_version}: {args.reason}")
         outcome = "accepted" if accepted else f"rejected by {', '.join(rejected_by)}"
         summary = (f"repair of task {args.task_id}: version {candidate.verifier_version} ({digest[:12]}) {outcome}; "
                    f"{len(atoms)} atoms, {len(args.drop)} dropped, {len(args.add)} added")
