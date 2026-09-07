@@ -3,14 +3,38 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Sequence
 
 from pydantic import TypeAdapter
 
 from kullback.agent.messages import Message, UserMessage
-from kullback.agent.session.entries import CompactionEntry, LeafEntry, MessageEntry, SessionEntry, SessionInfoEntry
+from kullback.agent.session.entries import (
+    CompactionEntry,
+    ContentCut,
+    LeafEntry,
+    MessageEntry,
+    SessionEntry,
+    SessionInfoEntry,
+)
 
 _ENTRY = TypeAdapter(SessionEntry)
+
+
+def cuts_in(path: Sequence[SessionEntry]) -> dict[str, ContentCut]:
+    """The content cuts in force on a path, by the entry each one cuts; the last cut of an id wins."""
+    cuts: dict[str, ContentCut] = {}
+    for entry in path:
+        if isinstance(entry, CompactionEntry):
+            for cut in entry.cuts:
+                cuts[cut.entry_id] = cut
+    return cuts
+
+
+def _cut(entry: SessionEntry, cut: ContentCut) -> SessionEntry:
+    """A copy of the entry carrying the cut content; the stored entry is never touched."""
+    if not isinstance(entry, MessageEntry):
+        return entry
+    return entry.model_copy(update={"message": entry.message.model_copy(update={"content": cut.content})})
 
 
 class SessionTreeError(ValueError):
@@ -108,6 +132,10 @@ class SessionStore:
         names an entry on the path, everything before that entry (the code fallback, which compacts
         tau's way by a prefix). The root `session_info` is never replaced, and a compaction that
         replaces nothing on the path stays where it was appended.
+
+        A compaction's `cuts` shorten an entry instead of replacing it: the entry keeps its id and
+        its place and the path carries a copy holding the cut content, so a tool call stays paired
+        with its result, the whole of it is still the line on disk, and `recall` still answers it.
         """
         path = self.path_to_leaf()
         for compaction in [e for e in path if isinstance(e, CompactionEntry)]:
@@ -128,14 +156,20 @@ class SessionStore:
             before = sum(1 for e in path[:first] if e.id not in replaced and e.id != compaction.id)
             kept.insert(before, compaction)
             path = kept
-        return path
+        cuts = cuts_in(path)
+        return [_cut(e, cuts[e.id]) if e.id in cuts else e for e in path] if cuts else path
 
     def active_messages(self) -> list[Message]:
-        """The messages the active path puts in front of the model, a compaction as a marked user message."""
+        """The messages the active path puts in front of the model, a compaction as a marked user message.
+
+        A compaction that only cut stands in for no entry, and the cut says what happened inside the
+        entry it cut, so it adds no message: it is a line of the record, not a summary of something
+        the model can no longer read.
+        """
         messages: list[Message] = []
         for entry in self.active_path():
             if isinstance(entry, MessageEntry):
                 messages.append(entry.message)
-            elif isinstance(entry, CompactionEntry):
+            elif isinstance(entry, CompactionEntry) and not (entry.cuts and not entry.replaces_entry_ids):
                 messages.append(UserMessage(content=f"[summary of earlier context]\n{entry.summary}"))
         return messages

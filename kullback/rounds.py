@@ -298,7 +298,7 @@ def write_rounds(workdir: Any, rounds: Iterable[RoundRecord]) -> Path:
 
     A record's `counts` carry D126's gate counts and, beside them, what only the driver saw:
     `started_at` and `ended_at` (the round's clock, which is where a build's duration is read from),
-    `spend`, `turns` and `context_fill` per agent, the compactions and the findings
+    `spend`, `turns` and `context_fill` per agent, the compactions, the floor's cuts and the findings
     (`driver_counts`), the artifact fingerprint with the artifacts this round changed, the repairs
     it made, and `moved`, which is the whole of why it did or did not count toward a stall.
     """
@@ -386,6 +386,7 @@ class Loop:
     beat_spend: dict[str, float] = field(default_factory=dict)
     spent_allowance: dict[str, bool] = field(default_factory=dict)
     compactions_seen: dict[str, int] = field(default_factory=dict)
+    cuts_seen: dict[str, int] = field(default_factory=dict)
     turns_seen: dict[str, int] = field(default_factory=dict)
     round_started: float = 0.0
     round_saved_start: float = 0.0
@@ -436,6 +437,12 @@ class Loop:
     def compactions(self, agent: str) -> int:
         harness = self.builder if agent == "builder" else self.examiner
         return int(harness.context_stats.fallback_compactions) if harness is not None else 0
+
+    def floor_cuts(self, agent: str) -> int:
+        """How many tool results the floor had to cut down because one of them alone was over the
+        line (D124): a count of the beats where no forget and no drop could have been enough."""
+        harness = self.builder if agent == "builder" else self.examiner
+        return int(harness.context_stats.cuts) if harness is not None else 0
 
     def fills(self, agent: str) -> list[float]:
         """How full this agent's context was at the end of each turn it has taken (D131, D124).
@@ -711,6 +718,7 @@ class Loop:
             "built_by_driver": self.plan.round in self.driver_built,
             "fallback_compactions": {
                 agent: self.compactions(agent) - self.compactions_seen.get(agent, 0) for agent in AGENTS},
+            "floor_cuts": {agent: self.floor_cuts(agent) - self.cuts_seen.get(agent, 0) for agent in AGENTS},
             "findings": list(self.sent),
             "artifacts": fingerprint, "artifact_hashes": per, "artifacts_changed": changed,
         }
@@ -876,6 +884,7 @@ class Loop:
         self.emit(RoundStart(round=n))
         self.sent, self.beat_spend, self.spent_allowance = [], {}, {}
         self.compactions_seen = {agent: self.compactions(agent) for agent in AGENTS}
+        self.cuts_seen = {agent: self.floor_cuts(agent) for agent in AGENTS}
         self.turns_seen = {agent: len(self.fills(agent)) for agent in AGENTS}
         self.allowance = {agent: self.allowance_for(agent) for agent in AGENTS}
         self.builder_beat(n)

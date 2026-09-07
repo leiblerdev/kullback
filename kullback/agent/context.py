@@ -24,6 +24,13 @@ turn, or a tool result from the last N turns (D131's protected zone of recent to
 forget that names one side of a tool call is widened to the whole exchange, the assistant message
 and every result answering it, because a result without its call, or a call without its result, is
 a transcript no provider accepts; the widening is reported, and a widened id meets the same guards.
+
+The cut. The floor may drop only what is unguarded, so a single guarded tool result larger than the
+whole line leaves the context over the line however much else goes. That one result is cut instead
+of forgotten: its content in the active path becomes its head, a mechanical summary and a note
+naming the entry, what it cost and that `recall` still answers the whole of it, which is on the
+file untouched. The call keeps its result, every other guard stands, and the compaction entry says
+what it cut.
 """
 
 from __future__ import annotations
@@ -40,6 +47,7 @@ from kullback.agent.events import Compaction
 from kullback.agent.messages import AssistantMessage, Message, ToolResultMessage, UserMessage, to_wire
 from kullback.agent.session import (
     CompactionEntry,
+    ContentCut,
     CustomEntry,
     MessageEntry,
     SessionEntry,
@@ -47,6 +55,7 @@ from kullback.agent.session import (
     SessionStore,
     SkillChangeEntry,
     ToolSetChangeEntry,
+    cuts_in,
 )
 from kullback.agent.tools import AgentTool
 from kullback.ai.provider import Model
@@ -60,6 +69,10 @@ DEFAULT_WINDOW = 200_000
 DEFAULT_LINE = 0.40
 LOADED_TOOLS_CAP = 20
 RECENT_TOOL_TURNS = 2
+# What a cut tool result keeps in the active path: the head of it, so the model still reads what the
+# result was, and no more, since the whole of it is what put the context over the line.
+CUT_HEAD_LINES = 12
+CUT_HEAD_CHARS = 1200
 NOTES_NAMESPACE = "context_notes"
 
 Arm = Literal["tools", "code_only", "files"]
@@ -208,6 +221,10 @@ class ContextStats(BaseModel):
     refusals: dict[str, int] = Field(default_factory=dict)
     fallback_compactions: int = 0
     mechanical_summaries: int = 0
+    # The floor's cuts: how many guarded tool results were too large to leave whole, and what they
+    # cost, so a build says how often one result alone held the context over the line.
+    cuts: int = 0
+    tokens_cut: int = 0
     fill_at_turn_end: list[float] = Field(default_factory=list)
 
 
@@ -318,6 +335,29 @@ def mechanical_summary(entries: Sequence[SessionEntry], reason: str) -> str:
     lines = [f"[mechanical summary: {reason}]"]
     for entry in entries:
         lines.append(f"- {entry.id} {entry_kind(entry)}: {first_line(entry_text(entry))}")
+    return "\n".join(lines)
+
+
+def cut_text(entry: SessionEntry, tokens_before: int) -> str:
+    """What one cut tool result reads as in the active path (D124).
+
+    The head of the result first, so the model still sees what came back, then the mechanical
+    summary of the entry, then the line that says which entry was cut, what the whole of it costs
+    and how to read it again. A cut is a shorter read of an entry that is still there.
+    """
+    head = "\n".join(entry_text(entry).splitlines()[:CUT_HEAD_LINES])[:CUT_HEAD_CHARS].rstrip()
+    note = (f"[cut by the floor: entry {entry.id} is {tokens_before} tokens on its own, over the line; "
+            f"the head of it is above and the whole result is on the session file, which "
+            f"recall(entry_id=\"{entry.id}\") reads back]")
+    parts = (head, mechanical_summary([entry], f"entry {entry.id} is over the line on its own"), note)
+    return "\n".join(part for part in parts if part)
+
+
+def cut_summary(cuts: Sequence[ContentCut]) -> str:
+    """The summary of a compaction that cut and dropped nothing: what was cut and from how much."""
+    lines = ["[content cut: no entry was forgotten and every tool call still has its result]"]
+    lines += [f"- entry {cut.entry_id} cut from {cut.tokens_before} to {cut.tokens_after} tokens; "
+              f"recall(entry_id=\"{cut.entry_id}\") reads the whole of it" for cut in cuts]
     return "\n".join(lines)
 
 
@@ -583,14 +623,18 @@ class ContextManager:
     def recall(self, entry_id: str) -> RecallResult:
         """Read a forgotten entry back from the record. The text returns as this tool's result,
         which is a new entry at the end of the context, marked with the original id; the original
-        is never spliced back where it stood (lost in the middle, D131)."""
+        is never spliced back where it stood (lost in the middle, D131).
+
+        An entry the floor cut is on the path but only as its head, so a recall of it is allowed and
+        answers the whole of it off the file: what the cut left is not what the entry says."""
         self.stats.recall_calls += 1
         if self.session is None:
             self._refuse("no_session", "recall needs a session store")
         entry = self.session.get(entry_id)
         if entry is None:
             self._refuse("unknown_entry", f"no entry {entry_id} in this session")
-        if any(e.id == entry_id for e in self.session.active_path()):
+        path = self.session.active_path()
+        if any(e.id == entry_id for e in path) and entry_id not in cuts_in(path):
             self._refuse("in_context", f"entry {entry_id} is in the context already")
         if not isinstance(entry, (MessageEntry, CompactionEntry)):
             self._refuse("no_content", f"entry {entry_id} is a {entry.type} and has no content to recall")
@@ -756,6 +800,34 @@ class ContextManager:
             return None
         return await self._fallback(turn, estimate)
 
+    def _over_line_cuts(self, path: Sequence[SessionEntry], guarded: dict[str, tuple[str, str]],
+                        dropped_ids: set[str], line_tokens: int, needed: int) -> list[ContentCut]:
+        """The guarded tool results that are over the line on their own, cut to a head and a note.
+
+        The floor may not forget a guarded entry: D131's protected zone is what the model is working
+        from this turn and last. But one result larger than the whole line holds the context over it
+        whatever else goes, and that is the case the b14 records show, so that result is cut in place
+        instead: the entry keeps its id, the call keeps its result, and the file keeps the whole.
+        The largest goes first, and the pass stops as soon as what was freed covers the excess.
+        """
+        candidates = [
+            (entry_tokens(entry), entry) for entry in path
+            if entry.id in guarded and entry.id not in dropped_ids
+            and isinstance(entry, MessageEntry) and isinstance(entry.message, ToolResultMessage)
+        ]
+        cuts: list[ContentCut] = []
+        for tokens_before, entry in sorted(candidates, key=lambda row: -row[0]):
+            if needed <= 0 or tokens_before <= line_tokens:
+                break
+            content = cut_text(entry, tokens_before)
+            tokens_after = message_tokens(entry.message.model_copy(update={"content": content}))
+            if tokens_after >= tokens_before:
+                continue
+            cuts.append(ContentCut(entry_id=entry.id, content=content,
+                                   tokens_before=tokens_before, tokens_after=tokens_after))
+            needed -= tokens_before - tokens_after
+        return cuts
+
     async def _fallback(self, turn: int, estimate: ContextEstimate) -> Optional[CompactionEntry]:
         path = self.session.active_path()
         guarded = self.guards(path)
@@ -771,20 +843,29 @@ class ContextManager:
                 continue
             dropped.extend(unit)
             freed += sum(entry_tokens(e) for e in unit)
-        if not dropped:
-            return None
         dropped_ids = {e.id for e in dropped}
+        cuts = ([] if freed >= excess else
+                self._over_line_cuts(path, guarded, dropped_ids, estimate.line_tokens, excess - freed))
+        freed += sum(cut.tokens_before - cut.tokens_after for cut in cuts)
+        if not dropped and not cuts:
+            return None
         rest = [e for e in path if not isinstance(e, SessionInfoEntry)]
         # Only when the dropped set is a non-empty prefix of the path: the field tells the store to
         # replace everything before this entry too, which is a claim to make only when something
         # before it actually went. A first kept entry at index 0 dropped nothing, so both that and
         # "nothing was kept at all" (kept_index None) mean no claim.
         kept_index = next((i for i, e in enumerate(rest) if e.id not in dropped_ids), None)
-        first_kept: Optional[str] = rest[kept_index].id if kept_index else None
-        summary, reason = await self._summarize(self.harness.model, dropped)
+        first_kept: Optional[str] = rest[kept_index].id if dropped and kept_index else None
+        # Nothing was dropped when only a cut was made, so there is nothing to summarize and no
+        # model call to spend on it: the summary is the cut itself.
+        summary, reason = (await self._summarize(self.harness.model, dropped) if dropped
+                           else (cut_summary(cuts), None))
         still_over = " (still over the line: the rest is protected)" if freed < excess else ""
-        note = f"code_fallback at turn {turn}: {estimate.note()}{still_over}; "
-        note += "summary by the model" if reason is None else f"mechanical summary because {reason}"
+        how = ("nothing dropped, so nothing summarized" if not dropped else
+               "summary by the model" if reason is None else f"mechanical summary because {reason}")
+        note = f"code_fallback at turn {turn}: {estimate.note()}{still_over}; {how}"
+        for cut in cuts:
+            note += f"; cut entry {cut.entry_id} from {cut.tokens_before} to {cut.tokens_after} tokens"
         entry = CompactionEntry(
             id=self.next_entry_id(),
             summary=summary,
@@ -792,11 +873,14 @@ class ContextManager:
             first_kept_entry_id=first_kept,
             by="code_fallback",
             note=note,
+            cuts=cuts,
         )
         self.session.append(entry)
         self._usage_stale = True
         self.refresh()
         self.stats.fallback_compactions += 1
+        self.stats.cuts += len(cuts)
+        self.stats.tokens_cut += sum(cut.tokens_before - cut.tokens_after for cut in cuts)
         if reason is not None:
             self.stats.mechanical_summaries += 1
         await self.harness.emit(
