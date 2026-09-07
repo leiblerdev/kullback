@@ -269,6 +269,12 @@ class EntitySchema(Record):
     # still a table, because some rows are only ever shown on their own, but the home is where a
     # tool has to look first on the customer's real database.
     homes: dict[str, str] = Field(default_factory=dict)
+    # table -> the columns whose values together identify one row, id column first, for a table the
+    # corpus showed holding several rows under one id. A table absent here is keyed by its id column
+    # alone, which is every table until the miner finds otherwise. A row id stays a string either
+    # way: the key columns' values joined by `key_separator`, so nothing that reads a row id changes.
+    composite_keys: dict[str, list[str]] = Field(default_factory=dict)
+    key_separator: str = "|"
 
 # --- policy and the simulated user ---
 

@@ -29,8 +29,11 @@ from kullback.builder.sandbox import (
     gate_parses,
     id_field,
     id_pattern_for,
+    key_fields,
+    key_separator,
     match_table,
     parse_result,
+    partial_key,
     run_gates,
 )
 
@@ -133,13 +136,15 @@ class ToolBuild:
 
 # --- reading rows out of recorded tool results ---
 
-def extract_rows(schema: EntitySchema, result: Any) -> list[tuple[str, str, dict]]:
+def extract_rows(schema: EntitySchema, result: Any, args: Optional[dict] = None) -> list[tuple[str, str, dict]]:
     """Rows a result states directly: itself, or the elements of a returned list.
 
-    A value nested inside a row (an item inside an order) is not read as a row of its own.
+    A value nested inside a row (an item inside an order) is not read as a row of its own. The
+    call's arguments are passed through to the key, because a table with a composite key can be
+    told which row it is answering by the call rather than by the row (`tool_runs.row_key`).
     """
     values = result if isinstance(result, list) else [result]
-    return [(t, i, v) for v in values for t, i in [match_table(schema, v) or (None, None)] if t]
+    return [(t, i, v) for v in values for t, i in [match_table(schema, v, args) or (None, None)] if t]
 
 # --- inverse replay over the whole corpus (D33, D74) ---
 
@@ -165,7 +170,7 @@ def _observations(traces: list[Trace], schema: EntitySchema, write_tools: set[st
             if call.error is not None or not is_assistant_call(call):
                 continue
             is_write = call.name in write_tools
-            rows = extract_rows(schema, parse_result(call.result))
+            rows = extract_rows(schema, parse_result(call.result), call.args)
             for table, row_id, row in rows:
                 out.append(_Obs(table, row_id, row, trace.trace_id, (trace_index, call_index),
                                 is_write or row_id in written))
@@ -228,6 +233,9 @@ def build_starting_state(
                                "its post-state is kept as the starting value")
         db.setdefault(table, {})[row_id] = chosen.row
 
+    assumptions += [f"{table} row {row_id} was seen without every part of its key; it was folded "
+                    f"into the {count} rows whose known key columns match and is not a row of its own"
+                    for table, row_id, count in fold_partial_rows(db, schema)]
     added = add_synthetic_rows(db, schema, traces) if synthetic else []
     assumptions += [f"{table_of} row {row_id} was never shown by a trace; it is a synthetic row "
                     "shaped from the observed rows and a Run that reads it is assisted"
@@ -253,6 +261,46 @@ def build_starting_state(
     (workdir / "assumptions.json").write_text(json.dumps(assumptions, indent=2) + "\n", encoding="utf-8")
     return StartingState(db=db, overlays=overlays, assumptions=assumptions, path=path,
                          synthetic_rows=[row_id for _, row_id in added] + grown_ids)
+
+
+def fold_partial_rows(db: dict, schema: EntitySchema) -> list[tuple[str, str, int]]:
+    """A row seen without every part of its key is not a new row and not a contradiction.
+
+    The rule. Such a sighting is folded into every row whose known key columns match it, filling
+    only the columns those rows were never shown holding, so it can add what the keyed sightings
+    did not show and can never overwrite what they did. Where no keyed row matches, it is kept as
+    the partial sighting it is, under its own partial key, because dropping it would lose an
+    observation and inventing the missing part would be a guess (D41). Returns (table, key, rows it
+    was folded into) per folded row.
+
+    Nothing to do on a table keyed by one column, which is every table until the miner names a
+    composite key: a key of one part is never partial.
+    """
+    folded: list[tuple[str, str, int]] = []
+    separator = key_separator(schema)
+    for table in sorted(db):
+        fields = key_fields(schema, table)
+        if len(fields) < 2:
+            continue
+        rows = db[table]
+        for key in sorted(rows):
+            if not partial_key(schema, table, key):
+                continue
+            known = key.split(separator)
+            matches = [other for other in sorted(rows) if other != key
+                       and _key_agrees(other.split(separator), known)]
+            for other in matches:
+                for name, value in rows[key].items():
+                    rows[other].setdefault(name, value)
+            if matches:
+                del rows[key]
+                folded.append((table, key, len(matches)))
+    return folded
+
+
+def _key_agrees(parts: list[str], known: list[str]) -> bool:
+    """Whether a full key matches every part a partial key does know."""
+    return len(parts) == len(known) and all(a == b for a, b in zip(parts, known, strict=False) if b)
 
 
 def fold_into_homes(db: dict, schema: EntitySchema) -> list[tuple[str, str, str]]:
@@ -287,19 +335,25 @@ def referenced_ids(traces: Iterable[Trace], schema: EntitySchema) -> list[tuple[
     Public: build.py's build_environment gate wires these ids into validate.environment_gate, to
     check db.json actually holds every id a trace referenced.
     """
-    fields = {table: id_field(schema, table) for table in schema.tables}
+    keys = {table: key_fields(schema, table) for table in schema.tables}
     out: set[tuple[str, str]] = set()
     for trace in traces:
         for call in trace.tool_calls:
             if call.error is not None:  # an id the customer's tool refused is not a row we owe
                 continue
-            for name, value in call.args.items():
-                if not isinstance(value, str):
+            args = call.args or {}
+            for table, fields in keys.items():
+                if not fields or not isinstance(args.get(fields[0]), str):
                     continue
-                for table, field_name in fields.items():
-                    pattern = id_pattern_for(schema, table, field_name)
-                    if field_name == name and (not pattern or re.match(pattern, value)):
-                        out.add((table, value))
+                pattern = id_pattern_for(schema, table, fields[0])
+                if pattern and not re.match(pattern, args[fields[0]]):
+                    continue
+                # A composite key the call does not complete names no row: a partial id would be a
+                # row of its own, which is exactly what the composite key exists to prevent.
+                if any(args.get(name) is None for name in fields[1:]):
+                    continue
+                out.add((table, key_separator(schema).join(
+                    [args[fields[0]]] + [str(args[name]) for name in fields[1:]])))
     return sorted(out)
 
 
@@ -316,8 +370,10 @@ def add_synthetic_rows(db: dict, schema: EntitySchema, traces: Iterable[Trace]) 
         rows = db.get(table) or {}
         if row_id in rows or not rows:
             continue
-        name = id_field(schema, table)
-        db.setdefault(table, {})[row_id] = dict(_modal_row(rows.values()), **({name: row_id} if name else {}))
+        fields = key_fields(schema, table)
+        parts = row_id.split(key_separator(schema)) if len(fields) > 1 else [row_id]
+        named = dict(zip(fields, parts, strict=False)) if fields else {}
+        db.setdefault(table, {})[row_id] = dict(_modal_row(rows.values()), **named)
         added.append((table, row_id))
     schema.synthetic_rows = sorted(set(schema.synthetic_rows) | {row_id for _, row_id in added})
     return added
@@ -756,6 +812,19 @@ def _schema_block(schema: EntitySchema) -> str:
         columns = sorted((c for c in schema.columns if c.table == table), key=lambda c: c.name)
         names = ", ".join(c.name for c in columns) if columns else "(no columns observed)"
         lines.append(f"- {table}: {names}")
+        fields = key_fields(schema, table)
+        if len(fields) > 1:
+            separator = key_separator(schema)
+            form = separator.join("{" + name + "}" for name in fields)
+            lines.append(f"    self.db.{table} is keyed by {' and '.join(fields)} together, joined "
+                         f"with {separator!r}: the key of a row is f\"{form}\". One "
+                         f"{fields[0]} stands for several rows here, one per "
+                         f"{' and '.join(fields[1:])}, so build the whole key to reach a row and "
+                         f"never look one up by {fields[0]} alone. A row's own "
+                         f"{' or '.join(fields[1:])} column can be null where the customer's tool "
+                         f"took the value from the call's arguments; the key is what says which row "
+                         f"this is. Split a key on {separator!r} to read its parts back, and answer "
+                         f"rows whose key parts match the arguments you were given.")
         home = (schema.homes or {}).get(table)
         if home:
             parent, column = home.split(".", 1)
