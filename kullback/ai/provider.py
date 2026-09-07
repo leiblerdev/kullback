@@ -13,7 +13,7 @@ import time
 import uuid
 from email.utils import parsedate_to_datetime
 from pathlib import Path
-from typing import Any, Iterable, Optional
+from typing import Any, Iterable, NamedTuple, Optional
 from urllib.parse import urlparse
 
 import httpx
@@ -41,6 +41,30 @@ class ToolCallRequest(BaseModel):
     arguments: dict = Field(default_factory=dict)
 
 
+class Exchange(BaseModel):
+    """One provider exchange as it went over the wire: what was sent, how long, how many tries.
+
+    Recorded so a stored Run says what was asked of the provider and not only what came back: the
+    sampling a renderer has to reproduce, fingerprints of the prompt it has to rebuild, and the
+    timing, attempts and provider request id an incident is read from (D159).
+    """
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    provider: Optional[str] = None
+    endpoint: Optional[str] = None  # base_url + path, never a key
+    wire_id: Optional[str] = None
+    sampling: dict = Field(default_factory=dict)  # the request body minus messages, tools, input, system
+    n_messages: int = 0
+    messages_hash: Optional[str] = None
+    n_tools: int = 0
+    tools_hash: Optional[str] = None
+    wall_ms: float = 0.0
+    attempts: int = 0
+    status: Optional[int] = None
+    request_id: Optional[str] = None
+
+
 class ModelReply(BaseModel):
     """What one model call returned."""
 
@@ -52,6 +76,9 @@ class ModelReply(BaseModel):
     model: Optional[str] = None
     stop_reason: Optional[str] = None
     raw: Optional[dict] = None
+    # What the adapter sent to get this reply. None on the three offline models: TestModel and
+    # RecordedModel never touch a wire, and a MemoModel hit carries the original call's exchange.
+    exchange: Optional[Exchange] = None
 
 
 class ModelConfig(BaseModel):
@@ -79,6 +106,11 @@ class ModelConfig(BaseModel):
     # cache. Set once per build and stage (build.py); the Anthropic adapter ignores it, since it
     # caches by cache_control points instead (cache_system, cache_last_two below).
     prompt_cache_key: Optional[str] = None
+    # Logprobs, for a training renderer that needs them (D159). OpenAI chat takes both fields, the
+    # Responses API takes top_logprobs and an include entry, and Anthropic offers neither, so its
+    # adapter ignores both. Whatever comes back lands in the reply's `raw` and nowhere else.
+    logprobs: Optional[bool] = None
+    top_logprobs: Optional[int] = None
 
 
 class Model:
@@ -382,11 +414,18 @@ def _read_assistant_replies(path: Path) -> list[ModelReply]:
 
 
 class ProviderError(RuntimeError):
-    """A provider said no. Carries the status and the body so the caller can see what it said."""
+    """A provider said no. Carries the status, the body and how many attempts were made.
 
-    def __init__(self, message: str, status: Optional[int] = None, body: Any = None):
+    `attempts` is 1 for an error raised without a retry loop behind it (a missing key, a body the
+    provider refused once); the retry loop sets the real count on the error it raises, which is what
+    a Run's error event reports (D159).
+    """
+
+    def __init__(self, message: str, status: Optional[int] = None, body: Any = None,
+                 attempts: int = 1):
         self.status = status
         self.body = body
+        self.attempts = attempts
         super().__init__(message)
 
 
@@ -424,6 +463,14 @@ ENV_VAR = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}")
 CACHE_CONTROL = {"type": "ephemeral"}
 TEXT_BLOCK_TYPES = ("text", "reasoning", "thinking")
 ID_DIGEST_LEN = 8
+# The keys of a request body that are the prompt itself rather than the sampling: each adapter
+# builds a different body, so the sampling is what is left after these come out, never a list of
+# the fields worth keeping (a field nobody enumerated is a field a Run would not record).
+PROMPT_BODY_KEYS = ("messages", "tools", "input", "system", "instructions")
+# The provider's own id for one exchange, under whichever header that provider sends it.
+REQUEST_ID_HEADERS = ("x-request-id", "request-id", "cf-ray")
+# The Responses API returns logprobs only for what the include list asks for.
+RESPONSES_LOGPROBS_INCLUDE = "message.output_text.logprobs"
 # An empty user turn cannot be dropped (that would end the request on an assistant message,
 # which the current Anthropic API rejects: prefill is gone on 4.6 and later), and it cannot be
 # sent empty either, so it goes as one placeholder block.
@@ -555,6 +602,41 @@ def json_body(request: Any) -> dict:
         return {}
 
 
+def body_hash(part: Any) -> str:
+    """sha256 of one part of a request body, so a renderer can check it rebuilt the same prompt.
+
+    `records.content_hash` does the same job for the Harness' records, and this is not it: `ai`
+    imports nothing of ours (D121), so the hash the adapters take is written here. It is a
+    fingerprint of what was sent, compared with itself, never with a record's hash.
+    """
+    return hashlib.sha256(json.dumps(part, sort_keys=True, default=str).encode("utf-8")).hexdigest()
+
+
+def request_id_of(headers: Any) -> Optional[str]:
+    """The provider's id for one exchange: the first of the known headers that is there."""
+    get = getattr(headers, "get", None)
+    if get is None:
+        return None
+    for key in REQUEST_ID_HEADERS:
+        value = get(key)
+        if value:
+            return str(value)
+    return None
+
+
+class Posted(NamedTuple):
+    """One finished post: the JSON it answered with, and how it answered.
+
+    `post` returns the JSON alone, as it always did; `query` takes this so the Exchange it records
+    can say how many attempts the retry loop made and which request the provider logged.
+    """
+
+    data: dict
+    status: Optional[int] = None
+    attempts: int = 0
+    headers: Any = None
+
+
 def retry_after_seconds(headers: Any, now: Optional[float] = None) -> Optional[float]:
     """Retry-After as seconds, whether the provider sent a count or an HTTP date."""
     raw = None
@@ -650,10 +732,41 @@ class HttpModel(Model):
         if self.key_required and not self.api_key:
             raise ProviderError(f"no API key for {self.name}; set {self.key_env_var} or pass api_key")
         body = self.build_body(messages, tools, config or ModelConfig())
-        data = self.post(body)
-        return self.parse_reply(data)
+        started = time.monotonic()
+        posted = self._post_full(body)
+        wall_ms = (time.monotonic() - started) * 1000.0
+        reply = self.parse_reply(posted.data)
+        reply.exchange = self.exchange_of(body, posted, wall_ms)
+        return reply
+
+    def exchange_of(self, body: dict, posted: Posted, wall_ms: float) -> Exchange:
+        """What this call sent and how it went, from the body itself and the response's own headers.
+
+        The prompt is fingerprinted rather than copied: the Run already carries the transcript, and
+        a count and a hash are what a renderer needs to say it rebuilt the same request (D159).
+        """
+        prompt = body.get("messages") or body.get("input") or []
+        tools = body.get("tools") or []
+        return Exchange(
+            provider=self.provider,
+            endpoint=self.base_url + self.path,
+            wire_id=self.wire_id,
+            sampling={key: value for key, value in body.items() if key not in PROMPT_BODY_KEYS},
+            n_messages=len(prompt),
+            messages_hash=body_hash(prompt),
+            n_tools=len(tools),
+            tools_hash=body_hash(tools),
+            wall_ms=wall_ms,
+            attempts=posted.attempts,
+            status=posted.status,
+            request_id=request_id_of(posted.headers),
+        )
 
     def post(self, body: dict) -> dict:
+        """The JSON one post answered with. The retry rules live in `_post_full` below."""
+        return self._post_full(body).data
+
+    def _post_full(self, body: dict) -> Posted:
         # The gate sits here, on the network path itself, not only on query(): a caller that
         # builds a body and posts it must not reach the transport while live calls are off.
         require_live_calls_enabled()
@@ -665,12 +778,13 @@ class HttpModel(Model):
                 response = self.client().post(url, headers=headers, json=body, timeout=self.timeout)
             except httpx.HTTPError as exc:
                 if last_attempt:
-                    raise RetryExhausted(f"{self.name}: {self.retry.attempts} attempts failed: {exc}") from exc
+                    raise RetryExhausted(f"{self.name}: {self.retry.attempts} attempts failed: {exc}",
+                                         attempts=attempt) from exc
                 self.sleep(backoff_delay(attempt, self.retry, self.rng))
                 continue
             if response.status_code < 400:
                 try:
-                    return response.json()
+                    return Posted(response.json(), response.status_code, attempt, response.headers)
                 except ValueError as exc:
                     # A 2xx that is not JSON is a proxy or gateway page, not an answer. It is
                     # a transport fault, so it retries like one instead of escaping as a
@@ -685,10 +799,12 @@ class HttpModel(Model):
                             f"{self.name}: {self.retry.attempts} attempts failed: {error}",
                             status=response.status_code,
                             body=response.text,
+                            attempts=attempt,
                         ) from exc
                     self.sleep(backoff_delay(attempt, self.retry, self.rng))
                     continue
             error = self.error_for(response)
+            error.attempts = attempt
             if isinstance(error, ContextOverflowError) or not _retryable_status(response.status_code):
                 raise error
             if last_attempt:
@@ -696,6 +812,7 @@ class HttpModel(Model):
                     f"{self.name}: {self.retry.attempts} attempts failed: {error}",
                     status=response.status_code,
                     body=error.body,
+                    attempts=attempt,
                 ) from error
             wait = retry_after_seconds(response.headers)
             if wait is not None and wait > self.retry.max_retry_after_s:
@@ -704,9 +821,10 @@ class HttpModel(Model):
                     f"{self.retry.max_retry_after_s:.0f}s this build will wait: {error}",
                     status=response.status_code,
                     body=error.body,
+                    attempts=attempt,
                 ) from error
             self.sleep(backoff_delay(attempt, self.retry, self.rng) if wait is None else wait)
-        raise RetryExhausted(f"{self.name}: no attempts were made")
+        raise RetryExhausted(f"{self.name}: no attempts were made", attempts=0)
 
     def error_for(self, response: Any) -> ProviderError:
         try:
@@ -766,6 +884,8 @@ class AnthropicModel(HttpModel):
             body["thinking"] = dict(config.thinking)
         if config.effort:
             body["output_config"] = {"effort": config.effort}
+        # config.logprobs and config.top_logprobs are deliberately not sent: the Messages API has
+        # no logprobs field, and a field it does not know makes it refuse the whole request.
         return body
 
     def parse_reply(self, data: dict) -> ModelReply:
@@ -830,6 +950,10 @@ class OpenAIModel(HttpModel):
             body["stop"] = list(config.stop)
         if config.prompt_cache_key:
             body["prompt_cache_key"] = config.prompt_cache_key
+        if config.logprobs is not None:
+            body["logprobs"] = config.logprobs
+        if config.top_logprobs is not None:
+            body["top_logprobs"] = config.top_logprobs
         body.update(self.reasoning_fields(config))
         if tools and self._reasoning_family() and "reasoning_effort" not in body:
             # Found live: gpt-5.6-luna answers a tool call with HTTP 400 saying function tools and
@@ -988,6 +1112,15 @@ class OpenAIResponsesModel(HttpModel):
             body["tools"] = [_responses_tool(t) for t in tools]
         if config.max_tokens is not None:
             body["max_output_tokens"] = config.max_tokens
+        if config.logprobs or config.top_logprobs is not None:
+            # This endpoint returns logprobs only for what `include` asks for, so asking for them
+            # is two fields, not one.
+            if config.top_logprobs is not None:
+                body["top_logprobs"] = config.top_logprobs
+            include = list(body.get("include") or [])
+            if RESPONSES_LOGPROBS_INCLUDE not in include:
+                include.append(RESPONSES_LOGPROBS_INCLUDE)
+            body["include"] = include
         return body
 
     def parse_reply(self, data: dict) -> ModelReply:

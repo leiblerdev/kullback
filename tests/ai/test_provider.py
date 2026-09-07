@@ -1130,3 +1130,102 @@ def test_an_endpoint_that_reports_no_cache_write_records_none():
     })
     assert reply.usage.cache_read == 400 and reply.usage.input == 500
     assert reply.usage.cache_write == 0
+
+
+# --- what one exchange records (D159) ---
+
+
+def test_the_exchange_names_the_sampling_sent_the_wire_id_the_endpoint_and_the_prompt_fingerprints(live, sleeps):
+    """A stored Run has to say what was asked for, not only what came back: a renderer that
+    re-tokenizes the prompt checks its own rebuild against the counts and the hashes here."""
+    seen = {}
+
+    def handler(request):
+        seen["body"] = pv.json_body(request)
+        return httpx.Response(200, json={"content": [], "usage": {}})
+
+    model = anthropic_model(handler, sleeps, model_id="anthropic/opus", wire_id="claude-opus-5")
+    reply = model.query(
+        [{"role": "system", "content": "be brief"}, {"role": "user", "content": "hi"}],
+        tools=[{"name": "get_order", "description": "d", "input_schema": {"type": "object"}}],
+        config=pv.ModelConfig(max_tokens=64, temperature=0.0, stop=["END"]),
+    )
+    exchange = reply.exchange
+    assert exchange.provider == "anthropic" and exchange.wire_id == "claude-opus-5"
+    assert exchange.endpoint == "https://api.anthropic.com/v1/messages"
+    # The sampling is the body minus the prompt itself, so a field no one enumerated is still recorded.
+    assert exchange.sampling == {"model": "claude-opus-5", "max_tokens": 64, "temperature": 0.0,
+                                 "stop_sequences": ["END"]}
+    assert exchange.n_messages == len(seen["body"]["messages"])
+    assert exchange.messages_hash == pv.body_hash(seen["body"]["messages"])
+    assert exchange.n_tools == 1 and exchange.tools_hash == pv.body_hash(seen["body"]["tools"])
+    assert exchange.wall_ms >= 0.0
+
+
+@pytest.mark.parametrize("header", ["x-request-id", "request-id", "cf-ray"])
+def test_the_exchange_counts_every_attempt_and_keeps_the_final_status_and_the_request_id(live, sleeps, header):
+    calls = []
+
+    def handler(request):
+        calls.append(1)
+        if len(calls) < 3:
+            return httpx.Response(500, json={"error": {"message": "boom"}})
+        return httpx.Response(200, headers={header: "req-42"}, json={"content": [], "usage": {}})
+
+    reply = anthropic_model(handler, sleeps).query([{"role": "user", "content": "hi"}])
+    assert reply.exchange.attempts == 3
+    assert reply.exchange.status == 200
+    assert reply.exchange.request_id == "req-42"
+
+
+def test_a_provider_error_carries_the_attempts_that_were_made(live, sleeps):
+    """The Run's error event reports it, so a call that died on one refused body is told from one
+    that died after five tries at a provider that was down."""
+    def down(request):
+        return httpx.Response(503, json={"error": {"message": "down"}})
+
+    with pytest.raises(pv.RetryExhausted) as exhausted:
+        anthropic_model(down, sleeps).query([{"role": "user", "content": "hi"}])
+    assert exhausted.value.attempts == 5
+
+    def refused(request):
+        return httpx.Response(400, json={"error": {"message": "bad tool schema"}})
+
+    with pytest.raises(pv.ProviderError) as once:
+        anthropic_model(refused, sleeps).query([{"role": "user", "content": "hi"}])
+    assert once.value.attempts == 1 and once.value.status == 400
+
+
+def test_an_offline_model_records_no_exchange(make_recorded_model):
+    """TestModel and RecordedModel never touch a wire, so there is nothing for them to record."""
+    assert pv.TestModel(["hello"]).query([]).exchange is None
+    recorded = make_recorded_model([{"role": "assistant", "content": "one moment"}])
+    assert recorded.query([]).exchange is None
+
+
+# --- logprobs, asked for only where the endpoint takes them (D159) ---
+
+
+def test_an_openai_chat_body_carries_logprobs_only_when_they_were_asked_for():
+    body = _body("openai/gpt-4.1-mini", logprobs=True, top_logprobs=5)
+    assert body["logprobs"] is True and body["top_logprobs"] == 5
+    plain = _body("openai/gpt-4.1-mini")
+    assert "logprobs" not in plain and "top_logprobs" not in plain
+
+
+def test_a_responses_body_asks_for_output_text_logprobs_when_they_were_asked_for(sleeps):
+    model = pv.OpenAIResponsesModel(
+        model_id="opencode-go/muse-spark-1.3-contributor", base_url="https://opencode.ai/zen/go/v1",
+        client=transport_of(ok_anthropic()), sleep=sleeps.append, env={},
+    )
+    body = model.build_body(HI, None, pv.ModelConfig(logprobs=True, top_logprobs=3))
+    assert body["top_logprobs"] == 3
+    assert body["include"] == [pv.RESPONSES_LOGPROBS_INCLUDE]
+    assert "include" not in model.build_body(HI, None, pv.ModelConfig())
+
+
+def test_an_anthropic_body_carries_no_logprobs_field(sleeps):
+    """The Messages API has no logprobs, and a field it does not know makes it refuse the request."""
+    body = anthropic_model(ok_anthropic(), sleeps).build_body(
+        HI, None, pv.ModelConfig(logprobs=True, top_logprobs=5))
+    assert "logprobs" not in json.dumps(body)
