@@ -850,3 +850,138 @@ def test_a_declined_recompile_is_named_on_the_assisted_tools_red_light(tmp_path)
         encoding="utf-8")
     light = next(r for r in builder_tools.red_lights(workdir) if r.target == "lookup_shelf")
     assert "scored [2, 0] against the kept body's [5, 9]" in light.failure and "declined" in light.failure
+
+
+# --- a body rewritten because the stage's inputs changed replaces the kept one only by beating it ---
+
+
+def _rerun_the_whole_stage(workdir: Path, model) -> None:
+    """Run compile_tools over every tool again, the way a change to one of its inputs makes it run.
+
+    A change to the schema, the Starting state, the readers or the tables block moves the stage's
+    key and the run that follows writes every body from scratch. The lesson file is a declared input
+    path of the stage, so recording one sentence moves the key the same way and asks for the same
+    full run, without a fixture having to fake a new world for the whole corpus.
+    """
+    from kullback.builder import memory
+
+    memory.record_lesson(workdir, "any_tool_at_all", ["the stage's inputs moved"])
+    plan = BuildPlan(workdir=workdir, iterate=True, model=model, max_attempts=0)
+    result = build_module.execute(plan, "compile_tools")
+    assert result.reports["compile_tools"].cached is False, "an input moved, so the stage has to run"
+
+
+def _busiest_tool(workdir: Path) -> str:
+    """The tool the recordings call most, so a body planted for it is judged on real evidence."""
+    outcomes = json.loads((workdir / "tool_call_outcomes.json").read_text(encoding="utf-8"))
+    return max(sorted(outcomes), key=lambda tool: len(outcomes[tool]))
+
+
+def _plant_body(workdir: Path, name: str, body: str) -> dict:
+    """Put `body` in the workdir as the body this tool already has; answers what was there before."""
+    path = workdir / "bodies.json"
+    before = json.loads(path.read_text(encoding="utf-8"))
+    path.write_text(json.dumps(dict(before, **{name: body})), encoding="utf-8")
+    return before
+
+
+def test_a_body_rewritten_because_the_stages_inputs_moved_does_not_replace_one_it_scores_below(
+    built, tmp_path
+):
+    """A live round changed one constant of the world, which rewrote every body from scratch, and a
+    write tool nothing about had changed went from 83 of its 139 recorded calls matched to 39; the
+    corpus fell from 179 confirmed Tasks to 165. D174 made a narrowed recompile replace a kept body
+    only by beating it and this path had no such rule: the rewrite was kept whatever it scored."""
+    workdir = tmp_path / "scores_below"
+    shutil.copytree(built, workdir)
+    before = json.loads((workdir / "bodies.json").read_text(encoding="utf-8"))
+
+    _rerun_the_whole_stage(workdir, TestModel(["raise KeyError('no such row')"], loop=True))
+
+    assert json.loads((workdir / "bodies.json").read_text(encoding="utf-8")) == before, \
+        "every body that crashes on every call scored below the one the workdir held"
+    rulings = json.loads((workdir / "kept_bodies.json").read_text(encoding="utf-8"))
+    assert rulings, "the run has to say per tool what it did with the body that tool already had"
+    busiest = rulings[_busiest_tool(workdir)]
+    assert busiest["outcome"] == "kept" and busiest["kept_score"] > busiest["attempt_score"]
+
+
+def test_a_body_rewritten_because_the_stages_inputs_moved_replaces_one_it_scores_above(built, tmp_path):
+    """The rule is not that the older body wins; it is that the better one does. A body that matches
+    more recorded calls than the one the workdir held takes the tool, and the ruling says so."""
+    workdir = tmp_path / "scores_above"
+    shutil.copytree(built, workdir)
+    name = _busiest_tool(workdir)
+    before = _plant_body(workdir, name, "return None")  # runs on every call and matches none of them
+
+    _rerun_the_whole_stage(workdir, Bodies())
+
+    written = json.loads((workdir / "bodies.json").read_text(encoding="utf-8"))
+    assert written[name] == before[name], "the body that answers the recordings replaces the one that does not"
+    ruling = json.loads((workdir / "kept_bodies.json").read_text(encoding="utf-8"))[name]
+    assert ruling["outcome"] == "beaten" and ruling["attempt_score"] > ruling["kept_score"]
+
+
+def test_a_rewritten_body_that_only_ties_leaves_the_body_the_workdir_already_had(built, tmp_path):
+    """A tie goes to the body that is already there. It has been through the Examiner's round and the
+    Tasks that were trusted were trusted against it, and an equally scored replacement buys nothing."""
+    workdir = tmp_path / "tie"
+    shutil.copytree(built, workdir)
+    name = _busiest_tool(workdir)
+    before = json.loads((workdir / "bodies.json").read_text(encoding="utf-8"))
+    variant = before[name] + "\n# the same body again, written another way"
+    _plant_body(workdir, name, variant)
+
+    _rerun_the_whole_stage(workdir, Bodies())  # writes exactly the body `before` holds
+
+    assert json.loads((workdir / "bodies.json").read_text(encoding="utf-8"))[name] == variant
+    ruling = json.loads((workdir / "kept_bodies.json").read_text(encoding="utf-8"))[name]
+    assert ruling["outcome"] == "kept" and ruling["kept_score"] == ruling["attempt_score"]
+
+
+def test_a_kept_body_that_raises_on_every_call_under_the_new_world_is_reported_and_gives_up_the_tool(
+    built, tmp_path
+):
+    """A schema change can take away the table a body read, and then it answers nothing at all. Such a
+    body is no candidate whatever it scores, or the tie would hand the tool back to a body the change
+    broke; it is named `could_not_run` and the run's own attempt takes the tool."""
+    workdir = tmp_path / "could_not_run"
+    shutil.copytree(built, workdir)
+    name = _busiest_tool(workdir)
+    _plant_body(workdir, name, "raise KeyError('the table this body read is gone')")
+    attempt = "raise ValueError('this attempt raises on every call too')"
+
+    _rerun_the_whole_stage(workdir, TestModel([attempt], loop=True))
+
+    ruling = json.loads((workdir / "kept_bodies.json").read_text(encoding="utf-8"))[name]
+    assert ruling["outcome"] == "could_not_run"
+    assert ruling["kept_score"] == ruling["attempt_score"], "the two tie, and the tie does not save it"
+    written = json.loads((workdir / "bodies.json").read_text(encoding="utf-8"))[name]
+    assert attempt in written and "the table this body read is gone" not in written
+
+
+def test_the_writer_is_told_what_the_body_it_has_to_beat_fails_at_and_is_never_shown_that_body(
+    built, tmp_path
+):
+    """Shown the body, the writer copies it, and a copy cannot beat it. What it is shown is what that
+    body fails at, grouped by shape with counts the way every other hint is (D181's rule 6)."""
+    from kullback.builder import compile_env
+
+    workdir = tmp_path / "hint"
+    shutil.copytree(built, workdir)
+    name = _busiest_tool(workdir)
+    planted = "raise KeyError('the table this body read is gone')"
+    _plant_body(workdir, name, planted)
+    model = Bodies()
+
+    _rerun_the_whole_stage(workdir, model)
+
+    sent = [" ".join(str(m.get("content") or "") for m in call["messages"]) for call in model.calls]
+    asked = [text for text in sent if f"Tool: {name}" in text]
+    assert asked, "the stage has to have asked for this tool's body"
+    assert all(planted not in text for text in asked), "the body to beat is never in the prompt"
+    hints = [text[text.index(compile_env.KEPT_BODY_HEAD):] for text in asked
+             if compile_env.KEPT_BODY_HEAD in text]
+    assert hints, "what that body fails at is what the writer is given"
+    assert all("- gate " in hint and "(1 call" in hint for hint in hints), \
+        "and it is given by gate, grouped by shape with the calls counted"

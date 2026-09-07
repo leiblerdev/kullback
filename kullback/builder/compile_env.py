@@ -20,6 +20,10 @@ from typing import Any, Callable, Iterable, Optional
 from kullback.builder import mine, synth
 from kullback.builder.body_skill import BODY_SKILL
 from kullback.builder.mine import is_assistant_call, is_scalar_result
+
+# The failure grouping D181's rule 6 gives every other hint; repair.py imports nothing of this
+# module, so the two sit in one layer with no cycle between them.
+from kullback.builder.repair import SHAPES_SHOWN, failure_shapes
 from kullback.builder.sandbox import (
     DB_CLASS,
     HELPERS,
@@ -136,6 +140,9 @@ class ToolBuild:
     # A kept assisted body that answers every recorded call the same way while the recordings differ:
     # not a body with a bug in it, a body that never read its arguments (`hardcoded_body`).
     hardcoded: bool = False
+    # Only ever set by `grade_body`: a body carried over from an earlier run of the stage that
+    # answered none of the recorded calls under the world as it stands now.
+    could_not_run: bool = False
 
 # --- reading rows out of recorded tool results ---
 
@@ -1481,6 +1488,104 @@ def attempt_score(gates: Iterable[GateResult]) -> tuple[int, int]:
     matched = sum(int(gate.metrics.get("success_matches") or 0)
                   for gate in gates if gate.stage == "replay_fidelity")
     return passed, matched
+
+
+def body_could_not_run(gates: Iterable[GateResult], rows: Iterable[dict]) -> bool:
+    """True when this body answered none of the recorded calls: it cannot be a candidate at all.
+
+    A body kept from an earlier run of the stage is replayed under the world as it stands now, and
+    the world may have moved out from under it: a table it read is gone, a column it indexed is
+    renamed, and every call raises. Such a body still has a score, and on a corpus where the new
+    attempt is no better the tie rule would hand the tool back to it. So it is told apart from a
+    body that merely scores badly, and the tie does not save it.
+
+    Answering nothing is read off the per-call rows and not off the executes ruling, because that
+    ruling counts only the exceptions that are a fault of the module itself: a KeyError is how a
+    tool refuses an id it does not hold (`CRASH_ERRORS`), and a body whose table is gone raises
+    exactly that on every call. The rows say what each call actually answered (`answer_digest`
+    marks a raise) and whether it matched the recording, so the reading is: every recorded call
+    raised and none of them matched. Before the rows there is the module itself: one that does not
+    parse, or a sandbox that could not run it, answered nothing either. A tool with no recorded
+    call has nothing to have failed and is never this.
+    """
+    for gate in gates:
+        if gate.stage == "parses" and not gate.passed:
+            return True
+        # The sandbox's own failure (the module did not load, or the run timed out) leaves no
+        # crash count, only the message; a ruling with a count is about the body, not the module.
+        if gate.stage == "executes_on_s0" and not gate.passed and "crashes" not in gate.metrics:
+            return True
+    answered = [row for row in rows if row.get("answer") is not None]
+    return bool(answered) and all(str(row["answer"]).startswith("error:") and not row.get("replayed")
+                                  for row in answered)
+
+
+def grade_body(toolsig: ToolSig, body: str, calls: Iterable[ToolCall], schema: EntitySchema, db: dict,
+               workdir: Path | str, call_states: Optional[dict] = None, rules: Any = None,
+               timeout: float = 30.0) -> ToolBuild:
+    """Run one body that already exists through the gates and the per-call replay, with no model call.
+
+    This is `compile_tool` with the writing taken out: the same gates in the same order, the same
+    per-call attribution and the same `hardcoded` reading, over a body the caller hands in. It is
+    what makes a body kept from an earlier run of the stage a candidate on equal terms with the
+    attempts the writer produces, since the two can only be compared under one world by the same
+    ruling, and the score written on a tool's row was measured under the world of the run that
+    wrote it. A stage whose inputs moved (the schema, the Starting state, the readers, the tables
+    block) rewrites every body from scratch, and until now the rewrite was kept whatever it scored:
+    one live round rewrote every body over a change to a world constant and took one write tool
+    from 83 of its 139 recorded calls matched to 39, with nothing about that tool's own inputs
+    having moved.
+    """
+    workdir, calls = Path(workdir), list(calls)
+    build = ToolBuild(name=toolsig.name, body=body or "")
+    shown, held_out = split_calls(calls)
+    source = module_source(schema, [toolsig], {toolsig.name: build.body})
+    sandbox = Sandbox(source, db, workdir, timeout=timeout, call_states=call_states)
+    build.gates = run_gates(source, sandbox, shown, held_out, schema, rules,
+                            probe_refusals=toolsig.kind == "write", sig=toolsig)
+    build.assisted = not (build.gates and all(gate.passed for gate in build.gates))
+    build.call_outcomes = (
+        replay_outcomes(toolsig, build.body, calls, schema, db, workdir, call_states=call_states,
+                        rules=rules, timeout=timeout)
+        if build.assisted else
+        [{"tool": toolsig.name, "call_id": call.id, "replayed": True, "detail": ""} for call in calls])
+    build.could_not_run = body_could_not_run(build.gates, build.call_outcomes)
+    build.hardcoded = build.assisted and hardcoded_body(calls, build.call_outcomes)
+    return build
+
+
+KEPT_BODY_HEAD = ("This tool already has a body in this build. It was replayed under the world as it "
+                  "stands now and it failed as follows. You are not shown that body: a body in the "
+                  "prompt is a body copied, and what is wanted here is a second, better one. Write "
+                  "your own, and do not fail in these ways.")
+
+
+def kept_body_hint(gates: Iterable[GateResult], held_out: Iterable[ToolCall] = ()) -> str:
+    """What the body already kept for this tool fails at, grouped by shape; "" when it fails at nothing.
+
+    The hint goes where every other hint goes (the lesson in the first user turn), and it is grouped
+    by shape with counts for the reason D181's rule 6 gives: a gate that ruled over sixty calls
+    leaves sixty sentences, and a writer shown one of them answers one of them. The held-out split
+    is filtered the way `_failure_text` filters it, so a body the writer is asked to beat still
+    cannot hand it the calls it was never shown.
+    """
+    hidden = [args_text(call) for call in held_out]
+    lines = []
+    for gate in gates:
+        if gate.passed:
+            continue
+        split = gate.metrics.get("split", "")
+        kept = [] if split == "held_out" else [f for f in gate.failures if not any(h in f for h in hidden)]
+        shapes = failure_shapes(kept)
+        text = "; ".join(f"{shape} ({count} call{'' if count == 1 else 's'})"
+                         for shape, count in shapes[:SHAPES_SHOWN])
+        if len(shapes) > SHAPES_SHOWN:
+            text += f"; {len(shapes) - SHAPES_SHOWN} more shapes"
+        withheld = len(gate.failures) - len(kept)
+        if withheld:
+            text += ("; " if text else "") + f"{withheld} more on calls you were not shown"
+        lines.append(f"- gate {gate.stage}: {text}")
+    return "\n".join([KEPT_BODY_HEAD] + lines) if lines else ""
 
 
 def _evidence_label(attempt: int, gates: list[GateResult]) -> str:
