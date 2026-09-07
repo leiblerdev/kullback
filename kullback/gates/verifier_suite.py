@@ -844,7 +844,7 @@ def validate_verifier(verifier: Verifier, reference_run: Any, empty_run: Any = N
         _run_gate("verifier_unfinished_run", scored, unfinished_run(verifier, reference), expect_pass=False),
         _run_gate("verifier_alt_path", scored, alt_path_run, expect_pass=True),
         loophole_probe(verifier, model, run_probe=run_probe, canon=canon, write_tools=write_tools),
-        _leak_gate(verifier, reference, intent_text, user_rules),
+        _leak_gate(verifier, reference, intent_text, user_rules, runs.values()),
         _mutation_gate(verifier, reference, score, canon_fn(canon)),
     ]
 
@@ -1041,9 +1041,19 @@ def _mutant(atom: Atom, fn: Callable) -> Optional[Atom]:
 
 
 def _leak_gate(verifier: Verifier, reference: Run, intent_text: Optional[str],
-               user_rules: Optional[UserRules]) -> GateResult:
-    """Check 7: constants only the Verifier should know, found in the Intent or the Simulated user rules."""
-    said_by_user = " ".join(_user_text(e) for e in reference.events if e.type == "user_turn")
+               user_rules: Optional[UserRules], runs: Iterable[Run] = ()) -> GateResult:
+    """Check 7: constants only the Verifier should know, found in the Intent or the Simulated user rules.
+
+    A value is only a secret when no user said it, and the users who count are the users of every
+    seed recording of the Task, not the one recording that happens to be the Reference. The Intent is
+    mined from all of them (D83), so reading `said_by_user` off the Reference alone made this check
+    stricter than the miner it polices: on the last build, of 24 leaked values across 14 Tasks, 18
+    were spoken by a user in another recording of the same Task, and those 14 Tasks were blocked for
+    nothing. `runs` is the Task's other seed Runs; the Reference is read whether or not it is among
+    them, so a caller that has only the Reference keeps the behaviour it always had.
+    """
+    said_by_user = " ".join(_user_text(e) for run in [reference, *runs]
+                            for e in run.events if e.type == "user_turn")
     secrets = set()
     for atom in verifier.atoms:
         payload = atom_payload(atom)

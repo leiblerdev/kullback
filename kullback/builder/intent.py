@@ -10,7 +10,10 @@ agree by construction: a price, a time and an id stay whole ("$17.99" is the tok
 is "w1234"), a hyphen, a slash and an underscore join rather than break, and `normalise` folds simple
 inflections together so "earbud" and "earbuds" are one word. A phrase grounds either whole, as a
 contiguous run inside one clause, or word by word within one Run when the customer said the same
-words in another arrangement. `IntentSpan` is in the frozen `kullback.runner.records`, so which of
+words in another arrangement. A span that is no user utterance, a tool argument or a written value,
+grounds only what some user of some Run of the Task said as well, so an id the recorded agent looked
+up and passed along never reaches the Intent the Simulated user is handed.
+`IntentSpan` is in the frozen `kullback.runner.records`, so which of
 the two a span used is kept in the span's display-only `label` (read it with `span_mode`) rather than
 in a new field.
 """
@@ -288,8 +291,33 @@ def _run_evidence(
     ]
 
 
+def _user_clauses(runs: Sequence[tuple[str, list[tuple[IntentSpan, list[list[str]], bool]]]]) -> list[list[str]]:
+    """Every clause a user of any Run of the Task spoke, read once for the whole grounding."""
+    return [clause for _, spans in runs for _, clauses, is_user in spans if is_user for clause in clauses]
+
+
+def _evidences(clauses: Sequence[Sequence[str]], is_user: bool, wanted: str,
+               user_clauses: Sequence[Sequence[str]]) -> bool:
+    """Whether this span may ground this phrase or word: it says it, and a user said it too.
+
+    A `tool_arg` or a `written_value` span is the system's writing, not the customer's, so on its own
+    it grounded words no recorded user ever spoke: an Intent read "Get a refund or replacement for
+    tablet order <id>" where the id was only ever looked up by the recorded agent and passed as an
+    argument, and another Intent carried an abbreviation the agent used as an argument where the
+    customer had spelled the word out in full. The Intent is handed to the Simulated user, so that
+    told the Candidate a value only the system knew: 6 of the leaked values on the last build came
+    this way. Such a span may still ground, because a Run that spelled a thing differently from the
+    Run beside it still has to evidence the Intent (D47), but only what some user of some Run of the
+    Task said in those words, by the same reading, negation and all.
+    """
+    if not _covers(clauses, wanted, is_user):
+        return False
+    return is_user or _covers(user_clauses, wanted, True)
+
+
 def _ground_in_run(
-    spans: Sequence[tuple[IntentSpan, list[list[str]], bool]], phrase: str
+    spans: Sequence[tuple[IntentSpan, list[list[str]], bool]], phrase: str,
+    user_clauses: Sequence[Sequence[str]],
 ) -> tuple[Optional[IntentSpan], str]:
     """The span this Run evidences the phrase with, and how it did it.
 
@@ -298,14 +326,16 @@ def _ground_in_run(
     clause and in any order: the model wrote "change wireless earbuds on order #W5061109" for a
     customer who said "order change" and "wireless earbuds" a sentence apart, and those are the
     customer's own words, not invented ones. Negation still bites, word by word, so a word the
-    customer ruled out grounds nothing either way (D47).
+    customer ruled out grounds nothing either way (D47). A span that is not a user utterance carries
+    what the system wrote, so it grounds only what `user_clauses` shows a user said as well.
     """
-    for span, clauses, honour_negation in spans:
-        if _covers(clauses, phrase, honour_negation):
+    for span, clauses, is_user in spans:
+        if _evidences(clauses, is_user, phrase, user_clauses):
             return span, "phrase"
     chosen: Optional[IntentSpan] = None
     for word in content_words(phrase):
-        hit = next((s for s, clauses, negation in spans if _covers(clauses, word, negation)), None)
+        hit = next((s for s, clauses, is_user in spans
+                    if _evidences(clauses, is_user, word, user_clauses)), None)
         if hit is None:
             return None, ""
         chosen = chosen if chosen is not None else hit
@@ -336,11 +366,12 @@ def _matching_spans(
 ) -> dict[str, list[IntentSpan]]:
     """Every span that evidences each phrase, in trace order, at most one span per Run."""
     runs = _run_evidence(traces, write_tools)
+    user_clauses = _user_clauses(runs)
     found: dict[str, list[IntentSpan]] = {}
     for phrase in phrases:
         spans: list[IntentSpan] = []
         for _, run_spans in runs:
-            span, mode = _ground_in_run(run_spans, phrase)
+            span, mode = _ground_in_run(run_spans, phrase, user_clauses)
             if span is not None:
                 spans.append(_with_mode(span, phrase, mode))
         found[phrase] = spans
@@ -350,14 +381,20 @@ def _matching_spans(
 def _word_evidence(
     phrases: Sequence[str], traces: Sequence[Trace], write_tools: Optional[set[str]] = None
 ) -> dict[str, tuple[list[str], list[str]]]:
-    """Per phrase, the words some Run does say and the words no Run says, for the rewrite prompt."""
+    """Per phrase, the words some Run does say and the words no Run says, for the rewrite prompt.
+
+    It reads the evidence by exactly the rule `_ground_in_run` grounds by, so a word only a tool
+    argument carries is reported as one no Run says. Telling the model the word is there when the
+    grounding will not accept it is what leaves a rewrite with nothing to change.
+    """
     runs = _run_evidence(traces, write_tools)
+    user_clauses = _user_clauses(runs)
     out: dict[str, tuple[list[str], list[str]]] = {}
     for phrase in phrases:
         shown, missing = [], []
         for word in content_words(phrase):
-            anywhere = any(_covers(clauses, word, negation)
-                           for _, spans in runs for _, clauses, negation in spans)
+            anywhere = any(_evidences(clauses, is_user, word, user_clauses)
+                           for _, spans in runs for _, clauses, is_user in spans)
             (shown if anywhere else missing).append(word)
         out[phrase] = (shown, missing)
     return out
