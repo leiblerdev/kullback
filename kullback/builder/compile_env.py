@@ -41,6 +41,7 @@ from kullback.builder.sandbox import gate_executes_on_s0 as gate_executes_on_s0
 from kullback.builder.sandbox import gate_non_trivial as gate_non_trivial
 from kullback.builder.sandbox import gate_replay_fidelity as gate_replay_fidelity
 from kullback.gates.confinement import ALLOWED_IMPORTS, DENIED_BUILTINS, TOOLS_CLASS, source_confinement
+from kullback.gates.tool_runs import body_replay_fidelity_gate
 from kullback.runner.budget import (
     CHARS_PER_TOKEN,
     CONTEXT_CAP_FRACTION,
@@ -72,6 +73,7 @@ from kullback.runner.records import (
 DB_FILE = "db.json"
 OVERLAY_DIR = "overlays"
 NODE_DIR = "tool_nodes"
+OUTCOME_DETAIL_CHARS = 300  # how much of one differing call's sentence a per-call row carries (D171)
 MAX_REPAIR_ATTEMPTS = 3
 # D117: at most this many model calls inside one attempt's tool-use loop, so a model that keeps
 # reaching for lookup_rows or test_body instead of ever submitting a body cannot spend an attempt
@@ -125,6 +127,9 @@ class ToolBuild:
     gates: list[GateResult] = field(default_factory=list)
     assisted: bool = False
     kept_attempt: Optional[int] = None  # which attempt's body this is, when no attempt passed
+    # D171: one row per recorded call of this tool, so the miss can be attributed to the Task whose
+    # Trace made the call. The corpus gate keeps one fidelity number; this keeps which call it was.
+    call_outcomes: list[dict] = field(default_factory=list)
 
 # --- reading rows out of recorded tool results ---
 
@@ -1256,6 +1261,67 @@ def call_starting_states(db: dict, overlays: Iterable[TaskOverlay], values: dict
     return {call_id: states[task_id] for call_id, task_id in call_tasks.items() if task_id in states}
 
 
+def replay_outcomes(toolsig: ToolSig, body: str, calls: Iterable[ToolCall], schema: EntitySchema, db: dict,
+                    workdir: Path | str, call_states: Optional[dict] = None, rules: Any = None,
+                    timeout: float = 30.0) -> list[dict]:
+    """Which of these recorded calls the kept body answers the way the recording did, one row per call (D171).
+
+    The corpus gate (`gate_replay_fidelity`) rules over all of a tool's recorded calls at once and
+    leaves one fidelity number and a list of failure sentences. That is the right grain for the
+    Builder, which repairs a body, and the wrong grain for a Task, which only ever makes some of
+    those calls: on one live build a body replayed 239 of its 240 calls and the one miss was read as
+    a fault of the tool everywhere the tool was called. So the sandbox is run once over every call
+    and the same ruling, `body_replay_fidelity_gate`, is then asked about each call on its own. A
+    call counted replayed here is a call the corpus gate counted matched, because it is the same
+    ruling over the same result; what is added is the call's id, which is what ties a miss to the
+    Trace and so to the Task that made it.
+
+    A body that does not exist, or a module that will not run at all, misses every call: there is
+    nothing to attribute a pass to. `rules` is the customer's CanonRules, the same ones the corpus
+    gate compares under (D39).
+    """
+    calls = list(calls)
+    if not calls:
+        return []
+
+    def missed(detail: str) -> list[dict]:
+        return [{"tool": toolsig.name, "call_id": call.id, "replayed": False, "detail": detail}
+                for call in calls]
+
+    if not (body or "").strip():
+        return missed("no body was compiled for this tool")
+    source = module_source(schema, [toolsig], {toolsig.name: body})
+    sandbox = Sandbox(source, db, Path(workdir) / "attribution", timeout=timeout, call_states=call_states)
+    try:
+        results = sandbox.run(calls)
+    except SandboxError as exc:
+        return missed(f"the module did not run: {exc}")
+    rows: list[dict] = []
+    for index, call in enumerate(calls):
+        if index >= len(results):
+            rows.append({"tool": toolsig.name, "call_id": call.id, "replayed": False,
+                         "detail": "the sandbox returned no result for this call"})
+            continue
+        ruling = body_replay_fidelity_gate([call], [results[index]], schema, label="per_call", rules=rules)
+        detail = "" if ruling.passed else (ruling.failures[0] if ruling.failures else "differs")
+        rows.append({"tool": toolsig.name, "call_id": call.id, "replayed": bool(ruling.passed),
+                     "detail": _clamped_detail(detail)})
+    return rows
+
+
+def _clamped_detail(text: str) -> str:
+    """One difference, short enough to sit in a Task's status row.
+
+    A tool that returns a whole catalogue writes a failure sentence thousands of characters long,
+    and the row is read by a person and by the repair verb, not by the comparer; the gate's own
+    failures keep the sentence whole.
+    """
+    text = " ".join(text.split())
+    if len(text) <= OUTCOME_DETAIL_CHARS:
+        return text
+    return f"{text[:OUTCOME_DETAIL_CHARS].rstrip()} [+{len(text) - OUTCOME_DETAIL_CHARS} characters]"
+
+
 def compile_tool(model, toolsig: ToolSig, calls: Iterable[ToolCall], schema: EntitySchema, db: dict,
                  workdir: Path | str, max_attempts: int = MAX_REPAIR_ATTEMPTS,
                  max_evidence_chars: Optional[int] = MAX_EVIDENCE_CHARS, timeout: float = 30.0,
@@ -1289,6 +1355,10 @@ def compile_tool(model, toolsig: ToolSig, calls: Iterable[ToolCall], schema: Ent
     it drafts this attempt's reply, inside `_reply_with_tools`'s own bounded loop
     (`MAX_TOOL_ROUNDS`), before the reply it settles on is gated the same way an old, tool-less
     reply always was. Turn it off for a caller that wants the old one-call-per-attempt behaviour.
+
+    The build carries `call_outcomes` (D171): one row per recorded call saying whether the kept body
+    answered it the way the recording did, so a miss can be attributed to the Task whose Trace made
+    the call and not to every Task that calls the tool.
 
     `lesson` is what this tool already failed on in an earlier build or an earlier recompile
     request (`memory.lesson_for`, written by `repair.record_tool_lesson`). It is carried into the
@@ -1417,11 +1487,20 @@ def compile_tool(model, toolsig: ToolSig, calls: Iterable[ToolCall], schema: Ent
     for record in build.nodes:
         if record["attempt"] == build.kept_attempt:
             record["kept"] = True
+    # D171: a tool that cleared every gate replayed every recorded call, since `run_gates` holds the
+    # shown and the held-out split to 100% each and only calls a build unassisted when both passed;
+    # so its per-call rows are known without a sandbox and only an assisted tool pays for the run.
+    build.call_outcomes = (
+        replay_outcomes(toolsig, build.body, calls, schema, db, workdir, call_states=call_states,
+                        rules=rules, timeout=timeout)
+        if build.assisted else
+        [{"tool": toolsig.name, "call_id": call.id, "replayed": True, "detail": ""} for call in calls])
     directory = workdir / NODE_DIR
     directory.mkdir(parents=True, exist_ok=True)
     (directory / f"{toolsig.name}.json").write_text(
         json.dumps({"tool": toolsig.name, "assisted": build.assisted,
-                    "kept_attempt": build.kept_attempt, "nodes": build.nodes},
+                    "kept_attempt": build.kept_attempt, "nodes": build.nodes,
+                    "call_outcomes": build.call_outcomes},
                    indent=2, default=str) + "\n", encoding="utf-8")
     return build
 

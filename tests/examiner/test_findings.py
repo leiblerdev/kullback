@@ -15,101 +15,95 @@ from gates.verifier_fixtures import other_reason_run, reference_run
 from kullback.examiner import findings as F
 from kullback.examiner.plan import ExaminerPlan
 
-RENEW, HOLD, FINE = "task_renew", "task_hold", "task_fine"
+RENEW, HOLD, FINE, CARD = "task_renew", "task_hold", "task_fine", "task_card"
 DUE_DATE = 'hard columns differ: due_date: ours "2026-03-01", recorded "2026-03-15"'
-
-
-def _ruling(stage: str, passed: bool, failures: tuple = (), **metrics) -> dict:
-    return {"stage": stage, "pass": passed, "failures": list(failures), "metrics": metrics}
+NO_SHELF = "expected a result, got KeyError: shelf"
 
 
 def _status() -> dict:
-    """Two Tasks an assisted tool blocks, one with a Reference whose Verifier failed the suite."""
+    """Four Tasks: two an assisted tool blocks by their own calls, one that calls it and is not
+    blocked (D171), one with a Reference whose Verifier failed the suite."""
     return {
-        RENEW: {"reference_confirmed": False, "assisted_tools": ["renew_loan"], "reason": "the seed Trace calls"},
-        HOLD: {"reference_confirmed": False, "assisted_tools": ["renew_loan", "place_hold"], "reason": "x"},
+        RENEW: {"reference_confirmed": False, "assisted_tools": ["renew_loan"],
+                "blocking_tools": ["renew_loan"], "reason": "this Task's own recorded calls"},
+        HOLD: {"reference_confirmed": False, "assisted_tools": ["renew_loan", "place_hold"],
+               "blocking_tools": ["place_hold", "renew_loan"], "reason": "x"},
+        CARD: {"reference_confirmed": False, "assisted_tools": ["renew_loan"],
+               "blocking_tools": [], "reason": "recordings disagree on the End state"},
         FINE: {"reference_confirmed": True, "verifier_passed": False, "not_run": ["verifier_alt_path"],
                "checks": {"mutation_flips": False, "second_path_passes": False, "empty_fails": True}},
     }
 
 
-def _rulings() -> list[dict]:
-    """What the compile_tools gates wrote: one row per tool per split, the tool only in the failures."""
-    return [
-        _ruling("replay_fidelity", False, (f'renew_loan({{"loan_id": "L1"}}): {DUE_DATE}',),
-                split="shown", success_calls=12, success_matches=11, error_calls=0, error_matches=0),
-        _ruling("replay_fidelity", False, ('renew_loan({"loan_id": "L2"}): expected a result, got KeyError: L2',),
-                split="held_out", success_calls=4, success_matches=3, error_calls=0, error_matches=0),
-        _ruling("replay_fidelity", True, (), split="shown", success_calls=9, success_matches=9),
-        _ruling("non_trivial", False, ("the body answers every call the same way",), arg_sets=3),
-    ]
+def _fidelity() -> dict:
+    """`tool_fidelity.json` in the shape compile_tools writes it (D171): the corpus ruling per tool,
+    and per Task per tool how many of that Task's own recorded calls replayed and how many differed."""
+    return {
+        "tools": {"renew_loan": {"calls": 16, "replayed": 14}, "place_hold": {"calls": 4, "replayed": 3}},
+        "tasks": {
+            RENEW: {"renew_loan": {"replayed": 2, "differing": 1, "reasons": [DUE_DATE]}},
+            HOLD: {"renew_loan": {"replayed": 1, "differing": 1, "reasons": [DUE_DATE]},
+                   "place_hold": {"replayed": 0, "differing": 1, "reasons": [NO_SHELF]}},
+            CARD: {"renew_loan": {"replayed": 3, "differing": 0, "reasons": []}},
+        },
+    }
 
 
-def _plan(tmp_path: Path, *, status: dict, rulings: list, references: dict) -> ExaminerPlan:
-    """A plan over a workdir holding the three files the rules read and nothing else."""
+def _plan(tmp_path: Path, *, status: dict, fidelity: dict, references: dict) -> ExaminerPlan:
+    """A plan over a workdir holding the files the rules read and nothing else."""
     workdir = tmp_path / "work"
     workdir.mkdir(parents=True, exist_ok=True)
-    for name, body in (("task_status.json", status), ("gates.json", rulings), ("references.json", references)):
+    for name, body in (("task_status.json", status), ("tool_fidelity.json", fidelity),
+                       ("references.json", references)):
         (workdir / name).write_text(json.dumps(body), encoding="utf-8")
-    return ExaminerPlan(workdir=workdir, inputs={})
+    return ExaminerPlan(workdir=workdir, inputs={"tool_fidelity": fidelity})
 
 
 def _filed(plan: ExaminerPlan) -> list[tuple[str, str, int, str]]:
     return [(f.kind, f.tool or f.task_id or "", f.cost, f.suggested) for f in plan.open_findings()]
 
 
-# --- reading a gate's failure line ------------------------------------------------------
-
-def test_a_gate_failure_line_gives_up_the_tool_it_names_and_what_the_gate_says_about_it():
-    """gates.json holds one row per tool per check and no row names its tool: the name is only in the
-    failure line, so attributing a ruling at all depends on reading it back off that line."""
-    assert F.failure_subject(f'renew_loan({{"loan_id": "L1"}}): {DUE_DATE}') == ("renew_loan", DUE_DATE)
-    assert F.failure_subject("renew_loan: a recorded success call replays differently") == (
-        "renew_loan", "a recorded success call replays differently")
-    assert F.failure_subject("the body answers every call the same way") == (
-        "", "the body answers every call the same way")
-
-
-def test_a_tools_replay_counts_come_from_its_own_failing_rulings_and_a_split_is_counted_once():
-    """The replay_fidelity metrics are that one tool's own split. A tool named by no failing ruling
-    has no counts here, and is reported without them rather than with another tool's."""
-    seen = F.tool_evidence(_rulings())
-    assert seen["renew_loan"]["calls"] == 16 and seen["renew_loan"]["replayed"] == 14
-    assert seen["renew_loan"]["detail"] == DUE_DATE, "the first failure is the one the hint quotes"
-    assert "place_hold" not in seen
-
-
 # --- the four rules ---------------------------------------------------------------------
 
 def test_an_assisted_tool_is_filed_as_a_finding_naming_the_tasks_it_blocks_and_the_column_that_differs():
-    """D49: a Task whose seed Trace calls an assisted tool has no Reference. The finding is about the
-    tool, not the Task, so one tool blocking two Tasks is one finding with a count and both ids."""
-    rows = F.assisted_tool_rows(_status(), _rulings())
+    """The finding is about the tool, not the Task, so one tool blocking two Tasks is one finding with
+    a count and both ids; the hint is the corpus gate's own words for the first differing call."""
+    rows = F.assisted_tool_rows(_status(), _fidelity())
     renew = next(r for r in rows if r["tool"] == "renew_loan")
     assert renew["task_ids"] == [HOLD, RENEW] and renew["suggested"] == "repair_recompile"
     assert renew["kind"] == "assisted_tool" and renew["key"] == "assisted_tool:renew_loan:"
-    assert "2 Tasks have no Reference" in renew["text"]
-    assert "replays 14 of 16 recorded calls" in renew["text"]
+    assert "2 Tasks' own recorded calls differently" in renew["text"]
+    assert "replays 14 of 16 recorded calls of the corpus and 3 Tasks call it" in renew["text"]
     assert DUE_DATE in renew["text"] and renew["hint"] == DUE_DATE
 
 
-def test_a_tool_no_failing_ruling_names_is_filed_without_replay_counts_rather_than_with_another_tools():
-    rows = F.assisted_tool_rows(_status(), _rulings())
-    held = next(r for r in rows if r["tool"] == "place_hold")
-    assert held["task_ids"] == [HOLD] and "No ruling names how its recorded calls replay." in held["text"]
-    assert held["hint"] and "compile_tools" in held["hint"]
+def test_a_task_that_calls_an_assisted_tool_its_own_calls_replay_is_not_counted_against_it():
+    """D171: assisted is a corpus ruling, and reading it as every Task that calls the tool put one
+    tool's name on 51 Tasks of a live build that make no call it answers differently."""
+    rows = F.assisted_tool_rows(_status(), _fidelity())
+    assert CARD not in next(r for r in rows if r["tool"] == "renew_loan")["task_ids"]
+    assert [r["task_ids"] for r in rows if r["tool"] == "place_hold"] == [[HOLD]]
+    assert next(r for r in rows if r["tool"] == "place_hold")["hint"] == NO_SHELF
+
+
+def test_a_tool_that_is_assisted_and_blocks_no_task_is_not_a_finding():
+    """The red light still stands in the Builder's status; a recompile of it buys no Task."""
+    status = {CARD: _status()[CARD]}
+    assert F.assisted_tool_rows(status, _fidelity()) == []
 
 
 def test_a_d79_check_that_failed_and_the_same_check_never_run_are_two_findings_with_two_verbs():
     """A check whose gate never ran is a Task short of an input, not a wrong Verifier: it asks for a
-    Run (`reroll`), where a check that ran and failed asks the Examiner to repair the Verifier."""
+    Run, where a check that ran and failed asks the Examiner to repair the Verifier."""
     rows = {row["key"]: row for row in F.suite_rows(_status())}
     assert set(rows) == {"suite:mutation_flips:", "suite:second_path_passes:not_run"}
     failed = rows["suite:mutation_flips:"]
     assert failed["task_ids"] == [FINE] and failed["suggested"] == "repair" and failed["kind"] == "suite"
     assert "failed on 1 Tasks" in failed["text"]
     missing = rows["suite:second_path_passes:not_run"]
-    assert missing["suggested"] == "reroll" and "missing Run, not a wrong Verifier" in missing["text"]
+    assert missing["suggested"] == "reroll_then_derive", "the Examiner's own reroll then derive (D173)"
+    assert "one Reference, so there is no second path to score" in missing["text"]
+    assert "missing Run, not a wrong Verifier" in missing["text"]
 
 
 def test_a_check_is_counted_only_against_a_task_that_reached_the_suite():
@@ -144,7 +138,7 @@ def test_a_verifier_that_accepts_a_held_out_run_is_not_filed(tmp_path):
     assert F.false_rejection_rows(store) == []
 
 
-def test_a_task_whose_recordings_disagree_is_filed_for_refusal_and_one_an_assisted_tool_blocks_is_not():
+def test_a_task_whose_recordings_disagree_is_filed_for_refusal_and_one_a_tool_blocks_is_not():
     """The corpus not settling on an End state is the Task's own loss and `repair_refuse_task` answers
     it. A Task whose recordings disagree because its tool replays differently is the tool's loss, and
     refusing it would give up a Task the Builder can still fix."""
@@ -176,7 +170,7 @@ def test_a_task_the_judge_failed_on_every_recording_is_filed_as_a_disagreement_t
 # --- ranking, dedup and the cut ---------------------------------------------------------
 
 def test_findings_are_filed_most_costly_first_so_the_builder_opens_on_the_tool_and_not_on_an_intent(tmp_path):
-    plan = _plan(tmp_path, status=_status(), rulings=_rulings(), references={})
+    plan = _plan(tmp_path, status=_status(), fidelity=_fidelity(), references={})
     filed = F.file_rule_findings(plan)
     assert [(f.kind, f.tool or f.task_id, f.cost) for f in filed][0] == ("assisted_tool", "renew_loan", 2)
     assert [f.cost for f in filed] == sorted((f.cost for f in filed), reverse=True)
@@ -188,7 +182,7 @@ def test_a_key_already_open_is_not_filed_again_and_nor_is_one_answered_that_cost
     """A round that files the same loss twice buries the ranking, and a round that files an answered
     loss again over the very same Tasks never lets the loop exit: a round with a finding pending
     runs another round (D126), and a code-driven build reached round 454 on three Tasks that way."""
-    plan = _plan(tmp_path, status=_status(), rulings=_rulings(), references={})
+    plan = _plan(tmp_path, status=_status(), fidelity=_fidelity(), references={})
     first = F.file_rule_findings(plan)
     assert F.file_rule_findings(plan) == [], "nothing new while every key is open"
     plan.close_findings([f.finding_id for f in first])
@@ -197,17 +191,17 @@ def test_a_key_already_open_is_not_filed_again_and_nor_is_one_answered_that_cost
 
 def test_a_loss_the_builder_answered_is_filed_again_once_the_tasks_it_costs_are_a_different_set(tmp_path):
     """Which is how a repair that half worked, or made things worse, stays visible."""
-    plan = _plan(tmp_path, status=_status(), rulings=_rulings(), references={})
+    plan = _plan(tmp_path, status=_status(), fidelity=_fidelity(), references={})
     plan.close_findings([f.finding_id for f in F.file_rule_findings(plan)])
     status = _status()
-    status[HOLD]["assisted_tools"] = ["place_hold"]
+    status[HOLD]["blocking_tools"] = ["place_hold"]
     plan.store["task_status"] = status
     again = F.file_rule_findings(plan)
     assert [(f.kind, f.tool, f.cost) for f in again] == [("assisted_tool", "renew_loan", 1)]
 
 
 def test_the_rule_findings_of_a_round_are_cut_at_the_limit_from_the_bottom_of_the_ranking(tmp_path):
-    plan = _plan(tmp_path, status=_status(), rulings=_rulings(), references={})
+    plan = _plan(tmp_path, status=_status(), fidelity=_fidelity(), references={})
     filed = F.file_rule_findings(plan, limit=2)
     assert [(f.kind, f.tool or f.task_id) for f in filed] == [("assisted_tool", "renew_loan"),
                                                               ("assisted_tool", "place_hold")]

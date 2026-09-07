@@ -659,10 +659,11 @@ VersionBy = Literal["derive", "repair"]
 # (D170). A corpus disagreement keeps the name it already had rather than gaining a second one.
 FindingKind = Literal["assisted_tool", "fidelity", "reference_disagreement", "suite", "false_rejection",
                       "environment", "other"]
-# `repair` is the Examiner's own verb, the one answer to a Verifier the Builder cannot touch (D123);
+# `repair` is the Examiner's own verb, the one answer to a Verifier the Builder cannot touch (D123),
+# and `reroll_then_derive` is its other one, for a check that had no second Run to score (D173);
 # `repair_refuse_task` is the Builder's, for a Task the corpus itself does not settle.
 FindingVerb = Literal["compile_tool", "replay", "reroll", "repair_intent", "repair_recompile",
-                      "repair_refuse_task", "repair", "none"]
+                      "repair_refuse_task", "repair", "reroll_then_derive", "none"]
 FindingStatus = Literal["open", "delivered", "closed"]
 
 

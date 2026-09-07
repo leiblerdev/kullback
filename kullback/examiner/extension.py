@@ -94,7 +94,9 @@ FINDINGS = ("A finding names the Builder verb that answers it and the one line t
             "the assisted tools blocking Tasks with no Reference, the D79 checks that failed, the Verifiers "
             "that reject every held-out Run, the Tasks whose recordings disagree. File what those do not say. "
             "A finding whose kind and subject is already open is refused with the id of the one that holds "
-            "it: act on that one instead of filing it again.")
+            "it: act on that one instead of filing it again. Two of those verbs are yours and not the "
+            "Builder's: `repair` on a Verifier, and `reroll_then_derive` on a check that had no second "
+            "finished Run to score, which is your own `reroll` of the Task and then `derive` again.")
 STOP = ("Stopping. Answer with one line and no tool call when every Task is trusted or refused, or when "
         "the rulings after your repairs and findings are the ones you already answered. Say which Tasks "
         "remain and what you filed for each.")

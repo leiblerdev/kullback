@@ -39,8 +39,11 @@ TARGET = "environment"
 # run_builder with derive_verifier still a Builder stage (D130): the rounds must leave the same bytes.
 # Re-pinned once when `reference.describe` began saying, of a Run that wrote nothing, whether its answer
 # stated facts read from the world: the same two groups and the same verdicts, one longer state sentence
-# inside the reason. Every other byte of the three rows is the pre-phase build's.
-TASK_STATUS_SHA256_BEFORE_THE_PHASE = "afe53bac43085dd27b0fcbe57e032438a63ed7cd80cad46f131f6591c8dbde7f"
+# inside the reason. Re-pinned again for D171: every row gained the Task's own replay fidelity
+# (`blocking_tools`, `tool_calls_replayed`, `tool_calls_differing`) and the reason names a tool only
+# where one of the Task's own recorded calls differs. Every other byte of the three rows is the
+# pre-phase build's.
+TASK_STATUS_SHA256_BEFORE_THE_PHASE = "a6186b51b650951ec677399bf4e71f19a753423400b93593ba263c747199d8b2"
 
 
 def _fixture(request) -> Path:
@@ -305,7 +308,9 @@ def test_an_examiner_that_derives_in_round_two_does_not_fail_the_round(tmp_path,
     loop.examiner_beat(1)
     loop.examiner_beat(2)
     assert loop.examiner_result is not None and not loop.examiner_result.is_error
-    assert [f.task_id for f in loop.pending_findings] == ["1"], "the round-2 finding is queued, not lost"
+    queued = [f.finding_id for f in loop.pending_findings]
+    assert [f.task_id for f in loop.pending_findings][-1] == "1", "the round-2 finding is queued, not lost"
+    assert len(queued) == len(set(queued)), "and the rule findings each derive filed are queued once (D170)"
     assert loop.close_round(2, loop.counts()).failed is False
 
 
@@ -692,7 +697,9 @@ def driven(tmp_path_factory, request):
         if isinstance(event, BeatEnd) and event.agent == "builder":
             builder_rows[:] = json.loads((workdir / "gates.json").read_text(encoding="utf-8"))
 
-    result = rounds.run_rounds(workdir, model=Bodies(), files=[_fixture(request)], max_attempts=0,
+    # One round: the fixture's Tasks never get a Reference, so under D172 the loop would run on to a
+    # stall; the round cap (D169) ends it after the one round these tests read.
+    result = rounds.run_rounds(workdir, model=Bodies(), files=[_fixture(request)], max_attempts=0, max_rounds=1,
                                subscribers=[events.append, after_the_builder_beat], on_event=dicts.append)
     return {"workdir": workdir, "result": result, "events": events, "dicts": dicts, "builder_rows": builder_rows}
 
@@ -722,7 +729,10 @@ def test_round_end_carries_every_count_d126_lists_and_none_comes_from_a_model(dr
     assert set(round_end.GATE_COUNTS) <= set(counts)
     assert counts["tasks"] == len(driven["result"]["tasks"]) == 3
     assert counts["fallback_compactions"] == {"builder": 0, "examiner": 0}
-    assert set(counts["spend"]) == {"builder", "examiner", "total", "cache_saved"} and counts["findings"] == []
+    assert set(counts["spend"]) == {"builder", "examiner", "total", "cache_saved"}
+    # No model filed any of these: they are the losses the round's own records show (D170), and the
+    # count is the list of ids because that is what the next round's Builder beat is handed.
+    assert counts["findings"] and all(f.startswith("finding-") for f in counts["findings"])
     assert rounds.load_rounds(driven["workdir"])[-1].counts == counts
     assert [d for d in driven["dicts"] if d.get("kind") == "round"][-1]["counts"] == counts
 
@@ -817,12 +827,13 @@ def test_the_round_the_driver_is_in_is_on_the_plan_before_the_first_beat(tmp_pat
     assert [(row["target"], row["round"]) for row in rows] == [("t1", 1), ("t2", 2), ("t3", 3)]
 
 
-def test_the_loop_exits_done_when_the_state_holds_after_a_round_over_the_fixture(driven):
-    """No Task on the fixture has a confirmed Reference, so D126's state holds after round 1 (the
-    gates' own claim in tests/gates/test_round_end.py), and the driver stops there."""
-    assert driven["result"]["exit"] == "done"
+def test_the_loop_over_the_fixture_is_not_done_after_a_round_and_stops_on_its_round_cap(driven):
+    """No Task on the fixture has a confirmed Reference: before D172 that read as D126's state and
+    the driver exited done at fidelity 0; now those Tasks are the loop's unfinished work, and the
+    fixture's one-round cap is what ends it."""
+    assert driven["result"]["exit"] == "max_rounds"
     assert [r["round"] for r in driven["result"]["rounds"]] == [1]
-    assert driven["events"][-1].exit == "done"
+    assert driven["events"][-1].exit == "max_rounds"
 
 
 def test_the_result_carries_the_build_result_the_rounds_the_trusted_tasks_and_the_refusals(driven):
@@ -920,10 +931,11 @@ def test_a_delivered_finding_is_closed_and_its_entry_unprotected_after_the_build
         "task_id": task_id, "kind": "fidelity", "text": "the replay diverges at the second call",
         "suggested": "replay"})
     assert filed.is_error is False, filed.content
-    assert [f.finding_id for f in loop.pending_findings] == [filed.details["finding"]["finding_id"]]
+    # The beat's own derive filed the losses its records show first (D170); the model's is the last.
+    assert [f.finding_id for f in loop.pending_findings][-1] == filed.details["finding"]["finding_id"]
     loop.builder_beat(2)
     findings = json.loads((plan.workdir / "examiner" / "findings.json").read_text(encoding="utf-8"))
-    assert [f["status"] for f in findings] == ["closed"]
+    assert {f["status"] for f in findings} == {"closed"}, "the rule findings close with the model's"
     assert loop.pending_findings == []
 
 
@@ -1043,8 +1055,10 @@ def test_a_finding_filed_in_round_one_is_performed_in_round_two_then_the_run_exi
                                   "text": "the replay diverges at the second call", "suggested": "replay"})),
         _reply(None, ("derive", {"target": "all"})),
         _reply("filed and derived."),
-        _reply("read the follow-up."),
-        _reply("acted on the finding."),
+        # Round 1's derive files three findings of its own off the records before the model files
+        # its one (D170), and round 2's Builder beat reads each as its own follow-up message.
+    ] + [_reply("read the follow-up.")] * 4 + [
+        _reply("acted on the findings."),
         _reply(None, ("derive", {"target": "all"})),
         _reply("re-derived clean."),
     ])
@@ -1053,10 +1067,12 @@ def test_a_finding_filed_in_round_one_is_performed_in_round_two_then_the_run_exi
     stored = rounds.load_rounds(workdir)
     assert len(stored) == 2
     assert stored[0].exit is None and [f.finding_id for f in stored[0].pending_findings] != []
-    assert stored[1].exit == "done" and stored[1].pending_findings == []
-    assert result["exit"] == "done" and result["failed"] is False
+    # The fixture's Tasks never get a Reference, so the run cannot be done (D172): with nothing
+    # pending and no gate count moved since round 1, it exits stalled.
+    assert stored[1].exit == "stalled" and stored[1].pending_findings == []
+    assert result["exit"] == "stalled" and result["failed"] is False
     findings = json.loads((workdir / "examiner" / "findings.json").read_text(encoding="utf-8"))
-    assert [f["status"] for f in findings] == ["closed"]
+    assert [f["status"] for f in findings] == ["closed"] * 4, "the rule findings close with the model's"
 
 
 def test_a_builder_error_keeps_its_findings_queued(tmp_path, monkeypatch):
@@ -1107,7 +1123,7 @@ def test_the_builder_is_handed_the_finding_with_the_verb_and_hint_as_a_callable_
                      hint="the Runs only ever cancel one order", round=2,
                      text="the Intent says gift card and no Run says it")
     message = rounds.finding_message(intent)
-    assert message == ("Finding finding-1 (fidelity): the Intent says gift card and no Run says it "
+    assert message == ("Finding finding-1 (fidelity, 1 Task): the Intent says gift card and no Run says it "
                        "Task task_x. Suggested: repair_intent(task_id='task_x', "
                        "hint='the Runs only ever cancel one order')")
     recompile = Finding(finding_id="finding-2", kind="fidelity", suggested="repair_recompile",
@@ -1183,9 +1199,12 @@ def test_a_resumed_finding_is_closed_once_the_examiner_opens(tmp_path, request):
     loop.examiner_beat(1)
     assert loop._unclosed == []
     stored = json.loads((workdir / "examiner" / "findings.json").read_text(encoding="utf-8"))
-    assert [r["status"] for r in stored] == ["closed"]
-    # And a second Loop over the workdir finds nothing to resume: no repeated remediation.
-    assert rounds.Loop(plan=plan, builder=builder_agent.build_harness(plan)).pending_findings == []
+    assert stored[0]["status"] == "closed" and stored[0]["finding_id"] == "f1"
+    assert all(r["status"] == "open" for r in stored[1:]), "the rule findings this beat filed are open"
+    # And a second Loop over the workdir finds f1 answered: no repeated remediation. What it does
+    # resume is the findings this beat's own derive filed, which no Builder beat has been handed.
+    resumed = rounds.Loop(plan=plan, builder=builder_agent.build_harness(plan)).pending_findings
+    assert "f1" not in [f.finding_id for f in resumed]
 
 
 def test_a_resumed_finding_reaches_the_model_on_round_one(tmp_path, request):

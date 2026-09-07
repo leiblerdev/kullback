@@ -86,6 +86,10 @@ EXAMINER_TARGET = "all"
 # `builder/repair.py`. A finding suggesting anything else names an artifact the Builder does not own
 # (the Examiner's `repair` over a Verifier, D123); it is delivered as a report and never driven.
 BUILDER_VERBS: frozenset = frozenset(BUILD_TOOLS) | {"repair_refuse_task", "repair_escalate"}
+# The Examiner's own two, which a finding may suggest and the Builder is never driven at: `repair`
+# rewrites a Verifier (D123), and `reroll_then_derive` is the Examiner's `reroll` of a Task followed
+# by `derive`, which is what a D79 check with no second Run to score asks for (D173).
+EXAMINER_VERBS: frozenset = frozenset({"repair", "reroll_then_derive"})
 BUILDER_SESSION = Path("builder") / "session.jsonl"
 EXAMINER_SESSION = Path("examiner") / "session.jsonl"
 
@@ -178,7 +182,7 @@ def finding_message(finding: Finding) -> str:
     artifact it cannot touch. What the finding costs is in the first line, because that is what the
     Builder ranks its round on (D170).
     """
-    cost = f", {finding.cost} Tasks" if finding.cost else ""
+    cost = f", {task_count(finding.cost)}" if finding.cost else ""
     text = f"Finding {finding.finding_id} ({finding.kind}{cost}): {finding.text}"
     if finding.task_id:
         text += f" Task {finding.task_id}."
@@ -189,6 +193,11 @@ def finding_message(finding: Finding) -> str:
     elif finding.suggested != "none":
         text += f" Answered by {finding.suggested}, and {EXAMINER_OWNS}: nothing here for you to call."
     return text
+
+
+def task_count(n: int) -> str:
+    """`3 Tasks`, `1 Task`: the count of Tasks a finding costs, which the Builder reads it by (D170)."""
+    return f"{n} Task{'' if n == 1 else 's'}"
 
 
 def leading_finding(findings: Iterable[Finding]) -> Optional[Finding]:
@@ -528,7 +537,8 @@ class Loop:
                 # D170: the steer names the finding that costs the most Tasks and how many, so the
                 # Environment is repaired before the Intents rather than after them.
                 lead = leading_finding(delivered)
-                head = (f"round {n}: start with {lead.finding_id}, which costs {lead.cost} Tasks: "
+                head = (f"round {n}: start with {lead.finding_id}, which costs "
+                        f"{task_count(lead.cost)}: "
                         f"{suggested_call(lead)}. " if lead is not None else f"round {n}: ")
                 self.builder.steer(head + "the Examiner's findings follow, one per message, the costliest "
                                    f"first; act on each, then build {self.target!r} again and read the rulings.")

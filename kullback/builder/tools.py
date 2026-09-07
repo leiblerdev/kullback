@@ -286,11 +286,12 @@ def _named_by(failure: str) -> tuple[str, str]:
 def red_lights(workdir: Any) -> list[RedLight]:
     """Every failing gate this workdir holds, off the records code wrote and never off a model.
 
-    Three files, because one is not enough: `gates.json` is every ruling the stages recorded, but
+    Four files, because one is not enough: `gates.json` is every ruling the stages recorded, but
     the compile_tools stage overwrites it with its own per-tool rulings, so the fidelity records in
     `replays.json` are read for the Tasks whose replay ruling is no longer in the file, and
     `tool_builds.json` for the tools that ended assisted, which is a body the Builder could not
-    write (D49) and the one red light no ruling names.
+    write (D49) and the one red light no ruling names. `tool_fidelity.json` says what an assisted
+    tool costs in Tasks (D171), which the assisted light alone does not.
     """
     workdir = Path(workdir)
     out: list[RedLight] = []
@@ -311,11 +312,32 @@ def red_lights(workdir: Any) -> list[RedLight]:
         out.append(RedLight(stage="replay_reference", kind="task", target=task_id,
                             failure=f"task {task_id}: {unconfirmed_reason(rows)}",
                             verb=verb_for("replay_reference")))
+    fidelity = _read_json(workdir / "tool_fidelity.json", {}) or {}
     for name, row in sorted((_read_json(workdir / "tool_builds.json", {}) or {}).items()):
         if isinstance(row, dict) and row.get("assisted"):
             out.append(RedLight(stage="compile_tools", kind="tool", target=name,
-                                failure=f"{name}{ASSISTED}", verb="repair_recompile"))
+                                failure=f"{name}{ASSISTED}{_blocked_note(fidelity, name)}",
+                                verb="repair_recompile"))
     return out
+
+
+def _blocked_note(fidelity: Any, name: str) -> str:
+    """What an assisted tool actually costs, off tool_fidelity.json (D171).
+
+    Assisted is a corpus ruling: one recorded call the body answers differently is enough. Left at
+    that, the model reads the tool as the blocker of every Task that calls it, and on one live
+    build 51 of the 64 Tasks that read as blocked have no own call any assisted body answers
+    differently. This says how many Tasks call the tool and how many have an own call it answers
+    differently, which is what a recompile of it buys.
+    """
+    rows = [row[name] for row in ((fidelity or {}).get("tasks") or {}).values()
+            if isinstance(row, dict) and name in row]
+    if not rows:
+        return ""
+    per_tool = ((fidelity or {}).get("tools") or {}).get(name) or {}
+    blocked = sum(1 for row in rows if row.get("differing"))
+    return (f" ({per_tool.get('replayed', 0)} of {per_tool.get('calls', 0)} recorded calls replay; "
+            f"{_count(len(rows), 'Task')} call it, {blocked} blocked by their own differing calls)")
 
 
 def _kinded(light: RedLight) -> tuple[str, str]:

@@ -28,7 +28,7 @@ from typing import Any, Iterable, Optional
 
 from kullback.examiner.plan import ExaminerPlan
 from kullback.gates import verifier_suite
-from kullback.gates.loosening import false_rejection, legitimate_runs
+from kullback.gates.loosening import discarded_runs, false_rejection, legitimate_runs
 from kullback.gates.probes import write_tools_of
 from kullback.runner.records import Finding, as_dict, read_json
 
@@ -61,10 +61,12 @@ SUITE_VERB: dict[str, str] = {
     "mutation_flips": "repair",         # an atom nothing can fail: it names no value
 }
 # A check whose gate never ran is not a wrong Verifier, it is a missing input, and the verb that
-# answers it buys the input rather than changing the Verifier. The second path needs a second
-# finished Run of the Task, which is what a re-roll is; the loophole probe needs probe budget,
-# which no verb buys, so it is reported with no verb rather than with a wrong one.
-MISSING_INPUT_VERB: dict[str, str] = {"second_path_passes": "reroll"}
+# answers it buys the input rather than changing the Verifier. `second_path_passes` on a Task with
+# one Reference has no second path to score (D173), and what buys one is the Examiner's own `reroll`
+# followed by `derive`: the Builder's re-roll would fill the corpus without deriving over it, and
+# the Verifier is the Examiner's to rewrite either way (D123). The loophole probe needs probe
+# budget, which no verb buys, so it is reported with no verb rather than with a wrong one.
+MISSING_INPUT_VERB: dict[str, str] = {"second_path_passes": "reroll_then_derive"}
 # The check name each D79 gate stage reports under, inverted from the suite's own map, so a status
 # row's `not_run` (which holds stage names) can be read against its `checks` (which holds these).
 CHECK_OF_STAGE: dict[str, str] = dict(verifier_suite.D79_STAGES)
@@ -140,87 +142,62 @@ def file_finding(plan: ExaminerPlan, *, kind: str, text: str, key: str, suggeste
     return record
 
 
-# --- reading a gate's failure line ------------------------------------------------------
-
-def failure_subject(line: str) -> tuple[str, str]:
-    """The name a gate failure is about and what the gate says about it.
-
-    The tool gates write `name({arguments}): what differs` and `name: what differs`; anything else
-    is a failure about the whole gate and belongs to no one name. Reading the name off the line is
-    what lets a per-tool ruling be attributed at all: gates.json holds one row per tool per check
-    and the row itself does not carry the tool's name.
-    """
-    head, separator, rest = line.partition("): ")
-    if separator and "(" in head:
-        return head.split("(", 1)[0].strip(), rest
-    name, separator, rest = line.partition(": ")
-    if separator and name and " " not in name:
-        return name, rest
-    return "", line
-
-
-def tool_evidence(rulings: list[dict]) -> dict[str, dict]:
-    """Per tool named in a failing ruling: its replayed and recorded call counts and its first failure.
-
-    The calls come from the replay_fidelity rulings, whose metrics are that one tool's own split
-    (the compile_tools stage rules per tool); a tool that ended assisted on another gate has no
-    counts here and is reported without them rather than with someone else's.
-    """
-    out: dict[str, dict] = {}
-    counted: set[tuple[str, str]] = set()  # one tool's split counted once, however many lines name it
-    for row in rulings:
-        if not isinstance(row, dict) or row.get("pass"):
-            continue
-        metrics = row.get("metrics") or {}
-        stage, split = str(row.get("stage") or ""), str(metrics.get("split") or "")
-        for line in row.get("failures") or []:
-            name, detail = failure_subject(str(line))
-            if not name:
-                continue
-            slot = out.setdefault(name, {"calls": 0, "replayed": 0, "detail": "", "stage": ""})
-            if not slot["detail"]:
-                slot["detail"], slot["stage"] = detail, stage
-            if stage == "replay_fidelity" and (name, split) not in counted:
-                counted.add((name, split))
-                slot["calls"] += int(metrics.get("success_calls") or 0) + int(metrics.get("error_calls") or 0)
-                slot["replayed"] += int(metrics.get("success_matches") or 0) + int(metrics.get("error_matches") or 0)
-    return out
-
-
 # --- the four rules ---------------------------------------------------------------------
 
-def assisted_tool_rows(status: dict, rulings: list[dict]) -> list[dict]:
-    """One row per assisted tool that leaves Tasks with no Reference, the tool it blocks most first.
+def assisted_tool_rows(status: dict, fidelity: dict) -> list[dict]:
+    """One row per tool whose own differing calls leave Tasks with no Reference, the costliest first.
 
-    A Task whose seed Trace calls an assisted tool cannot be replayed to its End state, so it has no
-    Reference and no Verdict (D49); the status row says which tools those are. The hint is the
-    gate's own first failure line, which names the column and both values or the error class, since
-    a hint written from the grouped line alone tells the compiler nothing it did not know.
+    D171 decides which Tasks a tool costs. Assisted is a corpus ruling: one recorded call the kept
+    body answers differently is enough for it, and reading that as "every Task whose seed Trace
+    calls this tool" put one tool's name on 51 Tasks of a live build that make no call it answers
+    differently. Only the Tasks the status row lists in `blocking_tools` are counted here, which are
+    the Tasks whose own recorded calls part from the body, and they are the Tasks a recompile buys.
+    A tool that is assisted and blocks nobody is not a finding: the red light still stands in the
+    Builder's status and the ranking would put it last anyway.
+
+    The counts and the first difference come from `tool_fidelity.json` (`tools` is the corpus
+    ruling per tool, `tasks` the per Task grain with the corpus gate's own words for each differing
+    call), so the hint quotes the leaf and both values or the error class (D154) without anything
+    here having to parse a gate's failure line.
     """
+    per_tool = (fidelity or {}).get("tools") or {}
+    per_task = (fidelity or {}).get("tasks") or {}
     blocked: dict[str, list[str]] = {}
     for task_id, row in sorted((status or {}).items()):
         if not isinstance(row, dict) or row.get("reference_confirmed"):
             continue
-        for name in row.get("assisted_tools") or []:
+        for name in row.get("blocking_tools") or []:
             blocked.setdefault(str(name), []).append(task_id)
-    evidence = tool_evidence(rulings)
     rows = []
     for name, task_ids in blocked.items():
-        seen = evidence.get(name) or {}
-        calls, replayed = seen.get("calls", 0), seen.get("replayed", 0)
-        detail = seen.get("detail", "")[:HINT_CHARS]
-        fidelity = (f" It replays {replayed} of {calls} recorded calls the way the recording did."
-                    if calls else " No ruling names how its recorded calls replay.")
-        first = f" First difference: {detail}" if detail else ""
+        corpus = per_tool.get(name) or {}
+        calls, replayed = int(corpus.get("calls") or 0), int(corpus.get("replayed") or 0)
+        detail = first_difference(per_task, name, task_ids)[:HINT_CHARS]
+        callers = sum(1 for row in per_task.values() if isinstance(row, dict) and name in row)
         rows.append({
             "kind": "assisted_tool", "tool": name, "task_ids": task_ids, "task_id": None,
             "key": finding_key("assisted_tool", name),
             "suggested": "repair_recompile",
-            "hint": detail or f"the {seen.get('stage') or 'compile_tools'} gate refused every body written for it",
-            "text": (f"{name} is assisted, so {len(task_ids)} Tasks have no Reference: a seed Trace of each "
-                     f"calls it and the replay cannot reach the End state (D49)." + fidelity + first),
+            "hint": detail or "a recorded call of this Task replays differently",
+            "text": (f"{name} answers {len(task_ids)} Tasks' own recorded calls differently, so none of them "
+                     f"replays to its End state and none has a Reference (D49, D171). It replays "
+                     f"{replayed} of {calls} recorded calls of the corpus and {callers} Tasks call it."
+                     + (f" First difference: {detail}" if detail else "")),
         })
     return rows
+
+
+def first_difference(per_task: dict, name: str, task_ids: Iterable[str]) -> str:
+    """The corpus gate's own words for the first call of these Tasks that the body answers differently.
+
+    The per Task grain carries the reasons already worded by the gate that ruled on the call, so the
+    hint the recompile is given is the same sentence the gate would have written about it.
+    """
+    for task_id in task_ids:
+        reasons = ((per_task.get(task_id) or {}).get(name) or {}).get("reasons") or []
+        if reasons:
+            return str(reasons[0])
+    return ""
 
 
 def suite_rows(status: dict) -> list[dict]:
@@ -255,12 +232,13 @@ def suite_rows(status: dict) -> list[dict]:
         })
     for check, task_ids in missing.items():
         verb = MISSING_INPUT_VERB.get(check, "none")
+        why = verifier_suite.ALT_PATH_NOT_RUN if check == "second_path_passes" else "the input it needs is not there"
         rows.append({
             "kind": "suite", "tool": None, "task_ids": task_ids, "task_id": None,
             "key": finding_key("suite", check, "not_run"), "suggested": verb,
-            "hint": "", "text": (f"The D79 check {check} never ran on {len(task_ids)} Tasks: the input it needs "
-                                 f"is not there, so the check counts as not passed and the Verifier is not "
-                                 f"trusted. This is a missing Run, not a wrong Verifier."),
+            "hint": "", "text": (f"The D79 check {check} never ran on {len(task_ids)} Tasks ({why}), so the "
+                                 f"check counts as not passed and none of them is trusted. This is a missing "
+                                 f"Run, not a wrong Verifier (D173)."),
         })
     return rows
 
@@ -268,13 +246,17 @@ def suite_rows(status: dict) -> list[dict]:
 def false_rejection_rows(store: dict) -> list[dict]:
     """One row per Task whose required atoms reject every held-out frontier Run (D133).
 
-    The number itself is the loosening gate's (`false_rejection`), read here over the same store the
-    trusted ruling reads it over; the atom is what the gate does not record, so it is recomputed by
-    scoring the first rejected Run against the atoms that did the rejecting. Hard atoms are left out
-    for the same reason the gate leaves them out: a Run that broke the policy is rightly rejected.
+    The number itself is the loosening gate's (`false_rejection`), read here over the same store and
+    the same pool the trusted ruling reads it over, the recordings the round's Reference rule
+    discarded taken out (D173): a Verifier that rejects a Run which did not do the job is right, and
+    counting that made the number say the opposite of what it means. The atom is what the gate does
+    not record, so it is recomputed by scoring the first rejected Run against the atoms that did the
+    rejecting. Hard atoms are left out for the same reason the gate leaves them out: a Run that broke
+    the policy is rightly rejected.
     """
     write_tools = write_tools_of(store.get("sigs") or [])
-    legitimate = legitimate_runs(store.get("replays") or {}, store.get("rerolls") or {})
+    legitimate = legitimate_runs(store.get("replays") or {}, store.get("rerolls") or {},
+                                 discarded_runs(store.get("task_status") or {}))
     canon_rules = store.get("canon_rules")
     task_runs = store.get("task_runs") or {}
     rows = []
@@ -307,13 +289,16 @@ def disagreement_rows(status: dict, references: dict) -> list[dict]:
     them apart, or the judge failed every recording there was. Either way the corpus does not say
     what the Task's answer is, and no Verifier can be derived from it. A Task blocked by an assisted
     tool is left out: its recordings disagree because the tool replays differently, and refusing it
-    would be refusing a Task the Builder can still fix.
+    would be refusing a Task the Builder can still fix. Blocked means blocked by its own differing
+    calls (D171): a Task that merely calls an assisted tool the body answers correctly is not
+    waiting on a recompile, and on one live build 51 of the 64 Tasks that read as blocked were that
+    kind, their real reason sitting later in the same sentence and never reaching a finding.
     """
     rows = []
     for task_id, row in sorted((references or {}).items()):
         if not isinstance(row, dict) or row.get("references"):
             continue
-        if ((status or {}).get(task_id) or {}).get("assisted_tools"):
+        if ((status or {}).get(task_id) or {}).get("blocking_tools"):
             continue
         groups = [g for g in row.get("groups") or [] if isinstance(g, dict)]
         failed = row.get("failed") or {}
@@ -343,9 +328,9 @@ def rule_rows(plan: ExaminerPlan) -> list[dict]:
     The tie-break is the key, so the same records give the same order however the dicts were built.
     """
     status = plan.store.get("task_status") or {}
-    rulings = [row for row in (_json(plan.ledger.path, []) or []) if isinstance(row, dict)]
+    fidelity = plan.store.get("tool_fidelity") or _json(plan.workdir / "tool_fidelity.json", {}) or {}
     references = _json(plan.workdir / "references.json", {}) or {}
-    rows = (assisted_tool_rows(status, rulings) + suite_rows(status)
+    rows = (assisted_tool_rows(status, fidelity) + suite_rows(status)
             + false_rejection_rows(plan.store) + disagreement_rows(status, references))
     return sorted(rows, key=lambda row: (-len(row["task_ids"]), row["key"]))
 
