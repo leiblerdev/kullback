@@ -799,12 +799,14 @@ def test_the_result_carries_the_build_result_the_rounds_the_trusted_tasks_and_th
 
 def test_the_examiner_receives_the_builder_artifacts_without_bodies_db_schema_or_environment(tmp_path, request):
     """D123: the Examiner never reads tool bodies or the Environment; what it is handed is DERIVE_INPUTS."""
-    plan = BuildPlan(workdir=tmp_path / "work", model=Bodies(), files=[_fixture(request)], max_attempts=0)
+    plan = BuildPlan(workdir=tmp_path / "work", model=Bodies(), files=[_fixture(request)], max_attempts=0,
+                     workers=2)
     loop = rounds.Loop(plan=plan, builder=builder_agent.build_harness(plan))
     loop.allowance = {agent: None for agent in rounds.AGENTS}
     loop.builder_beat(1)
     assert {"bodies", "db", "schema", "environment"} <= set(plan.store)
     loop.examiner_beat(1)
+    assert loop.eplan.workers == plan.workers, "the derivation derives on the build's workers (D163)"
     handed = set(loop.eplan.store) & set(plan.store)
     assert handed <= set(DERIVE_INPUTS)
     assert not handed & set(FORBIDDEN_INPUTS)

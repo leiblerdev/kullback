@@ -546,7 +546,8 @@ class Loop:
         self.eplan = ExaminerPlan(
             workdir=self.plan.workdir, inputs=_handover(self.plan.store),
             probe_model=models.get("loophole_probe"), judge_model=models.get("reference_judge"),
-            probe_limit=self.plan.probe_limit, anchor=pipeline.load_anchor(self.plan.workdir),
+            probe_limit=self.plan.probe_limit, workers=self.plan.workers,
+            anchor=pipeline.load_anchor(self.plan.workdir),
             on_event=_dict_sink(self.plan.on_event), round=n)
         self.examiner = examiner_agent.examiner_harness(
             self.eplan, self.agent_model, [*self.subscribers, self._collect_finding], max_turns=self.max_turns,

@@ -52,7 +52,8 @@ class ExaminerPlan:
     a callable the Builder built over its own store (`build.probe_runner`, `build.reroll_runner`):
     the Examiner never touches what they read. `probe_model` is the model the loophole probe runs
     with; `judge_model` the residue judge of D111; the re-roll model is the callable's own, never
-    named here. `allowance_remaining` is the round driver's number, in
+    named here. `workers` is how many Tasks the derivation derives at once (D163), the Builder's
+    number for the same thing. `allowance_remaining` is the round driver's number, in
     dollars: the reroll tool refuses at or below zero. `round` names the round the records it
     writes belong to. `unprotect` and `entry_id_for` are set by the extension when a harness with
     a session loads it; until then they are no-ops.
@@ -65,6 +66,7 @@ class ExaminerPlan:
     run_probe: Any = None
     run_rerolls: Any = None
     probe_limit: Optional[int] = None
+    workers: int = 1
     anchor: Any = None
     on_event: Optional[Any] = None
     round: int = 0
