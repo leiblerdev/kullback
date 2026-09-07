@@ -17,7 +17,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Iterable, Optional
 
-from kullback.builder import synth
+from kullback.builder import mine, synth
 from kullback.builder.body_skill import BODY_SKILL
 from kullback.builder.mine import is_assistant_call, is_scalar_result
 from kullback.builder.sandbox import (
@@ -263,6 +263,12 @@ def build_starting_state(
                                "its post-state is kept as the starting value")
         db.setdefault(table, {})[row_id] = chosen.row
 
+    # The constants of the world (mine.world_constants): one row of values the corpus pinned, which
+    # no sighting of a row can carry because the results they came from are not rows.
+    constants_table = mine.constants_table_of(schema)
+    if constants_table:
+        db.setdefault(constants_table, {})[mine.CONSTANTS_ROW] = mine.constants_row(schema)
+
     assumptions += [f"{table} row {row_id} was seen without every part of its key; it was folded "
                     f"into the {count} rows whose known key columns match and is not a row of its own"
                     for table, row_id, count in fold_partial_rows(db, schema)]
@@ -359,11 +365,45 @@ def fold_into_homes(db: dict, schema: EntitySchema) -> list[tuple[str, str, str]
     return folded
 
 
+def argument_ids(args: Any) -> list[tuple[str, str, dict]]:
+    """(the name it sat under, the value, the object it sat in) for every string in a call's arguments.
+
+    Lists and dicts are walked to any depth, because a call names the rows it acts on wherever its
+    own shape puts them: at the top level under the column's name, or inside a list of objects one
+    or more levels down. The object a value sat in is carried back with it so the other parts of a
+    composite key can be read from beside it, which is where a call that names several rows states
+    each row's own date or shift; a string inside a list keeps the name of the key the list sat
+    under and the object that key belongs to.
+    """
+    out: list[tuple[str, str, dict]] = []
+
+    def walk(name: Optional[str], value: Any, scope: dict) -> None:
+        if isinstance(value, str):
+            if name is not None:
+                out.append((name, value, scope))
+        elif isinstance(value, dict):
+            for key, item in value.items():
+                walk(str(key), item, value)
+        elif isinstance(value, (list, tuple)):
+            for item in value:
+                walk(name, item, scope)
+
+    walk(None, args if isinstance(args, dict) else {}, {})
+    return out
+
+
 def referenced_ids(traces: Iterable[Trace], schema: EntitySchema) -> list[tuple[str, str]]:
     """(table, id) pairs a call that succeeded named in its arguments, by the table's own id column.
 
     Public: build.py's build_environment gate wires these ids into validate.environment_gate, to
     check db.json actually holds every id a trace referenced.
+
+    Arguments are walked to any depth (`argument_ids`), because reading the top level alone missed
+    the shape a write takes when it acts on several rows at once: the rows are a list of objects
+    under one argument, each object naming its row by the table's own key columns, so the call owed
+    the world rows nothing counted and the body refused them as not found. The name of the key a
+    value sits under is what names the table, at any depth; the pattern the miner recorded is the
+    guard it always was.
     """
     keys = {table: key_fields(schema, table) for table in schema.tables}
     out: set[tuple[str, str]] = set()
@@ -372,18 +412,22 @@ def referenced_ids(traces: Iterable[Trace], schema: EntitySchema) -> list[tuple[
             if call.error is not None:  # an id the customer's tool refused is not a row we owe
                 continue
             args = call.args or {}
-            for table, fields in keys.items():
-                if not fields or not isinstance(args.get(fields[0]), str):
-                    continue
-                pattern = id_pattern_for(schema, table, fields[0])
-                if pattern and not re.match(pattern, args[fields[0]]):
-                    continue
-                # A composite key the call does not complete names no row: a partial id would be a
-                # row of its own, which is exactly what the composite key exists to prevent.
-                if any(args.get(name) is None for name in fields[1:]):
-                    continue
-                out.add((table, key_separator(schema).join(
-                    [args[fields[0]]] + [str(args[name]) for name in fields[1:]])))
+            for name, value, scope in argument_ids(args):
+                for table, fields in keys.items():
+                    if not fields or name != fields[0]:
+                        continue
+                    pattern = id_pattern_for(schema, table, fields[0])
+                    if pattern and not re.match(pattern, value):
+                        continue
+                    # A composite key the call does not complete names no row: a partial id would be
+                    # a row of its own, which is exactly what the composite key exists to prevent.
+                    # Each part is read from beside the id first and from the top level second, so a
+                    # list of rows that each carry their own date completes each row's own key, and
+                    # a call that states one date for every row it names still completes them all.
+                    parts = [scope.get(part, args.get(part)) for part in fields[1:]]
+                    if any(part is None for part in parts):
+                        continue
+                    out.add((table, key_separator(schema).join([value] + [str(p) for p in parts])))
     return sorted(out)
 
 
@@ -855,6 +899,13 @@ def _schema_block(schema: EntitySchema) -> str:
                          f"took the value from the call's arguments; the key is what says which row "
                          f"this is. Split a key on {separator!r} to read its parts back, and answer "
                          f"rows whose key parts match the arguments you were given.")
+        if table == mine.constants_table_of(schema):
+            lines.append(f"    self.db.{table} holds one row of the world's constants: every "
+                         f"recorded call of the tool a column is named after answered that column's "
+                         f"value, whatever it was asked. Read the row with "
+                         f"next(iter(self.db.{table}.values())), never by key, and let such a tool "
+                         f"answer its own column whole rather than assembling the answer out of "
+                         f"other tables' rows.")
         home = (schema.homes or {}).get(table)
         if home:
             parent, column = home.split(".", 1)
