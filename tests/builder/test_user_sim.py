@@ -629,8 +629,13 @@ def test_the_goal_the_recorded_user_opened_with_is_spoken_first(tau2_small):
     first = user.reply([{"role": "assistant", "content": "Hi! How can I help you today?"}])
     assert "water bottle" in first and "desk lamp" in first
     assert user.events[0].payload["sources"][GOAL] == "rules"
+    # A turn that asks for nothing gets the goal a second time, said as a restatement and marked as
+    # one, and never a third: the turn after that closes the Run.
     second = user.reply(ask("One moment please."))
-    assert "water bottle" not in second
+    assert user.events[-1].payload["sources"] == {GOAL: "goal_restated"}
+    third = user.reply(ask("Still one moment please."))
+    assert "water bottle" in second and "desk lamp" in second
+    assert "water bottle" not in third
 
 
 def test_a_confirmation_question_is_answered_with_the_recorded_confirmation(tau2_small):
@@ -673,7 +678,10 @@ def test_the_simulated_user_closes_the_run_with_the_recorded_closing_line(tau2_s
     rules = rules_from_fixture(tau2_small, 1)
     user = SimulatedUser(rules)
     user.reply(ask("Hi! How can I help you today?"))
-    text = user.reply(ask("Your return is processed. Is there anything else I can help you with?"))
+    # Nothing in this transcript wrote, so the first "anything else" gets the goal again; the
+    # second one is the close.
+    user.reply(ask("Your return is processed. Is there anything else I can help you with?"))
+    text = user.reply(ask("Is there anything else I can help you with?"))
     assert text == facts_by_field(rules)[CLOSING]
     assert user.done is True
 
@@ -1046,3 +1054,70 @@ def test_a_simulated_user_built_from_the_mined_rules_answers_the_name_and_zip_as
     assert "Ada Whitfield" in text
     assert "30318" in text
     assert user.events[-1].payload["unavailable_fields"] == []
+
+
+# --- the goal restated once before the Run is left ---
+
+
+def renewal_rules() -> UserRules:
+    """A recorded help desk call whose user opened with a request and closed with a line of its own."""
+    return derive_user_rules(
+        library_trace([
+            ("assistant", "Hi! How can I help you today?"),
+            ("user", "I would like to renew loan L2201 for another three weeks."),
+            ("assistant", "That is renewed. Is there anything else I can help you with?"),
+            ("user", "No, that is all for today. Thanks for your help."),
+        ]),
+        LIBRARY,
+    )
+
+
+def said(user: SimulatedUser) -> dict:
+    return user.events[-1].payload["sources"]
+
+
+def test_the_user_restates_its_goal_once_before_closing_on_a_silent_turn():
+    """Build 12: of 381 re-rolls that made no write, 248 closed after one turn where the agent asked
+    for nothing. A user whose request has not been acted on says it again before it leaves."""
+    user = SimulatedUser(renewal_rules(), vocab=LIBRARY)
+    opening = user.reply(ask("Hi! How can I help you today?"))
+    assert "L2201" in opening and said(user)[GOAL] == "rules"
+    again = user.reply(ask("One moment while I look into that."))
+    assert again == opening
+    assert said(user) == {GOAL: "goal_restated"}
+    assert user.done is False
+
+
+def test_the_user_restates_its_goal_when_asked_if_that_is_all_before_any_write():
+    user = SimulatedUser(renewal_rules(), vocab=LIBRARY, write_tools={"renew_loan"})
+    user.reply(ask("Hi! How can I help you today?"))
+    text = user.reply(ask("Is there anything else I can help you with?"))
+    assert "L2201" in text
+    assert said(user) == {GOAL: "goal_restated"}
+    assert user.done is False
+
+
+def test_the_user_closes_at_once_when_asked_if_that_is_all_after_the_write():
+    """The Run did what the user came for, so the same question is the end of the call, not a prod."""
+    user = SimulatedUser(renewal_rules(), vocab=LIBRARY, write_tools={"renew_loan"})
+    user.reply(ask("Hi! How can I help you today?"))
+    text = user.reply([
+        {"role": "user", "content": "Hi."},
+        {"role": "assistant", "content": None,
+         "tool_calls": [{"id": "c1", "name": "renew_loan", "arguments": {"loan_id": "#L2201"}}]},
+        {"role": "tool", "tool_call_id": "c1", "name": "renew_loan", "content": "{}"},
+        {"role": "assistant", "content": "That is renewed. Is there anything else I can help you with?"},
+    ])
+    assert text == facts_by_field(renewal_rules())[CLOSING]
+    assert said(user) == {CLOSING: "rules"}
+    assert user.done is True
+
+
+def test_the_second_silent_turn_closes():
+    user = SimulatedUser(renewal_rules(), vocab=LIBRARY)
+    user.reply(ask("Hi! How can I help you today?"))
+    user.reply(ask("One moment while I look into that."))
+    text = user.reply(ask("Still checking, sorry for the wait."))
+    assert text == facts_by_field(renewal_rules())[CLOSING]
+    assert said(user) == {CLOSING: "rules"}
+    assert user.done is True

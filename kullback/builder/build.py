@@ -779,6 +779,9 @@ def _candidate_runs(workdir: Path, task: Task, model: Any, *, count: int, prefix
     overlay, overlay_rows = compile_env.load_overlay(workdir, task.id)
     vocab = _vocab_from(workdir)
     tools = _tool_definitions(sigs, vocab)
+    # The Simulated user restates its goal once rather than leaving on the first dead turn, and it
+    # needs these names to tell a Run that has already written from one that has not (user_sim).
+    write_tools = {sig.name for sig in sigs if getattr(sig, "kind", None) == "write"}
     out = []
     for number in range(count):
         run_id = f"{prefix}-{task.id}-{seed + number}" if prefix else f"{task.id}-{seed + number}"
@@ -788,7 +791,8 @@ def _candidate_runs(workdir: Path, task: Task, model: Any, *, count: int, prefix
         router = route.Router(env_tools_module=toolkit, starting_state=json.loads(json.dumps(db)),
                               overlay=overlay, overlay_rows=overlay_rows, tool_sigs=sigs,
                               canon_rules=canon_rules, synthetic_rows=schema.synthetic_rows)
-        simulated = user_sim.SimulatedUser(rules, starting_state_reader=router.state, vocab=vocab) if rules else None
+        simulated = user_sim.SimulatedUser(rules, starting_state_reader=router.state, vocab=vocab,
+                                           write_tools=write_tools) if rules else None
         state = loop.new_run_state(run_id, workdir=workdir / "runs" / task.id, env_id=env_id, task_id=task.id,
                                    model=getattr(model, "name", None) or (prefix or "candidate"),
                                    seed=seed + number, user=simulated, user_rules=rules, max_turns=max_turns,
@@ -844,8 +848,10 @@ def probe_runner(plan: BuildPlan):
                               canon_rules=canon_rules, synthetic_rows=schema.synthetic_rows)
         reference = next((r for r in (replays.get(task.id) or {}).values() if r.get("confirmed")), None)
         rules = user_rules.get(reference["trace_id"]) if reference else None
-        simulated = user_sim.SimulatedUser(rules, starting_state_reader=router.state,
-                                           vocab=_vocab_from(workdir)) if rules else None
+        simulated = user_sim.SimulatedUser(
+            rules, starting_state_reader=router.state, vocab=_vocab_from(workdir),
+            write_tools={sig.name for sig in sigs if getattr(sig, "kind", None) == "write"},
+        ) if rules else None
         state = loop.new_run_state(f"probe-{task.id}", workdir=workdir / "probes", env_id=env_id,
                                    task_id=task.id, model=f"probe:{getattr(model, 'name', 'model')}",
                                    user=simulated, max_turns=PROBE_TURNS,
