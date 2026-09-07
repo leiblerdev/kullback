@@ -609,12 +609,12 @@ def _keep_hint(plan: BuildPlan) -> Callable[[Any], dict]:
 
 
 def repair_verb_tools(plan: BuildPlan, sink: Optional[Sink] = None) -> list[AgentTool]:
-    """The five repair verbs a Builder session may call (D135, D136, D138).
+    """The six repair verbs a Builder session may call (D135, D136, D138, D155).
 
     Three act: they record the request and run the stage that repairs the artifact, so the gates
-    rule on what came out in the same tool result. Two decide: `repair_refuse_task` and
-    `repair_escalate` come straight from `builder/repair.py`, record their request and change no
-    artifact. `repair_rewrite_skill` is not here: a model rewriting its own prompt stays proposed,
+    rule on what came out in the same tool result. Three decide: `repair_refuse_task`,
+    `repair_escalate` and `repair_record_finding` come straight from `builder/repair.py`, record
+    their request and change no artifact. `repair_rewrite_skill` is not here: a model rewriting its own prompt stays proposed,
     gated and versioned, and no gate accepts an edit yet (the GEPA caution in docs/todo.md).
     """
     recording = {tool.name: tool for tool in
@@ -649,6 +649,7 @@ def repair_verb_tools(plan: BuildPlan, sink: Optional[Sink] = None) -> list[Agen
                                    "intent"), render=render),
         recording["repair_refuse_task"],
         recording["repair_escalate"],
+        recording["repair_record_finding"],
     ]
 
 

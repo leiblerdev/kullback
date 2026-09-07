@@ -58,7 +58,11 @@ TOOLS = ("Tools, one example call each.\n"
          "cache.\n"
          "repair_refuse_task(task_id=\"task_1a2b\", reason=\"...\") and repair_escalate(task_id=\"task_1a2b\", "
          "queue=\"review\"): record a decision for the round report; they move no gate and change no "
-         "artifact.")
+         "artifact.\n"
+         "repair_record_finding(tool=\"update_booking\", finding=\"rooms[*].rate: on a call that changes "
+         "several rooms the recording writes the last new room's rate on every changed row; the body "
+         "reproduces it\", evidence=[\"call_12\", \"call_40\"]): record a behaviour of the recorded "
+         "system that its description does not say, for the customer's report; it moves no gate.")
 EXAMPLES = ("Examples of a red light and the call that answers it.\n"
             "1. `replay_fidelity: update_booking (12): hard columns differ: total: ours 118.0, recorded 120.0` -> "
             "repair_recompile(name=\"update_booking\", hint=\"keep the total the recording shows; do not "
@@ -87,7 +91,10 @@ RULES = ("Choosing. Read the whole status once. Act first on the red light that 
          "Runner, the judge or the Simulated user, and any call naming a path under kullback/gates or "
          "kullback/runner is refused in code. You write no Verifier and no probe: there is no tool for "
          "either. The gates are the standard, not something to argue with; a failed ruling is reported "
-         "as it is.")
+         "as it is. When several recorded calls agree with each other and part from the tool's "
+         "description at one leaf, the recording is the standard: the body reproduces what the "
+         "recording does there, and repair_record_finding says so with the leaf and the call ids, "
+         "so the customer reads it (D155).")
 STOP = ("Stopping. Answer with no tool call, in one line, when every gate is green, or when two status "
         "reports in a row show the same red lights after your repairs, or when a repair answers "
         "`nothing changed`. Before that line, call build on the target once more, after your last "

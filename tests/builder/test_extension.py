@@ -218,7 +218,7 @@ def test_the_extension_registers_every_stage_status_and_the_repair_verbs_with_si
     assert isinstance(harness, AgentHarness), "the Builder is an extension on the core, not a harness of its own"
     assert harness.registry.names() == ["status", "build", "recluster", "grow", "compile_tool", "replay",
                                         "reroll", "repair_recompile", "repair_grow", "repair_intent",
-                                        "repair_refuse_task", "repair_escalate"]
+                                        "repair_refuse_task", "repair_escalate", "repair_record_finding"]
     assert "repair_rewrite_skill" not in harness.registry.names(), "the GEPA caution: no unchecked prompt rewrite"
     assert [s.name for s in harness.sections] == ["builder", "builder_tools", "skills", "skill:triage", "builder_examples",
                                                   "builder_rules", "builder_targets", "builder_stop"]
@@ -306,7 +306,7 @@ def test_a_scripted_model_driving_the_session_calls_build_and_reads_the_rulings(
     tools = [t["name"] for t in model.calls[0]["tools"]]
     assert tools == ["status", "build", "recluster", "grow", "compile_tool", "replay", "reroll",
                      "repair_recompile", "repair_grow", "repair_intent", "repair_refuse_task",
-                     "repair_escalate"]
+                     "repair_escalate", "repair_record_finding"]
     system = model.calls[0]["messages"][0]
     assert "turn red lights green" in json.dumps(system)
     second = json.dumps(model.calls[1]["messages"])
@@ -416,3 +416,12 @@ def test_the_harness_of_the_driver_refuses_a_model_turn(tmp_path):
     assert isinstance(harness.model, builder_agent.DriverModel)
     with pytest.raises(RuntimeError, match="no model turn"):
         harness.model.query([])
+
+
+def test_the_rules_make_the_recording_the_standard_and_name_the_finding_verb(tmp_path):
+    """D155: several recorded calls that agree with each other and part from the description are the
+    system's behaviour; the body reproduces it and the finding is how the customer reads that."""
+    text = builder_agent.build_harness(BuildPlan(workdir=tmp_path)).system
+    assert "repair_record_finding(" in text, "the verb is shown with an example call, like every verb"
+    assert "the recording is the standard" in text
+    assert "update_booking" in text and "rate" in text, "the example is an invented booking domain"

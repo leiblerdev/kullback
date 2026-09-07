@@ -217,10 +217,10 @@ def test_every_ruling_the_registry_names_has_a_verb_that_acts_or_an_owner():
 
 # --- the repair verbs ----------------------------------------------------------
 
-def test_the_five_repair_verbs_are_registered_and_the_skill_rewrite_is_not(tmp_path):
+def test_the_six_repair_verbs_are_registered_and_the_skill_rewrite_is_not(tmp_path):
     names = [t.name for t in builder_tools.repair_verb_tools(BuildPlan(workdir=tmp_path))]
     assert names == ["repair_recompile", "repair_grow", "repair_intent", "repair_refuse_task",
-                     "repair_escalate"]
+                     "repair_escalate", "repair_record_finding"]
     assert "repair_rewrite_skill" not in names, "a model rewriting its own prompt stays gated (GEPA caution)"
 
 
