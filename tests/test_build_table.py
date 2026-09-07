@@ -30,7 +30,9 @@ def built(tmp_path_factory, request) -> Path:
     """One whole offline build, driven by code, the way tests/test_rounds.py drives one."""
     workdir = tmp_path_factory.mktemp("table")
     fixture = Path(request.config.rootpath) / "tests" / "fixtures" / "tau2_retail_small.json"
-    rounds.run_rounds(workdir, model=Bodies(), files=[fixture], max_attempts=0)
+    # One round: the fixture's Tasks never get a Reference, and under D172 that is unfinished work,
+    # so the round cap (D169) ends the run after the one round these tests read.
+    rounds.run_rounds(workdir, model=Bodies(), files=[fixture], max_attempts=0, max_rounds=1)
     return workdir
 
 
@@ -330,7 +332,7 @@ def test_a_round_that_kept_no_turn_count_names_the_record_it_would_need(tmp_path
 
 def test_a_round_that_moved_no_count_says_so(printed: str):
     row = cells(rows_of(printed, "Per round")[0])
-    assert row[0] == "1" and row[6] == "done"
+    assert row[0] == "1" and row[6] == "max_rounds"
     assert row[5] == "builder 0, examiner 0, total 0"
 
 

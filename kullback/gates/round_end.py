@@ -7,7 +7,8 @@ driver adds what only it knows (fallback compactions per agent, spend, findings,
 target was built at all). `done` is D126's state taken literally over a round that built its target
 (D166), `stalled` is `stall_rounds` consecutive rounds that moved no gate count in either direction,
 and `exit_for` applies the exits in the order ceiling, done, stalled (gate counts still, or
-fidelity flat for `fidelity_stall` rounds, D169), max_rounds.
+fidelity flat for `fidelity_stall` rounds, D169), max_rounds. A Task with no Reference is
+unfinished until it is refused (D172).
 """
 
 from __future__ import annotations
@@ -40,7 +41,12 @@ def round_counts(task_status: dict, verifiers: list[Verifier], probes: dict[str,
     refused = dict(trusted_ruling.metrics["refused"])
     with_reference = [task_id for task_id, row in (task_status or {}).items()
                       if _get(row, "reference_confirmed", False)]
-    unfinished = [task_id for task_id in with_reference
+    # D172: every Task the corpus gave is unfinished until it is trusted and clears fidelity, or is
+    # refused; a Task with no Reference yet (a seed tool assisted, a disagreement not yet refused)
+    # is the loop's remaining work, not a Task outside it. Reading `unfinished` over the Tasks with
+    # a Reference alone closed a build on "done" at fidelity 0 of 183 with every tool assisted,
+    # because no Task had a Reference to be unfinished.
+    unfinished = [task_id for task_id in (task_status or {})
                   if not ((task_id in trusted_ids and task_id in clearing) or task_id in refused)]
     return {
         "fidelity": len(replays or {}) - len(fidelity_ruling.failures),
@@ -68,13 +74,16 @@ def _counts(entry: Any) -> dict:
 
 
 def done(counts: dict) -> bool:
-    """D126's state, literal, over a round that built its target (D166): every Task with a Reference
-    is trusted and clears fidelity or is refused, and no probe passes.
+    """D126's state, literal, over a round that built its target (D166): every Task is trusted and
+    clears fidelity or is refused, and no probe passes.
 
-    A round whose build failed a stage holds no Task with a Reference at all, so `unfinished` is
-    empty and the literal reading calls it done. That closed a build whose compile_tools stage had
+    A round whose build failed a stage holds no Task with a Reference at all, so `unfinished` was
+    empty and the literal reading called it done. That closed a build whose compile_tools stage had
     failed three times, on the exit "done", with fidelity 0 of 183. `built` False is never done,
     whatever the rest of the counts say; a round that does not carry the count reads as before.
+    The same build, rebuilt, closed on "done" again at fidelity 0 with every tool assisted and no
+    Task holding a Reference: `unfinished` now counts every Task without a ruling (D172), so a
+    round is done only when the number is final, and a loop that cannot move ends on stalled.
     """
     counts = _counts(counts)
     if counts.get("built") is False:

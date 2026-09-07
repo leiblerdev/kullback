@@ -663,7 +663,9 @@ def driven(tmp_path_factory, request):
         if isinstance(event, BeatEnd) and event.agent == "builder":
             builder_rows[:] = json.loads((workdir / "gates.json").read_text(encoding="utf-8"))
 
-    result = rounds.run_rounds(workdir, model=Bodies(), files=[_fixture(request)], max_attempts=0,
+    # One round: the fixture's Tasks never get a Reference, so under D172 the loop would run on to a
+    # stall; the round cap (D169) ends it after the one round these tests read.
+    result = rounds.run_rounds(workdir, model=Bodies(), files=[_fixture(request)], max_attempts=0, max_rounds=1,
                                subscribers=[events.append, after_the_builder_beat], on_event=dicts.append)
     return {"workdir": workdir, "result": result, "events": events, "dicts": dicts, "builder_rows": builder_rows}
 
@@ -788,12 +790,13 @@ def test_the_round_the_driver_is_in_is_on_the_plan_before_the_first_beat(tmp_pat
     assert [(row["target"], row["round"]) for row in rows] == [("t1", 1), ("t2", 2), ("t3", 3)]
 
 
-def test_the_loop_exits_done_when_the_state_holds_after_a_round_over_the_fixture(driven):
-    """No Task on the fixture has a confirmed Reference, so D126's state holds after round 1 (the
-    gates' own claim in tests/gates/test_round_end.py), and the driver stops there."""
-    assert driven["result"]["exit"] == "done"
+def test_the_loop_over_the_fixture_is_not_done_after_a_round_and_stops_on_its_round_cap(driven):
+    """No Task on the fixture has a confirmed Reference: before D172 that read as D126's state and
+    the driver exited done at fidelity 0; now those Tasks are the loop's unfinished work, and the
+    fixture's one-round cap is what ends it."""
+    assert driven["result"]["exit"] == "max_rounds"
     assert [r["round"] for r in driven["result"]["rounds"]] == [1]
-    assert driven["events"][-1].exit == "done"
+    assert driven["events"][-1].exit == "max_rounds"
 
 
 def test_the_result_carries_the_build_result_the_rounds_the_trusted_tasks_and_the_refusals(driven):
@@ -1024,8 +1027,10 @@ def test_a_finding_filed_in_round_one_is_performed_in_round_two_then_the_run_exi
     stored = rounds.load_rounds(workdir)
     assert len(stored) == 2
     assert stored[0].exit is None and [f.finding_id for f in stored[0].pending_findings] != []
-    assert stored[1].exit == "done" and stored[1].pending_findings == []
-    assert result["exit"] == "done" and result["failed"] is False
+    # The fixture's Tasks never get a Reference, so the run cannot be done (D172): with nothing
+    # pending and no gate count moved since round 1, it exits stalled.
+    assert stored[1].exit == "stalled" and stored[1].pending_findings == []
+    assert result["exit"] == "stalled" and result["failed"] is False
     findings = json.loads((workdir / "examiner" / "findings.json").read_text(encoding="utf-8"))
     assert [f["status"] for f in findings] == ["closed"]
 
