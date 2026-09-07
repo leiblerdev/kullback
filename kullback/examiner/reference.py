@@ -30,6 +30,7 @@ from typing import Any, Callable, Iterable, Optional
 
 from kullback.examiner import derive as verifier_mod
 from kullback.gates import verifier_suite
+from kullback.gates.verifier_suite import _key
 from kullback.runner.judge import sources_not_given
 from kullback.runner.records import Atom, Constraint
 from kullback.runner.verdict import TRANSFER_HINTS
@@ -71,6 +72,7 @@ class Recording:
     violated: list[str] = field(default_factory=list)
     stated: tuple = ()          # the facts read from the world this Run's answers stated back
     transferred: bool = False   # it handed the conversation on rather than finishing it
+    settled: tuple = ()         # the same writes with list arguments in order, beside what they answered
 
 
 @dataclass
@@ -132,6 +134,68 @@ def end_state(run: Any, write_tools: Iterable[str], fn: Callable) -> tuple:
         return ANSWERED if verifier_suite.communicate_values(loaded, fn) else ()
     return tuple(sorted((e["tool"], e["entity"] or "", tuple(sorted(e["values"].items())))
                         for e in effects.values()))
+
+
+def _ordered(values: Iterable[tuple], fn: Callable) -> tuple:
+    """One write's arguments with the members of every list-valued one put in order.
+
+    A list argument is a set of things the user named, and the order the recorded agent happened to
+    list them in is not part of what the Run did to the world.
+    """
+    out = []
+    for name, key in values:
+        value = _decoded(key)
+        if isinstance(value, list):
+            key = json.dumps(sorted(_key(fn, item) for item in value), sort_keys=True)
+        out.append((name, key))
+    return tuple(out)
+
+
+def _decoded(key: str) -> Any:
+    """The value behind a canonical key. A customer's canon rules may render a list as text, so the
+    key is read again while it still reads as JSON and the list inside it is not missed."""
+    value: Any = key
+    for _ in range(2):
+        if not isinstance(value, str):
+            break
+        try:
+            value = json.loads(value)
+        except (TypeError, ValueError):
+            break
+    return value
+
+
+def _results(run: Any, fn: Callable) -> dict[int, str]:
+    """What each tool call was answered with, by the position of the call in the Run."""
+    out: dict[int, str] = {}
+    pending: list[tuple[int, Any]] = []
+    for pos, event in enumerate(run.events):
+        payload = dict(getattr(event, "payload", None) or {})
+        if event.type == "tool_call":
+            pending.append((pos, payload.get("id")))
+        elif event.type == "tool_result":
+            for at, call_id in reversed(pending):
+                if payload.get("id") in (None, call_id) and at not in out:
+                    out[at] = _key(fn, payload.get("result"))
+                    break
+    return out
+
+
+def settled_state(run: Any, write_tools: Iterable[str], fn: Callable) -> tuple:
+    """The End state with list arguments in order, each write beside what the tool answered.
+
+    Two Runs that made the same call with the same items in another order reached the same state
+    when the tool answered them the same way; when the answers differ the order mattered to the
+    world and the two states stay apart. On the second retail build 12 of 25 Tasks whose recordings
+    disagreed differed by nothing else, and each of them lost its Reference over it.
+    """
+    loaded = verifier_suite.as_run(run)
+    effects = verifier_suite.write_effects(loaded, set(write_tools), fn)
+    if not effects:
+        return ()
+    answers = _results(loaded, fn)
+    return tuple(sorted((e["tool"], e["entity"] or "", _ordered(sorted(e["values"].items()), fn),
+                         answers.get(e["pos"], "")) for e in effects.values()))
 
 
 def describe(state: tuple) -> str:
@@ -198,7 +262,8 @@ def load(path: str, kind: str, *, run_id: Optional[str] = None, trace_id: Option
     return Recording(run_id=run_id or run.run_id, path=str(path), kind=kind, trace_id=trace_id,
                      end_state=end_state(run, write_tools, fn),
                      violated=violations(run, atoms, write_tools, fn),
-                     stated=stated_facts(run, fn), transferred=transferred(run))
+                     stated=stated_facts(run, fn), transferred=transferred(run),
+                     settled=settled_state(run, write_tools, fn))
 
 
 # --- constraints against the corpus ---------------------------------------
@@ -251,16 +316,25 @@ def _label(index: int) -> str:
 
 
 def group(recordings: Iterable[Recording]) -> list[dict]:
-    """The Runs by End state, recordings before re-rolls, in order of first appearance."""
+    """The Runs by End state, recordings before re-rolls, in order of first appearance.
+
+    Two states the settled state cannot tell apart are one state: the writes are the same and the
+    order of a list argument is the only difference, and the tool answered both the same way.
+    """
     ordered = sorted(recordings, key=lambda r: (r.kind != RECORDING, r.run_id))
     groups: list[dict] = []
     by_state: dict[tuple, dict] = {}
+    by_settled: dict[tuple, dict] = {}
     for rec in ordered:
         row = by_state.get(rec.end_state)
+        if row is None and rec.settled:
+            row = by_settled.get(rec.settled)  # the same writes in another order, answered the same
         if row is None:
-            row = by_state[rec.end_state] = {"label": _label(len(groups)),
-                                             "state": describe(rec.end_state), "runs": [], "members": []}
+            row = {"label": _label(len(groups)), "state": describe(rec.end_state),
+                   "runs": [], "members": []}
             groups.append(row)
+        by_state.setdefault(rec.end_state, row)
+        by_settled.setdefault(rec.settled, row)
         row["runs"].append(rec.run_id)
         row["members"].append(rec)
     for row in groups:
@@ -395,6 +469,7 @@ def parse_judgement(text: str, labels: set[str]) -> Judgement:
 
 
 __all__ = ["RECORDING", "REROLL", "ANSWERED", "MISCOMPILED_SHARE", "AVAILABLE_SOURCES", "Recording", "Confirmation",
-           "Judgement", "end_state", "describe", "stated_facts", "transferred", "told_line",
+           "Judgement", "end_state", "settled_state", "describe", "stated_facts", "transferred",
+           "told_line",
            "hard_atoms", "violations", "load", "constraint_rates", "demote", "group", "confirm",
            "judge_prompt", "judge_groups", "parse_judgement"]

@@ -23,13 +23,15 @@ def cancel_run(run_id: str, order: str = "#W123", kind: str = ref.RECORDING) -> 
     ])
     return ref.Recording(run_id=run_id, path=run_id, kind=kind, trace_id=run_id if kind == ref.RECORDING else None,
                          end_state=ref.end_state(run, WRITES, _canon),
-                         stated=ref.stated_facts(run, _canon), transferred=ref.transferred(run))
+                         stated=ref.stated_facts(run, _canon), transferred=ref.transferred(run),
+                         settled=ref.settled_state(run, WRITES, _canon))
 
 
 def empty_run(run_id: str, kind: str = ref.RECORDING) -> ref.Recording:
     run = make_run(run_id, [user("Please cancel my order #W123."), assistant("I cannot do that.")])
     return ref.Recording(run_id=run_id, path=run_id, kind=kind, end_state=ref.end_state(run, WRITES, _canon),
-                         stated=ref.stated_facts(run, _canon), transferred=ref.transferred(run))
+                         stated=ref.stated_facts(run, _canon), transferred=ref.transferred(run),
+                         settled=ref.settled_state(run, WRITES, _canon))
 
 
 # --- End states -------------------------------------------------------------
@@ -71,7 +73,8 @@ def _library_recording(run_id: str, answer: str, *, renewed: bool = False, hande
     return ref.Recording(run_id=run_id, path=run_id, kind=kind,
                          trace_id=run_id if kind == ref.RECORDING else None,
                          end_state=ref.end_state(run, LIBRARY_WRITES, _canon),
-                         stated=ref.stated_facts(run, _canon), transferred=ref.transferred(run))
+                         stated=ref.stated_facts(run, _canon), transferred=ref.transferred(run),
+                         settled=ref.settled_state(run, LIBRARY_WRITES, _canon))
 
 
 def answered(run_id: str, answer: str = "Loan LB-4412 is due on 2026-09-20.", **kw) -> ref.Recording:
@@ -335,3 +338,55 @@ def test_the_confirmation_lists_every_recording_it_saw():
     broken.violated = ["c1"]
     out = ref.confirm([cancel_run("a"), broken]).as_dict()
     assert [r["run_id"] for r in out["recordings"]] == ["a", "b"] and out["failed"] == {"b": "violates c1"}
+
+
+# --- the order of a list argument (fix C) -----------------------------------
+# A caterer: the guest names three dishes and the agent books them in one call. Two recordings list
+# the same dishes in different orders; the kitchen answers both with the same booking.
+
+CATERING_WRITES = {"book_dishes"}
+
+
+def _catering(run_id: str, dishes: list[str], answered: dict, kind: str = ref.RECORDING) -> ref.Recording:
+    run = make_run(run_id, [
+        user("Please book the soup, the pie and the tart for table 9."),
+        call("book_dishes", {"table_id": "T-9", "dishes": dishes}),
+        result(answered),
+        assistant("Booked."),
+    ])
+    return ref.Recording(run_id=run_id, path=run_id, kind=kind,
+                         trace_id=run_id if kind == ref.RECORDING else None,
+                         end_state=ref.end_state(run, CATERING_WRITES, _canon),
+                         stated=ref.stated_facts(run, _canon), transferred=ref.transferred(run),
+                         settled=ref.settled_state(run, CATERING_WRITES, _canon))
+
+
+BOOKED = {"table_id": "T-9", "covers": 3, "status": "booked"}
+
+
+def test_the_same_dishes_booked_in_another_order_are_one_end_state():
+    first = _catering("a", ["soup", "pie", "tart"], BOOKED)
+    second = _catering("b", ["tart", "soup", "pie"], BOOKED)
+    assert first.end_state != second.end_state
+    assert first.settled == second.settled
+    groups = ref.group([first, second])
+    assert len(groups) == 1 and groups[0]["runs"] == ["a", "b"]
+
+
+def test_the_same_dishes_the_kitchen_answered_differently_stay_two_end_states():
+    first = _catering("a", ["soup", "pie", "tart"], BOOKED)
+    second = _catering("b", ["tart", "soup", "pie"], dict(BOOKED, status="waitlisted"))
+    assert first.settled != second.settled
+    assert len(ref.group([first, second])) == 2
+
+
+def test_two_runs_that_booked_different_dishes_stay_two_end_states():
+    first = _catering("a", ["soup", "pie", "tart"], BOOKED)
+    second = _catering("b", ["soup", "pie", "cake"], BOOKED)
+    assert len(ref.group([first, second])) == 2
+
+
+def test_a_task_whose_recordings_differ_only_in_that_order_confirms_a_reference():
+    out = ref.confirm([_catering("a", ["soup", "pie", "tart"], BOOKED),
+                       _catering("b", ["tart", "soup", "pie"], BOOKED)], judge=None)
+    assert [r.run_id for r in out.references] == ["a", "b"] and out.reason is None
