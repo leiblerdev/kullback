@@ -93,7 +93,9 @@ def code_loop(tmp_path_factory, request):
     loop.builder_beat(1)
     first = len(events)
     task_id = plan.last.artifacts["tasks"][0].id
-    loop.pending_findings = [_finding(task_id)]
+    # The second finding's verb is the Examiner's own (D170): the Builder has no such tool, so the
+    # driver must deliver it and not call it.
+    loop.pending_findings = [_finding(task_id), _finding(task_id, suggested="repair", finding_id="f2")]
     loop.builder_beat(2)
     return {"loop": loop, "plan": plan, "events": events, "dicts": dicts, "first": first, "task_id": task_id}
 
@@ -111,9 +113,11 @@ def test_beat_events_name_the_agent_and_the_round_and_the_dict_stream_sees_them_
     assert all(isinstance(e.spend, float) for e in events if isinstance(e, BeatEnd))
 
 
-def test_the_code_driver_acts_on_a_finding_by_calling_the_builder_tool_it_names(code_loop):
+def test_the_code_driver_calls_the_builder_tool_a_finding_names_and_skips_a_verb_the_builder_has_not(code_loop):
     """A finding that suggests `replay` for a Task is a replay(task) call through the Builder's hooks,
-    before the build of the target; the code driver never asks a model what to do with it."""
+    before the build of the target; the code driver never asks a model what to do with it. A finding
+    whose answer is the Examiner's own `repair` names an artifact the Builder cannot touch (D123), so
+    it is delivered and not called: driving it would only ever be an error result (D170)."""
     second = code_loop["events"][code_loop["first"]:]
     starts = [e for e in second if isinstance(e, ToolExecutionStart)]
     assert [(e.tool_name, e.arguments) for e in starts] == [
@@ -213,6 +217,31 @@ def test_a_finding_from_the_examiner_is_a_follow_up_on_the_builder_at_the_next_b
     assert model_loop["loop"].pending_findings == []
 
 
+def test_the_builder_is_handed_the_finding_that_costs_the_most_tasks_and_a_verb_it_has(model_loop):
+    """D170: three builds opened every round on one Task's Intent while an assisted tool blocked
+    fifty. The lead is the costliest finding naming a verb the Builder can call; a finding answered
+    by the Examiner's own `repair` is delivered as a report, since rendering `repair(...)` would send
+    the Builder after the one artifact D123 keeps out of its hands."""
+    tool = Finding(finding_id="f1", kind="assisted_tool", tool="renew_loan", suggested="repair_recompile",
+                   hint="the due_date column differs", text="renew_loan is assisted",
+                   task_ids=["t1", "t2", "t3"])
+    verifier = Finding(finding_id="f2", kind="suite", suggested="repair", text="mutation_flips failed",
+                       task_ids=["t1", "t2", "t3", "t4"])
+    intent = Finding(finding_id="f3", kind="fidelity", task_id="t9", suggested="repair_intent",
+                     hint="the Runs say renewal", text="the Intent says extension")
+    assert rounds.leading_finding([intent, verifier, tool]) is tool, "costliest of the ones it can call"
+    assert rounds.leading_finding([verifier]) is None and rounds.leading_finding([]) is None
+    assert [f.finding_id for f in sorted([intent, tool, verifier], key=lambda f: -f.cost)] == ["f2", "f1", "f3"]
+    message = rounds.finding_message(tool)
+    assert message.startswith("Finding f1 (assisted_tool, 3 Tasks):")
+    assert "repair_recompile(name='renew_loan', hint='the due_date column differs')" in message
+    owned = rounds.finding_message(verifier)
+    assert "Answered by repair, and the Examiner owns it" in owned and "repair(" not in owned
+    # The steer of a real beat says the order the messages after it come in.
+    steer = model_loop["harness"].messages[model_loop["after_first"]].content
+    assert steer.startswith("round 2: ") and "the costliest first" in steer
+
+
 # --- the Examiner's side of a round, driven by a model ----------------------------------------
 
 @pytest.fixture(scope="module")
@@ -279,7 +308,9 @@ def test_an_examiner_that_derives_in_round_two_does_not_fail_the_round(tmp_path,
     loop.examiner_beat(1)
     loop.examiner_beat(2)
     assert loop.examiner_result is not None and not loop.examiner_result.is_error
-    assert [f.task_id for f in loop.pending_findings] == ["1"], "the round-2 finding is queued, not lost"
+    queued = [f.finding_id for f in loop.pending_findings]
+    assert [f.task_id for f in loop.pending_findings][-1] == "1", "the round-2 finding is queued, not lost"
+    assert len(queued) == len(set(queued)), "and the rule findings each derive filed are queued once (D170)"
     assert loop.close_round(2, loop.counts()).failed is False
 
 
@@ -698,7 +729,10 @@ def test_round_end_carries_every_count_d126_lists_and_none_comes_from_a_model(dr
     assert set(round_end.GATE_COUNTS) <= set(counts)
     assert counts["tasks"] == len(driven["result"]["tasks"]) == 3
     assert counts["fallback_compactions"] == {"builder": 0, "examiner": 0}
-    assert set(counts["spend"]) == {"builder", "examiner", "total", "cache_saved"} and counts["findings"] == []
+    assert set(counts["spend"]) == {"builder", "examiner", "total", "cache_saved"}
+    # No model filed any of these: they are the losses the round's own records show (D170), and the
+    # count is the list of ids because that is what the next round's Builder beat is handed.
+    assert counts["findings"] and all(f.startswith("finding-") for f in counts["findings"])
     assert rounds.load_rounds(driven["workdir"])[-1].counts == counts
     assert [d for d in driven["dicts"] if d.get("kind") == "round"][-1]["counts"] == counts
 
@@ -897,10 +931,11 @@ def test_a_delivered_finding_is_closed_and_its_entry_unprotected_after_the_build
         "task_id": task_id, "kind": "fidelity", "text": "the replay diverges at the second call",
         "suggested": "replay"})
     assert filed.is_error is False, filed.content
-    assert [f.finding_id for f in loop.pending_findings] == [filed.details["finding"]["finding_id"]]
+    # The beat's own derive filed the losses its records show first (D170); the model's is the last.
+    assert [f.finding_id for f in loop.pending_findings][-1] == filed.details["finding"]["finding_id"]
     loop.builder_beat(2)
     findings = json.loads((plan.workdir / "examiner" / "findings.json").read_text(encoding="utf-8"))
-    assert [f["status"] for f in findings] == ["closed"]
+    assert {f["status"] for f in findings} == {"closed"}, "the rule findings close with the model's"
     assert loop.pending_findings == []
 
 
@@ -1020,8 +1055,10 @@ def test_a_finding_filed_in_round_one_is_performed_in_round_two_then_the_run_exi
                                   "text": "the replay diverges at the second call", "suggested": "replay"})),
         _reply(None, ("derive", {"target": "all"})),
         _reply("filed and derived."),
-        _reply("read the follow-up."),
-        _reply("acted on the finding."),
+        # Round 1's derive files three findings of its own off the records before the model files
+        # its one (D170), and round 2's Builder beat reads each as its own follow-up message.
+    ] + [_reply("read the follow-up.")] * 4 + [
+        _reply("acted on the findings."),
         _reply(None, ("derive", {"target": "all"})),
         _reply("re-derived clean."),
     ])
@@ -1035,7 +1072,7 @@ def test_a_finding_filed_in_round_one_is_performed_in_round_two_then_the_run_exi
     assert stored[1].exit == "stalled" and stored[1].pending_findings == []
     assert result["exit"] == "stalled" and result["failed"] is False
     findings = json.loads((workdir / "examiner" / "findings.json").read_text(encoding="utf-8"))
-    assert [f["status"] for f in findings] == ["closed"]
+    assert [f["status"] for f in findings] == ["closed"] * 4, "the rule findings close with the model's"
 
 
 def test_a_builder_error_keeps_its_findings_queued(tmp_path, monkeypatch):
@@ -1086,7 +1123,7 @@ def test_the_builder_is_handed_the_finding_with_the_verb_and_hint_as_a_callable_
                      hint="the Runs only ever cancel one order", round=2,
                      text="the Intent says gift card and no Run says it")
     message = rounds.finding_message(intent)
-    assert message == ("Finding finding-1 (fidelity): the Intent says gift card and no Run says it "
+    assert message == ("Finding finding-1 (fidelity, 1 Task): the Intent says gift card and no Run says it "
                        "Task task_x. Suggested: repair_intent(task_id='task_x', "
                        "hint='the Runs only ever cancel one order')")
     recompile = Finding(finding_id="finding-2", kind="fidelity", suggested="repair_recompile",
@@ -1162,9 +1199,12 @@ def test_a_resumed_finding_is_closed_once_the_examiner_opens(tmp_path, request):
     loop.examiner_beat(1)
     assert loop._unclosed == []
     stored = json.loads((workdir / "examiner" / "findings.json").read_text(encoding="utf-8"))
-    assert [r["status"] for r in stored] == ["closed"]
-    # And a second Loop over the workdir finds nothing to resume: no repeated remediation.
-    assert rounds.Loop(plan=plan, builder=builder_agent.build_harness(plan)).pending_findings == []
+    assert stored[0]["status"] == "closed" and stored[0]["finding_id"] == "f1"
+    assert all(r["status"] == "open" for r in stored[1:]), "the rule findings this beat filed are open"
+    # And a second Loop over the workdir finds f1 answered: no repeated remediation. What it does
+    # resume is the findings this beat's own derive filed, which no Builder beat has been handed.
+    resumed = rounds.Loop(plan=plan, builder=builder_agent.build_harness(plan)).pending_findings
+    assert "f1" not in [f.finding_id for f in resumed]
 
 
 def test_a_resumed_finding_reaches_the_model_on_round_one(tmp_path, request):

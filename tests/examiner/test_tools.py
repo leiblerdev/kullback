@@ -362,6 +362,44 @@ def test_a_finding_can_suggest_repair_intent_with_a_hint(derived):
     assert unknown.is_error, "a verb the Builder has no tool for is refused by the schema"
 
 
+def test_a_second_finding_of_the_same_kind_on_the_same_subject_is_refused_with_the_open_findings_id(derived):
+    """D170: one loss is one finding. Build 12's Examiner made 24 finding calls to put 7 on the list;
+    a model filing the same thing again is told which finding already holds it, and the answer names
+    the id so it can act on that one instead of adding a second row for one loss."""
+    plan, harness = _harness(derived, round=1)
+    first = drive(harness, "finding", {"task_id": T, "kind": "fidelity", "text": "the body differs on replay",
+                                       "tool": "cancel_pending_order", "suggested": "repair_recompile",
+                                       "hint": "the status column differs"})
+    again = drive(harness, "finding", {"task_id": T, "kind": "fidelity", "text": "said again, other words",
+                                       "tool": "cancel_pending_order", "suggested": "repair_recompile"},
+                  call_id="f2")
+    assert again.is_error and first.details["finding_id"] in again.content
+    assert "cancel_pending_order" in again.content and T in again.content
+    assert len(_read(derived.workdir / "examiner" / "findings.json")) == 1, "one loss, one row"
+    plan.close_findings([first.details["finding_id"]])
+    reopened = drive(harness, "finding", {"task_id": T, "kind": "fidelity", "text": "still differs",
+                                          "tool": "cancel_pending_order", "suggested": "repair_recompile"},
+                     call_id="f3")
+    assert reopened.is_error is False, "the loss is still there after the Builder answered: a new finding"
+
+
+def test_derive_files_the_losses_its_own_records_show_before_the_model_chooses_anything(tmp_path):
+    """D170: a finding the model chooses to write is a finding the model may not write. The derivation
+    files what the records say on its way out, so the list exists on a code-driven beat that calls
+    nothing else, and the round driver reads it off the derive result."""
+    world = make_world(tmp_path, rerolls=("rr2",))
+    plan = world.plan()
+    harness = examiner_agent.examiner_harness(plan)
+    result = drive(harness, "derive", {"target": "all"})
+    filed = result.details["findings"]
+    assert [(f["kind"], f["task_id"], f["suggested"]) for f in filed] == [
+        ("reference_disagreement", T, "repair_refuse_task")]
+    assert filed[0]["task_ids"] == [T] and filed[0]["key"] == f"reference_disagreement::{T}"
+    assert "findings filed from the records, most costly first" in result.details["summary"]
+    assert [f.finding_id for f in plan.open_findings()] == [filed[0]["finding_id"]]
+    assert _read(world.workdir / "examiner" / "findings.json")[0]["round"] == plan.round
+
+
 def test_an_examiner_reading_an_intent_record_sees_the_refused_phrases(derived):
     """`read` with kind `intent` is where the Examiner learns what the intent gate refused: the
     ungrounded phrases and, for the phrases that are grounded, the Runs that evidence them. Without

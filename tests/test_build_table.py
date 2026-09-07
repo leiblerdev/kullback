@@ -135,6 +135,8 @@ def test_the_build_duration_names_the_record_when_no_round_kept_a_clock(tmp_path
 
 
 def test_the_mechanic_row_says_no_model_turn_was_recorded_under_the_code_driver(printed: str):
+    """The one round this build runs (D172) files its findings and ends on the cap before any beat
+    acts on them, so the repairs D170 drives are counted in tests/test_rounds.py and not here."""
     values = {cells(row)[0]: cells(row)[1] for row in rows_of(printed, "")}
     assert values["What the mechanic called"].startswith("0 over 0 model turns")
     assert values["Repairs requested"].startswith("0;")
