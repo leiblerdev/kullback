@@ -27,6 +27,7 @@ one that was just repaired.
 from __future__ import annotations
 
 import json
+import re
 import time
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Iterable, Optional
@@ -199,20 +200,52 @@ def change_of(workdir: Any, verb: str, target: str, before: Optional[str]) -> di
 # --- the target's own ruling, off the artifact the stage just wrote -----------
 
 
-def _first_failure(node: Any) -> str:
-    """The first thing that went wrong in one compile attempt, in the gate's own words.
+SHAPES_SHOWN = 3
+_LITERAL = re.compile(r"'[^']*'|\"[^\"]*\"|\b\d+\b")
 
-    An attempt that never reached the sandbox (a refusal, an empty reply) carries `failures`; one
-    that ran carries the gates it was put through, whose rulings use the record alias `pass`.
+
+def failure_shape(text: str) -> str:
+    """One failure sentence with its values generalized, so two calls that failed the same way group."""
+    return _LITERAL.sub("*", " ".join(str(text).split()))
+
+
+def failure_shapes(failures: Iterable[str]) -> list[tuple[str, int]]:
+    """The distinct kinds of failure among a gate's sentences: the first of each kind, and how many share it.
+
+    A gate that ruled over sixty recorded calls leaves sixty sentences, and one of them was all the
+    mechanic ever saw, so the hint it wrote answered one example and the next recompile met the
+    fifty-nine it had not been told about. Grouped by shape, the same sixty sentences say how many
+    kinds of failure there are, which is what a hint has to answer.
     """
+    seen: dict[str, list[Any]] = {}
+    for failure in failures:
+        row = seen.setdefault(failure_shape(failure), [str(failure), 0])
+        row[1] += 1
+    return [(text, count) for text, count in seen.values()]
+
+
+def _failure_detail(node: Any) -> str:
+    """What went wrong in one compile attempt: the first failure, or every shape when calls failed in more than one way."""
     if not isinstance(node, dict):
         return ""
     for failure in node.get("failures") or []:
         return str(failure)
     for ruling in node.get("gates") or []:
-        if isinstance(ruling, dict) and not ruling.get("pass"):
-            failures = ruling.get("failures") or []
-            return f"{ruling.get('stage')}: {failures[0]}" if failures else f"{ruling.get('stage')} failed"
+        if not (isinstance(ruling, dict) and not ruling.get("pass")):
+            continue
+        stage = ruling.get("stage")
+        failures = [str(f) for f in (ruling.get("failures") or [])]
+        if not failures:
+            return f"{stage} failed"
+        if len(failures) == 1:
+            return f"{stage}: {failures[0]}"
+        shapes = failure_shapes(failures)
+        shown = "; ".join(f"{text} ({count} call{'' if count == 1 else 's'})"
+                          for text, count in shapes[:SHAPES_SHOWN])
+        more = len(shapes) - SHAPES_SHOWN
+        plural = "" if len(shapes) == 1 else "s"
+        return (f"{stage}: {len(failures)} calls failed in {len(shapes)} shape{plural}: {shown}"
+                + (f"; {more} more shapes" if more > 0 else ""))
     return ""
 
 
@@ -227,15 +260,17 @@ def intent_ruling(workdir: Any, task_id: str) -> str:
 def recompile_ruling(workdir: Any, name: str) -> str:
     """Whether this tool's new body cleared the gates, off `tool_builds.json`.
 
-    A tool that ended assisted is a body no attempt got through (D49), so the line carries the first
-    failure of its last attempt: that is what the next hint has to answer.
+    A tool that ended assisted is a body no attempt got through (D49), so the line carries what went
+    wrong in its last attempt: that is what the next hint has to answer. Where the recorded calls
+    failed in more than one way, every shape is named with how many calls fell into it, since a hint
+    written against the first sentence alone repairs one call and leaves the rest as they were.
     """
     build = tool_build(workdir, name)
     if not build:
         return f"repair_recompile {name}: {NO_ATTEMPT}"
     if not build.get("assisted"):
         return f"repair_recompile {name}: cleared the gates"
-    failures = [text for text in (_first_failure(node) for node in build.get("nodes") or []) if text]
+    failures = [text for text in (_failure_detail(node) for node in build.get("nodes") or []) if text]
     return f"repair_recompile {name}: still assisted: {failures[-1] if failures else NO_FAILURE}"
 
 
