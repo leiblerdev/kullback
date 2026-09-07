@@ -334,6 +334,76 @@ def test_the_fills_reach_the_world_and_the_split_is_left_to_what_was_read(tmp_pa
     assert readers.reader_assumptions(artifact) == assumptions
 
 
+# --- which revealed columns may split a Task ---------------------------------
+
+PROBE_READER = """
+def read(result):
+    out = {}
+    for line in result.splitlines():
+        name, _, value = line.partition(":")
+        if name.strip() == "Vent":
+            out["vent_open"] = value.strip() == "OPEN"
+        if name.strip() == "Warmth":
+            out["warmth"] = float(value.strip().split()[0])
+    return out
+"""
+
+
+def probe_traces():
+    """Six recordings: the vent is a switch in one of two states, the warmth a probe's own reading."""
+    return [trace(f"run_{index}",
+                  [call("check_climate",
+                        f"Vent: {'OPEN' if index % 2 else 'CLOSED'}\nWarmth: {19.1 + index} units")])
+            for index in range(6)]
+
+
+def probe_proposal(tmp_path):
+    body = json.dumps({"table": "greenhouse",
+                       "columns": [{"name": "vent_open"}, {"name": "warmth"}],
+                       "readers": [{"tool": "check_climate", "source": PROBE_READER}]})
+    traces = probe_traces()
+    proposal, ruling = gated(tmp_path, body, traces=traces)
+    schema = EntitySchema(tables=[], columns=[])
+    readers.apply_to_schema(schema, [proposal], {CARETAKER: readers.column_values(proposal, ruling.parsed)})
+    rows = readers.starting_rows(traces, proposal, ruling.parsed)
+    artifact = {"proposals": {CARETAKER: proposal.to_dict()}, "rows": {CARETAKER: rows},
+                "fills": {}, "assumptions": []}
+    return traces, schema, artifact
+
+
+def test_a_revealed_reading_is_exempt_and_a_revealed_switch_is_hard(tmp_path):
+    _traces, schema, _artifact = probe_proposal(tmp_path)
+    classes = {column.name: column.class_ for column in schema.columns}
+    assert classes == {"vent_open": "hard", "warmth": "exempt"}
+    assert all(column.classified_by == "rule" for column in schema.columns)
+
+
+def test_a_revealed_reading_splits_no_task_and_a_revealed_switch_still_does(tmp_path):
+    from kullback.builder.cluster import split_by_world
+
+    traces, schema, artifact = probe_proposal(tmp_path)
+    worlds = readers.merge_worlds({}, artifact, schema)
+    keys = {key for world in worlds.values() for key in world}
+    assert ("greenhouse", CARETAKER, "vent_open") in keys
+    assert ("greenhouse", CARETAKER, "warmth") not in keys, "no two recordings read the same warmth"
+    parts = split_by_world(traces, worlds)
+    assert len(parts) == 2, "one Task per state of the switch, not one per reading"
+    assert sorted(len(part) for part in parts) == [3, 3]
+
+
+def test_with_no_classes_to_hand_every_revealed_column_still_counts(tmp_path):
+    """A caller with no schema says every column, which is what merge_worlds did before the classes."""
+    traces, _schema, artifact = probe_proposal(tmp_path)
+    worlds = readers.merge_worlds({}, artifact)
+    assert len(split_by_world_of(traces, worlds)) == 6
+
+
+def split_by_world_of(traces, worlds):
+    from kullback.builder.cluster import split_by_world
+
+    return split_by_world(traces, worlds)
+
+
 # --- what the proposal leaves for the rest of the build ----------------------
 
 def test_the_columns_carry_the_requestor_that_revealed_them_and_the_export_flags_the_table(tmp_path):

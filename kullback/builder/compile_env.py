@@ -199,11 +199,19 @@ def trace_worlds(traces: Iterable[Trace], schema: EntitySchema, write_tools: set
     them in different Tasks, because a Task's overlay can pin one version only (D74), and a trace
     replayed on the other version differs on every read of that row; telecom's one customer seen
     across 456 traces in as many states is where this was found.
+
+    A version is the row's `hard` columns and nothing else (D73). An exempt column is never compared
+    anywhere, and a semantic one is compared by meaning, so neither can make a replayed read differ,
+    and hashing the whole row split one Task per value of every reading the world takes when it is
+    asked. A table with no hard column has one version, which is the same statement: nothing about
+    it is compared, so nothing about it can disagree.
     """
+    hard = {(column.table, column.name) for column in schema.columns if column.class_ == "hard"}
     worlds: dict[str, dict] = {}
     for obs in _observations(list(traces), schema, write_tools):
         if not obs.after_write:
-            worlds.setdefault(obs.trace_id, {}).setdefault((obs.table, obs.row_id), content_hash(obs.row))
+            version = {name: value for name, value in obs.row.items() if (obs.table, str(name)) in hard}
+            worlds.setdefault(obs.trace_id, {}).setdefault((obs.table, obs.row_id), content_hash(version))
     return worlds
 
 
