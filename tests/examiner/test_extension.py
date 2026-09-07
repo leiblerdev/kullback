@@ -24,8 +24,9 @@ from kullback.examiner import skills
 from kullback.examiner import tools as tools_mod
 from kullback.examiner.extension import examiner_extension
 from kullback.gates import gates_over
+from kullback.runner import budget
 
-SEVEN = ["read", "derive", "probe", "repair", "refuse", "reroll", "finding"]
+EIGHT = ["read", "search", "derive", "probe", "repair", "refuse", "reroll", "finding"]
 COMPARED = ("task_status.json", "references.json", "constraints_check.json", "gates.json", "scorecard.json")
 
 
@@ -68,10 +69,10 @@ def _tree(workdir: Path) -> dict:
     return out
 
 
-def test_the_extension_registers_the_seven_tools_the_tagged_sections_the_probe_skill_and_the_two_hooks(world):
+def test_the_extension_registers_the_eight_tools_the_tagged_sections_the_probe_skill_and_the_two_hooks(world):
     plan, harness = _harness(world)
     assert isinstance(harness, AgentHarness), "the Examiner is an extension on the core, not a harness of its own"
-    assert harness.registry.names() == SEVEN
+    assert harness.registry.names() == EIGHT
     assert [s.name for s in harness.sections] == ["examiner", "examiner_tools", "skills", "skill:probe",
                                                   "examiner_examples", "examiner_rules", "examiner_findings",
                                                   "examiner_tasks", "examiner_stop"]
@@ -129,7 +130,7 @@ def test_the_examiner_has_no_tool_that_writes_a_body_a_table_or_the_environment(
     assert after == before
     assert sorted(str(p.relative_to(workdir)) for p in (workdir / "env").rglob("*") if p.is_file()) == env_before
     names = [tool.name for tool in tools_mod.examiner_tools(ext.ExaminerPlan(workdir=workdir, inputs=inputs))]
-    assert names == SEVEN and not {"build", "compile_tool", "grow", "recluster", "replay"} & set(names)
+    assert names == EIGHT and not {"build", "compile_tool", "grow", "recluster", "replay"} & set(names)
     produced = {name for tool in tools_mod.examiner_tools(ext.ExaminerPlan(workdir=workdir, inputs=inputs))
                 for name in (tool.result_model.model_fields["produced"].default_factory() if "produced"
                              in tool.result_model.model_fields else [])}
@@ -294,3 +295,15 @@ def test_the_probe_skill_names_the_eight_bug_classes():
         assert bug_class[0].upper() + bug_class[1:] + "." in skills.PROBE_SKILL
     assert "stays in the pool forever" in skills.PROBE_SKILL and "three" in skills.PROBE_SKILL
     assert skills.PROBE_SKILL_NAME == "probe"
+
+
+def test_the_examiner_session_reports_the_window_of_the_model_it_runs_on(world):
+    """D124's line is 40 percent of the window, so the window has to be the model's own; the agent
+    core may not import runner.budget, so this caller passes `window_for` in."""
+    known = next(m for m, w in sorted(budget.CONTEXT_WINDOWS.items()) if w != budget.DEFAULT_CONTEXT_WINDOW)
+    _, harness = _harness(world, TestModel(["ok"], name=known))
+    assert harness.context.config.window == budget.window_for(known) != budget.DEFAULT_CONTEXT_WINDOW
+    assert f"of {budget.window_for(known)}," in harness.context.estimate().note()
+    # a model the catalog does not know, and the code driver, keep the default
+    assert _harness(world, TestModel(["ok"]))[1].context.config.window == budget.DEFAULT_CONTEXT_WINDOW
+    assert _harness(world)[1].context.config.window == budget.DEFAULT_CONTEXT_WINDOW

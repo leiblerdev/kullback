@@ -1,9 +1,12 @@
-"""The Examiner's seven tools: pydantic arguments in, a short result out, every ruling from a gate (D123, D127, D128).
+"""The Examiner's eight tools: pydantic arguments in, a short result out, every ruling from a gate (D123, D127, D128).
 
 `read` is the Examiner's whole read surface: a Task, a Trace, an Intent, a Run, a Verifier, a
-probe pool, the task status, the rulings, the re-roll and replay rows, the References. `derive`
-runs the derivation over every Task (or one) and is the Builder's old derive_verifier stage, byte
-for byte. `probe` scores one hand-written Run against the current Verifier and keeps it in the
+probe pool, the task status, the rulings, the re-roll and replay rows, the References. `search`
+looks for one phrase across those records instead of reading them: the Traces, the Runs, the
+Intents, the task status and the Verifiers, answering a count per kind and one line per match with
+where it matched, so a claim about many Tasks is grounded without holding any of them in context.
+`derive` runs the derivation over every Task (or one) and is the Builder's old derive_verifier
+stage, byte for byte. `probe` scores one hand-written Run against the current Verifier and keeps it in the
 Task's pool forever. `repair` proposes a new Verifier version and the gates decide whether it is
 accepted: the D79 suite, the pool, one-directional loosening. `refuse` asks to give a Task up and
 the refuse gate admits it only when no frontier Run finished. `reroll` buys more frontier Runs
@@ -20,8 +23,10 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 import time
-from typing import Any, Awaitable, Callable, Literal, Optional
+from pathlib import Path
+from typing import Any, Awaitable, Callable, Iterator, Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -66,6 +71,10 @@ Sink = Callable[[Any], Awaitable[None]]
 STAGE = stage_mod.STAGE
 ReadKind = Literal["task", "trace", "intent", "run", "verifier", "probes", "task_status", "gates", "rerolls",
                    "replays", "references"]
+SearchKind = Literal["trace", "run", "intent", "task_status", "verifier"]
+SEARCH_KINDS: tuple[str, ...] = ("trace", "run", "intent", "task_status", "verifier")
+SEARCH_LINE = 200  # about one line of the record around a match, the match inside it
+SEARCH_LIMIT = 50
 # The eight classes of skills.BUG_CLASSES, spelled out so the tool schema names them; the test pins the two.
 BugClass = Literal["loose answer extraction", "missing final-answer markers", "numeric-tolerance abuse",
                    "schema-only validation", "extra-field acceptance", "visible-test overfitting",
@@ -105,6 +114,35 @@ class ReadResult(BaseModel):
 
     kind: str
     id: Optional[str] = None
+    text: str
+
+
+class SearchArgs(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    text: str = Field(description="What to look for: a case-insensitive substring, or a regular "
+                                  "expression when `regex` is true.")
+    regex: bool = Field(default=False, description="Read `text` as a regular expression instead of a "
+                                                   "substring. Off by default, so a phrase with a "
+                                                   "bracket or a dot in it searches for itself.")
+    kinds: list[SearchKind] = Field(default_factory=list,
+                                    description="Which records to search: trace, run, intent, task_status, "
+                                                "verifier. Empty is all five.")
+    tool: Optional[str] = Field(default=None, description="Only the calls of this tool. A tool call in a "
+                                                          "Trace and an event of a Run belong to a tool; "
+                                                          "nothing else does, so the other kinds answer "
+                                                          "nothing when this is set.")
+    task_id: Optional[str] = Field(default=None, description="Only the records of this Task.")
+    limit: int = Field(default=SEARCH_LIMIT, ge=1, le=500,
+                       description="The most matching lines to answer; the counts are of every match.")
+
+
+class SearchResult(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    matches: int
+    shown: int
+    counts: dict[str, int] = Field(default_factory=dict)
     text: str
 
 
@@ -274,6 +312,16 @@ READ_CHARS = 60000  # the most one `read` hands the model (D175): one row of any
 WHOLE_FILE_KINDS = ("task_status", "gates", "rerolls", "replays", "references")
 
 
+NARROWER = "read one id at a time, or a narrower kind"
+
+
+def _clamp(text: str, advice: str = NARROWER) -> str:
+    """Any tool's text cut at READ_CHARS with the cut and what to do about it named (D175)."""
+    if len(text) <= READ_CHARS:
+        return text
+    return f"{text[:READ_CHARS].rstrip()}\n[+{len(text) - READ_CHARS} characters cut: {advice}]"
+
+
 def _clamped_text(body: Any) -> str:
     """One read's text, cut at READ_CHARS with the cut named (D175).
 
@@ -282,11 +330,7 @@ def _clamped_text(body: Any) -> str:
     four compactions in the second, and the beat that followed read nothing it had read before.
     A read that does not fit says how much was cut and what to read instead.
     """
-    text = _text(body)
-    if len(text) <= READ_CHARS:
-        return text
-    return (f"{text[:READ_CHARS].rstrip()}\n[+{len(text) - READ_CHARS} characters cut: read one id at a time, "
-            f"or a narrower kind]")
+    return _clamp(_text(body))
 
 
 def _index(kind: str, rows: Any) -> dict:
@@ -429,6 +473,186 @@ def _read(plan: ExaminerPlan):
         return ReadResult(kind=kind, id=key, text=_clamped_text(body))
 
     return read
+
+
+# --- search over the records ------------------------------------------------------
+
+# One candidate line of a record: the record's id, the Task it belongs to, the tool it belongs to
+# when it belongs to one, where in the record it is, and the text a match is looked for in.
+Row = tuple[str, Optional[str], Optional[str], str, str]
+
+
+def _pattern(text: str, regex: bool) -> "re.Pattern[str]":
+    """The needle: a case-insensitive substring, or the text as a regular expression when asked.
+
+    A flag rather than a guess at metacharacters, so a phrase holding a bracket, a dot or a dollar
+    searches for itself and a call that wants a pattern says so.
+    """
+    if not text.strip():
+        raise ValueError("search needs text to look for")
+    try:
+        return re.compile(text if regex else re.escape(text), re.IGNORECASE)
+    except re.error as exc:
+        raise ValueError(f"{text!r} is not a regular expression: {exc}") from None
+
+
+def _excerpt(text: str, match: "re.Match[str]", width: int = SEARCH_LINE) -> str:
+    """The line the match is on, cut to `width` characters with the match inside what is left."""
+    start = text.rfind("\n", 0, match.start()) + 1
+    end = text.find("\n", match.end())
+    line = text[start:len(text) if end < 0 else end].strip()
+    if len(line) <= width:
+        return line
+    at = max(0, match.start() - start - width // 3)
+    left = min(at, len(line) - width)
+    return ("..." if left > 0 else "") + line[left:left + width] + ("..." if left + width < len(line) else "")
+
+
+def _match_line(kind: str, row: Row, match: "re.Match[str]") -> str:
+    """One match as the model reads it: the kind and the id, the Task, where it matched, the line."""
+    record, task_id, _, where, text = row
+    task = f" (task {task_id})" if task_id and task_id != record else ""
+    return f"{kind} {record}{task}: {where}: {_excerpt(text, match)}"
+
+
+def _task_of_trace(plan: ExaminerPlan) -> dict[str, str]:
+    """Which Task each Trace belongs to, off the Tasks' own run ids."""
+    return {run_id: task.id for task in (plan.inputs.get("tasks") or []) for run_id in task.run_ids}
+
+
+def _trace_rows(plan: ExaminerPlan, task_id: Optional[str]) -> Iterator[Row]:
+    """Every Trace's turns and recorded tool calls: what the customer's agent said, called and got."""
+    task_of = _task_of_trace(plan)
+    for trace in plan.inputs.get("traces") or []:
+        task = task_of.get(trace.trace_id)
+        if task_id is not None and task != task_id:
+            continue
+        for turn in trace.turns:
+            if turn.content:
+                yield trace.trace_id, task, None, f"turn {turn.idx} {turn.role}", turn.content
+        for tool_call in trace.tool_calls:
+            where = f"tool call {tool_call.name}"
+            yield trace.trace_id, task, tool_call.name, f"{where} args", _text(tool_call.args)
+            if tool_call.result is not None:
+                yield trace.trace_id, task, tool_call.name, f"{where} result", _text(tool_call.result)
+            if tool_call.error is not None:
+                yield trace.trace_id, task, tool_call.name, f"{where} error", _text(as_dict(tool_call.error))
+
+
+def _run_paths(plan: ExaminerPlan, task_id: Optional[str]) -> Iterator[tuple[str, str, str]]:
+    """Every Run the Examiner can reach as (Task, run id, path): the replay rows and the re-roll
+    rows, which is where `read` with kind `run` finds a Run too."""
+    for task, rows in sorted((plan.store.get("replays") or {}).items()):
+        if task_id is None or task == task_id:
+            for row in (rows or {}).values():
+                if row.get("path"):
+                    yield task, str(row.get("run_id") or Path(row["path"]).stem), row["path"]
+    for task, rows in sorted((plan.store.get("rerolls") or {}).items()):
+        if task_id is None or task == task_id:
+            for row in rows or []:
+                if row.get("path"):
+                    yield task, str(row.get("run_id") or Path(row["path"]).stem), row["path"]
+
+
+def _run_file(plan: ExaminerPlan, task_id: str, path: str) -> Optional[Path]:
+    """The Run's file: the path the row holds, else the same name under this workdir's runs/<task>/,
+    since a row written by another build's working directory names a path relative to that one."""
+    file = Path(path)
+    if file.is_file():
+        return file
+    inside = plan.workdir / "runs" / task_id / file.name
+    return inside if inside.is_file() else None
+
+
+def _run_rows(plan: ExaminerPlan, task_id: Optional[str], pattern: "re.Pattern[str]") -> Iterator[Row]:
+    """Every Run's events. A Run file is one JSON line per event, with the Run's own fields on a line
+    of their own, and the files run to megabytes; so a line is scanned as text and only a line the
+    pattern already hit is parsed, to say which event it is."""
+    for task, run_id, path in _run_paths(plan, task_id):
+        file = _run_file(plan, task, path)
+        if file is None:
+            continue
+        with file.open(encoding="utf-8") as handle:
+            for line in handle:
+                if pattern.search(line) is None:
+                    continue
+                body = json.loads(line) if line.lstrip().startswith("{") else {}
+                payload = body.get("payload") if isinstance(body.get("payload"), dict) else {}
+                name = payload.get("name") if isinstance(payload.get("name"), str) else None
+                where = ("run fields" if "type" not in body else
+                         f"event {body.get('idx')} {body['type']}" + (f" {name}" if name else ""))
+                yield run_id, task, name, where, line.rstrip("\n")
+
+
+def _intent_rows(plan: ExaminerPlan, task_id: Optional[str]) -> Iterator[Row]:
+    """Every Intent: the line itself, the phrases the intent gate refused, what evidences each."""
+    for task, body in sorted((plan.inputs.get("intents") or {}).items()):
+        if task_id is not None and task != task_id:
+            continue
+        record = Intent.model_validate(body)
+        yield task, task, None, "text", record.text
+        for phrase in record.ungrounded_phrases:
+            yield task, task, None, "ungrounded_phrase", phrase
+        for phrase, run_ids in sorted(record.run_coverage.items()):
+            yield task, task, None, f"run_coverage {phrase}", ", ".join(run_ids)
+        for span in record.spans:
+            yield task, task, None, f"span {span.source} in {span.trace_id}", span.text
+
+
+def _status_rows(plan: ExaminerPlan, task_id: Optional[str]) -> Iterator[Row]:
+    """Every task_status row, field by field: the reason, the checks, the tools that blocked it."""
+    for task, row in sorted((plan.store.get("task_status") or {}).items()):
+        if task_id is not None and task != task_id:
+            continue
+        for field, value in sorted((row or {}).items()):
+            yield task, task, None, field, value if isinstance(value, str) else _text(value)
+
+
+def _verifier_rows(plan: ExaminerPlan, task_id: Optional[str]) -> Iterator[Row]:
+    """Every current Verifier's atoms, one row each."""
+    for verifier in plan.store.get("verifiers") or []:
+        if task_id is not None and verifier.task_id != task_id:
+            continue
+        for atom in verifier.atoms:
+            yield verifier.task_id, verifier.task_id, None, f"atom {atom.id} {atom.kind}", _text(as_dict(atom))
+
+
+def _rows(plan: ExaminerPlan, kind: str, args: SearchArgs, pattern: "re.Pattern[str]") -> Iterator[Row]:
+    if kind == "trace":
+        return _trace_rows(plan, args.task_id)
+    if kind == "run":
+        return _run_rows(plan, args.task_id, pattern)
+    if kind == "intent":
+        return _intent_rows(plan, args.task_id)
+    if kind == "task_status":
+        return _status_rows(plan, args.task_id)
+    return _verifier_rows(plan, args.task_id)
+
+
+def _search(plan: ExaminerPlan):
+    async def search(args: SearchArgs) -> SearchResult:
+        pattern = _pattern(args.text, args.regex)
+        kinds = [kind for kind in SEARCH_KINDS if not args.kinds or kind in args.kinds]
+        counts = {kind: 0 for kind in kinds}
+        lines: list[str] = []
+        for kind in kinds:
+            for row in _rows(plan, kind, args, pattern):
+                if args.tool is not None and row[2] != args.tool:
+                    continue
+                match = pattern.search(row[4])
+                if match is None:
+                    continue
+                counts[kind] += 1
+                if len(lines) < args.limit:
+                    lines.append(_match_line(kind, row, match))
+        total = sum(counts.values())
+        head = (f"search {args.text!r} over {', '.join(kinds)}: {total} matches ("
+                + ", ".join(f"{kind} {count}" for kind, count in counts.items())
+                + f"), showing {len(lines)}")
+        text = _clamp("\n".join([head, *lines]), "search a narrower phrase, one kind, or one Task")
+        return SearchResult(matches=total, shown=len(lines), counts=counts, text=text)
+
+    return search
 
 
 def _derive(plan: ExaminerPlan, sink: Optional[Sink]):
@@ -760,11 +984,15 @@ def _finding(plan: ExaminerPlan):
 
 
 def examiner_tools(plan: ExaminerPlan, sink: Optional[Sink] = None) -> list[AgentTool]:
-    """The seven tools over one plan; `sink` is where the derive stage's events go (the harness's `emit`)."""
+    """The eight tools over one plan; `sink` is where the derive stage's events go (the harness's `emit`)."""
     return [
         AgentTool("read", "Read a Task, a Trace, an Intent, a Run, a Verifier, a probe pool, the task status, "
                   "the rulings, the re-roll or replay rows, or the References, as JSON.",
                   ReadArgs, ReadResult, _read(plan), render=render),
+        AgentTool("search", "Find one phrase across the records without reading them: the Traces, the Runs, "
+                  "the Intents, the task status and the Verifiers. Answers a count per kind and one line "
+                  "per match, saying which record, which Task and where in it the phrase is.",
+                  SearchArgs, SearchResult, _search(plan), render=render),
         AgentTool("derive", "Derive one Verifier per Task from its References through the D79 suite "
                   "(`all`, or one Task id).", DeriveArgs, DeriveResult, _derive(plan, sink), render=render),
         AgentTool("probe", "Score a hand-written Run against a Task's current Verifier and keep it in the "

@@ -146,3 +146,18 @@ def test_the_code_driver_leaves_what_build_build_leaves_byte_for_byte(tmp_path, 
     left, right = tree(driven), tree(plain)
     assert set(left) == set(right)
     assert [name for name in left if left[name] != right[name]] == []
+
+
+def test_a_session_reports_the_window_of_the_model_it_runs_on_not_the_default(built):
+    """D124's line is a fraction of the window, so the window has to be the model's own: the agent
+    core may not import runner.budget and the caller passes `window_for` in."""
+    known = next(m for m, w in sorted(budget.CONTEXT_WINDOWS.items())
+                 if w != budget.DEFAULT_CONTEXT_WINDOW)
+    plan = BuildPlan(workdir=built)
+    harness = builder_agent.build_harness(plan, TestModel(["ok"], name=known))
+    assert harness.context.config.window == budget.window_for(known) != budget.DEFAULT_CONTEXT_WINDOW
+    assert f"of {budget.window_for(known)}," in harness.context.estimate().note()
+    # a model the catalog does not know, and the code driver, keep the default
+    assert builder_agent.build_harness(plan, TestModel(["ok"])).context.config.window == \
+        budget.DEFAULT_CONTEXT_WINDOW
+    assert builder_agent.build_harness(plan).context.config.window == budget.DEFAULT_CONTEXT_WINDOW

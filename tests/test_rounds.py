@@ -729,6 +729,7 @@ def test_round_end_carries_every_count_d126_lists_and_none_comes_from_a_model(dr
     assert set(round_end.GATE_COUNTS) <= set(counts)
     assert counts["tasks"] == len(driven["result"]["tasks"]) == 3
     assert counts["fallback_compactions"] == {"builder": 0, "examiner": 0}
+    assert counts["floor_cuts"] == {"builder": 0, "examiner": 0}
     assert set(counts["spend"]) == {"builder", "examiner", "total", "cache_saved"}
     # No model filed any of these: they are the losses the round's own records show (D170), and the
     # count is the list of ids because that is what the next round's Builder beat is handed.
