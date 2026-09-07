@@ -22,7 +22,7 @@ from kullback.runner.records import Task, ToolCall, Trace, Verifier
 STATUS_KEYS = {"reference_confirmed", "verifier_passed", "reason", "recordings", "rerolls", "judged",
                "assisted_tools", "blocking_tools", "tool_calls_replayed", "tool_calls_differing"}
 REFERENCE_KEYS = {"references", "recordings", "failed", "groups", "reason", "judged", "judge_reason",
-                  "judge_abstained", "judge_calls", "judge_fallback"}
+                  "judge_abstained"}
 
 
 def _read(path: Path):

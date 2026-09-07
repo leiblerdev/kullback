@@ -10,10 +10,15 @@ from pathlib import Path
 import pytest
 
 from conftest import PTR
+from kullback.builder import compile_env
 from kullback.builder.mine import (
+    CONSTANTS_ROW,
+    CONSTANTS_TABLE,
     SCALAR_RESULT_FIELD,
     classify_column,
     classify_kind,
+    constants_row,
+    constants_table_of,
     gate_tools,
     is_scalar_result,
     mine_schema,
@@ -22,6 +27,7 @@ from kullback.builder.mine import (
     propose_kind,
     row_homes,
     unknown_tools,
+    world_constants,
 )
 from kullback.runner.records import RawPtr, ToolCall, ToolCallError, Trace, as_dict
 
@@ -1598,3 +1604,71 @@ def test_one_id_repeated_across_two_traces_is_not_a_composite_key():
 def test_the_fixture_needs_no_composite_key(fixture_traces):
     """The rule must be silent on a corpus whose ids stand for one row each."""
     assert mine_schema(fixture_traces).composite_keys == {}
+
+
+# --- constants of the world --------------------------------------------------
+
+
+def _listing(trace_id: str, result, name: str = "list_all_kennels", args=None) -> Trace:
+    return one_trace(trace_id, [
+        {"id": f"{trace_id}-1", "name": name, "args": args or {}, "result": result},
+        {"id": f"{trace_id}-2", "name": name, "args": args or {}, "result": result},
+    ])
+
+
+def test_a_no_argument_listing_whose_answer_never_changes_is_a_constant_of_the_world():
+    listing = {"north": "K1", "south": "K2"}
+    schema = mine_schema([_listing("A", listing), _listing("B", listing)])
+    assert constants_table_of(schema) == CONSTANTS_TABLE
+    assert constants_row(schema) == {"list_all_kennels": listing}
+
+
+def test_a_listing_that_answered_two_things_is_not_a_constant():
+    schema = mine_schema([_listing("A", {"north": "K1"}), _listing("B", {"north": "K1", "south": "K2"})])
+    assert constants_table_of(schema) is None
+
+
+def test_a_tool_called_two_ways_is_not_a_constant_however_alike_its_answers():
+    traces = [_listing("A", {"north": "K1"}, args={"zone": "north"}),
+              _listing("B", {"north": "K1"}, args={"zone": "south"})]
+    assert world_constants(traces) == {}
+
+
+def test_one_call_is_not_evidence_that_a_result_never_changes():
+    trace = one_trace("A", [{"id": "c1", "name": "list_all_kennels", "args": {}, "result": ["K1"]}])
+    assert world_constants([trace]) == {}
+
+
+def test_rows_of_a_table_are_not_a_constant_however_often_they_repeat():
+    """The answer carries an id column the calls also address rows by, so a table owns those rows."""
+    rows = [{"kennel_id": "K1", "zone": "north"}, {"kennel_id": "K2", "zone": "south"}]
+    traces = [_listing("A", rows, name="list_kennels"), _listing("B", rows, name="list_kennels"),
+              one_trace("C", [{"id": "c9", "name": "get_kennel", "args": {"kennel_id": "K1"},
+                               "result": rows[0]}])]
+    assert world_constants(traces) == {}
+
+
+def test_a_list_of_objects_no_table_owns_is_a_constant_of_the_world():
+    """Nothing addresses these by an id, so the miner homes no row and no table holds the list."""
+    listing = [{"zone": "north", "code": "NO"}, {"zone": "south", "code": "SO"}]
+    traces = [_listing("A", listing), _listing("B", listing)]
+    assert world_constants(traces) == {"list_all_kennels": listing}
+
+
+def test_a_write_that_acknowledges_every_call_the_same_way_is_not_a_constant():
+    traces = [_listing("A", "ok", name="update_kennel"), _listing("B", "ok", name="update_kennel")]
+    assert world_constants(traces, write_tools=["update_kennel"]) == {}
+
+
+def test_the_constant_is_a_column_of_one_row_so_a_body_reaches_it_without_naming_a_key():
+    schema = mine_schema([_listing("A", ["K1", "K2"]), _listing("B", ["K1", "K2"])])
+    block = compile_env._schema_block(schema)
+    assert f"self.db.{CONSTANTS_TABLE} holds one row of the world's constants" in block
+    assert f"next(iter(self.db.{CONSTANTS_TABLE}.values()))" in block
+
+
+def test_the_starting_state_holds_the_constant_the_recording_pinned(tmp_path):
+    schema = mine_schema([_listing("A", ["K1", "K2"]), _listing("B", ["K1", "K2"])])
+    state = compile_env.build_starting_state(
+        [_listing("A", ["K1", "K2"])], schema, tmp_path, tool_sigs=[], synthetic=False)
+    assert state.db[CONSTANTS_TABLE] == {CONSTANTS_ROW: {"list_all_kennels": ["K1", "K2"]}}

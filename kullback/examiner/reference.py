@@ -6,16 +6,12 @@ plus the policy say the End state should hold: a recording that broke a compiled
 a failed recording; the rest are grouped by End state, and the References are the one group that
 agrees. When more than one group is left, code cannot tell which of them carried out the request, so
 a judge may mark groups as failed, never as passed (D110); a Task whose groups still disagree gets
-no Reference and no Verdict. That judge is an agent with a bounded look
-(judge.py): it may ask for the Intent's phrases, the policy sections matching a query, the Starting
-state rows its Runs named, what each state told the user, what the coded rules answered about each
-Run, and one Run's last answer, six calls in all. The conversation is still withheld, so a ruling of
-its that rests on anything else, authentication or a spoken confirmation or the opening request, is
-an abstention and fails nothing (D93); over the cap the one-shot judge rules and the record says so.
-The End state it is handed has two halves, what the Runs wrote and what their
-answers told the user (D43): with the second half missing a Task the recorded agent resolved by
-answering read as a Task nobody acted on, and the judge failed the recordings the corpus itself had
-rewarded. Re-rolls (D112) enter the same rule
+no Reference and no Verdict. That judge is handed the Intent, the policy and the End states and no
+transcript, so a ruling of its that rests on anything else, authentication or a spoken confirmation
+or the opening request, is an abstention and fails nothing (D93). The End state it is handed has two
+halves, what the Runs wrote and what their answers told the user (D43): with the second half missing
+a Task the recorded agent resolved by answering read as a Task nobody acted on, and the judge failed
+the recordings the corpus itself had rewarded. Re-rolls (D112) enter the same rule
 as recordings of a lower standing: the Reference is a recording whenever the agreeing group holds
 one, since the recording is the only Run that touched the customer's real system.
 
@@ -60,9 +56,6 @@ MAX_FACTS = 12  # how many of a group's stated facts the prompt lists before it 
 # the policy and the End states, and never a transcript, so authentication, a spoken confirmation and
 # the opening request are absent by construction; a ruling that rests on one of them abstains (D93).
 AVAILABLE_SOURCES = ("intent", "policy", "end_states")
-# What `parse_judgement` says about a reply it could not read. Named, because the agent judge (judge.py)
-# falls back to the one-shot judge on exactly this answer and must not compare against a sentence.
-UNREADABLE_REPLY = "unreadable reply"
 _LABELS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
 _JSON_RE = re.compile(r"\{.*\}", re.DOTALL)
 
@@ -92,8 +85,6 @@ class Confirmation:
     judged: bool = False
     judge_reason: Optional[str] = None
     judge_abstained: bool = False  # the judge rested on something it was not given, so it failed nothing
-    judge_calls: list[dict] = field(default_factory=list)  # what the judge looked at, in order
-    judge_fallback: Optional[str] = None  # why the one-shot judge ruled instead of the agent
     recordings: list[Recording] = field(default_factory=list)  # every Run the rule saw
 
     def as_dict(self) -> dict:
@@ -103,8 +94,7 @@ class Confirmation:
                                for r in self.recordings],
                 "failed": dict(self.failed), "groups": list(self.groups), "reason": self.reason,
                 "judged": self.judged, "judge_reason": self.judge_reason,
-                "judge_abstained": self.judge_abstained, "judge_calls": list(self.judge_calls),
-                "judge_fallback": self.judge_fallback}
+                "judge_abstained": self.judge_abstained}
 
 
 @dataclass
@@ -113,10 +103,6 @@ class Judgement:
     failed: set[str] = field(default_factory=set)
     reason: str = ""
     unavailable: list[str] = field(default_factory=list)
-    # What the judge looked at before it ruled (judge.py), one entry per tool call, and why the
-    # one-shot judge ruled when the agent judge could not. Empty on the one-shot judge's own rulings.
-    calls: list[dict] = field(default_factory=list)
-    fell_back: Optional[str] = None
 
     @property
     def abstained(self) -> bool:
@@ -396,7 +382,7 @@ def group(recordings: Iterable[Recording]) -> list[dict]:
 
 
 def confirm(recordings: Iterable[Recording], *, intent: str = "", policy_lines: Iterable[str] = (),
-            judge: Any = None, phrases: Iterable[str] = ()) -> Confirmation:
+            judge: Any = None) -> Confirmation:
     """D111 over one Task's Runs: constraint violations out, then one agreeing End state, judge as residue."""
     out = Confirmation()
     recordings = list(recordings)
@@ -415,11 +401,9 @@ def confirm(recordings: Iterable[Recording], *, intent: str = "", policy_lines: 
     out.groups = [{k: v for k, v in g.items() if k != "members"} for g in groups]
     remaining = groups
     if len(groups) > 1 and judge is not None:
-        judgement = judge_groups(judge, intent, policy_lines, groups, phrases)
+        judgement = judge_groups(judge, intent, policy_lines, groups)
         out.judged, out.judge_reason = True, judgement.reason
         out.judge_abstained = judgement.abstained
-        out.judge_calls = list(judgement.calls)
-        out.judge_fallback = judgement.fell_back
         for g in groups:
             if g["label"] in judgement.failed:
                 why = judgement.reason or "did not reach the End state the Intent and the policy require"
@@ -492,18 +476,8 @@ def judge_prompt(intent: str, policy_lines: Iterable[str], groups: list[dict]) -
     return "\n".join(lines)
 
 
-def judge_groups(model: Any, intent: str, policy_lines: Iterable[str], groups: list[dict],
-                 phrases: Iterable[str] = ()) -> Judgement:
-    """What the judge said about the End states; an unreadable reply fails nothing (D110).
-
-    A judge that can look answers `rule_groups` and rules through its own tools (judge.py); anything
-    else is one model call over this prompt, which is also what the agent judge falls back to. The
-    dispatch is on the object rather than an import, so this module stays the one the agent judge
-    reads its prompt pieces and its ruling parser from and not the other way round.
-    """
-    ruler = getattr(model, "rule_groups", None)
-    if callable(ruler):
-        return ruler(intent, policy_lines, groups, phrases)
+def judge_groups(model: Any, intent: str, policy_lines: Iterable[str], groups: list[dict]) -> Judgement:
+    """What the judge said about the End states; an unreadable reply fails nothing (D110)."""
     try:
         reply = model.query([{"role": "user", "content": judge_prompt(intent, policy_lines, groups)}])
     except Exception as exc:
@@ -515,14 +489,14 @@ def parse_judgement(text: str, labels: set[str]) -> Judgement:
     """The judge's reply as a ruling. A ruling resting on a source it was not handed fails nothing (D93)."""
     match = _JSON_RE.search(text or "")
     if not match:
-        return Judgement(reason=UNREADABLE_REPLY)
+        return Judgement(reason="unreadable reply")
     try:
         body = json.loads(match.group(0))
     except json.JSONDecodeError:
-        return Judgement(reason=UNREADABLE_REPLY)
+        return Judgement(reason="unreadable reply")
     failed = body.get("failed") if isinstance(body, dict) else None
     if not isinstance(failed, list):
-        return Judgement(reason=UNREADABLE_REPLY)
+        return Judgement(reason="unreadable reply")
     said = str(body.get("reason") or "")[:MAX_LINE_CHARS]
     missing = sources_not_given(body.get("evidence"), AVAILABLE_SOURCES)
     if missing:
@@ -532,8 +506,7 @@ def parse_judgement(text: str, labels: set[str]) -> Judgement:
     return Judgement(failed={str(x).strip().upper() for x in failed} & labels, reason=said)
 
 
-__all__ = ["RECORDING", "REROLL", "ANSWERED", "MISCOMPILED_SHARE", "AVAILABLE_SOURCES", "UNREADABLE_REPLY",
-           "Recording", "Confirmation",
+__all__ = ["RECORDING", "REROLL", "ANSWERED", "MISCOMPILED_SHARE", "AVAILABLE_SOURCES", "Recording", "Confirmation",
            "Judgement", "end_state", "settled_state", "describe", "stated_facts", "transferred",
            "told_line",
            "hard_atoms", "coded_atoms", "violations", "load", "constraint_rates", "demote", "group",
