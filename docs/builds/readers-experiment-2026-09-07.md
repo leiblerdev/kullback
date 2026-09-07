@@ -221,3 +221,176 @@ attempts and the failures per attempt), `replays.json` (per tool, per call verdi
 confirmation), `tool_fidelity.json` (compile_tools' own replay), `tasks.json` and
 `tasks_frozen.json` (the Task counts), `budget.json` (spend, against the copied workdir's totals),
 `bodies.json` (which bodies read the revealed table).
+
+## 8. Follow-up: one gate, mined write effects, corpus fills
+
+After the two arms above, the declared arm and the `--readers-gate` flag were removed: the code
+holds one path, the free one, and arm A's rule 1 survives as a reported metric rather than a
+refusal, so the stage ruling now says how many shapes of each tool parse to nothing
+(`silent_shapes`, `silent_by_tool`) without failing anything.
+
+Two faults from sections 2 and 6 were fixed:
+
+1. The requestor's own writes now close columns. A write tool's changed columns are mined the way
+   `mine.observed_effects` credits assistant writes: the columns whose parsed value differs between
+   the last reading before the call and the first reading after it, the call's own result counting
+   as a reading after it, in at least one recording. Those columns close at that tool's calls in
+   every walk, so a requestor write ends a column the way a first reading does. The miner's
+   `kind` in `tool_sigs.json` says which tools are writes.
+2. Columns no recording reads before its first write are filled from the corpus: the commonest
+   pre-write value of that column across recordings. Each fill is recorded as an assumption of the
+   Starting state, the way `compile_env.build_starting_state` records its own, and the count is in
+   the stage ruling. A column no recording reads before any write anywhere stays unset and is
+   named in the ruling.
+
+Re-run on `.work-readers-b` with the same command, model and ceiling as before
+(`--target replay_reference --max-rounds 1`).
+
+### Tasks at replay fidelity
+
+| | base | arm B before | arm B after |
+|---|---|---|---|
+| Tasks confirmed | 0 | 0 | 0 |
+| frozen denominator | 183 | 183 | 183 |
+| Tasks after clustering | 183 | 393 | 221 |
+| recordings replayed | 456 | 456 | 456 |
+| writes matched | 658 of 2,577 (25.5%) | 1,630 (63.3%) | 1,301 (50.5%) |
+| reads scored in substance | 2,696 of 5,155 | 2,756 | 2,842 |
+
+### Per tool, recorded calls matched
+
+Same source and rule as section 3: a call counts as matched when the Runner ruled `same`,
+`cosmetic` or `both_refused`, and the call counts are the recording's own. `kind` is the miner's
+label, which the new closing rule reads.
+
+| tool | side | kind | calls | base | before | after |
+|---|---|---|---|---|---|---|
+| get_details_by_id | assistant | read | 1153 | 0.0% | 0.0% | 0.0% |
+| get_customer_by_phone | assistant | read | 459 | 100.0% | 100.0% | 100.0% |
+| enable_roaming | assistant | write | 164 | 100.0% | 100.0% | 100.0% |
+| refuel_data | assistant | write | 146 | 100.0% | 100.0% | 100.0% |
+| transfer_to_human_agents | assistant | generic | 124 | 100.0% | 100.0% | 100.0% |
+| get_data_usage | assistant | read | 121 | 91.7% | 0.0% | 100.0% |
+| get_bills_for_customer | assistant | read | 79 | 0.0% | 0.0% | 100.0% |
+| send_payment_request | assistant | write | 67 | 100.0% | 100.0% | 100.0% |
+| resume_line | assistant | read | 53 | 0.0% | 0.0% | 0.0% |
+| can_send_mms | user | write | 714 | 1.5% | 81.7% | 79.8% |
+| check_network_status | user | write | 462 | 10.0% | 41.8% | 2.6% |
+| run_speed_test | user | write | 424 | 46.2% | 40.1% | 44.6% |
+| check_status_bar | user | write | 403 | 1.2% | 74.4% | 34.0% |
+| reboot_device | user | read | 337 | 44.2% | 17.5% | 15.4% |
+| check_apn_settings | user | read | 319 | 68.3% | 76.5% | 72.7% |
+| toggle_roaming | user | read | 248 | 20.6% | 5.2% | 0.0% |
+| toggle_airplane_mode | user | read | 245 | 47.8% | 41.2% | 44.9% |
+| set_network_mode_preference | user | read | 223 | 73.5% | 73.5% | 73.5% |
+| check_app_permissions | user | read | 198 | 39.9% | 1.0% | 37.9% |
+| toggle_data | user | write | 197 | 11.7% | 3.6% | 8.1% |
+| grant_app_permission | user | read | 188 | 95.7% | 95.7% | 95.7% |
+| check_wifi_calling_status | user | read | 163 | 39.9% | 100.0% | 39.9% |
+| reset_apn_settings | user | read | 154 | 85.1% | 85.1% | 0.6% |
+| reseat_sim_card | user | read | 147 | 0.0% | 26.5% | 24.5% |
+| check_sim_status | user | read | 135 | 34.8% | 49.6% | 51.9% |
+| check_network_mode_preference | user | read | 126 | 66.7% | 99.2% | 57.1% |
+| check_installed_apps | user | read | 111 | 100.0% | 96.4% | 100.0% |
+| toggle_wifi_calling | user | read | 98 | 100.0% | 100.0% | 100.0% |
+| check_payment_request | user | read | 91 | 36.3% | 76.9% | 69.2% |
+| toggle_data_saver_mode | user | read | 75 | 45.3% | 14.7% | 26.7% |
+| check_data_restriction_status | user | read | 64 | 87.5% | 100.0% | 87.5% |
+| disconnect_vpn | user | read | 63 | 57.1% | 15.9% | 7.9% |
+| make_payment | user | read | 62 | 1.6% | 91.9% | 91.9% |
+| check_vpn_status | user | read | 57 | 93.0% | 100.0% | 8.8% |
+| check_wifi_status | user | read | 21 | 100.0% | 100.0% | 100.0% |
+| check_app_status | user | read | 8 | 50.0% | 0.0% | 50.0% |
+
+Totals over the requestor's own 27 tools: base 2,013 of 5,333 (37.7%), before 3,036 (56.9%), after
+2,421 (45.4%). Over the assistant's 9: base 1,071 of 2,366 (45.3%), before 960 (40.6%), after 1,160
+(49.0%). The 33 calls of malformed or invented tool names match in all three.
+
+The three tools the brief named as the earlier build's worst keep most of their gain but lose some
+of it: the MMS capability check 1.5% to 81.7% to 79.8%, the status bar 1.2% to 74.4% to 34.0%, the
+SIM reseat 0% to 26.5% to 24.5%. The two it named as the best are unmoved at 95.7% and 73.5%, as
+they were in the free arm before. The two assistant-side lookups that gained (a data usage lookup
+0% to 100%, a bills lookup 0% to 100%) read the customer's own tables, not the revealed row: their
+bodies were rewritten in this run and the move is body-writing, not the closing rule.
+
+### The split, before and after
+
+Measured over the frozen 183-Task grouping, by walking each recording and asking which revealed
+columns two recordings of one frozen Task disagree on at the point the overlay is taken:
+
+| | before | after |
+|---|---|---|
+| frozen Tasks whose recordings disagree on a revealed column | 89 of 183 | 27 of 183 |
+| distinct columns that split a Task | 21 | 8 |
+| revealed columns read per recording, before its first write | 13.5 | 4.6 |
+| Tasks after clustering, in the build | 393 | 221 |
+
+Before, the columns that split the most Tasks were the cellular network type (61 Tasks), the
+cellular signal (55), the mobile data switch (47), airplane mode (42), the cellular connection
+(36), the network mode preference (35), the SIM card status (31), the MMSC setting and the roaming
+switch (27 each), the app permission list (24), Wi-Fi calling (21), the speed quality and the
+speed result (20 each), the granted permission and the app name (16 each). After, eight columns
+remain: the roaming switch (21 Tasks), airplane mode (12), a payment request (3), the network mode
+preference and the mobile data switch (2 each), the data saver switch, the VPN status and a
+payment made (1 each).
+
+Of the first readings the old rule took in the disagreeing Tasks, 1,925 of 2,201 came after a call
+of a tool now credited with changing that column. That is the fault named in the follow-up: the
+requestor's own writes never closed a column, so a reading taken after the requestor had already
+changed the device was recorded as its starting value.
+
+### Assumptions and unset columns
+
+The proposal named 29 columns. 24 of them are read by no recording before that recording's first
+write and are filled from the corpus, each fill written into the Starting state's assumptions, for
+example: the table's row for the requestor, column `cellular_signal`, not read before a write in
+407 of 456 recordings, starting on the value 20 of the 49 recordings that did read it before
+writing showed. (The wording of that sentence was corrected after this run; it changes no number
+here.) Five columns are read
+before a write in no recording at all and stay unset: `cellular_connection`, `messaging_mms`,
+`wifi_calling`, `speed_test_result`, `speed_quality`. Both counts are in the stage ruling
+(`filled_columns`, `unset_columns`), and the unset names are listed there.
+
+The reported silent metric found nothing on this corpus: `silent_shapes` 0, `silent_by_tool` empty.
+The proposal passed on the first attempt, not assisted. That is the same reply as the free arm
+before the change, served from the model memo, so the readers stage cost nothing in this run.
+
+### Cost and wall time
+
+| | arm B before | arm B after |
+|---|---|---|
+| wall time | 9m 15s | 5m 02s |
+| spend, whole build | $0.701 | $0.281 |
+| of which the readers stage | $0.015, 1 attempt | $0.000, memo hit |
+| of which compile_tools | $0.275, 290 calls | $0.281, 421 calls |
+| of which compile_policy | $0.411, 418 calls | $0.000, memo hit |
+
+`compile_tools`' own replay (`tool_fidelity.json`): 3,377 of 6,515 calls, against 3,830 of 7,277
+before; 25 of 36 bodies kept assisted, the same as before.
+
+### Where this disagrees with the instruction
+
+The closing rule does what it was asked to do, and the split halves, but on this corpus it costs
+call fidelity on the requestor's side, 56.9% down to 45.4%, and the cause is the miner's `kind`,
+not the rule.
+
+Five of the requestor's tools carry `kind == "write"` here. One of them is a real toggle. The other
+four are device *checks* that only report state, and several real toggles carry `kind == "read"`
+(see the `kind` column above). Each credited tool is mined as changing 12 to 16 columns, because a
+check's result string restates the whole device state and any column that drifted between two of
+its calls is credited to it. A check therefore closes almost the whole row at its first call, which
+is why revealed columns read per recording fell from 13.5 to 4.6, why 24 of 29 columns had to be
+filled from corpus modes, and why the tools whose starting value now comes from a mode rather than
+from the recording lose fidelity: the roaming toggle to 0%, the APN reset from 85.1% to 0.6%, the
+VPN check from 100% to 8.8%, the network status check from 41.8% to 2.6%.
+
+A narrower variant was probed before settling: credit a column only when the write is the single
+write call in the interval between the two readings. It does not help (4.6 columns per recording
+becomes 5.0), because the mislabelled checks are the only calls in most intervals.
+
+So the honest reading is that the fault named in the follow-up is real and the fix is the right
+shape, but it lands on a miner label that is wrong for this corpus, and the two changes together
+trade one measured number (the split, 393 to 221) against another (requestor-side matched calls,
+3,036 to 2,421). Whichever way D176 is recorded, the `kind` classifier is the next thing to look
+at: as long as a read-only check can be labelled a write, any rule that lets writes close columns
+will close too many.

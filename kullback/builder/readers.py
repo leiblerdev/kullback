@@ -724,8 +724,8 @@ def fills_for(rows: dict[str, dict], proposal: Proposal) -> tuple[dict, list[str
         fills[name] = best[1]
         assumptions.append(
             f"{proposal.table} row {proposal.requestor} column {name} was not read before a write in "
-            f"{missing} of {len(rows)} recordings; those start on {_clip(best[1])}, the commonest "
-            f"value the other {best[0]} showed before their first write")
+            f"{missing} of {len(rows)} recordings; those start on {_clip(best[1])}, which {best[0]} "
+            f"of the {len(seen)} recordings that did read it before writing showed")
     return fills, assumptions, unset
 
 
