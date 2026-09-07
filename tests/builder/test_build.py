@@ -12,6 +12,7 @@ from conftest import PTR
 from kullback.ai.provider import TestModel
 from kullback.builder import build as build_module
 from kullback.builder import pipeline
+from kullback.builder import tools as builder_tools
 from kullback.builder.build import BuildPlan
 from kullback.runner.records import Task, ToolCall, ToolSig, Trace, Turn, Verifier
 from test_e2e import TOOL_BODIES
@@ -642,3 +643,51 @@ def test_a_stage_drops_the_run_files_an_earlier_build_left_under_its_name(tmp_pa
     assert build_module._discard_runs(run_dir, "reroll-t1-") == 2
     assert sorted(p.name for p in run_dir.iterdir()) == ["replay-abc.jsonl", "reroll-t10-0.jsonl"]
     assert build_module._discard_runs(tmp_path / "runs" / "missing", "reroll-") == 0
+
+
+# --- D174: a recompile keeps the better body ---
+
+
+def test_a_recompile_that_scores_no_higher_than_the_kept_body_leaves_it_in_place_and_says_so(built, tmp_path):
+    """One live build's third round recompiled a write tool from 65 percent of its recorded calls
+    matched to none of them, and lost 41 Tasks of fidelity in the round: the narrowed rerun took
+    whatever its attempts produced as the tool's body. A recompile is an attempt at a better body;
+    it replaces the kept one only by beating it on the compiler's own key."""
+    workdir = tmp_path / "declined"
+    shutil.copytree(built, workdir)
+    name = sorted(json.loads((workdir / "bodies.json").read_text(encoding="utf-8")))[0]
+    good = json.loads((workdir / "bodies.json").read_text(encoding="utf-8"))[name]
+    plan = BuildPlan(workdir=workdir, iterate=True, model=Bodies(), max_attempts=0)
+    build_module.execute(plan, "compile_tools", tools=[name])  # writes the kept body's score
+    row = json.loads((workdir / "tool_builds.json").read_text(encoding="utf-8"))[name]
+    assert isinstance(row.get("score"), list) and len(row["score"]) == 2
+
+    from kullback.builder import memory
+
+    # A repair records the lesson it acts on, which is what makes the narrowed rerun recompile
+    # rather than answer from the cache; the attempt it then makes crashes on every call.
+    memory.record_lesson(workdir, name, ["replay_fidelity: one recorded call differs"])
+    worse = TestModel(["raise KeyError('no such row')"], loop=True)
+    result = build_module.execute(BuildPlan(workdir=workdir, iterate=True, model=worse, max_attempts=0),
+                                  "compile_tools", tools=[name])
+    assert result.status == "complete" and result.reports["compile_tools"].cached is False
+    assert json.loads((workdir / "bodies.json").read_text(encoding="utf-8"))[name] == good, \
+        "the body that crashes on every call must not replace the one that replayed"
+    row = json.loads((workdir / "tool_builds.json").read_text(encoding="utf-8"))[name]
+    assert row["recompile_declined"]["kept_score"] == row["score"]
+    assert row["recompile_declined"]["attempt_score"] < row["score"]
+    assert row.get("assisted") is False, "the kept body's assisted ruling stands with it"
+    light = next((r for r in builder_tools.red_lights(workdir)
+                  if r.target == name and r.stage == "compile_tools"), None)
+    assert light is None, "a body that passed every gate is no red light, declined attempt or not"
+
+
+def test_a_declined_recompile_is_named_on_the_assisted_tools_red_light(tmp_path):
+    workdir = tmp_path / "lights"
+    workdir.mkdir()
+    (workdir / "tool_builds.json").write_text(json.dumps({
+        "lookup_shelf": {"assisted": True, "score": [5, 9],
+                         "recompile_declined": {"attempt_score": [2, 0], "kept_score": [5, 9]}}}),
+        encoding="utf-8")
+    light = next(r for r in builder_tools.red_lights(workdir) if r.target == "lookup_shelf")
+    assert "scored [2, 0] against the kept body's [5, 9]" in light.failure and "declined" in light.failure

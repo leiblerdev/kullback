@@ -316,9 +316,21 @@ def red_lights(workdir: Any) -> list[RedLight]:
     for name, row in sorted((_read_json(workdir / "tool_builds.json", {}) or {}).items()):
         if isinstance(row, dict) and row.get("assisted"):
             out.append(RedLight(stage="compile_tools", kind="tool", target=name,
-                                failure=f"{name}{ASSISTED}{_blocked_note(fidelity, name)}",
+                                failure=f"{name}{ASSISTED}{_blocked_note(fidelity, name)}"
+                                        f"{_declined_note(row)}",
                                 verb="repair_recompile"))
     return out
+
+
+def _declined_note(row: dict) -> str:
+    """The last recompile of this tool scored no higher than the body kept, so it was declined
+    (D174); saying so is what stops the next request from asking the same question."""
+    declined = row.get("recompile_declined")
+    if not isinstance(declined, dict):
+        return ""
+    attempt, kept = declined.get("attempt_score") or [], declined.get("kept_score") or []
+    return (f"; the last recompile scored {attempt} against the kept body's {kept} "
+            f"(gates passed, calls matched) and was declined: change the hint, not the request")
 
 
 def _blocked_note(fidelity: Any, name: str) -> str:

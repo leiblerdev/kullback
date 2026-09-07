@@ -285,9 +285,11 @@ def _tools_stage(model: Any, max_attempts: int, workers: int = 1, only: Optional
             assisted = [name for name, row in builds.items() if row.get("assisted") and name not in only]
             # D171: the tools this run does not recompile keep the per-call rows the last run left,
             # so the artifact it releases still attributes every tool's fidelity, not only these.
-            outcomes = {name: list(rows) for name, rows
-                        in (_read_json(ctx.workdir / "tool_call_outcomes.json", {}) or {}).items()
-                        if name not in only}
+            all_outcomes = _read_json(ctx.workdir / "tool_call_outcomes.json", {}) or {}
+            outcomes = {name: list(rows) for name, rows in all_outcomes.items() if name not in only}
+            # D174: what the recompiled tools had before this run, so a worse attempt cannot replace it.
+            previous = {name: (bodies[name], builds.get(name) or {}, list(all_outcomes.get(name) or []))
+                        for name in only if name in bodies}
             sigs = [sig for sig in sigs if sig.name in only]
 
         def compile_one(sig):  # one tool, its own directory and nodes; independent of every other (D118)
@@ -301,11 +303,33 @@ def _tools_stage(model: Any, max_attempts: int, workers: int = 1, only: Optional
                                             # a different question than the one that failed.
                                             lesson=memory.lesson_for(ctx.workdir, sig.name))
 
+        declined: list[str] = []
         for sig, build in zip(sigs, parallel.each(sigs, compile_one, workers), strict=True):
-            bodies[sig.name] = build.body
             gates.extend(build.gates)
+            score = list(compile_env.attempt_score(build.gates))
+            kept = previous.get(sig.name) if only is not None else None
+            kept_score = list(kept[1]["score"]) if kept is not None and kept[1].get("score") is not None else None
+            if kept_score is not None and kept_score >= score:
+                # D174: a recompile is an attempt at a better body, not a replacement for the one
+                # kept. The body it produced scored no higher on the same key the compiler ranks its
+                # own attempts by (gates passed, then recorded calls matched), so the kept body
+                # stands. A lower score is written on the row for the Builder to read; a tie leaves
+                # the row as it was, so a request that changed nothing leaves the stage's files
+                # unchanged and the next identical request is answered from the cache. One live
+                # build's third round recompiled a write tool from 65 percent of its calls matched
+                # to none of them and lost 41 Tasks of fidelity that round.
+                body, row, rows = kept
+                bodies[sig.name] = body
+                builds[sig.name] = row if kept_score == score else dict(
+                    row, recompile_declined={"attempt_score": score, "kept_score": kept_score})
+                outcomes[sig.name] = rows
+                if row.get("assisted"):
+                    assisted.append(sig.name)
+                declined.append(sig.name)
+                continue
+            bodies[sig.name] = build.body
             builds[sig.name] = {"assisted": build.assisted, "nodes": build.nodes,
-                                "after_write_skipped": skipped.get(sig.name, 0)}
+                                "after_write_skipped": skipped.get(sig.name, 0), "score": score}
             outcomes[sig.name] = build.call_outcomes
             if build.assisted:
                 assisted.append(sig.name)
@@ -322,7 +346,7 @@ def _tools_stage(model: Any, max_attempts: int, workers: int = 1, only: Optional
         fidelity_by_task = attribute_fidelity(outcomes, call_tasks, assisted)
         _write_json(ctx.workdir / "tool_fidelity.json", fidelity_by_task)
         return {"bodies": bodies, "assisted_tools": sorted(assisted),
-                "tool_fidelity": fidelity_by_task}
+                "tool_fidelity": fidelity_by_task, "recompile_declined": declined}
 
     def gate(ctx, outputs):
         return stage_gates.compile_tools_gate(outputs["bodies"], outputs["assisted_tools"])
