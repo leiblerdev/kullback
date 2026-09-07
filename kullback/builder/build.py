@@ -7,6 +7,20 @@ is the CLI's entry and runs every stage; `execute(plan, target)` runs one stage 
 is upstream of it, which is what the Builder's tools (builder/tools.py) call. A tool that wants one
 tool body recompiled or one Task replayed gets a variant of the same declaration with that stage
 narrowed, so its cache key and its gates are the stage's own.
+
+The re-rolls stage keys a second time inside itself, per Task. The pipeline's key is one key for the
+whole stage, so a build that repaired one Intent or recompiled one body re-ran every Task's Runs:
+three retail rounds re-rolled at the scale of the whole corpus and re-rolls were four fifths of the
+build's spend. `_reroll_key` is what one Task's Runs were sampled under (its overlay and the
+Starting state under it, the schema, the bodies of the tools its own recordings call, the
+canonicalizer rules, its user rules, the Vocabulary, the policy text, the system prompt it opens
+with, and the count, seed, model, turn cap and code version), recorded beside its Runs in
+`runs/<task>/rerolls.json`; a Task whose key has not moved and whose Run files are still there keeps
+them. The assumption: a body of a tool the Task's recordings never call may change without the
+Task's re-rolls going stale. A Run on disk is a sample already taken against the toolkit as it stood,
+and nothing re-scores it against the current bodies (the D79 suite reads the Run file: the second
+path and the false-rejection number score the recorded End state, they do not re-execute it). A
+Candidate could call that tool in a live Run; this Run did not.
 """
 
 from __future__ import annotations
@@ -818,6 +832,106 @@ def _intent_stage(model: Any, workers: int = 1, only: Optional[Iterable[str]] = 
 
 rerolls_gate = stage_gates.rerolls_gate  # the ruling moved to kullback.gates in phase 4; the name stays
 
+REROLL_RECORD = "rerolls.json"  # beside the Task's Runs, under runs/<task>/; never inside a Run file
+REROLL_KEY_FORMAT = 1
+REROLL_SEED = 0  # the stage's own seed; the Examiner's reroll verb rotates its prefix instead (D133)
+REROLL_TURNS = 30  # the loop's cap for a re-roll, the same as a Candidate batch's default
+REROLL_KEY_NOTE = (
+    "a Task keeps its re-rolls while its own inputs hold. A body of a tool its recordings never call "
+    "may move without them going stale: a Run on disk is a sample already taken against the toolkit "
+    "as it stood, and nothing re-scores it against the current bodies")
+# The parts of a Task's key, in the order a re-rolled Task is asked what moved, and how each is said.
+REROLL_KEY_PARTS: tuple[tuple[str, str], ...] = (
+    ("bodies", "a tool body"), ("overlay", "overlay"), ("starting_state", "Starting state"),
+    ("schema", "schema"), ("canon_rules", "canonicalizer rules"), ("user_rules", "user rules"),
+    ("vocabulary", "vocabulary"), ("policy_text", "policy text"), ("system_prompt", "system prompt"),
+    ("settings", "re-roll settings"), ("format", "the shape of the key itself"),
+)
+
+
+def _tools_called(task: Task, traces: dict) -> list[str]:
+    """The tools this Task's own recordings call, sorted (D171's grain: the Task's calls, not the corpus's)."""
+    names: set[str] = set()
+    for run_id in task.run_ids:
+        trace = traces.get(run_id)
+        for call in getattr(trace, "tool_calls", None) or ():
+            names.add(call.name)
+    return sorted(names)
+
+
+def _reroll_key(task: Task, *, traces: dict, bodies: dict, rules: Any, system_prompt: Optional[str],
+                workdir: Path, shared: dict) -> dict:
+    """What one Task's re-rolls were sampled under, part by part, so a repeat can name what moved.
+
+    Kept as named parts rather than one hash because the ruling has to say which input moved for
+    each Task it re-rolled, and "a tool body" is not the same message as "overlay". Only the bodies
+    of the tools this Task's recordings call are in it; the module docstring carries why.
+    """
+    overlay, overlay_rows = compile_env.load_overlay(workdir, task.id)
+    return {
+        "format": REROLL_KEY_FORMAT,
+        "bodies": {name: content_hash((bodies or {}).get(name)) for name in _tools_called(task, traces)},
+        "overlay": content_hash([as_dict(overlay), overlay_rows]),
+        "user_rules": content_hash(rules),
+        "system_prompt": content_hash(system_prompt),
+        **shared,
+    }
+
+
+def _reroll_reason(recorded: Any, current: dict) -> str:
+    """Which of the Task's inputs moved, in a few words; the empty string when none did."""
+    if not isinstance(recorded, dict):
+        return "no key is recorded for this Task"
+    for name, label in REROLL_KEY_PARTS:
+        if recorded.get(name) == current.get(name):
+            continue
+        if name != "bodies":
+            return label
+        before, after = recorded.get("bodies") or {}, current.get("bodies") or {}
+        moved = sorted(name for name in set(before) | set(after) if before.get(name) != after.get(name))
+        rest = f" and {len(moved) - 1} more" if len(moved) > 1 else ""
+        return f"body of tool {moved[0]}{rest}" if moved else label
+    return ""
+
+
+def _reroll_rows(workdir: Path, rows: Iterable[dict], relative: bool) -> list[dict]:
+    """The stage's rows with their paths under the workdir or absolute again.
+
+    Recorded relative so a workdir copied elsewhere reuses its own Run files rather than the
+    originals', and handed back absolute because that is what the artifact has always carried.
+    """
+    out = []
+    for row in rows:
+        path = Path(str(row.get("path") or ""))
+        if relative:
+            try:
+                path = path.resolve().relative_to(Path(workdir).resolve())
+            except ValueError:  # a Run written outside this workdir keeps the path it has
+                pass
+        else:
+            path = Path(workdir) / path
+        out.append({"run_id": row.get("run_id"), "path": path.as_posix() if relative else str(path),
+                    "termination_reason": row.get("termination_reason")})
+    return out
+
+
+def _reroll_record(workdir: Path, task_id: str) -> dict:
+    """What the last run of the stage recorded beside this Task's Runs, or an empty record."""
+    record = _read_json(Path(workdir) / "runs" / task_id / REROLL_RECORD, None)
+    return record if isinstance(record, dict) else {}
+
+
+def _reroll_reuse(workdir: Path, task_id: str, key: dict) -> Optional[list[dict]]:
+    """This Task's recorded re-rolls as the stage's own rows, when the key holds and every file is there."""
+    record = _reroll_record(workdir, task_id)
+    if record.get("key") != key:
+        return None
+    rows = record.get("runs")
+    if not isinstance(rows, list) or not rows:
+        return None
+    out = _reroll_rows(workdir, rows, relative=False)
+    return out if all(Path(row["path"]).is_file() for row in out) else None
+
 
 def _rerolls_stage(model: Any, rerolls: int, workers: int = 1, only: Optional[Iterable[str]] = None):
     """D112: `rerolls` Candidate-shaped Runs of the frontier per Task, inside the built Environment.
@@ -825,6 +939,10 @@ def _rerolls_stage(model: Any, rerolls: int, workers: int = 1, only: Optional[It
     A customer's traces mostly hold one recording per Task, and one recording cannot be checked
     against anything; the re-rolls give the D111 rule Runs to compare it with. They run in the built
     Environment, not the customer's system, so they corroborate only as far as fidelity does.
+
+    Each Task is re-rolled only when its own key moved (`_reroll_key`, the module docstring). A
+    narrowed run is an explicit ask, the Builder's `reroll` tool or an `--iterate` naming a Task, and
+    re-rolls whatever the key says, the way an explicit recompile does.
     """
 
     only = sorted(only) if only is not None else None
@@ -836,7 +954,19 @@ def _rerolls_stage(model: Any, rerolls: int, workers: int = 1, only: Optional[It
         source = compile_env.module_source(inputs["schema"], inputs["sigs"], inputs["bodies"])
         traces = {t.trace_id: t for t in inputs.get("traces") or []}
         canon_rules = _rules_of(inputs)
-        jobs = []
+        # Everything every Task's key shares, hashed once. `version` is the stage's own code version,
+        # bound below this function and read when the stage runs, so an edit here re-rolls everything
+        # once and nothing after that.
+        shared = {
+            "starting_state": content_hash(inputs["db"]),
+            "schema": content_hash(inputs["schema"]),
+            "canon_rules": content_hash(canon_rules),
+            "vocabulary": content_hash(as_dict(_vocab_from(ctx.workdir))),
+            "policy_text": content_hash(inputs.get("policy_text")),
+            "settings": content_hash({"count": rerolls, "seed": REROLL_SEED, "turns": REROLL_TURNS,
+                                      "model": getattr(model, "name", "none"), "code": version}),
+        }
+        jobs, reused, reasons = [], {}, {}
         tasks = list(inputs["tasks"])
         if only is not None:
             unknown = sorted(set(only) - {task.id for task in tasks})
@@ -851,22 +981,43 @@ def _rerolls_stage(model: Any, rerolls: int, workers: int = 1, only: Optional[It
                 # Its re-rolls from an earlier build go too: the second retail build's dead re-rolls
                 # sat under 36 Tasks a later build skipped, and every count that globs runs/ read them.
                 _discard_runs(ctx.workdir / "runs" / task.id, f"reroll-{task.id}-")
+                (ctx.workdir / "runs" / task.id / REROLL_RECORD).unlink(missing_ok=True)
                 continue
             rules = next((user_rules.get(r["trace_id"]) for r in confirmed if user_rules.get(r["trace_id"])), None)
-            jobs.append((task, rules))
+            prompt = _system_prompt_for(task, traces, inputs.get("policy_text"))
+            key = _reroll_key(task, traces=traces, bodies=inputs["bodies"], rules=rules,
+                              system_prompt=prompt, workdir=ctx.workdir, shared=shared)
+            rows = None if only is not None else _reroll_reuse(ctx.workdir, task.id, key)
+            if rows is not None:
+                reused[task.id] = rows
+                continue
+            reasons[task.id] = ("an explicit re-roll was asked for" if only is not None
+                                else _reroll_reason(_reroll_record(ctx.workdir, task.id).get("key"), key)
+                                or "the Run files the key names are gone")
+            jobs.append((task, rules, prompt, key))
 
         def reroll(job):  # one Task's re-rolls, in its own world and run directory (D118)
-            task, rules = job
+            task, rules, prompt, key = job
             _discard_runs(ctx.workdir / "runs" / task.id, f"reroll-{task.id}-")
             runs = _candidate_runs(ctx.workdir, task, model, count=rerolls, prefix="reroll", source=source,
                                    schema=inputs["schema"], sigs=inputs["sigs"], db=inputs["db"], env_id=env_id,
-                                   canon_rules=canon_rules, rules=rules,
-                                   system_prompt=_system_prompt_for(task, traces, inputs.get("policy_text")))
-            return [{"run_id": r.run_id, "path": p, "termination_reason": r.termination_reason} for r, p in runs]
+                                   canon_rules=canon_rules, rules=rules, seed=REROLL_SEED,
+                                   max_turns=REROLL_TURNS, system_prompt=prompt)
+            rows = [{"run_id": r.run_id, "path": p, "termination_reason": r.termination_reason} for r, p in runs]
+            _write_json(ctx.workdir / "runs" / task.id / REROLL_RECORD,
+                        {"task_id": task.id, "key": key,
+                         "runs": _reroll_rows(ctx.workdir, rows, relative=True)})
+            return rows
 
-        out = {task.id: rows for (task, _), rows in zip(jobs, parallel.each(jobs, reroll, workers), strict=True)}
+        rolled = {task.id: rows for (task, _, _, _), rows
+                  in zip(jobs, parallel.each(jobs, reroll, workers), strict=True)}
+        out = {task.id: rolled.get(task.id) or reused[task.id] for task in tasks
+               if task.id in rolled or task.id in reused}
         _write_runs_index(ctx.workdir)
-        ctx.record_gate(rerolls_gate(out, rerolls))
+        ruling = rerolls_gate(out, rerolls)
+        ctx.record_gate(ruling.model_copy(update={"metrics": {
+            **ruling.metrics, "reused": len(reused), "rerolled": len(rolled),
+            "rerolled_because": dict(sorted(reasons.items())), "note": REROLL_KEY_NOTE}}))
         return {"rerolls": out}
 
     version = (f"{_version('rerolls', run, loop, route, user_sim, provider)}:"
