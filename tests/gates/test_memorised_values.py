@@ -214,3 +214,36 @@ def test_the_failure_names_the_tool_so_a_red_light_can_be_attributed_to_it():
     assert result.passed is False
     assert result.failures[0].startswith("renew_loan: ")
     assert result.metrics["memorised"] == 1
+
+
+# --- rule (a) again: a pattern that describes no shape is not a shape (D167) ---
+
+
+def _wildcard_schema() -> EntitySchema:
+    """The library's schema, plus a shelves table whose codes the miner could give no shape.
+
+    `mine.id_pattern` falls back to a bare character class when a column's values share nothing, and
+    six characters of any kind is what it wrote for one build's ids.
+    """
+    schema = _schema()
+    return schema.model_copy(update={
+        "id_patterns": dict(schema.id_patterns, **{"shelves.shelf_code": r"^.{6}$"})})
+
+
+def test_an_ordinary_word_is_not_a_memorised_id_under_a_wildcard_pattern_of_its_length():
+    """D167: the three fixed probes were none of them six letters long, so `^.{6}$` read as a shape
+    and the gate refused a dict key, a status word and two place names as memorised ids. Five tools
+    stayed assisted for four attempts each on that alone."""
+    source = ('totals = {"amount": 0}\n'
+              'state = "loaned"\n'
+              'return {"branch": "Marlow", "held_at": "Barrow", "state": state, **totals}\n')
+    result = _rule(source, _sig(), schema=_wildcard_schema())
+    assert result.passed is True, result.failures
+
+
+def test_a_literal_with_a_real_id_shape_is_still_refused_beside_a_shapeless_pattern():
+    """Widening the probes may not blunt the gate: the mined shape that is a shape still rules."""
+    source = 'if loan_id == "LN9999":\n    raise ValueError("Loan not found")\nreturn self.db.loans[loan_id]\n'
+    result = _rule(source, _sig(), schema=_wildcard_schema())
+    assert result.passed is False
+    assert "'LN9999'" in result.failures[0] and "loans.loan_id" in result.failures[0]

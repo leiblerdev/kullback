@@ -100,9 +100,14 @@ def _nothing_recorded(call: Any) -> bool:
     return not recorded if recorded is not None else _get(call, "result") is None
 
 
-def mine_gate(sigs, calls=None, min_calls: int = 3) -> GateResult:
-    """Each ToolSig rests on enough calls or is flagged llm, and recorded args fit the mined schema."""
-    sigs, calls = list(sigs or ()), list(calls or ())
+def mine_gate(sigs, calls=None, min_calls: int = 3, unknown=None) -> GateResult:
+    """Each ToolSig rests on enough calls or is flagged llm, and recorded args fit the mined schema.
+
+    `unknown` are the names of D164: a name the recording refused on every call, and a name a
+    recorded agent invented that is no identifier. They are reported and never a failure, because
+    the Environment is right to have no such tool, and a Run refuses the name as the recording did.
+    """
+    sigs, calls, unknown = list(sigs or ()), list(calls or ()), list(unknown or ())
     failures, by_name = [], {}
     for sig in sigs:
         name = _get(sig, "name")
@@ -118,7 +123,8 @@ def mine_gate(sigs, calls=None, min_calls: int = 3) -> GateResult:
         sig = by_name.get(_get(call, "name"))
         if sig is not None:
             failures += _arg_failures(sig, _get(call, "args", {}) or {})
-    return gate("mine", failures, tools=len(by_name), calls=len(calls))
+    return gate("mine", failures, tools=len(by_name), calls=len(calls), unknown_tools=len(unknown),
+                unknown_tool_names=[_get(row, "name") for row in unknown])
 
 
 def _arg_failures(sig: Any, args: dict) -> list[str]:

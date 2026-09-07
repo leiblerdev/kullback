@@ -20,6 +20,7 @@ from kullback.builder.mine import (
     mine_tools,
     propose_column_class,
     propose_kind,
+    unknown_tools,
 )
 from kullback.runner.records import RawPtr, ToolCall, ToolCallError, Trace, as_dict
 
@@ -440,32 +441,107 @@ def test_gate_needs_three_observed_calls_or_the_llm_flag(fixture_traces):
         assert name in joined
 
 
-def test_a_user_requestor_call_is_never_mined_into_a_toolsig_or_schema():
-    """Telecom's traces interleave the assistant and the simulated user's own tool calls, run against
-    the user's own phone (docs/cross-domain-check.md, Judgement). Retail and airline never carry a
-    user-requestor call, so this is new coverage, not a change to their behavior."""
+def a_users_own_toolkit() -> list:
+    """A trace where the reader calls the library's tools and the reader's own shelf lamp answers
+    only the reader: the assistant's one call to it came back `tool_not_found` (D164)."""
+    return [
+        one_trace(
+            "t1",
+            [
+                {"name": "get_loan_details", "args": {"loan_id": "#L1"}, "result": '{"loan_id": "#L1"}'},
+                {"name": "get_loan_details", "args": {"loan_id": "#L2"}, "result": '{"loan_id": "#L2"}'},
+                {"name": "get_loan_details", "args": {"loan_id": "#L3"}, "result": '{"loan_id": "#L3"}'},
+                {"name": "read_shelf_lamp", "args": {"shelf": "3"}, "result": '{"lit": true}',
+                 "requestor": "user"},
+                {"name": "read_shelf_lamp", "args": {"shelf": "4"}, "result": '{"lit": false}',
+                 "requestor": "user"},
+                {"name": "read_shelf_lamp", "args": {"shelf": "4"}, "result": None,
+                 "error": ToolCallError(class_="tool_not_found",
+                                        payload="Error: Tool 'read_shelf_lamp' not found.")},
+            ],
+        )
+    ]
+
+
+def test_a_tool_only_the_user_calls_is_mined_with_the_user_as_its_caller():
+    """D164: a tool of the simulated user's own toolkit is a tool of the recording, mined from the
+    calls the user made. The assistant asked for it once and the recording refused, so the assistant
+    is not one of its callers and the Router refuses it there too."""
+    sig = sig_by_name(mine_tools(a_users_own_toolkit()), "read_shelf_lamp")
+    assert sig.callers == ["user"]
+    assert sig.refused_callers == ["assistant"]
+    assert {f.name for f in sig.args_fields} == {"shelf"}
+    assert {f.name for f in sig.result_schema} == {"lit"}
+    assert sig.evidence_strength.call_count == 3
+
+
+def test_a_tool_the_assistant_calls_is_mined_with_the_assistant_as_its_only_caller():
+    """The other side of D164: nothing about a tool with one caller changed."""
+    sig = sig_by_name(mine_tools(a_users_own_toolkit()), "get_loan_details")
+    assert sig.callers == ["assistant"]
+    assert sig.refused_callers == []
+    assert sig.evidence_strength.call_count == 3
+
+
+def test_the_schema_and_the_skipped_count_still_read_the_assistants_calls_alone():
+    """D164 leaves R33 standing: what the customer's system is, is read from the assistant's calls.
+    The user's calls reach the ToolSig of the tool they called and nothing else."""
+    traces = a_users_own_toolkit()
+    schema = mine_schema(traces)
+    assert schema.tables == ["loans"]
+    assert "lit" not in {c.name for c in schema.columns}
+
+    gate = gate_tools(mine_tools(traces), traces)
+    assert gate.metrics["skipped_user_calls"] == 2
+
+
+def test_a_name_refused_on_every_call_is_no_toolsig_and_is_reported_as_unknown():
+    """D164: the recording had no such tool for anyone who asked, so the Environment has none either."""
     traces = [
         one_trace(
             "t1",
             [
-                {"name": "get_order_details", "args": {"order_id": "#W1"}, "result": '{"order_id": "#W1"}'},
-                {"name": "get_order_details", "args": {"order_id": "#W2"}, "result": '{"order_id": "#W2"}'},
-                {"name": "get_order_details", "args": {"order_id": "#W3"}, "result": '{"order_id": "#W3"}'},
-                {"name": "check_network_status", "args": {}, "result": '{"signal": "5g"}', "requestor": "user"},
+                {"name": "get_loan_details", "args": {"loan_id": "#L1"}, "result": '{"loan_id": "#L1"}'},
+                {"name": "renew_every_loan", "args": {}, "result": None,
+                 "error": ToolCallError(class_="tool_not_found", payload="Error: Tool 'renew_every_loan' not found.")},
+                {"name": "renew_every_loan", "args": {}, "result": None,
+                 "error": ToolCallError(class_="tool_not_found", payload="Error: Tool 'renew_every_loan' not found.")},
             ],
         )
     ]
-    sigs = mine_tools(traces)
-    assert not any(s.name == "check_network_status" for s in sigs)
-    assert sig_by_name(sigs, "get_order_details").evidence_strength.call_count == 3
+    assert [s.name for s in mine_tools(traces)] == ["get_loan_details"]
+    assert unknown_tools(traces) == [
+        {"name": "renew_every_loan", "calls": 2, "requestors": ["assistant"], "reason": "refused on every call"}
+    ]
 
-    schema = mine_schema(traces)
-    assert schema.tables == ["orders"]
-    assert "signal" not in {c.name for c in schema.columns}
 
-    gate = gate_tools(sigs, traces)
-    assert gate.metrics["skipped_user_calls"] == 1
-    assert gate.metrics["tools"] == 1
+def test_a_name_that_is_not_an_identifier_is_never_a_toolsig_even_when_it_was_answered():
+    """D164: a recorded agent invents names no generated module could hold; `def $LOAN_ACTION(...)`
+    does not parse, and three of those killed a build at compile_tools."""
+    traces = [
+        one_trace(
+            "t1",
+            [
+                {"name": "$LOAN_ACTION", "args": {"loan_id": "#L1"}, "result": '{"ok": true}'},
+                {"name": "$AGENT_FUNCTION{renew_loan}", "args": {}, "result": None,
+                 "error": ToolCallError(class_="tool_not_found", payload="not found")},
+            ],
+        )
+    ]
+    assert mine_tools(traces) == []
+    assert [(row["name"], row["reason"]) for row in unknown_tools(traces)] == [
+        ("$AGENT_FUNCTION{renew_loan}", "not a tool name"),
+        ("$LOAN_ACTION", "not a tool name"),
+    ]
+
+
+def test_a_declared_tool_no_trace_called_is_still_the_assistants():
+    """D72's declared-only signature keeps its caller: the declaration is the assistant's tool list."""
+    traces = [one_trace("t1", [{"name": "get_loan_details", "args": {}, "result": "{}"}],
+                        tools_declared=[{"name": "renew_loan", "description": "renew a loan"}])]
+    sig = sig_by_name(mine_tools(traces), "renew_loan")
+    assert sig.source == "declared"
+    assert sig.callers == ["assistant"] and sig.refused_callers == []
 
 
 def test_gate_tools_without_traces_reports_zero_skipped_as_before():
@@ -1139,6 +1215,22 @@ def test_an_id_shape_that_appears_late_is_still_matched_by_the_pattern():
     assert all(re.fullmatch(pattern, v) for v in values)
     tight = id_pattern([f"u_{i}" for i in range(200)])
     assert tight == r"^[A-Za-z]+_\d+$"
+
+
+def test_a_position_that_mixes_letters_and_digits_is_that_class_and_not_any_character():
+    """D167: `^.{6}$` matches any six characters, so the memorised-values gate read an ordinary word
+    like `amount` as an id of this shape. The class the sample shows is the class the pattern says."""
+    from kullback.builder.mine import id_pattern
+
+    pattern = id_pattern(["K1NW8N", "HATHAT", "Z7GOZK"])
+    assert pattern == "^[A-Z0-9]{6}$"
+    assert re.fullmatch(pattern, "K1NW8N")
+    assert not re.fullmatch(pattern, "amount")
+    assert id_pattern(["k1nw8n", "hathat", "z7gozk"]) == "^[a-z0-9]{6}$"
+    assert id_pattern(["K1nw8N", "hAthaT", "z7GOzk"]) == "^[A-Za-z0-9]{6}$"
+    # an id whose positions each hold letters only or digits only keeps the tighter shape it had
+    assert id_pattern(["#W1234567", "#W7651432", "#W3487216"]) == r"^#W\d{7}$"
+    assert id_pattern(["TX", "NY", "CA"]) == "^[A-Za-z]{2}$"
 
 
 # --- kind and table naming, against the domains the retail rules missed ------

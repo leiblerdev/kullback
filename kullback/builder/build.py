@@ -19,6 +19,7 @@ from typing import Any, Iterable, Optional
 
 from kullback.ai import provider
 from kullback.builder import (
+    body_skill,
     cluster,
     compile_env,
     ingest,
@@ -154,12 +155,17 @@ def _mine_stage():
         traces = inputs["traces"]
         sigs = mine.mine_tools(traces)
         schema = mine.mine_schema(traces)
+        # D164: the names the recording refused on every call, and the ones a recorded agent
+        # invented, are no tool of this customer. They are written beside the sigs so a build can
+        # see them, and they are never a failure: a Run refuses them as the recording did.
+        unknown = mine.unknown_tools(traces)
         _write_json(ctx.workdir / "tool_sigs.json", [as_dict(s) for s in sigs])
+        _write_json(ctx.workdir / "unknown_tools.json", unknown)
         _write_json(ctx.workdir / "schema.json", as_dict(schema))  # cli._score reads it (D39, D73)
         calls = [c for t in traces for c in t.tool_calls]
         # "flag, do not synthesize": a tool the corpus barely shows stays in the build, named in
         # the gate, rather than being invented or dropped (design section 6).
-        ctx.record_gate(artifacts.mine_gate(sigs, calls))
+        ctx.record_gate(artifacts.mine_gate(sigs, calls, unknown=unknown))
         return {"sigs": sigs, "schema": schema}
 
     return pipeline.Stage(name="mine", fn=run, inputs=("traces",), outputs=("sigs", "schema"),
@@ -244,14 +250,18 @@ def _tools_stage(model: Any, max_attempts: int, workers: int = 1, only: Optional
         # cannot be replayed on that world and is not evidence against the tool it called: the second
         # retail build failed get_order_details for reading back an order the trace had just changed.
         after_write = after_write_calls(traces, cluster.write_tool_names(inputs["sigs"]))
+        # D164: a call from a requestor this tool never answered was refused by the recording, so it
+        # is not evidence for the body; the body is written against the calls of its own callers.
+        callers = callers_by_tool(inputs["sigs"])
         skipped: dict[str, int] = {}
         for trace in traces:
             task_id = _task_of(tasks, trace.trace_id)
             for at, call in enumerate(trace.tool_calls):
-                if (trace.trace_id, at) in after_write:
-                    skipped[call.name] = skipped.get(call.name, 0) + 1
-                elif trace.trace_id in seeds:  # D81: the anchor's calls are not Builder evidence
-                    calls_by_tool.setdefault(call.name, []).append(call)
+                if is_evidence_call(call, callers):
+                    if (trace.trace_id, at) in after_write:
+                        skipped[call.name] = skipped.get(call.name, 0) + 1
+                    elif trace.trace_id in seeds:  # D81: the anchor's calls are not Builder evidence
+                        calls_by_tool.setdefault(call.name, []).append(call)
                 if call.id and task_id:
                     call_tasks[call.id] = task_id
         # D74: each recorded call replays on the world its own Task saw, not on the shared one.
@@ -308,7 +318,7 @@ def _tools_stage(model: Any, max_attempts: int, workers: int = 1, only: Optional
     # compile_env and sandbox, and until the first live build it hashed neither: a fix to the
     # sandbox left every broken body in the cache and `--iterate` handed them straight back.
     version = (f"compile_tools:{getattr(model, 'name', 'none')}:"
-               f"{_module_hash(compile_env)}:{_module_hash(sandbox)}")
+               f"{_module_hash(compile_env)}:{_module_hash(sandbox)}:{_module_hash(body_skill)}")
     # The tool lessons are an input of this stage: they reach the compiler prompt (compile_one
     # above), so a new lesson is a new question and the old answer is not an answer to it. Left
     # undeclared, a recompile asked for after a lesson was recorded was served the cached bodies
@@ -351,6 +361,22 @@ def after_write_calls(traces: Iterable[Trace], write_tools: Iterable[str]) -> se
             if call.name in writes and call.error is None:
                 touched |= names
     return out
+
+
+def callers_by_tool(sigs: Iterable[Any]) -> dict[str, set[str]]:
+    """Each mined tool's callers as a set, for the evidence filter below (D164)."""
+    return {sig.name: set(sig.callers or ["assistant"]) for sig in sigs}
+
+
+def is_evidence_call(call: Any, callers: dict[str, set[str]]) -> bool:
+    """Whether this recorded call is evidence for the body of the tool it named (D164).
+
+    A tool the recording answers for one caller and refuses for another was refused for a reason,
+    and the refusal says nothing about what the body does. Only a call from a caller the tool
+    answers is written against; a call from anyone else is dropped, the same way the Router will
+    refuse it in a Run.
+    """
+    return (call.requestor or "assistant") in callers.get(call.name, {"assistant"})
 
 
 def _task_of(tasks, trace_id: str) -> Optional[str]:

@@ -150,6 +150,11 @@ def test_defaults_carry_the_decisions_they_encode():
     # D70: a tool with no evidence is read, and flagged unclassified.
     sig = ToolSig(name="get_order_details")
     assert sig.kind == "read" and sig.unclassified is True and sig.kind_confidence == "low"
+    # D164: a tool answers the assistant unless the mining says otherwise, so a tool_sigs.json
+    # written before the decision loads as the assistant-only surface it was.
+    assert sig.callers == ["assistant"] and sig.refused_callers == []
+    old_row = {"name": "get_order_details", "kind": "read", "args_schema": {}, "source": "observed"}
+    assert ToolSig.model_validate(old_row).callers == ["assistant"]
     # D97: the three sub-versions sit on Environment and are copied onto Verdict.
     env = Environment(env_id="e1", schema_version="s1", tools_version="t1", policy_version="p1")
     verdict = Verdict(

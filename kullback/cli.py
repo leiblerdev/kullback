@@ -305,6 +305,11 @@ def build(
                                                         "the Examiner's; without it code issues the tool calls."),
     stall_rounds: int = typer.Option(1, "--stall-rounds", help="Rounds that move no gate count before the loop "
                                                               "exits stalled (D126)."),
+    fidelity_stall: int = typer.Option(3, "--fidelity-stall", help="Rounds without a rise in fidelity before the "
+                                                                  "loop exits stalled, whatever the other counts "
+                                                                  "do; 0 turns it off (D169)."),
+    max_rounds: int = typer.Option(12, "--max-rounds", help="Rounds after which the loop exits max_rounds; "
+                                                            "0 is no cap (D169)."),
     allowance_usd: Optional[float] = typer.Option(None, "--allowance-usd",
                                                   help="Per-agent spend allowance per round; the default is "
                                                        "each agent's own round-1 spend from round 2 on (D123)."),
@@ -342,6 +347,7 @@ def build(
                 ceiling_usd=ceiling_usd, grow=_grow_targets(grow), grow_seed=grow_seed,
                 probe_limit=probe_limit, rerolls=rerolls, search=search, workers=workers, target=target,
                 agent_model=adapter if agent else None, stall_rounds=stall_rounds,
+                fidelity_stall=fidelity_stall, max_rounds=max_rounds,
                 allowance_usd=allowance_usd, subscribers=[_echo_round])
     except Exception:
         pulse.stop()

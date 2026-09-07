@@ -420,6 +420,9 @@ def _round_lines(data: ReportData) -> list[str]:
     if data.rounds[-1].exit == "stalled":
         unfinished = list(last.get("unfinished") or [])
         lines.append("stalled: these Tasks need a person: " + (", ".join(unfinished) or "none named") + ".")
+    elif data.rounds[-1].exit == "max_rounds":
+        lines.append("round cap reached (D169): the loop stopped with "
+                     f"{len(list(last.get('unfinished') or []))} Tasks unfinished.")
     return lines
 
 

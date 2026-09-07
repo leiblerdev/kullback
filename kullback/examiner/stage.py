@@ -15,6 +15,9 @@ Runner as a tool of both agents (D120).
 
 from __future__ import annotations
 
+import hashlib
+from dataclasses import dataclass
+from functools import lru_cache
 from pathlib import Path
 from typing import Any, Iterable, Optional
 
@@ -24,6 +27,7 @@ from kullback.gates import artifacts, fidelity, verifier_suite
 from kullback.gates import scorecard as scorecard_mod
 from kullback.gates import stages as stage_gates
 from kullback.gates.ledger import GateLedger
+from kullback.runner import parallel
 from kullback.runner.canon import rules_of
 from kullback.runner.records import (
     GateResult,
@@ -32,6 +36,7 @@ from kullback.runner.records import (
     Verifier,
     apply_intent,
     as_dict,
+    content_hash,
     read_json,
     write_json,
 )
@@ -41,6 +46,14 @@ DERIVE_INPUTS = ("tasks", "sigs", "constraints", "canon_rules", "replays", "rero
 FORBIDDEN_INPUTS = ("bodies", "db", "schema", "environment", "overlays", "synthetic_rows", "policy_text",
                     "lessons_applied", "lessons_set_aside")
 STAGE = "derive_verifier"
+# The per-Task cache under the workdir (D163). Bumped when the entry's shape changes, so an old entry
+# is a miss rather than a row read with the wrong meaning.
+CACHE_DIR = ("examiner", "cache")
+CACHE_FORMAT = 1
+# The modules a Task's derivation runs through, hashed into every key: an edit to any of them is a
+# different derivation and must not be served a stale entry (the Builder's stages hash the same way,
+# build.py's `_version`).
+CODE_MODULES = (verifier_mod, reference_mod, verifier_suite)
 
 
 class ExamContext:
@@ -190,10 +203,96 @@ def verifier_for(ctx, task: Task, confirmation: Any, *, canon_rules: Any, write_
     return record, status
 
 
+# --- the per-Task cache (D163) ---------------------------------------------------
+
+@lru_cache(maxsize=1)
+def module_code_hash() -> str:
+    """The code side of a Task's cache key: the bytes of this module and of the ones it derives through.
+
+    A Verifier, its status row and its D79 suite are what this file, derive.py, reference.py and
+    verifier_suite.py compute; an edit to any of them is a different answer over the same inputs, so
+    the key moves with their bytes and yesterday's entry is a miss. The whole file is hashed rather
+    than one function's source: the derivation runs through most of each of them.
+    """
+    paths = [Path(__file__)] + [Path(getattr(module, "__file__", "") or "") for module in CODE_MODULES]
+    return content_hash({f"{path.parent.name}/{path.name}": hashlib.sha256(path.read_bytes()).hexdigest()
+                         for path in paths if path.is_file()})[:16]
+
+
+def model_name(model: Any) -> Optional[str]:
+    """How a model enters a cache key: its name, or that there is one at all."""
+    if model is None:
+        return None
+    return str(getattr(model, "name", None) or type(model).__name__)
+
+
+def cache_key(task: Task, recordings: list, common: dict, *, intents: dict, user_rules: dict,
+              traces: dict) -> str:
+    """The content hash of everything this Task's derivation reads.
+
+    The Runs are in by id and by the hash of what they wrote, which is what the D111 rule groups on
+    and what every atom is derived from; a Run whose file changed under the same id lands on a
+    different End state and so on a different key. The Intent is in twice, as the grounded record the
+    Verifier is derived under and as the request text the residue judge is handed. The Task's user
+    rules are in for every Trace its recordings name, since which of them the leak check reads is
+    settled by the References, inside the derivation. `common` is what every Task of the call shares:
+    the constraints after D76's demotion, the policy lines, the canon rules, the write tools, the
+    probe's model and limit, the judge's name and the code hash.
+    """
+    return content_hash({
+        "task": {"id": task.id, "name": task.name, "intent": task.intent, "run_ids": list(task.run_ids)},
+        "intent_record": as_dict(intents[task.id]) if task.id in intents else None,
+        "request": request_text(task, intents, traces),
+        "runs": [{"run_id": r.run_id, "trace_id": r.trace_id, "kind": r.kind,
+                  "end_state": content_hash(r.end_state), "violated": sorted(r.violated)}
+                 for r in recordings],
+        "user_rules": {trace_id: user_rules.get(trace_id)
+                       for trace_id in sorted({r.trace_id for r in recordings if r.trace_id})},
+        **common,
+    })
+
+
+def cache_path(workdir: Path, task_id: str, key: str) -> Path:
+    return Path(workdir).joinpath(*CACHE_DIR) / task_id / f"{key[:16]}.json"
+
+
+def read_entry(workdir: Path, task_id: str, key: str) -> Optional[dict]:
+    """The Task's cached outputs under this key, or None.
+
+    An entry of another shape is a miss, and so is a half-written one: a build killed mid-derivation
+    leaves whatever bytes it had reached, and the Task derives again rather than the round failing on
+    a file the cache itself wrote.
+    """
+    try:
+        entry = read_json(cache_path(workdir, task_id, key))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(entry, dict) or entry.get("format") != CACHE_FORMAT or entry.get("key") != key:
+        return None
+    if entry.get("task_id") != task_id or not isinstance(entry.get("status"), dict):
+        return None
+    return entry
+
+
+@dataclass
+class _Job:
+    """One Task through the two pools: what the first found, what the second has to run."""
+    task: Task
+    key: str
+    entry: Optional[dict] = None  # the cache hit, with the Task's outputs in it
+    confirmation: Any = None      # the D111 answer, on a miss
+    may_probe: bool = False
+
+    @property
+    def cached(self) -> bool:
+        return self.entry is not None
+
+
 # --- the stage body --------------------------------------------------------------
 
 def derive_all(ctx: ExamContext, inputs: dict, *, probe_model: Any = None, probe_limit: Optional[int] = None,
-               judge_model: Any = None, run_probe: Any = None, only: Optional[str] = None) -> dict:
+               judge_model: Any = None, run_probe: Any = None, only: Optional[str] = None,
+               workers: int = 1, code_hash: Optional[str] = None) -> dict:
     """One Verifier per Task from its References by the D111 rule, through the whole D79 suite.
 
     The References are the confirmed seed replays plus the finished re-rolls that agree on one End
@@ -210,6 +309,14 @@ def derive_all(ctx: ExamContext, inputs: dict, *, probe_model: Any = None, probe
     references.json already on disk; without it the whole build is derived and the files are the
     stage's, byte for byte. Either way scorecard.json is rewritten last, so it reads as it did when
     the stage ran inside the pipeline.
+
+    The Tasks are independent, so their bodies run on `workers` threads and a Task whose inputs have
+    not moved since the last call is served from `<workdir>/examiner/cache/<task_id>/` without
+    running anything: build 13 spent 13.7 of its 16 hours in two of these calls over the same
+    artifacts, most of it in the probe Run and the re-rolls of the D79 suite (D163). The results are
+    gathered in Task order and the two files are written once, after the pool, so both give the
+    bytes the serial run gave; the probe budget is handed out between the two pools, in Task order,
+    for the same reason. `cached` and `ran` in the result count which Tasks came from where.
     """
     canon_rules = rules_of(inputs)
     fn = verifier_suite.canon_fn(canon_rules)
@@ -230,14 +337,22 @@ def derive_all(ctx: ExamContext, inputs: dict, *, probe_model: Any = None, probe
     assisted_tools = set(inputs.get("assisted_tools") or ())
     atoms = reference_mod.hard_atoms(constraints, write_tools, read_tools)
     probe = run_probe if probe_model is not None else None
-    probed = 0
     tasks = list(inputs["tasks"])
     if only is not None:
         tasks = [task for task in tasks if task.id == only]
         if not tasks:
             raise ValueError(f"no Task is named {only}")
-    verifiers, status, references = [], {}, {}
-    for task in tasks:
+    common = {"format": CACHE_FORMAT,
+              "code": code_hash if code_hash is not None else module_code_hash(),
+              "canon_rules": canon_rules,
+              "constraints": [as_dict(c) for c in constraints],
+              "policy_lines": list(policy_lines),
+              "write_tools": sorted(write_tools),
+              "probe": {"model": model_name(probe_model), "limit": probe_limit, "runner": probe is not None},
+              "judge": model_name(judge_model)}
+
+    def prepare(task: Task) -> _Job:
+        """The Task's Runs, its key, and the D111 answer when the key is not on disk."""
         recordings = [reference_mod.load(r["path"], reference_mod.RECORDING, run_id=r["run_id"],
                                          trace_id=r["trace_id"], write_tools=write_tools, fn=fn, atoms=atoms)
                       for r in seed_replays[task.id]]
@@ -245,23 +360,58 @@ def derive_all(ctx: ExamContext, inputs: dict, *, probe_model: Any = None, probe
                                           write_tools=write_tools, fn=fn, atoms=atoms)
                        for r in rerolls.get(task.id, [])
                        if (r.get("termination_reason") or "") in verifier_suite.SUCCESS_TERMINATIONS]
+        key = cache_key(task, recordings, common, intents=intents, user_rules=user_rules, traces=traces)
+        entry = read_entry(ctx.workdir, task.id, key)
+        if entry is not None:
+            return _Job(task=task, key=key, entry=entry)
         confirmation = reference_mod.confirm(recordings, intent=request_text(task, intents, traces),
                                              policy_lines=policy_lines, judge=judge_model)
-        references[task.id] = confirmation.as_dict()
+        return _Job(task=task, key=key, confirmation=confirmation)
+
+    jobs = parallel.each(tasks, prepare, workers)
+    # The probe budget is spent in Task order whatever order the threads ran in, so which Tasks get
+    # check 6 is the serial run's answer; a Task served from the cache spent its slot when it ran.
+    probed = 0
+    for job in jobs:
+        if job.cached:
+            probed += int(bool(job.entry.get("probed")))
+        elif job.confirmation.references:
+            job.may_probe = probe is not None and (probe_limit is None or probed < probe_limit)
+            probed += int(job.may_probe)
+
+    def finish(job: _Job) -> dict:
+        """The Task's outputs: the cache entry as it stands, or the derivation and a new entry."""
+        task = job.task
+        if job.cached:
+            if job.entry.get("verifier") is not None:
+                write_json(ctx.workdir / "verifiers" / f"{task.id}.json", job.entry["verifier"])
+            return job.entry
+        confirmation = job.confirmation
         if not confirmation.references:
-            status[task.id] = no_reference_status(ctx, task, confirmation,
-                                                  seed_replays=seed_replays[task.id], replays=replays,
-                                                  rerolls=rerolls, traces=traces,
-                                                  assisted_tools=assisted_tools)
-            continue
-        may_probe = probe is not None and (probe_limit is None or probed < probe_limit)
-        probed += int(may_probe)
-        record, status[task.id] = verifier_for(
-            ctx, task, confirmation, canon_rules=canon_rules, write_tools=write_tools,
-            constraints=constraints, intents=intents, user_rules=user_rules,
-            recordings=len(seed_replays[task.id]), rerolls=len(rerolls.get(task.id, [])),
-            probe=probe, probe_model=probe_model, may_probe=may_probe)
-        verifiers.append(record)
+            row = no_reference_status(ctx, task, confirmation, seed_replays=seed_replays[task.id],
+                                      replays=replays, rerolls=rerolls, traces=traces,
+                                      assisted_tools=assisted_tools)
+            verifier = None
+        else:
+            record, row = verifier_for(
+                ctx, task, confirmation, canon_rules=canon_rules, write_tools=write_tools,
+                constraints=constraints, intents=intents, user_rules=user_rules,
+                recordings=len(seed_replays[task.id]), rerolls=len(rerolls.get(task.id, [])),
+                probe=probe, probe_model=probe_model, may_probe=job.may_probe)
+            verifier = as_dict(record)
+        entry = {"format": CACHE_FORMAT, "task_id": task.id, "key": job.key, "status": row,
+                 "references": confirmation.as_dict(), "verifier": verifier, "probed": job.may_probe}
+        write_json(cache_path(ctx.workdir, task.id, job.key), entry)
+        return entry
+
+    entries = parallel.each(jobs, finish, workers)
+    verifiers, status, references = [], {}, {}
+    for job, entry in zip(jobs, entries, strict=True):
+        status[job.task.id] = entry["status"]
+        references[job.task.id] = entry["references"]
+        if entry["verifier"] is not None:
+            verifiers.append(Verifier.model_validate(entry["verifier"]))
+    cached = sum(1 for job in jobs if job.cached)
     if only is not None:
         status = {**(read_json(ctx.workdir / "task_status.json", {}) or {}), **status}
         references = {**(read_json(ctx.workdir / "references.json", {}) or {}), **references}
@@ -279,4 +429,4 @@ def derive_all(ctx: ExamContext, inputs: dict, *, probe_model: Any = None, probe
         disagreeing=sum(1 for r in references.values()
                         if not r["references"] and (r.get("reason") or "").startswith("recordings disagree"))))
     write_json(ctx.workdir / "scorecard.json", scorecard_mod.scorecard(ctx.workdir))
-    return {"verifiers": verifiers, "task_status": status}
+    return {"verifiers": verifiers, "task_status": status, "cached": cached, "ran": len(jobs) - cached}

@@ -132,6 +132,94 @@ def test_the_loophole_probe_runs_through_the_runner_callable_given_and_the_input
     assert out["task_status"]["t1"]["verifier_passed"] is False
 
 
+def _counted_probe(calls: list):
+    """A `run_probe` that records which Task it was asked for, so a Run made twice is visible."""
+    def run_probe(model, verifier):
+        calls.append(verifier.task_id)
+        return VF.wrong_run()
+
+    return run_probe
+
+
+def _derived_bytes(workdir: Path, tasks: int) -> dict:
+    names = ["task_status.json", "references.json"] + [f"verifiers/t{n}.json" for n in range(1, tasks + 1)]
+    return {name: (workdir / name).read_bytes() for name in names}
+
+
+def test_derive_all_on_four_workers_writes_the_task_status_references_and_verifiers_one_worker_writes(tmp_path):
+    serial = make_world(tmp_path / "serial", tasks=4)
+    threaded = make_world(tmp_path / "threaded", tasks=4)
+    for world, workers in ((serial, 1), (threaded, 4)):
+        out = _derive(world.workdir, world.inputs, probe_model=object(), run_probe=probe_runner_over(),
+                      workers=workers)
+        assert out["ran"] == 4 and out["cached"] == 0 and len(out["verifiers"]) == 4
+    assert _derived_bytes(serial.workdir, 4) == _derived_bytes(threaded.workdir, 4)
+
+
+def test_a_second_derive_over_unchanged_inputs_runs_no_task_probes_none_again_and_reports_every_task_cached(tmp_path):
+    world = make_world(tmp_path, tasks=3)
+    calls: list[str] = []
+    first = _derive(world.workdir, world.inputs, probe_model=object(), run_probe=_counted_probe(calls), workers=2)
+    assert first["ran"] == 3 and first["cached"] == 0 and sorted(calls) == ["t1", "t2", "t3"]
+    before = _derived_bytes(world.workdir, 3)
+    second = _derive(world.workdir, world.inputs, probe_model=object(), run_probe=_counted_probe(calls), workers=2)
+    assert second["cached"] == 3 and second["ran"] == 0
+    assert sorted(calls) == ["t1", "t2", "t3"], "the loophole probe's Run is not made again for a cached Task"
+    assert second["task_status"] == first["task_status"]
+    assert [v.task_id for v in second["verifiers"]] == [v.task_id for v in first["verifiers"]]
+    assert _derived_bytes(world.workdir, 3) == before
+
+
+def test_only_the_task_whose_intent_changed_is_derived_again(tmp_path):
+    world = make_world(tmp_path, tasks=3)
+    calls: list[str] = []
+    _derive(world.workdir, world.inputs, probe_model=object(), run_probe=_counted_probe(calls), workers=2)
+    moved = dict(world.inputs, intents={"t2": {"task_id": "t2", "grounded": True,
+                                               "text": "cancel the pending order and say it is cancelled"}})
+    out = _derive(world.workdir, moved, probe_model=object(), run_probe=_counted_probe(calls), workers=2)
+    assert out["ran"] == 1 and out["cached"] == 2
+    assert calls[3:] == ["t2"], "only the Task whose Intent moved is derived and probed again"
+    assert len(out["verifiers"]) == 3, "the other two Tasks' Verifiers come back off the cache"
+
+
+def test_a_task_whose_rerolls_changed_is_derived_again(tmp_path):
+    world = make_world(tmp_path, tasks=3)
+    calls: list[str] = []
+    first = _derive(world.workdir, world.inputs, probe_model=object(), run_probe=_counted_probe(calls), workers=2)
+    assert first["task_status"]["t3"]["rerolls"] == 1
+    rerolls = {task_id: [dict(row) for row in rows] for task_id, rows in world.inputs["rerolls"].items()}
+    rerolls["t3"].append({"run_id": "ref2", "path": world.paths["ref"], "termination_reason": "success"})
+    out = _derive(world.workdir, dict(world.inputs, rerolls=rerolls), probe_model=object(),
+                  run_probe=_counted_probe(calls), workers=2)
+    assert out["ran"] == 1 and out["cached"] == 2 and calls[3:] == ["t3"]
+    assert out["task_status"]["t3"]["rerolls"] == 2 and out["task_status"]["t1"]["rerolls"] == 1
+
+
+def test_the_code_hash_is_part_of_the_key_so_an_edited_module_derives_every_task_again(tmp_path):
+    world = make_world(tmp_path, tasks=2)
+
+    def derive(**kwargs):
+        return _derive(world.workdir, world.inputs, probe_model=object(), run_probe=probe_runner_over(), **kwargs)
+
+    assert derive(code_hash="the modules as they stand")["ran"] == 2
+    assert derive(code_hash="the modules as they stand")["cached"] == 2
+    assert derive(code_hash="one module edited since")["ran"] == 2, "a changed module is a changed derivation"
+    # The default is the bytes of this module, derive.py, reference.py and verifier_suite.py, and it
+    # is the same input to the key: a key written under a pinned hash is not read back under it.
+    assert derive()["ran"] == 2 and derive()["cached"] == 2
+    assert stage.module_code_hash() not in ("the modules as they stand", "one module edited since")
+
+
+def test_a_half_written_cache_entry_is_a_miss_and_not_a_failed_derivation(tmp_path):
+    world = make_world(tmp_path, tasks=2)
+    _derive(world.workdir, world.inputs, probe_model=object(), run_probe=probe_runner_over())
+    entries = sorted((world.workdir / "examiner" / "cache").rglob("*.json"))
+    assert [path.parent.name for path in entries] == ["t1", "t2"], "one entry per Task, under its id"
+    entries[0].write_text('{"format": 1, "task_id": "t1", "key"', encoding="utf-8")  # killed mid-write
+    out = _derive(world.workdir, world.inputs, probe_model=object(), run_probe=probe_runner_over())
+    assert out["ran"] == 1 and out["cached"] == 1 and len(out["verifiers"]) == 2
+
+
 @pytest.mark.parametrize("name", stage.FORBIDDEN_INPUTS[:4])
 def test_inputs_from_refuses_a_store_that_names_bodies_db_schema_or_the_environment(name):
     store = {"tasks": [Task(id="t")], "sigs": [], "constraints": [], name: {"anything": 1}}

@@ -59,7 +59,10 @@ UNMAPPED_FORMATS = {"otel_genai": "OpenTelemetry GenAI", "claude_code_jsonl": "C
 ERROR_RULES: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("tool_not_found", (
         r"\b(?:unknown|unrecognized|undefined|no such|invalid)\s+tool\b",
-        r"\btool\b['\"\s:=]*[\w.\-]*['\"]?\s*(?:was\s+|is\s+)?"
+        # The name token is anything but a quote or whitespace: a source that names its tools with
+        # a placeholder ("$DEVICE_ACTION") or a call shape ("$AGENT_FUNCTION{check_x}") says tool
+        # not found in the same sentence, and a word-character token let those fall to not_found_entity.
+        r"\btool\b['\"\s:=]*[^'\"\s]*['\"]?\s*(?:was\s+|is\s+)?"
         r"(?:not found|does not exist|is not a valid|not a valid|is unknown)",
     )),
     ("permission_denied", ("permission", "not authorized", "unauthorized", "forbidden", "access denied")),

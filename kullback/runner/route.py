@@ -104,8 +104,13 @@ class Router:
                 self.state.put(table, row_id, row)
                 _db_put(db, table, str(row_id), row)
 
-    def route(self, name: str, args: Optional[dict] = None) -> RouteResult:
+    def route(self, name: str, args: Optional[dict] = None, requestor: str = "assistant") -> RouteResult:
         args = dict(args or {})
+        if not self._may_call(name, requestor):
+            # D164: the recording answered this tool for other callers and refused this one, so the
+            # Run refuses it too, in the same class, before any code, recording or stand-in is asked
+            # and without touching the world.
+            return self._error(name, "tool_not_found", f"no tool named {name} for the {requestor}")
         function = getattr(self.tools, name, None) if self.tools is not None else None
         if self._is_tool(name, function):
             return self._code(name, function, args)
@@ -121,6 +126,13 @@ class Router:
         if self.stand_in is not None:
             return self._stand_in(name, args)
         return self._error(name, "tool_not_found", f"no tool named {name}")
+
+    def _may_call(self, name: str, requestor: str) -> bool:
+        """D164: whether this caller is one the mined tool answers. An unmined name is nobody's."""
+        sig = self.sigs.get(name)
+        if sig is None:
+            return True
+        return requestor in (getattr(sig, "callers", None) or ["assistant"])
 
     def _is_tool(self, name: str, function: Any) -> bool:
         """D45: only the customer's own tools run. A public helper on the toolkit is not one of them."""

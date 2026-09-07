@@ -229,6 +229,9 @@ class StatusResult(BaseModel):
     and `failing` are the whole picture either way, so a zoom never hides which gates are red.
     `zoom` is the filter in the words the model passed it, empty when there was none, and it is
     what tells the rendering to list every red light in full instead of grouping them.
+
+    `unbuilt` is the workdir that holds no ruling at all: nothing has been built, so no gate has
+    ruled and the green wording would be a lie (D166).
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -238,6 +241,7 @@ class StatusResult(BaseModel):
     passing: list[str] = Field(default_factory=list)
     failing: list[str] = Field(default_factory=list)
     zoom: str = ""
+    unbuilt: bool = False
 
 
 class StatusArgs(BaseModel):
@@ -436,25 +440,38 @@ def _gate_block(stage: str, lights: list[RedLight]) -> list[str]:
     return lines
 
 
+UNBUILT_SUMMARY = ("status: nothing has been built in this workdir; no gate has ruled yet, so build "
+                   "the target before reading the gates")
+
+
 def status_of(workdir: Any, gate: str = "", target: str = "") -> StatusResult:
     """The red lights and the rulings that are passing, as the status tool returns them.
 
     `gate` and `target` narrow which red lights come back; the rulings passing and the gates failing
     are the whole picture either way, so a zoom answers about one gate without hiding the rest.
+
+    A workdir holding no ruling at all says so instead of reading as green (D166): "0 red lights;
+    0 of 0 gates red" and "the gates are green" is what a model read on a fresh workdir, after which
+    it answered without building anything and the round closed.
     """
+    workdir = Path(workdir)
     lights = red_lights(workdir)
-    rows = [r for r in (_read_json(Path(workdir) / "gates.json", []) or []) if isinstance(r, dict)]
+    rows = [r for r in (_read_json(workdir / "gates.json", []) or []) if isinstance(r, dict)]
     passing = sorted({str(r.get("stage") or "") for r in rows if r.get("pass")})
     failing = list(dict.fromkeys(light.stage for light in lights))
+    unbuilt = not rows and not (_read_json(workdir / "replays.json", {}) or {}) \
+        and not (_read_json(workdir / "tool_builds.json", {}) or {})
     asked = [part for part in (f"gate={gate}" if gate else "", f"target={target}" if target else "") if part]
     shown = [light for light in lights
              if (not gate or light.stage == gate) and (not target or light.target == target)]
     summary = _headline(lights, passing, failing)
-    if asked:
+    if unbuilt:
+        summary = UNBUILT_SUMMARY
+    elif asked:
         summary = (f"status({', '.join(asked)}): {_count(len(shown), 'red light')} "
                    f"of {len(lights)} in all, each in full")
     return StatusResult(summary=summary, red_lights=shown, passing=passing, failing=failing,
-                        zoom=", ".join(asked))
+                        zoom=", ".join(asked), unbuilt=unbuilt)
 
 
 def _in_full(result: StatusResult) -> list[str]:
@@ -477,7 +494,11 @@ def render_status(result: StatusResult) -> str:
     one thing that is shortened is a single very long failure text, which says how much is left and
     is shown whole by the zoom the last line names. The order is the order the records were read in
     and then alphabetical, so two runs over one workdir render the same text.
+
+    A workdir with no ruling in it renders one line, and not the green one (D166).
     """
+    if result.unbuilt:
+        return result.summary
     if result.zoom:
         return "\n".join([result.summary, *_in_full(result)])
     if not result.red_lights:

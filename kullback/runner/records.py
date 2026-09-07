@@ -237,6 +237,12 @@ class ToolSig(Record):
     evidence_strength: EvidenceStrength = Field(default_factory=EvidenceStrength)
     source: SigSource = "observed"
     classified_by: ClassifiedBy = "rule"
+    # D164: who the recording answered this tool for. A customer's traces may carry a simulated user
+    # running a toolkit of its own beside the assistant's, and a tool is not the same tool for both:
+    # the Router refuses a caller outside this list the way the recording refused it. `refused_callers`
+    # are the requestors that called and were only ever refused, kept so the build can say why.
+    callers: list[str] = Field(default_factory=lambda: ["assistant"])
+    refused_callers: list[str] = Field(default_factory=list)
 
 
 class Column(Record):

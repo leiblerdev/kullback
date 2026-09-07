@@ -663,7 +663,9 @@ def driven(tmp_path_factory, request):
         if isinstance(event, BeatEnd) and event.agent == "builder":
             builder_rows[:] = json.loads((workdir / "gates.json").read_text(encoding="utf-8"))
 
-    result = rounds.run_rounds(workdir, model=Bodies(), files=[_fixture(request)], max_attempts=0,
+    # One round: the fixture's Tasks never get a Reference, so under D172 the loop would run on to a
+    # stall; the round cap (D169) ends it after the one round these tests read.
+    result = rounds.run_rounds(workdir, model=Bodies(), files=[_fixture(request)], max_attempts=0, max_rounds=1,
                                subscribers=[events.append, after_the_builder_beat], on_event=dicts.append)
     return {"workdir": workdir, "result": result, "events": events, "dicts": dicts, "builder_rows": builder_rows}
 
@@ -717,6 +719,17 @@ def test_every_rounds_gate_rulings_are_kept_beside_gates_json_round_by_round(dri
     assert [row["round"] for row in history] == [r["round"] for r in driven["result"]["rounds"]]
     assert history[-1]["rulings"] == json.loads((workdir / "gates.json").read_text(encoding="utf-8"))
     assert any(not ruling["pass"] for ruling in history[-1]["rulings"]), "the fixture leaves red gates"
+
+
+def test_the_driver_counts_say_the_target_was_not_built_when_the_last_run_failed_a_stage(tmp_path):
+    """D166: the counts off the gates cannot see a build that never finished, so the driver says it.
+    A round with no run at all, and a round whose run failed a stage, both report built False."""
+    loop = _bare_loop(tmp_path)
+    assert loop.plan.last is None and loop.driver_counts()["built"] is False
+    loop.plan.last = pipeline.PipelineResult(status="failed", failed_stage="compile_tools")
+    assert loop.driver_counts()["built"] is False
+    loop.plan.last = pipeline.PipelineResult(status="ok")
+    assert loop.driver_counts()["built"] is True
 
 
 def test_the_driver_counts_the_turns_of_the_beat_alone_and_how_full_the_context_got(tmp_path):
@@ -777,12 +790,13 @@ def test_the_round_the_driver_is_in_is_on_the_plan_before_the_first_beat(tmp_pat
     assert [(row["target"], row["round"]) for row in rows] == [("t1", 1), ("t2", 2), ("t3", 3)]
 
 
-def test_the_loop_exits_done_when_the_state_holds_after_a_round_over_the_fixture(driven):
-    """No Task on the fixture has a confirmed Reference, so D126's state holds after round 1 (the
-    gates' own claim in tests/gates/test_round_end.py), and the driver stops there."""
-    assert driven["result"]["exit"] == "done"
+def test_the_loop_over_the_fixture_is_not_done_after_a_round_and_stops_on_its_round_cap(driven):
+    """No Task on the fixture has a confirmed Reference: before D172 that read as D126's state and
+    the driver exited done at fidelity 0; now those Tasks are the loop's unfinished work, and the
+    fixture's one-round cap is what ends it."""
+    assert driven["result"]["exit"] == "max_rounds"
     assert [r["round"] for r in driven["result"]["rounds"]] == [1]
-    assert driven["events"][-1].exit == "done"
+    assert driven["events"][-1].exit == "max_rounds"
 
 
 def test_the_result_carries_the_build_result_the_rounds_the_trusted_tasks_and_the_refusals(driven):
@@ -799,12 +813,14 @@ def test_the_result_carries_the_build_result_the_rounds_the_trusted_tasks_and_th
 
 def test_the_examiner_receives_the_builder_artifacts_without_bodies_db_schema_or_environment(tmp_path, request):
     """D123: the Examiner never reads tool bodies or the Environment; what it is handed is DERIVE_INPUTS."""
-    plan = BuildPlan(workdir=tmp_path / "work", model=Bodies(), files=[_fixture(request)], max_attempts=0)
+    plan = BuildPlan(workdir=tmp_path / "work", model=Bodies(), files=[_fixture(request)], max_attempts=0,
+                     workers=2)
     loop = rounds.Loop(plan=plan, builder=builder_agent.build_harness(plan))
     loop.allowance = {agent: None for agent in rounds.AGENTS}
     loop.builder_beat(1)
     assert {"bodies", "db", "schema", "environment"} <= set(plan.store)
     loop.examiner_beat(1)
+    assert loop.eplan.workers == plan.workers, "the derivation derives on the build's workers (D163)"
     handed = set(loop.eplan.store) & set(plan.store)
     assert handed <= set(DERIVE_INPUTS)
     assert not handed & set(FORBIDDEN_INPUTS)
@@ -892,6 +908,7 @@ def test_close_round_with_findings_pending_clears_a_done_exit_and_continues(tmp_
     findings owe the Builder a beat, so the exit is cleared, the findings ride on the record in
     rounds.json, and the loop runs another round instead of reporting done with work open."""
     loop = _bare_loop(tmp_path)
+    loop.plan.last = pipeline.PipelineResult(status="ok")  # the target was built, so done is reachable (D166)
     loop.pending_findings = [_finding("t1")]
     record = loop.close_round(1, _record(1, unfinished=[]).counts)
     assert record.exit is None
@@ -1010,8 +1027,10 @@ def test_a_finding_filed_in_round_one_is_performed_in_round_two_then_the_run_exi
     stored = rounds.load_rounds(workdir)
     assert len(stored) == 2
     assert stored[0].exit is None and [f.finding_id for f in stored[0].pending_findings] != []
-    assert stored[1].exit == "done" and stored[1].pending_findings == []
-    assert result["exit"] == "done" and result["failed"] is False
+    # The fixture's Tasks never get a Reference, so the run cannot be done (D172): with nothing
+    # pending and no gate count moved since round 1, it exits stalled.
+    assert stored[1].exit == "stalled" and stored[1].pending_findings == []
+    assert result["exit"] == "stalled" and result["failed"] is False
     findings = json.loads((workdir / "examiner" / "findings.json").read_text(encoding="utf-8"))
     assert [f["status"] for f in findings] == ["closed"]
 
@@ -1180,3 +1199,26 @@ def test_result_with_no_build_reports_the_stalled_round_without_crashing(tmp_pat
     assert out["exit"] == "stalled" and out["failed"] is True
     assert out["trusted"] == [] and out["refused"] == {}
     assert out["rounds"][0]["exit_note"] == "builder failed: boom"
+
+
+def test_the_round_cap_ends_the_loop_even_with_findings_pending_and_says_so(tmp_path):
+    """D169: the cap is a hard stop like the ceiling; a finding still open rides on the record with
+    the note that the cap ended the run first."""
+    loop = _bare_loop(tmp_path, max_rounds=2)
+    loop.plan.last = pipeline.PipelineResult(status="ok")
+    loop.close_round(1, _record(1, fidelity=10, trusted=1).counts)
+    loop.pending_findings = [_finding("t1")]
+    record = loop.close_round(2, _record(2, fidelity=11, trusted=2).counts)
+    assert record.exit == "max_rounds"
+    assert "round cap" in (record.exit_note or "")
+    assert [f.finding_id for f in record.pending_findings] == ["f1"]
+
+
+def test_fidelity_flat_for_the_window_exits_stalled_with_the_reason_on_the_record(tmp_path):
+    loop = _bare_loop(tmp_path, fidelity_stall=2)
+    loop.plan.last = pipeline.PipelineResult(status="ok")
+    loop.close_round(1, _record(1, fidelity=10, trusted=1).counts)
+    loop.close_round(2, _record(2, fidelity=10, trusted=2).counts)
+    record = loop.close_round(3, _record(3, fidelity=10, trusted=1).counts)
+    assert record.exit == "stalled"
+    assert "fidelity did not rise in 2 rounds" in (record.exit_note or "")

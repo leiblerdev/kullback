@@ -73,10 +73,25 @@ def test_status_reads_the_records_and_asks_no_model(built):
 
 
 def test_status_over_a_workdir_with_nothing_built_says_so(tmp_path):
+    """D166: a fresh workdir holds no ruling, and "0 of 0 gates red" plus "the gates are green" is
+    what a model read there before answering without building anything."""
     result = builder_tools.status_of(tmp_path)
-    assert result.red_lights == [] and result.passing == []
-    assert "0 red lights" in result.summary
-    assert "the gates are green" in builder_tools.render_status(result)
+    assert result.red_lights == [] and result.passing == [] and result.unbuilt is True
+    text = builder_tools.render_status(result)
+    assert text == result.summary == builder_tools.UNBUILT_SUMMARY
+    assert "nothing has been built in this workdir" in text
+    assert "build the target" in text
+    assert "green" not in text
+
+
+def test_status_over_a_workdir_that_has_ruled_and_has_no_red_light_says_the_gates_are_green(tmp_path):
+    """One passing ruling is a build that happened, so the green wording is true there."""
+    (tmp_path / "gates.json").write_text(json.dumps([{"stage": "ingest", "pass": True, "failures": []}]),
+                                         encoding="utf-8")
+    result = builder_tools.status_of(tmp_path)
+    assert result.unbuilt is False and result.red_lights == [] and result.passing == ["ingest"]
+    text = builder_tools.render_status(result)
+    assert "0 red lights" in text and "the gates are green" in text
 
 
 # --- status at the size a live build reaches ------------------------------------

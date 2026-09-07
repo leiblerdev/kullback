@@ -220,6 +220,7 @@ def test_the_driver_derives_through_the_hooks_and_the_model_driven_session_leave
     assert [e.name for e in events if isinstance(e, StageStart)] == ["derive_verifier"]
     ended = [e for e in events if isinstance(e, StageEnd)]
     assert ended[-1].counts["status"] == "ran" and ended[-1].counts["verifiers"] == 1
+    assert ended[-1].counts["ran"] == 1 and ended[-1].counts["cached"] == 0, "the first call derives the Task (D163)"
     assert isinstance(events[-1], ToolExecutionEnd) and events[-1].tool_name == "derive"
     started = next(e for e in events if isinstance(e, ToolExecutionStart))
     assert started.tool_call_id == examiner_agent.DRIVER_CALL_ID

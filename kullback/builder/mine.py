@@ -140,15 +140,28 @@ def _ask(model: Model, system: str, payload: dict) -> Any:
 
 
 def is_assistant_call(call: Any) -> bool:
-    """Telecom's traces interleave the assistant and the simulated user's own tool calls, the user
-    running a separate toolkit against its own phone (docs/cross-domain-check.md, Judgement). Only the
-    assistant's calls describe the customer's Environment; a missing requestor is the assistant."""
+    """A customer's traces may interleave the assistant's tool calls with a simulated user's own,
+    the user running a separate toolkit of its own (docs/cross-domain-check.md, Judgement). Only the
+    assistant's calls describe the customer's system, so the schema, the observed effects and the
+    Starting state are read from these alone; a missing requestor is the assistant. The user's calls
+    are still mined into the ToolSig of a tool the user calls (D164), never into any of those three."""
     return (call.requestor or "assistant") == "assistant"
 
 
 def skipped_user_calls(traces: list[Trace]) -> int:
-    """Tool calls whose requestor is not the assistant: never mined into a ToolSig, kind or schema."""
+    """Tool calls whose requestor is not the assistant: kept out of the schema, the effects and the
+    Starting state. They do reach the ToolSig of the tool they called, under its `callers` (D164)."""
     return sum(1 for trace in traces for call in trace.tool_calls if not is_assistant_call(call))
+
+
+def _requestor_of(call: Any) -> str:
+    """The actor that made the call; a missing requestor is the assistant."""
+    return call.requestor or "assistant"
+
+
+def _is_refusal(call: Any) -> bool:
+    """The recording had no such tool for this caller: the one answer that is not evidence (D164)."""
+    return call.error is not None and call.error.class_ == "tool_not_found"
 
 
 # --- tools -------------------------------------------------------------------
@@ -156,7 +169,9 @@ def skipped_user_calls(traces: list[Trace]) -> int:
 def _new_acc() -> dict:
     return {"calls": 0, "errors": 0, "traces": [], "args": {}, "results": {},
             "arg_calls": 0, "result_calls": 0, "errors_by_class": {}, "samples": [],
-            "echoed": 0.0, "messages": 0}
+            "echoed": 0.0, "messages": 0,
+            # D164: every requestor that called this name, and the ones the recording answered.
+            "requestors": set(), "answered": set()}
 
 
 def _declared_specs(traces: list[Trace]) -> dict[str, dict]:
@@ -171,12 +186,20 @@ def _declared_specs(traces: list[Trace]) -> dict[str, dict]:
 
 
 def _accumulate(traces: list[Trace]) -> dict[str, dict]:
+    """Every requestor's calls, per tool name (D164).
+
+    A tool the simulated user calls is a tool of the recording all the same, and its arguments,
+    results, error shapes and samples are the only evidence there is for it, so they are taken from
+    whoever called. What the customer's system is (the schema, the observed effects, the Starting
+    state) is still read from the assistant's calls alone.
+    """
     stats: dict[str, dict] = {}
     for trace in traces:
         for call in trace.tool_calls:
-            if not is_assistant_call(call):
-                continue
             acc = stats.setdefault(call.name, _new_acc())
+            acc["requestors"].add(_requestor_of(call))
+            if not _is_refusal(call):
+                acc["answered"].add(_requestor_of(call))
             acc["calls"] += 1
             if trace.trace_id not in acc["traces"]:
                 acc["traces"].append(trace.trace_id)
@@ -480,6 +503,39 @@ def _decide_kind(sig: ToolSig, model: Optional[Model], samples: list, spec: Opti
         sig.unclassified = False
 
 
+def _callers_of(acc: dict, declared: bool) -> tuple[list[str], list[str]]:
+    """Who the recording answered this name for, and who it only ever refused (D164).
+
+    A declared tool no trace called is the assistant's, because the declaration is the tool list the
+    assistant was sent. A name nobody was answered for has no caller, and gets no ToolSig.
+    """
+    if not acc["requestors"]:
+        return (["assistant"] if declared else []), []
+    return sorted(acc["answered"]), sorted(acc["requestors"] - acc["answered"])
+
+
+def unknown_tools(traces: list[Trace]) -> list[dict]:
+    """The names the traces call that are no tool of the recording (D164).
+
+    Two kinds. A name every call of which came back `tool_not_found`: the recording had no such tool
+    for anyone who asked. And a name that is not a Python identifier, which a recorded agent invented
+    (`$DEVICE_ACTION`) and no generated module could ever hold. Neither gets a ToolSig, so neither is
+    compiled or gated, and the Router refuses it in a Run as the recording did. They are reported so
+    a build can see what the recorded agent reached for and found nothing.
+    """
+    rows = []
+    for name, acc in sorted(_accumulate(traces).items()):
+        if not name.isidentifier():
+            reason = "not a tool name"
+        elif not acc["answered"]:
+            reason = "refused on every call"
+        else:
+            continue
+        rows.append({"name": name, "calls": acc["calls"],
+                     "requestors": sorted(acc["requestors"]), "reason": reason})
+    return rows
+
+
 def mine_tools(traces: list[Trace], model: Optional[Model] = None) -> list[ToolSig]:
     """One ToolSig per tool the traces show: schemas as the union of everything observed (D72), kind per D68."""
     stats = _accumulate(traces)
@@ -491,7 +547,11 @@ def mine_tools(traces: list[Trace], model: Optional[Model] = None) -> list[ToolS
     sigs = []
     for name in sorted(stats):
         acc = stats[name]
+        callers, refused = _callers_of(acc, name in specs)
+        if not callers or not name.isidentifier():
+            continue  # D164: no tool of this recording; unknown_tools() reports it instead
         sig = _build_sig(name, acc, specs.get(name), effects.get(name, []))
+        sig.callers, sig.refused_callers = callers, refused
         _decide_kind(sig, model, acc["samples"], specs.get(name), acc, quiet)
         if model is not None and not sig.result_schema and acc["calls"]:
             _llm_result_schema(model, sig, acc["samples"])
@@ -1166,20 +1226,49 @@ def _loose_shape(text: str) -> str:
     return "".join(parts)
 
 
+def _alnum_class(chars: set[str]) -> str:
+    """The letters-and-digits class of an id, in the case its sample shows (D167)."""
+    letters = {c for c in chars if c.isalpha()}
+    if all(c.isupper() for c in letters):
+        return "[A-Z0-9]"
+    if all(c.islower() for c in letters):
+        return "[a-z0-9]"
+    return "[A-Za-z0-9]"
+
+
+def _mixes_letters_and_digits(columns: list[set[str]]) -> bool:
+    """Whether any one position of these ids holds both a letter and a digit."""
+    return any(any(c.isdigit() for c in chars) and any(c.isalpha() for c in chars)
+               and all(c.isalnum() and c.isascii() for c in chars) for chars in columns)
+
+
 def _shape_pattern(texts: list[str]) -> Optional[str]:
+    """The regex the ids share, position by position where they are all the same length.
+
+    D167: a position holding both letters and digits used to be written ".", so an id like `K1NW8N`
+    got the pattern `^.{6}$`, which any six characters match, and the memorised-values gate read an
+    ordinary word like `amount` as an id of that shape. A position that mixes says the id is
+    alphanumeric, so every varying position of that id is written in one letters-and-digits class in
+    the case the sample shows, and the six collapse to `[A-Z0-9]{6}`. Ids whose positions each hold
+    letters only or digits only keep the tighter shape they always had (`^#W\\d{7}$`).
+    """
     lengths = {len(t) for t in texts}
     if len(lengths) == 1:
+        columns = [{t[position] for t in texts} for position in range(lengths.pop())]
+        alnum = _mixes_letters_and_digits(columns)
+        klass = _alnum_class({c for chars in columns if len(chars) > 1 for c in chars})
         atoms = []
-        for position in range(lengths.pop()):
-            chars = {t[position] for t in texts}
+        for chars in columns:
             if len(chars) == 1:
-                atoms.append(_lit(chars.pop()))
+                atoms.append(_lit(next(iter(chars))))
+            elif not all(c.isalnum() and c.isascii() for c in chars):
+                atoms.append(".")
+            elif alnum:
+                atoms.append(klass)
             elif all(c.isdigit() for c in chars):
                 atoms.append(r"\d")
-            elif all(c.isalpha() and c.isascii() for c in chars):
-                atoms.append("[A-Za-z]")
             else:
-                atoms.append(".")
+                atoms.append("[A-Za-z]")
         return "^" + _collapse(atoms) + "$"
     shapes = {_loose_shape(t) for t in texts}
     return "^" + shapes.pop() + "$" if len(shapes) == 1 else None
