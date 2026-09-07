@@ -16,6 +16,12 @@ drained one message at a time, each starting a new turn; a follow-up is delivere
 run would otherwise end, which is what the Examiner's findings and a scheduler's next target want
 (D123). A steer interrupts; a follow-up waits.
 
+An empty last turn. A turn that answers nothing and calls nothing is not a stop the caller can
+read: two of one live build's three no-tool turns were empty strings right after a code compaction,
+and the round ended with no account of what was left. The loop asks once, with a one-line user
+message, for the summary the prompt's stop rule wants; a second empty turn ends the run, so a model
+with nothing to say costs one turn and not a loop.
+
 Hooks. A `tool_call` hook sees the call before the tool runs and may return rewritten arguments
 or raise; a raise blocks the call, and the model reads an is_error result naming the hook. That
 is fail-safe by construction: a hook that crashes blocks the call rather than letting it through,
@@ -111,6 +117,7 @@ async def run_agent_loop(
 
     await send(AgentStart())
     turn = 0
+    asked_for_summary = False  # the empty-turn ask is made once per run, never twice
     pending: list[Message] = list(prompts or [])
     pending.extend(_drain_all(state.steering))
     while True:
@@ -149,12 +156,28 @@ async def run_agent_loop(
             await send(TurnEnd(turn=turn, message=assistant, tool_results=results))
             has_more_tools = bool(assistant.tool_calls)
             pending = _drain_all(state.steering)
+            if (not has_more_tools and not pending and not state.follow_ups
+                    and not asked_for_summary and _says_nothing(assistant)):
+                asked_for_summary = True
+                pending = [user_message(EMPTY_TURN_ASK)]
         if state.follow_ups:
             pending = [state.follow_ups.popleft()]
             continue
         break
     await send(AgentEnd(messages=new))
     return new
+
+
+# What an empty last turn is answered with, once. It names no artifact of any application: the stop
+# rule the model is to follow is the one in its own prompt.
+EMPTY_TURN_ASK = ("Your last turn answered nothing and called no tool. Before the session ends, answer "
+                  "in one line with what is left and what you did about each of them, as the stop rule "
+                  "in your prompt asks.")
+
+
+def _says_nothing(assistant: AssistantMessage) -> bool:
+    """A turn with no tool call and no text: nothing the caller can read as a stop."""
+    return not assistant.tool_calls and not (assistant.content or "").strip()
 
 
 def _drain_all(queue: deque[Message]) -> list[Message]:
