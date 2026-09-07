@@ -222,28 +222,33 @@ def derive_verifier(task: Any, reference_run: Any, rerun_paths: Optional[list[st
 
     said = [communicate_values(r, fn) for r in good]
     request = asked_facts([intent, task], reference, fn)
+    reported: list[int] = []
     for number, key in enumerate(sorted(set.intersection(*[set(s) for s in said]) if said else set())):
         fact = said[0][key]
         payload = {"kind": "communicate", "value": key, "text": fact["text"]}
         if communicate_kind(fact, key, reference, request):
-            atoms.append(_atom(f"c{number}", "communicate", payload,
-                               provenance="system_derived", spans=[fact["span"]],
-                               description=f"the final answer states {fact['text']}, "
-                                           "which the request asked the agent about"))
+            atoms.append(_demanded_fact(f"c{number}", payload, fact["span"]))
             continue
         # Same value, same predicate, reported and never a rejection: the request did not ask for
         # this fact, so a Run that solved the Task without repeating it has done the job.
-        reported = _atom(f"c{number}", "allowed", payload, provenance="system_derived",
-                         spans=[fact["span"]],
-                         description=f"the final answer may state {fact['text']}; the request did not ask "
-                                     "the agent about it, so it is reported and rejects no Run")
-        atoms.append(reported.model_copy(update={"target": dict(payload, kind=REPORTED_COMMUNICATE)}))
+        reported.append(len(atoms))
+        atoms.append(_reported_fact(f"c{number}", payload, fact["span"]))
+    request_asked = _demands_something(atoms)  # read before the fallback below, which the cap ignores
+    if reported and not request_asked:
+        # Nothing else in this Verifier can be falsified, so the facts stand: on a Task whose request
+        # names no fact and whose Reference wrote nothing, reporting them all leaves a Verifier an
+        # empty Run passes, which the D79 suite is right to distrust. What the Reference told the
+        # user is then the only evidence of the work, and it is demanded again.
+        for at in reported:
+            atoms[at] = _demanded_fact(atoms[at].id, dict(atoms[at].target, kind="communicate"),
+                                       atoms[at].spans[0] if atoms[at].spans else None,
+                                       asked=False)
 
-    # The cap comes last so the rule can see whether the Verifier demands anything else.
+    # The cap comes last so the rule can see whether the request asked for anything else.
     #
     # A cap of 0 is what the Reference did, and on a Task whose other Runs wrote it is also a claim
-    # the Task's own evidence contradicts. Where it would be the whole of what the Verifier asks
-    # (nothing else required, no question, no fact the request asked for), it is not written: an
+    # the Task's own evidence contradicts. Where the request asked for nothing else (nothing
+    # required, no question, no fact it named), it is not written: an
     # atom no Run can fail but a writing one is not a bar, it is the shape D173 names, an empty Run
     # and the wrong Run both satisfy it, and every held-out Run that took the writing path is
     # rejected by it. The D133 route is taken rather than a cap widened to the writing group: those
@@ -255,7 +260,7 @@ def derive_verifier(task: Any, reference_run: Any, rerun_paths: Optional[list[st
     # covering it the Verdict's extra-write check rejects it whatever the cap says.
     if good_effects:
         cap = max(len(e) for e in good_effects)
-        if cap or not writes_elsewhere or _demands_something(atoms):
+        if cap or not writes_elsewhere or request_asked:
             atoms.append(_atom("entity_count", "required", {"kind": "entity_count", "count": cap},
                                description=f"the Run makes at most {cap} write calls"))
 
@@ -272,6 +277,23 @@ def derive_verifier(task: Any, reference_run: Any, rerun_paths: Optional[list[st
     task_id = task if isinstance(task, str) else (task.id if isinstance(task, Task) else str(task))
     return Verifier(task_id=task_id, atoms=atoms, verifier_version=verifier_version,
                     seed_run_ids=[r.run_id for r in good])
+
+
+def _demanded_fact(atom_id: str, payload: dict, span: Any, asked: bool = True) -> Atom:
+    """A fact the answer has to state, and why it has to."""
+    why = ("which the request asked the agent about" if asked
+           else "and the Verifier asks nothing else that a Run can fail")
+    return _atom(atom_id, "communicate", payload, provenance="system_derived",
+                 spans=[span] if span else [],
+                 description=f"the final answer states {payload['text']}, {why}")
+
+
+def _reported_fact(atom_id: str, payload: dict, span: Any) -> Atom:
+    """A fact the answer may state: same value, same predicate, and no Run is rejected for it."""
+    atom = _atom(atom_id, "allowed", payload, provenance="system_derived", spans=[span] if span else [],
+                 description=f"the final answer may state {payload['text']}; the request did not ask "
+                             "the agent about it, so it is reported and rejects no Run")
+    return atom.model_copy(update={"target": dict(payload, kind=REPORTED_COMMUNICATE)})
 
 
 def _demands_something(atoms: Iterable[Atom]) -> bool:

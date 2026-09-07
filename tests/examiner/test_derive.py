@@ -500,12 +500,23 @@ def test_a_reference_that_wrote_nothing_caps_writes_at_zero(tmp_path):
 
 
 def test_a_cap_of_zero_is_not_written_when_another_run_of_the_task_wrote_and_nothing_else_is_asked(tmp_path):
-    """The Task's own Runs contradict the cap, and a Verifier of that cap alone falsifies nothing."""
+    """The Task's own Runs contradict the cap, and the request named no fact to keep it for."""
     vague = pump_run(asked="Can you look into my pump for me?")
     verifier = V.derive_verifier(Task(id="shop", intent="look into the pump the caller asked about"),
                                  vague, [], None, write_tools=SHOP_TOOLS, writes_elsewhere=True)
     assert cap_atoms(verifier) == []
-    assert [a.kind for a in verifier.atoms] == ["allowed", "allowed", "allowed"]
+
+
+def test_a_verifier_that_would_ask_nothing_at_all_keeps_the_facts_the_reference_stated(tmp_path):
+    """An empty Run has to fail: with no write and no fact named, what was said is the only evidence."""
+    vague = pump_run(asked="Can you look into my pump for me?")
+    verifier = V.derive_verifier(Task(id="shop", intent="look into the pump the caller asked about"),
+                                 vague, [], None, write_tools=SHOP_TOOLS)
+    assert stated(verifier, V.REPORTED_COMMUNICATE) == []
+    assert stated(verifier, "communicate") == ["249.0", "36", "P-2044"]
+    assert "asks nothing else" in (fact_atom(verifier, "249.0").description or "")
+    silent = pump_run("shop-alt", asked="Can you look into my pump for me?", final="I have looked.")
+    assert S.check_run(verifier, silent, write_tools=SHOP_TOOLS)[0] is False
 
 
 def test_the_cap_stays_when_the_verifier_asks_for_something_else(tmp_path):
