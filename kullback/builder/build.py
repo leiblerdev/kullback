@@ -29,6 +29,7 @@ from kullback.builder import (
     parallel,
     pipeline,
     policy,
+    readers,
     sandbox,
     synth,
     user_sim,
@@ -166,10 +167,54 @@ def _mine_stage():
         # "flag, do not synthesize": a tool the corpus barely shows stays in the build, named in
         # the gate, rather than being invented or dropped (design section 6).
         ctx.record_gate(artifacts.mine_gate(sigs, calls, unknown=unknown))
-        return {"sigs": sigs, "schema": schema}
+        return {"sigs": sigs, "mined_schema": schema}
 
-    return pipeline.Stage(name="mine", fn=run, inputs=("traces",), outputs=("sigs", "schema"),
+    # The artifact is `mined_schema`, not `schema`: the readers stage is what releases `schema`,
+    # because a requestor's prose results add tables to it and every stage downstream reads the
+    # schema with those tables on it. With no prose results the readers stage passes this through.
+    return pipeline.Stage(name="mine", fn=run, inputs=("traces",), outputs=("sigs", "mined_schema"),
                           code_version=_version("mine", run, mine))
+
+
+def _readers_stage(model: Any, gate: str, max_attempts: int = readers.MAX_ATTEMPTS):
+    """The rows a requestor other than the assistant reveals through prose results (D176 candidate).
+
+    It runs per requestor whose own tools answer with strings the row extractor reads nothing out
+    of. Where a corpus has none, the stage records "no prose results", passes the mined schema
+    through unchanged and calls no model at all.
+    """
+
+    def run(ctx, inputs):
+        traces, schema = inputs["traces"], inputs["mined_schema"]
+        by_requestor = readers.prose_calls(traces)
+        if not by_requestor:
+            _write_json(ctx.workdir / readers.READERS_FILE, {"note": readers.NO_PROSE})
+            ctx.record_gate(stage_gates.readers_gate([], 0))
+            return {"schema": schema, "readers": {"note": readers.NO_PROSE, "proposals": {}, "rows": {}}}
+        if model is None:
+            raise BuildError("this corpus has prose results from a requestor of its own and the "
+                             "readers stage has no model to propose them with; pass --model")
+        proposals, rows, nodes, values = {}, {}, [], {}
+        for requestor in sorted(by_requestor):
+            proposal, attempts, parsed = readers.propose(
+                model, requestor, by_requestor[requestor], traces, ctx.workdir / "readers",
+                gate=gate, max_attempts=max_attempts)
+            proposals[requestor] = proposal.to_dict()
+            rows[requestor] = readers.starting_rows(traces, proposal, parsed)
+            values[requestor] = readers.column_values(proposal, parsed)
+            nodes += attempts
+        artifact = {"gate": gate, "proposals": proposals, "rows": rows}
+        readers.apply_to_schema(schema, readers.proposals_from(artifact), values)
+        _write_json(ctx.workdir / readers.READERS_FILE, {**artifact, "attempts": nodes})
+        _write_json(ctx.workdir / "schema.json", as_dict(schema))
+        # Section 6: a proposal the gate could not satisfy is flagged and kept, never a failed build.
+        ctx.record_gate(stage_gates.readers_gate(proposals.values(), len(by_requestor)))
+        return {"schema": schema, "readers": artifact}
+
+    version = (f"readers:{getattr(model, 'name', 'none')}:{gate}:{max_attempts}:"
+               f"{_module_hash(readers)}:{_module_hash(sandbox)}")
+    return pipeline.Stage(name="readers", fn=run, inputs=("traces", "mined_schema"),
+                          outputs=("schema", "readers"), code_version=version)
 
 
 def _cluster_stage():
@@ -178,6 +223,9 @@ def _cluster_stage():
         # worlds, and a Task's overlay can pin only one, so they are different Tasks.
         worlds = compile_env.trace_worlds(inputs["traces"], inputs["schema"],
                                           cluster.write_tool_names(inputs["sigs"]))
+        # A row another requestor revealed splits Tasks the same way (D74): two recordings that read
+        # one of its columns differently before either wrote started in different worlds.
+        readers.merge_worlds(worlds, inputs["readers"])
         categories, tasks = cluster.cluster_runs(inputs["traces"], inputs["sigs"], worlds=worlds)
         for task in tasks:
             _write_json(ctx.workdir / "tasks" / f"{task.id}.json", as_dict(task))
@@ -187,9 +235,9 @@ def _cluster_stage():
         ctx.record_gate(stage_gates.cluster_gate(tasks, categories))
         return {"categories": categories, "tasks": tasks}
 
-    return pipeline.Stage(name="cluster", fn=run, inputs=("traces", "sigs", "schema"),
+    return pipeline.Stage(name="cluster", fn=run, inputs=("traces", "sigs", "schema", "readers"),
                           outputs=("categories", "tasks"),
-                          code_version=_version("cluster", run, cluster, intent, compile_env))
+                          code_version=_version("cluster", run, cluster, intent, compile_env, readers))
 
 
 def _canon_stage():
@@ -217,7 +265,8 @@ def _state_stage(grow: Optional[dict] = None, grow_seed: int = 0):
     def run(ctx, inputs, grow=None, grow_seed=0):
         state = compile_env.build_starting_state(inputs["traces"], inputs["schema"], ctx.workdir,
                                                  inputs["tasks"], inputs["sigs"], grow=grow,
-                                                 grow_seed=grow_seed)
+                                                 grow_seed=grow_seed,
+                                                 revealed_rows=readers.reader_rows(inputs["readers"]))
         # The synthetic ids live on the schema (D40); run_batch reads them back from schema.json.
         _write_json(ctx.workdir / "schema.json", as_dict(inputs["schema"]))
         return {"db": state.db, "overlays": list(state.overlays),
@@ -226,9 +275,10 @@ def _state_stage(grow: Optional[dict] = None, grow_seed: int = 0):
     # A partial, so the grow targets are in the stage's cache key: the same traces grown to two
     # sizes are two Starting states, not one served twice (pipeline._fn_identity).
     fn = functools.partial(run, grow=dict(grow or {}), grow_seed=grow_seed)
-    return pipeline.Stage(name="starting_state", fn=fn, inputs=("traces", "schema", "tasks", "sigs"),
+    return pipeline.Stage(name="starting_state", fn=fn,
+                          inputs=("traces", "schema", "tasks", "sigs", "readers"),
                           outputs=("db", "overlays", "assumptions", "synthetic_rows"),
-                          code_version=_version("starting_state", fn, compile_env, synth))
+                          code_version=_version("starting_state", fn, compile_env, synth, readers))
 
 
 def _tools_stage(model: Any, max_attempts: int, workers: int = 1, only: Optional[Iterable[str]] = None):
@@ -272,6 +322,9 @@ def _tools_stage(model: Any, max_attempts: int, workers: int = 1, only: Optional
         # every recorded call, so a tool with a single error still has it peeled.
         error_prefix = compile_env.shared_error_prefix(
             call for calls in calls_by_tool.values() for call in calls)
+        # What a body has to know about a table another requestor's own tools revealed: how to reach
+        # its one row, and the derivations of the columns nothing stores. Same bytes for every tool.
+        world_note = readers.body_note(readers.proposals_from(inputs["readers"]))
         bodies, gates, assisted, builds = {}, [], [], {}
         outcomes: dict[str, list[dict]] = {}  # D171: per tool, one row per recorded call
         rules = _rules_of(inputs)
@@ -298,7 +351,7 @@ def _tools_stage(model: Any, max_attempts: int, workers: int = 1, only: Optional
                                             ctx.workdir / "tools" / sig.name,
                                             max_attempts=max_attempts, call_states=states,
                                             rules=rules, tool_names=tool_names,
-                                            error_prefix=error_prefix,
+                                            error_prefix=error_prefix, world_note=world_note,
                                             # What this tool already failed on, so a recompile asks
                                             # a different question than the one that failed.
                                             lesson=memory.lesson_for(ctx.workdir, sig.name))
@@ -356,6 +409,9 @@ def _tools_stage(model: Any, max_attempts: int, workers: int = 1, only: Optional
     # sandbox left every broken body in the cache and `--iterate` handed them straight back.
     version = (f"compile_tools:{getattr(model, 'name', 'none')}:"
                f"{_module_hash(compile_env)}:{_module_hash(sandbox)}:{_module_hash(body_skill)}:"
+               # The readers' own source reaches the body writer through `world_note`, and the
+               # module that renders it is not one of the three above.
+               f"{_module_hash(readers)}:"
                # The attribution is this file's own function, so its bytes are not in any module
                # hash above; an edit to it is a different artifact and must not hit the cache.
                f"{content_hash(pipeline._fn_identity(attribute_fidelity, 'compile_tools'))[:16]}")
@@ -368,7 +424,8 @@ def _tools_stage(model: Any, max_attempts: int, workers: int = 1, only: Optional
     if only is not None:
         paths += ("bodies.json", "tool_builds.json", "tool_call_outcomes.json")
     return pipeline.Stage(name="compile_tools", fn=run, builder=True,
-                          inputs=("traces", "tasks", "sigs", "schema", "db", "overlays", "canon_rules"),
+                          inputs=("traces", "tasks", "sigs", "schema", "db", "overlays", "canon_rules",
+                                  "readers"),
                           outputs=("bodies", "assisted_tools", "tool_fidelity"), gate=gate, input_paths=paths,
                           code_version=version if only is None else f"{version}:only={','.join(only)}")
 
@@ -614,6 +671,9 @@ def _environment_stage(domain: str):
         environment = compile_env.build_environment(
             inputs["schema"], inputs["sigs"], inputs["bodies"], inputs["policy_text"], files=files,
             assisted_tools=inputs.get("assisted_tools") or ())
+        # A table another requestor's own tools revealed is in the world because the Runner needs it,
+        # and it is not the customer's system: the export marks it rather than passing it off as one.
+        environment.flags = sorted(set(environment.flags) | set(readers.environment_flags(inputs["schema"])))
         bundle.environment = environment
         compile_env.emit_tau2_shape(bundle, ctx.workdir / "env", files=files)
         _write_json(ctx.workdir / "environment.json", as_dict(environment))
@@ -1145,6 +1205,10 @@ class BuildPlan:
     search: Any = None
     workers: int = 1
     emit: Optional[Any] = None
+    # Which gate the readers stage holds a proposal to: `declared` also holds the stored-or-derived
+    # and acknowledgement declarations to the recording, `replay` leaves everything but "it parses,
+    # it runs and it answers a dict or None" to replay fidelity.
+    readers_gate: str = readers.GATE_DECLARED
     # Which round the driver is in, so a repair request records the round it was made in (D126);
     # a build with no round driver is one pass, which is round 1. `rounds.py` moves it.
     round: int = field(init=False, default=1)
@@ -1167,6 +1231,9 @@ class BuildPlan:
         # at it; the default keeps them in this workdir, where a first build has none to carry.
         self.memory_dir = Path(self.memory_dir) if self.memory_dir is not None else self.workdir / "memory"
         self.fresh = not self.iterate
+        if self.readers_gate not in readers.GATES:
+            raise ValueError(f"unknown readers gate {self.readers_gate!r}; it is one of "
+                             + ", ".join(readers.GATES))
         self.ceiling = _ceiling(self.workdir, self.ceiling_usd)
         self.models = self._wrap_models()
 
@@ -1180,6 +1247,7 @@ class BuildPlan:
         # The loophole probe and the re-rolls are Candidate-shaped Runs: fresh samples, production
         # setting (D65, D112); the Intent and the judge are Builder calls.
         return {
+            "readers": _wrap(model, "readers", workdir, ceiling),
             "compile_tools": _wrap(model, "compile_tools", workdir, ceiling),
             "compile_policy": _wrap(model, "compile_policy", workdir, ceiling),
             "judge_lessons": _wrap(model, "judge_lessons", workdir, ceiling),
@@ -1221,6 +1289,7 @@ def stages(plan: BuildPlan, *, tools: Optional[Iterable[str]] = None, replay_tas
     declared = [
         _ingest_stage(plan.workdir, plan.files) if plan.files else None,
         _mine_stage(),
+        _readers_stage(models["readers"], plan.readers_gate),
         _cluster_stage(),
         _canon_stage(),
         _state_stage(plan.grow if grow is None else grow, plan.grow_seed),
@@ -1280,7 +1349,8 @@ def build(workdir: Any, iterate: bool = False, model: Any = None, files: Optiona
           max_attempts: int = 3, memory_dir: Any = None, on_event: Optional[Any] = None,
           grow: Optional[dict[str, int]] = None, grow_seed: int = 0,
           probe_limit: Optional[int] = None, rerolls: int = DEFAULT_REROLLS, search: Any = None,
-          workers: int = 1, emit: Optional[Any] = None) -> dict:
+          workers: int = 1, emit: Optional[Any] = None,
+          readers_gate: str = readers.GATE_DECLARED) -> dict:
     """Read the ingested Traces and write the Environment, the Tasks, their References and re-rolls.
 
     The whole graph, as `kullback build` runs it; the Verifiers are the Examiner's (D123). The arguments are `BuildPlan`'s; the default of one
@@ -1290,7 +1360,7 @@ def build(workdir: Any, iterate: bool = False, model: Any = None, files: Optiona
     plan = BuildPlan(workdir=workdir, iterate=iterate, model=model, files=list(files or []), ceiling_usd=ceiling_usd,
                      domain=domain, max_attempts=max_attempts, memory_dir=memory_dir, on_event=on_event,
                      grow=grow, grow_seed=grow_seed, probe_limit=probe_limit, rerolls=rerolls, search=search,
-                     workers=workers, emit=emit)
+                     workers=workers, emit=emit, readers_gate=readers_gate)
     result = execute(plan, TARGET_ALL)
     return result_of(workdir, result, result.artifacts.get("environment"))
 
