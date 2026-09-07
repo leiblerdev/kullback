@@ -136,8 +136,10 @@ def final_constraints(ctx, inputs: dict, seed_replays: dict, write_tools: set, r
     compiled rules fired on confirmed recordings and poisoned every Verifier.
     """
     compiled = [c for c in inputs["constraints"] if c.compiled or c.judge_atom]
-    rates = reference_mod.constraint_rates(compiled, [r["path"] for rows in seed_replays.values() for r in rows],
-                                           write_tools, fn, read_tools)
+    paths = [r["path"] for rows in seed_replays.values() for r in rows]
+    # Every rule with code is asked, so a rule that gates nothing still says how it fares against the
+    # frontier and a rule that judged nothing is not read as a rule that held.
+    rates = reference_mod.constraint_rates(list(inputs["constraints"]), paths, write_tools, fn, read_tools)
     constraints, demoted = reference_mod.demote(compiled, rates)
     by_id = {c.id: c for c in compiled}
     residual = [by_id[row["id"]].model_copy(update={"compiled": False, "judge_atom": False,
@@ -224,13 +226,31 @@ def no_reference_status(ctx, task: Task, confirmation: Any, *, seed_replays: lis
 
 
 def derive_for(task_for: Task, confirmation: Any, *, canon_rules: Any, write_tools: set, constraints: list,
-               verifier_version: str = "1") -> Verifier:
-    """The derivation over the References: the first is the Reference, the rest its re-runs."""
+               intent: Any = None, verifier_version: str = "1") -> Verifier:
+    """The derivation over the References: the first is the Reference, the rest its re-runs.
+
+    The Task's Intent record goes in beside the Task itself: which facts the answer must state is
+    settled by what the request asked about, and the record carries the grounded span behind every
+    phrase of it, which the Intent line alone does not.
+    """
     paths = [r.path for r in confirmation.references]
     return verifier_mod.derive_verifier(task_for, paths[0], paths[1:], canon_rules,
                                         write_tools=write_tools, constraints=constraints,
                                         successful_run_ids=[r.run_id for r in confirmation.references],
+                                        intent=intent, writes_elsewhere=wrote_outside(confirmation),
                                         verifier_version=verifier_version)
+
+
+def wrote_outside(confirmation: Any) -> bool:
+    """Did a Run of this Task that is not one of its References write something?
+
+    The D111 rule saw every one of them, and a Reference group that wrote nothing beside a Run that
+    did is the Task saying it has more than one path. What the derivation does with that is its own
+    rule; this only reports the fact, off the End states the rule already grouped on.
+    """
+    references = {r.run_id for r in confirmation.references}
+    return any(r.end_state and r.end_state != reference_mod.ANSWERED
+               for r in confirmation.recordings if r.run_id not in references)
 
 
 def suite_for(task_for: Task, verifier: Verifier, paths: list, *, canon_rules: Any, write_tools: set,
@@ -258,7 +278,8 @@ def verifier_for(ctx, task: Task, confirmation: Any, *, canon_rules: Any, write_
     first = confirmation.references[0]
     task_for = apply_intent(task, intents[task.id]) if task.id in intents else task
     record = derive_for(task_for, confirmation, canon_rules=canon_rules, write_tools=write_tools,
-                        constraints=constraints, verifier_version=verifier_version)
+                        constraints=constraints, intent=intents.get(task.id),
+                        verifier_version=verifier_version)
     rules_trace = first.trace_id or next((r.trace_id for r in confirmation.references if r.trace_id), None)
     gates = suite_for(task_for, record, paths, canon_rules=canon_rules, write_tools=write_tools,
                       user_rules=user_rules, rules_trace=rules_trace, probe_model=probe_model,

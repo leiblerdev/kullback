@@ -22,12 +22,16 @@ def cancel_run(run_id: str, order: str = "#W123", kind: str = ref.RECORDING) -> 
         assistant("Done."),
     ])
     return ref.Recording(run_id=run_id, path=run_id, kind=kind, trace_id=run_id if kind == ref.RECORDING else None,
-                         end_state=ref.end_state(run, WRITES, _canon))
+                         end_state=ref.end_state(run, WRITES, _canon),
+                         stated=ref.stated_facts(run, _canon), transferred=ref.transferred(run),
+                         settled=ref.settled_state(run, WRITES, _canon))
 
 
 def empty_run(run_id: str, kind: str = ref.RECORDING) -> ref.Recording:
     run = make_run(run_id, [user("Please cancel my order #W123."), assistant("I cannot do that.")])
-    return ref.Recording(run_id=run_id, path=run_id, kind=kind, end_state=ref.end_state(run, WRITES, _canon))
+    return ref.Recording(run_id=run_id, path=run_id, kind=kind, end_state=ref.end_state(run, WRITES, _canon),
+                         stated=ref.stated_facts(run, _canon), transferred=ref.transferred(run),
+                         settled=ref.settled_state(run, WRITES, _canon))
 
 
 # --- End states -------------------------------------------------------------
@@ -53,7 +57,7 @@ LIBRARY_WRITES = {"renew_loan"}
 LOAN = {"loan_id": "LB-4412", "title": "The Long Ships", "due": "2026-09-20", "fine": 0}
 
 
-def _library_recording(run_id: str, answer: str, *, renewed: bool = False,
+def _library_recording(run_id: str, answer: str, *, renewed: bool = False, handed_on: bool = False,
                        kind: str = ref.RECORDING) -> ref.Recording:
     events = [user("When is my copy of The Long Ships due back?"),
               call("get_loan", {"loan_id": "LB-4412"}, kind="read", cid="c0"),
@@ -61,11 +65,16 @@ def _library_recording(run_id: str, answer: str, *, renewed: bool = False,
     if renewed:
         events += [call("renew_loan", {"loan_id": "LB-4412", "weeks": 2}, cid="c1"),
                    result({"loan_id": "LB-4412", "due": "2026-10-04"}, cid="c1")]
+    if handed_on:
+        events += [call("transfer_to_librarian", {"loan_id": "LB-4412"}, kind="read", cid="c2"),
+                   result({"queued": True}, cid="c2")]
     events.append(assistant(answer))
     run = make_run(run_id, events)
     return ref.Recording(run_id=run_id, path=run_id, kind=kind,
                          trace_id=run_id if kind == ref.RECORDING else None,
-                         end_state=ref.end_state(run, LIBRARY_WRITES, _canon))
+                         end_state=ref.end_state(run, LIBRARY_WRITES, _canon),
+                         stated=ref.stated_facts(run, _canon), transferred=ref.transferred(run),
+                         settled=ref.settled_state(run, LIBRARY_WRITES, _canon))
 
 
 def answered(run_id: str, answer: str = "Loan LB-4412 is due on 2026-09-20.", **kw) -> ref.Recording:
@@ -117,6 +126,33 @@ def test_the_judge_fails_the_refusal_and_the_answered_recordings_are_the_referen
     prompt = judge.calls[0]["messages"][0]["content"]
     assert "A (2 runs): no writes; the answer states facts read from the world" in prompt
     assert "B (1 run): no writes; the answer states nothing read from the world" in prompt
+
+
+def test_the_judge_is_told_which_facts_each_end_state_stated_back():
+    """A Task the agent resolved by answering reads as an abandoned one when the judge sees only "no
+    writes"; the values the answers stated are the other half of the End state (D43)."""
+    judge = TestModel(['{"failed": ["B"], "evidence": ["intent", "end_states"], "reason": "no due date"}'])
+    ref.confirm([answered("a"), refused("b")], intent="tell the reader when loan LB-4412 is due",
+                policy_lines=["a reader may be told the due date of their own loan"], judge=judge)
+    prompt = judge.calls[0]["messages"][0]["content"]
+    assert "told the user: 2026-09-20, LB-4412; none handed the conversation on" in prompt
+    assert "told the user no fact read from the world" in prompt
+    assert "you still do not have the transcript" in prompt
+
+
+def test_a_state_whose_runs_handed_the_conversation_on_says_so():
+    judge = TestModel(['{"failed": [], "evidence": ["end_states"], "reason": "cannot tell"}'])
+    ref.confirm([answered("a"), refused("b", handed_on=True)],
+                intent="tell the reader when loan LB-4412 is due", judge=judge)
+    prompt = judge.calls[0]["messages"][0]["content"]
+    assert "1 of 1 handed the conversation on" in prompt
+
+
+def test_the_facts_of_a_state_are_the_ones_all_its_runs_stated_between_them():
+    """One state, two Runs, and the judge is told everything that state's Runs told the user."""
+    both = ref.group([answered("a"), answered("b", answer="Nothing is owed on LB-4412.")])
+    assert both[0]["told"] == ["2026-09-20", "LB-4412"]
+    assert ref.told_line(both[0]).startswith("told the user: 2026-09-20, LB-4412")
 
 
 # --- the rule ---------------------------------------------------------------
@@ -267,7 +303,8 @@ def _runs(n: int):
 def test_a_rule_the_confirmed_recordings_mostly_break_is_demoted_and_the_rest_kept():
     rules = [_rule("ok", ALWAYS), _rule("bad", NEVER)]
     rates = ref.constraint_rates(rules, _runs(4), WRITES, _canon)
-    assert rates == {"ok": {"failed": 0, "runs": 4}, "bad": {"failed": 4, "runs": 4}}
+    assert rates == {"ok": {"failed": 0, "runs": 4, "judged": 4},
+                     "bad": {"failed": 4, "runs": 4, "judged": 4}}
     kept, demoted = ref.demote(rules, rates)
     assert [c.id for c in kept] == ["ok"]
     assert demoted[0]["id"] == "bad" and "4 of 4" in demoted[0]["reason"]
@@ -278,6 +315,42 @@ def test_too_few_recordings_demote_nothing():
     rates = ref.constraint_rates(rules, _runs(2), WRITES, _canon)
     kept, demoted = ref.demote(rules, rates)
     assert [c.id for c in kept] == ["bad"] and demoted == []
+
+
+# A rule with code that was never asked about anything read as a rule the recordings had upheld.
+
+
+def _read_only_runs(n: int):
+    return [make_run(f"read{i}", [call("look_up_ticket", {"ticket_id": "T-1"}, kind="read"),
+                                  result({"status": "open"})]) for i in range(n)]
+
+
+def test_a_rule_that_judged_no_call_is_not_counted_as_one_the_recordings_upheld():
+    rates = ref.constraint_rates([_rule("quiet", NEVER)], _read_only_runs(4), WRITES, _canon,
+                                 read_tools={"look_up_ticket"})
+    assert rates["quiet"]["failed"] == 0 and rates["quiet"]["runs"] == 4
+    assert rates["quiet"]["judged"] == 0
+    assert rates["quiet"]["skipped"] == "no recording made a call this rule judges"
+
+
+def test_a_rule_whose_own_tests_failed_is_still_run_against_the_recordings():
+    rules = [_rule("ok", ALWAYS), Constraint(id="uncompiled", text="rule uncompiled", compiled=False,
+                                             predicate_src=NEVER)]
+    rates = ref.constraint_rates(rules, _runs(4), WRITES, _canon)
+    assert rates["uncompiled"]["failed"] == 4 and rates["uncompiled"]["judged"] == 4
+    assert rates["uncompiled"]["gates"] is False and "gates" not in rates["ok"]
+
+
+def test_a_rule_that_compiled_to_no_code_says_so_rather_than_reading_as_checked():
+    rates = ref.constraint_rates([Constraint(id="prose", text="rule prose")], _runs(4), WRITES, _canon)
+    assert rates["prose"] == {"failed": 0, "runs": 0, "judged": 0, "skipped": "the rule compiled to no code",
+                              "gates": False}
+
+
+def test_a_judge_atom_is_not_run_against_the_recordings():
+    rule = Constraint(id="asked", text="rule asked", compiled=True, judge_atom=True, predicate_src=ALWAYS)
+    rates = ref.constraint_rates([rule], _runs(4), WRITES, _canon)
+    assert rates["asked"]["skipped"] == "the rule is a judge atom"
 
 
 def test_violations_name_the_constraints_a_run_breaks():
@@ -291,7 +364,7 @@ def test_a_rule_broken_by_a_few_percent_of_the_recordings_is_demoted():
     rules = [_rule("rare", "def check(pre_state, write_call, transcript):\n    return write_call['arguments']['order_id'] != '#W1'\n")]
     runs = _runs(39) + [make_run("odd", [call("cancel_pending_order", {"order_id": "#W2"}), result({"status": "cancelled"})])]
     rates = ref.constraint_rates(rules, runs, WRITES, _canon)
-    assert rates["rare"] == {"failed": 39, "runs": 40}
+    assert rates["rare"] == {"failed": 39, "runs": 40, "judged": 40}
     one_in_forty = {"rare": {"failed": 1, "runs": 40}}
     assert ref.demote(rules, one_in_forty)[1][0]["id"] == "rare"
     assert ref.demote(rules, {"rare": {"failed": 1, "runs": 80}})[1] == []
@@ -302,3 +375,55 @@ def test_the_confirmation_lists_every_recording_it_saw():
     broken.violated = ["c1"]
     out = ref.confirm([cancel_run("a"), broken]).as_dict()
     assert [r["run_id"] for r in out["recordings"]] == ["a", "b"] and out["failed"] == {"b": "violates c1"}
+
+
+# --- the order of a list argument (fix C) -----------------------------------
+# A caterer: the guest names three dishes and the agent books them in one call. Two recordings list
+# the same dishes in different orders; the kitchen answers both with the same booking.
+
+CATERING_WRITES = {"book_dishes"}
+
+
+def _catering(run_id: str, dishes: list[str], answered: dict, kind: str = ref.RECORDING) -> ref.Recording:
+    run = make_run(run_id, [
+        user("Please book the soup, the pie and the tart for table 9."),
+        call("book_dishes", {"table_id": "T-9", "dishes": dishes}),
+        result(answered),
+        assistant("Booked."),
+    ])
+    return ref.Recording(run_id=run_id, path=run_id, kind=kind,
+                         trace_id=run_id if kind == ref.RECORDING else None,
+                         end_state=ref.end_state(run, CATERING_WRITES, _canon),
+                         stated=ref.stated_facts(run, _canon), transferred=ref.transferred(run),
+                         settled=ref.settled_state(run, CATERING_WRITES, _canon))
+
+
+BOOKED = {"table_id": "T-9", "covers": 3, "status": "booked"}
+
+
+def test_the_same_dishes_booked_in_another_order_are_one_end_state():
+    first = _catering("a", ["soup", "pie", "tart"], BOOKED)
+    second = _catering("b", ["tart", "soup", "pie"], BOOKED)
+    assert first.end_state != second.end_state
+    assert first.settled == second.settled
+    groups = ref.group([first, second])
+    assert len(groups) == 1 and groups[0]["runs"] == ["a", "b"]
+
+
+def test_the_same_dishes_the_kitchen_answered_differently_stay_two_end_states():
+    first = _catering("a", ["soup", "pie", "tart"], BOOKED)
+    second = _catering("b", ["tart", "soup", "pie"], dict(BOOKED, status="waitlisted"))
+    assert first.settled != second.settled
+    assert len(ref.group([first, second])) == 2
+
+
+def test_two_runs_that_booked_different_dishes_stay_two_end_states():
+    first = _catering("a", ["soup", "pie", "tart"], BOOKED)
+    second = _catering("b", ["soup", "pie", "cake"], BOOKED)
+    assert len(ref.group([first, second])) == 2
+
+
+def test_a_task_whose_recordings_differ_only_in_that_order_confirms_a_reference():
+    out = ref.confirm([_catering("a", ["soup", "pie", "tart"], BOOKED),
+                       _catering("b", ["tart", "soup", "pie"], BOOKED)], judge=None)
+    assert [r.run_id for r in out.references] == ["a", "b"] and out.reason is None
