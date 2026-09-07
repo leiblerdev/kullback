@@ -53,12 +53,13 @@ def test_the_driver_builds_the_environment_and_reports_the_rulings(driven):
     result = driven["result"]
     assert result["status"] == "complete" and result["env_id"] and result["target"] == "environment"
     assert result["tool_result"]["is_error"] is False
-    assert {"ingest", "mine", "cluster", "compile_tools", "compile_policy", "intent", "vocabulary",
+    assert {"ingest", "mine", "readers", "cluster", "compile_tools", "compile_policy", "intent", "vocabulary",
             "build_user_rules", "tau2_export", "replay_reference", "rerolls"} <= set(result["rulings"])
     assert "derive_verifier" not in result["rulings"], "the Verifiers are the Examiner's (D123)"
     state = json.loads((driven["workdir"] / "pipeline" / "state.json").read_text(encoding="utf-8"))
     assert state["status"] == "complete" and state["statuses"]["build_environment"] == "ran"
-    assert set(state["statuses"]) == {"ingest", "mine", "cluster", "canon_rules", "starting_state", "compile_tools",
+    assert set(state["statuses"]) == {"ingest", "mine", "readers", "cluster", "canon_rules", "starting_state",
+                                      "compile_tools",
                                       "compile_policy", "judge_lessons", "intent", "vocabulary", "user_rules",
                                       "build_environment", "replay_reference", "rerolls"}
 
@@ -67,7 +68,7 @@ def test_stage_events_reach_the_subscribers_in_order_and_the_tool_end_comes_last
     events = driven["events"]
     starts = [e.name for e in events if isinstance(e, StageStart)]
     ends = [e.name for e in events if isinstance(e, StageEnd)]
-    assert starts == ends and starts[:3] == ["ingest", "mine", "cluster"] and starts[-1] == "rerolls"
+    assert starts == ends and starts[:3] == ["ingest", "mine", "readers"] and starts[-1] == "rerolls"
     assert isinstance(events[-1], ToolExecutionEnd) and events[-1].tool_name == "build"
     compile_end = next(e for e in events if isinstance(e, StageEnd) and e.name == "compile_tools")
     assert compile_end.counts["status"] == "ran" and "parses" in compile_end.counts["rulings"]
@@ -255,11 +256,13 @@ def test_a_stage_target_after_the_build_is_served_from_the_cache_and_only_runs_u
     result = builder_agent.drive_tool(harness, "build", {"target": "cluster"})
     assert not result.is_error, result.content
     stages = {s["name"]: s for s in result.details["stages"]}
-    assert set(stages) == {"mine", "cluster"}, "no files to ingest, so the traces come off disk and mine is first"
+    assert set(stages) == {"mine", "readers", "cluster"}, ("no files to ingest, so the traces come off disk "
+                                                             "and mine is first")
     # The first build mined and clustered before the anchor existed; the anchor is in every key now
     # (D81), so the two run once more, without a model, and are served from the cache from then on.
     assert not any(s["cached"] for s in stages.values())
-    assert result.details["produced"] == ["sigs", "schema", "categories", "tasks"]
+    assert result.details["produced"] == ["mined_sigs", "mined_schema", "schema", "sigs", "readers",
+                                          "categories", "tasks"]
     assert "gate rulings: cluster pass" in result.content
     again = builder_agent.drive_tool(harness, "build", {"target": "cluster"})
     assert all(s["cached"] for s in again.details["stages"])
@@ -312,7 +315,7 @@ def test_a_scripted_model_driving_the_session_calls_build_and_reads_the_rulings(
     second = json.dumps(model.calls[1]["messages"])
     assert "gate rulings:" in second and "build environment: complete" in second
     events = model_driven["events"]
-    assert [e.name for e in events if isinstance(e, StageStart)][:3] == ["ingest", "mine", "cluster"]
+    assert [e.name for e in events if isinstance(e, StageStart)][:3] == ["ingest", "mine", "readers"]
     assert [e.type for e in events][0] == "agent_start" and events[-1].type == "agent_end"
     kinds = [e.type for e in events]
     assert kinds.index("stage_start") < kinds.index("tool_execution_end")
