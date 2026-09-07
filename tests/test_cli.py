@@ -183,6 +183,24 @@ def test_agent_drives_both_agents_with_the_one_model(workdir, fake_modules):
     assert kwargs["agent_model"] is None and kwargs["model"] is not None
 
 
+def test_build_takes_a_judge_model_and_a_second_one_and_defaults_both_to_the_build_model(workdir, fake_modules):
+    """D160: `kullback build` can name the judge, and a second judge, without touching --model."""
+    plain = invoke("build", "--workdir", str(workdir), "--model", "some/model")
+    assert plain.exit_code == 0, plain.output
+    kwargs = fake_modules["kullback.rounds.run_rounds"][0]["kwargs"]
+    assert kwargs["judge_model"] is None and kwargs["second_judge_model"] is None, \
+        "no flags, so the plan judges with the build model as it always did"
+
+    named = invoke("build", "--workdir", str(workdir), "--model", "some/model",
+                   "--judge-model", "other/small", "--second-judge-model", "third/tiny")
+    assert named.exit_code == 0, named.output
+    kwargs = fake_modules["kullback.rounds.run_rounds"][1]["kwargs"]
+    assert kwargs["judge_model"] is not None and kwargs["second_judge_model"] is not None
+
+    alone = invoke("build", "--workdir", str(workdir), "--second-judge-model", "third/tiny")
+    assert alone.exit_code != 0 and "needs a first judge" in alone.output
+
+
 # --- freeze-runner ----------------------------------------------------------
 
 def version_file(workdir: Path) -> Path:
@@ -564,6 +582,27 @@ def test_the_judge_atoms_of_a_verifier_are_answered_before_the_verdict(tmp_path)
     assert set(answers) == {"r1", "r2"}
     assert list(answers["r1"]) == ["a_polite"]  # the code atom is not asked of a judge
     assert answers["r1"]["a_polite"].verdict == "pass"
+
+
+def test_the_second_judge_is_another_persona_by_default_and_another_model_when_one_is_named(monkeypatch):
+    """D160: the pair is two personas of one model until --second-judge-model puts a second model on
+    the other side, and either way each judge is named by the model it runs on."""
+    from kullback.ai.provider import TestModel
+
+    built: dict[str, TestModel] = {}
+
+    def live(model_id, base_url=None):
+        return built.setdefault(model_id, TestModel([], name=model_id, loop=True))
+
+    monkeypatch.setattr(cli, "_live_model", live)
+    first, second = cli._judges("vendor/large")
+    assert (first.name, second.name) == ("vendor/large:a", "vendor/large:b")
+    assert second.model is first.model and second.persona, "one model, two personas (D97)"
+
+    first, second = cli._judges("vendor/large", None, "other/small")
+    assert (first.name, second.name) == ("vendor/large:a", "other/small:b")
+    assert second.model is not first.model
+    assert cli._judges(None) is None, "no judge model, no judges"
 
 
 def test_no_judge_model_means_no_judge_results_and_no_model_call(tmp_path):

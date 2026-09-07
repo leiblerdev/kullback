@@ -190,8 +190,11 @@ def test_an_exhausted_allowance_steers_a_model_driven_agent_once(model_loop):
     assert [m.role for m in first] == ["user", "assistant", "tool", "user", "assistant", "tool", "assistant"]
     assert loop.spent_allowance["builder"] is True
     ends = [e for e in model_loop["events"] if isinstance(e, ToolExecutionEnd)]
-    assert len(ends) == 3, "two tool ends of the model's own, and the driver's build at the second beat, " \
-                           "where the model acted on the finding and never called build"
+    assert len(ends) == 4, "two tool ends of the model's own; the driver's build at the first beat, where " \
+                           "the model's last build was another target and the store held only its artifacts " \
+                           "(D161); and the driver's build at the second beat, where the model acted on the " \
+                           "finding and never called build (D153)"
+    assert loop.driver_built == [1, 2]
 
 
 def test_a_finding_from_the_examiner_is_a_follow_up_on_the_builder_at_the_next_beat_with_the_record_in_details(model_loop):
@@ -285,6 +288,26 @@ def test_the_examiner_plan_sees_its_allowance_shrink_at_every_tool_end(model_exa
     assert loop.spent_allowance["examiner"] is True
 
 
+# --- which models judged the build (D160) -------------------------------------------------
+
+def test_a_build_records_the_judge_models_only_when_one_was_named(tmp_path):
+    """The report names the judge models beside the build model; a build that judges with its own
+    model records nothing, so its files are what they were before this."""
+    own = BuildPlan(workdir=tmp_path / "own", model=TestModel(["hi"], name="vendor/large"))
+    rounds._record_judge_models(own)
+    assert not (own.workdir / "report_config.json").exists()
+
+    named = BuildPlan(workdir=tmp_path / "named", model=TestModel(["hi"], name="vendor/large"),
+                      judge_model=TestModel(["hi"], name="other/small"),
+                      second_judge_model=TestModel(["hi"], name="third/tiny"))
+    (named.workdir / "report_config.json").write_text(json.dumps({"audit_rate": 0.5}), encoding="utf-8")
+    rounds._record_judge_models(named)
+    body = json.loads((named.workdir / "report_config.json").read_text(encoding="utf-8"))
+    assert body["judge_models"] == {"build": "vendor/large", "judge": "other/small",
+                                    "second_judge": "third/tiny"}
+    assert body["audit_rate"] == 0.5, "what the file already said is kept"
+
+
 # --- the allowance and the exits, decided by the driver -----------------------------------
 
 def test_the_allowance_defaults_to_round_ones_spend_per_agent(tmp_path):
@@ -365,6 +388,25 @@ def test_a_builder_that_repairs_and_answers_without_building_has_the_target_buil
     loop.builder_beat(1)
     assert loop.build_result is not None and not loop.build_result.is_error
     assert TARGET in plan.store or plan.last is not None, "the target was built, by the driver"
+    assert loop.driver_built == [1] and loop.driver_counts()["built_by_driver"] is True
+
+
+def test_a_builder_that_repairs_after_building_has_the_target_built_again_by_the_driver(tmp_path, request):
+    """Build 13, round 2: the model built the target, then acted on a follow-up finding with a narrowed
+    recompile and answered. The store then held only that one stage's artifacts and the Examiner's
+    derive failed on the Constraints again. The driver notices the last run was narrowed and builds
+    the target once more, so the handover holds everything the derivation reads."""
+    plan = BuildPlan(workdir=tmp_path / "work", model=Bodies(), files=[_fixture(request)], max_attempts=0)
+    model = TestModel([_reply("", ("build", {"target": TARGET})),
+                       _reply("", ("repair_recompile", {"name": "get_order_details", "hint": "return the row"})),
+                       _reply("repaired; finishing.")])
+    loop = rounds.Loop(plan=plan, builder=builder_agent.build_harness(plan, agent_model=model),
+                       agent_model=model, target=TARGET)
+    loop.plan.round = 1
+    loop.builder_beat(1)
+    assert loop.build_result is not None and not loop.build_result.is_error
+    assert plan.last_narrowing == {} and plan.last_target == TARGET, "the last run was the target in full"
+    assert "constraints" in plan.store, "the artifact the Examiner's derive reads is in the handover"
     assert loop.driver_built == [1] and loop.driver_counts()["built_by_driver"] is True
 
 

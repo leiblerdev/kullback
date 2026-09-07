@@ -413,12 +413,18 @@ def test_load_counts_judge_pairs_the_same_way_judge_py_does(workdir: Path):
 
     (workdir / "judge_pairs.jsonl").write_text(
         "\n".join(json.dumps(row) for row in [
-            {"disagreement": True}, {"disagreement": False}, {"abstain": True}, {"abstain": True},
+            {"disagreement": True, "judges": "vendor/large:a vs other/small:b"},
+            {"disagreement": False, "judges": "vendor/large:a vs other/small:b"},
+            {"abstain": True}, {"abstain": True},
         ]) + "\n",
         encoding="utf-8",
     )
     loaded = load(workdir)
     assert loaded.judge_disagreement == disagreement_rate(workdir)
+    # D160: the by-pair rate is counted the same way on both sides too, and a row that names no
+    # pair joins none.
+    assert loaded.judge_disagreement["by_pair"] == {
+        "vendor/large:a vs other/small:b": {"pairs": 2, "disagreements": 1, "rate": 0.5}}
     assert loaded.judge_disagreement["abstains"] == 2
     assert loaded.judge_disagreement["abstain_rate"] == 0.5
     assert "Judge abstention: 2 of 4 pairs (50%)" in render(loaded)
@@ -884,6 +890,28 @@ def test_the_abstained_items_are_listed_apart_from_the_splits(data):
     splits, undecided = block.split("### Items the judges did not decide", 1)
     assert "r5" in splits and "r5" not in undecided
     assert "r6:a1" in undecided and "and both abstained" in undecided
+
+
+def test_the_queue_names_the_judge_models_and_how_often_each_pair_parted(data):
+    """D160: one rate over every pair cannot say which two models disagreed, so the report says both."""
+    data.judge_models = {"build": "vendor/large", "judge": "other/small", "second_judge": "third/tiny"}
+    data.judge_disagreement = dict(data.judge_disagreement, by_pair={
+        "other/small:a vs third/tiny:b": {"pairs": 6, "disagreements": 2, "rate": 0.3333},
+        "other/small:a vs other/small:a#3": {"pairs": 2, "disagreements": 0, "rate": 0.0},
+    })
+    block = render(data).split("## Disagreement queue", 1)[1]
+    assert "Judge models: other/small, third/tiny, where the build model is vendor/large." in block
+    assert "- other/small:a vs third/tiny:b: 2 of 6 pairs (33%)" in block
+    assert "- other/small:a vs other/small:a#3: 0 of 2 pairs (0%)" in block
+
+
+def test_a_build_judged_by_its_own_model_names_no_judge_model_and_no_pair(data):
+    """The default says nothing new, and a build from before the pair names has no by-pair number
+    to print rather than a zero it never measured."""
+    data.judge_models = {"build": "vendor/large", "judge": "vendor/large"}
+    block = render(data).split("## Disagreement queue", 1)[1]
+    assert "Judge models:" not in block
+    assert "Disagreement by judge pair" not in block
 
 
 def test_a_queue_row_with_no_reason_is_still_read_as_a_split(data):

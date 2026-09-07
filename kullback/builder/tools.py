@@ -181,6 +181,9 @@ REPAIR_VERB_FOR: dict[str, str] = {
     "compile_tools.deterministic": "repair_recompile",
     "compile_tools.non_trivial": "repair_recompile",
     "compile_tools.replay_fidelity": "repair_recompile",
+    # A body holding an id or a value it copied out of a recorded call is written again, with the
+    # lookup over the world's tables the hint asks for (D162).
+    "compile_tools.memorised_values": "repair_recompile",
     # A Task whose Traces do not replay to their End state is a tool that answers differently.
     "replay_reference": "repair_recompile",
     # A row the Traces name that the built world does not hold is a table to grow (D107).

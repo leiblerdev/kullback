@@ -1,4 +1,4 @@
-"""The six rulings over what a generated tool body did when the sandbox ran it (design section 6).
+"""The seven rulings over what a generated tool body did when the sandbox ran it (design section 6).
 
 `builder/sandbox.py` runs a body in a subprocess and hands back one result dict per recorded call;
 nothing here starts a process. Each ruling takes the calls and those results (or the sandbox's
@@ -9,6 +9,9 @@ world does not hold. The sandbox's gate functions are thin wrappers that run and
 these, so the accept-or-reject decision is in this package and hashed with it (D122) while the
 subprocess stays where it was.
 
+The seventh, `body_memorised_values_gate` (D162), runs no calls at all: it reads the body's own
+source and refuses a literal that is data the recordings carried rather than code the body needs.
+
 The row helpers (`parse_result`, `match_table`, `columns_of`, `id_field`, `id_pattern_for`) live
 here because the replay ruling compares rows column by column under the schema's classes (D73,
 D84); `sandbox.py` and `compile_env.py` read them back from here.
@@ -16,17 +19,21 @@ D84); `sandbox.py` and `compile_env.py` read them back from here.
 
 from __future__ import annotations
 
+import ast
 import json
 import re
 from typing import Any, Iterable, Optional
 
+from kullback.gates.confinement import TOOLS_CLASS
 from kullback.runner.canon import canonicalize as canon
 from kullback.runner.canon import first_difference
 from kullback.runner.records import EntitySchema, GateResult, ToolCall, content_hash
 
 CRASH_ERRORS = frozenset({"NameError", "AttributeError", "TypeError", "ImportError",
                           "ModuleNotFoundError", "IndentationError", "SyntaxError", "RecursionError"})
-TOOL_RUN_STAGES = ("parses", "executes_on_s0", "deterministic", "non_trivial", "replay_fidelity", "refuses_unknown")
+MEMORISED_STAGE = "compile_tools.memorised_values"
+TOOL_RUN_STAGES = ("parses", "executes_on_s0", "deterministic", "non_trivial", "replay_fidelity",
+                   "refuses_unknown", MEMORISED_STAGE)
 
 
 # --- reading rows out of recorded tool results: shared with compile_env.py's inverse replay ---
@@ -294,3 +301,292 @@ def body_refuses_unknown_gate(probes: list[tuple[str, Any, ToolCall]], results: 
                 for (name, unknown, probe), result in zip(probes, results or [], strict=False) if result["ok"]]
     return _ruling("refuses_unknown", not failures,
                    {"reference_args": len(probes), "accepted": len(failures)}, failures)
+
+
+# --- 7. a body may not memorise the recordings (D162) ---
+#
+# Build 13: of 150 replay calls that differed from their recording, 126 were one KeyError raised by
+# the body of the tool that replaces items on an order, and 22 more were the same failure seen in a
+# later read of the same row. The body never looked the new item up in the world's products table;
+# it held three item ids from the recorded calls in a dict, so every other id crashed it. The model
+# was asked to recompile that tool 19 times in the round and never converged. A stronger model may
+# avoid it; a code gate makes it impossible for any model, which is what the harness is for.
+#
+# The check is static and knows no domain: it reads the literals out of the model's own methods and
+# asks three questions of each. Does it have the shape the schema mined for some table's ids; is it
+# a row id the Starting state actually holds; is it a value some recorded call passed this tool as
+# an argument. A body that answers yes to any of them copied data out of the recordings, and the
+# repair is always the same sentence: look it up in the world's tables.
+
+MEMORISED_LESSON = ("the body memorised recorded ids; write the lookup over the world's tables "
+                    "instead of holding a value copied from a recorded call")
+# Shorter than this is code, not data: "id", "", a one-letter key. Same for the small integers a
+# body counts, indexes and compares with; a recorded id is never 0, 1 or 7.
+MIN_LITERAL_CHARS = 3
+MIN_LITERAL_NUMBER = 10
+# An id pattern that accepts an ordinary word describes no shape at all: `mine.id_pattern` falls
+# back to a bare character class when a column's values share nothing, and reading that as an id
+# shape would refuse every alphanumeric literal a body writes. The probes are plain English words
+# no customer owns; a pattern that accepts one of them is not asked rule (a).
+SHAPELESS_PROBES = ("value", "name", "text")
+
+
+def _scopes(tree: ast.AST, class_name: str) -> list[ast.AST]:
+    """The model's own code in a generated module: the toolkit's methods, `__init__` excepted.
+
+    The data model, the toolkit shim and `DomainDB.load` are code-owned bytes no model wrote, and
+    their literals are evidence of nothing (`gates/confinement.py` draws the same line). A source
+    that defines no toolkit class is a bare body, which parses as a module on its own and is then
+    read whole, so a caller can rule on what a model replied with before it is wrapped.
+    """
+    methods = [member
+               for node in ast.walk(tree) if isinstance(node, ast.ClassDef) and node.name == class_name
+               for member in node.body
+               if isinstance(member, (ast.FunctionDef, ast.AsyncFunctionDef)) and member.name != "__init__"]
+    return list(methods) if methods else [tree]
+
+
+def _docstring_node(scope: Any) -> Optional[ast.Constant]:
+    """The docstring of one scope, which `compile_env` writes and the model does not."""
+    body = getattr(scope, "body", None) or []
+    first = body[0] if body else None
+    if isinstance(first, ast.Expr) and isinstance(first.value, ast.Constant) \
+            and isinstance(first.value.value, str):
+        return first.value
+    return None
+
+
+def body_literals(source: str, class_name: str = TOOLS_CLASS) -> list[Any]:
+    """Every string and number the model's own code spells out, each once, in a fixed order.
+
+    The order is `ast.walk`'s, which is level by level and so reads a dict display's keys before its
+    values; what matters is that it is the same order every time, since it is the order the failures
+    come out in. `ast.walk` reaches a dict display's keys the same way it reaches its values, so
+    `{"1008292230": ...}` is read as the literal it is; a memorising body writes its table that way
+    more often than any other. Booleans and None are code by construction, docstrings are
+    code-owned, and the two size floors keep loop counters and one-word keys out.
+    """
+    found: dict[tuple[str, Any], Any] = {}
+    for scope in _scopes(ast.parse(source), class_name):
+        doc = _docstring_node(scope)
+        for node in ast.walk(scope):
+            if not isinstance(node, ast.Constant) or node is doc:
+                continue
+            value = node.value
+            if isinstance(value, bool) or value is None:
+                continue
+            if isinstance(value, str) and len(value) >= MIN_LITERAL_CHARS:
+                found.setdefault(("str", value), value)
+            elif isinstance(value, (int, float)) and abs(value) >= MIN_LITERAL_NUMBER:
+                found.setdefault(("num", value), value)
+    return list(found.values())
+
+
+def _rows_in(node: Any) -> list[dict]:
+    """The rows of a table however the world stores it: keyed by id, or in a list."""
+    if isinstance(node, dict):
+        return [row for row in node.values() if isinstance(row, dict)]
+    if isinstance(node, list):
+        return [row for row in node if isinstance(row, dict)]
+    return []
+
+
+def _ids_in(schema: EntitySchema, table: str, node: Any) -> set[str]:
+    """The ids of one table's rows: the keys the world files them under, and the id column itself."""
+    ids: set[str] = set()
+    if isinstance(node, dict) and node and all(isinstance(row, dict) for row in node.values()):
+        ids |= {key for key in node if isinstance(key, str)}
+    name = id_field(schema, table)
+    for row in _rows_in(node):
+        value = row.get(name) if name else None
+        if isinstance(value, (str, int, float)) and not isinstance(value, bool):
+            ids.add(str(value))
+    return ids
+
+
+def starting_state_ids(schema: EntitySchema, db: Any) -> dict[str, set[str]]:
+    """Every row id the Starting state holds, by the table that holds it.
+
+    A table whose rows live inside another table's rows is read there too (`schema.homes`): the
+    corpus that set this decision keeps its items under the products' variants and its own top-level
+    table empty, so reading the top level alone would find none of the ids that were memorised.
+    """
+    out: dict[str, set[str]] = {}
+    world = db if isinstance(db, dict) else {}
+    for table in sorted(schema.tables or []):
+        ids = _ids_in(schema, table, world.get(table))
+        parent, _, column = ((schema.homes or {}).get(table) or "").partition(".")
+        if column:
+            for row in _rows_in(world.get(parent)):
+                ids |= _ids_in(schema, table, row.get(column))
+        if ids:
+            out[table] = ids
+    return out
+
+
+def recorded_argument_values(calls: Iterable[ToolCall]) -> dict[str, str]:
+    """Every scalar the recorded calls passed, as text, with the argument that carried it.
+
+    Values inside a list or a dict argument count: an id is memorised the same way whether the
+    recording passed it on its own or in a list of them.
+    """
+    out: dict[str, str] = {}
+
+    def walk(name: str, value: Any) -> None:
+        if isinstance(value, bool) or value is None:
+            return
+        if isinstance(value, (str, int, float)):
+            out.setdefault(str(value), name)
+        elif isinstance(value, list):
+            for item in value:
+                walk(name, item)
+        elif isinstance(value, dict):
+            for item in value.values():
+                walk(name, item)
+
+    for call in calls:
+        for name, value in sorted((call.args or {}).items()):
+            walk(str(name), value)
+    return out
+
+
+def _names_in(node: Any) -> set[str]:
+    """Every property name a JSON schema declares, at any depth."""
+    out: set[str] = set()
+    if isinstance(node, dict):
+        properties = node.get("properties")
+        if isinstance(properties, dict):
+            out |= {str(key) for key in properties}
+        required = node.get("required")
+        if isinstance(required, list):
+            out |= {str(key) for key in required if isinstance(key, str)}
+        for value in node.values():
+            out |= _names_in(value)
+    elif isinstance(node, list):
+        for value in node:
+            out |= _names_in(value)
+    return out
+
+
+def _declared_in(node: Any) -> set[str]:
+    """Every value a JSON schema spells out itself: an enum's members, a default, a const."""
+    out: set[str] = set()
+    if isinstance(node, dict):
+        for key, value in node.items():
+            if key == "enum" and isinstance(value, list):
+                out |= {str(v) for v in value
+                        if isinstance(v, (str, int, float)) and not isinstance(v, bool)}
+            elif key in ("default", "const") and isinstance(value, (str, int, float)) \
+                    and not isinstance(value, bool):
+                out.add(str(value))
+            else:
+                out |= _declared_in(value)
+    elif isinstance(node, list):
+        for value in node:
+            out |= _declared_in(value)
+    return out
+
+
+def structure_names(schema: Optional[EntitySchema], sig: Any = None) -> set[str]:
+    """The names of the world and of the signature, which a body says and never memorises.
+
+    A table, a column and an argument name are how a body addresses the world at all: `"item_id"`
+    as a dict key is structure, not an id. They are exempt from every rule, unlike the values of
+    rule (c), so a body can build the row shape the recording shows without tripping the gate.
+    """
+    out: set[str] = set()
+    if schema is not None:
+        out |= {str(table) for table in schema.tables or []}
+        out |= {str(column.name) for column in schema.columns or []}
+        out |= {key.split(".", 1)[-1] for key in schema.id_patterns or {}}
+    if sig is not None:
+        out |= _names_in(getattr(sig, "args_schema", {}) or {})
+        out |= {str(getattr(field, "name", "")) for field in getattr(sig, "args_fields", []) or []}
+        out |= {str(getattr(field, "name", "")) for field in getattr(sig, "result_schema", []) or []}
+    return {name for name in out if name}
+
+
+def signature_values(sig: Any = None) -> set[str]:
+    """The values the tool's own signature spells out: an enum's members, a default, a const.
+
+    These are the customer's vocabulary, not their data, and a body is meant to name them. What the
+    description lists is checked separately, as text, because a mined signature often carries the
+    enum only in the sentence that introduced it.
+    """
+    return _declared_in(getattr(sig, "args_schema", {}) or {}) if sig is not None else set()
+
+
+def _shaped(pattern: str) -> bool:
+    """An id pattern that accepts an ordinary word describes no id shape and is not asked about."""
+    try:
+        return not any(re.fullmatch(pattern, probe) for probe in SHAPELESS_PROBES)
+    except re.error:
+        return False
+
+
+def _pattern_hit(schema: Optional[EntitySchema], text: str) -> Optional[tuple[str, str]]:
+    """The first mined id shape this text has, as `table.column` and the pattern; None for no hit."""
+    for key in sorted((schema.id_patterns if schema is not None else None) or {}):
+        pattern = schema.id_patterns[key]
+        if not _shaped(pattern):
+            continue
+        try:
+            if re.fullmatch(pattern, text):
+                return key, pattern
+        except re.error:
+            continue
+    return None
+
+
+def body_memorised_values_gate(source: str, schema: Optional[EntitySchema] = None, db: Any = None,
+                               calls: Iterable[ToolCall] = (), sig: Any = None,
+                               class_name: str = TOOLS_CLASS) -> GateResult:
+    """7. A body may not memorise the recordings: every id and value comes out of the world (D162).
+
+    Three rules over the literals of the model's own methods, in the order that says most about
+    where a value came from. (a) The literal has the shape the schema mined for some table's ids.
+    (b) The literal is a row id the Starting state holds. (c) The literal is a value a recorded call
+    passed this tool, and neither the signature nor the description names it: an enum member the
+    description lists is the tool's vocabulary and is allowed, an order id it happened to be called
+    with is not. Names are never data (`structure_names`), so a body writes `row["item_id"]` freely.
+
+    The failure names the literal as the code holds it, the rule that caught it and the table or the
+    argument it came from. It is the model's own source, so quoting it back leaks nothing, and the
+    held-out split is never named: rule (c) says an argument's name, never a call.
+    """
+    schema = schema if schema is not None else EntitySchema()
+    label = f"{getattr(sig, 'name', '')}: " if getattr(sig, "name", "") else ""
+    try:
+        literals = body_literals(source, class_name)
+    except SyntaxError as exc:
+        return _ruling(MEMORISED_STAGE, False, {}, [f"{label}does not parse: {exc.msg}"])
+    structure = structure_names(schema, sig)
+    named = signature_values(sig) | structure
+    description = getattr(sig, "description", "") or ""
+    by_table = starting_state_ids(schema, db)
+    by_argument = recorded_argument_values(calls)
+    failures: list[str] = []
+    for literal in literals:
+        text = literal if isinstance(literal, str) else str(literal)
+        if text in structure:
+            continue
+        found = _pattern_hit(schema, text) if isinstance(literal, str) else None
+        if found is not None:
+            failures.append(f"{label}the literal {literal!r} has the shape of {found[0]} ids "
+                            f"({found[1]}); look the row up in the world's tables instead of "
+                            "holding an id a recorded call carried")
+            continue
+        table = next((name for name in sorted(by_table) if text in by_table[name]), None)
+        if table is not None:
+            failures.append(f"{label}the literal {literal!r} is a row id of {table} in the Starting "
+                            "state; look the row up in the world's tables instead of holding an id "
+                            "a recorded call carried")
+            continue
+        argument = by_argument.get(text)
+        if argument is not None and text not in named and text not in description:
+            failures.append(f"{label}the literal {literal!r} is a value the recorded calls passed as "
+                            f"{argument}, and neither the description nor the signature names it; "
+                            "read it from the argument instead of holding a recorded value")
+    return _ruling(MEMORISED_STAGE, not failures,
+                   {"literals": len(literals), "memorised": len(failures),
+                    "tables": len(by_table), "recorded_values": len(by_argument)}, failures)

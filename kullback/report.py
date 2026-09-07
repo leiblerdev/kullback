@@ -86,6 +86,8 @@ class ReportData(BaseModel):
     frontier_models: list[str] = Field(default_factory=list)
     assisted_share: dict[str, float] = Field(default_factory=dict)
     judge_disagreement: dict = Field(default_factory=dict)
+    # Which model each side of the judging ran on, by role (D160): "build", "judge", "second_judge".
+    judge_models: dict = Field(default_factory=dict)
     audit_rate: Optional[float] = None
     disagreement_queue: list[dict] = Field(default_factory=list)
     tasks_aside: list[dict] = Field(default_factory=list)
@@ -684,6 +686,53 @@ def _counts(counts: dict) -> str:
     return ", ".join(f"{name} {number}" for name, number in sorted(counts.items()))
 
 
+def _by_pair(rows: list[dict]) -> dict:
+    """Judge disagreement per pair of judges, off the pair name each row carries (D160).
+
+    The counting is `records.disagreement_stats`, the same rule as the rate over every row, and the
+    pair's name is the one judge.py wrote into the row, so neither number nor name is invented here.
+    The grouping is repeated rather than imported: the report reads records and reaches into no other
+    Runner module (design section 4 item 18). A row from before D160 names no pair and joins none.
+    """
+    grouped: dict[str, list[dict]] = {}
+    for row in rows:
+        name = str(row.get("judges") or "")
+        if name:
+            grouped.setdefault(name, []).append(row)
+    return {name: {key: disagreement_stats(group)[key] for key in ("pairs", "disagreements", "rate")}
+            for name, group in sorted(grouped.items())}
+
+
+def _judge_models_lines(data: ReportData) -> list[str]:
+    """The judge models this build used, named when they are not the model that built it (D160).
+
+    A judge on the build's own model is the default and says nothing new; a judge on another model,
+    or two judges on two models, is what a reader has to know to read the rate below.
+    """
+    models = data.judge_models or {}
+    build = models.get("build")
+    named = [models[role] for role in ("judge", "second_judge") if models.get(role) and models[role] != build]
+    if not named:
+        return []
+    against = f", where the build model is {build}" if build else ""
+    return [f"Judge models: {', '.join(named)}{against}.", ""]
+
+
+def _by_pair_lines(by_pair: dict) -> list[str]:
+    """One line per pair of judges: how often those two parted (D160).
+
+    Nothing is printed for a build whose pair rows predate the judge names, which is a silence about
+    a number that was never recorded rather than a zero that was never measured.
+    """
+    if not by_pair:
+        return []
+    lines = ["", "Disagreement by judge pair:"]
+    for name, row in sorted(by_pair.items()):
+        lines.append(f"- {name}: {row.get('disagreements', 0)} of {row.get('pairs', 0)} pairs "
+                     f"({_percent(row.get('rate'))})")
+    return lines
+
+
 def _queue(data: ReportData) -> list[str]:
     lines = [QUEUE, ""]
     pairs = data.judge_disagreement.get("pairs", 0)
@@ -692,10 +741,12 @@ def _queue(data: ReportData) -> list[str]:
              "which is the labelled set this number is bounded by (D92)."
              if data.audit_rate is not None
              else " No human labels yet, so this number has no error bound.")
+    lines += _judge_models_lines(data)
     lines.append(
         f"Judge disagreement: {disagreements} of {pairs} pairs "
         f"({_percent(data.judge_disagreement.get('rate'))})." + bound
     )
+    lines += _by_pair_lines(data.judge_disagreement.get("by_pair") or {})
     abstains = data.judge_disagreement.get("abstains")
     if abstains is not None:
         lines.append(
@@ -1130,7 +1181,8 @@ def load(workdir: Any) -> ReportData:
         task_coverage=_list_of(root / "coverage.json", TaskCoverage),
         frontier_models=config.get("frontier_models", []),
         assisted_share=config.get("assisted_share") or assisted_share_from_runs(runs),
-        judge_disagreement=disagreement_stats(pairs),
+        judge_disagreement=dict(disagreement_stats(pairs), by_pair=_by_pair(pairs)),
+        judge_models=config.get("judge_models") or {},
         audit_rate=config.get("audit_rate"),
         disagreement_queue=_jsonl(root / "disagreement_queue.jsonl", unread),
         tasks_aside=_jsonl(root / "tasks_aside.jsonl", unread),

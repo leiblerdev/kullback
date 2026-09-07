@@ -1007,10 +1007,18 @@ class BuildPlan:
     (D118) is how many tool bodies, policy sentences, Intents or Tasks' re-rolls are asked for at
     once, and how many ready stages run side by side. `on_event` gets the dict events a screen reads,
     `emit` the typed stage events the Builder extension puts on the harness's stream.
+
+    `judge_model` is the adapter the build's judge runs on (D160), and `model` when it is None: the
+    model that writes the Environment need not be the one that rules on it. `second_judge_model` is
+    the other side of a two-judge question, named here so its calls are priced and so the report can
+    say which two models the judging was done by; the build's own residue judge is one judge that may
+    only fail (D110, D111), and nothing here gives it a second.
     """
     workdir: Path
     iterate: bool = False
     model: Any = None
+    judge_model: Any = None
+    second_judge_model: Any = None
     files: list = field(default_factory=list)
     ceiling_usd: Optional[float] = None
     domain: str = "domain"
@@ -1032,6 +1040,11 @@ class BuildPlan:
     models: dict = field(init=False, default_factory=dict)
     store: dict = field(init=False, default_factory=dict)
     last: Optional[pipeline.PipelineResult] = field(init=False, default=None)
+    # What the last `execute` ran: its target and its narrowing. A narrowed run (a repair verb's
+    # one stage) leaves `store` holding only what that run resolved, and the round driver reads
+    # these to know the store is partial and the target has to be built again (D161).
+    last_target: Optional[str] = field(init=False, default=None)
+    last_narrowing: dict = field(init=False, default_factory=dict)
 
     def __post_init__(self) -> None:
         self.workdir = Path(self.workdir)
@@ -1046,6 +1059,11 @@ class BuildPlan:
 
     def _wrap_models(self) -> dict:
         model, workdir, ceiling = self.model, self.workdir, self.ceiling
+        # The judge is its own model when one was named, else the build's (D160). Both judges are
+        # wrapped like every other stage model, so a judge on a second provider is priced into
+        # budget.json and refused past the ceiling on the same terms as the Builder's own calls.
+        judge = self.judge_model if self.judge_model is not None else model
+        second_judge = self.second_judge_model
         # The loophole probe and the re-rolls are Candidate-shaped Runs: fresh samples, production
         # setting (D65, D112); the Intent and the judge are Builder calls.
         return {
@@ -1058,8 +1076,20 @@ class BuildPlan:
             "reroll": (_wrap(model, "reroll", workdir, ceiling, cap_context=False, memoize=False)
                        if model is not None and self.rerolls > 0 else None),
             "intent": _wrap(model, "intent", workdir, ceiling) if model is not None else None,
-            "reference_judge": _wrap(model, "reference_judge", workdir, ceiling) if model is not None else None,
+            "reference_judge": _wrap(judge, "reference_judge", workdir, ceiling) if judge is not None else None,
+            "second_judge": (_wrap(second_judge, "second_judge", workdir, ceiling)
+                             if second_judge is not None else None),
         }
+
+    def judge_model_ids(self) -> dict:
+        """Which model each side of the judging runs on, by the name the ledger prices it under (D160).
+
+        The report reads this to name the judge models beside the build model; a key is absent when
+        that model was never named.
+        """
+        named = {"build": self.model, "judge": self.judge_model, "second_judge": self.second_judge_model}
+        return {role: getattr(model, "name", None) or "model"
+                for role, model in named.items() if model is not None}
 
 
 def stages(plan: BuildPlan, *, tools: Optional[Iterable[str]] = None, replay_tasks: Optional[Iterable[str]] = None,
@@ -1128,6 +1158,7 @@ def execute(plan: BuildPlan, target: str = TARGET_ALL, **narrowing: Any) -> pipe
     _merge_pipeline_state(workdir, prior_ingest)
     _write_scorecard(workdir)
     plan.store, plan.last = dict(result.artifacts), result
+    plan.last_target, plan.last_narrowing = target, dict(narrowing)
     return result
 
 

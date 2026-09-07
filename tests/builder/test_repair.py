@@ -254,6 +254,47 @@ def test_a_hint_that_already_quotes_the_exception_does_not_carry_it_twice(tmp_pa
     assert text.count("no attribute 'copy_id'") == 1
 
 
+def test_a_lesson_for_a_memorising_body_says_to_write_the_lookup_over_the_worlds_tables(tmp_path):
+    """D162: the gate's failures name the literals of one attempt; the lesson belongs to the tool
+    and says the one thing every such failure is repaired by."""
+    (tmp_path / "tool_builds.json").write_text(json.dumps(
+        {"get_member": {"assisted": True, "nodes": [{"attempt": 0, "gates": [
+            {"stage": "compile_tools.memorised_values", "pass": False,
+             "failures": ["get_member: the literal 'M0042' is a row id of members in the Starting state"]}]}]}}),
+        encoding="utf-8")
+    repair.record_tool_lesson(tmp_path, "get_member", ["read the member by the argument"])
+    text = repair.lesson_for_tool(tmp_path, "get_member")
+    assert "read the member by the argument" in text
+    assert "memorised recorded ids" in text and "world's tables" in text
+
+
+def test_a_tool_whose_latest_body_memorised_nothing_leaves_no_such_lesson(tmp_path):
+    _tool_builds(tmp_path, [CRASH])
+    assert repair.memorised_values_lesson(tmp_path, "get_member") == ""
+
+
+def test_the_ratchet_does_not_keep_a_prior_body_a_gate_of_this_build_refuses():
+    """A body cleared the gates of the build it was written in. A build that adds a gate (D162) can
+    hold a prior body no gate accepts today, and ratcheting onto it is a repair that never lands."""
+    prior = {"bodies": {"a": "old-memorising", "b": "old-b"}}
+    new = {"bodies": {"a": "new-bad", "b": "new-b"}}
+    out = repair.ratchet_bodies(prior, new, {"a": False, "b": True}, refused=["a"])
+    assert out["bodies"]["a"] == "new-bad"
+    assert out["bodies"]["b"] == "new-b"
+
+
+def test_the_ratchet_hook_restores_nothing_for_a_tool_whose_prior_body_is_refused(tmp_path):
+    (tmp_path / "bodies.json").write_text(json.dumps({"bodies": {"calc": "old-memorising"}}))
+    hook = repair.ratchet_hook(tmp_path, refused=["calc"])
+    call = ToolCall(id="c1", name="compile_tool", arguments={"name": "calc"})
+    from kullback.agent.tools import ToolResult
+    failed = ToolResult(content="compile_tool calc: failed",
+                        details={"produced": ["bodies"], "payload": {},
+                                 "stage_gates": [{"stage": "compile_tools.memorised_values",
+                                                  "passed": False}]})
+    assert hook(call, failed) is None
+
+
 def test_a_workdir_with_no_tool_builds_records_the_hint_alone(tmp_path):
     assert repair.gate_exception_line(tmp_path, "get_member") == ""
     repair.record_tool_lesson(tmp_path, "get_member", ["read the loans column by key"])
