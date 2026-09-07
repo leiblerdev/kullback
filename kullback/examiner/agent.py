@@ -15,6 +15,7 @@ import asyncio
 from pathlib import Path
 from typing import Any, Callable, Iterable, Optional
 
+from kullback.agent.context import ContextConfig
 from kullback.agent.events import ToolExecutionEnd
 from kullback.agent.extensions import load_extensions
 from kullback.agent.harness import AgentHarness, DriverModel
@@ -25,6 +26,7 @@ from kullback.ai.provider import Model
 from kullback.examiner.extension import examiner_extension
 from kullback.examiner.plan import ExaminerPlan
 from kullback.gates.trust import trusted_gate
+from kullback.runner import budget
 
 DRIVER_CALL_ID = "examiner-driver"
 MAX_TURNS = 8
@@ -43,11 +45,23 @@ class ExaminerError(RuntimeError):
     """The session left nothing to report: the driver's derive failed, or the model never derived."""
 
 
+def context_config(model: Optional[Model]) -> ContextConfig:
+    """The context settings of a session on this model: its own window, which the caller has to pass
+    in because the agent core may not import `runner.budget` (D121, D124).
+
+    Without it every harness ran on the 200,000 default, so the Examiner's fill line said "of 200000"
+    on a model with twice that window and the floor fired at half the fill it was written for.
+    """
+    return ContextConfig(window=budget.window_for(getattr(model, "name", None)))
+
+
 def examiner_harness(plan: ExaminerPlan, agent_model: Optional[Model] = None,
                      subscribers: Iterable[Callable[[Any], Any]] = (), max_turns: int = MAX_TURNS,
                      session: Optional[SessionStore] = None) -> AgentHarness:
     """A harness with the Examiner extension over this plan; subscribers attached before any event."""
-    harness = AgentHarness(model=agent_model or DriverModel("Examiner"), max_turns=max_turns, session=session)
+    model = agent_model or DriverModel("Examiner")
+    harness = AgentHarness(model=model, max_turns=max_turns, session=session,
+                           context=context_config(agent_model))
     for subscriber in subscribers:
         harness.subscribe(subscriber)
     load_extensions(harness, [examiner_extension(plan)])
