@@ -272,6 +272,46 @@ def test_unfinished_run_is_none_for_an_empty_reference_and_cuts_a_writeless_one_
     assert [e.type for e in S.unfinished_run(verifier, talk).events] == ["user_turn"]
 
 
+def _answering_events(final: str = "That is all, have a good day.") -> list[dict]:
+    """A Task whose outcome is the answer: the agent reads the order and states its status, twice."""
+    return [
+        user("What is the status of order #W123?"),
+        call("get_order_details", {"order_id": "#W123"}, kind="read", cid="c0"),
+        result(ORDER, cid="c0"),
+        assistant("Order #W123 is pending."),
+        user("Thanks, anything else I should know?"),
+        assistant("Nothing else on #W123."),
+        user("Great, bye."),
+        assistant(final),
+    ]
+
+
+def test_a_verifier_that_requires_no_write_is_cut_before_the_first_answer_stating_a_fact_it_asks_for():
+    """The cut has to fall where the Run stops doing the job. For a Task whose outcome is the answer
+    there is no write to cut before, and the facts are usually stated well before the closing turn:
+    cutting before the last turn leaves the answer standing and the cut Run passes (D173)."""
+    answering = make_run("answering", _answering_events())
+    verifier = V.derive_verifier(TASK, answering, [], None, write_tools=WRITE_TOOLS)
+    assert [S.atom_payload(a)["text"] for a in verifier.atoms
+            if S.atom_payload(a).get("kind") == "communicate"] == ["#W123"]
+    unfinished = S.unfinished_run(verifier, answering)
+    assert [e.type for e in unfinished.events] == ["user_turn", "tool_call", "tool_result"]
+    assert S.check_run(verifier, unfinished)[0] is False
+    gates = {g.stage: g for g in S.validate_verifier(verifier, answering)}
+    assert gates["verifier_unfinished_run"].passed is True
+
+
+def test_a_writeless_verifier_with_no_communicate_atom_is_cut_before_its_last_answer():
+    """No write to cut before and no fact the Verifier asks for: the final turn is all that is left
+    to take away, and what the cut Run then fails on is the derivation's business, not the cut's."""
+    silent = make_run("silent", [user("Are you there?"), assistant("I am here."), user("Good."),
+                                 assistant("Goodbye.")])
+    verifier = V.derive_verifier(TASK, silent, [], None, write_tools=WRITE_TOOLS)
+    assert not [a for a in verifier.atoms if S.atom_payload(a).get("kind") == "communicate"]
+    unfinished = S.unfinished_run(verifier, silent)
+    assert [e.type for e in unfinished.events] == ["user_turn", "model_call", "user_turn"]
+
+
 def test_the_suite_reports_every_d79_check_by_the_name_the_verifier_gate_wants(tmp_path, test_model):
     """verifier_gate counts a check it was not told about as a failure, so the names have to line up;
     the mapping is the contract between the two modules and nothing imports it."""
@@ -295,6 +335,20 @@ def test_a_check_with_no_run_is_reported_as_not_run(tmp_path):
     assert all("not run" in " ".join(gates[stage].failures)
                for stage in ("verifier_wrong_run", "verifier_alt_path", "verifier_loophole"))
     assert artifacts.verifier_gate(S.d79_results(gates.values())).passed is False
+
+
+def test_the_second_path_check_says_it_had_no_second_path_rather_than_that_one_failed(tmp_path):
+    """A Task with one Reference has no second path to score, which is a different thing from a
+    Verifier that turned one away and asks for a different repair: more Runs, not looser atoms
+    (D173). The ruling still fails, and the reason it carries is the one a reader acts on."""
+    verifier = derive(tmp_path)
+    gate = {g.stage: g for g in S.validate_verifier(verifier, reference_run())}["verifier_alt_path"]
+    assert gate.passed is False
+    assert gate.metrics["not_run_reason"] == S.ALT_PATH_NOT_RUN
+    assert gate.failures == [f"not run: {S.ALT_PATH_NOT_RUN}"]
+    given = {g.stage: g for g in S.validate_verifier(verifier, reference_run(),
+                                                     alt_path_run=alt_path_run())}["verifier_alt_path"]
+    assert given.passed is True and "not_run_reason" not in given.metrics
 
 
 def test_a_hollow_verifier_fails_the_suite_with_no_runs_supplied(tmp_path):
@@ -354,15 +408,74 @@ def test_the_mutation_check_flags_an_atom_the_reference_cannot_fail(tmp_path):
     rule = Constraint(id="k1", text="never call delete_order", compiled=True,
                       predicate_src=("def check(pre_state, write_call, transcript):\n"
                                      "    return write_call['name'] != 'delete_order'\n"))
-    talking = make_run("talking", [user("Hello?"), assistant("Hello, how can I help?")])
-    verifier = V.derive_verifier(TASK, talking, [], None, write_tools=WRITE_TOOLS, constraints=[rule])
-    gate = [g for g in S.validate_verifier(verifier, talking) if g.stage == "verifier_mutation"][0]
-    assert gate.passed is False  # nothing was written, so the rule was never asked anything
-    assert "hard.k1" in " ".join(gate.failures)
+    # A re-run wrote twice, so the cap is 2 while the Reference writes once: asking for at most 1
+    # write is a smaller demand the Reference still meets, so the cap is checking nothing here.
+    loose = derive(tmp_path, reruns=[alt_path_run(), extra_write_run()], constraints=[rule])
+    gate = [g for g in S.validate_verifier(loose, reference_run()) if g.stage == "verifier_mutation"][0]
+    assert gate.passed is False
+    assert "entity_count" in " ".join(gate.failures)
     lively = [g for g in S.validate_verifier(derive(tmp_path, constraints=[rule]), reference_run())
               if g.stage == "verifier_mutation"][0]
     assert lively.passed is True
     assert lively.metrics["atoms_mutated"] >= 4
+
+
+def test_a_zero_cap_has_no_mutant_and_is_not_counted_as_a_failed_flip(tmp_path):
+    """A Verifier whose Reference wrote nothing caps writes at 0, and max(count - 1, 0) is that same
+    cap: the Reference rightly still passes, and counting it as an atom that cannot be falsified
+    failed 27 read-only Tasks of one build and 28 of another (D173)."""
+    asked = make_run("asked", [
+        user("What is the status of order #W123?"),
+        call("get_order_details", {"order_id": "#W123"}, kind="read", cid="c0"),
+        result(ORDER, cid="c0"),
+        assistant("Order #W123 is pending."),
+        user("Thanks."),
+        assistant("You are welcome."),
+    ])
+    verifier = V.derive_verifier(TASK, asked, [], None, write_tools=WRITE_TOOLS)
+    cap = atom_by_id(verifier, "entity_count")
+    assert S.atom_payload(cap)["count"] == 0
+    assert S._mutant(cap, S.canon_fn(None)) is None
+    gate = [g for g in S.validate_verifier(verifier, asked) if g.stage == "verifier_mutation"][0]
+    # The communicate atom is what carries this Verifier, and it flips, so the check passes.
+    assert gate.passed is True, gate.failures
+    assert gate.metrics == {"atoms_mutated": 1, "atoms_not_mutable": 1}
+
+
+def test_a_hard_atom_that_judged_no_call_does_not_read_as_held(tmp_path):
+    """A before-write rule over a Run with no write call was asked nothing, so it neither held nor
+    failed; reading its True as "the constraint held" hid that the policy is unchecked there, and
+    made the mutation check report a Verifier defect where no rule had ever run (D173)."""
+    rule = Constraint(id="k1", text="never cancel a delivered order", compiled=True,
+                      predicate_src=("def check(pre_state, write_call, transcript):\n"
+                                     "    return write_call['arguments'].get('order_id') != '#W123'\n"))
+    verifier = derive(tmp_path, constraints=[rule])
+    hard = atom_by_id(verifier, "hard.k1")
+    reading = make_run("reading", [
+        user("What is the status of #W123?"),
+        call("get_order_details", {"order_id": "#W123"}, kind="read", cid="c0"),
+        result(ORDER, cid="c0"),
+        assistant("It is pending."),
+    ])
+    assert S.hard_holds(hard, reading, WRITE_TOOLS) is None
+    assert S.hard_holds(hard, reference_run(), WRITE_TOOLS) is False  # it was asked, and it failed
+    # None is not a failure, so a Run the rule says nothing about is scored as it always was.
+    assert S.check_run(Verifier(task_id="t1", atoms=[hard]), reading) == (True, None)
+
+
+def test_a_verifier_with_no_mutable_atom_fails_the_mutation_check_and_the_text_says_so(tmp_path):
+    """The cap of 0 plus Hard atoms of a read-only Task: nothing in it can be made to say something
+    false about its own Reference, which is the one thing check 8 is there to catch."""
+    rule = Constraint(id="k1", text="never call delete_order", compiled=True,
+                      predicate_src=("def check(pre_state, write_call, transcript):\n"
+                                     "    return write_call['name'] != 'delete_order'\n"))
+    talking = make_run("talking", [user("Hello?"), assistant("Hello, how can I help?")])
+    verifier = V.derive_verifier(TASK, talking, [], None, write_tools=WRITE_TOOLS, constraints=[rule])
+    assert {S.atom_payload(a).get("kind") for a in verifier.atoms} == {"entity_count", "hard"}
+    gate = [g for g in S.validate_verifier(verifier, talking) if g.stage == "verifier_mutation"][0]
+    assert gate.passed is False
+    assert gate.metrics == {"atoms_mutated": 0, "atoms_not_mutable": 2}
+    assert "nothing in it can be falsified" in " ".join(gate.failures)
 
 
 def test_leak_check_finds_a_number_the_verifier_read_off_a_tool_result(tmp_path):

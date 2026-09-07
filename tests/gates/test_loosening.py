@@ -26,6 +26,17 @@ def test_the_pool_grows_with_rerolls_of_a_later_round_merged_from_the_examiners_
     assert L.legitimate_runs(REPLAYS, merged)[TASK] == {"ref", "rr2", "reroll-r2-t1-0"}
 
 
+def test_the_pool_leaves_out_the_recordings_the_reference_rule_discarded_when_it_is_asked_to():
+    """A replay is confirmed when the Environment reproduced it, which says nothing about whether it
+    did the job; the same round's D111 rule discards the ones that did not, and the status row keeps
+    them under failed_recordings (D173). The loosening gate still reads the whole pool."""
+    discarded = {TASK: {"ref": "judge: it did not do the job"}}
+    assert L.discarded_runs({TASK: {"failed_recordings": {"ref": "judge: it did not do the job"}}}) == {TASK: {"ref"}}
+    assert L.discarded_runs({TASK: {}}) == {TASK: set()}
+    assert L.legitimate_runs(REPLAYS, REROLLS, discarded) == {TASK: {"rr2"}}
+    assert L.legitimate_runs(REPLAYS, REROLLS) == {TASK: {"ref", "rr2"}}
+
+
 def test_a_reroll_that_died_unfinished_is_not_in_the_pool():
     assert "reroll-t1-1" not in L.legitimate_runs(REPLAYS, REROLLS)[TASK]
     assert L.legitimate_runs({}, {TASK: [reroll_row("r", "max_steps"), reroll_row("s", "error")]}) == {TASK: set()}
@@ -142,3 +153,19 @@ def test_a_verifier_that_rejects_every_held_out_frontier_run_fails_the_false_rej
     assert some.passed and some.metrics["per_task"][TASK]["fraction"] == 0.5
     assert some.metrics["per_task"][TASK]["rejected_ids"] == ["rr2"]
     assert L.false_rejection_gate([], {}, {}, {}, None, []).passed
+
+
+def test_a_run_the_reference_rule_discarded_is_not_a_false_rejection_of_the_verifier(tmp_path):
+    """The number D133 asks for is the share of genuinely legitimate held-out Runs the required atoms
+    reject. A recording the round's own Reference rule threw out is not one of them, and counting it
+    put 50 Tasks of one build and 9 of another at 1.0 for rejecting exactly what they should (D173)."""
+    strict = tighten(base(tmp_path)).model_copy(update={"seed_run_ids": ["ref"]})
+    runs = {TASK: [reference_run(), other_reason_run()]}
+    ruling = L.false_rejection_gate([strict], runs, REPLAYS, REROLLS, None, SIGS)
+    assert not ruling.passed and ruling.metrics["per_task"][TASK]["fraction"] == 1.0
+    status = {TASK: {"failed_recordings": {"rr2": "judge: it did not do the job"}}}
+    ruling = L.false_rejection_gate([strict], runs, REPLAYS, REROLLS, None, SIGS, status)
+    assert ruling.passed
+    assert ruling.metrics["per_task"][TASK] == {"held_out": 0, "rejected": 0, "fraction": None,
+                                                "rejected_ids": [],
+                                                "version": ruling.metrics["per_task"][TASK]["version"]}

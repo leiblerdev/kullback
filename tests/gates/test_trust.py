@@ -84,6 +84,26 @@ def test_a_verifier_that_failed_the_suite_is_not_trusted(tmp_path):
     world["task_status"] = {TASK: status(verifier_passed=False)}
     ruling = T.trusted_gate(**world)
     assert ruling.failures == ["task t1: the D79 suite did not pass"] and ruling.metrics["trusted"] == []
+    assert ruling.metrics["checks_not_run"] == {}
+
+
+def test_a_task_with_one_reference_says_the_second_path_check_was_not_run_rather_than_failed(tmp_path):
+    """The rule is unchanged: a Task the suite refused is untrusted whatever the reason. What the
+    ruling says changes, because a check with no input asks for more Runs of the Task and a check
+    that failed asks for a looser Verifier, and until D173 both read the same."""
+    world = _world(tmp_path)
+    world["task_status"] = {TASK: status(verifier_passed=False, not_run=["verifier_alt_path"],
+                                         checks={"second_path_passes": False, "oracle_passes": True})}
+    ruling = T.trusted_gate(**world)
+    assert ruling.metrics["trusted"] == []
+    assert ruling.metrics["checks_not_run"] == {TASK: ["second_path_passes"]}
+    assert ruling.metrics["untrusted"] == {
+        TASK: "the D79 suite did not pass: second_path_passes not run (one Reference, so there is no "
+              "second path to score)"}
+    # A check that really failed is still reported as a failure, beside the one nobody could run.
+    world["task_status"] = {TASK: status(verifier_passed=False, not_run=["verifier_alt_path"],
+                                         checks={"second_path_passes": False, "mutation_flips": False})}
+    assert T.trusted_gate(**world).metrics["untrusted"][TASK].endswith("; mutation_flips failed")
 
 
 def test_a_verifier_that_is_not_the_last_accepted_version_is_not_trusted(tmp_path):
