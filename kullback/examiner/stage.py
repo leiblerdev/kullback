@@ -45,6 +45,10 @@ from kullback.runner.records import (
 
 DERIVE_INPUTS = ("tasks", "sigs", "constraints", "canon_rules", "replays", "rerolls", "intents", "user_rules",
                  "traces", "assisted_tools", "tool_fidelity")
+# The inputs the derivation reads without a default: a store short of any of them is a build that
+# stopped before the stage that releases it, and the Examiner has nothing to derive from rather
+# than a KeyError halfway through (`missing_inputs`).
+REQUIRED_INPUTS = ("tasks", "sigs", "constraints")
 FORBIDDEN_INPUTS = ("bodies", "db", "schema", "environment", "overlays", "synthetic_rows", "policy_text",
                     "lessons_applied", "lessons_set_aside")
 STAGE = "derive_verifier"
@@ -78,6 +82,16 @@ class ExamContext:
         """One ruling into gates.json under this stage's name, remembered for the tool result."""
         self.recorded.append(result)
         return self.ledger.record(self.stage, result)
+
+
+def missing_inputs(store: dict) -> list[str]:
+    """The derivation inputs a store does not hold, in `REQUIRED_INPUTS` order; empty when it can derive.
+
+    A `--target` naming a stage before compile_policy leaves the store without the artifacts the
+    derivation reads with no default, and the Examiner used to open on it and fail on the first one
+    it reached. The driver asks this before the beat and ends the round on the build instead.
+    """
+    return [name for name in REQUIRED_INPUTS if name not in store]
 
 
 def inputs_from(store: dict) -> dict:
