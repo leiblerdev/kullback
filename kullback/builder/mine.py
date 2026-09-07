@@ -987,10 +987,10 @@ def _noun_of(tool_name: str) -> Optional[str]:
 def _address_of(tool_name: str) -> set[str]:
     """The entities a tool name says a row is only addressed by: the tokens after the first preposition.
 
-    `get_bills_for_customer` is about bills and addressed by a customer, so `customer` is here and
-    `bill` is not. It is the same reading `_noun_of` makes of the same name, from the other side of
-    the preposition, and it is what keeps the asked-for-id rule below from filing a child row under
-    the parent whose id the call happened to pass.
+    A name of the shape `get_invoices_for_tenant` is about invoices and addressed by a tenant, so
+    `tenant` is here and `invoice` is not. It is the same reading `_noun_of` makes of the same
+    name, from the other side of the preposition, and it is what keeps the asked-for-id rule
+    below from filing a child row under the parent whose id the call happened to pass.
     """
     tokens = [t for t in re.split(r"[^a-z0-9]+", tool_name.lower()) if t]
     for index, token in enumerate(tokens):
