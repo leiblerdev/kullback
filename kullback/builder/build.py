@@ -176,16 +176,21 @@ def _mine_stage():
                           code_version=_version("mine", run, mine))
 
 
-def _readers_stage(model: Any, gate: str, max_attempts: int = readers.MAX_ATTEMPTS):
+def _readers_stage(model: Any, max_attempts: int = readers.MAX_ATTEMPTS):
     """The rows a requestor other than the assistant reveals through prose results (D176 candidate).
 
     It runs per requestor whose own tools answer with strings the row extractor reads nothing out
     of. Where a corpus has none, the stage records "no prose results", passes the mined schema
     through unchanged and calls no model at all.
+
+    What that requestor's writes change is mined here, from the miner's own verdict on which of its
+    tools are writes, and closes a column at those calls so a value read only after a write is not
+    the recording's starting value. A column no recording read before a write is filled with the
+    commonest pre-write value the corpus shows, and the fill is recorded as an assumption.
     """
 
     def run(ctx, inputs):
-        traces, schema = inputs["traces"], inputs["mined_schema"]
+        traces, schema, sigs = inputs["traces"], inputs["mined_schema"], inputs["sigs"]
         by_requestor = readers.prose_calls(traces)
         if not by_requestor:
             _write_json(ctx.workdir / readers.READERS_FILE, {"note": readers.NO_PROSE})
@@ -194,26 +199,37 @@ def _readers_stage(model: Any, gate: str, max_attempts: int = readers.MAX_ATTEMP
         if model is None:
             raise BuildError("this corpus has prose results from a requestor of its own and the "
                              "readers stage has no model to propose them with; pass --model")
+        # D68 again: what a tool changes is evidence, not a declaration, and only a tool the miner
+        # calls a write is ever credited with a change.
+        write_tools = {s.name for s in sigs if getattr(s, "kind", "") == "write"}
         proposals, rows, nodes, values = {}, {}, [], {}
+        fills, assumptions, unset = {}, [], {}
         for requestor in sorted(by_requestor):
             proposal, attempts, parsed = readers.propose(
                 model, requestor, by_requestor[requestor], traces, ctx.workdir / "readers",
-                gate=gate, max_attempts=max_attempts)
+                write_tools=write_tools, max_attempts=max_attempts)
+            read_rows = readers.starting_rows(traces, proposal, parsed)
+            filled, sentences, missing = readers.fills_for(read_rows, proposal)
             proposals[requestor] = proposal.to_dict()
-            rows[requestor] = readers.starting_rows(traces, proposal, parsed)
+            rows[requestor] = read_rows
+            fills[requestor] = filled
+            assumptions += sentences
+            unset[requestor] = missing
             values[requestor] = readers.column_values(proposal, parsed)
             nodes += attempts
-        artifact = {"gate": gate, "proposals": proposals, "rows": rows}
+        artifact = {"proposals": proposals, "rows": rows, "fills": fills,
+                    "assumptions": assumptions, "unset": unset}
         readers.apply_to_schema(schema, readers.proposals_from(artifact), values)
         _write_json(ctx.workdir / readers.READERS_FILE, {**artifact, "attempts": nodes})
         _write_json(ctx.workdir / "schema.json", as_dict(schema))
         # Section 6: a proposal the gate could not satisfy is flagged and kept, never a failed build.
-        ctx.record_gate(stage_gates.readers_gate(proposals.values(), len(by_requestor)))
+        ctx.record_gate(stage_gates.readers_gate(proposals.values(), len(by_requestor),
+                                                 assumptions=assumptions, unset=unset))
         return {"schema": schema, "readers": artifact}
 
-    version = (f"readers:{getattr(model, 'name', 'none')}:{gate}:{max_attempts}:"
+    version = (f"readers:{getattr(model, 'name', 'none')}:{max_attempts}:"
                f"{_module_hash(readers)}:{_module_hash(sandbox)}")
-    return pipeline.Stage(name="readers", fn=run, inputs=("traces", "mined_schema"),
+    return pipeline.Stage(name="readers", fn=run, inputs=("traces", "mined_schema", "sigs"),
                           outputs=("schema", "readers"), code_version=version)
 
 
@@ -266,7 +282,9 @@ def _state_stage(grow: Optional[dict] = None, grow_seed: int = 0):
         state = compile_env.build_starting_state(inputs["traces"], inputs["schema"], ctx.workdir,
                                                  inputs["tasks"], inputs["sigs"], grow=grow,
                                                  grow_seed=grow_seed,
-                                                 revealed_rows=readers.reader_rows(inputs["readers"]))
+                                                 revealed_rows=readers.reader_rows(inputs["readers"]),
+                                                 revealed_assumptions=readers.reader_assumptions(
+                                                     inputs["readers"]))
         # The synthetic ids live on the schema (D40); run_batch reads them back from schema.json.
         _write_json(ctx.workdir / "schema.json", as_dict(inputs["schema"]))
         return {"db": state.db, "overlays": list(state.overlays),
@@ -1205,10 +1223,6 @@ class BuildPlan:
     search: Any = None
     workers: int = 1
     emit: Optional[Any] = None
-    # Which gate the readers stage holds a proposal to: `declared` also holds the stored-or-derived
-    # and acknowledgement declarations to the recording, `replay` leaves everything but "it parses,
-    # it runs and it answers a dict or None" to replay fidelity.
-    readers_gate: str = readers.GATE_DECLARED
     # Which round the driver is in, so a repair request records the round it was made in (D126);
     # a build with no round driver is one pass, which is round 1. `rounds.py` moves it.
     round: int = field(init=False, default=1)
@@ -1231,9 +1245,6 @@ class BuildPlan:
         # at it; the default keeps them in this workdir, where a first build has none to carry.
         self.memory_dir = Path(self.memory_dir) if self.memory_dir is not None else self.workdir / "memory"
         self.fresh = not self.iterate
-        if self.readers_gate not in readers.GATES:
-            raise ValueError(f"unknown readers gate {self.readers_gate!r}; it is one of "
-                             + ", ".join(readers.GATES))
         self.ceiling = _ceiling(self.workdir, self.ceiling_usd)
         self.models = self._wrap_models()
 
@@ -1289,7 +1300,7 @@ def stages(plan: BuildPlan, *, tools: Optional[Iterable[str]] = None, replay_tas
     declared = [
         _ingest_stage(plan.workdir, plan.files) if plan.files else None,
         _mine_stage(),
-        _readers_stage(models["readers"], plan.readers_gate),
+        _readers_stage(models["readers"]),
         _cluster_stage(),
         _canon_stage(),
         _state_stage(plan.grow if grow is None else grow, plan.grow_seed),
@@ -1349,8 +1360,7 @@ def build(workdir: Any, iterate: bool = False, model: Any = None, files: Optiona
           max_attempts: int = 3, memory_dir: Any = None, on_event: Optional[Any] = None,
           grow: Optional[dict[str, int]] = None, grow_seed: int = 0,
           probe_limit: Optional[int] = None, rerolls: int = DEFAULT_REROLLS, search: Any = None,
-          workers: int = 1, emit: Optional[Any] = None,
-          readers_gate: str = readers.GATE_DECLARED) -> dict:
+          workers: int = 1, emit: Optional[Any] = None) -> dict:
     """Read the ingested Traces and write the Environment, the Tasks, their References and re-rolls.
 
     The whole graph, as `kullback build` runs it; the Verifiers are the Examiner's (D123). The arguments are `BuildPlan`'s; the default of one
@@ -1360,7 +1370,7 @@ def build(workdir: Any, iterate: bool = False, model: Any = None, files: Optiona
     plan = BuildPlan(workdir=workdir, iterate=iterate, model=model, files=list(files or []), ceiling_usd=ceiling_usd,
                      domain=domain, max_attempts=max_attempts, memory_dir=memory_dir, on_event=on_event,
                      grow=grow, grow_seed=grow_seed, probe_limit=probe_limit, rerolls=rerolls, search=search,
-                     workers=workers, emit=emit, readers_gate=readers_gate)
+                     workers=workers, emit=emit)
     result = execute(plan, TARGET_ALL)
     return result_of(workdir, result, result.artifacts.get("environment"))
 

@@ -1,4 +1,4 @@
-"""The readers stage: the row a requestor's own prose results reveal, under either gate.
+"""The readers stage: the row a requestor's own prose results reveal.
 
 The domain here is invented, the way every Builder test's is: a greenhouse whose caretaker runs a
 few tools of its own against a vent and a heater, and answers in sentences rather than in rows.
@@ -20,6 +20,7 @@ from kullback.runner.records import EntitySchema, RawPtr, ToolCall, Trace, Turn,
 
 PTR = RawPtr(file_hash="testfile", sim_index=0)
 CARETAKER = "caretaker"
+WRITES = ("open_vent",)
 
 VENT_READER = """
 def read(result):
@@ -43,17 +44,9 @@ def read(result):
     return None
 """
 
-BANNER_READER = """
+OPEN_REPORTING_READER = """
 def read(result):
-    line = result.split("Banner:", 1)[1].strip()
-    return {"banner": line}
-"""
-
-BANNER_DERIVE = """
-def derive_banner(row):
-    if row.get("vent") is None or row.get("warmth") is None:
-        return None
-    return row["vent"] + " | " + str(row["warmth"])
+    return {"vent": "open"}
 """
 
 
@@ -78,31 +71,27 @@ def two_traces():
     ]
 
 
-def proposal_json(*, gate=readers.GATE_DECLARED, vent=VENT_READER, climate=CLIMATE_READER,
-                  open_shapes=("Vent opened.",), changes=("vent",), columns=None):
-    declared = gate == readers.GATE_DECLARED
-    body = {
+def proposal_json(*, vent=VENT_READER, climate=CLIMATE_READER, open_reader=OPEN_READER,
+                  columns=("vent", "warmth")):
+    return json.dumps({
         "table": "greenhouse",
-        "columns": columns if columns is not None else [{"name": "vent", "origin": "stored"},
-                                                        {"name": "warmth", "origin": "stored"}],
-        "readers": [
-            {"tool": "check_vent", "source": vent, "acknowledgements": [], "changes": []},
-            {"tool": "check_climate", "source": climate, "acknowledgements": [], "changes": []},
-            {"tool": "open_vent", "source": OPEN_READER,
-             "acknowledgements": list(open_shapes) if declared else [],
-             "changes": list(changes) if declared else []},
-        ],
-    }
-    return json.dumps(body)
+        "columns": [{"name": name} for name in columns],
+        "readers": [{"tool": "check_vent", "source": vent},
+                    {"tool": "check_climate", "source": climate},
+                    {"tool": "open_vent", "source": open_reader}],
+    })
 
 
-def gate_once(tmp_path, reply_json, *, gate=readers.GATE_DECLARED, traces=None):
-    """One proposal parsed out of a reply and run through the gate over these recordings."""
+def gated(tmp_path, reply_json, traces=None):
+    """One proposal parsed out of a reply, run through the gate over these recordings."""
     traces = two_traces() if traces is None else traces
     by_requestor = readers.prose_calls(traces)
-    proposal = readers._parse_reply(ModelReply(content=reply_json), CARETAKER, gate)
+    proposal = readers._parse_reply(ModelReply(content=reply_json), CARETAKER)
     assert proposal is not None
-    return proposal, readers.gate_proposal(proposal, by_requestor[CARETAKER], traces, tmp_path)
+    ruling = readers.gate_proposal(proposal, by_requestor[CARETAKER], tmp_path)
+    readers.absorb_columns(proposal, ruling.parsed)
+    proposal.effects = readers.write_effects(traces, proposal, ruling.parsed, WRITES)
+    return proposal, ruling
 
 
 # --- what the stage is for ---------------------------------------------------
@@ -128,8 +117,8 @@ def test_results_that_differ_only_in_their_digits_are_one_shape_with_the_count_o
 
 # --- the gate ----------------------------------------------------------------
 
-def test_a_proposal_whose_readers_answer_every_recorded_result_passes_the_declared_gate(tmp_path):
-    _, ruling = gate_once(tmp_path, proposal_json())
+def test_a_proposal_whose_readers_run_over_every_recorded_result_passes(tmp_path):
+    _, ruling = gated(tmp_path, proposal_json())
     assert ruling.failures == []
     assert ruling.parsed[("check_vent", "Vent: CLOSED")] == {"vent": "closed"}
 
@@ -139,112 +128,146 @@ def test_a_reader_that_raises_is_named_by_its_tool_and_its_masked_shape(tmp_path
 def read(result):
     return {"vent": result.split("=", 1)[1]}
 """
-    _, ruling = gate_once(tmp_path, proposal_json(vent=broken))
-    named = [line for line in ruling.failures if line.startswith("check_vent shape ")]
-    assert len(named) == 2, ruling.failures
-    assert "IndexError" in named[0] and "'Vent: CLOSED'" in named[0]
+    _, ruling = gated(tmp_path, proposal_json(vent=broken))
+    assert len(ruling.failures) == 2, ruling.failures
+    assert all(line.startswith("check_vent shape ") for line in ruling.failures)
+    assert "IndexError" in ruling.failures[0] and "'Vent: CLOSED'" in ruling.failures[0]
 
 
 def test_the_gate_names_one_line_per_shape_and_not_one_per_recorded_result(tmp_path):
     """Two recordings answer 'Vent: OPEN', so a reader that fails on it fails once, not twice."""
     traces = [trace("run_a", [call("check_vent", "Vent: OPEN")]),
               trace("run_b", [call("check_vent", "Vent: OPEN")])]
-    body = json.dumps({"table": "greenhouse", "columns": [{"name": "vent", "origin": "stored"}],
-                       "readers": [{"tool": "check_vent", "source": "def read(result):\n    return None",
-                                    "acknowledgements": [], "changes": []}]})
-    _, ruling = gate_once(tmp_path, body, traces=traces)
-    assert len(ruling.failures) == 1 and "asserted nothing" in ruling.failures[0]
+    body = json.dumps({"table": "greenhouse", "columns": [{"name": "vent"}],
+                       "readers": [{"tool": "check_vent",
+                                    "source": "def read(result):\n    return result"}]})
+    _, ruling = gated(tmp_path, body, traces=traces)
+    assert len(ruling.failures) == 1 and "answered a str" in ruling.failures[0]
 
 
-def test_a_result_that_asserts_nothing_has_to_be_declared_an_acknowledgement(tmp_path):
-    _, ruling = gate_once(tmp_path, proposal_json(open_shapes=()))
-    assert len(ruling.failures) == 1
-    assert "open_vent shape 'Vent opened.'" in ruling.failures[0]
-    assert "not declared an acknowledgement" in ruling.failures[0]
-
-
-def test_the_replay_gate_asks_only_that_a_reader_runs_and_answers_a_dict_or_none(tmp_path):
-    """The same proposal, minus every declaration: nothing is left to fail on."""
-    _, ruling = gate_once(tmp_path, proposal_json(gate=readers.GATE_REPLAY),
-                          gate=readers.GATE_REPLAY)
+def test_a_reader_that_reads_nothing_out_of_a_shape_is_counted_and_not_refused(tmp_path):
+    """The refusing version of this rule was measured on a customer corpus and bought nothing."""
+    _, ruling = gated(tmp_path, proposal_json())
     assert ruling.failures == []
+    assert ruling.silent == {"open_vent": 1}, "the write's own result asserts no column value"
 
 
-def test_the_replay_gate_still_refuses_a_reader_that_answers_something_that_is_not_a_row(tmp_path):
-    _, ruling = gate_once(tmp_path, proposal_json(gate=readers.GATE_REPLAY,
-                                                  vent="def read(result):\n    return result"),
-                          gate=readers.GATE_REPLAY)
-    assert len(ruling.failures) == 2
-    assert "answered a str" in ruling.failures[0]
-
-
-def test_a_key_no_column_was_proposed_for_is_a_failure_under_declared_and_a_column_under_replay(tmp_path):
-    one_column = [{"name": "vent", "origin": "stored"}]
-    declared_proposal, declared = gate_once(tmp_path, proposal_json(columns=one_column))
-    assert any("warmth" in line for line in declared.failures)
-    free_proposal, free = gate_once(tmp_path, proposal_json(gate=readers.GATE_REPLAY, columns=one_column),
-                                    gate=readers.GATE_REPLAY)
-    assert free.failures == []
-    assert readers.absorb_columns(free_proposal, free.parsed).stored_names() == ["vent", "warmth"]
-    assert declared_proposal.stored_names() == ["vent"]
-
-
-def test_a_derived_column_is_checked_against_its_derivation_over_the_stored_columns(tmp_path):
-    wrong = """
-def derive_banner(row):
-    if row.get("vent") is None or row.get("warmth") is None:
-        return None
-    return "always the same"
-"""
-    traces = [trace("run_a", [call("check_climate", "Vent: OPEN\nWarmth: 21 units"),
-                              call("check_banner", "Banner: open | 21")])]
-    body = {"table": "greenhouse",
-            "columns": [{"name": "vent", "origin": "stored"}, {"name": "warmth", "origin": "stored"},
-                        {"name": "banner", "origin": "derived", "derive": wrong}],
-            "readers": [{"tool": "check_climate", "source": CLIMATE_READER},
-                        {"tool": "check_banner", "source": BANNER_READER}]}
-    _, ruling = gate_once(tmp_path, json.dumps(body), traces=traces)
-    assert len(ruling.failures) == 1
-    assert "derive_banner computed" in ruling.failures[0] and "check_banner shape" in ruling.failures[0]
-
-    body["columns"][2]["derive"] = BANNER_DERIVE
-    _, agreeing = gate_once(tmp_path, json.dumps(body), traces=traces)
-    assert agreeing.failures == []
-
-
-def test_a_tool_that_only_acknowledges_has_to_name_a_column_it_is_seen_to_change(tmp_path):
-    _, unnamed = gate_once(tmp_path, proposal_json(changes=()))
-    assert len(unnamed.failures) == 1 and "name in changes" in unnamed.failures[0]
-    _, unseen = gate_once(tmp_path, proposal_json(changes=("warmth",)))
-    assert len(unseen.failures) == 1 and "it changes warmth" in unseen.failures[0]
+def test_a_key_no_column_was_proposed_for_becomes_a_column_of_the_table(tmp_path):
+    proposal, ruling = gated(tmp_path, proposal_json(columns=("vent",)))
+    assert ruling.failures == []
+    assert proposal.columns == ["vent", "warmth"]
 
 
 def test_a_column_that_reads_as_an_id_is_refused_because_code_owns_the_rows_key(tmp_path):
-    columns = [{"name": "greenhouse_id", "origin": "stored"}, {"name": "vent", "origin": "stored"},
-               {"name": "warmth", "origin": "stored"}]
-    _, ruling = gate_once(tmp_path, proposal_json(columns=columns))
+    _, ruling = gated(tmp_path, proposal_json(columns=("greenhouse_id", "vent", "warmth")))
     assert any("greenhouse_id" in line and "code owns its key" in line for line in ruling.failures)
 
 
-# --- the world the readers leave --------------------------------------------
+# --- what the requestor's writes change --------------------------------------
 
-def test_the_starting_row_is_what_was_read_before_the_declared_write_and_not_after_it(tmp_path):
-    proposal, ruling = gate_once(tmp_path, proposal_json())
+def test_a_write_tool_is_credited_with_a_column_two_readings_around_it_disagree_on(tmp_path):
+    proposal, ruling = gated(tmp_path, proposal_json())
+    assert proposal.effects == {"open_vent": ["vent"]}, "warmth was never read before that call"
+
+
+def test_a_tool_the_miner_calls_a_read_is_never_credited_with_a_change(tmp_path):
+    """The world moving around a read is not evidence that the read moved it (D68)."""
     traces = two_traces()
-    rows = readers.starting_rows(traces, proposal, ruling.parsed)
-    assert rows["run_a"] == {"vent": "closed", "warmth": 21}, "the vent was open only after open_vent"
+    proposal = readers._parse_reply(ModelReply(content=proposal_json()), CARETAKER)
+    ruling = readers.gate_proposal(proposal, readers.prose_calls(traces)[CARETAKER], tmp_path)
+    assert readers.write_effects(traces, proposal, ruling.parsed, ()) == {}
+    assert readers.write_effects(traces, proposal, ruling.parsed, ("check_vent",)) == {}
+
+
+def test_a_write_that_reports_its_own_new_value_is_read_as_evidence_of_the_change(tmp_path):
+    """A write whose result states the new state is the commonest evidence a corpus has."""
+    traces = [trace("run_a", [call("check_vent", "Vent: CLOSED"),
+                              call("open_vent", "Vent: OPEN")])]
+    proposal, _ = gated(tmp_path, proposal_json(open_reader=OPEN_REPORTING_READER), traces=traces)
+    assert proposal.effects == {"open_vent": ["vent"]}
+
+
+def test_the_starting_row_is_what_was_read_before_the_write_and_not_after_it(tmp_path):
+    proposal, ruling = gated(tmp_path, proposal_json())
+    rows = readers.starting_rows(two_traces(), proposal, ruling.parsed)
+    assert rows["run_a"] == {"vent": "closed", "warmth": 21}, "the vent was open only after the write"
     assert rows["run_b"] == {"vent": "open", "warmth": 12}
 
 
-def test_without_a_declared_write_the_first_reading_of_a_column_stands(tmp_path):
-    proposal, ruling = gate_once(tmp_path, proposal_json(gate=readers.GATE_REPLAY),
-                                 gate=readers.GATE_REPLAY)
-    rows = readers.starting_rows(two_traces(), proposal, ruling.parsed)
-    assert rows["run_a"] == {"vent": "closed", "warmth": 21}, "the reader read nothing out of the write"
+def test_a_column_read_only_after_the_write_of_another_column_still_stands(tmp_path):
+    """Only the columns that tool is seen to change close at it; the rest keep the first reading."""
+    proposal, ruling = gated(tmp_path, proposal_json())
+    only_after = trace("run_c", [call("open_vent", "Vent opened."),
+                                 call("check_climate", "Vent: OPEN\nWarmth: 21 units")])
+    assert readers.starting_row(only_after, proposal, ruling.parsed) == {"warmth": 21}
 
+
+def test_with_no_write_seen_to_change_it_the_first_reading_of_a_column_stands(tmp_path):
+    proposal, ruling = gated(tmp_path, proposal_json())
+    proposal.effects = {}
+    rows = readers.starting_rows(two_traces(), proposal, ruling.parsed)
+    assert rows["run_a"] == {"vent": "closed", "warmth": 21}
+
+
+# --- the columns no recording read before writing them -----------------------
+
+def three_traces():
+    """Two recordings that read the vent before the write, and one that only writes it."""
+    return two_traces() + [trace("run_c", [call("open_vent", "Vent opened."),
+                                           call("check_climate", "Vent: OPEN\nWarmth: 19 units")])]
+
+
+def test_a_column_a_recording_never_read_before_writing_is_filled_from_the_corpus(tmp_path):
+    traces = three_traces()
+    proposal, ruling = gated(tmp_path, proposal_json(), traces=traces)
+    rows = readers.starting_rows(traces, proposal, ruling.parsed)
+    assert "vent" not in rows["run_c"], "that recording opened the vent before it ever read it"
+    fills, assumptions, unset = readers.fills_for(rows, proposal)
+    assert set(fills) == {"vent"} and fills["vent"] in {"closed", "open"}
+    assert unset == []
+    assert len(assumptions) == 1
+    assert "column vent was not read before a write in 1 of 3 recordings" in assumptions[0]
+
+
+def test_the_fill_is_the_value_the_most_recordings_showed_before_their_first_write(tmp_path):
+    traces = three_traces() + [trace("run_d", [call("check_vent", "Vent: OPEN")])]
+    proposal, ruling = gated(tmp_path, proposal_json(), traces=traces)
+    rows = readers.starting_rows(traces, proposal, ruling.parsed)
+    fills, _assumptions, _unset = readers.fills_for(rows, proposal)
+    assert fills["vent"] == "open", "two recordings started open against one closed"
+
+
+def test_a_column_the_corpus_never_shows_before_a_write_is_left_unset_and_named(tmp_path):
+    """Nothing in the corpus says what the lamp was, so the world is not made to invent one."""
+    traces = two_traces()
+    proposal, ruling = gated(tmp_path, proposal_json(columns=("vent", "warmth", "lamp")),
+                             traces=traces)
+    rows = readers.starting_rows(traces, proposal, ruling.parsed)
+    fills, assumptions, unset = readers.fills_for(rows, proposal)
+    assert unset == ["lamp"] and fills == {} and assumptions == []
+
+
+def test_the_fills_reach_the_world_and_the_split_is_left_to_what_was_read(tmp_path):
+    traces = three_traces()
+    proposal, ruling = gated(tmp_path, proposal_json(), traces=traces)
+    rows = readers.starting_rows(traces, proposal, ruling.parsed)
+    fills, assumptions, _unset = readers.fills_for(rows, proposal)
+    artifact = {"proposals": {CARETAKER: proposal.to_dict()}, "rows": {CARETAKER: rows},
+                "fills": {CARETAKER: fills}, "assumptions": assumptions}
+    reached = readers.reader_rows(artifact)[("greenhouse", CARETAKER)]
+    assert reached["run_c"]["vent"] == fills["vent"], "the world holds a value the corpus showed"
+    worlds: dict = {}
+    readers.merge_worlds(worlds, artifact)
+    key = ("greenhouse", CARETAKER, "vent")
+    assert key not in worlds["run_c"], "a filled column is the same everywhere and splits nothing"
+    assert worlds["run_a"][key] != worlds["run_b"][key]
+    assert readers.reader_assumptions(artifact) == assumptions
+
+
+# --- what the proposal leaves for the rest of the build ----------------------
 
 def test_the_columns_carry_the_requestor_that_revealed_them_and_the_export_flags_the_table(tmp_path):
-    proposal, ruling = gate_once(tmp_path, proposal_json())
+    proposal, ruling = gated(tmp_path, proposal_json())
     schema = EntitySchema(tables=["plots"], columns=[])
     readers.apply_to_schema(schema, [proposal], {CARETAKER: readers.column_values(proposal, ruling.parsed)})
     assert schema.tables == ["greenhouse", "plots"]
@@ -255,40 +278,13 @@ def test_the_columns_carry_the_requestor_that_revealed_them_and_the_export_flags
     assert any("greenhouse" in flag and CARETAKER in flag for flag in readers.environment_flags(schema))
 
 
-def test_a_body_is_told_to_read_the_one_row_without_naming_its_key(tmp_path):
+def test_a_body_is_told_to_read_the_one_row_without_naming_its_key_and_what_the_writes_change(tmp_path):
     """The row's key is the requestor's name, and a literal id in a body is refused by D162."""
-    proposal, _ = gate_once(tmp_path, proposal_json())
+    proposal, _ = gated(tmp_path, proposal_json())
     note = readers.body_note([proposal])
     assert "next(iter(self.db.greenhouse.values()))" in note and "never by key" in note
-    assert CARETAKER not in note.split("Its stored columns")[1]
-
-
-def test_a_derived_column_reaches_the_body_writer_as_the_function_and_not_as_a_column(tmp_path):
-    body = {"table": "greenhouse",
-            "columns": [{"name": "vent", "origin": "stored"}, {"name": "warmth", "origin": "stored"},
-                        {"name": "banner", "origin": "derived", "derive": BANNER_DERIVE}],
-            "readers": [{"tool": "check_vent", "source": VENT_READER},
-                        {"tool": "check_climate", "source": CLIMATE_READER},
-                        {"tool": "open_vent", "source": OPEN_READER,
-                         "acknowledgements": ["Vent opened."], "changes": ["vent"]}]}
-    proposal, ruling = gate_once(tmp_path, json.dumps(body))
-    assert ruling.failures == []
-    schema = EntitySchema()
-    readers.apply_to_schema(schema, [proposal], {})
-    assert {c.name for c in schema.columns} == {"vent", "warmth"}, "nothing stores a derived column"
-    assert "def derive_banner(row):" in readers.body_note([proposal])
-
-
-def test_two_recordings_that_read_one_column_differently_start_in_different_worlds(tmp_path):
-    proposal, ruling = gate_once(tmp_path, proposal_json())
-    artifact = {"proposals": {CARETAKER: proposal.to_dict()},
-                "rows": {CARETAKER: readers.starting_rows(two_traces(), proposal, ruling.parsed)}}
-    worlds: dict = {}
-    readers.merge_worlds(worlds, artifact)
-    key = ("greenhouse", CARETAKER, "vent")
-    assert worlds["run_a"][key] != worlds["run_b"][key]
-    assert worlds["run_a"][("greenhouse", CARETAKER, "warmth")] != worlds["run_b"][
-        ("greenhouse", CARETAKER, "warmth")]
+    assert "The recording shows open_vent changing: vent." in note
+    assert CARETAKER not in note.split("Its columns are")[1]
 
 
 # --- the attempts ------------------------------------------------------------
@@ -298,12 +294,13 @@ def test_a_failing_proposal_is_handed_back_the_shapes_that_failed_and_the_next_a
                        proposal_json()])
     traces = two_traces()
     proposal, nodes, parsed = readers.propose(model, CARETAKER, readers.prose_calls(traces)[CARETAKER],
-                                              traces, tmp_path, gate=readers.GATE_DECLARED)
+                                              traces, tmp_path, write_tools=WRITES)
     assert proposal.assisted is False and proposal.attempts == 2
     assert [n["passed"] for n in nodes] == [False, True]
     retry = model.calls[1]["messages"][-1]["content"]
     assert "check_vent shape 'Vent: CLOSED'" in retry and "IndexError" in retry
     assert parsed[("check_vent", "Vent: OPEN")] == {"vent": "open"}
+    assert proposal.effects == {"open_vent": ["vent"]}, "the effects are mined off the kept proposal"
 
 
 def test_after_the_last_attempt_the_proposal_with_the_fewest_failing_shapes_is_kept_and_assisted(tmp_path):
@@ -313,23 +310,23 @@ def test_after_the_last_attempt_the_proposal_with_the_fewest_failing_shapes_is_k
     model = TestModel([worse, better, worse, worse])
     traces = two_traces()
     proposal, nodes, _ = readers.propose(model, CARETAKER, readers.prose_calls(traces)[CARETAKER],
-                                         traces, tmp_path, gate=readers.GATE_DECLARED)
+                                         traces, tmp_path, write_tools=WRITES)
     assert len(nodes) == readers.MAX_ATTEMPTS and proposal.assisted is True
-    assert [n["failing_shapes"] for n in nodes] == [4, 3, 4, 4]
-    assert proposal.reader_for("check_climate").source.strip() == CLIMATE_READER.strip(), "the second attempt"
-    assert sum("check_vent" in line for line in proposal.failures) == 2
+    assert [n["failing_shapes"] for n in nodes] == [3, 2, 3, 3]
+    assert proposal.reader_for("check_climate").source.strip() == CLIMATE_READER.strip()
+    assert len(proposal.failures) == 2 and all("check_vent" in line for line in proposal.failures)
 
 
-def test_an_unknown_gate_is_refused_rather_than_run_under_a_default(tmp_path):
-    with pytest.raises(ValueError, match="unknown readers gate"):
-        readers.propose(TestModel([]), CARETAKER, {}, [], tmp_path, gate="whatever")
-
-
-def test_the_stage_ruling_flags_an_assisted_proposal_and_never_fails_the_build():
+def test_the_stage_ruling_reports_the_silent_shapes_and_the_fills_and_fails_no_build():
     kept = readers.Proposal(requestor=CARETAKER, table="greenhouse", attempts=4, assisted=True,
+                            silent={"open_vent": 2}, effects={"open_vent": ["vent"]},
                             failures=["check_vent shape 'Vent: N': the reader raised KeyError"])
-    ruling = readers_gate([kept.to_dict()], 1)
+    ruling = readers_gate([kept.to_dict()], 1, assumptions=["one column was filled"],
+                          unset={CARETAKER: ["warmth"]})
     assert ruling.passed is False and ruling.metrics["assisted"] == 1
+    assert ruling.metrics["silent_shapes"] == 2 and ruling.metrics["silent_by_tool"] == {"open_vent": 2}
+    assert ruling.metrics["changed_columns"] == 1 and ruling.metrics["filled_columns"] == 1
+    assert ruling.metrics["unset_columns"] == {CARETAKER: ["warmth"]}
     assert CARETAKER in ruling.failures[0]
     assert readers_gate([], 0).passed is True
 
@@ -357,8 +354,7 @@ def test_a_corpus_with_no_prose_results_records_the_note_and_asks_no_model(tmp_p
 
 def test_the_stage_puts_the_revealed_row_in_the_world_and_splits_the_tasks_that_disagree(tmp_path):
     _write_traces(tmp_path, two_traces())
-    plan = BuildPlan(workdir=tmp_path, model=TestModel([proposal_json()], loop=True),
-                     readers_gate=readers.GATE_DECLARED)
+    plan = BuildPlan(workdir=tmp_path, model=TestModel([proposal_json()], loop=True))
     result = execute(plan, "db")
     db = result.artifacts["db"]
     assert list(db["greenhouse"]) == [CARETAKER]
@@ -366,32 +362,40 @@ def test_the_stage_puts_the_revealed_row_in_the_world_and_splits_the_tasks_that_
     pinned = {t: [(r.table, r.id) for r in o.rows] for t, o in overlays.items()}
     assert all(("greenhouse", CARETAKER) in rows for rows in pinned.values())
     assert len(result.artifacts["tasks"]) == 2, "the two recordings started with the vent in two states"
-    schema = result.artifacts["schema"]
-    assert "greenhouse" in schema.tables
-    assert readers.revealed_tables(schema) == {"greenhouse": CARETAKER}
+    assert readers.revealed_tables(result.artifacts["schema"]) == {"greenhouse": CARETAKER}
 
 
-def test_the_flag_chooses_the_gate_the_stage_holds_the_proposal_to(tmp_path):
-    """The same reply, with no declaration in it, is refused under declared and kept under replay."""
-    bare = json.dumps({"table": "greenhouse", "columns": [{"name": "vent"}],
-                       "readers": [{"tool": "check_vent", "source": VENT_READER},
-                                   {"tool": "check_climate", "source": CLIMATE_READER},
-                                   {"tool": "open_vent", "source": OPEN_READER}]})
-    _write_traces(tmp_path, two_traces())
-    strict = execute(BuildPlan(workdir=tmp_path, model=TestModel([bare], loop=True),
-                               readers_gate=readers.GATE_DECLARED), "readers")
-    assert strict.artifacts["readers"]["proposals"][CARETAKER]["assisted"] is True
+def test_the_stage_records_every_column_it_filled_from_the_corpus_as_an_assumption(tmp_path):
+    """A recording that never read a column starts on what the corpus showed, and says so."""
+    traces = [trace("run_a", [call("check_vent", "Vent: OPEN"),
+                              call("check_climate", "Vent: OPEN\nWarmth: 21 units")]),
+              trace("run_c", [call("check_climate", "Vent: OPEN\nWarmth: 19 units")])]
+    _write_traces(tmp_path, traces)
+    plan = BuildPlan(workdir=tmp_path, model=TestModel([json.dumps({
+        "table": "greenhouse",
+        "columns": [{"name": "vent"}, {"name": "warmth"}, {"name": "lamp"}],
+        "readers": [{"tool": "check_vent", "source": VENT_READER},
+                    {"tool": "check_climate", "source": CLIMATE_READER}]})], loop=True))
+    result = execute(plan, "db")
+    artifact = result.artifacts["readers"]
+    assert artifact["fills"][CARETAKER] == {}, "both recordings read every column they hold"
+    assert artifact["unset"][CARETAKER] == ["lamp"], "nothing in the corpus ever read the lamp"
+    assert "lamp" not in result.artifacts["db"]["greenhouse"][CARETAKER]
+    assumptions = json.loads((tmp_path / "assumptions.json").read_text(encoding="utf-8"))
+    assert result.artifacts["assumptions"] == assumptions
 
-    free_dir = tmp_path / "free"
-    _write_traces(free_dir, two_traces())
-    free = execute(BuildPlan(workdir=free_dir, model=TestModel([bare], loop=True),
-                             readers_gate=readers.GATE_REPLAY), "readers")
-    assert free.artifacts["readers"]["proposals"][CARETAKER]["assisted"] is False
 
-
-def test_a_gate_nobody_registered_is_refused_when_the_plan_is_made(tmp_path):
-    with pytest.raises(ValueError, match="unknown readers gate"):
-        BuildPlan(workdir=tmp_path, readers_gate="whatever")
+def test_a_fill_reaches_the_starting_state_and_its_assumption_file(tmp_path):
+    traces = [trace("run_a", [call("check_vent", "Vent: OPEN"),
+                              call("check_climate", "Vent: OPEN\nWarmth: 21 units")]),
+              trace("run_c", [call("check_climate", "Warmth: 19 units")])]
+    _write_traces(tmp_path, traces)
+    plan = BuildPlan(workdir=tmp_path, model=TestModel([proposal_json()], loop=True))
+    result = execute(plan, "db")
+    assert result.artifacts["readers"]["fills"][CARETAKER] == {"vent": "open"}
+    assumptions = json.loads((tmp_path / "assumptions.json").read_text(encoding="utf-8"))
+    assert any("column vent was not read before a write in 1 of 2 recordings" in line
+               for line in assumptions), assumptions
 
 
 def test_the_stage_needs_a_model_where_a_corpus_has_prose_results(tmp_path):

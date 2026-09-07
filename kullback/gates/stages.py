@@ -44,23 +44,40 @@ def intent_gate(intents: dict) -> GateResult:
     return gate("intent", failures, tasks=len(intents), grounded=sum(1 for r in intents.values() if _get(r, "grounded")))
 
 
-def readers_gate(proposals: Iterable[Any], requestors: int = 0) -> GateResult:
+def readers_gate(proposals: Iterable[Any], requestors: int = 0, assumptions: Iterable[Any] = (),
+                 unset: Any = None) -> GateResult:
     """A proposal the readers gate could not satisfy is flagged and kept, never a failed build.
 
     Section 6 again: a requestor whose readers stayed assisted still leaves a world, and what that
     world is worth is replay fidelity's to say, not this gate's. Each proposal is the plain dict the
     stage wrote to readers.json, so nothing in the gates package has to know the Builder's records.
+
+    Three things are reported and none of them fails a build: the shapes a reader read nothing out
+    of, per tool, which is the strictness one arm of the 2026-09-07 experiment refused on and this
+    one only counts; the columns filled from the corpus because no recording read them before a
+    write, one assumption each; and the columns left unset because no recording read them before any
+    write, which are named so a reader of the build can see what the world is guessing at.
     """
     proposals = list(proposals)
     assisted = [p for p in proposals if _get(p, "assisted")]
+    unset = dict(unset or {})
     failures = [f"{_get(p, 'requestor')}: kept after {_get(p, 'attempts')} attempts with "
                 f"{len(_get(p, 'failures') or [])} shape(s) still failing: "
                 f"{(_get(p, 'failures') or ['no reason recorded'])[0]}"
                 for p in assisted]
+    silent = {}
+    effects = 0
+    for p in proposals:
+        for tool, count in sorted((_get(p, "silent") or {}).items()):
+            silent[str(tool)] = int(count)
+        effects += sum(len(columns or []) for columns in (_get(p, "effects") or {}).values())
     return gate("readers", failures, requestors=requestors, proposals=len(proposals),
                 assisted=len(assisted),
                 columns=sum(len(_get(p, "columns") or []) for p in proposals),
-                readers=sum(len(_get(p, "readers") or []) for p in proposals))
+                readers=sum(len(_get(p, "readers") or []) for p in proposals),
+                silent_shapes=sum(silent.values()), silent_by_tool=silent,
+                changed_columns=effects, filled_columns=len(list(assumptions)),
+                unset_columns={str(k): sorted(v or []) for k, v in unset.items()})
 
 
 def rerolls_gate(rerolls: dict, per_task: int) -> GateResult:

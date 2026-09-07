@@ -212,6 +212,7 @@ def build_starting_state(
     grow: Optional[dict[str, int]] = None,
     grow_seed: int = 0,
     revealed_rows: Optional[dict] = None,
+    revealed_assumptions: Optional[Iterable[str]] = None,
 ) -> StartingState:
     """One shared db.json for the customer, plus one TaskOverlay per Task (D33, D74).
 
@@ -225,6 +226,8 @@ def build_starting_state(
     are the rows another requestor's prose results revealed (`builder/readers.py`), which take the
     same inverse replay as any other row: one sighting per trace, marked on the schema by the
     requestor that revealed them and never part of the customer's own system.
+    `revealed_assumptions` are that stage's own sentences, the columns it filled from the corpus
+    because no recording read them before a write, recorded here with the state's own guesses.
     """
     traces, workdir = list(traces), Path(workdir)
     workdir.mkdir(parents=True, exist_ok=True)
@@ -235,7 +238,7 @@ def build_starting_state(
         by_row.setdefault((obs.table, obs.row_id), []).append(obs)
 
     db: dict[str, dict] = {table: {} for table in sorted(schema.tables)}
-    assumptions: list[str] = []
+    assumptions: list[str] = [str(line) for line in (revealed_assumptions or [])]
     for (table, row_id), seen in sorted(by_row.items()):
         clean = [o for o in seen if not o.after_write]
         chosen = max(clean or seen, key=lambda o: o.order)
