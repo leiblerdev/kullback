@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any, NamedTuple, Optional, Sequence
 
 from kullback.ai.provider import Model
+from kullback.gates.tool_runs import id_field, match_table
 from kullback.runner.records import (
     Column,
     EffectObservation,
@@ -1291,8 +1292,93 @@ def id_pattern(values: list) -> Optional[str]:
     return wide if all(re.fullmatch(wide, t) for t in texts) else None
 
 
+def composite_keys(traces: list[Trace], schema: EntitySchema,
+                   write_tools: Sequence[str] = ()) -> dict[str, list[str]]:
+    """Tables the corpus shows holding several rows under one id, and the columns that tell them apart.
+
+    The rule, read off what a corpus can show on its own. Inside one trace, with no write in between,
+    a table's rows repeat an id and their hard values differ: one id is standing for more than one
+    row, and the schema's single key is losing all but the last of them. What tells the two apart is
+    a column of the table that is also an argument of the call that returned the row, and whose
+    argument value differs between the two calls: the customer's tool was asked for one version and
+    answered it, so the argument is the part of the identity the row itself may not repeat (a search
+    that answers rows for the date it was given and leaves the date column null).
+
+    Four things it must not do, and how each is refused. A row that merely changed after a write is
+    the after_write rule's (D74), so a sighting on or after a write to that id is not compared. A
+    soft column is not identity, so only `hard` columns (D73) count, both for the difference that
+    opens the case and for the column that joins the key. A column that is not a column of the table
+    cannot be part of its key, so candidates come from the schema's own columns. And a table whose
+    ids stand for one row each is never touched, because it has no repeat to explain.
+
+    Every conflicting pair of the corpus has to be explained by the same columns: the key is the
+    intersection over all of them, so one odd pair cannot add a column, and a table whose repeats
+    no argument explains keeps its single key rather than gaining a guess.
+    """
+    writes = set(write_tools)
+    id_columns_by_table: dict[str, str] = {}
+    candidates_per_pair: dict[str, list[set[str]]] = {}
+    hard = {(c.table, c.name) for c in schema.columns if c.class_ == "hard"}
+    for trace in traces:
+        written: set[str] = set()
+        seen: dict[tuple[str, str], list[tuple[dict, dict]]] = {}
+        for call in trace.tool_calls:
+            if not is_assistant_call(call) or call.error is not None or call.result is None:
+                continue
+            args = call.args or {}
+            is_write = call.name in writes
+            rows = _result_rows(_parse(call.result))
+            for row in rows:
+                found = match_table(schema, row)
+                if found is None:
+                    continue
+                table, row_id = found
+                name = id_field(schema, table)
+                if name is None:
+                    continue
+                id_columns_by_table[table] = name
+                if is_write or row_id in written:
+                    continue
+                for previous, previous_args in seen.get((table, row_id), []):
+                    if not _hard_difference(table, previous, row, hard):
+                        continue
+                    candidates_per_pair.setdefault(table, []).append(
+                        _telling_arguments(table, name, hard, previous_args, args))
+                seen.setdefault((table, row_id), []).append((row, args))
+            if is_write:
+                written |= {row_id for row_id in (
+                    (match_table(schema, row) or (None, None))[1] for row in rows) if row_id}
+                written |= {v for v in args.values() if isinstance(v, str)}
+    out: dict[str, list[str]] = {}
+    for table, sets in sorted(candidates_per_pair.items()):
+        common = set.intersection(*sets)
+        if common:
+            out[table] = [id_columns_by_table[table]] + sorted(common)
+    return out
+
+
+def _hard_difference(table: str, first: dict, second: dict, hard: set[tuple[str, str]]) -> bool:
+    """Whether two sightings of one id disagree on a hard column, which is what makes them two rows."""
+    return any(canonical_json(first.get(name)) != canonical_json(second.get(name))
+               for name in {*first, *second} if (table, str(name)) in hard)
+
+
+def _telling_arguments(table: str, id_column: str, hard: set[tuple[str, str]],
+                       first: dict, second: dict) -> set[str]:
+    """Columns of the table both calls passed and disagreed on: what says which row was asked for."""
+    return {name for name in set(first) & set(second)
+            if name != id_column and (table, str(name)) in hard
+            and canonical_json(first[name]) != canonical_json(second[name])}
+
+
+def write_tool_names(traces: list[Trace]) -> set[str]:
+    """The tools the code rule of D68 calls writes, for a caller that has no ToolSigs to hand."""
+    return {sig.name for sig in mine_tools(traces) if sig.kind == "write"}
+
+
 def mine_schema(traces: list[Trace], db_json_path: Optional[Path] = None,
-                model: Optional[Model] = None) -> EntitySchema:
+                model: Optional[Model] = None,
+                write_tools: Optional[Sequence[str]] = None) -> EntitySchema:
     """Tables and columns from observed tool results and from a given db.json, classified per D73."""
     store: dict[str, dict] = {}
     if db_json_path is not None:
@@ -1346,4 +1432,9 @@ def mine_schema(traces: list[Trace], db_json_path: Optional[Path] = None,
                 pattern = id_pattern(cell["values"])
                 if pattern:
                     id_patterns[f"{table}.{name}"] = pattern
-    return EntitySchema(tables=sorted(store), columns=columns, id_patterns=id_patterns, homes=homes)
+    schema = EntitySchema(tables=sorted(store), columns=columns, id_patterns=id_patterns, homes=homes)
+    # Last, because the rule reads the columns' classes and the id column the rest of the Harness
+    # will key by, so the key it names is the one every reader forms.
+    schema.composite_keys = composite_keys(
+        traces, schema, write_tools if write_tools is not None else sorted(write_tool_names(traces)))
+    return schema

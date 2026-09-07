@@ -2005,3 +2005,97 @@ def test_a_compiled_tool_carries_one_call_outcome_per_recorded_call(
     assert all(row["replayed"] for row in build.call_outcomes)
     written = json.loads((workdir / ce.NODE_DIR / "get_order_details.json").read_text(encoding="utf-8"))
     assert written["call_outcomes"] == build.call_outcomes
+
+
+# --- rows whose identity is more than one column (composite row keys) ---------
+
+def dock_schema(**extra) -> EntitySchema:
+    """An invented `docks` table let out per shift, keyed by dock_id and shift together."""
+    names = {"dock_id": "hard", "shift": "hard", "seats": "hard", "zone": "hard", "updated_at": "exempt"}
+    return EntitySchema(
+        tables=["docks"],
+        columns=[Column(table="docks", name=name, **{"class": kind}, classified_by="rule")
+                 for name, kind in sorted(names.items())],
+        id_patterns={"docks.dock_id": r"^dock_\d$"},
+        composite_keys={"docks": ["dock_id", "shift"]},
+        **extra,
+    )
+
+
+def a_dock(dock_id: str, seats: int, shift=None) -> dict:
+    return {"dock_id": dock_id, "shift": shift, "seats": seats, "zone": "north"}
+
+
+def test_a_composite_key_keeps_both_versions_of_one_id(workdir):
+    schema = dock_schema()
+    trace = _trace("A", [
+        _call("list_docks", {"shift": "early"}, result=[a_dock("dock_1", 4)], idx=0),
+        _call("list_docks", {"shift": "late"}, result=[a_dock("dock_1", 1)], idx=1),
+    ])
+    state = ce.build_starting_state([trace], schema, workdir, tool_sigs=[], synthetic=False)
+    assert sorted(state.db["docks"]) == ["dock_1|early", "dock_1|late"]
+    assert state.db["docks"]["dock_1|early"]["seats"] == 4
+    assert state.db["docks"]["dock_1|late"]["seats"] == 1
+
+
+def test_a_key_column_the_row_leaves_null_is_taken_from_the_call_that_returned_it():
+    schema = dock_schema()
+    row = a_dock("dock_1", 4)
+    assert ce.match_table(schema, row, {"shift": "early"}) == ("docks", "dock_1|early")
+    assert ce.match_table(schema, row) == ("docks", "dock_1|")
+    assert ce.match_table(schema, dict(row, shift="late"), {"shift": "early"}) == ("docks", "dock_1|late")
+
+
+def test_a_single_key_table_is_keyed_exactly_as_it_was(schema, sample):
+    order = sample["by_status"]["pending"]
+    assert ce.match_table(schema, order, {"anything": "at all"}) == ("orders", order["order_id"])
+
+
+def test_a_partial_sighting_folds_into_the_rows_whose_known_key_columns_match(workdir):
+    """It is not a new row and not a contradiction: it fills only what the keyed rows never showed."""
+    schema = dock_schema()
+    trace = _trace("A", [
+        _call("list_docks", {"shift": "early"}, result=[a_dock("dock_1", 4)], idx=0),
+        _call("list_docks", {"shift": "late"}, result=[a_dock("dock_1", 1)], idx=1),
+        _call("find_dock", {"dock_id": "dock_1"}, result={"dock_id": "dock_1", "zone": "south",
+                                                          "seats": 9, "berth": "outer"}, idx=2),
+    ])
+    state = ce.build_starting_state([trace], schema, workdir, tool_sigs=[], synthetic=False)
+    assert sorted(state.db["docks"]) == ["dock_1|early", "dock_1|late"]
+    assert state.db["docks"]["dock_1|early"]["seats"] == 4  # what the keyed sighting showed stands
+    assert state.db["docks"]["dock_1|early"]["berth"] == "outer"  # what it never showed is filled
+    assert any("without every part of its key" in line for line in state.assumptions)
+
+
+def test_a_partial_sighting_no_keyed_row_matches_is_kept_as_the_partial_sighting_it_is(workdir):
+    schema = dock_schema()
+    trace = _trace("A", [
+        _call("list_docks", {"shift": "early"}, result=[a_dock("dock_1", 4)], idx=0),
+        _call("find_dock", {"dock_id": "dock_2"}, result={"dock_id": "dock_2", "seats": 9}, idx=1),
+    ])
+    state = ce.build_starting_state([trace], schema, workdir, tool_sigs=[], synthetic=False)
+    assert sorted(state.db["docks"]) == ["dock_1|early", "dock_2|"]
+
+
+def test_an_id_a_call_named_without_every_key_column_owes_no_synthetic_row(workdir):
+    schema = dock_schema()
+    trace = _trace("A", [
+        _call("list_docks", {"shift": "early"}, result=[a_dock("dock_1", 4)], idx=0),
+        _call("find_dock", {"dock_id": "dock_9"}, result=None, idx=1),
+        _call("find_dock", {"dock_id": "dock_8", "shift": "late"}, result=None, idx=2),
+    ])
+    assert ce.referenced_ids([trace], schema) == [("docks", "dock_8|late")]
+    state = ce.build_starting_state([trace], schema, workdir, tool_sigs=[])
+    assert sorted(state.db["docks"]) == ["dock_1|early", "dock_8|late"]
+    assert state.db["docks"]["dock_8|late"]["shift"] == "late"  # the key's own parts, not the modal row
+    assert state.synthetic_rows == ["dock_8|late"]
+
+
+def test_the_tables_block_tells_the_body_writer_how_to_form_a_composite_key():
+    block = ce._schema_block(dock_schema())
+    assert 'f"{dock_id}|{shift}"' in block
+    assert "never look one up by dock_id alone" in block
+
+
+def test_the_tables_block_says_nothing_about_keys_for_a_single_key_table(schema):
+    assert "keyed by" not in ce._schema_block(schema)

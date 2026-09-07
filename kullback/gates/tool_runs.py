@@ -12,9 +12,9 @@ subprocess stays where it was.
 The seventh, `body_memorised_values_gate` (D162), runs no calls at all: it reads the body's own
 source and refuses a literal that is data the recordings carried rather than code the body needs.
 
-The row helpers (`parse_result`, `match_table`, `columns_of`, `id_field`, `id_pattern_for`) live
-here because the replay ruling compares rows column by column under the schema's classes (D73,
-D84); `sandbox.py` and `compile_env.py` read them back from here.
+The row helpers (`parse_result`, `match_table`, `row_key`, `columns_of`, `id_field`, `key_fields`,
+`id_pattern_for`) live here because the replay ruling compares rows column by column under the
+schema's classes (D73, D84); `sandbox.py` and `compile_env.py` read them back from here.
 """
 
 from __future__ import annotations
@@ -86,8 +86,57 @@ def id_field(schema: EntitySchema, table: str) -> Optional[str]:
     return next(iter(preferred or mined), None) or next((n for n in sorted(names) if n.endswith("_id")), None)
 
 
-def match_table(schema: EntitySchema, value: Any) -> Optional[tuple[str, str]]:
-    """Which table a returned row belongs to, and its id; None when the value is not a row."""
+def key_fields(schema: EntitySchema, table: str) -> list[str]:
+    """The columns a row's key is made of: the composite key the schema names, or the id column.
+
+    Every table is keyed by its id column until the miner finds one id standing for several rows
+    (`mine.composite_keys`), so this answers a one-element list on a schema that names no composite
+    key, which is what every reader saw before composite keys existed.
+    """
+    composite = [str(name) for name in (getattr(schema, "composite_keys", None) or {}).get(table) or ()]
+    if composite:
+        return composite
+    name = id_field(schema, table)
+    return [name] if name else []
+
+
+def key_separator(schema: EntitySchema) -> str:
+    """The string that joins a composite key's values into the row id (D74's rows stay strings)."""
+    return getattr(schema, "key_separator", None) or "|"
+
+
+def row_key(schema: EntitySchema, table: str, row: dict, args: Optional[dict] = None) -> Optional[str]:
+    """A row's key: its id, or the composite key's values joined; None when it carries no id.
+
+    A key column the row leaves out or answers null is taken from the arguments of the call that
+    returned the row, because a customer's tool can take the value that says which row this is from
+    the call and not repeat it in the row (a search that answers rows for the date it was asked
+    about, and leaves the date column null). What neither the row nor the call supplies is empty in
+    the key, and `partial_key` is what tells a reader the sighting is missing a part of its key.
+    """
+    fields = key_fields(schema, table)
+    if not fields or not isinstance(row.get(fields[0]), str):
+        return None
+    parts = [row[fields[0]]]
+    for name in fields[1:]:
+        value = row.get(name)
+        if value is None and args:
+            value = args.get(name)
+        parts.append("" if value is None else str(value))
+    return key_separator(schema).join(parts)
+
+
+def partial_key(schema: EntitySchema, table: str, key: str) -> bool:
+    """Whether a key is missing a part: a sighting of the row without what says which row it is."""
+    fields = key_fields(schema, table)
+    if len(fields) < 2:
+        return False
+    parts = key.split(key_separator(schema))
+    return len(parts) != len(fields) or any(part == "" for part in parts[1:])
+
+
+def match_table(schema: EntitySchema, value: Any, args: Optional[dict] = None) -> Optional[tuple[str, str]]:
+    """Which table a returned row belongs to, and its key; None when the value is not a row."""
     if not isinstance(value, dict):
         return None
     best, best_score = None, 1
@@ -100,7 +149,9 @@ def match_table(schema: EntitySchema, value: Any) -> Optional[tuple[str, str]]:
             continue
         score = len(set(columns_of(schema, table)) & set(value))
         if score > best_score:
-            best, best_score = (table, value[name]), score
+            key = row_key(schema, table, value, args)
+            if key is not None:
+                best, best_score = (table, key), score
     return best
 
 

@@ -29,8 +29,11 @@ from kullback.builder.sandbox import (
     gate_parses,
     id_field,
     id_pattern_for,
+    key_fields,
+    key_separator,
     match_table,
     parse_result,
+    partial_key,
     run_gates,
 )
 
@@ -133,13 +136,15 @@ class ToolBuild:
 
 # --- reading rows out of recorded tool results ---
 
-def extract_rows(schema: EntitySchema, result: Any) -> list[tuple[str, str, dict]]:
+def extract_rows(schema: EntitySchema, result: Any, args: Optional[dict] = None) -> list[tuple[str, str, dict]]:
     """Rows a result states directly: itself, or the elements of a returned list.
 
-    A value nested inside a row (an item inside an order) is not read as a row of its own.
+    A value nested inside a row (an item inside an order) is not read as a row of its own. The
+    call's arguments are passed through to the key, because a table with a composite key can be
+    told which row it is answering by the call rather than by the row (`tool_runs.row_key`).
     """
     values = result if isinstance(result, list) else [result]
-    return [(t, i, v) for v in values for t, i in [match_table(schema, v) or (None, None)] if t]
+    return [(t, i, v) for v in values for t, i in [match_table(schema, v, args) or (None, None)] if t]
 
 # --- inverse replay over the whole corpus (D33, D74) ---
 
@@ -154,18 +159,30 @@ class _Obs:
     after_write: bool
 
 
-def _observations(traces: list[Trace], schema: EntitySchema, write_tools: set[str]) -> list[_Obs]:
-    """Every row sighting in corpus order; a write marks the rows it returned or named in its args."""
+def _observations(traces: list[Trace], schema: EntitySchema, write_tools: set[str],
+                  revealed_rows: Optional[dict] = None) -> list[_Obs]:
+    """Every row sighting in corpus order; a write marks the rows it returned or named in its args.
+
+    `revealed_rows` are the rows another requestor's own prose results revealed (builder/readers.py),
+    as (table, row id) to trace to row: one sighting per trace, already walked to the version that
+    trace started in, so it sits before that trace's own calls and no write has touched it. R33 is
+    unchanged for everything else: only the assistant's calls describe the customer's system, and a
+    row that came from another requestor is marked as that requestor's on the schema.
+    """
     out: list[_Obs] = []
     for trace_index, trace in enumerate(traces):
         written: set[str] = set()
+        for (table, row_id), by_trace in sorted((revealed_rows or {}).items()):
+            row = by_trace.get(trace.trace_id)
+            if row:
+                out.append(_Obs(table, row_id, dict(row), trace.trace_id, (trace_index, -1), False))
         for call_index, call in enumerate(trace.tool_calls):
             # A call the simulated user made through its own tools (telecom's phone tools) is not a
             # sighting of the customer's system; only the assistant's calls describe it (R33).
             if call.error is not None or not is_assistant_call(call):
                 continue
             is_write = call.name in write_tools
-            rows = extract_rows(schema, parse_result(call.result))
+            rows = extract_rows(schema, parse_result(call.result), call.args)
             for table, row_id, row in rows:
                 out.append(_Obs(table, row_id, row, trace.trace_id, (trace_index, call_index),
                                 is_write or row_id in written))
@@ -199,6 +216,8 @@ def build_starting_state(
     synthetic: bool = True,
     grow: Optional[dict[str, int]] = None,
     grow_seed: int = 0,
+    revealed_rows: Optional[dict] = None,
+    revealed_assumptions: Optional[Iterable[str]] = None,
 ) -> StartingState:
     """One shared db.json for the customer, plus one TaskOverlay per Task (D33, D74).
 
@@ -208,18 +227,23 @@ def build_starting_state(
     keyed by wall-clock time (design section 8). Ids the traces asked for but never showed are then
     filled with tagged synthetic rows (D40), unless `synthetic` is off. `grow` names a row count per
     table to reach with rows composed from the observed ones (D107, `synth.grow`); what was added,
-    the rules it followed and the checks it passed are written to synthetic.json.
+    the rules it followed and the checks it passed are written to synthetic.json. `revealed_rows`
+    are the rows another requestor's prose results revealed (`builder/readers.py`), which take the
+    same inverse replay as any other row: one sighting per trace, marked on the schema by the
+    requestor that revealed them and never part of the customer's own system.
+    `revealed_assumptions` are that stage's own sentences, the columns it filled from the corpus
+    because no recording read them before a write, recorded here with the state's own guesses.
     """
     traces, workdir = list(traces), Path(workdir)
     workdir.mkdir(parents=True, exist_ok=True)
     write_tools = {s.name for s in (tool_sigs or []) if s.kind == "write"}
-    observations = _observations(traces, schema, write_tools)
+    observations = _observations(traces, schema, write_tools, revealed_rows)
     by_row: dict[tuple[str, str], list[_Obs]] = {}
     for obs in observations:
         by_row.setdefault((obs.table, obs.row_id), []).append(obs)
 
     db: dict[str, dict] = {table: {} for table in sorted(schema.tables)}
-    assumptions: list[str] = []
+    assumptions: list[str] = [str(line) for line in (revealed_assumptions or [])]
     for (table, row_id), seen in sorted(by_row.items()):
         clean = [o for o in seen if not o.after_write]
         chosen = max(clean or seen, key=lambda o: o.order)
@@ -228,6 +252,9 @@ def build_starting_state(
                                "its post-state is kept as the starting value")
         db.setdefault(table, {})[row_id] = chosen.row
 
+    assumptions += [f"{table} row {row_id} was seen without every part of its key; it was folded "
+                    f"into the {count} rows whose known key columns match and is not a row of its own"
+                    for table, row_id, count in fold_partial_rows(db, schema)]
     added = add_synthetic_rows(db, schema, traces) if synthetic else []
     assumptions += [f"{table_of} row {row_id} was never shown by a trace; it is a synthetic row "
                     "shaped from the observed rows and a Run that reads it is assisted"
@@ -253,6 +280,46 @@ def build_starting_state(
     (workdir / "assumptions.json").write_text(json.dumps(assumptions, indent=2) + "\n", encoding="utf-8")
     return StartingState(db=db, overlays=overlays, assumptions=assumptions, path=path,
                          synthetic_rows=[row_id for _, row_id in added] + grown_ids)
+
+
+def fold_partial_rows(db: dict, schema: EntitySchema) -> list[tuple[str, str, int]]:
+    """A row seen without every part of its key is not a new row and not a contradiction.
+
+    The rule. Such a sighting is folded into every row whose known key columns match it, filling
+    only the columns those rows were never shown holding, so it can add what the keyed sightings
+    did not show and can never overwrite what they did. Where no keyed row matches, it is kept as
+    the partial sighting it is, under its own partial key, because dropping it would lose an
+    observation and inventing the missing part would be a guess (D41). Returns (table, key, rows it
+    was folded into) per folded row.
+
+    Nothing to do on a table keyed by one column, which is every table until the miner names a
+    composite key: a key of one part is never partial.
+    """
+    folded: list[tuple[str, str, int]] = []
+    separator = key_separator(schema)
+    for table in sorted(db):
+        fields = key_fields(schema, table)
+        if len(fields) < 2:
+            continue
+        rows = db[table]
+        for key in sorted(rows):
+            if not partial_key(schema, table, key):
+                continue
+            known = key.split(separator)
+            matches = [other for other in sorted(rows) if other != key
+                       and _key_agrees(other.split(separator), known)]
+            for other in matches:
+                for name, value in rows[key].items():
+                    rows[other].setdefault(name, value)
+            if matches:
+                del rows[key]
+                folded.append((table, key, len(matches)))
+    return folded
+
+
+def _key_agrees(parts: list[str], known: list[str]) -> bool:
+    """Whether a full key matches every part a partial key does know."""
+    return len(parts) == len(known) and all(a == b for a, b in zip(parts, known, strict=False) if b)
 
 
 def fold_into_homes(db: dict, schema: EntitySchema) -> list[tuple[str, str, str]]:
@@ -287,19 +354,25 @@ def referenced_ids(traces: Iterable[Trace], schema: EntitySchema) -> list[tuple[
     Public: build.py's build_environment gate wires these ids into validate.environment_gate, to
     check db.json actually holds every id a trace referenced.
     """
-    fields = {table: id_field(schema, table) for table in schema.tables}
+    keys = {table: key_fields(schema, table) for table in schema.tables}
     out: set[tuple[str, str]] = set()
     for trace in traces:
         for call in trace.tool_calls:
             if call.error is not None:  # an id the customer's tool refused is not a row we owe
                 continue
-            for name, value in call.args.items():
-                if not isinstance(value, str):
+            args = call.args or {}
+            for table, fields in keys.items():
+                if not fields or not isinstance(args.get(fields[0]), str):
                     continue
-                for table, field_name in fields.items():
-                    pattern = id_pattern_for(schema, table, field_name)
-                    if field_name == name and (not pattern or re.match(pattern, value)):
-                        out.add((table, value))
+                pattern = id_pattern_for(schema, table, fields[0])
+                if pattern and not re.match(pattern, args[fields[0]]):
+                    continue
+                # A composite key the call does not complete names no row: a partial id would be a
+                # row of its own, which is exactly what the composite key exists to prevent.
+                if any(args.get(name) is None for name in fields[1:]):
+                    continue
+                out.add((table, key_separator(schema).join(
+                    [args[fields[0]]] + [str(args[name]) for name in fields[1:]])))
     return sorted(out)
 
 
@@ -316,8 +389,10 @@ def add_synthetic_rows(db: dict, schema: EntitySchema, traces: Iterable[Trace]) 
         rows = db.get(table) or {}
         if row_id in rows or not rows:
             continue
-        name = id_field(schema, table)
-        db.setdefault(table, {})[row_id] = dict(_modal_row(rows.values()), **({name: row_id} if name else {}))
+        fields = key_fields(schema, table)
+        parts = row_id.split(key_separator(schema)) if len(fields) > 1 else [row_id]
+        named = dict(zip(fields, parts, strict=False)) if fields else {}
+        db.setdefault(table, {})[row_id] = dict(_modal_row(rows.values()), **named)
         added.append((table, row_id))
     schema.synthetic_rows = sorted(set(schema.synthetic_rows) | {row_id for _, row_id in added})
     return added
@@ -756,6 +831,19 @@ def _schema_block(schema: EntitySchema) -> str:
         columns = sorted((c for c in schema.columns if c.table == table), key=lambda c: c.name)
         names = ", ".join(c.name for c in columns) if columns else "(no columns observed)"
         lines.append(f"- {table}: {names}")
+        fields = key_fields(schema, table)
+        if len(fields) > 1:
+            separator = key_separator(schema)
+            form = separator.join("{" + name + "}" for name in fields)
+            lines.append(f"    self.db.{table} is keyed by {' and '.join(fields)} together, joined "
+                         f"with {separator!r}: the key of a row is f\"{form}\". One "
+                         f"{fields[0]} stands for several rows here, one per "
+                         f"{' and '.join(fields[1:])}, so build the whole key to reach a row and "
+                         f"never look one up by {fields[0]} alone. A row's own "
+                         f"{' or '.join(fields[1:])} column can be null where the customer's tool "
+                         f"took the value from the call's arguments; the key is what says which row "
+                         f"this is. Split a key on {separator!r} to read its parts back, and answer "
+                         f"rows whose key parts match the arguments you were given.")
         home = (schema.homes or {}).get(table)
         if home:
             parent, column = home.split(".", 1)
@@ -815,14 +903,22 @@ _BUILDER_TOOLS_PARAGRAPH = (
 
 
 def _stable_system(schema: Optional[EntitySchema] = None, tool_names: Iterable[str] = (),
-                   builder_tools: bool = False) -> str:
+                   builder_tools: bool = False, world_note: str = "") -> str:
     """`_SYSTEM` plus what every tool in this build shares: one prefix, sent unchanged on every
-    call of the stage, long enough on a real customer to clear a provider's cache minimum."""
+    call of the stage, long enough on a real customer to clear a provider's cache minimum.
+
+    `world_note` is what a table another requestor revealed needs said about it
+    (`builder/readers.py`): how to reach its one row, and the derivations of the columns nothing
+    stores. It is the same bytes for every tool of a build, so it belongs in this prefix and not in
+    the per-tool turn.
+    """
     # The body skill (D168) sits in the prefix too: it is the same bytes for every tool of a build,
     # and it is read before the tables, which is where a body's mistakes are made.
     parts = [_SYSTEM, BODY_SKILL, _confinement_block()]
     if schema is not None:
         parts.append(_schema_block(schema))
+    if world_note:
+        parts.append(world_note)
     names = sorted(set(tool_names))
     if names:
         parts.append("Tools in this build: " + ", ".join(names))
@@ -849,7 +945,7 @@ def _tool_block(toolsig: ToolSig, examples: Iterable[ToolCall], error_prefix: Op
 def body_messages(toolsig: ToolSig, examples: Iterable[ToolCall], schema: Optional[EntitySchema] = None,
                   failure: str = "", tool_names: Iterable[str] = (),
                   error_prefix: Optional[str] = None, builder_tools: bool = False,
-                  lesson: str = "") -> list[dict]:
+                  lesson: str = "", world_note: str = "") -> list[dict]:
     """The whole message list one body request sends, so its size can be checked before it goes.
 
     The system message carries the fixed instructions plus what is the same for every tool in
@@ -868,7 +964,7 @@ def body_messages(toolsig: ToolSig, examples: Iterable[ToolCall], schema: Option
         user += "\n\n" + lesson
     if failure:
         user += "\n\nThe previous body failed these gates:\n" + failure
-    return [{"role": "system", "content": _stable_system(schema, tool_names, builder_tools)},
+    return [{"role": "system", "content": _stable_system(schema, tool_names, builder_tools, world_note)},
             {"role": "user", "content": user}]
 
 
@@ -1327,7 +1423,7 @@ def compile_tool(model, toolsig: ToolSig, calls: Iterable[ToolCall], schema: Ent
                  max_evidence_chars: Optional[int] = MAX_EVIDENCE_CHARS, timeout: float = 30.0,
                  call_states: Optional[dict] = None, rules: Any = None,
                  tool_names: Iterable[str] = (), error_prefix: Optional[str] = None,
-                 builder_tools: bool = True, lesson: str = "") -> ToolBuild:
+                 builder_tools: bool = True, lesson: str = "", world_note: str = "") -> ToolBuild:
     """Write one tool body, gate it, and repair it at most three times with growing evidence (D75).
 
     Attempt 1 sees the failing call, attempt 2 every failing call, attempt 3 the full call table, and
@@ -1392,7 +1488,7 @@ def compile_tool(model, toolsig: ToolSig, calls: Iterable[ToolCall], schema: Ent
         if attempt == 0:
             messages = body_messages(toolsig, evidence, schema=schema, tool_names=tool_names,
                                      error_prefix=error_prefix, builder_tools=builder_tools,
-                                     lesson=lesson)
+                                     lesson=lesson, world_note=world_note)
         else:
             messages = _append_retry(messages, reply_content, evidence, failure, error_prefix)
         # Fewer whole calls, never a shortened one. `_example_block` refuses to cut a call in
@@ -1406,7 +1502,7 @@ def compile_tool(model, toolsig: ToolSig, calls: Iterable[ToolCall], schema: Ent
             node["evidence_calls"] = len(evidence)
             messages = (body_messages(toolsig, evidence, schema=schema, tool_names=tool_names,
                                       error_prefix=error_prefix, builder_tools=builder_tools,
-                                      lesson=lesson)
+                                      lesson=lesson, world_note=world_note)
                         if attempt == 0
                         else _append_retry(messages[:-2], reply_content, evidence, failure, error_prefix))
         size = prompt_chars(messages)
@@ -1623,6 +1719,11 @@ def emit_tau2_shape(env: EnvBundle, workdir: Path | str, files: Optional[dict] =
         "synthetic_rows": list(env.schema.synthetic_rows),
         "overlays": [as_dict(o) for o in env.overlays],
         "atoms": {v.task_id: [as_dict(a) for a in v.atoms] for v in env.verifiers},
+        # Which tables another requestor's own tools revealed rather than the assistant's (R33). A
+        # reader who takes db.json for the customer's system has to be able to see which rows are not.
+        "revealed_by": {c.table: str((c.evidence or {}).get("revealed_by"))
+                        for c in sorted(env.schema.columns, key=lambda c: (c.table, c.name))
+                        if (c.evidence or {}).get("revealed_by")},
     }
     paths["sidecar.json"] = workdir / "sidecar.json"
     paths["sidecar.json"].write_text(json.dumps(sidecar, indent=2, default=str) + "\n", encoding="utf-8")

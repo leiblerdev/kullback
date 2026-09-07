@@ -1,0 +1,849 @@
+"""Readers: the columns a requestor's prose results describe, proposed as code and gated on the recording.
+
+A customer's recording may carry a requestor beside the assistant, running a toolkit of its own
+(D164). Where that toolkit answers with prose rather than with rows, `compile_env.extract_rows`
+reads nothing from it and R33 keeps it out of the Starting state, so the world holds no row for the
+thing those tools read and write, and every body written for them reads state the world does not
+have.
+
+This module builds that row. Per requestor with prose results, the model is shown the distinct
+result shapes of each of its tools, with the digits masked, and proposes one table, its columns,
+and per tool a reader: `def read(result)` mapping one result string to the column values it
+asserts, or None for a result that asserts nothing. A gate runs every reader over every recorded
+result of its tool and hands what failed back as the next attempt's evidence, one line per masked
+shape. The readers run in the same subprocess sandbox as a tool body (`builder/sandbox.py`), never
+in this process.
+
+The gate asks of a reader only that it parses, runs on every recorded result without raising, and
+answers with a dict or None; a column named as an id is refused, because code owns the row's key.
+Everything else is left to replay fidelity. A shape whose reader reads nothing out of it is
+counted per tool and reported in the stage ruling, never refused: the experiment of 2026-09-07
+measured the refusing version of that rule and it bought one extra attempt and no fidelity.
+
+What the requestor writes is mined from the recording rather than declared, the way
+`mine.observed_effects` credits the assistant's writes: a column a write tool of that requestor is
+seen to change closes at its calls, so a value read only after a write is not that recording's
+starting value. A column no recording reads before its first write is filled with the commonest
+pre-write value the corpus shows for it, and each fill is recorded as an assumption of the Starting
+state; a column no recording reads before any write is left unset and named in the ruling.
+
+Nothing here names a domain, a tool or a value: what is domain is read off the corpus, and what is
+code is the shape of a row and the shape of a function over a string.
+"""
+
+from __future__ import annotations
+
+import ast
+import json
+import re
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any, Iterable, Optional
+
+from kullback.builder.mine import _reply_json, propose_column_class
+from kullback.builder.sandbox import Sandbox, SandboxError, gate_parses, parse_result
+from kullback.gates.confinement import ALLOWED_IMPORTS, DENIED_BUILTINS, gate_confined
+from kullback.runner.canon import canonicalize as canon
+from kullback.runner.records import (
+    Column,
+    EntitySchema,
+    RawPtr,
+    ToolCall,
+    Trace,
+    content_hash,
+)
+
+READERS_FILE = "readers.json"
+NO_PROSE = "no prose results"
+ASSISTANT = "assistant"
+
+MAX_ATTEMPTS = 4
+MAX_EXAMPLES = 3  # verbatim results shown per masked shape
+MAX_SEQUENCES = 3  # recordings whose call order is shown, so an effect between tools can be seen
+MAX_SEQUENCE_CALLS = 24
+MAX_FEEDBACK_LINES = 40  # failures carried into the next attempt, one line per masked shape
+MAX_VALUE_CHARS = 120  # a value quoted back inside a failure line
+SANDBOX_TIMEOUT = 300.0
+CREDIT_ODDS = 3.0  # how much likelier a column's change is when a tool was called, for a credit
+CREDIT_CHANGES = 3  # changing intervals the tool was called in, at least
+CREDIT_ABSENT = 3  # intervals it was not called in, at least, so there is a contrast to read
+CREDIT_SHARE = 0.5  # the column's changes it has to be in, so a credit explains them
+
+_DIGITS = re.compile(r"\d+")
+_PTR = RawPtr(file_hash="readers")  # every ToolCall cites a raw location (D66); these are not recorded calls
+
+
+def mask(text: str) -> str:
+    """One result with its digits masked, which is the grain the model and the gate both name.
+
+    Two results that differ only in a battery percentage or a signal strength are one shape: the
+    model proposes one reader for them and the gate reports one failure line for them.
+    """
+    return _DIGITS.sub("N", text)
+
+
+def is_prose(call: Any) -> bool:
+    """Whether this call answered with a string the row extractor cannot read a row out of."""
+    if call.error is not None:
+        return False
+    parsed = parse_result(call.result)
+    return isinstance(parsed, str) and bool(parsed.strip())
+
+
+def prose_calls(traces: Iterable[Trace]) -> dict[str, dict[str, list[ToolCall]]]:
+    """Per requestor other than the assistant, per tool, the calls that answered with prose.
+
+    The assistant's own calls are left out on purpose: only they describe the customer's system
+    (R33), and this module is about the rows another requestor's tools reveal.
+    """
+    out: dict[str, dict[str, list[ToolCall]]] = {}
+    for trace in traces:
+        for call in trace.tool_calls:
+            requestor = call.requestor or ASSISTANT
+            if requestor == ASSISTANT or not is_prose(call):
+                continue
+            out.setdefault(requestor, {}).setdefault(call.name, []).append(call)
+    return out
+
+
+@dataclass
+class ResultShape:
+    """One masked shape of one tool's results, with how many calls carried it and a few verbatim."""
+    shape: str
+    count: int
+    examples: list[str] = field(default_factory=list)
+
+
+def shapes_of(calls: Iterable[ToolCall]) -> list[ResultShape]:
+    """The distinct masked shapes of these calls' results, commonest first.
+
+    An example is carried only where masking actually changed the text: where it did not, the shape
+    is the result and repeating it verbatim says nothing the shape has not already said.
+    """
+    seen: dict[str, ResultShape] = {}
+    for call in calls:
+        text = str(parse_result(call.result))
+        shape = mask(text)
+        entry = seen.setdefault(shape, ResultShape(shape=shape, count=0))
+        entry.count += 1
+        if text != shape and text not in entry.examples and len(entry.examples) < MAX_EXAMPLES:
+            entry.examples.append(text)
+    return sorted(seen.values(), key=lambda s: (-s.count, s.shape))
+
+
+@dataclass
+class ToolReader:
+    """One tool's reader: the source of a function over one result string."""
+    tool: str
+    source: str
+
+
+@dataclass
+class Proposal:
+    """One requestor's world as the model proposed it, and how the gate ruled on it.
+
+    `effects` is not the model's: it is mined from the recording after the gate has run, per tool of
+    this requestor, as the columns the corpus credits its calls with changing (`write_effects`), and
+    those credits are what say which of these tools is a write (`kinds_for`).
+    """
+    requestor: str
+    table: str
+    columns: list[str] = field(default_factory=list)
+    readers: list[ToolReader] = field(default_factory=list)
+    effects: dict[str, list[str]] = field(default_factory=dict)
+    attempts: int = 0
+    failures: list[str] = field(default_factory=list)
+    silent: dict[str, int] = field(default_factory=dict)  # per tool, shapes the reader reads nothing from
+    assisted: bool = False
+
+    def reader_for(self, tool: str) -> Optional[ToolReader]:
+        return next((r for r in self.readers if r.tool == tool), None)
+
+    def changes_of(self, tool: str) -> list[str]:
+        return list(self.effects.get(tool) or [])
+
+    def to_dict(self) -> dict:
+        return {
+            "requestor": self.requestor, "table": self.table, "attempts": self.attempts,
+            "failures": list(self.failures), "assisted": self.assisted, "columns": list(self.columns),
+            "silent": dict(self.silent), "effects": {k: list(v) for k, v in sorted(self.effects.items())},
+            "readers": [{"tool": r.tool, "source": r.source} for r in self.readers],
+        }
+
+    @classmethod
+    def from_dict(cls, body: dict) -> "Proposal":
+        return cls(
+            requestor=str(body.get("requestor") or ""), table=str(body.get("table") or ""),
+            attempts=int(body.get("attempts") or 0), assisted=bool(body.get("assisted")),
+            failures=[str(f) for f in body.get("failures") or []],
+            silent={str(k): int(v) for k, v in (body.get("silent") or {}).items()},
+            effects={str(k): [str(c) for c in v] for k, v in (body.get("effects") or {}).items()},
+            columns=[str(c) for c in body.get("columns") or []],
+            readers=[ToolReader(tool=str(r.get("tool") or ""), source=str(r.get("source") or ""))
+                     for r in body.get("readers") or []],
+        )
+
+
+def proposals_from(artifact: Any) -> list[Proposal]:
+    """The proposals held in the `readers` artifact, in requestor order; none when there were none."""
+    body = artifact if isinstance(artifact, dict) else {}
+    return [Proposal.from_dict(row) for _, row in sorted((body.get("proposals") or {}).items())]
+
+
+def rows_from(artifact: Any) -> dict:
+    """The per-trace starting rows the readers parsed, as `{requestor: {trace_id: {column: value}}}`."""
+    body = artifact if isinstance(artifact, dict) else {}
+    return dict(body.get("rows") or {})
+
+
+# --- the model's turn -------------------------------------------------------
+
+_SYSTEM = (
+    "You are given the recorded results of the tools one requestor of a recording ran itself, "
+    "beside the assistant's own. Those results are prose strings, not objects, so nothing reads a "
+    "row out of them and the rebuilt world holds no row for the thing they describe. Your job is to "
+    "propose that row: one table, the columns it holds, and per tool a reader, a Python function "
+    "over one result string.\n\n"
+    "What you receive, as one JSON object: per tool, the arguments it was called with, and every "
+    "distinct shape its results took, with the digits masked as N, how many calls carried that "
+    "shape, and up to three verbatim results behind it. You also receive the order of the calls "
+    "inside a few recordings, so an effect one tool has on what a later tool answers can be seen.\n\n"
+    "A reader is `def read(result):` returning a dict of the column values that result asserts, or "
+    "None for a result that asserts none. It reads the string and nothing else: it takes no other "
+    "argument, keeps no state between calls, and holds no value that is not in the string it was "
+    "given. Every key it returns is a column you propose. A column value is a plain scalar, the "
+    "same value however the sentence around it is worded, so two results that say the same thing "
+    "in two wordings parse to the same value.\n\n"
+    "Name the table and the columns after what they hold, in the recording's own words, lowercase "
+    "with underscores. Do not propose a column that is an id: the table holds one row per "
+    "requestor and code owns its key, so a column named id, or the table's name with _id after "
+    "it, is refused.\n"
+)
+
+_REPLY_SHAPE = (
+    "Answer with one JSON object and nothing else:\n"
+    '{"table": "<table name>",\n'
+    ' "columns": [{"name": "<column>"}, ...],\n'
+    ' "readers": [{"tool": "<tool name>", "source": "def read(result):\\n    ..."}, ...]}\n'
+    "One reader per tool you were shown, and no reader for a tool you were not.\n"
+)
+
+def _code_rules() -> str:
+    """The sandbox's own rules, generated from the gate's constants so the two cannot drift."""
+    return ("The reader and the derivations are checked before they run and are refused if they "
+            "name anything outside their own argument. They may not use: "
+            + ", ".join(sorted(DENIED_BUILTINS)) + ". They may not touch a dunder attribute. They "
+            "may import only: " + ", ".join(sorted(ALLOWED_IMPORTS)) + ". Write the import inside "
+            "the function, and do not read or write any file, clock or network.")
+
+
+def _feedback_shape() -> str:
+    return ("If a proposal does not hold, you are given it back with one line per shape that "
+            "failed, naming the tool, the masked shape and what went wrong. Answer with the whole "
+            "object again, corrected. Stop when every line is answered: send the object, not a "
+            "commentary on it.")
+
+
+def system_prompt() -> str:
+    """The stable prefix of every call of this stage: the same bytes for every attempt and requestor."""
+    return "\n".join([_SYSTEM, _REPLY_SHAPE, _code_rules(), _feedback_shape()])
+
+
+def evidence_payload(requestor: str, calls_by_tool: dict[str, list[ToolCall]],
+                     traces: Iterable[Trace]) -> dict:
+    """What one proposal is asked from: the shapes per tool, and a few recordings' call order."""
+    tools = []
+    for name in sorted(calls_by_tool):
+        calls = calls_by_tool[name]
+        arguments = sorted({key for call in calls for key in (call.args or {})})
+        tools.append({
+            "tool": name,
+            "arguments": arguments,
+            "calls": len(calls),
+            "shapes": [{"shape": s.shape, "calls": s.count, **({"examples": s.examples} if s.examples else {})}
+                       for s in shapes_of(calls)],
+        })
+    return {"requestor": requestor, "tools": tools,
+            "call_order_in_recordings": _sequences(requestor, traces)}
+
+
+def _sequences(requestor: str, traces: Iterable[Trace]) -> list[list[dict]]:
+    """The order this requestor's calls came in, inside the few recordings that show the most of them."""
+    walks: list[tuple[int, str, list[dict]]] = []
+    for trace in traces:
+        steps = [{"tool": call.name, "shape": mask(str(parse_result(call.result)))}
+                 for call in trace.tool_calls
+                 if (call.requestor or ASSISTANT) == requestor and is_prose(call)]
+        if len(steps) > 1:
+            walks.append((-len(steps), trace.trace_id, steps[:MAX_SEQUENCE_CALLS]))
+    return [steps for _, _, steps in sorted(walks)[:MAX_SEQUENCES]]
+
+
+def _parse_reply(reply: Any, requestor: str) -> Optional[Proposal]:
+    """The model's JSON as a Proposal; None when the reply carries no usable object."""
+    body = _reply_json(reply)
+    table = str(body.get("table") or "").strip()
+    columns = body.get("columns")
+    readers = body.get("readers")
+    if not table or not isinstance(columns, list) or not isinstance(readers, list):
+        return None
+    names = [str(c.get("name") or "").strip() if isinstance(c, dict) else str(c).strip() for c in columns]
+    names = [name for name in names if name]
+    tools = [ToolReader(tool=str(r.get("tool") or "").strip(), source=str(r.get("source") or ""))
+             for r in readers if isinstance(r, dict) and str(r.get("tool") or "").strip()]
+    if not names or not tools:
+        return None
+    return Proposal(requestor=requestor, table=table, columns=names, readers=tools)
+
+
+# --- the sandbox module the readers and derivations run in -------------------
+
+def _last_function(source: str) -> Optional[str]:
+    """The name of the last function the source defines at its top level, or None when it defines none."""
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        return None
+    names = [node.name for node in tree.body if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))]
+    return names[-1] if names else None
+
+
+def _method_body(source: str, argument: str) -> Optional[str]:
+    """One model-written function as the body of a generated method: its source, then a call to it.
+
+    The function is nested inside the method, so it is checked by the same confinement gate a tool
+    body is and it runs in the same subprocess sandbox. The name is read off the source rather than
+    fixed, so a derivation named after its column and a reader named `read` both work.
+    """
+    name = _last_function(source)
+    return None if name is None else f"{source.rstrip()}\n\nreturn {name}({argument})"
+
+
+def _method_names(proposal: Proposal) -> dict[str, str]:
+    """Stable method names for the readers: position, never a customer's word."""
+    return {reader.tool: f"reader_{index}" for index, reader in enumerate(sorted(
+        proposal.readers, key=lambda r: r.tool))}
+
+
+def _module(proposal: Proposal) -> tuple[str, list[str]]:
+    """The one module the sandbox runs: a method per reader. Refusals come back as sentences."""
+    from kullback.builder.compile_env import module_source  # builder to builder, at call time
+    from kullback.runner.records import FieldStat, ToolSig
+
+    reader_names = _method_names(proposal)
+    sigs, bodies, refused = [], {}, []
+    for reader in sorted(proposal.readers, key=lambda r: r.tool):
+        body = _method_body(reader.source, "result")
+        if body is None:
+            refused.append(f"{reader.tool}: the reader source defines no function, so there is nothing to run")
+            continue
+        sigs.append(ToolSig(name=reader_names[reader.tool], kind="read",
+                            args_fields=[FieldStat(name="result", types=["str"], optional=False)]))
+        bodies[reader_names[reader.tool]] = body
+    return module_source(EntitySchema(), sigs, bodies), refused
+
+
+def _run(source: str, calls: list[ToolCall], workdir: Path) -> tuple[list[dict], str]:
+    """One subprocess over these calls; a sandbox refusal comes back as a sentence, not an exception."""
+    if not calls:
+        return [], ""
+    box = Sandbox(source, {}, Path(workdir), timeout=SANDBOX_TIMEOUT)
+    try:
+        return box.run(calls), ""
+    except SandboxError as exc:
+        return [], f"the readers module did not run: {exc}"
+
+
+# --- the gate ---------------------------------------------------------------
+
+@dataclass
+class Ruling:
+    """What the gate made of one proposal: the failures, what it read, and what it read nothing from."""
+    failures: list[str] = field(default_factory=list)
+    failing_shapes: int = 0
+    parsed: dict = field(default_factory=dict)  # (tool, result text) -> dict or None
+    silent: dict[str, int] = field(default_factory=dict)  # per tool, shapes the reader read nothing from
+    ran: bool = False
+
+
+def _clip(value: Any) -> str:
+    text = json.dumps(value, default=str, sort_keys=True)
+    return text if len(text) <= MAX_VALUE_CHARS else text[:MAX_VALUE_CHARS] + "..."
+
+
+def _texts_by_tool(calls_by_tool: dict[str, list[ToolCall]]) -> dict[str, list[str]]:
+    """The distinct result texts per tool: a reader is a function of the string, so one run answers all."""
+    out: dict[str, list[str]] = {}
+    for tool, calls in calls_by_tool.items():
+        seen: dict[str, None] = {}
+        for call in calls:
+            seen.setdefault(str(parse_result(call.result)), None)
+        out[tool] = list(seen)
+    return out
+
+
+def gate_proposal(proposal: Proposal, calls_by_tool: dict[str, list[ToolCall]],
+                  workdir: Path | str) -> Ruling:
+    """Run every reader over every recorded result of its tool and rule on what came back.
+
+    A reader has to parse, run and answer with a dict or None, and no column may read as an id.
+    Nothing else is refused: a shape a reader reads nothing out of is counted per tool and reported
+    (`Ruling.silent`), because the arm that refused it, measured on a customer corpus on 2026-09-07,
+    bought one extra attempt and no fidelity.
+
+    Failures are named per masked shape, never per result: a shape carried by four hundred calls is
+    one line for the model to answer, and the count of failing shapes is how one attempt is ranked
+    against another.
+    """
+    workdir = Path(workdir)
+    ruling = Ruling()
+    source, refused = _module(proposal)
+    ruling.failures += refused
+    for check in (gate_parses(source), gate_confined(source)):
+        if not check.passed:
+            ruling.failures += [f"the readers module {check.stage}: {line}" for line in check.failures]
+    ruling.failures += _naming_failures(proposal)
+    missing = sorted(set(calls_by_tool) - {r.tool for r in proposal.readers})
+    ruling.failures += [f"{tool}: no reader was proposed for a tool that has recorded results" for tool in missing]
+    if ruling.failures:
+        ruling.failing_shapes = _shape_count(calls_by_tool)
+        return ruling
+
+    reader_names = _method_names(proposal)
+    texts = _texts_by_tool(calls_by_tool)
+    jobs = [(tool, text) for tool in sorted(texts) for text in texts[tool]]
+    calls = [ToolCall(name=reader_names[tool], args={"result": text}, raw_ptr=_PTR) for tool, text in jobs]
+    results, refusal = _run(source, calls, workdir / "readers")
+    if refusal:
+        ruling.failures.append(refusal)
+        ruling.failing_shapes = _shape_count(calls_by_tool)
+        return ruling
+    ruling.ran = True
+    failed: dict[tuple[str, str], str] = {}
+    silent: dict[str, set] = {}
+    for (tool, text), result in zip(jobs, results, strict=False):
+        line = _read_failure(tool, text, result)
+        if line is not None:
+            failed.setdefault((tool, mask(text)), line)
+            continue
+        value = result.get("value")
+        ruling.parsed[(tool, text)] = value
+        if not value:
+            silent.setdefault(tool, set()).add(mask(text))
+    ruling.silent = {tool: len(shapes) for tool, shapes in sorted(silent.items())}
+    ruling.failing_shapes = len(failed)
+    ruling.failures = sorted(failed.values())
+    return ruling
+
+
+def _shape_count(calls_by_tool: dict[str, list[ToolCall]]) -> int:
+    """Every masked shape in the corpus: what a proposal that never ran is ranked as having failed."""
+    return sum(len(shapes_of(calls)) for calls in calls_by_tool.values())
+
+
+def _naming_failures(proposal: Proposal) -> list[str]:
+    """The names code owns: the table's key is the requestor, so no column of it may be an id."""
+    table = proposal.table
+    singular = table[:-1] if table.endswith("s") and not table.endswith("ss") else table
+    reserved = {"id", f"{table}_id", f"{singular}_id"}
+    return [f"column {name}: the table holds one row per requestor and code owns its key, so it may "
+            "not hold a column that reads as an id; name the value it holds instead"
+            for name in sorted(set(proposal.columns) & reserved)]
+
+
+def _read_failure(tool: str, text: str, result: dict) -> Optional[str]:
+    """What is wrong with one reader's answer to one recorded result, or None when nothing is."""
+    label = f"{tool} shape {mask(text)!r}"
+    if not result.get("ok", False):
+        return f"{label}: the reader raised {result.get('error')}: {result.get('message')}"
+    value = result.get("value")
+    if value is not None and not isinstance(value, dict):
+        return (f"{label}: the reader answered a {type(value).__name__}; a reader answers a dict of "
+                "column values or None")
+    return None
+
+
+def _walk(trace: Trace, proposal: Proposal, parsed: dict) -> list[tuple[str, str, Optional[dict]]]:
+    """This requestor's prose calls in the order the recording made them, with what the reader read."""
+    out = []
+    for call in trace.tool_calls:
+        if (call.requestor or ASSISTANT) != proposal.requestor or not is_prose(call):
+            continue
+        text = str(parse_result(call.result))
+        key = (call.name, text)
+        if key not in parsed:
+            continue
+        out.append((call.name, text, parsed[key]))
+    return out
+
+
+def _intervals(steps: list[tuple[str, str, Optional[dict]]], column: str):
+    """Per reading interval of one column: whether it changed, and which tools were called in it.
+
+    An interval runs from the last reading of the column before a stretch of calls to the first
+    reading after it, the reading's own call included in the stretch, because a tool that answers
+    the new value is a candidate for having set it.
+    """
+    reads = [(index, values[column]) for index, (_t, _x, values) in enumerate(steps)
+             if values and column in values]
+    for (start, before), (end, after) in zip(reads, reads[1:], strict=False):
+        yield canon(before) != canon(after), {steps[k][0] for k in range(start + 1, end + 1)}
+
+
+def write_effects(traces: Iterable[Trace], proposal: Proposal, parsed: dict) -> dict[str, list[str]]:
+    """Per tool of this requestor, the columns the corpus credits its calls with changing.
+
+    Credit is by association, not by which call happens to sit in the interval. A tool that
+    restates the whole world is inside changing and unchanging intervals alike, so its presence
+    says nothing; a tool that sets a column is inside changing ones and almost nowhere else. So per
+    column and tool the four counts are taken over every reading interval of the corpus (tool
+    called and the column changed, called and unchanged, absent and changed, absent and unchanged),
+    and the tool is credited when calling it makes a change likelier by a clear margin and the
+    column's changes are mostly its:
+
+        changed share with the tool >= CREDIT_ODDS * changed share without it, and
+        the changing intervals it was called in >= CREDIT_SHARE of all of them,
+
+    on at least `CREDIT_CHANGES` changing intervals it was called in and `CREDIT_ABSENT` intervals
+    it was not, because a tool the corpus never runs without offers no contrast to read. The share
+    is what separates a cause from a passenger: a tool that rides along with a repair is in some of
+    a column's changes, the tool that sets it is in most of them.
+
+    Nothing here consults the miner's `kind`: this is what decides it for these tools (`kinds_for`).
+    """
+    walks = [_walk(trace, proposal, parsed) for trace in traces]
+    counts: dict[tuple[str, str], list[int]] = {}
+    totals: dict[str, list[int]] = {}
+    for column in proposal.columns:
+        for steps in walks:
+            for changed, present in _intervals(steps, column):
+                totals.setdefault(column, [0, 0])[0 if changed else 1] += 1
+                for tool in present:
+                    counts.setdefault((tool, column), [0, 0])[0 if changed else 1] += 1
+    found: dict[str, set] = {}
+    for (tool, column), (with_changed, with_same) in counts.items():
+        changed, same = totals[column]
+        without_changed, without_same = changed - with_changed, same - with_same
+        without = without_changed + without_same
+        if with_changed < CREDIT_CHANGES or without < CREDIT_ABSENT:
+            continue
+        if with_changed < CREDIT_SHARE * changed:
+            continue
+        share_with = with_changed / (with_changed + with_same)
+        share_without = without_changed / without
+        if share_with >= CREDIT_ODDS * share_without:
+            found.setdefault(tool, set()).add(column)
+    return {tool: sorted(columns) for tool, columns in sorted(found.items())}
+
+
+def kinds_for(proposal: Proposal) -> dict[str, str]:
+    """The kind of every tool this proposal reads: a write when the corpus credits it with a column.
+
+    The miner rules on a tool by what its results are seen to do to the rebuilt world's rows
+    (`mine.observed_effects`), and a tool whose result is prose touches no row, so its kind there is
+    read off the shape of the string and the words in it. That is what put four device checks of one
+    customer corpus in the write column on 2026-09-07: a check that restates the whole state looks
+    like a tool that sets it. Here the row exists, so the kind follows the credits.
+    """
+    return {reader.tool: ("write" if proposal.changes_of(reader.tool) else "read")
+            for reader in proposal.readers}
+
+
+def apply_to_sigs(sigs: Iterable[Any], proposals: Iterable[Proposal]) -> list[Any]:
+    """The mined sigs with the kind of every prose-result tool of a requestor set by its credits.
+
+    Only those tools move, and only their `kind`, `kind_reason` and how it was classified; every
+    other sig is handed on as it came.
+    """
+    kinds: dict[str, str] = {}
+    for proposal in proposals:
+        kinds.update(kinds_for(proposal))
+    out = []
+    for sig in sigs:
+        want = kinds.get(getattr(sig, "name", ""))
+        if want is None or getattr(sig, "kind", "") == want:
+            out.append(sig)
+            continue
+        out.append(sig.model_copy(update={
+            "kind": want, "kind_confidence": "medium", "classified_by": "observed",
+            "kind_reason": ("the results of this tool are prose, and over the recorded readings of "
+                            "the row it reveals its calls are " +
+                            ("credited with changing " if want == "write" else "not credited with changing ") +
+                            "a column of that row")}))
+    return out
+
+
+def starting_row(trace: Trace, proposal: Proposal, parsed: dict) -> dict:
+    """The row this recording started in: per column, the first value read before it was written.
+
+    A column the proposal's mined effects credit to a tool is closed at that tool's calls, so a
+    value read only after the write, the write's own result included, is not the starting value.
+    Nothing else closes a column, so the first reading of it stands.
+    """
+    row: dict = {}
+    closed: set = set()
+    for tool, _text, values in _walk(trace, proposal, parsed):
+        closed |= set(proposal.changes_of(tool))
+        for name, value in (values or {}).items():
+            if name in proposal.columns and name not in row and name not in closed:
+                row[name] = value
+    return row
+
+
+def absorb_columns(proposal: Proposal, parsed: dict) -> Proposal:
+    """Make every key the readers actually answered a column of the table.
+
+    A key nobody proposed is not a failure, so without this the world would hold a value under no
+    column and the export would drop it.
+    """
+    known = set(proposal.columns)
+    extra = sorted({name for value in parsed.values() if isinstance(value, dict) for name in value} - known)
+    proposal.columns = list(proposal.columns) + extra
+    return proposal
+
+
+def column_values(proposal: Proposal, parsed: dict) -> dict[str, list]:
+    """Per column, the values the readers actually read, for the column class rule (D73)."""
+    out: dict[str, list] = {}
+    for value in parsed.values():
+        for name, item in (value or {}).items() if isinstance(value, dict) else ():
+            out.setdefault(name, []).append(item)
+    return out
+
+
+# --- the stage's own loop ---------------------------------------------------
+
+def propose(model: Any, requestor: str, calls_by_tool: dict[str, list[ToolCall]], traces: Iterable[Trace],
+            workdir: Path | str, *, max_attempts: int = MAX_ATTEMPTS) -> tuple[Proposal, list[dict], dict]:
+    """Ask for one requestor's proposal, gate it, and retry with the failures at most `max_attempts` times.
+
+    The prompt is two messages: a system prefix that is the same bytes for every attempt and every
+    requestor of a build, and a user turn carrying this requestor's evidence. A retry keeps both
+    exactly as they were sent and appends the previous reply and the failures as new turns, so the
+    prefix a provider caches never moves, the way compile_tool's repair loop does it (D75).
+
+    Nothing is cached here: the model handed in is already memoized on the bytes of its request
+    (`build._wrap`), and those bytes carry every recorded result this proposal saw, so a rebuild
+    over the same results never reaches the network.
+
+    After the last attempt the proposal with the fewest failing shapes is kept, marked assisted, and
+    its reasons are recorded, the way a kept assisted body is. Whichever proposal is kept, the
+    columns the corpus credits each of its tools with changing are mined before it is handed back.
+    """
+    traces, workdir = list(traces), Path(workdir)
+    messages = [{"role": "system", "content": system_prompt()},
+                {"role": "user", "content": json.dumps(evidence_payload(requestor, calls_by_tool, traces),
+                                                       default=str, sort_keys=True)}]
+    nodes: list[dict] = []
+    best: Optional[Proposal] = None
+    best_failing = None
+    best_parsed: dict = {}
+    best_silent: dict = {}
+
+    def finish(proposal: Proposal, parsed: dict, silent: dict) -> tuple[Proposal, list[dict], dict]:
+        proposal.silent = dict(silent)
+        proposal = absorb_columns(proposal, parsed)
+        proposal.effects = write_effects(traces, proposal, parsed)
+        return proposal, nodes, parsed
+
+    for attempt in range(max_attempts):
+        reply = model.query(messages)
+        content = getattr(reply, "content", None) or ""
+        proposal = _parse_reply(reply, requestor)
+        if proposal is None:
+            nodes.append({"attempt": attempt, "requestor": requestor, "passed": False,
+                          "failures": ["the reply carried no usable proposal object"]})
+            messages = messages + [
+                {"role": "assistant", "content": content},
+                {"role": "user", "content": "That reply carried no usable JSON object. Answer with the "
+                                            "object described above and nothing else."}]
+            continue
+        proposal.attempts = attempt + 1
+        ruling = gate_proposal(proposal, calls_by_tool, workdir)
+        nodes.append({"attempt": attempt, "requestor": requestor, "passed": not ruling.failures,
+                      "failing_shapes": ruling.failing_shapes, "columns": len(proposal.columns),
+                      "readers": len(proposal.readers), "silent_shapes": sum(ruling.silent.values()),
+                      "failures": ruling.failures[:MAX_FEEDBACK_LINES]})
+        if best_failing is None or ruling.failing_shapes < best_failing:
+            best, best_failing = proposal, ruling.failing_shapes
+            best_parsed, best_silent = ruling.parsed, ruling.silent
+            best.failures = ruling.failures[:MAX_FEEDBACK_LINES]
+        if not ruling.failures:
+            proposal.assisted = False
+            return finish(proposal, ruling.parsed, ruling.silent)
+        messages = messages + [{"role": "assistant", "content": content},
+                               {"role": "user", "content": _retry_turn(ruling)}]
+    kept = best if best is not None else Proposal(requestor=requestor, table="", attempts=max_attempts,
+                                                  failures=["no attempt produced a usable proposal"])
+    kept.assisted = True
+    return finish(kept, best_parsed, best_silent)
+
+
+def _retry_turn(ruling: Ruling) -> str:
+    lines = ruling.failures[:MAX_FEEDBACK_LINES]
+    more = len(ruling.failures) - len(lines)
+    text = "The proposal failed on these shapes:\n" + "\n".join(f"- {line}" for line in lines)
+    if more > 0:
+        text += f"\n- and {more} more of the same kinds"
+    return text + "\n\nAnswer with the whole object again, corrected."
+
+
+# --- what the proposal leaves for the rest of the build ---------------------
+
+def apply_to_schema(schema: EntitySchema, proposals: Iterable[Proposal],
+                    values: Optional[dict] = None) -> EntitySchema:
+    """Add each proposal's table and its stored columns to the mined schema, marked by who revealed them.
+
+    The mark rides on `Column.evidence` under `revealed_by`, which is the least the schema record
+    has to change to carry it: a column of a table another requestor revealed is not a column of the
+    customer's system, and the export says so rather than passing it off as one.
+    """
+    values = values or {}
+    for proposal in proposals:
+        if not proposal.table:
+            continue
+        seen = {(c.table, c.name) for c in schema.columns}
+        if proposal.table not in schema.tables:
+            schema.tables = sorted([*schema.tables, proposal.table])
+        for name in proposal.columns:
+            if (proposal.table, name) in seen:
+                continue
+            observed = list((values.get(proposal.requestor) or {}).get(name) or [])
+            ruling = propose_column_class(proposal.table, name, observed)
+            schema.columns.append(Column(
+                table=proposal.table, name=name, class_=ruling.column_class,
+                class_rule=ruling.column_class, class_confidence=ruling.confidence,
+                class_reason=ruling.reason, classified_by="rule",
+                evidence={**ruling.evidence, "revealed_by": proposal.requestor},
+                samples=observed[:MAX_EXAMPLES]))
+    schema.columns = sorted(schema.columns, key=lambda c: (c.table, c.name))
+    return schema
+
+
+def revealed_tables(schema: EntitySchema) -> dict[str, str]:
+    """Per table, the requestor that revealed it; a table the assistant's calls describe is not here."""
+    out: dict[str, str] = {}
+    for column in schema.columns:
+        who = (column.evidence or {}).get("revealed_by")
+        if who:
+            out[column.table] = str(who)
+    return out
+
+
+def environment_flags(schema: EntitySchema) -> list[str]:
+    """One flag per revealed table, so the setup review sees what is not the customer's own system."""
+    return [f"{table}: revealed by the {who}'s own tools and not by the assistant's, so it is marked "
+            "in the export and is not part of the customer's system (R33)"
+            for table, who in sorted(revealed_tables(schema).items())]
+
+
+def body_note(proposals: Iterable[Proposal]) -> str:
+    """What a body writer has to know about a revealed table: how to reach its row, and what it holds.
+
+    It sits in the stable system prefix beside the tables block, so it is the same bytes for every
+    tool of a build. The row is reached without naming its key, because the key is the requestor's
+    name and a literal id in a body is refused by the memorised_values gate (D162).
+    """
+    parts: list[str] = []
+    for proposal in proposals:
+        if not proposal.table:
+            continue
+        lines = [f"Table {proposal.table} holds what the {proposal.requestor}'s own tools read and "
+                 f"write, not what the assistant's do. It holds exactly one row: read it with "
+                 f"next(iter(self.db.{proposal.table}.values())), never by key.",
+                 "Its columns are: " + (", ".join(proposal.columns) or "(none)") + "."]
+        changed = {tool: proposal.changes_of(tool) for tool in sorted(proposal.effects)}
+        for tool, columns in changed.items():
+            lines.append(f"The recording shows {tool} changing: {', '.join(columns)}.")
+        parts.append("\n".join(lines))
+    return "\n\n".join(parts)
+
+
+def starting_rows(traces: Iterable[Trace], proposal: Proposal, parsed: dict) -> dict[str, dict]:
+    """Per trace, the row this proposal's requestor started that recording in."""
+    return {trace.trace_id: starting_row(trace, proposal, parsed) for trace in traces}
+
+
+def fills_for(rows: dict[str, dict], proposal: Proposal) -> tuple[dict, list[str], list[str]]:
+    """Per column no recording read before its first write, the value the corpus shows commonest.
+
+    A recording that never read a column before writing it starts, without this, on whatever the
+    Environment's own default is, which is a value no recording ever showed. The corpus does hold
+    one: the pre-write value of that column in the recordings that did read it. The commonest of
+    those is taken, every recording that lacked the column is filled with it, and each fill is
+    recorded as an assumption of the Starting state the way the state's own guesses are. A column no
+    recording reads before any write has no such value, so it stays unset and is named.
+
+    Returns the fills, the assumption sentences, and the columns left unset.
+    """
+    fills: dict = {}
+    assumptions: list[str] = []
+    unset: list[str] = []
+    for name in proposal.columns:
+        seen: list = [row[name] for row in rows.values() if name in row]
+        missing = sum(1 for row in rows.values() if name not in row)
+        if not missing:
+            continue
+        if not seen:
+            unset.append(name)
+            continue
+        counted: dict = {}
+        for value in seen:
+            key = content_hash(value)
+            entry = counted.setdefault(key, [0, value])
+            entry[0] += 1
+        best = sorted(counted.values(), key=lambda e: (-e[0], _clip(e[1])))[0]
+        fills[name] = best[1]
+        assumptions.append(
+            f"{proposal.table} row {proposal.requestor} column {name} was not read before a write in "
+            f"{missing} of {len(rows)} recordings; those start on {_clip(best[1])}, which {best[0]} "
+            f"of the {len(seen)} recordings that did read it before writing showed")
+    return fills, assumptions, unset
+
+
+def merge_worlds(worlds: dict[str, dict], artifact: Any) -> dict[str, dict]:
+    """Add the revealed row's pre-write columns to `compile_env.trace_worlds`, one key per column.
+
+    A row assembled column by column out of many calls is not seen whole the way a returned row is,
+    so two recordings contradict each other only on a column they both read and read differently
+    (D74). Keyed per column, that is what `cluster.split_by_world` compares. Only the columns a
+    recording read before a write are here: a column filled from the corpus is the same value in
+    every recording and would split nothing, and the recordings that did not read it never
+    contradicted anyone.
+    """
+    for proposal in proposals_from(artifact):
+        rows = (rows_from(artifact).get(proposal.requestor) or {})
+        for trace_id, row in rows.items():
+            for name, value in (row or {}).items():
+                worlds.setdefault(trace_id, {})[(proposal.table, proposal.requestor, name)] = content_hash(value)
+    return worlds
+
+
+def fills_from(artifact: Any) -> dict:
+    """Per requestor, the columns filled from the corpus and the value each was filled with."""
+    body = artifact if isinstance(artifact, dict) else {}
+    return dict(body.get("fills") or {})
+
+
+def reader_assumptions(artifact: Any) -> list[str]:
+    """The sentences the fills leave for `assumptions.json`, in the order the stage wrote them."""
+    body = artifact if isinstance(artifact, dict) else {}
+    return [str(line) for line in body.get("assumptions") or []]
+
+
+def reader_rows(artifact: Any) -> dict[tuple[str, str], dict[str, dict]]:
+    """The revealed rows as `build_starting_state` takes them: (table, row id) to trace to row.
+
+    The corpus fills are folded in here, under the columns the recording did not read for itself,
+    so the world holds a value the corpus showed rather than the Environment's own default.
+    """
+    out: dict[tuple[str, str], dict[str, dict]] = {}
+    rows = rows_from(artifact)
+    fills = fills_from(artifact)
+    for proposal in proposals_from(artifact):
+        filled = dict(fills.get(proposal.requestor) or {})
+        by_trace = {trace_id: {**filled, **row}
+                    for trace_id, row in (rows.get(proposal.requestor) or {}).items() if row or filled}
+        if by_trace:
+            out[(proposal.table, proposal.requestor)] = by_trace
+    return out
