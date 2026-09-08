@@ -310,14 +310,15 @@ def gate_non_trivial(sandbox: Sandbox, calls: Iterable[ToolCall], rules: Any = N
 
 def gate_replay_fidelity(sandbox: Sandbox, calls: Iterable[ToolCall], schema: EntitySchema,
                          label: str = "held_out", threshold: float = 1.0,
-                         rules: Any = None) -> GateResult:
+                         rules: Any = None, readers: Any = None) -> GateResult:
     """5. Recorded calls replay: hard columns match after canon, errors match by class, both apart."""
     calls = list(calls)
     try:
         results = sandbox.run(calls)
     except SandboxError as exc:
-        return body_replay_fidelity_gate(calls, None, schema, label, threshold, rules, error=str(exc))
-    return body_replay_fidelity_gate(calls, results, schema, label, threshold, rules)
+        return body_replay_fidelity_gate(calls, None, schema, label, threshold, rules, error=str(exc),
+                                         readers=readers)
+    return body_replay_fidelity_gate(calls, results, schema, label, threshold, rules, readers=readers)
 
 
 def _collection_keys(state: Any) -> set[str]:
@@ -403,7 +404,7 @@ def gate_refuses_unknown(sandbox: Sandbox, calls: Iterable[ToolCall], rules: Any
 
 def run_gates(source: str, sandbox: Sandbox, shown: Iterable[ToolCall], held_out: Iterable[ToolCall],
               schema: EntitySchema, rules: Any = None, probe_refusals: bool = False,
-              sig: Any = None) -> list[GateResult]:
+              sig: Any = None, readers: Any = None) -> list[GateResult]:
     """The gates in order, stopping at the first failure so the failure localizes (EvoEnv).
 
     Gate 3 runs over every recorded call, not a first pair: a body that is steady on the first two
@@ -422,7 +423,7 @@ def run_gates(source: str, sandbox: Sandbox, shown: Iterable[ToolCall], held_out
     if gates[-1].passed:
         gates.append(gate_confined(source))
     if gates[-1].passed:
-        gates.append(body_memorised_values_gate(source, schema, sandbox.db, every, sig))
+        gates.append(body_memorised_values_gate(source, schema, sandbox.db, every, sig, readers=readers))
     for gate, calls, extra in ((gate_executes_on_s0, every, {}), (gate_deterministic, every, {"rules": rules}),
                                (gate_non_trivial, every, {"rules": rules})):
         if not gates[-1].passed:
@@ -430,9 +431,10 @@ def run_gates(source: str, sandbox: Sandbox, shown: Iterable[ToolCall], held_out
         gates.append(gate(sandbox, calls, **extra))
     if not gates[-1].passed:
         return gates
-    gates.append(gate_replay_fidelity(sandbox, shown, schema, label="shown", rules=rules))
+    gates.append(gate_replay_fidelity(sandbox, shown, schema, label="shown", rules=rules, readers=readers))
     if held_out and gates[-1].passed:
-        gates.append(gate_replay_fidelity(sandbox, held_out, schema, label="held_out", rules=rules))
+        gates.append(gate_replay_fidelity(sandbox, held_out, schema, label="held_out", rules=rules,
+                                          readers=readers))
     if probe_refusals and gates[-1].passed:
         gates.append(gate_refuses_unknown(sandbox, every, rules))
     return gates

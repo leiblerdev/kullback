@@ -149,3 +149,32 @@ def test_the_verifier_derives_from_the_replayed_run(tmp_path):
         verifier, out.path, write_tools={"cancel_order"})}
     assert gates["verifier_oracle"] and gates["verifier_empty_run"]
 
+
+
+# --- D187: the scoring path is handed what knows the schema's column classes ---
+
+def _kiln_comparer():
+    """The comparer the build hands the Runner, over an invented kiln with one exempt column."""
+    from kullback.gates.tool_runs import ReplayComparer
+    from kullback.runner.records import Column, EntitySchema
+
+    schema = EntitySchema(tables=["firings"], id_patterns={"firings.firing_id": r"^F\d+$"}, columns=[
+        Column(table="firings", name="firing_id", **{"class": "hard"}),
+        Column(table="firings", name="peak_c", **{"class": "hard"}),
+        Column(table="firings", name="logged_at", **{"class": "exempt"})])
+    return ReplayComparer(schema)
+
+
+def test_a_column_the_schema_marks_exempt_does_not_part_a_replayed_call():
+    recorded = call("x", "t", {}, {"firing_id": "F9", "peak_c": 1230, "logged_at": "2031-01-01T00:00:00"})
+    ours = {"firing_id": "F9", "peak_c": 1230, "logged_at": "2031-07-04T18:00:00"}
+    assert replay.compare_call(recorded, ours, None) == replay.DIFFERS
+    assert replay.compare_call(recorded, ours, None, comparer=_kiln_comparer()) == replay.COSMETIC
+
+
+def test_a_hard_column_still_parts_a_replayed_call_and_the_note_names_it():
+    recorded = call("x", "t", {}, {"firing_id": "F9", "peak_c": 1230, "logged_at": "2031-01-01T00:00:00"})
+    ours = {"firing_id": "F9", "peak_c": 900, "logged_at": "2031-01-01T00:00:00"}
+    verdict, notes = replay.compare_call_notes(recorded, ours, None, comparer=_kiln_comparer())
+    assert verdict == replay.DIFFERS
+    assert notes == ["peak_c: ours 900, recorded 1230"]
