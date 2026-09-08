@@ -309,31 +309,13 @@ def score_note(workdir: Any, name: str) -> str:
     elif outcome == "could_not_run":
         released = (f"{pair}, and the body already there answered no call at all under this world, "
                     f"so the attempt was released")
-    elif outcome == "reverted_regression":
-        # D201: the attempt was ahead on the score and behind on the calls. Saying only that the
-        # kept body stands would read as a tie, and the next hint would be written against nothing.
-        broke = [str(call) for call in (row.get("broke") or [])]
-        total = int(row.get("broke_calls") or len(broke))
-        named = ", ".join(broke)
-        more = total - len(broke)
-        released = (f"{pair}, but it stopped answering {total} recorded call"
-                    f"{'' if total == 1 else 's'} the body already there answers"
-                    + (f" ({named}{f' and {more} more' if more > 0 else ''})" if named else "")
-                    + ", so it was reverted and the body already there stands")
     else:
         released = f"{pair}, so the body already there stands and this recompile changed nothing"
     replayed = int(row.get("from_replay") or 0)
     evidence = int(row.get("evidence_calls") or 0)
     from_replay = (f"; {replayed} of the {evidence} evidence calls are from_replay, put back because "
                    f"the Reference replay failed on them") if replayed else ""
-    # D201: the stage's ruling stands, and the transaction that wrapped it may have put the release
-    # back. Saying only what the stage decided would leave the record claiming a body was released
-    # after the whole repair was undone.
-    broke = [str(task) for task in (row.get("reverted_tasks") or [])]
-    put_back = (f"; the repair was then put back because it cost {', '.join(broke)}" if broke
-                else "; the repair was then put back for no effect on the Tasks it can touch"
-                if row.get("reverted") and outcome in ("beaten", "could_not_run") else "")
-    return f" ({released}{from_replay}{put_back}{stalled_note(row)})"
+    return f" ({released}{from_replay}{stalled_note(row)})"
 
 
 def recompile_ruling(workdir: Any, name: str) -> str:
@@ -725,6 +707,23 @@ def memorised_values_lesson(workdir: Any, tool: str) -> str:
     return ""
 
 
+def sensitivity_lesson(workdir: Any, tool: str) -> str:
+    """The one sentence a body refused for answering two worlds alike leaves behind (D195).
+
+    Read off `tool_builds.json` the way the memorised-values lesson is, and it names the columns the
+    ruling recorded, because "read the world" is what the writer of a memorising body already
+    believes it did. The columns are the ruling's own metric, so nothing here parses a failure
+    sentence. Only the latest ruling of this stage is asked, whichever way it went: a tool whose
+    last attempt read the columns has learned the lesson, and repeating it to the next writer is
+    telling it to repair what it has already repaired.
+    """
+    for ruling in _rulings_of(workdir, tool):
+        if ruling.get("stage") == gates.SENSITIVITY_STAGE:
+            return ("" if ruling.get("pass") else
+                    gates.sensitivity_lesson((ruling.get("metrics") or {}).get("columns") or []))
+    return ""
+
+
 def record_tool_lesson(workdir: Any, tool: str, failures: list[str]) -> Path:
     """Write one gate-failure sequence to the Builder memory for this workdir.
 
@@ -742,6 +741,11 @@ def record_tool_lesson(workdir: Any, tool: str, failures: list[str]) -> Path:
     memorised = memorised_values_lesson(workdir, tool)
     if memorised and not any(memorised in failure for failure in failures):
         failures.append(memorised)
+    # D195 the same way: a body that answered two Tasks alike is repaired by naming the columns it
+    # has to read off the world, and the hint almost never names a column.
+    sensitivity = sensitivity_lesson(workdir, tool)
+    if sensitivity and not any(sensitivity in failure for failure in failures):
+        failures.append(sensitivity)
     return memory_mod.record_lesson(workdir, tool, failures)
 
 

@@ -53,7 +53,6 @@ from kullback import round_delta
 from kullback.agent.tools import AgentTool, NoArgs, counted_ruling_line
 from kullback.builder import build as build_module
 from kullback.builder import repair as repair_module
-from kullback.builder import transaction
 from kullback.builder.build import TARGET_ALL, BuildPlan
 from kullback.gates import Ruling, ruling_of
 from kullback.gates.fidelity import unconfirmed_reason
@@ -210,6 +209,9 @@ REPAIR_VERB_FOR: dict[str, str] = {
     # A body holding an id or a value it copied out of a recorded call is written again, with the
     # lookup over the world's tables the hint asks for (D162).
     "compile_tools.memorised_values": "repair_recompile",
+    # A body that answered two Tasks alike where their recordings differ is written again, with the
+    # columns it has to read off the world named (D195).
+    "sensitivity": "repair_recompile",
     # A Task whose Traces do not replay to their End state is a tool that answers differently.
     "replay_reference": "repair_recompile",
     # A row the Traces name that the built world does not hold is a table to grow (D107).
@@ -713,13 +715,6 @@ def _repair_executor(plan: BuildPlan, sink: Optional[Sink], verb: str, target_of
     moved anything of its own (D142); the record is written in a `finally`, so a stage that raises
     still leaves the row the round's report reads. The result then opens with that target's own
     ruling, read back off the artifact the stage just wrote.
-
-    The stage runs inside a transaction (D201). Before it, the lights of every Task this repair can
-    touch are recorded; after it, they are read again off the artifacts the stage wrote, and the
-    repair is kept only where its own target moved up and no Task in that set lost a light. Where it
-    is not kept the files that kind writes are put back byte for byte, so the target ruling read
-    afterwards is the artifact as it stands, and the transaction's own sentence goes in front of it:
-    that sentence is what the next attempt has to answer.
     """
     run_stage = _executor(plan, sink, verb, lambda _a: stage, narrowing_of)
 
@@ -727,20 +722,15 @@ def _repair_executor(plan: BuildPlan, sink: Optional[Sink], verb: str, target_of
         extra = before(args) if before is not None else {}
         target = target_of(args)
         hash_before = repair_module.target_hash(plan.workdir, verb, target)
-        txn = transaction.open_transaction(plan.workdir, verb, target, round_no=plan.round)
         try:
             result = await run_stage(args)
         finally:
-            # The revert happens here, so a stage that raised leaves the artifacts as it found them
-            # and the row the round's report reads says which of the three outcomes this repair had.
-            ruling = transaction.close(txn)
             repair_module.record_request(
                 plan.workdir, verb, target,
-                {"arguments": args.model_dump(mode="json"), **extra, **ruling.as_row(),
+                {"arguments": args.model_dump(mode="json"), **extra,
                  **repair_module.change_of(plan.workdir, verb, target, hash_before)},
                 round_no=plan.round)
-        result.target_ruling = "\n".join(
-            [f"{verb} {target}: {ruling.line}", repair_module.target_ruling(plan.workdir, verb, args)])
+        result.target_ruling = repair_module.target_ruling(plan.workdir, verb, args)
         result.ruling_target = target
         return result
 

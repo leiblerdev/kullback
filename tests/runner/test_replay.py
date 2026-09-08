@@ -7,8 +7,8 @@ import json
 from kullback.examiner import derive as verifier_mod
 from kullback.gates import verifier_suite as suite
 from kullback.runner import replay
-from kullback.runner.records import Task, ToolCallError
-from runner.replay_fixtures import Toolkit, call, do_replay, events, sigs, trace, world  # noqa: F401
+from kullback.runner.records import Task, ToolCallError, Trace, Turn
+from runner.replay_fixtures import PTR, Toolkit, call, do_replay, events, router, sigs, trace, world  # noqa: F401
 
 
 def test_the_replay_writes_the_reference_run_the_loop_would(tmp_path):
@@ -79,7 +79,7 @@ def test_a_check_that_agreed_carries_no_difference_record(tmp_path):
     out = do_replay(tmp_path)
     assert out.confirmed and out.checks
     assert all("difference" not in check for check in out.checks)
-    assert all(set(check) == {"tool", "kind", "verdict", "route", "call_id", "ours", "recorded"}
+    assert all(set(check) == {"tool", "kind", "requestor", "verdict", "route", "call_id", "ours", "recorded"}
                for check in out.checks)
 
 
@@ -178,3 +178,118 @@ def test_a_hard_column_still_parts_a_replayed_call_and_the_note_names_it():
     verdict, notes = replay.compare_call_notes(recorded, ours, None, comparer=_kiln_comparer())
     assert verdict == replay.DIFFERS
     assert notes == ["peak_c: ours 900, recorded 1230"]
+
+
+# --- D204: a run of consecutive turns of one role is one logical turn ---
+
+def _replay_of(tmp_path, turns, calls=()):
+    """One invented Trace replayed over the order world, so a test can shape its turn order."""
+    recording = Trace(trace_id="tr1", raw_hash="r" * 64, ingest_version="1", source="test",
+                      turns=turns, tool_calls=list(calls), raw_ptr=PTR, system_prompt="You are the agent.")
+    return replay.replay_trace(recording, router(), workdir=tmp_path / "runs" / "t1", task_id="t1",
+                               env_id="env1", write_tools={"cancel_order"})
+
+
+def _turn(idx, role, content=None, call_ids=()):
+    return Turn(idx=idx, role=role, content=content, tool_call_ids=list(call_ids), raw_ptr=PTR)
+
+
+def test_two_user_turns_in_a_row_are_one_turn_and_the_assistant_ask_that_follows_sees_both(tmp_path):
+    """The loop asks the user once, so a recording where the user speaks twice has to hand both over
+    at once or the cursor stalls on the second and every later turn is a gap."""
+    out = _replay_of(tmp_path, [
+        _turn(0, "assistant", "How can I help?"),
+        _turn(1, "user", "Cancel order 123."),
+        _turn(2, "user", "It is the delivered one."),
+        _turn(3, "assistant", None, ["c2"]),
+        _turn(4, "tool", '{"id": "123"}', ["c2"]),
+        _turn(5, "assistant", "Order 123 is cancelled."),
+        _turn(6, "user", "Thanks."),
+    ], [call("c2", "cancel_order", {"order_id": "123", "reason": "requested"},
+             {"id": "123", "status": "cancelled", "total": 25})])
+    assert out.confirmed, out.reasons
+    assert out.counts["gaps"] == 0
+    assert out.counts["absorbed_user_runs"] == 1 and out.counts["absorbed_turns"] == 1
+    run = suite.load_run(out.path)
+    spoken = [e.payload["text"] for e in run.events if e.type == "user_turn"]
+    assert spoken == ["Cancel order 123.\nIt is the delivered one.", "Thanks."]
+    assert out.counts["writes"] == 1 and out.counts["writes_matched"] == 1, "the write after the run replays"
+
+
+def test_a_tool_a_user_turn_called_inside_a_run_is_routed_and_compared(tmp_path):
+    """The user's own call is part of what the assistant answers next, so it has to reach the
+    Environment before the next assistant ask, and it is scored like any other recorded call."""
+    out = _replay_of(tmp_path, [
+        _turn(0, "assistant", "How can I help?"),
+        _turn(1, "user", "What is my balance?", ["u1"]),
+        _turn(2, "tool", '{"balance": 10}', ["u1"]),
+        _turn(3, "user", "Then cancel order 123."),
+        _turn(4, "assistant", None, ["c2"]),
+        _turn(5, "tool", '{"id": "123"}', ["c2"]),
+        _turn(6, "assistant", "Order 123 is cancelled."),
+        _turn(7, "user", "Thanks."),
+    ], [call("u1", "check_balance", {}, {"balance": 10}, requestor="user"),
+        call("c2", "cancel_order", {"order_id": "123", "reason": "requested"},
+             {"id": "123", "status": "cancelled", "total": 25})])
+    assert out.confirmed, out.reasons
+    assert out.counts["absorbed_user_runs"] == 1 and out.counts["gaps"] == 0
+    own = [c for c in out.checks if c["requestor"] == "user"]
+    assert [(c["tool"], c["verdict"]) for c in own] == [("check_balance", replay.SAME)]
+    run = suite.load_run(out.path)
+    called = [e.payload["name"] for e in run.events if e.type == "tool_call"]
+    assert called == ["check_balance", "cancel_order"], "the user's call is routed in recorded order"
+
+
+def test_a_user_turns_own_call_that_parts_is_named_a_user_call_in_the_reasons(tmp_path):
+    out = _replay_of(tmp_path, [
+        _turn(0, "assistant", "How can I help?"),
+        _turn(1, "user", "What is my balance?", ["u1"]),
+        _turn(2, "tool", '{"balance": 99}', ["u1"]),
+        _turn(3, "user", "Thanks."),
+        _turn(4, "assistant", "Anything else?"),
+    ], [call("u1", "check_balance", {}, {"balance": 99}, requestor="user")])
+    assert out.reasons == ["check_balance user_call: differs"]
+
+
+def test_two_assistant_turns_in_a_row_are_one_turn_and_the_user_is_asked_once(tmp_path):
+    """An assistant turn that called nothing is not one the loop comes back to, so a second
+    assistant turn beside it is absorbed rather than left for an ask that never comes."""
+    out = _replay_of(tmp_path, [
+        _turn(0, "assistant", "Hello."),
+        _turn(1, "assistant", "How can I help?"),
+        _turn(2, "user", "Nothing, thanks."),
+    ])
+    assert out.confirmed, out.reasons
+    assert out.counts["absorbed_model_runs"] == 1 and out.counts["gaps"] == 0
+    run = suite.load_run(out.path)
+    said = [e.payload["reply"]["content"] for e in run.events if e.type == "model_call"]
+    assert said[0] == "Hello.\nHow can I help?"
+    assert len([e for e in run.events if e.type == "user_turn"]) == 1
+
+
+def test_a_role_standing_where_the_other_was_due_counts_one_gap_and_then_resyncs(tmp_path):
+    """A recorded user turn where an assistant turn was due is a real mismatch, and it is counted
+    once: the cursor takes the user run on the next ask instead of stalling on it for good."""
+    out = _replay_of(tmp_path, [
+        _turn(0, "assistant", None, ["c1"]),
+        _turn(1, "tool", '{"id": "123"}', ["c1"]),
+        _turn(2, "user", "Any update?"),
+        _turn(3, "assistant", "It is delivered."),
+        _turn(4, "user", "Thanks."),
+    ], [call("c1", "get_order_details", {"order_id": "123"},
+             {"id": "123", "status": "delivered", "total": 25})])
+    assert out.counts["gaps"] == 1
+    assert out.reasons == ["1 turn(s) out of order"]
+    assert out.counts["absorbed_user_runs"] == 0 and out.counts["absorbed_model_runs"] == 0
+    run = suite.load_run(out.path)
+    assert [e.payload["text"] for e in run.events if e.type == "user_turn"] == ["Any update?", "Thanks."]
+
+
+def test_a_trace_whose_roles_alternate_absorbs_nothing_and_replays_as_it_did(tmp_path):
+    """Assistant turns separated by the tool turns of their own calls are not a run: the loop asks
+    the model again after each, so absorbing them would swallow the ask the user is owed."""
+    out = _replay_of(tmp_path, list(trace().turns), trace().tool_calls)
+    assert out.confirmed and out.reasons == []
+    assert out.counts["absorbed_user_runs"] == 0 and out.counts["absorbed_model_runs"] == 0
+    assert out.counts["absorbed_turns"] == 0 and out.counts["gaps"] == 0
+    assert out.counts["writes"] == 1 and out.counts["reads"] == 1

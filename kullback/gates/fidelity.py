@@ -78,7 +78,12 @@ def replay_fidelity_gate(calls, canon_rules: Any = None, schema: Any = None,
 # --- the per-Task bar (the replay_reference stage, D108) ---
 
 def summarize(replays: dict[str, dict[str, dict]]) -> dict:
-    """The stage's numbers over every replay: Traces, confirmed, per Task, writes and reads."""
+    """The stage's numbers over every replay: Traces, confirmed, per Task, writes and reads.
+
+    `turns_absorbed` counts the recorded turns the replay cursor folded into the turn beside them
+    rather than stalling on (D204), which is how a round reads how much of a corpus records a run of
+    consecutive turns of one role at all.
+    """
     rows = [r for per_task in replays.values() for r in per_task.values()]
     tasks_confirmed = sum(any(r["confirmed"] for r in per_task.values()) for per_task in replays.values())
     total = lambda key: sum(int((r.get("counts") or {}).get(key) or 0) for r in rows)  # noqa: E731
@@ -86,7 +91,8 @@ def summarize(replays: dict[str, dict[str, dict]]) -> dict:
             "tasks": len(replays), "tasks_confirmed": tasks_confirmed,
             "writes": total("writes"), "writes_matched": total("writes_matched"),
             "reads": total("reads"), "reads_semantic": total("reads_semantic"),
-            "reads_cosmetic": total("reads_cosmetic"), "unmade": total("unmade")}
+            "reads_cosmetic": total("reads_cosmetic"), "unmade": total("unmade"),
+            "turns_absorbed": total("absorbed_turns")}
 
 
 def unconfirmed_reason(per_task: dict[str, dict]) -> str:
