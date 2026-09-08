@@ -414,9 +414,10 @@ def cache_key(task: Task, recordings: list, common: dict, *, intents: dict, user
     rules are in for every Trace its recordings name, since which of them the leak check reads is
     settled by the References, inside the derivation. `common` is what every Task of the call shares:
     the constraints after D76's demotion, the policy lines, the canon rules, the write tools, the
-    probe's model and limit, the judge's name and the code hash. `fidelity_row` is this Task's own
-    replay fidelity (D171): it decides which tools the row names as blocking, so a recompile that
-    moves it has to move the key with it.
+    probe's model and limit, the judge's name, which judge it is (D185's `judge_agent`, so the
+    one-shot judge's answer is never read back for the agent's) and the code hash. `fidelity_row` is
+    this Task's own replay fidelity (D171): it decides which tools the row names as blocking, so a
+    recompile that moves it has to move the key with it.
     """
     return content_hash({
         "task": {"id": task.id, "name": task.name, "intent": task.intent, "run_ids": list(task.run_ids)},
@@ -471,7 +472,8 @@ class _Job:
 # --- the stage body --------------------------------------------------------------
 
 def derive_all(ctx: ExamContext, inputs: dict, *, probe_model: Any = None, probe_limit: Optional[int] = None,
-               judge_model: Any = None, run_probe: Any = None, only: Optional[str] = None,
+               judge_model: Any = None, judge_agent: bool = False, run_probe: Any = None,
+               only: Optional[str] = None,
                workers: int = 1, code_hash: Optional[str] = None) -> dict:
     """One Verifier per Task from its References by the D111 rule, through the whole D79 suite.
 
@@ -484,6 +486,13 @@ def derive_all(ctx: ExamContext, inputs: dict, *, probe_model: Any = None, probe
     ones they mostly break are demoted (D76). Check 4's wrong Run is built from the Reference by
     code; check 6's loophole probe is the one Run per Task `run_probe` executes, and `probe_limit`
     caps how many Tasks get one. A Task with no Reference is not verdicted.
+
+    `judge_model` is the model that residue judging runs on and `judge_agent` is which judge it runs:
+    off, the default, is the one-shot judge of D110, one call over the Intent, the policy and the End
+    states; on, it is the agent with a bounded look of D185, which asks its own read tools before it
+    rules and falls back to the one-shot judge over its cap. The flag is in the cache key beside the
+    judge's name, so turning it on or off derives every Reference again rather than reading the other
+    judge's answer off disk.
 
     An assisted tool is a corpus-level ruling and it blocks no Task on its own (D171): a Task is
     blocked by a tool only when one of the Task's own recorded calls of it differs, which is what
@@ -522,10 +531,16 @@ def derive_all(ctx: ExamContext, inputs: dict, *, probe_model: Any = None, probe
     assisted_tools = set(inputs.get("assisted_tools") or ())
     tool_fidelity = inputs.get("tool_fidelity") or {}
     atoms = reference_mod.hard_atoms(constraints, write_tools, read_tools)
-    # D12: the residue judge is an agent with a bounded look over the same Task, and the one-shot
-    # judge it wraps is its fallback. Built once for the build, asked once per disagreeing Task.
-    judge = None if judge_model is None else judge_mod.AgentJudge(
-        judge_model, constraints=constraints, write_tools=write_tools, read_tools=read_tools, fn=fn)
+    # D185: the residue judge is the one-shot judge unless the build asked for the agent with a
+    # bounded look, which wraps the one-shot judge as its own fallback. Either way it is built once
+    # for the build and asked once per disagreeing Task; `judge_groups` dispatches on the object.
+    if judge_model is None:
+        judge = None
+    elif judge_agent:
+        judge = judge_mod.AgentJudge(judge_model, constraints=constraints, write_tools=write_tools,
+                                     read_tools=read_tools, fn=fn)
+    else:
+        judge = judge_model
     probe = run_probe if probe_model is not None else None
     tasks = list(inputs["tasks"])
     if only is not None:
@@ -539,7 +554,7 @@ def derive_all(ctx: ExamContext, inputs: dict, *, probe_model: Any = None, probe
               "policy_lines": list(policy_lines),
               "write_tools": sorted(write_tools),
               "probe": {"model": model_name(probe_model), "limit": probe_limit, "runner": probe is not None},
-              "judge": model_name(judge_model)}
+              "judge": model_name(judge_model), "judge_agent": bool(judge_agent)}
 
     def prepare(task: Task) -> _Job:
         """The Task's Runs, its key, and the D111 answer when the key is not on disk."""

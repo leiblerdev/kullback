@@ -597,6 +597,7 @@ class Loop:
         self.eplan = ExaminerPlan(
             workdir=self.plan.workdir, inputs=_handover(self.plan.store),
             probe_model=models.get("loophole_probe"), judge_model=models.get("reference_judge"),
+            judge_agent=self.plan.judge_agent,
             probe_limit=self.plan.probe_limit, workers=self.plan.workers,
             anchor=pipeline.load_anchor(self.plan.workdir),
             on_event=_dict_sink(self.plan.on_event), round=n)
@@ -1015,7 +1016,7 @@ def _read_config(path: Path) -> dict:
 
 
 def run_rounds(workdir: Any, model: Any = None, *, agent_model: Optional[Model] = None, files: Optional[list] = None,
-               judge_model: Any = None, second_judge_model: Any = None,
+               judge_model: Any = None, second_judge_model: Any = None, judge_agent: bool = False,
                iterate: bool = False, ceiling_usd: Optional[float] = None, allowance_usd: Optional[float] = None,
                stall_rounds: int = 1, fidelity_stall: int = 0, max_rounds: int = 0,
                target: str = TARGET_ALL, domain: str = "domain", max_attempts: int = 3,
@@ -1029,11 +1030,13 @@ def run_rounds(workdir: Any, model: Any = None, *, agent_model: Optional[Model] 
     the Examiner's too; `agent_model` drives both sessions when given, and with None code issues the
     tool calls (build for the Builder, derive for the Examiner). `judge_model` is the model the
     build's judge runs on and `model` when it is None; `second_judge_model` is the other side of a
-    two-judge question (D160). The dict is run_builder's plus the rounds, the exit, the trusted
+    two-judge question (D160); `judge_agent` asks for the residue judge with a bounded look instead
+    of the one-shot judge (D185). The dict is run_builder's plus the rounds, the exit, the trusted
     Tasks, the refusals and the Examiner's rulings.
     """
     plan = BuildPlan(workdir=Path(workdir), iterate=iterate, model=model, judge_model=judge_model,
-                     second_judge_model=second_judge_model, files=list(files or []),
+                     second_judge_model=second_judge_model, judge_agent=judge_agent,
+                     files=list(files or []),
                      ceiling_usd=ceiling_usd, domain=domain, max_attempts=max_attempts, memory_dir=memory_dir,
                      on_event=on_event, grow=grow, grow_seed=grow_seed, probe_limit=probe_limit, rerolls=rerolls,
                      search=search, workers=workers)

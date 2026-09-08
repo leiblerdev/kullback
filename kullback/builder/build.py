@@ -1459,13 +1459,16 @@ class BuildPlan:
     model that writes the Environment need not be the one that rules on it. `second_judge_model` is
     the other side of a two-judge question, named here so its calls are priced and so the report can
     say which two models the judging was done by; the build's own residue judge is one judge that may
-    only fail (D110, D111), and nothing here gives it a second.
+    only fail (D110, D111), and nothing here gives it a second. `judge_agent` is which residue judge
+    that is: off, the default, the one-shot judge of D110; on, the agent with a bounded look, which
+    costs References and so ships as an opt-in (D185).
     """
     workdir: Path
     iterate: bool = False
     model: Any = None
     judge_model: Any = None
     second_judge_model: Any = None
+    judge_agent: bool = False
     files: list = field(default_factory=list)
     ceiling_usd: Optional[float] = None
     domain: str = "domain"

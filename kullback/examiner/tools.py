@@ -812,7 +812,8 @@ def _derive(plan: ExaminerPlan, sink: Optional[Sink]):
         try:
             out = await asyncio.to_thread(
                 stage_mod.derive_all, ctx, plan.inputs, probe_model=plan.probe_model,
-                probe_limit=plan.probe_limit, judge_model=plan.judge_model, run_probe=plan.run_probe,
+                probe_limit=plan.probe_limit, judge_model=plan.judge_model,
+                judge_agent=plan.judge_agent, run_probe=plan.run_probe,
                 only=only, workers=plan.workers)
         except Exception as exc:
             await _emit(plan, sink, StageEnd(name=STAGE, counts={
