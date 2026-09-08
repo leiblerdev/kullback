@@ -278,12 +278,18 @@ def test_compile_tool_recompiles_one_body_and_releases_every_body(driven):
     result = builder_agent.drive_tool(harness, "compile_tool", {"name": "get_user_details"})
     assert not result.is_error, result.content
     stages = {s["name"]: s for s in result.details["stages"]}
-    assert stages["compile_tools"]["cached"] is False and stages["starting_state"]["cached"] is True
+    assert stages["compile_tools"]["cached"] is False
     after = json.loads((driven["workdir"] / "bodies.json").read_text(encoding="utf-8"))
     assert after == before, "one tool recompiled by the same model, the rest read back: every body is still there"
     assert set(plan.store["bodies"]) == set(before)
     gates = {g["stage"] for g in json.loads((driven["workdir"] / "gates.json").read_text(encoding="utf-8"))}
     assert {"parses", "intent", "rerolls"} <= gates, "the sandbox rulings were appended, the rest kept"
+    # D202: starting_state declares bodies.json, because a column a Task first touches with a write
+    # is pinned by running that tool's body, and the build that made this workdir wrote the bodies
+    # after the Starting state was built. So the first narrowed run rebuilds it once and the key
+    # settles from there, which is the same shape the narrowed replay below settles in.
+    again = builder_agent.drive_tool(harness, "compile_tool", {"name": "get_user_details"})
+    assert {s["name"]: s["cached"] for s in again.details["stages"]}["starting_state"] is True
 
 
 def test_replay_one_task_keeps_the_other_tasks_replays(driven):

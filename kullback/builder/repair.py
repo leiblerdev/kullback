@@ -309,13 +309,31 @@ def score_note(workdir: Any, name: str) -> str:
     elif outcome == "could_not_run":
         released = (f"{pair}, and the body already there answered no call at all under this world, "
                     f"so the attempt was released")
+    elif outcome == "reverted_regression":
+        # D201: the attempt was ahead on the score and behind on the calls. Saying only that the
+        # kept body stands would read as a tie, and the next hint would be written against nothing.
+        broke = [str(call) for call in (row.get("broke") or [])]
+        total = int(row.get("broke_calls") or len(broke))
+        named = ", ".join(broke)
+        more = total - len(broke)
+        released = (f"{pair}, but it stopped answering {total} recorded call"
+                    f"{'' if total == 1 else 's'} the body already there answers"
+                    + (f" ({named}{f' and {more} more' if more > 0 else ''})" if named else "")
+                    + ", so it was reverted and the body already there stands")
     else:
         released = f"{pair}, so the body already there stands and this recompile changed nothing"
     replayed = int(row.get("from_replay") or 0)
     evidence = int(row.get("evidence_calls") or 0)
     from_replay = (f"; {replayed} of the {evidence} evidence calls are from_replay, put back because "
                    f"the Reference replay failed on them") if replayed else ""
-    return f" ({released}{from_replay}{stalled_note(row)})"
+    # D201: the stage's ruling stands, and the transaction that wrapped it may have put the release
+    # back. Saying only what the stage decided would leave the record claiming a body was released
+    # after the whole repair was undone.
+    broke = [str(task) for task in (row.get("reverted_tasks") or [])]
+    put_back = (f"; the repair was then put back because it cost {', '.join(broke)}" if broke
+                else "; the repair was then put back for no effect on the Tasks it can touch"
+                if row.get("reverted") and outcome in ("beaten", "could_not_run") else "")
+    return f" ({released}{from_replay}{put_back}{stalled_note(row)})"
 
 
 def recompile_ruling(workdir: Any, name: str) -> str:

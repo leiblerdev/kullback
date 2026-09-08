@@ -39,9 +39,17 @@ def compile_tools_gate(bodies: dict, assisted_tools: Iterable[str] = ()) -> Gate
 
 
 def intent_gate(intents: dict) -> GateResult:
-    """An ungrounded Intent is a Task with no Verdict, never a failed build (D47, section 6)."""
+    """An ungrounded Intent is a Task with no Verdict, never a failed build (D47, section 6).
+
+    The two strip counts ride in the metrics (D196): how many of these lines held a value only the
+    system knew, and how many values were taken out of them. A build whose strip counts are zero on
+    a corpus whose leak check still fails is a strip that is not reading the same values the check is.
+    """
     failures = [f"task {t}: {_get(r, 'reason')}" for t, r in sorted(intents.items()) if not _get(r, "grounded")]
-    return gate("intent", failures, tasks=len(intents), grounded=sum(1 for r in intents.values() if _get(r, "grounded")))
+    stripped = [list(_get(r, "stripped", []) or []) for r in intents.values()]
+    return gate("intent", failures, tasks=len(intents), grounded=sum(1 for r in intents.values() if _get(r, "grounded")),
+                intents_stripped=sum(1 for values in stripped if values),
+                values_stripped=sum(len(values) for values in stripped))
 
 
 def readers_gate(proposals: Iterable[Any], requestors: int = 0, assumptions: Iterable[Any] = (),

@@ -46,6 +46,7 @@ from kullback.builder import (
     readers,
     sandbox,
     synth,
+    transaction,
     user_sim,
     vocabulary,
 )
@@ -60,9 +61,12 @@ from kullback.runner.records import (
     EntitySchema,
     Environment,
     GateResult,
+    RawPtr,
     Task,
+    ToolCall,
     ToolSig,
     Trace,
+    Turn,
     UserRules,
     as_dict,
     content_hash,
@@ -332,6 +336,11 @@ def _state_stage(grow: Optional[dict] = None, grow_seed: int = 0):
         # Its own copy: build_starting_state tags the synthetic ids on the schema it is given, and
         # the artifact the mine stage released is not this stage's to write to (with_synthetic_rows).
         schema = inputs["schema"].model_copy(deep=True)
+        # D202: the bodies this workdir already holds, so a column a Task first touches with a write
+        # is pinned from what that write recorded. They are a declared input path of the stage and
+        # not an artifact, because no stage has released a body yet when this one runs; a recompile
+        # that moves bodies.json moves this stage's key and the inversion runs again.
+        bodies = dict(_read_json(ctx.workdir / "bodies.json", {}) or {})
         state = compile_env.build_starting_state(inputs["traces"], schema, ctx.workdir,
                                                  inputs["tasks"], inputs["sigs"], grow=grow,
                                                  grow_seed=grow_seed,
@@ -339,7 +348,11 @@ def _state_stage(grow: Optional[dict] = None, grow_seed: int = 0):
                                                  revealed_assumptions=readers.reader_assumptions(
                                                      inputs["readers"]),
                                                  read_result=readers.result_reader(
-                                                     inputs["readers"], inputs["traces"], ctx.workdir))
+                                                     inputs["readers"], inputs["traces"], ctx.workdir),
+                                                 bodies=bodies, rules=_rules_of(inputs),
+                                                 readers=tool_runs.load_readers(inputs["readers"]),
+                                                 guessed_columns=readers.filled_columns(
+                                                     inputs["readers"]))
         # The synthetic ids live on the schema (D40); run_batch reads them back from schema.json.
         _write_json(ctx.workdir / "schema.json", as_dict(schema))
         return {"db": state.db, "overlays": list(state.overlays),
@@ -349,9 +362,11 @@ def _state_stage(grow: Optional[dict] = None, grow_seed: int = 0):
     # sizes are two Starting states, not one served twice (pipeline._fn_identity).
     fn = functools.partial(run, grow=dict(grow or {}), grow_seed=grow_seed)
     return pipeline.Stage(name="starting_state", fn=fn,
-                          inputs=("traces", "schema", "tasks", "sigs", "readers"),
+                          inputs=("traces", "schema", "tasks", "sigs", "readers", "canon_rules"),
                           outputs=("db", "overlays", "assumptions", "synthetic_rows"),
-                          code_version=_version("starting_state", fn, compile_env, synth, readers, mine))
+                          input_paths=("bodies.json",),
+                          code_version=_version("starting_state", fn, compile_env, synth, readers,
+                                                mine, sandbox, tool_runs))
 
 
 def _evidence_version() -> str:
@@ -625,7 +640,19 @@ def _tools_stage(model: Any, max_attempts: int, workers: int = 1, only: Optional
             # scores: the tie below would otherwise hand the tool back to a body a schema change
             # broke. Everything else competes, and a tie goes to the body that is already there,
             # which the Examiner has seen and the Tasks that trusted it were trusted against.
-            keeps_previous = graded is not None and not graded.could_not_run and kept_score >= score
+            #
+            # D201: this is the repair transaction with the tool's own recorded calls as its set. The
+            # target's state is the score the compiler ranks its attempts by, so a tie or a loss is
+            # still a repair with no effect and the kept body still stands; what the score alone
+            # could not see is a rewrite that gained two calls and lost one, which has cost something
+            # and is reverted for a regression the way an Intent that costs a Task its Reference is.
+            body_ruling = (transaction.rule("compile_tools.body", sig.name,
+                                            transaction.improved(kept_score, score),
+                                            transaction.call_lights(graded.call_outcomes),
+                                            transaction.call_lights(build.call_outcomes))
+                           if graded is not None else None)
+            keeps_previous = (body_ruling is not None and not graded.could_not_run
+                              and not body_ruling.accepted)
             # gates.json is the ruling on the module this stage released, and every failing row in
             # it becomes a red light the Builder is asked to repair (`builder/tools.red_lights`).
             # So the rows recorded are the gates of the body that was released, not of the attempt
@@ -646,8 +673,17 @@ def _tools_stage(model: Any, max_attempts: int, workers: int = 1, only: Optional
                 unbeaten = int((prior_rulings.get(sig.name) or {}).get("unbeaten") or 0)
                 unbeaten += 1 if ctx.attempt <= 1 else 0
                 kept_rulings[sig.name] = {
-                    "outcome": "kept" if keeps_previous else
-                               ("could_not_run" if graded.could_not_run else "beaten"),
+                    # An attempt that scored no higher is kept out for the reason D184 gives, and the
+                    # word for it stays "kept". The new outcome is the one the score alone could not
+                    # see: an attempt ahead on the score and behind on the calls.
+                    "outcome": ("could_not_run" if graded.could_not_run else
+                                "beaten" if body_ruling.accepted else
+                                transaction.REVERTED_REGRESSION if body_ruling.moved else "kept"),
+                    # The recorded calls that attempt would have cost, named: it is the lesson the
+                    # next hint has to answer (D191's shape).
+                    "broke": ([call.split(" ")[0] for call in body_ruling.broke[:transaction.NAMED]]
+                              if body_ruling.moved else []),
+                    "broke_calls": len(body_ruling.broke) if body_ruling.moved else 0,
                     "kept_score": kept_score, "attempt_score": score,
                     "unbeaten": unbeaten if keeps_previous else 0,
                     "from_replay": from_replay.get(sig.name, 0),
@@ -1185,9 +1221,14 @@ def _intent_stage(model: Any, workers: int = 1, only: Optional[Iterable[str]] = 
     code version, so the same repair asked twice with two hints is two runs and not one cache hit.
     A narrowed run rewrites its Tasks however well they already ground: a repair is an explicit ask.
 
+    The schema and the canon rules are read for the D196 strip alone: they are what gives a value's
+    column its class, so the strip and the compare read one column one way (D73).
+
     A full run ratchets (todo: a stage never replaces a passing artifact with a failing one). A Task
-    whose recorded Intent grounded and whose member Runs are unchanged keeps that record and is not
-    put to the model again; only the rest are written. The artifact still names every Task. Two
+    whose recorded Intent grounded, whose member Runs are unchanged and whose line the strip would
+    not change keeps that record and is not put to the model again; only the rest are written. The
+    strip condition is what stops a line written before D196 living on: it grounds, so the ratchet
+    would keep it, and it may still hold a value only the tools knew. The artifact still names every Task. Two
     things follow: a repaired Intent survives the next full build instead of being written over by
     a fresh line that may ground worse, and an `--iterate` build does not pay to rewrite what
     already grounds.
@@ -1204,8 +1245,16 @@ def _intent_stage(model: Any, workers: int = 1, only: Optional[Iterable[str]] = 
 
     def run(ctx, inputs):
         write_tools = {s.name for s in inputs["sigs"] if s.kind == "write"}
+        schema, canon_rules = inputs.get("schema"), inputs.get("canon_rules")
         tasks = list(inputs["tasks"])
+        by_id = {t.trace_id: t for t in inputs["traces"]}
         recorded = _read_intents(ctx.workdir, [task.id for task in tasks])
+
+        def clean(task) -> bool:
+            """D196: a line recorded before the strip ran, or before this schema, is written again."""
+            members = [by_id[rid] for rid in task.run_ids if rid in by_id]
+            return intent.strip_holds(recorded[task.id], members, schema=schema, rules=canon_rules)
+
         if only is not None:
             unknown = sorted(set(only) - {task.id for task in tasks})
             if unknown:
@@ -1213,13 +1262,14 @@ def _intent_stage(model: Any, workers: int = 1, only: Optional[Iterable[str]] = 
             kept = {task.id: recorded[task.id] for task in tasks if task.id not in set(only)}
         else:
             kept = {task.id: recorded[task.id] for task in tasks
-                    if intent.still_grounds(recorded[task.id], task.run_ids)}
+                    if intent.still_grounds(recorded[task.id], task.run_ids) and clean(task)}
         tasks = [task for task in tasks if task.id not in kept]
 
         def write_one(task):
             try:
                 record = intent.write_intent(model, task, inputs["traces"], write_tools=write_tools,
-                                             hint=hints.get(task.id))
+                                             hint=hints.get(task.id), schema=schema,
+                                             canon_rules=canon_rules)
             except Exception as exc:  # one Task's Intent failing is that Task ungrounded, not a dead build
                 record = intent.Intent(task_id=task.id, reason=f"{type(exc).__name__}: {exc}")
             _write_json(ctx.workdir / "intents" / f"{task.id}.json", as_dict(record))
@@ -1236,7 +1286,8 @@ def _intent_stage(model: Any, workers: int = 1, only: Optional[Iterable[str]] = 
     version = f"{_version('intent', run, intent)}:{getattr(model, 'name', 'none')}"
     if only is not None:
         version += f":only={','.join(only)}:hints={content_hash(hints)[:16]}"
-    return pipeline.Stage(name="intent", fn=run, builder=True, inputs=("tasks", "traces", "sigs"),
+    return pipeline.Stage(name="intent", fn=run, builder=True,
+                          inputs=("tasks", "traces", "sigs", "schema", "canon_rules"),
                           outputs=("intents",), input_paths=("intents",), code_version=version)
 
 
@@ -1583,6 +1634,78 @@ def reroll_runner(plan: BuildPlan):
         return [{"run_id": r.run_id, "path": p, "termination_reason": r.termination_reason} for r, p in runs]
 
     return run_rerolls
+
+
+def _variant_trace(task_id: str, calls: Iterable[dict], transcript: Iterable[dict], run_id: str) -> Trace:
+    """A rewritten call path as a Trace the replay can drive (D199).
+
+    The conversation is the Run's own, turn for turn: what the agent asked and what it told the user
+    are not the rewrite's to invent, and the atoms over questions and stated facts read them. Each
+    call names the turn it belongs to, so a call that moved past a spoken turn moved in the
+    transcript too, and a call whose turn is gone joins the last turn its speaker had. A Run whose
+    transcript could not be read still replays, as one assistant turn of every call.
+    """
+    ptr = RawPtr(file_hash=run_id)
+    spoken = [dict(turn) for turn in transcript] or [{"role": "assistant", "content": ""}]
+    turns = [Turn(idx=index, role=str(turn.get("role") or "assistant"),
+                  content=str(turn.get("content") or ""), raw_ptr=ptr)
+             for index, turn in enumerate(spoken)]
+    tool_calls = []
+    for index, call in enumerate(calls):
+        call_id = str(call.get("id") or f"{run_id}-{index}")
+        requestor = str(call.get("requestor") or "assistant")
+        role = "user" if requestor == "user" else "assistant"
+        tool_calls.append(ToolCall(id=call_id, name=str(call.get("name") or ""),
+                                   args=dict(call.get("args") or {}), requestor=requestor, raw_ptr=ptr))
+        at = int(call.get("turn") or 0)
+        turn = turns[at] if 0 <= at < len(turns) and turns[at].role == role else next(
+            (t for t in reversed(turns) if t.role == role), turns[0])
+        turn.tool_call_ids.append(call_id)
+    return Trace(trace_id=run_id, raw_hash=run_id, ingest_version="variant", source="variant",
+                 turns=turns, tool_calls=tool_calls, raw_ptr=ptr)
+
+
+def variant_runner(plan: BuildPlan):
+    """A rewritten call path replayed from a Task's Starting state, as a callable for the Examiner (D199).
+
+    `run_variant(task_id, calls, run_id, transcript)` builds the Task's world the way the replay stage
+    builds it, one fresh world per variant, drives the calls through the same Router and the same
+    scoring, and answers with the Run that came out. Where the Run ended is the caller's to read:
+    this only runs it. The callable reads the plan's store, so the Examiner that calls it never does
+    (D123), and it costs no model call, since the Trace it drives was written by code.
+    """
+    store = _runner_store(plan)
+    schema = with_synthetic_rows(store["schema"], store.get("synthetic_rows") or ())
+    sigs, bodies, db = store["sigs"], store["bodies"], store["db"]
+    env_id = getattr(store["environment"], "env_id", None)
+    tasks = {t.id: t for t in store["tasks"]}
+    canon_rules = _rules_of(store)
+    write_tools = {s.name for s in sigs if s.kind == "write"}
+    comparer = tool_runs.ReplayComparer(schema, tool_runs.load_readers(store.get("readers") or []), canon_rules)
+    source = compile_env.module_source(schema, sigs, bodies)
+    workdir = plan.workdir
+
+    def run_variant(task_id: str, calls: Iterable[dict], run_id: str,
+                    transcript: Iterable[dict] = ()) -> Optional[dict]:
+        if task_id not in tasks:
+            raise BuildError(f"no Task is named {task_id}")
+        overlay, overlay_rows = compile_env.load_overlay(workdir, task_id)
+        toolkit = compile_env.load_toolkit(source, json.loads(json.dumps(db)), overlay=overlay,
+                                           overlay_values=overlay_rows)
+        router = route.Router(env_tools_module=toolkit, starting_state=json.loads(json.dumps(db)),
+                              overlay=overlay, overlay_rows=overlay_rows, tool_sigs=sigs,
+                              canon_rules=canon_rules, synthetic_rows=schema.synthetic_rows)
+        trace = _variant_trace(task_id, calls, transcript, run_id)
+        result = replay_mod.replay_trace(trace, router, workdir=workdir / "runs" / task_id,
+                                         task_id=task_id, env_id=env_id, write_tools=write_tools,
+                                         canon_rules=canon_rules, comparer=comparer, run_id=run_id)
+        _write_runs_index(workdir)
+        if not result.path:
+            return None
+        return {"run_id": result.run_id, "path": result.path,
+                "termination_reason": result.termination_reason, "crashed": result.crashed}
+
+    return run_variant
 
 
 def _runner_store(plan: BuildPlan) -> dict:

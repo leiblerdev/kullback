@@ -470,7 +470,10 @@ def test_a_builder_round_with_every_stage_cached_is_told_that_nothing_changed_an
     same in words and names the verbs of this session that can change an artifact."""
     plan = BuildPlan(workdir=tmp_path / "cached", model=Bodies(), files=[_fixture(request)], max_attempts=0)
     harness = builder_agent.build_harness(plan)
-    for _ in range(2):  # the second build re-ingests the file; the third has nothing left to run
+    # The second build re-ingests the file. The third is the first to build the Starting state with
+    # the bodies in front of it, which D202 inverts a write against, so what it releases can move
+    # once and take the stages under it with it. The fourth has nothing left to run.
+    for _ in range(3):
         builder_agent.drive_tool(harness, "build", {"target": TARGET})
     third = builder_agent.drive_tool(harness, "build", {"target": TARGET})
     assert not third.is_error and "nothing changed: all" in third.content.splitlines()[0]
@@ -538,7 +541,7 @@ def test_a_round_whose_repair_moved_a_gate_ruling_is_not_stalled(tmp_path):
     second = loop.close_round(2, _record(2).counts)
     assert second.counts["moved"] is True and second.exit is None
     assert second.counts["repairs"] == [{"verb": "repair_recompile", "target": "get_order",
-                                         "artifact": "bodies", "changed": False}]
+                                         "artifact": "bodies", "changed": False, "outcome": ""}]
     assert loop.close_round(3, _record(3).counts).exit == "stalled", "no repair, no ruling, no count"
 
 
@@ -550,7 +553,7 @@ def test_a_round_whose_only_repair_decided_something_is_stalled(tmp_path):
     repair.record_request(loop.plan.workdir, "repair_refuse_task", "t2", {}, round_no=2)
     second = loop.close_round(2, _record(2).counts)
     assert second.counts["repairs"] == [{"verb": "repair_refuse_task", "target": "t2",
-                                         "artifact": None, "changed": False}]
+                                         "artifact": None, "changed": False, "outcome": ""}]
     assert second.counts["moved"] is False and second.exit == "stalled"
 
 
@@ -584,8 +587,10 @@ def test_a_round_records_the_change_each_repair_measured_on_its_own_target(tmp_p
     repair.record_request(workdir, "repair_intent", "task_b",
                           {"changed": False, "hash_before": "ccc", "hash_after": "ccc"}, round_no=1)
     assert loop.close_round(1, _record(1).counts).counts["repairs"] == [
-        {"verb": "repair_intent", "target": "task_a", "artifact": "intents", "changed": True},
-        {"verb": "repair_intent", "target": "task_b", "artifact": "intents", "changed": False}]
+        {"verb": "repair_intent", "target": "task_a", "artifact": "intents", "changed": True,
+         "outcome": ""},
+        {"verb": "repair_intent", "target": "task_b", "artifact": "intents", "changed": False,
+         "outcome": ""}]
 
 
 def test_the_stall_follow_up_names_the_pending_findings_and_the_repairs_made(tmp_path):

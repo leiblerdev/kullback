@@ -68,6 +68,7 @@ from kullback.runner.records import (
     Environment,
     GateResult,
     OverlayRow,
+    OverlayStep,
     Task,
     TaskOverlay,
     ToolCall,
@@ -77,6 +78,7 @@ from kullback.runner.records import (
     as_dict,
     content_hash,
 )
+from kullback.runner.route import call_fingerprint  # D197: one fingerprint, written and served alike
 
 DB_FILE = "db.json"
 OVERLAY_DIR = "overlays"
@@ -84,6 +86,16 @@ PINS_FILE = "overlay_pins.json"  # what the Starting-state pinner pinned per Tas
 NODE_DIR = "tool_nodes"
 OUTCOME_DETAIL_CHARS = 300  # how much of one differing call's sentence a per-call row carries (D171)
 MAX_REPAIR_ATTEMPTS = 3
+# D202: how many starting values one column is tried in before the pinner gives up on inverting a
+# write, and how many (column, value) pairs one recorded write is tried in altogether. A boolean or
+# an enum has a domain of two to a few values and settles in the first batch; a wide table with a
+# numeric column is what the two caps are for, so one write can never turn into a thousand runs.
+PRE_WRITE_CANDIDATE_CAP = 16
+PRE_WRITE_TRIES_CAP = 64
+# One sandbox job carries a whole copy of the world per candidate, so how many candidates share a
+# subprocess is set by how big that world is rather than by a fixed count: a small world settles a
+# whole column in one run, a large one is split so no job file grows past this.
+PRE_WRITE_JOB_BYTES = 4_000_000
 # D117: at most this many model calls inside one attempt's tool-use loop, so a model that keeps
 # reaching for lookup_rows or test_body instead of ever submitting a body cannot spend an attempt
 # for free; the last reply's content is taken as the body once the rounds run out.
@@ -289,6 +301,15 @@ class _Obs:
     # A keyless result homed onto the row the call named (`home_partial_result`), rather than a row
     # a result stated. Kept apart from `depth` so the pins report can count the two rules apart.
     homed: bool = False
+    # Which recorded call saw the row (D197). `call` fingerprints the call the way route.py does, so
+    # a Run making that call again can be told it is the same read; `call_id` names the recorded call
+    # itself, which is what the sandbox scores a body on. A sighting no call made carries neither.
+    # `from_write` says that call was itself a write (D202): `after_write` is true of the sighting a
+    # write made and of every later sighting of the same row alike, so it cannot tell the two apart,
+    # and a write's recorded result is the only evidence of what a column it touched held before it.
+    call: str = ""
+    call_id: str = ""
+    from_write: bool = False
 
     @property
     def partial(self) -> bool:
@@ -341,9 +362,11 @@ def _observations(traces: list[Trace], schema: EntitySchema, write_tools: set[st
                 rows = [(homed.table, homed.row_id, homed.row, 0)]
             elif homed is not None and stats is not None:
                 stats["unread_partial_results"] = stats.get("unread_partial_results", 0) + 1
+            fingerprint = call_fingerprint(call.name, call.args or {})
             for table, row_id, row, depth in rows:
                 out.append(_Obs(table, row_id, row, trace.trace_id, (trace_index, call_index),
-                                is_write or row_id in written, depth, bool(homed and homed.row)))
+                                is_write or row_id in written, depth, bool(homed and homed.row),
+                                fingerprint, str(call.id or ""), is_write))
             if is_write:
                 written |= {row_id for _, row_id, _, _ in rows}
                 written |= {v for v in call.args.values() if isinstance(v, str)}
@@ -401,6 +424,10 @@ def build_starting_state(
     revealed_rows: Optional[dict] = None,
     revealed_assumptions: Optional[Iterable[str]] = None,
     read_result: Optional[Callable[[str, Any], Any]] = None,
+    bodies: Optional[dict] = None,
+    rules: Any = None,
+    readers: Any = None,
+    guessed_columns: Optional[Iterable[tuple[str, str]]] = None,
 ) -> StartingState:
     """One shared db.json for the customer, plus one TaskOverlay per Task (D33, D74).
 
@@ -418,6 +445,13 @@ def build_starting_state(
     because no recording read them before a write, recorded here with the state's own guesses.
     `read_result` is the readers' own function (D176), asked what a scalar result asserts when the
     call named a row and the result carries no key of its own (`home_partial_result`).
+    `bodies` are the tool bodies this workdir already holds, with `rules` and `readers` for the
+    compare: given them, a column a Task first touches with a write is pinned from what that write
+    recorded rather than left at the shared value (D202, `PreWriteInverter`). Without them, which is
+    every build before the first one that compiled a body, nothing is inverted.
+    `guessed_columns` are the (table, column) pairs another stage filled from the corpus rather than
+    read (`readers.filled_columns`): they arrive on a revealed row looking like any other sighting,
+    and a sighting nobody read is exactly what the inversion is allowed to move.
     What the pinner did is written to `overlay_pins.json` beside the overlays.
     """
     traces, workdir = list(traces), Path(workdir)
@@ -469,7 +503,12 @@ def build_starting_state(
                     "sighting of it carried are shaped from the observed rows and a Run that reads "
                     "it is assisted"
                     for table_of, row_id in completed]
-    overlays = _build_overlays(observations, tasks or [], workdir, assumptions, stats)
+    # D202 runs after the shared world is settled and inside the overlay build, because it inverts a
+    # write against the Task's own world: the shared rows with that Task's pins already on them.
+    inverter = (PreWriteInverter(traces, observations, schema, db, tool_sigs or [], bodies, workdir,
+                                 rules=rules, readers=readers, guessed=guessed_columns)
+                if bodies else None)
+    overlays = _build_overlays(observations, tasks or [], workdir, assumptions, stats, inverter)
     assumptions += [f"{table_of} row {row_id} is stored under {home}; the standalone copy was folded "
                     "into it and a Task overlay that pins it re-adds the standalone copy"
                     for table_of, row_id, home in fold_into_homes(db, schema)]
@@ -690,7 +729,8 @@ def _modal_row(rows: Iterable[dict]) -> dict:
 
 
 def _build_overlays(observations: list[_Obs], tasks: Iterable[Task], workdir: Path,
-                    assumptions: list[str], stats: Optional[dict] = None) -> list[TaskOverlay]:
+                    assumptions: list[str], stats: Optional[dict] = None,
+                    inverter: Optional[PreWriteInverter] = None) -> list[TaskOverlay]:
     """A Task's rows in the version its own Runs saw, column by column: each column's first sighting.
 
     One rule for every column, whatever shape the recording stated it in. A Task's pinned row takes
@@ -708,6 +748,11 @@ def _build_overlays(observations: list[_Obs], tasks: Iterable[Task], workdir: Pa
     Two Runs that read different parts of one row do not disagree, which is why the comparison is
     per column and not over the whole row.
 
+    A column whose first touch in the Task is a write has no sighting to take, so `inverter` is
+    given the Task's pinned rows and reads the write's own recorded result for what the column held
+    before it (D202, `PreWriteInverter`); it changes the rows in place before the overlay is hashed,
+    so the world the gates score bodies on (`call_starting_states`) is the inverted one.
+
     Per Task, what was pinned and by which of these rules is counted into `overlay_pins.json`.
     """
     corpus: dict[tuple[str, str], dict[str, set]] = {}
@@ -716,6 +761,7 @@ def _build_overlays(observations: list[_Obs], tasks: Iterable[Task], workdir: Pa
         for name, value in obs.row.items():
             columns.setdefault(str(name), set()).add(canon(value))
     overlays, pins = [], {}
+    by_table: dict[str, set] = {}  # D197: which columns of which table any Task saw move
     for task in tasks:
         members = set(task.run_ids)
         seen: dict[tuple[str, str], list[_Obs]] = {}
@@ -733,27 +779,85 @@ def _build_overlays(observations: list[_Obs], tasks: Iterable[Task], workdir: Pa
         assumptions += [f"task {task.id} runs disagree on {table} row {row_id}: the overlay pins the "
                         "earliest sighting, so the runs that saw the other version cannot replay on it"
                         for (table, row_id) in sorted(seen) if _columns_disagreeing(seen[(table, row_id)])]
+        steps = [step for key in sorted(seen) for step in _row_steps(key[0], key[1], seen[key])]
+        # Where a sighting of the row came from, kept apart from `seen` because the inversion can
+        # add a row no sighting of this Task ever stated: a write named it and never answered it.
+        origins = {key: (sightings[0].trace_id, sightings[0].after_write)
+                   for key, sightings in seen.items()}
+        inverted = (inverter.invert(task, rows, origins, sources, assumptions)
+                    if inverter is not None else {})
         overlay = TaskOverlay(task_id=task.id, rows=[
             OverlayRow(table=t, id=i, version_hash=content_hash(rows[(t, i)]),
-                       trace_id=seen[(t, i)][0].trace_id, after_write=seen[(t, i)][0].after_write)
+                       trace_id=origins[(t, i)][0], after_write=origins[(t, i)][1])
             for t, i in sorted(rows)
-        ])
+        ], steps=steps)
         assumptions += [f"task {task.id} pins {t} row {i} from a post-write sighting"
                         for (t, i), sightings in sorted(seen.items()) if sightings[0].after_write]
         _write_overlay(workdir, overlay, {content_hash(rows[key]): rows[key] for key in rows})
         pins[task.id] = {
             "rows": len(rows),
-            "rows_nested": sum(1 for key in rows if any(o.depth for o in seen[key])),
+            "rows_nested": sum(1 for key in rows if any(o.depth for o in seen.get(key, ()))),
             "columns": sum(len(row) for row in rows.values()),
             "columns_homed": sum(1 for key, source in sources.items()
                                  for name in source if source[name].homed),
             "columns_the_corpus_disagrees_on": sum(
                 1 for key, row in rows.items() for name in row
                 if len(corpus.get(key, {}).get(name) or ()) > 1),
+            # D197: the columns of this Task's own rows that moved between two of its reads, and the
+            # sightings a Run can be served for them. Both are zero where nothing moved.
+            "columns_time_varying": len({(s.table, s.id, name) for s in steps for name in s.values}),
+            "sequences_served": len(steps),
+            **{name: inverted.get(name, 0) for name in
+               ("columns_inverted", "columns_no_inverse", "inversion_candidates_tried")},
+            "inversions": list(inverted.get("inversions") or ()),
         }
+        for step in steps:
+            by_table.setdefault(step.table, set()).update((step.id, name) for name in step.values)
         overlays.append(overlay)
-    _write_pins(workdir, pins, stats or {})
+    stats = dict(stats or {})
+    if inverter is not None:
+        stats["inversion_by_tool"] = inverter.by_tool
+        stats["writes_without_a_body"] = inverter.writes_without_a_body
+    _write_pins(workdir, pins, stats, {t: len(v) for t, v in sorted(by_table.items())})
     return overlays
+
+
+def _row_steps(table: str, row_id: str, sightings: list[_Obs]) -> list[OverlayStep]:
+    """One row's time-varying columns, per call of the Task's own recording, in call order (D197).
+
+    A column is time-varying for this Task when two of its reads of the row hold different values
+    and no recorded write touched the row between them. That is a statement about the customer's
+    system and not about the recording: a status read twice an hour apart, a reading taken again,
+    a queue whose position has moved. Pinning one value made
+    the first read match and every later one differ, which is what a whole-Task constant can say and
+    no more.
+
+    So each sighting the Task made becomes a step carrying only the columns that moved, keyed by the
+    call's fingerprint and by how many calls of that fingerprint came before it. The Router counts
+    the same way, so the nth read of the row is served the nth recorded value and the last value
+    holds once the sequence is spent. A row read once, or read twice in one value, gets no step and
+    keeps its single pin. Walking stops at the first sighting a write had already touched: from
+    there the write's own value is what a later read sees, which is how it already worked.
+    """
+    usable: list[_Obs] = []
+    for obs in sightings:
+        if obs.after_write or not obs.call:
+            break
+        usable.append(obs)
+    moved = {name for name in {n for obs in usable for n in obs.row}
+             if len({canon(obs.row[name]) for obs in usable if name in obs.row}) > 1}
+    if not moved:
+        return []
+    steps: list[OverlayStep] = []
+    counted: dict[str, int] = {}
+    for obs in usable:
+        index = counted.get(obs.call, 0)
+        counted[obs.call] = index + 1
+        values = {str(name): obs.row[name] for name in sorted(moved) if name in obs.row}
+        if values:
+            steps.append(OverlayStep(table=table, id=row_id, call=obs.call, index=index,
+                                     call_id=obs.call_id, values=values))
+    return steps
 
 
 def _columns_disagreeing(sightings: list[_Obs]) -> list[str]:
@@ -768,16 +872,324 @@ def _columns_disagreeing(sightings: list[_Obs]) -> list[str]:
             if len({per[name] for per in by_trace.values() if name in per}) > 1]
 
 
-def _write_pins(workdir: Path, pins: dict, stats: dict) -> Path:
+def column_domains(observations: Iterable[_Obs]) -> dict[tuple[str, str], list]:
+    """Every starting value the corpus ever showed a column in, most frequent first (D202).
+
+    A column's candidate starting values are the values it was ever seen holding. A boolean gives
+    two, an enum a few, a numeric or text column gives whatever the corpus holds, which is why the
+    caller caps the list rather than this. Values are counted after canon, so two spellings of one
+    value are one candidate, and what is handed back is the value the corpus recorded.
+    """
+    counted: dict[tuple[str, str], dict] = {}
+    for obs in observations:
+        for name, value in obs.row.items():
+            slot = counted.setdefault((obs.table, str(name)), {})
+            entry = slot.setdefault(canon(value), [0, value])
+            entry[0] += 1
+    domains: dict[tuple[str, str], list] = {}
+    for key, slot in counted.items():
+        ordered = sorted(slot.items(), key=lambda item: (-item[1][0], str(item[0])))
+        domains[key] = [value for _, (_count, value) in ordered]
+    return domains
+
+
+class PreWriteInverter:
+    """Pins a column a Task first touches with a write from what that write recorded (D202).
+
+    D188 pins each of a Task's columns from the earliest of that Task's own sightings that carried
+    it. A column no Run read before the first write to it has no such sighting, so the overlay
+    leaves it where the shared world put it, which is a valid starting value and rarely this Task's:
+    a flag toggled, a setting checked and reset, a mode switched. The write's recorded result, the
+    value it left or a sentence saying what it changed, is then the only evidence there is of what
+    the column held before it, and this reads that evidence.
+
+    The rule. For each write a Task recorded, the tool's kept body is run in the sandbox on the
+    Task's world as it stands. Where the body already answers the way the recording did, nothing is
+    inverted: the pre-state in front of it is consistent with the write. Where it does not, the body
+    is run again on that world with one column changed to one candidate starting value, and the
+    first candidate under which the body's answer matches the recording column by column (the D187
+    compare) is pinned, with the reason `inverted_from_write`, the write's call id and the hash of
+    the body the inversion trusted. Candidates are the column's observed domain across the corpus
+    plus the value the shared world holds, capped per column and per write, columns tried narrowest
+    domain first because a column the corpus shows in two values is what a toggle looks like. A
+    column the Task read before any write touched its row is never inverted, because a read is
+    better evidence than an inversion. A column no candidate settles keeps the shared value with the
+    reason `no_inverse` and is counted, so the next reading sees which tools still part.
+
+    A column is inverted for the first write that could have touched it and never again: the writes
+    after it read the state the earlier ones left, which is the replay's business and not the
+    pinner's. This is code only, no model calls. If the kept body for the tool is itself wrong the
+    inversion inherits its error, which is why the body hash travels with the reason: a recompile
+    that moves the body moves `bodies.json`, and the Starting state declares that file, so the
+    inversion re-runs. A tool with no body yet, which is every tool on a first build, is skipped and
+    counted.
+    """
+
+    def __init__(self, traces: Iterable[Trace], observations: Iterable[_Obs], schema: EntitySchema,
+                 db: dict, tool_sigs: Iterable[ToolSig], bodies: dict, workdir: Path | str,
+                 rules: Any = None, readers: Any = None, timeout: float = 30.0,
+                 guessed: Optional[Iterable[tuple[str, str]]] = None):
+        observations = list(observations)
+        self.guessed = {(str(table), str(name)) for table, name in (guessed or ())}
+        self.schema, self.db, self.workdir = schema, db, Path(workdir)
+        self.rules, self.readers, self.timeout = rules, readers, timeout
+        self.sigs = {sig.name: sig for sig in tool_sigs if sig.kind == "write"}
+        self.bodies = {name: body for name, body in (bodies or {}).items()
+                       if name in self.sigs and str(body or "").strip()}
+        self.domains = column_domains(observations)
+        self.calls = self._write_calls(traces)
+        self.stated: dict[str, list[tuple[str, str]]] = {}
+        for obs in observations:
+            if obs.call_id and obs.from_write:
+                seen = self.stated.setdefault(obs.call_id, [])
+                if (obs.table, obs.row_id) not in seen:
+                    seen.append((obs.table, obs.row_id))
+        # Row id to the tables holding it, so the row a write named in its arguments is found once
+        # over the world rather than once per recorded call.
+        self.homes: dict[str, list[tuple[str, str]]] = {}
+        for table in sorted(self.db):
+            for row_id in sorted(self.db[table]):
+                self.homes.setdefault(row_id, []).append((table, row_id))
+        self.batch = max(1, min(PRE_WRITE_TRIES_CAP,
+                                PRE_WRITE_JOB_BYTES // max(1, len(json.dumps(db, default=str)))))
+        self.by_tool: dict[str, dict[str, int]] = {}
+        self.writes_without_a_body = 0
+        self._sources: dict[str, str] = {}
+
+    def _write_calls(self, traces: Iterable[Trace]) -> dict[str, list[tuple[tuple, str, ToolCall]]]:
+        """Per trace, every write call it recorded, whoever made it, in the order the corpus states them.
+
+        R33 keeps another requestor's results from stating rows of the customer's system, and that
+        rule stands: nothing here reads a result as a row. What a write is read for is the pre-state
+        it implies, and the Router serves every requestor's call out of the same Task world (D164),
+        so a write by a simulated user constrains that world exactly as the assistant's does. Reading
+        only the assistant's inverted nothing at all on the corpus this was written for, where the
+        writes that part are the user's own device tools.
+        """
+        out: dict[str, list[tuple[tuple, str, ToolCall]]] = {}
+        for trace_index, trace in enumerate(traces):
+            for call_index, call in enumerate(trace.tool_calls):
+                if call.error is not None:
+                    continue
+                if call.name in self.sigs:
+                    out.setdefault(trace.trace_id, []).append(
+                        ((trace_index, call_index), trace.trace_id, call))
+        return out
+
+    def invert(self, task: Task, rows: dict, origins: dict, sources: dict,
+               assumptions: list[str]) -> dict:
+        """Invert this Task's pre-write columns in place; the counts of what it did and did not."""
+        record = {"columns_inverted": 0, "columns_no_inverse": 0, "inversion_candidates_tried": 0,
+                  "inversions": []}
+        entries = sorted((entry for run_id in task.run_ids for entry in self.calls.get(run_id, [])),
+                         key=lambda entry: entry[0])
+        if not entries:
+            return record
+        # A column some Run read before any write had touched its row is pinned by that read, and a
+        # read is better evidence of a starting value than an inversion can be. A column another
+        # stage filled from the corpus is not one of those: it arrives on a revealed row looking
+        # like a sighting, and nobody read it. Whole corpora sit behind that distinction, one of
+        # them a device every Task's writes touch and no recording states.
+        read_pinned = {(key, name) for key, source in sources.items()
+                       for name, obs in source.items()
+                       if not obs.after_write and (key[0], name) not in self.guessed}
+        decided: set[tuple[tuple[str, str], str]] = set()
+        for _order, trace_id, call in self._failing(entries, self._world(rows)):
+            world = self._world(rows)
+            for key in self._targets(call, rows):
+                if self._invert_one(task, call, trace_id, key, world, rows, origins, decided,
+                                    read_pinned, record, assumptions):
+                    break  # the write is reproduced; the rows after this one are not its doing
+        return record
+
+    def _failing(self, entries, world) -> list:
+        """The Task's writes the kept bodies do not already reproduce on the world in front of them.
+
+        Every write of one tool is asked in one sandbox run, because the subprocess is the cost here
+        and a Task can hold a dozen writes. The world is the Task's as the overlay states it before
+        any inversion: a write whose pre-state an earlier inversion moved is asked again through the
+        `decided` set, which is the same rule that inverts a column for its first write only.
+        """
+        out: list = []
+        for tool, group in sorted(self._by_tool(entries).items()):
+            body = self.bodies.get(tool)
+            if not body:
+                self.writes_without_a_body += len(group)
+                continue
+            sandbox = Sandbox(self._source(tool), world, self.workdir / "inversion" / tool,
+                              timeout=self.timeout)
+            try:
+                results = sandbox.run([entry[2] for entry in group])
+            except SandboxError:
+                continue
+            out += [entry for entry, result in zip(group, results, strict=False)
+                    if not self._matches(entry[2], result)]
+        return sorted(out, key=lambda entry: entry[0])
+
+    @staticmethod
+    def _by_tool(entries) -> dict:
+        grouped: dict[str, list] = {}
+        for entry in entries:
+            grouped.setdefault(entry[2].name, []).append(entry)
+        return grouped
+
+    def _invert_one(self, task, call, trace_id, key, world, rows, origins, decided, read_pinned,
+                    record, assumptions) -> bool:
+        table, row_id = key
+        tries, considered = self._tries(key, world, decided, read_pinned)
+        for name in considered:
+            decided.add((key, name))
+        if not tries:
+            return False
+        hit = None
+        for start in range(0, len(tries), self.batch):
+            batch = tries[start:start + self.batch]
+            record["inversion_candidates_tried"] += len(batch)
+            self._count(call.name, "inversion_candidates_tried", len(batch))
+            hit = self._first_match(call, key, world, batch)
+            if hit is not None:
+                break
+        if hit is None:
+            record["columns_no_inverse"] += len(considered)
+            self._count(call.name, "columns_no_inverse", len(considered))
+            return False
+        name, value = hit
+        row = dict(rows.get(key) or {})
+        row[name] = value
+        rows[key] = row
+        world.setdefault(table, {})[row_id] = row
+        if key not in origins:
+            origins[key] = (trace_id, True)
+        record["columns_inverted"] += 1
+        self._count(call.name, "columns_inverted", 1)
+        record["inversions"].append({"table": table, "row": row_id, "column": name,
+                                     "reason": "inverted_from_write", "tool": call.name,
+                                     "call_id": call.id or "",
+                                     "body": content_hash(self.bodies[call.name])[:16]})
+        assumptions.append(
+            f"task {task.id} never read {table} row {row_id} column {name} before write call "
+            f"{call.id} changed it; the starting value is inverted from what that write recorded")
+        return True
+
+    def _tries(self, key, world, decided, read_pinned) -> tuple[list[tuple[str, Any]], list[str]]:
+        """The (column, candidate) pairs to run, narrowest domain first, and the columns they cover."""
+        table, row_id = key
+        keys_of = set(key_fields(self.schema, table))
+        names = sorted({column.name for column in self.schema.columns if column.table == table})
+        order = sorted(names, key=lambda name: (len(self.domains.get((table, name)) or ()), name))
+        tries: list[tuple[str, Any]] = []
+        considered: list[str] = []
+        for name in order:
+            if name in keys_of or (key, name) in read_pinned or (key, name) in decided:
+                continue
+            here = canon((world.get(table, {}).get(row_id) or {}).get(name))
+            values = [value for value in self._candidates(table, row_id, name)
+                      if canon(value) != here]
+            if not values:
+                continue
+            considered.append(name)
+            tries += [(name, value) for value in values][:PRE_WRITE_TRIES_CAP - len(tries)]
+            if len(tries) >= PRE_WRITE_TRIES_CAP:
+                break
+        return tries, considered
+
+    def _candidates(self, table: str, row_id: str, name: str) -> list:
+        """The column's corpus domain, most frequent first, then the value the shared world holds."""
+        values = list(self.domains.get((table, name)) or ())
+        shared = (self.db.get(table, {}).get(row_id) or {}).get(name)
+        if shared is not None and canon(shared) not in {canon(value) for value in values}:
+            values.append(shared)
+        return values[:PRE_WRITE_CANDIDATE_CAP]
+
+    def _first_match(self, call, key, world, batch):
+        """Run one batch of candidate worlds and hand back the first that reproduces the recording."""
+        table, row_id = key
+        probes, states = [], {}
+        for index, (name, value) in enumerate(batch):
+            variant = dict(world)
+            variant[table] = dict(world.get(table) or {})
+            row = dict(variant[table].get(row_id) or {})
+            row[name] = value
+            variant[table][row_id] = row
+            probe = call.model_copy(update={"id": f"{call.id or call.name}#d202#{index}"})
+            probes.append(probe)
+            states[probe.id] = variant
+        sandbox = Sandbox(self._source(call.name), world, self.workdir / "inversion" / call.name,
+                          timeout=self.timeout, call_states=states)
+        try:
+            results = sandbox.run(probes)
+        except SandboxError:
+            return None
+        for (name, value), result in zip(batch, results, strict=False):
+            if self._matches(call, result):
+                return name, value
+        return None
+
+    def _matches(self, call: ToolCall, result: Optional[dict]) -> bool:
+        """The D187 compare: this answer says what the recording said, column by column."""
+        if result is None:
+            return False
+        return bool(body_replay_fidelity_gate([call], [result], self.schema, label="pre_write_inverse",
+                                              rules=self.rules, readers=self.readers).passed)
+
+    def _targets(self, call: ToolCall, rows: dict) -> list[tuple[str, str]]:
+        """The rows this write could have changed, most specific evidence first.
+
+        A write that answers rows says which rows it touched. A write that answers a sentence says
+        nothing, and then the id it was given is what `_observations` already marks a row written by.
+        A write that answers a sentence and takes no arguments at all, which is what a device tool
+        run on the one thing in front of its requestor looks like, says only which table it is about,
+        through the reader that tool has (D176); its target is then this Task's own rows of that
+        table, and with no reader either, this Task's rows. Nothing outside the Task's overlay is
+        ever a target, so the search is bounded by what the Task itself saw.
+        """
+        out = list(self.stated.get(str(call.id or ""), ()))
+        for value in call.args.values():
+            if not isinstance(value, str):
+                continue
+            for key in self.homes.get(value, ()):
+                if key not in out and (key in rows or key[0] in self.db):
+                    out.append(key)
+        if out:
+            return out
+        table_of = getattr(self.readers, "table_of", None)
+        table = table_of(call.name) if callable(table_of) else None
+        return [key for key in sorted(rows) if table is None or key[0] == table]
+
+    def _source(self, tool: str) -> str:
+        """The one-tool module the sandbox runs, built once per tool."""
+        if tool not in self._sources:
+            self._sources[tool] = module_source(self.schema, [self.sigs[tool]],
+                                                {tool: self.bodies[tool]})
+        return self._sources[tool]
+
+    def _world(self, rows: dict) -> dict:
+        """The Task's world as the overlay states it, which is what `merge_overlays` hands the gates."""
+        world = copy.deepcopy(self.db)
+        for (table, row_id), row in rows.items():
+            world.setdefault(table, {})[row_id] = dict(row)
+        return world
+
+    def _count(self, tool: str, name: str, amount: int) -> None:
+        self.by_tool.setdefault(tool, {})[name] = self.by_tool.setdefault(tool, {}).get(name, 0) + amount
+
+
+def _write_pins(workdir: Path, pins: dict, stats: dict,
+                time_varying_by_table: Optional[dict] = None) -> Path:
     """What the pinner did, per Task and in total: the ruling a person reads after a build."""
     totals = {name: sum(int(row.get(name) or 0) for row in pins.values())
               for name in ("rows", "rows_nested", "columns", "columns_homed",
-                           "columns_the_corpus_disagrees_on")}
-    payload = {"depth_cap": ROW_WALK_DEPTH,
+                           "columns_the_corpus_disagrees_on", "columns_time_varying",
+                           "sequences_served", "columns_inverted", "columns_no_inverse",
+                           "inversion_candidates_tried")}
+    payload = {"columns_time_varying_by_table": dict(time_varying_by_table or {}),
+               "depth_cap": ROW_WALK_DEPTH,
                "results_deeper_than_the_cap": int(stats.get("depth_capped") or 0),
                "unread_partial_results": int(stats.get("unread_partial_results") or 0),
                "nested_sightings_of_a_row_already_stated":
                    int(stats.get("nested_sightings_of_a_row_already_stated") or 0),
+               "inversion_by_tool": dict(sorted((stats.get("inversion_by_tool") or {}).items())),
+               "writes_without_a_body": int(stats.get("writes_without_a_body") or 0),
                "totals": totals, "tasks": dict(sorted(pins.items()))}
     path = Path(workdir) / PINS_FILE
     path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
@@ -1881,9 +2293,29 @@ def call_starting_states(db: dict, overlays: Iterable[TaskOverlay], values: dict
     into the gates, since a `ToolCall` does not name its trace. The state is the shared world with
     that Task's overlay merged, which is the world that call actually ran on, so a corpus holding one
     row in two versions does not make a correct body look wrong.
+
+    D197: where the Task's overlay carries a pin sequence, the call that saw a later value of a
+    time-varying row runs on a world holding that value and not the first one. The scoring path and
+    the replay have to serve one world or the score punishes a body for a state the replay would
+    have served it. The state is keyed per call already, so the sequence needs no new key: a call a
+    step names gets its own copy of the Task's world with that step's columns laid in it, and every
+    other call keeps the Task's world as it was pinned.
     """
     states = {overlay.task_id: merge_overlays(db, [overlay], values) for overlay in overlays}
-    return {call_id: states[task_id] for call_id, task_id in call_tasks.items() if task_id in states}
+    per_call: dict[str, dict] = {}
+    for overlay in overlays:
+        base = states.get(overlay.task_id)
+        for step in overlay.steps:
+            if base is None or not step.call_id or not step.values:
+                continue
+            world = per_call.get(step.call_id)
+            if world is None:
+                world = per_call[step.call_id] = copy.deepcopy(base)
+            row = world.setdefault(step.table, {}).get(step.id)
+            world[step.table][step.id] = (dict(row, **step.values) if isinstance(row, dict)
+                                          else dict(step.values))
+    return {call_id: per_call.get(call_id) or states[task_id]
+            for call_id, task_id in call_tasks.items() if task_id in states}
 
 
 def replay_outcomes(toolsig: ToolSig, body: str, calls: Iterable[ToolCall], schema: EntitySchema, db: dict,

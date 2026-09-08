@@ -12,6 +12,7 @@ import pytest
 
 from conftest import PTR
 from kullback.builder import compile_env as ce
+from kullback.runner import route
 from kullback.runner.records import Column, EntitySchema, Task, ToolCall, ToolSig, Trace
 
 
@@ -211,3 +212,106 @@ def test_a_keyless_answer_is_not_filed_under_the_parent_the_call_addressed_it_by
     state = ce.build_starting_state([trace], _schema(), workdir, [Task(id="t1", run_ids=["A"])],
                                     sigs, synthetic=False)
     assert state.db["routes"] == {}
+
+
+# --- D197: a row the Task reads twice, with the column moving and no write between the reads ---
+
+
+def _reader_router(workdir, task_id, db):
+    """A Router over the Task's overlay with no tool code and no recordings behind it.
+
+    Every call it is given is answered with an error, which is beside the point: what is under test
+    is the world the call leaves behind, which is what a tool body would have read.
+    """
+    overlay, values = ce.load_overlay(workdir, task_id)
+    return route.Router(starting_state=json.loads(json.dumps(db)), overlay=overlay,
+                        overlay_rows=values, tool_sigs=_sigs())
+
+
+def _read_twice(first, second, third=None):
+    """One trace reading one meter two or three times, each read answering its own value."""
+    results = [first, second] + ([third] if third is not None else [])
+    return _trace("A", [_call("get_meter_reading", {"meter_id": "M1"},
+                              result={"meter_id": "M1", "reading": value}, idx=index)
+                        for index, value in enumerate(results)])
+
+
+def test_two_reads_of_one_row_with_a_column_that_moved_are_served_in_call_order(workdir):
+    """The meter read 41 and then 77 with nothing written between: both values, in that order."""
+    state = ce.build_starting_state([_read_twice("41", "77")], _schema(), workdir,
+                                    [Task(id="t1", run_ids=["A"])], _sigs(), synthetic=False)
+    router = _reader_router(workdir, "t1", state.db)
+    assert router.state.row("meters", "M1")["reading"] == "41"
+    router.route("get_meter_reading", {"meter_id": "M1"})
+    assert router.state.row("meters", "M1")["reading"] == "41"
+    router.route("get_meter_reading", {"meter_id": "M1"})
+    assert router.state.row("meters", "M1")["reading"] == "77"
+
+
+def test_a_read_past_the_end_of_the_sequence_holds_the_last_recorded_value(workdir):
+    state = ce.build_starting_state([_read_twice("41", "77")], _schema(), workdir,
+                                    [Task(id="t1", run_ids=["A"])], _sigs(), synthetic=False)
+    router = _reader_router(workdir, "t1", state.db)
+    for _ in range(3):
+        router.route("get_meter_reading", {"meter_id": "M1"})
+    assert router.state.row("meters", "M1")["reading"] == "77"
+
+
+def test_a_column_that_did_not_move_keeps_one_pin_and_no_sequence(workdir):
+    state = ce.build_starting_state([_read_twice("41", "41")], _schema(), workdir,
+                                    [Task(id="t1", run_ids=["A"])], _sigs(), synthetic=False)
+    overlay, _ = ce.load_overlay(workdir, "t1")
+    router = _reader_router(workdir, "t1", state.db)
+    router.route("get_meter_reading", {"meter_id": "M1"})
+    router.route("get_meter_reading", {"meter_id": "M1"})
+    assert overlay.steps == []
+    assert router.state.row("meters", "M1")["reading"] == "41"
+
+
+def test_a_read_the_recording_never_made_is_answered_from_the_pin(workdir):
+    """The sequence is served to the reads the Task recorded, not to every call of that tool."""
+    state = ce.build_starting_state([_read_twice("41", "77")], _schema(), workdir,
+                                    [Task(id="t1", run_ids=["A"])], _sigs(), synthetic=False)
+    router = _reader_router(workdir, "t1", state.db)
+    router.route("get_meter_reading", {"meter_id": "M2"})
+    router.route("get_meter_reading", {"meter_id": "M2"})
+    assert router.state.row("meters", "M1")["reading"] == "41"
+
+
+def test_a_write_between_two_reads_ends_the_sequence_and_the_write_stands(workdir):
+    """A row a write touched is not time-varying: what a later read sees is the write's own value."""
+    sigs = _sigs() + [ToolSig(name="set_meter_reading", kind="write", unclassified=False)]
+    trace = _trace("A", [
+        _call("get_meter_reading", {"meter_id": "M1"}, result={"meter_id": "M1", "reading": "41"}, idx=0),
+        _call("set_meter_reading", {"meter_id": "M1", "reading": "99"},
+              result={"meter_id": "M1", "reading": "99"}, idx=1),
+        _call("get_meter_reading", {"meter_id": "M1"}, result={"meter_id": "M1", "reading": "99"}, idx=2)])
+    state = ce.build_starting_state([trace], _schema(), workdir, [Task(id="t1", run_ids=["A"])],
+                                    sigs, synthetic=False)
+    overlay, _ = ce.load_overlay(workdir, "t1")
+    router = _reader_router(workdir, "t1", state.db)
+    router.route("get_meter_reading", {"meter_id": "M1"})
+    router.route("get_meter_reading", {"meter_id": "M1"})
+    assert overlay.steps == []
+    assert router.state.row("meters", "M1")["reading"] == "41"
+
+
+def test_the_sequence_a_task_pinned_is_counted_per_task_and_per_table(workdir):
+    state = ce.build_starting_state([_read_twice("41", "77", "77")], _schema(), workdir,
+                                    [Task(id="t1", run_ids=["A"])], _sigs(), synthetic=False)
+    pins = json.loads((workdir / ce.PINS_FILE).read_text(encoding="utf-8"))
+    assert state.db["meters"]["M1"]["reading"] == "77"
+    assert pins["tasks"]["t1"]["columns_time_varying"] == 1
+    assert pins["totals"]["sequences_served"] == 3
+    assert pins["columns_time_varying_by_table"] == {"meters": 1}
+
+
+def test_the_world_a_body_is_scored_on_carries_the_value_that_calls_own_read_saw(workdir):
+    """The scoring path serves the sequence the replay serves, or a body is punished for a state
+    the replay would have given it."""
+    state = ce.build_starting_state([_read_twice("41", "77")], _schema(), workdir,
+                                    [Task(id="t1", run_ids=["A"])], _sigs(), synthetic=False)
+    states = ce.call_starting_states(state.db, state.overlays, ce.overlay_values(workdir),
+                                     {"c0": "t1", "c1": "t1"})
+    assert states["c0"]["meters"]["M1"]["reading"] == "41"
+    assert states["c1"]["meters"]["M1"]["reading"] == "77"

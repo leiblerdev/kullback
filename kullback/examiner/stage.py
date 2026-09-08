@@ -27,6 +27,7 @@ from typing import Any, Callable, Iterable, Optional
 from kullback.examiner import derive as verifier_mod
 from kullback.examiner import judge as judge_mod
 from kullback.examiner import reference as reference_mod
+from kullback.examiner import variants as variants_mod
 from kullback.gates import artifacts, fidelity, verifier_suite
 from kullback.gates import scorecard as scorecard_mod
 from kullback.gates import stages as stage_gates
@@ -57,12 +58,14 @@ STAGE = "derive_verifier"
 # The per-Task cache under the workdir (D163). Bumped when the entry's shape changes, so an old entry
 # is a miss rather than a row read with the wrong meaning.
 CACHE_DIR = ("examiner", "cache")
-CACHE_FORMAT = 5  # the status row counts D190's relaxed and falsifying atoms, D189's second-path
-# batches, and the reference record carries D193's second pass over a residue and what it settled
+CACHE_FORMAT = 6  # the status row counts D190's relaxed and falsifying atoms, D189's second-path
+# batches, the reference record carries D193's second pass over a residue and what it settled, and
+# the second-path row carries D199's synthesised paths, what they were rewritten from and whether
+# the Task's path is single by structure
 # The modules a Task's derivation runs through, hashed into every key: an edit to any of them is a
 # different derivation and must not be served a stale entry (the Builder's stages hash the same way,
 # build.py's `_version`).
-CODE_MODULES = (verifier_mod, reference_mod, judge_mod, verifier_suite)
+CODE_MODULES = (verifier_mod, reference_mod, judge_mod, verifier_suite, variants_mod)
 
 
 class ExamContext:
@@ -334,14 +337,19 @@ def merge_second_path(confirmation: Any, candidates: Iterable[Any]) -> int:
 
 
 def second_path_row(batches: int, runs: int, *, found: bool, cap: int = SECOND_PATH_BATCHES,
-                    reason: str = "") -> dict:
+                    reason: str = "", synthesised: int = 0, kinds: Iterable[str] = (),
+                    tried: int = 0, kept: int = 0, structural: bool = False) -> dict:
     """What the search for a second path cost this Task and what it bought, for the row and the counts."""
     if found:
         why = ""
+    elif structural:
+        why = SINGLE_PATH_BY_STRUCTURE
     else:
         why = reason or (f"no second path in {batches} batches" if batches else NO_REROLL_RUNNER)
     return {"batches": int(batches), "runs": int(runs), "found": bool(found),
-            "exhausted": bool(not found and batches >= cap), "reason": why}
+            "exhausted": bool(not found and batches >= cap), "reason": why,
+            "synthesised": int(synthesised), "synth_kinds": sorted(set(kinds)),
+            "synth_tried": int(tried), "synth_kept": int(kept), "structural": bool(structural)}
 
 
 def _second_path(row: Any) -> dict:
@@ -351,7 +359,12 @@ def _second_path(row: Any) -> dict:
         return second_path_row(0, 0, found=False)
     return {"batches": int(found.get("batches") or 0), "runs": int(found.get("runs") or 0),
             "found": bool(found.get("found")), "exhausted": bool(found.get("exhausted")),
-            "reason": str(found.get("reason") or "")}
+            "reason": str(found.get("reason") or ""),
+            "synthesised": int(found.get("synthesised") or 0),
+            "synth_kinds": list(found.get("synth_kinds") or ()),
+            "synth_tried": int(found.get("synth_tried") or 0),
+            "synth_kept": int(found.get("synth_kept") or 0),
+            "structural": bool(found.get("structural"))}
 
 
 def second_path_search(task_id: str, confirmation: Any, *, workdir: Path, run_rerolls: Any,
@@ -385,6 +398,83 @@ def second_path_search(task_id: str, confirmation: Any, *, workdir: Path, run_re
     row = second_path_row(bought, runs, found=found, cap=cap,
                           reason=CEILING_REACHED if ceiling and not found else "")
     return row, recordings, ceiling
+
+
+# --- the synthesised second path (D199) ------------------------------------------
+
+# When the search above is spent, the Reference Run is asked for a second path instead of the model.
+# variants.py rewrites its call path three ways, each of which leaves the world where it was, and
+# each rewrite is replayed through the Environment from the Task's Starting state and kept only if
+# it reaches the Reference's End state under the same D111 rule a bought Run is held to. A Run with
+# no independent adjacent pair, no read to insert and no read to drop offers nothing, and that Task's
+# path is single by structure, which is an honest end state and is counted as one.
+SYNTH_PREFIX = "synth-path"
+SINGLE_PATH_BY_STRUCTURE = "single_path_by_structure"
+SYNTH_KEPT_NONE = "no rewrite of the Reference's call path reaches its End state"
+
+
+def synth_second_path(task_id: str, confirmation: Any, *, run_variant: Any, round_number: int,
+                      write_tools: set, fn: Callable, atoms: Any,
+                      limit: int = variants_mod.MAX_VARIANTS) -> tuple[dict, list]:
+    """Rewrites of the Reference's own call path, replayed and kept where they land in the same place.
+
+    Answers with what the synthesis found, for the row and the counts, and the Recordings of the
+    rewrites that were kept. They join the Confirmation the way a bought second path does, so check 5
+    scores the Verifier on them and on nothing else that is new.
+    """
+    reference = confirmation.references[0]
+    try:
+        run = verifier_suite.as_run(reference.path)
+    except (OSError, ValueError, TypeError):
+        return {"tried": 0, "kinds": [], "structural": False, "reason": SYNTH_KEPT_NONE}, []
+    plans = variants_mod.variants(variants_mod.call_results(run), write_tools, limit=limit)
+    if not plans:
+        return {"tried": 0, "kinds": [], "structural": True,
+                "reason": SINGLE_PATH_BY_STRUCTURE}, []
+    spoken = variants_mod.transcript(run)
+    seen = {variants_mod.signature(variants_mod.call_results(run))}
+    tried, kept, kinds = 0, [], []
+    for index, plan in enumerate(plans, 1):
+        signature = variants_mod.signature(plan["calls"])
+        if signature in seen:
+            continue
+        seen.add(signature)
+        tried += 1
+        try:
+            row = run_variant(task_id, plan["calls"],
+                              f"{SYNTH_PREFIX}-r{round_number}-{task_id}-{index}", spoken)
+        except Exception:
+            # A rewrite the Environment cannot run is a rewrite that is not kept. It buys nothing
+            # and it is not the round's business to fall over on one, the way a crashed replay is
+            # scored as a replay that did not confirm rather than as a build that failed.
+            continue
+        if not row or not row.get("path"):
+            continue
+        try:
+            rec = reference_mod.load(row["path"], reference_mod.REROLL, run_id=row["run_id"],
+                                     write_tools=write_tools, fn=fn, atoms=atoms)
+        except (OSError, ValueError, TypeError):
+            continue
+        if rec.violated or not reaches_reference(reference, rec):
+            continue
+        kept.append(rec)
+        kinds.append(plan["kind"])
+    return {"tried": tried, "kinds": kinds, "structural": False,
+            "reason": "" if kept else SYNTH_KEPT_NONE}, kept
+
+
+def pool_at_reference(pool_runs: Iterable[tuple[str, str]], confirmation: Any,
+                      left_out: dict) -> list[str]:
+    """The held-out Runs that reach the Reference and are not References themselves (D133).
+
+    A Task whose path is single by structure has no second path of its own to show, and this is the
+    second path the evidence already holds: a Run nobody derived from that landed on the Reference's
+    settled End state. `left_out` is the same pool with the Runs that landed elsewhere named, so
+    what is left here is the pool minus those and minus the References.
+    """
+    references = {r.run_id for r in confirmation.references}
+    return sorted({run_id for run_id, _path in pool_runs
+                   if run_id not in left_out and run_id not in references})
 
 
 def task_fidelity(tool_fidelity: Any, task_id: str) -> dict:
@@ -489,13 +579,17 @@ def wrote_outside(confirmation: Any) -> bool:
 
 def suite_for(task_for: Task, verifier: Verifier, paths: list, *, canon_rules: Any, write_tools: set,
               user_rules: dict, rules_trace: Optional[str], probe_model: Any, run_probe: Any,
-              may_probe: bool) -> list[GateResult]:
-    """The whole D79 suite over one Verifier: the wrong Run, the second path, the leak, the probe (D79, D119)."""
+              may_probe: bool, intent: Any = None) -> list[GateResult]:
+    """The whole D79 suite over one Verifier: the wrong Run, the second path, the leak, the probe (D79, D119).
+
+    The Intent record goes in beside its line so the leak check reads it as an audit of the D196
+    strip and names the column of anything the strip missed.
+    """
     return verifier_suite.validate_verifier(
         verifier, paths[0], canon=canon_rules, write_tools=write_tools, seed_runs=paths[1:],
         wrong_run=verifier_suite.wrong_run(verifier, paths[0], canon_rules),
         alt_path_run=paths[1] if len(paths) > 1 else None,
-        intent_text=task_for.intent, user_rules=user_rules.get(rules_trace),
+        intent_text=task_for.intent, user_rules=user_rules.get(rules_trace), intent=intent,
         model=probe_model if may_probe else None, run_probe=run_probe)
 
 
@@ -527,19 +621,33 @@ def verifier_for(ctx, task: Task, confirmation: Any, *, canon_rules: Any, write_
     rules_trace = first.trace_id or next((r.trace_id for r in confirmation.references if r.trace_id), None)
     gates = suite_for(task_for, record, paths, canon_rules=canon_rules, write_tools=write_tools,
                       user_rules=user_rules, rules_trace=rules_trace, probe_model=probe_model,
-                      run_probe=probe, may_probe=may_probe)
+                      run_probe=probe, may_probe=may_probe, intent=intents.get(task.id))
     results = verifier_suite.d79_results(gates)
     passed = artifacts.verifier_gate(results).passed
     write_json(ctx.workdir / "verifiers" / f"{task.id}.json", as_dict(record))
     left_out = not_at_reference(confirmation, pool_runs, write_tools,
                                 fn or verifier_suite.canon_fn(canon_rules))
-    status = {"reference_confirmed": True, "verifier_passed": bool(passed),
+    # D199: a Task whose path is single by structure has no second path to score and never will, so
+    # check 5 is not run and the suite reports it as not passed (D173). That not run stops blocking
+    # this Task alone, and only where every other check passes and the held-out pool holds a Run
+    # that reached the Reference: the pool Run is the second path, arrived at by an agent nobody
+    # derived from. Where the pool holds none the Task stays uncounted, as it was.
+    at_reference = pool_at_reference(pool_runs, confirmation, left_out)
+    waived = bool(not passed and (second_path or {}).get("reason") == SINGLE_PATH_BY_STRUCTURE
+                  and at_reference
+                  and all(value for name, value in results.items() if name != "second_path_passes"))
+    status = {"reference_confirmed": True, "verifier_passed": bool(passed or waived),
+              "second_path_waived": waived, "pool_at_reference": at_reference,
               "references": len(confirmation.references), "reference_kind": first.kind,
               "recordings": recordings, "rerolls": rerolls,
               "failed_recordings": {**dict(confirmation.failed), **left_out},
               "did_not_reach_reference": sorted(left_out), "judged": confirmation.judged,
               "checks": results,
               "not_run": [g.stage for g in gates if g.metrics.get("skipped")],
+              # D196: the columns the leak check found the strip had missed, so a finding can be
+              # keyed on the Task and the column and the next build's strip can cover it.
+              "leak_columns": sorted(next((g.metrics.get("columns") or []
+                                           for g in gates if g.stage == "verifier_leak"), [])),
               **verifier_mod.derivation_counts(record),
               "second_path": second_path if second_path is not None else second_path_row(
                   0, 0, found=len(confirmation.references) > 1),
@@ -644,7 +752,8 @@ class _Job:
 
 def derive_all(ctx: ExamContext, inputs: dict, *, probe_model: Any = None, probe_limit: Optional[int] = None,
                judge_model: Any = None, judge_agent: bool = False, run_probe: Any = None,
-               run_rerolls: Any = None, round_number: int = 0, only: Optional[str] = None,
+               run_rerolls: Any = None, run_variant: Any = None, round_number: int = 0,
+               only: Optional[str] = None,
                workers: int = 1, code_hash: Optional[str] = None) -> dict:
     """One Verifier per Task from its References by the D111 rule, through the whole D79 suite.
 
@@ -673,6 +782,13 @@ def derive_all(ctx: ExamContext, inputs: dict, *, probe_model: Any = None, probe
     check 5 stays not run, as it was. The Runs of every batch are recorded in the Examiner's own
     re-roll file under the reason `second_path`, so a second derivation over the same Task reads
     them back rather than buying them again.
+
+    `run_variant` is the Builder's replay callable (D199), and a Task whose Reference still stands
+    alone after that search has a second path written from the Reference's own call path instead:
+    rewrites that leave the world where it was, each replayed from the Task's Starting state and
+    kept only where it reaches the Reference's End state under the same rule. No model is called and
+    nothing is bought. A Task the rewrites cannot touch is single by structure, which its row says
+    and the round counts.
 
     An assisted tool is a corpus-level ruling and it blocks no Task on its own (D171): a Task is
     blocked by a tool only when one of the Task's own recorded calls of it differs, which is what
@@ -797,6 +913,21 @@ def derive_all(ctx: ExamContext, inputs: dict, *, probe_model: Any = None, probe
             second, bought, ceiling = second_path_search(
                 task.id, confirmation, workdir=ctx.workdir, run_rerolls=run_rerolls,
                 round_number=round_number, write_tools=write_tools, fn=fn, atoms=atoms)
+            # D199: the search bought no second path, so one is written from the Reference's own
+            # call path and replayed; nothing is bought here and no model is called.
+            if not second["found"] and run_variant is not None:
+                synth, made = synth_second_path(
+                    task.id, confirmation, run_variant=run_variant, round_number=round_number,
+                    write_tools=write_tools, fn=fn, atoms=atoms)
+                merge_second_path(confirmation, made)
+                # They are not in the cache key and not in the false-rejection pool: a synthesised
+                # Run is written by code from a Run already in the key, so a round that reads the
+                # entry back gets the same answer, and it is nobody's held-out Run to reject.
+                second = second_path_row(
+                    second["batches"], second["runs"], found=len(confirmation.references) > 1,
+                    reason=synth["reason"] or second["reason"], synthesised=len(made),
+                    kinds=synth["kinds"], tried=synth["tried"], kept=len(made),
+                    structural=synth["structural"] and not made)
             if bought:
                 job.recordings = job.recordings + bought
                 job.key = cache_key(task, job.recordings, common, intents=intents,
@@ -864,6 +995,15 @@ def derive_all(ctx: ExamContext, inputs: dict, *, probe_model: Any = None, probe
         second_path_exhausted=sum(1 for r in status.values() if _second_path(r)["exhausted"]),
         second_path_batches=sum(_second_path(r)["batches"] for r in status.values()),
         second_path_runs=sum(_second_path(r)["runs"] for r in status.values()),
+        # D199: what the synthesis wrote when the buying was spent. `second_path_synthesised` is the
+        # Tasks whose second path came from the Reference's own call path, `single_path_by_structure`
+        # the Tasks that offer no rewrite at all, and the last two what the replays cost and kept.
+        second_path_synthesised=sum(1 for r in status.values() if _second_path(r)["synthesised"]),
+        single_path_by_structure=sum(1 for r in status.values() if _second_path(r)["structural"]),
+        synth_variants_tried=sum(_second_path(r)["synth_tried"] for r in status.values()),
+        synth_variants_kept=sum(_second_path(r)["synth_kept"] for r in status.values()),
+        # The Tasks the not run no longer blocks, because the held-out pool held the second path.
+        second_path_waived=sum(1 for r in status.values() if r.get("second_path_waived")),
         disagreeing=sum(1 for r in references.values()
                         if not r["references"] and (r.get("reason") or "").startswith("recordings disagree"))))
     write_json(ctx.workdir / "scorecard.json", scorecard_mod.scorecard(ctx.workdir))

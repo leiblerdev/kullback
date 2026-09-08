@@ -406,9 +406,26 @@ def _headline(data: ReportData) -> list[str]:
     return lines
 
 
+def _reverted_lines(data: ReportData) -> list[str]:
+    """The repairs every round put back, by kind and by why (D201).
+
+    One line per round that reverted anything, because a round that closed its red lights while
+    three of its repairs were reverted for breaking Tasks elsewhere did less than its findings say,
+    and the kind is what says which verb keeps buying nothing. The sentence is the driver's, off the
+    round's own counts: this file reads records and works nothing out for itself.
+    """
+    lines = []
+    for record in data.rounds:
+        said = str((record.counts or {}).get("repairs_reverted") or "")
+        if said:
+            lines.append(f"round {record.round}: {said}.")
+    return lines
+
+
 def _round_lines(data: ReportData) -> list[str]:
     """What the rounds left: how many Tasks have a trusted Verifier, with the false-rejection number
-    per Task beside it (D133), how many were refused and why, and what a stalled exit hands a person."""
+    per Task beside it (D133), how many were refused and why, what the repairs of each round bought
+    and what they were put back for (D201), and what a stalled exit hands a person."""
     if not data.rounds:
         return []
     last = data.rounds[-1].counts or {}
@@ -420,6 +437,7 @@ def _round_lines(data: ReportData) -> list[str]:
     lines.append(f"{len(refused)} Tasks refused" + (": " + "; ".join(
         f"{task_id} ({reason or 'no reason recorded'})" for task_id, reason in sorted(refused.items()))
         if refused else "") + ".")
+    lines += _reverted_lines(data)
     if data.rounds[-1].exit == "stalled":
         unfinished = list(last.get("unfinished") or [])
         lines.append("stalled: these Tasks need a person: " + (", ".join(unfinished) or "none named") + ".")
