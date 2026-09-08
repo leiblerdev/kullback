@@ -107,7 +107,7 @@ from kullback.gates.probes import (
     version_hash,
 )
 from kullback.gates.round_end import GATE_COUNTS, done, exit_for, round_counts, stalled
-from kullback.gates.scorecard import FROZEN_TASKS_NAME, freeze_tasks, task_coverage
+from kullback.gates.scorecard import FROZEN_TASKS_NAME, freeze_tasks, frozen_tasks, task_coverage
 from kullback.gates.scorecard import scorecard as scorecard_gate
 from kullback.gates.stages import (
     cluster_gate,
@@ -346,7 +346,7 @@ __all__ = [
     "discarded_runs", "done",
     "environment_gate",
     "executes_gate", "exit_for", "false_rejection", "false_rejection_gate", "fidelity", "finished_runs", "first_string",
-    "freeze_tasks", "gate_confined", "gate_named", "gates_over", "ingest_gate", "intent_gate", "leak_gate",
+    "freeze_tasks", "frozen_tasks", "gate_confined", "gate_named", "gates_over", "ingest_gate", "intent_gate", "leak_gate",
     "ledger", "legitimate_runs", "load_run", "loophole_probe", "loosening", "loosening_gate", "mine_gate", "names_protected_path",
     "newly_passed", "non_trivial_gate", "oracle_replay_gate", "over_strict", "parses_gate", "policy_gate",
     "predicate_confinement", "predicate_confinement_gate", "probe_admission_gate", "probe_pool_gate",

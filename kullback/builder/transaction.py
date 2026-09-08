@@ -114,9 +114,12 @@ def corpus_tasks(workdir: Any) -> list[str]:
     """Every Task of the build, off the frozen list where there is one and the status rows otherwise."""
     frozen = _json_at(workdir, "tasks_frozen.json", [])
     if isinstance(frozen, dict):
-        frozen = frozen.get("tasks") or frozen.get("task_ids") or []
+        # D200 writes the frozen Tasks as records beside their ids, so the ids are read first and a
+        # record is read for its id: stringifying a record would name a Task nothing else can match.
+        frozen = frozen.get("task_ids") or frozen.get("tasks") or []
     if isinstance(frozen, list) and frozen:
-        return sorted(str(task) for task in frozen)
+        return sorted(str(task.get("id", "")) if isinstance(task, dict) else str(task)
+                      for task in frozen)
     status = _json_at(workdir, "task_status.json", {})
     return sorted(status) if isinstance(status, dict) else []
 

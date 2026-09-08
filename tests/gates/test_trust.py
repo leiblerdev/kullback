@@ -103,7 +103,21 @@ def test_a_task_with_one_reference_says_the_second_path_check_was_not_run_rather
     # A check that really failed is still reported as a failure, beside the one nobody could run.
     world["task_status"] = {TASK: status(verifier_passed=False, not_run=["verifier_alt_path"],
                                          checks={"second_path_passes": False, "mutation_flips": False})}
-    assert T.trusted_gate(**world).metrics["untrusted"][TASK].endswith("; mutation_flips failed")
+    assert T.trusted_gate(**world).metrics["untrusted"][TASK].endswith("mutation_flips failed")
+
+
+def test_a_suite_failure_names_every_failing_check_and_every_check_with_no_input(tmp_path):
+    """A reader groups the Tasks that stop at the suite by what stopped them, so the reason names
+    each check in the suite's own order and says why the ones with no input had none."""
+    world = _world(tmp_path)
+    checks = {name: True for name in T.D79_STAGES.values()}
+    checks["mutation_flips"] = checks["plausible_wrong_fails"] = checks["loophole_probe_fails"] = False
+    world["task_status"] = {TASK: status(verifier_passed=False, checks=checks,
+                                         not_run=["verifier_loophole"],
+                                         not_run_reasons={"loophole_probe_fails": "no model"})}
+    assert T.trusted_gate(**world).metrics["untrusted"] == {
+        TASK: "the D79 suite did not pass: plausible_wrong_fails failed, "
+              "loophole_probe_fails not run (no model), mutation_flips failed"}
 
 
 def test_a_verifier_that_is_not_the_last_accepted_version_is_not_trusted(tmp_path):

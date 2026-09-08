@@ -16,6 +16,10 @@ one path and not the Task, and calling that trusted overstated the count. A Task
 out is not evidence either way, so it keeps `no_pool` in `false_rejection_ruling` and is decided by
 the other steps. Every ruling carries the fraction (`false_rejection`), the pool size
 (`false_rejection_pool`) and that per-Task word, so a reader sees the denominator behind the rate.
+
+A suite failure names every check behind it (D198): the ones that failed and the ones that had no
+input with the reason each gate gave, in the suite's fixed order, so a reader can tabulate the Tasks
+that stop here instead of reading one sentence that says only that they stopped.
 """
 
 from __future__ import annotations
@@ -76,23 +80,36 @@ def _reason_of(refusal: Any) -> str:
 
 
 def _suite_reason(row: Any, skipped: list[str]) -> str:
-    """Why the suite did not pass, saying which checks had no input rather than treating a check
-    nobody could run as a check the Verifier failed (D173).
+    """Why the suite did not pass: every check that failed and every check that had no input, each
+    named, in the fixed order of the suite (D198), and a check nobody could run never read as a check
+    the Verifier failed (D173).
 
     A single-Reference Task fails `second_path_passes` because there is no second path to score, not
     because the Verifier turned one away, and the two ask for different repairs: more Runs of the
     Task (the Examiner's `reroll`, then `derive`) against a looser Verifier. The rule is unchanged
     either way, so a single-path Task is still untrusted; what changes is what the reason says and
     what `checks_not_run` in the metrics lets a reader act on.
+
+    Until D198 a suite failure with nothing skipped said only "the D79 suite did not pass", and on
+    one live build 25 Tasks stopped there with no way for a reader to group them by what went wrong.
+    A check with no input says why in its own words, off the row the derivation wrote, because the
+    gate that skipped it is the only thing that knows; `NOT_RUN_REASON` is the fallback for a row
+    written before those words were recorded.
     """
     checks = _get(row, "checks", None) or {}
-    failed = sorted(name for name, ok in checks.items() if not ok and name not in skipped)
-    if not skipped:
+    given = _get(row, "not_run_reasons", None) or {}
+    named = []
+    for name in D79_STAGES.values():
+        if checks.get(name) or (name not in checks and name not in skipped):
+            continue  # a name the row does not mention is no evidence about the Verifier either way
+        if name in skipped:
+            why = str(given.get(name) or NOT_RUN_REASON.get(name) or "")
+            named.append(f"{name} not run" + (f" ({why})" if why else ""))
+        else:
+            named.append(f"{name} failed")
+    if not named:
         return "the D79 suite did not pass"
-    named = ", ".join(f"{name} not run" + (f" ({NOT_RUN_REASON[name]})" if name in NOT_RUN_REASON else "")
-                      for name in skipped)
-    line = f"the D79 suite did not pass: {named}"
-    return f"{line}; {', '.join(failed)} failed" if failed else line
+    return "the D79 suite did not pass: " + ", ".join(named)
 
 
 def _is_accepted_version(verifier: Verifier, history: Optional[Any]) -> bool:

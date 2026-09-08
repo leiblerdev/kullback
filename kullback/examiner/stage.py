@@ -28,7 +28,7 @@ from kullback.examiner import derive as verifier_mod
 from kullback.examiner import judge as judge_mod
 from kullback.examiner import reference as reference_mod
 from kullback.examiner import variants as variants_mod
-from kullback.gates import artifacts, fidelity, verifier_suite
+from kullback.gates import artifacts, fidelity, loosening, verifier_suite
 from kullback.gates import scorecard as scorecard_mod
 from kullback.gates import stages as stage_gates
 from kullback.gates.ledger import GateLedger
@@ -58,10 +58,11 @@ STAGE = "derive_verifier"
 # The per-Task cache under the workdir (D163). Bumped when the entry's shape changes, so an old entry
 # is a miss rather than a row read with the wrong meaning.
 CACHE_DIR = ("examiner", "cache")
-CACHE_FORMAT = 6  # the status row counts D190's relaxed and falsifying atoms, D189's second-path
-# batches, the reference record carries D193's second pass over a residue and what it settled, and
-# the second-path row carries D199's synthesised paths, what they were rewritten from and whether
-# the Task's path is single by structure
+CACHE_FORMAT = 7  # the status row counts D190's relaxed and falsifying atoms, D189's second-path
+# batches and D198's reason per check with no input, the reference record carries D193's second pass
+# over a residue and what deriving a Verifier per survivor settled (D198), and the second-path row
+# carries D199's synthesised paths, what they were rewritten from and whether the Task's path is
+# single by structure
 # The modules a Task's derivation runs through, hashed into every key: an edit to any of them is a
 # different derivation and must not be served a stale entry (the Builder's stages hash the same way,
 # build.py's `_version`).
@@ -593,6 +594,172 @@ def suite_for(task_for: Task, verifier: Verifier, paths: list, *, canon_rules: A
         model=probe_model if may_probe else None, run_probe=run_probe)
 
 
+# --- the residue, settled by deriving a Verifier per survivor (D198) --------------
+
+# How many surviving End states a Task may derive a Verifier from. Each one is a derivation and a
+# code-only suite, so the cost is bounded by this and by nothing else; a Task with more states than
+# this takes the first four in recording order and says so on its row.
+SURVIVOR_CAP = 4
+
+
+def survivor_pool(trial: Any, pool_runs: Iterable[tuple[str, str]], write_tools: set,
+                  fn: Callable) -> tuple[list, set[str]]:
+    """The held-out Runs D133 measures against one survivor, and their ids.
+
+    The pool is the Task's frontier Runs less the ones that did not reach this survivor's End state,
+    which is the same subtraction the released Verifier's ruling makes (D173, D194); a survivor is
+    therefore measured against the Runs that did what it did, exactly as the Reference would be.
+    """
+    left_out = not_at_reference(trial, pool_runs, write_tools, fn)
+    legitimate = {run_id for run_id, _ in pool_runs} - set(left_out) - set(trial.failed)
+    runs = [verifier_suite.as_run(path) for run_id, path in pool_runs if run_id in legitimate]
+    return runs, legitimate
+
+
+def survivor_row(label: str, group: dict, results: dict, skipped: list[str], held: dict) -> dict:
+    """How one survivor's Verifier fared, as the row the choice is made on and the record keeps.
+
+    `passed` is no check having failed on its merits. A check with no input is not a verdict on the
+    Verifier (D173), and the loophole probe is bought for the Task and not for each candidate, so a
+    check nobody could run neither passes a survivor nor fails it; it does cost a point of
+    `checks_passed`, because a state more Runs reached has a second path to score and that is better
+    evidence about it, not worse.
+    """
+    failed = sorted(name for name, ok in results.items() if not ok and name not in skipped)
+    return {"label": str(label), "runs": len(group.get("runs") or []),
+            "checks_passed": sum(1 for ok in results.values() if ok),
+            "checks_failed": failed, "checks_not_run": sorted(skipped),
+            "passed": not failed,
+            "false_rejection": held.get("fraction"), "held_out": int(held.get("held_out") or 0)}
+
+
+def survivor_order(row: dict) -> tuple:
+    """The order the choice reads: most checks passed first, then the lowest false rejection.
+
+    A survivor with nothing held out has no false-rejection measurement, and a measurement that was
+    not made is not evidence against it, so it sorts where a Verifier that rejects nothing sorts
+    (D194 leaves such a Task to its other checks for the same reason).
+    """
+    fraction = row.get("false_rejection")
+    return (-int(row["checks_passed"]), float(fraction) if fraction is not None else 0.0)
+
+
+def choose_survivor(rows: list[dict], order: Iterable[str]) -> tuple[Optional[dict], str, str]:
+    """Which survivor's Verifier the harness stands behind, in one reading of the rows (D198).
+
+    Most checks passed decides, then the lowest false rejection. Survivors whose Verifiers are equal
+    on both are equal under every check the harness has: nothing it can ask tells those End states
+    apart, so the Task takes the first by recording order and says that is why, rather than reading
+    an order the rows were sorted in as a finding. When no survivor's Verifier stands up the Task
+    keeps no Reference, and the reason names the best of them, which is where a person starts.
+    """
+    ranked = sorted(rows, key=survivor_order)
+    standing = [row for row in ranked if row["passed"]]
+    if not standing:
+        best = ranked[0]
+        return None, reference_mod.SURVIVORS_ALL_FAIL, (
+            f"{reference_mod.SURVIVORS_ALL_FAIL}: a Verifier was derived from each of {len(rows)} "
+            f"surviving End states and none of them passed the suite; the best is {best['label']}, "
+            f"which passed {best['checks_passed']} checks and failed {', '.join(best['checks_failed'])}")
+    best = standing[0]
+    tied = [row for row in standing if survivor_order(row) == survivor_order(best)]
+    if len(tied) > 1:
+        places = list(order)
+        first = min(tied, key=lambda row: places.index(row["label"]))
+        return first, reference_mod.SURVIVORS_EQUIVALENT, (
+            f"{reference_mod.SURVIVORS_EQUIVALENT}: {', '.join(row['label'] for row in tied)} each "
+            f"passed {best['checks_passed']} checks with the same false rejection, so they are "
+            f"equivalent under every check the harness has; the Task takes {first['label']}, the "
+            "first by recording order")
+    return best, reference_mod.SURVIVOR_CHOSEN, (
+        f"{reference_mod.SURVIVOR_CHOSEN}: {best['label']} of {len(rows)} surviving End states, "
+        f"its Verifier passing {best['checks_passed']} checks with false rejection "
+        f"{_fraction_text(best)}")
+
+
+def settle_residue(task: Task, confirmation: Any, *, canon_rules: Any, write_tools: set,
+                   constraints: list, intents: dict, user_rules: dict, fn: Callable,
+                   pool_runs: Iterable[tuple[str, str]] = (), verifier_version: str = "1",
+                   cap: int = SURVIVOR_CAP) -> None:
+    """Derive one Verifier per surviving End state and let the suite and the held-out pool choose (D198).
+
+    The judge is fail-only and a residue is the question it has already declined: three decisions
+    measured it over one and it settled none of them, so asking a third time is asking the same
+    question again. What the harness has instead is the check it applies to every Reference it does
+    keep. So each survivor is derived from as if it were the Reference, by the same path and the same
+    atoms, and put through the D79 suite and D133's false rejection over the Runs that reached it.
+    The survivor whose Verifier stands up best is the Reference; survivors whose Verifiers are equal
+    on every check the harness has are equivalent under everything it can ask, so the Task takes the
+    first by recording order rather than pretending a difference was found (D184's keep-by-beating
+    idea, applied to References). When no survivor's Verifier stands up the Task keeps no Reference
+    and the row names the best of them, which is where a person looks first.
+
+    Nothing here buys a Run: the derivation is code, the suite's Runs are the Reference's own and the
+    two it synthesizes, and the loophole probe is left to the Task's released Verifier. So a survivor
+    is compared on the checks that can be run for all of them alike, and the winner still faces the
+    whole suite, probe included, on the ordinary path afterwards.
+    """
+    survivors = list(confirmation.survivors)
+    if len(survivors) < 2:
+        return
+    if len(survivors) > cap:
+        confirmation.survivors_capped = True
+        survivors = survivors[:cap]
+    task_for = apply_intent(task, intents[task.id]) if task.id in intents else task
+    pool_runs = list(pool_runs)
+    rows: list[dict] = []
+    by_label: dict[str, dict] = {}
+    for group in survivors:
+        members = list(group.get("members") or ())
+        if not members:
+            continue
+        others = {rec.run_id for g in survivors if g is not group for rec in (g.get("members") or ())}
+        trial = reference_mod.Confirmation(
+            references=members, recordings=list(confirmation.recordings),
+            failed={run_id: reason for run_id, reason in confirmation.failed.items()
+                    if run_id not in others})
+        verifier = derive_for(task_for, trial, canon_rules=canon_rules, write_tools=write_tools,
+                              constraints=constraints, intent=intents.get(task.id),
+                              verifier_version=verifier_version)
+        paths = [r.path for r in members]
+        rules_trace = next((r.trace_id for r in members if r.trace_id), None)
+        gates = suite_for(task_for, verifier, paths, canon_rules=canon_rules, write_tools=write_tools,
+                          user_rules=user_rules, rules_trace=rules_trace, probe_model=None,
+                          run_probe=None, may_probe=False)
+        results = verifier_suite.d79_results(gates)
+        skipped = [verifier_suite.D79_STAGES[g.stage] for g in gates if g.metrics.get("skipped")]
+        runs, legitimate = survivor_pool(trial, pool_runs, write_tools, fn)
+        held = loosening.false_rejection(verifier, runs, legitimate, canon_rules, write_tools)
+        row = survivor_row(group["label"], group, results, skipped, held)
+        rows.append(row)
+        by_label[row["label"]] = group
+    if not rows:
+        return
+    confirmation.residue_derived = True
+    confirmation.survivor_scores = sorted(rows, key=survivor_order)
+    best, why, said = choose_survivor(rows, [row["label"] for row in rows])
+    confirmation.survivor_reason, confirmation.reason = why, said
+    if best is None:
+        return
+    confirmation.survivor_chosen = best["label"]
+    won = by_label[best["label"]]
+    confirmation.references = list(won.get("members") or ())
+    for group in survivors:
+        if group is won:
+            continue
+        for rec in group.get("members") or ():
+            confirmation.failed.setdefault(
+                rec.run_id, f"survivor {group['label']} was not chosen: {confirmation.reason}")
+
+
+def _fraction_text(row: dict) -> str:
+    """A survivor's false rejection with its denominator, or the words for a pool that held nothing."""
+    fraction = row.get("false_rejection")
+    if fraction is None:
+        return "not measured, nothing was held out"
+    return f"{float(fraction):.2f} of {row['held_out']} held-out Runs"
+
+
 def verifier_for(ctx, task: Task, confirmation: Any, *, canon_rules: Any, write_tools: set, constraints: list,
                  intents: dict, user_rules: dict, recordings: int, rerolls: int, probe: Any,
                  probe_model: Any, may_probe: bool, fidelity_row: Optional[dict] = None,
@@ -648,6 +815,11 @@ def verifier_for(ctx, task: Task, confirmation: Any, *, canon_rules: Any, write_
               # keyed on the Task and the column and the next build's strip can cover it.
               "leak_columns": sorted(next((g.metrics.get("columns") or []
                                            for g in gates if g.stage == "verifier_leak"), [])),
+              # D198 rule 2: why each check had no input, in the check's own words, so the ruling
+              # that reports a suite failure names the reason rather than a table of its own.
+              "not_run_reasons": {verifier_suite.D79_STAGES[g.stage]: str(g.metrics["not_run_reason"])
+                                  for g in gates if g.metrics.get("not_run_reason")
+                                  and g.stage in verifier_suite.D79_STAGES},
               **verifier_mod.derivation_counts(record),
               "second_path": second_path if second_path is not None else second_path_row(
                   0, 0, found=len(confirmation.references) > 1),
@@ -761,7 +933,10 @@ def derive_all(ctx: ExamContext, inputs: dict, *, probe_model: Any = None, probe
     state after the recordings that broke a Hard constraint are out; the judge is the residue when
     two End states remain and fails at most one side (D110, D111). A judgement that leaves two or
     more states in is asked once more over those states alone, under a stop rule saying one of them
-    may remain, and anything but one state left is an abstention (D193). The Reference proper is the first
+    may remain, and anything but one state left is an abstention (D193). What that abstention leaves,
+    and a judgement that failed every state on grounds that do not agree, is settled without the judge:
+    a Verifier is derived from each surviving End state and the suite and the held-out pool choose
+    between them (D198). The Reference proper is the first
     recording of that group, the rest are the re-runs whose agreement sets required against allowed
     (D43) and the second path of check 5, and the anchor is never among them (D81). Before any of
     that, every compiled constraint is checked against the confirmed recordings corpus-wide and the
@@ -901,6 +1076,13 @@ def derive_all(ctx: ExamContext, inputs: dict, *, probe_model: Any = None, probe
             return job.entry
         confirmation = job.confirmation
         fidelity_row = task_fidelity(tool_fidelity, task.id)
+        # D198: a residue the judgement left, or a judgement that failed everything on grounds that
+        # do not agree, is settled here by deriving a Verifier per surviving End state; the Task then
+        # goes on with the Reference that choice made, or with none and the reason naming the best.
+        if not confirmation.references and confirmation.survivors:
+            settle_residue(task, confirmation, canon_rules=canon_rules, write_tools=write_tools,
+                           constraints=constraints, intents=intents, user_rules=user_rules, fn=fn,
+                           pool_runs=pool_runs_of(task.id, replays, rerolls))
         if not confirmation.references:
             row = no_reference_status(ctx, task, confirmation, seed_replays=seed_replays[task.id],
                                       replays=replays, rerolls=rerolls, traces=traces,
@@ -985,6 +1167,17 @@ def derive_all(ctx: ExamContext, inputs: dict, *, probe_model: Any = None, probe
         judge_residue_resolved=sum(1 for r in references.values() if r.get("judge_residue_resolved")),
         judge_residue_abstained=sum(1 for r in references.values() if r.get("judge_residue_abstained")),
         no_correct_recording=sum(1 for r in references.values() if r.get("no_correct_recording")),
+        # D198: what deriving a Verifier per surviving End state settled. `residue_derived` is how
+        # many Tasks were put through it at all, and the three below are its three answers; a Task
+        # with more survivors than the cap says so, because the choice it made was over a slice.
+        residue_derived=sum(1 for r in references.values() if r.get("residue_derived")),
+        survivor_chosen=sum(1 for r in references.values()
+                            if r.get("survivor_reason") == reference_mod.SURVIVOR_CHOSEN),
+        survivors_equivalent=sum(1 for r in references.values()
+                                 if r.get("survivor_reason") == reference_mod.SURVIVORS_EQUIVALENT),
+        survivors_all_fail=sum(1 for r in references.values()
+                               if r.get("survivor_reason") == reference_mod.SURVIVORS_ALL_FAIL),
+        survivors_capped=sum(1 for r in references.values() if r.get("survivors_capped")),
         # D133: the held-out Runs the pool leaves out because they did not reach the Reference's
         # End state, named per Task on the status row and counted here for the Examiner.
         did_not_reach_reference=sum(len(r.get("did_not_reach_reference") or ()) for r in status.values()),

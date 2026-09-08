@@ -46,6 +46,7 @@ from kullback.builder import (
     readers,
     sandbox,
     synth,
+    templates,
     transaction,
     user_sim,
     vocabulary,
@@ -84,6 +85,9 @@ from kullback.runner.records import write_json as _write_json
 # store (D120).
 
 CANON_RULES = "canon-rules.json"
+# What the cluster stage did with the frozen Task list this round (D200): read by the driver
+# so a round's status says how many Tasks it froze, added and could not reproduce.
+TASK_SPLIT = "task_split.json"
 
 
 class BuildError(RuntimeError):
@@ -209,7 +213,8 @@ def _mine_stage():
                           code_version=_version("mine", run, mine))
 
 
-def _readers_stage(model: Any, max_attempts: int = readers.MAX_ATTEMPTS):
+def _readers_stage(model: Any, max_attempts: int = readers.MAX_ATTEMPTS,
+                   max_forced: int = templates.MAX_FORCED):
     """The rows a requestor other than the assistant reveals through prose results (D176 candidate).
 
     It runs per requestor whose own tools answer with strings the row extractor reads nothing out
@@ -227,16 +232,11 @@ def _readers_stage(model: Any, max_attempts: int = readers.MAX_ATTEMPTS):
     def run(ctx, inputs):
         traces, schema, sigs = inputs["traces"], inputs["mined_schema"], inputs["mined_sigs"]
         by_requestor = readers.prose_calls(traces)
-        if not by_requestor:
-            _write_json(ctx.workdir / readers.READERS_FILE, {"note": readers.NO_PROSE})
-            ctx.record_gate(stage_gates.readers_gate([], 0))
-            return {"schema": schema, "sigs": sigs,
-                    "readers": {"note": readers.NO_PROSE, "proposals": {}, "rows": {}}}
-        if model is None:
-            raise BuildError("this corpus has prose results from a requestor of its own and the "
-                             "readers stage has no model to propose them with; pass --model")
         proposals, rows, nodes, values = {}, {}, [], {}
         fills, assumptions, unset = {}, [], {}
+        if by_requestor and model is None:
+            raise BuildError("this corpus has prose results from a requestor of its own and the "
+                             "readers stage has no model to propose them with; pass --model")
         for requestor in sorted(by_requestor):
             proposal, attempts, parsed = readers.propose(
                 model, requestor, by_requestor[requestor], traces, ctx.workdir / "readers",
@@ -254,18 +254,36 @@ def _readers_stage(model: Any, max_attempts: int = readers.MAX_ATTEMPTS):
                     "assumptions": assumptions, "unset": unset}
         kept = readers.proposals_from(artifact)
         readers.apply_to_schema(schema, kept, values)
-        sigs = readers.apply_to_sigs(sigs, kept)
-        _write_json(ctx.workdir / readers.READERS_FILE, {**artifact, "attempts": nodes})
+        # Handed on as it came where no proposal moved it: the stage's artifacts are compared by
+        # identity downstream, and a rebuilt list of the same sigs is a new artifact every build.
+        sigs = readers.apply_to_sigs(sigs, kept) if kept else sigs
+        # D203: a homed prose result no reader answers pins nothing, and the proposal stage is asked
+        # only about another requestor's toolkit. Every such tool gets a reader derived from its own
+        # recorded results, and one forced proposal where the corpus cannot settle the slots.
+        pairs, gaps = templates.close_gaps(
+            model, traces, schema, ctx.workdir,
+            readers.result_reader({**artifact, "derived": []}, traces, ctx.workdir),
+            max_forced=max_forced)
+        artifact = {**artifact, "derived": [pair.to_dict() for pair in pairs], "gaps": gaps}
+        templates.apply_revealed(schema, pairs)
+        # A corpus whose prose results are all read, or that has none, records the note and nothing
+        # else, so a build over such a corpus writes the same artifact it always wrote.
+        silent = not by_requestor and not pairs and not gaps.get("tools")
+        if silent:
+            artifact = {"note": readers.NO_PROSE, "proposals": {}, "rows": {}}
+        _write_json(ctx.workdir / readers.READERS_FILE,
+                    {"note": readers.NO_PROSE} if silent else {**artifact, "attempts": nodes})
         _write_json(ctx.workdir / "schema.json", as_dict(schema))
         _write_json(ctx.workdir / "tool_sigs.json", [as_dict(s) for s in sigs])
         # Section 6: a proposal the gate could not satisfy is flagged and kept, never a failed build.
         ctx.record_gate(stage_gates.readers_gate(proposals.values(), len(by_requestor),
                                                  assumptions=assumptions, unset=unset,
-                                                 kinds={p.requestor: readers.kinds_for(p) for p in kept}))
+                                                 kinds={p.requestor: readers.kinds_for(p) for p in kept},
+                                                 derived=pairs, totals=gaps.get("totals")))
         return {"schema": schema, "sigs": sigs, "readers": artifact}
 
-    version = (f"readers:{getattr(model, 'name', 'none')}:{max_attempts}:"
-               f"{_module_hash(readers)}:{_module_hash(sandbox)}")
+    version = (f"readers:{getattr(model, 'name', 'none')}:{max_attempts}:{max_forced}:"
+               f"{_module_hash(readers)}:{_module_hash(templates)}:{_module_hash(sandbox)}")
     return pipeline.Stage(name="readers", fn=run, inputs=("traces", "mined_schema", "mined_sigs"),
                           outputs=("schema", "sigs", "readers"), code_version=version)
 
@@ -282,9 +300,14 @@ def _cluster_stage():
         # one of its columns differently before either wrote started in different worlds.
         readers.merge_worlds(worlds, inputs["readers"], inputs["schema"])
         categories, tasks = cluster.cluster_runs(inputs["traces"], inputs["sigs"], worlds=worlds)
+        # D200: once a list is frozen it is the Task list. A rebuild may add Tasks for Runs nobody
+        # froze, it may not drop, re-split or re-id a frozen one, because every number the build is
+        # judged on is counted over that list and a Task that moves takes its ruling with it.
+        tasks, split = cluster.resume_frozen(tasks, scorecard_mod.frozen_tasks(ctx.workdir))
         for task in tasks:
             _write_json(ctx.workdir / "tasks" / f"{task.id}.json", as_dict(task))
         _write_json(ctx.workdir / "tasks.json", {"tasks": [as_dict(t) for t in tasks]})
+        _write_json(ctx.workdir / TASK_SPLIT, split)
         # D96: the coverage denominator is frozen once, here, before anything measures coverage.
         scorecard_mod.freeze_tasks(ctx.workdir, tasks)
         ctx.record_gate(stage_gates.cluster_gate(tasks, categories))
