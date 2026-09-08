@@ -5,10 +5,12 @@ an Intent phrase with no grounded span, `repair_intent`. The Builder followed ne
 and no Task became trusted, because the losses that decide the number were never named: the
 assisted seed tool that blocked 52 Tasks with no Reference, the D79 check that failed on most
 Tasks with one, the Verifier whose required atoms reject every held-out Run, the Task whose own
-recordings do not agree on an End state. One build filed nothing at all in three rounds while 80
-of 119 Tasks had no Reference. A finding the model chooses to write is a finding the model may not
-write; these four are read off task_status.json, gates.json and references.json by code, so they
-exist whether or not there is a model and whether or not it says anything.
+recordings do not agree on an End state, the Task no Trace of which replays to its End state. One
+build filed nothing at all in three rounds while 80 of 119 Tasks had no Reference, and another
+labelled one finding of forty-six fidelity while the replay ruling was what blocked fifty-eight
+Tasks. A finding the model chooses to write is a finding the model may not write; these five are
+read off task_status.json, gates.json, replays.json and references.json by code, so they exist
+whether or not there is a model and whether or not it says anything.
 
 They are filed by the derive stage, which is the first call of every Examiner beat and the only
 call of a code-driven one: the list is complete before the model's first choice. They are ranked by
@@ -28,7 +30,8 @@ from typing import Any, Iterable, Optional
 
 from kullback.examiner.plan import ExaminerPlan
 from kullback.gates import verifier_suite
-from kullback.gates.loosening import discarded_runs, false_rejection, legitimate_runs, over_strict
+from kullback.gates.fidelity import unconfirmed_reason
+from kullback.gates.loosening import discarded_runs, false_rejection, legitimate_runs
 from kullback.gates.probes import write_tools_of
 from kullback.runner.records import Finding, as_dict, read_json
 
@@ -102,6 +105,34 @@ def open_by_key(plan: ExaminerPlan) -> dict[str, str]:
             if isinstance(row, dict) and row.get("status") == "open" and row.get("key")}
 
 
+def told_task_tools(plan: ExaminerPlan) -> set[tuple[str, str]]:
+    """Every Task and tool pair a finding of this build already covers, whatever kind it was filed
+    under and whether it is open or closed.
+
+    A fidelity row about a Task and a tool says the same thing as the assisted_tool finding about
+    that tool which lists the Task among the ones it costs, and two messages saying one thing cost
+    the Builder two turns. The pair is what makes them the same, not the kind, so this is compared
+    beside the key and not through it.
+
+    Closed counts as told, not only open. A pair covered by an open finding and skipped for it would
+    come back as news the round after, when the Builder has answered that finding and closed it, and
+    the round would hand it the same loss under a second name; `cost_by_key` refuses that for a key
+    and this refuses it for a pair.
+    """
+    pairs: set[tuple[str, str]] = set()
+    for row in plan.store.get("findings", []):
+        if not isinstance(row, dict) or not row.get("tool"):
+            continue
+        tasks = list(row.get("task_ids") or ([row["task_id"]] if row.get("task_id") else []))
+        pairs.update((str(task), str(row["tool"])) for task in tasks)
+    return pairs
+
+
+def covered_pairs(row: dict) -> set[tuple[str, str]]:
+    """The Task and tool pairs one row covers; empty for a row that names no tool."""
+    return {(str(task), str(row["tool"])) for task in row.get("task_ids") or ()} if row.get("tool") else set()
+
+
 def cost_by_key(plan: ExaminerPlan) -> dict[str, list[str]]:
     """The Tasks the last finding under each key said it cost, whatever became of that finding.
 
@@ -142,7 +173,7 @@ def file_finding(plan: ExaminerPlan, *, kind: str, text: str, key: str, suggeste
     return record
 
 
-# --- the four rules ---------------------------------------------------------------------
+# --- the five rules ---------------------------------------------------------------------
 
 def assisted_tool_rows(status: dict, fidelity: dict) -> list[dict]:
     """One row per tool whose own differing calls leave Tasks with no Reference, the costliest first.
@@ -263,7 +294,7 @@ def false_rejection_rows(store: dict) -> list[dict]:
     for verifier in sorted(store.get("verifiers") or [], key=lambda v: v.task_id):
         runs = task_runs.get(verifier.task_id, [])
         seen = false_rejection(verifier, runs, legitimate.get(verifier.task_id, set()), canon_rules, write_tools)
-        if not over_strict(seen):
+        if not (seen["held_out"] >= 1 and seen["fraction"] == 1.0):
             continue
         run_id = seen["rejected_ids"][0]
         run = next((r for r in runs if r.run_id == run_id), None)
@@ -278,6 +309,48 @@ def false_rejection_rows(store: dict) -> list[dict]:
                      else f"the required atoms reject Run {run_id}"),
             "text": (f"The Verifier's required atoms reject all {seen['held_out']} held-out frontier Runs of this "
                      f"Task, so it recognises no path but its own seeds (D133)." + names_atom),
+        })
+    return rows
+
+
+def fidelity_rows(status: dict, fidelity: dict, replays: dict) -> list[dict]:
+    """One row per Task no Trace of which replays to its End state, named as the fidelity loss it is.
+
+    The label is the point. `replay_reference` is the ruling that blocks a Task whose recorded calls
+    the bodies answer differently, and on one live build it blocked 58 Tasks while 1 of the round's
+    46 findings was labelled fidelity: the loss reached the Builder under the name of whatever
+    grading layer the Examiner happened to read, so the Builder worked the Verifiers of Tasks that
+    had no Reference to derive one from. The rule reads the same records the reference replay gate
+    reads (`replays.json`, per Task per Trace, with `confirmed` and the gate's own `reasons`), so
+    nothing here decides anything a gate has not decided.
+
+    The tool named is the Task's own blocker where the status row has one (D171's `blocking_tools`,
+    which are the tools whose own differing calls cost this Task), otherwise the first tool
+    `tool_fidelity.json` records a difference for on this Task. A Task the records name no tool for
+    keeps the reason line and suggests nothing: a recompile of no tool is not a verb.
+    """
+    per_task = (fidelity or {}).get("tasks") or {}
+    rows = []
+    for task_id, traces in sorted((replays or {}).items()):
+        traces = {trace: row for trace, row in (traces or {}).items() if isinstance(row, dict)} \
+            if isinstance(traces, dict) else {}
+        if not traces or any(row.get("confirmed") for row in traces.values()):
+            continue
+        row = (status or {}).get(task_id) or {}
+        blocking = [str(name) for name in (row.get("blocking_tools") or [])]
+        differing = sorted(name for name, seen in (per_task.get(task_id) or {}).items()
+                           if isinstance(seen, dict) and seen.get("differing"))
+        tool = (blocking or differing or [""])[0]
+        reason = unconfirmed_reason(traces)[:HINT_CHARS]
+        detail = first_difference(per_task, tool, [task_id])[:HINT_CHARS] if tool else ""
+        rows.append({
+            "kind": "fidelity", "tool": tool or None, "task_ids": [task_id], "task_id": task_id,
+            "key": finding_key("fidelity", tool, task_id),
+            "suggested": "repair_recompile" if tool else "none",
+            "hint": detail or reason,
+            "text": (f"No Trace of this Task replays to its End state, so it has no Reference and no "
+                     f"Verifier can be derived from it: {reason}."
+                     + (f" The tool blocking it is {tool}." if tool else " No tool is named as the blocker.")),
         })
     return rows
 
@@ -331,7 +404,8 @@ def rule_rows(plan: ExaminerPlan) -> list[dict]:
     fidelity = plan.store.get("tool_fidelity") or _json(plan.workdir / "tool_fidelity.json", {}) or {}
     references = _json(plan.workdir / "references.json", {}) or {}
     rows = (assisted_tool_rows(status, fidelity) + suite_rows(status)
-            + false_rejection_rows(plan.store) + disagreement_rows(status, references))
+            + false_rejection_rows(plan.store) + disagreement_rows(status, references)
+            + fidelity_rows(status, fidelity, plan.store.get("replays") or {}))
     return sorted(rows, key=lambda row: (-len(row["task_ids"]), row["key"]))
 
 
@@ -349,11 +423,19 @@ def file_rule_findings(plan: ExaminerPlan, limit: int = RULE_FINDING_LIMIT) -> l
     """
     already = open_by_key(plan)
     told = cost_by_key(plan)
+    covered = told_task_tools(plan)
     filed: list[Finding] = []
     for row in rule_rows(plan):
         if len(filed) >= limit:
             break
         if row["key"] in already or told.get(row["key"]) == sorted(row["task_ids"]):
             continue
+        pairs = covered_pairs(row)
+        # The pair skip is the fidelity rule's alone: a Task and tool another finding already names
+        # is that finding's news. The other rules are ranked by the Tasks they cost and re-file when
+        # that set moves (`cost_by_key`), which a pair cannot see.
+        if row["kind"] == "fidelity" and pairs and pairs <= covered:
+            continue
+        covered |= pairs
         filed.append(file_finding(plan, **row))
     return filed

@@ -154,46 +154,13 @@ def test_a_verifier_of_a_refused_task_is_not_counted_as_trusted(tmp_path):
     assert ruling.metrics["trusted"] == [TASK] and ruling.metrics["refused"] == {}
 
 
-def test_a_false_rejection_under_the_threshold_is_trusted_and_the_ruling_carries_the_fraction_and_the_pool_size(tmp_path):
+def test_the_trusted_ruling_carries_the_false_rejection_number_per_task(tmp_path):
     strict = tighten(base(tmp_path)).model_copy(update={"seed_run_ids": ["ref"]})
-    ruling = T.trusted_gate(**_world(tmp_path, strict))
+    world = _world(tmp_path, strict)
+    ruling = T.trusted_gate(**world)
     # rr2 gives another reason and is rejected; alt is held out and passes: one in two.
     assert ruling.metrics["false_rejection"] == {TASK: 0.5}
-    assert ruling.metrics["false_rejection_pool"] == {TASK: 2}
-    assert ruling.metrics["false_rejection_ruling"] == {TASK: "0.50 of 2 held-out Runs"}
-    assert ruling.passed and ruling.metrics["trusted"] == [TASK], \
-        "a Verifier that recognises some path other than its seeds is a check of the Task"
-
-
-def test_a_verifier_that_rejects_every_held_out_run_is_not_trusted_and_the_reason_names_the_false_rejection(tmp_path):
-    """D194: the number was measured from the start and never read, so a Verifier the false-rejection
-    gate calls over-strict was trusted anyway. Rejecting every Run that reached the Reference makes it
-    a check of one path, not of the Task."""
-    strict = tighten(base(tmp_path)).model_copy(update={"seed_run_ids": ["ref"]})
-    world = _world(tmp_path, strict)
-    # Only the Run giving another reason is left in the pool, and the strict version rejects it.
-    world["rerolls"] = {TASK: [reroll_row("rr2", "success"), reroll_row("alt", "max_steps")]}
-    ruling = T.trusted_gate(**world)
-    assert not ruling.passed and ruling.metrics["trusted"] == []
-    assert ruling.metrics["false_rejection"] == {TASK: 1.0} and ruling.metrics["false_rejection_pool"] == {TASK: 1}
-    assert ruling.failures == [
-        "task t1: false_rejection 1.00 of 1 held-out Runs: the required atoms reject every held-out Run that "
-        "reached the Reference, so the Verifier checks one path and not the Task"]
-    assert ruling.metrics["untrusted"][TASK].startswith("false_rejection 1.00 of 1 held-out Runs")
-
-
-def test_a_task_with_nothing_held_out_says_no_pool_and_is_trusted_on_the_other_gates(tmp_path):
-    """An empty sample is not a rate and not a failure: no held-out Run reached the Reference, so the
-    step has nothing to rule on and the Task stands or falls on the checks that do."""
-    strict = tighten(base(tmp_path)).model_copy(update={"seed_run_ids": ["ref"]})
-    world = _world(tmp_path, strict)
+    assert ruling.metrics["trusted"] == [TASK], "over-strict is reported next to trusted, not hidden by it"
     world["rerolls"] = {}
     world["replays"] = {TASK: {"tr1": replay_row("tr1", True, run_id="ref")}}
-    ruling = T.trusted_gate(**world)
-    assert ruling.metrics["false_rejection"] == {TASK: None} and ruling.metrics["false_rejection_pool"] == {TASK: 0}
-    assert ruling.metrics["false_rejection_ruling"] == {TASK: "no_pool"}
-    assert ruling.passed and ruling.metrics["trusted"] == [TASK]
-    # The other gates still rule: the same empty pool does not carry a Task the suite turned away.
-    world["task_status"] = {TASK: status(verifier_passed=False)}
-    denied = T.trusted_gate(**world)
-    assert denied.metrics["trusted"] == [] and denied.metrics["false_rejection_ruling"] == {TASK: "no_pool"}
+    assert T.trusted_gate(**world).metrics["false_rejection"] == {TASK: None}

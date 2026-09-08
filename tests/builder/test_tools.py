@@ -436,13 +436,14 @@ def test_a_repair_intent_result_opens_with_that_tasks_own_ruling(built):
     out = _run(_tool(plan, "repair_intent"), {"task_id": task, "hint": "say what every run of it shows"})
     assert not out.is_error, out.content
     record = _intents(built)[task]
-    first, second = out.content.splitlines()[:2]
+    first, second, third = out.content.splitlines()[:3]
     assert first == out.details["target_ruling"]
     assert first.startswith(f"repair_intent {task}: ")
     assert ("grounded" in first) is bool(record["grounded"])
     if not record["grounded"]:
         assert first.endswith(f"still refused: {record['reason']}")
-    assert second.startswith("repair_intent intent: "), "the stage summary still follows it"
+    assert second == builder_tools.NO_ZOOM.format(target=task), "and the zoom on it is taken off the table"
+    assert third.startswith("repair_intent intent: "), "the stage summary still follows it"
 
 
 def test_a_repair_recompile_result_says_whether_that_tool_cleared_the_gates(built, tmp_path):
@@ -529,3 +530,50 @@ def test_a_repair_whose_stage_failed_still_records_the_request_it_was_asked(buil
     assert out.is_error and "no Task is named" in out.content
     row = _requests(workdir, "repair_intent")[-1]
     assert row["target"] == "task_nobody_mined" and row["changed"] is False
+
+
+def test_a_repair_result_carrying_its_targets_ruling_takes_the_zoom_on_that_target_off_the_table(tmp_path):
+    """One live build called status(target=...) two to three times per tool and no ruling changed
+    between the calls: the repair result the model had just read already carried that tool's own
+    ruling. The nudge is withheld while the ruling is in hand, and the count says how often."""
+    workdir = tmp_path / "zoom"
+    workdir.mkdir()
+    (workdir / "gates.json").write_text(json.dumps(
+        [{"stage": "replay_fidelity", "pass": False,
+          "failures": ["dock_bike: hard columns differ: rack_id: ours 4, recorded 7"]}]), encoding="utf-8")
+    plan = BuildPlan(workdir=workdir, iterate=True)
+    grouped = builder_tools.render_status(builder_tools.status_of(workdir), plan)
+    assert grouped.endswith(builder_tools.ZOOM_HINT), "nothing is in hand yet, so the nudge stands"
+    assert plan.zooms_skipped == 0
+
+    repaired = builder_tools.BuildResult(
+        summary="repair_recompile compile_tools: complete", target="compile_tools", status="complete",
+        passed=False, ruling_target="dock_bike",
+        target_ruling="repair_recompile dock_bike: still assisted: rack_id: ours 4, recorded 7")
+    text = builder_tools.render(repaired, plan)
+    assert text.splitlines()[1] == builder_tools.NO_ZOOM.format(target="dock_bike")
+    assert plan.rulings_in_hand == {"dock_bike": repaired.target_ruling} and plan.zooms_skipped == 1
+
+    again = builder_tools.render_status(builder_tools.status_of(workdir), plan)
+    assert builder_tools.ZOOM_HINT not in again, "every red light is on a target already answered"
+    assert plan.zooms_skipped == 2
+    # A run over more than one target puts every ruling back in question, so the nudge stands again.
+    builder_tools.render(builder_tools.BuildResult(summary="build environment: complete",
+                                                   target="environment", status="complete", passed=True), plan)
+    assert plan.rulings_in_hand == {}
+    assert builder_tools.render_status(builder_tools.status_of(workdir), plan).endswith(builder_tools.ZOOM_HINT)
+
+
+def test_a_task_refused_twice_for_one_reason_is_named_in_the_status_headline(tmp_path):
+    """A third refusal of it is refused in code (repair.refuse_lock), so the picture says which
+    Tasks those are rather than leaving the session to find out by calling the verb."""
+    workdir = tmp_path / "refused"
+    workdir.mkdir()
+    (workdir / "gates.json").write_text(json.dumps(
+        [{"stage": "intent", "pass": False, "failures": ["task task_dock: noun phrases with no span: the rack"]}]),
+        encoding="utf-8")
+    assert "refused twice" not in builder_tools.status_of(workdir).summary
+    tools = {t.name: t for t in repair_module.repair_tools(workdir)}
+    for _ in range(2):
+        _run(tools["repair_refuse_task"], {"task_id": "task_dock", "reason": "no frontier Run docks it"})
+    assert "refused twice: task_dock" in builder_tools.status_of(workdir).summary

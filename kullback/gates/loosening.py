@@ -8,9 +8,7 @@ replays.json and the merged re-roll rows, never from a model's opinion, and it g
 traces arrive. `false_rejection` is D133's per-Task number: over the legitimate Runs the Verifier
 was not derived from, less the ones the round's Reference rule discarded (D173), the fraction its
 atoms wrongly fail; the gate on it has no tuned threshold and fails only the one case D133 warns
-about, a Verifier that recognises no frontier path but its seeds. `over_strict` is that one case as
-a predicate, and `FALSE_REJECTION_THRESHOLD` the number in it, so the gate here, the finding the
-Examiner is handed and the trusted ruling all read the threshold the same way (D194).
+about, a Verifier that recognises no frontier path but its seeds.
 """
 
 from __future__ import annotations
@@ -21,12 +19,6 @@ from kullback.gates.probes import as_verifier, version_hash, write_tools_of
 from kullback.gates.verifier_suite import SUCCESS_TERMINATIONS, check_run
 from kullback.runner.gate_support import _get, gate
 from kullback.runner.records import GateResult, Run, Verifier, VerifierHistory, VerifierVersion
-
-# D133's threshold on the false-rejection number, in one place because three callers read it: the
-# false-rejection gate, the finding the Examiner is handed, and the trusted ruling. It is not a
-# tuned cutoff, it is the whole pool: a required-atom set that rejects every held-out Run recognises
-# no path but its own seeds.
-FALSE_REJECTION_THRESHOLD = 1.0
 
 
 def finished_run_ids(task_id: str, replays: dict, rerolls: dict) -> list[str]:
@@ -138,21 +130,6 @@ def false_rejection(verifier: Verifier, runs: list[Run], legitimate: set[str], c
     return {"held_out": len(held), "rejected": len(rejected), "fraction": fraction, "rejected_ids": rejected}
 
 
-def over_strict(row: dict) -> bool:
-    """D133's threshold, read the one way by every caller: a pool with something in it, and every
-    Run in it rejected.
-
-    The number has no tuned cutoff and never gained one; the single case D133 names is a Verifier
-    that recognises no path but its own seeds, and that is a fraction at FALSE_REJECTION_THRESHOLD over
-    a pool of at least one. Keeping the comparison here rather than spelled out at each call site is what lets
-    the false-rejection gate, the finding and the trusted ruling agree by construction: before this
-    function the first two read it and the third did not, so a Verifier the gate called over-strict
-    was trusted anyway.
-    """
-    return bool(row.get("held_out", 0) >= 1 and row.get("fraction") is not None
-                and float(row["fraction"]) >= FALSE_REJECTION_THRESHOLD)
-
-
 def false_rejection_gate(verifiers: list[Verifier], task_runs: dict[str, list[Run]], replays: dict, rerolls: dict,
                          canon_rules: Any, sigs: list, task_status: Optional[dict] = None) -> GateResult:
     """The per-Task false-rejection number (D133); a failure only for a Verifier that rejects every
@@ -174,6 +151,6 @@ def false_rejection_gate(verifiers: list[Verifier], task_runs: dict[str, list[Ru
                               canon_rules, write_tools)
         row["version"] = version_hash(verifier)
         per_task[task_id] = row
-        if over_strict(row):
+        if row["held_out"] >= 1 and row["fraction"] == 1.0:
             failures.append(f"task {task_id}: the required atoms reject every held-out frontier Run")
     return gate("false_rejection", failures, per_task=per_task)

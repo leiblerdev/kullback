@@ -321,6 +321,30 @@ def test_the_round_n_examiner_steer_asks_for_derive_again():
     assert "target='t1'" in examiner_agent.examiner_round_message(3, "t1")
 
 
+def test_a_finding_suggesting_the_examiners_own_verb_comes_back_in_the_next_beats_steer():
+    """Two live builds' Examiners suggested `repair` 33 and 18 times and called it once each: the
+    suggestion was filed, read by the Builder, which owns none of it, and never acted on. What the
+    Builder is handed as `pending_line` the Examiner is now handed as its own open suggestions,
+    ranked by the Tasks each costs and cut at a handful."""
+    rows = [{"finding_id": f"finding-{n}", "status": "open", "suggested": "repair",
+             "task_id": f"task_{n}", "task_ids": [f"task_{n}"] * n, "hint": f"drop atom-{n}"}
+            for n in range(1, 8)]
+    rows += [{"finding_id": "finding-9", "status": "open", "suggested": "repair_recompile",
+              "task_id": "task_9", "task_ids": ["task_9"] * 40, "hint": "the Builder's"},
+             {"finding_id": "finding-10", "status": "closed", "suggested": "repair",
+              "task_id": "task_10", "task_ids": ["task_10"] * 40, "hint": "already answered"}]
+    owed = examiner_agent.own_suggestions(rows)
+    assert [row["finding_id"] for row in owed] == ["finding-7", "finding-6", "finding-5",
+                                                   "finding-4", "finding-3"], "costliest first, five of them"
+    assert len(examiner_agent.own_suggestions(rows, cap=None)) == 7, "no cap is every one of them"
+    steer = examiner_agent.examiner_round_message(2, "all", rows)
+    assert "finding-7 suggests repair on task_7 (drop atom-7)" in steer
+    assert "finding-9" not in steer and "finding-10" not in steer
+    assert "`payload`" in steer, "the shape a repair takes, said where the repair is asked for"
+    assert examiner_agent.suggested_line([]) == ""
+    assert "Still open" not in examiner_agent.examiner_round_message(2, "all", [])
+
+
 def test_the_probe_skill_names_the_eight_bug_classes():
     assert len(skills.BUG_CLASSES) == 8 and len(set(skills.BUG_CLASSES)) == 8
     for bug_class in skills.BUG_CLASSES:

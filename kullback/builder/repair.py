@@ -335,10 +335,101 @@ def _render(result: RepairResult) -> str:
     return f"{result.verb} {result.target}: {result.status}" + (f" ({result.detail})" if result.detail else "")
 
 
+# --- the same decision, taken again --------------------------------------------
+
+# How many times one Task may be refused for one reason before the verb stops taking it. D181's
+# three strikes stopped the Examiner repairing one Verifier against one check for ever; the Builder's
+# `repair_refuse_task` had no such stop, and one live build made 17 of them, had 0 admitted, and in
+# round 3 refused four Tasks again with the reason word for word from round 1 and the same answer.
+# Refusing is not a repair: nothing about the Task moves between two identical requests, so the
+# second is the last one that can tell anybody anything.
+REFUSE_STOP = 2
+# What buys something a third refusal cannot. Whether a Task is refused is the refuse gate's, over
+# the Examiner's own `refuse` and only when no frontier Run finished (D128); on the Builder's side
+# what is left is repairing what the Task is actually blocked on, or escalating it to a person.
+REFUSE_ALTERNATIVES = "repair_recompile or repair_intent on what blocks it, or repair_escalate"
+
+
+def refusals_recorded(workdir: Any, verb: str = "repair_refuse_task") -> list[dict]:
+    """Every request this workdir has recorded for `verb`, oldest first; a half-written line is skipped."""
+    path = Path(workdir) / "repairs" / f"{verb}.jsonl"
+    if not path.is_file():
+        return []
+    rows = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        try:
+            row = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(row, dict):
+            rows.append(row)
+    return rows
+
+
+def _reason_of(row: dict) -> str:
+    return str((row.get("arguments") or {}).get("reason") or "").strip()
+
+
+def refuse_lock(workdir: Any, task_id: str, reason: str, limit: int = REFUSE_STOP) -> Optional[str]:
+    """Why this refusal is refused, or None when it is still open.
+
+    The count is per Task and per reason, so a Task refused once for one reason and once for another
+    is still open: two reasons are two things to say. The same reason `limit` times is the request
+    that has already been answered twice, and the message says so with what buys something instead.
+    """
+    reason = (reason or "").strip()
+    seen = [row for row in refusals_recorded(workdir)
+            if str(row.get("target") or "") == task_id and _reason_of(row) == reason and not row.get("blocked")]
+    if len(seen) < limit:
+        return None
+    rounds = ", ".join(str(row.get("round") or "?") for row in seen)
+    return (f"task {task_id} has already been refused {len(seen)} times for this reason (round {rounds}) "
+            f"and nothing about it has moved; a third refusal is refused. What buys something "
+            f"instead: {REFUSE_ALTERNATIVES}.")
+
+
+def refused_twice(workdir: Any, limit: int = REFUSE_STOP) -> list[str]:
+    """The Tasks refused `limit` times for one reason, for the status line: "refused twice: <task>"."""
+    counts: dict[tuple[str, str], int] = {}
+    for row in refusals_recorded(workdir):
+        if row.get("blocked"):
+            continue
+        counts[(str(row.get("target") or ""), _reason_of(row))] = \
+            counts.get((str(row.get("target") or ""), _reason_of(row)), 0) + 1
+    return sorted({task for (task, _), seen in counts.items() if task and seen >= limit})
+
+
+def refuse_repeats(workdir: Any, round_no: Optional[int] = None) -> int:
+    """How many refusals repeated a Task and reason already recorded, blocked ones counted.
+
+    A blocked third attempt is recorded with `blocked` so the count is readable off the same file
+    the round report reads and does not need the session; a repeat is any row whose Task and reason
+    an earlier row already carried. `round_no` narrows it to one round.
+    """
+    seen: set[tuple[str, str]] = set()
+    repeats = 0
+    for row in refusals_recorded(workdir):
+        key = (str(row.get("target") or ""), _reason_of(row))
+        if key in seen and (round_no is None or int(row.get("round") or 0) == int(round_no)):
+            repeats += 1
+        seen.add(key)
+    return repeats
+
+
 def _executor(workdir: Any, verb: str, target_of: Any, round_of: Optional[Callable[[], int]] = None,
-              detail: Optional[str] = None) -> Any:
+              detail: Optional[str] = None, guard: Optional[Callable[[Any, Any], Optional[str]]] = None) -> Any:
     async def execute(args: Any) -> RepairResult:
         target = target_of(args)
+        locked = guard(workdir, args) if guard is not None else None
+        if locked is not None:
+            # The blocked attempt is recorded too, marked, so the round report and `refuse_repeats`
+            # read the whole of what the session tried off the one file, and the strike count itself
+            # skips the marked rows: a block is not a third answer.
+            record_request(workdir, verb, target,
+                           {"arguments": args.model_dump(mode="json"), "blocked": True,
+                            "changed": False, "hash_before": None, "hash_after": None},
+                           round_no=int(round_of()) if round_of is not None else 1)
+            raise PermissionError(f"{verb} refused: {locked}")
         extra: dict[str, Any] = {}
         before = target_hash(workdir, verb, target)
         if verb == "repair_rewrite_skill":
@@ -382,10 +473,13 @@ def repair_tools(workdir: Any, sink: Optional[Sink] = None,
         AgentTool("repair_refuse_task", "Record that a Task is not worth deriving anything from. This "
                   "repairs nothing and moves no gate: it writes one row for the round report, and "
                   "whether the Task is refused is the Examiner's under the refuse gate. An Intent the "
-                  "evidence does not support is repaired with repair_intent, not refused here.",
+                  "evidence does not support is repaired with repair_intent, not refused here. "
+                  "The same Task refused twice for the same reason is refused a third time here, "
+                  "with what buys something instead.",
                   RefuseTaskArgs, RepairResult,
                   _executor(workdir, "repair_refuse_task", lambda a: a.task_id, round_of,
-                            detail="one row for the round report; no gate moves and no artifact changes"),
+                            detail="one row for the round report; no gate moves and no artifact changes",
+                            guard=lambda wd, a: refuse_lock(wd, a.task_id, a.reason)),
                   render=_render),
         AgentTool("repair_escalate", "Escalate a Task to a person on a named queue.",
                   EscalateArgs, RepairResult,

@@ -1284,3 +1284,23 @@ def test_fidelity_flat_for_the_window_exits_stalled_with_the_reason_on_the_recor
     record = loop.close_round(3, _record(3, fidelity=10, trusted=1).counts)
     assert record.exit == "stalled"
     assert "fidelity did not rise in 2 rounds" in (record.exit_note or "")
+
+
+def test_the_driver_counts_the_four_things_the_loop_repairs_are_read_on(tmp_path):
+    """D192: what the Examiner suggested to itself and left open, the corrected-call asks a shape
+    refusal earned, the refusals that repeated a Task and reason already recorded, and the
+    status(target=) nudges withheld because the target's ruling was already in hand. Each is read
+    off a record or a counter and never off a model."""
+    loop = _bare_loop(tmp_path)
+    counts = loop.driver_counts()
+    assert (counts["suggested_open"], counts["shape_retries"], counts["refuse_repeats"],
+            counts["zooms_skipped"]) == (0, 0, 0, 0)
+    loop.retry_asks += 2
+    loop.plan.zooms_skipped += 3
+    tools = {t.name: t for t in repair.repair_tools(loop.plan.workdir)}
+    for _ in range(3):
+        asyncio.run(tools["repair_refuse_task"].run({"task_id": "task_dock", "reason": "no Run docks it"}))
+    counts = loop.driver_counts()
+    assert counts["shape_retries"] == 2 and counts["zooms_skipped"] == 3
+    assert counts["refuse_repeats"] == 2, "the second identical ask and the blocked third"
+    assert counts["suggested_open"] == 0, "no Examiner beat has opened, so it has suggested nothing"
