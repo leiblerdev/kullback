@@ -28,7 +28,7 @@ from typing import Any, Iterable, Optional
 
 from kullback.examiner.plan import ExaminerPlan
 from kullback.gates import verifier_suite
-from kullback.gates.loosening import discarded_runs, false_rejection, legitimate_runs
+from kullback.gates.loosening import discarded_runs, false_rejection, legitimate_runs, over_strict
 from kullback.gates.probes import write_tools_of
 from kullback.runner.records import Finding, as_dict, read_json
 
@@ -263,7 +263,7 @@ def false_rejection_rows(store: dict) -> list[dict]:
     for verifier in sorted(store.get("verifiers") or [], key=lambda v: v.task_id):
         runs = task_runs.get(verifier.task_id, [])
         seen = false_rejection(verifier, runs, legitimate.get(verifier.task_id, set()), canon_rules, write_tools)
-        if not (seen["held_out"] >= 1 and seen["fraction"] == 1.0):
+        if not over_strict(seen):
             continue
         run_id = seen["rejected_ids"][0]
         run = next((r for r in runs if r.run_id == run_id), None)

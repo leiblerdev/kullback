@@ -5,9 +5,17 @@ of any round with a success termination. The rule reads re-rolls already paid fo
 never awards a pass. A trusted Verifier passed the D79 suite (`task_status` says `verifier_passed`),
 scores no pass on every probe in its pool, is the last accepted version of its history, loosens past
 no frontier Run (the loosening gate is run again here over the history cut at that version, so an
-accepted flag written without the gate is not trust, D127), and its Task is not refused; round_end's
-"Tasks with a trusted Verifier" is this ruling's count, and the per-Task false-rejection number rides
-in its metrics so the report can put it next to that count (D133).
+accepted flag written without the gate is not trust, D127), its false rejection over the held-out
+pool is under D133's threshold, and its Task is not refused; round_end's "Tasks with a trusted
+Verifier" is this ruling's count.
+
+D194 made the false-rejection number a step in the chain rather than a number riding beside it. It
+was measured here from the start and never read: a Verifier whose required atoms reject every
+held-out Run that reached the Reference recognises no path but its own seeds, so what it checks is
+one path and not the Task, and calling that trusted overstated the count. A Task with nothing held
+out is not evidence either way, so it keeps `no_pool` in `false_rejection_ruling` and is decided by
+the other steps. Every ruling carries the fraction (`false_rejection`), the pool size
+(`false_rejection_pool`) and that per-Task word, so a reader sees the denominator behind the rate.
 """
 
 from __future__ import annotations
@@ -22,6 +30,7 @@ from kullback.gates.loosening import (
     finished_run_ids,
     legitimate_runs,
     loosening_gate,
+    over_strict,
 )
 from kullback.gates.probes import (
     as_pool,
@@ -37,6 +46,9 @@ from kullback.runner.records import GateResult, ProbePool, Run, Verifier, Verifi
 # A check the suite could not run, and why it had no input. The stage names the status row carries
 # are the suite's; the trusted ruling speaks the D79 check names a person reads (D173).
 NOT_RUN_REASON = {"second_path_passes": ALT_PATH_NOT_RUN}
+# What the false-rejection step says about a Task that held nothing out: no held-out Run reached the
+# Reference, so the number is not a zero rate and not a failure, it is an absent measurement (D194).
+NO_POOL = "no_pool"
 
 
 def finished_runs(task_id: str, replays: dict, rerolls: dict) -> list[str]:
@@ -118,6 +130,8 @@ def trusted_gate(task_status: dict, verifiers: list[Verifier], probes: dict[str,
     trusted: list[str] = []
     untrusted: dict[str, str] = {}
     fractions: dict[str, Optional[float]] = {}
+    pool_sizes: dict[str, int] = {}
+    pool_says: dict[str, str] = {}
     not_run: dict[str, list[str]] = {}
     probes_passing = 0
     failures: list[str] = []
@@ -127,8 +141,12 @@ def trusted_gate(task_status: dict, verifiers: list[Verifier], probes: dict[str,
         scores = probe_scores(verifier, as_pool(pool), canon_rules, write_tools) if pool is not None else {}
         passing = [probe_id for probe_id, ok in scores.items() if ok]
         probes_passing += len(passing)
-        fractions[task_id] = false_rejection(verifier, (task_runs or {}).get(task_id, []),
-                                             legitimate.get(task_id, set()), canon_rules, write_tools)["fraction"]
+        held = false_rejection(verifier, (task_runs or {}).get(task_id, []), legitimate.get(task_id, set()),
+                               canon_rules, write_tools)
+        fractions[task_id] = held["fraction"]
+        pool_sizes[task_id] = held["held_out"]
+        pool_says[task_id] = NO_POOL if not held["held_out"] else \
+            f"{held['fraction']:.2f} of {held['held_out']} held-out Runs"
         row = (task_status or {}).get(task_id) or {}
         skipped = [D79_STAGES.get(stage, stage) for stage in (_get(row, "not_run", None) or [])]
         if skipped:
@@ -144,10 +162,14 @@ def trusted_gate(task_status: dict, verifiers: list[Verifier], probes: dict[str,
             reason = f"version {version_hash(verifier)} loosens past the frontier: {loosened}"
         elif task_id in refused:
             reason = "the Task is refused"
+        elif over_strict(held):
+            reason = (f"false_rejection {pool_says[task_id]}: the required atoms reject every held-out Run that "
+                      "reached the Reference, so the Verifier checks one path and not the Task")
         else:
             trusted.append(task_id)
             continue
         untrusted[task_id] = reason
         failures.append(f"task {task_id}: {reason}")
     return gate("trusted", failures, trusted=trusted, untrusted=untrusted, probes_passing=probes_passing,
-                false_rejection=fractions, refused=refused, checks_not_run=not_run)
+                false_rejection=fractions, false_rejection_pool=pool_sizes, false_rejection_ruling=pool_says,
+                refused=refused, checks_not_run=not_run)
