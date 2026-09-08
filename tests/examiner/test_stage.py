@@ -16,7 +16,8 @@ from examiner.worlds import anchor_of, make_world, probe_runner_over
 from gates import verifier_fixtures as VF
 from kullback.ai.provider import ModelReply, TestModel, ToolCallRequest
 from kullback.builder.pipeline import Anchor
-from kullback.examiner import stage
+from kullback.examiner import reference, stage
+from kullback.gates import verifier_suite
 from kullback.gates.artifacts import D79_CHECKS, D79_STAGES
 from kullback.gates.ledger import GateLedger
 from kullback.runner import budget
@@ -27,7 +28,9 @@ STATUS_KEYS = {"reference_confirmed", "verifier_passed", "reason", "recordings",
 REFERENCE_KEYS = {"references", "recordings", "failed", "groups", "reason", "judged", "judge_reason",
                   "judge_abstained", "judge_uncited", "abstain_reason", "judge_calls", "judge_fallback",
                   "judge_passes", "judge_second", "judge_residue_resolved", "judge_residue_abstained",
-                  "no_correct_recording", "no_correct_key", "judge_citations"}
+                  "no_correct_recording", "no_correct_key", "judge_citations", "survivor_labels",
+                  "residue_derived", "survivor_reason", "survivor_chosen", "survivor_scores",
+                  "survivors_capped"}
 # The key the world's two End states differ on, and the value the re-roll `wrong` holds at it (D186).
 # The tool is the one the shared fixture Runs write with, read from there rather than spelled again.
 WRONG_ROW = f"{next(iter(VF.WRITE_TOOLS))}.#w999.order_id"
@@ -370,8 +373,11 @@ def test_the_round_counts_say_how_many_judgements_cited_nothing_the_states_diffe
     metrics = _ruling(world.workdir)["metrics"]
     assert metrics["judged"] == 1 and metrics["judge_uncited"] == 1
     row = _read(world.workdir / "references.json")["t1"]
-    assert row["judge_uncited"] and row["references"] == [] and row["failed"] == {}
+    assert row["judge_uncited"] and not any(why.startswith("judge:") for why in row["failed"].values())
     assert row["abstain_reason"] == "a failure rested on nothing the states differ on: stated:#W123"
+    # The judgement failed nothing, so both states are still in and the derivation is what settles
+    # them (D198); the D186 accounting above is unchanged by that.
+    assert row["residue_derived"] and row["survivor_labels"] == ["A", "B"]
 
     kept = make_world(tmp_path / "kept", rerolls=("wrong",))
     _derive(kept.workdir, kept.inputs, judge_model=TestModel([_fails_the_wrong_row("it wrote elsewhere")]))
@@ -640,3 +646,88 @@ def test_a_path_single_by_structure_keeps_blocking_when_no_pool_run_reached_the_
                   run_variant=_variant_runner_over(world, VF.alt_path_run, []))["task_status"]["t1"]
     assert row["second_path"]["structural"] is True and row["pool_at_reference"] == []
     assert row["second_path_waived"] is False and row["verifier_passed"] is False
+
+
+# --- a residue settled by deriving a Verifier per survivor (D198) ------------------
+
+def _survivor(label: str, *, checks_passed: int, failed: tuple = (), fraction=None, held_out: int = 0) -> dict:
+    """One survivor's row as `settle_residue` writes it, for the choice on its own."""
+    return {"label": label, "runs": 1, "checks_passed": checks_passed, "checks_failed": list(failed),
+            "checks_not_run": [], "passed": not failed, "false_rejection": fraction,
+            "held_out": held_out}
+
+
+def test_the_survivor_whose_verifier_fails_a_check_loses_to_the_one_whose_verifier_stands_up():
+    """The judge is out of the question here: the choice is the suite's, so a survivor whose
+    Verifier a mutation of the Reference slips past is not the state the Task is confirmed on."""
+    rows = [_survivor("A", checks_passed=8, failed=("mutation_flips",)), _survivor("B", checks_passed=9)]
+    best, why, said = stage.choose_survivor(rows, ["A", "B"])
+    assert best["label"] == "B" and why == "survivor_chosen"
+    assert said.startswith("survivor_chosen: B of 2 surviving End states, its Verifier passing 9 checks")
+
+
+def test_two_survivors_whose_verifiers_are_equal_on_every_check_take_the_first_by_recording_order():
+    """Nothing the harness can ask tells the two End states apart, which is a fact about them and
+    not a reason to prefer either, so the Task takes the one its recordings reached first."""
+    rows = [_survivor("A", checks_passed=9, fraction=0.5, held_out=2),
+            _survivor("B", checks_passed=9, fraction=0.5, held_out=2)]
+    best, why, said = stage.choose_survivor(rows, ["A", "B"])
+    assert best["label"] == "A" and why == "survivors_equivalent"
+    assert "the Task takes A, the first by recording order" in said
+    # The order the rows arrive in is the recording order, not the order the choice sorted them into.
+    assert stage.choose_survivor(list(reversed(rows)), ["B", "A"])[0]["label"] == "B"
+
+
+def test_the_lower_false_rejection_settles_survivors_that_pass_the_same_checks():
+    rows = [_survivor("A", checks_passed=9, fraction=1.0, held_out=3),
+            _survivor("B", checks_passed=9, fraction=0.0, held_out=3)]
+    best, why, _ = stage.choose_survivor(rows, ["A", "B"])
+    assert best["label"] == "B" and why == "survivor_chosen"
+
+
+def test_when_no_survivors_verifier_stands_up_the_task_keeps_no_reference_and_the_reason_names_the_best():
+    rows = [_survivor("A", checks_passed=6, failed=("mutation_flips", "empty_fails")),
+            _survivor("B", checks_passed=8, failed=("oracle_passes",))]
+    best, why, said = stage.choose_survivor(rows, ["A", "B"])
+    assert best is None and why == "survivors_all_fail"
+    assert said == ("survivors_all_fail: a Verifier was derived from each of 2 surviving End states "
+                    "and none of them passed the suite; the best is B, which passed 8 checks and "
+                    "failed oracle_passes")
+
+
+def test_a_residue_is_settled_by_the_derivation_and_the_round_counts_say_what_it_settled(tmp_path):
+    """End to end: the judge abstains over two End states, the derivation derives a Verifier from
+    each, and the Task keeps the Reference that choice made with the reason on its row."""
+    abstains = json.dumps({"failed": [], "evidence": ["end_states"], "reason": "cannot tell"})
+    world = make_world(tmp_path, rerolls=("wrong",))
+    out = _derive(world.workdir, world.inputs, judge_model=TestModel([abstains, abstains]))
+    row = _read(world.workdir / "references.json")["t1"]
+    assert row["residue_derived"] and row["survivor_labels"] == ["A", "B"]
+    assert row["survivor_reason"] == "survivors_equivalent" and row["survivor_chosen"] == "A"
+    assert [score["label"] for score in row["survivor_scores"]] == ["A", "B"]
+    assert [r["run_id"] for r in row["references"]] == ["ref"]
+    assert out["task_status"]["t1"]["reference_confirmed"] is True
+    metrics = _ruling(world.workdir)["metrics"]
+    assert metrics["residue_derived"] == 1 and metrics["survivors_equivalent"] == 1
+    assert metrics["survivor_chosen"] == 0 and metrics["survivors_all_fail"] == 0
+    assert metrics["survivors_capped"] == 0
+
+
+def test_a_task_derives_at_most_the_capped_number_of_survivors_and_says_it_chose_over_a_slice(tmp_path):
+    """The cost of settling a residue is one derivation per surviving End state, so it is capped; a
+    Task over the cap chose among the first states by recording order and its row says so."""
+    world = make_world(tmp_path, rerolls=("wrong", "extra", "rr2"))
+    fn = verifier_suite.canon_fn({})
+    records = [reference.load(world.paths[run_id], reference.RECORDING, run_id=run_id,
+                              write_tools=VF.WRITE_TOOLS, fn=fn)
+               for run_id in ("ref", "wrong", "extra", "rr2")]
+    groups = reference.group(records)
+    assert len(groups) == 4, "the world's four Runs reach four End states"
+    confirmation = reference.Confirmation(recordings=records, survivors=groups)
+    stage.settle_residue(Task(id="t1", intent=VF.TASK.intent, run_ids=["ref"]), confirmation,
+                         canon_rules={}, write_tools=set(VF.WRITE_TOOLS), constraints=[],
+                         intents={}, user_rules={}, fn=fn, cap=2)
+    assert confirmation.survivors_capped is True
+    assert {row["label"] for row in confirmation.survivor_scores} == {"A", "B"}, \
+        "the two states the recordings reached first, and not the two the cap left out"
+    assert confirmation.survivor_chosen in {"A", "B"}

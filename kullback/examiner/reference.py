@@ -36,6 +36,14 @@ line are the judge saying no recording did what was required, which is `no_corre
 reason of its own for a later beat to file as an Environment or an Intent finding; failures
 disagreeing among themselves are an abstention, "failed all on differing grounds".
 
+A residue the judge will not settle is settled by code instead (D198). Asking a fail-only judge twice
+is asking it the question it has already declined, so the states it left in are handed to the
+derivation: one Verifier per surviving End state, each derived from that state as if it were the
+Reference, each put through the D79 suite and the held-out false-rejection check, and the survivor
+whose Verifier stands up best is the Reference. This module's part of that is only to say which
+states survived, in the order the recordings first reached them; the deriving and the choosing are
+the derive stage's, since the suite lives above this file.
+
 A compiled constraint that fails on a large share of the confirmed recordings corpus-wide is demoted
 first. The recordings are the frontier under the customer's own policy, and a rule they break that
 often is a miscompiled rule, not a corpus of violations (D76); on the first retail build four such
@@ -97,6 +105,11 @@ UNREADABLE_REPLY = "unreadable reply"
 SURVIVORS_NOT_TOLD_APART = "survivors not told apart"
 DIFFERING_GROUNDS = "failed all on differing grounds"
 NO_CORRECT_RECORDING = "no correct recording"
+# D198's three answers, once the derivation has put a Verifier of every survivor through the suite.
+# They are named here because the reference record carries them and this module owns that record.
+SURVIVOR_CHOSEN = "survivor_chosen"
+SURVIVORS_EQUIVALENT = "survivors_equivalent"
+SURVIVORS_ALL_FAIL = "survivors_all_fail"
 _LABELS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
 _JSON_RE = re.compile(r"\{.*\}", re.DOTALL)
 
@@ -142,6 +155,15 @@ class Confirmation:
     # Per failed state, what its failure cited: the key, the value held there and what it should have
     # been. Kept across both passes, because the failed-all reading is over all of them at once.
     judge_citations: dict[str, dict] = field(default_factory=dict)
+    # D198. The End states still in when the judgement was done, with their members, which is what
+    # the derivation derives a Verifier from one by one. Empty on a Task the rule settled on its own.
+    # The fields below it are the derivation's answer, written back onto this record.
+    survivors: list[dict] = field(default_factory=list)
+    residue_derived: bool = False           # a Verifier was derived per survivor
+    survivor_reason: Optional[str] = None   # SURVIVOR_CHOSEN, SURVIVORS_EQUIVALENT or SURVIVORS_ALL_FAIL
+    survivor_chosen: Optional[str] = None   # the label of the state that became the Reference
+    survivor_scores: list[dict] = field(default_factory=list)  # per survivor, how its Verifier fared
+    survivors_capped: bool = False          # more states survived than a Task may derive
 
     def as_dict(self) -> dict:
         return {"references": [{"run_id": r.run_id, "trace_id": r.trace_id, "kind": r.kind}
@@ -158,7 +180,15 @@ class Confirmation:
                 "judge_residue_abstained": self.judge_residue_abstained,
                 "no_correct_recording": self.no_correct_recording,
                 "no_correct_key": self.no_correct_key,
-                "judge_citations": dict(self.judge_citations)}
+                "judge_citations": dict(self.judge_citations),
+                # The survivors by label only: the members are Recordings, and the record keeps
+                # run ids, which `groups` above already carries per label.
+                "survivor_labels": [str(g["label"]) for g in self.survivors],
+                "residue_derived": self.residue_derived,
+                "survivor_reason": self.survivor_reason,
+                "survivor_chosen": self.survivor_chosen,
+                "survivor_scores": list(self.survivor_scores),
+                "survivors_capped": self.survivors_capped}
 
 
 @dataclass
@@ -557,11 +587,18 @@ def confirm(recordings: Iterable[Recording], *, intent: str = "", policy_lines: 
         elif out.judged:
             out.judge_abstained, out.abstain_reason = True, DIFFERING_GROUNDS
             out.reason += f"; the judge abstained, {DIFFERING_GROUNDS}"
+            # Failed all, on grounds that do not agree, settles nothing: every state is still a
+            # candidate and the derivation is asked which of them a Verifier can stand on (D198).
+            out.survivors = list(groups)
     else:
         out.reason = (f"recordings disagree on the End state ({len(remaining)} states: "
                       + "; ".join(f"{g['label']} {g['state']}" for g in remaining) + ")")
         if out.judge_abstained:
             out.reason += f"; the judge abstained, {out.abstain_reason or out.judge_reason}"
+        # A residue is what a judgement left behind, so these are survivors only where a judgement
+        # was made: with no judge in the build nothing has been asked yet, and D111 keeps no
+        # Reference for a Task whose recordings disagree.
+        out.survivors = list(remaining) if out.judged else []
     return out
 
 
@@ -908,6 +945,7 @@ def parse_judgement(text: str, groups: list[dict], available: Iterable[str] = AV
 __all__ = ["RECORDING", "REROLL", "ANSWERED", "MISCOMPILED_SHARE", "AVAILABLE_SOURCES", "UNREADABLE_REPLY",
            "MAX_DIFFERING_KEYS", "NO_KEY", "NO_VALUE", "STATED_PREFIX", "WRITTEN",
            "SURVIVORS_NOT_TOLD_APART", "DIFFERING_GROUNDS", "NO_CORRECT_RECORDING",
+           "SURVIVOR_CHOSEN", "SURVIVORS_EQUIVALENT", "SURVIVORS_ALL_FAIL",
            "Recording", "Confirmation",
            "Judgement", "end_state", "settled_state", "describe", "stated_facts", "transferred",
            "told_line", "state_values", "differing_keys", "differs_line", "numbered_policy",
