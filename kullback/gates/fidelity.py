@@ -17,25 +17,38 @@ from __future__ import annotations
 
 from typing import Any
 
+from kullback.gates.tool_runs import compare_results
 from kullback.runner.gate_support import MISS_REASONS, _get, _rate, _same, gate
 from kullback.runner.records import GateResult
 
 # --- the per-tool bar (compile_tools gate 5, D80) ---
 
-def replay_match(call: Any, canon_rules: Any = None) -> bool:
-    """Does the rebuilt tool answer a recorded call the way the recording did (errors by shape, D51)."""
+def replay_match(call: Any, canon_rules: Any = None, schema: Any = None, readers: Any = None) -> bool:
+    """Does the rebuilt tool answer a recorded call the way the recording did (errors by shape, D51).
+
+    Given a schema the two answers are compared column by column under its classes, so an exempt
+    column cannot fail a call and a semantic one is left to the judge (D73, D84, D187); given none,
+    the whole answer is one hard value, which is what this asked before.
+    """
     expected_error, actual_error = _get(call, "expected_error"), _get(call, "actual_error")
     if expected_error is not None:
         return actual_error is not None and _get(expected_error, "class_") == _get(actual_error, "class_")
-    return actual_error is None and _same(_get(call, "expected"), _get(call, "actual"),
-                                          canon_rules=canon_rules)
+    if actual_error is not None:
+        return False
+    if schema is not None:
+        return compare_results(schema, _get(call, "expected"), _get(call, "actual"), canon_rules,
+                               tool=str(_get(call, "tool", "") or ""), readers=readers)[0]
+    return _same(_get(call, "expected"), _get(call, "actual"), canon_rules=canon_rules)
 
 
-def replay_fidelity_gate(calls, canon_rules: Any = None) -> GateResult:
+def replay_fidelity_gate(calls, canon_rules: Any = None, schema: Any = None,
+                         readers: Any = None) -> GateResult:
     """Gate 5: replay of recorded calls, success and error fidelity reported separately (R22 item 8, D80).
 
     `canon_rules` is the customer's canonicalization: a gate given none compares under the module
     defaults and can call two values different that the Verdict calls the same (gate_support.py).
+    `schema` and `readers` are threaded the same way and for the same reason: without them this
+    ruling holds every column to a hard column's bar (D187).
     """
     failures, misses, per_tool = [], [], {}
     totals = {"success": [0, 0], "error": [0, 0]}
@@ -45,7 +58,7 @@ def replay_fidelity_gate(calls, canon_rules: Any = None) -> GateResult:
         slot = per_tool.setdefault(tool, {"success": {"total": 0, "matched": 0}, "error": {"total": 0, "matched": 0}})
         totals[kind][0] += 1
         slot[kind]["total"] += 1
-        if replay_match(call, canon_rules):
+        if replay_match(call, canon_rules, schema, readers):
             totals[kind][1] += 1
             slot[kind]["matched"] += 1
             continue

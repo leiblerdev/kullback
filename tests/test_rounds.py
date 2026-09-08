@@ -42,8 +42,10 @@ TARGET = "environment"
 # inside the reason. Re-pinned again for D171: every row gained the Task's own replay fidelity
 # (`blocking_tools`, `tool_calls_replayed`, `tool_calls_differing`) and the reason names a tool only
 # where one of the Task's own recorded calls differs. Every other byte of the three rows is the
-# pre-phase build's.
-TASK_STATUS_SHA256_BEFORE_THE_PHASE = "a6186b51b650951ec677399bf4e71f19a753423400b93593ba263c747199d8b2"
+# pre-phase build's. Re-pinned again for D188: the Starting-state pinner walks a result to any depth,
+# so the fixture's orders pin the rows they mention inside themselves and the reasons name what the
+# fuller world now answers.
+TASK_STATUS_SHA256_BEFORE_THE_PHASE = "8d1a4fd938a32494728e5d4bea59f483113b21bff49e2b4da5ca60aac5f37af8"
 
 
 def _fixture(request) -> Path:

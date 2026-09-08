@@ -118,11 +118,16 @@ class TraceUser:
 class ScoredRouter:
     """The Router with each answer compared against the call the Trace recorded for it."""
 
-    def __init__(self, router: Any, expected: deque, write_tools: Iterable[str] = (), canon_rules: Any = None):
+    def __init__(self, router: Any, expected: deque, write_tools: Iterable[str] = (), canon_rules: Any = None,
+                 comparer: Any = None):
         self.inner = router
         self.expected = expected
         self.write_tools = set(write_tools)
         self.canon_rules = canon_rules
+        # What knows the schema's column classes and the readers' columns (D187). The Runner cannot
+        # import the gates, so it is handed an object with one `agrees` method, the way it is handed
+        # the canonicalizer's rules; given none, the comparison is canonical equality alone.
+        self.comparer = comparer
         self.checks: list[dict] = []
 
     def __getattr__(self, name: str) -> Any:  # state_hash, world, start_world, state: the loop's reads
@@ -133,8 +138,8 @@ class ScoredRouter:
         # D164: the caller goes through, so the inner Router can refuse a tool this caller never had.
         outcome = self.inner.route(name, args, requestor=requestor)
         recorded = recorded if recorded is not None else self._take(name)
-        verdict = UNRECORDED if recorded is None else compare_call(
-            recorded, outcome.result, outcome.error, self.canon_rules)
+        verdict, notes = (UNRECORDED, []) if recorded is None else compare_call_notes(
+            recorded, outcome.result, outcome.error, self.canon_rules, self.comparer)
         check = {
             "tool": name, "kind": "write" if name in self.write_tools else "read", "verdict": verdict,
             "route": outcome.route, "call_id": recorded.id if recorded is not None else None,
@@ -145,6 +150,9 @@ class ScoredRouter:
             # A call that agreed needs nothing beyond the preview; a call that parted has to say
             # what parted, and 160 characters is not enough to say it (D66).
             check["difference"] = difference(outcome.result, outcome.error, recorded, self.canon_rules)
+            if notes:
+                # Which columns parted and under which class, which the leaf path cannot say (D187).
+                check["difference"]["columns"] = notes[:COLUMN_NOTES]
         self.checks.append(check)
         return outcome
 
@@ -156,21 +164,42 @@ class ScoredRouter:
         return None
 
 
-def compare_call(recorded: ToolCall, result: Any, error: Any, rules: Any = None) -> str:
+def compare_call(recorded: ToolCall, result: Any, error: Any, rules: Any = None,
+                 comparer: Any = None) -> str:
     """One routed answer against the recorded one: same, cosmetic, or one of the ways they part."""
+    return compare_call_notes(recorded, result, error, rules, comparer)[0]
+
+
+def compare_call_notes(recorded: ToolCall, result: Any, error: Any, rules: Any = None,
+                       comparer: Any = None) -> tuple[str, list[str]]:
+    """The verdict and, where the two answers were compared column by column, what parted (D187).
+
+    The first two routes are whole-answer equality: the same bytes, then the same canonical string.
+    Both hold every value to a hard column's bar, because `canonicalize` takes no column and no
+    table. So a third route asks the `comparer`, which knows the schema's classes and the readers'
+    columns: a column the schema marks exempt is equal whatever the two hold, a semantic one is
+    reported and left to the judge, a prose result is read into the columns it asserts, and a list
+    of keyed rows is paired by key rather than by position. Two answers that agree there agree
+    cosmetically: the effect is the same and the bytes are not.
+
+    Given no comparer the two old routes stand alone, which is what every caller had before.
+    """
     ours_failed, theirs_failed = error is not None, recorded.error is not None
     if ours_failed and theirs_failed:
-        return BOTH_REFUSED
+        return BOTH_REFUSED, []
     if ours_failed:
-        return OURS_REFUSED
+        return OURS_REFUSED, []
     if theirs_failed:
-        return THEIRS_REFUSED
+        return THEIRS_REFUSED, []
     ours, theirs = _norm(result), _norm(recorded.result)
     if _dumps(ours) == _dumps(theirs):
-        return SAME
+        return SAME, []
     if canonicalize(ours, rules) == canonicalize(theirs, rules):
-        return COSMETIC
-    return DIFFERS
+        return COSMETIC, []
+    if comparer is None:
+        return DIFFERS, []
+    agreed, notes = comparer.agrees(recorded.name, theirs, ours)
+    return (COSMETIC if agreed else DIFFERS), list(notes)
 
 
 def _norm(value: Any) -> Any:
@@ -195,6 +224,7 @@ def _preview(value: Any, limit: int = 160) -> str:
 # What a check that did not agree keeps of each side, against the 160 characters of the preview.
 DIFFERENCE_LIMIT = 4000
 ERROR_LIMIT = 1000
+COLUMN_NOTES = 20  # columns named on a check that parted, each with the class it was held to
 
 
 def _error_text(error: Any) -> str:
@@ -269,11 +299,12 @@ class Replay:
 
 
 def replay_trace(trace: Trace, router: Any, *, workdir: Any, task_id: str, env_id: Optional[str] = None,
-                 write_tools: Iterable[str] = (), canon_rules: Any = None, run_id: Optional[str] = None) -> Replay:
+                 write_tools: Iterable[str] = (), canon_rules: Any = None, run_id: Optional[str] = None,
+                 comparer: Any = None) -> Replay:
     """Drive the loop with the Trace's own turns over `router`; the Run lands under `workdir`."""
     script = _Script(trace)
     model, user = TraceModel(script), TraceUser(script)
-    scored = ScoredRouter(router, model.expected, write_tools, canon_rules)
+    scored = ScoredRouter(router, model.expected, write_tools, canon_rules, comparer)
     run_id = run_id or f"replay-{trace.trace_id}"
     state = loop.new_run_state(run_id, workdir=workdir, env_id=env_id, task_id=task_id,
                                trace_id=trace.trace_id, model=RECORDED, user=user,
@@ -319,4 +350,5 @@ def _score(trace: Trace, state: Any, scored: ScoredRouter, model: TraceModel, us
 
 # The per-Task ruling over these records (some Trace confirmed, or why none did) is
 # `kullback.gates.fidelity.reference_replay_gate`; this module scores one replay and stops.
-__all__ = ["Replay", "ScoredRouter", "TraceModel", "TraceUser", "compare_call", "difference", "replay_trace"]
+__all__ = ["Replay", "ScoredRouter", "TraceModel", "TraceUser", "compare_call", "compare_call_notes",
+           "difference", "replay_trace"]

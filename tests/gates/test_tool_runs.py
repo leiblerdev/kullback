@@ -7,7 +7,13 @@ from __future__ import annotations
 
 import json
 
-from kullback.gates.tool_runs import body_non_trivial_gate, body_replay_fidelity_gate, compare_results
+from kullback.gates.tool_runs import (
+    body_non_trivial_gate,
+    body_replay_fidelity_gate,
+    compare_columns,
+    compare_results,
+    load_readers,
+)
 from kullback.runner.canon import CanonRules
 from kullback.runner.records import Column, EntitySchema, ToolCall
 from runner.replay_fixtures import PTR
@@ -81,3 +87,98 @@ def test_a_constant_body_still_fails_when_each_argument_set_had_one_answer_of_it
     assert result.failures == ["the body answers every call the same way"]
     assert "state_driven" not in result.metrics
     assert result.metrics["arg_sets"] == 2 and result.metrics["recorded_answers"] == 2
+
+
+# --- D187: the scoring path honours the column classes, and prose is read into columns ---
+
+READER = (
+    "def read(result):\n"
+    "    parts = result.split(' | ')\n"
+    "    if len(parts) != 3:\n"
+    "        return None\n"
+    "    return {'lamp_state': parts[0], 'lamp_note': parts[1], 'lamp_reading': parts[2]}\n"
+)
+
+LAMP_SCHEMA = EntitySchema(tables=["lamps"], columns=[
+    Column(table="lamps", name="lamp_state", **{"class": "hard"}),
+    Column(table="lamps", name="lamp_note", **{"class": "semantic"}),
+    Column(table="lamps", name="lamp_reading", **{"class": "exempt"})])
+
+LAMP_READERS = load_readers({"proposals": {"technician": {
+    "table": "lamps", "columns": ["lamp_state", "lamp_note", "lamp_reading"],
+    "readers": [{"tool": "check_lamp", "source": READER}]}}})
+
+
+def test_two_prose_results_differing_only_in_a_semantic_column_compare_equal():
+    ok, notes = compare_results(LAMP_SCHEMA, "on | steady glow | 41", "on | a steady glow | 41",
+                                tool="check_lamp", readers=LAMP_READERS)
+    assert ok is True and notes == ["semantic:lamp_note"]
+
+
+def test_two_prose_results_differing_in_a_hard_column_do_not_compare_equal():
+    ok, notes = compare_results(LAMP_SCHEMA, "on | steady glow | 41", "off | steady glow | 41",
+                                tool="check_lamp", readers=LAMP_READERS)
+    assert ok is False
+    assert notes == ['read as columns: lamp_state: ours "off", recorded "on"']
+
+
+def test_a_prose_result_differing_only_in_an_exempt_column_compares_equal():
+    ok, notes = compare_results(LAMP_SCHEMA, "on | steady glow | 41", "on | steady glow | 77",
+                                tool="check_lamp", readers=LAMP_READERS)
+    assert ok is True and notes == ["exempt:lamp_reading"]
+
+
+def test_a_reader_that_reads_nothing_falls_back_to_comparing_the_strings():
+    ok, notes = compare_results(LAMP_SCHEMA, "on, steady", "off, steady",
+                                tool="check_lamp", readers=LAMP_READERS)
+    assert ok is False
+    assert notes == ['string differs: value: ours "off, steady", recorded "on, steady"']
+
+
+def test_a_returned_rows_exempt_column_cannot_fail_a_replay_and_a_hard_one_does():
+    schema = EntitySchema(tables=["orders"], id_patterns={"orders.order_id": r"^#O\d+$"}, columns=[
+        Column(table="orders", name="order_id", **{"class": "hard"}),
+        Column(table="orders", name="total", **{"class": "hard"}),
+        Column(table="orders", name="created_at", **{"class": "exempt"})])
+    recorded = {"order_id": "#O7", "total": 12, "created_at": "2031-01-01T00:00:00"}
+    later = {"order_id": "#O7", "total": 12, "created_at": "2031-06-02T09:30:00"}
+    assert compare_results(schema, recorded, later) == (True, ["exempt:created_at"])
+    ok, notes = compare_results(schema, recorded, dict(later, total=13))
+    assert ok is False
+    assert notes == ['total: ours 13, recorded 12', "exempt:created_at"]
+
+
+def test_a_semantic_column_takes_the_judge_when_one_is_given():
+    asked = []
+
+    def judge(column, ours, theirs):
+        asked.append(column)
+        return {"verdict": "equivalent"}
+
+    schema = EntitySchema(tables=["lamps"], columns=[
+        Column(table="lamps", name="lamp_id", **{"class": "hard"}),
+        Column(table="lamps", name="lamp_note", **{"class": "semantic"})])
+    recorded = {"lamp_id": "L1", "lamp_note": "steady glow"}
+    ours = {"lamp_id": "L1", "lamp_note": "a glow that holds steady"}
+    assert compare_columns(schema, "lamps", recorded, ours, judge=judge) == (True, [])
+    assert asked == ["lamp_note"]
+    assert compare_columns(schema, "lamps", recorded, ours) == (True, ["semantic:lamp_note"])
+
+
+def test_two_lists_of_keyed_rows_compare_equal_whatever_order_they_come_back_in():
+    schema = EntitySchema(tables=["bills"], id_patterns={"bills.bill_id": r"^#L\d+$"}, columns=[
+        Column(table="bills", name="bill_id", **{"class": "hard"}),
+        Column(table="bills", name="amount", **{"class": "hard"})])
+    first = {"bill_id": "#L1", "amount": 10}
+    second = {"bill_id": "#L2", "amount": 20}
+    assert compare_results(schema, [first, second], [second, first]) == (True, [])
+    ok, notes = compare_results(schema, [first, second], [second, dict(first, amount=11)])
+    assert ok is False and notes == ['amount: ours 11, recorded 10']
+
+
+def test_two_lists_of_rows_carrying_no_key_are_still_paired_by_position():
+    schema = EntitySchema(tables=["bills"], columns=[
+        Column(table="bills", name="amount", **{"class": "hard"})])
+    ok, notes = compare_results(schema, [{"amount": 10}, {"amount": 20}], [{"amount": 20}, {"amount": 10}])
+    assert ok is False
+    assert notes == ['value: ours 20, recorded 10', 'value: ours 10, recorded 20']

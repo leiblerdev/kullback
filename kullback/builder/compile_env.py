@@ -38,6 +38,7 @@ from kullback.builder.sandbox import (
     match_table,
     parse_result,
     partial_key,
+    row_key,
     run_gates,
 )
 
@@ -79,6 +80,7 @@ from kullback.runner.records import (
 
 DB_FILE = "db.json"
 OVERLAY_DIR = "overlays"
+PINS_FILE = "overlay_pins.json"  # what the Starting-state pinner pinned per Task, and what it could not
 NODE_DIR = "tool_nodes"
 OUTCOME_DETAIL_CHARS = 300  # how much of one differing call's sentence a per-call row carries (D171)
 MAX_REPAIR_ATTEMPTS = 3
@@ -146,15 +148,129 @@ class ToolBuild:
 
 # --- reading rows out of recorded tool results ---
 
-def extract_rows(schema: EntitySchema, result: Any, args: Optional[dict] = None) -> list[tuple[str, str, dict]]:
-    """Rows a result states directly: itself, or the elements of a returned list.
+ROW_WALK_DEPTH = 8  # how deep a result is walked for rows; generous, and a cycle never reaches it
 
-    A value nested inside a row (an item inside an order) is not read as a row of its own. The
-    call's arguments are passed through to the key, because a table with a composite key can be
-    told which row it is answering by the call rather than by the row (`tool_runs.row_key`).
+
+def walk_result_rows(schema: EntitySchema, result: Any, args: Optional[dict] = None,
+                     depth_cap: int = ROW_WALK_DEPTH) -> tuple[list[tuple[str, str, dict, int]], int]:
+    """Every row a result states at any depth, with how deep it sat, and how often the cap was hit.
+
+    A result is a tree, and the customer's tools put rows anywhere in it: a list of routes each
+    holding the stops it is made of, a settings object holding a nested object, a wrapper keyed by a
+    name. Reading only the top level pinned none of those, so a search over the parts of a route
+    found nothing in the world and a nested setting kept the seed world's shape, not the Task's.
+
+    Every dict is tested with `match_table` and every list is walked. A dict that matches a table is
+    a row and is still walked, because a parent row that embeds child rows is a sighting of both.
+    Depth counts the rows a row sits inside and not the lists: a list is how one result holds
+    several of one thing, so the elements of a list the result answers are the result's own rows
+    however many lists deep they sit, and a dict inside a row is one level down. That is what
+    `_observations` reads to tell a row a result states from a mention of it inside another.
+
+    The walk carries the containers on the current path so a structure that points back at itself
+    ends, and stops at `depth_cap` levels, counting each stop so the count can be read back rather
+    than the rows quietly going missing. The call's arguments are passed to every test, because a
+    table with a composite key can be told which row it is answering by the call rather than by the
+    row (`tool_runs.row_key`).
     """
-    values = result if isinstance(result, list) else [result]
-    return [(t, i, v) for v in values for t, i in [match_table(schema, v, args) or (None, None)] if t]
+    rows: list[tuple[str, str, dict, int]] = []
+    path: set[int] = set()
+    capped = 0
+
+    def walk(value: Any, depth: int) -> None:
+        nonlocal capped
+        if not isinstance(value, (dict, list, tuple)):
+            return
+        if depth > depth_cap:
+            capped += 1
+            return
+        marker = id(value)
+        if marker in path:
+            return
+        path.add(marker)
+        if isinstance(value, dict):
+            match = match_table(schema, value, args)
+            if match:
+                rows.append((match[0], match[1], value, depth))
+            for item in value.values():
+                walk(item, depth + 1)
+        else:
+            # A list is how a result holds several of one thing, not a level of nesting: the rows of
+            # a list the result answers are the result's own rows, however many lists deep it sits.
+            for item in value:
+                walk(item, depth)
+        path.discard(marker)
+
+    walk(result, 0)
+    return rows, capped
+
+
+def extract_rows(schema: EntitySchema, result: Any, args: Optional[dict] = None) -> list[tuple[str, str, dict]]:
+    """The rows a result states, at any depth (`walk_result_rows`), without their depth."""
+    rows, _ = walk_result_rows(schema, result, args)
+    return [(table, row_id, row) for table, row_id, row, _ in rows]
+
+
+@dataclass
+class PartialHome:
+    """A keyless result placed on the row the call named, and the columns anything could read of it.
+
+    `row` empty means the row is known and its values are not: the result asserts its columns in a
+    shape no reader of this build turns into values, so nothing is pinned and the sighting is
+    counted rather than guessed at.
+    """
+    table: str
+    row_id: str
+    row: dict
+
+
+def home_partial_result(schema: EntitySchema, tool_name: str, result: Any, args: Optional[dict] = None,
+                        read_result: Optional[Callable[[str, Any], Any]] = None) -> Optional[PartialHome]:
+    """A keyless result placed on the row the call's own arguments named, or None (D180 homing).
+
+    A read can answer with the fields alone and leave which row they belong to entirely to the
+    call: a status for the row the call named, a settings object for the line the call named.
+    Such a result matches no table, so nothing about it was ever pinned and the seed world's one
+    placeholder value answered every Task. The call named the row, so the row is knowable: the
+    columns the result carries are laid on the row whose id column the call passed
+    (`mine.asked_for_id`, which is `_home_of`'s own first rule, narrowed by `mine._address_of` so a
+    call that lists a parent's children is not filed under the parent).
+
+    Where the result is an object it states its own columns. Where it is a scalar, the columns are
+    inside the text and only a reader of that tool can say what they are (D176): `read_result` is
+    that reader, answering the column values a result asserts or None. A tool with no reader pins
+    nothing, because reading a value out of a sentence in this module would be a second reader
+    written by hand.
+
+    Only the result's own columns and the parts of the key are kept; the call's other arguments are
+    filters and a filter is not a fact about the row. A key the call does not complete homes
+    nothing, because a partial key would name a row of its own (`partial_key`).
+    """
+    if isinstance(result, (list, tuple)) or not isinstance(args, dict) or not args:
+        return None
+    stated = result if isinstance(result, dict) else None
+    id_names = sorted({name for table in schema.tables for name in key_fields(schema, table)})
+    candidate = dict({name: value for name, value in args.items()
+                      if isinstance(value, (str, int, float)) and not isinstance(value, bool)},
+                     **(stated or {}))
+    column = mine.asked_for_id(tool_name, candidate, id_names, args)
+    table = mine.table_for_id(column) if column else None
+    if table is None or table not in set(schema.tables):
+        return None
+    key_row = {name: args[name] for name in key_fields(schema, table) if args.get(name) is not None}
+    key_row.update({name: value for name, value in (stated or {}).items() if value is not None})
+    key = row_key(schema, table, key_row, args)
+    if key is None or partial_key(schema, table, key):
+        return None
+    if stated is None:
+        read = read_result(tool_name, result) if read_result is not None else None
+        stated = dict(read) if isinstance(read, dict) and read else {}
+    row = dict(stated)
+    if row:
+        for name in key_fields(schema, table):
+            if row.get(name) is None and args.get(name) is not None:
+                row[name] = args[name]
+    return PartialHome(table=table, row_id=key, row=row)
 
 # --- inverse replay over the whole corpus (D33, D74) ---
 
@@ -167,10 +283,26 @@ class _Obs:
     trace_id: str
     order: tuple
     after_write: bool
+    # How deep in the result the row sat: 0 for a row the result states at its top level, more for
+    # one nested inside it. Kept so the pins report can say how many rows the deeper walk found.
+    depth: int = 0
+    # A keyless result homed onto the row the call named (`home_partial_result`), rather than a row
+    # a result stated. Kept apart from `depth` so the pins report can count the two rules apart.
+    homed: bool = False
+
+    @property
+    def partial(self) -> bool:
+        """Some of a row's columns rather than the row itself, so it never replaces a fuller sighting.
+
+        A keyless result carries only the columns it asserts, and a row nested inside another is
+        that row as the thing it sits in describes it, which is rarely all of it.
+        """
+        return self.homed or self.depth > 0
 
 
 def _observations(traces: list[Trace], schema: EntitySchema, write_tools: set[str],
-                  revealed_rows: Optional[dict] = None) -> list[_Obs]:
+                  revealed_rows: Optional[dict] = None, stats: Optional[dict] = None,
+                  read_result: Optional[Callable[[str, Any], Any]] = None) -> list[_Obs]:
     """Every row sighting in corpus order; a write marks the rows it returned or named in its args.
 
     `revealed_rows` are the rows another requestor's own prose results revealed (builder/readers.py),
@@ -178,6 +310,13 @@ def _observations(traces: list[Trace], schema: EntitySchema, write_tools: set[st
     trace started in, so it sits before that trace's own calls and no write has touched it. R33 is
     unchanged for everything else: only the assistant's calls describe the customer's system, and a
     row that came from another requestor is marked as that requestor's on the schema.
+
+    A row some result states on its own is described by those sightings alone: a dict nested inside
+    another row that carries the same key is a mention of that row inside something else, and what
+    it carries is about the thing it sits in. A part of a booking states the price that booking paid
+    and the places that booking used, and taking it for the part's own row rewrote 44 rows one
+    corpus had stated plainly. So a nested sighting is kept only for a row nothing states on its
+    own, which is exactly the row the world was missing.
     """
     out: list[_Obs] = []
     for trace_index, trace in enumerate(traces):
@@ -192,17 +331,32 @@ def _observations(traces: list[Trace], schema: EntitySchema, write_tools: set[st
             if call.error is not None or not is_assistant_call(call):
                 continue
             is_write = call.name in write_tools
-            rows = extract_rows(schema, parse_result(call.result), call.args)
-            for table, row_id, row in rows:
+            result = parse_result(call.result)
+            rows, capped = walk_result_rows(schema, result, call.args)
+            if stats is not None and capped:
+                stats["depth_capped"] = stats.get("depth_capped", 0) + capped
+            # A result that states no row of its own is still about a row when the call named one.
+            homed = None if rows else home_partial_result(schema, call.name, result, call.args, read_result)
+            if homed and homed.row:
+                rows = [(homed.table, homed.row_id, homed.row, 0)]
+            elif homed is not None and stats is not None:
+                stats["unread_partial_results"] = stats.get("unread_partial_results", 0) + 1
+            for table, row_id, row, depth in rows:
                 out.append(_Obs(table, row_id, row, trace.trace_id, (trace_index, call_index),
-                                is_write or row_id in written))
+                                is_write or row_id in written, depth, bool(homed and homed.row)))
             if is_write:
-                written |= {row_id for _, row_id, _ in rows}
+                written |= {row_id for _, row_id, _, _ in rows}
                 written |= {v for v in call.args.values() if isinstance(v, str)}
-    return out
+    stated = {(obs.table, obs.row_id) for obs in out if not obs.depth}
+    dropped = [obs for obs in out if obs.depth and (obs.table, obs.row_id) in stated]
+    if stats is not None and dropped:
+        stats["nested_sightings_of_a_row_already_stated"] = (
+            stats.get("nested_sightings_of_a_row_already_stated", 0) + len(dropped))
+    return [obs for obs in out if not obs.depth or (obs.table, obs.row_id) not in stated]
 
 
-def trace_worlds(traces: Iterable[Trace], schema: EntitySchema, write_tools: set[str]) -> dict[str, dict]:
+def trace_worlds(traces: Iterable[Trace], schema: EntitySchema, write_tools: set[str],
+                 read_result: Optional[Callable[[str, Any], Any]] = None) -> dict[str, dict]:
     """Per trace, the version of every row it saw before any write touched it: the world it started in.
 
     Two traces that saw one row in two such versions started in different worlds. cluster.py keeps
@@ -215,14 +369,24 @@ def trace_worlds(traces: Iterable[Trace], schema: EntitySchema, write_tools: set
     and hashing the whole row split one Task per value of every reading the world takes when it is
     asked. A table with no hard column has one version, which is the same statement: nothing about
     it is compared, so nothing about it can disagree.
+
+    A trace's version of a row is built column by column from its own sightings, each column taking
+    the value of the earliest sighting that carried it, so a trace that read part of a row and then
+    the whole of it states one version and not two. Reading the first sighting alone would split two
+    traces that agree on every column merely because one of them saw the row through a tool that
+    answers fewer of them.
     """
     hard = {(column.table, column.name) for column in schema.columns if column.class_ == "hard"}
-    worlds: dict[str, dict] = {}
-    for obs in _observations(list(traces), schema, write_tools):
-        if not obs.after_write:
-            version = {name: value for name, value in obs.row.items() if (obs.table, str(name)) in hard}
-            worlds.setdefault(obs.trace_id, {}).setdefault((obs.table, obs.row_id), content_hash(version))
-    return worlds
+    seen: dict[str, dict[tuple[str, str], dict]] = {}
+    for obs in _observations(list(traces), schema, write_tools, read_result=read_result):
+        if obs.after_write:
+            continue
+        version = seen.setdefault(obs.trace_id, {}).setdefault((obs.table, obs.row_id), {})
+        for name, value in obs.row.items():
+            if (obs.table, str(name)) in hard:
+                version.setdefault(str(name), value)
+    return {trace_id: {key: content_hash(version) for key, version in rows.items()}
+            for trace_id, rows in seen.items()}
 
 
 def build_starting_state(
@@ -236,6 +400,7 @@ def build_starting_state(
     grow_seed: int = 0,
     revealed_rows: Optional[dict] = None,
     revealed_assumptions: Optional[Iterable[str]] = None,
+    read_result: Optional[Callable[[str, Any], Any]] = None,
 ) -> StartingState:
     """One shared db.json for the customer, plus one TaskOverlay per Task (D33, D74).
 
@@ -251,11 +416,15 @@ def build_starting_state(
     requestor that revealed them and never part of the customer's own system.
     `revealed_assumptions` are that stage's own sentences, the columns it filled from the corpus
     because no recording read them before a write, recorded here with the state's own guesses.
+    `read_result` is the readers' own function (D176), asked what a scalar result asserts when the
+    call named a row and the result carries no key of its own (`home_partial_result`).
+    What the pinner did is written to `overlay_pins.json` beside the overlays.
     """
     traces, workdir = list(traces), Path(workdir)
     workdir.mkdir(parents=True, exist_ok=True)
     write_tools = {s.name for s in (tool_sigs or []) if s.kind == "write"}
-    observations = _observations(traces, schema, write_tools, revealed_rows)
+    stats: dict = {}
+    observations = _observations(traces, schema, write_tools, revealed_rows, stats, read_result)
     by_row: dict[tuple[str, str], list[_Obs]] = {}
     for obs in observations:
         by_row.setdefault((obs.table, obs.row_id), []).append(obs)
@@ -264,11 +433,22 @@ def build_starting_state(
     assumptions: list[str] = [str(line) for line in (revealed_assumptions or [])]
     for (table, row_id), seen in sorted(by_row.items()):
         clean = [o for o in seen if not o.after_write]
-        chosen = max(clean or seen, key=lambda o: o.order)
+        pool = clean or seen
+        # A partial sighting states the columns it carries and nothing else, so it never wins the
+        # row from a sighting of the whole of it; it states its own columns on top of that row
+        # where it came later, which is the same inverse replay the whole row takes.
+        whole = [o for o in pool if not o.partial]
+        chosen = max(whole or pool, key=lambda o: o.order)
+        row = dict(chosen.row)
+        for later in sorted((o for o in pool if o.partial and o.order > chosen.order),
+                            key=lambda o: o.order):
+            row.update(later.row)
         if not clean:
             assumptions.append(f"{table} row {row_id} was only ever seen after a write; "
                                "its post-state is kept as the starting value")
-        db.setdefault(table, {})[row_id] = chosen.row
+        db.setdefault(table, {})[row_id] = row
+    # A row every sighting of which was partial is a row the corpus mentioned and never stated.
+    in_part = {key for key, seen in by_row.items() if all(o.partial for o in seen)}
 
     # The constants of the world (mine.world_constants): one row of values the corpus pinned, which
     # no sighting of a row can carry because the results they came from are not rows.
@@ -283,7 +463,13 @@ def build_starting_state(
     assumptions += [f"{table_of} row {row_id} was never shown by a trace; it is a synthetic row "
                     "shaped from the observed rows and a Run that reads it is assisted"
                     for table_of, row_id in added]
-    overlays = _build_overlays(observations, tasks or [], workdir, assumptions)
+    completed = complete_partial_rows(db, schema, in_part) if synthetic else []
+    added += completed
+    assumptions += [f"{table_of} row {row_id} was only ever mentioned in part; the columns no "
+                    "sighting of it carried are shaped from the observed rows and a Run that reads "
+                    "it is assisted"
+                    for table_of, row_id in completed]
+    overlays = _build_overlays(observations, tasks or [], workdir, assumptions, stats)
     assumptions += [f"{table_of} row {row_id} is stored under {home}; the standalone copy was folded "
                     "into it and a Task overlay that pins it re-adds the standalone copy"
                     for table_of, row_id, home in fold_into_homes(db, schema)]
@@ -460,6 +646,35 @@ def add_synthetic_rows(db: dict, schema: EntitySchema, traces: Iterable[Trace]) 
     return added
 
 
+def complete_partial_rows(db: dict, schema: EntitySchema, in_part: Iterable[tuple[str, str]]
+                          ) -> list[tuple[str, str]]:
+    """Fill the columns of a row the corpus only ever mentioned, from the rows it did state (D40).
+
+    A row seen only inside another row, or only through a keyless read homed onto it, carries the
+    columns that sighting was about and no others, and a body that reads one of the rest finds
+    nothing there. This is the same standing as a row the traces referenced and never showed, and it
+    takes the same answer: the columns it lacks are the observed rows' commonest, what was actually
+    seen stands over them untouched, and the id is tagged so a Run that reads the row is assisted
+    (D49). A table whose every row was mentioned in part has nothing to shape a fill from and is
+    left as it is, because recombining guesses would be inventing rather than recombining.
+    """
+    completed: list[tuple[str, str]] = []
+    mentioned = set(in_part)
+    for table, row_id in sorted(mentioned):
+        rows = db.get(table) or {}
+        row = rows.get(row_id)
+        stated = [other for key, other in sorted(rows.items())
+                  if (table, key) not in mentioned and isinstance(other, dict)]
+        if not isinstance(row, dict) or not stated:
+            continue
+        filled = dict(_modal_row(stated), **row)
+        if filled != row:
+            rows[row_id] = filled
+            completed.append((table, row_id))
+    schema.synthetic_rows = sorted(set(schema.synthetic_rows) | {row_id for _, row_id in completed})
+    return completed
+
+
 def _modal_row(rows: Iterable[dict]) -> dict:
     """The value seen most often per column across the observed rows, ties broken canonically."""
     columns: dict[str, dict[str, int]] = {}
@@ -475,37 +690,98 @@ def _modal_row(rows: Iterable[dict]) -> dict:
 
 
 def _build_overlays(observations: list[_Obs], tasks: Iterable[Task], workdir: Path,
-                    assumptions: list[str]) -> list[TaskOverlay]:
-    """A Task's rows in the version its own Runs saw: the first sighting inside each of its traces.
+                    assumptions: list[str], stats: Optional[dict] = None) -> list[TaskOverlay]:
+    """A Task's rows in the version its own Runs saw, column by column: each column's first sighting.
 
-    One Task can hold Runs that saw one row in two versions. The overlay can pin only one of them,
+    One rule for every column, whatever shape the recording stated it in. A Task's pinned row takes
+    each column from the earliest of that Task's own sightings that carried it, so a row seen once
+    whole and once in part is one pinned version and not two, a column a nested sighting is the only
+    one to state is pinned like any other, and a column the corpus disagrees on carries the value
+    this Task's own recording read first rather than the one value the shared world holds for every
+    Task. Reading only the earliest sighting whole is why a nested row and a homed partial read were
+    never pinned: they arrive as sightings of some of a row's columns, and a whole-row rule has
+    nowhere to put them.
+
+    One Task can hold Runs that read one column in two values. The overlay can pin only one of them,
     so the disagreement is recorded as an assumption rather than passing silently: the Runs on the
     other version cannot replay on this overlay, and the report and the setup review need to see it.
+    Two Runs that read different parts of one row do not disagree, which is why the comparison is
+    per column and not over the whole row.
+
+    Per Task, what was pinned and by which of these rules is counted into `overlay_pins.json`.
     """
-    overlays = []
+    corpus: dict[tuple[str, str], dict[str, set]] = {}
+    for obs in observations:
+        columns = corpus.setdefault((obs.table, obs.row_id), {})
+        for name, value in obs.row.items():
+            columns.setdefault(str(name), set()).add(canon(value))
+    overlays, pins = [], {}
     for task in tasks:
-        members, rows = set(task.run_ids), {}
-        per_trace: dict[tuple[str, str], dict[str, str]] = {}
-        for obs in observations:
-            key = (obs.table, obs.row_id)
-            if obs.trace_id not in members:
-                continue
-            if key not in rows or obs.order < rows[key].order:
-                rows[key] = obs
-            per_trace.setdefault(key, {}).setdefault(obs.trace_id, content_hash(obs.row))
+        members = set(task.run_ids)
+        seen: dict[tuple[str, str], list[_Obs]] = {}
+        for obs in sorted((o for o in observations if o.trace_id in members), key=lambda o: o.order):
+            seen.setdefault((obs.table, obs.row_id), []).append(obs)
+        rows: dict[tuple[str, str], dict] = {}
+        sources: dict[tuple[str, str], dict[str, _Obs]] = {}
+        for key, sightings in seen.items():
+            row, source = {}, {}
+            for obs in sightings:
+                for name, value in obs.row.items():
+                    if str(name) not in row:
+                        row[str(name)], source[str(name)] = value, obs
+            rows[key], sources[key] = row, source
         assumptions += [f"task {task.id} runs disagree on {table} row {row_id}: the overlay pins the "
                         "earliest sighting, so the runs that saw the other version cannot replay on it"
-                        for (table, row_id), hashes in sorted(per_trace.items()) if len(set(hashes.values())) > 1]
+                        for (table, row_id) in sorted(seen) if _columns_disagreeing(seen[(table, row_id)])]
         overlay = TaskOverlay(task_id=task.id, rows=[
-            OverlayRow(table=t, id=i, version_hash=content_hash(rows[(t, i)].row),
-                       trace_id=rows[(t, i)].trace_id, after_write=rows[(t, i)].after_write)
+            OverlayRow(table=t, id=i, version_hash=content_hash(rows[(t, i)]),
+                       trace_id=seen[(t, i)][0].trace_id, after_write=seen[(t, i)][0].after_write)
             for t, i in sorted(rows)
         ])
         assumptions += [f"task {task.id} pins {t} row {i} from a post-write sighting"
-                        for (t, i), obs in sorted(rows.items()) if obs.after_write]
-        _write_overlay(workdir, overlay, {content_hash(o.row): o.row for o in rows.values()})
+                        for (t, i), sightings in sorted(seen.items()) if sightings[0].after_write]
+        _write_overlay(workdir, overlay, {content_hash(rows[key]): rows[key] for key in rows})
+        pins[task.id] = {
+            "rows": len(rows),
+            "rows_nested": sum(1 for key in rows if any(o.depth for o in seen[key])),
+            "columns": sum(len(row) for row in rows.values()),
+            "columns_homed": sum(1 for key, source in sources.items()
+                                 for name in source if source[name].homed),
+            "columns_the_corpus_disagrees_on": sum(
+                1 for key, row in rows.items() for name in row
+                if len(corpus.get(key, {}).get(name) or ()) > 1),
+        }
         overlays.append(overlay)
+    _write_pins(workdir, pins, stats or {})
     return overlays
+
+
+def _columns_disagreeing(sightings: list[_Obs]) -> list[str]:
+    """Columns two of a Task's Runs read differently, each Run taking its own earliest value."""
+    by_trace: dict[str, dict[str, str]] = {}
+    for obs in sightings:
+        per = by_trace.setdefault(obs.trace_id, {})
+        for name, value in obs.row.items():
+            per.setdefault(str(name), canon(value))
+    names = sorted({name for per in by_trace.values() for name in per})
+    return [name for name in names
+            if len({per[name] for per in by_trace.values() if name in per}) > 1]
+
+
+def _write_pins(workdir: Path, pins: dict, stats: dict) -> Path:
+    """What the pinner did, per Task and in total: the ruling a person reads after a build."""
+    totals = {name: sum(int(row.get(name) or 0) for row in pins.values())
+              for name in ("rows", "rows_nested", "columns", "columns_homed",
+                           "columns_the_corpus_disagrees_on")}
+    payload = {"depth_cap": ROW_WALK_DEPTH,
+               "results_deeper_than_the_cap": int(stats.get("depth_capped") or 0),
+               "unread_partial_results": int(stats.get("unread_partial_results") or 0),
+               "nested_sightings_of_a_row_already_stated":
+                   int(stats.get("nested_sightings_of_a_row_already_stated") or 0),
+               "totals": totals, "tasks": dict(sorted(pins.items()))}
+    path = Path(workdir) / PINS_FILE
+    path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    return path
 
 
 def _write_overlay(workdir: Path, overlay: TaskOverlay, values: dict) -> Path:
@@ -1176,7 +1452,7 @@ def _lookup_rows_text(schema: EntitySchema, db: dict, shown: list[ToolCall], cal
 
 def _build_tools_impl(schema: EntitySchema, toolsig: ToolSig, shown: list[ToolCall], db: dict,
                       call_states: Optional[dict], workdir: Path, attempt: int, timeout: float,
-                      rules: Any) -> dict[str, Callable[..., str]]:
+                      rules: Any, readers: Any = None) -> dict[str, Callable[..., str]]:
     """lookup_rows and test_body, closed over one attempt's own evidence and probe directory.
 
     test_body gates on `shown` alone, with an empty held-out list: the split the repair loop keeps
@@ -1194,7 +1470,7 @@ def _build_tools_impl(schema: EntitySchema, toolsig: ToolSig, shown: list[ToolCa
         sandbox = Sandbox(source, db, workdir / f"attempt_{attempt}_probe_{probes['n']}", timeout=timeout,
                           call_states=call_states)
         gates = run_gates(source, sandbox, shown, [], schema, rules,
-                          probe_refusals=toolsig.kind == "write", sig=toolsig)
+                          probe_refusals=toolsig.kind == "write", sig=toolsig, readers=readers)
         if all(g.passed for g in gates):
             return "passed every gate: " + ", ".join(g.stage for g in gates)
         return _failure_text(gates)
@@ -1522,7 +1798,7 @@ def body_could_not_run(gates: Iterable[GateResult], rows: Iterable[dict]) -> boo
 
 def grade_body(toolsig: ToolSig, body: str, calls: Iterable[ToolCall], schema: EntitySchema, db: dict,
                workdir: Path | str, call_states: Optional[dict] = None, rules: Any = None,
-               timeout: float = 30.0) -> ToolBuild:
+               timeout: float = 30.0, readers: Any = None) -> ToolBuild:
     """Run one body that already exists through the gates and the per-call replay, with no model call.
 
     This is `compile_tool` with the writing taken out: the same gates in the same order, the same
@@ -1542,11 +1818,11 @@ def grade_body(toolsig: ToolSig, body: str, calls: Iterable[ToolCall], schema: E
     source = module_source(schema, [toolsig], {toolsig.name: build.body})
     sandbox = Sandbox(source, db, workdir, timeout=timeout, call_states=call_states)
     build.gates = run_gates(source, sandbox, shown, held_out, schema, rules,
-                            probe_refusals=toolsig.kind == "write", sig=toolsig)
+                            probe_refusals=toolsig.kind == "write", sig=toolsig, readers=readers)
     build.assisted = not (build.gates and all(gate.passed for gate in build.gates))
     build.call_outcomes = (
         replay_outcomes(toolsig, build.body, calls, schema, db, workdir, call_states=call_states,
-                        rules=rules, timeout=timeout)
+                        rules=rules, timeout=timeout, readers=readers)
         if build.assisted else
         [{"tool": toolsig.name, "call_id": call.id, "replayed": True, "detail": ""} for call in calls])
     build.could_not_run = body_could_not_run(build.gates, build.call_outcomes)
@@ -1610,7 +1886,7 @@ def call_starting_states(db: dict, overlays: Iterable[TaskOverlay], values: dict
 
 def replay_outcomes(toolsig: ToolSig, body: str, calls: Iterable[ToolCall], schema: EntitySchema, db: dict,
                     workdir: Path | str, call_states: Optional[dict] = None, rules: Any = None,
-                    timeout: float = 30.0) -> list[dict]:
+                    timeout: float = 30.0, readers: Any = None) -> list[dict]:
     """Which of these recorded calls the kept body answers the way the recording did, one row per call (D171).
 
     The corpus gate (`gate_replay_fidelity`) rules over all of a tool's recorded calls at once and
@@ -1649,7 +1925,8 @@ def replay_outcomes(toolsig: ToolSig, body: str, calls: Iterable[ToolCall], sche
             rows.append({"tool": toolsig.name, "call_id": call.id, "replayed": False,
                          "detail": "the sandbox returned no result for this call"})
             continue
-        ruling = body_replay_fidelity_gate([call], [results[index]], schema, label="per_call", rules=rules)
+        ruling = body_replay_fidelity_gate([call], [results[index]], schema, label="per_call", rules=rules,
+                                           readers=readers)
         detail = "" if ruling.passed else (ruling.failures[0] if ruling.failures else "differs")
         rows.append({"tool": toolsig.name, "call_id": call.id, "replayed": bool(ruling.passed),
                      "detail": _clamped_detail(detail), "answer": answer_digest(results[index]),
@@ -1741,7 +2018,8 @@ def compile_tool(model, toolsig: ToolSig, calls: Iterable[ToolCall], schema: Ent
                  max_evidence_chars: Optional[int] = MAX_EVIDENCE_CHARS, timeout: float = 30.0,
                  call_states: Optional[dict] = None, rules: Any = None,
                  tool_names: Iterable[str] = (), error_prefix: Optional[str] = None,
-                 builder_tools: bool = True, lesson: str = "", world_note: str = "") -> ToolBuild:
+                 builder_tools: bool = True, lesson: str = "", world_note: str = "",
+                 readers: Any = None) -> ToolBuild:
     """Write one tool body, gate it, and repair it at most three times with growing evidence (D75).
 
     Attempt 1 sees the failing call, attempt 2 every failing call, attempt 3 the full call table, and
@@ -1833,7 +2111,7 @@ def compile_tool(model, toolsig: ToolSig, calls: Iterable[ToolCall], schema: Ent
             build.nodes.append(dict(node, refused=True))
             break
         tools_impl = (_build_tools_impl(schema, toolsig, shown, db, call_states, workdir, attempt,
-                                        timeout, rules)
+                                        timeout, rules, readers)
                      if builder_tools else None)
         try:
             if builder_tools:
@@ -1878,7 +2156,7 @@ def compile_tool(model, toolsig: ToolSig, calls: Iterable[ToolCall], schema: Ent
         sandbox = Sandbox(source, db, workdir / f"attempt_{attempt}", timeout=timeout,
                           call_states=call_states)
         gates = run_gates(source, sandbox, shown, held_out, schema, rules,
-                          probe_refusals=toolsig.kind == "write", sig=toolsig)
+                          probe_refusals=toolsig.kind == "write", sig=toolsig, readers=readers)
         node.update(body_hash=content_hash(body), gates=[as_dict(g) for g in gates],
                     passed=all(g.passed for g in gates))
         build.nodes.append(node)
@@ -1913,7 +2191,7 @@ def compile_tool(model, toolsig: ToolSig, calls: Iterable[ToolCall], schema: Ent
     # so its per-call rows are known without a sandbox and only an assisted tool pays for the run.
     build.call_outcomes = (
         replay_outcomes(toolsig, build.body, calls, schema, db, workdir, call_states=call_states,
-                        rules=rules, timeout=timeout)
+                        rules=rules, timeout=timeout, readers=readers)
         if build.assisted else
         [{"tool": toolsig.name, "call_id": call.id, "replayed": True, "detail": ""} for call in calls])
     build.hardcoded = build.assisted and hardcoded_body(calls, build.call_outcomes)

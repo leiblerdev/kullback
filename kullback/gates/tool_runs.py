@@ -24,9 +24,10 @@ import json
 import re
 from typing import Any, Iterable, Optional
 
-from kullback.gates.confinement import TOOLS_CLASS
+from kullback.gates.confinement import TOOLS_CLASS, function_confinement
 from kullback.runner.canon import canonicalize as canon
-from kullback.runner.canon import first_difference
+from kullback.runner.canon import class_of, first_difference
+from kullback.runner.canon import compare as compare_column
 from kullback.runner.records import EntitySchema, GateResult, ToolCall, content_hash
 
 CRASH_ERRORS = frozenset({"NameError", "AttributeError", "TypeError", "ImportError",
@@ -34,6 +35,14 @@ CRASH_ERRORS = frozenset({"NameError", "AttributeError", "TypeError", "ImportErr
 MEMORISED_STAGE = "compile_tools.memorised_values"
 TOOL_RUN_STAGES = ("parses", "executes_on_s0", "deterministic", "non_trivial", "replay_fidelity",
                    "refuses_unknown", MEMORISED_STAGE)
+# A note that names a column class is a reading, not a failure: an exempt column is equal whatever
+# it holds and a semantic one is reported and left to the judge (D73, D84). Every other note the
+# comparison leaves is a hard column that parted, and those are what fail a ruling.
+CLASS_NOTES = ("exempt:", "semantic:")
+# A prose result the reader read no columns out of falls back to comparing the whole string, and
+# the failure line says which of the two routes it took (D187).
+STRING_ROUTE = "string differs"
+COLUMN_ROUTE = "read as columns"
 
 
 # --- reading rows out of recorded tool results: shared with compile_env.py's inverse replay ---
@@ -155,6 +164,196 @@ def match_table(schema: EntitySchema, value: Any, args: Optional[dict] = None) -
     return best
 
 
+# --- the columns a prose result asserts, so two of them compare under the schema's classes (D187) ---
+
+def _last_function(source: str) -> Optional[str]:
+    """The name of the last function the source defines at its top level, or None when it defines none."""
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        return None
+    names = [node.name for node in tree.body if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))]
+    return names[-1] if names else None
+
+
+class ResultReaders:
+    """Per tool, the function that reads its prose result into the column values the string asserts.
+
+    Some tools answer with one sentence that folds several columns together: a confirmation and a
+    device's state in one line. The readers stage (D176) has a model write `read(result)` per such
+    tool and holds it to a round trip against every recorded result, and the schema classes the
+    columns it reads the way it classes any other (D73). Nothing consulted that when a replayed
+    answer was scored: the whole sentence was compared as one hard value, so a drift in a semantic
+    sub-field failed the call and the classes were dead code for prose.
+
+    This runs those readers where the comparison runs. The source is checked by the same
+    confinement rules a tool body is (`function_confinement`) before it is executed, and a reader
+    that will not parse, will not confine, raises, or answers anything but a non-empty dict simply
+    does not apply: the caller falls back to comparing the strings, which is what it did before.
+    Readings are cached per (tool, text), since a reader is a function of the string alone.
+    """
+
+    def __init__(self, sources: Optional[dict] = None, tables: Optional[dict] = None):
+        self._sources = {str(k): str(v) for k, v in (sources or {}).items()}
+        self._tables = {str(k): str(v) for k, v in (tables or {}).items()}
+        self._functions: dict[str, Any] = {}
+        self._readings: dict[tuple[str, str], Optional[dict]] = {}
+
+    def __bool__(self) -> bool:
+        return bool(self._sources)
+
+    @property
+    def tools(self) -> list[str]:
+        return sorted(self._sources)
+
+    def table_of(self, tool: str) -> Optional[str]:
+        """The table whose columns this tool's reader answers, or None when it has no reader."""
+        return self._tables.get(tool) or None if tool in self._sources else None
+
+    def _function(self, tool: str) -> Any:
+        if tool in self._functions:
+            return self._functions[tool]
+        source = self._sources.get(tool) or ""
+        name = _last_function(source)
+        found = None
+        if name is not None and not function_confinement(source):
+            namespace: dict = {"__name__": "reader_source"}
+            try:
+                exec(compile(source, "<reader>", "exec", dont_inherit=True), namespace)  # noqa: S102
+                candidate = namespace.get(name)
+                found = candidate if callable(candidate) else None
+            except Exception:  # a reader that will not load does not apply, and nothing else fails
+                found = None
+        self._functions[tool] = found
+        return found
+
+    def read(self, tool: str, text: Any) -> Optional[dict]:
+        """The columns this tool's result asserts, or None when no reader applies or it reads nothing."""
+        if not isinstance(text, str) or tool not in self._sources:
+            return None
+        key = (tool, text)
+        if key in self._readings:
+            return self._readings[key]
+        function = self._function(tool)
+        value: Any = None
+        if function is not None:
+            try:
+                value = function(text)
+            except Exception:  # a reader that raises on a result is a reader that does not apply
+                value = None
+        reading = value if isinstance(value, dict) and value else None
+        self._readings[key] = reading
+        return reading
+
+
+def load_readers(artifact: Any) -> ResultReaders:
+    """The readers held in the `readers` artifact, per tool, with the table their columns belong to."""
+    body = artifact if isinstance(artifact, dict) else {}
+    sources: dict[str, str] = {}
+    tables: dict[str, str] = {}
+    for _requestor, proposal in sorted((body.get("proposals") or {}).items()):
+        if not isinstance(proposal, dict):
+            continue
+        table = str(proposal.get("table") or "")
+        for reader in proposal.get("readers") or []:
+            tool = str((reader or {}).get("tool") or "") if isinstance(reader, dict) else ""
+            source = str((reader or {}).get("source") or "") if isinstance(reader, dict) else ""
+            if tool and source:
+                sources[tool] = source
+                tables[tool] = table
+    return ResultReaders(sources, tables)
+
+
+def hard_notes(notes: Iterable[str]) -> list[str]:
+    """The notes that fail a ruling: every one that does not name a class the ruling forgives."""
+    return [note for note in notes if not note.startswith(CLASS_NOTES)]
+
+
+def compare_columns(schema: EntitySchema, table: Optional[str], expected: dict, got: dict,
+                    rules: Any = None, judge: Any = None, equivalence: Any = None,
+                    route: str = "") -> tuple[bool, list[str]]:
+    """Two readings of one row compared column by column under the schema's classes (D73, D84, D187).
+
+    Every key either side carries is asked for its class. An exempt column is equal whatever the two
+    hold and is noted, never failed; a semantic one goes through `canon.compare`, which takes the
+    judge when one is given and otherwise leaves the pair unresolved, and either way it is reported
+    and not failed, the way a semantic column has been read here since D73; a hard one is compared by
+    canonical string and names the leaf it parted at. A column the schema does not class for this
+    table takes the rules' default, which is what `canon.compare` would have given it.
+
+    `route` names how the two dicts were arrived at, so a failure line says whether the comparison
+    read a prose result into columns or walked a returned row.
+    """
+    prefix = f"{route}: " if route else ""
+    hard: list[str] = []
+    notes: list[str] = []
+    for name in sorted(set(expected) | set(got)):
+        column_class = class_of(schema, table, name, rules)
+        if column_class == "exempt":
+            if canon(expected.get(name), rules) != canon(got.get(name), rules):
+                notes.append(f"exempt:{name}")
+            continue
+        if column_class == "semantic":
+            verdict = compare_column(expected.get(name), got.get(name), "semantic", rules=rules,
+                                     judge=judge, table=equivalence, column=name)
+            if not verdict.equal:
+                notes.append(f"semantic:{name}")
+            continue
+        found_at = first_difference(got.get(name), expected.get(name), rules, name)
+        if found_at:
+            hard.append(f"{prefix}{found_at}")
+    return not hard, hard + notes
+
+
+def read_as_columns(schema: EntitySchema, tool: str, expected: Any, got: Any, rules: Any = None,
+                    readers: Any = None, judge: Any = None,
+                    equivalence: Any = None) -> Optional[tuple[bool, list[str]]]:
+    """Two prose results compared by the columns their reader asserts; None when no reader applies.
+
+    Both sides have to be strings the tool's own reader reads to a dict. When either reads to
+    nothing, or the tool has no reader at all, this answers None and the caller compares the strings
+    as it always did.
+    """
+    if readers is None or not tool or not isinstance(expected, str) or not isinstance(got, str):
+        return None
+    table = readers.table_of(tool)
+    if table is None:
+        return None
+    left, right = readers.read(tool, expected), readers.read(tool, got)
+    if not isinstance(left, dict) or not isinstance(right, dict):
+        return None
+    return compare_columns(schema, table, left, right, rules, judge, equivalence, route=COLUMN_ROUTE)
+
+
+class ReplayComparer:
+    """What a replayed answer is compared by beyond canonical equality of the whole answer (D187).
+
+    `runner/replay.py` scores a replayed call by canonicalizing both answers under one hardcoded
+    class, so it consults neither the schema's column classes nor the readers' columns; the Runner
+    cannot import this package to reach either. So it is handed one object with one method, the way
+    it is handed `canon_rules`, and everything that knows the schema stays here.
+    """
+
+    def __init__(self, schema: Optional[EntitySchema] = None, readers: Any = None, rules: Any = None,
+                 judge: Any = None, equivalence: Any = None):
+        self.schema = schema if schema is not None else EntitySchema()
+        self.readers = readers
+        self.rules = rules
+        self.judge = judge
+        self.equivalence = equivalence
+
+    def agrees(self, tool: str, expected: Any, got: Any) -> tuple[bool, list[str]]:
+        """Whether the replayed answer agrees with the recording, and what parted, by class."""
+        reading = read_as_columns(self.schema, tool, expected, got, self.rules, self.readers,
+                                  self.judge, self.equivalence)
+        if reading is not None:
+            return reading
+        ok, notes = compare_results(self.schema, expected, got, self.rules, tool=tool,
+                                    readers=self.readers, judge=self.judge,
+                                    equivalence=self.equivalence)
+        return ok, notes
+
+
 # --- the rulings, in the order that localizes a failure ---
 
 def _ruling(stage: str, passed: bool, metrics: dict, failures: Iterable[str] = ()) -> GateResult:
@@ -273,28 +472,55 @@ def classify_exception(result: dict) -> str:
     return "business_error" if name == "ValueError" else "unknown"
 
 
+def keys_of(schema: EntitySchema, values: Iterable[Any]) -> Optional[list[tuple[str, str]]]:
+    """The row key of every value in this list, or None when any of them carries none.
+
+    A key is the table and the row id `match_table` reads off a returned row (`row_key`), which is
+    what says which row a sighting is of whatever position it came back in.
+    """
+    found = [match_table(schema, value) for value in values]
+    return found if found and all(f is not None for f in found) else None  # type: ignore[return-value]
+
+
 def _row_pairs(schema: EntitySchema, expected: list, got: list) -> list[tuple[Any, Any]]:
-    """Pair two lists of rows by id where every row on both sides carries one, else by position."""
-    left = [match_table(schema, value) for value in expected]
-    right = {found: value for value in got for found in [match_table(schema, value)] if found}
-    if all(left) and len(right) == len(got) and all(found in right for found in left):
-        return [(value, right[found]) for value, found in zip(expected, left, strict=False)]
+    """Pair two lists of rows by their key when both sides are keyed, else by position (D182, D187).
+
+    A list result comes back in the body's own iteration order, and the recording's order is
+    whatever the customer's tool answered; D182 already ruled that list order is not an End-state
+    fact, and this is the read-result twin. Order is only ignored where there is something better to
+    pair by: every row on both sides carrying a key, and no key standing for two rows, since a key
+    twice leaves nothing to say which of the two a row on the other side is.
+    """
+    left, right = keys_of(schema, expected), keys_of(schema, got)
+    if left is not None and right is not None and len(set(right)) == len(right) and set(left) == set(right):
+        by_key = dict(zip(right, got, strict=False))
+        return [(value, by_key[found]) for value, found in zip(expected, left, strict=False)]
     return list(zip(expected, got, strict=False))
 
 
-def compare_results(schema: EntitySchema, expected: Any, got: Any, rules: Any = None) -> tuple[bool, list[str]]:
-    """Hard columns must match after canon; semantic ones are reported, not failed (D73, D84).
+def compare_results(schema: EntitySchema, expected: Any, got: Any, rules: Any = None, tool: str = "",
+                    readers: Any = None, judge: Any = None,
+                    equivalence: Any = None) -> tuple[bool, list[str]]:
+    """Hard columns must match after canon; exempt and semantic ones are reported, not failed (D73, D84).
 
     A list of rows and a dict wrapping rows are walked into, so the column classes decide there too.
     Comparing a wrapped result as one canonical string would let an exempt column fail a replay that
     the same row returned on its own passes, which is the opposite of what D73 and D84 ask for.
+
+    A tool whose result is one prose sentence has its columns read out of it by that tool's reader
+    (D176) and compared the same way (D187); when the reader reads nothing out of either side the
+    strings are compared whole, and the failure line says which of the two routes it took.
     """
+    reading = read_as_columns(schema, tool, expected, got, rules, readers, judge, equivalence)
+    if reading is not None:
+        return reading
     if isinstance(expected, list) and isinstance(got, list):
         if len(expected) != len(got):
             return False, [f"list of {len(expected)} against {len(got)}"]
         ok, notes = True, []
         for one, other in _row_pairs(schema, expected, got):
-            one_ok, one_notes = compare_results(schema, one, other, rules)
+            one_ok, one_notes = compare_results(schema, one, other, rules, judge=judge,
+                                                equivalence=equivalence)
             ok, notes = ok and one_ok, notes + one_notes
         return ok, notes
     found = match_table(schema, expected)
@@ -303,25 +529,28 @@ def compare_results(schema: EntitySchema, expected: Any, got: Any, rules: Any = 
             return False, [f"keys differ: {sorted(set(expected) ^ set(got))}"]
         ok, notes = True, []
         for key in sorted(expected):
-            key_ok, key_notes = compare_results(schema, expected[key], got[key], rules)
+            key_ok, key_notes = compare_results(schema, expected[key], got[key], rules, judge=judge,
+                                                equivalence=equivalence)
             ok, notes = ok and key_ok, notes + key_notes
         return ok, notes
     if not found or not isinstance(got, dict):
+        # The leaf is named, not only the column: `items` sends a reader into two dumps, and
+        # `items[1].options.size: ours "large", recorded "small"` is the repair (D154).
         found_at = first_difference(got, expected, rules)
+        if found_at and readers is not None and tool and readers.table_of(tool) is not None:
+            found_at = f"{STRING_ROUTE}: {found_at}"  # a reader exists and read nothing out of it
         return found_at is None, [found_at] if found_at else []
-    # The leaf is named, not only the column: `items` sends a reader into two dumps, and
-    # `items[1].options.size: ours "large", recorded "small"` is the repair (D154).
-    differs = [found_at for n in columns_of(schema, found[0], "hard")
-               for found_at in [first_difference(got.get(n), expected.get(n), rules, n)] if found_at]
-    semantic = [f"semantic:{n}" for n in columns_of(schema, found[0], "semantic")
-                if canon(expected.get(n), rules) != canon(got.get(n), rules)]
-    return not differs, differs + semantic
+    return compare_columns(schema, found[0], expected, got, rules, judge, equivalence)
 
 
 def body_replay_fidelity_gate(calls: Iterable[ToolCall], results: Optional[list[dict]], schema: EntitySchema,
                               label: str = "held_out", threshold: float = 1.0, rules: Any = None,
-                              error: Optional[str] = None) -> GateResult:
-    """5. Recorded calls replay: hard columns match after canon, errors match by class, both apart."""
+                              error: Optional[str] = None, readers: Any = None) -> GateResult:
+    """5. Recorded calls replay: hard columns match after canon, errors match by class, both apart.
+
+    `readers` are the readers of D176, given where a tool's results are prose: the two sentences are
+    then compared by the columns they assert rather than as one hard value (D187).
+    """
     calls = list(calls)
     if error is not None:
         return _ruling("replay_fidelity", False, {"split": label}, [error])
@@ -341,13 +570,14 @@ def body_replay_fidelity_gate(calls: Iterable[ToolCall], results: Optional[list[
             failures.append(f"{call.name}({args_text(call)}): expected a result, got "
                             f"{result['error']}: {result['message']}")
             continue
-        ok, differing = compare_results(schema, parse_result(call.result), result["value"], rules)
+        ok, differing = compare_results(schema, parse_result(call.result), result["value"], rules,
+                                        tool=call.name, readers=readers)
         semantic += sum(1 for n in differing if n.startswith("semantic:"))
         if ok:
             hits["success_matches"] += 1
         else:
             failures.append(f"{call.name}({args_text(call)}): hard columns differ: "
-                            f"{'; '.join(n for n in differing if not n.startswith('semantic:')) or 'value'}")
+                            f"{'; '.join(hard_notes(differing)) or 'value'}")
     success = hits["success_matches"] / hits["success_calls"] if hits["success_calls"] else 1.0
     errors = hits["error_matches"] / hits["error_calls"] if hits["error_calls"] else 1.0
     metrics = dict(hits, split=label, success_fidelity=success, error_fidelity=errors,
@@ -535,6 +765,45 @@ def recorded_argument_values(calls: Iterable[ToolCall]) -> dict[str, str]:
     return out
 
 
+def recorded_result_values(calls: Iterable[ToolCall], readers: Any = None) -> dict[str, str]:
+    """Every scalar a recorded call's own result carried, as text, with the tool that answered it.
+
+    The twin of `recorded_argument_values`, read the same way: every scalar leaf at any depth, so a
+    fee inside a payment history and an amount inside a row of a list both count. Where a tool's
+    results are prose, its reader (D176) is asked for the columns the sentence asserts and those
+    count too, since a value the body memorised out of a sentence is memorised the same way as one
+    it took out of a dict.
+
+    A body holding one of these picked a value the recordings answered instead of deriving it: a
+    fee chosen by leg count, a timestamp copied off an existing row, a row matched by an amount a
+    result once carried. That is exactly the shape D162 exists to refuse, and the gate had only ever
+    looked at what the recordings passed in, never at what they answered back (D187).
+    """
+    out: dict[str, str] = {}
+
+    def walk(tool: str, value: Any) -> None:
+        if isinstance(value, bool) or value is None:
+            return
+        if isinstance(value, (str, int, float)):
+            out.setdefault(str(value), tool)
+        elif isinstance(value, list):
+            for item in value:
+                walk(tool, item)
+        elif isinstance(value, dict):
+            for item in value.values():
+                walk(tool, item)
+
+    for call in calls:
+        if call.error is not None:
+            continue
+        value = parse_result(call.result)
+        walk(call.name, value)
+        reading = readers.read(call.name, value) if readers is not None else None
+        if isinstance(reading, dict):
+            walk(call.name, reading)
+    return out
+
+
 def _names_in(node: Any) -> set[str]:
     """Every property name a JSON schema declares, at any depth."""
     out: set[str] = set()
@@ -601,6 +870,28 @@ def signature_values(sig: Any = None) -> set[str]:
     return _declared_in(getattr(sig, "args_schema", {}) or {}) if sig is not None else set()
 
 
+_DIGIT = re.compile(r"\d")
+
+
+def _is_datum(literal: Any) -> bool:
+    """Whether a literal is a value that had to be worked out, rather than a word the tool says.
+
+    Rule (d) asks about the values a tool's own recorded results carried, and almost every result
+    carries words as well as data: the status a write sets, the sentence a hand-off acknowledges
+    with, the state a device reports. A body has to spell those out, and the first measurement of
+    the rule refused a correct write tool for writing the one status word its own recording answers.
+    So the rule asks only about what a word never is: a number, or a string carrying a digit, which
+    is what an amount, a timestamp, a count and a reference all carry and what a plain word does
+    not. It is the same line rule (a) draws with `SHAPELESS_PROBES`, drawn over a value instead of
+    over a pattern.
+    """
+    if isinstance(literal, bool):
+        return False
+    if isinstance(literal, (int, float)):
+        return True
+    return isinstance(literal, str) and bool(_DIGIT.search(literal))
+
+
 def _shaped(pattern: str) -> bool:
     """An id pattern that accepts an ordinary word describes no id shape and is not asked about.
 
@@ -630,19 +921,23 @@ def _pattern_hit(schema: Optional[EntitySchema], text: str) -> Optional[tuple[st
 
 def body_memorised_values_gate(source: str, schema: Optional[EntitySchema] = None, db: Any = None,
                                calls: Iterable[ToolCall] = (), sig: Any = None,
-                               class_name: str = TOOLS_CLASS) -> GateResult:
+                               class_name: str = TOOLS_CLASS, readers: Any = None) -> GateResult:
     """7. A body may not memorise the recordings: every id and value comes out of the world (D162).
 
-    Three rules over the literals of the model's own methods, in the order that says most about
+    Four rules over the literals of the model's own methods, in the order that says most about
     where a value came from. (a) The literal has the shape the schema mined for some table's ids.
     (b) The literal is a row id the Starting state holds. (c) The literal is a value a recorded call
     passed this tool, and neither the signature nor the description names it: an enum member the
     description lists is the tool's vocabulary and is allowed, an order id it happened to be called
-    with is not. Names are never data (`structure_names`), so a body writes `row["item_id"]` freely.
+    with is not. (d) The literal is a value one of this tool's own recorded results carried and is a
+    datum rather than a word (`_is_datum`), under the same exclusions (D187): a fee the body picks by
+    leg count, a timestamp it spells out, a row it matches by an amount it once saw answered, are
+    all values it should have derived.
 
-    The failure names the literal as the code holds it, the rule that caught it and the table or the
-    argument it came from. It is the model's own source, so quoting it back leaks nothing, and the
-    held-out split is never named: rule (c) says an argument's name, never a call.
+    The failure names the literal as the code holds it, the rule that caught it and the table, the
+    argument or the tool it came from. It is the model's own source, so quoting it back leaks
+    nothing, and the held-out split is never named: rules (c) and (d) say an argument's or a tool's
+    name, never a call.
     """
     schema = schema if schema is not None else EntitySchema()
     label = f"{getattr(sig, 'name', '')}: " if getattr(sig, "name", "") else ""
@@ -653,8 +948,10 @@ def body_memorised_values_gate(source: str, schema: Optional[EntitySchema] = Non
     structure = structure_names(schema, sig)
     named = signature_values(sig) | structure
     description = getattr(sig, "description", "") or ""
+    calls = list(calls)
     by_table = starting_state_ids(schema, db)
     by_argument = recorded_argument_values(calls)
+    by_result = recorded_result_values(calls, readers)
     failures: list[str] = []
     for literal in literals:
         text = literal if isinstance(literal, str) else str(literal)
@@ -677,6 +974,14 @@ def body_memorised_values_gate(source: str, schema: Optional[EntitySchema] = Non
             failures.append(f"{label}the literal {literal!r} is a value the recorded calls passed as "
                             f"{argument}, and neither the description nor the signature names it; "
                             "read it from the argument instead of holding a recorded value")
+            continue
+        answered = by_result.get(text) if _is_datum(literal) else None
+        if answered is not None and text not in named and text not in description:
+            failures.append(f"{label}the literal {literal!r} is a value the recorded results of "
+                            f"{answered} carried, and neither the description nor the signature "
+                            "names it; derive it from the world's rows instead of holding a value a "
+                            "recorded result answered")
     return _ruling(MEMORISED_STAGE, not failures,
                    {"literals": len(literals), "memorised": len(failures),
-                    "tables": len(by_table), "recorded_values": len(by_argument)}, failures)
+                    "tables": len(by_table), "recorded_values": len(by_argument),
+                    "recorded_results": len(by_result)}, failures)

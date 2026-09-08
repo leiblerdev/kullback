@@ -317,6 +317,18 @@ def _class_of(schema: Any, table: Optional[str], name: str, rules: CanonRules) -
     return rules.default_class
 
 
+def class_of(schema: Any, table: Optional[str], name: str, rules: Optional[CanonRules] = None) -> ColumnClass:
+    """The class this schema gives one column of one table, or the rules' default (D73).
+
+    `canon_record` and `compare` have read classes this way since D73, but every caller that scores
+    a replayed answer read none of them: `compare_call` and `first_difference` canonicalize a whole
+    answer under one hardcoded class, so a column the schema marks exempt failed a write and every
+    semantic column was held to a hard column's bar (D187). This is that lookup as a function the
+    scoring path can call, so a ruling and a Verdict resolve a class the same way.
+    """
+    return _class_of(schema, table, name, _rules(rules))
+
+
 # --- equality by column class ---
 
 def compare(

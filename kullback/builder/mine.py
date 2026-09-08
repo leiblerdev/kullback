@@ -1021,6 +1021,33 @@ def _asked_for(row: dict, ids: Sequence[str], args: Optional[dict]) -> Optional[
     return (named or matched)[0]
 
 
+def id_of_row(row: dict, id_names: Sequence[str] = ()) -> list[str]:
+    """The row's own id columns: an `_id` name, or a column the corpus shows behaving like an id."""
+    return [key for key in row if isinstance(key, str) and key != "id"
+            and (key.endswith("_id") and len(key) > 3 or key in id_names)]
+
+
+def asked_for_id(tool_name: str, row: dict, id_names: Sequence[str] = (),
+                 args: Optional[dict] = None) -> Optional[str]:
+    """The row's id column whose value the call passed as an argument, or None (D180's first rule).
+
+    Public because the same rule homes two different things: a row a result stated, which
+    `_home_of` reads below, and a keyless partial result the Starting-state pinner has to place on
+    the row the call named (`compile_env.home_partial_result`). One rule, read from one place, so
+    the two cannot drift apart. The narrowing is `_home_of`'s own: an id the tool name says is only
+    the address is ignored, and so is a column whose name carries no id suffix.
+    """
+    address = _address_of(tool_name)
+    named_entities = [key for key in id_of_row(row, id_names)
+                      if _entity_of(key) != key and _entity_of(key) not in address]
+    return _asked_for(row, named_entities, args)
+
+
+def table_for_id(column: str) -> str:
+    """The table an id column names: its entity, plural (`customer_id` is a row of `customers`)."""
+    return _plural(_entity_of(column))
+
+
 def _home_of(tool_name: str, row: dict, id_names: Sequence[str] = (), siblings: Sequence[dict] = (),
              args: Optional[dict] = None) -> tuple[Optional[str], str]:
     """The entity a result row is about and the rule that says so; (None, reason) when nothing does.
@@ -1041,14 +1068,11 @@ def _home_of(tool_name: str, row: dict, id_names: Sequence[str] = (), siblings: 
     `id_columns` and would otherwise name a table after itself. Everything the asked-for rule
     cannot decide falls through to the rules that were here before it, unchanged.
     """
-    ids = [key for key in row if isinstance(key, str) and key != "id"
-           and (key.endswith("_id") and len(key) > 3 or key in id_names)]
+    ids = id_of_row(row, id_names)
     noun = _noun_of(tool_name)
-    address = _address_of(tool_name)
-    named_entities = [key for key in ids if _entity_of(key) != key and _entity_of(key) not in address]
-    asked = _asked_for(row, named_entities, args)
+    asked = asked_for_id(tool_name, row, id_names, args)
     if asked is not None:
-        return _plural(_entity_of(asked)), f"the call passed the value of {asked}, so the row is that entity"
+        return table_for_id(asked), f"the call passed the value of {asked}, so the row is that entity"
     for key in ids:
         if _entity_of(key) == noun:
             return _plural(_entity_of(key)), f"the tool name is about {noun}, which {key} names"

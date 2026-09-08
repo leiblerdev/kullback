@@ -474,8 +474,27 @@ def test_a_verifier_with_no_mutable_atom_fails_the_mutation_check_and_the_text_s
     assert {S.atom_payload(a).get("kind") for a in verifier.atoms} == {"entity_count", "hard"}
     gate = [g for g in S.validate_verifier(verifier, talking) if g.stage == "verifier_mutation"][0]
     assert gate.passed is False
-    assert gate.metrics == {"atoms_mutated": 0, "atoms_not_mutable": 2}
+    # Three, not two: D190 attaches its no-write claim here too, and a Run with no call at all
+    # gives that rule nothing to judge, so it is inert on this Reference like the other two.
+    assert gate.metrics == {"atoms_mutated": 0, "atoms_not_mutable": 3}
     assert "nothing in it can be falsified" in " ".join(gate.failures)
+
+
+def literal_value_atom(tool: str, entity: str, id_field: str, field: str, value,
+                       provenance: str = "system_derived") -> Verifier:
+    """A Verifier holding one write value as the literal it is, which is the atom check 7 rules on.
+
+    Built by hand rather than derived: since D190 the derivation writes a required value no user of
+    the Task said as a shape over its own column and keeps no literal, so it no longer produces this
+    atom, while a Verifier stored before D190 and one a repair wrote by hand still do. The check is
+    frozen and its behaviour over such an atom is what these tests are about.
+    """
+    atom = S.make_atom(f"w0.{field}", "required",
+                       {"kind": "write_value", "tool": tool, "entity": entity, "entity_raw": entity,
+                        "id_field": id_field, "at": 3, "field": field,
+                        "value": S._key(S.canon_fn(None), value), "raw": value},
+                       provenance=provenance)
+    return Verifier(task_id="t1", atoms=[atom])
 
 
 def test_leak_check_finds_a_number_the_verifier_read_off_a_tool_result(tmp_path):
@@ -489,10 +508,7 @@ def test_leak_check_finds_a_number_the_verifier_read_off_a_tool_result(tmp_path)
             result({"ok": True}, cid="c1"),
             assistant("Refunded."),
         ]
-    verifier = V.derive_verifier(TASK, make_run("ref", events(150.0)), [], None,
-                                 write_tools={"refund_order"})
-    amount = [a for a in verifier.atoms if S.atom_payload(a).get("field") == "amount"][0]
-    assert amount.provenance == "system_derived"
+    verifier = literal_value_atom("refund_order", "#W123", "order_id", "amount", 150.0)
     gates = {g.stage: g for g in S.validate_verifier(verifier, make_run("ref", events(150.0)),
                                                      intent_text="refund exactly 150.0 on #W123",
                                                      user_rules=UserRules())}
@@ -509,7 +525,7 @@ def test_leak_check_finds_a_number_the_verifier_read_off_a_tool_result(tmp_path)
 ])
 def test_the_leak_check_finds_a_system_derived_constant_in_the_intent_or_the_user_rules_and_never_the_users_own_words(
         tmp_path, intent_text, user_rules, expected_pass, leaked):
-    verifier = derive(tmp_path)
+    verifier = literal_value_atom("cancel_pending_order", "#W123", "order_id", "amount", 150.0)
     gates = {g.stage: g for g in S.validate_verifier(
         verifier, reference_run(), empty_run(), wrong_run(), alt_path_run(),
         intent_text=intent_text, user_rules=user_rules)}
@@ -531,12 +547,8 @@ def _garage_events(said: str) -> list[dict]:
 
 
 def _garage_verifier() -> Verifier:
-    task = Task(id="g1", intent="book the car in for its service")
-    verifier = V.derive_verifier(task, make_run("ref", _garage_events("please book my car in for its service")),
-                                 [], None, write_tools={"book_service"})
-    quote = [a for a in verifier.atoms if S.atom_payload(a).get("field") == "quote"][0]
-    assert quote.provenance == "system_derived"  # the driver was never told the price
-    return verifier
+    """The price kept as a literal: the driver was never told it, so check 7 rules on it (D190)."""
+    return literal_value_atom("book_service", "KP19TRX", "plate", "quote", 240.0)
 
 
 def test_a_value_a_user_said_in_another_seed_recording_is_no_leak():
