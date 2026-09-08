@@ -261,7 +261,10 @@ def test_each_task_overlay_pins_the_version_its_runs_saw(sample, schema, sigs, w
     assert {o.task_id for o in state.overlays} == {"t_cancel", "t_after"}
     cancel_overlay, cancel_values = ce.load_overlay(workdir, "t_cancel")
     after_overlay, after_values = ce.load_overlay(workdir, "t_after")
-    assert [(r.table, r.id) for r in cancel_overlay.rows] == [("orders", oid)]
+    # The order's own row, and the rows the order mentions inside itself (D188 walks a result to
+    # any depth), the order first because the rows are sorted by table.
+    assert cancel_overlay.rows[0].table == "orders" and cancel_overlay.rows[0].id == oid
+    assert {r.table for r in cancel_overlay.rows} == {"orders", "products"}
     assert cancel_values[cancel_overlay.rows[0].version_hash]["status"] == "pending"
     assert after_values[after_overlay.rows[0].version_hash]["status"] == "cancelled"
     assert cancel_overlay.rows[0].version_hash != after_overlay.rows[0].version_hash
