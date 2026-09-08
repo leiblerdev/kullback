@@ -906,6 +906,28 @@ def test_a_body_rewritten_because_the_stages_inputs_moved_does_not_replace_one_i
     assert busiest["outcome"] == "kept" and busiest["kept_score"] > busiest["attempt_score"]
 
 
+def test_the_gates_a_run_records_are_the_kept_bodys_and_not_the_losing_attempts(built, tmp_path):
+    """gates.json is read as the ruling on the module the stage released, and `red_lights` turns every
+    failing row in it into work for the Builder. A run that keeps the body it already had must not
+    leave the failures of the attempt that lost to it there: the Builder would repair a body no
+    module holds. What the attempt scored is on the tool's row and in the run's own ruling."""
+    workdir = tmp_path / "gates_of_the_kept"
+    shutil.copytree(built, workdir)
+    crash = "this attempt reaches for a row that is not there"
+
+    _rerun_the_whole_stage(workdir, TestModel([f"raise KeyError({crash!r})"], loop=True))
+
+    rulings = json.loads((workdir / "kept_bodies.json").read_text(encoding="utf-8"))
+    assert rulings and all(r["outcome"] == "kept" for r in rulings.values())
+    rows = json.loads((workdir / "gates.json").read_text(encoding="utf-8"))
+    assert rows, "the run still records what it ruled on the bodies it released"
+    failed = [row for row in rows if not row.get("pass")]
+    assert not [row for row in failed if row.get("stage") == "executes_on_s0"], \
+        "the attempt crashed on every call and the bodies released did not"
+    assert all(crash not in json.dumps(row) for row in failed), \
+        "nothing the attempt raised reaches the file the Builder repairs from"
+
+
 def test_a_body_rewritten_because_the_stages_inputs_moved_replaces_one_it_scores_above(built, tmp_path):
     """The rule is not that the older body wins; it is that the better one does. A body that matches
     more recorded calls than the one the workdir held takes the tool, and the ruling says so."""

@@ -467,7 +467,6 @@ def _tools_stage(model: Any, max_attempts: int, workers: int = 1, only: Optional
         # tie leaves the stage's files untouched).
         kept_rulings = dict(_read_json(ctx.workdir / KEPT_BODIES_FILE, {}) or {}) if only is not None else {}
         for sig, (build, graded) in zip(sigs, parallel.each(sigs, compile_one, workers), strict=True):
-            gates.extend(build.gates)
             score = list(compile_env.attempt_score(build.gates))
             kept_score = list(compile_env.attempt_score(graded.gates)) if graded is not None else None
             # A body that answers no call at all under this world is no candidate, whatever it
@@ -475,6 +474,14 @@ def _tools_stage(model: Any, max_attempts: int, workers: int = 1, only: Optional
             # broke. Everything else competes, and a tie goes to the body that is already there,
             # which the Examiner has seen and the Tasks that trusted it were trusted against.
             keeps_previous = graded is not None and not graded.could_not_run and kept_score >= score
+            # gates.json is the ruling on the module this stage released, and every failing row in
+            # it becomes a red light the Builder is asked to repair (`builder/tools.red_lights`).
+            # So the rows recorded are the gates of the body that was released, not of the attempt
+            # that lost to it: under D174 a losing attempt was one narrowed rerun's one tool, and
+            # widening the rule to every full run would otherwise fill the file with failures the
+            # released bodies do not have. What the losing attempt scored is not lost with it: it
+            # is on the tool's row (`recompile_declined`) and in the run's own ruling below.
+            gates.extend(graded.gates if keeps_previous else build.gates)
             kept_rulings.pop(sig.name, None)
             if graded is not None:
                 kept_rulings[sig.name] = {
