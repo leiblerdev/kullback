@@ -3,7 +3,8 @@
 The Builder's plan holds the pipeline's artifacts; this one holds the derivation inputs (never a tool
 body, a table or the Environment, D123) plus what the Examiner itself wrote to disk: the Verifiers,
 the task status, the probe pools, the Verifier histories, the refusals, the findings and its own
-re-roll rows. `store` is what `gates_over` binds a registered gate's arguments to, so every name a
+re-roll rows and the automatic loosening proposals. `store` is what `gates_over` binds a
+registered gate's arguments to, so every name a
 gate spec lists (`verifiers`, `probes`, `history`, `task_runs`, `refusals`, `replays`, `rerolls`,
 `canon_rules`, `sigs`, `task_status`) is a key here. `load_state` reads all of it back off disk, so a
 second session, or the next round, finds what the last one left (D127: a probe stays in the pool).
@@ -107,6 +108,9 @@ class ExaminerPlan:
                    for path in sorted((self.state_dir / "history").glob("*.json"))}
         refusals = read_json(self.state_dir / "refusals.json", {}) or {}
         findings = read_json(self.state_dir / "findings.json", []) or []
+        # D205: one row per automatic loosening proposal, which is what the per Task and per round
+        # caps are counted off and what the round reads its four auto_loosen counts from.
+        loosened = read_json(self.state_dir / "auto_loosen.json", []) or []
         self.extra_rerolls = read_json(self.state_dir / "rerolls.json", {}) or {}
         replays = self.inputs.get("replays") or {}
         rerolls = merged_rerolls(self.inputs.get("rerolls") or {}, self.extra_rerolls)
@@ -123,16 +127,19 @@ class ExaminerPlan:
             "canon_rules": rules_of(self.inputs),
             "sigs": list(self.inputs.get("sigs") or []),
             "task_runs": task_runs_of(replays, rerolls),
+            "auto_loosen": loosened,
         })
 
     def write_state(self) -> None:
-        """Everything the Examiner owns on disk: pools, histories, refusals, findings, its re-roll rows."""
+        """Everything the Examiner owns on disk: pools, histories, refusals, findings, its re-roll rows,
+        the automatic loosening proposals."""
         for task_id, pool in sorted(self.store.get("probes", {}).items()):
             write_json(self.workdir / "probes" / task_id / "pool.json", as_dict(pool))
         for task_id, hist in sorted(self.store.get("history", {}).items()):
             write_json(self.state_dir / "history" / f"{task_id}.json", as_dict(hist))
         write_json(self.state_dir / "refusals.json", self.store.get("refusals", {}))
         write_json(self.state_dir / "findings.json", self.store.get("findings", []))
+        write_json(self.state_dir / "auto_loosen.json", self.store.get("auto_loosen", []))
         write_json(self.state_dir / "rerolls.json", self.extra_rerolls)
 
     def current(self, task_id: str) -> Optional[Verifier]:

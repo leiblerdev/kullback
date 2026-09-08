@@ -25,6 +25,7 @@ import asyncio
 import json
 import re
 import time
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Iterable, Iterator, Literal, Optional, get_args
 
@@ -33,6 +34,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from kullback.agent.events import StageEnd, StageStart
 from kullback.agent.tools import AgentTool, RetryableToolError, counted_ruling_line
 from kullback.examiner import findings as findings_mod
+from kullback.examiner import loosen as loosen_mod
 from kullback.examiner import stage as stage_mod
 from kullback.examiner.plan import ExaminerPlan
 from kullback.gates import Ruling, artifacts, ruling_of, verifier_suite
@@ -49,6 +51,7 @@ from kullback.gates.trust import finished_runs, refuse_gate
 from kullback.gates.verifier_suite import check_run, make_atom
 from kullback.runner import budget
 from kullback.runner.records import (
+    Atom,
     Event,
     FindingKind,
     FindingVerb,
@@ -893,12 +896,18 @@ def _derive(plan: ExaminerPlan, sink: Optional[Sink]):
         rulings = [ruling_of(r) for r in ctx.recorded] + [ruling_of(r) for r in loosening]
         plan.last_rulings = rulings
         failed = [r.stage for r in rulings if not r.passed]
+        # D205: before the losses are filed, the ones the harness can answer itself are answered. An
+        # over-strict Verifier is loosened here by code and ruled on by the same gates a repair goes
+        # through; what the gates turn down, and what no rule can relax, stays a finding below.
+        loosened = auto_loosen(plan)
         # D170: the losses the records show are filed here, before the model has chosen anything, so
         # the list exists on a code-driven beat too and the ranking is what the Builder is handed.
         filed = findings_mod.file_rule_findings(plan)
         ranked = "; ".join(f"{f.kind} {f.tool or f.task_id or ''} costs {f.cost} Tasks" for f in filed[:3])
         summary = (f"derive {args.target}: {len(out['verifiers'])} Verifiers over {len(status)} Tasks, "
                    f"{passed} passed the D79 suite" + (f"; failed rulings: {', '.join(failed)}" if failed else "")
+                   + (f"; {loosened['auto_loosen_proposed']} over-strict Verifiers loosened by rule, "
+                      f"{loosened['auto_loosen_accepted']} accepted" if loosened["auto_loosen_proposed"] else "")
                    + (f"; {len(filed)} findings filed from the records, most costly first: {ranked}"
                       if filed else ""))
         return DeriveResult(summary=summary, target=args.target, status="ran",
@@ -906,6 +915,53 @@ def _derive(plan: ExaminerPlan, sink: Optional[Sink]):
                             findings=[as_dict(f) for f in filed])
 
     return derive
+
+
+def auto_loosen(plan: ExaminerPlan) -> dict:
+    """The loosening step the derivation runs by itself over the Tasks the gate rules over-strict (D205).
+
+    For each such Task the first held-out Run that reached the Reference End state and the Verifier
+    rejects is taken, the atoms that reject it are relaxed by kind (`loosen.proposal_for`), and the
+    result goes through `propose_version`, which is the repair tool's own path: the D79 suite, the
+    probe pool and one-directional loosening rule on it before it becomes the Verifier on disk. A
+    proposal the gates turn down leaves the Task exactly as it was and is recorded with
+    `auto_loosen_rejected` and the check that turned it down, so the next round reads why.
+
+    At most one proposal per Task per round and at most `MAX_ROUNDS` rounds; a Task still over-strict
+    after that keeps its finding, which the Builder can no longer close (D192's gap, closed in
+    rounds.py), so the Examiner is steered at it with the atoms named. An accepted proposal closes
+    that finding, because the loss it reports is gone.
+
+    Nothing here calls a model. The counts land on the round through `plan.store["auto_loosen"]`.
+    """
+    rows = plan.store.setdefault("auto_loosen", [])
+    write_tools = write_tools_of(plan.store.get("sigs") or [])
+    canon_rules = plan.store.get("canon_rules")
+    task_runs = plan.store.get("task_runs") or {}
+    for task_id, seen in sorted(loosen_mod.over_strict_rows(plan.store).items()):
+        if not loosen_mod.may_propose(rows, task_id, plan.round):
+            continue
+        verifier = plan.current(task_id)
+        run = next((r for r in task_runs.get(task_id, []) if r.run_id in set(seen["rejected_ids"])), None)
+        if verifier is None or run is None:
+            continue
+        proposal = loosen_mod.proposal_for(verifier, run, canon_rules, write_tools)
+        if proposal is None:
+            continue
+        out = propose_version(plan, task_id, drop=proposal.drop, add=proposal.add,
+                              reason=proposal.reason, by="auto_loosen")
+        rows.append({"task_id": task_id, "round": plan.round, "run_id": proposal.run_id,
+                     "kinds": proposal.kinds, "atoms": proposal.drop, "accepted": out.accepted,
+                     "rejected_by": list(out.rejected_by),
+                     "reason": proposal.reason if out.accepted
+                               else f"{loosen_mod.REJECTED}: {', '.join(out.rejected_by)}"})
+        if out.accepted:
+            plan.close_findings([row["finding_id"] for row in plan.store.get("findings") or []
+                                 if isinstance(row, dict) and row.get("status") == "open"
+                                 and row.get("kind") == "false_rejection" and row.get("task_id") == task_id])
+    plan.store["auto_loosen"] = rows
+    plan.write_state()
+    return loosen_mod.round_counts(rows, plan.round)
 
 
 def _restore_prior_row(plan: ExaminerPlan, filename: str, store_key: Optional[str], task_id: str,
@@ -1050,6 +1106,99 @@ def repair_lock(rejections: dict[tuple[str, str], list[str]], task_id: str,
     return None
 
 
+@dataclass
+class Proposed:
+    """What one proposed Verifier version came to: the candidate, the gates' answer and their rulings."""
+    candidate: Verifier
+    digest: str
+    accepted: bool
+    rejected_by: list[str]
+    rulings: list[Ruling]
+
+
+def propose_version(plan: ExaminerPlan, task_id: str, *, drop: Iterable[str], add: Iterable[Any],
+                    reason: str, by: str) -> Proposed:
+    """One new Verifier version through the gates that rule on a repair, whoever proposed it.
+
+    The path is the `repair` tool's, lifted out of it so that nothing can propose a version by
+    another route: the D79 suite over the candidate, the Task's probe pool and one-directional
+    loosening all rule before anything is written, the version is kept in the history either way with
+    the checks that rejected it, and only an accepted one becomes the file on disk. `by` is what the
+    history row records as the proposer, which is how a reader tells the model's repair from the
+    harness's own loosening step (D205), and it changes nothing about what the gates ask.
+
+    `add` rows are atoms or the objects the tool's schema takes; a row of the wrong shape is refused
+    by `_atom_of` with the corrected call, as it always was.
+    """
+    task = _task(plan, task_id)
+    current = _current(plan, task_id)
+    history = plan.store.setdefault("history", {})
+    hist = history.get(task_id) or VerifierHistory(task_id=task_id)
+    if not hist.versions:
+        hist.versions.append(VerifierVersion(
+            task_id=task_id, content_hash=version_hash(current), verifier_version=str(1),
+            round=plan.round, by="derive", reason="the Verifier on disk before any repair",
+            accepted=True, verifier=current))
+    dropped = set(drop)
+    added = [row if isinstance(row, Atom) else _atom_of(row, current.atoms) for row in add]
+    atoms = [a for a in current.atoms if a.id not in dropped] + added
+    if not atoms:
+        raise ValueError("a repair cannot leave the Verifier without atoms")
+    candidate = current.model_copy(deep=True, update={
+        "atoms": atoms, "verifier_version": str(len(hist.versions) + 1)})
+    canon_rules = plan.store.get("canon_rules")
+    sigs = plan.store.get("sigs") or []
+    write_tools = write_tools_of(sigs)
+    paths = _reference_paths(plan, task_id)
+    intents = plan.inputs.get("intents") or {}
+    task_for = (apply_intent(task, Intent.model_validate(intents[task.id])) if task.id in intents else task)
+    gates = stage_mod.suite_for(task_for, candidate, paths, canon_rules=canon_rules, write_tools=write_tools,
+                                user_rules=plan.inputs.get("user_rules") or {},
+                                rules_trace=_rules_trace(plan, task_id), probe_model=plan.probe_model,
+                                run_probe=plan.run_probe, may_probe=_may_probe(plan))
+    results = verifier_suite.d79_results(gates)
+    d79 = artifacts.verifier_gate(results)
+    pools = plan.store.get("probes") or {}
+    pool_gate = probe_pool_gate([candidate], {k: v for k, v in pools.items() if k == task_id},
+                                canon_rules, sigs)
+    trial = hist.model_copy(deep=True)
+    digest = version_hash(candidate)
+    row = VerifierVersion(task_id=task_id, content_hash=digest, verifier_version=candidate.verifier_version,
+                          parent_hash=version_hash(current), round=plan.round, by=by, reason=reason,
+                          accepted=False, verifier=candidate)
+    trial.versions.append(row)
+    loosening = loosening_gate({task_id: trial}, plan.store.get("task_runs") or {},
+                               plan.store.get("replays") or {}, plan.store.get("rerolls") or {},
+                               canon_rules, sigs)
+    rejected_by = [g.stage for g in gates if not g.passed]
+    if not pool_gate.passed:
+        rejected_by.append(pool_gate.stage)
+    if not loosening.passed:
+        rejected_by.append(loosening.stage)
+    accepted = d79.passed and pool_gate.passed and loosening.passed
+    row = row.model_copy(update={"accepted": accepted, "rejected_by": rejected_by})
+    hist.versions.append(row)
+    history[task_id] = hist
+    if accepted:
+        plan.set_current(candidate)
+        status = plan.store.setdefault("task_status", {})
+        entry = dict(status.get(task_id) or {})
+        entry.update({"verifier_passed": True, "checks": results,
+                      "not_run": [g.stage for g in gates if g.metrics.get("skipped")]})
+        status[task_id] = entry
+        write_json(plan.workdir / "task_status.json", status)
+    plan.write_state()
+    # The build-wide rulings land in gates.json; the result carries the candidate's own.
+    plan.ledger.record(by, probe_pool_gate(plan.store["verifiers"], pools, canon_rules, sigs))
+    plan.ledger.record(by, loosening_gate(history, plan.store.get("task_runs") or {},
+                                          plan.store.get("replays") or {},
+                                          plan.store.get("rerolls") or {}, canon_rules, sigs))
+    rulings = [ruling_of(d79), ruling_of(pool_gate), ruling_of(loosening)]
+    plan.last_rulings = rulings
+    return Proposed(candidate=candidate, digest=digest, accepted=accepted, rejected_by=rejected_by,
+                    rulings=rulings)
+
+
 def _repair(plan: ExaminerPlan):
     # One session's rejections, per Task and per check, in the order they happened (REPAIR_STOP).
     rejections: dict[tuple[str, str], list[str]] = {}
@@ -1058,80 +1207,17 @@ def _repair(plan: ExaminerPlan):
         locked = repair_lock(rejections, args.task_id)
         if locked is not None:
             raise PermissionError(f"repair refused: {locked}")
-        task = _task(plan, args.task_id)
-        current = _current(plan, args.task_id)
-        history = plan.store.setdefault("history", {})
-        hist = history.get(args.task_id) or VerifierHistory(task_id=args.task_id)
-        if not hist.versions:
-            hist.versions.append(VerifierVersion(
-                task_id=args.task_id, content_hash=version_hash(current), verifier_version=str(1),
-                round=plan.round, by="derive", reason="the Verifier on disk before any repair",
-                accepted=True, verifier=current))
-        drop = set(args.drop)
-        atoms = ([a for a in current.atoms if a.id not in drop]
-                 + [_atom_of(row, current.atoms) for row in args.add])
-        if not atoms:
-            raise ValueError("a repair cannot leave the Verifier without atoms")
-        candidate = current.model_copy(deep=True, update={
-            "atoms": atoms, "verifier_version": str(len(hist.versions) + 1)})
-        canon_rules = plan.store.get("canon_rules")
-        sigs = plan.store.get("sigs") or []
-        write_tools = write_tools_of(sigs)
-        paths = _reference_paths(plan, args.task_id)
-        intents = plan.inputs.get("intents") or {}
-        task_for = (apply_intent(task, Intent.model_validate(intents[task.id])) if task.id in intents else task)
-        gates = stage_mod.suite_for(task_for, candidate, paths, canon_rules=canon_rules, write_tools=write_tools,
-                                    user_rules=plan.inputs.get("user_rules") or {},
-                                    rules_trace=_rules_trace(plan, args.task_id), probe_model=plan.probe_model,
-                                    run_probe=plan.run_probe, may_probe=_may_probe(plan))
-        results = verifier_suite.d79_results(gates)
-        d79 = artifacts.verifier_gate(results)
-        pools = plan.store.get("probes") or {}
-        pool_gate = probe_pool_gate([candidate], {k: v for k, v in pools.items() if k == args.task_id},
-                                    canon_rules, sigs)
-        trial = hist.model_copy(deep=True)
-        digest = version_hash(candidate)
-        row = VerifierVersion(task_id=args.task_id, content_hash=digest, verifier_version=candidate.verifier_version,
-                              parent_hash=version_hash(current), round=plan.round, by="repair", reason=args.reason,
-                              accepted=False, verifier=candidate)
-        trial.versions.append(row)
-        loosening = loosening_gate({args.task_id: trial}, plan.store.get("task_runs") or {},
-                                   plan.store.get("replays") or {}, plan.store.get("rerolls") or {},
-                                   canon_rules, sigs)
-        rejected_by = [g.stage for g in gates if not g.passed]
-        if not pool_gate.passed:
-            rejected_by.append(pool_gate.stage)
-        if not loosening.passed:
-            rejected_by.append(loosening.stage)
-        accepted = d79.passed and pool_gate.passed and loosening.passed
-        row = row.model_copy(update={"accepted": accepted, "rejected_by": rejected_by})
-        hist.versions.append(row)
-        history[args.task_id] = hist
-        if accepted:
-            plan.set_current(candidate)
-            status = plan.store.setdefault("task_status", {})
-            entry = dict(status.get(args.task_id) or {})
-            entry.update({"verifier_passed": True, "checks": results,
-                          "not_run": [g.stage for g in gates if g.metrics.get("skipped")]})
-            status[args.task_id] = entry
-            write_json(plan.workdir / "task_status.json", status)
-        plan.write_state()
-        # The build-wide rulings land in gates.json; the result carries the candidate's own.
-        plan.ledger.record("repair", probe_pool_gate(plan.store["verifiers"], pools, canon_rules, sigs))
-        plan.ledger.record("repair", loosening_gate(history, plan.store.get("task_runs") or {},
-                                                    plan.store.get("replays") or {},
-                                                    plan.store.get("rerolls") or {}, canon_rules, sigs))
-        rulings = [ruling_of(d79), ruling_of(pool_gate), ruling_of(loosening)]
-        plan.last_rulings = rulings
-        for check in rejected_by:
+        out = propose_version(plan, args.task_id, drop=args.drop, add=args.add, reason=args.reason, by="repair")
+        for check in out.rejected_by:
             rejections.setdefault((args.task_id, check), []).append(
-                f"version {candidate.verifier_version}: {args.reason}")
-        outcome = "accepted" if accepted else f"rejected by {', '.join(rejected_by)}"
-        summary = (f"repair of task {args.task_id}: version {candidate.verifier_version} ({digest[:12]}) {outcome}; "
-                   f"{len(atoms)} atoms, {len(args.drop)} dropped, {len(args.add)} added")
-        return RepairResult(summary=summary, task_id=args.task_id, content_hash=digest,
-                            verifier_version=candidate.verifier_version, accepted=accepted,
-                            rejected_by=rejected_by, rulings=rulings)
+                f"version {out.candidate.verifier_version}: {args.reason}")
+        outcome = "accepted" if out.accepted else f"rejected by {', '.join(out.rejected_by)}"
+        summary = (f"repair of task {args.task_id}: version {out.candidate.verifier_version} "
+                   f"({out.digest[:12]}) {outcome}; {len(out.candidate.atoms)} atoms, "
+                   f"{len(args.drop)} dropped, {len(args.add)} added")
+        return RepairResult(summary=summary, task_id=args.task_id, content_hash=out.digest,
+                            verifier_version=out.candidate.verifier_version, accepted=out.accepted,
+                            rejected_by=out.rejected_by, rulings=out.rulings)
 
     return repair
 

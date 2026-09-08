@@ -66,6 +66,7 @@ from kullback.builder.agent import builder_message
 from kullback.builder.build import DEFAULT_REROLLS, TARGET_ALL, BuildError, BuildPlan
 from kullback.builder.tools import BUILD_TOOLS, EXAMINER_OWNS
 from kullback.examiner import agent as examiner_agent
+from kullback.examiner import loosen
 from kullback.examiner import stage as examiner_stage
 from kullback.examiner.agent import ExaminerError, examiner_message, examiner_round_message
 from kullback.examiner.plan import STATE_DIR, ExaminerPlan
@@ -597,15 +598,22 @@ class Loop:
         if self.plan.last is None or (result is not None and result.is_error):
             raise BuildError(result.content if result is not None
                              else f"the model never called build({self.target!r})")
-        closed = [finding.finding_id for finding in delivered if finding.finding_id not in failed]
+        handled = [finding for finding in delivered if finding.finding_id not in failed]
+        # D205, closing D192's gap: a finding suggesting a verb only the Examiner can call is not the
+        # Builder's to close. The Builder was shown it and could not act on it, and closing it there
+        # took it out of the Examiner's own steer (`own_suggestions` reads the open ones), which is
+        # why `suggested_open` read 0 and 1 on builds whose Examiners suggested their own verb 33 and
+        # 18 times. It is dequeued all the same, so it no longer owes the Builder a beat and the loop
+        # can still exit; what closes it is the Examiner acting, or the harness's own loosening step.
+        closed = [f.finding_id for f in handled if f.suggested not in EXAMINER_VERBS]
         if self.eplan is not None:
             if closed:
                 self.eplan.close_findings(closed)
         else:
             self._unclosed.extend(closed)
-        closed_ids = set(closed)
+        delivered_ids = {finding.finding_id for finding in handled}
         self.pending_findings = [finding for finding in self.pending_findings
-                                 if finding.finding_id not in closed_ids]
+                                 if finding.finding_id not in delivered_ids]
         self._beat_done("builder", n, before)
 
     def _store_is_partial(self) -> bool:
@@ -776,8 +784,15 @@ class Loop:
             "shape_retries": self.retry_asks - self.retries_seen,
             "refuse_repeats": repair_module.refuse_repeats(self.plan.workdir, self.plan.round),
             "zooms_skipped": self.plan.zooms_skipped - self.zooms_seen,
+            # D205: what the harness's own loosening step proposed this round, what the gates took
+            # and what they turned down, with the atom kinds it relaxed.
+            **loosen.round_counts(self.loosenings_now(), self.plan.round),
             "artifacts": fingerprint, "artifact_hashes": per, "artifacts_changed": changed,
         }
+
+    def loosenings_now(self) -> list:
+        """The automatic loosening rows as the Examiner's store holds them, none before a beat opened."""
+        return list(self.eplan.store.get("auto_loosen") or []) if self.eplan is not None else []
 
     def findings_now(self) -> list:
         """The finding rows as the Examiner's store holds them, or none when no beat has opened."""

@@ -764,6 +764,20 @@ def scored_write_tools(verifier: Verifier, run: Run, write_tools: Optional[Itera
     return resolve_write_tools([run], verifier_write_tools(verifier))
 
 
+def names_no_row(payload: dict) -> bool:
+    """Is this write atom about the tool rather than about one row?
+
+    A write payload that names no entity, no raw entity and no id field carries the predicate
+    `wrote(tool)` with no fields, which the Runner satisfies with any successful call of the tool and
+    marks every one of them covered. The scorer here has to read the same atom the same way or the
+    two would disagree about the very Runs the D79 gates are made of: a Verifier the gates rejected
+    for a row it never wrote would be passed by the Verdict. It is the shape an over-specific write
+    atom is relaxed to (D205), and it is the shape the derivation writes whenever a write leaves no
+    id field behind, so nothing about it belongs to one relaxation.
+    """
+    return not (payload.get("entity") or payload.get("entity_raw") or payload.get("id_field"))
+
+
 def check_run(verifier: Verifier, run: Any, canon: Any = None, *,
               write_tools: Optional[Iterable[str]] = None) -> tuple[bool, Optional[str]]:
     """Does this Run satisfy the atoms? Used by the D79 checks below, never by the Runner."""
@@ -772,6 +786,7 @@ def check_run(verifier: Verifier, run: Any, canon: Any = None, *,
     tools = scored_write_tools(verifier, run, write_tools)
     effects = write_effects(run, tools, fn)
     present = {(e["tool"], e["entity"]) for e in effects.values()}
+    wrote_with = {e["tool"] for e in effects.values()}
     values = {(e["tool"], e["entity"], f, v) for e in effects.values() for f, v in e["values"].items()}
     asked, said = set(question_keys(run, effects, fn)), set(communicate_values(run, fn))
     for atom in verifier.atoms:
@@ -787,7 +802,8 @@ def check_run(verifier: Verifier, run: Any, canon: Any = None, *,
             continue
         if atom.kind != "required" and kind not in ("question", "communicate"):
             continue
-        if kind == "write" and target not in present:
+        if kind == "write" and (payload.get("tool") not in wrote_with if names_no_row(payload)
+                                else target not in present):
             return False, atom.id
         if kind == "write_value" and target + (payload.get("field"), payload.get("value")) not in values:
             return False, atom.id
@@ -814,12 +830,17 @@ def _extra_write(verifier: Verifier, effects: dict, write_tools: Optional[Iterab
     if not write_tools:
         return None
     covered = set()
+    whole_tool = set()
     for atom in verifier.atoms:
         payload = atom_payload(atom)
         if atom.kind != "forbidden" and payload.get("kind") in ("write", "write_value"):
             covered.add((payload.get("tool"), payload.get("entity")))
+            if names_no_row(payload):
+                # `wrote(tool)` with no fields marks every call of the tool covered on the Runner's
+                # side, so an atom about the tool covers every row it wrote here too.
+                whole_tool.add(payload.get("tool"))
     for effect in effects.values():
-        if (effect["tool"], effect["entity"]) not in covered:
+        if effect["tool"] not in whole_tool and (effect["tool"], effect["entity"]) not in covered:
             return f"extra_write:{effect['tool']}"
     return None
 
