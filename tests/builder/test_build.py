@@ -1215,3 +1215,31 @@ def test_a_replay_failing_call_the_writer_is_not_shown_is_counted_and_never_quot
 
 def test_a_tool_the_replay_failed_on_nothing_for_gets_no_such_lesson():
     assert build_module.replay_lesson({}, ["c1"]) == ""
+
+
+def test_a_written_call_path_becomes_a_trace_the_replay_can_drive():
+    """D199: the conversation is the Run's own, turn for turn, and each call joins the turn it names,
+    so a rewrite varies the calls and neither what the agent asked nor what it told the user."""
+    spoken = [{"role": "user", "content": "please stock shelf s1"},
+              {"role": "assistant", "content": "let me look"},
+              {"role": "assistant", "content": "shelf s1 now holds 4."},
+              {"role": "user", "content": "and check it for me"}]
+    calls = [{"name": "read_shelf", "args": {"shelf_id": "s1"}, "id": "c0", "turn": 1},
+             {"name": "stock_shelf", "args": {"shelf_id": "s1", "units": 4}, "id": "c1", "turn": 1},
+             {"name": "read_shelf", "args": {"shelf_id": "s1"}, "id": "c2", "requestor": "user", "turn": 3}]
+
+    trace = build_module._variant_trace("t1", calls, spoken, "synth-path-r1-t1-1")
+
+    assert [(turn.role, turn.content, turn.tool_call_ids) for turn in trace.turns] == [
+        ("user", "please stock shelf s1", []), ("assistant", "let me look", ["c0", "c1"]),
+        ("assistant", "shelf s1 now holds 4.", []), ("user", "and check it for me", ["c2"])]
+    assert [(c.id, c.name, c.requestor) for c in trace.tool_calls] == [
+        ("c0", "read_shelf", "assistant"), ("c1", "stock_shelf", "assistant"),
+        ("c2", "read_shelf", "user")]
+
+
+def test_a_call_whose_turn_is_gone_joins_the_last_turn_its_speaker_had():
+    spoken = [{"role": "assistant", "content": "done"}]
+    trace = build_module._variant_trace("t1", [{"name": "read_shelf", "args": {}, "turn": 9}], spoken, "synth-1")
+    assert [call.id for call in trace.tool_calls] == ["synth-1-0"]
+    assert [(turn.role, turn.tool_call_ids) for turn in trace.turns] == [("assistant", ["synth-1-0"])]

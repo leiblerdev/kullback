@@ -77,7 +77,8 @@ def drive_tool(harness: AgentHarness, name: str, arguments: dict, call_id: str =
 def run_examiner(workdir: Any, *, inputs: dict, env_id: Optional[str] = None, agent_model: Optional[Model] = None,
                  probe_model: Any = None, judge_model: Any = None, judge_agent: bool = False,
                  run_probe: Any = None,
-                 run_rerolls: Any = None, probe_limit: Optional[int] = None, workers: int = 1,
+                 run_rerolls: Any = None, run_variant: Any = None,
+                 probe_limit: Optional[int] = None, workers: int = 1,
                  anchor: Any = None,
                  subscribers: Iterable[Callable[[Any], Any]] = (), max_turns: int = MAX_TURNS,
                  target: str = "all", session_path: Any = None, round: int = 0,
@@ -91,7 +92,7 @@ def run_examiner(workdir: Any, *, inputs: dict, env_id: Optional[str] = None, ag
     """
     plan = ExaminerPlan(workdir=Path(workdir), inputs=inputs, env_id=env_id, probe_model=probe_model,
                         judge_model=judge_model, judge_agent=judge_agent,
-                        run_probe=run_probe, run_rerolls=run_rerolls,
+                        run_probe=run_probe, run_rerolls=run_rerolls, run_variant=run_variant,
                         probe_limit=probe_limit, workers=workers, anchor=anchor, round=round,
                         allowance_remaining=allowance_remaining)
     session = SessionStore.load(session_path) if session_path is not None else None

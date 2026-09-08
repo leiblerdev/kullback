@@ -869,6 +869,9 @@ def _derive(plan: ExaminerPlan, sink: Optional[Sink]):
                 # the `reroll` tool draws.
                 run_rerolls=(plan.run_rerolls if plan.allowance_remaining is None
                              or plan.allowance_remaining > 0 else None),
+                # D199: the replay callable is not under the allowance, since a synthesised path is
+                # written by code and buys nothing.
+                run_variant=plan.run_variant,
                 round_number=plan.round,
                 only=only, workers=plan.workers)
         except Exception as exc:
