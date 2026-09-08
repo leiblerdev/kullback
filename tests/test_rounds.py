@@ -46,8 +46,9 @@ TARGET = "environment"
 # themselves and the reasons name what the fuller world now answers. Re-pinned again for D193: two
 # of the three Tasks are a residue the judge is now asked about a second time, and the reason on
 # those rows ends in the abstention that second pass reached instead of the first pass's judge
-# reason. The verdicts are the same three, and every other byte of the rows is the pre-phase build's.
-TASK_STATUS_SHA256_BEFORE_THE_PHASE = "2819b2b7ee5edc27262d39fdef16297e830cb06223606b624a923d7e895d9d84"
+# reason. Re-pinned once more where D188 and D193 land together: the verdicts are the same three
+# and every other byte of the rows is the pre-phase build's.
+TASK_STATUS_SHA256_BEFORE_THE_PHASE = "27e57bea570e8f9dd01c2a992a35673e3b7cc62df2f6a5ee2e6c868eadd2c16d"
 
 
 def _fixture(request) -> Path:
