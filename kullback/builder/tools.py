@@ -209,6 +209,9 @@ REPAIR_VERB_FOR: dict[str, str] = {
     # A body holding an id or a value it copied out of a recorded call is written again, with the
     # lookup over the world's tables the hint asks for (D162).
     "compile_tools.memorised_values": "repair_recompile",
+    # A body that answered two Tasks alike where their recordings differ is written again, with the
+    # columns it has to read off the world named (D195).
+    "sensitivity": "repair_recompile",
     # A Task whose Traces do not replay to their End state is a tool that answers differently.
     "replay_reference": "repair_recompile",
     # A row the Traces name that the built world does not hold is a table to grow (D107).

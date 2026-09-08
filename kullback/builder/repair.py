@@ -707,6 +707,23 @@ def memorised_values_lesson(workdir: Any, tool: str) -> str:
     return ""
 
 
+def sensitivity_lesson(workdir: Any, tool: str) -> str:
+    """The one sentence a body refused for answering two worlds alike leaves behind (D195).
+
+    Read off `tool_builds.json` the way the memorised-values lesson is, and it names the columns the
+    ruling recorded, because "read the world" is what the writer of a memorising body already
+    believes it did. The columns are the ruling's own metric, so nothing here parses a failure
+    sentence. Only the latest ruling of this stage is asked, whichever way it went: a tool whose
+    last attempt read the columns has learned the lesson, and repeating it to the next writer is
+    telling it to repair what it has already repaired.
+    """
+    for ruling in _rulings_of(workdir, tool):
+        if ruling.get("stage") == gates.SENSITIVITY_STAGE:
+            return ("" if ruling.get("pass") else
+                    gates.sensitivity_lesson((ruling.get("metrics") or {}).get("columns") or []))
+    return ""
+
+
 def record_tool_lesson(workdir: Any, tool: str, failures: list[str]) -> Path:
     """Write one gate-failure sequence to the Builder memory for this workdir.
 
@@ -724,6 +741,11 @@ def record_tool_lesson(workdir: Any, tool: str, failures: list[str]) -> Path:
     memorised = memorised_values_lesson(workdir, tool)
     if memorised and not any(memorised in failure for failure in failures):
         failures.append(memorised)
+    # D195 the same way: a body that answered two Tasks alike is repaired by naming the columns it
+    # has to read off the world, and the hint almost never names a column.
+    sensitivity = sensitivity_lesson(workdir, tool)
+    if sensitivity and not any(sensitivity in failure for failure in failures):
+        failures.append(sensitivity)
     return memory_mod.record_lesson(workdir, tool, failures)
 
 
