@@ -585,7 +585,7 @@ def _tools_stage(model: Any, max_attempts: int, workers: int = 1, only: Optional
             graded = compile_env.grade_body(
                 sig, kept[0], calls_by_tool.get(sig.name, []), inputs["schema"], inputs["db"],
                 ctx.workdir / "tools" / sig.name / KEPT_BODY_DIR,
-                call_states=states, rules=rules,
+                call_states=states, rules=rules, call_tasks=call_tasks,
                 readers=result_readers) if kept is not None else None
             # What this tool already failed on, so a recompile asks a different question than the
             # one that failed, and what the body it has to beat fails at now. The kept body itself
@@ -606,7 +606,8 @@ def _tools_stage(model: Any, max_attempts: int, workers: int = 1, only: Optional
                                             max_attempts=max_attempts, call_states=states,
                                             rules=rules, tool_names=tool_names,
                                             error_prefix=error_prefix, world_note=world_note,
-                                            lesson=lesson, readers=result_readers), graded
+                                            lesson=lesson, call_tasks=call_tasks,
+                                            readers=result_readers), graded
 
         declined: list[str] = []
         # Per tool, whether the body it already had was kept, beaten, or could not run at all under

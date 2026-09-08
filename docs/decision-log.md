@@ -1383,6 +1383,20 @@ Two numbers cut against the premise that this gate does much work. Of the 70 Tas
 
 gates_version is a hash of the package, so these two files moving moves the version the ruling carries, and the three workdirs need freezing again before the next launch. Next to read is false_rejection_pool beside false_rejection per round, whether the pool grows, and whether the flipped Tasks come back once the Examiner acts on the finding raised for them.
 
+### D195. A body that reads state answers differently when that state differs (2026-09-08)
+
+The founder asked again to "observe from the errors and fix things generally, it should not overfit" (2026-09-08). The idea comes from Repo2RLEnv: a synthesized test counts only once it fails on a stub and passes on the real thing. Kullback asks that of a Verifier (D79), never of a tool body, which passes whenever its answers match the recordings, read or memorised. D191 watched a kept body write a status line as a constant and beat an attempt that derived it from the row.
+
+compile_tools gains an eighth ruling, sensitivity, between non_trivial and replay_fidelity. Two recorded calls of one tool, under two Tasks, whose arguments match or differ only in the row they name, and whose recorded results part in a column, are a sensitivity pair; a column holding those two row ids is dropped, since echoing an argument is not reading a world. A column counts only where the two Task worlds hold it differently; where they hold one value the fault is an unpinned Starting state, which replay already blocks. The body must part in one of those columns; answering both alike is memorising or reading the wrong row. The failure names the tool, the column and the two Task ids, never a value; the lesson names the columns. A pair parting in the whole answer, where the tool has no reader (D176), becomes unread_pairs and is not ruled on; no pair passes as no_pairs. This gate alone does not stop the chain: it runs before replay_fidelity so gates passed lifts a reading body over a memorising one in attempt_score and keep-by-beating (D184), and the chain goes on so the replay count still breaks ties among failing bodies.
+
+Seventeen tests on an invented plant nursery cover a constant body, a reading body, one reading another Task's row, a column both worlds hold alike, an exempt column, a nested row id and an unread prose result.
+
+Measured on copies of two live workdirs, no model call. Telecom: 36 tools, 48 ruled pairs over 13 tools, 10 unread pairs over 3 more, 23 with no pair, one failing, and real: that body tests a device column against the string on while the two pinned worlds hold Yes and No. Airline: 13 tools, 5 ruled pairs over 2 tools, nothing failing.
+
+Two numbers cut against the premise. Without the test that the worlds hold the column, the rule failed 6 telecom tools and 2 airline tools, seven of those eight parting in a column neither world holds, so the accusation belonged to the Starting state. And rejecting a body wins no fidelity by itself: dropped with nothing in its place, telecom falls from 19 of 329 Tasks confirmed to 17 and writes matched from 2786 to 2617, airline is unchanged at 88 of 122. That is the floor: a live stage recompiles with the lesson, which cannot be measured offline.
+
+The cost is one more ruling per attempt with no subprocess, a pair search capped at 25 pairs and four worlds per bucket, and two files under kullback/gates moved, so gates_version moves and the workdirs need freezing again. On the next builds read pairs, unread_pairs and no_pairs per tool: a corpus mostly no_pairs is one this gate cannot see.
+
 ## Pending (asked, not yet answered)
 
 - ~~The user's own tools and the world they act on (D71, first part).~~ Decided as D176 (2026-09-07): one world, rows revealed by a requestor marked by it, readers as code under the free gate.
