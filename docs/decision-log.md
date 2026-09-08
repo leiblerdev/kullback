@@ -1291,6 +1291,20 @@ Measured read only on copies, the first corpus limited to its first 40 judged Ta
 
 Three things disagree with the premise. Re-judged fresh, the confirmation-shaped reason is rare, 1 of 34 judgements on the second corpus and 2 of 85 on the first against the 5 of 7 last reported, so resampling the judge moves this more than the treatment does. Almost nothing is dropped by the check now; the judge itself fails far fewer states once it has to point at a value. And the agent judge buys its low false rejection with References, 19 and 10 of them, so it stays off. Next to read is `judge_uncited` per round, the recorded reasons, and whether Tasks lose References to a judge that will not commit.
 
+### D194. False rejection over the held-out pool gates trusted (2026-09-08)
+
+The founder asked for fixes read off the errors that hold generally ("observe from the errors and fix things generally, it should not overfit", 2026-09-08). The funnel read over the three live builds found this one inside a ruling: the trusted ruling measured D133's false-rejection number for every Task, wrote it into its own metrics, and never read it in its reason chain. Three Tasks on the first corpus (task_c280d4c61cef, task_6c7a19337b05, task_12bf34ff4998) counted as trusted while their required atoms rejected every held-out Run that had reached the Reference, two more did on the second (task_7cc03b8bfc5c, task_d14a4f6c7cb3), and on the third no Verifier passed the suite at all. The same measure fails a Verifier in the false-rejection gate and raises a finding for the Examiner, so two rulings disagreed about one Verifier.
+
+The rule: a Task is trusted only when its false rejection over the held-out pool is under D133's threshold, or the pool is empty, in which case the step records no_pool and the other checks decide. A Verifier that turns away every Run which reached the Reference checks one path, not the Task, so counting it as trusted overstated the number the loop is aimed at. The threshold now lives in one place, FALSE_REJECTION_THRESHOLD in the loosening module with over_strict as the predicate over a row, read there by the false-rejection gate, the finding and the trusted ruling alike. Every ruling carries the fraction, the pool size and that per-Task word, so a rate is never reported without its denominator.
+
+Three tests cover it on the gates suite's invented domain: a fraction at the threshold is not trusted and the failure names it with the fraction and the pool size, a fraction under it is trusted, and an empty pool says no_pool and leaves the Task to the other checks.
+
+Measured offline on copies of the two workdirs holding trusted Tasks, code only, no model call, spend zero. Trusted falls from 119 to 116 over 200 Verifiers on the first corpus, from 28 to 26 over 61 on the second, and from 0 to 0 on the third: an honest loss of five, not a regression.
+
+Two numbers cut against the premise that this gate does much work. Of the 70 Tasks on the first corpus holding a pool, 23 sit at the threshold, but 20 already failed the D79 suite, so the step decides three; on the second, 5 of 12 sit there and 2 are new. And the pool is empty for 130 of 200 Tasks on the first corpus and 49 of 61 on the second, so the gate is silent on most of both until re-rolls and live traces arrive. D185's filter of the pool down to the Runs that reached the Reference now has an effect it did not have before: until today it moved a reported number and no decision.
+
+gates_version is a hash of the package, so these two files moving moves the version the ruling carries, and the three workdirs need freezing again before the next launch. Next to read is false_rejection_pool beside false_rejection per round, whether the pool grows, and whether the flipped Tasks come back once the Examiner acts on the finding raised for them.
+
 ## Pending (asked, not yet answered)
 
 - ~~The user's own tools and the world they act on (D71, first part).~~ Decided as D176 (2026-09-07): one world, rows revealed by a requestor marked by it, readers as code under the free gate.

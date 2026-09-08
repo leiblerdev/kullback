@@ -88,6 +88,7 @@ from kullback.gates.fidelity import (
 )
 from kullback.gates.ledger import GateLedger
 from kullback.gates.loosening import (
+    FALSE_REJECTION_THRESHOLD,
     accepted_versions,
     discarded_runs,
     false_rejection,
@@ -95,6 +96,7 @@ from kullback.gates.loosening import (
     legitimate_runs,
     loosening_gate,
     newly_passed,
+    over_strict,
 )
 from kullback.gates.probes import (
     PROBE_STOP,
@@ -292,8 +294,8 @@ GATES: tuple[GateSpec, ...] = (
                                            "task_status")),
     _spec("refuse", "a Task is refused only when no frontier Run of it finished", refuse_gate,
           artifacts=("refusals", "replays", "rerolls")),
-    _spec("trusted", "a Verifier is trusted when it passed the suite, rejects every probe, is an accepted version "
-          "and its Task is not refused", trusted_gate,
+    _spec("trusted", "a Verifier is trusted when it passed the suite, rejects every probe, is an accepted version, "
+          "falsely rejects fewer than every held-out Run and its Task is not refused", trusted_gate,
           artifacts=("task_status", "verifiers", "probes", "history", "refusals", "task_runs", "replays", "rerolls",
                      "canon_rules", "sigs")),
     _spec("leak_check", "what reaches the Candidate, against the Verifier's constants (D89)", leak_gate),
@@ -322,6 +324,7 @@ def gates_over(artifact: str) -> tuple[GateSpec, ...]:
 
 __all__ = [
     "D79_CHECKS", "D79_STAGES", "FROZEN_TASKS_NAME", "GATES", "GATE_COUNTS", "GRADER_FIELDS", "HELPERS_SRC",
+    "FALSE_REJECTION_THRESHOLD",
     "LEAK_MIN_LENGTH", "MEMORISED_LESSON", "MEMORISED_STAGE", "PROBE_STOP", "PROTECTED", "PROTECTED_PATH",
     "TAU2_FILES", "TOOL_RUN_STAGES", "VERDICT_GOLDEN_CHECKS",
     "VERDICT_VERSIONS", "GateLedger", "GateResult", "GateSpec", "Ruling", "accepted_versions",
@@ -334,7 +337,7 @@ __all__ = [
     "executes_gate", "exit_for", "false_rejection", "false_rejection_gate", "fidelity", "finished_runs", "first_string",
     "freeze_tasks", "gate_confined", "gate_named", "gates_over", "ingest_gate", "intent_gate", "leak_gate",
     "ledger", "legitimate_runs", "load_run", "loophole_probe", "loosening", "loosening_gate", "mine_gate", "names_protected_path",
-    "newly_passed", "non_trivial_gate", "oracle_replay_gate", "parses_gate", "policy_gate",
+    "newly_passed", "non_trivial_gate", "oracle_replay_gate", "over_strict", "parses_gate", "policy_gate",
     "predicate_confinement", "predicate_confinement_gate", "probe_admission_gate", "probe_pool_gate",
     "probe_scores", "probes", "recorded_argument_values", "reference_replay_gate", "refuse_gate",
     "regrade_gate", "replay_fidelity_gate",
