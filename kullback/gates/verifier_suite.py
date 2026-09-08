@@ -851,13 +851,18 @@ def validate_verifier(verifier: Verifier, reference_run: Any, empty_run: Any = N
                       user_rules: Optional[UserRules] = None, *, canon: Any = None,
                       write_tools: Optional[Iterable[str]] = None, model: Any = None,
                       run_probe: Optional[Callable] = None,
-                      seed_runs: Optional[Iterable[Any]] = None) -> list[GateResult]:
+                      seed_runs: Optional[Iterable[Any]] = None,
+                      intent: Any = None) -> list[GateResult]:
     """The nine D79 checks as GateResults. A check whose input is missing fails as "not run".
 
     Nothing here executes a Run (D91), so the wrong Run, the second path and the loophole probe are
     the caller's to supply; a check the caller left out is reported as not run, the way artifacts.py
     counts it, and never as a pass. The empty Run and the unfinished Run need no input and are
     synthesized from the Reference.
+
+    `intent` is the Task's Intent record where the caller has it, which turns check 7 into an audit
+    of the D196 strip: the record says which columns the miner already took out, and the check names
+    the column of anything it missed.
     """
     reference = as_run(reference_run)
     runs = {r.trace_id or r.run_id: r for r in [as_run(s) for s in (seed_runs or [])] + [reference]}
@@ -878,7 +883,7 @@ def validate_verifier(verifier: Verifier, reference_run: Any, empty_run: Any = N
                   expect_pass=False),
         _run_gate("verifier_alt_path", scored, alt_path_run, expect_pass=True, missing=ALT_PATH_NOT_RUN),
         loophole_probe(verifier, model, run_probe=run_probe, canon=canon, write_tools=write_tools),
-        _leak_gate(verifier, reference, intent_text, user_rules, runs.values()),
+        _leak_gate(verifier, reference, intent_text, user_rules, runs.values(), intent),
         _mutation_gate(verifier, reference, score, canon_fn(canon), write_tools),
     ]
 
@@ -1133,8 +1138,23 @@ def _mutant(atom: Atom, fn: Callable) -> Optional[Atom]:
     return None
 
 
+def atom_column(atom: Atom) -> str:
+    """The column an atom's value sat under, as the Intent strip and a finding name it (D196).
+
+    A write value names its tool and its field; a fact the answer states names the atom's own kind,
+    because a communicated token is not a column of anything. Nothing here is a value.
+    """
+    payload = atom_payload(atom)
+    field = payload.get("field") or payload.get("id_field") or payload.get("key")
+    tool = payload.get("tool")
+    if field and tool:
+        return f"{tool}.{field}"
+    return str(field or tool or atom.kind)
+
+
 def _leak_gate(verifier: Verifier, reference: Run, intent_text: Optional[str],
-               user_rules: Optional[UserRules], runs: Iterable[Run] = ()) -> GateResult:
+               user_rules: Optional[UserRules], runs: Iterable[Run] = (),
+               intent: Any = None) -> GateResult:
     """Check 7: constants only the Verifier should know, found in the Intent or the Simulated user rules.
 
     A value is only a secret when no user said it, and the users who count are the users of every
@@ -1144,10 +1164,17 @@ def _leak_gate(verifier: Verifier, reference: Run, intent_text: Optional[str],
     were spoken by a user in another recording of the same Task, and those 14 Tasks were blocked for
     nothing. `runs` is the Task's other seed Runs; the Reference is read whether or not it is among
     them, so a caller that has only the Reference keeps the behaviour it always had.
+
+    With `intent`, the Intent record itself, this is an audit of the D196 strip rather than the first
+    time anyone looked: the miner has already taken every system-known value out of the line and said
+    on the record which columns it took, so what reaches here is what the strip missed. The check
+    still fails, exactly as it did before, and it names the column each missed value came from, which
+    is what a finding can be keyed on and what the next build's strip has to cover. A caller with no
+    record passes none and the check reads as it always did.
     """
     said_by_user = " ".join(_user_text(e) for run in [reference, *runs]
                             for e in run.events if e.type == "user_turn")
-    secrets = set()
+    secrets: dict[str, str] = {}
     for atom in verifier.atoms:
         payload = atom_payload(atom)
         if atom.provenance not in ("system_derived", "agent_chosen"):
@@ -1157,14 +1184,18 @@ def _leak_gate(verifier: Verifier, reference: Run, intent_text: Optional[str],
         value = payload["text"] if payload.get("text") is not None else payload.get("raw")
         for text in _texts(value) if value is not None else []:
             if len(text) > 1 and text not in ("true", "false", "null") and not _token_in(said_by_user, text):
-                secrets.add(text)
+                secrets.setdefault(text, atom_column(atom))
     blobs = {"intent": intent_text or ""}
     if user_rules is not None:
         blobs["user_rules"] = canonical_json(as_dict(user_rules))
-    failures = [f"{where} leaks {text}" for text in sorted(secrets)
-                for where, blob in blobs.items() if _token_in(blob, text)]
+    missed = [(text, secrets[text], where) for text in sorted(secrets)
+              for where, blob in blobs.items() if _token_in(blob, text)]
+    failures = [f"{where} leaks {text} (column {column})" for text, column, where in missed]
+    stripped = list(getattr(intent, "stripped", ()) or ())
     return GateResult(stage="verifier_leak", passed=not failures,
-                      metrics={"constants": len(secrets)}, failures=failures)
+                      metrics={"constants": len(secrets), "columns": sorted({c for _, c, _ in missed}),
+                               "stripped": len(stripped), "audited": intent is not None},
+                      failures=failures)
 
 
 def loophole_probe(verifier: Verifier, model: Any, *, run_probe: Optional[Callable] = None, canon: Any = None,

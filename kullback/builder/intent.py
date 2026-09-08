@@ -16,6 +16,11 @@ up and passed along never reaches the Intent the Simulated user is handed.
 `IntentSpan` is in the frozen `kullback.runner.records`, so which of
 the two a span used is kept in the span's display-only `label` (read it with `span_mode`) rather than
 in a new field.
+
+Before any of that, every attempt goes through `strip_intent` (D196): a value the recording's own
+tools held and no user of any Run said is taken out of the line and replaced by the shape a user
+would know, and what was taken is recorded on the Intent as a column, a class and a shape with no
+value in it. The leak check reads that record as an audit of a strip it no longer has to repeat.
 """
 
 from __future__ import annotations
@@ -27,10 +32,13 @@ from typing import Any, Iterable, Optional, Sequence
 from kullback.ai.provider import Model
 from kullback.builder.cluster import APOSTROPHE_RE, STOPWORDS
 from kullback.builder.cluster import first_line as _shared_first_line
+from kullback.runner.canon import DATE_ONLY, CanonRules, class_of
 from kullback.runner.records import (  # noqa: F401 - Intent, IntentSpan, SpanSource and apply_intent are re-exported
+    ColumnClass,
     Intent,
     IntentSpan,
     SpanSource,
+    StrippedValue,
     Task,
     ToolCall,
     Trace,
@@ -424,6 +432,258 @@ def ground_phrases(
     return _choose_spans(_matching_spans(phrases, traces, write_tools))
 
 
+# --- the strip: no value only the system knew reaches an Intent (D196) ---------------------
+
+MIN_VALUE_CHARS = 2  # a one-character value identifies nothing and matches everywhere
+CODE_TAIL = 4  # the last characters of a code, the part a person reads a reference back by
+RESERVED_VALUES = frozenset(("true", "false", "null", "none"))
+MONTHS = ("january", "february", "march", "april", "may", "june",
+          "july", "august", "september", "october", "november", "december")
+# The words a stripped value leaves dangling at the end of a line ("cancel the order for").
+TRAILING_WORDS = frozenset("a an the of on in for to with at from by and or".split())
+STRIP_PUNCTUATION = " \t,;:.-"
+
+
+def canon_rules_of(rules: Any) -> CanonRules:
+    """The canon rules as the object `class_of` reads, whether the caller held one or its dict form.
+
+    The artifact crosses the Builder's cache as plain JSON, so a stage that reads it back holds a
+    dict where the stage that wrote it held the record; either one classifies a column the same way.
+    """
+    if isinstance(rules, CanonRules):
+        return rules
+    if isinstance(rules, dict):
+        try:
+            return CanonRules.model_validate(rules)
+        except ValueError:
+            return CanonRules()
+    return CanonRules()
+
+
+def _value_text(value: Any) -> Optional[str]:
+    """One scalar as the text a line would spell it with, or nothing when it is not a value.
+
+    A bool and a null name no row and identify nobody, so they are not values here; a number is,
+    and it is spelled the way `json.dumps` spells it, which is how every other reader of a recorded
+    result spells it too.
+    """
+    if value is None or isinstance(value, bool):
+        return None
+    text = value if isinstance(value, str) else _flat(value)
+    text = text.strip()
+    return text or None
+
+
+def _walk_values(value: Any, table: Optional[str], column: Optional[str], source: str,
+                 schema: Any, rules: CanonRules, out: dict[str, StrippedValue]) -> None:
+    """Every leaf of a recorded argument, result or row, under the column key it sat beneath."""
+    if isinstance(value, dict):
+        for key in sorted(value, key=str):
+            _walk_values(value[key], table, str(key), source, schema, rules, out)
+        return
+    if isinstance(value, (list, tuple, set, frozenset)):
+        for item in value:
+            _walk_values(item, table, column, source, schema, rules, out)
+        return
+    text = _value_text(value)
+    if text is None or len(text) < MIN_VALUE_CHARS or text.lower() in RESERVED_VALUES:
+        return
+    out.setdefault(text, StrippedValue(
+        column=column or (table or ""), table=table, source=source,
+        **{"class": class_of(schema, None, column, rules) if column else rules.default_class},
+    ))
+
+
+def system_values(traces: Sequence[Trace], *, start_state: Any = None, schema: Any = None,
+                  rules: Any = None) -> dict[str, StrippedValue]:
+    """Every value the system held in these Runs, by the column it sat under and that column's class.
+
+    The system side of a recording is what the tools were asked and what they answered: an argument
+    the recorded agent passed and a field of a result it read. `start_state` is the Task's own rows
+    where a caller has them; the recording's reads are the usual way the Starting state reaches an
+    Intent, because a value no recorded call ever read is a value the miner never saw either.
+
+    The class comes from `canon.class_of` under the schema's own column names, so the strip and the
+    compare give one column one class (D73). The table is not looked up: a leaf key is the column
+    name wherever the result nested it, and asking the schema for `<tool>.<key>` would miss every
+    column the corpus stores under the table's own name.
+    """
+    out: dict[str, StrippedValue] = {}
+    rules = canon_rules_of(rules)
+    for trace in traces:
+        for call in trace.tool_calls:
+            if call.error is not None:
+                continue
+            _walk_values(call.args, call.name, None, "tool_arg", schema, rules, out)
+            _walk_values(call.result, call.name, None, "tool_result", schema, rules, out)
+    if start_state is not None:
+        _walk_values(start_state, None, None, "start_state", schema, rules, out)
+    return out
+
+
+def spoken_text(traces: Sequence[Trace]) -> str:
+    """Everything the user side of every Run said, read as one blob.
+
+    The leak check reads its own `said_by_user` this way (D157), so a value this says no user said
+    is a value that check will call a secret: the strip is at least as strict as the audit over it.
+    """
+    return " ".join(turn.content or "" for trace in traces
+                    for turn in trace.turns if turn.role == "user")
+
+
+def _token_at(haystack: str, needle: str, start: int = 0) -> int:
+    """Where this value sits in this text as a whole token, or -1; the leak check's own boundary."""
+    hay, need = haystack.lower(), needle.lower()
+    while True:
+        at = hay.find(need, start)
+        if at < 0:
+            return -1
+        before = hay[at - 1] if at else " "
+        after = hay[at + len(need)] if at + len(need) < len(hay) else " "
+        if not before.isalnum() and not after.isalnum():
+            return at
+        start = at + 1
+
+
+def _said(spoken: str, value: str) -> bool:
+    return _token_at(spoken, value) >= 0
+
+
+def _month_of(value: str) -> Optional[str]:
+    """The month a date names, or nothing; only a date, never a number that looks like one."""
+    match = DATE_ONLY.match(value)
+    if match is None or (len(value) > 10 and value[10] not in "T "):
+        return None
+    index = int(value[5:7])
+    return MONTHS[index - 1] if 1 <= index <= 12 else None
+
+
+def _is_code(value: str) -> bool:
+    """Is this value a reference a person reads back by its last characters, rather than an amount?
+
+    A code carries a digit and something else: a letter, or enough digits that no amount is spelled
+    that way. A price and a count are not codes, and their last four characters say nothing.
+    """
+    body = value.strip("#").replace("-", "").replace("_", "")
+    if len(body) <= CODE_TAIL or not any(c.isdigit() for c in body):
+        return False
+    if any(c.isalpha() for c in body):
+        return True
+    return body.isdigit()
+
+
+def replacement_for(value: str, column_class: ColumnClass = "hard") -> tuple[str, str]:
+    """The shape of a system-known value a user would still recognise, and the words it leaves.
+
+    Three shapes and no more. A column the compare exempts decides nothing, so its value goes and
+    leaves nothing behind. A date becomes its month, which is what a person says about a delivery
+    they are waiting on. A code becomes its last characters, which is what a person reads back off a
+    confirmation mail. Everything else is removed: an amount, a name and an address are either the
+    user's own words, in which case they were never stripped, or they are the system's and the
+    Candidate has to go and read them.
+    """
+    if column_class == "exempt":
+        return "removed", ""
+    month = _month_of(value)
+    if month is not None:
+        return "month", month
+    if _is_code(value):
+        return "last4", f"ending {value[-CODE_TAIL:]}"
+    return "removed", ""
+
+
+def _tidy(text: str) -> str:
+    """One line again after words were taken out of it: no double space, no dangling preposition."""
+    out = " ".join((text or "").split())
+    out = re.sub(r"\s+([,;:.!?])", r"\1", out)
+    out = re.sub(r"([,;:])(\s*[,;:])+", r"\1", out)
+    out = out.strip(STRIP_PUNCTUATION)
+    words = out.split()
+    while words and words[-1].strip(STRIP_PUNCTUATION).lower() in TRAILING_WORDS:
+        words.pop()
+    return " ".join(words).strip(STRIP_PUNCTUATION)
+
+
+def _protected_spans(text: str, protected: Sequence[str]) -> list[list[int]]:
+    """Where words an earlier strip already put into this line sit, so this one leaves them alone."""
+    spans: list[list[int]] = []
+    for words in protected:
+        if not words:
+            continue
+        at = _token_at(text, words)
+        while at >= 0:
+            spans.append([at, at + len(words)])
+            at = _token_at(text, words, at + 1)
+    return spans
+
+
+def strip_intent(text: str, traces: Sequence[Trace], *, start_state: Any = None, schema: Any = None,
+                 rules: Any = None,
+                 protected: Sequence[str] = ()) -> tuple[str, list[StrippedValue]]:
+    """The candidate line with every system-known value taken out of it, and what was taken (D196).
+
+    A system-known value is one the recording's own tools held and no user of any Run of the Task
+    said. Such a value in an Intent tells the Simulated user, and through it the Candidate, something
+    no customer ever knew, which is what the D79 leak check fails a whole Task for; and it is a word
+    the grounding could never evidence either (D157), so the same line was already being refused.
+    Taking it out before the line is graded turns both losses into a line that still names the goal.
+
+    The pass is code, longest value first so a code goes before the digits inside it, and it never
+    reads a value it has itself written in: the words a shape leaves are frozen, and `protected`
+    freezes the words an earlier strip of the same line left, so stripping twice is stripping once.
+    """
+    known = system_values(traces, start_state=start_state, schema=schema, rules=rules)
+    spoken = spoken_text(traces)
+    wanted = sorted((v for v in known if not _said(spoken, v)), key=lambda v: (-len(v), v))
+    out, frozen = text or "", _protected_spans(text or "", protected)
+    taken: list[StrippedValue] = []
+    for value in wanted:
+        shape, words = replacement_for(value, known[value].class_)
+        found, start = False, 0
+        while True:
+            at = _token_at(out, value, start)
+            if at < 0:
+                break
+            if any(begin <= at < end for begin, end in frozen):
+                start = at + 1  # inside words a strip wrote; that is not the line's own value
+                continue
+            out = out[:at] + words + out[at + len(value):]
+            shift = len(words) - len(value)
+            for span in frozen:
+                if span[0] >= at:
+                    span[0] += shift
+                    span[1] += shift
+            frozen.append([at, at + len(words)])
+            start, found = at + len(words), True
+        if found:
+            taken.append(known[value].model_copy(update={"shape": shape, "replacement": words}))
+    return _tidy(out), taken
+
+
+def strip_words(stripped: Sequence[StrippedValue]) -> set[str]:
+    """The words a strip put into a line, folded the way the grounding folds them.
+
+    They stand for a value no user said, so no Run evidences them and the grounding would refuse the
+    line for the shape it was handed. A word here is exempt wherever it appears in the line, which
+    is coarse: a shape word the model also wrote for its own reasons goes unchecked. The alternative
+    is grounding by character offset, and a phrase half checked is not worth that.
+    """
+    return {normalise(word) for value in stripped for word in content_words(value.replacement)}
+
+
+def strip_holds(record: Intent, traces: Sequence[Trace], *, start_state: Any = None,
+                schema: Any = None, rules: Any = None) -> bool:
+    """Whether a recorded Intent's own line is already clean, so the ratchet may keep it.
+
+    A record written before the strip existed grounds and leaks at once, and the ratchet would keep
+    it for as long as its Runs do not move. Re-reading its line against the same evidence is code
+    and costs nothing, so a line the strip would still change is one the model is asked again for.
+    """
+    text, taken = strip_intent(record.text, traces, start_state=start_state, schema=schema,
+                               rules=rules, protected=[s.replacement for s in record.stripped])
+    return not taken and text == (record.text or "").strip()
+
+
 def _intent_prompt(traces: Sequence[Trace], write_tools: Optional[set[str]], *,
                    hint: Optional[str] = None, feedback: Optional[str] = None) -> str:
     """The evidence from a bounded sample of the Task's Runs (D65: no call may grow with the corpus).
@@ -487,13 +747,28 @@ def still_grounds(record: Intent, run_ids: Iterable[str]) -> bool:
     return evidenced == set(run_ids)
 
 
+def _phrases_to_ground(text: str, stripped: Sequence[StrippedValue]) -> list[str]:
+    """The phrases of a stripped line that the evidence still has to show, the shape words taken out."""
+    exempt = strip_words(stripped)
+    if not exempt:
+        return noun_phrases(text)
+    out: list[str] = []
+    for phrase in noun_phrases(text):
+        kept = " ".join(word for word in phrase.split() if normalise(word) not in exempt)
+        if kept and kept not in out:
+            out.append(kept)
+    return out
+
+
 def _graded(task: Task, text: str, members: Sequence[Trace], write_tools: Optional[set[str]],
-            model: Model) -> Intent:
+            model: Model, stripped: Sequence[StrippedValue] = ()) -> Intent:
     """One line as an Intent record: the spans behind its phrases and the reason it is refused, if it is.
 
     Nothing here asks the model anything; it is the grounding `write_intent` runs on each attempt.
+    `stripped` is what the D196 strip took out of this line: the words it left in their place stand
+    for a value no user said, so no Run can evidence them and they are not put to the evidence.
     """
-    found = _matching_spans(noun_phrases(text), members, write_tools)
+    found = _matching_spans(_phrases_to_ground(text, stripped), members, write_tools)
     spans, ungrounded = _choose_spans(found)
     coverage = {phrase: sorted(s.trace_id for s in matches) for phrase, matches in found.items() if matches}
     member_ids = sorted(t.trace_id for t in members)
@@ -506,6 +781,7 @@ def _graded(task: Task, text: str, members: Sequence[Trace], write_tools: Option
         ungrounded_phrases=ungrounded,
         run_coverage=coverage,
         model=getattr(model, "name", None),
+        stripped=list(stripped),
     )
     if not text:
         intent.reason = "the model returned no intent"
@@ -548,6 +824,11 @@ def _feedback(intent: Intent, member_ids: Sequence[str], members: Sequence[Trace
     not guess at a whole line.
     """
     lines = [f'Your last line was: "{intent.text}"' if intent.text else "Your last reply held no line."]
+    if intent.stripped:
+        columns = sorted({value.column for value in intent.stripped})[:MAX_LISTED_PHRASES]
+        lines.append("Values only the tools knew were taken out of it (columns: " + ", ".join(columns) +
+                     "). Say what the user asked for in the user's own words, not in a value the "
+                     "user would have had to be told.")
     if intent.ungrounded_phrases:
         listed = intent.ungrounded_phrases[:MAX_LISTED_PHRASES]
         lines.append("These phrases have no span in the evidence: " + ", ".join(listed) + ".")
@@ -576,6 +857,9 @@ def write_intent(
     *,
     write_tools: Optional[set[str]] = None,
     hint: Optional[str] = None,
+    start_state: Any = None,
+    schema: Any = None,
+    canon_rules: Any = None,
 ) -> Intent:
     """The Task's Intent, grounded phrase by phrase; a single-Run Task skips the cross-run check (D97).
 
@@ -588,6 +872,11 @@ def write_intent(
     unevidenced phrases named, up to `MAX_INTENT_ATTEMPTS` writes in all, and the best of them is
     kept: a line at all before none, then the fewest phrases with no span. `hint` is what a repair
     asked for and rides on every attempt's prompt.
+
+    Every attempt goes through the D196 strip before it is graded, so no value only the system knew
+    is ever in a line this returns. A line the strip empties is a line that no longer reads, and the
+    rewrite that answers it is the next attempt, told which columns were taken out and never their
+    values; that attempt is stripped again, by the same code, before it too is graded.
     """
     wanted = list(task.run_ids)
     members = [t for t in traces if t.trace_id in set(wanted)]
@@ -604,7 +893,9 @@ def write_intent(
     for _ in range(MAX_INTENT_ATTEMPTS):
         prompt = _intent_prompt(members, write_tools, hint=hint, feedback=feedback)
         reply = model.query([{"role": "user", "content": prompt}])
-        intent = _graded(task, _first_line(reply.content), members, write_tools, model)
+        text, stripped = strip_intent(_first_line(reply.content), members, start_state=start_state,
+                                      schema=schema, rules=canon_rules)
+        intent = _graded(task, text, members, write_tools, model, stripped)
         if best is None or _score(intent, member_ids) < _score(best, member_ids):
             best = intent
         if intent.grounded:
