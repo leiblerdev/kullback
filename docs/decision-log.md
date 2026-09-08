@@ -1397,6 +1397,20 @@ Two numbers cut against the premise. Without the test that the worlds hold the c
 
 The cost is one more ruling per attempt with no subprocess, a pair search capped at 25 pairs and four worlds per bucket, and two files under kullback/gates moved, so gates_version moves and the workdirs need freezing again. On the next builds read pairs, unread_pairs and no_pairs per tool: a corpus mostly no_pairs is one this gate cannot see.
 
+### D204. The replay cursor takes a run of consecutive same-role turns as one logical turn (2026-09-08)
+
+The founder asked again to observe from the errors and fix things generally, it should not overfit (2026-09-08). One live workdir had 427 of 456 Traces reporting turns out of order and 70 of its 329 Tasks blocked on that line. The shape was always the same: the assistant replies in text, the user answers with a tool call of its own, then a second user turn stands before the assistant speaks.
+
+The cursor handed the loop one turn per ask, in lockstep with the loop's rule of model, then user once, repeat. Where one side speaks twice before the other answers, that handoff stalls and the two never resync, so every later turn is a gap and every later write never replays. It is a class: it appears wherever the user side can act, an application calling its own tool or a person sending two messages before an answer.
+
+The rule. The cursor takes the whole run of consecutive turns of the asked role as one logical turn, reading past tool turns as it already did. That side is handed what those turns said, in order with a newline between them, and every call they made; a user turn's own calls are routed before the next assistant ask and compared like any other recorded call, named user_call in the reasons. A run closes at a turn that called a tool only for the role the loop comes back to by itself, which is the model alone, since the loop asks the model again while its reply carries calls and asks the user once for a reply carrying none; without that, a model turn separated from the next by its own tool result would be swallowed and the ask the user is owed would never happen. A gap is counted only where the turn at the cursor is of neither the asked role nor a run the cursor can absorb. Counts gain absorbed_user_runs, absorbed_model_runs and absorbed_turns, the stage summary gains turns_absorbed, and the live loop is untouched.
+
+Six tests on an invented order domain: two user turns in a row are one turn and the write after them replays; a tool called inside a user run is routed in order and compared; a user call that parts is named user_call; two assistant turns in a row are one turn and the user is asked once; a real mismatch counts one gap and then resyncs; alternating roles absorb nothing.
+
+Measured offline on copies of three live workdirs, code only, no model call and no spend. Telecom moves from 19 of 329 Tasks confirmed to 90, Traces with a gap from 427 to 0, gaps from 4319 to 0, with 3224 user runs and 4918 turns absorbed; 224 of the 239 Tasks still unconfirmed now rank a tool the user called itself, over twelve tools, where before those calls were reported under the assistant's labels. Airline and retail are unchanged, 88 of 122 and 203 of 209, turns_absorbed zero.
+
+That zero is the disagreement: only the corpus the observation came from moved, because neither other corpus records such a run, so they show the rule costs nothing where the shape is absent, not that it wins anything. Two frozen files changed, kullback/runner/replay.py and kullback/gates/fidelity.py, so the three workdirs need freezing again; the stage versions itself off the module, so replays.json rebuilds with no constant to bump. On the next builds read turns_absorbed, which says whether a corpus has this shape, and the user_call reasons, which name tool bodies no reading had separated before.
+
 ## Pending (asked, not yet answered)
 
 - ~~The user's own tools and the world they act on (D71, first part).~~ Decided as D176 (2026-09-07): one world, rows revealed by a requestor marked by it, readers as code under the free gate.
