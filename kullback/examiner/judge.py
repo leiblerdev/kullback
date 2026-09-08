@@ -34,6 +34,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from kullback.agent.context import ContextConfig
 from kullback.agent.harness import AgentHarness
+from kullback.agent.loop import Hooks
 from kullback.agent.tools import AgentTool, NoArgs, TextResult
 from kullback.examiner import reference as reference_mod
 from kullback.gates import verifier_suite
@@ -56,6 +57,11 @@ RULE_TEXT_CHARS = 160
 
 OVER_THE_CAP = f"the judge asked for more than {MAX_CALLS} tool calls"
 UNREADABLE = "the agent's judgement could not be read"
+
+
+class CapReached(Exception):
+    """Raised by the cap hook to block the call that goes over it; the loop turns it into a result."""
+
 
 ANSWER_NOW = (f"You have used your {MAX_CALLS} tool calls. Answer now with the JSON judgement and call "
               "nothing else.")
@@ -185,7 +191,7 @@ def _constraints_text(case: JudgeCase, label: str) -> str:
     if not atoms:
         return f"state {label}: no rule of the policy compiled to code, so none was checked"
     text_of = {c.id: c.text for c in case.constraints}
-    lines: list[str] = []
+    scored: list[tuple[int, str]] = []
     silent = 0
     for atom in atoms:
         rule_id = atom.target["constraint_id"]
@@ -199,13 +205,16 @@ def _constraints_text(case: JudgeCase, label: str) -> str:
         if not judged:
             silent += 1
             continue
-        lines.append(f"{rule_id}: {_line(text_of.get(rule_id))} | judged {judged} of {len(runs)} run(s), "
-                     f"failed {failed}")
-        if len(lines) >= CONSTRAINT_RULES:
-            break
-    head = (f"state {label}: {len(atoms)} rule(s) of the policy have code; {silent} of them judged no call "
-            "of these Runs, so the code says nothing about them")
-    return _clamp("\n".join([head, *lines]), CONSTRAINT_CHARS)
+        scored.append((failed, f"{rule_id}: {_line(text_of.get(rule_id))} | judged {judged} of "
+                               f"{len(runs)} run(s), failed {failed}"))
+    # Every rule is counted before any is shown, so the head is a count of them all and not of the
+    # ones that fitted; and the rules that failed a Run come first, since a rule that passed every
+    # Run of the state is the answer the judge already assumed.
+    scored.sort(key=lambda row: -row[0])
+    head = (f"state {label}: {len(atoms)} rule(s) of the policy have code; {len(scored)} judged a call of "
+            f"these Runs and {silent} judged none, so the code says nothing either way about those; showing "
+            f"{min(len(scored), CONSTRAINT_RULES)}, the ones that failed a Run first")
+    return _clamp("\n".join([head, *(line for _failed, line in scored[:CONSTRAINT_RULES])]), CONSTRAINT_CHARS)
 
 
 def _answer_text(case: JudgeCase, label: str) -> str:
@@ -355,10 +364,15 @@ CHOICE_RULE = (
     "- Judge the Intent, never the opening request: the user may have revised it during the Run."
 )
 
+# What a ruling of this judge's may rest on: the End states it was handed and the six tools it may
+# call. D93's rule is unchanged, and what it keeps out is what neither of them holds: the
+# conversation, the opening request, an authentication, a confirmation the user spoke.
+JUDGE_SOURCES = tuple(reference_mod.AVAILABLE_SOURCES) + ("rows", "stated", "constraints", "answer")
+
 ANSWER_SHAPE = (
     'Answer with JSON only, on its own turn, no tool call beside it: '
-    '{"failed": ["A"], "evidence": ["intent", "policy", "end_states"], "reason": "..."}. '
-    'Every name in evidence must be one of ' + ", ".join(reference_mod.AVAILABLE_SOURCES)
+    '{"failed": ["A"], "evidence": ["intent", "policy", "rows"], "reason": "..."}. '
+    'In evidence name what your ruling rests on, each one of ' + ", ".join(JUDGE_SOURCES)
     + '; when your answer needs anything else, name that instead and fail nothing. When you cannot tell, '
     'answer {"failed": [], "reason": "cannot tell"}.'
 )
@@ -421,7 +435,8 @@ class AgentJudge:
         case = self.case(intent, policy_lines, groups, phrases)
         text, calls, over_cap = self._session(case)
         if not over_cap:
-            judgement = reference_mod.parse_judgement(text, {str(g["label"]) for g in groups})
+            judgement = reference_mod.parse_judgement(text, {str(g["label"]) for g in groups},
+                                                      available=JUDGE_SOURCES)
             if judgement.reason != reference_mod.UNREADABLE_REPLY:
                 judgement.calls = calls
                 return judgement
@@ -431,24 +446,38 @@ class AgentJudge:
         return fallback
 
     def _session(self, case: JudgeCase) -> tuple[str, list[dict], bool]:
-        """The agent's last spoken turn, the calls it made, and whether it asked past the cap."""
-        harness = AgentHarness(model=self.model, system=judge_system_prompt(), tools=judge_tools(case),
-                               max_turns=self.max_turns,
-                               context=ContextConfig(window=budget.window_for(self.name)))
+        """The agent's last spoken turn, the calls it made, and whether it asked past the cap.
+
+        The cap is held by a `tool_call` hook and not by the cancel flag alone: a model may ask for
+        several tools in one turn, and the loop runs a turn's batch through before it reads the flag
+        again, so a judge that batched its last turn looked past six times and the record said nine.
+        The hook is asked before every tool, so the call that goes over is blocked before it reads
+        anything, and the record ends on it.
+        """
         calls: list[dict] = []
         over_cap = False
+        asked = 0
+
+        def over_the_cap(call: Any) -> None:
+            """The hook the loop asks before it runs a tool; a raise blocks the call (D122's shape)."""
+            nonlocal asked, over_cap
+            asked += 1
+            if asked > self.max_calls:
+                over_cap = True
+                harness.cancel()
+                raise CapReached(OVER_THE_CAP)
+
+        harness = AgentHarness(model=self.model, system=judge_system_prompt(), tools=judge_tools(case),
+                               max_turns=self.max_turns, hooks=Hooks(tool_call=[over_the_cap]),
+                               context=ContextConfig(window=budget.window_for(self.name)))
 
         def watch(event: Any) -> None:
-            nonlocal over_cap
-            if event.type != "tool_execution_end":
+            if event.type != "tool_execution_end" or len(calls) > self.max_calls:
                 return
             calls.append({"tool": event.tool_name,
                           "summary": _clamp(" ".join((event.result.content or "").split()),
                                             CALL_SUMMARY_CHARS)})
-            if len(calls) > self.max_calls:
-                over_cap = True
-                harness.cancel()
-            elif len(calls) == self.max_calls:
+            if len(calls) == self.max_calls and not over_cap:
                 harness.steer(ANSWER_NOW)
 
         harness.subscribe(watch)
@@ -471,5 +500,5 @@ class AgentJudge:
         return said, calls, over_cap
 
 
-__all__ = ["MAX_CALLS", "MAX_TURNS", "OVER_THE_CAP", "UNREADABLE", "AgentJudge", "JudgeCase", "judge_message",
-           "judge_system_prompt", "judge_tools"]
+__all__ = ["MAX_CALLS", "MAX_TURNS", "OVER_THE_CAP", "UNREADABLE", "JUDGE_SOURCES", "AgentJudge", "CapReached",
+           "JudgeCase", "judge_message", "judge_system_prompt", "judge_tools"]

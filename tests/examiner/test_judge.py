@@ -114,7 +114,7 @@ def test_the_constraints_tool_says_which_rules_judged_the_runs_and_which_said_no
     case = _judge(TestModel([]), constraints=[FINAL_MONTH_RULE]).case(INTENT, POLICY, groups)
     wrote = J._constraints_text(case, "B")
     assert "c_1: A permit in its final month is not cancelled. | judged 1 of 1 run(s), failed 1" in wrote
-    assert "1 of them judged no call of these Runs" in J._constraints_text(case, "A")
+    assert "0 judged a call of these Runs and 1 judged none" in J._constraints_text(case, "A")
 
 
 def test_the_answer_tool_gives_the_last_thing_one_run_said_and_no_more_of_the_conversation(tmp_path):
@@ -137,6 +137,19 @@ def test_the_judge_over_the_cap_falls_back_to_the_one_shot_judge_and_the_record_
     assert [r.run_id for r in out.references] == ["a"]
 
 
+def test_a_turn_that_asks_for_many_tools_at_once_still_looks_only_six_times(tmp_path):
+    """The cap is a hook asked before each tool, not the cancel flag alone: the loop runs a turn's
+    whole batch before it reads that flag, and a judge that batched its last turn looked nine times
+    under a cap of six and the record said nine."""
+    batch = ModelReply(content=None, tool_calls=[ToolCallRequest(id=f"t{i}", name="intent", arguments={})
+                                                 for i in range(J.MAX_CALLS + 3)])
+    out = ref.confirm([refusing_run(tmp_path), cancelling_run(tmp_path)], intent=INTENT, policy_lines=POLICY,
+                      judge=_judge(TestModel([batch, ModelReply(content=RULING)])))
+    looked = [row for row in out.judge_calls if "Intent" in row["summary"]]
+    assert len(looked) == J.MAX_CALLS, "the seventh call is blocked before it reads anything"
+    assert len(out.judge_calls) == J.MAX_CALLS + 1 and out.judge_fallback == J.OVER_THE_CAP
+
+
 def test_the_judge_is_told_to_answer_once_it_has_spent_its_calls(tmp_path):
     model = TestModel([_call(f"t{i}", "intent", {}) for i in range(J.MAX_CALLS)] + [ModelReply(content=RULING)])
     out = ref.confirm([refusing_run(tmp_path), cancelling_run(tmp_path)], intent=INTENT,
@@ -156,6 +169,18 @@ def test_a_judgement_that_will_not_parse_falls_back_and_the_fallback_rules(tmp_p
 
 
 # --- what it may not rest on -------------------------------------------------
+
+def test_a_ruling_that_rests_on_a_row_it_read_is_not_an_abstention(tmp_path):
+    """The one-shot judge had three sources and abstained on any other name; this judge has its six
+    tools too, so naming the rows it read is naming something it was given (D93)."""
+    model = TestModel([_call("t1", "rows", {"group": "B"}),
+                       ModelReply(content='{"failed": ["B"], "evidence": ["rows", "policy"], "reason": '
+                                          '"the permit row is in its final month"}')])
+    out = ref.confirm([refusing_run(tmp_path), cancelling_run(tmp_path)], intent=INTENT,
+                      policy_lines=POLICY, judge=_judge(model))
+    assert not out.judge_abstained and [r.run_id for r in out.references] == ["a"]
+    assert "rows" in J.JUDGE_SOURCES and "transcript" not in J.JUDGE_SOURCES
+
 
 def test_a_judgement_that_needs_the_conversation_abstains_and_fails_nothing(tmp_path):
     model = TestModel([_call("t1", "answer", {"group": "B"}),

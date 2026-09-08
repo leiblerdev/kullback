@@ -511,8 +511,15 @@ def judge_groups(model: Any, intent: str, policy_lines: Iterable[str], groups: l
     return parse_judgement(getattr(reply, "content", None) or "", {g["label"] for g in groups})
 
 
-def parse_judgement(text: str, labels: set[str]) -> Judgement:
-    """The judge's reply as a ruling. A ruling resting on a source it was not handed fails nothing (D93)."""
+def parse_judgement(text: str, labels: set[str], available: Iterable[str] = AVAILABLE_SOURCES) -> Judgement:
+    """The judge's reply as a ruling. A ruling resting on a source it was not handed fails nothing (D93).
+
+    `available` is what this judge was given, and the one-shot judge's three are the default. The
+    agent judge (judge.py) hands its own list, its six tools, because a ruling of its that rests on
+    the rows it read rests on something it was given and abstaining on that would be D93 read
+    backwards; what is absent by construction for either of them, the conversation, the opening
+    request, an authentication, a spoken confirmation, is absent from both lists.
+    """
     match = _JSON_RE.search(text or "")
     if not match:
         return Judgement(reason=UNREADABLE_REPLY)
@@ -524,7 +531,7 @@ def parse_judgement(text: str, labels: set[str]) -> Judgement:
     if not isinstance(failed, list):
         return Judgement(reason=UNREADABLE_REPLY)
     said = str(body.get("reason") or "")[:MAX_LINE_CHARS]
-    missing = sources_not_given(body.get("evidence"), AVAILABLE_SOURCES)
+    missing = sources_not_given(body.get("evidence"), available)
     if missing:
         return Judgement(reason=f"the ruling rests on {', '.join(missing)}, which this judge was not given"
                                 + (f"; the judge said: {said}" if said else ""),

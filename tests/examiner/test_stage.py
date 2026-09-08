@@ -13,6 +13,7 @@ import pytest
 from conftest import PTR
 from examiner.worlds import anchor_of, make_world, probe_runner_over
 from gates import verifier_fixtures as VF
+from kullback.ai.provider import ModelReply, TestModel, ToolCallRequest
 from kullback.builder.pipeline import Anchor
 from kullback.examiner import stage
 from kullback.gates.artifacts import D79_CHECKS, D79_STAGES
@@ -303,6 +304,23 @@ def test_derive_all_rewrites_the_scorecard_after_the_task_status(tmp_path):
     coverage = _read(world.workdir / "scorecard.json")["task_coverage"]
     assert coverage["tasks_covered"] == 1 and coverage["uncovered"] == [], \
         "the card counts the Task the status just verdicted"
+
+
+# --- the judge the derivation builds (D12) --------------------------------------------
+
+def test_the_derivation_hands_the_task_to_the_agent_judge_and_the_record_says_what_it_looked_at(tmp_path):
+    """A Task whose Runs ended in two states goes to the judge, and derive_all is what builds it: the
+    reference record carries the tool it called before it failed a state."""
+    world = make_world(tmp_path, rerolls=("wrong",))
+    model = TestModel([
+        ModelReply(content=None, tool_calls=[ToolCallRequest(id="c1", name="rows", arguments={"group": "B"})]),
+        ModelReply(content='{"failed": ["B"], "evidence": ["rows"], "reason": "it wrote to another row"}')])
+    out = _derive(world.workdir, world.inputs, judge_model=model)
+    row = _read(world.workdir / "references.json")["t1"]
+    assert row["judged"] and row["judge_fallback"] is None and not row["judge_abstained"]
+    assert [call["tool"] for call in row["judge_calls"]] == ["rows"]
+    assert [r["run_id"] for r in row["references"]] == ["ref"] and list(row["failed"]) == ["wrong"]
+    assert out["task_status"]["t1"]["reference_confirmed"] is True
 
 
 # --- the false-rejection pool: only the Runs that did the Task (D133) -----------------
