@@ -50,7 +50,9 @@ class ExaminerPlan:
     `inputs` is the derivation's store, filtered through `inputs_from` (a store naming a body, the
     db, the schema or the Environment is refused). `run_probe` and `run_rerolls` are the Runner as
     a callable the Builder built over its own store (`build.probe_runner`, `build.reroll_runner`):
-    the Examiner never touches what they read. `probe_model` is the model the loophole probe runs
+    the Examiner never touches what they read. `run_variant` is the third of them
+    (`build.variant_runner`, D199): a call path written by code, replayed from a Task's Starting
+    state, which costs no model call. `probe_model` is the model the loophole probe runs
     with; `judge_model` the residue judge of D111 and `judge_agent` whether that judge is the agent
     with a bounded look rather than the one-shot judge (D185, off by default); the re-roll model is
     the callable's own, never named here. `workers` is how many Tasks the derivation derives at once (D163), the Builder's
@@ -67,6 +69,7 @@ class ExaminerPlan:
     judge_agent: bool = False
     run_probe: Any = None
     run_rerolls: Any = None
+    run_variant: Any = None
     probe_limit: Optional[int] = None
     workers: int = 1
     anchor: Any = None

@@ -471,8 +471,7 @@ def test_a_task_whose_reference_stands_alone_buys_one_batch_and_stops_when_a_sec
     row = out["task_status"]["t1"]
     assert len(calls) == 1 and calls[0][:2] == ("t1", stage.SECOND_PATH_RUNS)
     assert calls[0][2] == "second-path-r2-b1", "the batch names the round and the batch it is"
-    assert row["second_path"] == {"batches": 1, "runs": stage.SECOND_PATH_RUNS, "found": True,
-                                  "exhausted": False, "reason": ""}
+    assert row["second_path"] == stage.second_path_row(1, stage.SECOND_PATH_RUNS, found=True)
     assert row["checks"]["second_path_passes"] is True and "verifier_alt_path" not in row["not_run"]
     assert out["second_path_runs"] == stage.SECOND_PATH_RUNS and out["ceiling_reached"] is False
     metrics = _ruling(world.workdir)["metrics"]
@@ -491,8 +490,8 @@ def test_the_cap_holds_and_the_task_keeps_the_check_not_run_with_the_reason_it_s
     out = _derive(world.workdir, world.inputs, run_rerolls=_reroll_runner_over(world, VF.wrong_run, calls))
     row = out["task_status"]["t1"]
     assert len(calls) == stage.SECOND_PATH_BATCHES == 3
-    assert row["second_path"] == {"batches": 3, "runs": 3 * stage.SECOND_PATH_RUNS, "found": False,
-                                  "exhausted": True, "reason": "no second path in 3 batches"}
+    assert row["second_path"] == stage.second_path_row(3, 3 * stage.SECOND_PATH_RUNS, found=False)
+    assert row["second_path"]["reason"] == "no second path in 3 batches"
     assert row["reference_confirmed"] is True, "a batch that landed elsewhere never unseats the Reference"
     assert row["checks"]["second_path_passes"] is False and "verifier_alt_path" in row["not_run"]
     assert len(row["did_not_reach_reference"]) == 3 * stage.SECOND_PATH_RUNS
@@ -513,7 +512,7 @@ def test_the_batches_are_read_back_on_a_re_run_and_no_further_batch_is_bought(tm
     again = _derive(world.workdir, world.inputs, run_rerolls=runner)
     row = again["task_status"]["t1"]
     assert again["ran"] == 1 and len(calls) == 1
-    assert row["second_path"] == {"batches": 0, "runs": 0, "found": True, "exhausted": False, "reason": ""}
+    assert row["second_path"] == stage.second_path_row(0, 0, found=True)
     assert row["checks"]["second_path_passes"] is True
 
 
@@ -530,8 +529,8 @@ def test_a_task_that_already_has_a_second_path_buys_no_batch(tmp_path):
 def test_without_a_reroll_runner_the_check_stays_not_run_and_the_row_says_why(tmp_path):
     world = _lone_reference_world(tmp_path)
     row = _derive(world.workdir, world.inputs)["task_status"]["t1"]
-    assert row["second_path"] == {"batches": 0, "runs": 0, "found": False, "exhausted": False,
-                                  "reason": stage.NO_REROLL_RUNNER}
+    assert row["second_path"] == stage.second_path_row(0, 0, found=False)
+    assert row["second_path"]["reason"] == stage.NO_REROLL_RUNNER
     assert "verifier_alt_path" in row["not_run"]
 
 
@@ -544,5 +543,100 @@ def test_a_batch_that_hits_the_run_ceiling_stops_the_search_and_the_call_says_so
     out = _derive(world.workdir, world.inputs, run_rerolls=run_rerolls)
     row = out["task_status"]["t1"]
     assert out["ceiling_reached"] is True and row["reference_confirmed"] is True
-    assert row["second_path"] == {"batches": 0, "runs": 0, "found": False, "exhausted": False,
-                                  "reason": stage.CEILING_REACHED}
+    assert row["second_path"] == stage.second_path_row(0, 0, found=False, reason=stage.CEILING_REACHED)
+
+
+# --- the second path synthesised from the Reference Run (D199) --------------------------
+
+def _variant_runner_over(world, make_run, seen: list):
+    """A `run_variant(task_id, calls, run_id, answer)` that writes one hand-built Run to the Task's
+    folder, so the stage's rule is exercised without an Environment to replay through."""
+    def run_variant(task_id: str, calls: list, run_id: str, transcript: list = ()) -> dict:
+        seen.append({"task_id": task_id, "run_id": run_id, "transcript": list(transcript),
+                     "calls": [call["name"] for call in calls]})
+        run = make_run().model_copy(deep=True, update={"run_id": run_id})
+        path = VF.write_events_jsonl(run, world.workdir / "runs" / task_id / f"{run.run_id}.jsonl")
+        return {"run_id": run.run_id, "path": path, "termination_reason": run.termination_reason}
+
+    return run_variant
+
+
+def _one_call_run(run_id: str = "ref"):
+    """The Reference's events with its only read taken out: one call, so no rewrite of it exists."""
+    events = [e for e in VF.reference_events()
+              if e["payload"].get("name") != "get_order_details" and e["payload"].get("id") != "c0"]
+    return VF.make_run(run_id, events)
+
+
+def test_a_lone_reference_whose_call_path_can_be_rewritten_gets_a_second_path_written_from_it(tmp_path):
+    """The buying found nothing, so the Reference's own call path is rewritten, replayed, and kept
+    because it reaches the same End state; check 5 is scored on it like any second path."""
+    world = _lone_reference_world(tmp_path)
+    bought: list = []
+    seen: list = []
+    out = _derive(world.workdir, world.inputs,
+                  run_rerolls=_reroll_runner_over(world, VF.wrong_run, bought),
+                  run_variant=_variant_runner_over(world, VF.alt_path_run, seen), round_number=2)
+    row = out["task_status"]["t1"]
+    assert len(bought) == stage.SECOND_PATH_BATCHES, "the buying is spent before anything is written"
+    assert [call["calls"] for call in seen] == [["get_order_details", "get_order_details",
+                                                 next(iter(VF.WRITE_TOOLS))]]
+    assert [turn["role"] for turn in seen[0]["transcript"]] == ["user", "assistant", "user", "assistant"], \
+        "a variant varies the call path inside the conversation the Run it came from had"
+    assert seen[0]["transcript"][-1]["content"] == "Your order #W123 is cancelled and 150.0 is refunded."
+    assert row["second_path"]["synthesised"] == 1 and row["second_path"]["synth_kinds"] == ["insert_read"]
+    assert row["second_path"]["synth_tried"] == 1 and row["second_path"]["found"] is True
+    assert row["second_path"]["structural"] is False
+    assert row["checks"]["second_path_passes"] is True and "verifier_alt_path" not in row["not_run"]
+    metrics = _ruling(world.workdir)["metrics"]
+    assert metrics["second_path_synthesised"] == 1 and metrics["single_path_by_structure"] == 0
+    assert metrics["synth_variants_tried"] == 1 and metrics["synth_variants_kept"] == 1
+
+
+def test_a_rewrite_that_lands_on_another_end_state_is_not_kept_and_the_check_stays_not_run(tmp_path):
+    world = _lone_reference_world(tmp_path)
+    seen: list = []
+    out = _derive(world.workdir, world.inputs,
+                  run_variant=_variant_runner_over(world, VF.wrong_run, seen))
+    row = out["task_status"]["t1"]
+    assert len(seen) == 1 and row["second_path"]["synth_tried"] == 1
+    assert row["second_path"]["synth_kept"] == 0 and row["second_path"]["found"] is False
+    assert row["second_path"]["reason"] == stage.SYNTH_KEPT_NONE
+    assert row["checks"]["second_path_passes"] is False and row["verifier_passed"] is False
+    assert _ruling(world.workdir)["metrics"]["synth_variants_kept"] == 0
+
+
+def test_a_path_single_by_structure_is_named_and_stops_blocking_when_the_pool_holds_a_run_at_the_reference(
+        tmp_path):
+    """A Reference of one call offers no rewrite: no pair to reorder, no read to insert, none to drop.
+    The Task says so, and the held-out Run that reached the same End state is the second path."""
+    world = make_world(tmp_path, rerolls=())
+    VF.write_events_jsonl(_one_call_run(), Path(world.paths["ref"]))
+    held = _one_call_run("held")
+    path = VF.write_events_jsonl(held, world.workdir / "runs" / "t1" / "held.jsonl")
+    world.inputs["replays"]["t1"]["held"] = {"trace_id": "held", "run_id": "held", "confirmed": True,
+                                             "path": path, "reasons": []}
+    anchor = Anchor(held_out={"t1": ["held"]}, unguarded=[])
+    world.inputs["tasks"] = [Task(id="t1", intent=VF.TASK.intent, run_ids=["ref", "held"])]
+    seen: list = []
+    out = _derive(world.workdir, world.inputs, anchor=anchor,
+                  probe_model=object(), run_probe=probe_runner_over(),
+                  run_variant=_variant_runner_over(world, VF.alt_path_run, seen))
+    row = out["task_status"]["t1"]
+    assert seen == [], "there is nothing to replay, so nothing is replayed"
+    assert row["second_path"]["structural"] is True
+    assert row["second_path"]["reason"] == stage.SINGLE_PATH_BY_STRUCTURE
+    assert row["checks"]["second_path_passes"] is False and "verifier_alt_path" in row["not_run"]
+    assert row["pool_at_reference"] == ["held"] and row["second_path_waived"] is True
+    assert row["verifier_passed"] is True, "the pool holds the second path this Task cannot have"
+    metrics = _ruling(world.workdir)["metrics"]
+    assert metrics["single_path_by_structure"] == 1 and metrics["second_path_waived"] == 1
+
+
+def test_a_path_single_by_structure_keeps_blocking_when_no_pool_run_reached_the_reference(tmp_path):
+    world = make_world(tmp_path, rerolls=())
+    VF.write_events_jsonl(_one_call_run(), Path(world.paths["ref"]))
+    row = _derive(world.workdir, world.inputs, probe_model=object(), run_probe=probe_runner_over(),
+                  run_variant=_variant_runner_over(world, VF.alt_path_run, []))["task_status"]["t1"]
+    assert row["second_path"]["structural"] is True and row["pool_at_reference"] == []
+    assert row["second_path_waived"] is False and row["verifier_passed"] is False

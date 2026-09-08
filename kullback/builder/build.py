@@ -60,9 +60,12 @@ from kullback.runner.records import (
     EntitySchema,
     Environment,
     GateResult,
+    RawPtr,
     Task,
+    ToolCall,
     ToolSig,
     Trace,
+    Turn,
     UserRules,
     as_dict,
     content_hash,
@@ -1598,6 +1601,78 @@ def reroll_runner(plan: BuildPlan):
         return [{"run_id": r.run_id, "path": p, "termination_reason": r.termination_reason} for r, p in runs]
 
     return run_rerolls
+
+
+def _variant_trace(task_id: str, calls: Iterable[dict], transcript: Iterable[dict], run_id: str) -> Trace:
+    """A rewritten call path as a Trace the replay can drive (D199).
+
+    The conversation is the Run's own, turn for turn: what the agent asked and what it told the user
+    are not the rewrite's to invent, and the atoms over questions and stated facts read them. Each
+    call names the turn it belongs to, so a call that moved past a spoken turn moved in the
+    transcript too, and a call whose turn is gone joins the last turn its speaker had. A Run whose
+    transcript could not be read still replays, as one assistant turn of every call.
+    """
+    ptr = RawPtr(file_hash=run_id)
+    spoken = [dict(turn) for turn in transcript] or [{"role": "assistant", "content": ""}]
+    turns = [Turn(idx=index, role=str(turn.get("role") or "assistant"),
+                  content=str(turn.get("content") or ""), raw_ptr=ptr)
+             for index, turn in enumerate(spoken)]
+    tool_calls = []
+    for index, call in enumerate(calls):
+        call_id = str(call.get("id") or f"{run_id}-{index}")
+        requestor = str(call.get("requestor") or "assistant")
+        role = "user" if requestor == "user" else "assistant"
+        tool_calls.append(ToolCall(id=call_id, name=str(call.get("name") or ""),
+                                   args=dict(call.get("args") or {}), requestor=requestor, raw_ptr=ptr))
+        at = int(call.get("turn") or 0)
+        turn = turns[at] if 0 <= at < len(turns) and turns[at].role == role else next(
+            (t for t in reversed(turns) if t.role == role), turns[0])
+        turn.tool_call_ids.append(call_id)
+    return Trace(trace_id=run_id, raw_hash=run_id, ingest_version="variant", source="variant",
+                 turns=turns, tool_calls=tool_calls, raw_ptr=ptr)
+
+
+def variant_runner(plan: BuildPlan):
+    """A rewritten call path replayed from a Task's Starting state, as a callable for the Examiner (D199).
+
+    `run_variant(task_id, calls, run_id, transcript)` builds the Task's world the way the replay stage
+    builds it, one fresh world per variant, drives the calls through the same Router and the same
+    scoring, and answers with the Run that came out. Where the Run ended is the caller's to read:
+    this only runs it. The callable reads the plan's store, so the Examiner that calls it never does
+    (D123), and it costs no model call, since the Trace it drives was written by code.
+    """
+    store = _runner_store(plan)
+    schema = with_synthetic_rows(store["schema"], store.get("synthetic_rows") or ())
+    sigs, bodies, db = store["sigs"], store["bodies"], store["db"]
+    env_id = getattr(store["environment"], "env_id", None)
+    tasks = {t.id: t for t in store["tasks"]}
+    canon_rules = _rules_of(store)
+    write_tools = {s.name for s in sigs if s.kind == "write"}
+    comparer = tool_runs.ReplayComparer(schema, tool_runs.load_readers(store.get("readers") or []), canon_rules)
+    source = compile_env.module_source(schema, sigs, bodies)
+    workdir = plan.workdir
+
+    def run_variant(task_id: str, calls: Iterable[dict], run_id: str,
+                    transcript: Iterable[dict] = ()) -> Optional[dict]:
+        if task_id not in tasks:
+            raise BuildError(f"no Task is named {task_id}")
+        overlay, overlay_rows = compile_env.load_overlay(workdir, task_id)
+        toolkit = compile_env.load_toolkit(source, json.loads(json.dumps(db)), overlay=overlay,
+                                           overlay_values=overlay_rows)
+        router = route.Router(env_tools_module=toolkit, starting_state=json.loads(json.dumps(db)),
+                              overlay=overlay, overlay_rows=overlay_rows, tool_sigs=sigs,
+                              canon_rules=canon_rules, synthetic_rows=schema.synthetic_rows)
+        trace = _variant_trace(task_id, calls, transcript, run_id)
+        result = replay_mod.replay_trace(trace, router, workdir=workdir / "runs" / task_id,
+                                         task_id=task_id, env_id=env_id, write_tools=write_tools,
+                                         canon_rules=canon_rules, comparer=comparer, run_id=run_id)
+        _write_runs_index(workdir)
+        if not result.path:
+            return None
+        return {"run_id": result.run_id, "path": result.path,
+                "termination_reason": result.termination_reason, "crashed": result.crashed}
+
+    return run_variant
 
 
 def _runner_store(plan: BuildPlan) -> dict:

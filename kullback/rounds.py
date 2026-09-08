@@ -348,12 +348,13 @@ def _handover(store: dict) -> dict:
     return {name: store[name] for name in DERIVE_INPUTS if name in store}
 
 
-def _runners(plan: BuildPlan) -> tuple[Optional[Callable], Optional[Callable]]:
-    """The Builder's two Runner callables, the loophole probe and the re-roll (D120), or none of either
-    when the Environment is not in the store (a narrowed target built nothing to run in)."""
+def _runners(plan: BuildPlan) -> tuple[Optional[Callable], Optional[Callable], Optional[Callable]]:
+    """The Builder's three Runner callables, the loophole probe, the re-roll (D120) and the replay of a
+    written call path (D199), or none of them when the Environment is not in the store (a narrowed
+    target built nothing to run in)."""
     if "environment" not in plan.store:
-        return None, None
-    return build_module.probe_runner(plan), build_module.reroll_runner(plan)
+        return None, None, None
+    return build_module.probe_runner(plan), build_module.reroll_runner(plan), build_module.variant_runner(plan)
 
 
 async def _drain(events: AsyncIterator[Any], tool: str, tools: tuple[str, ...] = ()) -> Optional[ToolResult]:
@@ -685,7 +686,7 @@ class Loop:
         self.eplan.refresh(_handover(self.plan.store))
         # The Runner runs in the Environment the Builder just left: a rebuilt db, schema or body would
         # otherwise stay behind a callable closed over the round-1 store (D120).
-        self.eplan.run_probe, self.eplan.run_rerolls = _runners(self.plan)
+        self.eplan.run_probe, self.eplan.run_rerolls, self.eplan.run_variant = _runners(self.plan)
         self.eplan.env_id = getattr(self.plan.store.get("environment"), "env_id", None)
         self.eplan.allowance_remaining = self.allowance.get("examiner")
         if self.agent_model is None:
