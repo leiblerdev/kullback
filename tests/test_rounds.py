@@ -990,6 +990,32 @@ def test_a_delivered_finding_is_closed_and_its_entry_unprotected_after_the_build
     assert loop.pending_findings == []
 
 
+def test_a_finding_that_suggests_the_examiners_own_verb_is_delivered_but_not_closed_by_the_builder(tmp_path, request):
+    """D205, closing D192's gap: the Builder cannot rewrite a Verifier, so it cannot answer a finding
+    that asks for one; closing it there took the finding out of the Examiner's own steer. It is
+    dequeued all the same, so it no longer owes the Builder a beat and the loop can still exit."""
+    plan = BuildPlan(workdir=tmp_path / "work", model=Bodies(), files=[_fixture(request)], max_attempts=0)
+    loop = rounds.Loop(plan=plan, builder=builder_agent.build_harness(plan))
+    loop.allowance = {agent: None for agent in rounds.AGENTS}
+    loop.builder_beat(1)
+    loop.examiner_beat(1)
+    task_id = plan.last.artifacts["tasks"][0].id
+    mine = examiner_agent.drive_tool(loop.examiner, "finding", {
+        "task_id": task_id, "kind": "false_rejection", "suggested": "repair",
+        "text": "the required atoms reject every held-out Run that reached the Reference"})
+    theirs = examiner_agent.drive_tool(loop.examiner, "finding", {
+        "task_id": task_id, "kind": "fidelity", "suggested": "replay",
+        "text": "the replay diverges at the second call"})
+    assert mine.is_error is False and theirs.is_error is False, mine.content
+    loop.builder_beat(2)
+    rows = {f["finding_id"]: f for f in
+            json.loads((plan.workdir / "examiner" / "findings.json").read_text(encoding="utf-8"))}
+    assert rows[mine.details["finding"]["finding_id"]]["status"] == "open"
+    assert rows[theirs.details["finding"]["finding_id"]]["status"] == "closed"
+    assert loop.pending_findings == [], "delivered is delivered; it owes the Builder nothing more"
+    assert loop.driver_counts()["suggested_open"] == 1, "the Examiner's next steer names its own"
+
+
 # --- terminal rounds keep their findings, failed derives fail the round ------------------
 
 def test_close_round_with_findings_pending_clears_a_done_exit_and_continues(tmp_path):

@@ -701,7 +701,11 @@ class GateResult(Record):
 
 # --- the Examiner's records (phase 5) ---
 
-VersionBy = Literal["derive", "repair"]
+# Who proposed a version. `auto_loosen` is the harness's own loosening step (D205): the derivation
+# relaxing an atom that rejects a held-out Run which reached the Reference. It is a third proposer
+# and not a third path: it goes through the gates a repair goes through, and the word is here so a
+# reader of a history can tell a version the model asked for from one the records asked for.
+VersionBy = Literal["derive", "repair", "auto_loosen"]
 # `suite` and `false_rejection` name the two losses the findings never used to reach: a D79 check
 # that failed across many Tasks, and a Verifier whose required atoms reject every held-out Run
 # (D170). A corpus disagreement keeps the name it already had rather than gaining a second one.
