@@ -23,6 +23,12 @@ from kullback.runner.records import ToolCall, Trace, Turn, as_dict, plain
 
 RECORDED = "recorded"
 SPOKEN_ROLES = ("assistant", "user")
+# Which side the driving loop comes back to on its own after a turn that called a tool (D204).
+# `loop.step` asks the model again for as long as its reply carries tool calls, and asks the user
+# exactly once for a reply that carries none. So a model turn that called a tool closes its run:
+# the loop itself will ask for whatever follows it. A user turn that called a tool closes nothing,
+# because nothing will ask the user again before the model speaks.
+REASKED_AFTER_CALLS = {"assistant": True, "user": False}
 # How one routed call compares with the recording. The first three agree on effect; the rest do not.
 SAME, COSMETIC, BOTH_REFUSED = "same", "cosmetic", "both_refused"
 DIFFERS, OURS_REFUSED, THEIRS_REFUSED, UNRECORDED = "differs", "ours_refused", "theirs_refused", "unrecorded"
@@ -30,30 +36,63 @@ AGREES = frozenset({SAME, COSMETIC, BOTH_REFUSED})
 
 
 class _Script:
-    """One cursor over the Trace's turns, shared by the scripted model and the scripted user."""
+    """One cursor over the Trace's turns, shared by the scripted model and the scripted user.
+
+    A recording does not always alternate one turn of one side with one turn of the other, and the
+    loop that drives the replay does (`loop.step`). Wherever the user side can act, a run of
+    consecutive turns of one role is a legal recorded shape: a user application that calls a tool of
+    its own and then speaks again, a person who sends two messages before the assistant answers, a
+    note dropped between two turns. Handing such a run out one turn at a time stalls the cursor,
+    because the loop asks the other side next and the role it asks for is not the role that stands
+    there; every later turn then counts as a gap and never replays at all.
+
+    So the cursor takes a run as one logical turn, the way it already reads past tool turns: the
+    side that is asked is handed everything it said before the other side speaks, in order, and
+    every tool call those turns made. A gap is counted only where the turn standing at the cursor is
+    of neither the asked role nor a run the cursor can absorb (D204).
+    """
 
     def __init__(self, trace: Trace):
         self.turns = list(trace.turns)
         self.calls = {call.id: call for call in trace.tool_calls if call.id}
         self.pos = 0
+        # Per role: the runs of more than one turn taken as one, and the turns they folded in.
+        self.absorbed = {role: 0 for role in SPOKEN_ROLES}
+        self.absorbed_turns = {role: 0 for role in SPOKEN_ROLES}
 
-    def take(self, role: str) -> Optional[Turn]:
-        """The next turn of this role, if it is the next spoken turn; tool turns are skipped."""
+    def take(self, role: str) -> list[Turn]:
+        """This role's run at the cursor: its turns up to the next turn of the other side.
+
+        Tool turns are read past, here as before, so a run holds turns the recording separated by
+        the results of their own calls. The run closes at a turn that called a tool where the loop
+        comes back to that role by itself (`REASKED_AFTER_CALLS`), which is what keeps the model
+        side reading exactly one turn per query the way it always has.
+        """
+        run: list[Turn] = []
         for index in range(self.pos, len(self.turns)):
             turn = self.turns[index]
             if turn.role not in SPOKEN_ROLES:
                 continue
-            if turn.role == role:
-                self.pos = index + 1
-                return turn
-            return None
-        return None
+            if turn.role != role:
+                break
+            run.append(turn)
+            self.pos = index + 1
+            if REASKED_AFTER_CALLS.get(role) and turn.tool_call_ids:
+                break
+        if len(run) > 1:
+            self.absorbed[role] += 1
+            self.absorbed_turns[role] += len(run) - 1
+        return run
 
     def remaining(self, role: str) -> bool:
         return any(turn.role == role for turn in self.turns[self.pos:])
 
-    def requests(self, turn: Turn) -> list[ToolCall]:
-        return [self.calls[i] for i in turn.tool_call_ids if i in self.calls]
+    def said(self, run: Iterable[Turn]) -> str:
+        """What the run says as one turn: its turns in order, one newline between them."""
+        return "\n".join(turn.content for turn in run if turn.content)
+
+    def requests(self, run: Iterable[Turn]) -> list[ToolCall]:
+        return [self.calls[i] for turn in run for i in turn.tool_call_ids if i in self.calls]
 
 
 class TraceModel(Model):
@@ -67,14 +106,14 @@ class TraceModel(Model):
 
     def query(self, messages: list[dict], tools: Optional[list[dict]] = None,
               config: Optional[ModelConfig] = None) -> ModelReply:
-        turn = self.script.take("assistant")
-        if turn is None:
+        run = self.script.take("assistant")
+        if not run:
             if self.script.remaining("assistant"):
                 self.gaps += 1
             return ModelReply(content="", model=self.name)
-        requests = self.script.requests(turn)
+        requests = self.script.requests(run)
         self.expected.extend(requests)
-        return ModelReply(content=turn.content or "", model=self.name, tool_calls=[
+        return ModelReply(content=self.script.said(run), model=self.name, tool_calls=[
             ToolCallRequest(id=call.id, name=call.name, arguments=dict(call.args or {})) for call in requests])
 
 
@@ -93,13 +132,15 @@ class TraceUser:
         return not self.script.remaining("user")
 
     def reply(self, transcript: list) -> str:
-        turn = self.script.take("user")
-        if turn is None:
+        run = self.script.take("user")
+        if not run:
             self.gaps += 1
             return ""
-        for call in self.script.requests(turn):
+        # In recorded order, and before the assistant is asked again: a call the user's own turn
+        # made is part of what the assistant answers next, so the Environment has to have seen it.
+        for call in self.script.requests(run):
             self._own_call(call)
-        return turn.content or ""
+        return self.script.said(run)
 
     def _own_call(self, call: ToolCall) -> None:
         if self.state is None or self.router is None:
@@ -142,6 +183,8 @@ class ScoredRouter:
             recorded, outcome.result, outcome.error, self.canon_rules, self.comparer)
         check = {
             "tool": name, "kind": "write" if name in self.write_tools else "read", "verdict": verdict,
+            # Who the call was made by, so a reason can say a user turn's own call parted (D204).
+            "requestor": requestor,
             "route": outcome.route, "call_id": recorded.id if recorded is not None else None,
             "ours": _preview(outcome.error if outcome.error is not None else outcome.result),
             "recorded": _preview(recorded.error if recorded is not None and recorded.error is not None
@@ -315,11 +358,16 @@ def replay_trace(trace: Trace, router: Any, *, workdir: Any, task_id: str, env_i
         loop.run(state, model, router=scored)
     except Exception as exc:  # the loop wrote the error and the stop before raising
         crashed = f"{type(exc).__name__}: {exc}"
-    return _score(trace, state, scored, model, user, crashed)
+    return _score(trace, state, scored, script, model, user, crashed)
 
 
-def _score(trace: Trace, state: Any, scored: ScoredRouter, model: TraceModel, user: TraceUser,
-           crashed: Optional[str]) -> Replay:
+def _label(check: dict) -> str:
+    """How a check is named in a reason: a call a user turn made itself says so, not read or write."""
+    return "user_call" if check.get("requestor") == "user" else check["kind"]
+
+
+def _score(trace: Trace, state: Any, scored: ScoredRouter, script: _Script, model: TraceModel,
+           user: TraceUser, crashed: Optional[str]) -> Replay:
     writes = [c for c in scored.checks if c["kind"] == "write"]
     reads = [c for c in scored.checks if c["kind"] == "read"]
     writes_off = [c for c in writes if c["verdict"] not in AGREES]
@@ -331,10 +379,13 @@ def _score(trace: Trace, state: Any, scored: ScoredRouter, model: TraceModel, us
         "reads_cosmetic": sum(c["verdict"] == COSMETIC for c in reads),
         "reads_both_refused": sum(c["verdict"] == BOTH_REFUSED for c in reads),
         "reads_semantic": len(reads_off), "unmade": len(unmade), "gaps": model.gaps + user.gaps,
+        # What the cursor read as one logical turn rather than as a gap it could never resync from.
+        "absorbed_user_runs": script.absorbed["user"], "absorbed_model_runs": script.absorbed["assistant"],
+        "absorbed_turns": sum(script.absorbed_turns.values()),
         "routes": dict(state.run.route_counts),
     }
-    reasons = [f"{c['tool']} write: {c['verdict']}" for c in writes_off]
-    reasons += [f"{c['tool']} read: {c['verdict']}" for c in reads_off]
+    reasons = [f"{c['tool']} {_label(c)}: {c['verdict']}" for c in writes_off]
+    reasons += [f"{c['tool']} {_label(c)}: {c['verdict']}" for c in reads_off]
     reasons += [f"{name} was recorded and never called" for name in unmade]
     if counts["gaps"]:
         reasons.append(f"{counts['gaps']} turn(s) out of order")
