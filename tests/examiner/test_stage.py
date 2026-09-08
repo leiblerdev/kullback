@@ -25,7 +25,8 @@ STATUS_KEYS = {"reference_confirmed", "verifier_passed", "reason", "recordings",
 REFERENCE_KEYS = {"references", "recordings", "failed", "groups", "reason", "judged", "judge_reason",
                   "judge_abstained", "judge_uncited", "abstain_reason", "judge_calls", "judge_fallback"}
 # The key the world's two End states differ on, and the value the re-roll `wrong` holds at it (D186).
-WRONG_ROW = "cancel_pending_order.#w999.order_id"
+# The tool is the one the shared fixture Runs write with, read from there rather than spelled again.
+WRONG_ROW = f"{next(iter(VF.WRITE_TOOLS))}.#w999.order_id"
 
 
 def _fails_the_wrong_row(reason: str, *, evidence: tuple = ("end_states",)) -> str:
