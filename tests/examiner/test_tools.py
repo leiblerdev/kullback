@@ -600,6 +600,23 @@ def test_a_repair_whose_atom_payload_is_not_an_object_is_a_validation_error_not_
     assert len(_history(derived).versions) == 1, "no version was written for either"
 
 
+def test_a_shape_refusal_hands_back_the_same_atom_written_the_way_the_tool_takes_it(derived):
+    """Naming the rule was not enough: the one repair of a live build was refused cleanly for a
+    payload that was a string, and no second call was ever made. The refusal now carries the atom
+    the model sent, with the payload written as an object of the keys this Verifier's own atoms
+    use, and the ask the loop puts in front of the model once (agent/loop.py)."""
+    plan, harness = _harness(derived)
+    result = drive(harness, "repair", {"task_id": T, "reason": "name the entity",
+                                       "add": [{"id": "a1", "kind": "required", "payload": "the entity"}]})
+    shape = json.loads(tools_mod.corrected_atom({"id": "a1", "kind": "required", "payload": "the entity"},
+                                                plan.current(T).atoms))
+    assert shape["id"] == "a1" and shape["kind"] == "required"
+    assert set(shape["payload"]) == set(next(a.target for a in plan.current(T).atoms if a.kind == "required"))
+    assert json.dumps(shape, sort_keys=True, ensure_ascii=False) in result.content
+    assert result.details["retry_ask"].startswith("Your repair was refused for the shape of one atom")
+    assert len(_history(derived).versions) == 1, "the refused repair wrote no version"
+
+
 def test_reading_a_run_or_a_trace_id_nothing_carries_answers_the_ids_that_exist(derived):
     """One live build spent 13 of a session's 22 turns on one Task, four of them re-reading the same
     Run and Trace ids that were not there; the tool answered each with a KeyError and nothing to try."""

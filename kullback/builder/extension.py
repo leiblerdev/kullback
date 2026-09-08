@@ -99,7 +99,9 @@ STOP = ("Stopping. Answer with no tool call, in one line, when every gate is gre
         "reports in a row show the same red lights after your repairs, or when a repair answers "
         "`nothing changed`. Before that line, call build on the target once more, after your last "
         "repair: the Examiner reads what that build leaves, and a repair alone leaves it nothing. "
-        "Say which red lights remain and what you tried on each.")
+        "Say which red lights remain and what you tried on each. A repair result that opens with its "
+        "target's own ruling has already answered for that target: do not call status on it again in "
+        "the same turn to read the same line back.")
 
 
 def target_vocabulary(plan: BuildPlan) -> str:

@@ -25,6 +25,7 @@ from kullback.agent.tools import ToolResult
 from kullback.ai.provider import Model
 from kullback.examiner.extension import examiner_extension
 from kullback.examiner.plan import ExaminerPlan
+from kullback.examiner.tools import ATOM_SHAPE
 from kullback.gates.trust import trusted_gate
 from kullback.runner import budget
 
@@ -131,7 +132,50 @@ def examiner_message(target: str = "all") -> str:
             "line when nothing is left to do. " + FINDING_VERBS)
 
 
-def examiner_round_message(round: int, target: str = "all") -> str:
+# The verbs a finding may suggest that only the Examiner can call: `repair` rewrites a Verifier and
+# `reroll_then_derive` buys a check the second Run it never had. A finding suggesting one of these
+# is addressed to the Examiner itself, and nothing was carrying it back: two live builds' Examiners
+# suggested `repair` 33 and 18 times and called it once each. Named here rather than imported from
+# the round driver, which imports this module and not the other way round.
+OWN_VERBS: tuple[str, ...] = ("repair", "reroll_then_derive")
+# How many of them one beat is handed. Each costs the beat a turn out of MAX_TURNS, so the list is
+# ranked by the Tasks each finding costs and cut at a handful; what is dropped is always what costs
+# the fewest Tasks, and the next beat is handed it once the ones above it are closed.
+OWN_SUGGESTION_CAP = 5
+
+
+def own_suggestions(findings: Iterable[Any], cap: Optional[int] = OWN_SUGGESTION_CAP) -> list[dict]:
+    """The open findings that suggest a verb only the Examiner can call, costliest first, capped.
+
+    `findings` are the rows of the store's findings file, dicts as they were written. A row that is
+    not open, or suggests a verb the Builder owns, is not this list's business. A cap of 0 or None
+    is no cap, which is what a count of them wants.
+    """
+    rows = [row for row in findings or ()
+            if isinstance(row, dict) and row.get("status") == "open" and row.get("suggested") in OWN_VERBS]
+    rows.sort(key=lambda row: (-len(row.get("task_ids") or []), str(row.get("finding_id") or "")))
+    return rows[:cap] if cap else rows
+
+
+def suggested_line(findings: Iterable[Any], cap: int = OWN_SUGGESTION_CAP) -> str:
+    """The one line a beat is handed about its own open suggestions, or empty when there are none.
+
+    The shape of `pending_line` on the Builder's side: what is owed, named, with the verb each one
+    asks for, so the beat does not have to read its own transcript to find out what it wrote and
+    never did. The payload shape is said once at the end, since a repair refused for the shape of an
+    atom is a repair the round loses.
+    """
+    rows = own_suggestions(findings, cap)
+    if not rows:
+        return ""
+    named = [f"{row.get('finding_id') or '?'} suggests {row.get('suggested')} on "
+             f"{row.get('task_id') or ', '.join(row.get('task_ids') or []) or 'no Task'}"
+             + (f" ({row.get('hint')})" if row.get("hint") else "") for row in rows]
+    return (f"Still open and suggesting your own verbs: {'; '.join(named)}. Call the verb or say why "
+            f"it is not worth calling. A repair takes {ATOM_SHAPE}.")
+
+
+def examiner_round_message(round: int, target: str = "all", findings: Iterable[Any] = ()) -> str:
     """The steer a model-driven Examiner is sent from round 2 on: the round driver's later beats.
 
     It asks for what the driver requires. A beat keeps the result of the derive the model called,
@@ -140,10 +184,15 @@ def examiner_round_message(round: int, target: str = "all") -> str:
     model read them, filed a finding and answered in one line, and the round failed for the derive
     it was never asked for. The rest is the round-1 message's, since the work after the derivation
     is the same work every round.
+
+    `findings` are the store's finding rows; the ones still open that suggest one of the Examiner's
+    own verbs are named in the steer (`suggested_line`), which is what `pending_line` does for the
+    Builder. A suggestion no beat ever acts on is a round's work thrown away.
     """
+    owed = suggested_line(findings)
     return (f"round {round}: call the derive tool with target={target!r} again, read the rulings, then "
             "probe, repair, refuse or send a finding as they tell you; answer with one line when "
-            "nothing is left to do. " + FINDING_VERBS)
+            "nothing is left to do. " + FINDING_VERBS + (f" {owed}" if owed else ""))
 
 
 def _model_driven(harness: AgentHarness, target: str) -> Optional[ToolResult]:

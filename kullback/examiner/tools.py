@@ -31,7 +31,7 @@ from typing import Any, Awaitable, Callable, Iterable, Iterator, Literal, Option
 from pydantic import BaseModel, ConfigDict, Field
 
 from kullback.agent.events import StageEnd, StageStart
-from kullback.agent.tools import AgentTool, counted_ruling_line
+from kullback.agent.tools import AgentTool, RetryableToolError, counted_ruling_line
 from kullback.examiner import findings as findings_mod
 from kullback.examiner import stage as stage_mod
 from kullback.examiner.plan import ExaminerPlan
@@ -541,9 +541,46 @@ def _may_probe(plan: ExaminerPlan) -> bool:
 
 ATOM_SHAPE = ("an atom is an object with `id`, `kind` (required, allowed, question, communicate, hard) "
               "and `payload`, an object naming the atom's target")
+# The one line the loop puts in front of the model after a shape refusal (agent/loop.py). It says
+# the corrected call and asks for it once; it names no artifact of any corpus, since the shape it
+# carries is built from the atoms of the Verifier the repair was called on.
+_SHAPE_ASK = ("Your repair was refused for the shape of one atom, not for what it says. Call repair "
+              "again with the same reason and that atom written as: {shape}")
 
 
-def _atom_of(row: dict):
+def payload_shape(atoms: Iterable[Any], kind: Any) -> dict:
+    """The payload an atom of this kind carries in the Verifier being repaired, or any atom's.
+
+    The shape is read off the Verifier the repair starts from rather than written down here, so the
+    correction is the one this Task's own atoms use and nothing about any domain is hardcoded. An
+    empty Verifier leaves an empty payload, and the refusal falls back to the words of ATOM_SHAPE.
+    """
+    rows = [atom for atom in atoms or () if getattr(atom, "target", None)]
+    for atom in rows:
+        if getattr(atom, "kind", None) == kind:
+            return dict(atom.target)
+    return dict(rows[0].target) if rows else {}
+
+
+def corrected_atom(row: dict, atoms: Iterable[Any] = ()) -> str:
+    """The row the model sent, written out in the shape the tool takes: its own id, its own kind,
+    its own extra fields, and a payload that is an object.
+
+    One example is worth the enum: the refusal that names only the rule ("the payload is a str, not
+    an object") was answered in one live build by not calling the tool again. The example is built
+    from the row's own fields and from a sibling atom of the same kind, so it is this Task's shape
+    and not a shape from anywhere else.
+    """
+    body = dict(row)
+    body.pop("payload", None)
+    body.pop("target", None)
+    example = {"id": body.pop("id", None) or "atom-1", "kind": body.pop("kind", None) or "required",
+               "payload": payload_shape(atoms, row.get("kind"))}
+    example.update({key: value for key, value in body.items() if key != "predicate_src"})
+    return json.dumps(example, sort_keys=True, default=str, ensure_ascii=False)
+
+
+def _atom_of(row: dict, atoms: Iterable[Any] = ()):
     """One `add` row as an Atom, with a validation error rather than a crash on a row of the wrong shape.
 
     A live build's Examiner sent a payload as a string; nothing here checked, and the predicate
@@ -551,16 +588,25 @@ def _atom_of(row: dict):
     object has no attribute 'get'` and the model spent thirteen of that session's twenty-two turns
     on the Task without landing anything. What the row must be is said once, here, in the words the
     tool's own schema uses.
+
+    The refusal carries the corrected call and not only the rule (`corrected_atom`), and it is a
+    `RetryableToolError`, so the loop puts that corrected call in front of the model once and the
+    repair is tried again instead of abandoned. A second refusal with the same ask stands.
     """
     body = dict(row)
     missing = [name for name in ("id", "kind") if not body.get(name)]
     if missing:
-        raise ValueError(f"the atom {row!r} names no {', '.join(missing)}: {ATOM_SHAPE}")
+        raise RetryableToolError(
+            f"the atom {row!r} names no {', '.join(missing)}: {ATOM_SHAPE}. The same atom with "
+            f"every field it needs: {corrected_atom(row, atoms)}",
+            ask=_SHAPE_ASK.format(shape=corrected_atom(row, atoms)))
     atom_id, kind = body.pop("id"), body.pop("kind")
     payload = body.pop("payload", None) or body.pop("target", None) or {}
     if not isinstance(payload, dict):
-        raise ValueError(f"the payload of atom {atom_id} is {type(payload).__name__}, not an object: "
-                         f"{ATOM_SHAPE}")
+        raise RetryableToolError(
+            f"the payload of atom {atom_id} is {type(payload).__name__}, not an object: {ATOM_SHAPE}. "
+            f"The same atom with the payload as an object: {corrected_atom(row, atoms)}",
+            ask=_SHAPE_ASK.format(shape=corrected_atom(row, atoms)))
     return make_atom(atom_id, kind, payload, helpers=verifier_suite.HELPERS_SRC, **body)
 
 
@@ -1007,7 +1053,8 @@ def _repair(plan: ExaminerPlan):
                 round=plan.round, by="derive", reason="the Verifier on disk before any repair",
                 accepted=True, verifier=current))
         drop = set(args.drop)
-        atoms = [a for a in current.atoms if a.id not in drop] + [_atom_of(row) for row in args.add]
+        atoms = ([a for a in current.atoms if a.id not in drop]
+                 + [_atom_of(row, current.atoms) for row in args.add])
         if not atoms:
             raise ValueError("a repair cannot leave the Verifier without atoms")
         candidate = current.model_copy(deep=True, update={

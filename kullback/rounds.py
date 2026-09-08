@@ -44,7 +44,16 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, AsyncIterator, Callable, Iterable, Optional
 
-from kullback.agent.events import BeatEnd, BeatStart, RoundEnd, RoundStart, StageEnd, StageStart, ToolExecutionEnd
+from kullback.agent.events import (
+    BeatEnd,
+    BeatStart,
+    MessageEnd,
+    RoundEnd,
+    RoundStart,
+    StageEnd,
+    StageStart,
+    ToolExecutionEnd,
+)
 from kullback.agent.harness import AgentHarness
 from kullback.agent.session import SessionStore
 from kullback.agent.tools import ToolResult
@@ -396,6 +405,12 @@ class Loop:
     stall_told: int = 0
     examiner_skipped: list[str] = field(default_factory=list)  # the derivation inputs the target never built
     started_hashes: dict[str, str] = field(default_factory=dict)
+    # Corrected-call asks the loop put in front of an agent after a shape refusal (agent/loop.py,
+    # D192), cumulative over the run, with the count at the round's start beside it. One agent runs
+    # at a time (D128), so one counter is the whole of it.
+    retry_asks: int = 0
+    retries_seen: int = 0
+    zooms_seen: int = 0  # `plan.zooms_skipped` at the round's start; the plan's counter is cumulative
 
     def __post_init__(self) -> None:
         """A new Loop resumes the workdir's unfinished business: findings an earlier invocation
@@ -414,6 +429,17 @@ class Loop:
         # Findings the Builder performed before the Examiner opened: no plan to close them on yet.
         # They flush into the store the moment _open_examiner runs, never dropped, never double-closed.
         self._unclosed: list[str] = []
+        self.builder.subscribe(self._count_retry_ask)
+
+    def _count_retry_ask(self, event: Any) -> None:
+        """Every corrected-call ask the loop put in front of an agent after a shape refusal (D192).
+
+        The ask rides on the user message the loop appends, so the count is of what the agent was
+        actually asked and not of what a tool raised: a refusal whose ask has already been made
+        once stands on its own and is not counted twice.
+        """
+        if isinstance(event, MessageEnd) and (getattr(event.message, "details", None) or {}).get("retry_ask"):
+            self.retry_asks += 1
 
     # --- the stream ------------------------------------------------------------
 
@@ -602,7 +628,8 @@ class Loop:
             anchor=pipeline.load_anchor(self.plan.workdir),
             on_event=_dict_sink(self.plan.on_event), round=n)
         self.examiner = examiner_agent.examiner_harness(
-            self.eplan, self.agent_model, [*self.subscribers, self._collect_finding], max_turns=self.max_turns,
+            self.eplan, self.agent_model,
+            [*self.subscribers, self._collect_finding, self._count_retry_ask], max_turns=self.max_turns,
             session=_session(self.plan.workdir, EXAMINER_SESSION))
         self._flush_closed_findings()
 
@@ -668,7 +695,11 @@ class Loop:
             if n == 1:
                 events = self.examiner.prompt(examiner_message())
             else:
-                self.examiner.steer(examiner_round_message(n, EXAMINER_TARGET))
+                # The beat is handed its own open suggestions, the way the Builder's beat is handed
+                # `pending_line`: a finding the Examiner filed for itself and never acted on is a
+                # round's work thrown away (D192).
+                self.examiner.steer(examiner_round_message(n, EXAMINER_TARGET,
+                                                           self.eplan.store.get("findings") or []))
                 events = self.examiner.continue_()
             self.examiner_result = self._watched(self.examiner, "examiner", events, "derive")
             if self.examiner_result is None:
@@ -736,8 +767,21 @@ class Loop:
                 agent: self.compactions(agent) - self.compactions_seen.get(agent, 0) for agent in AGENTS},
             "floor_cuts": {agent: self.floor_cuts(agent) - self.cuts_seen.get(agent, 0) for agent in AGENTS},
             "findings": list(self.sent),
+            # The four counts D192's rules are read on. `suggested_open` is the findings the Examiner
+            # filed for its own verbs and has not acted on, which is what its next beat is handed;
+            # `shape_retries` the corrected-call asks a shape refusal earned; `refuse_repeats` the
+            # refusals that repeated a Task and reason already recorded; `zooms_skipped` the
+            # `status(target=)` nudges withheld because the target's own ruling was already in hand.
+            "suggested_open": len(examiner_agent.own_suggestions(self.findings_now(), cap=None)),
+            "shape_retries": self.retry_asks - self.retries_seen,
+            "refuse_repeats": repair_module.refuse_repeats(self.plan.workdir, self.plan.round),
+            "zooms_skipped": self.plan.zooms_skipped - self.zooms_seen,
             "artifacts": fingerprint, "artifact_hashes": per, "artifacts_changed": changed,
         }
+
+    def findings_now(self) -> list:
+        """The finding rows as the Examiner's store holds them, or none when no beat has opened."""
+        return list(self.eplan.store.get("findings") or []) if self.eplan is not None else []
 
     def counts(self) -> dict:
         """D126's counts off the gates, plus what only the driver knows (`driver_counts`)."""
@@ -902,6 +946,8 @@ class Loop:
         self.compactions_seen = {agent: self.compactions(agent) for agent in AGENTS}
         self.cuts_seen = {agent: self.floor_cuts(agent) for agent in AGENTS}
         self.turns_seen = {agent: len(self.fills(agent)) for agent in AGENTS}
+        self.retries_seen = self.retry_asks
+        self.zooms_seen = self.plan.zooms_skipped
         self.allowance = {agent: self.allowance_for(agent) for agent in AGENTS}
         self.builder_beat(n)
         self.examiner_beat(n)
