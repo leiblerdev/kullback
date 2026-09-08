@@ -360,10 +360,27 @@ class OverlayRow(Record):
     after_write: bool = False  # the sighting came after a write in its own trace (D74 merge order)
 
 
+class OverlayStep(Record):
+    """One row's time-varying columns as one recorded call saw them, in call order (D197).
+
+    A pinned row is one version of the world and cannot say that a live system's row moved between
+    two reads with no write between them. A step says it: the columns that moved, the call that saw
+    them, and how many calls of that shape came before it in the Task's own recording.
+    """
+    table: str
+    id: str
+    call: str  # the call's fingerprint: its tool name and canonical arguments, with no world in it
+    index: int = 0  # the nth call of that fingerprint in the Task's own order, counting from zero
+    call_id: Optional[str] = None  # the recorded call, so a body is scored on the world it ran on
+    values: dict[str, Any] = Field(default_factory=dict)
+
+
 class TaskOverlay(Record):
     """A Task's Starting state: rows read before the shared db.json (D74)."""
     task_id: str
     rows: list[OverlayRow] = Field(default_factory=list)
+    # D197: the rows whose columns moved between two reads of the Task, in the order the reads came.
+    steps: list[OverlayStep] = Field(default_factory=list)
 
 
 class Category(Record):

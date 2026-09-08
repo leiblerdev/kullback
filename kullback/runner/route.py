@@ -41,6 +41,18 @@ def recording_key(tool: str, args: dict, state_hash: Optional[str], rules: Any =
     return content_hash({"tool": tool, "args": canonical_args(args or {}, rules), "state": state_hash})
 
 
+def call_fingerprint(tool: str, args: dict) -> str:
+    """Which recorded call a routed call is, with no world in it: the tool name and its canonical args.
+
+    The pin sequence (D197) is served by this and not by the recording key, because the whole point
+    of a time-varying row is that the world moved between two calls the recording keys apart. No
+    CanonRules are read on either side, so the Builder that writes a sequence and the Router that
+    serves it compute the same value without the rules having to travel with the overlay; a Run that
+    reaches the row by arguments the recording never showed matches nothing and keeps the pin.
+    """
+    return content_hash({"tool": tool, "args": canonical_args(args or {})})
+
+
 def recording(tool: str, args: dict, state_hash: str, result: Any, error: Optional[dict] = None,
               writes: Optional[dict] = None) -> dict:
     """One row of the recording table, in the shape Router indexes.
@@ -59,7 +71,8 @@ class Router:
     def __init__(self, env_tools_module: Any = None, recordings: Any = None, starting_state: Any = None,
                  overlay: Any = None, stand_in_model: Any = None, tool_sigs: Optional[list[ToolSig]] = None,
                  overlay_rows: Optional[dict] = None, canon_rules: Any = None,
-                 synthetic_rows: Optional[Iterable[str]] = None):
+                 synthetic_rows: Optional[Iterable[str]] = None,
+                 overlay_steps: Optional[Iterable[Any]] = None):
         self.tools = env_tools_module
         # D40: a result that names a synthetic row was answered from a row no trace showed.
         self.synthetic_rows = frozenset(synthetic_rows or ())
@@ -70,6 +83,12 @@ class Router:
         self.canon_rules = canon_rules  # the customer's CanonRules, which key the recording table (D39)
         self.recordings, self.unkeyed_recordings = _index_recordings(recordings, canon_rules)
         self.marked_tools = _has_tool_markers(self.tools)
+        # D197: the rows whose columns the Task's own recording shows moving between two reads, by
+        # fingerprint and then by how many calls of that fingerprint this Run has already made.
+        self.steps = _index_steps(overlay_steps if overlay_steps is not None
+                                  else getattr(overlay, "steps", None))
+        self.steps_served = 0  # how many of them this Run laid in the world, for the Run's record
+        self._calls_seen: dict[str, int] = {}
         self._lay_overlay_in_db()
         self.start_world = self.world()
 
@@ -111,6 +130,7 @@ class Router:
             # Run refuses it too, in the same class, before any code, recording or stand-in is asked
             # and without touching the world.
             return self._error(name, "tool_not_found", f"no tool named {name} for the {requestor}")
+        self._advance(name, args)
         function = getattr(self.tools, name, None) if self.tools is not None else None
         if self._is_tool(name, function):
             return self._code(name, function, args)
@@ -126,6 +146,36 @@ class Router:
         if self.stand_in is not None:
             return self._stand_in(name, args)
         return self._error(name, "tool_not_found", f"no tool named {name}")
+
+    def _advance(self, name: str, args: dict) -> None:
+        """D197: serve the nth read of a time-varying row the nth value its Task's recording holds.
+
+        A row the customer's live system moves between two reads with no write between them (a
+        status that changes, a reading that is taken again, a queue that shortens) cannot be one
+        pinned version: the first read matches and every later one does not. The pinner writes what
+        each of the Task's own reads saw as a sequence, and this lays the next value in the world
+        before the call is answered, so a body that reads the world answers what was recorded.
+
+        Only the columns that moved are laid, so a column nothing moved keeps its single pin, and
+        only a call whose fingerprint the recording holds moves anything, so a Run that reads the
+        row some other way is answered from the pin. Once a fingerprint's sequence is spent nothing
+        more is laid and the last value stands, which is what a system that stopped changing does.
+        A write is untouched by this: `_apply` lands the write's own rows and a later read sees
+        those, because the write's value is laid after any step of the same call.
+        """
+        if not self.steps:
+            return
+        fingerprint = call_fingerprint(name, args)
+        index = self._calls_seen.get(fingerprint, 0)
+        self._calls_seen[fingerprint] = index + 1
+        db = getattr(self.tools, "db", None)
+        for step in (self.steps.get(fingerprint) or {}).get(index) or ():
+            row = dict(step.values)
+            if not row:
+                continue
+            self.state.put(step.table, step.id, row)
+            _db_put(db, step.table, str(step.id), row)
+            self.steps_served += 1
 
     def _may_call(self, name: str, requestor: str) -> bool:
         """D164: whether this caller is one the mined tool answers. An unmined name is nobody's."""
@@ -212,6 +262,14 @@ def _index_recordings(recordings: Any, rules: Any = None) -> tuple[dict, int]:
             continue
         table[recording_key(tool, entry.get("args") or {}, state_hash, rules)] = entry
     return table, unkeyed
+
+
+def _index_steps(steps: Any) -> dict[str, dict[int, list]]:
+    """The Task's pin sequences by fingerprint, then by which call of that fingerprint they belong to."""
+    out: dict[str, dict[int, list]] = {}
+    for step in steps or ():
+        out.setdefault(str(step.call), {}).setdefault(int(step.index or 0), []).append(step)
+    return out
 
 
 def _error_record(error: Any) -> Optional[ToolCallError]:

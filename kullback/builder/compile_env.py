@@ -68,6 +68,7 @@ from kullback.runner.records import (
     Environment,
     GateResult,
     OverlayRow,
+    OverlayStep,
     Task,
     TaskOverlay,
     ToolCall,
@@ -77,6 +78,7 @@ from kullback.runner.records import (
     as_dict,
     content_hash,
 )
+from kullback.runner.route import call_fingerprint  # D197: one fingerprint, written and served alike
 
 DB_FILE = "db.json"
 OVERLAY_DIR = "overlays"
@@ -289,6 +291,11 @@ class _Obs:
     # A keyless result homed onto the row the call named (`home_partial_result`), rather than a row
     # a result stated. Kept apart from `depth` so the pins report can count the two rules apart.
     homed: bool = False
+    # Which recorded call saw the row (D197). `call` fingerprints the call the way route.py does, so
+    # a Run making that call again can be told it is the same read; `call_id` names the recorded call
+    # itself, which is what the sandbox scores a body on. A sighting no call made carries neither.
+    call: str = ""
+    call_id: Optional[str] = None
 
     @property
     def partial(self) -> bool:
@@ -341,9 +348,11 @@ def _observations(traces: list[Trace], schema: EntitySchema, write_tools: set[st
                 rows = [(homed.table, homed.row_id, homed.row, 0)]
             elif homed is not None and stats is not None:
                 stats["unread_partial_results"] = stats.get("unread_partial_results", 0) + 1
+            fingerprint = call_fingerprint(call.name, call.args or {})
             for table, row_id, row, depth in rows:
                 out.append(_Obs(table, row_id, row, trace.trace_id, (trace_index, call_index),
-                                is_write or row_id in written, depth, bool(homed and homed.row)))
+                                is_write or row_id in written, depth, bool(homed and homed.row),
+                                fingerprint, call.id))
             if is_write:
                 written |= {row_id for _, row_id, _, _ in rows}
                 written |= {v for v in call.args.values() if isinstance(v, str)}
@@ -716,6 +725,7 @@ def _build_overlays(observations: list[_Obs], tasks: Iterable[Task], workdir: Pa
         for name, value in obs.row.items():
             columns.setdefault(str(name), set()).add(canon(value))
     overlays, pins = [], {}
+    by_table: dict[str, set] = {}  # D197: which columns of which table any Task saw move
     for task in tasks:
         members = set(task.run_ids)
         seen: dict[tuple[str, str], list[_Obs]] = {}
@@ -733,11 +743,12 @@ def _build_overlays(observations: list[_Obs], tasks: Iterable[Task], workdir: Pa
         assumptions += [f"task {task.id} runs disagree on {table} row {row_id}: the overlay pins the "
                         "earliest sighting, so the runs that saw the other version cannot replay on it"
                         for (table, row_id) in sorted(seen) if _columns_disagreeing(seen[(table, row_id)])]
+        steps = [step for key in sorted(seen) for step in _row_steps(key[0], key[1], seen[key])]
         overlay = TaskOverlay(task_id=task.id, rows=[
             OverlayRow(table=t, id=i, version_hash=content_hash(rows[(t, i)]),
                        trace_id=seen[(t, i)][0].trace_id, after_write=seen[(t, i)][0].after_write)
             for t, i in sorted(rows)
-        ])
+        ], steps=steps)
         assumptions += [f"task {task.id} pins {t} row {i} from a post-write sighting"
                         for (t, i), sightings in sorted(seen.items()) if sightings[0].after_write]
         _write_overlay(workdir, overlay, {content_hash(rows[key]): rows[key] for key in rows})
@@ -750,10 +761,54 @@ def _build_overlays(observations: list[_Obs], tasks: Iterable[Task], workdir: Pa
             "columns_the_corpus_disagrees_on": sum(
                 1 for key, row in rows.items() for name in row
                 if len(corpus.get(key, {}).get(name) or ()) > 1),
+            # D197: the columns of this Task's own rows that moved between two of its reads, and the
+            # sightings a Run can be served for them. Both are zero where nothing moved.
+            "columns_time_varying": len({(s.table, s.id, name) for s in steps for name in s.values}),
+            "sequences_served": len(steps),
         }
+        for step in steps:
+            by_table.setdefault(step.table, set()).update((step.id, name) for name in step.values)
         overlays.append(overlay)
-    _write_pins(workdir, pins, stats or {})
+    _write_pins(workdir, pins, stats or {}, {t: len(v) for t, v in sorted(by_table.items())})
     return overlays
+
+
+def _row_steps(table: str, row_id: str, sightings: list[_Obs]) -> list[OverlayStep]:
+    """One row's time-varying columns, per call of the Task's own recording, in call order (D197).
+
+    A column is time-varying for this Task when two of its reads of the row hold different values
+    and no recorded write touched the row between them. That is a statement about the customer's
+    system and not about the recording: a status read twice an hour apart, a reading taken again,
+    a queue whose position has moved. Pinning one value made
+    the first read match and every later one differ, which is what a whole-Task constant can say and
+    no more.
+
+    So each sighting the Task made becomes a step carrying only the columns that moved, keyed by the
+    call's fingerprint and by how many calls of that fingerprint came before it. The Router counts
+    the same way, so the nth read of the row is served the nth recorded value and the last value
+    holds once the sequence is spent. A row read once, or read twice in one value, gets no step and
+    keeps its single pin. Walking stops at the first sighting a write had already touched: from
+    there the write's own value is what a later read sees, which is how it already worked.
+    """
+    usable: list[_Obs] = []
+    for obs in sightings:
+        if obs.after_write or not obs.call:
+            break
+        usable.append(obs)
+    moved = {name for name in {n for obs in usable for n in obs.row}
+             if len({canon(obs.row[name]) for obs in usable if name in obs.row}) > 1}
+    if not moved:
+        return []
+    steps: list[OverlayStep] = []
+    counted: dict[str, int] = {}
+    for obs in usable:
+        index = counted.get(obs.call, 0)
+        counted[obs.call] = index + 1
+        values = {str(name): obs.row[name] for name in sorted(moved) if name in obs.row}
+        if values:
+            steps.append(OverlayStep(table=table, id=row_id, call=obs.call, index=index,
+                                     call_id=obs.call_id, values=values))
+    return steps
 
 
 def _columns_disagreeing(sightings: list[_Obs]) -> list[str]:
@@ -768,12 +823,15 @@ def _columns_disagreeing(sightings: list[_Obs]) -> list[str]:
             if len({per[name] for per in by_trace.values() if name in per}) > 1]
 
 
-def _write_pins(workdir: Path, pins: dict, stats: dict) -> Path:
+def _write_pins(workdir: Path, pins: dict, stats: dict,
+                time_varying_by_table: Optional[dict] = None) -> Path:
     """What the pinner did, per Task and in total: the ruling a person reads after a build."""
     totals = {name: sum(int(row.get(name) or 0) for row in pins.values())
               for name in ("rows", "rows_nested", "columns", "columns_homed",
-                           "columns_the_corpus_disagrees_on")}
-    payload = {"depth_cap": ROW_WALK_DEPTH,
+                           "columns_the_corpus_disagrees_on", "columns_time_varying",
+                           "sequences_served")}
+    payload = {"columns_time_varying_by_table": dict(time_varying_by_table or {}),
+               "depth_cap": ROW_WALK_DEPTH,
                "results_deeper_than_the_cap": int(stats.get("depth_capped") or 0),
                "unread_partial_results": int(stats.get("unread_partial_results") or 0),
                "nested_sightings_of_a_row_already_stated":
@@ -1879,9 +1937,29 @@ def call_starting_states(db: dict, overlays: Iterable[TaskOverlay], values: dict
     into the gates, since a `ToolCall` does not name its trace. The state is the shared world with
     that Task's overlay merged, which is the world that call actually ran on, so a corpus holding one
     row in two versions does not make a correct body look wrong.
+
+    D197: where the Task's overlay carries a pin sequence, the call that saw a later value of a
+    time-varying row runs on a world holding that value and not the first one. The scoring path and
+    the replay have to serve one world or the score punishes a body for a state the replay would
+    have served it. The state is keyed per call already, so the sequence needs no new key: a call a
+    step names gets its own copy of the Task's world with that step's columns laid in it, and every
+    other call keeps the Task's world as it was pinned.
     """
     states = {overlay.task_id: merge_overlays(db, [overlay], values) for overlay in overlays}
-    return {call_id: states[task_id] for call_id, task_id in call_tasks.items() if task_id in states}
+    per_call: dict[str, dict] = {}
+    for overlay in overlays:
+        base = states.get(overlay.task_id)
+        for step in overlay.steps:
+            if base is None or not step.call_id or not step.values:
+                continue
+            world = per_call.get(step.call_id)
+            if world is None:
+                world = per_call[step.call_id] = copy.deepcopy(base)
+            row = world.setdefault(step.table, {}).get(step.id)
+            world[step.table][step.id] = (dict(row, **step.values) if isinstance(row, dict)
+                                          else dict(step.values))
+    return {call_id: per_call.get(call_id) or states[task_id]
+            for call_id, task_id in call_tasks.items() if task_id in states}
 
 
 def replay_outcomes(toolsig: ToolSig, body: str, calls: Iterable[ToolCall], schema: EntitySchema, db: dict,
