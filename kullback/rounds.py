@@ -61,6 +61,7 @@ from kullback.ai.provider import Model
 from kullback.builder import agent as builder_agent
 from kullback.builder import build as build_module
 from kullback.builder import pipeline, transaction
+from kullback.builder import readers as readers_mod
 from kullback.builder import repair as repair_module
 from kullback.builder.agent import builder_message
 from kullback.builder.build import DEFAULT_REROLLS, TARGET_ALL, TASK_SPLIT, BuildError, BuildPlan
@@ -787,8 +788,22 @@ class Loop:
             "repairs_reverted": transaction.reverted_by_kind(self.repairs_in(self.plan.round)),
             "artifacts": fingerprint, "artifact_hashes": per, "artifacts_changed": changed,
             **self._pin_counts(),
+            **self._reader_counts(),
             **self.task_split(),
         }
+
+    def _reader_counts(self) -> dict:
+        """D203: what the build had to derive for itself because no proposal read a homed result.
+
+        `readers_derived` is the tools whose reader the corpus alone settled, `readers_forced` the
+        tools one model call had to settle, `slots_unbound` the template positions no column of the
+        homed row matched, and `results_unread` what is still read by nothing. All zero is a corpus
+        whose prose results were already read, not a mechanism that did nothing.
+        """
+        totals = (_read_json(self.plan.workdir / readers_mod.READERS_FILE, {}) or {}).get("gaps") or {}
+        totals = totals.get("totals") or {}
+        return {name: int(totals.get(name) or 0)
+                for name in ("readers_derived", "readers_forced", "slots_unbound", "results_unread")}
 
     def _pin_counts(self) -> dict:
         """D197: what the pinner found moving between two reads, so a round says it without a report.

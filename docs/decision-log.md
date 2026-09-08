@@ -1407,6 +1407,7 @@ Tests on an invented bike hire domain: a value only the tools held is taken out 
 Measured offline on copies of both workdirs, code only, spend zero. On the first corpus the strip touches 12 of 213 Intents and takes 13 values, 8 as last four characters and 5 removed, all hard columns; the leak check over its 201 Verifiers falls from 5 failing Tasks to 0, and all 12 stripped lines still ground. On the second it touches 0 of 125 Intents and fails 0 of 78 Verifiers either way. Two numbers cut against the premise: the second corpus does not move at all, and the funnel read's 6 airline leak failures are not in that workdir, a snapshot of a running build.
 
 The frozen packages moved, so gates_version and the three workdirs need freezing again. Next to read is intents_stripped and values_stripped beside leak_misses in the round counts: a corpus where the first two are zero and the third is not has a strip reading different values from its check.
+
 ### D197. A row read more than once in a Task is served its recorded values in call order (2026-09-08)
 
 The founder asked for fixes read off the errors that do not overfit. The airline round 1 report read ten Tasks failing on a status read and four on a nested leg list, and telecom read device columns parting between two reads, naming one class: a live system's row changes between two reads with no recorded write between them, which the per-Task constant D188 pins cannot reproduce.
@@ -1469,6 +1470,46 @@ The bodies are the input and the Starting state runs above the stage releasing t
 Twelve tests on an invented domain of meters and seals cover a flag and an enum pinned by inversion, no candidate counted per tool, a column read before its write, a write the pre state reproduces, two writes of one column, the pin reaching `call_starting_states`, no body yet, another requestor's write, and a corpus filled column treated as unread.
 
 Measured on copies, code only, zero cost. On the corpus the reading came from, 183 Tasks, 51 columns inverted and 1116 with no inverse over 4972 candidates, the first failure moving off toggle_roaming for 7 Tasks and check_app_permissions for 3. On the other, 122 Tasks, nothing inverted, 35 with no inverse over 320 candidates, an identical reason table. Both disagree with the premise on the number that matters: Tasks confirmed stayed 17 and 54, because an inversion moves a Task's first failure later rather than removing it, so can_send_mms rose from 13 to 19 and check_network_status from 10 to 15 as earlier calls began passing. Next builds: read columns_inverted against columns_no_inverse per tool in `overlay_pins.json`, and whether a Task whose first write now replays fails later or out of turn order.
+
+### D203. A tool whose prose nobody reads gets a reader of its own (2026-09-08)
+
+The founder asked to observe from the errors and fix things generally, without overfitting. The
+error is a hole in D176: readers are proposed one requestor toolkit at a time, so a tool of the
+customer's own system that answers a sentence gets no reader, and D180 homing has nothing to home.
+The airline recording left 112 homed prose results of one read tool unread and homed no column at
+all; the telecom recording left 231 results of two tools unread.
+
+The rule is that after the readers stage every tool with homed prose results no reader answers is a
+gap the harness closes itself. The tool's own recorded results are aligned into templates: tokenise
+on whitespace, group by token width, the positions every result agrees on are the literal frame and
+the rest are slots. A slot binds to the one column of the homed row whose value equals it on every
+result, exactly first and then through canon. A bound template compiles to a reader and a render,
+kept only where the D183 round trip reproduces every recorded result character for character from
+the row the corpus held. Where a slot binds to no column or to two, one model call per tool asks
+for the pair, given the templates, the masked slot values and the row's columns, and the same round
+trip rules on it. That reader may also name a column the row does not hold, which is what the read
+reveals about the row. A reveal has no column to check it against, so it is held to two other
+things: one row answers one value for it within a run, or the sentence states something varying
+under the row rather than a column of it; and it takes more than one value over the corpus, or it
+asserts nothing. A revealed column enters the schema marked by the tool that revealed it, because
+the tool bodies are written from the schema. A tool answering one string to every call is a
+constant acknowledgement, counted apart, and results still unread are counted per tool and filed as
+one environment finding naming their masked shapes.
+
+Twenty one tests over an invented courier depot cover alignment, binding, forcing, the rejected
+render, the revealed column entering the schema, both refusals of a reveal, and unread results
+counted by shape.
+
+Measured offline on workdir copies with D197 merged in. Airline went from 88 of 122 Tasks confirmed
+to 100, columns homed from 0 to 255, sequences served from 0 to 52, and the read that blocked
+thirty Tasks stopped disagreeing. Telecom did not move, 19 of 329 either way: one unread tool
+answers one string to 164 calls, the other has two results, below the three an alignment needs, and
+its forced proposal failed the round trip. The disagreement to state plainly is that step one, the
+code only half, derived nothing on either corpus: every gain came from the one forced call, so the
+alignment is proven by tests and not yet by a corpus. Adding one column to the airline schema also
+moved the mined counts, because the miner reads a result differently once its table holds it. Cost
+was four forced calls, far under a dollar. Read readers_derived, readers_forced, columns_revealed,
+slots_unbound and results_unread on the next builds.
 
 ### D204. The replay cursor takes a run of consecutive same-role turns as one logical turn (2026-09-08)
 
