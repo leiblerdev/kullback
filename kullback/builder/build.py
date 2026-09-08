@@ -84,6 +84,9 @@ from kullback.runner.records import write_json as _write_json
 # store (D120).
 
 CANON_RULES = "canon-rules.json"
+# What the cluster stage did with the frozen Task list this round (D200): read by the driver
+# so a round's status says how many Tasks it froze, added and could not reproduce.
+TASK_SPLIT = "task_split.json"
 
 
 class BuildError(RuntimeError):
@@ -282,9 +285,14 @@ def _cluster_stage():
         # one of its columns differently before either wrote started in different worlds.
         readers.merge_worlds(worlds, inputs["readers"], inputs["schema"])
         categories, tasks = cluster.cluster_runs(inputs["traces"], inputs["sigs"], worlds=worlds)
+        # D200: once a list is frozen it is the Task list. A rebuild may add Tasks for Runs nobody
+        # froze, it may not drop, re-split or re-id a frozen one, because every number the build is
+        # judged on is counted over that list and a Task that moves takes its ruling with it.
+        tasks, split = cluster.resume_frozen(tasks, scorecard_mod.frozen_tasks(ctx.workdir))
         for task in tasks:
             _write_json(ctx.workdir / "tasks" / f"{task.id}.json", as_dict(task))
         _write_json(ctx.workdir / "tasks.json", {"tasks": [as_dict(t) for t in tasks]})
+        _write_json(ctx.workdir / TASK_SPLIT, split)
         # D96: the coverage denominator is frozen once, here, before anything measures coverage.
         scorecard_mod.freeze_tasks(ctx.workdir, tasks)
         ctx.record_gate(stage_gates.cluster_gate(tasks, categories))

@@ -63,7 +63,7 @@ from kullback.builder import build as build_module
 from kullback.builder import pipeline, transaction
 from kullback.builder import repair as repair_module
 from kullback.builder.agent import builder_message
-from kullback.builder.build import DEFAULT_REROLLS, TARGET_ALL, BuildError, BuildPlan
+from kullback.builder.build import DEFAULT_REROLLS, TARGET_ALL, TASK_SPLIT, BuildError, BuildPlan
 from kullback.builder.compile_env import PINS_FILE
 from kullback.builder.tools import BUILD_TOOLS, EXAMINER_OWNS
 from kullback.examiner import agent as examiner_agent
@@ -787,6 +787,7 @@ class Loop:
             "repairs_reverted": transaction.reverted_by_kind(self.repairs_in(self.plan.round)),
             "artifacts": fingerprint, "artifact_hashes": per, "artifacts_changed": changed,
             **self._pin_counts(),
+            **self.task_split(),
         }
 
     def _pin_counts(self) -> dict:
@@ -800,6 +801,23 @@ class Loop:
         totals = (_read_json(self.plan.workdir / PINS_FILE, {}) or {}).get("totals") or {}
         return {name: int(totals.get(name) or 0)
                 for name in ("columns_time_varying", "sequences_served")}
+
+    def task_split(self) -> dict:
+        """What the cluster stage did with the frozen Task list (D200), as three counts.
+
+        A round that added Tasks grew the corpus; a round whose `tasks_frozen_only` is above zero
+        re-clustered Runs the frozen list had already grouped, so the Task list and the numbers
+        counted over it are still comparable, and the drift is visible instead of silent.
+        """
+        try:
+            split = json.loads((Path(self.plan.workdir) / TASK_SPLIT).read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return {}
+        if not isinstance(split, dict):
+            return {}
+        return {"tasks_frozen": int(split.get("frozen") or 0),
+                "tasks_added": len(split.get("added") or []),
+                "tasks_frozen_only": len(split.get("frozen_only") or [])}
 
     def findings_now(self) -> list:
         """The finding rows as the Examiner's store holds them, or none when no beat has opened."""
