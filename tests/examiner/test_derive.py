@@ -39,11 +39,13 @@ from kullback.runner.records import Constraint, Task, Verifier, as_dict, content
 
 # The derivation over verifier_fixtures.derive(tmp_path): seven atoms, seeds ref, alt and rr2. It was
 # pinned at the commit the phase 5 move started from (a40812c, 77d497a99ac9e8c1) to hold that the
-# move changed no byte of the artifact (D130). It has moved twice since: when a stated fact the
-# request never asked about stopped being a demand, and when the write cap moved to the end of the
-# atom list so the rule on a cap of 0 could see what else the Verifier demands. A change to this
-# value is a change to every Verifier of every build, so it is moved deliberately or not at all.
-DERIVATION_HASH = "ab18f441cf7e5e3790ca3f78b67ea2e7a7ffa06879c66318156d607d39537fa3"
+# move changed no byte of the artifact (D130). It has moved three times since: when a stated fact the
+# request never asked about stopped being a demand, when the write cap moved to the end of the atom
+# list so the rule on a cap of 0 could see what else the Verifier demands, and at D190, when a
+# demanded fact took the provenance of the value it carries and a reported one stopped carrying any.
+# A change to this value is a change to every Verifier of every build, so it is moved deliberately
+# or not at all.
+DERIVATION_HASH = "15c3e65d0651f92e539d80f0e9215b7c4bc76a499d7327acaeebfcc814fc65d0"
 
 
 def test_the_derivation_never_imports_the_builder_the_runner_internals_or_anything_that_runs(tmp_path):
@@ -102,19 +104,25 @@ def test_user_stated_value_is_required_and_elicited_value_is_allowed(tmp_path):
 
 
 def test_system_derived_and_agent_chosen_provenance(tmp_path):
-    run = make_run("p", [
+    """The classification is unchanged; what the derivation writes for a system_derived value is not.
+
+    D190: the caller never said #W555, so the id the agent looked up is written as a shape over its
+    own column rather than as the literal, while the reason the agent invented stays allowed.
+    """
+    events = [
         user("Refund my order please."),
         call("get_order_details", {"order_id": "#W555"}, kind="read", cid="c0"),
         result({"order_id": "#W555", "total": 42.5}, cid="c0"),
         call("cancel_pending_order", {"order_id": "#W555", "reason": "goodwill"}, cid="c1"),
         result({"status": "cancelled"}, cid="c1"),
         assistant("Refunded 42.5."),
-    ])
+    ]
+    run = make_run("p", events)
+    assert S.classify_provenance(run, 5, "#W555", S.canon_fn(None))[0] == "system_derived"
     verifier = V.derive_verifier(TASK, run, [], None, write_tools=WRITE_TOOLS)
-    order = [a for a in verifier.atoms if S.atom_payload(a).get("field") == "order_id"][0]
+    order = atom_by_id(verifier, "w0.order_id")
     reason = [a for a in verifier.atoms if S.atom_payload(a).get("field") == "reason"][0]
-    assert order.provenance == "system_derived"
-    assert order.kind == "required"
+    assert order.kind == "hard" and S.atom_payload(order)["derived_as"] == V.SHAPE_ATOM
     assert reason.provenance == "agent_chosen"
     assert reason.kind == "allowed"
 
@@ -480,7 +488,8 @@ def test_a_reported_fact_keeps_the_value_the_span_and_a_predicate_that_can_answe
     """Reported is not dropped: the Verdict can still say whether the Run stated the fact."""
     verifier = pump_verifier("tell the caller about the pump they asked about")
     price = fact_atom(verifier, "249.0")
-    assert price.kind == "allowed" and price.provenance == "system_derived"
+    # No provenance since D190: provenance is what evidences a demand, and this atom makes none.
+    assert price.kind == "allowed" and price.provenance is None
     assert price.predicate_src and "249.0" in price.predicate_src
     assert price.spans and price.spans[0].msg_index == 2
     assert "rejects no Run" in (price.description or "")

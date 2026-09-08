@@ -56,7 +56,7 @@ STAGE = "derive_verifier"
 # The per-Task cache under the workdir (D163). Bumped when the entry's shape changes, so an old entry
 # is a miss rather than a row read with the wrong meaning.
 CACHE_DIR = ("examiner", "cache")
-CACHE_FORMAT = 3  # the reference record carries what the judge looked at, and the status row the pool
+CACHE_FORMAT = 4  # the status row counts the atoms D190 relaxed to a shape and added to falsify
 # The modules a Task's derivation runs through, hashed into every key: an edit to any of them is a
 # different derivation and must not be served a stale entry (the Builder's stages hash the same way,
 # build.py's `_version`).
@@ -376,6 +376,7 @@ def verifier_for(ctx, task: Task, confirmation: Any, *, canon_rules: Any, write_
               "did_not_reach_reference": sorted(left_out), "judged": confirmation.judged,
               "checks": results,
               "not_run": [g.stage for g in gates if g.metrics.get("skipped")],
+              **verifier_mod.derivation_counts(record),
               **fidelity_fields(fidelity_row or {})}
     return record, status
 
