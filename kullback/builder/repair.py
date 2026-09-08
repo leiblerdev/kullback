@@ -128,6 +128,18 @@ NO_ATTEMPT = "the compiler recorded no attempt"
 NO_FAILURE = "the gates recorded no failure"
 NO_INTENT = "no Intent is recorded for this Task"
 
+# The stage's ruling on the body each tool already had, one row per tool: the outcome (kept, beaten
+# or could not run), both scores, how many recompiles in a row have now scored no higher, and how
+# many of the evidence calls the Reference replay put back (D184, D191). It is written by the
+# compile_tools stage in `builder/build.py` and read back here, because the sentence a repair opens
+# with has to say the same thing the stage decided: "cleared the gates" is about the body that was
+# released, and the released body is often the one that was already there.
+KEPT_BODIES_FILE = "kept_bodies.json"
+# How many recompiles in a row may score no higher before the tool is called stalled. The third
+# strike shape of D181 rule 2, for the Builder's own verb: two rounds that bought nothing on one
+# tool are the evidence that a third will buy nothing either.
+STALLED_AFTER = 2
+
 
 def _json_at(workdir: Any, relative: Any, default: Any) -> Any:
     """One record file of a workdir, or the default when it is missing or half written."""
@@ -257,24 +269,79 @@ def intent_ruling(workdir: Any, task_id: str) -> str:
     return f"repair_intent {task_id}: still refused: {record.get('reason') or NO_INTENT}"
 
 
+def kept_body_ruling(workdir: Any, name: str) -> dict:
+    """What the compile_tools stage decided about the body this tool already had (D184, D191)."""
+    rows = _json_at(workdir, KEPT_BODIES_FILE, {})
+    row = rows.get(name) if isinstance(rows, dict) else None
+    return row if isinstance(row, dict) else {}
+
+
+def stalled_note(row: dict) -> str:
+    """How many recompiles in a row have bought this tool nothing, once that is worth saying (D191).
+
+    Said at the second one and every one after, because the point of saying it is that the next
+    round should be spent elsewhere: a Builder that reads "still assisted" and nothing else asks the
+    same question again, which is what four live rounds of one build did on the same four tools.
+    """
+    unbeaten = int(row.get("unbeaten") or 0) if isinstance(row, dict) else 0
+    if unbeaten < STALLED_AFTER:
+        return ""
+    return (f"; stalled: {unbeaten} recompiles in a row scored no higher than the body it has, so "
+            f"the next one will not either unless something other than the hint changes")
+
+
+def score_note(workdir: Any, name: str) -> str:
+    """The score pair this recompile was judged on, and which body the stage released (D191).
+
+    The stage scores every attempt against the body the tool already has, on the key the compiler
+    ranks its own attempts by (gates passed, then recorded calls matched), and releases whichever
+    won. Until this said so, the ruling named only the released body's gates, so a recompile whose
+    attempt lost by ninety calls and a recompile that won read the same to the model.
+    """
+    row = kept_body_ruling(workdir, name)
+    outcome = str(row.get("outcome") or "")
+    if not outcome:
+        return ""
+    attempt, kept = row.get("attempt_score"), row.get("kept_score")
+    pair = f"the attempt scored {attempt} against the kept body's {kept} (gates passed, calls matched)"
+    if outcome == "beaten":
+        released = f"{pair} and was released"
+    elif outcome == "could_not_run":
+        released = (f"{pair}, and the body already there answered no call at all under this world, "
+                    f"so the attempt was released")
+    else:
+        released = f"{pair}, so the body already there stands and this recompile changed nothing"
+    replayed = int(row.get("from_replay") or 0)
+    evidence = int(row.get("evidence_calls") or 0)
+    from_replay = (f"; {replayed} of the {evidence} evidence calls are from_replay, put back because "
+                   f"the Reference replay failed on them") if replayed else ""
+    return f" ({released}{from_replay}{stalled_note(row)})"
+
+
 def recompile_ruling(workdir: Any, name: str) -> str:
-    """Whether this tool's new body cleared the gates, off `tool_builds.json`.
+    """Whether this tool's new body cleared the gates, off `tool_builds.json` and `kept_bodies.json`.
 
     A tool that ended assisted is a body no attempt got through (D49), so the line carries what went
     wrong in its last attempt: that is what the next hint has to answer. Where the recorded calls
     failed in more than one way, every shape is named with how many calls fell into it, since a hint
     written against the first sentence alone repairs one call and leaves the rest as they were.
+
+    The assisted reading is the released body's, and the released body is the one the stage kept
+    whenever the attempt did not beat it, so the line goes on to say what the attempt scored against
+    it and whose body came out (D191). "cleared the gates" on its own was read as a repair that
+    worked, over rounds in which the repair had changed nothing at all.
     """
     build = tool_build(workdir, name)
     if not build:
         return f"repair_recompile {name}: {NO_ATTEMPT}"
+    score = score_note(workdir, name)
     if not build.get("assisted"):
-        return f"repair_recompile {name}: cleared the gates"
+        return f"repair_recompile {name}: cleared the gates{score}"
     failures = [text for text in (_failure_detail(node) for node in build.get("nodes") or []) if text]
     # A body that never read its arguments is a different repair from a body with a defect in it, so
     # the line says which one this is before it says what the gates saw.
     stood = "still assisted and hardcoded" if build.get("hardcoded") else "still assisted"
-    return f"repair_recompile {name}: {stood}: {failures[-1] if failures else NO_FAILURE}"
+    return f"repair_recompile {name}: {stood}{score}: {failures[-1] if failures else NO_FAILURE}"
 
 
 def grow_ruling(workdir: Any, table: str, count: int) -> str:

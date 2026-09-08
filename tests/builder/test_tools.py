@@ -455,7 +455,9 @@ def test_a_repair_recompile_result_says_whether_that_tool_cleared_the_gates(buil
     assisted = json.loads((workdir / "tool_builds.json").read_text(encoding="utf-8"))[ASSISTED]["assisted"]
     first = out.content.splitlines()[0]
     assert first.startswith(f"repair_recompile {ASSISTED}: ")
-    assert ("still assisted: " in first) is bool(assisted)
+    assert ("still assisted" in first) is bool(assisted)
+    # D191: the line also says what the attempt scored against the body already there.
+    assert "(the attempt scored " in first and ("was released" in first or "stands" in first)
     assert ("cleared the gates" in first) is (not assisted)
     gate_line = next(line for line in out.content.splitlines() if line.startswith("rulings: "))
     assert "compile_tools" in gate_line, "the gate-wide line stays, after the target's own"

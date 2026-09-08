@@ -341,3 +341,85 @@ def test_a_finding_records_the_tool_the_leaf_and_the_calls_it_rests_on_and_moves
     assert row["target"] == "update_booking" and row["changed"] is False
     assert row["arguments"]["evidence"] == ["call_12", "call_40"]
     assert row["arguments"]["finding"].startswith("rooms[*].rate:")
+
+
+# --- D191: the repair ruling says what the stage decided, not only what the released body scored ---
+
+
+def _kept_bodies(tmp_path, **rows):
+    (tmp_path / "kept_bodies.json").write_text(json.dumps(rows), encoding="utf-8")
+
+
+def _builds_rows(tmp_path, **rows):
+    (tmp_path / "tool_builds.json").write_text(json.dumps(rows), encoding="utf-8")
+
+
+def test_a_recompile_whose_attempt_lost_says_so_beside_the_released_bodys_ruling(tmp_path):
+    """`cleared the gates` is a reading of the body the stage released, and the released body is the
+    one that was already there whenever the attempt did not beat it. Read alone it says a repair
+    worked, over rounds in which the repair changed nothing at all."""
+    _builds_rows(tmp_path, renew_loan={"assisted": False})
+    _kept_bodies(tmp_path, renew_loan={"outcome": "kept", "attempt_score": [6, 12],
+                                       "kept_score": [6, 104], "unbeaten": 1,
+                                       "from_replay": 0, "evidence_calls": 216})
+
+    ruling = repair.recompile_ruling(tmp_path, "renew_loan")
+
+    assert ruling == ("repair_recompile renew_loan: cleared the gates (the attempt scored [6, 12] "
+                      "against the kept body's [6, 104] (gates passed, calls matched), so the body "
+                      "already there stands and this recompile changed nothing)")
+
+
+def test_a_recompile_whose_attempt_won_says_it_was_released(tmp_path):
+    _builds_rows(tmp_path, renew_loan={"assisted": False})
+    _kept_bodies(tmp_path, renew_loan={"outcome": "beaten", "attempt_score": [7, 40],
+                                       "kept_score": [6, 10], "unbeaten": 0})
+
+    assert repair.recompile_ruling(tmp_path, "renew_loan") == (
+        "repair_recompile renew_loan: cleared the gates (the attempt scored [7, 40] against the "
+        "kept body's [6, 10] (gates passed, calls matched) and was released)")
+
+
+def test_a_still_assisted_tool_carries_the_score_pair_before_the_failure_the_next_hint_answers(tmp_path):
+    _builds_rows(tmp_path, find_branch={"assisted": True, "nodes": [{"attempt": 0, "gates": [
+        {"stage": "replay_fidelity", "pass": False, "failures": ["find_branch({}) answered nothing"]}]}]})
+    _kept_bodies(tmp_path, find_branch={"outcome": "kept", "attempt_score": [6, 0],
+                                        "kept_score": [6, 10], "unbeaten": 1})
+
+    ruling = repair.recompile_ruling(tmp_path, "find_branch")
+
+    assert ruling.startswith("repair_recompile find_branch: still assisted (the attempt scored [6, 0]")
+    assert ruling.endswith(": replay_fidelity: find_branch({}) answered nothing")
+
+
+def test_the_evidence_a_replay_failure_put_back_is_counted_in_the_ruling(tmp_path):
+    _builds_rows(tmp_path, renew_loan={"assisted": False})
+    _kept_bodies(tmp_path, renew_loan={"outcome": "kept", "attempt_score": [6, 9], "kept_score": [6, 9],
+                                       "unbeaten": 1, "from_replay": 7, "evidence_calls": 43})
+
+    assert ("7 of the 43 evidence calls are from_replay, put back because the Reference replay "
+            "failed on them") in repair.recompile_ruling(tmp_path, "renew_loan")
+
+
+def test_a_tool_stalled_for_two_recompiles_says_so_and_one_recompile_does_not(tmp_path):
+    assert repair.stalled_note({"unbeaten": 1}) == ""
+    assert repair.stalled_note({}) == ""
+    assert "stalled: 2 recompiles in a row scored no higher" in repair.stalled_note({"unbeaten": 2})
+    assert "stalled: 5 recompiles in a row scored no higher" in repair.stalled_note({"unbeaten": 5})
+
+
+def test_a_workdir_with_no_kept_body_ruling_leaves_the_line_as_it_was(tmp_path):
+    """The first run of the stage for a tool has no body to have beaten, so there is no pair to
+    name and the ruling is the one it always was."""
+    _builds_rows(tmp_path, renew_loan={"assisted": False})
+    assert repair.recompile_ruling(tmp_path, "renew_loan") == "repair_recompile renew_loan: cleared the gates"
+
+
+def test_a_kept_body_that_could_not_run_says_the_attempt_took_the_tool(tmp_path):
+    _builds_rows(tmp_path, renew_loan={"assisted": False})
+    _kept_bodies(tmp_path, renew_loan={"outcome": "could_not_run", "attempt_score": [6, 3],
+                                       "kept_score": [6, 3], "unbeaten": 0})
+
+    ruling = repair.recompile_ruling(tmp_path, "renew_loan")
+
+    assert "answered no call at all under this world, so the attempt was released" in ruling

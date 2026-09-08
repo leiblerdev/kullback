@@ -12,6 +12,7 @@ from conftest import PTR
 from kullback.ai.provider import TestModel
 from kullback.builder import build as build_module
 from kullback.builder import pipeline
+from kullback.builder import repair as repair_module
 from kullback.builder import tools as builder_tools
 from kullback.builder.build import BuildPlan
 from kullback.runner.records import Task, ToolCall, ToolSig, Trace, Turn, Verifier
@@ -85,8 +86,11 @@ def test_a_second_build_is_served_from_the_cache(built, tmp_path):
 
     intent is the third, and for a different reason: it declares `intents/` as an input path so a
     repair_intent is seen by the next full build, and the first build wrote that folder, so the
-    second build's key has moved. It settles on the run after, which is what the third build here
-    shows: the stage reads the same records back, writes the same bytes, and the key stops moving.
+    second build's key has moved. compile_tools is the fourth and it is the same reason: it declares
+    `replays.json` as an input path so the calls the replay of the References failed on are evidence
+    for the next body (D191), and the first build's replay wrote that file after compile_tools had
+    run. Both settle on the run after, which is what the third build here shows: the stages read the
+    same records back, write the same bytes, and the keys stop moving.
 
     The rebuild goes into a copy of the built workdir, so the module's shared fixture is left as
     the first build wrote it and the tests that read it do not depend on running after this one."""
@@ -97,8 +101,8 @@ def test_a_second_build_is_served_from_the_cache(built, tmp_path):
     statuses = json.loads((workdir / "pipeline" / "state.json").read_text(encoding="utf-8"))["statuses"]
     # ingest is the previous build's own record, carried over because this build had no file to
     # ingest and so ran no ingest stage at all.
-    assert {name for name, status in statuses.items() if status != "cached"} == {"ingest", "mine", "readers",
-                                                                                "cluster", "intent"}
+    assert {name for name, status in statuses.items() if status != "cached"} == {
+        "ingest", "mine", "readers", "cluster", "intent", "compile_tools"}
     assert statuses["ingest"] == "ran"
 
     third = build_module.build(workdir, iterate=True, model=Bodies())
@@ -841,6 +845,22 @@ def test_a_recompile_that_scores_no_higher_than_the_kept_body_leaves_it_in_place
     assert light is None, "a body that passed every gate is no red light, declined attempt or not"
 
 
+def test_a_tool_no_recompile_has_moved_twice_over_is_named_stalled_on_its_red_light(tmp_path):
+    """The red lights are what the Builder reads before it chooses a verb, so a tool it has already
+    spent two rounds on has to read differently there from one it has not tried."""
+    workdir = tmp_path / "stalled_light"
+    workdir.mkdir()
+    (workdir / "tool_builds.json").write_text(json.dumps({
+        "lookup_shelf": {"assisted": True, "score": [5, 9]}}), encoding="utf-8")
+    (workdir / "kept_bodies.json").write_text(json.dumps({
+        "lookup_shelf": {"outcome": "kept", "attempt_score": [5, 9], "kept_score": [5, 9],
+                         "unbeaten": 3}}), encoding="utf-8")
+
+    light = next(r for r in builder_tools.red_lights(workdir) if r.target == "lookup_shelf")
+
+    assert "stalled: 3 recompiles in a row scored no higher" in light.failure
+
+
 def test_a_declined_recompile_is_named_on_the_assisted_tools_red_light(tmp_path):
     workdir = tmp_path / "lights"
     workdir.mkdir()
@@ -1007,3 +1027,191 @@ def test_the_writer_is_told_what_the_body_it_has_to_beat_fails_at_and_is_never_s
     assert hints, "what that body fails at is what the writer is given"
     assert all("- gate " in hint and "(1 call" in hint for hint in hints), \
         "and it is given by gate, grouped by shape with the calls counted"
+
+
+# --- D191: one scorer for a narrowed repair, and the replay's own failures as evidence ---
+
+
+def _kept_row(workdir: Path, name: str) -> dict:
+    return json.loads((workdir / "kept_bodies.json").read_text(encoding="utf-8"))[name]
+
+
+def _recompile_one(workdir: Path, name: str, model, lesson: str) -> None:
+    """One narrowed recompile of one tool, the way `repair_recompile` runs it.
+
+    The lesson is what the repair verb records before the stage runs, and it is a declared input
+    path of the narrowed stage, so recording one is what makes the rerun actually recompile rather
+    than answer from the cache.
+    """
+    from kullback.builder import memory
+
+    memory.record_lesson(workdir, name, [lesson])
+    result = build_module.execute(BuildPlan(workdir=workdir, iterate=True, model=model, max_attempts=0),
+                                  "compile_tools", tools=[name])
+    assert result.reports["compile_tools"].cached is False
+
+
+def test_a_narrowed_recompile_scores_a_tool_the_way_the_full_pass_scores_it(built, tmp_path):
+    """The Builder reads a repair's ruling and decides what to spend the next round on, so what a
+    narrowed recompile calls a score has to be the number the full pass will re-derive. Four live
+    rounds of one build repaired the same four tools on a local reading and lost every one of them
+    again on the next full pass."""
+    workdir = tmp_path / "one_scorer"
+    shutil.copytree(built, workdir)
+    name = _busiest_tool(workdir)
+
+    _recompile_one(workdir, name, Bodies(), "replay_fidelity: one recorded call differs")
+    narrowed = _kept_row(workdir, name)
+    _rerun_the_whole_stage(workdir, Bodies())
+    full = _kept_row(workdir, name)
+
+    assert narrowed["kept_score"] == full["kept_score"], \
+        "the body that already exists is graded under one world by one function, however narrow the run"
+    assert narrowed["attempt_score"] == full["attempt_score"]
+    assert narrowed["evidence_calls"] == full["evidence_calls"], \
+        "and against the same recorded calls, which is what makes the two scores comparable at all"
+
+
+def test_a_tool_two_recompiles_in_a_row_bought_nothing_on_is_marked_stalled_where_the_builder_reads_it(
+    built, tmp_path
+):
+    """An attempt that scores no higher leaves the tool exactly as it was, and the ruling for it read
+    the same as the first attempt's. One live build spent nine rounds on four tools that way."""
+    workdir = tmp_path / "stalled"
+    shutil.copytree(built, workdir)
+    name = _busiest_tool(workdir)
+    worse = TestModel(["return None"], loop=True)  # runs on every call and matches almost none
+
+    _recompile_one(workdir, name, worse, "the first hint")
+    first = _kept_row(workdir, name)["unbeaten"]
+    assert first >= 1, "a recompile that scored no higher counts against the tool"
+
+    _recompile_one(workdir, name, worse, "the second hint, near enough the first")
+
+    second = _kept_row(workdir, name)["unbeaten"]
+    assert second == first + 1, "and each one after it counts once more"
+    assert (f"stalled: {second} recompiles in a row scored no higher"
+            in repair_module.recompile_ruling(workdir, name))
+
+
+def test_a_recompile_that_beats_the_body_it_had_clears_the_stalled_count(built, tmp_path):
+    workdir = tmp_path / "unstalled"
+    shutil.copytree(built, workdir)
+    name = _busiest_tool(workdir)
+    good = json.loads((workdir / "bodies.json").read_text(encoding="utf-8"))[name]
+    _plant_body(workdir, name, "return None")
+
+    _recompile_one(workdir, name, TestModel(["return None"], loop=True), "a hint that changes nothing")
+    assert _kept_row(workdir, name)["unbeaten"] >= 1
+    _recompile_one(workdir, name, Bodies(), "a hint that lands")
+
+    assert json.loads((workdir / "bodies.json").read_text(encoding="utf-8"))[name] == good
+    assert _kept_row(workdir, name)["unbeaten"] == 0, "a repair that landed is not a stall"
+
+
+def _replay_call(name, call_id, args=None):
+    from conftest import PTR
+    from kullback.runner.records import ToolCall
+    return ToolCall(name=name, args=args or {}, id=call_id, raw_ptr=PTR)
+
+
+def _kennel_traces():
+    """One Run the Builder may learn from and one held out as the anchor, over an invented domain.
+
+    The seed Run books a stay and then reads the row it just changed, which is the D74 skip; the
+    held-out Run only reads, which is the D81 hold-out.
+    """
+    seed = _trace("run_seed", [
+        _replay_call("book_kennel_stay", "c_write", {"kennel_id": "k1"}),
+        _replay_call("read_kennel_row", "c_after_write", {"kennel_id": "k1"}),
+        _replay_call("read_kennel_row", "c_plain", {"kennel_id": "k2"}),
+    ])
+    anchor = _trace("run_anchor", [_replay_call("read_kennel_row", "c_anchor", {"kennel_id": "k3"})])
+    return seed, anchor
+
+
+def _kennel_evidence(replay_failed=None):
+    seed, anchor = _kennel_traces()
+    traces = [seed, anchor]
+    after_write = build_module.after_write_calls(traces, {"book_kennel_stay"})
+    callers = {"book_kennel_stay": {"assistant"}, "read_kennel_row": {"assistant"}}
+    return build_module.evidence_calls(traces, {"run_seed"}, after_write, callers, replay_failed)
+
+
+def test_the_three_filters_still_drop_every_call_no_replay_failure_names():
+    calls, skipped, from_replay = _kennel_evidence()
+    assert [c.id for c in calls["read_kennel_row"]] == ["c_plain"]
+    assert skipped == {"read_kennel_row": 1} and from_replay == {}
+
+
+def test_a_call_the_reference_replay_failed_on_is_evidence_whatever_a_filter_dropped_it_for():
+    """The filters answer what a body may be written from. Whether a Task confirms is a different
+    question, and a call the replay of the References failed on is the whole of that question: the
+    recording made it, so a Run of that Task cannot confirm until the body answers it."""
+    failed = {"read_kennel_row": {"c_after_write": "differs: status: ours \"open\", recorded \"held\"",
+                                  "c_anchor": "differs: status: ours \"open\", recorded \"held\""}}
+    calls, skipped, from_replay = _kennel_evidence(failed)
+
+    assert sorted(c.id for c in calls["read_kennel_row"]) == ["c_after_write", "c_anchor", "c_plain"]
+    assert from_replay == {"read_kennel_row": 2}, "and the ruling says how many are there for that reason"
+    assert skipped == {}, "a call put back is not also counted as skipped"
+
+
+def test_a_call_the_replay_agreed_on_is_left_where_its_filter_put_it(tmp_path):
+    replays = {"task_a": {"run_seed": {"confirmed": False, "checks": [
+        {"tool": "read_kennel_row", "call_id": "c_after_write", "verdict": "same"},
+        {"tool": "read_kennel_row", "call_id": "c_anchor", "verdict": "both_refused"}]}}}
+    (tmp_path / "replays.json").write_text(json.dumps(replays), encoding="utf-8")
+    assert build_module.replay_failures(tmp_path) == {}
+
+
+def test_a_confirmed_task_leaves_no_failing_call_and_a_failing_one_names_its_leaf(tmp_path):
+    replays = {
+        "task_a": {"run_1": {"confirmed": True, "checks": [
+            {"tool": "read_kennel_row", "call_id": "c_ok", "verdict": "differs"}]}},
+        "task_b": {"run_2": {"confirmed": False, "checks": [
+            {"tool": "read_kennel_row", "call_id": "c_bad",
+             "verdict": "differs", "difference": {"leaf": 'status: ours "open", recorded "held"'}},
+            {"tool": "book_kennel_stay", "call_id": "c_refused", "verdict": "theirs_refused",
+             "difference": {"keys_changed": ["nights"], "keys_only_theirs": ["rate"]}}]}}}
+    (tmp_path / "replays.json").write_text(json.dumps(replays), encoding="utf-8")
+
+    failed = build_module.replay_failures(tmp_path)
+
+    assert failed == {
+        "read_kennel_row": {"c_bad": 'differs: status: ours "open", recorded "held"'},
+        "book_kennel_stay": {"c_refused": "theirs_refused: columns that differ: nights; "
+                                          "columns the recording has and the body does not: rate"}}
+
+
+def test_a_workdir_that_has_not_replayed_yet_has_no_replay_failures_to_read(tmp_path):
+    assert build_module.replay_failures(tmp_path) == {}
+
+
+def test_the_lesson_names_the_column_the_replay_parted_on_and_counts_the_calls_that_parted_alike():
+    failed = {"c1": 'differs: status: ours "open", recorded "held"',
+              "c2": 'differs: status: ours "open", recorded "booked"',
+              "c3": "differs: columns that differ: nights"}
+
+    lesson = build_module.replay_lesson(failed, ["c1", "c2", "c3"])
+
+    assert build_module.REPLAY_LESSON_HEAD in lesson
+    assert 'status: ours "open", recorded "held" (2 calls)' in lesson, \
+        "two calls that parted on the same column in the same way are one shape with a count"
+    assert "columns that differ: nights (1 call)" in lesson
+
+
+def test_a_replay_failing_call_the_writer_is_not_shown_is_counted_and_never_quoted():
+    """The masking is the one every other hint already applies: a call held out of the split, or a
+    Run held out as the anchor, is a call whose recorded answer the writer must not read."""
+    failed = {"c_shown": 'differs: status: ours "open", recorded "held"',
+              "c_hidden": 'differs: rate: ours 40, recorded 65'}
+
+    lesson = build_module.replay_lesson(failed, ["c_shown"])
+
+    assert "recorded 65" not in lesson and "rate" not in lesson
+    assert "1 more on calls you were not shown" in lesson
+
+
+def test_a_tool_the_replay_failed_on_nothing_for_gets_no_such_lesson():
+    assert build_module.replay_lesson({}, ["c1"]) == ""

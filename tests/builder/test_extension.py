@@ -293,7 +293,12 @@ def test_replay_one_task_keeps_the_other_tasks_replays(driven):
     task = sorted(replays)[0]
     result = builder_agent.drive_tool(harness, "replay", {"task": task})
     assert not result.is_error, result.content
-    assert {s["name"] for s in result.details["stages"] if not s["cached"]} == {"replay_reference"}
+    ran = {s["name"] for s in result.details["stages"] if not s["cached"]}
+    # D191: compile_tools declares `replay_evidence.json`, the calls the last replay could not
+    # reproduce, and the build's own replay wrote that file after compile_tools had already run. So
+    # the first narrowed replay in a workdir recompiles once and the file settles from there. What
+    # this test is about is that no other stage runs and no other Task's replays are touched.
+    assert ran <= {"replay_reference", "compile_tools"} and "replay_reference" in ran
     assert set(plan.store["replays"]) == set(replays)
     assert "replay_reference" in result.content
     missing = builder_agent.drive_tool(harness, "replay", {"task": "no_such_task"})
