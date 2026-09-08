@@ -37,7 +37,7 @@ from kullback.examiner import derive as V
 from kullback.gates import artifacts
 from kullback.gates import verifier_suite as S
 from kullback.runner.confinement import confine
-from kullback.runner.records import Constraint, Task, UserRules, Verifier
+from kullback.runner.records import Constraint, Intent, StrippedValue, Task, UserRules, Verifier
 from runner.replay_fixtures import Toolkit, do_replay
 
 # --- reading re-runs from disk (D91) --------------------------------------
@@ -532,6 +532,33 @@ def test_the_leak_check_finds_a_system_derived_constant_in_the_intent_or_the_use
     assert gates["verifier_leak"].passed is expected_pass
     if leaked is not None:
         assert leaked in " ".join(gates["verifier_leak"].failures)
+
+
+def test_the_leak_check_reads_the_intent_record_and_names_the_column_of_what_the_strip_missed():
+    """D196 makes check 7 an audit: the strip has already run, so a leak is a column it does not
+    cover yet, and the column is what a finding can be keyed on and the next strip has to read."""
+    record = Intent(task_id="t1", text="cancel #W123 and refund exactly 150.0", grounded=True,
+                    stripped=[StrippedValue(column="order_id", table="orders", shape="last4",
+                                            replacement="ending 0123")])
+    gate = {g.stage: g for g in S.validate_verifier(
+        literal_value_atom("cancel_pending_order", "#W123", "order_id", "amount", 150.0),
+        reference_run(), intent_text=record.text, user_rules=UserRules(),
+        intent=record)}["verifier_leak"]
+    assert gate.passed is False
+    assert "column cancel_pending_order.amount" in " ".join(gate.failures)
+    assert gate.metrics["columns"] == ["cancel_pending_order.amount"]
+    assert gate.metrics["stripped"] == 1 and gate.metrics["audited"] is True
+
+
+def test_a_leak_check_with_no_intent_record_reads_as_it_always_did():
+    """A caller that holds no record still gets the check, and says on the ruling that it audited
+    nothing: a strip that never ran must not read as a strip that found nothing."""
+    gate = {g.stage: g for g in S.validate_verifier(
+        literal_value_atom("cancel_pending_order", "#W123", "order_id", "amount", 150.0),
+        reference_run(), intent_text="cancel #W123 and refund exactly 150.0",
+        user_rules=UserRules())}["verifier_leak"]
+    assert gate.passed is False
+    assert gate.metrics["audited"] is False and gate.metrics["stripped"] == 0
 
 
 def _garage_events(said: str) -> list[dict]:

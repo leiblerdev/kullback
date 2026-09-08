@@ -231,6 +231,41 @@ def first_difference(per_task: dict, name: str, task_ids: Iterable[str]) -> str:
     return ""
 
 
+def leak_rows(status: dict, task_ids: Iterable[str]) -> list[dict]:
+    """One row per Task and column the D196 strip missed, plus one row for the Tasks that named none.
+
+    The leak check is an audit of a strip that has already run (D196), so what it reports is a
+    column the strip does not cover yet, and the column is the whole of the news: the Builder's next
+    Intent for that Task has to be written without it, and the strip that reads the same column
+    class will take it out by itself once it sees it. The key is the Task and the column, so two
+    rounds finding the same column on the same Task are one finding (D192) while a second column on
+    the same Task is a second one. A status row from before D196 names no column, and those Tasks
+    keep the one grouped row the check always filed.
+    """
+    task_ids = list(task_ids)
+    named = {task_id: [str(c) for c in (status.get(task_id) or {}).get("leak_columns") or []]
+             for task_id in task_ids}
+    rows = [{
+        "kind": "intent_leak", "tool": None, "task_ids": [task_id], "task_id": task_id,
+        "key": finding_key("intent_leak", column, task_id), "suggested": SUITE_VERB["leak_check_clean"],
+        "hint": (f"the Intent of this Task states a value of {column} that no user said; write the "
+                 f"line without it"),
+        "text": (f"The D79 check leak_check_clean failed on {task_id}: its Intent states a value of "
+                 f"the column {column} that no recorded user said, so the Simulated user would hand "
+                 f"the Candidate something only the system knew."),
+    } for task_id in sorted(named) for column in sorted(set(named[task_id]))]
+    unnamed = sorted(task_id for task_id, columns in named.items() if not columns)
+    if unnamed:
+        rows.append({
+            "kind": "suite", "tool": None, "task_ids": unnamed, "task_id": None,
+            "key": finding_key("suite", "leak_check_clean"), "suggested": SUITE_VERB["leak_check_clean"],
+            "hint": "the D79 check leak_check_clean fails on this Task",
+            "text": (f"The D79 check leak_check_clean failed on {len(unnamed)} Tasks that have a "
+                     f"Reference, so none of them has a trusted Verifier."),
+        })
+    return rows
+
+
 def suite_rows(status: dict) -> list[dict]:
     """One row per D79 check that cost Tasks, the check that cost most first.
 
@@ -239,6 +274,8 @@ def suite_rows(status: dict) -> list[dict]:
     checks that failed and the checks that never ran are separate rows with separate keys, because
     they have separate answers: a check whose gate never ran is a Task short of an input, and
     telling the Examiner to repair a Verifier over it is telling it to repair the wrong thing.
+
+    The leak check is the one exception, and `leak_rows` files it per Task and column (D196).
     """
     failed: dict[str, list[str]] = {}
     missing: dict[str, list[str]] = {}
@@ -250,7 +287,7 @@ def suite_rows(status: dict) -> list[dict]:
             if ok:
                 continue
             (missing if check in not_run else failed).setdefault(check, []).append(task_id)
-    rows = []
+    rows = leak_rows(status or {}, failed.pop("leak_check_clean", []))
     for check, task_ids in failed.items():
         verb = SUITE_VERB.get(check, "none")
         rows.append({

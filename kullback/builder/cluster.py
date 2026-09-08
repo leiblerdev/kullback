@@ -75,15 +75,8 @@ def category_id(signature: Sequence[str]) -> str:
     return "cat_" + content_hash(list(signature))[:12]
 
 
-def task_id(run_ids: Sequence[str]) -> str:
-    """The id of the Task grouping these Runs, over the sorted Run ids and nothing else (D200).
-
-    A Run belongs to exactly one Task, so the Run set names the Task on its own, and leaving the
-    Category out of the hash is what makes the id survive a rebuild: re-mining a tool from read to
-    write moves every Category id, and an id that moved with it took the Task's cache and its
-    trusted ruling with it even though the same Runs were grouped the same way.
-    """
-    return "task_" + content_hash(sorted(run_ids))[:12]
+def task_id(cat_id: str, run_ids: Sequence[str]) -> str:
+    return "task_" + content_hash({"category_id": cat_id, "run_ids": list(run_ids)})[:12]
 
 
 def run_tokens(trace: Trace) -> set[str]:
@@ -248,7 +241,7 @@ def cluster_runs(
         for cluster in _cluster_by_intent(by_signature[signature], bags, weights, threshold):
           for group in split_by_world(cluster, worlds or {}):
             run_ids = sorted(t.trace_id for t in group)
-            tid = task_id(run_ids)
+            tid = task_id(cat_id, run_ids)
             tasks.append(
                 Task(
                     id=tid,
@@ -261,72 +254,3 @@ def cluster_runs(
             task_ids.append(tid)
         categories.append(Category(id=cat_id, write_tools=list(signature), task_ids=task_ids))
     return categories, tasks
-
-
-# D200: what a rebuild says about a frozen Task it did not reproduce. It is kept, so every number
-# measured over the frozen list stays comparable across rounds, and it is named, so the drift is a
-# finding rather than a silently smaller denominator.
-FROZEN_ONLY_REASON = "the rebuild grouped this Task's Runs differently; the frozen Task is kept"
-
-
-def _as_task(record: Any) -> Task:
-    """A frozen record as a Task, whether it was stored as a record or as a Task already."""
-    return record if isinstance(record, Task) else Task.model_validate(dict(record))
-
-
-def resume_frozen(tasks: Sequence[Task], frozen: Optional[Sequence[Any]],
-                  *, min_runs: int = MIN_RUNS_GUARDED) -> tuple[list[Task], dict]:
-    """The Task list a rebuild is allowed to publish once a list has been frozen (D200).
-
-    Every number a build is judged on is counted over the frozen list, so a re-split that drops a
-    Task or gives it a new id makes two rounds incomparable and takes that Task's ruling with it.
-    Here a frozen Task is never dropped and never re-split: it keeps its id, its Runs and its
-    Category. A Run the frozen list does not hold is free to form a new Task, which is what lets a
-    corpus grow; a Run the frozen list does hold stays where it was even when the rebuild would
-    have put it somewhere else, and the freshly grouped Task it was going to join keeps only the
-    Runs nobody had frozen (with the id those Runs address, since the id is over the Run set).
-
-    Returns the Task list and the split status: how many Tasks came off the frozen list, how many
-    the rebuild grouped, which are new, and which are `frozen_only`, meaning the rebuild would have
-    removed them. A `frozen_only` count above zero is a finding, not a failure: the build goes on.
-    """
-    live = list(tasks)
-    if frozen is None:
-        return live, {"frozen": 0, "live": len(live), "added": [t.id for t in live],
-                      "frozen_only": [], "reasons": {}}
-
-    kept = [_as_task(record) for record in frozen]
-    home = {run_id: task.id for task in kept for run_id in task.run_ids}
-    by_id = {task.id: task for task in kept}
-    # The same Runs are the same Task whatever the id was hashed over, so a list frozen by an older
-    # harness is matched on its Run set as well as on its id.
-    live_sets = {frozenset(task.run_ids) for task in live}
-    live_ids = {task.id for task in live}
-    reproduced = {task.id for task in kept
-                  if task.id in live_ids or frozenset(task.run_ids) in live_sets}
-
-    # A frozen Task with no name yet takes the name the rebuild found for the same Runs: a name is a
-    # label, never identity, so it may improve between rounds where the id may not.
-    named = {task.id: task.name for task in live if task.name}
-    added: list[Task] = []
-    for task in live:
-        if task.id in by_id:
-            continue
-        free = [run_id for run_id in task.run_ids if run_id not in home]
-        if not free:
-            continue
-        if len(free) == len(task.run_ids):
-            added.append(task)
-        else:
-            added.append(task.model_copy(update={"id": task_id(free), "run_ids": sorted(free),
-                                                 "unguarded": len(free) < min_runs}))
-    for task in kept:
-        if task.name is None and task.id in named:
-            task.name = named[task.id]
-
-    frozen_only = [task.id for task in kept if task.id not in reproduced]
-    return kept + added, {
-        "frozen": len(kept), "live": len(live), "added": [t.id for t in added],
-        "frozen_only": frozen_only,
-        "reasons": {task_id_: FROZEN_ONLY_REASON for task_id_ in frozen_only},
-    }

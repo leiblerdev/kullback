@@ -14,13 +14,12 @@ from kullback.builder.cluster import (
     confirmed_write_calls,
     idf_weights,
     name_task,
-    resume_frozen,
     run_tokens,
     similarity,
     tokens,
     write_tool_names,
 )
-from kullback.runner.records import Task, ToolCall, ToolCallError, ToolSig, Trace, Turn
+from kullback.runner.records import ToolCall, ToolCallError, ToolSig, Trace, Turn
 
 SIGS = [
     ToolSig(name="cancel_order", kind="write"),
@@ -523,84 +522,3 @@ def test_a_group_with_no_world_information_stays_one_task():
 
     parts = split_by_world([_bare_trace("b"), _bare_trace("a")], {})
     assert [[t.trace_id for t in p] for p in parts] == [["a", "b"]]
-
-
-# --- D200: the frozen Task list is authoritative across rounds ---
-
-# The same three Runs, mined once with the shipping tool read and once with it written: the
-# Category the Runs land in moves, which is the whole point of the second signature.
-KINDS_AFTER_REMINE = [
-    ToolSig(name="cancel_order", kind="write"),
-    ToolSig(name="modify_address", kind="write"),
-    ToolSig(name="get_order", kind="write"),
-]
-
-
-def test_the_same_runs_get_the_same_task_id_in_two_clusterings():
-    traces = [cancel_trace("t1", "W1"), cancel_trace("t2", "W2")]
-    first = {t.id: t.run_ids for t in cluster_runs(traces, SIGS)[1]}
-    second = {t.id: t.run_ids for t in cluster_runs(list(reversed(traces)), SIGS)[1]}
-    assert first == second
-
-
-def test_a_task_id_survives_the_runs_landing_in_another_category():
-    """The id is over the Runs, so re-mining a tool from read to write cannot move it."""
-    traces = [cancel_trace("t1", "W1"), cancel_trace("t2", "W2")]
-    before = cluster_runs(traces, SIGS)[1]
-    after = cluster_runs(traces, KINDS_AFTER_REMINE)[1]
-    assert [t.id for t in before] == [t.id for t in after]
-    assert {t.category_id for t in before} != {t.category_id for t in after}
-
-
-def test_a_second_clustering_over_a_frozen_list_keeps_every_frozen_task():
-    traces = [cancel_trace("t1", "W1"), cancel_trace("t2", "W2"), address_trace("t3", "W3")]
-    frozen = cluster_runs(traces, SIGS)[1]
-    tasks, split = resume_frozen(cluster_runs(traces, SIGS)[1], [t.model_dump() for t in frozen])
-    assert [t.id for t in tasks] == [t.id for t in frozen]
-    assert (split["frozen"], split["added"], split["frozen_only"]) == (len(frozen), [], [])
-
-
-def test_a_new_run_adds_a_task_and_moves_no_frozen_one():
-    frozen = cluster_runs([cancel_trace("t1", "W1")], SIGS)[1]
-    grown = cluster_runs([cancel_trace("t1", "W1"), address_trace("t9", "W9")], SIGS)[1]
-    tasks, split = resume_frozen(grown, [t.model_dump() for t in frozen])
-    assert [t.id for t in tasks][: len(frozen)] == [t.id for t in frozen]
-    assert len(split["added"]) == 1
-    added = next(t for t in tasks if t.id in split["added"])
-    assert added.run_ids == ["t9"] and split["frozen_only"] == []
-
-
-def test_a_recluster_that_would_drop_a_frozen_task_marks_it_frozen_only():
-    """Two Runs frozen apart, then merged by a later round: neither frozen Task is dropped."""
-    apart = cluster_runs([cancel_trace("t1", "W1"), address_trace("t2", "W2")], SIGS)[1]
-    assert len(apart) == 2
-    merged = [Task(id="task_merged", category_id=apart[0].category_id, run_ids=["t1", "t2"])]
-    tasks, split = resume_frozen(merged, [t.model_dump() for t in apart])
-    assert [t.id for t in tasks] == [t.id for t in apart], "the merge publishes neither a new nor a lost Task"
-    assert split["frozen_only"] == [t.id for t in apart]
-    assert all(split["reasons"][t.id] for t in apart)
-
-
-def test_a_recluster_that_moves_one_run_into_a_frozen_task_keeps_only_the_free_runs():
-    frozen = cluster_runs([cancel_trace("t1", "W1")], SIGS)[1]
-    mixed = [Task(id="task_mixed", category_id=frozen[0].category_id, run_ids=["t1", "t7"])]
-    tasks, split = resume_frozen(mixed, [t.model_dump() for t in frozen])
-    assert [t.run_ids for t in tasks] == [["t1"], ["t7"]]
-    assert split["frozen_only"] == [frozen[0].id], "the frozen Task the merge would have swallowed is kept"
-    assert split["added"] == [tasks[1].id]
-
-
-def test_with_no_frozen_list_every_task_the_clustering_found_is_new():
-    tasks = cluster_runs([cancel_trace("t1", "W1")], SIGS)[1]
-    resumed, split = resume_frozen(tasks, None)
-    assert resumed == tasks
-    assert (split["frozen"], split["added"], split["frozen_only"]) == (0, [t.id for t in tasks], [])
-
-
-def test_a_frozen_task_whose_id_predates_content_addressing_is_matched_on_its_runs():
-    """A list frozen by an older harness keeps its ids; the same Runs are still the same Task."""
-    live = cluster_runs([cancel_trace("t1", "W1")], SIGS)[1]
-    older = [Task(id="task_oldstyle", category_id=live[0].category_id, run_ids=["t1"])]
-    tasks, split = resume_frozen(live, [t.model_dump() for t in older])
-    assert [t.id for t in tasks] == ["task_oldstyle"]
-    assert (split["added"], split["frozen_only"]) == ([], [])

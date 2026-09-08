@@ -16,8 +16,6 @@ from kullback.runner.gate_support import MISS_REASONS, _get, _passed, _rate, _sa
 from kullback.runner.records import as_dict, content_hash
 
 FROZEN_TASKS_NAME = "tasks_frozen.json"
-# 1 held ids alone; 2 (D200) holds the Task records too, so a rebuild can resume from the list.
-FROZEN_TASKS_FORMAT = 2
 COVERAGE_TAGS = ("fact_unavailable", "overlay_miss", "reconstructed", "truncated")
 # The D96 reasons a Run record can actually carry today: user_sim.py tags a user_turn
 # `fact_unavailable` and loop.py tags a tool_result `overlay_miss`. Nothing writes `reconstructed`
@@ -31,20 +29,14 @@ def freeze_tasks(build_dir: Union[str, Path], tasks) -> list[str]:
 
     A frozen list already on disk is returned unchanged: a later split or re-cluster must not move the
     denominator, which is exactly what D96 forbids.
-
-    Format 2 (D200) writes the whole Task record beside the id, not the id alone, because a later
-    round has to resume from this list: an id says a Task is missing, the record says which Runs it
-    grouped, and only the record lets the rebuild keep the Task instead of dropping it. `task_ids`
-    stays where it was so a reader written against format 1 keeps working.
     """
     path = Path(build_dir) / FROZEN_TASKS_NAME
     if path.is_file():
         return _frozen_ids(_load(Path(build_dir), FROZEN_TASKS_NAME, None)) or []
-    records = [dict(task) if isinstance(task, dict) else as_dict(task) for task in tasks or ()]
     ids = [_get(task, "id", "?") for task in tasks or ()]
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps({"format": FROZEN_TASKS_FORMAT, "task_ids": ids, "tasks": records,
-                                "hash": content_hash(ids)}, indent=2, sort_keys=True), encoding="utf-8")
+    path.write_text(json.dumps({"task_ids": ids, "hash": content_hash(ids)}, indent=2, sort_keys=True),
+                    encoding="utf-8")
     return ids
 
 
@@ -53,27 +45,6 @@ def _frozen_ids(data: Any) -> Optional[list[str]]:
     if data is None:
         return None
     return list(data.get("task_ids", []) if isinstance(data, dict) else data)
-
-
-def frozen_tasks(build_dir: Union[str, Path]) -> Optional[list[dict]]:
-    """The frozen Tasks as records, in frozen order, or None when this build never froze a list.
-
-    A Task the frozen file holds only as an id (format 1, or a file written before the Task's record
-    existed) is filled in from the per-Task file the cluster stage wrote beside it, so a build frozen
-    by an older harness can still be resumed from. An id with neither is returned with no Runs, which
-    reads downstream as a Task nothing covers rather than as a Task that never existed.
-    """
-    root = Path(build_dir)
-    data = _load(root, FROZEN_TASKS_NAME, None)
-    ids = _frozen_ids(data)
-    if ids is None:
-        return None
-    stored = {_get(record, "id"): record for record in _listed(data, "tasks")} if isinstance(data, dict) else {}
-    out: list[dict] = []
-    for task_id in ids:
-        record = stored.get(task_id) or _load(root / "tasks", f"{task_id}.json", None)
-        out.append(dict(record) if isinstance(record, dict) else {"id": task_id, "run_ids": []})
-    return out
 
 
 def scorecard(build_dir: Union[str, Path], reference_verdicts=None) -> dict:

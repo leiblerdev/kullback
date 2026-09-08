@@ -7,13 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from kullback.gates.scorecard import (
-    FROZEN_TASKS_NAME,
-    freeze_tasks,
-    frozen_tasks,
-    scorecard,
-    task_coverage,
-)
+from kullback.gates.scorecard import FROZEN_TASKS_NAME, freeze_tasks, scorecard, task_coverage
 from kullback.runner.gate_support import MISS_REASONS
 from kullback.runner.records import Task, as_dict
 
@@ -327,23 +321,3 @@ def test_the_scorecard_gate_is_never_green_over_nothing(build_dir: Path):
     assert any("no Task is gradeable" in f for f in card["gate"]["failures"])
 
 
-
-
-def test_the_frozen_list_holds_the_task_records_a_later_round_resumes_from(build_dir: Path):
-    """D200: an id says a Task went missing, the record says which Runs it grouped."""
-    freeze_tasks(build_dir, [Task(id="t1", run_ids=["r1", "r2"]), Task(id="t2", run_ids=["r3"])])
-    assert [(t["id"], t["run_ids"]) for t in frozen_tasks(build_dir)] == [("t1", ["r1", "r2"]), ("t2", ["r3"])]
-
-
-def test_a_frozen_list_written_as_ids_alone_is_filled_in_from_the_per_task_files(build_dir: Path):
-    (build_dir / FROZEN_TASKS_NAME).write_text(json.dumps({"task_ids": ["t1", "t2"]}), encoding="utf-8")
-    (build_dir / "tasks").mkdir(exist_ok=True)
-    (build_dir / "tasks" / "t1.json").write_text(json.dumps(as_dict(Task(id="t1", run_ids=["r1"]))),
-                                                 encoding="utf-8")
-    assert frozen_tasks(build_dir) == [{"id": "t1", "category_id": None, "run_ids": ["r1"], "intent": None,
-                                        "unguarded": False, "name": None, "anchor_run_ids": []},
-                                       {"id": "t2", "run_ids": []}]
-
-
-def test_a_build_that_never_froze_a_list_reads_back_as_no_list_at_all(tmp_path: Path):
-    assert frozen_tasks(tmp_path) is None

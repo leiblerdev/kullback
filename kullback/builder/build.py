@@ -80,9 +80,6 @@ from kullback.runner.records import write_json as _write_json
 # store (D120).
 
 CANON_RULES = "canon-rules.json"
-# What the cluster stage did with the frozen Task list this round (D200): read by the driver
-# so a round's status says how many Tasks it froze, added and could not reproduce.
-TASK_SPLIT = "task_split.json"
 
 
 class BuildError(RuntimeError):
@@ -281,14 +278,9 @@ def _cluster_stage():
         # one of its columns differently before either wrote started in different worlds.
         readers.merge_worlds(worlds, inputs["readers"], inputs["schema"])
         categories, tasks = cluster.cluster_runs(inputs["traces"], inputs["sigs"], worlds=worlds)
-        # D200: once a list is frozen it is the Task list. A rebuild may add Tasks for Runs nobody
-        # froze, it may not drop, re-split or re-id a frozen one, because every number the build is
-        # judged on is counted over that list and a Task that moves takes its ruling with it.
-        tasks, split = cluster.resume_frozen(tasks, scorecard_mod.frozen_tasks(ctx.workdir))
         for task in tasks:
             _write_json(ctx.workdir / "tasks" / f"{task.id}.json", as_dict(task))
         _write_json(ctx.workdir / "tasks.json", {"tasks": [as_dict(t) for t in tasks]})
-        _write_json(ctx.workdir / TASK_SPLIT, split)
         # D96: the coverage denominator is frozen once, here, before anything measures coverage.
         scorecard_mod.freeze_tasks(ctx.workdir, tasks)
         ctx.record_gate(stage_gates.cluster_gate(tasks, categories))
@@ -593,7 +585,7 @@ def _tools_stage(model: Any, max_attempts: int, workers: int = 1, only: Optional
             graded = compile_env.grade_body(
                 sig, kept[0], calls_by_tool.get(sig.name, []), inputs["schema"], inputs["db"],
                 ctx.workdir / "tools" / sig.name / KEPT_BODY_DIR,
-                call_states=states, rules=rules,
+                call_states=states, rules=rules, call_tasks=call_tasks,
                 readers=result_readers) if kept is not None else None
             # What this tool already failed on, so a recompile asks a different question than the
             # one that failed, and what the body it has to beat fails at now. The kept body itself
@@ -614,7 +606,8 @@ def _tools_stage(model: Any, max_attempts: int, workers: int = 1, only: Optional
                                             max_attempts=max_attempts, call_states=states,
                                             rules=rules, tool_names=tool_names,
                                             error_prefix=error_prefix, world_note=world_note,
-                                            lesson=lesson, readers=result_readers), graded
+                                            lesson=lesson, call_tasks=call_tasks,
+                                            readers=result_readers), graded
 
         declined: list[str] = []
         # Per tool, whether the body it already had was kept, beaten, or could not run at all under
@@ -1192,9 +1185,14 @@ def _intent_stage(model: Any, workers: int = 1, only: Optional[Iterable[str]] = 
     code version, so the same repair asked twice with two hints is two runs and not one cache hit.
     A narrowed run rewrites its Tasks however well they already ground: a repair is an explicit ask.
 
+    The schema and the canon rules are read for the D196 strip alone: they are what gives a value's
+    column its class, so the strip and the compare read one column one way (D73).
+
     A full run ratchets (todo: a stage never replaces a passing artifact with a failing one). A Task
-    whose recorded Intent grounded and whose member Runs are unchanged keeps that record and is not
-    put to the model again; only the rest are written. The artifact still names every Task. Two
+    whose recorded Intent grounded, whose member Runs are unchanged and whose line the strip would
+    not change keeps that record and is not put to the model again; only the rest are written. The
+    strip condition is what stops a line written before D196 living on: it grounds, so the ratchet
+    would keep it, and it may still hold a value only the tools knew. The artifact still names every Task. Two
     things follow: a repaired Intent survives the next full build instead of being written over by
     a fresh line that may ground worse, and an `--iterate` build does not pay to rewrite what
     already grounds.
@@ -1211,8 +1209,16 @@ def _intent_stage(model: Any, workers: int = 1, only: Optional[Iterable[str]] = 
 
     def run(ctx, inputs):
         write_tools = {s.name for s in inputs["sigs"] if s.kind == "write"}
+        schema, canon_rules = inputs.get("schema"), inputs.get("canon_rules")
         tasks = list(inputs["tasks"])
+        by_id = {t.trace_id: t for t in inputs["traces"]}
         recorded = _read_intents(ctx.workdir, [task.id for task in tasks])
+
+        def clean(task) -> bool:
+            """D196: a line recorded before the strip ran, or before this schema, is written again."""
+            members = [by_id[rid] for rid in task.run_ids if rid in by_id]
+            return intent.strip_holds(recorded[task.id], members, schema=schema, rules=canon_rules)
+
         if only is not None:
             unknown = sorted(set(only) - {task.id for task in tasks})
             if unknown:
@@ -1220,13 +1226,14 @@ def _intent_stage(model: Any, workers: int = 1, only: Optional[Iterable[str]] = 
             kept = {task.id: recorded[task.id] for task in tasks if task.id not in set(only)}
         else:
             kept = {task.id: recorded[task.id] for task in tasks
-                    if intent.still_grounds(recorded[task.id], task.run_ids)}
+                    if intent.still_grounds(recorded[task.id], task.run_ids) and clean(task)}
         tasks = [task for task in tasks if task.id not in kept]
 
         def write_one(task):
             try:
                 record = intent.write_intent(model, task, inputs["traces"], write_tools=write_tools,
-                                             hint=hints.get(task.id))
+                                             hint=hints.get(task.id), schema=schema,
+                                             canon_rules=canon_rules)
             except Exception as exc:  # one Task's Intent failing is that Task ungrounded, not a dead build
                 record = intent.Intent(task_id=task.id, reason=f"{type(exc).__name__}: {exc}")
             _write_json(ctx.workdir / "intents" / f"{task.id}.json", as_dict(record))
@@ -1243,7 +1250,8 @@ def _intent_stage(model: Any, workers: int = 1, only: Optional[Iterable[str]] = 
     version = f"{_version('intent', run, intent)}:{getattr(model, 'name', 'none')}"
     if only is not None:
         version += f":only={','.join(only)}:hints={content_hash(hints)[:16]}"
-    return pipeline.Stage(name="intent", fn=run, builder=True, inputs=("tasks", "traces", "sigs"),
+    return pipeline.Stage(name="intent", fn=run, builder=True,
+                          inputs=("tasks", "traces", "sigs", "schema", "canon_rules"),
                           outputs=("intents",), input_paths=("intents",), code_version=version)
 
 

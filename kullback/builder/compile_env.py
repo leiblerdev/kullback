@@ -1798,7 +1798,8 @@ def body_could_not_run(gates: Iterable[GateResult], rows: Iterable[dict]) -> boo
 
 def grade_body(toolsig: ToolSig, body: str, calls: Iterable[ToolCall], schema: EntitySchema, db: dict,
                workdir: Path | str, call_states: Optional[dict] = None, rules: Any = None,
-               timeout: float = 30.0, readers: Any = None) -> ToolBuild:
+               timeout: float = 30.0, readers: Any = None,
+               call_tasks: Optional[dict] = None) -> ToolBuild:
     """Run one body that already exists through the gates and the per-call replay, with no model call.
 
     This is `compile_tool` with the writing taken out: the same gates in the same order, the same
@@ -1816,7 +1817,8 @@ def grade_body(toolsig: ToolSig, body: str, calls: Iterable[ToolCall], schema: E
     build = ToolBuild(name=toolsig.name, body=body or "")
     shown, held_out = split_calls(calls)
     source = module_source(schema, [toolsig], {toolsig.name: build.body})
-    sandbox = Sandbox(source, db, workdir, timeout=timeout, call_states=call_states)
+    sandbox = Sandbox(source, db, workdir, timeout=timeout, call_states=call_states,
+                      call_tasks=call_tasks)
     build.gates = run_gates(source, sandbox, shown, held_out, schema, rules,
                             probe_refusals=toolsig.kind == "write", sig=toolsig, readers=readers)
     build.assisted = not (build.gates and all(gate.passed for gate in build.gates))
@@ -2019,7 +2021,7 @@ def compile_tool(model, toolsig: ToolSig, calls: Iterable[ToolCall], schema: Ent
                  call_states: Optional[dict] = None, rules: Any = None,
                  tool_names: Iterable[str] = (), error_prefix: Optional[str] = None,
                  builder_tools: bool = True, lesson: str = "", world_note: str = "",
-                 readers: Any = None) -> ToolBuild:
+                 readers: Any = None, call_tasks: Optional[dict] = None) -> ToolBuild:
     """Write one tool body, gate it, and repair it at most three times with growing evidence (D75).
 
     Attempt 1 sees the failing call, attempt 2 every failing call, attempt 3 the full call table, and
@@ -2028,6 +2030,9 @@ def compile_tool(model, toolsig: ToolSig, calls: Iterable[ToolCall], schema: Ent
     cap is refused, not truncated, and the cap is on by default. `call_states` (from
     `call_starting_states`) is the per-Task world each recorded call ran on; without it every call
     replays on the shared db, which is right only where the corpus shows one version of each row.
+    `call_tasks` is the map behind it, call id to Task id, which is what lets gate 8 name the two
+    Tasks a sensitivity pair spans (D195); without it a pair is named by the Traces its calls
+    came from.
     `rules` is the customer's CanonRules (D39): given none, the gates compare under the module
     defaults and can fail a body over a difference the customer's own rules fold away. `tool_names`
     is every tool name in this build, stable across every call of this stage, so it lives in the
@@ -2154,7 +2159,7 @@ def compile_tool(model, toolsig: ToolSig, calls: Iterable[ToolCall], schema: Ent
             continue
         source = module_source(schema, [toolsig], {toolsig.name: body})
         sandbox = Sandbox(source, db, workdir / f"attempt_{attempt}", timeout=timeout,
-                          call_states=call_states)
+                          call_states=call_states, call_tasks=call_tasks)
         gates = run_gates(source, sandbox, shown, held_out, schema, rules,
                           probe_refusals=toolsig.kind == "write", sig=toolsig, readers=readers)
         node.update(body_hash=content_hash(body), gates=[as_dict(g) for g in gates],

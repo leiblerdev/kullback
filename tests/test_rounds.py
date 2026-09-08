@@ -47,10 +47,8 @@ TARGET = "environment"
 # of the three Tasks are a residue the judge is now asked about a second time, and the reason on
 # those rows ends in the abstention that second pass reached instead of the first pass's judge
 # reason. Re-pinned once more where D188 and D193 land together: the verdicts are the same three
-# and every other byte of the rows is the pre-phase build's. Re-pinned for D200, which takes the
-# Category out of a Task's id so the id is over the Runs alone: the three rows are the same three
-# Tasks with the same verdicts and reasons, keyed by the id those Runs now address.
-TASK_STATUS_SHA256_BEFORE_THE_PHASE = "79a494e63cb59b132e07992484d05711606ef1a943cb0fb66259512c23941a66"
+# and every other byte of the rows is the pre-phase build's.
+TASK_STATUS_SHA256_BEFORE_THE_PHASE = "27e57bea570e8f9dd01c2a992a35673e3b7cc62df2f6a5ee2e6c868eadd2c16d"
 
 
 def _fixture(request) -> Path:
@@ -772,16 +770,6 @@ def test_a_rounds_counts_carry_its_clock_its_spend_its_turns_and_its_context_fil
     assert counts["turns"] == {"builder": 0, "examiner": 0, "total": 0}, "the code driver takes no turn"
     assert counts["context_fill"] == {"builder": 0.0, "examiner": 0.0}
     assert set(counts["spend"]) == {"builder", "examiner", "total", "cache_saved"}
-
-
-def test_a_rounds_counts_say_how_many_tasks_it_froze_added_and_could_not_reproduce(driven):
-    """D200: a Task list that drifts makes two rounds incomparable, so the drift is a count."""
-    counts = rounds.load_rounds(driven["workdir"])[-1].counts
-    split = json.loads((driven["workdir"] / "task_split.json").read_text(encoding="utf-8"))
-    tasks = json.loads((driven["workdir"] / "tasks.json").read_text(encoding="utf-8"))["tasks"]
-    assert counts["tasks_frozen"] == split["frozen"] == 0, "the first build has no list to resume from"
-    assert counts["tasks_added"] == len(split["added"]) == len(tasks)
-    assert counts["tasks_frozen_only"] == len(split["frozen_only"]) == 0
 
 
 def test_every_rounds_gate_rulings_are_kept_beside_gates_json_round_by_round(driven):

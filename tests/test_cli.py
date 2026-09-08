@@ -154,10 +154,8 @@ def test_build_prints_one_line_per_round_and_the_exit_before_the_json(workdir, f
     assert result.exit_code == 0, result.output
     lines = result.output.splitlines()
     assert lines[0] == ("round 1: fidelity 1/2 tasks, trusted 0, refused 0, assisted runs 3, probes passing 0, "
-                        "tasks frozen 0 added 0 frozen only 0, "
                         "compactions builder 0 examiner 0, spend $0.0000, cache saved $0.0000")
     assert lines[1] == ("round 2: fidelity 2/2 tasks, trusted 1, refused 1, assisted runs 3, probes passing 4, "
-                        "tasks frozen 0 added 0 frozen only 0, "
                         "compactions builder 1 examiner 0, spend $1.2500, cache saved $0.0000")
     assert lines[2] == "exit: stalled after 2 rounds"
     body = json.loads("\n".join(lines[3:]))

@@ -378,8 +378,6 @@ def _round_line(counts: dict) -> str:
     return (f"fidelity {counts.get('fidelity', 0)}/{counts.get('tasks', 0)} tasks, "
             f"trusted {counts.get('trusted', 0)}, refused {counts.get('refused_count', 0)}, "
             f"assisted runs {counts.get('assisted_runs', 0)}, probes passing {counts.get('probes_passing', 0)}, "
-            f"tasks frozen {counts.get('tasks_frozen', 0)} added {counts.get('tasks_added', 0)} "
-            f"frozen only {counts.get('tasks_frozen_only', 0)}, "
             f"compactions builder {compactions.get('builder', 0)} examiner {compactions.get('examiner', 0)}, "
             f"spend ${float(spend.get('total') or 0.0):.4f}, cache saved ${float(spend.get('cache_saved') or 0.0):.4f}")
 
