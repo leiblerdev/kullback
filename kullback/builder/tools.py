@@ -341,13 +341,17 @@ def red_lights(workdir: Any) -> list[RedLight]:
                             failure=f"task {task_id}: {unconfirmed_reason(rows)}",
                             verb=verb_for("replay_reference")))
     fidelity = _read_json(workdir / "tool_fidelity.json", {}) or {}
+    # D191: how many recompiles in a row this tool has bought nothing with, so a Builder reading a
+    # red light knows the difference between one it has not tried and one it has tried four times.
+    kept = _read_json(workdir / repair_module.KEPT_BODIES_FILE, {}) or {}
     for name, row in sorted((_read_json(workdir / "tool_builds.json", {}) or {}).items()):
         if isinstance(row, dict) and row.get("assisted"):
             out.append(RedLight(stage="compile_tools", kind="tool", target=name,
                                 failure=f"{name}{ASSISTED}"
                                         f"{HARDCODED if row.get('hardcoded') else ''}"
                                         f"{_blocked_note(fidelity, name)}"
-                                        f"{_declined_note(row)}",
+                                        f"{_declined_note(row)}"
+                                        f"{repair_module.stalled_note(kept.get(name) or {} if isinstance(kept, dict) else {})}",
                                 verb="repair_recompile"))
     return out
 
