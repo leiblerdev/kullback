@@ -49,6 +49,7 @@ from kullback.builder import (
     user_sim,
     vocabulary,
 )
+from kullback.builder.repair import KEPT_BODIES_FILE, SHAPES_SHOWN, failure_shapes
 from kullback.gates import artifacts, fidelity, tool_runs, verifier_suite
 from kullback.gates import scorecard as scorecard_mod
 from kullback.gates import stages as stage_gates
@@ -353,6 +354,19 @@ def _state_stage(grow: Optional[dict] = None, grow_seed: int = 0):
                           code_version=_version("starting_state", fn, compile_env, synth, readers, mine))
 
 
+def _evidence_version() -> str:
+    """The bytes of the functions that decide what a body is written against (D191).
+
+    They are this file's own, so none of them is in a module hash of `compile_env`, `sandbox`,
+    `body_skill` or `readers`, and a change to which recorded calls reach the writer and the gates
+    is a different question that must not be answered out of the cache.
+    """
+    return content_hash([pipeline._fn_identity(fn, "compile_tools")
+                         for fn in (replay_failures, replay_failures_of, replay_difference,
+                                    replay_lesson, evidence_calls, is_evidence_call,
+                                    after_write_calls)])[:16]
+
+
 def _record_hardcoded_lesson(workdir: Any, name: str) -> None:
     """Tell the next attempt what the gates do not say: this body never read its arguments.
 
@@ -367,9 +381,113 @@ def _record_hardcoded_lesson(workdir: Any, name: str) -> None:
 # Where the body a tool already has is replayed, beside the attempt directories of the run that is
 # trying to beat it, so the two never share a sandbox directory.
 KEPT_BODY_DIR = "kept_body"
-# The stage's ruling on those replays, one row per tool: kept, beaten, or could not run, with both
-# scores. A record of the run, never an input of it (see the comment where it is filled).
-KEPT_BODIES_FILE = "kept_bodies.json"
+# The stage's ruling on those replays, one row per tool (KEPT_BODIES_FILE), is a record of the run
+# and never an input of it (see the comment where it is filled). Its name is declared in repair.py,
+# because the repair ruling reads the same file back to say what the attempt scored (D191).
+
+# What the replay of the References wrote, and the two verdicts it leaves on a check that agreed.
+# Everything else is a recorded call the replay failed to reproduce (D191).
+REPLAYS_FILE = "replays.json"
+REPLAY_AGREED = frozenset({"same", "both_refused"})
+# Which recorded calls the last replay failed on, per tool, and nothing else about them. The
+# compile stage declares this and not `replays.json`: the evidence set moves when the set of failing
+# calls moves, and a replay that reproduced the same failures again has changed no question the body
+# writer is being asked. Declaring the replay record itself made every replay of one Task recompile
+# the whole toolkit first, which is a round's spend for an evidence set that did not move.
+REPLAY_EVIDENCE_FILE = "replay_evidence.json"
+# The head of the lesson those failures become, said once above the shapes.
+REPLAY_LESSON_HEAD = (
+    "The replay of the References failed on recorded calls of this tool. Every one of them is a call "
+    "a Task's own recording made, and a Run of that Task cannot confirm until the body answers it the "
+    "way the recording did. Repair these first.")
+
+
+def replay_difference(check: Any) -> str:
+    """One replay-failing check as a sentence: the verdict and the leaf where the two answers part.
+
+    `runner/replay.compare_call` writes a check per recorded call with `verdict`, and for a call it
+    failed a `difference` holding either a `leaf` (the column and the two values) or the key sets
+    that differ. The leaf is what a body is repaired by: a column name and the recorded value
+    against the replayed one. A check with neither is named by its verdict alone, which still says
+    the recording refused where the body answered or the other way round.
+    """
+    if not isinstance(check, dict):
+        return ""
+    verdict = str(check.get("verdict") or "differs")
+    difference = check.get("difference")
+    if isinstance(difference, dict):
+        leaf = difference.get("leaf")
+        if leaf:
+            return f"{verdict}: {leaf}"
+        changed = [str(k) for k in (difference.get("keys_changed") or [])]
+        missing = [str(k) for k in (difference.get("keys_only_theirs") or [])]
+        extra = [str(k) for k in (difference.get("keys_only_ours") or [])]
+        parts = [part for part in (
+            f"columns that differ: {', '.join(sorted(changed))}" if changed else "",
+            f"columns the recording has and the body does not: {', '.join(sorted(missing))}" if missing else "",
+            f"columns the body has and the recording does not: {', '.join(sorted(extra))}" if extra else "",
+        ) if part]
+        if parts:
+            return f"{verdict}: {'; '.join(parts)}"
+    return verdict
+
+
+def replay_failures(workdir: Any) -> dict[str, dict[str, str]]:
+    """Per tool, the recorded calls the last replay of the References failed on, and how (D191).
+
+    The compile gate scores a body against the calls that survive the evidence filters (the
+    after-write skip, the anchor hold-out, the caller filter). Those filters each answer a question
+    about what a body may be written from, and none of them answers the question the Reference
+    replay asks, which is whether a Task's own recording plays back. So a call the replay failed on
+    is evidence whatever a filter says about it: the recording made that call, and the Task cannot
+    confirm while the body answers it differently.
+
+    Read off `replays.json`, which the replay stage rewrites whole every round, so this is the
+    latest round's reasons and nothing older. A build that has not replayed yet has no file and
+    this is empty, which is the first pass: there is nothing yet to have failed.
+    """
+    return replay_failures_of(_read_json(Path(workdir) / REPLAYS_FILE, {}) or {})
+
+
+def replay_failures_of(replays: Any) -> dict[str, dict[str, str]]:
+    """`replay_failures` over the replay record in hand, so the stage that writes it can index it."""
+    rows: dict[str, dict[str, str]] = {}
+    if not isinstance(replays, dict):
+        return rows
+    for per_task in replays.values():
+        for record in (per_task or {}).values() if isinstance(per_task, dict) else ():
+            if not isinstance(record, dict) or record.get("confirmed"):
+                continue
+            for check in record.get("checks") or []:
+                if not isinstance(check, dict) or check.get("verdict") in REPLAY_AGREED:
+                    continue
+                tool, call_id = check.get("tool"), check.get("call_id")
+                if not tool or not call_id:
+                    continue
+                rows.setdefault(str(tool), {}).setdefault(str(call_id), replay_difference(check))
+    return rows
+
+
+def replay_lesson(failures: dict[str, str], shown_ids: Iterable[str]) -> str:
+    """What the Reference replay failed on for this tool, as the sentence the next body answers.
+
+    Grouped by shape with counts, the way every other hint is (D181 rule 6): a tool whose replay
+    failed on a hundred calls leaves a hundred sentences, and a writer shown one of them answers one
+    of them. `shown_ids` is the calls this writer is allowed to see; a call it is not shown (the
+    held-out split, a Run held out as the anchor) is counted and never quoted, which is the same
+    masking `kept_body_hint` applies.
+    """
+    shown_ids = set(shown_ids)
+    quoted = [text for call_id, text in sorted(failures.items()) if call_id in shown_ids and text]
+    withheld = len(failures) - len(quoted)
+    shapes = failure_shapes(quoted)
+    text = "; ".join(f"{shape} ({count} call{'' if count == 1 else 's'})"
+                     for shape, count in shapes[:SHAPES_SHOWN])
+    if len(shapes) > SHAPES_SHOWN:
+        text += f"; {len(shapes) - SHAPES_SHOWN} more shapes"
+    if withheld:
+        text += ("; " if text else "") + f"{withheld} more on calls you were not shown"
+    return f"{REPLAY_LESSON_HEAD}\n- {text}" if text else ""
 
 
 def _tools_stage(model: Any, max_attempts: int, workers: int = 1, only: Optional[Iterable[str]] = None):
@@ -397,7 +515,6 @@ def _tools_stage(model: Any, max_attempts: int, workers: int = 1, only: Optional
                              "(an --iterate build re-runs the stage when its inputs or code changed)")
         traces, tasks = inputs["traces"], inputs["tasks"]
         seeds = _seed_traces(ctx, tasks, traces)
-        calls_by_tool: dict[str, list] = {}
         call_tasks: dict[str, str] = {}
         # D74: every recorded call replays on the world its Task saw before any write. A call that
         # follows a write on the same row in its own trace saw the world after that write, so it
@@ -407,15 +524,16 @@ def _tools_stage(model: Any, max_attempts: int, workers: int = 1, only: Optional
         # D164: a call from a requestor this tool never answered was refused by the recording, so it
         # is not evidence for the body; the body is written against the calls of its own callers.
         callers = callers_by_tool(inputs["sigs"])
-        skipped: dict[str, int] = {}
+        # D191: whatever the three filters say, a call the last Reference replay failed on is
+        # evidence for the body of the tool it named. The filters answer what a body may be written
+        # from; this answers what a Task needs the body to reproduce, and that question is the one
+        # the corpus is scored on.
+        replay_failed = replay_failures(ctx.workdir)
+        calls_by_tool, skipped, from_replay = evidence_calls(
+            traces, seeds, after_write, callers, replay_failed)
         for trace in traces:
             task_id = _task_of(tasks, trace.trace_id)
-            for at, call in enumerate(trace.tool_calls):
-                if is_evidence_call(call, callers):
-                    if (trace.trace_id, at) in after_write:
-                        skipped[call.name] = skipped.get(call.name, 0) + 1
-                    elif trace.trace_id in seeds:  # D81: the anchor's calls are not Builder evidence
-                        calls_by_tool.setdefault(call.name, []).append(call)
+            for call in trace.tool_calls:
                 if call.id and task_id:
                     call_tasks[call.id] = task_id
         # D74: each recorded call replays on the world its own Task saw, not on the shared one.
@@ -473,10 +591,15 @@ def _tools_stage(model: Any, max_attempts: int, workers: int = 1, only: Optional
             # one that failed, and what the body it has to beat fails at now. The kept body itself
             # is never in the prompt: shown one, the writer copies it, and a copy cannot beat it.
             lesson = memory.lesson_for(ctx.workdir, sig.name)
+            shown, held_out = compile_env.split_calls(calls_by_tool.get(sig.name, []))
             if graded is not None:
-                hint = compile_env.kept_body_hint(
-                    graded.gates, compile_env.split_calls(calls_by_tool.get(sig.name, []))[1])
+                hint = compile_env.kept_body_hint(graded.gates, held_out)
                 lesson = "\n".join(part for part in (lesson, hint) if part)
+            # D191: what the Reference replay failed on, in the same lesson and under the same
+            # masking: only a call this writer is already shown is quoted with its values.
+            replay_hint = replay_lesson(replay_failed.get(sig.name, {}),
+                                        [call.id for call in shown if call.id])
+            lesson = "\n".join(part for part in (lesson, replay_hint) if part)
             return compile_env.compile_tool(model, sig, calls_by_tool.get(sig.name, []),
                                             inputs["schema"], inputs["db"],
                                             ctx.workdir / "tools" / sig.name,
@@ -492,7 +615,8 @@ def _tools_stage(model: Any, max_attempts: int, workers: int = 1, only: Optional
         # declared input path of a narrowed rerun, and a decision written there would move the key
         # of the next identical request and buy a recompile nobody asked for (D174's own rule that a
         # tie leaves the stage's files untouched).
-        kept_rulings = dict(_read_json(ctx.workdir / KEPT_BODIES_FILE, {}) or {}) if only is not None else {}
+        prior_rulings = dict(_read_json(ctx.workdir / KEPT_BODIES_FILE, {}) or {})
+        kept_rulings = dict(prior_rulings) if only is not None else {}
         for sig, (build, graded) in zip(sigs, parallel.each(sigs, compile_one, workers), strict=True):
             score = list(compile_env.attempt_score(build.gates))
             kept_score = list(compile_env.attempt_score(graded.gates)) if graded is not None else None
@@ -511,10 +635,22 @@ def _tools_stage(model: Any, max_attempts: int, workers: int = 1, only: Optional
             gates.extend(graded.gates if keeps_previous else build.gates)
             kept_rulings.pop(sig.name, None)
             if graded is not None:
+                # D191: how many recompiles in a row have now scored no higher than the body this
+                # tool already has. The count survives a full run of the stage, which resets the
+                # rest of the file, because the stall is the tool's and not one run's: a Builder
+                # that has bought nothing on this tool three times over should spend its next round
+                # somewhere else, and the counter is the only thing that can tell it so.
+                # A stage whose gate fails runs again on the same request, and the second run is not
+                # a second recompile: only the first attempt of a request moves the count.
+                unbeaten = int((prior_rulings.get(sig.name) or {}).get("unbeaten") or 0)
+                unbeaten += 1 if ctx.attempt <= 1 else 0
                 kept_rulings[sig.name] = {
                     "outcome": "kept" if keeps_previous else
                                ("could_not_run" if graded.could_not_run else "beaten"),
-                    "kept_score": kept_score, "attempt_score": score}
+                    "kept_score": kept_score, "attempt_score": score,
+                    "unbeaten": unbeaten if keeps_previous else 0,
+                    "from_replay": from_replay.get(sig.name, 0),
+                    "evidence_calls": len(calls_by_tool.get(sig.name, []))}
             if keeps_previous:
                 # A run of this stage is an attempt at a better body, not a replacement for the one
                 # it has. The attempt scored no higher on the key the compiler ranks its own
@@ -528,7 +664,8 @@ def _tools_stage(model: Any, max_attempts: int, workers: int = 1, only: Optional
                 body = previous[sig.name][0]
                 bodies[sig.name] = compile_env.mark_hardcoded(body) if graded.hardcoded else body
                 builds[sig.name] = dict(previous[sig.name][1], assisted=graded.assisted,
-                                        hardcoded=graded.hardcoded, score=kept_score)
+                                        hardcoded=graded.hardcoded, score=kept_score,
+                                        from_replay=from_replay.get(sig.name, 0))
                 if graded.hardcoded:  # D181's rule 7, for the body the stage releases, not the attempt
                     _record_hardcoded_lesson(ctx.workdir, sig.name)
                 if score < kept_score:  # D174's line for the Builder: change the hint, not the request
@@ -542,7 +679,8 @@ def _tools_stage(model: Any, max_attempts: int, workers: int = 1, only: Optional
             bodies[sig.name] = compile_env.mark_hardcoded(build.body) if build.hardcoded else build.body
             builds[sig.name] = {"assisted": build.assisted, "hardcoded": build.hardcoded,
                                 "nodes": build.nodes,
-                                "after_write_skipped": skipped.get(sig.name, 0), "score": score}
+                                "after_write_skipped": skipped.get(sig.name, 0), "score": score,
+                                "from_replay": from_replay.get(sig.name, 0)}
             if build.hardcoded:
                 _record_hardcoded_lesson(ctx.workdir, sig.name)
             outcomes[sig.name] = build.call_outcomes
@@ -581,13 +719,20 @@ def _tools_stage(model: Any, max_attempts: int, workers: int = 1, only: Optional
                f"{_module_hash(readers)}:"
                # The attribution is this file's own function, so its bytes are not in any module
                # hash above; an edit to it is a different artifact and must not hit the cache.
-               f"{content_hash(pipeline._fn_identity(attribute_fidelity, 'compile_tools'))[:16]}")
+               f"{content_hash(pipeline._fn_identity(attribute_fidelity, 'compile_tools'))[:16]}:"
+               # The evidence set and the lesson are this file's own functions too (D191), so their
+               # bytes are in no module hash above either: a change to which recorded calls a body
+               # is written against is a different question and must not be answered from the cache.
+               f"{_evidence_version()}")
     # The tool lessons are an input of this stage: they reach the compiler prompt (compile_one
     # above), so a new lesson is a new question and the old answer is not an answer to it. Left
     # undeclared, a recompile asked for after a lesson was recorded was served the cached bodies
     # and the stage reported "from cache" however often it was asked; the file's bytes are in the
     # key, which is what makes the narrowed rerun actually recompile that tool.
-    paths = (memory.TOOL_LESSONS_FILE,)
+    # D191: the Reference replay's own failures are an input of this stage, since a call it failed
+    # on is evidence for the body whatever the filters say. Left undeclared, a stage whose other
+    # inputs had not moved was served bodies written before that evidence existed.
+    paths = (memory.TOOL_LESSONS_FILE, REPLAY_EVIDENCE_FILE)
     if only is not None:
         paths += ("bodies.json", "tool_builds.json", "tool_call_outcomes.json")
     return pipeline.Stage(name="compile_tools", fn=run, builder=True,
@@ -625,6 +770,45 @@ def after_write_calls(traces: Iterable[Trace], write_tools: Iterable[str]) -> se
             if call.name in writes and call.error is None:
                 touched |= names
     return out
+
+
+def evidence_calls(traces: Iterable[Trace], seeds: set[str], after_write: set[tuple[str, int]],
+                   callers: dict[str, set[str]],
+                   replay_failed: Optional[dict[str, dict[str, str]]] = None
+                   ) -> tuple[dict[str, list], dict[str, int], dict[str, int]]:
+    """Per tool, the recorded calls its body is written against and graded on, with the two counts.
+
+    Three filters say a recorded call is not evidence about a body: a call that followed a write on
+    the same row saw a world no Starting state can put back (D74), a call in a Run held out as the
+    anchor is not the Builder's to learn from (D81), and a call from a requestor the tool never
+    answered was refused for a reason of its own (D164). Each of those is about what a body may be
+    written from.
+
+    `replay_failed` is the other question: which recorded calls the last replay of the References
+    could not reproduce. A call there is evidence whatever a filter says, because a Task confirms
+    only when its own recording plays back, and a body scored on a set that leaves those calls out
+    can clear every gate while the corpus stays where it was (D191). The counts returned are the
+    after-write skips, which the tool's row has always carried, and how many calls a replay failure
+    put back over a filter, which is what says how much of the evidence is there for that reason.
+    """
+    replay_failed = replay_failed or {}
+    calls_by_tool: dict[str, list] = {}
+    skipped: dict[str, int] = {}
+    from_replay: dict[str, int] = {}
+    for trace in traces:
+        for at, call in enumerate(trace.tool_calls):
+            readmitted = bool(call.id) and call.id in replay_failed.get(call.name, {})
+            if not (readmitted or is_evidence_call(call, callers)):
+                continue
+            dropped = (trace.trace_id, at) in after_write or trace.trace_id not in seeds
+            if dropped and not readmitted:
+                if (trace.trace_id, at) in after_write:
+                    skipped[call.name] = skipped.get(call.name, 0) + 1
+                continue
+            calls_by_tool.setdefault(call.name, []).append(call)
+            if dropped:  # a filter would have dropped it and the replay failure overrode the filter
+                from_replay[call.name] = from_replay.get(call.name, 0) + 1
+    return calls_by_tool, skipped, from_replay
 
 
 def callers_by_tool(sigs: Iterable[Any]) -> dict[str, set[str]]:
@@ -924,6 +1108,10 @@ def _replay_stage(only: Optional[Iterable[str]] = None):
                                                  canon_rules=canon_rules, comparer=comparer)
                 replays.setdefault(task.id, {})[trace_id] = result.as_dict()
         _write_json(ctx.workdir / "replays.json", replays)
+        # D191: the calls this replay could not reproduce, per tool, which is what the compile stage
+        # adds to a body's evidence and keys its cache on.
+        _write_json(ctx.workdir / REPLAY_EVIDENCE_FILE,
+                    {tool: sorted(failures) for tool, failures in sorted(replay_failures_of(replays).items())})
         _write_runs_index(ctx.workdir)
         # Section 6: a Task none of whose Traces replay to their End state is rejected for that
         # Task, which the Examiner's derivation turns into "not verdicted"; the build itself goes on.
