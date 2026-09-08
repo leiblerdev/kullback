@@ -45,6 +45,17 @@ HINT_CHARS = 400
 # list instead of working it. The list is ranked before it is cut, so what is dropped is always
 # what costs the fewest Tasks, and the next round files it once the ones above it are closed.
 RULE_FINDING_LIMIT = 10
+# How many masked shapes an unread-result finding names. The shapes are the grain the readers stage
+# reports and repairs on, and a tool with forty of them says nothing more in forty lines than in
+# three; the count in the same sentence says how many there are.
+SHAPES_NAMED = 3
+# The build's readers artifact, read for the results no reader answers (D203). Named here rather
+# than imported from the builder so the examiner package keeps its one-way dependency on the records.
+READERS_FILE = "readers.json"
+# The kinds whose rows are deduplicated on the Task and tool pairs they cover (D192), beside the key.
+# Both name a tool and the Tasks it costs rather than a loss ranked by a moving set of Tasks, so a
+# pair another finding already carries is that finding's news and not a second message.
+PAIR_DEDUPED = frozenset({"fidelity", "environment"})
 
 # Which verb answers which D79 check. Two of the nine have an owner outside the Verifier: the leak
 # check fails on a value that reached the Intent, which is a line the Builder's model wrote and
@@ -393,6 +404,47 @@ def disagreement_rows(status: dict, references: dict) -> list[dict]:
     return rows
 
 
+def unread_result_rows(readers_artifact: dict, status: dict) -> list[dict]:
+    """One row per tool whose homed prose results nothing reads, so its rows hold no pinned column.
+
+    D203 closes most of that class in code: a reader is derived from the tool's own recorded
+    results, and where the corpus cannot settle a slot one forced proposal is asked for. What is
+    left over is a real gap in the world and not a body's fault, so it is filed as an environment
+    finding naming the tool and the masked shapes still unread. A Run reading such a result is
+    served the seed's own value however the Task's overlay is pinned, and nothing else in the build
+    says so.
+
+    The Tasks named are the ones this tool blocks (D171), so the pair dedup can see that another
+    finding already covers them; a tool that blocks nobody is still filed, ranked last, because the
+    loss it names is in the world rather than in a Task's ruling.
+    """
+    gaps = ((readers_artifact or {}).get("gaps") or {})
+    unread = ((gaps.get("totals") or {}).get("results_unread_by_tool") or {})
+    blocked: dict[str, list[str]] = {}
+    for task_id, row in sorted((status or {}).items()):
+        if not isinstance(row, dict) or row.get("reference_confirmed"):
+            continue
+        for name in row.get("blocking_tools") or []:
+            blocked.setdefault(str(name), []).append(task_id)
+    rows = []
+    for name, count in sorted(unread.items()):
+        entry = (gaps.get("tools") or {}).get(name) or {}
+        shapes = sorted({str(shape) for shape in entry.get("unread_shapes") or []})[:SHAPES_NAMED]
+        rows.append({
+            "kind": "environment", "tool": str(name), "task_ids": blocked.get(str(name), []),
+            "task_id": None, "key": finding_key("environment", str(name)),
+            "suggested": "none",
+            "hint": (f"no reader answers {shapes[0]}" if shapes
+                     else "no reader answers this tool's results"),
+            "text": (f"{name} answers {int(count)} recorded results the world homes on a row and "
+                     f"nothing reads columns out of, so those rows hold no pinned value and every "
+                     f"Run reading them is served the seed's own (D203). Neither the derivation "
+                     f"from its own results nor a forced proposal settled them."
+                     + (f" Shapes still unread: {'; '.join(shapes)}." if shapes else "")),
+        })
+    return rows
+
+
 # --- the whole pass ---------------------------------------------------------------------
 
 def rule_rows(plan: ExaminerPlan) -> list[dict]:
@@ -403,9 +455,11 @@ def rule_rows(plan: ExaminerPlan) -> list[dict]:
     status = plan.store.get("task_status") or {}
     fidelity = plan.store.get("tool_fidelity") or _json(plan.workdir / "tool_fidelity.json", {}) or {}
     references = _json(plan.workdir / "references.json", {}) or {}
+    reader_gaps = _json(plan.workdir / READERS_FILE, {}) or {}
     rows = (assisted_tool_rows(status, fidelity) + suite_rows(status)
             + false_rejection_rows(plan.store) + disagreement_rows(status, references)
-            + fidelity_rows(status, fidelity, plan.store.get("replays") or {}))
+            + fidelity_rows(status, fidelity, plan.store.get("replays") or {})
+            + unread_result_rows(reader_gaps, status))
     return sorted(rows, key=lambda row: (-len(row["task_ids"]), row["key"]))
 
 
@@ -431,10 +485,10 @@ def file_rule_findings(plan: ExaminerPlan, limit: int = RULE_FINDING_LIMIT) -> l
         if row["key"] in already or told.get(row["key"]) == sorted(row["task_ids"]):
             continue
         pairs = covered_pairs(row)
-        # The pair skip is the fidelity rule's alone: a Task and tool another finding already names
-        # is that finding's news. The other rules are ranked by the Tasks they cost and re-file when
-        # that set moves (`cost_by_key`), which a pair cannot see.
-        if row["kind"] == "fidelity" and pairs and pairs <= covered:
+        # The pair skip is the fidelity rule's and the unread-result rule's: a Task and tool another
+        # finding already names is that finding's news. The other rules are ranked by the Tasks they
+        # cost and re-file when that set moves (`cost_by_key`), which a pair cannot see.
+        if row["kind"] in PAIR_DEDUPED and pairs and pairs <= covered:
             continue
         covered |= pairs
         filed.append(file_finding(plan, **row))

@@ -1407,6 +1407,46 @@ Seven tests on an invented delivery network cover two reads served in order, a t
 
 The measurement disagrees with the premise. Replay ran on copies of both workdirs, code only, at no cost. Airline held at 88 of 122 Tasks confirmed before and after and telecom at 19 of 329, both rebuilding db.json byte for byte, so the comparison isolates the sequences. columns_time_varying is zero on both. Of 1645 airline rows a Task pinned, 688 were read twice cleanly inside one Task and none had a column that moved; of 1291 telecom rows, 363 were read twice and none moved. The airline read the report blamed makes 112 recorded calls over 43 argument shapes, and no shape has two different recorded results anywhere in the corpus. Those 112 are exactly the unread partial results overlay_pins.json already counts: the result is keyless, no reader turns it into columns, no row enters the world, and the seed's constant answers every read. Those ten Tasks are a reader coverage failure of the D176 and D180 kind, not a time-varying row, and the mechanism here is inert on both corpora in hand. Read on the next builds whether any corpus reports a non-zero columns_time_varying, and read the unread partial results count for that airline read instead.
 
+### D203. A tool whose prose nobody reads gets a reader of its own (2026-09-08)
+
+The founder asked to observe from the errors and fix things generally, without overfitting. The
+error is a hole in D176: readers are proposed one requestor toolkit at a time, so a tool of the
+customer's own system that answers a sentence gets no reader, and D180 homing has nothing to home.
+The airline recording left 112 homed prose results of one read tool unread and homed no column at
+all; the telecom recording left 231 results of two tools unread.
+
+The rule is that after the readers stage every tool with homed prose results no reader answers is a
+gap the harness closes itself. The tool's own recorded results are aligned into templates: tokenise
+on whitespace, group by token width, the positions every result agrees on are the literal frame and
+the rest are slots. A slot binds to the one column of the homed row whose value equals it on every
+result, exactly first and then through canon. A bound template compiles to a reader and a render,
+kept only where the D183 round trip reproduces every recorded result character for character from
+the row the corpus held. Where a slot binds to no column or to two, one model call per tool asks
+for the pair, given the templates, the masked slot values and the row's columns, and the same round
+trip rules on it. That reader may also name a column the row does not hold, which is what the read
+reveals about the row. A reveal has no column to check it against, so it is held to two other
+things: one row answers one value for it within a run, or the sentence states something varying
+under the row rather than a column of it; and it takes more than one value over the corpus, or it
+asserts nothing. A revealed column enters the schema marked by the tool that revealed it, because
+the tool bodies are written from the schema. A tool answering one string to every call is a
+constant acknowledgement, counted apart, and results still unread are counted per tool and filed as
+one environment finding naming their masked shapes.
+
+Twenty one tests over an invented courier depot cover alignment, binding, forcing, the rejected
+render, the revealed column entering the schema, both refusals of a reveal, and unread results
+counted by shape.
+
+Measured offline on workdir copies with D197 merged in. Airline went from 88 of 122 Tasks confirmed
+to 100, columns homed from 0 to 255, sequences served from 0 to 52, and the read that blocked
+thirty Tasks stopped disagreeing. Telecom did not move, 19 of 329 either way: one unread tool
+answers one string to 164 calls, the other has two results, below the three an alignment needs, and
+its forced proposal failed the round trip. The disagreement to state plainly is that step one, the
+code only half, derived nothing on either corpus: every gain came from the one forced call, so the
+alignment is proven by tests and not yet by a corpus. Adding one column to the airline schema also
+moved the mined counts, because the miner reads a result differently once its table holds it. Cost
+was four forced calls, far under a dollar. Read readers_derived, readers_forced, columns_revealed,
+slots_unbound and results_unread on the next builds.
+
 ## Pending (asked, not yet answered)
 
 - ~~The user's own tools and the world they act on (D71, first part).~~ Decided as D176 (2026-09-07): one world, rows revealed by a requestor marked by it, readers as code under the free gate.

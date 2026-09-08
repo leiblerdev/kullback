@@ -1059,13 +1059,22 @@ def result_reader(artifact: Any, traces: Iterable[Trace], workdir: Path | str
     once here over the distinct results its tool answered anywhere in the corpus, and the answers
     are served from that table.
 
-    None when no proposal carries a reader, so a corpus without readers starts no subprocess. The
+    Beside the proposed readers, the artifact may hold readers this build derived for itself from a
+    tool's own recorded results, for a tool nobody proposed one for or for the shapes a proposed
+    reader read nothing out of (`builder/templates.py`). A proposed reader answers first and a
+    derived one fills what it left: the model's reading of a shape it was shown is the one to keep,
+    and the derivation exists for the shapes no model was ever asked about.
+
+    None when neither kind of reader exists, so a corpus without readers starts no subprocess. The
     readers run in the same sandbox as everything else in this module, never in this process.
     """
+    from kullback.builder import templates as templates_mod  # builder to builder, at call time
+
     proposals = [p for p in proposals_from(artifact) if p.readers]
-    if not proposals:
-        return None
     traces = list(traces)
+    derived = templates_mod.derived_reader(artifact, traces, workdir)
+    if not proposals and not derived:
+        return None
     values: dict[tuple[str, str], Optional[dict]] = {}
     for proposal in proposals:
         names = _method_names(proposal)
@@ -1089,6 +1098,7 @@ def result_reader(artifact: Any, traces: Iterable[Trace], workdir: Path | str
             values[key] = value if isinstance(value, dict) and value else None
 
     def read(tool: str, result: Any) -> Optional[dict]:
-        return values.get((tool, str(result)))
+        key = (tool, str(result))
+        return values.get(key) or derived.get(key)
 
     return read
