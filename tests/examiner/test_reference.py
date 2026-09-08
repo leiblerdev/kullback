@@ -247,11 +247,12 @@ def test_a_judgement_that_rests_on_what_the_judge_was_given_still_fails_a_state(
 
 def test_the_judge_never_awards_a_pass():
     """Failing nothing leaves the disagreement; failing everything leaves no Reference."""
-    nothing = ref.confirm([cancel_run("a"), empty_run("b")], judge=TestModel(['{"failed": [], "reason": "cannot tell"}']))
+    nothing = ref.confirm([cancel_run("a"), empty_run("b")],
+                          judge=TestModel(['{"failed": [], "reason": "cannot tell"}'], loop=True))
     assert nothing.references == [] and nothing.reason.startswith("recordings disagree")
     both = ruling(fails("A", DELIVERY_KEY, "#D123", "B"), fails("B", DELIVERY_KEY, ref.NO_VALUE, "A"))
     everything = ref.confirm([cancel_run("a"), empty_run("b")], judge=TestModel([both]))
-    assert everything.references == [] and everything.reason == "the judge failed every End state"
+    assert everything.references == [] and everything.reason.startswith("the judge failed every End state")
 
 
 def test_an_unreadable_judge_reply_fails_nothing():
@@ -414,6 +415,92 @@ def test_a_failure_citing_the_no_value_a_state_holds_where_the_other_wrote_is_ac
     assert seen.failed == {"B"} and not seen.abstained
     guessed = ref.parse_judgement(ruling(fails("B", DELIVERY_KEY, "no writes", "A")), groups)
     assert guessed.failed == set() and guessed.abstained
+
+
+# --- the residue of a fail-only judgement (D193) -----------------------------
+# The same bike-hire desk with three Runs, which is the shape the residue needs: a fail-only judge
+# may drop one state with confidence and still leave two, and one pass can never settle that.
+
+LATE = "2026-10-09"
+ASKED = "2026-10-02"
+EARLY = "2026-09-25"
+HIRE_INTENT = "extend hire BH-31 by a week"
+
+
+def three_hires() -> list[ref.Recording]:
+    return [hire_run("a", ASKED), hire_run("b", EARLY), hire_run("c", LATE)]
+
+
+def drops_c(reason: str = "three weeks is more than was asked for") -> str:
+    """The first pass: one state dropped with a cited failure, two left in."""
+    return ruling(fails("C", UNTIL, LATE, "A", reason))
+
+
+def _confirm_three(*replies: str) -> ref.Confirmation:
+    return ref.confirm(three_hires(), intent=HIRE_INTENT, judge=TestModel(list(replies)))
+
+
+def test_a_residue_of_two_is_resolved_by_a_cited_second_pass():
+    judge = TestModel([drops_c(), ruling(fails("B", UNTIL, EARLY, "A", "the rider asked for a week"))])
+    out = ref.confirm(three_hires(), intent=HIRE_INTENT, judge=judge)
+    assert [r.run_id for r in out.references] == ["a"]
+    assert out.judge_passes == 2 and out.judge_residue_resolved and not out.judge_residue_abstained
+    assert out.failed == {"c": "judge: three weeks is more than was asked for",
+                          "b": "judge: the rider asked for a week"}
+    second = judge.calls[1]["messages"][0]["content"]
+    assert "\nC (1 run)" not in second, "the second pass is asked about the survivors only"
+    assert ref.SURVIVORS_NOT_TOLD_APART in second and "exactly one of them may remain" in second
+
+
+def test_an_uncited_second_pass_abstains_and_names_the_keys_the_survivors_were_not_told_apart_on():
+    """The second pass rests on a key both survivors hold, so it settles nothing, as the first would."""
+    out = _confirm_three(drops_c(), ruling(fails("B", SHARED, "BH-31", "A", "no confirmation was given")))
+    assert out.references == [] and out.judge_passes == 2
+    assert out.judge_residue_abstained and out.judge_abstained and out.judge_uncited
+    assert out.abstain_reason == f"{ref.SURVIVORS_NOT_TOLD_APART}: {UNTIL}, stated:{EARLY}, stated:{ASKED}"
+    assert out.reason.startswith("recordings disagree on the End state (2 states")
+    assert ref.SURVIVORS_NOT_TOLD_APART in out.reason
+
+
+def test_a_second_pass_that_fails_nothing_abstains_and_the_first_passs_failure_stands():
+    out = _confirm_three(drops_c(), '{"failed": [], "reason": "the survivors cannot be told apart"}')
+    assert out.references == [] and out.judge_passes == 2
+    assert out.judge_residue_abstained and not out.judge_uncited
+    assert out.abstain_reason.startswith(f"{ref.SURVIVORS_NOT_TOLD_APART}: {UNTIL}")
+    assert out.failed == {"c": "judge: three weeks is more than was asked for"}
+    assert out.judge_second["reason"] == "the survivors cannot be told apart"
+
+
+def test_failed_all_on_one_key_the_intent_required_is_recorded_as_no_correct_recording():
+    """Every state failed on the same key against the same requirement is one claim about the world,
+    not a disagreement between the recordings, so it is a reason of its own for a later beat."""
+    out = _confirm_three(ruling(fails("A", UNTIL, ASKED, "intent", "the rider asked for two weeks"),
+                                fails("B", UNTIL, EARLY, "intent"),
+                                fails("C", UNTIL, LATE, "intent")))
+    assert out.references == [] and out.no_correct_recording and out.no_correct_key == UNTIL
+    assert out.reason.startswith(f"{ref.NO_CORRECT_RECORDING}: every End state was failed on {UNTIL}")
+    assert not out.judge_abstained and out.judge_passes == 1
+
+
+def test_failed_all_on_keys_that_disagree_abstains_instead():
+    out = _confirm_three(ruling(fails("A", UNTIL, ASKED, "intent"),
+                                fails("B", f"stated:{EARLY}", "told to the user", "intent"),
+                                fails("C", UNTIL, LATE, "intent")))
+    assert out.references == [] and not out.no_correct_recording
+    assert out.judge_abstained and out.abstain_reason == ref.DIFFERING_GROUNDS
+    assert out.reason.startswith("the judge failed every End state")
+
+
+def test_the_reference_row_carries_how_many_times_the_judge_was_asked():
+    once = ref.confirm(three_hires(), intent=HIRE_INTENT,
+                       judge=TestModel([ruling(fails("B", UNTIL, EARLY, "A"), fails("C", UNTIL, LATE, "A"))]))
+    assert once.as_dict()["judge_passes"] == 1 and once.as_dict()["judge_second"] is None
+    twice = _confirm_three(drops_c(), ruling(fails("B", UNTIL, EARLY, "A", "a week was asked for")))
+    row = twice.as_dict()
+    assert row["judge_passes"] == 2 and row["judge_residue_resolved"] is True
+    assert row["judge_second"]["failed"] == ["B"] and row["judge_second"]["reason"] == ""
+    assert row["judge_citations"]["B"] == {"key": UNTIL, "value": EARLY, "expected": "A"}
+    assert ref.confirm(three_hires()).as_dict()["judge_passes"] == 0, "no judge, no pass"
 
 
 # --- constraints against the corpus -----------------------------------------

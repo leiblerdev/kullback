@@ -41,11 +41,14 @@ TARGET = "environment"
 # stated facts read from the world: the same two groups and the same verdicts, one longer state sentence
 # inside the reason. Re-pinned again for D171: every row gained the Task's own replay fidelity
 # (`blocking_tools`, `tool_calls_replayed`, `tool_calls_differing`) and the reason names a tool only
-# where one of the Task's own recorded calls differs. Every other byte of the three rows is the
-# pre-phase build's. Re-pinned again for D188: the Starting-state pinner walks a result to any depth,
-# so the fixture's orders pin the rows they mention inside themselves and the reasons name what the
-# fuller world now answers.
-TASK_STATUS_SHA256_BEFORE_THE_PHASE = "8d1a4fd938a32494728e5d4bea59f483113b21bff49e2b4da5ca60aac5f37af8"
+# where one of the Task's own recorded calls differs. Re-pinned again for D188: the Starting-state
+# pinner walks a result to any depth, so the fixture's orders pin the rows they mention inside
+# themselves and the reasons name what the fuller world now answers. Re-pinned again for D193: two
+# of the three Tasks are a residue the judge is now asked about a second time, and the reason on
+# those rows ends in the abstention that second pass reached instead of the first pass's judge
+# reason. Re-pinned once more where D188 and D193 land together: the verdicts are the same three
+# and every other byte of the rows is the pre-phase build's.
+TASK_STATUS_SHA256_BEFORE_THE_PHASE = "27e57bea570e8f9dd01c2a992a35673e3b7cc62df2f6a5ee2e6c868eadd2c16d"
 
 
 def _fixture(request) -> Path:
