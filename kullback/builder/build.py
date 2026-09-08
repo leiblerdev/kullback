@@ -182,6 +182,13 @@ def _mine_stage():
         # home. A lookup whose rows reach no table is the whole of its replay fidelity, and this is
         # where that is readable before a single body has been written.
         _write_json(ctx.workdir / "row_homes.json", mine.row_homes(traces))
+        # The constants of the world: per tool the corpus called the same way every time and got
+        # the same answer to, that answer. They are columns of one row of the schema's own
+        # constants table; the file is what a reader of the build sees them by, since the mine gate
+        # is frozen and cannot carry a count of them.
+        _write_json(ctx.workdir / "world_constants.json",
+                    {"table": mine.constants_table_of(schema), "row": mine.CONSTANTS_ROW,
+                     "columns": sorted(mine.constants_row(schema))})
         _write_json(ctx.workdir / "schema.json", as_dict(schema))  # cli._score reads it (D39, D73)
         calls = [c for t in traces for c in t.tool_calls]
         # "flag, do not synthesize": a tool the corpus barely shows stays in the build, named in
@@ -335,10 +342,31 @@ def _record_hardcoded_lesson(workdir: Any, name: str) -> None:
     memory.record_lesson(workdir, name, [compile_env.HARDCODED_LESSON])
 
 
+# Where the body a tool already has is replayed, beside the attempt directories of the run that is
+# trying to beat it, so the two never share a sandbox directory.
+KEPT_BODY_DIR = "kept_body"
+# The stage's ruling on those replays, one row per tool: kept, beaten, or could not run, with both
+# scores. A record of the run, never an input of it (see the comment where it is filled).
+KEPT_BODIES_FILE = "kept_bodies.json"
+
+
 def _tools_stage(model: Any, max_attempts: int, workers: int = 1, only: Optional[Iterable[str]] = None):
     """compile_tools, or with `only` the same stage narrowed to those tools: the rest of the bodies
     are read back from bodies.json, so the artifact it releases is still every body (the tool
-    `compile_tool(name)`)."""
+    `compile_tool(name)`).
+
+    A tool that already has a body in this workdir keeps it unless the run's own attempt beats it.
+    D174 made that true of a narrowed rerun by comparing the score written on the tool's row; it was
+    not true of a full run, which is what the stage does whenever one of its inputs moved (the
+    schema, the Starting state, the readers, the tables block), and a full run rewrites every body
+    from scratch. Two live rounds lost Tasks that way with nothing about the rewritten tools' own
+    inputs having moved: one took a write tool from 83 of its 139 recorded calls matched to 39 and
+    the corpus from 179 confirmed Tasks to 165, and another dropped six device tools by more than
+    five points each in the round that raised ten. So the previous body is replayed here under the
+    world as it stands now and under the gates as they stand now (`compile_env.grade_body`), and it
+    is a candidate on the same key the compiler ranks its own attempts by. The stage knows nothing
+    about which input moved; the rule is only that a body which exists competes.
+    """
     only = sorted(only) if only is not None else None
 
     def run(ctx, inputs):
@@ -383,54 +411,104 @@ def _tools_stage(model: Any, max_attempts: int, workers: int = 1, only: Optional
         outcomes: dict[str, list[dict]] = {}  # D171: per tool, one row per recorded call
         rules = _rules_of(inputs)
         sigs = list(inputs["sigs"])
+        # Every body this workdir already holds, whatever run of the stage left it. On a full run
+        # they are the memory of the last one; on a narrowed run they are also the bodies of the
+        # tools this run does not touch, which is why that branch reads them into its own artifact.
+        stored_bodies = dict(_read_json(ctx.workdir / "bodies.json", {}) or {})
+        stored_builds = dict(_read_json(ctx.workdir / "tool_builds.json", {}) or {})
         if only is not None:
             unknown = sorted(set(only) - {sig.name for sig in sigs})
             if unknown:
                 raise BuildError(f"no mined tool is named {', '.join(unknown)}")
-            bodies = dict(_read_json(ctx.workdir / "bodies.json", {}) or {})
-            builds = dict(_read_json(ctx.workdir / "tool_builds.json", {}) or {})
+            bodies, builds = dict(stored_bodies), dict(stored_builds)
             assisted = [name for name, row in builds.items() if row.get("assisted") and name not in only]
             # D171: the tools this run does not recompile keep the per-call rows the last run left,
             # so the artifact it releases still attributes every tool's fidelity, not only these.
             all_outcomes = _read_json(ctx.workdir / "tool_call_outcomes.json", {}) or {}
             outcomes = {name: list(rows) for name, rows in all_outcomes.items() if name not in only}
-            # D174: what the recompiled tools had before this run, so a worse attempt cannot replace it.
-            previous = {name: (bodies[name], builds.get(name) or {}, list(all_outcomes.get(name) or []))
-                        for name in only if name in bodies}
             sigs = [sig for sig in sigs if sig.name in only]
+        # D174, widened: what each tool this run writes a body for already had, so an attempt that
+        # is worse than it cannot replace it. The score is not read off the row: a row's score was
+        # measured under the world of the run that wrote it, and a run whose inputs moved is a
+        # different world, so the two are only comparable when both are measured under this one.
+        previous = {sig.name: (stored_bodies[sig.name], stored_builds.get(sig.name) or {})
+                    for sig in sigs if (stored_bodies.get(sig.name) or "").strip()}
 
         def compile_one(sig):  # one tool, its own directory and nodes; independent of every other (D118)
+            # The body this tool already has, replayed first, so what it fails at can be said to the
+            # writer before it writes. The replay is per tool and runs on this tool's own thread.
+            kept = previous.get(sig.name)
+            graded = compile_env.grade_body(
+                sig, kept[0], calls_by_tool.get(sig.name, []), inputs["schema"], inputs["db"],
+                ctx.workdir / "tools" / sig.name / KEPT_BODY_DIR,
+                call_states=states, rules=rules) if kept is not None else None
+            # What this tool already failed on, so a recompile asks a different question than the
+            # one that failed, and what the body it has to beat fails at now. The kept body itself
+            # is never in the prompt: shown one, the writer copies it, and a copy cannot beat it.
+            lesson = memory.lesson_for(ctx.workdir, sig.name)
+            if graded is not None:
+                hint = compile_env.kept_body_hint(
+                    graded.gates, compile_env.split_calls(calls_by_tool.get(sig.name, []))[1])
+                lesson = "\n".join(part for part in (lesson, hint) if part)
             return compile_env.compile_tool(model, sig, calls_by_tool.get(sig.name, []),
                                             inputs["schema"], inputs["db"],
                                             ctx.workdir / "tools" / sig.name,
                                             max_attempts=max_attempts, call_states=states,
                                             rules=rules, tool_names=tool_names,
                                             error_prefix=error_prefix, world_note=world_note,
-                                            # What this tool already failed on, so a recompile asks
-                                            # a different question than the one that failed.
-                                            lesson=memory.lesson_for(ctx.workdir, sig.name))
+                                            lesson=lesson), graded
 
         declined: list[str] = []
-        for sig, build in zip(sigs, parallel.each(sigs, compile_one, workers), strict=True):
-            gates.extend(build.gates)
+        # Per tool, whether the body it already had was kept, beaten, or could not run at all under
+        # this world, with both scores. It is a record of what this run decided, not an input of it,
+        # so it lives beside the stage's other records rather than on the tool's row: the row is a
+        # declared input path of a narrowed rerun, and a decision written there would move the key
+        # of the next identical request and buy a recompile nobody asked for (D174's own rule that a
+        # tie leaves the stage's files untouched).
+        kept_rulings = dict(_read_json(ctx.workdir / KEPT_BODIES_FILE, {}) or {}) if only is not None else {}
+        for sig, (build, graded) in zip(sigs, parallel.each(sigs, compile_one, workers), strict=True):
             score = list(compile_env.attempt_score(build.gates))
-            kept = previous.get(sig.name) if only is not None else None
-            kept_score = list(kept[1]["score"]) if kept is not None and kept[1].get("score") is not None else None
-            if kept_score is not None and kept_score >= score:
-                # D174: a recompile is an attempt at a better body, not a replacement for the one
-                # kept. The body it produced scored no higher on the same key the compiler ranks its
-                # own attempts by (gates passed, then recorded calls matched), so the kept body
-                # stands. A lower score is written on the row for the Builder to read; a tie leaves
-                # the row as it was, so a request that changed nothing leaves the stage's files
-                # unchanged and the next identical request is answered from the cache. One live
-                # build's third round recompiled a write tool from 65 percent of its calls matched
-                # to none of them and lost 41 Tasks of fidelity that round.
-                body, row, rows = kept
-                bodies[sig.name] = body
-                builds[sig.name] = row if kept_score == score else dict(
-                    row, recompile_declined={"attempt_score": score, "kept_score": kept_score})
-                outcomes[sig.name] = rows
-                if row.get("assisted"):
+            kept_score = list(compile_env.attempt_score(graded.gates)) if graded is not None else None
+            # A body that answers no call at all under this world is no candidate, whatever it
+            # scores: the tie below would otherwise hand the tool back to a body a schema change
+            # broke. Everything else competes, and a tie goes to the body that is already there,
+            # which the Examiner has seen and the Tasks that trusted it were trusted against.
+            keeps_previous = graded is not None and not graded.could_not_run and kept_score >= score
+            # gates.json is the ruling on the module this stage released, and every failing row in
+            # it becomes a red light the Builder is asked to repair (`builder/tools.red_lights`).
+            # So the rows recorded are the gates of the body that was released, not of the attempt
+            # that lost to it: under D174 a losing attempt was one narrowed rerun's one tool, and
+            # widening the rule to every full run would otherwise fill the file with failures the
+            # released bodies do not have. What the losing attempt scored is not lost with it: it
+            # is on the tool's row (`recompile_declined`) and in the run's own ruling below.
+            gates.extend(graded.gates if keeps_previous else build.gates)
+            kept_rulings.pop(sig.name, None)
+            if graded is not None:
+                kept_rulings[sig.name] = {
+                    "outcome": "kept" if keeps_previous else
+                               ("could_not_run" if graded.could_not_run else "beaten"),
+                    "kept_score": kept_score, "attempt_score": score}
+            if keeps_previous:
+                # A run of this stage is an attempt at a better body, not a replacement for the one
+                # it has. The attempt scored no higher on the key the compiler ranks its own
+                # attempts by (gates passed, then recorded calls matched), so the kept body stands.
+                # Its assisted and hardcoded readings, its score and its per-call rows are the ones
+                # just measured, not the ones the last run wrote, because those were measured under
+                # a world that has since moved; where the world has not moved they are the same
+                # values and the row is left byte for byte as it was. One live build's third round
+                # recompiled a write tool from 65 percent of its calls matched to none of them and
+                # lost 41 Tasks of fidelity in the round.
+                body = previous[sig.name][0]
+                bodies[sig.name] = compile_env.mark_hardcoded(body) if graded.hardcoded else body
+                builds[sig.name] = dict(previous[sig.name][1], assisted=graded.assisted,
+                                        hardcoded=graded.hardcoded, score=kept_score)
+                if graded.hardcoded:  # D181's rule 7, for the body the stage releases, not the attempt
+                    _record_hardcoded_lesson(ctx.workdir, sig.name)
+                if score < kept_score:  # D174's line for the Builder: change the hint, not the request
+                    builds[sig.name]["recompile_declined"] = {"attempt_score": score,
+                                                              "kept_score": kept_score}
+                outcomes[sig.name] = graded.call_outcomes
+                if graded.assisted:
                     assisted.append(sig.name)
                 declined.append(sig.name)
                 continue
@@ -453,10 +531,12 @@ def _tools_stage(model: Any, max_attempts: int, workers: int = 1, only: Optional
         # D171: the per-call rows are kept whole on disk, so a narrowed rerun can read back the
         # tools it did not touch; the artifact the stages pass on is the attribution over them.
         _write_json(ctx.workdir / "tool_call_outcomes.json", outcomes)
+        _write_json(ctx.workdir / KEPT_BODIES_FILE, kept_rulings)
         fidelity_by_task = attribute_fidelity(outcomes, call_tasks, assisted)
         _write_json(ctx.workdir / "tool_fidelity.json", fidelity_by_task)
         return {"bodies": bodies, "assisted_tools": sorted(assisted),
-                "tool_fidelity": fidelity_by_task, "recompile_declined": declined}
+                "tool_fidelity": fidelity_by_task, "recompile_declined": declined,
+                "kept_bodies": kept_rulings}
 
     def gate(ctx, outputs):
         return stage_gates.compile_tools_gate(outputs["bodies"], outputs["assisted_tools"])
@@ -1379,13 +1459,16 @@ class BuildPlan:
     model that writes the Environment need not be the one that rules on it. `second_judge_model` is
     the other side of a two-judge question, named here so its calls are priced and so the report can
     say which two models the judging was done by; the build's own residue judge is one judge that may
-    only fail (D110, D111), and nothing here gives it a second.
+    only fail (D110, D111), and nothing here gives it a second. `judge_agent` is which residue judge
+    that is: off, the default, the one-shot judge of D110; on, the agent with a bounded look, which
+    costs References and so ships as an opt-in (D185).
     """
     workdir: Path
     iterate: bool = False
     model: Any = None
     judge_model: Any = None
     second_judge_model: Any = None
+    judge_agent: bool = False
     files: list = field(default_factory=list)
     ceiling_usd: Optional[float] = None
     domain: str = "domain"

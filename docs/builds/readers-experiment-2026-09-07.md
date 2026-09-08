@@ -571,3 +571,197 @@ Numbers above are read from `row_homes.json` (the homing decisions), `replays.js
 call verdicts and Task confirmation), `tool_fidelity.json` (compile_tools' own replay), `gates.json`
 (the stage rulings), `schema.json` and `db.json` (the tables), `readers.json` (the proposal) and
 `budget.json` (spend, against the copied workdir's totals).
+
+## 10. Follow-up: the render, and the round trip as the gate
+
+Failure pattern 5: the requestor's device tools end their results with a status line composed out of
+several other columns, the readers parse that line into columns, and the compiled bodies write it
+back with a word the row never held. Section 9 left five of those tools between 0% and 77%.
+
+Decided with the founder (2026-09-07 evening) and built here: the readers proposal gains, per tool,
+a **render**, `def render(row) -> str`, the inverse of the reader, and the gate holds the two
+together by round trip. For every recorded result of a tool, `render` of the row that result was
+answered from, walked exactly the way `starting_row` walks it and completed with the fills, has to
+be that result again character for character. Failures come back one line per masked shape, the
+same feedback shape readers already had, for up to 4 attempts; the proposal with the fewest failing
+shapes is kept and marked assisted, as before. Renders run in the same subprocess sandbox as the
+readers, in one module under one confinement gate. A tool whose result is an acknowledgement renders
+a constant; a word the sentence states that no column holds is computed inside the render out of the
+columns that do, and gets no column of its own. The body skill gained one paragraph saying the
+render is the answer (a read tool answers `render(row)`, a write tool applies its effect and then
+answers `render(row)`), and the body writer sees the render source in its prompt for those tools.
+
+Re-run on a fresh copy of the third corpus's workdir with the same command, model and ceiling as
+section 9 (`--target replay_reference --max-rounds 1 --workers 8 --ceiling-usd 10`). The before
+column is the section 9 workdir as it stands on disk.
+
+### The round trip, per attempt
+
+| | attempt 0 | attempt 1 | attempt 2 | attempt 3 |
+|---|---|---|---|---|
+| renders proposed, of 27 tools | 27 | 15 | 27 | 27 |
+| columns proposed | 29 | 29 | 29 | 30 |
+| round trips asked | 2,670 | 0 | 2,986 | 3,303 |
+| round trips that held | 1,192 | 0 | 1,780 | 3,189 |
+| masked shapes failing, of 175 | 135 | 175 | 96 | 14 |
+| shapes the readers read nothing out of | 51 | 0 | 27 | 0 |
+
+Attempt 1 is the one interesting failure of the loop: the model answered with renders for 15 of the
+27 tools, so 12 tools were reported missing a render and the round trip never ran. The feedback
+named each of the 12 and attempt 2 proposed all 27 again. Attempts 0, 2 and 3 are a clean descent:
+44.6%, 59.6%, 96.5% of the recorded results written back out of the row they came from. The kept
+proposal is attempt 3's, marked assisted because 14 masked shapes still fail after the fourth
+attempt, all of them on two tools whose results begin with a line the row does not determine.
+
+### Tasks at replay fidelity
+
+| | before | after |
+|---|---|---|
+| Tasks confirmed | 3 | 3 |
+| frozen denominator | 183 | 183 |
+| Tasks after clustering | 373 | 365 |
+| recordings replayed | 456 | 456 |
+| writes matched | 1,307 of 2,264 (57.7%) | 1,482 of 2,466 (60.1%) |
+| reads matched | 3,691 of 5,468 | 4,103 of 5,266 |
+
+### Per tool, recorded calls matched
+
+Same source and rule as sections 3, 8 and 9: `replays.json`, a call counts as matched when the
+Runner ruled `same`, `cosmetic` or `both_refused`, and the call counts are the recording's own.
+`render` says whether the kept proposal carried a render for that tool.
+
+| tool | side | render | calls | before | after |
+|---|---|---|---|---|---|
+| get_details_by_id | assistant | no | 1153 | 79.3% | 94.5% |
+| can_send_mms | user | yes | 714 | 81.7% | 81.7% |
+| check_network_status | user | yes | 462 | 56.9% | 47.4% |
+| get_customer_by_phone | assistant | no | 459 | 100.0% | 100.0% |
+| run_speed_test | user | yes | 424 | 46.0% | 62.5% |
+| check_status_bar | user | yes | 403 | 76.7% | 84.1% |
+| reboot_device | user | yes | 337 | 39.2% | 31.5% |
+| check_apn_settings | user | yes | 319 | 58.3% | 71.2% |
+| toggle_roaming | user | yes | 248 | 23.4% | 40.7% |
+| toggle_airplane_mode | user | yes | 245 | 51.0% | 52.7% |
+| set_network_mode_preference | user | yes | 223 | 7.2% | 74.0% |
+| check_app_permissions | user | yes | 198 | 92.4% | 82.3% |
+| toggle_data | user | yes | 197 | 38.6% | 20.3% |
+| grant_app_permission | user | yes | 188 | 0.5% | 78.2% |
+| enable_roaming | assistant | no | 164 | 100.0% | 100.0% |
+| check_wifi_calling_status | user | yes | 163 | 98.8% | 98.8% |
+| reset_apn_settings | user | yes | 154 | 30.5% | 85.1% |
+| reseat_sim_card | user | yes | 147 | 25.2% | 31.3% |
+| refuel_data | assistant | no | 146 | 100.0% | 100.0% |
+| check_sim_status | user | yes | 135 | 74.8% | 87.4% |
+| check_network_mode_preference | user | yes | 126 | 100.0% | 98.4% |
+| transfer_to_human_agents | assistant | no | 124 | 100.0% | 100.0% |
+| get_data_usage | assistant | no | 121 | 0.0% | 0.0% |
+| check_installed_apps | user | yes | 111 | 100.0% | 100.0% |
+| toggle_wifi_calling | user | yes | 98 | 100.0% | 100.0% |
+| check_payment_request | user | yes | 91 | 74.7% | 36.3% |
+| get_bills_for_customer | assistant | no | 79 | 0.0% | 0.0% |
+| toggle_data_saver_mode | user | yes | 75 | 45.3% | 45.3% |
+| send_payment_request | assistant | no | 67 | 100.0% | 100.0% |
+| check_data_restriction_status | user | yes | 64 | 98.4% | 98.4% |
+| disconnect_vpn | user | yes | 63 | 60.3% | 73.0% |
+| make_payment | user | yes | 62 | 0.0% | 1.6% |
+| check_vpn_status | user | yes | 57 | 100.0% | 50.9% |
+| resume_line | assistant | no | 53 | 0.0% | 0.0% |
+| check_wifi_status | user | yes | 21 | 100.0% | 100.0% |
+| check_app_status | user | yes | 8 | 25.0% | 25.0% |
+
+Totals: the requestor's own 27 tools, all of which carry a render, 3,091 of 5,333 (58.0%) to 3,502
+(65.7%); the assistant's 9, none of which carry one, 1,874 of 2,366 (79.2%) to 2,050 (86.6%); over
+everything 4,998 of 7,732 (64.6%) to 5,585 (72.2%). The 33 calls of malformed or invented tool names
+match in both.
+
+`compile_tools`' own replay (`tool_fidelity.json`): 4,909 of 6,993 evidence calls, against 4,617 of
+6,984 before. 25 of 36 bodies kept assisted, against 23 before.
+
+### The tools pattern 5 named, and the ones that moved most
+
+| tool | calls | before | after |
+|---|---|---|---|
+| a permission grant | 188 | 0.5% | 78.2% |
+| a network mode preference setter | 223 | 7.2% | 74.0% |
+| an APN reset | 154 | 30.5% | 85.1% |
+| a roaming toggle | 248 | 23.4% | 40.7% |
+| a speed test | 424 | 46.0% | 62.5% |
+| an APN check | 319 | 58.3% | 71.2% |
+| a VPN disconnect | 63 | 60.3% | 73.0% |
+| a SIM status check | 135 | 74.8% | 87.4% |
+| a status bar check | 403 | 76.7% | 84.1% |
+| a SIM reseat | 147 | 25.2% | 31.3% |
+| an airplane toggle | 245 | 51.0% | 52.7% |
+| a reboot | 337 | 39.2% | 31.5% |
+| a network status check | 462 | 56.9% | 47.4% |
+| an app permission check | 198 | 92.4% | 82.3% |
+| a data toggle | 197 | 38.6% | 20.3% |
+| a payment request check | 91 | 74.7% | 36.3% |
+| a VPN status check | 57 | 100.0% | 50.9% |
+
+Over all 27 of the requestor's tools, 10 move up by more than five points, 6 move down by more than
+five, and 11 stay within five. The five the pattern itself named split two up and three down.
+
+All 14 masked shapes the render never satisfied after four attempts belong to one tool, the reboot.
+Its results open with a line the row does not determine and end with the composed line, so the
+render writes the second half and not the first, and it is one of the six that fall. The other five
+that fall carry no failing shape at all, so their loss is body writing rather than the render.
+
+### Cost and wall time
+
+| | before (section 9) | after |
+|---|---|---|
+| wall time | 8m 53s | 15m 05s |
+| spend, this build over the copy | $0.702 | $0.789 |
+| of which the readers stage | $0.015, 1 attempt | $0.047, 4 attempts |
+| of which compile_tools | $0.276 | $0.350, 526 calls |
+| of which compile_policy | $0.407 | $0.387, 404 calls |
+
+The round exited `max_rounds`, no stage failed, and neither run came near the $10 ceiling. The whole
+cost of the render is the readers stage's three extra attempts, $0.032 and about two minutes.
+
+### Where this disagrees with the instruction
+
+The brief expected the render to move the five tools it named. It moves two of them up and three of
+them down, and the tools it moves furthest are four the brief did not name, one of which went from
+1 matched call in 188 to 147. The requestor's side gains 411 calls net and the corpus stays at 3
+Tasks confirmed, because the Tasks that hold those tools are split by the revealed row the same way
+section 9 measured, and one round of body writing still moves single tools by tens of calls in both
+directions. So the render does what it was built to do (96.5% of recorded results written back out
+of the row, up from 44.6% on the first attempt) and it buys real fidelity, but it does not on its
+own turn a Task at replay fidelity, and it is not the only thing that moved between these two runs.
+
+### The nested-argument fill (part 3 of the same brief)
+
+`compile_env.referenced_ids` now walks lists and dicts at any depth for a value under a table's
+first key field, reading the remaining key parts from the object the value sat in rather than from
+the top level. Measured over the three corpora on disk, against the old top-level-only rule:
+
+| corpus | referenced ids, old | new | new only | of those, not in the world |
+|---|---|---|---|---|
+| first (retail) | 255 | 255 | 0 | 0 |
+| second (nested list writes, D179) | 173 | 220 | 47 | 17, all one table |
+| third (device corpus) | 4 | 4 | 0 | 0 |
+
+So the rule fires exactly where D179 said it would and nowhere else, and it changed no number in
+either of the two builds above: both ran with 0 synthetic rows before and after. On the first
+corpus 9 referenced ids are still not in the world, but their table has no observed row at all, and
+D40 leaves such a table empty rather than inventing a shape for it. That is the rule as written,
+not something this change touched.
+
+The third corpus's lookup goes 914 of 1,153 (79.3%) to 1,090 (94.5%) in this run, and it is not
+this fill: the 239 calls section 9 left were `not_found` on ids the world does hold under other
+tables, and after this run 63 calls differ on one missing column of a row the body did find. The
+body was rewritten this round. On the first corpus the four lookups are unmoved (1,200 of 1,204,
+423 of 424, 414 of 414, 24 of 24).
+
+### How to reproduce
+
+    cp -R .work-readers-c .work-readers-d
+    uv run kullback build -w .work-readers-d --target replay_reference \
+        --model openai/gpt-5.6-luna --workers 8 --ceiling-usd 10 --max-rounds 1
+
+Numbers are read from `readers.json` (the attempts, the renders, the round trips), `replays.json`
+(per call verdicts and Task confirmation), `tool_fidelity.json` (compile_tools' own replay),
+`schema.json` and `db.json` (the tables) and `budget.json` (spend, against the copied workdir's
+totals).

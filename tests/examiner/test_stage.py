@@ -23,7 +23,17 @@ from kullback.runner.records import Task, ToolCall, Trace, Verifier
 STATUS_KEYS = {"reference_confirmed", "verifier_passed", "reason", "recordings", "rerolls", "judged",
                "assisted_tools", "blocking_tools", "tool_calls_replayed", "tool_calls_differing"}
 REFERENCE_KEYS = {"references", "recordings", "failed", "groups", "reason", "judged", "judge_reason",
-                  "judge_abstained", "judge_calls", "judge_fallback"}
+                  "judge_abstained", "judge_uncited", "abstain_reason", "judge_calls", "judge_fallback"}
+# The key the world's two End states differ on, and the value the re-roll `wrong` holds at it (D186).
+# The tool is the one the shared fixture Runs write with, read from there rather than spelled again.
+WRONG_ROW = f"{next(iter(VF.WRITE_TOOLS))}.#w999.order_id"
+
+
+def _fails_the_wrong_row(reason: str, *, evidence: tuple = ("end_states",)) -> str:
+    """A judge reply that fails the state which cancelled the wrong order, cited as D186 asks."""
+    return json.dumps({"failed": [{"group": "B", "key": WRONG_ROW, "value": "#W999", "expected": "A",
+                                   "reason": reason}],
+                       "evidence": list(evidence), "reason": reason})
 
 
 def _read(path: Path):
@@ -306,7 +316,7 @@ def test_derive_all_rewrites_the_scorecard_after_the_task_status(tmp_path):
         "the card counts the Task the status just verdicted"
 
 
-# --- the judge the derivation builds (D12) --------------------------------------------
+# --- the judge the derivation builds (D12, D185) ---------------------------------------
 
 def test_the_derivation_hands_the_task_to_the_agent_judge_and_the_record_says_what_it_looked_at(tmp_path):
     """A Task whose Runs ended in two states goes to the judge, and derive_all is what builds it: the
@@ -314,13 +324,67 @@ def test_the_derivation_hands_the_task_to_the_agent_judge_and_the_record_says_wh
     world = make_world(tmp_path, rerolls=("wrong",))
     model = TestModel([
         ModelReply(content=None, tool_calls=[ToolCallRequest(id="c1", name="rows", arguments={"group": "B"})]),
-        ModelReply(content='{"failed": ["B"], "evidence": ["rows"], "reason": "it wrote to another row"}')])
-    out = _derive(world.workdir, world.inputs, judge_model=model)
+        ModelReply(content=_fails_the_wrong_row("it wrote to another row", evidence=("rows",)))])
+    out = _derive(world.workdir, world.inputs, judge_model=model, judge_agent=True)
     row = _read(world.workdir / "references.json")["t1"]
     assert row["judged"] and row["judge_fallback"] is None and not row["judge_abstained"]
     assert [call["tool"] for call in row["judge_calls"]] == ["rows"]
     assert [r["run_id"] for r in row["references"]] == ["ref"] and list(row["failed"]) == ["wrong"]
     assert out["task_status"]["t1"]["reference_confirmed"] is True
+
+
+def test_the_agent_judge_is_built_only_when_the_derivation_is_asked_for_it(tmp_path, monkeypatch):
+    """D185: the one-shot judge is the default and the agent is an opt-in, so a build that names a
+    judge model and nothing else never constructs one."""
+    built = []
+    real = stage.judge_mod.AgentJudge
+    monkeypatch.setattr(stage.judge_mod, "AgentJudge",
+                        lambda model, **kw: built.append(model) or real(model, **kw))
+
+    world = make_world(tmp_path, rerolls=("wrong",))
+    _derive(world.workdir, world.inputs,
+            judge_model=TestModel([_fails_the_wrong_row("it wrote elsewhere")]))
+    assert built == [], "the default judge is one call over the prompt, not an agent"
+    one_shot = _read(world.workdir / "references.json")["t1"]
+    assert one_shot["judged"] and one_shot["judge_calls"] == [] and one_shot["judge_fallback"] is None
+
+    asked = make_world(tmp_path / "asked", rerolls=("wrong",))
+    _derive(asked.workdir, asked.inputs, judge_agent=True,
+            judge_model=TestModel([_fails_the_wrong_row("it wrote elsewhere", evidence=("rows",))]))
+    assert len(built) == 1, "the flag is what builds the judge with a bounded look"
+
+
+def test_the_round_counts_say_how_many_judgements_cited_nothing_the_states_differ_on(tmp_path):
+    """D186's count sits beside `judged`, so a round can be read for how much of the judge's work
+    landed somewhere it was never shown; the reason is on the reference row."""
+    shared = json.dumps({"failed": [{"group": "B", "key": "stated:#W123", "value": "told to the user",
+                                     "expected": "A",
+                                     "reason": "the buyer never confirmed the cancellation"}],
+                         "evidence": ["end_states"], "reason": "no confirmation"})
+    world = make_world(tmp_path, rerolls=("wrong",))
+    _derive(world.workdir, world.inputs, judge_model=TestModel([shared]))
+    metrics = _ruling(world.workdir)["metrics"]
+    assert metrics["judged"] == 1 and metrics["judge_uncited"] == 1
+    row = _read(world.workdir / "references.json")["t1"]
+    assert row["judge_uncited"] and row["references"] == [] and row["failed"] == {}
+    assert row["abstain_reason"] == "a failure rested on nothing the states differ on: stated:#W123"
+
+    kept = make_world(tmp_path / "kept", rerolls=("wrong",))
+    _derive(kept.workdir, kept.inputs, judge_model=TestModel([_fails_the_wrong_row("it wrote elsewhere")]))
+    cited = _ruling(kept.workdir)["metrics"]
+    assert cited["judged"] == 1 and cited["judge_uncited"] == 0 and cited["references"] == 1
+
+
+def test_which_judge_ruled_is_in_the_cache_key_so_turning_the_agent_on_derives_again(tmp_path):
+    """The judge's name is in the key and so is which judge it is: the one-shot answer must not be
+    read back off disk for a run that asked for the agent."""
+    world = make_world(tmp_path, rerolls=("wrong",))
+    common = {"format": stage.CACHE_FORMAT, "judge": "vendor/small"}
+    task, recordings = world.inputs["tasks"][0], []
+    keys = {agent: stage.cache_key(task, recordings, {**common, "judge_agent": agent},
+                                   intents={}, user_rules={}, traces={})
+            for agent in (False, True)}
+    assert keys[False] != keys[True]
 
 
 # --- the false-rejection pool: only the Runs that did the Task (D133) -----------------
