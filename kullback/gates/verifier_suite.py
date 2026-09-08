@@ -1176,8 +1176,10 @@ def loophole_probe(verifier: Verifier, model: Any, *, run_probe: Optional[Callab
     """
     if model is None or run_probe is None:
         missing = "no model" if model is None else "no run_probe"
-        return GateResult(stage="verifier_loophole", passed=False, metrics={"skipped": True},
-                          failures=[f"not run: {missing}, so the Verifier is not known to be tight"])
+        why = f"{missing}, so the Verifier is not known to be tight"
+        return GateResult(stage="verifier_loophole", passed=False,
+                          metrics={"skipped": True, "not_run_reason": why},
+                          failures=[f"not run: {why}"])
     passed, failing_atom = check_run(verifier, run_probe(model, verifier), canon, write_tools=write_tools)
     return GateResult(stage="verifier_loophole", passed=not passed,
                       metrics={"probe_passed": passed, "failing_atom": failing_atom},

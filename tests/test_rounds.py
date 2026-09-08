@@ -47,8 +47,10 @@ TARGET = "environment"
 # of the three Tasks are a residue the judge is now asked about a second time, and the reason on
 # those rows ends in the abstention that second pass reached instead of the first pass's judge
 # reason. Re-pinned once more where D188 and D193 land together: the verdicts are the same three
-# and every other byte of the rows is the pre-phase build's.
-TASK_STATUS_SHA256_BEFORE_THE_PHASE = "27e57bea570e8f9dd01c2a992a35673e3b7cc62df2f6a5ee2e6c868eadd2c16d"
+# and every other byte of the rows is the pre-phase build's. Re-pinned for D198: the two Tasks the
+# judge left a residue on now take the Reference a Verifier per survivor chose, so their rows carry
+# the whole confirmed shape instead of a reason.
+TASK_STATUS_SHA256_BEFORE_THE_PHASE = "f33e2f44ae0d967adde2a841fd204918743743e03da3f71359ebdf992d164f84"
 
 
 def _fixture(request) -> Path:
@@ -294,7 +296,9 @@ def test_the_round_n_examiner_steer_asks_for_derive_again(model_examiner_loop):
     steer now asks for the call the beat checks for, in the words examiner/agent.py holds."""
     loop = model_examiner_loop["loop"]
     steer = loop.examiner.messages[model_examiner_loop["after_first"]]
-    assert steer.content == examiner_round_message(2, rounds.EXAMINER_TARGET)
+    # The steer is that message, and what follows it is the findings left open, which the fixture
+    # now has because two of its Tasks keep a Reference (D198).
+    assert steer.content.startswith(examiner_round_message(2, rounds.EXAMINER_TARGET))
     assert f"call the derive tool with target={rounds.EXAMINER_TARGET!r}" in steer.content
 
 
@@ -917,12 +921,16 @@ def test_the_code_driven_rounds_over_the_fixture_leave_the_task_status_the_singl
     path = driven["workdir"] / "task_status.json"
     status = json.loads(path.read_text(encoding="utf-8"))
     assert len(status) == 3
-    assert all(row.get("reference_confirmed") is False for row in status.values())
+    # D198: the two Tasks whose residue the judge left are settled by deriving a Verifier from each
+    # surviving End state, so they keep a Reference; neither Verifier passes the suite, and the third
+    # Task never replayed, so it keeps its own reason.
+    confirmed = [t for t, row in status.items() if row.get("reference_confirmed")]
+    assert len(confirmed) == 2
     assert all(row.get("verifier_passed") is False for row in status.values())
-    assert all(row.get("reason") for row in status.values())
+    assert all(row.get("reason") for t, row in status.items() if t not in confirmed)
     assert hashlib.sha256(path.read_bytes()).hexdigest() == TASK_STATUS_SHA256_BEFORE_THE_PHASE
-    assert not list((driven["workdir"] / "verifiers").glob("*.json"))
-    assert driven["result"]["rounds"][-1]["counts"]["tasks_with_reference"] == 0
+    assert sorted(p.stem for p in (driven["workdir"] / "verifiers").glob("*.json")) == confirmed
+    assert driven["result"]["rounds"][-1]["counts"]["tasks_with_reference"] == 2
 
 
 def test_the_examiner_appends_its_round_end_rulings_after_the_builders_rows_and_moves_none(driven):

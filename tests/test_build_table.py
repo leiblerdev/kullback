@@ -257,8 +257,11 @@ def test_every_frozen_task_has_a_row_saying_how_far_it_got(printed: str, built: 
     rows = rows_of(printed, "Per Task")
     assert {cells(row)[0].strip("`") for row in rows} == set(frozen)
     for row in rows:
-        assert cells(row)[1] == "no" and cells(row)[2] == "no", "no fixture Task confirms a Reference"
+        # No fixture Task clears the D79 suite; two of them keep a Reference, chosen among the End
+        # states the judge left in (D198), so the Reference column is not "no" everywhere.
+        assert cells(row)[1] in {"yes", "no"} and cells(row)[2] == "no"
         assert cells(row)[7] == f"`task_status.json {cells(row)[0].strip('`')}`"
+    assert [cells(row)[1] for row in rows].count("yes") == 2
 
 
 def test_a_task_whose_verifier_the_suite_refused_carries_the_checks_that_failed_and_its_atoms(tmp_path):
