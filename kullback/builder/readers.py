@@ -1024,6 +1024,20 @@ def fills_from(artifact: Any) -> dict:
     return dict(body.get("fills") or {})
 
 
+def filled_columns(artifact: Any) -> set[tuple[str, str]]:
+    """As (table, column): every column this stage filled from the corpus rather than read.
+
+    A filled column is one no recording read before its first write, so the value on it is the
+    corpus's commonest and not this Task's. The Starting-state pinner has to be able to tell such a
+    column from one a recording actually read, because a read is evidence and a fill is a guess, and
+    a guess is what D202 inverts a write against.
+    """
+    fills = fills_from(artifact)
+    return {(proposal.table, str(name))
+            for proposal in proposals_from(artifact)
+            for name in (fills.get(proposal.requestor) or {})}
+
+
 def reader_assumptions(artifact: Any) -> list[str]:
     """The sentences the fills leave for `assumptions.json`, in the order the stage wrote them."""
     body = artifact if isinstance(artifact, dict) else {}

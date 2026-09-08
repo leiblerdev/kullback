@@ -89,8 +89,11 @@ def test_a_second_build_is_served_from_the_cache(built, tmp_path):
     second build's key has moved. compile_tools is the fourth and it is the same reason: it declares
     `replays.json` as an input path so the calls the replay of the References failed on are evidence
     for the next body (D191), and the first build's replay wrote that file after compile_tools had
-    run. Both settle on the run after, which is what the third build here shows: the stages read the
-    same records back, write the same bytes, and the keys stop moving.
+    run. starting_state is the fifth and the same again: it declares `bodies.json`, because a column
+    a Task first touches with a write is pinned by running that tool's body (D202), and the first
+    build wrote the bodies after the Starting state had been built. All of them settle on the run
+    after, which is what the third build here shows: the stages read the same records back, write
+    the same bytes, and the keys stop moving.
 
     The rebuild goes into a copy of the built workdir, so the module's shared fixture is left as
     the first build wrote it and the tests that read it do not depend on running after this one."""
@@ -102,7 +105,7 @@ def test_a_second_build_is_served_from_the_cache(built, tmp_path):
     # ingest is the previous build's own record, carried over because this build had no file to
     # ingest and so ran no ingest stage at all.
     assert {name for name, status in statuses.items() if status != "cached"} == {
-        "ingest", "mine", "readers", "cluster", "intent", "compile_tools"}
+        "ingest", "mine", "readers", "cluster", "intent", "compile_tools", "starting_state"}
     assert statuses["ingest"] == "ran"
 
     third = build_module.build(workdir, iterate=True, model=Bodies())
