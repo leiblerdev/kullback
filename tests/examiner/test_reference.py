@@ -2,12 +2,26 @@
 
 from __future__ import annotations
 
+import json
+
 from gates.verifier_fixtures import assistant, call, make_run, result, user
 from kullback.ai.provider import TestModel
 from kullback.examiner import reference as ref
 from kullback.runner.records import Constraint
 
 WRITES = {"cancel_pending_order", "exchange_delivered_order_items"}
+# One key `cancel_run`'s state holds and `empty_run`'s does not, which is what the two disagree on.
+ORDER_KEY = "cancel_pending_order.#W123.order_id"
+
+
+def ruling(*failures: dict, evidence=("intent", "end_states"), reason: str = "") -> str:
+    """One judge reply in D186's shape: every failure cites the state, the key, the value and what it
+    should have been. A failure is written `{"group": .., "key": .., "value": .., "expected": ..}`."""
+    return json.dumps({"failed": list(failures), "evidence": list(evidence), "reason": reason})
+
+
+def fails(group: str, key: str, value: str, expected: str, reason: str = "") -> dict:
+    return {"group": group, "key": key, "value": value, "expected": expected, "reason": reason}
 
 
 def _canon(value):
@@ -115,8 +129,8 @@ def test_a_recording_with_writes_keeps_its_write_state_whatever_it_said():
 def test_the_judge_fails_the_refusal_and_the_answered_recordings_are_the_references():
     """26 Tasks on the last build had no-write recordings in one group, so the judge was never called
     and refusals stayed References; the two states now reach it."""
-    judge = TestModel(['{"failed": ["B"], "evidence": ["intent", "end_states"], '
-                       '"reason": "the reader was never told when the book is due"}'])
+    due = "the reader was never told when the book is due"
+    judge = TestModel([ruling(fails("B", "stated:2026-09-20", ref.NO_VALUE, "A", due), reason=due)])
     out = ref.confirm([answered("a"), answered("b"), refused("c")],
                       intent="tell the reader when loan LB-4412 is due",
                       policy_lines=["a reader may be told the due date of their own loan"], judge=judge)
@@ -131,7 +145,7 @@ def test_the_judge_fails_the_refusal_and_the_answered_recordings_are_the_referen
 def test_the_judge_is_told_which_facts_each_end_state_stated_back():
     """A Task the agent resolved by answering reads as an abandoned one when the judge sees only "no
     writes"; the values the answers stated are the other half of the End state (D43)."""
-    judge = TestModel(['{"failed": ["B"], "evidence": ["intent", "end_states"], "reason": "no due date"}'])
+    judge = TestModel([ruling(fails("B", "stated:2026-09-20", ref.NO_VALUE, "A"), reason="no due date")])
     ref.confirm([answered("a"), refused("b")], intent="tell the reader when loan LB-4412 is due",
                 policy_lines=["a reader may be told the due date of their own loan"], judge=judge)
     prompt = judge.calls[0]["messages"][0]["content"]
@@ -177,7 +191,8 @@ def test_two_end_states_and_no_judge_is_no_reference():
 
 
 def test_the_judge_can_fail_a_state_and_the_other_one_becomes_the_reference():
-    judge = TestModel(['{"failed": ["B"], "reason": "the cancellation the user asked for never happened"}'])
+    never = "the cancellation the user asked for never happened"
+    judge = TestModel([ruling(fails("B", ORDER_KEY, ref.NO_VALUE, "A", never), reason=never)])
     out = ref.confirm([cancel_run("a"), empty_run("b")], intent="cancel order #W123",
                       policy_lines=["pending orders may be cancelled"], judge=judge)
     assert [r.run_id for r in out.references] == ["a"]
@@ -222,7 +237,8 @@ def test_a_run_that_matches_a_revised_intent_is_not_failed_for_the_opening_reque
 
 
 def test_a_judgement_that_rests_on_what_the_judge_was_given_still_fails_a_state():
-    judge = TestModel(['{"failed": ["B"], "evidence": ["Intent", "End states"], "reason": "nothing was written"}'])
+    judge = TestModel([ruling(fails("B", ORDER_KEY, ref.NO_VALUE, "A"),
+                              evidence=("Intent", "End states"), reason="nothing was written")])
     out = ref.confirm([cancel_run("a"), empty_run("b")], intent="cancel order #W123", judge=judge)
     assert [r.run_id for r in out.references] == ["a"]
     assert out.failed == {"b": "judge: nothing was written"} and not out.judge_abstained
@@ -232,17 +248,21 @@ def test_the_judge_never_awards_a_pass():
     """Failing nothing leaves the disagreement; failing everything leaves no Reference."""
     nothing = ref.confirm([cancel_run("a"), empty_run("b")], judge=TestModel(['{"failed": [], "reason": "cannot tell"}']))
     assert nothing.references == [] and nothing.reason.startswith("recordings disagree")
-    everything = ref.confirm([cancel_run("a"), empty_run("b")], judge=TestModel(['{"failed": ["A", "B"]}']))
+    both = ruling(fails("A", ORDER_KEY, "#W123", "B"), fails("B", ORDER_KEY, ref.NO_VALUE, "A"))
+    everything = ref.confirm([cancel_run("a"), empty_run("b")], judge=TestModel([both]))
     assert everything.references == [] and everything.reason == "the judge failed every End state"
 
 
 def test_an_unreadable_judge_reply_fails_nothing():
+    groups = ref.group([cancel_run("a"), empty_run("b")])
     for text in ("I think B is wrong", '{"failed": "B"}'):
-        unreadable = ref.parse_judgement(text, {"A", "B"})
+        unreadable = ref.parse_judgement(text, groups)
         assert unreadable.failed == set() and unreadable.reason == "unreadable reply"
         assert not unreadable.abstained
-    read = ref.parse_judgement('sure: {"failed": ["b", "Z"], "reason": "x"}', {"A", "B"})
-    assert read.failed == {"B"} and read.reason == "x"
+    read = ref.parse_judgement(
+        "sure: " + ruling(fails("b", ORDER_KEY, ref.NO_VALUE, "A"), fails("Z", "anything", "x", "A"),
+                          reason="x"), groups)
+    assert read.failed == {"B"} and read.reason == "x", "a failure naming no state of this Task fails nothing"
 
 
 def test_the_judge_is_not_called_when_the_recordings_agree():
@@ -283,6 +303,116 @@ def test_the_judge_prompt_is_bounded():
     groups = ref.group([cancel_run("a"), empty_run("b")])
     prompt = ref.judge_prompt("x" * 5000, ["line %d" % i for i in range(200)], groups)
     assert len(prompt) < 12000 and "line 39" in prompt and "line 40" not in prompt
+
+
+# --- what a failing judgement must cite (D186) -------------------------------
+# A bike-hire desk, invented for these tests: a hire is read with `find_hire` and its end date moved
+# with `extend_hire`. Two Runs extend the same hire to different dates, so the states agree on the
+# hire they touched and on the id they told the rider back, and disagree only on the date. That is
+# the shape a judge must cite in: the disagreement is one value, and the reasons the judge reached
+# for instead on two corpora, a confirmation it was given or not given, are nowhere in front of it.
+
+HIRE_WRITES = {"extend_hire"}
+HIRE = {"hire_id": "BH-31", "bike": "city 7", "due": "2026-09-18"}
+UNTIL = "extend_hire.BH-31.until"
+SHARED = "extend_hire.BH-31.hire_id"
+
+
+def hire_run(run_id: str, until: str) -> ref.Recording:
+    run = make_run(run_id, [
+        user("Can I keep the bike for another week?"),
+        call("find_hire", {"hire_id": "BH-31"}, kind="read", cid="c0"),
+        result(HIRE, cid="c0"),
+        call("extend_hire", {"hire_id": "BH-31", "until": until}, cid="c1"),
+        result({"hire_id": "BH-31", "due": until}, cid="c1"),
+        assistant(f"Hire BH-31 now runs to {until}."),
+    ])
+    return ref.Recording(run_id=run_id, path=run_id, trace_id=run_id,
+                         end_state=ref.end_state(run, HIRE_WRITES, _canon),
+                         stated=ref.stated_facts(run, _canon), transferred=ref.transferred(run),
+                         settled=ref.settled_state(run, HIRE_WRITES, _canon))
+
+
+def hire_groups() -> list[dict]:
+    return ref.group([hire_run("a", "2026-10-02"), hire_run("b", "2026-09-25")])
+
+
+def test_differing_keys_names_the_column_and_the_stated_value_the_states_disagree_on_and_nothing_else():
+    keys = ref.differing_keys(hire_groups())
+    assert set(keys) == {"A", "B"} and keys["A"] == keys["B"]
+    assert set(keys["A"]) == {UNTIL, "stated:2026-10-02", "stated:2026-09-25"}
+    assert SHARED not in keys["A"] and "stated:BH-31" not in keys["A"]
+
+
+def test_a_failure_citing_a_differing_key_with_its_own_value_and_another_states_value_is_accepted():
+    judge = TestModel([ruling(fails("B", UNTIL, "2026-09-25", "A", "the rider asked for another week"))])
+    out = ref.confirm([hire_run("a", "2026-10-02"), hire_run("b", "2026-09-25")],
+                      intent="extend hire BH-31 by a week", judge=judge)
+    assert [r.run_id for r in out.references] == ["a"]
+    assert out.failed == {"b": "judge: the rider asked for another week"}
+    assert not out.judge_abstained and not out.judge_uncited and out.abstain_reason is None
+
+
+def test_a_failure_on_a_key_the_states_share_abstains_and_the_task_keeps_no_reference():
+    """The confirmation case in code. The judge's reason was that the rider never confirmed, and it
+    spelled that as a key both states hold; no value in front of it separates them, so it settles
+    nothing and the whole judgement is dropped."""
+    judge = TestModel([ruling(fails("B", SHARED, "BH-31", "A", "no explicit confirmation was given"))])
+    out = ref.confirm([hire_run("a", "2026-10-02"), hire_run("b", "2026-09-25")],
+                      intent="extend hire BH-31 by a week", judge=judge)
+    assert out.references == [] and out.failed == {}
+    assert out.judged and out.judge_abstained and out.judge_uncited
+    assert out.abstain_reason == f"a failure rested on nothing the states differ on: {SHARED}"
+    assert out.reason.startswith("recordings disagree on the End state")
+    assert "the judge abstained" in out.reason
+
+
+def test_a_failure_citing_a_value_the_state_does_not_hold_is_uncited():
+    groups = hire_groups()
+    wrong = ref.parse_judgement(ruling(fails("B", UNTIL, "2026-10-02", "A")), groups)
+    assert wrong.failed == set() and wrong.abstained
+    assert wrong.uncited == f"a failure rested on nothing the states differ on: {UNTIL}"
+    right = ref.parse_judgement(ruling(fails("B", UNTIL, "2026-09-25", "A")), groups)
+    assert right.failed == {"B"} and not right.abstained
+
+
+def test_an_expected_naming_a_policy_line_that_was_shown_is_accepted_and_one_that_was_not_is_uncited():
+    policy = [f"section {n}: hires may be extended" for n in range(45)]
+    shown = ref.shown_policy(policy)
+    assert shown == list(range(1, ref.MAX_POLICY_LINES + 1)), "the prompt shows the first forty lines"
+    groups = hire_groups()
+    seen = ref.parse_judgement(ruling(fails("B", UNTIL, "2026-09-25", "policy:1")), groups,
+                               policy_shown=shown)
+    assert seen.failed == {"B"} and not seen.abstained
+    unseen = ref.parse_judgement(ruling(fails("B", UNTIL, "2026-09-25", "policy:41")), groups,
+                                 policy_shown=shown)
+    assert unseen.failed == set() and unseen.abstained
+    assert "policy:41" not in ref.judge_prompt("extend the hire", policy, groups)
+
+
+def test_each_states_block_in_the_prompt_opens_with_the_keys_and_values_it_differs_on():
+    groups = hire_groups()
+    prompt = ref.judge_prompt("extend hire BH-31 by a week", ["hires may be extended once"], groups)
+    lines = prompt.splitlines()
+    for row in groups:
+        at = next(n for n, text in enumerate(lines) if text.startswith(f"{row['label']} (1 run):"))
+        assert lines[at + 1].strip().startswith("differs from the other states on: ")
+        assert SHARED not in lines[at + 1]
+        # The value is on the line because a failure quotes it back and is checked against the
+        # string the prompt used; a key without its value could only be answered by guessing.
+        assert f"{UNTIL} = {ref.state_values(row)[UNTIL]}" in lines[at + 1]
+        assert lines[at + 2].strip().startswith("told the user: ")
+
+
+def test_a_failure_citing_the_no_value_a_state_holds_where_the_other_wrote_is_accepted():
+    groups = ref.group([cancel_run("a"), empty_run("b")])
+    prompt = ref.judge_prompt("cancel the order", [], groups)
+    assert f"{ORDER_KEY} = {ref.NO_VALUE}" in prompt
+    seen = ref.parse_judgement(ruling(fails("B", ORDER_KEY, ref.NO_VALUE, "A", "nothing was cancelled")),
+                               groups)
+    assert seen.failed == {"B"} and not seen.abstained
+    guessed = ref.parse_judgement(ruling(fails("B", ORDER_KEY, "no writes", "A")), groups)
+    assert guessed.failed == set() and guessed.abstained
 
 
 # --- constraints against the corpus -----------------------------------------

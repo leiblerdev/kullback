@@ -21,6 +21,14 @@ The cap is six tool calls. Over it, or on a judgement that will not parse, the o
 and the record says so, so the agent can only add a look and never take away the answer that was
 there before. Every call and the ruling go to the Task's reference record (`judge_calls`), so a
 reader can see what the judge looked at before it failed a state.
+
+Looking did not stop the dominant wrong failure, which is a confirmation neither judge can see: on
+two corpora the reasons behind 9 of 28 judge-failed Tasks and 5 of 7 were an explicit confirmation
+the transcript would have carried, and the `evidence` list the judge writes for itself never caught
+one, because it names allowed sources and rests on an absent one. So D186 checks the failure rather
+than the sources: each one cites a key the states differ on, this state's value at it and what the
+value should have been, `rows` and `stated` mark the differing entries, `policy` numbers the lines
+it shows so `policy:<n>` means one of them, and a failure that does not pass drops the judgement.
 """
 
 from __future__ import annotations
@@ -93,9 +101,24 @@ class JudgeCase:
     read_tools: frozenset = frozenset()
     constraints: tuple = ()
     fn: Optional[Callable] = None
+    # The numbers of the policy lines the `policy` tool has answered with, so an `expected` of
+    # `policy:<n>` is checked against what this judgement was shown and not the whole policy (D186).
+    policy_seen: set = field(default_factory=set)
 
     def labels(self) -> list[str]:
         return [str(g["label"]) for g in self.groups]
+
+    def differing(self, label: str) -> list[str]:
+        """The keys one state differs from the others on, as the prompt and the tools name them."""
+        row = self.group(label)
+        if row is None:
+            return []
+        return reference_mod.differing_keys(self.groups).get(str(row["label"])) or []
+
+    def values(self, label: str) -> dict:
+        """One state's citable values, so a differing key is shown beside the value held at it."""
+        row = self.group(label)
+        return reference_mod.state_values(row) if row is not None else {}
 
     def group(self, label: str) -> Optional[dict]:
         wanted = str(label).strip().upper()
@@ -156,8 +179,11 @@ def _rows_text(case: JudgeCase, label: str) -> str:
         if len(lines) >= ROWS_SHOWN:
             break
     head = f"state {label}: its Runs named {len(wanted)} value(s) of the world; showing {len(lines)}"
-    tail = (f"no row of the Starting state is keyed by: {', '.join(missing[:ROWS_SHOWN])}" if missing else "")
-    return _clamp("\n".join([head, *lines] + ([tail] if tail else [])), ROWS_CHARS)
+    tail = [f"no row of the Starting state is keyed by: {', '.join(missing[:ROWS_SHOWN])}"] if missing else []
+    # The rows come before the differing keys, so the answer opens on what was asked for; the keys are
+    # here at all because a failure must cite one of them and this tool is often the last look (D186).
+    differs = reference_mod.differs_line(case.differing(label), case.values(label))
+    return _clamp("\n".join([head, *lines, *tail, differs]), ROWS_CHARS)
 
 
 def _stated_text(case: JudgeCase, label: str) -> str:
@@ -166,9 +192,13 @@ def _stated_text(case: JudgeCase, label: str) -> str:
     if row is None:
         return _unknown(label, case)
     facts = list(row.get("told") or [])
-    lines = [f"state {label}: {reference_mod.told_line(row)}"]
+    differing = case.differing(label)
+    lines = [f"state {label}: {reference_mod.told_line(row)}",
+             reference_mod.differs_line(differing, case.values(label))]
     if facts:
-        lines.append("every value stated: " + ", ".join(str(f) for f in facts))
+        marked = set(differing)
+        lines.append("every value stated: " + ", ".join(
+            f"{f} (differs)" if f"{reference_mod.STATED_PREFIX}{f}" in marked else str(f) for f in facts))
     for rec in row.get("members", []):
         if rec.transferred:
             ended = "handed the conversation on"
@@ -242,14 +272,23 @@ def _intent_text(case: JudgeCase) -> str:
 
 
 def _policy_text(case: JudgeCase, query: str) -> str:
-    """The policy sections matching a query, the Examiner's search shape (D178), clamped."""
+    """The policy sections matching a query, the Examiner's search shape (D178), clamped.
+
+    Each hit carries its line number in the whole policy, because a failure whose `expected` is
+    `policy:<n>` is checked against the numbers this judgement was shown (D186); the numbers seen
+    are recorded on the case as the tool answers.
+    """
     needle = " ".join(str(query or "").split()).lower()
     if not needle:
         return "policy needs a phrase to look for"
-    hits = [text for text in case.policy_lines if needle in text.lower()]
-    head = (f"policy search {needle!r}: {len(hits)} of {len(case.policy_lines)} sections match, "
+    numbered = reference_mod.numbered_policy(case.policy_lines)
+    hits = [(n, text) for n, text in numbered if needle in text.lower()]
+    head = (f"policy search {needle!r}: {len(hits)} of {len(numbered)} sections match, "
             f"showing {min(len(hits), POLICY_HITS)}")
-    lines = [f"- {_line(text, reference_mod.MAX_LINE_CHARS)}" for text in hits[:POLICY_HITS]]
+    lines = []
+    for n, text in hits[:POLICY_HITS]:
+        case.policy_seen.add(n)
+        lines.append(f"{n}. {_line(text, reference_mod.MAX_LINE_CHARS)}")
     if not hits:
         lines = ["no section holds that phrase; search a shorter one, or a word the request uses"]
     return _clamp("\n".join([head, *lines]), POLICY_CHARS)
@@ -318,11 +357,13 @@ def judge_tools(case: JudgeCase) -> list[AgentTool]:
 WHAT_YOU_RECEIVE = (
     "Recordings of one Task ended in different states, lettered A, B, C. Say which of the states did NOT do "
     "what the Intent asked, or did something the policy does not allow.\n"
-    "You receive the Intent and one line per state saying what its Runs wrote and what their answers told the "
-    "user. You do not receive the policy, the rows of the world or the conversation: the first two are behind "
-    "tools, and the conversation stays withheld. Whether the agent authenticated the user, asked for and was "
-    "given a confirmation, or called its tools in the right order cannot be seen from here, and no state is "
-    "ever failed for want of evidence you were not given."
+    "You receive the Intent and, per state, what its Runs wrote, the keys it differs from the other states on, "
+    "and what their answers told the user. You do not receive the policy, the rows of the world or the "
+    "conversation: the first two are behind tools, and the conversation stays withheld. Whether the agent "
+    "authenticated the user, asked for and was given a confirmation, or called its tools in the right order "
+    "cannot be seen from here, and no state is ever failed for want of evidence you were not given.\n"
+    "The states agree everywhere except on the keys their blocks name, so those keys are the whole of what "
+    "you are being asked about, and a failure of yours names one of them."
 )
 
 TOOLS_TEXT = (
@@ -342,12 +383,14 @@ EXAMPLES = (
     "values it had read; state B moved the booking. Failing A on the writes alone would be wrong, so the judge "
     "calls policy with the noun of the request and finds a section saying a booking inside its notice window "
     "may not be moved, then calls rows on A and sees the booking's date inside that window. A refused what the "
-    "policy forbids and B did what it forbids, so the ruling fails B, on policy and rows.\n"
+    "policy forbids and B did what it forbids, so the ruling fails B, on policy and rows, citing the key B "
+    "differs on with the value B holds and that numbered policy line as what it should have been.\n"
     "\n"
     "Two. The Intent is to add a second holder to an account. State A added one; state B wrote nothing and told "
     "the user nothing it had read. The judge calls rows on B and the account is there and open, calls policy "
     "for the noun and finds no rule against a second holder, and calls stated on B, which handed nothing on and "
-    "stated no value. Nothing excuses B, so the ruling fails B. Had B handed the conversation on, or had the "
+    "stated no value. Nothing excuses B, so the ruling fails B, on the key for the holder A wrote and B has no "
+    "value at, with A named as what the value should have been. Had B handed the conversation on, or had the "
     "row been closed, the ruling would have been that it cannot tell, and nothing would be failed."
 )
 
@@ -361,6 +404,8 @@ CHOICE_RULE = (
     "none, so that on its own is not a state failed either.\n"
     "- When your reason would need the conversation, the opening request, an authentication or a spoken "
     "confirmation, fail nothing and name what you needed instead.\n"
+    "- Your reason has to land on one of the keys that state differs on. When none of them carries it, the "
+    "disagreement you are describing is not the one in front of you, so fail nothing.\n"
     "- Judge the Intent, never the opening request: the user may have revised it during the Run."
 )
 
@@ -369,13 +414,8 @@ CHOICE_RULE = (
 # conversation, the opening request, an authentication, a confirmation the user spoke.
 JUDGE_SOURCES = tuple(reference_mod.AVAILABLE_SOURCES) + ("rows", "stated", "constraints", "answer")
 
-ANSWER_SHAPE = (
-    'Answer with JSON only, on its own turn, no tool call beside it: '
-    '{"failed": ["A"], "evidence": ["intent", "policy", "rows"], "reason": "..."}. '
-    'In evidence name what your ruling rests on, each one of ' + ", ".join(JUDGE_SOURCES)
-    + '; when your answer needs anything else, name that instead and fail nothing. When you cannot tell, '
-    'answer {"failed": [], "reason": "cannot tell"}.'
-)
+ANSWER_SHAPE = ("Answer on its own turn, with no tool call beside it.\n"
+                + reference_mod.cited_shape(JUDGE_SOURCES))
 
 STOP_RULE = (
     f"Stop rule. You have at most {MAX_CALLS} tool calls for the whole judgement. Spend them on the states you "
@@ -392,9 +432,12 @@ def judge_message(case: JudgeCase) -> str:
     """The one message the judge answers: the Intent and one line per state, the rest behind the tools."""
     lines = ["Intent: " + (_line(case.intent, reference_mod.MAX_REQUEST_CHARS) or "(not recorded)"), "",
              "End states:"]
+    differing = reference_mod.differing_keys(case.groups)
     for row in case.groups:
         runs = len(row.get("runs") or [])
         lines.append(f"{row['label']} ({runs} run{'s' if runs != 1 else ''}): {row['state']}")
+        lines.append("    " + reference_mod.differs_line(differing.get(str(row["label"])) or (),
+                                                         reference_mod.state_values(row)))
         lines.append("    " + reference_mod.told_line(row))
     lines += ["", "Look at what you need, then rule."]
     return "\n".join(lines)
@@ -435,8 +478,8 @@ class AgentJudge:
         case = self.case(intent, policy_lines, groups, phrases)
         text, calls, over_cap = self._session(case)
         if not over_cap:
-            judgement = reference_mod.parse_judgement(text, {str(g["label"]) for g in groups},
-                                                      available=JUDGE_SOURCES)
+            judgement = reference_mod.parse_judgement(text, groups, available=JUDGE_SOURCES,
+                                                      policy_shown=case.policy_seen)
             if judgement.reason != reference_mod.UNREADABLE_REPLY:
                 judgement.calls = calls
                 return judgement

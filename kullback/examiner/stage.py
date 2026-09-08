@@ -637,6 +637,10 @@ def derive_all(ctx: ExamContext, inputs: dict, *, probe_model: Any = None, probe
         blocked_by_own_calls=sum(1 for r in status.values() if r.get("blocking_tools")),
         failed_recordings=sum(len(r.get("failed") or {}) for r in references.values()),
         judged=sum(1 for r in references.values() if r.get("judged")),
+        # D186: how many judgements were dropped whole because a failure of theirs cited nothing the
+        # states differ on. Beside `judged`, because it is the share of the judge's work that landed
+        # somewhere it was not shown, and the reason is on each reference row as `abstain_reason`.
+        judge_uncited=sum(1 for r in references.values() if r.get("judge_uncited")),
         # D133: the held-out Runs the pool leaves out because they did not reach the Reference's
         # End state, named per Task on the status row and counted here for the Examiner.
         did_not_reach_reference=sum(len(r.get("did_not_reach_reference") or ()) for r in status.values()),
