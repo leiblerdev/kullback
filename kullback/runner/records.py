@@ -391,28 +391,6 @@ class Task(Record):
 # an Intent without importing the Builder (D123); builder/intent.py re-exports the three names.
 
 SpanSource = Literal["user_utterance", "tool_arg", "written_value"]
-# Where a value the strip took out of an Intent was known from, and the shape left in its place
-# (D196). "removed" leaves nothing, "last4" leaves the last characters of a code, "month" leaves the
-# month of a date: the three things a user of the customer's line says about a value they half know.
-KnownSource = Literal["tool_arg", "tool_result", "start_state"]
-StripShape = Literal["removed", "last4", "month"]
-
-
-class StrippedValue(Record):
-    """One system-known value taken out of an Intent before the Intent existed (D196).
-
-    The column and the class the compare gives that column, the shape left behind and where the
-    value was known from. Never the value: this record is written to the workdir and read back by
-    the leak check as an audit, and a record of what was stripped that carries the value would leak
-    it exactly where the strip was there to stop it. `replacement` is what now stands in the Intent
-    text, so it holds only what the Intent itself already says out loud.
-    """
-    column: str
-    table: Optional[str] = None
-    class_: ColumnClass = Field("hard", alias="class")
-    shape: StripShape = "removed"
-    source: KnownSource = "tool_result"
-    replacement: str = ""
 
 
 class IntentSpan(Record):
@@ -436,9 +414,6 @@ class Intent(Record):
     run_coverage: dict[str, list[str]] = Field(default_factory=dict)  # phrase -> every member Run that evidences it
     reason: Optional[str] = None
     model: Optional[str] = None
-    # What the D196 strip took out before this line was graded, so the leak check reads the strip as
-    # an audit rather than re-deciding it. Empty means the strip found nothing, not that it never ran.
-    stripped: list[StrippedValue] = Field(default_factory=list)
 
 
 def apply_intent(task: Task, intent: Intent) -> Task:
@@ -689,7 +664,7 @@ VersionBy = Literal["derive", "repair"]
 # that failed across many Tasks, and a Verifier whose required atoms reject every held-out Run
 # (D170). A corpus disagreement keeps the name it already had rather than gaining a second one.
 FindingKind = Literal["assisted_tool", "fidelity", "reference_disagreement", "suite", "false_rejection",
-                      "environment", "intent_leak", "other"]
+                      "environment", "other"]
 # `repair` is the Examiner's own verb, the one answer to a Verifier the Builder cannot touch (D123),
 # and `reroll_then_derive` is its other one, for a check that had no second Run to score (D173);
 # `repair_refuse_task` is the Builder's, for a Task the corpus itself does not settle.

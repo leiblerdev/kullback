@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import json
-
 import pytest
 
 from conftest import PTR
@@ -19,11 +17,9 @@ from kullback.builder.intent import (
     span_candidates,
     span_mode,
     still_grounds,
-    strip_holds,
-    strip_intent,
     write_intent,
 )
-from kullback.runner.records import Column, EntitySchema, Task, ToolCall, Trace, Turn
+from kullback.runner.records import Task, ToolCall, Trace, Turn
 
 WRITES = {"cancel_order"}
 
@@ -619,113 +615,3 @@ def test_the_user_wanted_frame_is_stripped_before_grounding():
     assert strip_frame("The customer asked for a refund on #W2") == "a refund on #W2"
     assert strip_frame("cancel order #W1") == "cancel order #W1"
     assert strip_frame("The user wanted") == "The user wanted"
-
-
-# --- D196: the strip, before the Intent exists ---
-
-
-def hire_trace(trace_id: str, ref: str, said: str) -> Trace:
-    """One bike-hire recording: the rider says why, the desk reads the hire and refunds the deposit."""
-    return make_trace(
-        trace_id,
-        [said],
-        [
-            {
-                "name": "get_hire",
-                "args": {"hire_ref": ref},
-                "result": {"hire_ref": ref, "station": "Riverside", "started_on": "2026-03-04",
-                           "deposit": 45.0},
-            },
-            {"name": "refund_hire", "args": {"hire_ref": ref, "deposit": 45.0},
-             "result": {"refunded": True}},
-        ],
-    )
-
-
-def hire_task() -> tuple[Task, list[Trace]]:
-    traces = [hire_trace("h1", "HR-88231", "the hire i started never unlocked, please refund me"),
-              hire_trace("h2", "HR-44107", "please refund the hire, the bike never unlocked")]
-    return Task(id="task_hire", run_ids=["h1", "h2"]), traces
-
-
-def hire_schema() -> EntitySchema:
-    """The station is exempt to the compare: two desks may name it differently and mean one place."""
-    return EntitySchema(
-        tables=["hires"],
-        columns=[Column(table="hires", name="hire_ref", **{"class": "hard"}),
-                 Column(table="hires", name="station", **{"class": "exempt"}),
-                 Column(table="hires", name="started_on", **{"class": "hard"})],
-    )
-
-
-def test_a_value_only_the_tools_held_is_taken_out_and_the_record_names_its_column_and_class():
-    _, traces = hire_task()
-    text, stripped = strip_intent("refund the hire HR-88231 at Riverside", traces, schema=hire_schema())
-    assert "HR-88231" not in text and "Riverside" not in text
-    by_column = {value.column: value for value in stripped}
-    assert by_column["hire_ref"].class_ == "hard" and by_column["hire_ref"].source == "tool_arg"
-    assert by_column["station"].class_ == "exempt" and by_column["station"].shape == "removed"
-    dumped = json.dumps([value.model_dump(mode="json", by_alias=True) for value in stripped])
-    assert "HR-88231" not in dumped and "Riverside" not in dumped, "a record of a strip holds no value"
-
-
-def test_a_value_the_user_said_stays_in_the_intent():
-    _, traces = hire_task()
-    traces[0].turns[0].content = "hire HR-88231 at Riverside never unlocked, please refund me"
-    text, stripped = strip_intent("refund the hire HR-88231 at Riverside", traces, schema=hire_schema())
-    assert text == "refund the hire HR-88231 at Riverside"
-    assert stripped == []
-
-
-def test_a_code_the_user_never_said_becomes_its_last_characters():
-    _, traces = hire_task()
-    text, stripped = strip_intent("refund the hire HR-88231", traces, schema=hire_schema())
-    assert text == "refund the hire ending 8231"
-    assert [value.shape for value in stripped] == ["last4"]
-
-
-def test_a_date_the_user_never_said_becomes_its_month():
-    _, traces = hire_task()
-    text, _ = strip_intent("refund the hire started on 2026-03-04", traces, schema=hire_schema())
-    assert text == "refund the hire started on march"
-
-
-def test_an_amount_the_user_never_said_is_removed_and_leaves_a_line_that_reads():
-    _, traces = hire_task()
-    text, stripped = strip_intent("refund the 45.0 deposit on the hire", traces, schema=hire_schema())
-    assert text == "refund the deposit on the hire"
-    assert [value.column for value in stripped] == ["deposit"]
-
-
-def test_a_stripped_intent_still_names_what_the_user_asked_for(make_test_model):
-    """The line loses the reference the rider was never told and keeps the thing the rider wanted."""
-    task, traces = hire_task()
-    model = make_test_model(["refund the hire HR-88231 at Riverside"])
-    intent = write_intent(model, task, traces, schema=hire_schema())
-    assert "refund" in intent.text and "hire" in intent.text
-    assert "HR-88231" not in intent.text and "Riverside" not in intent.text
-    assert intent.grounded is True, "the words a strip leaves are not put to the evidence"
-    assert sorted(value.column for value in intent.stripped) == ["hire_ref", "station"]
-
-
-def test_the_next_attempt_is_told_which_columns_were_taken_out_and_never_their_values(make_test_model):
-    """A line the strip empties no longer reads, and the rewrite that answers it is the next attempt."""
-    task, traces = hire_task()
-    model = make_test_model(["HR-88231", "refund the hire"])
-    intent = write_intent(model, task, traces, schema=hire_schema())
-    second = model.calls[1]["messages"][-1]["content"]
-    assert "Values only the tools knew were taken out of it (columns: hire_ref)" in second
-    assert intent.text == "refund the hire" and intent.grounded is True
-
-
-def test_stripping_a_line_twice_strips_it_once(make_test_model):
-    """The words a shape leaves are the line's own from then on, so a second pass has nothing to do."""
-    task, traces = hire_task()
-    intent = write_intent(make_test_model(["refund the hire HR-88231"]), task, traces, schema=hire_schema())
-    assert strip_holds(intent, traces, schema=hire_schema()) is True
-
-
-def test_a_line_written_before_the_strip_existed_does_not_hold():
-    _, traces = hire_task()
-    recorded = Intent(task_id="task_hire", text="refund the hire HR-88231", grounded=True)
-    assert strip_holds(recorded, traces, schema=hire_schema()) is False

@@ -1,4 +1,4 @@
-"""The eight rulings over what a generated tool body did when the sandbox ran it (design section 6).
+"""The seven rulings over what a generated tool body did when the sandbox ran it (design section 6).
 
 `builder/sandbox.py` runs a body in a subprocess and hands back one result dict per recorded call;
 nothing here starts a process. Each ruling takes the calls and those results (or the sandbox's
@@ -12,10 +12,6 @@ subprocess stays where it was.
 The seventh, `body_memorised_values_gate` (D162), runs no calls at all: it reads the body's own
 source and refuses a literal that is data the recordings carried rather than code the body needs.
 
-The eighth, `body_sensitivity_gate` (D195), rules over calls the sandbox has already run: two
-recorded calls of one tool made under two Tasks, answered differently by the recording, have to be
-answered differently by the body too, in the columns the recordings part in.
-
 The row helpers (`parse_result`, `match_table`, `row_key`, `columns_of`, `id_field`, `key_fields`,
 `id_pattern_for`) live here because the replay ruling compares rows column by column under the
 schema's classes (D73, D84); `sandbox.py` and `compile_env.py` read them back from here.
@@ -26,7 +22,7 @@ from __future__ import annotations
 import ast
 import json
 import re
-from typing import Any, Iterable, NamedTuple, Optional
+from typing import Any, Iterable, Optional
 
 from kullback.gates.confinement import TOOLS_CLASS, function_confinement
 from kullback.runner.canon import canonicalize as canon
@@ -37,9 +33,8 @@ from kullback.runner.records import EntitySchema, GateResult, ToolCall, content_
 CRASH_ERRORS = frozenset({"NameError", "AttributeError", "TypeError", "ImportError",
                           "ModuleNotFoundError", "IndentationError", "SyntaxError", "RecursionError"})
 MEMORISED_STAGE = "compile_tools.memorised_values"
-SENSITIVITY_STAGE = "sensitivity"
 TOOL_RUN_STAGES = ("parses", "executes_on_s0", "deterministic", "non_trivial", "replay_fidelity",
-                   "refuses_unknown", MEMORISED_STAGE, SENSITIVITY_STAGE)
+                   "refuses_unknown", MEMORISED_STAGE)
 # A note that names a column class is a reading, not a failure: an exempt column is equal whatever
 # it holds and a semantic one is reported and left to the judge (D73, D84). Every other note the
 # comparison leaves is a hard column that parted, and those are what fail a ruling.
@@ -990,218 +985,3 @@ def body_memorised_values_gate(source: str, schema: Optional[EntitySchema] = Non
                    {"literals": len(literals), "memorised": len(failures),
                     "tables": len(by_table), "recorded_values": len(by_argument),
                     "recorded_results": len(by_result)}, failures)
-
-
-# --- 8. a body that reads state answers differently when that state differs (D195) ---
-#
-# Repo2RLEnv's two-stage check: a test earns its place only when it fails on a stub and passes on
-# the real thing. Kullback already asks that of a Verifier (D79) and never asked it of a tool body.
-# A body passes the replay ruling when its answers match the recordings under each call's own Task
-# overlay, and nothing there asks whether the body read the state it should have read. D187 rule (d)
-# catches a literal that equals recorded result text, but a value can be memorised through a dict
-# keyed on a row id, a chain of ifs on the argument, or a number computed from the argument alone,
-# and none of those is a literal echo. One live round kept a body that wrote a status line as a
-# constant over an attempt that derived it from four columns of the row, because the constant got
-# further through the gates.
-#
-# The evidence is already on the table: two recorded calls of one tool, made under two Tasks, whose
-# recorded results differ in a column while their arguments are the same or differ only in the row
-# id. Whatever produced that difference was the world, so a body that reads the world answers those
-# two calls differently in that column, and a body that answers them alike did not read it.
-
-SENSITIVITY_LESSON_HEAD = "the body answered two Tasks alike where their recordings differ in "
-SENSITIVITY_LESSON_TAIL = ("; derive those columns from the row the call names in the world the body "
-                           "is given, never from the arguments alone and never from a value written "
-                           "into the body")
-# A pair costs nothing to rule on (both calls have already been run under their own worlds) but
-# finding one is quadratic in a tool's recorded calls, so the search stops here. Enough pairs to
-# name the columns a body has to read; not enough to make the gate the slow part of a compile.
-MAX_SENSITIVITY_PAIRS = 25
-# What the whole answer is called when it has no columns to name: a prose result the tool's own
-# reader read nothing out of, or a scalar. Not "value", which a customer's row may hold as a column.
-WHOLE_ANSWER = "the whole answer"
-# How many keys of an object a failure spells out before it says how many more there are: a shape
-# is meant to be read at a glance, and a wide row would otherwise fill the line.
-SHAPE_KEYS = 8
-
-
-class SensitivityPair(NamedTuple):
-    """Two recorded calls of one tool that ran on two worlds and were answered differently.
-
-    `columns` are the columns their recorded results part in, which is what the body's own two
-    answers have to part in as well; `tasks` names the two Tasks, for the failure line; `same_args`
-    is true where the two calls carry byte-identical arguments, which is the stronger pair, since
-    then nothing but the world can account for the difference. `read_columns` says the tool's reader
-    read both recorded results into columns (D176), so the body's own two answers must be read the
-    same way: a pair whose recordings were compared as whole prose and answers compared column by
-    column are two different questions, and the body would be failed for the mismatch and not for
-    what it did.
-    """
-    first: ToolCall
-    second: ToolCall
-    columns: tuple[str, ...]
-    tasks: tuple[str, str]
-    same_args: bool = False
-    read_columns: bool = False
-
-
-def sensitivity_lesson(columns: Iterable[str]) -> str:
-    """The one sentence a body refused for answering two worlds alike leaves behind (D195).
-
-    It names the columns, because a lesson that only said "read the world" is what the body writer
-    already believes it did; the repair is a column, and the column is the thing the gate knows.
-    """
-    named = sorted({str(column) for column in columns if column})
-    return SENSITIVITY_LESSON_HEAD + ", ".join(named) + SENSITIVITY_LESSON_TAIL if named else ""
-
-
-def _walk_columns(schema: EntitySchema, table: Optional[str], left: Any, right: Any, rules: Any,
-                  path: str, out: dict[str, tuple[Any, Any]]) -> None:
-    """Every leaf two values part at, by column path; exempt columns are never a difference."""
-    if isinstance(left, dict) and isinstance(right, dict):
-        found = match_table(schema, left) or match_table(schema, right)
-        here = found[0] if found else table
-        for name in sorted(set(left) | set(right)):
-            if class_of(schema, here, name, rules) == "exempt":
-                continue
-            _walk_columns(schema, here, left.get(name), right.get(name), rules,
-                          f"{path}.{name}" if path else str(name), out)
-        return
-    if isinstance(left, (list, tuple)) and isinstance(right, (list, tuple)):
-        if len(left) != len(right):
-            out.setdefault(path or WHOLE_ANSWER, (left, right))
-            return
-        for one, other in _row_pairs(schema, list(left), list(right)):
-            _walk_columns(schema, table, one, other, rules, path, out)
-        return
-    if canon(left, rules) != canon(right, rules):
-        out.setdefault(path or WHOLE_ANSWER, (left, right))
-
-
-def column_differences(schema: EntitySchema, expected: Any, got: Any, rules: Any = None,
-                       tool: str = "", readers: Any = None) -> dict[str, tuple[Any, Any]]:
-    """Every column two answers of one tool part in, with both sides (D73, D84, D187).
-
-    `compare_results` answers whether two results agree and names the first leaf that parted; this
-    names all of them, which is what a ruling that has to ask "did the body move the same columns
-    the recordings moved" needs. An exempt column is equal whatever it holds, so it is never a
-    difference and never evidence that a body read anything. A prose result is read into its columns
-    by that tool's own reader first (D176), so a tool that answers with one sentence is compared the
-    same way here as it is at replay; with no reader the two sentences are one value and part or do
-    not part as a whole. The two sides come back with the paths because a caller has to be able to
-    ask whether a difference is one the arguments already account for; nothing that reads the values
-    may put them in a failure line.
-    """
-    out: dict[str, tuple[Any, Any]] = {}
-    left, right, table = expected, got, None
-    if readers is not None and tool and isinstance(expected, str) and isinstance(got, str):
-        found = readers.table_of(tool)
-        one, other = ((readers.read(tool, expected), readers.read(tool, got))
-                      if found is not None else (None, None))
-        if isinstance(one, dict) and isinstance(other, dict):
-            left, right, table = one, other, found
-    _walk_columns(schema, table, left, right, rules, "", out)
-    return out
-
-
-def differing_columns(schema: EntitySchema, expected: Any, got: Any, rules: Any = None,
-                      tool: str = "", readers: Any = None) -> list[str]:
-    """The names alone of the columns two answers of one tool part in."""
-    return sorted(column_differences(schema, expected, got, rules, tool, readers))
-
-
-def answer_shape(result: Any) -> str:
-    """What one sandbox answer looks like with no value of it in the line.
-
-    A failure of this ruling is about two answers being the same, and the reader needs to see what
-    kind of thing they are, not what they hold: a customer's row never travels into a gate's
-    failures (D162 draws the same line for the literals it quotes, which are the model's own).
-    """
-    if isinstance(result, dict) and "ok" in result and not result.get("ok"):
-        return f"a raised {result.get('error') or 'error'}"
-    value = result.get("value") if isinstance(result, dict) and "ok" in result else result
-    if value is None:
-        return "nothing"
-    if isinstance(value, bool):
-        return "a boolean"
-    if isinstance(value, (int, float)):
-        return "a number"
-    if isinstance(value, str):
-        return f"text of {len(value)} characters"
-    if isinstance(value, (list, tuple)):
-        return f"a list of {len(value)}"
-    if isinstance(value, dict):
-        names = sorted(str(key) for key in value)
-        more = f" and {len(names) - SHAPE_KEYS} more" if len(names) > SHAPE_KEYS else ""
-        return "an object with " + ", ".join(names[:SHAPE_KEYS]) + more
-    return "a value"
-
-
-def _answer_difference(schema: EntitySchema, pair: SensitivityPair, one: Any, other: Any,
-                       rules: Any = None, readers: Any = None) -> set[str]:
-    """The columns the body's own two answers part in, read the way the pair's recordings were read.
-
-    A raise is an answer here, as it is at replay: where one call raised and the other did not, or
-    the two raised different classes, the body did answer them differently, and this ruling has
-    nothing to add over what the replay ruling will say about which of them is right.
-    """
-    ok_one = bool(isinstance(one, dict) and one.get("ok"))
-    ok_other = bool(isinstance(other, dict) and other.get("ok"))
-    if ok_one != ok_other:
-        return set(pair.columns)
-    if not ok_one:
-        return set(pair.columns) if classify_exception(one or {}) != classify_exception(other or {}) else set()
-    return set(differing_columns(schema, one.get("value"), other.get("value"), rules,
-                                 pair.first.name, readers if pair.read_columns else None))
-
-
-def body_sensitivity_gate(pairs: Iterable[SensitivityPair], first: Optional[list[dict]],
-                          second: Optional[list[dict]], schema: Optional[EntitySchema] = None,
-                          rules: Any = None, readers: Any = None,
-                          error: Optional[str] = None) -> GateResult:
-    """8. A body answers two worlds differently wherever their recordings differ (D195).
-
-    `pairs` are the sensitivity pairs the caller found over this tool's recorded calls; `first` and
-    `second` are what the body answered the two calls of each pair, each under its own Task's
-    overlay. A pair is met when the body's two answers part in at least one of the columns the two
-    recordings part in. Answers that are equal, or that part only in columns the recordings agree
-    on, mean the body did not read the state that moved: it is memorising, or it is reading a row
-    the call did not name.
-
-    A tool with no pair is a tool the corpus never showed twice under two worlds, and there is
-    nothing to conclude from that, so the ruling records `no_pairs` and passes; the metric is what
-    says how much of a corpus this gate could see at all.
-
-    A pair that parts in the whole answer and no column is counted and not ruled on. It is a prose
-    result the tool's own reader read nothing out of (D176), so the check has no column to name, no
-    way to ask whether the two worlds hold that column differently, and nothing to put in a lesson;
-    what it has is a reader to grow, and `unread_pairs` is where a build reads how much of this gate
-    a missing reader costs.
-    """
-    pairs = list(pairs)
-    schema = schema if schema is not None else EntitySchema()
-    if error is not None:
-        return _ruling(SENSITIVITY_STAGE, False, {"pairs": len(pairs), "failed": 0}, [error])
-    answers = dict(zip((id(p) for p in pairs), zip(first or [], second or [], strict=False), strict=False))
-    unread = [pair for pair in pairs if tuple(pair.columns) == (WHOLE_ANSWER,)]
-    pairs = [pair for pair in pairs if tuple(pair.columns) != (WHOLE_ANSWER,)]
-    if not pairs:
-        return _ruling(SENSITIVITY_STAGE, True,
-                       {"pairs": 0, "failed": 0, "no_pairs": True, "columns": [], "same_args_pairs": 0,
-                        "unread_pairs": len(unread)})
-    failures, columns = [], set()
-    for pair in pairs:
-        one, other = answers.get(id(pair), (None, None))
-        if _answer_difference(schema, pair, one, other, rules, readers) & set(pair.columns):
-            continue
-        columns |= set(pair.columns)
-        failures.append(
-            f"{pair.first.name}({args_text(pair.first)}) and {pair.second.name}({args_text(pair.second)}): "
-            f"the recordings of tasks {pair.tasks[0]} and {pair.tasks[1]} differ in "
-            f"{', '.join(pair.columns)}, and the body answers the first with {answer_shape(one)} and "
-            f"the second with {answer_shape(other)}, which do not differ there; read "
-            f"{', '.join(pair.columns)} off the row the call names in the world the body is given")
-    return _ruling(SENSITIVITY_STAGE, not failures,
-                   {"pairs": len(pairs), "failed": len(failures), "no_pairs": False,
-                    "columns": sorted(columns), "unread_pairs": len(unread),
-                    "same_args_pairs": sum(1 for pair in pairs if pair.same_args)}, failures)

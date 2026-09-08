@@ -27,13 +27,9 @@ from typing import Any, Iterable, Optional
 # Gate 0 (confinement) is a static check over the body and runs no subprocess, so it lives with the
 # other pure gates in kullback.gates (D122); the two names the five gates below need stay imported
 # here. Everything else the callers read straight out of kullback.gates.
-from kullback.builder import mine
 from kullback.gates import tool_runs
 from kullback.gates.confinement import PROVIDED_HELPERS, TOOLS_CLASS, gate_confined
 from kullback.gates.tool_runs import (
-    MAX_SENSITIVITY_PAIRS,
-    WHOLE_ANSWER,
-    SensitivityPair,
     body_deterministic_gate,
     body_executes_gate,
     body_memorised_values_gate,
@@ -41,8 +37,6 @@ from kullback.gates.tool_runs import (
     body_parses_gate,
     body_refuses_unknown_gate,
     body_replay_fidelity_gate,
-    body_sensitivity_gate,
-    column_differences,
 )
 from kullback.runner import arith
 from kullback.runner.records import EntitySchema, GateResult, ToolCall, content_hash
@@ -188,11 +182,10 @@ class Sandbox:
 
     def __init__(self, source: str, db: dict, workdir: Path | str, class_name: str = TOOLS_CLASS,
                  db_class: str = DB_CLASS, timeout: float = 30.0,
-                 call_states: Optional[dict] = None, call_tasks: Optional[dict] = None):
+                 call_states: Optional[dict] = None):
         self.source, self.db, self.timeout = source, db, timeout
         self.class_name, self.db_class = class_name, db_class
         self.call_states = dict(call_states or {})  # call id -> the Starting state that call ran on
-        self.call_tasks = dict(call_tasks or {})  # call id -> the Task whose trace made the call (D195)
         # Absolute, because the subprocess is started with cwd inside this directory: a relative
         # workdir would be resolved against it a second time and every path would double. Found on
         # the first live build, where `--workdir .work-retail` made all sixteen tools fail the
@@ -208,15 +201,6 @@ class Sandbox:
     def state_for(self, call: ToolCall) -> dict:
         """The world this call runs on: its own Task's, or the shared one."""
         return self.call_states.get(call.id, self.db) if call.id else self.db
-
-    def task_of(self, call: ToolCall) -> str:
-        """The Task whose world this call runs on, as a failure line may name it.
-
-        The map the compile stage already builds for `call_starting_states` when the caller passes
-        it; otherwise the Trace the call came from, which a Task holds, so a ruling always has a
-        name for the two sides of a pair and never has to quote a record to tell them apart.
-        """
-        return (self.call_tasks.get(call.id) if call.id else None) or call.trace_id or (call.id or "unknown")
 
     def state_key(self, call: ToolCall) -> str:
         """A comparable key for the world this call runs on, memoised per world, never per call.
@@ -337,248 +321,6 @@ def gate_replay_fidelity(sandbox: Sandbox, calls: Iterable[ToolCall], schema: En
     return body_replay_fidelity_gate(calls, results, schema, label, threshold, rules, readers=readers)
 
 
-# --- 8. the sensitivity pairs the D195 ruling is made over ---
-#
-# The gate itself is `body_sensitivity_gate` in kullback.gates. What lives here is the search for
-# its evidence, next to `reference_args`, which gathers the refusal probe's the same way: the calls
-# are the Builder's, the worlds are the sandbox's, and only the decision belongs in the gates
-# package (D122).
-
-# At most this many worlds out of one bucket are paired with each other. Every extra world is a
-# quadratic cost for a corpus that has already shown its columns at the third or fourth.
-WORLDS_PER_BUCKET = 4
-# What a row id becomes when two calls' arguments are compared with the row they name taken out.
-ROW_ID_MASK = "\x00row"
-
-
-def _argument_scalars(args: Any) -> list[tuple[str, Any]]:
-    """Every scalar an argument set carries and the name it sits under, however deeply nested.
-
-    A call can name its row at the top (`order_id="..."`) or inside an object a list holds, and the
-    homing rules read a flat mapping of column name to value, so the nesting is flattened here and
-    the leaf's own name is kept, which is the name those rules prefer when several ids match.
-    """
-    out: list[tuple[str, Any]] = []
-
-    def walk(name: str, value: Any) -> None:
-        if isinstance(value, dict):
-            for key, inner in value.items():
-                walk(str(key), inner)
-        elif isinstance(value, (list, tuple)):
-            for inner in value:
-                walk(name, inner)
-        elif isinstance(value, (str, int, float)) and not isinstance(value, bool) and value != "":
-            out.append((name, value))
-
-    for key, value in (args if isinstance(args, dict) else {}).items():
-        walk(str(key), value)
-    return out
-
-
-def row_id_values(schema: EntitySchema, call: ToolCall, world_keys: set[str]) -> set:
-    """Every argument value of this call that names a row, by the two rules the pinner already uses.
-
-    A value the call's own world holds as the key of a keyed collection names a row of that
-    collection; that is `reference_args`' rule, read per value rather than per argument. And the id
-    column of a row the recording answered, whose value the call passed, names a row too: that is
-    `mine.asked_for_id`, which is `_home_of`'s first rule and what `home_partial_result` places a
-    keyless result by. The second is what finds a row id an argument carries inside a nested object,
-    where the first sees nothing because the world files that row under a key of its own.
-    """
-    scalars = _argument_scalars(call.args)
-    found = {value for _, value in scalars if isinstance(value, str) and value in world_keys}
-    flat = dict(scalars)
-    if not flat:
-        return found
-    id_names = sorted({name for table in schema.tables for name in tool_runs.key_fields(schema, table)})
-    for row in _result_rows(tool_runs.parse_result(call.result)):
-        column = mine.asked_for_id(call.name, row, id_names, flat)
-        value = row.get(column) if column else None
-        if isinstance(value, (str, int, float)) and not isinstance(value, bool):
-            found.add(value)
-    return found
-
-
-def _result_rows(value: Any) -> list[dict]:
-    """The row objects a recorded result states, at the top or one list deep."""
-    if isinstance(value, dict):
-        return [value]
-    if isinstance(value, (list, tuple)):
-        return [row for row in value if isinstance(row, dict)]
-    return []
-
-
-def _masked_args(call: ToolCall, ids: set) -> str:
-    """This call's arguments with every row id it names replaced, so two calls that differ only in
-    which row they ask about share one key."""
-
-    def mask(value: Any) -> Any:
-        if isinstance(value, dict):
-            return {key: mask(inner) for key, inner in value.items()}
-        if isinstance(value, (list, tuple)):
-            return [mask(inner) for inner in value]
-        if isinstance(value, (str, int, float)) and not isinstance(value, bool) and value in ids:
-            return ROW_ID_MASK
-        return value
-
-    return content_hash(mask(call.args if isinstance(call.args, dict) else {}))
-
-
-def _worlds_apart(sandbox: "Sandbox", calls: list[ToolCall]) -> list[tuple[ToolCall, ToolCall]]:
-    """One call per world out of a bucket, each paired with every other, in a fixed order."""
-    first: dict[str, ToolCall] = {}
-    for call in calls:
-        first.setdefault(sandbox.state_key(call), call)
-    chosen = [first[key] for key in sorted(first)][:WORLDS_PER_BUCKET]
-    return [(chosen[i], chosen[j]) for i in range(len(chosen)) for j in range(i + 1, len(chosen))]
-
-
-def sensitivity_pairs(sandbox: "Sandbox", calls: Iterable[ToolCall], schema: EntitySchema,
-                      rules: Any = None, readers: Any = None,
-                      max_pairs: int = MAX_SENSITIVITY_PAIRS) -> list[SensitivityPair]:
-    """Two recorded calls of one tool, made under two worlds, whose recorded results differ (D195).
-
-    The calls are bucketed twice: by their arguments exactly, which is the stronger pair because
-    nothing but the world can then account for a difference, and by their arguments with the row
-    they name masked out (`row_id_values`), which is the pair a tool that takes an id per Task
-    leaves. The exact buckets are drained first, so a tool that has both kinds is ruled on by the
-    stronger. Within a bucket only calls that ran on different worlds are paired, since two calls on
-    one world are one input and a body that answers them alike is right to.
-
-    A call the recording answered with an error carries no columns and is not evidence here; the
-    error classes are the replay ruling's to compare.
-    """
-    calls = [call for call in calls if call.error is None and call.result is not None]
-    keys_of: dict[int, set[str]] = {}
-    ids_of: dict[str, set] = {}
-    world_columns: dict[int, dict] = {}
-    exact: dict[str, list[ToolCall]] = {}
-    masked: dict[str, list[ToolCall]] = {}
-    for call in calls:
-        state = sandbox.state_for(call)
-        keys = keys_of.get(id(state))
-        if keys is None:
-            keys = keys_of[id(state)] = _collection_keys(state)
-        ids = ids_of[call.id or ""] = row_id_values(schema, call, keys)
-        exact.setdefault(content_hash(call.args), []).append(call)
-        masked.setdefault(_masked_args(call, ids), []).append(call)
-    out: list[SensitivityPair] = []
-    seen: set[tuple[str, str]] = set()
-    for buckets, same_args in ((exact, True), (masked, False)):
-        for key in sorted(buckets):
-            for one, other in _worlds_apart(sandbox, buckets[key]):
-                mark = (min(one.id or "", other.id or ""), max(one.id or "", other.id or ""))
-                if mark in seen:
-                    continue
-                seen.add(mark)
-                recorded = (tool_runs.parse_result(one.result), tool_runs.parse_result(other.result))
-                differences = column_differences(schema, recorded[0], recorded[1], rules, one.name, readers)
-                columns = tuple(sorted(differences if same_args else _not_the_row_named(
-                    differences, ids_of.get(one.id or "", set()), ids_of.get(other.id or "", set()))))
-                columns = _held_by_the_world(sandbox.state_for(one), sandbox.state_for(other),
-                                             columns, world_columns)
-                if columns:
-                    out.append(SensitivityPair(one, other, columns,
-                                               (sandbox.task_of(one), sandbox.task_of(other)), same_args,
-                                               _read_as_columns(one.name, recorded, readers)))
-                if len(out) >= max_pairs:
-                    return out
-    return out
-
-
-def _world_columns(state: Any) -> dict[str, frozenset]:
-    """Every column name a world holds anywhere, and the set of values it holds under that name.
-
-    Column names, not paths: a world files one row under several shapes and a recorded result names
-    the column it stated, so the question this answers is the only one that can be asked of both.
-    """
-    out: dict[str, set] = {}
-
-    def walk(node: Any) -> None:
-        if isinstance(node, dict):
-            for key, value in node.items():
-                if isinstance(value, (dict, list, tuple)):
-                    walk(value)
-                else:
-                    out.setdefault(str(key), set()).add(json.dumps(value, sort_keys=True, default=str))
-        elif isinstance(node, (list, tuple)):
-            for value in node:
-                walk(value)
-
-    walk(state)
-    return {name: frozenset(values) for name, values in out.items()}
-
-
-def _held_by_the_world(one: dict, other: dict, columns: Iterable[str],
-                       cache: Optional[dict] = None) -> tuple[str, ...]:
-    """The columns of a difference that the two worlds themselves hold differently.
-
-    The two-stage check has two stages: the recordings have to differ, and the state the body is
-    given has to be able to tell the body which of the two it is standing in. Where the two worlds
-    hold one value for the column the recordings part in, no body that reads the world can answer
-    them differently, and failing one for it would be accusing the body of what the Starting state
-    did: the Task is already blocked by the replay ruling, which is where an unpinned column
-    belongs. Whole-answer differences carry no column name and cannot be asked, so they are kept.
-    """
-    cache = {} if cache is None else cache
-    for state in (one, other):
-        if id(state) not in cache:
-            cache[id(state)] = _world_columns(state)
-    left, right = cache[id(one)], cache[id(other)]
-    return tuple(column for column in columns
-                 if column == WHOLE_ANSWER
-                 or left.get(column.rsplit(".", 1)[-1]) != right.get(column.rsplit(".", 1)[-1]))
-
-
-def _read_as_columns(tool: str, recorded: tuple[Any, Any], readers: Any) -> bool:
-    """Whether this tool's reader read both recorded results into columns (D176).
-
-    It says which reading the pair was found under, so the body's own two answers are read the same
-    way. Where the reader reads nothing out of the recordings the pair rests on the whole answer,
-    and holding the body's answers to columns the reader can only find on their side would fail a
-    body for a mismatch of readings rather than for anything it did.
-    """
-    if readers is None or not tool:
-        return False
-    if not all(isinstance(value, str) for value in recorded) or readers.table_of(tool) is None:
-        return False
-    return all(isinstance(readers.read(tool, value), dict) for value in recorded)
-
-
-def _not_the_row_named(differences: dict, ids_one: set, ids_other: set) -> dict:
-    """The differences left once the ones the two calls' own arguments account for are dropped.
-
-    Two calls that name two rows have two recorded results whose id column differs, and a body that
-    echoes its argument produces that difference without reading anything. So a column whose value
-    on each side is a row id that side's own call named is no evidence; where the two calls carry
-    the same arguments there is nothing to drop, and the caller does not ask.
-    """
-    def named(value: Any, ids: set) -> bool:
-        return isinstance(value, (str, int, float)) and not isinstance(value, bool) and value in ids
-
-    return {path: sides for path, sides in differences.items()
-            if not (named(sides[0], ids_one) and named(sides[1], ids_other))}
-
-
-def gate_sensitivity(sandbox: Sandbox, calls: Iterable[ToolCall], schema: EntitySchema,
-                     rules: Any = None, readers: Any = None) -> GateResult:
-    """8. Two calls the recordings answered differently are answered differently by the body (D195).
-
-    The two calls of a pair have already run under their own Task's overlay for the gates before
-    this one, so the sandbox answers both out of its memo and this gate starts no subprocess of its
-    own on a body that got this far.
-    """
-    pairs = sensitivity_pairs(sandbox, calls, schema, rules, readers)
-    if not pairs:
-        return body_sensitivity_gate([], [], [], schema, rules, readers)
-    try:
-        first = sandbox.run([pair.first for pair in pairs])
-        second = sandbox.run([pair.second for pair in pairs])
-    except SandboxError as exc:
-        return body_sensitivity_gate(pairs, None, None, schema, rules, readers, error=str(exc))
-    return body_sensitivity_gate(pairs, first, second, schema, rules, readers)
-
-
 def _collection_keys(state: Any) -> set[str]:
     """Every key of a keyed collection in a world: a dict of rows, keyed by what the row is called.
 
@@ -674,8 +416,6 @@ def run_gates(source: str, sandbox: Sandbox, shown: Iterable[ToolCall], held_out
     static reads of the source, and a body that memorised the recordings is refused before a
     subprocess is started for it. `sig` is the tool's mined signature, which is what tells an enum
     member the description lists from an id a recorded call happened to carry.
-
-    Gate 8 (D195) is the exception to the stopping rule, for the reason given where it is appended.
     """
     shown, held_out = list(shown), list(held_out)
     every = shown + held_out
@@ -691,12 +431,6 @@ def run_gates(source: str, sandbox: Sandbox, shown: Iterable[ToolCall], held_out
         gates.append(gate(sandbox, calls, **extra))
     if not gates[-1].passed:
         return gates
-    # Gate 8 (D195) is the one gate that does not stop the chain. It has to run before the replay
-    # rulings, because that is what puts a body which reads the world above one which memorises it
-    # in `attempt_score`, and the chain has to go on past it, because a failed sensitivity gate is a
-    # tie among every body that fails it and the replay count is what breaks that tie. Both rulings
-    # are free once the body has reached here: the sandbox has already answered these calls.
-    gates.append(gate_sensitivity(sandbox, every, schema, rules=rules, readers=readers))
     gates.append(gate_replay_fidelity(sandbox, shown, schema, label="shown", rules=rules, readers=readers))
     if held_out and gates[-1].passed:
         gates.append(gate_replay_fidelity(sandbox, held_out, schema, label="held_out", rules=rules,

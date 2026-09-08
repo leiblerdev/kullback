@@ -98,7 +98,6 @@ KIND_OF_RULING: dict[str, str] = {
     "compile_tools.deterministic": "assisted_tool",
     "compile_tools.non_trivial": "assisted_tool",
     "compile_tools.memorised_values": "assisted_tool",
-    "sensitivity": "assisted_tool",
     "compile_tools.bodies": "assisted_tool",
     "assisted": "assisted_tool",
     # the reference rulings: the recordings of a Task do not settle on one End state

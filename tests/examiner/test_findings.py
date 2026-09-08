@@ -119,31 +119,6 @@ def test_a_d79_check_that_failed_and_the_same_check_never_run_are_two_findings_w
     assert "missing Run, not a wrong Verifier" in missing["text"]
 
 
-def test_a_leak_the_strip_missed_is_filed_per_task_and_column():
-    """D196: the strip has already run, so what the leak check reports is a column it does not cover.
-    The key is the Task and the column, so a second column on one Task is a second finding while the
-    same column found again in the next round is the same one."""
-    status = dict(_status(), task_late={
-        "reference_confirmed": True, "verifier_passed": False,
-        "checks": {"leak_check_clean": False}, "leak_columns": ["renew_loan.due_date", "loans.fine"]})
-    rows = {row["key"]: row for row in F.suite_rows(status)}
-    assert "intent_leak:renew_loan.due_date:task_late" in rows
-    assert "intent_leak:loans.fine:task_late" in rows
-    assert "suite:leak_check_clean:" not in rows, "the grouped row is the fallback, not the answer"
-    row = rows["intent_leak:renew_loan.due_date:task_late"]
-    assert row["kind"] == "intent_leak" and row["suggested"] == "repair_intent"
-    assert row["task_ids"] == ["task_late"] and "renew_loan.due_date" in row["hint"]
-
-
-def test_a_leak_on_a_task_that_names_no_column_is_still_filed_as_the_one_grouped_finding():
-    """A status row written before D196 names no column, and the loss is not dropped for that."""
-    status = dict(_status(), task_late={"reference_confirmed": True, "verifier_passed": False,
-                                        "checks": {"leak_check_clean": False}})
-    rows = {row["key"]: row for row in F.suite_rows(status)}
-    assert rows["suite:leak_check_clean:"]["task_ids"] == ["task_late"]
-    assert not any(key.startswith("intent_leak:") for key in rows)
-
-
 def test_a_check_is_counted_only_against_a_task_that_reached_the_suite():
     """A Task with no Reference never ran the suite, and a Task whose Verifier passed lost nothing;
     counting either would rank a check above the tool that is actually blocking the build."""

@@ -538,7 +538,7 @@ def test_a_round_whose_repair_moved_a_gate_ruling_is_not_stalled(tmp_path):
     second = loop.close_round(2, _record(2).counts)
     assert second.counts["moved"] is True and second.exit is None
     assert second.counts["repairs"] == [{"verb": "repair_recompile", "target": "get_order",
-                                         "artifact": "bodies", "changed": False}]
+                                         "artifact": "bodies", "changed": False, "outcome": ""}]
     assert loop.close_round(3, _record(3).counts).exit == "stalled", "no repair, no ruling, no count"
 
 
@@ -550,7 +550,7 @@ def test_a_round_whose_only_repair_decided_something_is_stalled(tmp_path):
     repair.record_request(loop.plan.workdir, "repair_refuse_task", "t2", {}, round_no=2)
     second = loop.close_round(2, _record(2).counts)
     assert second.counts["repairs"] == [{"verb": "repair_refuse_task", "target": "t2",
-                                         "artifact": None, "changed": False}]
+                                         "artifact": None, "changed": False, "outcome": ""}]
     assert second.counts["moved"] is False and second.exit == "stalled"
 
 
@@ -584,8 +584,10 @@ def test_a_round_records_the_change_each_repair_measured_on_its_own_target(tmp_p
     repair.record_request(workdir, "repair_intent", "task_b",
                           {"changed": False, "hash_before": "ccc", "hash_after": "ccc"}, round_no=1)
     assert loop.close_round(1, _record(1).counts).counts["repairs"] == [
-        {"verb": "repair_intent", "target": "task_a", "artifact": "intents", "changed": True},
-        {"verb": "repair_intent", "target": "task_b", "artifact": "intents", "changed": False}]
+        {"verb": "repair_intent", "target": "task_a", "artifact": "intents", "changed": True,
+         "outcome": ""},
+        {"verb": "repair_intent", "target": "task_b", "artifact": "intents", "changed": False,
+         "outcome": ""}]
 
 
 def test_the_stall_follow_up_names_the_pending_findings_and_the_repairs_made(tmp_path):

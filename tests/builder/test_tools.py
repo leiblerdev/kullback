@@ -436,14 +436,17 @@ def test_a_repair_intent_result_opens_with_that_tasks_own_ruling(built):
     out = _run(_tool(plan, "repair_intent"), {"task_id": task, "hint": "say what every run of it shows"})
     assert not out.is_error, out.content
     record = _intents(built)[task]
-    first, second, third = out.content.splitlines()[:3]
-    assert first == out.details["target_ruling"]
-    assert first.startswith(f"repair_intent {task}: ")
-    assert ("grounded" in first) is bool(record["grounded"])
+    first, second, third, fourth = out.content.splitlines()[:4]
+    assert "\n".join([first, second]) == out.details["target_ruling"]
+    # D201: the transaction's own verdict leads, because it says whether the repair below it stands.
+    assert first.startswith(f"repair_intent {task}: ") and (
+        "accepted" in first or "reverted" in first or "unchecked" in first)
+    assert second.startswith(f"repair_intent {task}: ")
+    assert ("grounded" in second) is bool(record["grounded"])
     if not record["grounded"]:
-        assert first.endswith(f"still refused: {record['reason']}")
-    assert second == builder_tools.NO_ZOOM.format(target=task), "and the zoom on it is taken off the table"
-    assert third.startswith("repair_intent intent: "), "the stage summary still follows it"
+        assert second.endswith(f"still refused: {record['reason']}")
+    assert third == builder_tools.NO_ZOOM.format(target=task), "and the zoom on it is taken off the table"
+    assert fourth.startswith("repair_intent intent: "), "the stage summary still follows it"
 
 
 def test_a_repair_recompile_result_says_whether_that_tool_cleared_the_gates(built, tmp_path):
@@ -454,7 +457,10 @@ def test_a_repair_recompile_result_says_whether_that_tool_cleared_the_gates(buil
     out = _run(_tool(plan, "repair_recompile"), {"name": ASSISTED, "hint": "import decimal first"})
     assert not out.is_error, out.content
     assisted = json.loads((workdir / "tool_builds.json").read_text(encoding="utf-8"))[ASSISTED]["assisted"]
-    first = out.content.splitlines()[0]
+    verdict, first = out.content.splitlines()[:2]
+    # D201: the transaction rules first, and a recompile that bought nothing says so before the
+    # gates are quoted at all.
+    assert verdict.startswith(f"repair_recompile {ASSISTED}: ") and "reverted: no effect" in verdict
     assert first.startswith(f"repair_recompile {ASSISTED}: ")
     assert ("still assisted" in first) is bool(assisted)
     # D191: the line also says what the attempt scored against the body already there.
@@ -469,7 +475,11 @@ def test_a_repair_grow_result_says_how_many_rows_the_table_holds(built, tmp_path
     plan = BuildPlan(workdir=workdir, iterate=True, model=Bodies(), max_attempts=0)
     out = _run(_tool(plan, "repair_grow"), {"table": "users", "count": 4})
     assert not out.is_error, out.content
-    assert out.content.splitlines()[0] == "repair_grow users: 4 rows, the 4 asked for"
+    verdict, ruling = out.content.splitlines()[:2]
+    # The table already holds the rows asked for, so the repair moved nothing and is put back (D201).
+    assert verdict == ("repair_grow users: reverted: no effect, users stands where it was "
+                       "(2 to 2 lights green over 3 Tasks, the whole corpus)")
+    assert ruling == "repair_grow users: 4 rows, the 4 asked for"
 
 
 def test_a_gate_that_fails_over_many_tasks_says_how_many_and_names_the_first_as_an_example():
