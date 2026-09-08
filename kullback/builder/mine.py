@@ -1499,115 +1499,6 @@ def _telling_arguments(table: str, id_column: str, hard: set[tuple[str, str]],
             and canonical_json(first[name]) != canonical_json(second[name])}
 
 
-# --- constants of the world (a no-argument tool whose answer never changes) ---
-
-CONSTANTS_TABLE = "constants"
-CONSTANTS_ROW = "world"
-MIN_CONSTANT_CALLS = 2  # one call is no evidence that a result never changes
-
-
-def is_rows_of_a_table(tool: str, value: Any, id_names: Sequence[str], args: Optional[dict]) -> bool:
-    """Whether the miner reads this result as rows some table owns, which is what a constant is not.
-
-    The question is the miner's own and is asked with the miner's own rule (`_table_of`): a scalar,
-    a list of scalars and a mapping of scalar to scalar carry no row at all and so are never rows of
-    a table, and a list of objects is rows only where one of them is homed. A result nothing homes
-    is not a table's, whatever its shape: on one corpus it is a mapping of a name to an id and on
-    another a list of objects, and in both the world held none of it and every recorded call of the
-    tool differed from the recording.
-    """
-    rows = _result_rows(value)
-    return any(_table_of(tool, row, id_names, rows, args) is not None for row in rows)
-
-
-def world_constants(traces: list[Trace], write_tools: Sequence[str] = ()) -> dict[str, Any]:
-    """Per tool whose calls never vary and whose every recorded result was one value, that value.
-
-    A catalog listing is the shape this is for: a tool the assistant calls with no arguments at all,
-    whose answer is the same list or the same mapping every time. Nothing in the rebuilt world held
-    it, because the row extractor reads rows and this is not rows, so every compiled body answered
-    it out of whatever rows the world happened to hold and differed from the recording on every
-    call: 19 of 19 on one corpus, with 15 of the recorded entries missing from ours.
-
-    Four things have to hold, and each of them is what keeps a mutable reading out:
-
-    - every recorded call carried the same arguments, none included, so the answer cannot be a
-      function of what it was asked;
-    - every call answered, none of them with an error, and every answer was the same value;
-    - the result is not rows of a table (`is_rows_of_a_table`), asked with the miner's own homing
-      rule, so a table's rows stay a table's and keep the key that identifies them;
-    - the corpus made at least `MIN_CONSTANT_CALLS` such calls, because one call says nothing about
-      whether the answer changes, and the tool is not a write, because a write that acknowledges
-      every call the same way is an acknowledgement and not a fact of the world.
-
-    Only the assistant's calls are read (R33). What is left is a fact of the customer's world that
-    the recording pins exactly, so the schema names it, the Starting state holds it and a body reads
-    it instead of assembling it out of rows.
-    """
-    id_names = id_columns(traces)
-    write_tools = set(write_tools or ())
-    per_tool: dict[str, list] = {}
-    for trace in traces:
-        for call in trace.tool_calls:
-            if is_assistant_call(call):
-                per_tool.setdefault(call.name, []).append(call)
-    out: dict[str, Any] = {}
-    for name in sorted(per_tool):
-        calls = per_tool[name]
-        if name in write_tools or len(calls) < MIN_CONSTANT_CALLS:
-            continue
-        if any(call.error is not None or call.result is None for call in calls):
-            continue
-        if len({canonical_json(call.args or {}) for call in calls}) != 1:
-            continue
-        if len({canonical_json(_parse(call.result)) for call in calls}) != 1:
-            continue
-        value = _parse(calls[0].result)
-        if is_rows_of_a_table(name, value, id_names, calls[0].args):
-            continue
-        out[name] = value
-    return out
-
-
-def constants_table_of(schema: EntitySchema) -> Optional[str]:
-    """The table holding the world's constants, or None when the corpus showed none."""
-    return next((column.table for column in schema.columns
-                 if (column.evidence or {}).get("constant_of")), None)
-
-
-def constants_row(schema: EntitySchema) -> dict:
-    """The one row the constants table holds: per column, the value the recording pinned."""
-    return {column.name: (column.evidence or {}).get("constant_value")
-            for column in schema.columns if (column.evidence or {}).get("constant_of")}
-
-
-def apply_constants(schema: EntitySchema, constants: dict) -> EntitySchema:
-    """Give the schema one table of the world's constants, one column per tool, and the value on it.
-
-    One row with a column per constant, rather than a row per constant: a body reaches the row
-    without naming a key (`next(iter(...).values())`), the way it reaches the row another requestor
-    revealed, and a literal id written into a body is refused by the memorised values gate (D162).
-    The value rides on the column's own evidence, so the Starting state reads it off the schema and
-    no stage has to mine the corpus a second time to find out what it was.
-    """
-    if not constants:
-        return schema
-    table = CONSTANTS_TABLE
-    while table in schema.tables:
-        table += "_"
-    schema.tables = sorted([*schema.tables, table])
-    for name in sorted(constants):
-        schema.columns.append(Column(
-            table=table, name=name, class_="hard", class_rule="hard", class_confidence="high",
-            class_reason="every recorded call of the tool of this name answered the same value and "
-                         "took the same arguments, so the world holds it as a constant",
-            classified_by="observed",
-            evidence={"constant_of": name, "constant_value": constants[name]},
-            samples=[constants[name]]))
-    schema.columns = sorted(schema.columns, key=lambda c: (c.table, c.name))
-    return schema
-
-
 def write_tool_names(traces: list[Trace]) -> set[str]:
     """The tools the code rule of D68 calls writes, for a caller that has no ToolSigs to hand."""
     return {sig.name for sig in mine_tools(traces) if sig.kind == "write"}
@@ -1672,9 +1563,6 @@ def mine_schema(traces: list[Trace], db_json_path: Optional[Path] = None,
     schema = EntitySchema(tables=sorted(store), columns=columns, id_patterns=id_patterns, homes=homes)
     # Last, because the rule reads the columns' classes and the id column the rest of the Harness
     # will key by, so the key it names is the one every reader forms.
-    names = write_tools if write_tools is not None else sorted(write_tool_names(traces))
-    schema.composite_keys = composite_keys(traces, schema, names)
-    # After the tables, because the rule asks the miner whether this result was rows of one, and
-    # the constants table is not mined from rows and has no key of its own.
-    apply_constants(schema, world_constants(traces, names))
+    schema.composite_keys = composite_keys(
+        traces, schema, write_tools if write_tools is not None else sorted(write_tool_names(traces)))
     return schema

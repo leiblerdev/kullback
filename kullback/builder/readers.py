@@ -8,29 +8,17 @@ have.
 
 This module builds that row. Per requestor with prose results, the model is shown the distinct
 result shapes of each of its tools, with the digits masked, and proposes one table, its columns,
-and per tool two functions: a reader, `def read(result)` mapping one result string to the column
-values it asserts, or None for a result that asserts nothing; and a render, `def render(row)`
-writing the result string that tool answers from a row, the inverse of the reader. A gate runs
-every reader over every recorded result of its tool, and then asks every render for each of those
-results again out of the row the recording had when it was answered. What failed comes back as the
-next attempt's evidence, one line per masked shape. Both run in the same subprocess sandbox as a
-tool body (`builder/sandbox.py`), never in this process.
+and per tool a reader: `def read(result)` mapping one result string to the column values it
+asserts, or None for a result that asserts nothing. A gate runs every reader over every recorded
+result of its tool and hands what failed back as the next attempt's evidence, one line per masked
+shape. The readers run in the same subprocess sandbox as a tool body (`builder/sandbox.py`), never
+in this process.
 
 The gate asks of a reader only that it parses, runs on every recorded result without raising, and
 answers with a dict or None; a column named as an id is refused, because code owns the row's key.
-A shape whose reader reads nothing out of it is counted per tool and reported in the stage ruling,
-never refused: the experiment of 2026-09-07 measured the refusing version of that rule and it
-bought one extra attempt and no fidelity.
-
-The render is where the recording rules on the proposal, and it is the part a free reader gate
-cannot ask for. A result whose last line is composed out of several other columns was read into
-columns and then written back by the compiled bodies with a word the row never held, on most of
-the recorded calls of a dozen tools. The round trip is the check: `render` of the row a result was
-answered from has to be that result again, character for character. A value the sentence states
-that no column holds follows from the columns that do, and working it out is the render's own
-business, so no column is invented for it. A tool whose result asserts nothing renders the constant
-it answers. What the render writes is then what the body writes: its source is in the body writer's
-prompt for that tool.
+Everything else is left to replay fidelity. A shape whose reader reads nothing out of it is
+counted per tool and reported in the stage ruling, never refused: the experiment of 2026-09-07
+measured the refusing version of that rule and it bought one extra attempt and no fidelity.
 
 What the requestor writes is mined from the recording rather than declared, the way
 `mine.observed_effects` credits the assistant's writes: a column a write tool of that requestor is
@@ -151,13 +139,6 @@ class ToolReader:
 
 
 @dataclass
-class ToolRender:
-    """One tool's render: the source of a function over the row, the inverse of the reader."""
-    tool: str
-    source: str
-
-
-@dataclass
 class Proposal:
     """One requestor's world as the model proposed it, and how the gate ruled on it.
 
@@ -169,19 +150,14 @@ class Proposal:
     table: str
     columns: list[str] = field(default_factory=list)
     readers: list[ToolReader] = field(default_factory=list)
-    renders: list[ToolRender] = field(default_factory=list)
     effects: dict[str, list[str]] = field(default_factory=dict)
     attempts: int = 0
     failures: list[str] = field(default_factory=list)
     silent: dict[str, int] = field(default_factory=dict)  # per tool, shapes the reader reads nothing from
-    round_trips: tuple[int, int] = (0, 0)  # recorded results the renders wrote back, of those asked
     assisted: bool = False
 
     def reader_for(self, tool: str) -> Optional[ToolReader]:
         return next((r for r in self.readers if r.tool == tool), None)
-
-    def render_for(self, tool: str) -> Optional[ToolRender]:
-        return next((r for r in self.renders if r.tool == tool), None)
 
     def changes_of(self, tool: str) -> list[str]:
         return list(self.effects.get(tool) or [])
@@ -190,10 +166,8 @@ class Proposal:
         return {
             "requestor": self.requestor, "table": self.table, "attempts": self.attempts,
             "failures": list(self.failures), "assisted": self.assisted, "columns": list(self.columns),
-            "silent": dict(self.silent), "round_trips": list(self.round_trips),
-            "effects": {k: list(v) for k, v in sorted(self.effects.items())},
+            "silent": dict(self.silent), "effects": {k: list(v) for k, v in sorted(self.effects.items())},
             "readers": [{"tool": r.tool, "source": r.source} for r in self.readers],
-            "renders": [{"tool": r.tool, "source": r.source} for r in self.renders],
         }
 
     @classmethod
@@ -203,13 +177,10 @@ class Proposal:
             attempts=int(body.get("attempts") or 0), assisted=bool(body.get("assisted")),
             failures=[str(f) for f in body.get("failures") or []],
             silent={str(k): int(v) for k, v in (body.get("silent") or {}).items()},
-            round_trips=tuple(int(n) for n in (body.get("round_trips") or [0, 0]))[:2] or (0, 0),
             effects={str(k): [str(c) for c in v] for k, v in (body.get("effects") or {}).items()},
             columns=[str(c) for c in body.get("columns") or []],
             readers=[ToolReader(tool=str(r.get("tool") or ""), source=str(r.get("source") or ""))
                      for r in body.get("readers") or []],
-            renders=[ToolRender(tool=str(r.get("tool") or ""), source=str(r.get("source") or ""))
-                     for r in body.get("renders") or []],
         )
 
 
@@ -243,15 +214,6 @@ _SYSTEM = (
     "given. Every key it returns is a column you propose. A column value is a plain scalar, the "
     "same value however the sentence around it is worded, so two results that say the same thing "
     "in two wordings parse to the same value.\n\n"
-    "Per tool you also propose a render, `def render(row):` returning the result string that tool "
-    "answers when the row stands as it is given. It is the inverse of the reader: for every "
-    "recorded result of the tool, render of the row that result was answered from has to be that "
-    "result again, character for character, and that round trip is what the proposal is held to. "
-    "The row it is given holds every column you proposed, the ones this tool reads and the ones it "
-    "does not. A result that asserts nothing, an acknowledgement the tool answers whatever the row "
-    "holds, is rendered as that constant string. A value the sentence states that no column of the "
-    "row holds, because it follows from two or more columns that do, is the render's own work: "
-    "compute it there from the columns it follows from, and do not add a column for it.\n\n"
     "Name the table and the columns after what they hold, in the recording's own words, lowercase "
     "with underscores. Do not propose a column that is an id: the table holds one row per "
     "requestor and code owns its key, so a column named id, or the table's name with _id after "
@@ -262,14 +224,13 @@ _REPLY_SHAPE = (
     "Answer with one JSON object and nothing else:\n"
     '{"table": "<table name>",\n'
     ' "columns": [{"name": "<column>"}, ...],\n'
-    ' "readers": [{"tool": "<tool name>", "source": "def read(result):\\n    ..."}, ...],\n'
-    ' "renders": [{"tool": "<tool name>", "source": "def render(row):\\n    ..."}, ...]}\n'
-    "One reader and one render per tool you were shown, and neither for a tool you were not.\n"
+    ' "readers": [{"tool": "<tool name>", "source": "def read(result):\\n    ..."}, ...]}\n'
+    "One reader per tool you were shown, and no reader for a tool you were not.\n"
 )
 
 def _code_rules() -> str:
     """The sandbox's own rules, generated from the gate's constants so the two cannot drift."""
-    return ("The reader and the render are checked before they run and are refused if they "
+    return ("The reader and the derivations are checked before they run and are refused if they "
             "name anything outside their own argument. They may not use: "
             + ", ".join(sorted(DENIED_BUILTINS)) + ". They may not touch a dunder attribute. They "
             "may import only: " + ", ".join(sorted(ALLOWED_IMPORTS)) + ". Write the import inside "
@@ -330,11 +291,9 @@ def _parse_reply(reply: Any, requestor: str) -> Optional[Proposal]:
     names = [name for name in names if name]
     tools = [ToolReader(tool=str(r.get("tool") or "").strip(), source=str(r.get("source") or ""))
              for r in readers if isinstance(r, dict) and str(r.get("tool") or "").strip()]
-    shown = [ToolRender(tool=str(r.get("tool") or "").strip(), source=str(r.get("source") or ""))
-             for r in (body.get("renders") or []) if isinstance(r, dict) and str(r.get("tool") or "").strip()]
     if not names or not tools:
         return None
-    return Proposal(requestor=requestor, table=table, columns=names, readers=tools, renders=shown)
+    return Proposal(requestor=requestor, table=table, columns=names, readers=tools)
 
 
 # --- the sandbox module the readers and derivations run in -------------------
@@ -366,22 +325,12 @@ def _method_names(proposal: Proposal) -> dict[str, str]:
         proposal.readers, key=lambda r: r.tool))}
 
 
-def _render_names(proposal: Proposal) -> dict[str, str]:
-    """Stable method names for the renders, on the same rule as the readers'."""
-    return {render.tool: f"render_{index}" for index, render in enumerate(sorted(
-        proposal.renders, key=lambda r: r.tool))}
-
-
 def _module(proposal: Proposal) -> tuple[str, list[str]]:
-    """The one module the sandbox runs: a method per reader and per render.
-
-    Both go in one module so both are checked by the one confinement gate and run in the one
-    subprocess; nothing here is ever executed in this process. Refusals come back as sentences.
-    """
+    """The one module the sandbox runs: a method per reader. Refusals come back as sentences."""
     from kullback.builder.compile_env import module_source  # builder to builder, at call time
     from kullback.runner.records import FieldStat, ToolSig
 
-    reader_names, render_names = _method_names(proposal), _render_names(proposal)
+    reader_names = _method_names(proposal)
     sigs, bodies, refused = [], {}, []
     for reader in sorted(proposal.readers, key=lambda r: r.tool):
         body = _method_body(reader.source, "result")
@@ -391,14 +340,6 @@ def _module(proposal: Proposal) -> tuple[str, list[str]]:
         sigs.append(ToolSig(name=reader_names[reader.tool], kind="read",
                             args_fields=[FieldStat(name="result", types=["str"], optional=False)]))
         bodies[reader_names[reader.tool]] = body
-    for render in sorted(proposal.renders, key=lambda r: r.tool):
-        body = _method_body(render.source, "row")
-        if body is None:
-            refused.append(f"{render.tool}: the render source defines no function, so there is nothing to run")
-            continue
-        sigs.append(ToolSig(name=render_names[render.tool], kind="read",
-                            args_fields=[FieldStat(name="row", types=["dict"], optional=False)]))
-        bodies[render_names[render.tool]] = body
     return module_source(EntitySchema(), sigs, bodies), refused
 
 
@@ -423,9 +364,6 @@ class Ruling:
     parsed: dict = field(default_factory=dict)  # (tool, result text) -> dict or None
     silent: dict[str, int] = field(default_factory=dict)  # per tool, shapes the reader read nothing from
     ran: bool = False
-    round_trips: int = 0  # recorded results the render was asked to reproduce
-    round_trips_matched: int = 0
-    render_shapes_failing: int = 0
 
 
 def _clip(value: Any) -> str:
@@ -445,28 +383,19 @@ def _texts_by_tool(calls_by_tool: dict[str, list[ToolCall]]) -> dict[str, list[s
 
 
 def gate_proposal(proposal: Proposal, calls_by_tool: dict[str, list[ToolCall]],
-                  workdir: Path | str, traces: Optional[Iterable[Trace]] = None) -> Ruling:
-    """Run every reader over every recorded result of its tool, then hold the renders to the round trip.
+                  workdir: Path | str) -> Ruling:
+    """Run every reader over every recorded result of its tool and rule on what came back.
 
     A reader has to parse, run and answer with a dict or None, and no column may read as an id.
-    Nothing else is asked of a reader: a shape a reader reads nothing out of is counted per tool and
-    reported (`Ruling.silent`), because the arm that refused it, measured on a customer corpus on
-    2026-09-07, bought one extra attempt and no fidelity.
-
-    The render is where the recording rules on the proposal. For every recorded result of a tool,
-    `render` of the row that result was answered from has to be that result again, character for
-    character (`round_trip_failures`). That is what a free reader gate cannot ask and what the
-    bodies kept getting wrong: a result whose last line is composed out of several other columns was
-    parsed into columns and then written back with a word the row never held. A row is not the
-    reader's own dict but the row as the recording had it at that call, so a value the sentence
-    states and no column holds has to be computed by the render out of the columns that do.
+    Nothing else is refused: a shape a reader reads nothing out of is counted per tool and reported
+    (`Ruling.silent`), because the arm that refused it, measured on a customer corpus on 2026-09-07,
+    bought one extra attempt and no fidelity.
 
     Failures are named per masked shape, never per result: a shape carried by four hundred calls is
     one line for the model to answer, and the count of failing shapes is how one attempt is ranked
     against another.
     """
     workdir = Path(workdir)
-    traces = list(traces or [])
     ruling = Ruling()
     source, refused = _module(proposal)
     ruling.failures += refused
@@ -474,11 +403,8 @@ def gate_proposal(proposal: Proposal, calls_by_tool: dict[str, list[ToolCall]],
         if not check.passed:
             ruling.failures += [f"the readers module {check.stage}: {line}" for line in check.failures]
     ruling.failures += _naming_failures(proposal)
-    ruling.failures += [f"{tool}: no reader was proposed for a tool that has recorded results"
-                        for tool in sorted(set(calls_by_tool) - {r.tool for r in proposal.readers})]
-    ruling.failures += [f"{tool}: no render was proposed for a tool that has recorded results, so "
-                        "nothing can write its results back out of the row"
-                        for tool in sorted(set(calls_by_tool) - {r.tool for r in proposal.renders})]
+    missing = sorted(set(calls_by_tool) - {r.tool for r in proposal.readers})
+    ruling.failures += [f"{tool}: no reader was proposed for a tool that has recorded results" for tool in missing]
     if ruling.failures:
         ruling.failing_shapes = _shape_count(calls_by_tool)
         return ruling
@@ -505,103 +431,9 @@ def gate_proposal(proposal: Proposal, calls_by_tool: dict[str, list[ToolCall]],
         if not value:
             silent.setdefault(tool, set()).add(mask(text))
     ruling.silent = {tool: len(shapes) for tool, shapes in sorted(silent.items())}
-    if failed:  # a row read wrong is a row nothing can be rendered from, so the round trip waits
-        ruling.failing_shapes = len(failed)
-        ruling.failures = sorted(failed.values())
-        return ruling
-    round_trip_failures(proposal, traces, ruling, source, workdir)
-    ruling.failing_shapes = len(failed) + ruling.render_shapes_failing
-    return ruling
-
-
-def round_trip_failures(proposal: Proposal, traces: list[Trace], ruling: Ruling,
-                        source: str, workdir: Path) -> None:
-    """Ask every render for the result the recording holds, from the row that result came out of.
-
-    The rows come from `render_rows`, which walks each recording the way `starting_row` does and
-    then lays each call's own readings over the row in the order the recording made them, so the
-    row handed to a render is the row the Environment will hold at that point. Identical (row,
-    result) pairs are asked once; two results the recording answered from one row are both asked,
-    and one of them failing is the honest answer that no function of the row alone can write both.
-
-    Nothing here refuses a proposal on its own: the failures are lines for the next attempt, and
-    after the last attempt the proposal with the fewest failing shapes is kept and marked assisted,
-    which is how a reader that could not be satisfied has always been recorded.
-    """
-    rows = render_rows(traces, proposal, ruling.parsed)
-    if not rows:
-        return
-    render_names = _render_names(proposal)
-    jobs: dict[tuple[str, str, str], tuple[str, dict, str]] = {}
-    for tool, text, row in rows:
-        if tool in render_names:
-            jobs.setdefault((tool, canon_text(row), text), (tool, row, text))
-    ordered = [jobs[key] for key in sorted(jobs)]
-    calls = [ToolCall(name=render_names[tool], args={"row": row}, raw_ptr=_PTR)
-             for tool, row, _text in ordered]
-    results, refusal = _run(source, calls, workdir / "readers")
-    if refusal:
-        ruling.failures.append(refusal)
-        ruling.render_shapes_failing = _shape_count_of(rows)
-        return
-    failed: dict[tuple[str, str], str] = {}
-    for (tool, row, text), result in zip(ordered, results, strict=False):
-        ruling.round_trips += 1
-        line = _render_failure(tool, text, row, result)
-        if line is None:
-            ruling.round_trips_matched += 1
-            continue
-        failed.setdefault((tool, mask(text)), line)
-    ruling.render_shapes_failing = len(failed)
+    ruling.failing_shapes = len(failed)
     ruling.failures = sorted(failed.values())
-
-
-def canon_text(value: Any) -> str:
-    """One value as the text two of them are compared by; the row's own key in the round trip."""
-    return json.dumps(canon(value), default=str, sort_keys=True)
-
-
-def _shape_count_of(rows: Iterable[tuple[str, str, dict]]) -> int:
-    """Every masked shape among these recorded results: what a render that never ran has failed."""
-    return len({(tool, mask(text)) for tool, text, _row in rows})
-
-
-def _render_failure(tool: str, text: str, row: dict, result: dict) -> Optional[str]:
-    """What is wrong with one render's answer, or None when it wrote the recorded result back."""
-    label = f"{tool} shape {mask(text)!r}"
-    if not result.get("ok", False):
-        return (f"{label}: the render raised {result.get('error')}: {result.get('message')} on the "
-                f"row {_clip(row)}")
-    value = result.get("value")
-    if not isinstance(value, str):
-        return (f"{label}: the render answered a {type(value).__name__}; a render answers the "
-                "result string the tool would have answered from that row")
-    if value != text:
-        return (f"{label}: the round trip does not hold. From the row {_clip(row)} the render "
-                f"answered {_clip(value)} where the recording answered {_clip(text)}")
-    return None
-
-
-def render_rows(traces: Iterable[Trace], proposal: Proposal,
-                parsed: dict) -> list[tuple[str, str, dict]]:
-    """Per recorded prose call: the tool, the result it answered, and the row it answered it from.
-
-    The row is the recording's own starting row (`starting_row`) over the corpus fills the Starting
-    state will use (`fills_for`), with each call's readings laid over it in the order the recording
-    made them. So the row a render is asked about holds every column the proposal named, whether or
-    not this tool reads it, which is what lets a render write a line composed out of columns its own
-    tool never mentions.
-    """
-    traces = list(traces)
-    read_rows = starting_rows(traces, proposal, parsed)
-    fills, _sentences, _unset = fills_for(read_rows, proposal)
-    out: list[tuple[str, str, dict]] = []
-    for trace in traces:
-        row = {**fills, **(read_rows.get(trace.trace_id) or {})}
-        for tool, text, values in _walk(trace, proposal, parsed):
-            row.update({name: value for name, value in (values or {}).items()})
-            out.append((tool, text, dict(row)))
-    return out
+    return ruling
 
 
 def _shape_count(calls_by_tool: dict[str, list[ToolCall]]) -> int:
@@ -807,7 +639,6 @@ def propose(model: Any, requestor: str, calls_by_tool: dict[str, list[ToolCall]]
     best_failing = None
     best_parsed: dict = {}
     best_silent: dict = {}
-    best_trips: tuple[int, int] = (0, 0)
 
     def finish(proposal: Proposal, parsed: dict, silent: dict) -> tuple[Proposal, list[dict], dict]:
         proposal.silent = dict(silent)
@@ -828,30 +659,23 @@ def propose(model: Any, requestor: str, calls_by_tool: dict[str, list[ToolCall]]
                                             "object described above and nothing else."}]
             continue
         proposal.attempts = attempt + 1
-        ruling = gate_proposal(proposal, calls_by_tool, workdir, traces)
+        ruling = gate_proposal(proposal, calls_by_tool, workdir)
         nodes.append({"attempt": attempt, "requestor": requestor, "passed": not ruling.failures,
                       "failing_shapes": ruling.failing_shapes, "columns": len(proposal.columns),
-                      "readers": len(proposal.readers), "renders": len(proposal.renders),
-                      "silent_shapes": sum(ruling.silent.values()),
-                      "round_trips": ruling.round_trips,
-                      "round_trips_matched": ruling.round_trips_matched,
-                      "render_shapes_failing": ruling.render_shapes_failing,
+                      "readers": len(proposal.readers), "silent_shapes": sum(ruling.silent.values()),
                       "failures": ruling.failures[:MAX_FEEDBACK_LINES]})
         if best_failing is None or ruling.failing_shapes < best_failing:
             best, best_failing = proposal, ruling.failing_shapes
             best_parsed, best_silent = ruling.parsed, ruling.silent
-            best_trips = (ruling.round_trips_matched, ruling.round_trips)
             best.failures = ruling.failures[:MAX_FEEDBACK_LINES]
         if not ruling.failures:
             proposal.assisted = False
-            proposal.round_trips = (ruling.round_trips_matched, ruling.round_trips)
             return finish(proposal, ruling.parsed, ruling.silent)
         messages = messages + [{"role": "assistant", "content": content},
                                {"role": "user", "content": _retry_turn(ruling)}]
     kept = best if best is not None else Proposal(requestor=requestor, table="", attempts=max_attempts,
                                                   failures=["no attempt produced a usable proposal"])
     kept.assisted = True
-    kept.round_trips = best_trips
     return finish(kept, best_parsed, best_silent)
 
 
@@ -914,17 +738,11 @@ def environment_flags(schema: EntitySchema) -> list[str]:
 
 
 def body_note(proposals: Iterable[Proposal]) -> str:
-    """What a body writer has to know about a revealed table: how to reach its row, what it holds,
-    and the render that writes each of these tools' results back out of it.
+    """What a body writer has to know about a revealed table: how to reach its row, and what it holds.
 
     It sits in the stable system prefix beside the tables block, so it is the same bytes for every
     tool of a build. The row is reached without naming its key, because the key is the requestor's
     name and a literal id in a body is refused by the memorised_values gate (D162).
-
-    The render's own source is here because it is the answer, checked against every recorded result
-    of its tool by round trip. A body that writes the sentence again from the columns gets a word
-    wrong on the values the recording never showed it; a body that renders the row the way the
-    render does cannot.
     """
     parts: list[str] = []
     for proposal in proposals:
@@ -937,12 +755,6 @@ def body_note(proposals: Iterable[Proposal]) -> str:
         changed = {tool: proposal.changes_of(tool) for tool in sorted(proposal.effects)}
         for tool, columns in changed.items():
             lines.append(f"The recording shows {tool} changing: {', '.join(columns)}.")
-        for render in sorted(proposal.renders, key=lambda r: r.tool):
-            lines.append(f"\nThe result of {render.tool} is this function of the row, which writes "
-                         f"every recorded result of it back out of the row it came from. Read the "
-                         f"row into a plain dict of its columns, apply this tool's own effect to "
-                         f"that dict and to the row, and answer what this function answers:\n"
-                         f"{render.source.rstrip()}")
         parts.append("\n".join(lines))
     return "\n\n".join(parts)
 

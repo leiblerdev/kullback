@@ -182,13 +182,6 @@ def _mine_stage():
         # home. A lookup whose rows reach no table is the whole of its replay fidelity, and this is
         # where that is readable before a single body has been written.
         _write_json(ctx.workdir / "row_homes.json", mine.row_homes(traces))
-        # The constants of the world: per tool the corpus called the same way every time and got
-        # the same answer to, that answer. They are columns of one row of the schema's own
-        # constants table; the file is what a reader of the build sees them by, since the mine gate
-        # is frozen and cannot carry a count of them.
-        _write_json(ctx.workdir / "world_constants.json",
-                    {"table": mine.constants_table_of(schema), "row": mine.CONSTANTS_ROW,
-                     "columns": sorted(mine.constants_row(schema))})
         _write_json(ctx.workdir / "schema.json", as_dict(schema))  # cli._score reads it (D39, D73)
         calls = [c for t in traces for c in t.tool_calls]
         # "flag, do not synthesize": a tool the corpus barely shows stays in the build, named in

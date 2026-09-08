@@ -48,21 +48,6 @@ def read(result):
     return {"vent": "open"}
 """
 
-VENT_RENDER = """
-def render(row):
-    return "Vent: " + row["vent"].upper()
-"""
-
-CLIMATE_RENDER = r"""
-def render(row):
-    return "Vent: %s\nWarmth: %d units" % (row["vent"].upper(), row["warmth"])
-"""
-
-OPEN_RENDER = """
-def render(row):
-    return "Vent opened."
-"""
-
 
 def call(name, result, requestor=CARETAKER, call_id=None, args=None):
     return ToolCall(id=call_id, name=name, args=dict(args or {}), result=result,
@@ -106,17 +91,13 @@ def credit_traces():
 
 
 def proposal_json(*, vent=VENT_READER, climate=CLIMATE_READER, open_reader=OPEN_READER,
-                  columns=("vent", "warmth"), vent_render=VENT_RENDER,
-                  climate_render=CLIMATE_RENDER, open_render=OPEN_RENDER):
+                  columns=("vent", "warmth")):
     return json.dumps({
         "table": "greenhouse",
         "columns": [{"name": name} for name in columns],
         "readers": [{"tool": "check_vent", "source": vent},
                     {"tool": "check_climate", "source": climate},
                     {"tool": "open_vent", "source": open_reader}],
-        "renders": [{"tool": "check_vent", "source": vent_render},
-                    {"tool": "check_climate", "source": climate_render},
-                    {"tool": "open_vent", "source": open_render}],
     })
 
 
@@ -130,7 +111,7 @@ def gated(tmp_path, reply_json, traces=None, effects=None):
     by_requestor = readers.prose_calls(traces)
     proposal = readers._parse_reply(ModelReply(content=reply_json), CARETAKER)
     assert proposal is not None
-    ruling = readers.gate_proposal(proposal, by_requestor[CARETAKER], tmp_path, traces)
+    ruling = readers.gate_proposal(proposal, by_requestor[CARETAKER], tmp_path)
     readers.absorb_columns(proposal, ruling.parsed)
     proposal.effects = (readers.write_effects(traces, proposal, ruling.parsed)
                         if effects is None else dict(effects))
@@ -183,8 +164,7 @@ def test_the_gate_names_one_line_per_shape_and_not_one_per_recorded_result(tmp_p
               trace("run_b", [call("check_vent", "Vent: OPEN")])]
     body = json.dumps({"table": "greenhouse", "columns": [{"name": "vent"}],
                        "readers": [{"tool": "check_vent",
-                                    "source": "def read(result):\n    return result"}],
-                       "renders": [{"tool": "check_vent", "source": VENT_RENDER}]})
+                                    "source": "def read(result):\n    return result"}]})
     _, ruling = gated(tmp_path, body, traces=traces)
     assert len(ruling.failures) == 1 and "answered a str" in ruling.failures[0]
 
@@ -369,13 +349,6 @@ def read(result):
 """
 
 
-PROBE_RENDER = r"""
-def render(row):
-    state = "OPEN" if row["vent_open"] else "CLOSED"
-    return "Vent: %s\nWarmth: %s units" % (state, row["warmth"])
-"""
-
-
 def probe_traces():
     """Six recordings: the vent is a switch in one of two states, the warmth a probe's own reading."""
     return [trace(f"run_{index}",
@@ -387,8 +360,7 @@ def probe_traces():
 def probe_proposal(tmp_path):
     body = json.dumps({"table": "greenhouse",
                        "columns": [{"name": "vent_open"}, {"name": "warmth"}],
-                       "readers": [{"tool": "check_climate", "source": PROBE_READER}],
-                       "renders": [{"tool": "check_climate", "source": PROBE_RENDER}]})
+                       "readers": [{"tool": "check_climate", "source": PROBE_READER}]})
     traces = probe_traces()
     proposal, ruling = gated(tmp_path, body, traces=traces)
     schema = EntitySchema(tables=[], columns=[])
@@ -546,9 +518,7 @@ def test_the_stage_records_every_column_it_filled_from_the_corpus_as_an_assumpti
         "table": "greenhouse",
         "columns": [{"name": "vent"}, {"name": "warmth"}, {"name": "lamp"}],
         "readers": [{"tool": "check_vent", "source": VENT_READER},
-                    {"tool": "check_climate", "source": CLIMATE_READER}],
-        "renders": [{"tool": "check_vent", "source": VENT_RENDER},
-                    {"tool": "check_climate", "source": CLIMATE_RENDER}]})], loop=True))
+                    {"tool": "check_climate", "source": CLIMATE_READER}]})], loop=True))
     result = execute(plan, "db")
     artifact = result.artifacts["readers"]
     assert artifact["fills"][CARETAKER] == {}, "both recordings read every column they hold"
@@ -561,20 +531,9 @@ def test_the_stage_records_every_column_it_filled_from_the_corpus_as_an_assumpti
 def test_a_fill_reaches_the_starting_state_and_its_assumption_file(tmp_path):
     traces = [trace("run_a", [call("check_vent", "Vent: OPEN"),
                               call("check_climate", "Vent: OPEN\nWarmth: 21 units")]),
-              trace("run_c", [call("check_warmth", "Warmth: 19 units")])]
+              trace("run_c", [call("check_climate", "Warmth: 19 units")])]
     _write_traces(tmp_path, traces)
-    body = json.dumps({
-        "table": "greenhouse",
-        "columns": [{"name": "vent"}, {"name": "warmth"}],
-        "readers": [{"tool": "check_vent", "source": VENT_READER},
-                    {"tool": "check_climate", "source": CLIMATE_READER},
-                    {"tool": "check_warmth",
-                     "source": "def read(result):\n    return {'warmth': int(result.split()[1])}"}],
-        "renders": [{"tool": "check_vent", "source": VENT_RENDER},
-                    {"tool": "check_climate", "source": CLIMATE_RENDER},
-                    {"tool": "check_warmth",
-                     "source": "def render(row):\n    return 'Warmth: %d units' % row['warmth']"}]})
-    plan = BuildPlan(workdir=tmp_path, model=TestModel([body], loop=True))
+    plan = BuildPlan(workdir=tmp_path, model=TestModel([proposal_json()], loop=True))
     result = execute(plan, "db")
     assert result.artifacts["readers"]["fills"][CARETAKER] == {"vent": "open"}
     assumptions = json.loads((tmp_path / "assumptions.json").read_text(encoding="utf-8"))
@@ -586,118 +545,3 @@ def test_the_stage_needs_a_model_where_a_corpus_has_prose_results(tmp_path):
     _write_traces(tmp_path, two_traces())
     with pytest.raises(build_module.BuildError, match="no model"):
         execute(BuildPlan(workdir=tmp_path), "readers")
-
-
-# --- the round trip: what the render is held to ------------------------------
-
-STATUS_READER = r"""
-def read(result):
-    out = {}
-    for line in result.splitlines():
-        name, _, value = line.partition(":")
-        if name.strip() == "Vent":
-            out["vent"] = value.strip().lower()
-        if name.strip() == "Warmth":
-            out["warmth"] = int(value.strip().split()[0])
-    return out
-"""
-
-STATUS_RENDER = r"""
-def render(row):
-    word = "DRAFTY" if row["vent"] == "open" and row["warmth"] < 15 else "STEADY"
-    return "Vent: %s\nWarmth: %d units\nStatus: %s" % (row["vent"].upper(), row["warmth"], word)
-"""
-
-STATUS_RENDER_DROPPING_A_WORD = r"""
-def render(row):
-    return "Vent: %s\nWarmth: %d units\nStatus: STEADY" % (row["vent"].upper(), row["warmth"])
-"""
-
-
-def status_traces():
-    """Two recordings whose last line is a word the row holds no column for, in both its states."""
-    return [trace("run_a", [call("check_status", "Vent: OPEN\nWarmth: 12 units\nStatus: DRAFTY")]),
-            trace("run_b", [call("check_status", "Vent: CLOSED\nWarmth: 21 units\nStatus: STEADY")])]
-
-
-def status_json(render=STATUS_RENDER):
-    return json.dumps({"table": "greenhouse",
-                       "columns": [{"name": "vent"}, {"name": "warmth"}],
-                       "readers": [{"tool": "check_status", "source": STATUS_READER}],
-                       "renders": [{"tool": "check_status", "source": render}]})
-
-
-def test_a_render_that_writes_every_recorded_result_back_out_of_its_row_passes(tmp_path):
-    _proposal, ruling = gated(tmp_path, status_json(), traces=status_traces())
-    assert ruling.failures == []
-    assert ruling.round_trips == 2 and ruling.round_trips_matched == 2
-
-
-def test_a_derived_word_the_row_holds_no_column_for_is_the_renders_own_work(tmp_path):
-    """The reader reads two columns and the sentence states a third thing that follows from them."""
-    proposal, ruling = gated(tmp_path, status_json(), traces=status_traces())
-    assert proposal.columns == ["vent", "warmth"], "nothing was added for the derived word"
-    assert ruling.round_trips_matched == ruling.round_trips
-
-
-def test_a_render_that_drops_a_word_fails_with_its_tool_and_its_masked_shape_named(tmp_path):
-    _proposal, ruling = gated(tmp_path, status_json(render=STATUS_RENDER_DROPPING_A_WORD),
-                              traces=status_traces())
-    assert len(ruling.failures) == 1, ruling.failures
-    line = ruling.failures[0]
-    assert line.startswith(r"check_status shape 'Vent: OPEN\nWarmth: N units\nStatus: DRAFTY'")
-    assert "the round trip does not hold" in line and "STEADY" in line
-    assert ruling.round_trips_matched == 1 and ruling.round_trips == 2
-
-
-def test_a_result_that_asserts_nothing_is_rendered_as_the_constant_the_tool_answers(tmp_path):
-    _proposal, ruling = gated(tmp_path, proposal_json())
-    assert ruling.failures == []
-    assert ruling.silent == {"open_vent": 1}, "the write asserts no column and still renders"
-
-
-def test_the_render_is_asked_about_the_row_as_the_recording_had_it_and_not_the_readers_own_dict(tmp_path):
-    """check_vent's result names one column; its render is still given the whole row."""
-    whole_row = r"""
-def render(row):
-    return "Vent: %s" % row["vent"].upper() if row["warmth"] else "Vent: ?"
-"""
-    _proposal, ruling = gated(tmp_path, proposal_json(vent_render=whole_row))
-    assert ruling.failures == []
-
-
-def test_a_tool_with_no_render_is_named_and_the_readers_are_not_even_run(tmp_path):
-    body = json.dumps({"table": "greenhouse", "columns": [{"name": "vent"}],
-                       "readers": [{"tool": "check_vent", "source": VENT_READER},
-                                   {"tool": "check_climate", "source": CLIMATE_READER},
-                                   {"tool": "open_vent", "source": OPEN_READER}],
-                       "renders": [{"tool": "check_vent", "source": VENT_RENDER}]})
-    _proposal, ruling = gated(tmp_path, body)
-    assert sorted(ruling.failures) == [
-        "check_climate: no render was proposed for a tool that has recorded results, so nothing can "
-        "write its results back out of the row",
-        "open_vent: no render was proposed for a tool that has recorded results, so nothing can "
-        "write its results back out of the row"]
-    assert ruling.ran is False
-
-
-def test_a_render_that_cannot_be_satisfied_leaves_the_proposal_kept_and_assisted(tmp_path):
-    traces = status_traces()
-    model = TestModel([status_json(render=STATUS_RENDER_DROPPING_A_WORD)], loop=True)
-    proposal, nodes, _parsed = readers.propose(model, CARETAKER, readers.prose_calls(traces)[CARETAKER],
-                                               traces, tmp_path)
-    assert len(nodes) == readers.MAX_ATTEMPTS and proposal.assisted is True
-    assert proposal.round_trips == (1, 2)
-    assert all(n["round_trips"] == 2 and n["round_trips_matched"] == 1 for n in nodes)
-    assert len(proposal.failures) == 1 and "the round trip does not hold" in proposal.failures[0]
-
-
-def test_a_body_of_a_prose_tool_is_shown_the_render_that_writes_its_results(tmp_path):
-    from kullback.builder.body_skill import BODY_SKILL
-
-    proposal, _ruling = gated(tmp_path, status_json(), traces=status_traces())
-    note = readers.body_note([proposal])
-    assert "The result of check_status is this function of the row" in note
-    assert STATUS_RENDER.strip() in note
-    assert "A read tool's body answers" in BODY_SKILL
-    assert "applies its effect to the row first and\nthen answers that function" in BODY_SKILL
