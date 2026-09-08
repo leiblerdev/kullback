@@ -49,7 +49,7 @@ from kullback.builder import (
     user_sim,
     vocabulary,
 )
-from kullback.gates import artifacts, fidelity, verifier_suite
+from kullback.gates import artifacts, fidelity, tool_runs, verifier_suite
 from kullback.gates import scorecard as scorecard_mod
 from kullback.gates import stages as stage_gates
 from kullback.runner import budget, canon, loop, route
@@ -407,6 +407,10 @@ def _tools_stage(model: Any, max_attempts: int, workers: int = 1, only: Optional
         # What a body has to know about a table another requestor's own tools revealed: how to reach
         # its one row, and the derivations of the columns nothing stores. Same bytes for every tool.
         world_note = readers.body_note(readers.proposals_from(inputs["readers"]))
+        # The same readers as code (D176), so a gate that compares two prose results compares the
+        # columns they assert and a gate that reads a body's literals sees the values a recorded
+        # result carried inside a sentence (D187).
+        result_readers = tool_runs.load_readers(inputs["readers"])
         bodies, gates, assisted, builds = {}, [], [], {}
         outcomes: dict[str, list[dict]] = {}  # D171: per tool, one row per recorded call
         rules = _rules_of(inputs)
@@ -441,7 +445,8 @@ def _tools_stage(model: Any, max_attempts: int, workers: int = 1, only: Optional
             graded = compile_env.grade_body(
                 sig, kept[0], calls_by_tool.get(sig.name, []), inputs["schema"], inputs["db"],
                 ctx.workdir / "tools" / sig.name / KEPT_BODY_DIR,
-                call_states=states, rules=rules) if kept is not None else None
+                call_states=states, rules=rules,
+                readers=result_readers) if kept is not None else None
             # What this tool already failed on, so a recompile asks a different question than the
             # one that failed, and what the body it has to beat fails at now. The kept body itself
             # is never in the prompt: shown one, the writer copies it, and a copy cannot beat it.
@@ -456,7 +461,7 @@ def _tools_stage(model: Any, max_attempts: int, workers: int = 1, only: Optional
                                             max_attempts=max_attempts, call_states=states,
                                             rules=rules, tool_names=tool_names,
                                             error_prefix=error_prefix, world_note=world_note,
-                                            lesson=lesson), graded
+                                            lesson=lesson, readers=result_readers), graded
 
         declined: list[str] = []
         # Per tool, whether the body it already had was kept, beaten, or could not run at all under
@@ -546,6 +551,9 @@ def _tools_stage(model: Any, max_attempts: int, workers: int = 1, only: Optional
     # sandbox left every broken body in the cache and `--iterate` handed them straight back.
     version = (f"compile_tools:{getattr(model, 'name', 'none')}:"
                f"{_module_hash(compile_env)}:{_module_hash(sandbox)}:{_module_hash(body_skill)}:"
+               # The gates the sandbox runs live in the gates package, and D187 changed what two
+               # results compare as; a body kept over an older ruling is not a body this one accepts.
+               f"{_module_hash(tool_runs)}:"
                # The readers' own source reaches the body writer through `world_note`, and the
                # module that renders it is not one of the three above.
                f"{_module_hash(readers)}:"
@@ -857,6 +865,10 @@ def _replay_stage(only: Optional[Iterable[str]] = None):
         env_id = getattr(inputs["environment"], "env_id", None)
         canon_rules = _rules_of(inputs)
         write_tools = {s.name for s in sigs if s.kind == "write"}
+        # What the Runner's own scoring cannot reach on its own: the schema's column classes, so an
+        # exempt column cannot fail a write and a semantic one is not held to a hard column's bar,
+        # and the readers, so a prose result is compared by the columns it asserts (D187).
+        comparer = tool_runs.ReplayComparer(schema, tool_runs.load_readers(inputs["readers"]), canon_rules)
         source = compile_env.module_source(schema, sigs, bodies)
         by_trace = {t.trace_id: t for t in inputs["traces"]}
         replays: dict[str, dict] = {}
@@ -883,7 +895,7 @@ def _replay_stage(only: Optional[Iterable[str]] = None):
                                       canon_rules=canon_rules, synthetic_rows=schema.synthetic_rows)
                 result = replay_mod.replay_trace(trace, router, workdir=ctx.workdir / "runs" / task.id,
                                                  task_id=task.id, env_id=env_id, write_tools=write_tools,
-                                                 canon_rules=canon_rules)
+                                                 canon_rules=canon_rules, comparer=comparer)
                 replays.setdefault(task.id, {})[trace_id] = result.as_dict()
         _write_json(ctx.workdir / "replays.json", replays)
         _write_runs_index(ctx.workdir)
@@ -892,10 +904,10 @@ def _replay_stage(only: Optional[Iterable[str]] = None):
         ctx.record_gate(fidelity.reference_replay_gate(replays))
         return {"replays": replays}
 
-    version = _version("replay_reference", run, replay_mod, fidelity, compile_env, route, loop)
+    version = _version("replay_reference", run, replay_mod, fidelity, compile_env, route, loop, tool_runs)
     return pipeline.Stage(name="replay_reference", fn=run,
                           inputs=("traces", "tasks", "sigs", "schema", "bodies", "db", "canon_rules",
-                                  "environment"),
+                                  "environment", "readers"),
                           outputs=("replays",),
                           input_paths=("overlays",) if only is None else ("overlays", "replays.json"),
                           code_version=version if only is None else f"{version}:only={','.join(only)}")

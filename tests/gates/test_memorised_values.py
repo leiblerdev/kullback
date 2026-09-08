@@ -9,7 +9,7 @@ values the recorded calls passed, and never by a name someone wrote into the cod
 from __future__ import annotations
 
 from conftest import PTR
-from kullback.gates.tool_runs import body_literals, body_memorised_values_gate
+from kullback.gates.tool_runs import body_literals, body_memorised_values_gate, load_readers
 from kullback.runner.records import Column, EntitySchema, FieldStat, ToolCall, ToolSig
 
 LIBRARY = {
@@ -247,3 +247,43 @@ def test_a_literal_with_a_real_id_shape_is_still_refused_beside_a_shapeless_patt
     result = _rule(source, _sig(), schema=_wildcard_schema())
     assert result.passed is False
     assert "'LN9999'" in result.failures[0] and "loans.loan_id" in result.failures[0]
+
+
+# --- rule (d): a value the recordings answered, not only one they passed in (D187) ---
+
+def _answering_calls(result: object) -> list[ToolCall]:
+    """One recorded call of the renewal tool, with the result the recording says it answered."""
+    return [ToolCall(id="c0", name="renew_loan", args={"loan_id": "LN0031", "term": "standard"},
+                     result=result, raw_ptr=PTR)]
+
+
+def test_a_literal_the_recorded_results_carried_is_refused_even_though_no_call_passed_it():
+    calls = _answering_calls({"loan_id": "LN0031", "fee": 1275, "term": "standard"})
+    body = "def renew_loan(self, loan_id, term):\n    return {'loan_id': loan_id, 'fee': 1275}\n"
+    ruling = body_memorised_values_gate(body, _schema(), LIBRARY, calls, _sig(), class_name="none")
+    assert ruling.passed is False
+    assert "1275" in ruling.failures[0] and "recorded results of renew_loan" in ruling.failures[0]
+
+
+def test_a_word_the_recorded_results_carried_is_the_tools_vocabulary_and_is_kept():
+    calls = _answering_calls({"loan_id": "LN0031", "state": "renewed", "term": "standard"})
+    body = "def renew_loan(self, loan_id, term):\n    return {'loan_id': loan_id, 'state': 'renewed'}\n"
+    ruling = body_memorised_values_gate(body, _schema(), LIBRARY, calls, _sig(), class_name="none")
+    assert ruling.passed is True
+
+
+def test_a_value_a_reader_reads_out_of_a_prose_result_is_refused_the_same_way():
+    reader = ("def read(result):\n"
+              "    return {'days_left': int(result.split(' ')[2])}\n")
+    readers = load_readers({"proposals": {"borrower": {
+        "table": "loans", "columns": ["days_left"],
+        "readers": [{"tool": "renew_loan", "source": reader}]}}})
+    calls = _answering_calls("Renewed. Now 137 days left")
+    body = "def renew_loan(self, loan_id, term):\n    return 'Renewed. Now %d days left' % 137\n"
+    kept = body_memorised_values_gate(body, _schema(), LIBRARY, calls, _sig(), class_name="none")
+    refused = body_memorised_values_gate(body, _schema(), LIBRARY, calls, _sig(), class_name="none",
+                                         readers=readers)
+    # 137 is a leaf of no recorded result until the reader is asked what the sentence asserts.
+    assert kept.passed is True
+    assert refused.passed is False
+    assert any("137" in line for line in refused.failures)

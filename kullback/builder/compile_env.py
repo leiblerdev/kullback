@@ -1176,7 +1176,7 @@ def _lookup_rows_text(schema: EntitySchema, db: dict, shown: list[ToolCall], cal
 
 def _build_tools_impl(schema: EntitySchema, toolsig: ToolSig, shown: list[ToolCall], db: dict,
                       call_states: Optional[dict], workdir: Path, attempt: int, timeout: float,
-                      rules: Any) -> dict[str, Callable[..., str]]:
+                      rules: Any, readers: Any = None) -> dict[str, Callable[..., str]]:
     """lookup_rows and test_body, closed over one attempt's own evidence and probe directory.
 
     test_body gates on `shown` alone, with an empty held-out list: the split the repair loop keeps
@@ -1194,7 +1194,7 @@ def _build_tools_impl(schema: EntitySchema, toolsig: ToolSig, shown: list[ToolCa
         sandbox = Sandbox(source, db, workdir / f"attempt_{attempt}_probe_{probes['n']}", timeout=timeout,
                           call_states=call_states)
         gates = run_gates(source, sandbox, shown, [], schema, rules,
-                          probe_refusals=toolsig.kind == "write", sig=toolsig)
+                          probe_refusals=toolsig.kind == "write", sig=toolsig, readers=readers)
         if all(g.passed for g in gates):
             return "passed every gate: " + ", ".join(g.stage for g in gates)
         return _failure_text(gates)
@@ -1522,7 +1522,7 @@ def body_could_not_run(gates: Iterable[GateResult], rows: Iterable[dict]) -> boo
 
 def grade_body(toolsig: ToolSig, body: str, calls: Iterable[ToolCall], schema: EntitySchema, db: dict,
                workdir: Path | str, call_states: Optional[dict] = None, rules: Any = None,
-               timeout: float = 30.0) -> ToolBuild:
+               timeout: float = 30.0, readers: Any = None) -> ToolBuild:
     """Run one body that already exists through the gates and the per-call replay, with no model call.
 
     This is `compile_tool` with the writing taken out: the same gates in the same order, the same
@@ -1542,11 +1542,11 @@ def grade_body(toolsig: ToolSig, body: str, calls: Iterable[ToolCall], schema: E
     source = module_source(schema, [toolsig], {toolsig.name: build.body})
     sandbox = Sandbox(source, db, workdir, timeout=timeout, call_states=call_states)
     build.gates = run_gates(source, sandbox, shown, held_out, schema, rules,
-                            probe_refusals=toolsig.kind == "write", sig=toolsig)
+                            probe_refusals=toolsig.kind == "write", sig=toolsig, readers=readers)
     build.assisted = not (build.gates and all(gate.passed for gate in build.gates))
     build.call_outcomes = (
         replay_outcomes(toolsig, build.body, calls, schema, db, workdir, call_states=call_states,
-                        rules=rules, timeout=timeout)
+                        rules=rules, timeout=timeout, readers=readers)
         if build.assisted else
         [{"tool": toolsig.name, "call_id": call.id, "replayed": True, "detail": ""} for call in calls])
     build.could_not_run = body_could_not_run(build.gates, build.call_outcomes)
@@ -1610,7 +1610,7 @@ def call_starting_states(db: dict, overlays: Iterable[TaskOverlay], values: dict
 
 def replay_outcomes(toolsig: ToolSig, body: str, calls: Iterable[ToolCall], schema: EntitySchema, db: dict,
                     workdir: Path | str, call_states: Optional[dict] = None, rules: Any = None,
-                    timeout: float = 30.0) -> list[dict]:
+                    timeout: float = 30.0, readers: Any = None) -> list[dict]:
     """Which of these recorded calls the kept body answers the way the recording did, one row per call (D171).
 
     The corpus gate (`gate_replay_fidelity`) rules over all of a tool's recorded calls at once and
@@ -1649,7 +1649,8 @@ def replay_outcomes(toolsig: ToolSig, body: str, calls: Iterable[ToolCall], sche
             rows.append({"tool": toolsig.name, "call_id": call.id, "replayed": False,
                          "detail": "the sandbox returned no result for this call"})
             continue
-        ruling = body_replay_fidelity_gate([call], [results[index]], schema, label="per_call", rules=rules)
+        ruling = body_replay_fidelity_gate([call], [results[index]], schema, label="per_call", rules=rules,
+                                           readers=readers)
         detail = "" if ruling.passed else (ruling.failures[0] if ruling.failures else "differs")
         rows.append({"tool": toolsig.name, "call_id": call.id, "replayed": bool(ruling.passed),
                      "detail": _clamped_detail(detail), "answer": answer_digest(results[index]),
@@ -1741,7 +1742,8 @@ def compile_tool(model, toolsig: ToolSig, calls: Iterable[ToolCall], schema: Ent
                  max_evidence_chars: Optional[int] = MAX_EVIDENCE_CHARS, timeout: float = 30.0,
                  call_states: Optional[dict] = None, rules: Any = None,
                  tool_names: Iterable[str] = (), error_prefix: Optional[str] = None,
-                 builder_tools: bool = True, lesson: str = "", world_note: str = "") -> ToolBuild:
+                 builder_tools: bool = True, lesson: str = "", world_note: str = "",
+                 readers: Any = None) -> ToolBuild:
     """Write one tool body, gate it, and repair it at most three times with growing evidence (D75).
 
     Attempt 1 sees the failing call, attempt 2 every failing call, attempt 3 the full call table, and
@@ -1833,7 +1835,7 @@ def compile_tool(model, toolsig: ToolSig, calls: Iterable[ToolCall], schema: Ent
             build.nodes.append(dict(node, refused=True))
             break
         tools_impl = (_build_tools_impl(schema, toolsig, shown, db, call_states, workdir, attempt,
-                                        timeout, rules)
+                                        timeout, rules, readers)
                      if builder_tools else None)
         try:
             if builder_tools:
@@ -1878,7 +1880,7 @@ def compile_tool(model, toolsig: ToolSig, calls: Iterable[ToolCall], schema: Ent
         sandbox = Sandbox(source, db, workdir / f"attempt_{attempt}", timeout=timeout,
                           call_states=call_states)
         gates = run_gates(source, sandbox, shown, held_out, schema, rules,
-                          probe_refusals=toolsig.kind == "write", sig=toolsig)
+                          probe_refusals=toolsig.kind == "write", sig=toolsig, readers=readers)
         node.update(body_hash=content_hash(body), gates=[as_dict(g) for g in gates],
                     passed=all(g.passed for g in gates))
         build.nodes.append(node)
@@ -1913,7 +1915,7 @@ def compile_tool(model, toolsig: ToolSig, calls: Iterable[ToolCall], schema: Ent
     # so its per-call rows are known without a sandbox and only an assisted tool pays for the run.
     build.call_outcomes = (
         replay_outcomes(toolsig, build.body, calls, schema, db, workdir, call_states=call_states,
-                        rules=rules, timeout=timeout)
+                        rules=rules, timeout=timeout, readers=readers)
         if build.assisted else
         [{"tool": toolsig.name, "call_id": call.id, "replayed": True, "detail": ""} for call in calls])
     build.hardcoded = build.assisted and hardcoded_body(calls, build.call_outcomes)
