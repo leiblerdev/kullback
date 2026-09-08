@@ -49,21 +49,34 @@ def _fidelity() -> dict:
     }
 
 
-def _plan(tmp_path: Path, *, status: dict, fidelity: dict, references: dict) -> ExaminerPlan:
+def _replays() -> dict:
+    """`replays.json` in the shape the reference replay gate reads: per Task, per Trace, whether
+    the Trace replayed to its End state and the gate's own reasons where it did not."""
+    return {
+        RENEW: {"trace-1": {"confirmed": False, "reasons": [DUE_DATE]}},
+        HOLD: {"trace-2": {"confirmed": False, "reasons": [NO_SHELF]}},
+        CARD: {"trace-3": {"confirmed": False, "reasons": ["the End state was never reached"]}},
+        FINE: {"trace-4": {"confirmed": True, "reasons": []}},
+    }
+
+
+def _plan(tmp_path: Path, *, status: dict, fidelity: dict, references: dict,
+          replays: dict | None = None) -> ExaminerPlan:
     """A plan over a workdir holding the files the rules read and nothing else."""
     workdir = tmp_path / "work"
     workdir.mkdir(parents=True, exist_ok=True)
     for name, body in (("task_status.json", status), ("tool_fidelity.json", fidelity),
                        ("references.json", references)):
         (workdir / name).write_text(json.dumps(body), encoding="utf-8")
-    return ExaminerPlan(workdir=workdir, inputs={"tool_fidelity": fidelity})
+    return ExaminerPlan(workdir=workdir,
+                        inputs={"tool_fidelity": fidelity, "replays": replays or {}})
 
 
 def _filed(plan: ExaminerPlan) -> list[tuple[str, str, int, str]]:
     return [(f.kind, f.tool or f.task_id or "", f.cost, f.suggested) for f in plan.open_findings()]
 
 
-# --- the four rules ---------------------------------------------------------------------
+# --- the five rules ---------------------------------------------------------------------
 
 def test_an_assisted_tool_is_filed_as_a_finding_naming_the_tasks_it_blocks_and_the_column_that_differs():
     """The finding is about the tool, not the Task, so one tool blocking two Tasks is one finding with
@@ -211,3 +224,35 @@ def test_two_findings_are_the_same_finding_when_the_kind_and_the_thing_they_are_
     assert F.finding_key("assisted_tool", "renew_loan") == F.finding_key("assisted_tool", "renew_loan", "")
     assert F.finding_key("suite", "mutation_flips") != F.finding_key("suite", "mutation_flips", "not_run")
     assert F.finding_key("fidelity", "", RENEW) != F.finding_key("environment", "", RENEW)
+
+
+def test_a_task_whose_replay_never_reached_its_end_state_is_filed_as_the_fidelity_loss_it_is():
+    """One live build labelled 1 of 46 findings fidelity while replay_reference was what blocked 58
+    Tasks: the loss reached the Builder under the name of whichever grading layer the Examiner had
+    read, so the Builder worked Verifiers of Tasks that had no Reference to derive one from."""
+    rows = F.fidelity_rows(_status(), _fidelity(), _replays())
+    assert [r["task_id"] for r in rows] == [CARD, HOLD, RENEW], "one per Task, none for the confirmed one"
+    renew = next(r for r in rows if r["task_id"] == RENEW)
+    assert renew["kind"] == "fidelity" and renew["tool"] == "renew_loan"
+    assert renew["suggested"] == "repair_recompile" and renew["hint"] == DUE_DATE
+    assert DUE_DATE in renew["text"] and "renew_loan" in renew["text"]
+    assert next(r for r in rows if r["task_id"] == HOLD)["tool"] == "place_hold", "its own blocker"
+    card = next(r for r in rows if r["task_id"] == CARD)
+    assert card["tool"] is None and card["suggested"] == "none", "no tool is named, so no verb is"
+    assert card["hint"] == "the End state was never reached"
+
+
+def test_a_fidelity_loss_already_named_by_an_open_finding_on_the_same_task_and_tool_is_not_said_twice(tmp_path):
+    """The assisted_tool finding about a tool already lists the Tasks it costs; a fidelity finding
+    on one of those Tasks and that tool is the same news in a second message, and each message
+    costs the Builder a turn. What is not covered is filed."""
+    plan = _plan(tmp_path, status=_status(), fidelity=_fidelity(), references={}, replays=_replays())
+    filed = F.file_rule_findings(plan)
+    fidelity = [(f.task_id, f.tool) for f in filed if f.kind == "fidelity"]
+    assert fidelity == [(CARD, None)], "the two Tasks an assisted_tool finding covers are not said again"
+    assert ("assisted_tool", "renew_loan") in [(f.kind, f.tool) for f in filed]
+    assert F.covered_pairs({"tool": "renew_loan", "task_ids": [RENEW]}) == {(RENEW, "renew_loan")}
+    assert (RENEW, "renew_loan") in F.told_task_tools(plan)
+    plan.close_findings([f.finding_id for f in filed])
+    assert [f.kind for f in F.file_rule_findings(plan)] == [], (
+        "a pair the Builder has been told about is not said again under a second name")

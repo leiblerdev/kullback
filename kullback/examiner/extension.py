@@ -86,7 +86,9 @@ EXAMPLES = ("Examples of a ruling and the call that answers it.\n"
             "one Run did finish is never refused.\n"
             "5. A Verifier that passed the suite: probe(task_id=\"task_1a2b\", bug_class=\"extra-field "
             "acceptance\", note=\"writes the change and a refund nobody asked for\", events=[...]); one "
-            "it accepts is the repair worth writing.")
+            "it accepts is the repair worth writing.\n"
+            "6. `repair failed: the payload of atom atom-3 is str ... as an object: {...}` -> the "
+            "reason was not the problem; call repair again with it and the atom as written there.")
 RULES = ("Choosing. Derive first, every round. Act first on the Tasks with a confirmed Reference whose "
          "Verifier failed the suite, then on the Tasks with no Verdict, and say in each finding which "
          "Builder verb answers it. You never read a tool body, the Starting state, the schema, the "

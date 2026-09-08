@@ -45,7 +45,7 @@ import asyncio
 import json
 import textwrap
 from pathlib import Path
-from typing import Any, Awaitable, Callable, Optional
+from typing import Any, Awaitable, Callable, Iterable, Optional
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -95,6 +95,9 @@ class BuildResult(BaseModel):
     # How the one Task, tool or table a repair verb was called on came out, read off the artifact
     # the stage just wrote (`repair.target_ruling`). Empty for a tool that has no single target.
     target_ruling: str = ""
+    # The name of that one target. `target` is the stage the verb ran (`intent`, `compile_tools`),
+    # which is not what the ruling is about, and the ruling in hand is kept per target (D192).
+    ruling_target: str = ""
     stage_gates: list[Ruling] = Field(default_factory=list)
     stages: list[StageReport] = Field(default_factory=list)
     produced: list[str] = Field(default_factory=list)
@@ -103,15 +106,36 @@ class BuildResult(BaseModel):
     payload: dict[str, Any] = Field(default_factory=dict)
 
 
-def render(result: BuildResult) -> str:
+# What a result says instead of leaving a zoom to be guessed at. The ruling is already there, so
+# the only thing a `status(target=)` on it would add is the same line again: one live build zoomed
+# two to three times per tool with no ruling change between the calls. `plan.zooms_skipped` counts
+# every nudge withheld this way, here and in `render_status`.
+NO_ZOOM = ("this is {target}'s own ruling as it stands after this call, so status(target=\"{target}\") "
+           "in this turn would read back the same line")
+
+
+def render(result: BuildResult, plan: Optional[BuildPlan] = None) -> str:
     """The lines the model reads: the target's own ruling, the status, the stages, the rulings.
 
     A repair verb's result opens with what happened to the one target it was called on, before
     anything a gate says. The gate-wide line still follows, and a gate failing over many targets
     now says how many and names its first as an example (`counted_ruling_line`), so neither line
     can be read as a verdict on the target the other one is about. The payload stays in details.
+
+    A result carrying its target's own ruling says so and takes the zoom off the table (`NO_ZOOM`);
+    with a `plan` the target is remembered as being in hand, and a result that carries no target
+    ruling is a run over more than one target, which puts every ruling back in question and empties
+    the hand.
     """
+    named = result.ruling_target or result.target
     lines = [result.target_ruling] if result.target_ruling else []
+    if plan is not None and result.target_ruling:
+        plan.rulings_in_hand[named] = result.target_ruling
+        plan.zooms_skipped += 1
+    elif plan is not None:
+        plan.rulings_in_hand.clear()
+    if result.target_ruling:
+        lines.append(NO_ZOOM.format(target=named))
     lines.append(result.summary)
     # status is already "cached" for a stage the cache served, so the flag would only say it twice.
     ran = [f"{s.name} ({s.status})" for s in result.stages if s.status != "pending"]
@@ -402,12 +426,18 @@ def _count(n: int, noun: str, plural: str = "s") -> str:
     return f"{n} {noun}{'' if n == 1 else plural}"
 
 
-def _headline(lights: list[RedLight], passing: list[str], failing: list[str], delta: str = "") -> str:
+def _headline(lights: list[RedLight], passing: list[str], failing: list[str], delta: str = "",
+              refused: Iterable[str] = ()) -> str:
     """The one line the model reads first: how much is red, how many Tasks it costs, what is assisted.
 
     `delta` is what the round before moved (`round_delta.delta_line`). Without it the picture is of
     the artifacts as they stand, and one live build lost a third of its trusted Tasks over three
     rounds with every round reading the same as the last.
+
+    `refused` are the Tasks already refused twice for one reason (`repair.refused_twice`). A third
+    refusal of them is refused in code, so the status says which they are rather than leaving the
+    session to find out by calling the verb: one live build made 17 refusals, had 0 admitted, and
+    repeated four Tasks word for word two rounds later.
     """
     tasks, top = _no_verdict(lights)
     hardcoded = _hardcoded(lights)
@@ -423,6 +453,9 @@ def _headline(lights: list[RedLight], passing: list[str], failing: list[str], de
     if hardcoded:
         parts.append(f"{_count(len(hardcoded), 'tool')} hardcoded, answering alike whatever they are "
                      f"given: " + ", ".join(hardcoded))
+    twice = list(refused)
+    if twice:
+        parts.append("refused twice: " + ", ".join(twice))
     if delta:
         parts.append(delta)
     return "status: " + "; ".join(parts)
@@ -522,7 +555,8 @@ def status_of(workdir: Any, gate: str = "", target: str = "") -> StatusResult:
     asked = [part for part in (f"gate={gate}" if gate else "", f"target={target}" if target else "") if part]
     shown = [light for light in lights
              if (not gate or light.stage == gate) and (not target or light.target == target)]
-    summary = _headline(lights, passing, failing, round_delta.delta_line(workdir))
+    summary = _headline(lights, passing, failing, round_delta.delta_line(workdir),
+                        repair_module.refused_twice(workdir))
     if unbuilt:
         summary = UNBUILT_SUMMARY
     elif asked:
@@ -544,7 +578,7 @@ def _in_full(result: StatusResult) -> list[str]:
     return lines
 
 
-def render_status(result: StatusResult) -> str:
+def render_status(result: StatusResult, plan: Optional[BuildPlan] = None) -> str:
     """The headline, then every gate grouped; a zoom prints its red lights one by one instead.
 
     Nothing is cut from the grouped picture: every failing gate is a block, every tool it names is a
@@ -567,8 +601,25 @@ def render_status(result: StatusResult) -> str:
     lines = [result.summary]
     for stage, lights in by_gate.items():
         lines += _gate_block(stage, lights)
-    lines.append(ZOOM_HINT)
+    # The nudge is withheld when every target in the picture has already handed the model its own
+    # ruling this turn (`NO_ZOOM`): the zoom would read back lines the model is holding.
+    targets = {light.target for light in result.red_lights if light.target}
+    hand = set((plan.rulings_in_hand if plan is not None else {}) or {})
+    if targets and targets <= hand:
+        plan.zooms_skipped += 1
+    else:
+        lines.append(ZOOM_HINT)
     return "\n".join(lines)
+
+
+def _render_for(plan: BuildPlan) -> Callable[[BuildResult], str]:
+    """`render` bound to one session's plan, which is where the rulings in hand are kept."""
+    return lambda result: render(result, plan)
+
+
+def _render_status_for(plan: BuildPlan) -> Callable[[StatusResult], str]:
+    """`render_status` bound to one session's plan, for the same reason."""
+    return lambda result: render_status(result, plan)
 
 
 def result_of(plan: BuildPlan, target: str, result: Any, verb: str) -> BuildResult:
@@ -673,6 +724,7 @@ def _repair_executor(plan: BuildPlan, sink: Optional[Sink], verb: str, target_of
                  **repair_module.change_of(plan.workdir, verb, target, hash_before)},
                 round_no=plan.round)
         result.target_ruling = repair_module.target_ruling(plan.workdir, verb, args)
+        result.ruling_target = target
         return result
 
     return execute
@@ -710,14 +762,14 @@ def repair_verb_tools(plan: BuildPlan, sink: Optional[Sink] = None) -> list[Agen
                   repair_module.RecompileArgs, BuildResult,
                   _repair_executor(plan, sink, "repair_recompile", lambda a: a.name,
                                    lambda a: {"tools": [a.name]}, "compile_tools",
-                                   before=_keep_hint(plan)), render=render),
+                                   before=_keep_hint(plan)), render=_render_for(plan)),
         AgentTool("repair_grow",
                   "Repair the Starting state: grow one table to a row count with synthetic rows (D107). "
                   "The result opens with how many rows that table holds now.",
                   repair_module.GrowRepairArgs, BuildResult,
                   _repair_executor(plan, sink, "repair_grow", lambda a: a.table,
                                    lambda a: {"grow": {**dict(plan.grow or {}), a.table: a.count}},
-                                   "starting_state"), render=render),
+                                   "starting_state"), render=_render_for(plan)),
         AgentTool("repair_intent",
                   "Repair one Task's Intent: write it again with a hint saying what the Task's Runs "
                   "evidence. An Intent with a noun phrase no Run says in those words leaves the Task "
@@ -728,7 +780,7 @@ def repair_verb_tools(plan: BuildPlan, sink: Optional[Sink] = None) -> list[Agen
                   _repair_executor(plan, sink, "repair_intent", lambda a: a.task_id,
                                    lambda a: {"intent_tasks": [a.task_id],
                                               "intent_hints": {a.task_id: a.hint}},
-                                   "intent"), render=render),
+                                   "intent"), render=_render_for(plan)),
         recording["repair_refuse_task"],
         recording["repair_escalate"],
         recording["repair_record_finding"],
@@ -743,28 +795,28 @@ def builder_tools(plan: BuildPlan, sink: Optional[Sink] = None) -> list[AgentToo
                   "grouped by the kind of failure, with the repair verb that answers it. Nothing is cut "
                   "from the list. Pass `gate` or `target` to zoom: that one gate's or that one tool's or "
                   "Task's red lights, each in full. Read off the records, never off a model.",
-                  StatusArgs, StatusResult, _status_executor(plan), render=render_status),
+                  StatusArgs, StatusResult, _status_executor(plan), render=_render_status_for(plan)),
         AgentTool("build", "Build a target of the Environment: `environment` for everything, or one stage "
                   "or artifact by name; whatever it reads that is stale is rebuilt first.",
                   BuildArgs, BuildResult,
-                  _executor(plan, sink, "build", lambda a: a.target, lambda a: {}), render=render),
+                  _executor(plan, sink, "build", lambda a: a.target, lambda a: {}), render=_render_for(plan)),
         AgentTool("recluster", "Cluster the Runs into Tasks again under the fixed configuration.",
                   NoArgs, BuildResult,
-                  _executor(plan, sink, "recluster", lambda a: "cluster", lambda a: {}), render=render),
+                  _executor(plan, sink, "recluster", lambda a: "cluster", lambda a: {}), render=_render_for(plan)),
         AgentTool("grow", "Grow one table of the Starting state to a row count with synthetic rows (D107).",
                   GrowArgs, BuildResult,
                   _executor(plan, sink, "grow", lambda a: "starting_state",
-                            lambda a: {"grow": {**dict(plan.grow or {}), a.table: a.count}}), render=render),
+                            lambda a: {"grow": {**dict(plan.grow or {}), a.table: a.count}}), render=_render_for(plan)),
         AgentTool("compile_tool", "Compile one tool's body again from its recorded calls, through the sandbox gates.",
                   CompileToolArgs, BuildResult,
                   _executor(plan, sink, "compile_tool", lambda a: "compile_tools",
-                            lambda a: {"tools": [a.name]}), render=render),
+                            lambda a: {"tools": [a.name]}), render=_render_for(plan)),
         AgentTool("replay", "Replay one Task's Traces through the built tools (the Reference Runs, D108).",
                   ReplayArgs, BuildResult,
                   _executor(plan, sink, "replay", lambda a: "replay_reference",
-                            lambda a: {"replay_tasks": [a.task]}), render=render),
+                            lambda a: {"replay_tasks": [a.task]}), render=_render_for(plan)),
         AgentTool("reroll", "Re-roll one Task with the frontier model inside the built Environment (D112).",
                   RerollArgs, BuildResult,
                   _executor(plan, sink, "reroll", lambda a: "rerolls",
-                            lambda a: {"reroll_tasks": [a.task]}), render=render),
+                            lambda a: {"reroll_tasks": [a.task]}), render=_render_for(plan)),
     ]

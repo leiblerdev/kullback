@@ -341,3 +341,26 @@ def test_a_finding_records_the_tool_the_leaf_and_the_calls_it_rests_on_and_moves
     assert row["target"] == "update_booking" and row["changed"] is False
     assert row["arguments"]["evidence"] == ["call_12", "call_40"]
     assert row["arguments"]["finding"].startswith("rooms[*].rate:")
+
+
+def test_the_same_task_refused_twice_for_the_same_reason_is_refused_a_third_time(tmp_path):
+    """D181 stopped the Examiner repairing one Verifier against one check for ever; the Builder's
+    refusal had no such stop. One live build made 17 of them, had 0 admitted, and two rounds later
+    refused four Tasks again with the reason word for word. Refusing moves nothing, so two
+    identical requests are all the information there is."""
+    tools = {t.name: t for t in repair.repair_tools(tmp_path)}
+    ask = {"task_id": "task_dock", "reason": "no frontier Run docks the bike"}
+    assert not _run(tools["repair_refuse_task"], ask).is_error
+    assert not _run(tools["repair_refuse_task"], dict(ask)).is_error
+    third = _run(tools["repair_refuse_task"], dict(ask))
+    assert third.is_error and "refused 2 times for this reason" in third.content
+    assert "repair_escalate" in third.content, "and what buys something instead"
+    assert repair.refused_twice(tmp_path) == ["task_dock"]
+    # A different reason is a different thing to say, and so is a different Task.
+    assert not _run(tools["repair_refuse_task"],
+                    {"task_id": "task_dock", "reason": "its recordings disagree"}).is_error
+    assert not _run(tools["repair_refuse_task"], {"task_id": "task_rack", **{"reason": ask["reason"]}}).is_error
+    rows = _requests(tmp_path, "repair_refuse_task")
+    assert [row.get("blocked") for row in rows] == [None, None, True, None, None]
+    assert repair.refuse_repeats(tmp_path) == 2, "the second identical ask and the blocked third"
+    assert repair.refuse_repeats(tmp_path, round_no=99) == 0, "narrowed to a round that made none"

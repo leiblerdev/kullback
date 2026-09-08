@@ -1507,6 +1507,12 @@ class BuildPlan:
     # these to know the store is partial and the target has to be built again (D161).
     last_target: Optional[str] = field(init=False, default=None)
     last_narrowing: dict = field(init=False, default_factory=dict)
+    # The targets whose own ruling a repair verb has already put in front of the model, by target,
+    # and how many `status(target=)` nudges that has spared (`builder/tools.py`, D192). A repair
+    # result opens with the target's own ruling, so a zoom on that target reads back the line the
+    # model has just read; one live build spent two to three of them per tool with no ruling change.
+    rulings_in_hand: dict = field(init=False, default_factory=dict)
+    zooms_skipped: int = field(init=False, default=0)
 
     def __post_init__(self) -> None:
         self.workdir = Path(self.workdir)
