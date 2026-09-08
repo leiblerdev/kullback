@@ -18,7 +18,8 @@ Runner as a tool of both agents (D120).
 from __future__ import annotations
 
 import hashlib
-from dataclasses import dataclass
+import threading
+from dataclasses import dataclass, field
 from functools import lru_cache
 from pathlib import Path
 from typing import Any, Callable, Iterable, Optional
@@ -30,7 +31,7 @@ from kullback.gates import artifacts, fidelity, verifier_suite
 from kullback.gates import scorecard as scorecard_mod
 from kullback.gates import stages as stage_gates
 from kullback.gates.ledger import GateLedger
-from kullback.runner import parallel
+from kullback.runner import budget, parallel
 from kullback.runner.canon import rules_of
 from kullback.runner.records import (
     GateResult,
@@ -56,7 +57,7 @@ STAGE = "derive_verifier"
 # The per-Task cache under the workdir (D163). Bumped when the entry's shape changes, so an old entry
 # is a miss rather than a row read with the wrong meaning.
 CACHE_DIR = ("examiner", "cache")
-CACHE_FORMAT = 4  # the status row counts the atoms D190 relaxed to a shape and added to falsify
+CACHE_FORMAT = 5  # the status row counts D190's relaxed and falsifying atoms and D189's second-path batches
 # The modules a Task's derivation runs through, hashed into every key: an edit to any of them is a
 # different derivation and must not be served a stale entry (the Builder's stages hash the same way,
 # build.py's `_version`).
@@ -148,7 +149,7 @@ def final_constraints(ctx, inputs: dict, seed_replays: dict, write_tools: set, r
     are the frontier under the customer's real policy, so a rule they mostly break is a miscompiled
     rule, and it becomes a residual, reported in the setup review and checked in no Verdict. The
     compile_policy gate is recorded again over the final list, after the recordings have had their
-    say, which is the order the reference check has to run in: on the second retail build 15 of 39
+    say, which is the order the reference check has to run in: on one early build 15 of 39
     compiled rules fired on confirmed recordings and poisoned every Verifier.
     """
     compiled = [c for c in inputs["constraints"] if c.compiled or c.judge_atom]
@@ -225,6 +226,164 @@ def pool_runs_of(task_id: str, replays: dict, rerolls: dict) -> list[tuple[str, 
             seen.add(row["run_id"])
             out.append((str(row["run_id"]), str(row["path"])))
     return out
+
+
+# --- the second path (D189) ------------------------------------------------------
+
+# A Task whose Reference stands alone leaves check 5 with nothing to score: `suite_for` has no
+# second Run to pass and the suite reports it not run, never passed (D173). The stage buys more
+# frontier Runs of that Task, a batch at a time, and stops as soon as one of them reaches the
+# Reference's End state, which is the second path the check wants. The cap is what bounds the cost:
+# at most `SECOND_PATH_BATCHES` batches of `SECOND_PATH_RUNS` Runs per Task per call, and a Task
+# that exhausts it keeps the check not run and says so on its row.
+SECOND_PATH_REASON = "second_path"
+SECOND_PATH_BATCHES = 3
+SECOND_PATH_RUNS = 3  # the Runs one batch buys, the count the re-roll stage samples per Task (D112)
+SECOND_PATH_PREFIX = "second-path"
+NO_REROLL_RUNNER = "no re-roll Runner in this session"
+CEILING_REACHED = "the budget ceiling was reached"
+# Where the Examiner's own re-roll rows live, the file `ExaminerPlan` reads back and merges into the
+# frontier pool (D133). The rows this stage writes carry their reason, so a re-run of the derivation
+# reads its own batches back and buys nothing, and the rows another verb wrote are left to it.
+EXTRA_REROLLS = ("examiner", "rerolls.json")
+_EXTRA_REROLLS_LOCK = threading.Lock()
+
+
+def extra_rerolls_path(workdir: Path) -> Path:
+    return Path(workdir).joinpath(*EXTRA_REROLLS)
+
+
+def second_path_rows(workdir: Path, task_id: str) -> list[dict]:
+    """The extra batches this stage already bought for one Task, off the Examiner's re-roll file.
+
+    Keyed by the reason the way D177 keys a Task's re-rolls by what they were sampled under: a
+    second derivation over the same Task reads these rows back rather than buying the batch again.
+    """
+    try:
+        rows = read_json(extra_rerolls_path(workdir), {}) or {}
+    except (OSError, ValueError):
+        return []
+    return [dict(row) for row in (rows.get(task_id) or [])
+            if isinstance(row, dict) and row.get("reason") == SECOND_PATH_REASON
+            and row.get("path") and Path(row["path"]).is_file()]
+
+
+def record_second_path(workdir: Path, task_id: str, rows: Iterable[dict], batch: int) -> list[dict]:
+    """One batch's Runs into the Examiner's own re-roll file, tagged with the batch and the reason.
+
+    They join the Task's Runs like any other re-roll: the plan merges this file into `rerolls`, so
+    the frontier pool, the loosening gate and the next derivation all see them.
+    """
+    tagged = [{**dict(row), "reason": SECOND_PATH_REASON, "batch": int(batch)} for row in rows]
+    with _EXTRA_REROLLS_LOCK:
+        path = extra_rerolls_path(workdir)
+        try:
+            every = read_json(path, {}) or {}
+        except (OSError, ValueError):
+            every = {}
+        seen = {row.get("run_id") for row in every.get(task_id) or []}
+        every.setdefault(task_id, []).extend(row for row in tagged if row.get("run_id") not in seen)
+        write_json(path, every)
+    return tagged
+
+
+def finished_recordings(rows: Iterable[dict], *, write_tools: set, fn: Callable, atoms: Any) -> list:
+    """The Runs of some re-roll rows that reached a success termination, as Recordings."""
+    return [reference_mod.load(row["path"], reference_mod.REROLL, run_id=row["run_id"],
+                               write_tools=write_tools, fn=fn, atoms=atoms)
+            for row in rows
+            if row.get("path")
+            and (row.get("termination_reason") or "") in verifier_suite.SUCCESS_TERMINATIONS]
+
+
+def reaches_reference(reference: Any, candidate: Any) -> bool:
+    """Does this Run reach the Reference's End state? The D111 grouping rule, asked of two Runs.
+
+    `reference.group` is the definition and it is not restated here: two Runs the rule would have
+    put in one group are one End state, which is the same writes with the same answers whatever
+    order a list argument came in (D182), and a Run that reaches it by other reads or other wording
+    is the second path check 5 scores (D46).
+    """
+    return len(reference_mod.group([reference, candidate])) == 1
+
+
+def merge_second_path(confirmation: Any, candidates: Iterable[Any]) -> int:
+    """The extra batches' Runs onto a settled Confirmation; how many of them reach the Reference.
+
+    The Reference is what the D111 rule settled over the Task's evidence. These Runs were bought
+    after it and for one purpose, to find a second way to the End state it settled on, so they
+    corroborate it and never re-open it. One that landed somewhere else did not do the Task and is
+    recorded in the same words the false-rejection pool uses for such a Run (D133), so it is counted
+    and left out rather than dropped.
+    """
+    if not confirmation.references:
+        return 0
+    reference = confirmation.references[0]
+    joined = 0
+    for rec in candidates:
+        if any(seen.run_id == rec.run_id for seen in confirmation.recordings):
+            continue
+        confirmation.recordings.append(rec)
+        if reaches_reference(reference, rec):
+            confirmation.references.append(rec)
+            joined += 1
+        else:
+            confirmation.failed[rec.run_id] = WROTE_NOTHING if not rec.settled else WROTE_OTHERWISE
+    return joined
+
+
+def second_path_row(batches: int, runs: int, *, found: bool, cap: int = SECOND_PATH_BATCHES,
+                    reason: str = "") -> dict:
+    """What the search for a second path cost this Task and what it bought, for the row and the counts."""
+    if found:
+        why = ""
+    else:
+        why = reason or (f"no second path in {batches} batches" if batches else NO_REROLL_RUNNER)
+    return {"batches": int(batches), "runs": int(runs), "found": bool(found),
+            "exhausted": bool(not found and batches >= cap), "reason": why}
+
+
+def _second_path(row: Any) -> dict:
+    """One status row's second-path record, with zeroes for a row that carries none (an older entry)."""
+    found = (row or {}).get("second_path") if isinstance(row, dict) else None
+    if not isinstance(found, dict):
+        return second_path_row(0, 0, found=False)
+    return {"batches": int(found.get("batches") or 0), "runs": int(found.get("runs") or 0),
+            "found": bool(found.get("found")), "exhausted": bool(found.get("exhausted")),
+            "reason": str(found.get("reason") or "")}
+
+
+def second_path_search(task_id: str, confirmation: Any, *, workdir: Path, run_rerolls: Any,
+                       round_number: int, write_tools: set, fn: Callable, atoms: Any,
+                       cap: int = SECOND_PATH_BATCHES,
+                       count: int = SECOND_PATH_RUNS) -> tuple[dict, list, bool]:
+    """Batches of fresh Runs until one reaches the Reference's End state, or the cap (D189).
+
+    Bounded per Task by the cap and per round by the Tasks that have one Reference and no more: at
+    most `cap` batches of `count` Runs each, about ten model calls a Run. A batch that finds the
+    second path is the last one bought; a Task that exhausts the cap keeps check 5 not run and its
+    row says how many batches went into saying so. The Runs of every batch are recorded whatever
+    they reached, so the round can be read for what the search cost.
+    """
+    bought, runs, ceiling = 0, 0, False
+    recordings: list = []
+    while run_rerolls is not None and bought < cap and len(confirmation.references) < 2:
+        prefix = f"{SECOND_PATH_PREFIX}-r{round_number}-b{bought + 1}"
+        try:
+            rows = [dict(row) for row in run_rerolls(task_id, count, prefix) or []]
+        except budget.BudgetExceeded:
+            ceiling = True
+            break
+        bought += 1
+        runs += len(rows)
+        record_second_path(workdir, task_id, rows, bought)
+        fresh = finished_recordings(rows, write_tools=write_tools, fn=fn, atoms=atoms)
+        recordings.extend(fresh)
+        merge_second_path(confirmation, fresh)
+    found = len(confirmation.references) > 1
+    row = second_path_row(bought, runs, found=found, cap=cap,
+                          reason=CEILING_REACHED if ceiling and not found else "")
+    return row, recordings, ceiling
 
 
 def task_fidelity(tool_fidelity: Any, task_id: str) -> dict:
@@ -343,6 +502,7 @@ def verifier_for(ctx, task: Task, confirmation: Any, *, canon_rules: Any, write_
                  intents: dict, user_rules: dict, recordings: int, rerolls: int, probe: Any,
                  probe_model: Any, may_probe: bool, fidelity_row: Optional[dict] = None,
                  pool_runs: Iterable[tuple[str, str]] = (), fn: Optional[Callable] = None,
+                 second_path: Optional[dict] = None,
                  verifier_version: str = "1") -> tuple[Verifier, dict]:
     """One Task's Verifier from its References, through the whole D79 suite, with its status row.
 
@@ -353,6 +513,9 @@ def verifier_for(ctx, task: Task, confirmation: Any, *, canon_rules: Any, write_
     held-out Runs that did not reach the Reference's End state beside the recordings the D111 rule
     discarded; `did_not_reach_reference` names that half on its own, so a reader can tell the two
     apart and the ruling can count them.
+
+    `second_path` is what the search for a second path to the Reference cost this Task and whether
+    it found one (D189); a Task that never had to search carries a row of zero batches.
     """
     paths = [r.path for r in confirmation.references]
     first = confirmation.references[0]
@@ -377,6 +540,8 @@ def verifier_for(ctx, task: Task, confirmation: Any, *, canon_rules: Any, write_
               "checks": results,
               "not_run": [g.stage for g in gates if g.metrics.get("skipped")],
               **verifier_mod.derivation_counts(record),
+              "second_path": second_path if second_path is not None else second_path_row(
+                  0, 0, found=len(confirmation.references) > 1),
               **fidelity_fields(fidelity_row or {})}
     return record, status
 
@@ -464,6 +629,10 @@ class _Job:
     entry: Optional[dict] = None  # the cache hit, with the Task's outputs in it
     confirmation: Any = None      # the D111 answer, on a miss
     may_probe: bool = False
+    # Every Run the key was taken over: the Task's own recordings and the extra batches an earlier
+    # derivation bought for the second path (D189), which are merged after the rule has settled.
+    recordings: list = field(default_factory=list)
+    extra: list = field(default_factory=list)
 
     @property
     def cached(self) -> bool:
@@ -474,7 +643,7 @@ class _Job:
 
 def derive_all(ctx: ExamContext, inputs: dict, *, probe_model: Any = None, probe_limit: Optional[int] = None,
                judge_model: Any = None, judge_agent: bool = False, run_probe: Any = None,
-               only: Optional[str] = None,
+               run_rerolls: Any = None, round_number: int = 0, only: Optional[str] = None,
                workers: int = 1, code_hash: Optional[str] = None) -> dict:
     """One Verifier per Task from its References by the D111 rule, through the whole D79 suite.
 
@@ -494,6 +663,13 @@ def derive_all(ctx: ExamContext, inputs: dict, *, probe_model: Any = None, probe
     rules and falls back to the one-shot judge over its cap. The flag is in the cache key beside the
     judge's name, so turning it on or off derives every Reference again rather than reading the other
     judge's answer off disk.
+
+    `run_rerolls` is the Builder's re-roll callable (D120), and a Task whose Reference stands alone
+    is re-rolled through it until a Run reaches that Reference's End state by another path or the
+    cap of `SECOND_PATH_BATCHES` batches is spent (D189). Without the callable nothing is bought and
+    check 5 stays not run, as it was. The Runs of every batch are recorded in the Examiner's own
+    re-roll file under the reason `second_path`, so a second derivation over the same Task reads
+    them back rather than buying them again.
 
     An assisted tool is a corpus-level ruling and it blocks no Task on its own (D171): a Task is
     blocked by a tool only when one of the Task's own recorded calls of it differs, which is what
@@ -566,15 +742,21 @@ def derive_all(ctx: ExamContext, inputs: dict, *, probe_model: Any = None, probe
                                           write_tools=write_tools, fn=fn, atoms=atoms)
                        for r in rerolls.get(task.id, [])
                        if (r.get("termination_reason") or "") in verifier_suite.SUCCESS_TERMINATIONS]
-        key = cache_key(task, recordings, common, intents=intents, user_rules=user_rules, traces=traces,
-                        fidelity_row=task_fidelity(tool_fidelity, task.id))
+        # D189: the extra batches an earlier derivation bought sit outside the D111 rule's evidence,
+        # so they are in the key (a batch bought is a different derivation) and are merged onto the
+        # Confirmation afterwards rather than being handed to `confirm`.
+        extra = finished_recordings(second_path_rows(ctx.workdir, task.id),
+                                    write_tools=write_tools, fn=fn, atoms=atoms)
+        key = cache_key(task, recordings + extra, common, intents=intents, user_rules=user_rules,
+                        traces=traces, fidelity_row=task_fidelity(tool_fidelity, task.id))
         entry = read_entry(ctx.workdir, task.id, key)
         if entry is not None:
             return _Job(task=task, key=key, entry=entry)
         confirmation = reference_mod.confirm(recordings, intent=request_text(task, intents, traces),
                                              policy_lines=policy_lines, judge=judge,
                                              phrases=grounded_phrases(intents.get(task.id)))
-        return _Job(task=task, key=key, confirmation=confirmation)
+        return _Job(task=task, key=key, confirmation=confirmation,
+                    recordings=recordings + extra, extra=extra)
 
     jobs = parallel.each(tasks, prepare, workers)
     # The probe budget is spent in Task order whatever order the threads ran in, so which Tasks get
@@ -586,6 +768,10 @@ def derive_all(ctx: ExamContext, inputs: dict, *, probe_model: Any = None, probe
         elif job.confirmation.references:
             job.may_probe = probe is not None and (probe_limit is None or probed < probe_limit)
             probed += int(job.may_probe)
+
+    # Set when a second-path batch hit the run ceiling, so the caller can stop the round rather than
+    # read a derivation that quietly bought nothing (the re-roll tool raises for the same reason).
+    ceiling_reached = threading.Event()
 
     def finish(job: _Job) -> dict:
         """The Task's outputs: the cache entry as it stands, or the derivation and a new entry."""
@@ -602,12 +788,26 @@ def derive_all(ctx: ExamContext, inputs: dict, *, probe_model: Any = None, probe
                                       assisted_tools=assisted_tools, fidelity_row=fidelity_row)
             verifier = None
         else:
+            # D189: the batches an earlier derivation bought, then as many fresh ones as the cap
+            # allows, until check 5 has a second path to score.
+            merge_second_path(confirmation, job.extra)
+            second, bought, ceiling = second_path_search(
+                task.id, confirmation, workdir=ctx.workdir, run_rerolls=run_rerolls,
+                round_number=round_number, write_tools=write_tools, fn=fn, atoms=atoms)
+            if bought:
+                job.recordings = job.recordings + bought
+                job.key = cache_key(task, job.recordings, common, intents=intents,
+                                    user_rules=user_rules, traces=traces, fidelity_row=fidelity_row)
+            if ceiling:
+                ceiling_reached.set()
+            extra_pool = [(r.run_id, r.path) for r in job.extra + bought]
             record, row = verifier_for(
                 ctx, task, confirmation, canon_rules=canon_rules, write_tools=write_tools,
                 constraints=constraints, intents=intents, user_rules=user_rules,
                 recordings=len(seed_replays[task.id]), rerolls=len(rerolls.get(task.id, [])),
                 probe=probe, probe_model=probe_model, may_probe=job.may_probe,
-                fidelity_row=fidelity_row, pool_runs=pool_runs_of(task.id, replays, rerolls), fn=fn)
+                fidelity_row=fidelity_row, second_path=second,
+                pool_runs=pool_runs_of(task.id, replays, rerolls) + extra_pool, fn=fn)
             verifier = as_dict(record)
         entry = {"format": CACHE_FORMAT, "task_id": task.id, "key": job.key, "status": row,
                  "references": confirmation.as_dict(), "verifier": verifier, "probed": job.may_probe}
@@ -645,7 +845,16 @@ def derive_all(ctx: ExamContext, inputs: dict, *, probe_model: Any = None, probe
         # D133: the held-out Runs the pool leaves out because they did not reach the Reference's
         # End state, named per Task on the status row and counted here for the Examiner.
         did_not_reach_reference=sum(len(r.get("did_not_reach_reference") or ()) for r in status.values()),
+        # D189: what the search for a second path cost and bought this round. `second_path_runs` is
+        # the whole extra frontier, about ten model calls a Run; `second_path_exhausted` is the
+        # Tasks that spent the cap and still have check 5 not run.
+        second_path_found=sum(1 for r in status.values() if _second_path(r)["found"] and _second_path(r)["batches"]),
+        second_path_exhausted=sum(1 for r in status.values() if _second_path(r)["exhausted"]),
+        second_path_batches=sum(_second_path(r)["batches"] for r in status.values()),
+        second_path_runs=sum(_second_path(r)["runs"] for r in status.values()),
         disagreeing=sum(1 for r in references.values()
                         if not r["references"] and (r.get("reason") or "").startswith("recordings disagree"))))
     write_json(ctx.workdir / "scorecard.json", scorecard_mod.scorecard(ctx.workdir))
-    return {"verifiers": verifiers, "task_status": status, "cached": cached, "ran": len(jobs) - cached}
+    return {"verifiers": verifiers, "task_status": status, "cached": cached, "ran": len(jobs) - cached,
+            "second_path_runs": sum(_second_path(r)["runs"] for r in status.values()),
+            "ceiling_reached": ceiling_reached.is_set()}

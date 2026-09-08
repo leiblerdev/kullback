@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -18,6 +19,7 @@ from kullback.builder.pipeline import Anchor
 from kullback.examiner import stage
 from kullback.gates.artifacts import D79_CHECKS, D79_STAGES
 from kullback.gates.ledger import GateLedger
+from kullback.runner import budget
 from kullback.runner.records import Task, ToolCall, Trace, Verifier
 
 STATUS_KEYS = {"reference_confirmed", "verifier_passed", "reason", "recordings", "rerolls", "judged",
@@ -434,3 +436,111 @@ def test_a_held_out_run_that_wrote_to_another_entity_is_left_out_with_its_own_re
     world, anchor = _world_with_a_held_out_run(tmp_path, VF.wrong_run())
     row = _derive(world.workdir, world.inputs, anchor=anchor)["task_status"]["t1"]
     assert row["failed_recordings"]["wrong"] == stage.WROTE_OTHERWISE
+
+
+# --- the second path a lone Reference is re-rolled for (D189) --------------------------
+
+def _reroll_runner_over(world, make_run, calls: list):
+    """A `run_rerolls(task_id, count, prefix)` that writes one batch of hand-built Runs to the Task's
+    folder and answers the rows the Builder's callable answers, so no model is asked."""
+    def run_rerolls(task_id: str, count: int, prefix: str) -> list:
+        calls.append((task_id, count, prefix))
+        rows = []
+        for number in range(count):
+            run = make_run().model_copy(deep=True, update={"run_id": f"{prefix}-{task_id}-{number}"})
+            path = VF.write_events_jsonl(run, world.workdir / "runs" / task_id / f"{run.run_id}.jsonl")
+            rows.append({"run_id": run.run_id, "path": path,
+                         "termination_reason": run.termination_reason})
+        return rows
+
+    return run_rerolls
+
+
+def _lone_reference_world(root: Path):
+    """The one-Task world with nothing beside its recording: check 5 has no second path to score."""
+    return make_world(root, rerolls=())
+
+
+def test_a_task_whose_reference_stands_alone_buys_one_batch_and_stops_when_a_second_path_appears(tmp_path):
+    world = _lone_reference_world(tmp_path)
+    calls: list = []
+    out = _derive(world.workdir, world.inputs, run_rerolls=_reroll_runner_over(world, VF.alt_path_run, calls),
+                  round_number=2)
+    row = out["task_status"]["t1"]
+    assert len(calls) == 1 and calls[0][:2] == ("t1", stage.SECOND_PATH_RUNS)
+    assert calls[0][2] == "second-path-r2-b1", "the batch names the round and the batch it is"
+    assert row["second_path"] == {"batches": 1, "runs": stage.SECOND_PATH_RUNS, "found": True,
+                                  "exhausted": False, "reason": ""}
+    assert row["checks"]["second_path_passes"] is True and "verifier_alt_path" not in row["not_run"]
+    assert out["second_path_runs"] == stage.SECOND_PATH_RUNS and out["ceiling_reached"] is False
+    metrics = _ruling(world.workdir)["metrics"]
+    assert metrics["second_path_found"] == 1 and metrics["second_path_exhausted"] == 0
+    # The batch's Runs join the Task's Runs like any other re-roll, under the reason that bought them.
+    rows = _read(world.workdir / "examiner" / "rerolls.json")["t1"]
+    assert [row["reason"] for row in rows] == ["second_path"] * stage.SECOND_PATH_RUNS
+    assert {row["batch"] for row in rows} == {1}
+
+
+def test_the_cap_holds_and_the_task_keeps_the_check_not_run_with_the_reason_it_spent(tmp_path):
+    """A Run that reached another End state is not a second path however many batches buy one, so the
+    Task keeps its Reference, keeps check 5 not run, and its row says what the search cost."""
+    world = _lone_reference_world(tmp_path)
+    calls: list = []
+    out = _derive(world.workdir, world.inputs, run_rerolls=_reroll_runner_over(world, VF.wrong_run, calls))
+    row = out["task_status"]["t1"]
+    assert len(calls) == stage.SECOND_PATH_BATCHES == 3
+    assert row["second_path"] == {"batches": 3, "runs": 3 * stage.SECOND_PATH_RUNS, "found": False,
+                                  "exhausted": True, "reason": "no second path in 3 batches"}
+    assert row["reference_confirmed"] is True, "a batch that landed elsewhere never unseats the Reference"
+    assert row["checks"]["second_path_passes"] is False and "verifier_alt_path" in row["not_run"]
+    assert len(row["did_not_reach_reference"]) == 3 * stage.SECOND_PATH_RUNS
+    assert _ruling(world.workdir)["metrics"]["second_path_exhausted"] == 1
+
+
+def test_the_batches_are_read_back_on_a_re_run_and_no_further_batch_is_bought(tmp_path):
+    world = _lone_reference_world(tmp_path)
+    calls: list = []
+    runner = _reroll_runner_over(world, VF.alt_path_run, calls)
+    first = _derive(world.workdir, world.inputs, run_rerolls=runner)
+    assert len(calls) == 1 and first["task_status"]["t1"]["second_path"]["found"] is True
+    cached = _derive(world.workdir, world.inputs, run_rerolls=runner)
+    assert cached["cached"] == 1 and len(calls) == 1, "the Task's key holds and it is served from disk"
+    # With the cache gone the Task derives again, and it still buys nothing: the rows the reason
+    # names are read back off the Examiner's own re-roll file and give check 5 its second path.
+    shutil.rmtree(world.workdir / "examiner" / "cache")
+    again = _derive(world.workdir, world.inputs, run_rerolls=runner)
+    row = again["task_status"]["t1"]
+    assert again["ran"] == 1 and len(calls) == 1
+    assert row["second_path"] == {"batches": 0, "runs": 0, "found": True, "exhausted": False, "reason": ""}
+    assert row["checks"]["second_path_passes"] is True
+
+
+def test_a_task_that_already_has_a_second_path_buys_no_batch(tmp_path):
+    world = make_world(tmp_path, rerolls=("alt",))
+    calls: list = []
+    out = _derive(world.workdir, world.inputs, run_rerolls=_reroll_runner_over(world, VF.alt_path_run, calls))
+    row = out["task_status"]["t1"]
+    assert calls == [] and row["second_path"]["batches"] == 0 and row["second_path"]["found"] is True
+    assert row["checks"]["second_path_passes"] is True
+    assert not (world.workdir / "examiner" / "rerolls.json").exists()
+
+
+def test_without_a_reroll_runner_the_check_stays_not_run_and_the_row_says_why(tmp_path):
+    world = _lone_reference_world(tmp_path)
+    row = _derive(world.workdir, world.inputs)["task_status"]["t1"]
+    assert row["second_path"] == {"batches": 0, "runs": 0, "found": False, "exhausted": False,
+                                  "reason": stage.NO_REROLL_RUNNER}
+    assert "verifier_alt_path" in row["not_run"]
+
+
+def test_a_batch_that_hits_the_run_ceiling_stops_the_search_and_the_call_says_so(tmp_path):
+    world = _lone_reference_world(tmp_path)
+
+    def run_rerolls(task_id, count, prefix):
+        raise budget.BudgetExceeded("reroll", task_id, 2.0, 1.0, 0.5)
+
+    out = _derive(world.workdir, world.inputs, run_rerolls=run_rerolls)
+    row = out["task_status"]["t1"]
+    assert out["ceiling_reached"] is True and row["reference_confirmed"] is True
+    assert row["second_path"] == {"batches": 0, "runs": 0, "found": False, "exhausted": False,
+                                  "reason": stage.CEILING_REACHED}
