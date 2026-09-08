@@ -814,17 +814,27 @@ def _derive(plan: ExaminerPlan, sink: Optional[Sink]):
                 stage_mod.derive_all, ctx, plan.inputs, probe_model=plan.probe_model,
                 probe_limit=plan.probe_limit, judge_model=plan.judge_model,
                 judge_agent=plan.judge_agent, run_probe=plan.run_probe,
+                # D189: a Task whose Reference stands alone is re-rolled for a second path, bounded
+                # by the stage's cap; a round whose allowance is spent buys no batch, the same line
+                # the `reroll` tool draws.
+                run_rerolls=(plan.run_rerolls if plan.allowance_remaining is None
+                             or plan.allowance_remaining > 0 else None),
+                round_number=plan.round,
                 only=only, workers=plan.workers)
         except Exception as exc:
             await _emit(plan, sink, StageEnd(name=STAGE, counts={
                 "status": "failed", "error": f"{type(exc).__name__}: {exc}",
                 "elapsed_ms": int((time.monotonic() - started) * 1000)}))
             raise
+        if out.get("ceiling_reached"):
+            plan.ceiling_reached = True
         status = out["task_status"]
         passed = sum(1 for row in status.values() if row.get("verifier_passed"))
         counts = {"status": "ran", "tasks": len(status), "verifiers": len(out["verifiers"]), "passed": passed,
                   # D163: how many Tasks came off the per-Task cache and how many were derived again.
                   "cached": out.get("cached", 0), "ran": out.get("ran", len(status)),
+                  # D189: the extra frontier Runs the search for a second path bought this call.
+                  "second_path_runs": out.get("second_path_runs", 0),
                   "elapsed_ms": int((time.monotonic() - started) * 1000)}
         await _emit(plan, sink, StageEnd(name=STAGE, counts=counts))
         plan.load_state()
