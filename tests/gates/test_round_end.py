@@ -212,3 +212,20 @@ def test_ceiling_done_and_stalled_come_before_the_round_cap():
     history = [_round(fidelity=1), _round(fidelity=1)]
     assert R.exit_for(history, 1, ceiling_reached=True, exhausted=[], all_rounds=history, max_rounds=1) == "ceiling"
     assert R.exit_for(history, 1, ceiling_reached=False, exhausted=[], all_rounds=history, max_rounds=1) == "stalled"
+
+
+def test_the_round_counts_say_what_the_strip_took_out_and_what_the_leak_check_still_caught(tmp_path):
+    """D196: three numbers, so a reader can tell a strip that covers the corpus from one that covers
+    the lines someone happened to look at. A round with no Intents at all counts zero of each."""
+    world = _world(tmp_path)
+    assert R.round_counts(**world)["intents_stripped"] == 0
+    world["task_status"]["t2"] = dict(world["task_status"]["t2"], leak_columns=["orders.total"])
+    world["intents"] = {
+        TASK: {"task_id": TASK, "text": "renew the loan", "grounded": True,
+               "stripped": [{"column": "loans.due_date", "class": "hard", "shape": "month"},
+                            {"column": "loans.barcode", "class": "hard", "shape": "last4"}]},
+        "t2": {"task_id": "t2", "text": "pay the fine", "grounded": True, "stripped": []},
+    }
+    counts = R.round_counts(**world)
+    assert counts["intents_stripped"] == 1 and counts["values_stripped"] == 2
+    assert counts["leak_misses"] == 1

@@ -26,9 +26,16 @@ GATE_COUNTS: tuple[str, ...] = ("fidelity", "trusted", "refused_count", "assiste
 def round_counts(task_status: dict, verifiers: list[Verifier], probes: dict[str, ProbePool],
                  history: dict[str, VerifierHistory], refusals: dict[str, dict], task_runs: dict[str, list[Run]],
                  replays: dict, rerolls: dict, canon_rules: Any, sigs: list, *,
-                 record: Optional[Callable[[GateResult], Any]] = None) -> dict:
+                 record: Optional[Callable[[GateResult], Any]] = None,
+                 intents: Optional[dict] = None) -> dict:
     """D126's counts for one round, each read off a ruling; `record`, when given, receives the two
-    rulings computed here (replay_reference, trusted) so a driver can land them in its ledger."""
+    rulings computed here (replay_reference, trusted) so a driver can land them in its ledger.
+
+    `intents` is what the Builder's Intent stage left, and the three D196 counts are read straight
+    off it and off the status rows: how many Intents the strip touched, how many values it took out,
+    and how many Task and column pairs the leak check found it had missed. The three say whether the
+    strip is doing the work or the check still is, which is the only way to tell a strip that covers
+    a corpus from one that covers the two lines someone looked at."""
     fidelity_ruling = reference_replay_gate(replays or {})
     trusted_ruling = trusted_gate(task_status, verifiers, probes, history, refusals, task_runs, replays, rerolls,
                                   canon_rules, sigs)
@@ -48,6 +55,7 @@ def round_counts(task_status: dict, verifiers: list[Verifier], probes: dict[str,
     # because no Task had a Reference to be unfinished.
     unfinished = [task_id for task_id in (task_status or {})
                   if not ((task_id in trusted_ids and task_id in clearing) or task_id in refused)]
+    stripped = [list(_get(record_of, "stripped", []) or []) for record_of in (intents or {}).values()]
     return {
         "fidelity": len(replays or {}) - len(fidelity_ruling.failures),
         "tasks": len(task_status or {}),
@@ -60,6 +68,10 @@ def round_counts(task_status: dict, verifiers: list[Verifier], probes: dict[str,
         "probes_passing": int(trusted_ruling.metrics["probes_passing"]),
         "false_rejection": dict(trusted_ruling.metrics["false_rejection"]),
         "unfinished": unfinished,
+        # D196: the strip, and what it missed.
+        "intents_stripped": sum(1 for values in stripped if values),
+        "values_stripped": sum(len(values) for values in stripped),
+        "leak_misses": sum(len(_get(row, "leak_columns", []) or []) for row in (task_status or {}).values()),
     }
 
 

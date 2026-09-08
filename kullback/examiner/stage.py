@@ -489,13 +489,17 @@ def wrote_outside(confirmation: Any) -> bool:
 
 def suite_for(task_for: Task, verifier: Verifier, paths: list, *, canon_rules: Any, write_tools: set,
               user_rules: dict, rules_trace: Optional[str], probe_model: Any, run_probe: Any,
-              may_probe: bool) -> list[GateResult]:
-    """The whole D79 suite over one Verifier: the wrong Run, the second path, the leak, the probe (D79, D119)."""
+              may_probe: bool, intent: Any = None) -> list[GateResult]:
+    """The whole D79 suite over one Verifier: the wrong Run, the second path, the leak, the probe (D79, D119).
+
+    The Intent record goes in beside its line so the leak check reads it as an audit of the D196
+    strip and names the column of anything the strip missed.
+    """
     return verifier_suite.validate_verifier(
         verifier, paths[0], canon=canon_rules, write_tools=write_tools, seed_runs=paths[1:],
         wrong_run=verifier_suite.wrong_run(verifier, paths[0], canon_rules),
         alt_path_run=paths[1] if len(paths) > 1 else None,
-        intent_text=task_for.intent, user_rules=user_rules.get(rules_trace),
+        intent_text=task_for.intent, user_rules=user_rules.get(rules_trace), intent=intent,
         model=probe_model if may_probe else None, run_probe=run_probe)
 
 
@@ -527,7 +531,7 @@ def verifier_for(ctx, task: Task, confirmation: Any, *, canon_rules: Any, write_
     rules_trace = first.trace_id or next((r.trace_id for r in confirmation.references if r.trace_id), None)
     gates = suite_for(task_for, record, paths, canon_rules=canon_rules, write_tools=write_tools,
                       user_rules=user_rules, rules_trace=rules_trace, probe_model=probe_model,
-                      run_probe=probe, may_probe=may_probe)
+                      run_probe=probe, may_probe=may_probe, intent=intents.get(task.id))
     results = verifier_suite.d79_results(gates)
     passed = artifacts.verifier_gate(results).passed
     write_json(ctx.workdir / "verifiers" / f"{task.id}.json", as_dict(record))
@@ -540,6 +544,10 @@ def verifier_for(ctx, task: Task, confirmation: Any, *, canon_rules: Any, write_
               "did_not_reach_reference": sorted(left_out), "judged": confirmation.judged,
               "checks": results,
               "not_run": [g.stage for g in gates if g.metrics.get("skipped")],
+              # D196: the columns the leak check found the strip had missed, so a finding can be
+              # keyed on the Task and the column and the next build's strip can cover it.
+              "leak_columns": sorted(next((g.metrics.get("columns") or []
+                                           for g in gates if g.stage == "verifier_leak"), [])),
               **verifier_mod.derivation_counts(record),
               "second_path": second_path if second_path is not None else second_path_row(
                   0, 0, found=len(confirmation.references) > 1),

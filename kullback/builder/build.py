@@ -1184,9 +1184,14 @@ def _intent_stage(model: Any, workers: int = 1, only: Optional[Iterable[str]] = 
     code version, so the same repair asked twice with two hints is two runs and not one cache hit.
     A narrowed run rewrites its Tasks however well they already ground: a repair is an explicit ask.
 
+    The schema and the canon rules are read for the D196 strip alone: they are what gives a value's
+    column its class, so the strip and the compare read one column one way (D73).
+
     A full run ratchets (todo: a stage never replaces a passing artifact with a failing one). A Task
-    whose recorded Intent grounded and whose member Runs are unchanged keeps that record and is not
-    put to the model again; only the rest are written. The artifact still names every Task. Two
+    whose recorded Intent grounded, whose member Runs are unchanged and whose line the strip would
+    not change keeps that record and is not put to the model again; only the rest are written. The
+    strip condition is what stops a line written before D196 living on: it grounds, so the ratchet
+    would keep it, and it may still hold a value only the tools knew. The artifact still names every Task. Two
     things follow: a repaired Intent survives the next full build instead of being written over by
     a fresh line that may ground worse, and an `--iterate` build does not pay to rewrite what
     already grounds.
@@ -1203,8 +1208,16 @@ def _intent_stage(model: Any, workers: int = 1, only: Optional[Iterable[str]] = 
 
     def run(ctx, inputs):
         write_tools = {s.name for s in inputs["sigs"] if s.kind == "write"}
+        schema, canon_rules = inputs.get("schema"), inputs.get("canon_rules")
         tasks = list(inputs["tasks"])
+        by_id = {t.trace_id: t for t in inputs["traces"]}
         recorded = _read_intents(ctx.workdir, [task.id for task in tasks])
+
+        def clean(task) -> bool:
+            """D196: a line recorded before the strip ran, or before this schema, is written again."""
+            members = [by_id[rid] for rid in task.run_ids if rid in by_id]
+            return intent.strip_holds(recorded[task.id], members, schema=schema, rules=canon_rules)
+
         if only is not None:
             unknown = sorted(set(only) - {task.id for task in tasks})
             if unknown:
@@ -1212,13 +1225,14 @@ def _intent_stage(model: Any, workers: int = 1, only: Optional[Iterable[str]] = 
             kept = {task.id: recorded[task.id] for task in tasks if task.id not in set(only)}
         else:
             kept = {task.id: recorded[task.id] for task in tasks
-                    if intent.still_grounds(recorded[task.id], task.run_ids)}
+                    if intent.still_grounds(recorded[task.id], task.run_ids) and clean(task)}
         tasks = [task for task in tasks if task.id not in kept]
 
         def write_one(task):
             try:
                 record = intent.write_intent(model, task, inputs["traces"], write_tools=write_tools,
-                                             hint=hints.get(task.id))
+                                             hint=hints.get(task.id), schema=schema,
+                                             canon_rules=canon_rules)
             except Exception as exc:  # one Task's Intent failing is that Task ungrounded, not a dead build
                 record = intent.Intent(task_id=task.id, reason=f"{type(exc).__name__}: {exc}")
             _write_json(ctx.workdir / "intents" / f"{task.id}.json", as_dict(record))
@@ -1235,7 +1249,8 @@ def _intent_stage(model: Any, workers: int = 1, only: Optional[Iterable[str]] = 
     version = f"{_version('intent', run, intent)}:{getattr(model, 'name', 'none')}"
     if only is not None:
         version += f":only={','.join(only)}:hints={content_hash(hints)[:16]}"
-    return pipeline.Stage(name="intent", fn=run, builder=True, inputs=("tasks", "traces", "sigs"),
+    return pipeline.Stage(name="intent", fn=run, builder=True,
+                          inputs=("tasks", "traces", "sigs", "schema", "canon_rules"),
                           outputs=("intents",), input_paths=("intents",), code_version=version)
 
 
