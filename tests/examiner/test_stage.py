@@ -25,7 +25,9 @@ from kullback.runner.records import Task, ToolCall, Trace, Verifier
 STATUS_KEYS = {"reference_confirmed", "verifier_passed", "reason", "recordings", "rerolls", "judged",
                "assisted_tools", "blocking_tools", "tool_calls_replayed", "tool_calls_differing"}
 REFERENCE_KEYS = {"references", "recordings", "failed", "groups", "reason", "judged", "judge_reason",
-                  "judge_abstained", "judge_uncited", "abstain_reason", "judge_calls", "judge_fallback"}
+                  "judge_abstained", "judge_uncited", "abstain_reason", "judge_calls", "judge_fallback",
+                  "judge_passes", "judge_second", "judge_residue_resolved", "judge_residue_abstained",
+                  "no_correct_recording", "no_correct_key", "judge_citations"}
 # The key the world's two End states differ on, and the value the re-roll `wrong` holds at it (D186).
 # The tool is the one the shared fixture Runs write with, read from there rather than spelled again.
 WRONG_ROW = f"{next(iter(VF.WRITE_TOOLS))}.#w999.order_id"

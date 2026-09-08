@@ -23,6 +23,19 @@ rewarded. Re-rolls (D112) enter the same rule
 as recordings of a lower standing: the Reference is a recording whenever the agreeing group holds
 one, since the recording is the only Run that touched the customer's real system.
 
+A fail-only judge with three or more states in front of it may drop some and still leave two, and
+that residue was the largest single reason a fidelity-passing Task kept no Reference on all three
+live builds. So a judgement that leaves two or more states in is asked once more, with only the
+survivors and the keys those survivors differ on, under a stop rule saying exactly one may remain:
+either it fails every other survivor with a cited failure, or it says the survivors cannot be told
+apart on what they differ on, which is an abstention with that reason (D193). A second pass that
+still leaves two or more, or that cites nothing, abstains the same way, and the Task falls where an
+abstention already fell. When instead every state is failed, the failures are read against each
+other: failures agreeing on one key and on one required value from the Intent or a numbered policy
+line are the judge saying no recording did what was required, which is `no_correct_recording`, a
+reason of its own for a later beat to file as an Environment or an Intent finding; failures
+disagreeing among themselves are an abstention, "failed all on differing grounds".
+
 A compiled constraint that fails on a large share of the confirmed recordings corpus-wide is demoted
 first. The recordings are the frontier under the customer's own policy, and a rule they break that
 often is a miscompiled rule, not a corpus of violations (D76); on the first retail build four such
@@ -78,6 +91,12 @@ POLICY_EXPECTED = "policy:"
 # What `parse_judgement` says about a reply it could not read. Named, because the agent judge (judge.py)
 # falls back to the one-shot judge on exactly this answer and must not compare against a sentence.
 UNREADABLE_REPLY = "unreadable reply"
+# D193's three readings of what a judgement left behind. The first two are abstention reasons and the
+# third is a reason of its own, distinct from the residue, so a reader can tell "the states were never
+# told apart" from "the judge says none of them was right".
+SURVIVORS_NOT_TOLD_APART = "survivors not told apart"
+DIFFERING_GROUNDS = "failed all on differing grounds"
+NO_CORRECT_RECORDING = "no correct recording"
 _LABELS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
 _JSON_RE = re.compile(r"\{.*\}", re.DOTALL)
 
@@ -112,6 +131,17 @@ class Confirmation:
     judge_calls: list[dict] = field(default_factory=list)  # what the judge looked at, in order
     judge_fallback: Optional[str] = None  # why the one-shot judge ruled instead of the agent
     recordings: list[Recording] = field(default_factory=list)  # every Run the rule saw
+    # D193. How many times the judge was asked (0 when it was not), what the second pass replied,
+    # kept the way the first pass's reply is, and what the two passes together settled.
+    judge_passes: int = 0
+    judge_second: Optional[dict] = None
+    judge_residue_resolved: bool = False   # the second pass left exactly one state in
+    judge_residue_abstained: bool = False  # it left two or more, or cited nothing
+    no_correct_recording: bool = False     # every state was failed, and the failures agree on why
+    no_correct_key: Optional[str] = None   # the key they agree on, when they do
+    # Per failed state, what its failure cited: the key, the value held there and what it should have
+    # been. Kept across both passes, because the failed-all reading is over all of them at once.
+    judge_citations: dict[str, dict] = field(default_factory=dict)
 
     def as_dict(self) -> dict:
         return {"references": [{"run_id": r.run_id, "trace_id": r.trace_id, "kind": r.kind}
@@ -122,7 +152,13 @@ class Confirmation:
                 "judged": self.judged, "judge_reason": self.judge_reason,
                 "judge_abstained": self.judge_abstained, "judge_uncited": self.judge_uncited,
                 "abstain_reason": self.abstain_reason, "judge_calls": list(self.judge_calls),
-                "judge_fallback": self.judge_fallback}
+                "judge_fallback": self.judge_fallback,
+                "judge_passes": self.judge_passes, "judge_second": self.judge_second,
+                "judge_residue_resolved": self.judge_residue_resolved,
+                "judge_residue_abstained": self.judge_residue_abstained,
+                "no_correct_recording": self.no_correct_recording,
+                "no_correct_key": self.no_correct_key,
+                "judge_citations": dict(self.judge_citations)}
 
 
 @dataclass
@@ -132,6 +168,9 @@ class Judgement:
     reason: str = ""
     # Per failed state, the words that failure gave for itself, which is what the record keeps of it.
     reasons: dict[str, str] = field(default_factory=dict)
+    # Per failed state, what its failure pointed at: the key, the value that state holds there and
+    # what the judge said it should have been. Read back when every state was failed (D193).
+    citations: dict[str, dict] = field(default_factory=dict)
     unavailable: list[str] = field(default_factory=list)
     # The abstain reason when a failure of this ruling cited nothing the states differ on (D186).
     uncited: Optional[str] = None
@@ -417,9 +456,68 @@ def group(recordings: Iterable[Recording]) -> list[dict]:
     return groups
 
 
+def _apply(out: Confirmation, groups: list[dict], judgement: Judgement) -> list[dict]:
+    """Record one judgement's failures on the Confirmation and answer with the states it left in."""
+    for g in groups:
+        if g["label"] not in judgement.failed:
+            continue
+        why = (judgement.reasons.get(g["label"]) or judgement.reason
+               or "did not reach the End state the Intent and the policy require")
+        for rec in g["members"]:
+            out.failed[rec.run_id] = f"judge: {why}"
+        cited = judgement.citations.get(g["label"])
+        if cited is not None:
+            out.judge_citations[str(g["label"])] = dict(cited)
+    return [g for g in groups if g["label"] not in judgement.failed]
+
+
+def residue_keys(groups: list[dict]) -> list[str]:
+    """The keys the states of a residue differ on, which is the whole of what could tell them apart."""
+    return sorted({key for keys in differing_keys(groups).values() for key in keys})
+
+
+def not_told_apart(groups: list[dict]) -> str:
+    """The abstention a residue ends in: the survivors, and what a ruling had to choose between."""
+    keys = residue_keys(groups)
+    shown = ", ".join(keys[:MAX_DIFFERING_KEYS]) or "nothing they differ on"
+    more = f" and {len(keys) - MAX_DIFFERING_KEYS} more" if len(keys) > MAX_DIFFERING_KEYS else ""
+    return f"{SURVIVORS_NOT_TOLD_APART}: {shown}{more}"
+
+
+def required_of_all(citations: dict[str, dict]) -> Optional[tuple[str, str]]:
+    """The key and the required value every failure agrees on, when a judgement failed every state.
+
+    Two or more failures citing one key and one `expected` that names the Intent or a numbered policy
+    line are one claim, not several: no recorded End state held at that key what the Task required.
+    That is a fact about the Environment or about the Intent and not about a disagreement between the
+    recordings, so it is recorded under its own reason and a later beat can file it (D193). An
+    `expected` naming another state cannot carry the claim, since that state was failed too, and
+    failures pointing at different keys are the judge failing everything for different reasons, which
+    settles nothing.
+    """
+    rows = list(citations.values())
+    if len(rows) < 2:
+        return None
+    if len({_as_shown(row.get("key")) for row in rows}) != 1:
+        return None
+    if len({_as_shown(row.get("expected")) for row in rows}) != 1:
+        return None
+    want = _as_shown(rows[0].get("expected"))
+    if want != INTENT_EXPECTED and not want.startswith(POLICY_EXPECTED):
+        return None
+    return str(rows[0].get("key")), str(rows[0].get("expected"))
+
+
 def confirm(recordings: Iterable[Recording], *, intent: str = "", policy_lines: Iterable[str] = (),
             judge: Any = None, phrases: Iterable[str] = ()) -> Confirmation:
-    """D111 over one Task's Runs: constraint violations out, then one agreeing End state, judge as residue."""
+    """D111 over one Task's Runs: constraint violations out, then one agreeing End state, judge as residue.
+
+    The judge is fail-only (D110), so one pass over three or more states may drop some and leave two
+    behind. A residue is asked once more, with only the survivors and under the stop rule that one of
+    them may remain (D193); what that pass leaves is the answer, and anything but one state left is
+    an abstention naming the keys the survivors were not told apart on. A judgement that fails every
+    state is read once more too, through what its failures cited.
+    """
     out = Confirmation()
     recordings = list(recordings)
     out.recordings = list(recordings)
@@ -438,29 +536,64 @@ def confirm(recordings: Iterable[Recording], *, intent: str = "", policy_lines: 
     remaining = groups
     if len(groups) > 1 and judge is not None:
         judgement = judge_groups(judge, intent, policy_lines, groups, phrases)
-        out.judged, out.judge_reason = True, judgement.reason
+        out.judged, out.judge_passes, out.judge_reason = True, 1, judgement.reason
         out.judge_abstained = judgement.abstained
         out.judge_uncited = bool(judgement.uncited)
         out.abstain_reason = judgement.uncited or (judgement.reason if judgement.abstained else None)
         out.judge_calls = list(judgement.calls)
         out.judge_fallback = judgement.fell_back
-        for g in groups:
-            if g["label"] in judgement.failed:
-                why = (judgement.reasons.get(g["label"]) or judgement.reason
-                       or "did not reach the End state the Intent and the policy require")
-                for rec in g["members"]:
-                    out.failed[rec.run_id] = f"judge: {why}"
-        remaining = [g for g in groups if g["label"] not in judgement.failed]
+        remaining = _apply(out, groups, judgement)
+        if len(remaining) > 1 and not judgement.abstained:
+            remaining = _second_pass(out, judge, intent, policy_lines, remaining, phrases)
     if len(remaining) == 1:
         out.references = list(remaining[0]["members"])
     elif not remaining:
         out.reason = "the judge failed every End state"
+        required = required_of_all(out.judge_citations)
+        if required is not None:
+            out.no_correct_recording, out.no_correct_key = True, required[0]
+            out.reason = (f"{NO_CORRECT_RECORDING}: every End state was failed on {required[0]}, "
+                          f"and {required[1]} says what it should have held")
+        elif out.judged:
+            out.judge_abstained, out.abstain_reason = True, DIFFERING_GROUNDS
+            out.reason += f"; the judge abstained, {DIFFERING_GROUNDS}"
     else:
         out.reason = (f"recordings disagree on the End state ({len(remaining)} states: "
                       + "; ".join(f"{g['label']} {g['state']}" for g in remaining) + ")")
         if out.judge_abstained:
-            out.reason += f"; the judge abstained, {out.judge_reason}"
+            out.reason += f"; the judge abstained, {out.abstain_reason or out.judge_reason}"
     return out
+
+
+def _second_pass(out: Confirmation, judge: Any, intent: str, policy_lines: Iterable[str],
+                 survivors: list[dict], phrases: Iterable[str]) -> list[dict]:
+    """The one extra call a residue gets, and what it left; anything but one state left abstains.
+
+    The survivors keep the labels the first pass gave them, so a failure of the second pass cites the
+    same state the record already names, and the keys are recomputed over the survivors alone: a key
+    that only told a failed state apart is no longer a difference and a failure resting on it would
+    be resting on nothing in front of this pass.
+    """
+    if not residue_keys(survivors):
+        # Nothing separates them, so there is nothing to ask about and no call is spent.
+        out.judge_residue_abstained = True
+        out.judge_abstained, out.abstain_reason = True, not_told_apart(survivors)
+        return survivors
+    judgement = judge_groups(judge, intent, policy_lines, survivors, phrases, True)
+    out.judge_passes = 2
+    out.judge_second = {"reason": judgement.reason, "failed": sorted(judgement.failed),
+                        "calls": list(judgement.calls), "fallback": judgement.fell_back,
+                        "abstained": judgement.abstained, "uncited": judgement.uncited}
+    left = _apply(out, survivors, judgement)
+    if len(left) == 1:
+        out.judge_residue_resolved = True
+        return left
+    if not left:
+        return left  # every survivor failed: the failed-all reading answers this one
+    out.judge_residue_abstained = True
+    out.judge_abstained, out.abstain_reason = True, not_told_apart(left)
+    out.judge_uncited = out.judge_uncited or bool(judgement.uncited)
+    return left
 
 
 # --- what the states disagree on (D186) -------------------------------------
@@ -563,8 +696,8 @@ def _expected_holds(said: Any, key: str, held: str, values: dict[str, dict[str, 
 
 
 def read_failures(entries: Any, groups: list[dict],
-                  policy_shown: Iterable[Any] = ()) -> tuple[dict[str, str], Optional[str]]:
-    """The states a reply fails with the words each failure gave, or the key that carried nothing.
+                  policy_shown: Iterable[Any] = ()) -> tuple[dict[str, str], dict[str, dict], Optional[str]]:
+    """The states a reply fails, what each failure cited, or the key that carried nothing.
 
     The judge is called only where the states disagree, so its judgement is which of the differences
     is the wrong one, and a failure is a claim about one named value: the state, the key, the value
@@ -573,14 +706,19 @@ def read_failures(entries: Any, groups: list[dict],
     reason the judge gave most often for a wrong failure was a confirmation it was never handed, and
     the `evidence` list it wrote itself never caught it, because it named allowed sources and rested
     on an absent one. A key nothing in front of it differs on is that same failure, in code.
+
+    The citations come back beside the reasons because a judgement that failed every state is read
+    again through them: failures agreeing on one key and one required value say something a residue
+    does not (D193), and the reason text alone cannot be compared that way.
     """
     values = {str(g["label"]).upper(): state_values(g) for g in groups}
     differing = {label.upper(): keys for label, keys in differing_keys(groups).items()}
     numbers = {str(n).strip() for n in policy_shown}
     failed: dict[str, str] = {}
+    cited: dict[str, dict] = {}
     for entry in entries or ():
         if not isinstance(entry, dict):
-            return {}, NO_KEY  # a bare label cites nothing, whatever else the reply said
+            return {}, {}, NO_KEY  # a bare label cites nothing, whatever else the reply said
         label = str(entry.get("group") or "").strip().upper()
         if label not in values:
             continue  # it names no state of this Task, so it fails nothing, as an unknown label always did
@@ -589,14 +727,16 @@ def read_failures(entries: Any, groups: list[dict],
         # prompt; that it is one of the keys the states differ on is what is being checked here.
         key = {k.casefold(): k for k in differing[label]}.get(said.casefold())
         if key is None:
-            return {}, said or NO_KEY
+            return {}, {}, said or NO_KEY
         held = values[label].get(key, NO_VALUE)
         if _as_shown(entry.get("value")) != _as_shown(held):
-            return {}, key
+            return {}, {}, key
         if not _expected_holds(entry.get("expected"), key, held, values, label, numbers):
-            return {}, key
+            return {}, {}, key
         failed.setdefault(label, str(entry.get("reason") or "")[:MAX_LINE_CHARS])
-    return failed, None
+        cited.setdefault(label, {"key": key, "value": held,
+                                 "expected": str(entry.get("expected") or "")[:MAX_LINE_CHARS]})
+    return failed, cited, None
 
 
 # --- the judge: fails, never passes ----------------------------------------
@@ -649,7 +789,27 @@ def cited_shape(sources: Iterable[str]) -> str:
     ])
 
 
-def judge_prompt(intent: str, policy_lines: Iterable[str], groups: list[dict]) -> str:
+def one_state_left(groups: list[dict]) -> str:
+    """The stop rule of a second pass: one of these states may remain, or you could not tell (D193).
+
+    Said last, after the shape of a judgement, because it is the rule for stopping and not for
+    reading the material. It names the two answers that settle the Task and says plainly that any
+    other answer settles nothing, so a judge that keeps hedging is not left thinking it has helped.
+    """
+    labels = ", ".join(str(g["label"]) for g in groups)
+    return "\n".join([
+        f"This is the second and last time you are asked about this Task. The states left are {labels}, "
+        "the ones your first ruling did not fail, and exactly one of them may remain.",
+        "So there are two answers. Either fail every one of them but the one that did what the Intent "
+        "asked, each failure citing a key these states differ on, as above; or, when the keys they "
+        "differ on do not tell you which one did, say so and fail nothing: reply "
+        '{"failed": [], "reason": "' + SURVIVORS_NOT_TOLD_APART + '"}.',
+        "Leaving two or more of them in, or failing all of them, settles nothing: the Task then keeps "
+        "no Reference at all, which is worse than saying you could not tell.",
+    ])
+
+
+def judge_prompt(intent: str, policy_lines: Iterable[str], groups: list[dict], final: bool = False) -> str:
     lines = ["Recordings of one Task ended in different states. Say which of the states did NOT do what "
              "the Intent asked, or did something the policy does not allow.",
              "",
@@ -678,23 +838,30 @@ def judge_prompt(intent: str, policy_lines: Iterable[str], groups: list[dict]) -
         lines.append("    " + differs_line(differing.get(str(g["label"])) or (), state_values(g)))
         lines.append("    " + told_line(g))
     lines += ["", cited_shape(AVAILABLE_SOURCES)]
+    if final:
+        lines += ["", one_state_left(groups)]
     return "\n".join(lines)
 
 
 def judge_groups(model: Any, intent: str, policy_lines: Iterable[str], groups: list[dict],
-                 phrases: Iterable[str] = ()) -> Judgement:
+                 phrases: Iterable[str] = (), final: bool = False) -> Judgement:
     """What the judge said about the End states; an unreadable reply fails nothing (D110).
 
     A judge that can look answers `rule_groups` and rules through its own tools (judge.py); anything
     else is one model call over this prompt, which is also what the agent judge falls back to. The
     dispatch is on the object rather than an import, so this module stays the one the agent judge
     reads its prompt pieces and its ruling parser from and not the other way round.
+
+    `final` is the second pass over a residue (D193): the same dispatch, the same parser, the same
+    checks on a failure, and one stop rule more saying exactly one of the states in front of it may
+    remain. Both judges take it through here, so the opt-in agent gets the second pass too.
     """
     ruler = getattr(model, "rule_groups", None)
     if callable(ruler):
-        return ruler(intent, policy_lines, groups, phrases)
+        return ruler(intent, policy_lines, groups, phrases, final)
     try:
-        reply = model.query([{"role": "user", "content": judge_prompt(intent, policy_lines, groups)}])
+        reply = model.query([{"role": "user",
+                              "content": judge_prompt(intent, policy_lines, groups, final)}])
     except Exception as exc:
         return Judgement(reason=f"judge call failed: {type(exc).__name__}")
     return parse_judgement(getattr(reply, "content", None) or "", groups,
@@ -731,19 +898,20 @@ def parse_judgement(text: str, groups: list[dict], available: Iterable[str] = AV
         return Judgement(reason=f"the ruling rests on {', '.join(missing)}, which this judge was not given"
                                 + (f"; the judge said: {said}" if said else ""),
                          unavailable=missing)
-    per_state, uncited = read_failures(failed, list(groups), policy_shown)
+    per_state, cited, uncited = read_failures(failed, list(groups), policy_shown)
     if uncited is not None:
         why = f"a failure rested on nothing the states differ on: {uncited}"
         return Judgement(reason=why + (f"; the judge said: {said}" if said else ""), uncited=why)
-    return Judgement(failed=set(per_state), reason=said, reasons=per_state)
+    return Judgement(failed=set(per_state), reason=said, reasons=per_state, citations=cited)
 
 
 __all__ = ["RECORDING", "REROLL", "ANSWERED", "MISCOMPILED_SHARE", "AVAILABLE_SOURCES", "UNREADABLE_REPLY",
            "MAX_DIFFERING_KEYS", "NO_KEY", "NO_VALUE", "STATED_PREFIX", "WRITTEN",
+           "SURVIVORS_NOT_TOLD_APART", "DIFFERING_GROUNDS", "NO_CORRECT_RECORDING",
            "Recording", "Confirmation",
            "Judgement", "end_state", "settled_state", "describe", "stated_facts", "transferred",
            "told_line", "state_values", "differing_keys", "differs_line", "numbered_policy",
            "shown_policy", "read_failures", "cited_shape",
            "hard_atoms", "coded_atoms", "violations", "load", "constraint_rates", "demote", "group",
-           "confirm",
-           "judge_prompt", "judge_groups", "parse_judgement"]
+           "confirm", "residue_keys", "not_told_apart", "required_of_all",
+           "one_state_left", "judge_prompt", "judge_groups", "parse_judgement"]

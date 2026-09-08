@@ -57,7 +57,8 @@ STAGE = "derive_verifier"
 # The per-Task cache under the workdir (D163). Bumped when the entry's shape changes, so an old entry
 # is a miss rather than a row read with the wrong meaning.
 CACHE_DIR = ("examiner", "cache")
-CACHE_FORMAT = 5  # the status row counts D190's relaxed and falsifying atoms and D189's second-path batches
+CACHE_FORMAT = 5  # the status row counts D190's relaxed and falsifying atoms, D189's second-path
+# batches, and the reference record carries D193's second pass over a residue and what it settled
 # The modules a Task's derivation runs through, hashed into every key: an edit to any of them is a
 # different derivation and must not be served a stale entry (the Builder's stages hash the same way,
 # build.py's `_version`).
@@ -649,7 +650,9 @@ def derive_all(ctx: ExamContext, inputs: dict, *, probe_model: Any = None, probe
 
     The References are the confirmed seed replays plus the finished re-rolls that agree on one End
     state after the recordings that broke a Hard constraint are out; the judge is the residue when
-    two End states remain and fails at most one side (D110, D111). The Reference proper is the first
+    two End states remain and fails at most one side (D110, D111). A judgement that leaves two or
+    more states in is asked once more over those states alone, under a stop rule saying one of them
+    may remain, and anything but one state left is an abstention (D193). The Reference proper is the first
     recording of that group, the rest are the re-runs whose agreement sets required against allowed
     (D43) and the second path of check 5, and the anchor is never among them (D81). Before any of
     that, every compiled constraint is checked against the confirmed recordings corpus-wide and the
@@ -842,6 +845,15 @@ def derive_all(ctx: ExamContext, inputs: dict, *, probe_model: Any = None, probe
         # states differ on. Beside `judged`, because it is the share of the judge's work that landed
         # somewhere it was not shown, and the reason is on each reference row as `abstain_reason`.
         judge_uncited=sum(1 for r in references.values() if r.get("judge_uncited")),
+        # D193: the residue of a fail-only judgement, which was the largest reason a Task that
+        # replayed kept no Reference. `judge_second_pass` is how many Tasks were asked twice, and the
+        # two below are what those second passes settled and what they left unsettled; the third is
+        # the Tasks whose every End state was failed on one key the failures agree the Intent or a
+        # policy line required, which is a finding about the world and not about a disagreement.
+        judge_second_pass=sum(1 for r in references.values() if (r.get("judge_passes") or 0) > 1),
+        judge_residue_resolved=sum(1 for r in references.values() if r.get("judge_residue_resolved")),
+        judge_residue_abstained=sum(1 for r in references.values() if r.get("judge_residue_abstained")),
+        no_correct_recording=sum(1 for r in references.values() if r.get("no_correct_recording")),
         # D133: the held-out Runs the pool leaves out because they did not reach the Reference's
         # End state, named per Task on the status row and counted here for the Examiner.
         did_not_reach_reference=sum(len(r.get("did_not_reach_reference") or ()) for r in status.values()),

@@ -63,6 +63,17 @@ def cancelling_run(tmp_path, run_id: str = "b") -> ref.Recording:
     return ref.load(path, ref.RECORDING, run_id=run_id, trace_id=run_id, write_tools=WRITE_TOOLS, fn=_canon)
 
 
+def noting_run(tmp_path, run_id: str = "c") -> ref.Recording:
+    """A third End state: the permit is cancelled and a note is written with it."""
+    path = _write_run(tmp_path, run_id, [
+        _event("user_turn", content="Please cancel my parking permit PK-77."),
+        _event("tool_call", id="c2", name="cancel_permit", args={"permit_id": "PK-77", "note": "holder moved"}),
+        _event("tool_result", id="c2", result={"permit_id": "PK-77", "status": "cancelled"}),
+        _event("model_call", reply={"content": "Cancelled and noted."}),
+    ])
+    return ref.load(path, ref.RECORDING, run_id=run_id, trace_id=run_id, write_tools=WRITE_TOOLS, fn=_canon)
+
+
 def _call(call_id: str, name: str, arguments: dict) -> ModelReply:
     return ModelReply(content=None, tool_calls=[ToolCallRequest(id=call_id, name=name, arguments=arguments)])
 
@@ -249,6 +260,23 @@ def test_the_stated_tool_marks_the_values_only_one_state_told_the_user(tmp_path)
     text = J._stated_text(_judge(TestModel([])).case(INTENT, POLICY, groups), "A")
     assert "differs from the other states on: " in text
     assert "2026-09-30 (differs)" in text and "PK-77 (differs)" in text
+
+
+NOTE_KEY = "cancel_permit.PK-77.note"
+
+
+def test_the_agent_gets_the_second_pass_over_the_states_its_first_ruling_left_in(tmp_path):
+    """D193 sits in `judge_groups`, so the judge that looks is asked twice the way the one-shot judge
+    is: a fresh session over the survivors, with the stop rule on the end of its message."""
+    model = TestModel([ModelReply(content=ruling(fails("C", NOTE_KEY, "holder moved", "A"))),
+                       ModelReply(content=RULING)])
+    out = ref.confirm([refusing_run(tmp_path), cancelling_run(tmp_path), noting_run(tmp_path)],
+                      intent=INTENT, policy_lines=POLICY, judge=_judge(model))
+    assert [r.run_id for r in out.references] == ["a"]
+    assert out.judge_passes == 2 and out.judge_residue_resolved
+    second = model.calls[-1]["messages"][-1]["content"]
+    assert "exactly one of them may remain" in second and "\nC (1 run)" not in second
+    assert second.rstrip().endswith("which is worse than saying you could not tell.")
 
 
 def test_the_prompt_names_its_tools_and_puts_the_stop_rule_last():
