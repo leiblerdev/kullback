@@ -270,7 +270,9 @@ def _cluster_stage():
         # D74: two Runs that saw one row in two versions before writing started in different
         # worlds, and a Task's overlay can pin only one, so they are different Tasks.
         worlds = compile_env.trace_worlds(inputs["traces"], inputs["schema"],
-                                          cluster.write_tool_names(inputs["sigs"]))
+                                          cluster.write_tool_names(inputs["sigs"]),
+                                          readers.result_reader(inputs["readers"], inputs["traces"],
+                                                                ctx.workdir))
         # A row another requestor revealed splits Tasks the same way (D74): two recordings that read
         # one of its columns differently before either wrote started in different worlds.
         readers.merge_worlds(worlds, inputs["readers"], inputs["schema"])
@@ -285,7 +287,7 @@ def _cluster_stage():
 
     return pipeline.Stage(name="cluster", fn=run, inputs=("traces", "sigs", "schema", "readers"),
                           outputs=("categories", "tasks"),
-                          code_version=_version("cluster", run, cluster, intent, compile_env, readers))
+                          code_version=_version("cluster", run, cluster, intent, compile_env, readers, mine))
 
 
 def _canon_stage():
@@ -309,16 +311,36 @@ def _rows_of(result: Any) -> list[dict]:
     return []
 
 
+def with_synthetic_rows(schema: EntitySchema, synthetic_rows: Iterable[str]) -> EntitySchema:
+    """The schema as the Starting state left it: the same record carrying those synthetic ids.
+
+    The ids are what marks a Run that reads such a row assisted (D40, D49), and the Starting state
+    is where they are found. The schema itself is the mine stage's artifact, shared by every stage
+    downstream, and a stage must not write to what it was given: a build served the Starting state
+    from cache never runs the tagging, so the schema it passes on would differ from the one the
+    first build passed on and every stage below would miss its own cache forever. The tag goes on a
+    copy, here, from the `synthetic_rows` artifact the Starting state releases.
+    """
+    tagged = schema.model_copy(deep=True)
+    tagged.synthetic_rows = sorted(set(tagged.synthetic_rows) | set(synthetic_rows or ()))
+    return tagged
+
+
 def _state_stage(grow: Optional[dict] = None, grow_seed: int = 0):
     def run(ctx, inputs, grow=None, grow_seed=0):
-        state = compile_env.build_starting_state(inputs["traces"], inputs["schema"], ctx.workdir,
+        # Its own copy: build_starting_state tags the synthetic ids on the schema it is given, and
+        # the artifact the mine stage released is not this stage's to write to (with_synthetic_rows).
+        schema = inputs["schema"].model_copy(deep=True)
+        state = compile_env.build_starting_state(inputs["traces"], schema, ctx.workdir,
                                                  inputs["tasks"], inputs["sigs"], grow=grow,
                                                  grow_seed=grow_seed,
                                                  revealed_rows=readers.reader_rows(inputs["readers"]),
                                                  revealed_assumptions=readers.reader_assumptions(
-                                                     inputs["readers"]))
+                                                     inputs["readers"]),
+                                                 read_result=readers.result_reader(
+                                                     inputs["readers"], inputs["traces"], ctx.workdir))
         # The synthetic ids live on the schema (D40); run_batch reads them back from schema.json.
-        _write_json(ctx.workdir / "schema.json", as_dict(inputs["schema"]))
+        _write_json(ctx.workdir / "schema.json", as_dict(schema))
         return {"db": state.db, "overlays": list(state.overlays),
                 "assumptions": list(state.assumptions), "synthetic_rows": list(state.synthetic_rows)}
 
@@ -328,7 +350,7 @@ def _state_stage(grow: Optional[dict] = None, grow_seed: int = 0):
     return pipeline.Stage(name="starting_state", fn=fn,
                           inputs=("traces", "schema", "tasks", "sigs", "readers"),
                           outputs=("db", "overlays", "assumptions", "synthetic_rows"),
-                          code_version=_version("starting_state", fn, compile_env, synth, readers))
+                          code_version=_version("starting_state", fn, compile_env, synth, readers, mine))
 
 
 def _record_hardcoded_lesson(workdir: Any, name: str) -> None:
@@ -795,8 +817,11 @@ def _user_rules_stage():
 
 def _environment_stage(domain: str):
     def run(ctx, inputs):
+        # The export tags the synthetic rows and its gate checks that it did, so the schema the
+        # bundle carries has to be the one the Starting state left (with_synthetic_rows).
+        schema = with_synthetic_rows(inputs["schema"], inputs.get("synthetic_rows") or ())
         bundle = compile_env.EnvBundle(
-            environment=Environment(env_id="pending"), schema=inputs["schema"], tools=inputs["sigs"],
+            environment=Environment(env_id="pending"), schema=schema, tools=inputs["sigs"],
             bodies=inputs["bodies"], db=inputs["db"], overlays=inputs["overlays"],
             overlay_values=compile_env.overlay_values(ctx.workdir), policy_text=inputs["policy_text"],
             tasks=inputs["tasks"], verifiers=[], assumptions=inputs["assumptions"], domain=domain)
@@ -806,7 +831,7 @@ def _environment_stage(domain: str):
         # env_id has to cover db.json and tasks.json, or two worlds holding different rows share one
         # identity and a regrade cannot tell them apart (design section 5).
         environment = compile_env.build_environment(
-            inputs["schema"], inputs["sigs"], inputs["bodies"], inputs["policy_text"], files=files,
+            schema, inputs["sigs"], inputs["bodies"], inputs["policy_text"], files=files,
             assisted_tools=inputs.get("assisted_tools") or ())
         # A table another requestor's own tools revealed is in the world because the Runner needs it,
         # and it is not the customer's system: the export marks it rather than passing it off as one.
@@ -820,7 +845,7 @@ def _environment_stage(domain: str):
         ctx.record_gate(stage_gates.tau2_export_gate(bundle.conflicts))
         # The build_environment gate's other two halves: db.json has to hold every id a trace
         # referenced, and every synthetic row has to be tagged, or both checks are silent no-ops.
-        referenced = [row_id for _, row_id in compile_env.referenced_ids(inputs["traces"], inputs["schema"])]
+        referenced = [row_id for _, row_id in compile_env.referenced_ids(inputs["traces"], schema)]
         tagged_synthetic = [{"id": row_id, "synthetic": True} for row_id in inputs["synthetic_rows"]]
         return {"environment": environment, "referenced_ids": referenced,
                 "synthetic_rows_tagged": tagged_synthetic}
@@ -853,7 +878,8 @@ def _replay_stage(only: Optional[Iterable[str]] = None):
     only = sorted(only) if only is not None else None
 
     def run(ctx, inputs):
-        schema, sigs, bodies, db = inputs["schema"], inputs["sigs"], inputs["bodies"], inputs["db"]
+        schema = with_synthetic_rows(inputs["schema"], inputs.get("synthetic_rows") or ())
+        sigs, bodies, db = inputs["sigs"], inputs["bodies"], inputs["db"]
         env_id = getattr(inputs["environment"], "env_id", None)
         canon_rules = _rules_of(inputs)
         write_tools = {s.name for s in sigs if s.kind == "write"}
@@ -895,7 +921,7 @@ def _replay_stage(only: Optional[Iterable[str]] = None):
     version = _version("replay_reference", run, replay_mod, fidelity, compile_env, route, loop)
     return pipeline.Stage(name="replay_reference", fn=run,
                           inputs=("traces", "tasks", "sigs", "schema", "bodies", "db", "canon_rules",
-                                  "environment"),
+                                  "environment", "synthetic_rows"),
                           outputs=("replays",),
                           input_paths=("overlays",) if only is None else ("overlays", "replays.json"),
                           code_version=version if only is None else f"{version}:only={','.join(only)}")
@@ -1183,7 +1209,8 @@ def _rerolls_stage(model: Any, rerolls: int, workers: int = 1, only: Optional[It
             task, rules, prompt, key = job
             _discard_runs(ctx.workdir / "runs" / task.id, f"reroll-{task.id}-")
             runs = _candidate_runs(ctx.workdir, task, model, count=rerolls, prefix="reroll", source=source,
-                                   schema=inputs["schema"], sigs=inputs["sigs"], db=inputs["db"], env_id=env_id,
+                                   schema=with_synthetic_rows(inputs["schema"], inputs.get("synthetic_rows") or ()),
+                                   sigs=inputs["sigs"], db=inputs["db"], env_id=env_id,
                                    canon_rules=canon_rules, rules=rules, seed=REROLL_SEED,
                                    max_turns=REROLL_TURNS, system_prompt=prompt)
             rows = [{"run_id": r.run_id, "path": p, "termination_reason": r.termination_reason} for r, p in runs]
@@ -1207,7 +1234,7 @@ def _rerolls_stage(model: Any, rerolls: int, workers: int = 1, only: Optional[It
                f"{getattr(model, 'name', 'none')}:{rerolls}")
     return pipeline.Stage(name="rerolls", fn=run, builder=True,
                           inputs=("tasks", "replays", "user_rules", "schema", "sigs", "bodies", "db",
-                                  "environment", "canon_rules", "traces", "policy_text"),
+                                  "environment", "canon_rules", "traces", "policy_text", "synthetic_rows"),
                           outputs=("rerolls",), input_paths=("overlays",),
                           code_version=version if only is None else f"{version}:only={','.join(only)}")
 
@@ -1275,7 +1302,8 @@ def probe_runner(plan: BuildPlan):
     the Examiner that calls it never does (D123).
     """
     store = _runner_store(plan)
-    schema, sigs, bodies, db = store["schema"], store["sigs"], store["bodies"], store["db"]
+    schema = with_synthetic_rows(store["schema"], store.get("synthetic_rows") or ())
+    sigs, bodies, db = store["sigs"], store["bodies"], store["db"]
     env_id = getattr(store["environment"], "env_id", None)
     tasks = {t.id: t for t in store["tasks"]}
     user_rules = store.get("user_rules") or {}
@@ -1328,7 +1356,8 @@ def reroll_runner(plan: BuildPlan):
         model = _wrap(plan.model, "reroll", plan.workdir, plan.ceiling, cap_context=False, memoize=False)
     if model is None:
         raise BuildError("the plan has no model to re-roll with")
-    schema, sigs, bodies, db = store["schema"], store["sigs"], store["bodies"], store["db"]
+    schema = with_synthetic_rows(store["schema"], store.get("synthetic_rows") or ())
+    sigs, bodies, db = store["sigs"], store["bodies"], store["db"]
     env_id = getattr(store["environment"], "env_id", None)
     tasks = {t.id: t for t in store["tasks"]}
     user_rules = store.get("user_rules") or {}

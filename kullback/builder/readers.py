@@ -50,7 +50,7 @@ import json
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Iterable, Optional
+from typing import Any, Callable, Iterable, Optional
 
 from kullback.builder.mine import _reply_json, propose_column_class
 from kullback.builder.sandbox import Sandbox, SandboxError, gate_parses, parse_result
@@ -1046,3 +1046,49 @@ def reader_rows(artifact: Any) -> dict[tuple[str, str], dict[str, dict]]:
         if by_trace:
             out[(proposal.table, proposal.requestor)] = by_trace
     return out
+
+
+def result_reader(artifact: Any, traces: Iterable[Trace], workdir: Path | str
+                  ) -> Optional[Callable[[str, Any], Optional[dict]]]:
+    """What each tool's reader reads out of a result, as one function of (tool, result).
+
+    The Starting-state pinner has a use for a reader beyond the requestor whose prose it was
+    proposed for: a read that answers a bare value and leaves which row it is about to the call
+    states its columns inside that value, and only this tool's reader can say what they are
+    (`compile_env.home_partial_result`). Rather than hand the pinner a sandbox, every reader is run
+    once here over the distinct results its tool answered anywhere in the corpus, and the answers
+    are served from that table.
+
+    None when no proposal carries a reader, so a corpus without readers starts no subprocess. The
+    readers run in the same sandbox as everything else in this module, never in this process.
+    """
+    proposals = [p for p in proposals_from(artifact) if p.readers]
+    if not proposals:
+        return None
+    traces = list(traces)
+    values: dict[tuple[str, str], Optional[dict]] = {}
+    for proposal in proposals:
+        names = _method_names(proposal)
+        source, refused = _module(proposal)
+        if refused or not gate_parses(source).passed or not gate_confined(source).passed:
+            continue
+        jobs: list[tuple[str, str]] = []
+        for trace in traces:
+            for call in trace.tool_calls:
+                if call.error is not None or call.name not in names:
+                    continue
+                key = (call.name, str(parse_result(call.result)))
+                if key not in values and key not in jobs:
+                    jobs.append(key)
+        calls = [ToolCall(name=names[tool], args={"result": text}, raw_ptr=_PTR) for tool, text in jobs]
+        results, refusal = _run(source, calls, Path(workdir) / "readers")
+        if refusal:
+            continue
+        for key, result in zip(jobs, results, strict=False):
+            value = result.get("value") if result.get("ok") else None
+            values[key] = value if isinstance(value, dict) and value else None
+
+    def read(tool: str, result: Any) -> Optional[dict]:
+        return values.get((tool, str(result)))
+
+    return read
