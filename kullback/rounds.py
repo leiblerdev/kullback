@@ -60,7 +60,7 @@ from kullback.agent.tools import ToolResult
 from kullback.ai.provider import Model
 from kullback.builder import agent as builder_agent
 from kullback.builder import build as build_module
-from kullback.builder import pipeline
+from kullback.builder import pipeline, transaction
 from kullback.builder import repair as repair_module
 from kullback.builder.agent import builder_message
 from kullback.builder.build import DEFAULT_REROLLS, TARGET_ALL, BuildError, BuildPlan
@@ -776,6 +776,13 @@ class Loop:
             "shape_retries": self.retry_asks - self.retries_seen,
             "refuse_repeats": repair_module.refuse_repeats(self.plan.workdir, self.plan.round),
             "zooms_skipped": self.plan.zooms_skipped - self.zooms_seen,
+            # D201: how this round's repairs ended. A round that closed six red lights while three of
+            # its repairs were put back for breaking Tasks elsewhere did less than its findings say,
+            # and until these counts existed nothing on the record could tell the two rounds apart.
+            **transaction.round_outcomes(self.repairs_in(self.plan.round)),
+            # The sentence the round's report prints, written here because report.py reads records
+            # and works nothing out for itself.
+            "repairs_reverted": transaction.reverted_by_kind(self.repairs_in(self.plan.round)),
             "artifacts": fingerprint, "artifact_hashes": per, "artifacts_changed": changed,
         }
 
@@ -862,7 +869,10 @@ class Loop:
         for row in self.repairs_in(n):
             verb = str(row.get("verb") or "?")
             out.append({"verb": verb, "target": str(row.get("target") or "?"),
-                        "artifact": REPAIR_ARTIFACT.get(verb), "changed": bool(row.get("changed"))})
+                        "artifact": REPAIR_ARTIFACT.get(verb), "changed": bool(row.get("changed")),
+                        # D201: which of the three ways this repair ended. A row an older build
+                        # recorded carries none, and reads as "", because nothing ruled on it.
+                        "outcome": str(row.get("outcome") or "")})
         return out
 
     def rulings_moved(self, n: int) -> bool:

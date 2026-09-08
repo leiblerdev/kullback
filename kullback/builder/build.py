@@ -46,6 +46,7 @@ from kullback.builder import (
     readers,
     sandbox,
     synth,
+    transaction,
     user_sim,
     vocabulary,
 )
@@ -624,7 +625,19 @@ def _tools_stage(model: Any, max_attempts: int, workers: int = 1, only: Optional
             # scores: the tie below would otherwise hand the tool back to a body a schema change
             # broke. Everything else competes, and a tie goes to the body that is already there,
             # which the Examiner has seen and the Tasks that trusted it were trusted against.
-            keeps_previous = graded is not None and not graded.could_not_run and kept_score >= score
+            #
+            # D201: this is the repair transaction with the tool's own recorded calls as its set. The
+            # target's state is the score the compiler ranks its attempts by, so a tie or a loss is
+            # still a repair with no effect and the kept body still stands; what the score alone
+            # could not see is a rewrite that gained two calls and lost one, which has cost something
+            # and is reverted for a regression the way an Intent that costs a Task its Reference is.
+            body_ruling = (transaction.rule("compile_tools.body", sig.name,
+                                            transaction.improved(kept_score, score),
+                                            transaction.call_lights(graded.call_outcomes),
+                                            transaction.call_lights(build.call_outcomes))
+                           if graded is not None else None)
+            keeps_previous = (body_ruling is not None and not graded.could_not_run
+                              and not body_ruling.accepted)
             # gates.json is the ruling on the module this stage released, and every failing row in
             # it becomes a red light the Builder is asked to repair (`builder/tools.red_lights`).
             # So the rows recorded are the gates of the body that was released, not of the attempt
@@ -645,8 +658,17 @@ def _tools_stage(model: Any, max_attempts: int, workers: int = 1, only: Optional
                 unbeaten = int((prior_rulings.get(sig.name) or {}).get("unbeaten") or 0)
                 unbeaten += 1 if ctx.attempt <= 1 else 0
                 kept_rulings[sig.name] = {
-                    "outcome": "kept" if keeps_previous else
-                               ("could_not_run" if graded.could_not_run else "beaten"),
+                    # An attempt that scored no higher is kept out for the reason D184 gives, and the
+                    # word for it stays "kept". The new outcome is the one the score alone could not
+                    # see: an attempt ahead on the score and behind on the calls.
+                    "outcome": ("could_not_run" if graded.could_not_run else
+                                "beaten" if body_ruling.accepted else
+                                transaction.REVERTED_REGRESSION if body_ruling.moved else "kept"),
+                    # The recorded calls that attempt would have cost, named: it is the lesson the
+                    # next hint has to answer (D191's shape).
+                    "broke": ([call.split(" ")[0] for call in body_ruling.broke[:transaction.NAMED]]
+                              if body_ruling.moved else []),
+                    "broke_calls": len(body_ruling.broke) if body_ruling.moved else 0,
                     "kept_score": kept_score, "attempt_score": score,
                     "unbeaten": unbeaten if keeps_previous else 0,
                     "from_replay": from_replay.get(sig.name, 0),
