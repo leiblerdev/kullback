@@ -336,6 +336,11 @@ def _state_stage(grow: Optional[dict] = None, grow_seed: int = 0):
         # Its own copy: build_starting_state tags the synthetic ids on the schema it is given, and
         # the artifact the mine stage released is not this stage's to write to (with_synthetic_rows).
         schema = inputs["schema"].model_copy(deep=True)
+        # D202: the bodies this workdir already holds, so a column a Task first touches with a write
+        # is pinned from what that write recorded. They are a declared input path of the stage and
+        # not an artifact, because no stage has released a body yet when this one runs; a recompile
+        # that moves bodies.json moves this stage's key and the inversion runs again.
+        bodies = dict(_read_json(ctx.workdir / "bodies.json", {}) or {})
         state = compile_env.build_starting_state(inputs["traces"], schema, ctx.workdir,
                                                  inputs["tasks"], inputs["sigs"], grow=grow,
                                                  grow_seed=grow_seed,
@@ -343,7 +348,11 @@ def _state_stage(grow: Optional[dict] = None, grow_seed: int = 0):
                                                  revealed_assumptions=readers.reader_assumptions(
                                                      inputs["readers"]),
                                                  read_result=readers.result_reader(
-                                                     inputs["readers"], inputs["traces"], ctx.workdir))
+                                                     inputs["readers"], inputs["traces"], ctx.workdir),
+                                                 bodies=bodies, rules=_rules_of(inputs),
+                                                 readers=tool_runs.load_readers(inputs["readers"]),
+                                                 guessed_columns=readers.filled_columns(
+                                                     inputs["readers"]))
         # The synthetic ids live on the schema (D40); run_batch reads them back from schema.json.
         _write_json(ctx.workdir / "schema.json", as_dict(schema))
         return {"db": state.db, "overlays": list(state.overlays),
@@ -353,9 +362,11 @@ def _state_stage(grow: Optional[dict] = None, grow_seed: int = 0):
     # sizes are two Starting states, not one served twice (pipeline._fn_identity).
     fn = functools.partial(run, grow=dict(grow or {}), grow_seed=grow_seed)
     return pipeline.Stage(name="starting_state", fn=fn,
-                          inputs=("traces", "schema", "tasks", "sigs", "readers"),
+                          inputs=("traces", "schema", "tasks", "sigs", "readers", "canon_rules"),
                           outputs=("db", "overlays", "assumptions", "synthetic_rows"),
-                          code_version=_version("starting_state", fn, compile_env, synth, readers, mine))
+                          input_paths=("bodies.json",),
+                          code_version=_version("starting_state", fn, compile_env, synth, readers,
+                                                mine, sandbox, tool_runs))
 
 
 def _evidence_version() -> str:

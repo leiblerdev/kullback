@@ -470,7 +470,10 @@ def test_a_builder_round_with_every_stage_cached_is_told_that_nothing_changed_an
     same in words and names the verbs of this session that can change an artifact."""
     plan = BuildPlan(workdir=tmp_path / "cached", model=Bodies(), files=[_fixture(request)], max_attempts=0)
     harness = builder_agent.build_harness(plan)
-    for _ in range(2):  # the second build re-ingests the file; the third has nothing left to run
+    # The second build re-ingests the file. The third is the first to build the Starting state with
+    # the bodies in front of it, which D202 inverts a write against, so what it releases can move
+    # once and take the stages under it with it. The fourth has nothing left to run.
+    for _ in range(3):
         builder_agent.drive_tool(harness, "build", {"target": TARGET})
     third = builder_agent.drive_tool(harness, "build", {"target": TARGET})
     assert not third.is_error and "nothing changed: all" in third.content.splitlines()[0]
