@@ -105,6 +105,10 @@ KIND_OF_RULING: dict[str, str] = {
     "references": "reference_disagreement",
     "reference_agreement": "reference_disagreement",
     "disagreement": "reference_disagreement",
+    # D193: every End state of a Task was failed on one key the failures agree the Intent or a policy
+    # line required. Nothing about the recordings disagreeing; the world or the Intent is what to look
+    # at, so it maps to the world and the Examiner may still file it as `other` for an Intent.
+    "no_correct_recording": "environment",
     # the Verifier's own rulings
     "derive_verifier": "suite",
     "verifier_suite": "suite",

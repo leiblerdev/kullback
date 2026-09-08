@@ -29,6 +29,11 @@ one, because it names allowed sources and rests on an absent one. So D186 checks
 than the sources: each one cites a key the states differ on, this state's value at it and what the
 value should have been, `rows` and `stated` mark the differing entries, `policy` numbers the lines
 it shows so `policy:<n>` means one of them, and a failure that does not pass drops the judgement.
+
+A ruling that leaves two or more states in is asked once more over those states alone (D193), which
+is a second session here with its own cap and the stop rule on the end of its message: the states in
+front of it are new and a look spent on a state that is already out should not be charged against
+the choice that is left.
 """
 
 from __future__ import annotations
@@ -428,8 +433,14 @@ def judge_system_prompt() -> str:
     return "\n\n".join([WHAT_YOU_RECEIVE, TOOLS_TEXT, EXAMPLES, CHOICE_RULE, ANSWER_SHAPE, STOP_RULE])
 
 
-def judge_message(case: JudgeCase) -> str:
-    """The one message the judge answers: the Intent and one line per state, the rest behind the tools."""
+def judge_message(case: JudgeCase, final: bool = False) -> str:
+    """The one message the judge answers: the Intent and one line per state, the rest behind the tools.
+
+    `final` is D193's second pass, where the states are the ones this judge's own first ruling left
+    in and one of them may remain. The stop rule goes here rather than into the system prompt, since
+    the system prompt is the same for both passes and this is what changed about the question; it is
+    the last thing on the turn, so the rule for stopping is read last either way.
+    """
     lines = ["Intent: " + (_line(case.intent, reference_mod.MAX_REQUEST_CHARS) or "(not recorded)"), "",
              "End states:"]
     differing = reference_mod.differing_keys(case.groups)
@@ -440,6 +451,8 @@ def judge_message(case: JudgeCase) -> str:
                                                          reference_mod.state_values(row)))
         lines.append("    " + reference_mod.told_line(row))
     lines += ["", "Look at what you need, then rule."]
+    if final:
+        lines += ["", reference_mod.one_state_left(case.groups)]
     return "\n".join(lines)
 
 
@@ -472,23 +485,29 @@ class AgentJudge:
                          constraints=self.constraints, fn=self.fn)
 
     def rule_groups(self, intent: str, policy_lines: Iterable[str], groups: list[dict],
-                    phrases: Iterable[str] = ()) -> reference_mod.Judgement:
+                    phrases: Iterable[str] = (), final: bool = False) -> reference_mod.Judgement:
         """One judgement: the agent's, or the one-shot judge's when the agent went over the cap or
-        answered something that will not parse. The calls it made ride on the Judgement either way."""
+        answered something that will not parse. The calls it made ride on the Judgement either way.
+
+        `final` is the second pass over a residue (D193). It is a fresh session over the survivors,
+        with its own cap: the first pass has already been paid for and the states in front of this
+        one are new, so a look spent on a state that is out is not charged against the choice that is
+        left. The fallback is the one-shot judge under the same stop rule.
+        """
         case = self.case(intent, policy_lines, groups, phrases)
-        text, calls, over_cap = self._session(case)
+        text, calls, over_cap = self._session(case, final)
         if not over_cap:
             judgement = reference_mod.parse_judgement(text, groups, available=JUDGE_SOURCES,
                                                       policy_shown=case.policy_seen)
             if judgement.reason != reference_mod.UNREADABLE_REPLY:
                 judgement.calls = calls
                 return judgement
-        fallback = reference_mod.judge_groups(self.model, intent, policy_lines, groups)
+        fallback = reference_mod.judge_groups(self.model, intent, policy_lines, groups, final=final)
         fallback.calls = calls
         fallback.fell_back = OVER_THE_CAP if over_cap else UNREADABLE
         return fallback
 
-    def _session(self, case: JudgeCase) -> tuple[str, list[dict], bool]:
+    def _session(self, case: JudgeCase, final: bool = False) -> tuple[str, list[dict], bool]:
         """The agent's last spoken turn, the calls it made, and whether it asked past the cap.
 
         The cap is held by a `tool_call` hook and not by the cancel flag alone: a model may ask for
@@ -528,7 +547,7 @@ class AgentJudge:
 
         async def go() -> None:
             nonlocal said
-            async for event in harness.prompt(judge_message(case)):
+            async for event in harness.prompt(judge_message(case, final)):
                 if event.type != "message_end":
                     continue
                 message = event.message
