@@ -55,6 +55,10 @@ ignore = ["E501"]
 # gates, runner and ai, and never each other (D120, D122, D123, ADR-0007); nothing imports the three
 # frontends except themselves. Written for all six packages now, though agent, gates and examiner
 # are still empty, so phase 2 and phase 3 do not have to touch this file (D130).
+# D214 adds the user package under builder and examiner and over gates: the Builder derives the
+# vocabulary the user speaks and drives the Runs it answers in, so it may import the user, and the
+# user may never import back. The forbidden contract below says the second half outright, because a
+# layers contract alone would let a cycle in through a module the layer list does not name.
 [tool.importlinter]
 root_package = "kullback"
 
@@ -65,10 +69,17 @@ containers = ["kullback"]
 layers = [
     "rounds",
     "builder | examiner",
+    "user",
     "gates",
     "agent | runner",
     "ai",
 ]
+
+[[tool.importlinter.contracts]]
+name = "the Simulated user never imports the two agents that drive it"
+type = "forbidden"
+source_modules = ["kullback.user"]
+forbidden_modules = ["kullback.builder", "kullback.examiner", "kullback.rounds"]
 
 [[tool.importlinter.contracts]]
 name = "gates rules on the Runner's work; it never reaches into the agent core"
@@ -84,6 +95,7 @@ source_modules = [
     "kullback.agent",
     "kullback.runner",
     "kullback.gates",
+    "kullback.user",
     "kullback.builder",
     "kullback.examiner",
     "kullback.rounds",

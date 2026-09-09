@@ -68,9 +68,10 @@ TARGET = "environment"
 # so the hash is taken over the rows with those two stamps stripped; the stamp is a wall clock and
 # hashing it would pin the minute the fixture ran rather than what it wrote. Re-pinned for D220: a
 # Task's re-roll key is now a function of its seed Runs, so the key hash inside every re-rolled Run
-# id moves; the diff against the previous pin is those ids and nothing else. The same three Tasks,
-# the same verdicts.
-TASK_STATUS_SHA256_BEFORE_THE_PHASE = "d675d9089f8bd63ef506ff56a918eb8eb3f2142148e426ecad67a1366509412c"
+# id moves. Re-pinned for D214: the rule-driven Simulated user moved into kullback/user, so the
+# re-roll stage's code version moved with it and the Run ids derived from that key moved again. The
+# same three Tasks, the same verdicts and the same reasons.
+TASK_STATUS_SHA256_BEFORE_THE_PHASE = "3c59e00288ccb2f1dae5eda91a96945182ec49ef78377be5c9c101606b6f673d"
 
 
 def _fixture(request) -> Path:
