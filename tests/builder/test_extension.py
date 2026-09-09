@@ -96,16 +96,14 @@ def test_the_tool_result_hook_appends_the_registered_gates_over_what_the_tool_pr
     assert {"compile_policy", "intent", "vocabulary", "build_user_rules", "replay_reference"} <= set(names)
     # The same rulings the stages recorded, decided again by the same functions over the store the
     # tool left; the hook writes nothing, so gates.json is the stages' and only theirs. ingest's
-    # ruling is a stage gate and lives in state.json; cluster's was in gates.json until the
-    # compile_tools stage overwrote the file with the sandbox rulings, as it always has.
+    # ruling is a stage gate and lives in state.json; cluster's stayed in gates.json, because the
+    # compile_tools stage now writes its per tool rows to their own file instead of over this one
+    # (D218 rule 2), and nothing a later stage does drops a ruling an earlier stage recorded.
     recorded = {g["stage"]: g for g in json.loads((driven["workdir"] / "gates.json").read_text(encoding="utf-8"))}
     state = json.loads((driven["workdir"] / "pipeline" / "state.json").read_text(encoding="utf-8"))
     recorded.update({g["stage"]: g for g in state["gates"]})
-    assert "cluster" not in recorded
+    assert "cluster" in recorded
     for ruling in rulings:
-        if ruling["stage"] == "cluster":
-            assert ruling["pass"] is True
-            continue
         assert ruling["stage"] in recorded, ruling["stage"]
         assert ruling["pass"] == recorded[ruling["stage"]]["pass"], ruling["stage"]
         assert ruling["failures"] == recorded[ruling["stage"]]["failures"], ruling["stage"]
@@ -283,7 +281,10 @@ def test_compile_tool_recompiles_one_body_and_releases_every_body(driven):
     assert after == before, "one tool recompiled by the same model, the rest read back: every body is still there"
     assert set(plan.store["bodies"]) == set(before)
     gates = {g["stage"] for g in json.loads((driven["workdir"] / "gates.json").read_text(encoding="utf-8"))}
-    assert {"parses", "intent", "rerolls"} <= gates, "the sandbox rulings were appended, the rest kept"
+    assert {"intent", "rerolls"} <= gates, "the stage rulings are kept, none of them dropped"
+    compiled = json.loads((driven["workdir"] / "compile_snapshot.json").read_text(encoding="utf-8"))
+    assert "parses" in {row["stage"] for row in compiled["rows"]}, "the sandbox rulings are in their own file"
+    assert not ({"parses", "confined"} & gates), "and never over the stage rulings (D218 rule 2)"
     # D202: starting_state declares bodies.json, because a column a Task first touches with a write
     # is pinned by running that tool's body, and the build that made this workdir wrote the bodies
     # after the Starting state was built. So the first narrowed run rebuilds it once and the key
