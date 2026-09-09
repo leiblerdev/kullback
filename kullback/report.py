@@ -10,7 +10,7 @@ from typing import Any, Literal, Optional
 
 from pydantic import BaseModel, Field, ValidationError
 
-from kullback import difficulty, round_snapshot
+from kullback import claims, difficulty, round_snapshot
 from kullback.examiner import lifecycle
 from kullback.runner.records import (
     Constraint,
@@ -28,9 +28,9 @@ from kullback.runner.records import (
     disagreement_stats,
 )
 
-SECTIONS = ("## Environment", "## Rounds", "## Tasks", "## Disagreement queue",
+SECTIONS = ("## Environment", "## Rounds", "## Tasks", "## Synthetic Tasks", "## Disagreement queue",
             "## The Simulated user", "## Lessons set aside")
-ENVIRONMENT, ROUNDS, TASKS, QUEUE, USER_FIDELITY, LESSONS = SECTIONS
+ENVIRONMENT, ROUNDS, TASKS, SYNTHETIC, QUEUE, USER_FIDELITY, LESSONS = SECTIONS
 
 
 class ScorecardItem(Record):
@@ -105,6 +105,12 @@ class ReportData(BaseModel):
     trusted: Optional[GateResult] = None
     # D209: difficulty.json, the record and the bucket per Task with the Tasks that carry neither.
     difficulty: dict = Field(default_factory=dict)
+    # D224: synthetic/index.json, the walks that became Tasks. Its own field and its own section,
+    # never added into `tasks`: nothing generated may be counted where the recorded Tasks are.
+    synthetic: dict = Field(default_factory=dict)
+    # D223: claims.json, what the transcripts claimed against what the state received, per Run, per
+    # Task and over the corpus, with the Tasks flagged for the Simulated user's end protocol.
+    claims: dict = Field(default_factory=dict)
     findings: list[dict] = Field(default_factory=list)  # repairs/repair_record_finding.jsonl (D155)
     # D218: the last closed round's Task table and how far the live files have moved from it. The
     # report reads the table, so its Task level numbers are one round's answer rather than a join
@@ -540,6 +546,103 @@ def _difficulty_table(data: ReportData) -> list[str]:
     return ["", "### Difficulty buckets", ""] + difficulty.markdown_table(rows, len(body.get("no_record") or {}))
 
 
+def _synthetic(data: ReportData) -> list[str]:
+    """The Tasks walked over the mined graph, under their own heading and in nobody else's count (D224).
+
+    A synthetic Task is a walk of the dependency graph the recordings showed, run in the rebuilt
+    world, with a Verifier derived from where it landed. No recording gates it, so it is never
+    trusted, never part of replay fidelity and never a Reference: what it buys is a pool wide enough
+    to measure over-strictness on a thin corpus and Tasks at a difficulty a round asked for. The
+    walks a body refused are printed beside the Tasks, because a corpus whose walks are mostly
+    refused has a graph missing a precondition edge and the count is what says so.
+    """
+    lines = [SYNTHETIC, ""]
+    body = data.synthetic or {}
+    rows = list(body.get("tasks") or [])
+    if not rows:
+        return lines + ["No synthetic Tasks were generated for this build."]
+    counts = dict(body.get("counts") or {})
+    graph_row = dict(counts.get("graph") or {})
+    verified = sum(1 for row in rows if row.get("suite_passed"))
+    lines += [f"{len(rows)} synthetic Tasks, {verified} of them verified by the D79 suite. None of them "
+              "counts toward replay fidelity, a confirmed Reference or the trusted count.", "",
+              f"Graph: {graph_row.get('nodes', 0)} tools, {graph_row.get('edges', 0)} edges "
+              f"({graph_row.get('value_edges', 0)} carrying a value, {graph_row.get('row_edges', 0)} "
+              f"joining a read to a write on one row), mined over {graph_row.get('runs', 0)} Runs.", "",
+              f"Walks tried {counts.get('walks_tried', 0)}, refused by a body "
+              f"{counts.get('walks_refused', 0)}, crashed {counts.get('walks_crashed', 0)}, "
+              f"unbound {counts.get('walks_unbound', 0)}.", ""]
+    lines += ["| bucket asked | bucket reached | Tasks | suite passed | mean pool |",
+              "| --- | --- | --- | --- | --- |"]
+    grouped: dict = {}
+    for row in rows:
+        key = (str(row.get("bucket_requested") or ""), str(row.get("bucket") or ""))
+        held = grouped.setdefault(key, {"tasks": 0, "passed": 0, "pool": 0})
+        held["tasks"] += 1
+        held["passed"] += 1 if row.get("suite_passed") else 0
+        held["pool"] += int(row.get("pool") or 0)
+    for (asked, reached), held in sorted(grouped.items()):
+        mean = held["pool"] / held["tasks"] if held["tasks"] else 0.0
+        lines.append(f"| {asked} | {reached} | {held['tasks']} | {held['passed']} | {mean:.1f} |")
+
+def _claims_table(data: ReportData) -> list[str]:
+    """What the transcripts claimed against what the state received, per Task and over the corpus (D223).
+
+    The Verdict already grades state alone (D46), so a false claim never earned a pass; what this
+    adds is the class. A Candidate that answered "done" and wrote nothing and one that wrote the
+    wrong row were one failure count, and they ask for two different repairs. The Tasks flagged
+    below are the ones where every failing held-out Run claimed a write the state never received,
+    which is where the Simulated user's end protocol accepted words for a state change.
+    """
+    body = data.claims or {}
+    totals = body.get("totals") or {}
+    if not body:
+        return ["", "### Claims against state", "",
+                "No claim record was written for this build, so no claim table is shown."]
+    lines = ["", "### Claims against state", "",
+             f"{totals.get('runs_with_claims', 0)} of {totals.get('runs', 0)} Runs claim a write in "
+             f"words: {totals.get('claims', 0)} claims, {totals.get('claims_written', 0)} answered by "
+             f"a write the state received and {totals.get('claims_unwritten', 0)} answered by none. "
+             f"{totals.get('writes_unclaimed', 0)} writes happened that no transcript mentions.",
+             f"Of {totals.get('failing_runs', 0)} failing Runs, "
+             f"{totals.get('claimed_unwritten_failures', 0)} claimed a write nothing received "
+             f"({_percent(totals.get('claimed_unwritten_share'))}). Mean partial completion "
+             f"{_percent(totals.get('partial_completion_mean'))}.",
+             "", claims.LEGEND, ""]
+    lines += claims.markdown_table(body.get("tasks") or {})
+    flagged = list(body.get("flagged") or [])
+    lines += ["", ("Flagged for the Simulated user's end protocol: " + ", ".join(flagged)
+                   + ". Every failing held-out Run of each claimed a write the state never received."
+                   if flagged else
+                   "No Task is flagged for the Simulated user's end protocol: no Task fails only on "
+                   "claims the state never received.")]
+    return lines
+
+
+def claims_for_task(data: ReportData, task_id: str) -> dict:
+    """One Task's row of the claim record, or an empty row where the build wrote none."""
+    row = ((data.claims or {}).get("tasks") or {}).get(task_id)
+    return dict(row) if isinstance(row, dict) else {}
+
+
+def _claim_task_lines(data: ReportData, task_id: str) -> list[str]:
+    """The two lines D223 puts beside a Task's numbers: what it claimed, and how far its Runs got."""
+    row = claims_for_task(data, task_id)
+    if not row:
+        return []
+    flagged = task_id in list((data.claims or {}).get("flagged") or [])
+    lines = [f"- Claims: {row.get('claims', 0)}, of which {row.get('claims_unwritten', 0)} name a "
+             f"write the state never received; {row.get('writes_unclaimed', 0)} writes no transcript "
+             f"mentions",
+             f"- Partial completion: {_percent(row.get('partial_completion_mean'))} of atoms confirmed "
+             f"per Run (band {row.get('partial_completion_band', 'none')}), beside trusted and not "
+             f"instead of it"]
+    if flagged:
+        lines.append("- Flagged: every failing held-out Run of this Task claimed a write the state "
+                     "never received, so the Simulated user's end protocol is what to read next")
+    return lines
+
+
 def tool_fidelity_counts(data: ReportData, name: str) -> dict:
     """Both grains of one tool's replay fidelity, off tool_fidelity.json (D171).
 
@@ -637,7 +740,8 @@ def _environment(data: ReportData) -> list[str]:
     """The Environment section, in the order a person reads it: what was built, what the gates and
     the scorecard said, what still needs a look, and what the pipeline did and cost."""
     return ([ENVIRONMENT, ""] + _headline(data) + _gates_table(data) + _scorecard_table(data)
-            + _difficulty_table(data) + _tool_notes(data) + _finding_lines(data) + _overlay_lines(data)
+            + _difficulty_table(data) + _claims_table(data)
+            + _tool_notes(data) + _finding_lines(data) + _overlay_lines(data)
             + ["", "### Coverage", ""] + _coverage(data) + _pipeline_lines(data))
 
 
@@ -708,6 +812,7 @@ def _tasks(data: ReportData) -> list[str]:
             lines.append(f"Not gradeable, Reference disputed ({aside[task.id]}).")
             lines.append("")
         lines += _task_numbers_lines(data, numbers)
+        lines += _claim_task_lines(data, task.id)
         if data.trusted is not None:
             lines += _trust_lines(data, task.id, fractions)
         lines += ["", suggestion(numbers, data.built, aside.get(task.id)), ""]
@@ -960,6 +1065,7 @@ def render(data: ReportData) -> str:
     lines += _environment(data) + [""]
     lines += _rounds(data) + [""]
     lines += _tasks(data) + [""]
+    lines += _synthetic(data) + [""]
     lines += _queue(data) + [""]
     lines += _user_fidelity(data) + [""]
     lines += _lessons(data) + [""]
@@ -1273,6 +1379,17 @@ def load_tool_sigs(workdir: Any) -> list[ToolSig]:
     return _list_of(root / "tool_sigs.json", ToolSig)
 
 
+SYNTHETIC_INDEX = ("synthetic", "index.json")
+"""Where the generated Tasks keep their index (D224). Named here rather than imported: the report
+reads records and never reaches into the Builder (design section 4 item 18)."""
+
+
+def _synthetic_body(root: Path) -> dict:
+    """synthetic/index.json as the last request left it, or nothing where none has run (D224)."""
+    body = _json(root.joinpath(*SYNTHETIC_INDEX))
+    return body if isinstance(body, dict) else {}
+
+
 def load(workdir: Any) -> ReportData:
     """Read every record the report shows from one workdir. Missing files mean a shorter report, not an error."""
     root = Path(workdir)
@@ -1331,6 +1448,8 @@ def load(workdir: Any) -> ReportData:
         rounds=_rounds_of(root / "rounds.json", unread),
         trusted=trusted,
         difficulty=_difficulty_body(root),
+        synthetic=_synthetic_body(root),
+        claims=claims.read_records(root),
         findings=_jsonl(root / "repairs" / "repair_record_finding.jsonl", unread),
         # D218 rule 4: the last closed round's table, and the drift of the live files from it.
         snapshot=snapshot or {},

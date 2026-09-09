@@ -44,7 +44,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, AsyncIterator, Callable, Iterable, Optional
 
-from kullback import difficulty, round_snapshot, sampling
+from kullback import claims, difficulty, round_snapshot, sampling, synthesise
 from kullback.agent.events import (
     BeatEnd,
     BeatStart,
@@ -87,6 +87,7 @@ from kullback.examiner.stage import DERIVE_INPUTS
 from kullback.gates import round_end, tool_runs
 from kullback.gates.ledger import HISTORY_NAME, GateLedger
 from kullback.runner import budget, feed
+from kullback.runner import judge as judge_mod
 from kullback.runner.records import (
     Finding,
     GateResult,
@@ -882,9 +883,15 @@ class Loop:
         other spend is. All zero on an Environment whose schema classes no column semantic; many
         unresolved with nothing judged is a judge that is not wired, which is what D219 was written
         for and is the reading nothing on the record could give before.
+
+        The judge counts beside them are D222's: how many reads the harness ran before asking,
+        how many calls the models made on top of those, how many questions the harness could
+        prefill no check for, and how the forced first turn went. `judge_refused_no_check` above
+        zero is a bug here, not a model that would not look.
         """
         counts = _read_json(self.plan.workdir / SEMANTIC_COUNTS_FILE, {}) or {}
-        out = {name: int(counts.get(name) or 0) for name in tool_runs.SEMANTIC_COUNTS}
+        out = {name: int(counts.get(name) or 0)
+               for name in tool_runs.SEMANTIC_COUNTS + judge_mod.JUDGE_COUNTS}
         stages = (budget.load_totals(self.plan.workdir).get("stages") or {})
         out["judge_spend"] = round(float((stages.get(SEMANTIC_JUDGE_STAGE) or {}).get("usd") or 0.0), 4)
         return out
@@ -1011,7 +1018,7 @@ class Loop:
 
     def counts(self) -> dict:
         """D126's counts off the gates, plus what only the driver knows (`driver_counts`), plus the
-        difficulty buckets (D209)."""
+        claim and partial-completion counters (D223) and the difficulty buckets (D209)."""
         store = self.eplan.store if self.eplan is not None else {}
         counts = round_end.round_counts(
             store.get("task_status") or {}, store.get("verifiers") or [], store.get("probes") or {},
@@ -1020,7 +1027,12 @@ class Loop:
             store.get("sigs") or [], record=self._land, intents=store.get("intents") or {})
         counts.update(self.driver_counts())
         counts.update(self.user_fidelity_counts())
+        # The claim rows are written before the buckets are: the difficulty record carries D223's
+        # band, and reading it off a file the round before left would band this round on last
+        # round's Runs.
+        counts.update(self.claim_counts(store))
         counts.update(self.difficulty_counts(counts))
+        counts.update(self.synthetic_counts())
         return counts
 
     def user_fidelity_counts(self) -> dict:
@@ -1089,6 +1101,20 @@ class Loop:
 
         return make
 
+    def claim_counts(self, store: dict) -> dict:
+        """What the round's Runs claimed against what their state received (D223), on its own file.
+
+        Four counters: how many claims the transcripts made, how many of them no write atom answered,
+        how many writes no transcript mentioned, and the mean partial completion over the Runs. None
+        of them rules on anything: `trusted` stays the count and a Verdict stays binary (D46). A
+        workdir the computation cannot read leaves the counters out rather than failing the round.
+        """
+        try:
+            body = claims.refresh(self.plan.workdir, store=store)
+        except (OSError, ValueError, TypeError):
+            return {}
+        return claims.round_counters(body)
+
     def difficulty_counts(self, counts: dict) -> dict:
         """The bucket table of the round in hand, written to its own file and summarised on the line.
 
@@ -1128,6 +1154,20 @@ class Loop:
             bodies=_read_json(Path(self.plan.workdir) / "bodies.json", {}) or {},
             buckets=round_snapshot.buckets_by_task(self.difficulty_body))
         return round_snapshot.write_snapshot(self.plan.workdir, n, rows)
+
+    def synthetic_counts(self) -> dict:
+        """What the synthetic store holds, read and never computed here (D224).
+
+        The numbers are carried on the round line under their own names so a reader sees them beside
+        the trusted count and never inside it. A workdir with no synthetic store carries none of
+        them rather than carrying zeros, because zero generated and never asked are not the same.
+        """
+        try:
+            counts = synthesise.counts_of(self.plan.workdir)
+        except (OSError, ValueError, TypeError):
+            return {}
+        return {key: counts[key] for key in ("synthetic_tasks", "synthetic_verified", "synthetic_buckets")
+                if counts.get(key)}
 
     def keep_gate_history(self, n: int, snapshot: Optional[dict] = None) -> None:
         """gates.json as this round leaves it, kept per round in gates_by_round.json.
