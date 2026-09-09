@@ -143,6 +143,24 @@ def test_a_round_is_told_how_many_draws_of_each_kind_it_took_since_the_round_bef
     assert sampling.draws_since(sampling.draws_by_kind()) == {}
 
 
+def test_a_loop_built_after_a_draw_does_not_report_that_draw_as_its_own(tmp_path):
+    """Greptile P1 (PR 26): the counter is process-global, so a second Loop starts from what it finds.
+
+    Without this the first round of any Loop but the first in a process reports the draws an
+    earlier build or an earlier Loop took.
+    """
+    from kullback import rounds
+    from kullback.builder import agent as builder_agent
+    from kullback.builder.build import BuildPlan
+
+    sampling.sample_key("reroll", "open-facility", SALT)
+    plan = BuildPlan(workdir=tmp_path / "work")
+    loop = rounds.Loop(plan=plan, builder=builder_agent.build_harness(plan))
+    assert sampling.draws_since(loop.draws_seen) == {}
+    sampling.sample_key("reroll", "raise-limit", SALT)
+    assert sampling.draws_since(loop.draws_seen) == {"reroll": 1}
+
+
 # --- the anchor, which is the one draw with a workdir behind it -------------
 
 def test_the_anchor_holds_out_the_same_runs_on_two_invocations_over_one_task_list(tmp_path):

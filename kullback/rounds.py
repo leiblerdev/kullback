@@ -439,6 +439,10 @@ class Loop:
         already holds bodies and Intents is exactly the run where round 1 rewrites the most.
         """
         self.started_hashes = artifact_hashes(self.plan.workdir)
+        # D212, Greptile P1 (PR 26): the draw counter is process-global, so a Loop built after
+        # something already drew has to start from what the process has taken, not from nothing.
+        # Otherwise its first round reports another Loop's draws as its own.
+        self.draws_seen = self.draws_seen or sampling.draws_by_kind()
         seen = {finding.finding_id for finding in self.pending_findings}
         self.pending_findings = list(self.pending_findings) + [
             finding for finding in _open_findings(self.plan.workdir) if finding.finding_id not in seen]
