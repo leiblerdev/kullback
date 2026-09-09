@@ -44,7 +44,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, AsyncIterator, Callable, Iterable, Optional
 
-from kullback import difficulty, round_snapshot, sampling, synthesise
+from kullback import claims, difficulty, round_snapshot, sampling, synthesise
 from kullback.agent.events import (
     BeatEnd,
     BeatStart,
@@ -1018,7 +1018,7 @@ class Loop:
 
     def counts(self) -> dict:
         """D126's counts off the gates, plus what only the driver knows (`driver_counts`), plus the
-        difficulty buckets (D209)."""
+        claim and partial-completion counters (D223) and the difficulty buckets (D209)."""
         store = self.eplan.store if self.eplan is not None else {}
         counts = round_end.round_counts(
             store.get("task_status") or {}, store.get("verifiers") or [], store.get("probes") or {},
@@ -1027,6 +1027,10 @@ class Loop:
             store.get("sigs") or [], record=self._land, intents=store.get("intents") or {})
         counts.update(self.driver_counts())
         counts.update(self.user_fidelity_counts())
+        # The claim rows are written before the buckets are: the difficulty record carries D223's
+        # band, and reading it off a file the round before left would band this round on last
+        # round's Runs.
+        counts.update(self.claim_counts(store))
         counts.update(self.difficulty_counts(counts))
         counts.update(self.synthetic_counts())
         return counts
@@ -1096,6 +1100,20 @@ class Loop:
                                             record_values=record_values)
 
         return make
+
+    def claim_counts(self, store: dict) -> dict:
+        """What the round's Runs claimed against what their state received (D223), on its own file.
+
+        Four counters: how many claims the transcripts made, how many of them no write atom answered,
+        how many writes no transcript mentioned, and the mean partial completion over the Runs. None
+        of them rules on anything: `trusted` stays the count and a Verdict stays binary (D46). A
+        workdir the computation cannot read leaves the counters out rather than failing the round.
+        """
+        try:
+            body = claims.refresh(self.plan.workdir, store=store)
+        except (OSError, ValueError, TypeError):
+            return {}
+        return claims.round_counters(body)
 
     def difficulty_counts(self, counts: dict) -> dict:
         """The bucket table of the round in hand, written to its own file and summarised on the line.

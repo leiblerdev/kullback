@@ -55,6 +55,9 @@ READERS_FILE = "readers.json"
 # What the Starting-state pinner ruled, read for the Tasks whose own Runs part on the column that
 # names a row they write (D213). Named here for the same reason READERS_FILE is.
 PINS_FILE = "overlay_pins.json"
+# What the round's claim pass ruled, read for the Tasks whose every failing held-out Run claims a
+# write the state never received (D223). Named here for the same reason PINS_FILE is.
+CLAIMS_FILE = "claims.json"
 # The kinds whose rows are deduplicated on the Task and tool pairs they cover (D192), beside the key.
 # Both name a tool and the Tasks it costs rather than a loss ranked by a moving set of Tasks, so a
 # pair another finding already carries is that finding's news and not a second message.
@@ -522,6 +525,31 @@ def runs_disagree_rows(pins: dict) -> list[dict]:
     return rows
 
 
+def claimed_unwritten_rows(claims_body: dict) -> list[dict]:
+    """One row per Task whose every failing held-out Run claimed a write the state never received (D223).
+
+    A Verdict grades state and never words (D46), so these Runs already fail; what the records could
+    not say before is that they all fail the same way. A Task where every failing held-out Run said
+    the work was done and no write atom moved for it is a Task the Simulated user let go on a
+    sentence, and the answer is the end protocol rather than the Verifier: nothing here suggests a
+    verb, because the verb that would fix it is not one the Builder or the Examiner owns.
+    """
+    rows = []
+    for task_id in sorted((claims_body or {}).get("flagged") or ()):
+        seen = ((claims_body.get("tasks") or {}).get(task_id) or {})
+        rows.append({
+            "kind": "other", "tool": None, "task_ids": [str(task_id)], "task_id": str(task_id),
+            "key": finding_key("claimed_unwritten", "", str(task_id)), "suggested": "none",
+            "hint": "every failing held-out Run of this Task claims a write the state never received",
+            "text": (f"All {int(seen.get('failing_runs') or 0)} failing held-out Runs of this Task claim "
+                     f"a write in words that no write atom of its Verifier received "
+                     f"({int(seen.get('claims_unwritten') or 0)} such claims). The Verdict is right to "
+                     f"fail them (D46); what to read next is the Simulated user's end protocol, which "
+                     f"ended these conversations on what the Candidate said (D210, D223)."),
+        })
+    return rows
+
+
 # --- the whole pass ---------------------------------------------------------------------
 
 def rule_rows(plan: ExaminerPlan) -> list[dict]:
@@ -534,10 +562,12 @@ def rule_rows(plan: ExaminerPlan) -> list[dict]:
     references = _json(plan.workdir / "references.json", {}) or {}
     reader_gaps = _json(plan.workdir / READERS_FILE, {}) or {}
     pins = _json(plan.workdir / PINS_FILE, {}) or {}
+    claims_body = _json(plan.workdir / CLAIMS_FILE, {}) or {}
     rows = (assisted_tool_rows(status, fidelity) + suite_rows(status)
             + false_rejection_rows(plan.store) + disagreement_rows(status, references)
             + fidelity_rows(status, fidelity, plan.store.get("replays") or {})
-            + unread_result_rows(reader_gaps, status) + runs_disagree_rows(pins))
+            + unread_result_rows(reader_gaps, status) + runs_disagree_rows(pins)
+            + claimed_unwritten_rows(claims_body))
     return sorted(rows, key=lambda row: (-len(row["task_ids"]), row["key"]))
 
 
