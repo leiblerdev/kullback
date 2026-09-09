@@ -569,14 +569,19 @@ def _tools_stage(model: Any, max_attempts: int, workers: int = 1, only: Optional
         replay_failed = replay_failures(ctx.workdir)
         calls_by_tool, skipped, from_replay = evidence_calls(
             traces, seeds, after_write, callers, replay_failed)
+        call_runs: dict[str, str] = {}
         for trace in traces:
             task_id = _task_of(tasks, trace.trace_id)
             for call in trace.tool_calls:
                 if call.id and task_id:
                     call_tasks[call.id] = task_id
+                    call_runs[call.id] = trace.trace_id
         # D74: each recorded call replays on the world its own Task saw, not on the shared one.
+        # D213: and on its own Run's layer of it, where the Task's Runs recorded a column in two
+        # values, so a call is never scored against the version another Run of the Task read first.
         states = compile_env.call_starting_states(inputs["db"], inputs["overlays"],
-                                                  compile_env.overlay_values(ctx.workdir), call_tasks)
+                                                  compile_env.overlay_values(ctx.workdir), call_tasks,
+                                                  compile_env.load_run_overlays(ctx.workdir), call_runs)
         tool_names = [sig.name for sig in inputs["sigs"]]
         # The transport's error wrapper is one per corpus, not one per tool: read it once over
         # every recorded call, so a tool with a single error still has it peeled.
@@ -1152,11 +1157,13 @@ def _replay_stage(only: Optional[Iterable[str]] = None):
                        if t not in only}
             tasks = [task for task in tasks if task.id in only]
         for task in tasks:
-            overlay, overlay_rows = compile_env.load_overlay(ctx.workdir, task.id)
             for trace_id in task.run_ids:
                 trace = by_trace.get(trace_id)
                 if trace is None:
                     continue
+                # D213: each Run replays against its own layer of the Task's overlay, so a column
+                # this Task's Runs recorded in two values is served each Run the version it saw.
+                overlay, overlay_rows = compile_env.load_overlay(ctx.workdir, task.id, trace_id)
                 # One fresh world per Trace: a replay must not see what the previous one wrote.
                 toolkit = compile_env.load_toolkit(source, json.loads(json.dumps(db)), overlay=overlay,
                                                    overlay_values=overlay_rows)

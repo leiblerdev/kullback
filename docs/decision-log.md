@@ -1574,6 +1574,18 @@ Measured offline over copies of both workdirs, code only, spend zero. First: 34 
 
 Read verifiers_retired and its two reasons per round, beside trusted and over_strict. Both workdirs predate the Run ids on the row, so only the withdrawal half applied to them; reference_rederived counts from the next derivation.
 
+### D213. When a Task's own Runs disagree on a row, each Run replays against its own sighting (2026-09-09)
+
+The founder asked to observe from the errors and fix things generally, without overfitting (2026-09-08). Sixteen of twenty-four failing calls read across four tools on two corpora were one class. A Task groups several Runs, the Starting state pinned one row per id from the earliest sighting across all of them, and every call of the Task was scored on that version, including the call whose own recording answered with another. The bodies were not wrong: one indexed the world by a single direct key and still failed, on the world another Run saw. The counter meant to see this compared only reads, so a Run whose only mention of a row sat inside its own write's result was never compared.
+
+The rule. What one Run saw of a row is read from every result that Run recorded, read or write, at any depth, so a nested sighting of a row something states plainly is marked rather than dropped. A Task overlay holds, per row and column, only what every Run that sighted the row agrees on. A column its Runs disagree on leaves the Task overlay and is carried by one layer per Run holding that Run's own earliest value, laid over the Task's rows when that Run replays. A Run that never sighted the column, and a generated Candidate Run, are served the Reference Run's layer whole rather than a mix of two; the Reference Run is the Task's first the Builder may build from. The sighting sequence is a within-Run statement and is built per Run. The per-call world the scoring path hashes is the calling Run's layer, so a change in either layer changes the hash. Every disagreement goes to the pinner's ruling with the table, the key class, the column classes and the Run ids, counted per round, and a Task whose Runs part on a column naming a row it writes is flagged a split candidate and filed as a finding, since the grouping may hold two Tasks.
+
+Nine tests on an invented delivery network cover both Runs confirming against their own value, an agreed column staying with the Task, a write-only sighting counting, a Run nothing recorded served the Reference Run's world, the per-call hash parting, and the split flag.
+
+Measured on copies, code only, spend zero. The first corpus holds no disagreement and stands at 193 of 205 Tasks and 417 of 456 Runs confirmed, one failing call fewer. The second holds one disagreeing column in one of 122 Tasks and does not move: 54 Tasks, 82 Runs, 353 failing calls either way. The third holds 104 rows and 537 columns across 91 of its 183 Tasks and moves from 34 to 37 Tasks, 45 to 61 Runs, and 2324 to 1795 failing calls. Nothing regressed.
+
+Two numbers cut against the reading this was built from. The two Tasks it named no longer exist, the mining having regrouped, and the successor of the one whose Runs were said to disagree holds two that agree everywhere; on the second corpus the class is one column and the gain comes wholly from the third. And no corpus has a split candidate, so the flag has zero instances today. Read the four counters in the pinner's ruling on the next build, beside the failing calls per tool.
+
 ## Pending (asked, not yet answered)
 
 - ~~The user's own tools and the world they act on (D71, first part).~~ Decided as D176 (2026-09-07): one world, rows revealed by a requestor marked by it, readers as code under the free gate.
