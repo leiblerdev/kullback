@@ -739,6 +739,31 @@ def test_the_fingerprint_names_the_input_that_moved():
     assert moved_input("a different fingerprint", rehomed, frozen) == "homing"
 
 
+def test_the_record_re_baselines_the_round_an_input_moved_so_a_later_bug_still_raises(tmp_path):
+    """Greptile P1 (PR 30): what a round compares against is the last grouping that was explained.
+
+    Left at the first grouping ever taken, one legitimate move would go on explaining every
+    regrouping after it and the raise could never fire again.
+    """
+    from kullback.builder import build as build_module
+
+    traces = dry_and_wet_traces()
+    schema = plot_schema()
+    tasks = cluster_runs(traces, PLOT_SIGS, worlds=worlds_of(traces))[1]
+    inputs = {"traces": traces, "schema": schema}
+    assert build_module._grouping(tmp_path, tasks, inputs)["grouping_moved"] == ""
+
+    grown = traces + [plot_trace("run_third", [("get_plot", {"plot_id": "p2"},
+                                                {"plot_id": "p2", "state": "dry"})])]
+    after = cluster_runs(grown, PLOT_SIGS, worlds=worlds_of(grown))[1]
+    grown_inputs = {"traces": grown, "schema": schema}
+    assert build_module._grouping(tmp_path, after, grown_inputs)["grouping_moved"] == "recordings"
+    assert build_module._grouping(tmp_path, after, grown_inputs)["grouping_moved"] == "", "re-baselined"
+
+    with pytest.raises(UnexplainedRegrouping):
+        build_module._grouping(tmp_path, list(after)[:1], grown_inputs)
+
+
 def test_a_grouping_that_moved_with_both_inputs_still_is_a_bug_and_raises():
     frozen = {"fingerprint": "f1", "recordings": "r1", "homing": "h1"}
     with pytest.raises(UnexplainedRegrouping):

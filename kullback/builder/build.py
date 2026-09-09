@@ -339,6 +339,11 @@ def _grouping(workdir: Path, live_tasks: Iterable[Any], inputs: dict) -> dict:
     three and compares: a fingerprint that matches says the split reproduced, one that differs names
     the input that moved, and one that differs while both inputs stand still raises, because the
     rule is that the split is a function of those two and of nothing else.
+
+    Greptile P1 (PR 30): the record is re-baselined the round an input moved, so what a later round
+    compares against is the last grouping that was explained rather than the first one ever taken.
+    Left at the first, one legitimate move would explain every regrouping after it and the raise
+    could never fire again.
     """
     now = {"recordings": cluster.recordings_hash(inputs["traces"]),
            "homing": compile_env.homing_hash(inputs["schema"])}
@@ -346,7 +351,7 @@ def _grouping(workdir: Path, live_tasks: Iterable[Any], inputs: dict) -> dict:
     path = Path(workdir) / cluster.GROUPING_FILE
     first = _read_json(path, None)
     moved = cluster.moved_input(fingerprint, now, first if isinstance(first, dict) else None)
-    if not isinstance(first, dict) or not first.get("fingerprint"):
+    if not isinstance(first, dict) or not first.get("fingerprint") or moved:
         _write_json(path, {"format": cluster.GROUPING_FORMAT, "fingerprint": fingerprint, **now})
     return {"grouping": fingerprint, "grouping_inputs": now, "grouping_moved": moved}
 
