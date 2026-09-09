@@ -13,7 +13,15 @@ import pytest
 from conftest import PTR
 from kullback.builder import compile_env as ce
 from kullback.runner import route
-from kullback.runner.records import Column, EntitySchema, Task, ToolCall, ToolSig, Trace
+from kullback.runner.records import (
+    Column,
+    EntitySchema,
+    FieldStat,
+    Task,
+    ToolCall,
+    ToolSig,
+    Trace,
+)
 
 
 def _schema(hard=("status", "reading", "carrier", "surface"), tables=("routes", "legs", "meters")):
@@ -413,3 +421,138 @@ def test_a_list_element_that_carries_no_key_beside_ones_that_do_is_counted(workd
     ce.build_starting_state([trace], _run_schema(), workdir, [Task(id="t1", run_ids=["A"])],
                             _sigs(), synthetic=False)
     assert _pins(workdir)["list_elements_carrying_no_key"] == 1
+
+
+# --- D213: a Task's own Runs disagree, so each Run replays against its own sighting --------------
+
+def _write_sigs():
+    """The reads above plus one write, so a call that changes a row is a write of the world."""
+    return _sigs() + [ToolSig(name="set_route_carrier", kind="write", unclassified=False)]
+
+
+def _two_runs_that_disagree(workdir, first="north", second="south", status="open"):
+    """One Task, two Runs, one route: they agree on its status and part on its carrier."""
+    run_a = _trace("A", [_call("get_route_details", {"route_id": "R1"},
+                               result={"route_id": "R1", "carrier": first, "status": status}, idx=0)])
+    run_b = _trace("B", [_call("get_route_details", {"route_id": "R1"},
+                               result={"route_id": "R1", "carrier": second, "status": status}, idx=1)])
+    state = ce.build_starting_state([run_a, run_b], _schema(), workdir,
+                                    [Task(id="t1", run_ids=["A", "B"])], _sigs(), synthetic=False)
+    return state
+
+
+def test_each_run_of_a_task_replays_against_the_version_its_own_recording_saw(workdir):
+    """Both Runs answer their own call correctly, so a body keyed straight on the id confirms twice."""
+    state = _two_runs_that_disagree(workdir)
+    states = ce.call_starting_states(state.db, state.overlays, ce.overlay_values(workdir),
+                                     {"c0": "t1", "c1": "t1"}, ce.load_run_overlays(workdir),
+                                     {"c0": "A", "c1": "B"})
+    assert states["c0"]["routes"]["R1"]["carrier"] == "north"
+    assert states["c1"]["routes"]["R1"]["carrier"] == "south"
+    sig = ToolSig(name="get_route_details", kind="read", unclassified=False,
+                  args_fields=[FieldStat(name="route_id", types=["str"], optional=False)])
+    outcomes = ce.replay_outcomes(
+        sig, "return self.db.routes[route_id]",
+        [_call("get_route_details", {"route_id": "R1"},
+               result={"route_id": "R1", "carrier": "north", "status": "open"}, idx=0),
+         _call("get_route_details", {"route_id": "R1"},
+               result={"route_id": "R1", "carrier": "south", "status": "open"}, idx=1)],
+        _schema(), state.db, workdir, call_states=states)
+    assert [row["replayed"] for row in outcomes] == [True, True]
+
+
+def test_a_column_the_runs_of_a_task_agree_on_stays_in_the_task_overlay(workdir):
+    """Only what the Runs part on is scoped to a Run; what they agree on is the Task's own."""
+    _two_runs_that_disagree(workdir)
+    payload = json.loads((workdir / ce.OVERLAY_DIR / "t1.json").read_text(encoding="utf-8"))
+    shared = payload["values"][payload["overlay"]["rows"][0]["version_hash"]]
+    assert shared == {"route_id": "R1", "status": "open"}
+    assert sorted(payload["runs"]) == ["A", "B"]
+    pins = _pins(workdir)
+    assert pins["rows_run_scoped"] == 1 and pins["columns_run_scoped"] == 1
+    assert pins["tasks_with_run_overlays"] == 1
+
+
+def test_a_row_a_run_only_ever_saw_inside_its_own_writes_answer_counts_for_the_disagreement(workdir):
+    """The write's own recorded result is a sighting; comparing only the reads hid the second version."""
+    run_a = _trace("A", [_call("search_routes", {"carrier": "north"},
+                               result=[{"leg_id": "L1", "surface": "asphalt"}], idx=0)])
+    run_b = _trace("B", [_call("set_route_carrier", {"route_id": "R1", "carrier": "north"},
+                               result={"route_id": "R1", "carrier": "north",
+                                       "legs": [{"leg_id": "L1", "surface": "gravel"}]}, idx=1)])
+    state = ce.build_starting_state([run_a, run_b], _schema(), workdir,
+                                    [Task(id="t1", run_ids=["A", "B"])], _write_sigs(),
+                                    synthetic=False)
+    assert any("runs disagree on legs row L1" in line for line in state.assumptions)
+    surfaces = {run_id: ce.load_overlay(workdir, "t1", run_id)[1][
+        next(row.version_hash for row in ce.load_overlay(workdir, "t1", run_id)[0].rows
+             if row.table == "legs")]["surface"] for run_id in ("A", "B")}
+    assert surfaces == {"A": "asphalt", "B": "gravel"}
+
+
+def test_a_run_the_task_never_recorded_is_served_the_reference_runs_own_version(workdir):
+    """A held-out Run, a re-roll and a probe carry no sighting; each is served one Run's world whole."""
+    _two_runs_that_disagree(workdir)
+    for asked in (None, "a-run-nothing-recorded"):
+        overlay, values = ce.load_overlay(workdir, "t1", asked)
+        assert values[overlay.rows[0].version_hash]["carrier"] == "north"
+
+
+def test_the_reference_run_of_a_task_is_the_first_run_the_builder_may_build_from(workdir):
+    """A held-out Run is never the Reference, so the Verifier and the world it judges come from one Run."""
+    task = Task(id="t1", run_ids=["A", "B"], anchor_run_ids=["A"])
+    assert ce.reference_run_of(task) == "B"
+    run_a = _trace("A", [_call("get_route_details", {"route_id": "R1"},
+                               result={"route_id": "R1", "carrier": "north"}, idx=0)])
+    run_b = _trace("B", [_call("get_route_details", {"route_id": "R1"},
+                               result={"route_id": "R1", "carrier": "south"}, idx=1)])
+    ce.build_starting_state([run_a, run_b], _schema(), workdir, [task], _sigs(), synthetic=False)
+    overlay, values = ce.load_overlay(workdir, "t1")
+    assert values[overlay.rows[0].version_hash]["carrier"] == "south"
+
+
+def test_the_world_a_call_is_scored_on_is_hashed_with_its_own_runs_layer_in_it(workdir):
+    """Two calls of one Task on two Runs are two inputs; a body that answers them alike answered blind."""
+    state = _two_runs_that_disagree(workdir)
+    states = ce.call_starting_states(state.db, state.overlays, ce.overlay_values(workdir),
+                                     {"c0": "t1", "c1": "t1"}, ce.load_run_overlays(workdir),
+                                     {"c0": "A", "c1": "B"})
+    sandbox = ce.Sandbox("", state.db, workdir, call_states=states)
+    calls = [_call("get_route_details", {"route_id": "R1"}, idx=0),
+             _call("get_route_details", {"route_id": "R1"}, idx=1)]
+    assert sandbox.state_key(calls[0]) != sandbox.state_key(calls[1])
+
+
+def test_a_task_whose_runs_part_on_the_column_that_names_a_written_row_is_flagged_for_a_split(workdir):
+    """The goal writes a row the Runs do not agree is the same row, so the grouping may hold two Tasks."""
+    revealed = {("routes", "R1"): {"A": {"route_id": "R1", "carrier": "north"},
+                                   "B": {"route_id": "R7", "carrier": "north"}}}
+    wrote = _call("set_route_carrier", {"route_id": "R1", "carrier": "south"},
+                  result={"route_id": "R1", "carrier": "south"}, idx=0)
+    traces = [_trace("A", [wrote]), _trace("B", [_call("set_route_carrier",
+                                                       {"route_id": "R1", "carrier": "south"},
+                                                       result={"route_id": "R1", "carrier": "south"},
+                                                       idx=1)])]
+    ce.build_starting_state(traces, _schema(), workdir, [Task(id="t1", run_ids=["A", "B"])],
+                            _write_sigs(), synthetic=False, revealed_rows=revealed)
+    pins = _pins(workdir)
+    assert pins["tasks_split_candidate"] == ["t1"]
+    assert [row["split_candidate"] for row in pins["runs_disagree"]] == [True]
+    assert pins["runs_disagree"][0]["key_class"] == "own"
+    assert pins["runs_disagree"][0]["column_classes"] == ["hard"]
+
+
+def test_a_row_one_run_reads_twice_is_still_served_that_runs_own_second_value(workdir):
+    """D197's sequence is a statement about one Run, so it is built from that Run's calls alone."""
+    run_a = _trace("A", [_call("get_meter_reading", {"meter_id": "M1"}, result={"reading": "41"}, idx=0),
+                         _call("get_meter_reading", {"meter_id": "M1"}, result={"reading": "77"}, idx=1)])
+    run_b = _trace("B", [_call("get_meter_reading", {"meter_id": "M1"}, result={"reading": "12"}, idx=2)])
+    state = ce.build_starting_state([run_a, run_b], _schema(), workdir,
+                                    [Task(id="t1", run_ids=["A", "B"])], _sigs(), synthetic=False)
+    states = ce.call_starting_states(state.db, state.overlays, ce.overlay_values(workdir),
+                                     {"c0": "t1", "c1": "t1", "c2": "t1"},
+                                     ce.load_run_overlays(workdir),
+                                     {"c0": "A", "c1": "A", "c2": "B"})
+    assert states["c0"]["meters"]["M1"]["reading"] == "41"
+    assert states["c1"]["meters"]["M1"]["reading"] == "77"
+    assert states["c2"]["meters"]["M1"]["reading"] == "12"
