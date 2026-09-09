@@ -56,9 +56,11 @@ TARGET = "environment"
 # the same three Tasks with the same verdicts, keyed by the id those Runs now address. Re-pinned for
 # D206: every row says which source satisfied each of its shape atoms and how many were dropped for
 # rejecting their own Reference, and a re-roll's Run id carries the key it was rolled under, so the
-# Runs named in `did_not_reach_reference` and `failed_recordings` are named by that id. The same
+# Runs named in `did_not_reach_reference` and `failed_recordings` are named by that id. Re-pinned
+# for D208: a confirmed row names the Run ids of the Reference it holds, which is what says whether
+# the Verifier beside it was derived from that Reference or from one since withdrawn. The same
 # three Tasks, the same verdicts and the same reasons.
-TASK_STATUS_SHA256_BEFORE_THE_PHASE = "4905ea6bd3b2a656d2099726fe9c6335a0f203ae72d444f94b2c7fddff6f8416"
+TASK_STATUS_SHA256_BEFORE_THE_PHASE = "67d46c8cf7fb4f735a2d22e72b3d0e1a3f93e79d263af170ea244d748807f46c"
 
 
 def _fixture(request) -> Path:

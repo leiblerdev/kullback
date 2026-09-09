@@ -10,6 +10,7 @@ from typing import Any, Literal, Optional
 
 from pydantic import BaseModel, Field, ValidationError
 
+from kullback.examiner import lifecycle
 from kullback.runner.records import (
     Constraint,
     Environment,
@@ -1224,7 +1225,11 @@ def load(workdir: Any) -> ReportData:
         scorecard=scorecard_rows(_json(root / "scorecard.json")),
         stages=stages,
         tasks=tasks,
-        verifiers=_records(root / "verifiers", Verifier, unread),
+        # D208: the live ones only. A workdir an older build left holds a file per Task that ever
+        # had a Reference, and a report that counted one whose Reference has since been withdrawn
+        # would say the harness stands behind a check it has retired.
+        verifiers=lifecycle.live(_records(root / "verifiers", Verifier, unread),
+                                 _json(root / "task_status.json") or {}),
         tool_sigs=load_tool_sigs(root),
         runs=runs,
         verdicts=_records(root / "verdicts", Verdict, unread),
