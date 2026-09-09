@@ -34,7 +34,6 @@ from pydantic import BaseModel, ConfigDict, Field
 from kullback.agent.events import StageEnd, StageStart
 from kullback.agent.tools import AgentTool, RetryableToolError, counted_ruling_line
 from kullback.examiner import findings as findings_mod
-from kullback.examiner import lifecycle
 from kullback.examiner import loosen as loosen_mod
 from kullback.examiner import stage as stage_mod
 from kullback.examiner.plan import ExaminerPlan
@@ -389,11 +388,7 @@ def _task(plan: ExaminerPlan, task_id: str):
 def _current(plan: ExaminerPlan, task_id: str) -> Verifier:
     verifier = plan.current(task_id)
     if verifier is None:
-        # D208: a Task whose Reference was withdrawn had its Verifier retired, and repairing it
-        # would be repairing a check on an End state the Task no longer says it reached.
-        gone = lifecycle.retired_row((plan.store.get("task_status") or {}).get(task_id))
-        why = f"; its Verifier was retired: {gone['text']}" if gone else "; derive first"
-        raise LookupError(f"task {task_id} has no live Verifier{why}")
+        raise LookupError(f"task {task_id} has no current Verifier; derive first")
     return verifier
 
 
@@ -440,11 +435,6 @@ def _index(kind: str, rows: Any) -> dict:
                 parts.append("failed " + ", ".join(failed))
             if row.get("blocking_tools"):
                 parts.append("blocked by " + ", ".join(row["blocking_tools"]))
-            # D208: a Task whose Verifier was retired reads as retired and why, so the absence of a
-            # Verifier is not read as a Verifier that is merely failing its checks.
-            gone = lifecycle.retired_row(row)
-            if gone:
-                parts.append(f"verifier retired ({gone.get('reason')})")
             out[task_id] = "; ".join(parts)
         return {"tasks": len(out), "rows": out, "note": "read task_status with an id for the whole row"}
     if kind == "gates":
@@ -902,16 +892,9 @@ def _derive(plan: ExaminerPlan, sink: Optional[Sink]):
                   "cached": out.get("cached", 0), "ran": out.get("ran", len(status)),
                   # D189: the extra frontier Runs the search for a second path bought this call.
                   "second_path_runs": out.get("second_path_runs", 0),
-                  # D208: the Verifiers this call retired, because the Reference they were derived
-                  # from is no longer the one their Task holds.
-                  **lifecycle.counts(out.get("retired") or []),
                   "elapsed_ms": int((time.monotonic() - started) * 1000)}
         await _emit(plan, sink, StageEnd(name=STAGE, counts=counts))
         plan.load_state()
-        # D208: what the derivation retired goes into version history before anything else runs, so
-        # a Verifier that leaves verifiers/ is still readable as the version it was and the reason
-        # it stopped being live is on the record beside it.
-        retired = _record_retirements(plan, out.get("retired") or [])
         loosening = _record_versions(plan, out["verifiers"], prior)
         rulings = [ruling_of(r) for r in ctx.recorded] + [ruling_of(r) for r in loosening]
         plan.last_rulings = rulings
@@ -926,7 +909,6 @@ def _derive(plan: ExaminerPlan, sink: Optional[Sink]):
         ranked = "; ".join(f"{f.kind} {f.tool or f.task_id or ''} costs {f.cost} Tasks" for f in filed[:3])
         summary = (f"derive {args.target}: {len(out['verifiers'])} Verifiers over {len(status)} Tasks, "
                    f"{passed} passed the D79 suite" + (f"; failed rulings: {', '.join(failed)}" if failed else "")
-                   + (f"; {len(retired)} Verifiers retired, their Reference withdrawn" if retired else "")
                    + (f"; {loosened['auto_loosen_proposed']} over-strict Verifiers loosened by rule, "
                       f"{loosened['auto_loosen_accepted']} accepted" if loosened["auto_loosen_proposed"] else "")
                    + (f"; {len(filed)} findings filed from the records, most costly first: {ranked}"
@@ -1003,40 +985,6 @@ def _restore_prior_row(plan: ExaminerPlan, filename: str, store_key: Optional[st
         else:
             store_rows.pop(task_id, None)
         plan.store[store_key] = store_rows
-
-
-def _record_retirements(plan: ExaminerPlan, retired: list[dict]) -> list[dict]:
-    """One history row per Verifier the derivation retired, and the finding it closes (D208).
-
-    The row is not accepted and never becomes the Task's current version: a retirement is the end of
-    a version, not the proposal of one, and the reason names which of the two ways the source went.
-    Keeping it in history is what lets the next round read that this Task had a Verifier and why it
-    stopped being one, without the file staying somewhere a gate can score it.
-
-    Any finding filed about that Verifier is closed in the same step. The loss it reported was
-    measured against a Verifier the harness no longer stands behind, so leaving it open would ask
-    the Builder to repair an artefact that is gone; the Task's own loss is that it has no Reference,
-    which its status row already says and the reference rules already file.
-    """
-    if not retired:
-        return []
-    history = plan.store.setdefault("history", {})
-    for row in retired:
-        record = row["verifier"]
-        hist = history.get(row["task_id"]) or VerifierHistory(task_id=row["task_id"])
-        hist.versions.append(VerifierVersion(
-            task_id=row["task_id"], content_hash=version_hash(record),
-            verifier_version=str(len(hist.versions) + 1),
-            parent_hash=next((v.content_hash for v in reversed(hist.versions) if v.accepted), None),
-            round=int(row.get("round") or 0), by="derive", reason=f"{row['reason']}: {row['text']}",
-            accepted=False, rejected_by=[row["reason"]], verifier=record))
-        history[row["task_id"]] = hist
-    plan.write_state()
-    plan.close_findings([f["finding_id"] for f in plan.store.get("findings") or []
-                         if isinstance(f, dict) and f.get("status") == "open"
-                         and f.get("kind") == "false_rejection"
-                         and f.get("task_id") in {row["task_id"] for row in retired}])
-    return retired
 
 
 def _record_versions(plan: ExaminerPlan, verifiers: list, prior: dict) -> list[GateResult]:

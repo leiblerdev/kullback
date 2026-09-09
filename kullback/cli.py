@@ -1,5 +1,5 @@
-"""The seven commands of the Harness: ingest, build, freeze-runner, run, verdict, regrade and report, each
-reading and writing records under one workdir with no hidden state."""
+"""The commands of the Harness: ingest, build, freeze-runner, run, verdict, regrade, report and difficulty,
+each reading and writing records under one workdir with no hidden state."""
 
 from __future__ import annotations
 
@@ -12,6 +12,7 @@ from typing import Any, Optional
 
 import typer
 
+from kullback import difficulty
 from kullback.report import coverage_rows, load, load_tool_sigs, write_report
 from kullback.runner import feed, heartbeat
 from kullback.runner.records import (
@@ -381,7 +382,8 @@ def _round_line(counts: dict) -> str:
             f"tasks frozen {counts.get('tasks_frozen', 0)} added {counts.get('tasks_added', 0)} "
             f"frozen only {counts.get('tasks_frozen_only', 0)}, "
             f"compactions builder {compactions.get('builder', 0)} examiner {compactions.get('examiner', 0)}, "
-            f"spend ${float(spend.get('total') or 0.0):.4f}, cache saved ${float(spend.get('cache_saved') or 0.0):.4f}")
+            f"spend ${float(spend.get('total') or 0.0):.4f}, cache saved ${float(spend.get('cache_saved') or 0.0):.4f}, "
+            f"buckets: {difficulty.round_summary(counts.get('buckets') or [])}")
 
 
 def _echo_round(event: Any) -> None:
@@ -503,6 +505,18 @@ def report(
         typer.echo(f"not read, so it is not counted: {name}")
     target = Path(out) if out else Path(workdir) / "report.md"
     typer.echo(str(write_report(data, target.parent, target.name)))
+
+
+@app.command("difficulty")
+def difficulty_table(
+    workdir: Path = WORKDIR,
+    write: bool = typer.Option(True, "--write/--no-write",
+                               help="Rewrite difficulty.json from what the workdir holds."),
+):
+    """Print the difficulty buckets of a finished build: Tasks, trusted and solve rate per bucket (D209)."""
+    body = (difficulty.refresh(workdir) if write else difficulty.compute(workdir))
+    for line in difficulty.markdown_table(body.get("buckets") or [], len(body.get("no_record") or {})):
+        typer.echo(line)
 
 
 @app.command()

@@ -25,7 +25,6 @@ from kullback.agent.extensions import ExtensionAPI, refuse_paths
 from kullback.agent.harness import prompt_block
 from kullback.agent.messages import ToolCall
 from kullback.agent.tools import ToolResult, counted_ruling_line
-from kullback.examiner import lifecycle
 from kullback.examiner.plan import ExaminerPlan
 from kullback.examiner.skills import PROBE_SKILL, PROBE_SKILL_NAME
 from kullback.examiner.tools import examiner_tools
@@ -136,10 +135,6 @@ def task_vocabulary(plan: ExaminerPlan) -> str:
         if row:
             parts.append("Reference confirmed" if row.get("reference_confirmed") else "no Reference")
             parts.append("Verifier passed" if row.get("verifier_passed") else "no passing Verifier")
-            # D208: a Task whose Reference was withdrawn had its Verifier retired, which is a
-            # different thing from a Task that never derived one.
-            if lifecycle.retired_row(row):
-                parts.append("Verifier retired")
         if task.id in pools:
             parts.append(f"{len(pools[task.id].probes)} probes")
         if task.id in refusals:

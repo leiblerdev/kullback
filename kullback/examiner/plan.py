@@ -17,7 +17,6 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Iterable, Optional
 
-from kullback.examiner import lifecycle
 from kullback.examiner.stage import inputs_from
 from kullback.gates.ledger import GateLedger
 from kullback.gates.verifier_suite import load_run
@@ -104,14 +103,8 @@ class ExaminerPlan:
     def load_state(self) -> None:
         """The store: the derivation inputs plus everything the Examiner and the derivation wrote to disk."""
         workdir = self.workdir
-        task_status = read_json(workdir / "task_status.json", {}) or {}
-        # D208: the one accessor. Every gate and every rule reads `verifiers` off this store, so
-        # filtering here is what stops a file whose Reference has been withdrawn from being scored:
-        # no consumer globs the directory itself, and a workdir an earlier build left with orphans
-        # is read the same way the next derivation will leave it.
-        verifiers, retired = lifecycle.partition(
-            (Verifier.model_validate(read_json(path))
-             for path in sorted((workdir / "verifiers").glob("*.json"))), task_status)
+        verifiers = [Verifier.model_validate(read_json(path))
+                     for path in sorted((workdir / "verifiers").glob("*.json"))]
         probes = {path.parent.name: ProbePool.model_validate(read_json(path))
                   for path in sorted((workdir / "probes").glob("*/pool.json"))}
         history = {path.stem: VerifierHistory.model_validate(read_json(path))
@@ -127,8 +120,7 @@ class ExaminerPlan:
         self.store = dict(self.inputs)
         self.store.update({
             "verifiers": verifiers,
-            "retired_verifiers": retired,
-            "task_status": task_status,
+            "task_status": read_json(workdir / "task_status.json", {}) or {},
             "probes": probes,
             "history": history,
             "refusals": refusals,
@@ -154,7 +146,7 @@ class ExaminerPlan:
         write_json(self.state_dir / "rerolls.json", self.extra_rerolls)
 
     def current(self, task_id: str) -> Optional[Verifier]:
-        """The Task's live Verifier, or None when its Reference was withdrawn and it was retired (D208)."""
+        """The Task's current Verifier, the file under verifiers/ as the store holds it."""
         return next((v for v in self.store.get("verifiers", []) if v.task_id == task_id), None)
 
     def set_current(self, verifier: Verifier) -> None:
