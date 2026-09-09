@@ -9,6 +9,7 @@ from pathlib import Path
 import pytest
 
 from conftest import PTR
+from kullback import sampling
 from kullback.ai.provider import TestModel
 from kullback.builder import build as build_module
 from kullback.builder import pipeline
@@ -498,6 +499,33 @@ def test_reroll_runner_writes_runs_under_the_task_with_the_prefix_given_and_leav
     assert {row["run_id"] for row in rows} <= ids
     with pytest.raises(build_module.BuildError, match="no Task is named"):
         run_rerolls("nobody", 1, "reroll-r1")
+
+
+def test_a_reroll_carries_the_seed_its_own_run_id_draws_and_draws_it_again_when_it_is_made_again(built):
+    """D212: the seed on a Run record is a function of the Run id and the build salt, not of the
+    position the Run held in the batch, so a re-roll discarded and made again is the one it replaced."""
+    plan = _cached_plan(built)
+    run_rerolls = build_module.reroll_runner(plan)
+    task = plan.store["tasks"][0]
+    salt = sampling.build_salt(built)
+    rows = run_rerolls(task.id, 2, "reroll-r1")
+    seeds = {row["run_id"]: _seed_of(row["path"]) for row in rows}
+    assert seeds == {row["run_id"]: sampling.sample_seed(build_module.RUN_SEED_KIND, row["run_id"], salt)
+                     for row in rows}
+    assert len(set(seeds.values())) == 2, "two Runs of one batch are two draws, not one"
+    for row in rows:
+        Path(row["path"]).unlink()
+    again = run_rerolls(task.id, 2, "reroll-r1")
+    assert {row["run_id"]: _seed_of(row["path"]) for row in again} == seeds
+
+
+def _seed_of(path: str) -> int:
+    """The seed the Run record on disk carries, off the run event the loop wrote first."""
+    for line in Path(path).read_text(encoding="utf-8").splitlines():
+        body = json.loads(line)
+        if "seed" in body:
+            return int(body["seed"])
+    raise AssertionError(f"no event of {path} names a seed")
 
 
 def test_a_task_the_rerolls_stage_skips_loses_the_rerolls_an_earlier_build_left_it(built):

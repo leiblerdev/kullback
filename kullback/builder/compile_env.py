@@ -419,6 +419,11 @@ class _Obs:
     call: str = ""
     call_id: str = ""
     from_write: bool = False
+    # A nested sighting of a row some other result states on its own, kept out of the pinning
+    # (`_observations`) and kept in the record. It is still a recorded result of the Run that made
+    # it, which is what a Run's own version of a row is read from (D213), so dropping it entirely
+    # hid a Run whose only mention of a row was inside the result of its own write.
+    shadowed: bool = False
 
     @property
     def partial(self) -> bool:
@@ -445,8 +450,16 @@ def _observations(traces: list[Trace], schema: EntitySchema, write_tools: set[st
     another row that carries the same key is a mention of that row inside something else, and what
     it carries is about the thing it sits in. A part of a booking states the price that booking paid
     and the places that booking used, and taking it for the part's own row rewrote 44 rows one
-    corpus had stated plainly. So a nested sighting is kept only for a row nothing states on its
-    own, which is exactly the row the world was missing.
+    corpus had stated plainly. So a nested sighting of a row something states on its own is marked
+    `shadowed` and pins nothing; only a row nothing states on its own is pinned from one, which is
+    exactly the row the world was missing.
+
+    Marked rather than dropped (D213). A shadowed sighting is still a recorded result of the Run
+    that made it, and what one Run of a Task saw of a row is read from every result that Run
+    recorded, read or write, at any depth. Dropping them left a Run whose only mention of a row sat
+    inside its own write's result invisible to the comparison between the Runs of one Task, so the
+    Task pinned another Run's version and every call of this one was scored against it. Every caller
+    that pins skips `shadowed`; the comparison between Runs does not.
     """
     out: list[_Obs] = []
     for trace_index, trace in enumerate(traces):
@@ -487,11 +500,15 @@ def _observations(traces: list[Trace], schema: EntitySchema, write_tools: set[st
                 written |= {value for _, value, _ in argument_ids(call.args)}
                 written |= {row_id for _, row_id in named_rows(schema, call.args or {})}
     stated = {(obs.table, obs.row_id) for obs in out if not obs.depth}
-    dropped = [obs for obs in out if obs.depth and (obs.table, obs.row_id) in stated]
+    dropped = 0
+    for obs in out:
+        if obs.depth and (obs.table, obs.row_id) in stated:
+            obs.shadowed = True
+            dropped += 1
     if stats is not None and dropped:
         stats["nested_sightings_of_a_row_already_stated"] = (
-            stats.get("nested_sightings_of_a_row_already_stated", 0) + len(dropped))
-    return [obs for obs in out if not obs.depth or (obs.table, obs.row_id) not in stated]
+            stats.get("nested_sightings_of_a_row_already_stated", 0) + dropped)
+    return out
 
 
 def trace_worlds(traces: Iterable[Trace], schema: EntitySchema, write_tools: set[str],
@@ -518,7 +535,7 @@ def trace_worlds(traces: Iterable[Trace], schema: EntitySchema, write_tools: set
     hard = {(column.table, column.name) for column in schema.columns if column.class_ == "hard"}
     seen: dict[str, dict[tuple[str, str], dict]] = {}
     for obs in _observations(list(traces), schema, write_tools, read_result=read_result):
-        if obs.after_write:
+        if obs.after_write or obs.shadowed:
             continue
         version = seen.setdefault(obs.trace_id, {}).setdefault((obs.table, obs.row_id), {})
         for name, value in obs.row.items():
@@ -574,7 +591,10 @@ def build_starting_state(
     workdir.mkdir(parents=True, exist_ok=True)
     write_tools = {s.name for s in (tool_sigs or []) if s.kind == "write"}
     stats: dict = {}
-    observations = _observations(traces, schema, write_tools, revealed_rows, stats, read_result)
+    sightings = _observations(traces, schema, write_tools, revealed_rows, stats, read_result)
+    # What pins: every sighting but the nested one of a row something states on its own. `sightings`
+    # keeps those too, because what one Run saw is read from every result that Run recorded (D213).
+    observations = [obs for obs in sightings if not obs.shadowed]
     by_row: dict[tuple[str, str], list[_Obs]] = {}
     for obs in observations:
         by_row.setdefault((obs.table, obs.row_id), []).append(obs)
@@ -624,7 +644,8 @@ def build_starting_state(
     inverter = (PreWriteInverter(traces, observations, schema, db, tool_sigs or [], bodies, workdir,
                                  rules=rules, readers=readers, guessed=guessed_columns)
                 if bodies else None)
-    overlays = _build_overlays(observations, tasks or [], workdir, assumptions, stats, inverter)
+    overlays = _build_overlays(observations, tasks or [], workdir, assumptions, stats, inverter,
+                               schema=schema, sightings=sightings)
     assumptions += [f"{table_of} row {row_id} is stored under {home}; the standalone copy was folded "
                     "into it and a Task overlay that pins it re-adds the standalone copy"
                     for table_of, row_id, home in fold_into_homes(db, schema)]
@@ -852,10 +873,26 @@ def _modal_row(rows: Iterable[dict]) -> dict:
             for name, counts in columns.items()}
 
 
+def reference_run_of(task: Task) -> str:
+    """The Run a Task speaks for: its first Run the Builder may build from (D213).
+
+    A Task's Verifier is derived from the Runs the anchor left the Builder, so the Run a generated
+    Candidate is judged against is one of those and never a held-out one. Which of them is a
+    tie-break and not a judgement, so it is the first in the Task's own frozen order (D200), and a
+    Task whose every Run was held out falls back to the first of those rather than to nothing: an
+    overlay has to name one Run or a Candidate would be served a mix of two.
+    """
+    held = set(task.anchor_run_ids or ())
+    return next((run_id for run_id in task.run_ids if run_id not in held),
+                task.run_ids[0] if task.run_ids else "")
+
+
 def _build_overlays(observations: list[_Obs], tasks: Iterable[Task], workdir: Path,
                     assumptions: list[str], stats: Optional[dict] = None,
-                    inverter: Optional[PreWriteInverter] = None) -> list[TaskOverlay]:
-    """A Task's rows in the version its own Runs saw, column by column: each column's first sighting.
+                    inverter: Optional[PreWriteInverter] = None,
+                    schema: Optional[EntitySchema] = None,
+                    sightings: Optional[list[_Obs]] = None) -> list[TaskOverlay]:
+    """A Task's rows in the version its own Runs saw, column by column, and one layer per Run (D213).
 
     One rule for every column, whatever shape the recording stated it in. A Task's pinned row takes
     each column from the earliest of that Task's own sightings that carried it, so a row seen once
@@ -866,19 +903,41 @@ def _build_overlays(observations: list[_Obs], tasks: Iterable[Task], workdir: Pa
     never pinned: they arrive as sightings of some of a row's columns, and a whole-row rule has
     nowhere to put them.
 
-    One Task can hold Runs that read one column in two values. The overlay can pin only one of them,
-    so the disagreement is recorded as an assumption rather than passing silently: the Runs on the
-    other version cannot replay on this overlay, and the report and the setup review need to see it.
+    One Task can hold Runs that recorded one column in two values, and pinning the earliest of them
+    served every Run the version one of them saw: the call whose own recording answered with the
+    other was scored against a world it never ran on, and a body that indexed the world by a single
+    direct key was read as looking up the wrong row. So the earliest sighting no longer wins the
+    Task. The Task overlay holds, per row and column, only what every Run of the Task that sighted
+    the row agrees on; a column its Runs disagree on is left out of the Task overlay and carried
+    instead by one layer per Run, holding that Run's own earliest sighting, laid over the Task's
+    rows when that Run replays. A Run that never sighted a disagreed column, and a generated
+    Candidate Run, which sighted nothing at all, are served the Reference Run's layer whole
+    (`reference_run_of`), never a mix of two Runs' values.
+
+    What one Run saw is read from every result that Run recorded, read or write, at any depth
+    (`sightings`, which keeps the shadowed nested sightings `observations` drops). A Run whose only
+    mention of a row sits inside its own write's recorded result is a Run that saw that row, and
+    leaving it out is what let the disagreement pass uncounted.
+
     Two Runs that read different parts of one row do not disagree, which is why the comparison is
-    per column and not over the whole row.
+    per column and not over the whole row. Every disagreement is recorded as an assumption and as a
+    `runs_disagree` row of `overlay_pins.json`, carrying the table, the key class, the column class
+    and the Run ids but no value; a Task whose Runs disagree on a key column of a row it writes is
+    flagged `split_candidate`, since one Task the mining grouped may be two.
+
+    D197's sighting sequence is a within-Run statement and is now built per Run: the nth read of a
+    row in one Run is served that Run's nth sighting, and the Task's own steps are the Reference
+    Run's. Built across the Runs, the sequence handed a Run's first read of a row the value another
+    Run's first read had seen.
 
     A column whose first touch in the Task is a write has no sighting to take, so `inverter` is
     given the Task's pinned rows and reads the write's own recorded result for what the column held
-    before it (D202, `PreWriteInverter`); it changes the rows in place before the overlay is hashed,
+    before it (D202, `PreWriteInverter`); it changes the rows in place before the overlay is split,
     so the world the gates score bodies on (`call_starting_states`) is the inverted one.
 
     Per Task, what was pinned and by which of these rules is counted into `overlay_pins.json`.
     """
+    sightings = observations if sightings is None else sightings
     corpus: dict[tuple[str, str], dict[str, set]] = {}
     for obs in observations:
         columns = corpus.setdefault((obs.table, obs.row_id), {})
@@ -886,38 +945,74 @@ def _build_overlays(observations: list[_Obs], tasks: Iterable[Task], workdir: Pa
             columns.setdefault(str(name), set()).add(canon(value))
     overlays, pins = [], {}
     by_table: dict[str, set] = {}  # D197: which columns of which table any Task saw move
+    disagreements: list[dict] = []
+    splits: list[str] = []
     for task in tasks:
         members = set(task.run_ids)
         seen: dict[tuple[str, str], list[_Obs]] = {}
         for obs in sorted((o for o in observations if o.trace_id in members), key=lambda o: o.order):
             seen.setdefault((obs.table, obs.row_id), []).append(obs)
+        # Every result the Task's Runs recorded, the shadowed nested ones included: what a Run saw
+        # is compared from these, and only what pins a row is taken from `seen`.
+        recorded: dict[tuple[str, str], list[_Obs]] = {}
+        for obs in sorted((o for o in sightings if o.trace_id in members), key=lambda o: o.order):
+            recorded.setdefault((obs.table, obs.row_id), []).append(obs)
         rows: dict[tuple[str, str], dict] = {}
         sources: dict[tuple[str, str], dict[str, _Obs]] = {}
-        for key, sightings in seen.items():
+        for key, group in seen.items():
             row, source = {}, {}
-            for obs in sightings:
+            for obs in group:
                 for name, value in obs.row.items():
                     if str(name) not in row:
                         row[str(name)], source[str(name)] = value, obs
             rows[key], sources[key] = row, source
-        assumptions += [f"task {task.id} runs disagree on {table} row {row_id}: the overlay pins the "
-                        "earliest sighting, so the runs that saw the other version cannot replay on it"
-                        for (table, row_id) in sorted(seen) if _columns_disagreeing(seen[(table, row_id)])]
-        steps = [step for key in sorted(seen) for step in _row_steps(key[0], key[1], seen[key])]
         # Where a sighting of the row came from, kept apart from `seen` because the inversion can
         # add a row no sighting of this Task ever stated: a write named it and never answered it.
-        origins = {key: (sightings[0].trace_id, sightings[0].after_write)
-                   for key, sightings in seen.items()}
+        origins = {key: (group[0].trace_id, group[0].after_write) for key, group in seen.items()}
         inverted = (inverter.invert(task, rows, origins, sources, assumptions)
                     if inverter is not None else {})
+        reference = reference_run_of(task)
+        scoped = _run_scoped_rows(task, rows, recorded, reference, schema)
+        for key in sorted(scoped.disagreeing):
+            table, row_id = key
+            classes = sorted({_column_class(schema, table, name) for name in scoped.disagreeing[key]})
+            assumptions.append(
+                f"task {task.id} runs disagree on {table} row {row_id}: the overlay holds what they "
+                f"agree on and each run replays against its own {', '.join(classes)} value")
+            disagreements.append({
+                "task_id": task.id, "table": table, "key_class": _key_class(schema, table),
+                "column_classes": classes, "columns": len(scoped.disagreeing[key]),
+                "run_ids": sorted({obs.trace_id for obs in recorded.get(key, ())} & members),
+                "split_candidate": key in scoped.split_candidates,
+            })
+        if scoped.split_candidates:
+            splits.append(task.id)
+        steps = {run_id: [step for key in sorted(seen)
+                          for step in _row_steps(key[0], key[1],
+                                                 [o for o in seen[key] if o.trace_id == run_id])]
+                 for run_id in sorted(members)}
+        task_steps = steps.get(reference) or []
         overlay = TaskOverlay(task_id=task.id, rows=[
-            OverlayRow(table=t, id=i, version_hash=content_hash(rows[(t, i)]),
+            OverlayRow(table=t, id=i, version_hash=content_hash(scoped.agreed[(t, i)]),
                        trace_id=origins[(t, i)][0], after_write=origins[(t, i)][1])
             for t, i in sorted(rows)
-        ], steps=steps)
+        ], steps=task_steps)
         assumptions += [f"task {task.id} pins {t} row {i} from a post-write sighting"
-                        for (t, i), sightings in sorted(seen.items()) if sightings[0].after_write]
-        _write_overlay(workdir, overlay, {content_hash(rows[key]): rows[key] for key in rows})
+                        for (t, i), group in sorted(seen.items()) if group[0].after_write]
+        values = {content_hash(scoped.agreed[key]): scoped.agreed[key] for key in rows}
+        runs: dict[str, dict] = {}
+        for run_id in sorted(members):
+            changed = []
+            for key in sorted(scoped.per_run.get(run_id) or {}):
+                row = scoped.per_run[run_id][key]
+                version = content_hash(row)
+                values[version] = row
+                changed.append(OverlayRow(table=key[0], id=key[1], version_hash=version,
+                                          trace_id=origins[key][0], after_write=origins[key][1]))
+            if changed or steps.get(run_id):
+                runs[run_id] = {"rows": [as_dict(row) for row in changed],
+                                "steps": [as_dict(step) for step in steps.get(run_id) or ()]}
+        _write_overlay(workdir, overlay, values, runs=runs, reference_run_id=reference)
         pins[task.id] = {
             "rows": len(rows),
             "rows_nested": sum(1 for key in rows if any(o.depth for o in seen.get(key, ()))),
@@ -927,18 +1022,27 @@ def _build_overlays(observations: list[_Obs], tasks: Iterable[Task], workdir: Pa
             "columns_the_corpus_disagrees_on": sum(
                 1 for key, row in rows.items() for name in row
                 if len(corpus.get(key, {}).get(name) or ()) > 1),
+            # D213: the rows and columns this Task's own Runs disagree on, which the Task overlay
+            # leaves unset and one layer per Run carries. Both are zero where the Runs agree.
+            "rows_run_scoped": len(scoped.disagreeing),
+            "columns_run_scoped": sum(len(names) for names in scoped.disagreeing.values()),
+            "runs_with_a_layer": len(runs),
+            "split_candidate": bool(scoped.split_candidates),
             # D197: the columns of this Task's own rows that moved between two of its reads, and the
             # sightings a Run can be served for them. Both are zero where nothing moved.
-            "columns_time_varying": len({(s.table, s.id, name) for s in steps for name in s.values}),
-            "sequences_served": len(steps),
+            "columns_time_varying": len({(s.table, s.id, name)
+                                         for group in steps.values() for s in group for name in s.values}),
+            "sequences_served": sum(len(group) for group in steps.values()),
             **{name: inverted.get(name, 0) for name in
                ("columns_inverted", "columns_no_inverse", "inversion_candidates_tried")},
             "inversions": list(inverted.get("inversions") or ()),
         }
-        for step in steps:
+        for step in (s for group in steps.values() for s in group):
             by_table.setdefault(step.table, set()).update((step.id, name) for name in step.values)
-        overlays.append(overlay)
+        overlays.append(_with_run_scope(overlay, runs.get(reference)))
     stats = dict(stats or {})
+    stats["runs_disagree"] = disagreements
+    stats["split_candidates"] = sorted(splits)
     if inverter is not None:
         stats["inversion_by_tool"] = inverter.by_tool
         stats["writes_without_a_body"] = inverter.writes_without_a_body
@@ -946,10 +1050,88 @@ def _build_overlays(observations: list[_Obs], tasks: Iterable[Task], workdir: Pa
     return overlays
 
 
-def _row_steps(table: str, row_id: str, sightings: list[_Obs]) -> list[OverlayStep]:
-    """One row's time-varying columns, per call of the Task's own recording, in call order (D197).
+@dataclass
+class _RunScoped:
+    """A Task's rows split into what its Runs agree on and what each Run saw for itself (D213)."""
+    agreed: dict[tuple[str, str], dict]
+    per_run: dict[str, dict[tuple[str, str], dict]]
+    disagreeing: dict[tuple[str, str], list[str]]
+    split_candidates: set[tuple[str, str]]
 
-    A column is time-varying for this Task when two of its reads of the row hold different values
+
+def _run_scoped_rows(task: Task, rows: dict, recorded: dict, reference: str,
+                     schema: Optional[EntitySchema] = None) -> _RunScoped:
+    """Split each pinned row into the columns the Task's Runs agree on and one layer per Run.
+
+    A column two Runs recorded in different values is not a fact about the Task, so the Task overlay
+    does not hold it. Each Run holds its own earliest value for it, and a Run that never sighted the
+    column holds the Reference Run's, because a world with a column missing is not a world any
+    recording ran on. Every Run of the Task gets a layer for such a row, so serving a Run its layer
+    is always serving it a whole row.
+
+    Only a column the Task pinned can be scoped: a column no sighting of the Task carried is a
+    column the shared world answers, and the overlay has nothing to lay over it either way.
+    """
+    agreed = {key: dict(row) for key, row in rows.items()}
+    per_run: dict[str, dict[tuple[str, str], dict]] = {}
+    disagreeing: dict[tuple[str, str], list[str]] = {}
+    splits: set[tuple[str, str]] = set()
+    for key, row in rows.items():
+        group = recorded.get(key) or ()
+        versions = _run_versions(group)
+        names = [name for name in sorted(row)
+                 if len({canon(per[name]) for per in versions.values() if name in per}) > 1]
+        if not names:
+            continue
+        disagreeing[key] = names
+        for name in names:
+            agreed[key].pop(name, None)
+        fallback = {name: (versions.get(reference) or {}).get(name, row[name]) for name in names}
+        for run_id in task.run_ids:
+            own = versions.get(run_id) or {}
+            per_run.setdefault(run_id, {})[key] = dict(
+                agreed[key], **{name: own.get(name, fallback[name]) for name in names})
+        # A Task whose Runs part on a key column of a row one of its writes touched may be two Tasks
+        # the grouping ran together: the goal writes a row the Runs do not agree is the same row.
+        if any(obs.after_write for obs in group) and set(names) & set(key_fields(schema, key[0])
+                                                                     if schema is not None else ()):
+            splits.add(key)
+    return _RunScoped(agreed=agreed, per_run=per_run, disagreeing=disagreeing, split_candidates=splits)
+
+
+def _with_run_scope(overlay: TaskOverlay, scope: Optional[dict]) -> TaskOverlay:
+    """The Task overlay with one Run's own rows and its own step sequence laid over it (D213)."""
+    if not scope:
+        return overlay
+    replaced = {(str(row["table"]), str(row["id"])): row for row in scope.get("rows") or ()}
+    rows = [OverlayRow.model_validate(replaced[(row.table, row.id)])
+            if (row.table, row.id) in replaced else row for row in overlay.rows]
+    return overlay.model_copy(update={
+        "rows": rows, "steps": [OverlayStep.model_validate(step) for step in scope.get("steps") or ()]})
+
+
+def _key_class(schema: Optional[EntitySchema], table: str) -> str:
+    """Whether the table's rows are named by one column or by several (D207's own two classes)."""
+    return "composite" if schema is not None and len(key_fields(schema, table)) > 1 else "own"
+
+
+def _column_class(schema: Optional[EntitySchema], table: str, name: str) -> str:
+    """The class a Verdict compares this column by (D73), or unclassified where the schema has none."""
+    for column in (getattr(schema, "columns", None) or ()):
+        if column.table == table and column.name == name:
+            return str(column.class_)
+    return "unclassified"
+
+
+def _row_steps(table: str, row_id: str, sightings: list[_Obs]) -> list[OverlayStep]:
+    """One row's time-varying columns, per call of one Run's own recording, in call order (D197).
+
+    One Run's, not the Task's (D213): a sequence built across two Runs served a Run's first read of
+    a row the value another Run's first read had seen, which is a statement about the order the
+    corpus happens to hold the Runs in and not about the customer's system. The Task's own steps are
+    its Reference Run's, and every other Run is served its own.
+
+    A column is time-varying for this Run when two of its reads of the row hold different values
     and no recorded write touched the row between them. That is a statement about the customer's
     system and not about the recording: a status read twice an hour apart, a reading taken again,
     a queue whose position has moved. Pinning one value made
@@ -984,16 +1166,30 @@ def _row_steps(table: str, row_id: str, sightings: list[_Obs]) -> list[OverlaySt
     return steps
 
 
+def _run_versions(sightings: Iterable[_Obs]) -> dict[str, dict[str, Any]]:
+    """Per Run, the version of one row that Run's own recordings state: each column's first sighting.
+
+    Every recorded result of that Run counts, read or write, at any depth (D213): a Run whose only
+    mention of a row is inside its own write's answer has still seen that row, and comparing only
+    the reads left the Runs of one Task looking as if they agreed.
+
+    The sightings are expected in the order the recordings made them, which is the order
+    `_build_overlays` groups them in, so the first value a Run states for a column is the earliest.
+    """
+    by_run: dict[str, dict[str, Any]] = {}
+    for obs in sightings:
+        per = by_run.setdefault(obs.trace_id, {})
+        for name, value in obs.row.items():
+            per.setdefault(str(name), value)
+    return by_run
+
+
 def _columns_disagreeing(sightings: list[_Obs]) -> list[str]:
     """Columns two of a Task's Runs read differently, each Run taking its own earliest value."""
-    by_trace: dict[str, dict[str, str]] = {}
-    for obs in sightings:
-        per = by_trace.setdefault(obs.trace_id, {})
-        for name, value in obs.row.items():
-            per.setdefault(str(name), canon(value))
-    names = sorted({name for per in by_trace.values() for name in per})
+    by_run = _run_versions(sightings)
+    names = sorted({name for per in by_run.values() for name in per})
     return [name for name in names
-            if len({per[name] for per in by_trace.values() if name in per}) > 1]
+            if len({canon(per[name]) for per in by_run.values() if name in per}) > 1]
 
 
 def column_domains(observations: Iterable[_Obs]) -> dict[tuple[str, str], list]:
@@ -1305,8 +1501,18 @@ def _write_pins(workdir: Path, pins: dict, stats: dict,
               for name in ("rows", "rows_nested", "columns", "columns_homed",
                            "columns_the_corpus_disagrees_on", "columns_time_varying",
                            "sequences_served", "columns_inverted", "columns_no_inverse",
-                           "inversion_candidates_tried")}
+                           "inversion_candidates_tried", "rows_run_scoped", "columns_run_scoped",
+                           "runs_with_a_layer")}
+    disagreements = list(stats.get("runs_disagree") or ())
+    splits = sorted(stats.get("split_candidates") or ())
     payload = {"columns_time_varying_by_table": dict(time_varying_by_table or {}),
+               # D213: every row a Task's own Runs recorded in two versions, with the classes the
+               # harness already mines and the Run ids, and nothing copied out of a record.
+               "runs_disagree": disagreements,
+               "rows_run_scoped": totals["rows_run_scoped"],
+               "columns_run_scoped": totals["columns_run_scoped"],
+               "tasks_with_run_overlays": sum(1 for row in pins.values() if row.get("rows_run_scoped")),
+               "tasks_split_candidate": splits,
                "depth_cap": ROW_WALK_DEPTH,
                "results_deeper_than_the_cap": int(stats.get("depth_capped") or 0),
                "unread_partial_results": int(stats.get("unread_partial_results") or 0),
@@ -1329,20 +1535,50 @@ def _write_pins(workdir: Path, pins: dict, stats: dict,
     return path
 
 
-def _write_overlay(workdir: Path, overlay: TaskOverlay, values: dict) -> Path:
-    """One file per Task: the overlay record and the row values behind its version hashes."""
+def _write_overlay(workdir: Path, overlay: TaskOverlay, values: dict,
+                   runs: Optional[dict] = None, reference_run_id: str = "") -> Path:
+    """One file per Task: the overlay record, one layer per Run, and the values behind both (D213).
+
+    `overlay` holds what the Task's Runs agree on; `runs` maps a Run id to the rows and steps that
+    Run replays against where they part from it, and `reference_run_id` names the layer anything
+    with no Run of its own is served.
+    """
     directory = Path(workdir) / OVERLAY_DIR
     directory.mkdir(parents=True, exist_ok=True)
     path = directory / f"{overlay.task_id}.json"
-    payload = {"overlay": as_dict(overlay), "values": values}
+    payload = {"overlay": as_dict(overlay), "values": values,
+               "runs": dict(runs or {}), "reference_run_id": reference_run_id}
     path.write_text(json.dumps(payload, sort_keys=True, indent=2) + "\n", encoding="utf-8")
     return path
 
 
-def load_overlay(workdir: Path | str, task_id: str) -> tuple[TaskOverlay, dict]:
-    """The Task's overlay and its row values; route.py reads this before the shared db.json (D74)."""
+def load_overlay(workdir: Path | str, task_id: str,
+                 run_id: Optional[str] = None) -> tuple[TaskOverlay, dict]:
+    """The overlay one Run of the Task replays against, and its row values (D74, D213).
+
+    Without a Run, or with one this Task has no layer for, which is every generated Candidate Run,
+    the Reference Run's layer is served: one Run's world whole rather than a mix of two. route.py
+    reads this before the shared db.json.
+    """
     payload = json.loads((Path(workdir) / OVERLAY_DIR / f"{task_id}.json").read_text(encoding="utf-8"))
-    return TaskOverlay.model_validate(payload["overlay"]), payload["values"]
+    overlay = TaskOverlay.model_validate(payload["overlay"])
+    runs = payload.get("runs") or {}
+    scope = runs.get(run_id) if run_id else None
+    if scope is None:
+        scope = runs.get(str(payload.get("reference_run_id") or ""))
+    return _with_run_scope(overlay, scope), payload["values"]
+
+
+def load_run_overlays(workdir: Path | str) -> dict[str, dict[str, TaskOverlay]]:
+    """Per Task, the overlay each of its Runs replays against (D213), for the gates' per-call worlds."""
+    directory = Path(workdir) / OVERLAY_DIR
+    out: dict[str, dict[str, TaskOverlay]] = {}
+    for path in sorted(directory.glob("*.json")) if directory.is_dir() else []:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        overlay = TaskOverlay.model_validate(payload["overlay"])
+        out[overlay.task_id] = {run_id: _with_run_scope(overlay, scope)
+                                for run_id, scope in sorted((payload.get("runs") or {}).items())}
+    return out
 
 
 def overlay_values(workdir: Path | str) -> dict:
@@ -2504,36 +2740,67 @@ def _evidence_label(attempt: int, gates: list[GateResult]) -> str:
 
 
 def call_starting_states(db: dict, overlays: Iterable[TaskOverlay], values: dict,
-                         call_tasks: dict) -> dict:
-    """Call id to the Starting state of the Task whose trace recorded it (D74).
+                         call_tasks: dict, run_overlays: Optional[dict] = None,
+                         call_runs: Optional[dict] = None) -> dict:
+    """Call id to the Starting state of the Run whose trace recorded it (D74, D213).
 
     `call_tasks` maps a recorded call's id to its Task id; it is what carries the trace-to-Task map
     into the gates, since a `ToolCall` does not name its trace. The state is the shared world with
     that Task's overlay merged, which is the world that call actually ran on, so a corpus holding one
     row in two versions does not make a correct body look wrong.
 
-    D197: where the Task's overlay carries a pin sequence, the call that saw a later value of a
+    D213: where the Task's own Runs recorded one column in two values, the Task overlay does not
+    hold that column and one layer per Run does. `call_runs` maps a call to the Run that made it and
+    `run_overlays` holds those layers per Task, so a call is scored on the world its own recording
+    saw and not on the version another Run of the same Task read first. Without either the Task's
+    overlay answers for every call, which is what a caller that has no Run map gets.
+
+    D197: where the Run's overlay carries a pin sequence, the call that saw a later value of a
     time-varying row runs on a world holding that value and not the first one. The scoring path and
     the replay have to serve one world or the score punishes a body for a state the replay would
     have served it. The state is keyed per call already, so the sequence needs no new key: a call a
-    step names gets its own copy of the Task's world with that step's columns laid in it, and every
-    other call keeps the Task's world as it was pinned.
+    step names gets its own copy of that Run's world with that step's columns laid in it, and every
+    other call keeps the world as it was pinned.
     """
-    states = {overlay.task_id: merge_overlays(db, [overlay], values) for overlay in overlays}
-    per_call: dict[str, dict] = {}
+    run_overlays = run_overlays or {}
+    call_runs = call_runs or {}
+    served: dict[tuple[str, str], TaskOverlay] = {}
     for overlay in overlays:
-        base = states.get(overlay.task_id)
+        served[(overlay.task_id, "")] = overlay
+        for run_id, scoped in (run_overlays.get(overlay.task_id) or {}).items():
+            served[(overlay.task_id, run_id)] = scoped
+    # One world per distinct set of pinned rows, not one per Run: a Run that scopes nothing pins the
+    # same rows as its Task and reads the same world, and a corpus of hundreds of Runs would
+    # otherwise hold hundreds of copies of the customer's whole world at once.
+    worlds: dict[tuple, dict] = {}
+    states: dict[tuple[str, str], dict] = {}
+    for key, overlay in served.items():
+        rows = tuple(sorted((row.table, row.id, row.version_hash) for row in overlay.rows))
+        if rows not in worlds:
+            worlds[rows] = merge_overlays(db, [overlay], values)
+        states[key] = worlds[rows]
+    per_call: dict[str, dict] = {}
+    for key, overlay in served.items():
+        base = states.get(key)
         for step in overlay.steps:
             if base is None or not step.call_id or not step.values:
                 continue
+            if call_runs.get(step.call_id, "") != key[1]:
+                continue  # another Run's layer holds this call's own sequence
             world = per_call.get(step.call_id)
             if world is None:
                 world = per_call[step.call_id] = copy.deepcopy(base)
             row = world.setdefault(step.table, {}).get(step.id)
             world[step.table][step.id] = (dict(row, **step.values) if isinstance(row, dict)
                                           else dict(step.values))
-    return {call_id: per_call.get(call_id) or states[task_id]
-            for call_id, task_id in call_tasks.items() if task_id in states}
+    out: dict[str, dict] = {}
+    for call_id, task_id in call_tasks.items():
+        key = (task_id, call_runs.get(call_id, ""))
+        if key not in states:
+            key = (task_id, "")
+        if key in states:
+            out[call_id] = per_call.get(call_id) or states[key]
+    return out
 
 
 def replay_outcomes(toolsig: ToolSig, body: str, calls: Iterable[ToolCall], schema: EntitySchema, db: dict,
