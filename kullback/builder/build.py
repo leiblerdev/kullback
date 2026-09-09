@@ -51,6 +51,9 @@ from kullback.builder import (
     user_sim,
     vocabulary,
 )
+from kullback.builder import (
+    lesson as lesson_mod,
+)
 from kullback.builder.repair import KEPT_BODIES_FILE, SHAPES_SHOWN, failure_shapes
 from kullback.gates import artifacts, fidelity, tool_runs, verifier_suite
 from kullback.gates import scorecard as scorecard_mod
@@ -419,6 +422,11 @@ def _record_hardcoded_lesson(workdir: Any, name: str) -> None:
 # Where the body a tool already has is replayed, beside the attempt directories of the run that is
 # trying to beat it, so the two never share a sandbox directory.
 KEPT_BODY_DIR = "kept_body"
+# What the code-only lesson steps found per tool this run: relations by kind, lines no recorded call
+# reached, whether the stall limit forced a rewrite, whether the tool is held at a gate before the
+# fidelity ruling (D211). A record of the run and never an input of it, the same way the rulings
+# beside it are; `rounds.py` adds them up so a round says what the steps bought.
+LESSON_COUNTS_FILE = "tool_lesson_counts.json"
 # The stage's ruling on those replays, one row per tool (KEPT_BODIES_FILE), is a record of the run
 # and never an input of it (see the comment where it is filled). Its name is declared in repair.py,
 # because the repair ruling reads the same file back to say what the attempt scored (D191).
@@ -617,6 +625,13 @@ def _tools_stage(model: Any, max_attempts: int, workers: int = 1, only: Optional
                     for sig in sigs if (stored_bodies.get(sig.name) or "").strip()}
 
         def compile_one(sig):  # one tool, its own directory and nodes; independent of every other (D118)
+            # D211: how many recompiles in a row have bought this tool nothing, and the gate both
+            # sides fell at last time, read before the body is graded because both change the ask
+            # rather than the sentence: past the stall limit the writer is asked to rewrite, and a
+            # tie at a gate before the fidelity ruling is a gate to repair, not a hint to write.
+            stall = prior_rulings.get(sig.name) or {}
+            unbeaten = int(stall.get("unbeaten") or 0)
+            blocked = str(stall.get("blocked_by_gate") or "")
             # The body this tool already has, replayed first, so what it fails at can be said to the
             # writer before it writes. The replay is per tool and runs on this tool's own thread.
             kept = previous.get(sig.name)
@@ -624,15 +639,21 @@ def _tools_stage(model: Any, max_attempts: int, workers: int = 1, only: Optional
                 sig, kept[0], calls_by_tool.get(sig.name, []), inputs["schema"], inputs["db"],
                 ctx.workdir / "tools" / sig.name / KEPT_BODY_DIR,
                 call_states=states, rules=rules, call_tasks=call_tasks,
-                readers=result_readers) if kept is not None else None
+                readers=result_readers, unbeaten=unbeaten, blocked=blocked) if kept is not None else None
             # What this tool already failed on, so a recompile asks a different question than the
             # one that failed, and what the body it has to beat fails at now. The kept body itself
             # is never in the prompt: shown one, the writer copies it, and a copy cannot beat it.
             lesson = memory.lesson_for(ctx.workdir, sig.name)
             shown, held_out = compile_env.split_calls(calls_by_tool.get(sig.name, []))
             if graded is not None:
-                hint = compile_env.kept_body_hint(graded.gates, held_out)
-                lesson = "\n".join(part for part in (lesson, hint) if part)
+                hint = compile_env.kept_body_hint(
+                    graded.gates, held_out,
+                    lesson_mod.FAILING_SET_SHOWN if lesson_mod.stalled(unbeaten) else SHAPES_SHOWN)
+                # D211: the code-only read of the body already there, which is the part no round
+                # of hints had: every leaf its failing calls part on, the relation those calls
+                # share, and the lines of it no recorded call has ever reached.
+                found = graded.diagnosis.lesson() if graded.diagnosis is not None else ""
+                lesson = "\n".join(part for part in (lesson, hint, found) if part)
             # D191: what the Reference replay failed on, in the same lesson and under the same
             # masking: only a call this writer is already shown is quoted with its values.
             replay_hint = replay_lesson(replay_failed.get(sig.name, {}),
@@ -656,6 +677,12 @@ def _tools_stage(model: Any, max_attempts: int, workers: int = 1, only: Optional
         # tie leaves the stage's files untouched).
         prior_rulings = dict(_read_json(ctx.workdir / KEPT_BODIES_FILE, {}) or {})
         kept_rulings = dict(prior_rulings) if only is not None else {}
+        # D211: what the code-only steps found per tool this run, so a round can say how many
+        # relations it named, how many lines nothing witnesses, how many rewrites the stall limit
+        # forced and how many tools are held at a gate. A narrowed rerun keeps the other tools' rows
+        # for the same reason the rulings above are kept.
+        prior_counts = dict(_read_json(ctx.workdir / LESSON_COUNTS_FILE, {}) or {})
+        lesson_counts = dict(prior_counts) if only is not None else {}
         for sig, (build, graded) in zip(sigs, parallel.each(sigs, compile_one, workers), strict=True):
             score = list(compile_env.attempt_score(build.gates))
             kept_score = list(compile_env.attempt_score(graded.gates)) if graded is not None else None
@@ -685,6 +712,7 @@ def _tools_stage(model: Any, max_attempts: int, workers: int = 1, only: Optional
             # is on the tool's row (`recompile_declined`) and in the run's own ruling below.
             gates.extend(graded.gates if keeps_previous else build.gates)
             kept_rulings.pop(sig.name, None)
+            lesson_counts.pop(sig.name, None)
             if graded is not None:
                 # D191: how many recompiles in a row have now scored no higher than the body this
                 # tool already has. The count survives a full run of the stage, which resets the
@@ -709,8 +737,16 @@ def _tools_stage(model: Any, max_attempts: int, workers: int = 1, only: Optional
                     "broke_calls": len(body_ruling.broke) if body_ruling.moved else 0,
                     "kept_score": kept_score, "attempt_score": score,
                     "unbeaten": unbeaten if keeps_previous else 0,
+                    # D211: the gate before the fidelity ruling that both bodies fall at, when
+                    # there is one. Two bodies that tie at a static gate tie at a fidelity number
+                    # neither of them earned, and the next round has to be spent on the gate.
+                    "blocked_by_gate": lesson_mod.blocked_gate(
+                        [{"stage": g.stage, "pass": g.passed} for g in graded.gates],
+                        [{"stage": g.stage, "pass": g.passed} for g in build.gates]),
                     "from_replay": from_replay.get(sig.name, 0),
                     "evidence_calls": len(calls_by_tool.get(sig.name, []))}
+                if graded.diagnosis is not None:
+                    lesson_counts[sig.name] = graded.diagnosis.counts()
             if keeps_previous:
                 # A run of this stage is an attempt at a better body, not a replacement for the one
                 # it has. The attempt scored no higher on the key the compiler ranks its own
@@ -757,6 +793,7 @@ def _tools_stage(model: Any, max_attempts: int, workers: int = 1, only: Optional
         # tools it did not touch; the artifact the stages pass on is the attribution over them.
         _write_json(ctx.workdir / "tool_call_outcomes.json", outcomes)
         _write_json(ctx.workdir / KEPT_BODIES_FILE, kept_rulings)
+        _write_json(ctx.workdir / LESSON_COUNTS_FILE, lesson_counts)
         fidelity_by_task = attribute_fidelity(outcomes, call_tasks, assisted)
         _write_json(ctx.workdir / "tool_fidelity.json", fidelity_by_task)
         return {"bodies": bodies, "assisted_tools": sorted(assisted),
@@ -771,6 +808,9 @@ def _tools_stage(model: Any, max_attempts: int, workers: int = 1, only: Optional
     # sandbox left every broken body in the cache and `--iterate` handed them straight back.
     version = (f"compile_tools:{getattr(model, 'name', 'none')}:"
                f"{_module_hash(compile_env)}:{_module_hash(sandbox)}:{_module_hash(body_skill)}:"
+               # D211: the code-only lesson steps reach the writer's prompt, so a change to what
+               # they say is a new question and the cached bodies are not an answer to it.
+               f"{_module_hash(lesson_mod)}:"
                # The gates the sandbox runs live in the gates package, and D187 changed what two
                # results compare as; a body kept over an older ruling is not a body this one accepts.
                f"{_module_hash(tool_runs)}:"
