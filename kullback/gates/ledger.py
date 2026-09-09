@@ -85,8 +85,13 @@ class GateLedger:
         row carries the tool it was measured on, so a red light can name the tool without a reader
         having to know the order the stage happened to record them in.
         """
+        # Greptile P1 (PR 29): a narrowed compile keeps the rows of the tools it did not touch, so
+        # the round belongs on each row and not only on the file. A row that already names the round
+        # it was measured in keeps it; one that does not takes the round writing the file, which is
+        # the round that measured it.
         body = {"format": COMPILE_FORMAT, "round": int(round_no), "stage": str(stage_name),
-                "rows": [dict(row) for row in rows]}
+                "rows": [{**dict(row), "round": int(dict(row).get("round") or round_no)}
+                         for row in rows]}
         with self.lock:
             self.compile.parent.mkdir(parents=True, exist_ok=True)
             self.compile.write_text(json.dumps(body, indent=2, sort_keys=True, default=str),

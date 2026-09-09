@@ -1130,6 +1130,10 @@ class Loop:
         self.plan.round = n  # the round a repair request records itself under (D126)
         self.emit(RoundStart(round=n))
         self.sent, self.beat_spend, self.spent_allowance = [], {}, {}
+        # D218, Greptile P1 (PR 29): a round's snapshot says what this round measured, so the
+        # rulings and the difficulty record start empty. A round that ends on an error before its
+        # counts were read would otherwise write the round before it into its own table.
+        self.landed, self.difficulty_body = {}, {}
         self.compactions_seen = {agent: self.compactions(agent) for agent in AGENTS}
         self.cuts_seen = {agent: self.floor_cuts(agent) for agent in AGENTS}
         self.turns_seen = {agent: len(self.fills(agent)) for agent in AGENTS}
