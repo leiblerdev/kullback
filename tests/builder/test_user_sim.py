@@ -7,30 +7,18 @@ import json
 import pytest
 
 from conftest import PTR
-from kullback.builder import intent as intent_mod
 from kullback.builder.user_sim import (
-    ASKABLE,
     CHOICE,
     CLOSING,
     CONFIRMATION,
-    GAVE_UP,
     GENERIC_CONFIRM,
     GOAL,
-    GOAL_SATISFIED,
-    HANDED_OFF,
-    RECORD,
-    SCENARIO_EXHAUSTED,
-    STRIPPED_TAG,
     FactLookup,
     SimulatedUser,
     asked_fields,
     derive_user_rules,
     dict_reader,
-    end_of_run,
-    ends_by_kind,
     extracted_values,
-    fact_class,
-    goal_write_set,
 )
 from kullback.builder.vocabulary import GENERIC_FIELDS, FieldSpec, Vocabulary
 from kullback.runner.records import (
@@ -459,18 +447,13 @@ def test_an_on_request_fact_is_not_volunteered(rules_with_zip):
     assert "19122" not in user.reply(ask("Thanks, one moment while I look that up."))
 
 
-def test_a_fact_only_the_world_holds_is_pointed_at_and_never_spoken():
-    """D210: the Starting state is still read, and what it holds is a record fact, so the user says
-    the Candidate can look it up rather than handing over a value no user of the Task ever said."""
+def test_a_fact_the_rules_lack_is_answered_from_the_starting_state():
     rules = UserRules(facts=[UserFact(field="zip", value="19122")])
     user = SimulatedUser(rules, starting_state_reader=dict_reader({"email": "mei@example.com"}))
     text = user.reply(ask("What email address is on the account?"))
-    assert "mei@example.com" not in text
-    assert "look it up" in text
+    assert "mei@example.com" in text
     event = user.events[-1]
-    assert event.payload["sources"] == {"email": "record"}
-    assert event.payload["record_fields"] == ["email"]
-    assert "fact_in_record" in event.payload["tags"]
+    assert event.payload["sources"] == {"email": "world"}
     assert event.assisted is False
 
 
@@ -532,11 +515,7 @@ def test_a_volunteered_fact_is_offered_once_without_being_asked():
 
 
 def test_the_world_is_read_as_this_user_and_not_as_the_first_row(tau2_retail_dir):
-    """D77: the Starting state is read as the user the rules describe, never as any other row.
-
-    D210: the row it finds is a record fact and no row's value is spoken, so what the lookup decides
-    is whether the user can point the Candidate at it at all.
-    """
+    """D77: the Starting state is read as the user the rules describe, never as any other row."""
     from kullback.runner.route import StateView
 
     db = json.loads((tau2_retail_dir / "db.json").read_text(encoding="utf-8"))
@@ -546,9 +525,9 @@ def test_the_world_is_read_as_this_user_and_not_as_the_first_row(tau2_retail_dir
     ])
     user = SimulatedUser(rules, starting_state_reader=StateView(shared=db))
     text = user.reply(ask("Could you confirm the email address on the account?"))
-    assert "mei.kovacs8232@example.com" not in text
+    assert "mei.kovacs8232@example.com" in text
     assert db["users"]["noah_brown_6181"]["email"] not in text
-    assert user.events[-1].payload["sources"] == {"email": "record"}
+    assert user.events[-1].payload["sources"] == {"email": "world"}
 
 
 def test_the_caller_can_name_the_user_whose_row_is_read(tau2_retail_dir):
@@ -557,12 +536,7 @@ def test_the_caller_can_name_the_user_whose_row_is_read(tau2_retail_dir):
     db = json.loads((tau2_retail_dir / "db.json").read_text(encoding="utf-8"))
     user = SimulatedUser(UserRules(), starting_state_reader=StateView(shared=db),
                          identity={"user_id": "mei_kovacs_8020"})
-    user.reply(ask("What is your email address?"))
-    assert user.events[-1].payload["record_fields"] == ["email"]
-    stranger = SimulatedUser(UserRules(), starting_state_reader=StateView(shared=db),
-                             identity={"user_id": "nobody_at_all_0000"})
-    stranger.reply(ask("What is your email address?"))
-    assert stranger.events[-1].payload["unavailable_fields"] == ["email"]
+    assert "mei.kovacs8232@example.com" in user.reply(ask("What is your email address?"))
 
 
 def test_a_user_the_world_does_not_hold_gets_no_row_at_all(tau2_retail_dir):
@@ -581,28 +555,18 @@ def test_a_user_the_world_does_not_hold_gets_no_row_at_all(tau2_retail_dir):
 
 
 def test_the_overlay_row_wins_over_the_shared_world(tau2_retail_dir):
-    """D74: the Task's own rows are read before the shared world.
-
-    The overlay row carries a field the shared row does not, so which of the two the user read is
-    what decides whether the field is a record fact it can point at or one nobody holds (D210).
-    """
+    """D74: the Task's own rows are read before the shared world."""
     from kullback.runner.route import StateView
 
     db = json.loads((tau2_retail_dir / "db.json").read_text(encoding="utf-8"))
-    shared = json.loads(json.dumps(db))
-    shared["users"]["mei_kovacs_8020"].pop("email", None)
     pinned = dict(db["users"]["mei_kovacs_8020"], email="mei.pinned@example.com")
+    view = StateView(shared=db, overlay={"users": {"mei_kovacs_8020": pinned}})
     rules = UserRules(facts=[
         UserFact(field="name", value="Mei Kovacs"),
         UserFact(field="zip", value="28236"),
     ])
-    user = SimulatedUser(rules, starting_state_reader=StateView(
-        shared=shared, overlay={"users": {"mei_kovacs_8020": pinned}}))
-    user.reply(ask("What is your email address?"))
-    assert user.events[-1].payload["record_fields"] == ["email"]
-    without = SimulatedUser(rules, starting_state_reader=StateView(shared=shared))
-    without.reply(ask("What is your email address?"))
-    assert without.events[-1].payload["unavailable_fields"] == ["email"]
+    user = SimulatedUser(rules, starting_state_reader=view)
+    assert "mei.pinned@example.com" in user.reply(ask("What is your email address?"))
 
 
 def test_a_row_with_two_payment_methods_reports_the_field_unavailable_not_a_pick(tau2_retail_dir):
@@ -879,11 +843,10 @@ def test_the_recorded_turn_order_breaks_a_tie_between_two_values_of_one_field():
     assert "19122" in user.reply(ask("What zip code should I use?"))
 
 
-def test_the_value_on_the_account_is_a_record_fact_when_the_recording_holds_only_the_new_one(
+def test_the_value_on_the_account_is_read_from_the_world_when_the_recording_holds_only_the_new_one(
         tau2_retail_dir):
-    """D210: a user that stated only the value it is moving to never said the one on file, so the
-    stored value is the world's and the user points at it rather than reading it out; and the value
-    it did state is not offered in the stored one's place either."""
+    """D77: the account's own value is in the Starting state, and a user that has stated only the
+    value it is moving to still knows what is on file."""
     from kullback.runner.route import StateView
 
     db = json.loads((tau2_retail_dir / "db.json").read_text(encoding="utf-8"))
@@ -896,8 +859,8 @@ def test_the_value_on_the_account_is_a_record_fact_when_the_recording_holds_only
     user = SimulatedUser(rules, starting_state_reader=StateView(shared=db), vocab=RETAIL)
     user.reply(ask("Hi! How can I help you today?"))
     text = user.reply(ask("What is the zip code currently on file for the account?"))
-    assert "19122" not in text and "78701" not in text
-    assert user.events[-1].payload["sources"] == {"zip": "record"}
+    assert "19122" in text and "78701" not in text
+    assert user.events[-1].payload["sources"] == {"zip": "world"}
 
 
 def test_each_user_turn_counts_the_asks_it_refused_and_the_running_total_for_the_run():
@@ -1158,205 +1121,3 @@ def test_the_second_silent_turn_closes():
     assert text == facts_by_field(renewal_rules())[CLOSING]
     assert said(user) == {CLOSING: "rules"}
     assert user.done is True
-
-
-# --- D210: an end carries its reason, a fact carries its class, an answer goes through the strip ---
-
-
-RENEWED = [
-    {"role": "user", "content": "Hi."},
-    {"role": "assistant", "content": None,
-     "tool_calls": [{"id": "c1", "name": "renew_loan", "arguments": {"loan_id": "#L2201"}}]},
-    {"role": "tool", "tool_call_id": "c1", "name": "renew_loan", "content": "{}"},
-    {"role": "assistant", "content": "That is renewed. Is there anything else I can help you with?"},
-]
-
-
-def renewal_user(**kwargs) -> SimulatedUser:
-    return SimulatedUser(renewal_rules(), vocab=LIBRARY, **kwargs)
-
-
-def test_a_run_whose_goal_writes_are_all_made_ends_goal_satisfied():
-    user = renewal_user(write_tools={"renew_loan", "pay_fine"}, goal_writes={"renew_loan"})
-    user.reply(ask("Hi! How can I help you today?"))
-    user.reply(RENEWED)
-    assert user.done is True
-    assert user.end_reason == GOAL_SATISFIED
-    assert GOAL_SATISFIED in user.events[-1].payload["tags"]
-
-
-def test_a_goal_that_implies_two_writes_is_not_satisfied_by_one_of_them():
-    user = renewal_user(write_tools={"renew_loan", "pay_fine"}, goal_writes={"renew_loan", "pay_fine"})
-    user.reply(ask("Hi! How can I help you today?"))
-    text = user.reply(RENEWED)
-    assert user.done is False
-    assert "L2201" in text and said(user) == {GOAL: "goal_restated"}
-
-
-def test_the_closing_cue_alone_does_not_end_a_run_whose_goal_writes_are_not_done():
-    """The cue was the whole end before D210, so a Run that had done half the work read as finished."""
-    user = renewal_user(write_tools={"renew_loan", "pay_fine"}, goal_writes={"renew_loan", "pay_fine"})
-    user.reply(ask("Hi! How can I help you today?"))
-    user.reply(ask("All done. Have a great day!"))
-    assert user.done is False
-    assert user.end_reason is None
-
-
-def test_a_candidate_that_closes_over_an_unfinished_goal_ends_handed_off():
-    user = renewal_user(write_tools={"renew_loan"}, goal_writes={"renew_loan"})
-    user.reply(ask("Hi! How can I help you today?"))
-    user.reply(ask("Is there anything else I can help you with?"))
-    user.reply(ask("Thanks for contacting us, have a great day."))
-    assert user.done is True
-    assert user.end_reason == HANDED_OFF
-
-
-def test_a_candidate_that_passes_the_conversation_on_ends_handed_off():
-    user = renewal_user(write_tools={"renew_loan"}, goal_writes={"renew_loan"})
-    user.reply(ask("Hi! How can I help you today?"))
-    user.reply(ask("One moment while I look into that."))
-    user.reply(ask("I am transferring you to a colleague who can do that."))
-    assert user.end_reason == HANDED_OFF
-
-
-def test_a_user_with_nothing_left_to_say_ends_scenario_exhausted():
-    user = renewal_user(write_tools={"renew_loan"}, goal_writes={"renew_loan"})
-    user.reply(ask("Hi! How can I help you today?"))
-    user.reply(ask("One moment while I look into that."))
-    user.reply(ask("Still checking, sorry for the wait."))
-    assert user.done is True
-    assert user.end_reason == SCENARIO_EXHAUSTED
-
-
-def test_two_asks_the_user_has_no_record_of_end_the_run_scenario_exhausted():
-    user = renewal_user(write_tools={"renew_loan"}, goal_writes={"renew_loan"})
-    user.reply(ask("Hi! How can I help you today?"))
-    user.reply(ask("What is your member id?"))
-    user.reply(ask("Could you give me your email address?"))
-    user.reply(ask("Thanks for contacting us, have a great day."))  # the goal is said once more
-    user.reply(ask("Thanks for contacting us, have a great day."))
-    assert user.end_reason == SCENARIO_EXHAUSTED
-
-
-def test_a_run_that_spends_its_turns_without_ending_gave_up(make_test_model):
-    from kullback.runner import loop
-
-    user = renewal_user(write_tools={"renew_loan"}, goal_writes={"renew_loan"})
-    model = make_test_model([{"content": "What is your member id?"}], loop=True)
-    state = loop.new_run_state("spent", user=user, max_turns=4)
-    loop.run(state, model)
-    assert state.run.termination_reason == "max_turns"
-    assert end_of_run(state.run) == GAVE_UP
-
-
-def test_the_end_kind_of_a_finished_run_is_read_off_the_run_the_loop_wrote(make_test_model):
-    from kullback.runner import loop
-
-    user = renewal_user(write_tools={"renew_loan"}, goal_writes=set())
-    model = make_test_model([{"content": "Is there anything else I can help you with?"}], loop=True)
-    state = loop.new_run_state("finished", user=user, max_turns=8)
-    loop.open_with_user(state)
-    loop.run(state, model)
-    assert end_of_run(state.run) == GOAL_SATISFIED
-
-
-def test_the_ends_of_a_round_are_counted_in_every_kind():
-    rows = [{"user_end": GOAL_SATISFIED}, {"user_end": GOAL_SATISFIED}, {"user_end": GAVE_UP},
-            {"user_end": None}]
-    assert ends_by_kind(rows) == {GOAL_SATISFIED: 2, SCENARIO_EXHAUSTED: 0, HANDED_OFF: 0, GAVE_UP: 1}
-
-
-def test_a_fact_the_recorded_user_gave_is_askable_and_one_only_the_world_holds_is_a_record_fact():
-    rules = derive_user_rules(bold_name_trace(), LIBRARY)
-    assert fact_class(rules, "name") == ASKABLE
-    assert fact_class(rules, "member_id") == RECORD
-
-
-def asked_name_trace() -> Trace:
-    """A recording whose user gave its name only because the help desk asked for it."""
-    return library_trace([
-        ("assistant", "Hi! How can I help you today?"),
-        ("user", "I would like to renew a book."),
-        ("assistant", "Of course. What is your full name?"),
-        ("user", "My name is Ada Whitfield."),
-    ])
-
-
-def test_an_askable_fact_is_given_once_asked_and_not_before():
-    rules = derive_user_rules(asked_name_trace(), LIBRARY)
-    assert fact_class(rules, "name") == ASKABLE
-    user = SimulatedUser(rules, vocab=LIBRARY)
-    opening = user.reply(ask("Hi! How can I help you today?"))
-    assert "Ada Whitfield" not in opening
-    answer = user.reply(ask("What is your full name?"))
-    assert "Ada Whitfield" in answer
-    assert said(user)["name"] == "rules"
-
-
-def test_a_question_about_a_record_fact_is_answered_without_the_value():
-    """The user knows what it told the help desk and nothing else; the rest is the world's, and the
-    Candidate has the tools that read it (D210)."""
-    user = SimulatedUser(derive_user_rules(bold_name_trace(), LIBRARY), vocab=LIBRARY,
-                         starting_state_reader=dict_reader({"member_id": "M400318"}))
-    user.reply(ask("Hi! How can I help you today?"))
-    text = user.reply(ask("Could you give me your member id?"))
-    assert "M400318" not in text
-    assert "look it up" in text
-    assert said(user) == {"member_id": "record"}
-    assert user.events[-1].payload["record_fields"] == ["member_id"]
-
-
-def test_a_value_the_strip_removes_is_never_spoken_and_is_counted():
-    """A value the recording's tools held and no user of the Task said is not this user's to give,
-    however it reached the rules; the fact is answered as absent instead (D196, D210)."""
-    trace = library_trace(
-        [
-            ("assistant", "Hi! How can I help you today?"),
-            ("user", "I would like to renew a book."),
-            ("assistant", None),
-        ],
-        calls=[made(2, "get_member", {"member_id": "M400318"}, result={"loans": ["L2201"]})],
-    )
-    leaky = UserRules(facts=[UserFact(field="member_id", value="M400318", span=PTR)])
-    user = SimulatedUser(leaky, vocab=LIBRARY, answer_strip=intent_mod.value_strip([trace]))
-    text = user.reply(ask("Could you give me your member id?"))
-    assert "M400318" not in text
-    assert user.stripped == 1
-    assert said(user) == {"member_id": "stripped"}
-    assert STRIPPED_TAG in user.events[-1].payload["tags"]
-
-
-def test_a_fact_a_user_of_the_task_did_say_is_left_alone_by_the_strip():
-    trace = library_trace(
-        [
-            ("assistant", "Hi! How can I help you today?"),
-            ("user", "My member id is M400318 and I would like to renew a book."),
-            ("assistant", None),
-        ],
-        calls=[made(2, "get_member", {"member_id": "M400318"}, result={"loans": ["L2201"]})],
-    )
-    user = SimulatedUser(derive_user_rules(trace, LIBRARY), vocab=LIBRARY,
-                         answer_strip=intent_mod.value_strip([trace]))
-    text = user.reply(ask("Could you give me your member id?"))
-    assert "M400318" in text
-    assert user.stripped == 0
-
-
-def test_the_goal_write_set_is_the_writes_the_recording_made_and_the_world_took():
-    trace = library_trace(
-        [
-            ("assistant", "Hi! How can I help you today?"),
-            ("user", "Please renew loan L2201 and pay the fine on it."),
-            ("assistant", None),
-            ("assistant", None),
-            ("assistant", None),
-        ],
-        calls=[
-            made(2, "get_member", {"member_id": "M400318"}, result={"loans": ["L2201"]}),
-            made(3, "renew_loan", {"loan_id": "L2201"}, result={"due": "2026-10-01"}),
-            made(4, "pay_fine", {"loan_id": "L2201"},
-                 error=ToolCallError(**{"class": "not_found_entity"}, payload="no fine")),
-        ],
-    )
-    assert goal_write_set(trace, {"renew_loan", "pay_fine"}) == {"renew_loan"}
-    assert goal_write_set(None, {"renew_loan"}) == set()

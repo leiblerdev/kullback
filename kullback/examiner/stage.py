@@ -19,7 +19,6 @@ from __future__ import annotations
 
 import hashlib
 import threading
-from collections import Counter
 from dataclasses import dataclass, field
 from functools import lru_cache
 from pathlib import Path
@@ -211,21 +210,6 @@ def not_at_reference(confirmation: Any, pool_runs: Iterable[tuple[str, str]], wr
         if settled != target:
             out[run_id] = WROTE_NOTHING if not settled else WROTE_OTHERWISE
     return out
-
-
-def pool_user_ends(task_id: str, rerolls: dict) -> dict[str, str]:
-    """How the Simulated user ended each held-out Run of this Task, by the four kinds (D210, D133).
-
-    A Run that ended `scenario_exhausted` or `gave_up` did not stop because the Task was done: its
-    user ran out of what it could say, or the Run ran out of turns. Counting such a Run as a false
-    rejection says the Verifier is over-strict when what happened was that the Run never finished,
-    which is the same reading D133 already fixed for Runs that reached another End state. The kinds
-    are named per Run here so a reading over the pool can leave them out; nothing is filtered on
-    them yet, because the pool's own rule is the settled End state and this is a second opinion.
-    """
-    return {str(row["run_id"]): str(row["user_end"])
-            for row in rerolls.get(task_id) or []
-            if row.get("run_id") and row.get("user_end")}
 
 
 def pool_runs_of(task_id: str, replays: dict, rerolls: dict) -> list[tuple[str, str]]:
@@ -780,7 +764,7 @@ def verifier_for(ctx, task: Task, confirmation: Any, *, canon_rules: Any, write_
                  intents: dict, user_rules: dict, recordings: int, rerolls: int, probe: Any,
                  probe_model: Any, may_probe: bool, fidelity_row: Optional[dict] = None,
                  pool_runs: Iterable[tuple[str, str]] = (), fn: Optional[Callable] = None,
-                 second_path: Optional[dict] = None, user_ends: Optional[dict] = None,
+                 second_path: Optional[dict] = None,
                  verifier_version: str = "1") -> tuple[Verifier, dict]:
     """One Task's Verifier from its References, through the whole D79 suite, with its status row.
 
@@ -825,10 +809,6 @@ def verifier_for(ctx, task: Task, confirmation: Any, *, canon_rules: Any, write_
               "recordings": recordings, "rerolls": rerolls,
               "failed_recordings": {**dict(confirmation.failed), **left_out},
               "did_not_reach_reference": sorted(left_out), "judged": confirmation.judged,
-              # D210: how the Simulated user of each held-out Run ended it, so a false-rejection
-              # reading can tell a Run that finished from one whose scenario ran out or that spent
-              # its turns, rather than reading every success termination as a Run that did the Task.
-              "user_ends": dict(sorted((user_ends or {}).items())),
               "checks": results,
               "not_run": [g.stage for g in gates if g.metrics.get("skipped")],
               # D196: the columns the leak check found the strip had missed, so a finding can be
@@ -1143,8 +1123,7 @@ def derive_all(ctx: ExamContext, inputs: dict, *, probe_model: Any = None, probe
                 recordings=len(seed_replays[task.id]), rerolls=len(rerolls.get(task.id, [])),
                 probe=probe, probe_model=probe_model, may_probe=job.may_probe,
                 fidelity_row=fidelity_row, second_path=second,
-                pool_runs=pool_runs_of(task.id, replays, rerolls) + extra_pool, fn=fn,
-                user_ends=pool_user_ends(task.id, rerolls))
+                pool_runs=pool_runs_of(task.id, replays, rerolls) + extra_pool, fn=fn)
             verifier = as_dict(record)
         entry = {"format": CACHE_FORMAT, "task_id": task.id, "key": job.key, "status": row,
                  "references": confirmation.as_dict(), "verifier": verifier, "probed": job.may_probe}
@@ -1202,12 +1181,6 @@ def derive_all(ctx: ExamContext, inputs: dict, *, probe_model: Any = None, probe
         # D133: the held-out Runs the pool leaves out because they did not reach the Reference's
         # End state, named per Task on the status row and counted here for the Examiner.
         did_not_reach_reference=sum(len(r.get("did_not_reach_reference") or ()) for r in status.values()),
-        # D210: how the held-out Runs of every Task ended, counted per round in the kinds the
-        # Simulated user reports, so a round that stops finishing what it starts says so in one
-        # number rather than per Task. The kinds are counted as they come rather than read from the
-        # Builder's list, because the Examiner does not import the Builder (D123).
-        user_ends_by_kind=dict(sorted(Counter(
-            kind for r in status.values() for kind in (r.get("user_ends") or {}).values()).items())),
         # D189: what the search for a second path cost and bought this round. `second_path_runs` is
         # the whole extra frontier, about ten model calls a Run; `second_path_exhausted` is the
         # Tasks that spent the cap and still have check 5 not run.
