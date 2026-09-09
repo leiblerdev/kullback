@@ -48,6 +48,12 @@ MAX_ROUNDS = 2
 # What the reason on a rejected proposal says, so a reader can tell a Task the gates turned down from
 # a Task nothing was proposed for.
 REJECTED = "auto_loosen_rejected"
+# D218 rule 3: the three ways this step ends with no proposal at all. Each is written on a row of its
+# own with `proposed` False, so the round says which Tasks it looked at and could do nothing for; a
+# row like that is not an attempt and never spends the Task's `MAX_ROUNDS` budget.
+NO_VERIFIER = "no Verifier is on file for the Task, so there is nothing to loosen"
+NO_REJECTED_RUN = "no Run the Verifier rejects is among the Task's Runs, so there is nothing to read"
+NO_RELAXATION = "no atom of the Verifier can be relaxed by rule; the finding is the Examiner's"
 # The relaxation each atom gets, by the word the counts report it under. `path` and `read` are drops;
 # `write` and `write_value` are relaxations to an End-state predicate; `answer` keeps the predicate
 # and stops rejecting on it.
@@ -200,9 +206,29 @@ def over_strict_rows(store: dict) -> dict[str, dict]:
     return rows
 
 
+def nothing_proposed(verifier: Any, run: Any) -> Optional[str]:
+    """Why this Task gets no proposal before one is worked out, or None when one can be (D218 rule 3)."""
+    if verifier is None:
+        return NO_VERIFIER
+    if run is None:
+        return NO_REJECTED_RUN
+    return None
+
+
+def proposed(rows: Iterable[dict]) -> list[dict]:
+    """The rows that carry a proposal, which is what every count and every cap is read over.
+
+    A row written because nothing could be proposed says what the step found and is not an attempt at
+    loosening: counting it would make a Task whose Verifier no rule can relax look like a Task the
+    gates turned down, and it would spend one of the two rounds the Task is allowed.
+    """
+    return [row for row in rows or ()
+            if isinstance(row, dict) and row.get("proposed", True)]
+
+
 def attempts(rows: Iterable[dict], task_id: str) -> list[dict]:
     """Every automatic proposal made for one Task, in the order they were made."""
-    return [row for row in rows or () if isinstance(row, dict) and row.get("task_id") == task_id]
+    return [row for row in proposed(rows) if row.get("task_id") == task_id]
 
 
 def may_propose(rows: Iterable[dict], task_id: str, round_number: int) -> bool:
@@ -216,7 +242,8 @@ def may_propose(rows: Iterable[dict], task_id: str, round_number: int) -> bool:
 
 def round_counts(rows: Iterable[dict], round_number: int) -> dict:
     """What the automatic loosening did this round, in the four counts D205 asks to be read."""
-    made = [row for row in rows or () if isinstance(row, dict) and row.get("round") == round_number]
+    this_round = [row for row in rows or () if isinstance(row, dict) and row.get("round") == round_number]
+    made = proposed(this_round)
     by_kind = {kind: 0 for kind in KINDS}
     for row in made:
         for kind in row.get("kinds") or ():
@@ -224,4 +251,7 @@ def round_counts(rows: Iterable[dict], round_number: int) -> dict:
     return {"auto_loosen_proposed": len(made),
             "auto_loosen_accepted": sum(1 for row in made if row.get("accepted")),
             "auto_loosen_rejected": sum(1 for row in made if not row.get("accepted")),
+            # D218 rule 3: the Tasks the step looked at and could propose nothing for, which used to
+            # leave the round with no record at all that it had looked.
+            "auto_loosen_unproposed": len(this_round) - len(made),
             "relaxations_by_kind": by_kind}
