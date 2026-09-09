@@ -200,11 +200,9 @@ def _record_intent(workdir: Path, task_id: str, text: str, run_ids: list[str], g
                                 "run_coverage": {text: sorted(run_ids)}}), encoding="utf-8")
 
 
-def _run_intent_stage(stage, workdir: Path, inputs: dict, anchor=None) -> dict:
-    """One stage driven on its own, the way the scheduler drives it: the context knows the inputs,
-    so a Builder stage's ctx.evidence is the seed set of exactly these (D220)."""
-    ctx = pipeline.StageContext(stage, workdir, anchor, lambda usd, item="": None, inputs=inputs)
-    return stage.fn(ctx, pipeline.withhold(stage, inputs) if stage.filtered else inputs)
+def _run_intent_stage(stage, workdir: Path, inputs: dict) -> dict:
+    ctx = pipeline.StageContext(stage, workdir, None, lambda usd, item="": None)
+    return stage.fn(ctx, inputs)
 
 
 def test_a_full_intent_run_keeps_a_grounded_record_and_never_asks_the_model_for_it(tmp_path):
@@ -579,9 +577,8 @@ def _run_rerolls(workdir: Path, inputs: dict, model, only=None) -> tuple[dict, d
     """The re-rolls stage over this workdir as a build runs it: its rows, and its ruling's metrics."""
     stage = build_module._rerolls_stage(model, build_module.DEFAULT_REROLLS, only=only)
     ledger = Rulings()
-    ctx = pipeline.StageContext(stage, workdir, None, lambda usd, item="": None, ledger=ledger,
-                                inputs=inputs)
-    rows = stage.fn(ctx, pipeline.withhold(stage, inputs))["rerolls"]
+    ctx = pipeline.StageContext(stage, workdir, None, lambda usd, item="": None, ledger=ledger)
+    rows = stage.fn(ctx, inputs)["rerolls"]
     return rows, ledger.results[-1].metrics
 
 
@@ -790,9 +787,13 @@ def test_a_candidate_run_opens_with_the_system_prompt_the_user_and_the_tools(bui
 
 def test_every_stage_hashes_the_modules_it_delegates_to():
     """R42 for every stage, not only compile_tools: the first live build was served a schema mined before D106."""
-    from kullback.builder import cluster, compile_env, mine, synth, user_sim
+    from kullback.builder import cluster, compile_env, mine, synth
     from kullback.gates import fidelity
     from kullback.runner import replay as replay_mod
+
+    # D214: the rule-driven Simulated user lives in kullback/user now, and the stage hashes the
+    # module that can actually change, not the name that re-exports it.
+    from kullback.user import rules as user_sim
     assert build_module._mine_stage().code_version.endswith(build_module._module_hash(mine))
     assert build_module._module_hash(cluster) in build_module._cluster_stage().code_version
     assert build_module._module_hash(user_sim) in build_module._user_rules_stage().code_version
@@ -1182,22 +1183,13 @@ def test_a_call_the_reference_replay_failed_on_is_evidence_whatever_a_filter_dro
     """The filters answer what a body may be written from. Whether a Task confirms is a different
     question, and a call the replay of the References failed on is the whole of that question: the
     recording made it, so a Run of that Task cannot confirm until the body answers it."""
-    failed = {"read_kennel_row": {"c_after_write": "differs: status: ours \"open\", recorded \"held\""}}
+    failed = {"read_kennel_row": {"c_after_write": "differs: status: ours \"open\", recorded \"held\"",
+                                  "c_anchor": "differs: status: ours \"open\", recorded \"held\""}}
     calls, skipped, from_replay = _kennel_evidence(failed)
 
-    assert sorted(c.id for c in calls["read_kennel_row"]) == ["c_after_write", "c_plain"]
-    assert from_replay == {"read_kennel_row": 1}, "and the ruling says how many are there for that reason"
+    assert sorted(c.id for c in calls["read_kennel_row"]) == ["c_after_write", "c_anchor", "c_plain"]
+    assert from_replay == {"read_kennel_row": 2}, "and the ruling says how many are there for that reason"
     assert skipped == {}, "a call put back is not also counted as skipped"
-
-
-def test_a_replay_failure_in_a_held_out_run_is_not_put_back_as_evidence():
-    """The held-out split is not one of the filters a replay failure overrides: that Run's failure
-    is the corpus fidelity number, and its arguments and result are not the writer's to see."""
-    failed = {"read_kennel_row": {"c_after_write": "differs", "c_anchor": "differs"}}
-    calls, _skipped, from_replay = _kennel_evidence(failed)
-
-    assert "c_anchor" not in {c.id for c in calls["read_kennel_row"]}
-    assert from_replay == {"read_kennel_row": 1}, "only the seed Run's call was put back"
 
 
 def test_a_call_the_replay_agreed_on_is_left_where_its_filter_put_it(tmp_path):

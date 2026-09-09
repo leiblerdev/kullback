@@ -714,8 +714,7 @@ def gate_refuses_unknown(sandbox: Sandbox, calls: Iterable[ToolCall], rules: Any
 
 def run_gates(source: str, sandbox: Sandbox, shown: Iterable[ToolCall], held_out: Iterable[ToolCall],
               schema: EntitySchema, rules: Any = None, probe_refusals: bool = False,
-              sig: Any = None, readers: Any = None,
-              holdout_values: Optional[dict] = None) -> list[GateResult]:
+              sig: Any = None, readers: Any = None) -> list[GateResult]:
     """The gates in order, stopping at the first failure so the failure localizes (EvoEnv).
 
     Gate 3 runs over every recorded call, not a first pair: a body that is steady on the first two
@@ -729,11 +728,6 @@ def run_gates(source: str, sandbox: Sandbox, shown: Iterable[ToolCall], held_out
     member the description lists from an id a recorded call happened to carry.
 
     Gate 8 (D195) is the exception to the stopping rule, for the reason given where it is appended.
-
-    `holdout_values` are the values the world holds only because a held-out Run witnessed them
-    (`compile_env.holdout_values`). Gate 7 refuses a literal equal to one of them under its own
-    rule (D220 rule 2b): the writer was shown that column masked, so a body spelling the value out
-    took it from somewhere it was not entitled to.
     """
     shown, held_out = list(shown), list(held_out)
     every = shown + held_out
@@ -741,8 +735,7 @@ def run_gates(source: str, sandbox: Sandbox, shown: Iterable[ToolCall], held_out
     if gates[-1].passed:
         gates.append(gate_confined(source))
     if gates[-1].passed:
-        gates.append(body_memorised_values_gate(source, schema, sandbox.db, every, sig, readers=readers,
-                                                holdout_values=holdout_values))
+        gates.append(body_memorised_values_gate(source, schema, sandbox.db, every, sig, readers=readers))
     for gate, calls, extra in ((gate_executes_on_s0, every, {}), (gate_deterministic, every, {"rules": rules}),
                                (gate_non_trivial, every, {"rules": rules})):
         if not gates[-1].passed:

@@ -49,7 +49,6 @@ from kullback.builder import (
     synth,
     templates,
     transaction,
-    user_sim,
     vocabulary,
 )
 from kullback.builder import (
@@ -79,6 +78,10 @@ from kullback.runner.records import (
 from kullback.runner.records import read_json as _read_json
 from kullback.runner.records import write_json as _write_json
 
+# The rule-driven Simulated user under its old name (D214): it lives in kullback/user now, and the
+# stages read it from there so a stage's code version follows the module that actually changed.
+from kullback.user import rules as user_sim
+
 # This module is the graph, not the runner: assembling the stages means naming ingest, mine, cluster,
 # compile_env, policy and user_sim, and the Runner never imports the Builder (design section 3, build
 # brief rule 7, D89), so the wiring has to live beside them in builder/ and not in runner/.
@@ -92,35 +95,6 @@ CANON_RULES = "canon-rules.json"
 # What the cluster stage did with the frozen Task list this round (D200): read by the driver
 # so a round's status says how many Tasks it froze, added and could not reproduce.
 TASK_SPLIT = "task_split.json"
-# What the Starting state pinned from a held-out Run alone, and what a replay answered out of it.
-WORLD_PROVENANCE_FILE = "world_provenance.json"
-HOLDOUT_ANSWERS_FILE = "holdout_answers.json"
-READMISSION_FILE = "readmission_blocked.json"
-
-# D220: every stage that reads beyond the seed Runs, and why. A Builder stage not named here is
-# handed its Traces and its Tasks' Run ids withheld (pipeline.withhold) and draws from ctx.evidence;
-# a stage named here declares `sees_all_runs` or is not a Builder stage at all. The list is the
-# whole of the exemption: `tests/builder` walks the graph and fails on a stage that reads every Run
-# without being named. Ordered as a reader meets them in `stages()`.
-ALL_RUNS_STAGES: dict[str, str] = {
-    "ingest": "it is what makes the Traces; the anchor is drawn from the Tasks, further down",
-    "mine": "the signatures and the schema are the shape of the customer's system, not evidence "
-            "about a Task, and it runs before the Tasks exist for an anchor to be drawn from",
-    "readers": "it runs before the Tasks exist, and the rows a prose result reveals are rows of the "
-               "world, which has to hold what a held-out Run reads",
-    "cluster": "it makes the Tasks the anchor is drawn from, so there is no split yet to apply",
-    "canon_rules": "the canonicalizer's rules are read off every recorded value in the corpus; a "
-                   "rule that held for the seed Runs alone would judge a held-out replay wrongly",
-    "starting_state": "the world stays complete (D220 rule 2): a row a held-out Run needs and the "
-                      "world does not hold is a different failure. What it pins from a held-out Run "
-                      "alone is recorded as such and withheld from the body writer instead",
-    "user_rules": "the Examiner's false-rejection pool scores the Verifier against the held-out "
-                  "Runs (D133), so the Simulated user's rules exist for those Runs too; the one "
-                  "Builder consumer, the re-rolls, draws its persona from ctx.evidence",
-    "build_environment": "it packages what the stages above released and reads no recording",
-    "replay_reference": "it replays the anchor on purpose, so the report can say how the held-out "
-                        "Runs fare; the Examiner's derivation is what keeps them out (D81)",
-}
 
 
 class BuildError(RuntimeError):
@@ -411,17 +385,6 @@ def _state_stage(grow: Optional[dict] = None, grow_seed: int = 0):
                                                      inputs["readers"]))
         # The synthetic ids live on the schema (D40); run_batch reads them back from schema.json.
         _write_json(ctx.workdir / "schema.json", as_dict(schema))
-        # D220 rule 2: the world is complete, and what only a held-out Run witnessed is written
-        # down beside it. This stage is not a Builder stage, so it may read the anchor; every stage
-        # below reads the provenance off this file and never the membership.
-        held_out = sorted({run_id for runs in (ctx.anchor.held_out if ctx.anchor else {}).values()
-                           for run_id in runs})
-        columns = compile_env.holdout_columns(state.witnesses, held_out)
-        _write_json(ctx.workdir / WORLD_PROVENANCE_FILE,
-                    {"witnesses": state.witnesses, "holdout_columns": columns,
-                     "holdout_rows": sum(len(rows) for rows in columns.values()),
-                     "holdout_columns_total": sum(len(names) for rows in columns.values()
-                                                  for names in rows.values())})
         return {"db": state.db, "overlays": list(state.overlays),
                 "assumptions": list(state.assumptions), "synthetic_rows": list(state.synthetic_rows)}
 
@@ -434,19 +397,6 @@ def _state_stage(grow: Optional[dict] = None, grow_seed: int = 0):
                           input_paths=("bodies.json",),
                           code_version=_version("starting_state", fn, compile_env, synth, readers,
                                                 mine, sandbox, tool_runs))
-
-
-def holdout_world(workdir: Any) -> tuple[dict, dict]:
-    """What the Starting state pinned from a held-out Run alone: the columns, and their values.
-
-    Read from `world_provenance.json`, which the Starting state wrote (D220 rule 2). A workdir
-    built before this decision holds no such file and answers with nothing withheld, which is the
-    honest reading: nothing was recorded, so nothing can be masked.
-    """
-    record = _read_json(Path(workdir) / WORLD_PROVENANCE_FILE, {}) or {}
-    columns = record.get("holdout_columns") or {}
-    db = _read_json(Path(workdir) / compile_env.DB_FILE, {}) or {}
-    return columns, compile_env.holdout_values(db, columns)
 
 
 def _evidence_version() -> str:
@@ -613,10 +563,8 @@ def _tools_stage(model: Any, max_attempts: int, workers: int = 1, only: Optional
         if model is None:
             raise BuildError("compile_tools has to run and this build has no model; pass --model "
                              "(an --iterate build re-runs the stage when its inputs or code changed)")
-        # D220: the seed Traces and the Tasks' seed Runs, filtered once by the pipeline; the raw
-        # Traces and Run ids of this stage's inputs are withheld and raise on any read.
-        traces, tasks = ctx.evidence.traces, ctx.evidence.tasks
-        seeds = ctx.evidence.trace_ids
+        traces, tasks = inputs["traces"], inputs["tasks"]
+        seeds = _seed_traces(ctx, tasks, traces)
         call_tasks: dict[str, str] = {}
         # D74: every recorded call replays on the world its Task saw before any write. A call that
         # follows a write on the same row in its own trace saw the world after that write, so it
@@ -631,11 +579,6 @@ def _tools_stage(model: Any, max_attempts: int, workers: int = 1, only: Optional
         # from; this answers what a Task needs the body to reproduce, and that question is the one
         # the corpus is scored on.
         replay_failed = replay_failures(ctx.workdir)
-        # D220 rule 3: a replay failure on a held-out Run is not readmitted. The stage is never told
-        # which calls those were, only how many per tool, which is what the round reports.
-        readmission_blocked = ctx.evidence.blocked(
-            {tool: list(ids) for tool, ids in replay_failed.items()})
-        _write_json(ctx.workdir / READMISSION_FILE, readmission_blocked)
         calls_by_tool, skipped, from_replay = evidence_calls(
             traces, seeds, after_write, callers, replay_failed)
         for trace in traces:
@@ -658,10 +601,6 @@ def _tools_stage(model: Any, max_attempts: int, workers: int = 1, only: Optional
         # columns they assert and a gate that reads a body's literals sees the values a recorded
         # result carried inside a sentence (D187).
         result_readers = tool_runs.load_readers(inputs["readers"])
-        # D220 rule 2: what the world holds only because a held-out Run witnessed it. lookup_rows
-        # answers those columns masked, and the memorised-values gate refuses a body that spells
-        # one of the values out. The world the bodies run on is the complete one.
-        holdout_cols, holdout_vals = holdout_world(ctx.workdir)
         bodies, gates, assisted, builds = {}, [], [], {}
         outcomes: dict[str, list[dict]] = {}  # D171: per tool, one row per recorded call
         rules = _rules_of(inputs)
@@ -704,8 +643,7 @@ def _tools_stage(model: Any, max_attempts: int, workers: int = 1, only: Optional
                 sig, kept[0], calls_by_tool.get(sig.name, []), inputs["schema"], inputs["db"],
                 ctx.workdir / "tools" / sig.name / KEPT_BODY_DIR,
                 call_states=states, rules=rules, call_tasks=call_tasks,
-                readers=result_readers, unbeaten=unbeaten, blocked=blocked,
-                holdout_values=holdout_vals) if kept is not None else None
+                readers=result_readers, unbeaten=unbeaten, blocked=blocked) if kept is not None else None
             # What this tool already failed on, so a recompile asks a different question than the
             # one that failed, and what the body it has to beat fails at now. The kept body itself
             # is never in the prompt: shown one, the writer copies it, and a copy cannot beat it.
@@ -732,8 +670,7 @@ def _tools_stage(model: Any, max_attempts: int, workers: int = 1, only: Optional
                                             rules=rules, tool_names=tool_names,
                                             error_prefix=error_prefix, world_note=world_note,
                                             lesson=lesson, call_tasks=call_tasks,
-                                            readers=result_readers, holdout=holdout_cols,
-                                            holdout_values=holdout_vals), graded
+                                            readers=result_readers), graded
 
         declined: list[str] = []
         # Per tool, whether the body it already had was kept, beaten, or could not run at all under
@@ -899,9 +836,7 @@ def _tools_stage(model: Any, max_attempts: int, workers: int = 1, only: Optional
     # D191: the Reference replay's own failures are an input of this stage, since a call it failed
     # on is evidence for the body whatever the filters say. Left undeclared, a stage whose other
     # inputs had not moved was served bodies written before that evidence existed.
-    # D220: the provenance of the world is read by this stage, so it is in its key: a build
-    # whose held-out split moved masks different columns and must compile again.
-    paths = (memory.TOOL_LESSONS_FILE, REPLAY_EVIDENCE_FILE, WORLD_PROVENANCE_FILE)
+    paths = (memory.TOOL_LESSONS_FILE, REPLAY_EVIDENCE_FILE)
     if only is not None:
         paths += ("bodies.json", "tool_builds.json", "tool_call_outcomes.json")
     return pipeline.Stage(name="compile_tools", fn=run, builder=True,
@@ -909,6 +844,15 @@ def _tools_stage(model: Any, max_attempts: int, workers: int = 1, only: Optional
                                   "readers"),
                           outputs=("bodies", "assisted_tools", "tool_fidelity"), gate=gate, input_paths=paths,
                           code_version=version if only is None else f"{version}:only={','.join(only)}")
+
+
+def _seed_traces(ctx, tasks, traces) -> set[str]:
+    """Every Trace the Builder may learn from: each Task's Runs minus its anchor (D81)."""
+    seeds: set[str] = set()
+    for task in tasks:
+        seeds.update(ctx.seed_runs(task.id, task.run_ids))
+    known = {t.trace_id for task in tasks for t in traces if t.trace_id in task.run_ids}
+    return seeds | {t.trace_id for t in traces if t.trace_id not in known}
 
 
 def after_write_calls(traces: Iterable[Trace], write_tools: Iterable[str]) -> set[tuple[str, int]]:
@@ -950,11 +894,6 @@ def evidence_calls(traces: Iterable[Trace], seeds: set[str], after_write: set[tu
     can clear every gate while the corpus stays where it was (D191). The counts returned are the
     after-write skips, which the tool's row has always carried, and how many calls a replay failure
     put back over a filter, which is what says how much of the evidence is there for that reason.
-
-    D220: the seed filter is not one of the filters a replay failure overrides. D191's premise holds
-    for a Run the Builder may learn from and for no other: a held-out Run's failure belongs in the
-    corpus fidelity number, which the replay stage already reports, and putting its arguments and its
-    recorded result in front of the body writer is the leak the readmission was never meant to be.
     """
     replay_failed = replay_failed or {}
     calls_by_tool: dict[str, list] = {}
@@ -962,8 +901,7 @@ def evidence_calls(traces: Iterable[Trace], seeds: set[str], after_write: set[tu
     from_replay: dict[str, int] = {}
     for trace in traces:
         for at, call in enumerate(trace.tool_calls):
-            readmitted = (bool(call.id) and call.id in replay_failed.get(call.name, {})
-                          and trace.trace_id in seeds)
+            readmitted = bool(call.id) and call.id in replay_failed.get(call.name, {})
             if not (readmitted or is_evidence_call(call, callers)):
                 continue
             dropped = (trace.trace_id, at) in after_write or trace.trace_id not in seeds
@@ -1048,8 +986,7 @@ def _policy_stage(model: Any, workers: int = 1):
     """D76: the policy sentences become Constraints, and the Reference's own path has to stay legal."""
 
     def run(ctx, inputs):
-        # D220: the system prompt is taken from a Trace the Builder may learn from.
-        text = _policy_text(ctx.evidence.traces)
+        text = _policy_text(inputs["traces"])
         constraints = (policy.compile_policy(model, text, workers=workers)
                        if (text and model is not None) else [])
         _write_json(ctx.workdir / "constraints.json", [as_dict(c) for c in constraints])
@@ -1130,8 +1067,7 @@ def _vocabulary_stage(model: Any, search: Any):
     """D115: what this corpus's users state and how its agents ask, from code; the web adds wording."""
 
     def run(ctx, inputs):
-        vocab = vocabulary.derive(ctx.evidence.traces, inputs["schema"], inputs["sigs"],
-                                  inputs.get("policy_text") or "")
+        vocab = vocabulary.derive(inputs["traces"], inputs["schema"], inputs["sigs"], inputs.get("policy_text") or "")
         vocab = vocabulary.enrich(vocab, search, model)
         _write_json(ctx.workdir / "vocabulary.json", as_dict(vocab))
         ctx.record_gate(stage_gates.vocabulary_gate(vocab))
@@ -1154,15 +1090,6 @@ def _vocab_from(workdir: Path) -> vocabulary.Vocabulary:
 
 
 def _user_rules_stage():
-    """The Simulated user's rules per Run, for every Run of the corpus (D44).
-
-    D220: this is one of the stages named in ALL_RUNS_STAGES. The Examiner's false-rejection pool
-    scores a Verifier against the held-out Runs (D133), so those Runs need their rules too, and the
-    one Builder consumer, the re-rolls, picks its persona out of ctx.evidence. Every fact the
-    artifact carries says which Run witnessed it and whether that Run is held out, so a reader that
-    indexes this file by Run id can see the provenance instead of having to fetch the anchor.
-    """
-
     def run(ctx, inputs):
         rules: dict[str, UserRules] = {}
         vocab = _vocab_of(inputs)
@@ -1171,20 +1098,17 @@ def _user_rules_stage():
         writes = {sig.name for sig in inputs["sigs"] if sig.kind == "write"}
         for trace in inputs["traces"]:
             rules[trace.trace_id] = user_sim.derive_user_rules(trace, vocab, writes=writes)
-        held_out = {tid for tid in rules if ctx.anchor is not None and ctx.anchor.is_held_out(tid)}
         for trace_id, record in rules.items():
             _write_json(ctx.workdir / "user_rules" / f"{trace_id}.json", as_dict(record))
         _write_json(ctx.workdir / "user_facts.json",
-                    {"facts": [{"run_id": tid, "field": f.field, "value": f.value,
-                                "held_out": tid in held_out}
+                    {"facts": [{"run_id": tid, "field": f.field, "value": f.value}
                                for tid, r in rules.items() for f in r.facts]})
         # Section 6: incomplete user rules flag the Run, they do not fail the build.
         ctx.record_gate(artifacts.user_rules_gate(list(rules.values())))
         return {"user_rules": rules}
 
-    return pipeline.Stage(name="user_rules", fn=run, builder=True, sees_all_runs=True,
-                          inputs=("traces", "vocabulary", "sigs"), outputs=("user_rules",),
-                          code_version=_version("user_rules", run, user_sim, vocabulary))
+    return pipeline.Stage(name="user_rules", fn=run, builder=True, inputs=("traces", "vocabulary", "sigs"),
+                          outputs=("user_rules",), code_version=_version("user_rules", run, user_sim, vocabulary))
 
 
 def _environment_stage(domain: str):
@@ -1261,10 +1185,6 @@ def _replay_stage(only: Optional[Iterable[str]] = None):
         comparer = tool_runs.ReplayComparer(schema, tool_runs.load_readers(inputs["readers"]), canon_rules)
         source = compile_env.module_source(schema, sigs, bodies)
         by_trace = {t.trace_id: t for t in inputs["traces"]}
-        # D220 rule 2c: what the world holds on a held-out Run's word alone, so each call can say
-        # whether its answer came out of it. This stage is not a Builder stage and replays the
-        # anchor on purpose, which is what makes the count readable per Run.
-        _, holdout_vals = holdout_world(ctx.workdir)
         replays: dict[str, dict] = {}
         tasks = list(inputs["tasks"])
         if only is not None:
@@ -1289,11 +1209,9 @@ def _replay_stage(only: Optional[Iterable[str]] = None):
                                       canon_rules=canon_rules, synthetic_rows=schema.synthetic_rows)
                 result = replay_mod.replay_trace(trace, router, workdir=ctx.workdir / "runs" / task.id,
                                                  task_id=task.id, env_id=env_id, write_tools=write_tools,
-                                                 canon_rules=canon_rules, comparer=comparer,
-                                                 holdout_values=holdout_vals)
+                                                 canon_rules=canon_rules, comparer=comparer)
                 replays.setdefault(task.id, {})[trace_id] = result.as_dict()
         _write_json(ctx.workdir / "replays.json", replays)
-        _write_json(ctx.workdir / HOLDOUT_ANSWERS_FILE, holdout_answers(replays, ctx.anchor))
         # D191: the calls this replay could not reproduce, per tool, which is what the compile stage
         # adds to a body's evidence and keys its cache on.
         _write_json(ctx.workdir / REPLAY_EVIDENCE_FILE,
@@ -1311,49 +1229,6 @@ def _replay_stage(only: Optional[Iterable[str]] = None):
                           outputs=("replays",),
                           input_paths=("overlays",) if only is None else ("overlays", "replays.json"),
                           code_version=version if only is None else f"{version}:only={','.join(only)}")
-
-
-def holdout_answers(replays: dict, anchor: Any = None) -> dict:
-    """How many replayed calls were answered out of a value only a held-out Run witnessed (D220 2c).
-
-    Counted per Task and over the corpus, and split by whether the Run being replayed is itself one
-    of the held-out ones, because those are the Runs the number is asked about: a held-out Run that
-    passes on a value the world holds only on its own word passed on the world, not on the body.
-    This is a finding on the record; no gate reads it.
-    """
-    per_task: dict[str, dict] = {}
-    per_tool: dict[str, dict] = {}
-    totals = {"calls": 0, "held_out_calls": 0, "runs": 0, "held_out_runs": 0}
-    columns: set[str] = set()
-    for task_id, rows in sorted((replays or {}).items()):
-        for trace_id, row in sorted((rows or {}).items()):
-            counts = (row or {}).get("counts") or {}
-            calls = int(counts.get("answered_from_holdout") or 0)
-            held = bool(anchor is not None and anchor.is_held_out(trace_id))
-            for check in (row or {}).get("checks") or ():
-                if not isinstance(check, dict) or not check.get("answered_from_holdout"):
-                    continue
-                tool = per_tool.setdefault(str(check.get("tool") or ""),
-                                           {"calls": 0, "held_out_calls": 0})
-                tool["calls"] += 1
-                if held:
-                    tool["held_out_calls"] += 1
-            if not calls:
-                continue
-            columns.update(counts.get("holdout_columns") or ())
-            slot = per_task.setdefault(task_id, {"calls": 0, "held_out_calls": 0, "runs": 0,
-                                                 "held_out_runs": 0})
-            slot["calls"] += calls
-            slot["runs"] += 1
-            totals["calls"] += calls
-            totals["runs"] += 1
-            if held:
-                slot["held_out_calls"] += calls
-                slot["held_out_runs"] += 1
-                totals["held_out_calls"] += calls
-                totals["held_out_runs"] += 1
-    return {"totals": totals, "columns": sorted(columns), "tasks": per_task,
-            "tools": dict(sorted(per_tool.items()))}
 
 
 def _write_runs_index(workdir: Path) -> Path:
@@ -1438,11 +1313,8 @@ def _intent_stage(model: Any, workers: int = 1, only: Optional[Iterable[str]] = 
     def run(ctx, inputs):
         write_tools = {s.name for s in inputs["sigs"] if s.kind == "write"}
         schema, canon_rules = inputs.get("schema"), inputs.get("canon_rules")
-        # D220: the Tasks with their seed Runs, and the seed Traces those Runs recorded. The Intent
-        # is the request a Task's own recordings state, and a held-out Run states nothing the
-        # Builder may put in it.
-        tasks = ctx.evidence.tasks
-        by_id = ctx.evidence.by_trace
+        tasks = list(inputs["tasks"])
+        by_id = {t.trace_id: t for t in inputs["traces"]}
         recorded = _read_intents(ctx.workdir, [task.id for task in tasks])
 
         def clean(task) -> bool:
@@ -1462,7 +1334,7 @@ def _intent_stage(model: Any, workers: int = 1, only: Optional[Iterable[str]] = 
 
         def write_one(task):
             try:
-                record = intent.write_intent(model, task, ctx.evidence.traces, write_tools=write_tools,
+                record = intent.write_intent(model, task, inputs["traces"], write_tools=write_tools,
                                              hint=hints.get(task.id), schema=schema,
                                              canon_rules=canon_rules)
             except Exception as exc:  # one Task's Intent failing is that Task ungrounded, not a dead build
@@ -1597,7 +1469,8 @@ def _reroll_reuse(workdir: Path, task_id: str, key: dict) -> Optional[list[dict]
     return out if all(Path(row["path"]).is_file() for row in out) else None
 
 
-def _rerolls_stage(model: Any, rerolls: int, workers: int = 1, only: Optional[Iterable[str]] = None):
+def _rerolls_stage(model: Any, rerolls: int, workers: int = 1, only: Optional[Iterable[str]] = None,
+                   user_model: Any = None):
     """D112: `rerolls` Candidate-shaped Runs of the frontier per Task, inside the built Environment.
 
     A customer's traces mostly hold one recording per Task, and one recording cannot be checked
@@ -1612,15 +1485,11 @@ def _rerolls_stage(model: Any, rerolls: int, workers: int = 1, only: Optional[It
     only = sorted(only) if only is not None else None
 
     def run(ctx, inputs):
-        # D220: the replays and the per-Run rules both cover every Run, the held-out ones included,
-        # because the stages that made them are declared to need every Run; a re-roll is a Builder
-        # Run and draws its reference, its persona and its members from the seed set alone.
-        replays = {task_id: ctx.evidence.by_run(rows)
-                   for task_id, rows in (inputs.get("replays") or {}).items()}
-        user_rules = ctx.evidence.by_run(inputs.get("user_rules") or {})
+        replays = inputs.get("replays") or {}
+        user_rules = inputs.get("user_rules") or {}
         env_id = getattr(inputs["environment"], "env_id", None)
         source = compile_env.module_source(inputs["schema"], inputs["sigs"], inputs["bodies"])
-        traces = ctx.evidence.by_trace
+        traces = {t.trace_id: t for t in inputs.get("traces") or []}
         canon_rules = _rules_of(inputs)
         # Everything every Task's key shares, hashed once. `version` is the stage's own code version,
         # bound below this function and read when the stage runs, so an edit here re-rolls everything
@@ -1635,15 +1504,16 @@ def _rerolls_stage(model: Any, rerolls: int, workers: int = 1, only: Optional[It
                                       "model": getattr(model, "name", "none"), "code": version}),
         }
         jobs, reused, reasons = [], {}, {}
-        tasks = ctx.evidence.tasks
+        tasks = list(inputs["tasks"])
         if only is not None:
             unknown = sorted(set(only) - {task.id for task in tasks})
             if unknown:
                 raise BuildError(f"no Task is named {', '.join(unknown)}")
             tasks = [task for task in tasks if task.id in only]
         for task in tasks:
-            confirmed = [r for _tid, r in sorted((replays.get(task.id) or {}).items())
-                         if r.get("confirmed")]
+            seeds = _seed_ids(ctx, task)
+            confirmed = [r for tid, r in sorted((replays.get(task.id) or {}).items())
+                         if tid in seeds and r.get("confirmed")]
             if not confirmed:  # nothing to compare a re-roll with, and no Simulated user to drive it
                 # Its re-rolls from an earlier build go too: the second retail build's dead re-rolls
                 # sat under 36 Tasks a later build skipped, and every count that globs runs/ read them.
@@ -1680,7 +1550,8 @@ def _rerolls_stage(model: Any, rerolls: int, workers: int = 1, only: Optional[It
                                    canon_rules=canon_rules, rules=rules, seed=REROLL_SEED,
                                    max_turns=REROLL_TURNS, system_prompt=prompt,
                                    members=_members_of(task, traces),
-                                   reference=traces.get(reference_id) if reference_id else None)
+                                   reference=traces.get(reference_id) if reference_id else None,
+                                   user_agent_model=user_model)
             rows = [{"run_id": r.run_id, "path": p, "termination_reason": r.termination_reason,
                      "user_end": user_sim.end_of_run(r)} for r, p in runs]
             _write_json(ctx.workdir / "runs" / task.id / REROLL_RECORD,
@@ -1703,8 +1574,14 @@ def _rerolls_stage(model: Any, rerolls: int, workers: int = 1, only: Optional[It
             "rerolled_because": dict(sorted(reasons.items())), "note": REROLL_KEY_NOTE}}))
         return {"rerolls": out}
 
+    # D214: whose turns the Runs get is part of what this stage produces, so a build that names a
+    # user driver puts it in the key. A build that names none adds nothing, so its key, its cache
+    # and the Run ids it derives from the key are the ones it had before D214.
     version = (f"{_version('rerolls', run, loop, route, user_sim, intent, provider)}:"
                f"{getattr(model, 'name', 'none')}:{rerolls}")
+    user_name = getattr(user_model, "name", None)
+    if user_name:
+        version = f"{version}:user={user_name}"
     return pipeline.Stage(name="rerolls", fn=run, builder=True,
                           inputs=("tasks", "replays", "user_rules", "schema", "sigs", "bodies", "db",
                                   "environment", "canon_rules", "traces", "policy_text", "synthetic_rows"),
@@ -1716,7 +1593,8 @@ def _candidate_runs(workdir: Path, task: Task, model: Any, *, count: int, prefix
                     schema: EntitySchema, sigs: list, db: dict, env_id: Optional[str], canon_rules: Any,
                     rules: Optional[UserRules], seed: int = 0, max_turns: int = 30,
                     system_prompt: Optional[str] = None, tag: str = "",
-                    members: Sequence[Any] = (), reference: Optional[Any] = None) -> list[tuple[Any, str]]:
+                    members: Sequence[Any] = (), reference: Optional[Any] = None,
+                    user_agent_model: Any = None) -> list[tuple[Any, str]]:
     """`count` Runs of `model` against the Task's world, each in a fresh copy of it; the Runs and their paths.
 
     Every Run opens the way the recorded one did: the recorded agent's own system prompt, the
@@ -1766,6 +1644,9 @@ def _candidate_runs(workdir: Path, task: Task, model: Any, *, count: int, prefix
         simulated = user_sim.SimulatedUser(rules, starting_state_reader=router.state, vocab=vocab,
                                            write_tools=write_tools, goal_writes=goal_writes,
                                            answer_strip=answer_strip) if rules else None
+        simulated = _user_driver(workdir, task, simulated, user_agent_model, vocab=vocab,
+                                 write_tools=write_tools, goal_writes=goal_writes,
+                                 answer_strip=answer_strip, trace=reference)
         state = loop.new_run_state(run_id, workdir=workdir / "runs" / task.id, env_id=env_id, task_id=task.id,
                                    model=getattr(model, "name", None) or (prefix or "candidate"),
                                    seed=sampling.sample_seed(RUN_SEED_KIND, run_id, salt),
@@ -1779,6 +1660,35 @@ def _candidate_runs(workdir: Path, task: Task, model: Any, *, count: int, prefix
                 raise
         out.append((state.run, str(state.path)))
     return out
+
+
+def _user_driver(workdir: Path, task: Task, fallback: Any, model: Any, *, vocab: Any,
+                 write_tools: Iterable[str], goal_writes: Optional[Iterable[str]],
+                 answer_strip: Any, trace: Optional[Trace]) -> Any:
+    """Whose turns this Task's Runs get: the agent user where it earned the Task, the rules otherwise (D214 rule 3).
+
+    Earned is not a judgement made here. The round driver scores both drivers offline against the
+    recorded turns and writes `drives` per Task into user_fidelity.json; this reads that row. A build
+    with no user model, a Task with no row, a Task the stall rule closed and a Task the agent did not
+    beat the rules on all take the same path, which is the path every Run took before D214.
+    """
+    if model is None or fallback is None or trace is None:
+        return fallback
+    from kullback.user import context as user_context
+    from kullback.user import fidelity as user_fidelity
+    from kullback.user import lesson as user_lesson
+    row = next((r for r in (user_fidelity.load_scores(workdir).get("tasks") or ())
+                if isinstance(r, dict) and r.get("task_id") == task.id), None)
+    if not row or not row.get("drives"):
+        return fallback
+    record = user_context.mine_record_values(trace)
+    lessons = user_lesson.lines_for(user_lesson.load_lessons(workdir), task.id)
+    ctx = user_context.curate(task.id, getattr(fallback, "rules", None), trace, vocab=vocab,
+                              write_tools=write_tools, record_fields=sorted(record), lessons=lessons)
+    from kullback.user.agent import AgentUser
+    return AgentUser(ctx, fallback, model, vocab=vocab, write_tools=write_tools,
+                     goal_writes=goal_writes, answer_strip=answer_strip, record_values=record,
+                     trace=trace)
 
 
 def _system_prompt_for(task: Task, traces: dict, policy_text: Optional[str] = None) -> Optional[str]:
@@ -1887,7 +1797,8 @@ def reroll_runner(plan: BuildPlan):
                                schema=schema, sigs=sigs, db=db, env_id=env_id, canon_rules=canon_rules,
                                rules=rules, system_prompt=_system_prompt_for(task, traces, store.get("policy_text")),
                                members=_members_of(task, traces),
-                               reference=traces.get(reference_id) if reference_id else None)
+                               reference=traces.get(reference_id) if reference_id else None,
+                               user_agent_model=plan.models.get("user_agent"))
         _write_runs_index(plan.workdir)
         return [{"run_id": r.run_id, "path": p, "termination_reason": r.termination_reason,
                  "user_end": user_sim.end_of_run(r)} for r, p in runs]
@@ -2042,6 +1953,14 @@ def _json_schema(node: Any) -> Any:
     return node
 
 
+def _seed_ids(ctx: Any, task: Task) -> set[str]:
+    """The Task's Runs a Builder stage may derive from: minus the anchor when one was chosen (D81)."""
+    try:
+        return set(ctx.seed_runs(task.id, task.run_ids))
+    except pipeline.PipelineError:
+        return set(task.run_ids)
+
+
 # --- the plan, the declaration, and the two entry points cli.py calls --------
 
 @dataclass
@@ -2086,6 +2005,10 @@ class BuildPlan:
     search: Any = None
     workers: int = 1
     emit: Optional[Any] = None
+    # D214: the model the agent user runs on, when a build is paying for one. None is the harness
+    # as it was: every Run is driven by the rule-driven Simulated user and no model call is made
+    # for a user turn, so a build that names none is byte-identical to a build before D214.
+    user_agent_model: Any = None
     # Which round the driver is in, so a repair request records the round it was made in (D126);
     # a build with no round driver is one pass, which is round 1. `rounds.py` moves it.
     round: int = field(init=False, default=1)
@@ -2137,6 +2060,11 @@ class BuildPlan:
             "reroll": (_wrap(model, "reroll", workdir, ceiling, cap_context=False, memoize=False)
                        if model is not None and self.rerolls > 0 else None),
             "intent": _wrap(model, "intent", workdir, ceiling) if model is not None else None,
+            # The agent user speaks in a Run, so it is a Candidate-shaped call: fresh sample,
+            # production setting, priced into the same ledger under its own stage name (D214).
+            "user_agent": (_wrap(self.user_agent_model, "user_agent", workdir, ceiling,
+                                 cap_context=False, memoize=False)
+                           if self.user_agent_model is not None else None),
             "reference_judge": _wrap(judge, "reference_judge", workdir, ceiling) if judge is not None else None,
             "second_judge": (_wrap(second_judge, "second_judge", workdir, ceiling)
                              if second_judge is not None else None),
@@ -2182,7 +2110,8 @@ def stages(plan: BuildPlan, *, tools: Optional[Iterable[str]] = None, replay_tas
         _user_rules_stage(),
         _environment_stage(plan.domain),
         _replay_stage(only=replay_tasks),
-        (_rerolls_stage(models["reroll"], plan.rerolls, plan.workers, only=reroll_tasks)
+        (_rerolls_stage(models["reroll"], plan.rerolls, plan.workers, only=reroll_tasks,
+                        user_model=models.get("user_agent"))
          if models["reroll"] is not None else None),
     ]
     return [stage for stage in declared if stage is not None]

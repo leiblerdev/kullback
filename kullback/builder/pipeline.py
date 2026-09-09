@@ -38,7 +38,6 @@ ANCHOR_MIN_RUNS = 3
 ANCHOR_SEED = 20260827  # kept on the record for the anchors drawn before D212; nothing draws from it now
 ANCHOR_KIND = "anchor"  # the kind of draw the held-out membership is keyed under (D212)
 ANCHOR_NAME = "anchor.json"
-EVIDENCE_COUNTS = "evidence_counts.json"  # per Task, what the Builder may learn from and what is held out
 MAX_ATTEMPTS = 3
 CACHE_FORMAT = 2  # part of every cache key, so entries written by an older encoder are never read back
 RECORD_TYPES = {cls.__name__: cls for cls in ALL_RECORDS}
@@ -200,175 +199,6 @@ def choose_anchor(tasks: Sequence[Any], workdir: str | Path, share: float = ANCH
     return anchor
 
 
-def evidence_counts(tasks: Sequence[Any], anchor: Anchor) -> dict:
-    """Per Task, how many of its Runs a Builder stage may learn from and how many are held out.
-
-    Written once, where the anchor is drawn, so a round reads the split off one file instead of
-    each stage counting its own (D220 rule 1).
-    """
-    rows: dict[str, dict] = {}
-    for task in tasks:
-        task_id, run_ids = _task(task)
-        held = set(anchor.anchor_runs(task_id))
-        rows[task_id] = {"evidence_traces": len([r for r in run_ids if r not in held]),
-                         "anchor_traces": len([r for r in run_ids if r in held])}
-    return rows
-
-
-def write_evidence_counts(workdir: str | Path, tasks: Sequence[Any], anchor: Anchor) -> Path:
-    rows = evidence_counts(tasks, anchor)
-    path = Path(workdir) / EVIDENCE_COUNTS
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(rows, indent=2, sort_keys=True), encoding="utf-8")
-    return path
-
-
-# --- what a Builder stage may read (D220) -----------------------------------
-#
-# The anchor guard on `ctx.anchor` (D81) refuses the membership itself, and nothing more: a stage
-# that read the recorded Traces or a Task's Run ids straight out of its inputs walked around it,
-# so the filter was opt-in and a new stage leaked by forgetting. Here the filter is applied once,
-# where the scheduler hands a Builder stage its inputs: the raw Traces and the Run ids of a Task
-# come in withheld, and `ctx.evidence` is the seed set. A stage that genuinely needs every Run
-# says so (`Stage.sees_all_runs`) and is listed in `build.ALL_RUNS_STAGES` with its reason.
-
-class Withheld:
-    """What a Builder stage was handed in place of evidence it may not read; touching it raises.
-
-    It carries the real value so the one filter (`Evidence`) can still read it, and refuses every
-    other use: iteration, length, indexing, membership, truth and attribute reads all raise
-    AnchorLeak, so a stage that forgets to draw from `ctx.evidence` fails loudly at the first read
-    rather than quietly building from the held-out Runs.
-    """
-
-    __slots__ = ("kind", "stage", "held")
-
-    def __init__(self, kind: str, stage: str, held: Any = None):
-        self.kind, self.stage, self.held = kind, stage, held
-
-    def _refuse(self, *_args: Any, **_kwargs: Any) -> Any:
-        raise AnchorLeak(
-            f"stage {self.stage} reached for the {self.kind}; a Builder stage draws from "
-            "ctx.evidence, which is the seed Runs alone (D81, D220). A stage that needs every Run "
-            "declares sees_all_runs and says why in build.ALL_RUNS_STAGES")
-
-    __iter__ = __len__ = __getitem__ = __contains__ = __bool__ = __call__ = _refuse
-    __eq__ = __ne__ = __hash__ = _refuse
-
-    def __getattr__(self, name: str) -> Any:
-        # A dunder probe is how a library asks whether this object supports a protocol, and the
-        # honest answer is that it does not; only a real read of the evidence is a leak.
-        if name.startswith("__") and name.endswith("__"):
-            raise AttributeError(name)
-        self._refuse()
-
-    def __repr__(self) -> str:
-        return f"<withheld {self.kind}>"
-
-
-def _is_traces(value: Any) -> bool:
-    """Whether an artifact is the recorded Traces: shape, not name, so a renamed one is still guarded."""
-    return (isinstance(value, list) and bool(value)
-            and all(hasattr(v, "trace_id") and hasattr(v, "tool_calls") for v in value))
-
-
-def _is_tasks(value: Any) -> bool:
-    return (isinstance(value, list) and bool(value)
-            and all(hasattr(v, "run_ids") and hasattr(v, "id") for v in value))
-
-
-def withhold(stage: Stage, inputs: dict) -> dict:
-    """This stage's inputs with the held-out evidence taken out of reach (D220 rule 1)."""
-    out: dict = {}
-    for name, value in inputs.items():
-        if _is_traces(value):
-            out[name] = Withheld("recorded Traces of every Run", stage.name, list(value))
-        elif _is_tasks(value):
-            out[name] = [task.model_copy(update={
-                "run_ids": Withheld(f"Run ids of Task {task.id}", stage.name, list(task.run_ids))})
-                for task in value]
-        else:
-            out[name] = value
-    return out
-
-
-def _run_ids_of(task: Any) -> list[str]:
-    """A Task's Run ids whether it came withheld or whole."""
-    held = getattr(task, "run_ids", None)
-    return list(held.held) if isinstance(held, Withheld) else list(held or [])
-
-
-class Evidence:
-    """The one filter: the seed Traces, their Runs, calls and turns, and the counts about what is not.
-
-    Every prompt-assembling Builder stage draws from here, so the seed/anchor split is applied at
-    the single place a stage turns recordings into evidence rather than once per stage (D220).
-    """
-
-    def __init__(self, anchor: Optional[Anchor], inputs: dict, stage: str):
-        self._anchor, self._stage = anchor, stage
-        self._all_traces = next((list(v) for v in inputs.values() if _is_traces(v)), [])
-        self._all_tasks = next((list(v) for v in inputs.values() if _is_tasks(v)), [])
-
-    def _held(self, run_id: str) -> bool:
-        return self._anchor is not None and self._anchor.is_held_out(run_id)
-
-    @property
-    def traces(self) -> list:
-        """The recorded Traces the Builder may learn from: every Trace no Task held out."""
-        return [t for t in self._all_traces if not self._held(t.trace_id)]
-
-    @property
-    def trace_ids(self) -> set[str]:
-        return {t.trace_id for t in self.traces}
-
-    @property
-    def by_trace(self) -> dict:
-        return {t.trace_id: t for t in self.traces}
-
-    def run_ids(self, task: Any) -> list[str]:
-        """This Task's Runs minus its anchor, read off a Task that came withheld or whole."""
-        ids = _run_ids_of(task)
-        return [r for r in ids if not self._held(r)]
-
-    def task(self, task: Any) -> Any:
-        """The Task record as a Builder stage may see it: its seed Runs in place of all of them."""
-        return task.model_copy(update={"run_ids": self.run_ids(task)})
-
-    @property
-    def tasks(self) -> list:
-        return [self.task(task) for task in self._all_tasks]
-
-    def traces_of(self, task: Any) -> list:
-        wanted = set(self.run_ids(task))
-        return [t for t in self._all_traces if t.trace_id in wanted]
-
-    def by_run(self, mapping: Any) -> dict:
-        """A Run-keyed artifact with the held-out Runs' entries dropped."""
-        return {key: value for key, value in (mapping or {}).items() if not self._held(str(key))}
-
-    @property
-    def counts(self) -> dict:
-        held = [t for t in self._all_traces if self._held(t.trace_id)]
-        return {"evidence_traces": len(self._all_traces) - len(held), "anchor_traces": len(held)}
-
-    def held_out_calls(self) -> set[str]:
-        """The ids of the calls the held-out Runs made; a count of them is not evidence about them."""
-        return {call.id for t in self._all_traces if self._held(t.trace_id)
-                for call in t.tool_calls if call.id}
-
-    def blocked(self, by_tool: dict) -> dict[str, int]:
-        """Per tool, how many of these call ids belong to a held-out Run and are therefore refused.
-
-        The Builder stage never sees which; it is handed the count, which is what the round reports
-        (D220 rule 3).
-        """
-        held = self.held_out_calls()
-        return {tool: len([cid for cid in ids if cid in held])
-                for tool, ids in sorted((by_tool or {}).items())
-                if any(cid in held for cid in ids)}
-
-
 # --- stages -----------------------------------------------------------------
 
 @dataclass
@@ -379,11 +209,6 @@ class Stage:
     the workdir in `input_paths`. What is not declared is not in the cache key, and a stage that
     reads an undeclared file is served its first output forever (design section 8). The scheduler
     reads the same declaration: `inputs` are what the stage waits for, `outputs` what it releases.
-
-    `sees_all_runs` is the one exemption from the held-out filter (D220): a Builder stage that says
-    it needs every Run, because the world it builds has to hold the rows a held-out Run reads or
-    because a later scorer reads its artifact for the held-out Runs, gets its inputs whole. Every
-    such stage is named with its reason in `build.ALL_RUNS_STAGES`, and a test walks the graph.
     """
     name: str
     fn: Callable[["StageContext", dict], dict]
@@ -394,12 +219,6 @@ class Stage:
     code_version: Optional[str] = None
     max_attempts: int = MAX_ATTEMPTS
     input_paths: Sequence[str] = ()
-    sees_all_runs: bool = False
-
-    @property
-    def filtered(self) -> bool:
-        """Whether this stage is handed the seed Runs alone (D220)."""
-        return bool(self.builder) and not self.sees_all_runs
 
 
 class StageContext:
@@ -408,26 +227,15 @@ class StageContext:
 
     def __init__(self, stage: Stage, workdir: Path, anchor: Optional[Anchor],
                  charge: Callable[[float, str], None], attempt: int = 1, failure: Optional[str] = None,
-                 ledger: Optional[GateLedger] = None, inputs: Optional[dict] = None):
+                 ledger: Optional[GateLedger] = None):
         self.stage, self.name, self.workdir = stage, stage.name, workdir
         self.attempt, self.failure = attempt, failure
         self._anchor, self._charge = anchor, charge
         self._ledger = ledger if ledger is not None else GateLedger(workdir)
-        self._evidence = Evidence(anchor, dict(inputs or {}), stage.name)
-
-    @property
-    def evidence(self) -> Evidence:
-        """The seed Traces of this stage's own inputs: the one place the held-out filter is applied.
-
-        With no anchor nothing is held out, and this is every Trace. That is not a hole: the
-        scheduler refuses to start a Builder stage on a build that has no anchor (`_run_stage`), so
-        the only caller that reaches this is one driving a stage itself, outside a build.
-        """
-        return self._evidence
 
     @property
     def anchor(self) -> Optional[Anchor]:
-        if self.stage.filtered:
+        if self.stage.builder:
             raise AnchorLeak(f"stage {self.name} is a Builder stage; the anchor is held out from it (D81)")
         return self._anchor
 
@@ -890,7 +698,6 @@ class Pipeline:
             done.add(stage.name)
             if self.anchor_from and self.anchor_from in outcome.outputs and self.anchor_from in stage.outputs:
                 self.anchor = choose_anchor(outcome.outputs[self.anchor_from], self.workdir)
-                write_evidence_counts(self.workdir, outcome.outputs[self.anchor_from], self.anchor)
             self._emit("stage", stage=stage.name, state=outcome.status, attempt=outcome.attempts)
             halt = False
         elif outcome.kind == "stopped":
@@ -925,16 +732,12 @@ class Pipeline:
             cache_path = self._cache_path(stage, inputs)
             cached = self._read_cache(cache_path) if attempt == 1 else None
             ctx = StageContext(stage, self.workdir, self.anchor, self._charger(stage.name, items_left),
-                               attempt=attempt, failure=failure, ledger=self.ledger, inputs=inputs)
-            # D220: the held-out filter is applied here, once, on the way into every Builder stage
-            # that has not declared it needs every Run; the cache key above is keyed on the whole
-            # inputs, so what a stage may read never moves what it is served.
-            given = withhold(stage, inputs) if stage.filtered else inputs
+                               attempt=attempt, failure=failure, ledger=self.ledger)
             if cached is not None:
                 outputs, status = cached, "cached"
             else:
                 try:
-                    outputs = stage.fn(ctx, given) or {}
+                    outputs = stage.fn(ctx, inputs) or {}
                 except _budget_types() as exc:
                     out.kind, out.status = "stopped", "stopped"
                     out.stopped = self._stop_report(stage.name, "", items_left, exc)

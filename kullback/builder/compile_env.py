@@ -114,19 +114,12 @@ class OverlayConflict(ValueError):
 
 @dataclass
 class StartingState:
-    """The shared world plus one overlay per Task, as written under the workdir.
-
-    `witnesses` is which Runs saw each pinned value (D220 rule 2): table, row, column, the Run ids
-    whose sighting carries the value the world ended up holding. The world stays complete, because
-    a row a held-out Run needs and the world does not hold is a different failure; what the split
-    changes is who may be shown a value, and that needs the provenance to be on the value.
-    """
+    """The shared world plus one overlay per Task, as written under the workdir."""
     db: dict
     overlays: list[TaskOverlay] = field(default_factory=list)
     assumptions: list[str] = field(default_factory=list)
     path: Optional[Path] = None
     synthetic_rows: list[str] = field(default_factory=list)
-    witnesses: dict = field(default_factory=dict)
 
 
 @dataclass
@@ -535,66 +528,6 @@ def trace_worlds(traces: Iterable[Trace], schema: EntitySchema, write_tools: set
             for trace_id, rows in seen.items()}
 
 
-# --- who saw a pinned value (D220 rule 2) -----------------------------------
-
-MASKED = "<held out>"  # what the body writer is shown where only a held-out Run witnessed a value
-
-
-def _same(left: Any, right: Any) -> bool:
-    return json.dumps(left, sort_keys=True, default=str) == json.dumps(right, sort_keys=True, default=str)
-
-
-def _witnesses_of(row: dict, pool: Iterable[Any]) -> dict[str, list[str]]:
-    """Per column of a pinned row, the Runs whose sighting carries the value the world kept.
-
-    A column no sighting states, because a later step composed or completed it, has no witness and
-    is nobody's evidence; a column every witness of which is held out is what rule 2 withholds.
-    """
-    seen: dict[str, set[str]] = {}
-    for obs in pool:
-        for name, value in (obs.row or {}).items():
-            if str(name) in row and _same(row[str(name)], value):
-                seen.setdefault(str(name), set()).add(obs.trace_id)
-    return {name: sorted(ids) for name, ids in sorted(seen.items())}
-
-
-def holdout_columns(witnesses: dict, held_out: Iterable[str]) -> dict[str, dict[str, list[str]]]:
-    """Per table and row, the columns only held-out Runs ever witnessed (D220 rule 2).
-
-    A column with no witness at all is not one of them: nothing was learned from a Run about it, so
-    there is nothing to withhold. This is the whole of what a body writer is refused.
-    """
-    held = set(held_out or ())
-    out: dict[str, dict[str, list[str]]] = {}
-    for table, rows in sorted((witnesses or {}).items()):
-        for row_id, columns in sorted((rows or {}).items()):
-            only = sorted(name for name, ids in (columns or {}).items() if ids and set(ids) <= held)
-            if only:
-                out.setdefault(table, {})[row_id] = only
-    return out
-
-
-def holdout_values(db: dict, columns: dict) -> dict[str, str]:
-    """Every scalar the world holds only because a held-out Run witnessed it, as text to its column.
-
-    The twin of `gates.tool_runs.recorded_result_values`: a body whose source spells one of these
-    out did not derive it from the world it is allowed to see, whatever else its literals look like.
-    A one-character value is skipped, because a flag or a digit is not a value anyone memorised.
-    """
-    out: dict[str, str] = {}
-    for table, rows in sorted((columns or {}).items()):
-        for row_id, names in sorted((rows or {}).items()):
-            row = ((db or {}).get(table) or {}).get(row_id) or {}
-            for name in names:
-                value = row.get(name)
-                if isinstance(value, bool) or value is None or isinstance(value, (list, dict)):
-                    continue
-                text = str(value)
-                if len(text) > 1:
-                    out.setdefault(text, f"{table}.{name}")
-    return out
-
-
 def build_starting_state(
     traces: Iterable[Trace],
     schema: EntitySchema,
@@ -647,7 +580,6 @@ def build_starting_state(
         by_row.setdefault((obs.table, obs.row_id), []).append(obs)
 
     db: dict[str, dict] = {table: {} for table in sorted(schema.tables)}
-    witnesses: dict[str, dict[str, dict[str, list[str]]]] = {}
     assumptions: list[str] = [str(line) for line in (revealed_assumptions or [])]
     for (table, row_id), seen in sorted(by_row.items()):
         clean = [o for o in seen if not o.after_write]
@@ -665,7 +597,6 @@ def build_starting_state(
             assumptions.append(f"{table} row {row_id} was only ever seen after a write; "
                                "its post-state is kept as the starting value")
         db.setdefault(table, {})[row_id] = row
-        witnesses.setdefault(table, {})[row_id] = _witnesses_of(row, pool)
     # A row every sighting of which was partial is a row the corpus mentioned and never stated.
     in_part = {key for key, seen in by_row.items() if all(o.partial for o in seen)}
 
@@ -713,8 +644,7 @@ def build_starting_state(
     path.write_text(json.dumps(db, sort_keys=True, indent=2) + "\n", encoding="utf-8")
     (workdir / "assumptions.json").write_text(json.dumps(assumptions, indent=2) + "\n", encoding="utf-8")
     return StartingState(db=db, overlays=overlays, assumptions=assumptions, path=path,
-                         synthetic_rows=[row_id for _, row_id in added] + grown_ids,
-                         witnesses=witnesses)
+                         synthetic_rows=[row_id for _, row_id in added] + grown_ids)
 
 
 def fold_partial_rows(db: dict, schema: EntitySchema) -> list[tuple[str, str, int]]:
@@ -2042,16 +1972,8 @@ def _shown_worlds(db: dict, shown: list[ToolCall], call_states: Optional[dict]) 
 
 
 def _lookup_rows_text(schema: EntitySchema, db: dict, shown: list[ToolCall], call_states: Optional[dict],
-                      table: Optional[str] = None, key: Optional[str] = None,
-                      holdout: Optional[dict] = None) -> str:
-    """What lookup_rows answers: a row, a table's shape, or the table list for an unknown name.
-
-    `holdout` is `holdout_columns`: per table and row, the columns only a held-out Run witnessed.
-    The row comes back with those columns present and their values masked (D220 rule 2a), so the
-    writer knows the shape of what it will read and cannot write a body around a value it was never
-    entitled to see. The masking is on the answer, so it holds whichever world the row was found
-    in, the shared one or a shown call's own.
-    """
+                      table: Optional[str] = None, key: Optional[str] = None) -> str:
+    """What lookup_rows answers: a row, a table's shape, or the table list for an unknown name."""
     tables = sorted(schema.tables)
     if table not in tables:
         return f"unknown table {table!r}; tables on self.db: {', '.join(tables)}"
@@ -2065,8 +1987,6 @@ def _lookup_rows_text(schema: EntitySchema, db: dict, shown: list[ToolCall], cal
             break
     if row is None:
         return f"{table} row {key!r} was not found in the Starting state or a shown call's world"
-    masked = ((holdout or {}).get(table) or {}).get(key) or []
-    row = {**row, **{name: MASKED for name in masked if name in row}}
     text = json.dumps(row, sort_keys=True, default=str)
     note = ""
     if len(text) > 2000:
@@ -2077,23 +1997,17 @@ def _lookup_rows_text(schema: EntitySchema, db: dict, shown: list[ToolCall], cal
 
 def _build_tools_impl(schema: EntitySchema, toolsig: ToolSig, shown: list[ToolCall], db: dict,
                       call_states: Optional[dict], workdir: Path, attempt: int, timeout: float,
-                      rules: Any, readers: Any = None, holdout: Optional[dict] = None,
-                      holdout_values: Optional[dict] = None) -> dict[str, Callable[..., str]]:
+                      rules: Any, readers: Any = None) -> dict[str, Callable[..., str]]:
     """lookup_rows and test_body, closed over one attempt's own evidence and probe directory.
 
     test_body gates on `shown` alone, with an empty held-out list: the split the repair loop keeps
     hidden from the model stays hidden from the model's own probing too, not just from the failure
     text a rejected attempt is shown.
-
-    `holdout` is what only a held-out Run witnessed (`holdout_columns`): lookup_rows answers with
-    those columns masked (D220 rule 2a), while test_body runs the draft on the complete `db`,
-    because a body has to be gated on the world it will run on and a masked world would fail it for
-    the wrong reason.
     """
     probes = {"n": 0}
 
     def lookup_rows(table: Optional[str] = None, key: Optional[str] = None) -> str:
-        return _lookup_rows_text(schema, db, shown, call_states, table, key, holdout=holdout)
+        return _lookup_rows_text(schema, db, shown, call_states, table, key)
 
     def test_body(body: Optional[str] = None) -> str:
         probes["n"] += 1
@@ -2101,8 +2015,7 @@ def _build_tools_impl(schema: EntitySchema, toolsig: ToolSig, shown: list[ToolCa
         sandbox = Sandbox(source, db, workdir / f"attempt_{attempt}_probe_{probes['n']}", timeout=timeout,
                           call_states=call_states)
         gates = run_gates(source, sandbox, shown, [], schema, rules,
-                          probe_refusals=toolsig.kind == "write", sig=toolsig, readers=readers,
-                          holdout_values=holdout_values)
+                          probe_refusals=toolsig.kind == "write", sig=toolsig, readers=readers)
         if all(g.passed for g in gates):
             return "passed every gate: " + ", ".join(g.stage for g in gates)
         return _failure_text(gates)
@@ -2507,8 +2420,7 @@ def diagnose_body(toolsig: ToolSig, source: str, sandbox: Sandbox, calls: list[T
 def grade_body(toolsig: ToolSig, body: str, calls: Iterable[ToolCall], schema: EntitySchema, db: dict,
                workdir: Path | str, call_states: Optional[dict] = None, rules: Any = None,
                timeout: float = 30.0, readers: Any = None,
-               call_tasks: Optional[dict] = None, unbeaten: int = 0, blocked: str = "",
-               holdout_values: Optional[dict] = None) -> ToolBuild:
+               call_tasks: Optional[dict] = None, unbeaten: int = 0, blocked: str = "") -> ToolBuild:
     """Run one body that already exists through the gates and the per-call replay, with no model call.
 
     This is `compile_tool` with the writing taken out: the same gates in the same order, the same
@@ -2529,8 +2441,7 @@ def grade_body(toolsig: ToolSig, body: str, calls: Iterable[ToolCall], schema: E
     sandbox = Sandbox(source, db, workdir, timeout=timeout, call_states=call_states,
                       call_tasks=call_tasks)
     build.gates = run_gates(source, sandbox, shown, held_out, schema, rules,
-                            probe_refusals=toolsig.kind == "write", sig=toolsig, readers=readers,
-                            holdout_values=holdout_values)
+                            probe_refusals=toolsig.kind == "write", sig=toolsig, readers=readers)
     build.assisted = not (build.gates and all(gate.passed for gate in build.gates))
     build.call_outcomes = (
         replay_outcomes(toolsig, build.body, calls, schema, db, workdir, call_states=call_states,
@@ -2760,8 +2671,7 @@ def compile_tool(model, toolsig: ToolSig, calls: Iterable[ToolCall], schema: Ent
                  call_states: Optional[dict] = None, rules: Any = None,
                  tool_names: Iterable[str] = (), error_prefix: Optional[str] = None,
                  builder_tools: bool = True, lesson: str = "", world_note: str = "",
-                 readers: Any = None, call_tasks: Optional[dict] = None,
-                 holdout: Optional[dict] = None, holdout_values: Optional[dict] = None) -> ToolBuild:
+                 readers: Any = None, call_tasks: Optional[dict] = None) -> ToolBuild:
     """Write one tool body, gate it, and repair it at most three times with growing evidence (D75).
 
     Attempt 1 sees the failing call, attempt 2 every failing call, attempt 3 the full call table, and
@@ -2856,8 +2766,7 @@ def compile_tool(model, toolsig: ToolSig, calls: Iterable[ToolCall], schema: Ent
             build.nodes.append(dict(node, refused=True))
             break
         tools_impl = (_build_tools_impl(schema, toolsig, shown, db, call_states, workdir, attempt,
-                                        timeout, rules, readers, holdout=holdout,
-                                        holdout_values=holdout_values)
+                                        timeout, rules, readers)
                      if builder_tools else None)
         try:
             if builder_tools:
@@ -2902,8 +2811,7 @@ def compile_tool(model, toolsig: ToolSig, calls: Iterable[ToolCall], schema: Ent
         sandbox = Sandbox(source, db, workdir / f"attempt_{attempt}", timeout=timeout,
                           call_states=call_states, call_tasks=call_tasks)
         gates = run_gates(source, sandbox, shown, held_out, schema, rules,
-                          probe_refusals=toolsig.kind == "write", sig=toolsig, readers=readers,
-                          holdout_values=holdout_values)
+                          probe_refusals=toolsig.kind == "write", sig=toolsig, readers=readers)
         node.update(body_hash=content_hash(body), gates=[as_dict(g) for g in gates],
                     passed=all(g.passed for g in gates))
         build.nodes.append(node)
