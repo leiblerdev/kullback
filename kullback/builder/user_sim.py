@@ -766,6 +766,13 @@ class SimulatedUser:
             said_something = bool(spoken or unavailable)
         self._silent = 0 if said_something else self._silent + 1
         self._unanswerable += len(unavailable)
+        # D210, Greptile P1 (PR 25): a turn whose only content is that this user has no record of
+        # what was asked is not the user having something to say, it is the exhaustion signal
+        # itself. Without this the unanswerable limit is reachable only on the turns where nothing
+        # was asked by name, so a Candidate that keeps asking for fields nobody ever told this user
+        # about runs to the turn limit and is reported as gave_up instead of scenario_exhausted.
+        if not self.done and unavailable and not (answers or record or spoken):
+            self._close(question, sources, spoken, self._writes_made(transcript))
         text = self._say(question, answers, sources, spoken, unavailable, record)
         # How many of this turn's asks went unanswered, and how many the Run has left unanswered so
         # far: the refusal rate a build reports, read off the Simulated user's own turns. A record
@@ -864,7 +871,15 @@ class SimulatedUser:
             sources[GOAL] = GOAL_RESTATED
             self._restated = True
             return
-        kind = self._end_kind(question, satisfied)
+        self._close(question, sources, spoken, made or set())
+
+    def _close(self, question: str, sources: dict, spoken: list, made: set) -> None:
+        """End the Run where this turn is one of the four kinds, and say nothing where it is not (D210).
+
+        The one place a Run ends, so the protocol reads the same whether the turn asked for fields
+        this user has no record of or asked nothing by name at all.
+        """
+        kind = self._end_kind(question, self._goal_done(made))
         if kind is None:
             return
         closing = self._fact(CLOSING)

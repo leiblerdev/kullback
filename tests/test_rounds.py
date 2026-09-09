@@ -60,9 +60,10 @@ TARGET = "environment"
 # for D208: a confirmed row names the Run ids of the Reference it holds, which is what says whether
 # the Verifier beside it was derived from that Reference or from one since withdrawn. Re-pinned for
 # D210: every row names, per held-out Run in its pool, which of the four kinds that Run ended in, so
-# a reading over the pool can leave out the Runs that did not finish. The same three Tasks, the same
+# a reading over the pool can leave out the Runs that did not finish, and the ends move again where
+# the review of D210 closed the turn that says nothing but a miss. The same three Tasks, the same
 # verdicts and the same reasons.
-TASK_STATUS_SHA256_BEFORE_THE_PHASE = "b5f1a7644fa7d9b72377249d84d1971748381c8fa0c5afb3bffd4ed6df0d5de5"
+TASK_STATUS_SHA256_BEFORE_THE_PHASE = "c711d0c53dfe418a4760b0042890e7ffe1ff51a80f33bc84d4ab8d8cbcba318b"
 
 
 def _fixture(request) -> Path:
