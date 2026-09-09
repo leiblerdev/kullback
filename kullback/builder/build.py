@@ -29,7 +29,7 @@ import functools
 import json
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Iterable, Optional
+from typing import Any, Iterable, Optional, Sequence
 
 from kullback.ai import provider
 from kullback.builder import (
@@ -1395,8 +1395,15 @@ def _reroll_rows(workdir: Path, rows: Iterable[dict], relative: bool) -> list[di
         else:
             path = Path(workdir) / path
         out.append({"run_id": row.get("run_id"), "path": path.as_posix() if relative else str(path),
-                    "termination_reason": row.get("termination_reason")})
+                    "termination_reason": row.get("termination_reason"),
+                    # D210: how the Simulated user ended this Run, kept so a reused row says it too.
+                    "user_end": row.get("user_end")})
     return out
+
+
+def _members_of(task: Task, traces: dict) -> list[Any]:
+    """This Task's own recordings, which are the evidence its answers are stripped against (D196)."""
+    return [traces[run_id] for run_id in task.run_ids if run_id in traces]
 
 
 def _reroll_record(workdir: Path, task_id: str) -> dict:
@@ -1467,7 +1474,8 @@ def _rerolls_stage(model: Any, rerolls: int, workers: int = 1, only: Optional[It
                 _discard_runs(ctx.workdir / "runs" / task.id, f"reroll-{task.id}-")
                 (ctx.workdir / "runs" / task.id / REROLL_RECORD).unlink(missing_ok=True)
                 continue
-            rules = next((user_rules.get(r["trace_id"]) for r in confirmed if user_rules.get(r["trace_id"])), None)
+            reference_id = next((r["trace_id"] for r in confirmed if user_rules.get(r["trace_id"])), None)
+            rules = user_rules.get(reference_id) if reference_id else None
             prompt = _system_prompt_for(task, traces, inputs.get("policy_text"))
             key = _reroll_key(task, traces=traces, bodies=inputs["bodies"], rules=rules,
                               system_prompt=prompt, workdir=ctx.workdir, shared=shared)
@@ -1478,23 +1486,26 @@ def _rerolls_stage(model: Any, rerolls: int, workers: int = 1, only: Optional[It
             reasons[task.id] = ("an explicit re-roll was asked for" if only is not None
                                 else _reroll_reason(_reroll_record(ctx.workdir, task.id).get("key"), key)
                                 or "the Run files the key names are gone")
-            jobs.append((task, rules, prompt, key))
+            jobs.append((task, rules, prompt, key, reference_id))
 
         def reroll(job):  # one Task's re-rolls, in its own world and run directory (D118)
-            task, rules, prompt, key = job
+            task, rules, prompt, key, reference_id = job
             _discard_runs(ctx.workdir / "runs" / task.id, f"reroll-{task.id}-")
             runs = _candidate_runs(ctx.workdir, task, model, count=rerolls, prefix="reroll", source=source,
                                    schema=with_synthetic_rows(inputs["schema"], inputs.get("synthetic_rows") or ()),
                                    sigs=inputs["sigs"], db=inputs["db"], env_id=env_id,
                                    canon_rules=canon_rules, rules=rules, seed=REROLL_SEED,
-                                   max_turns=REROLL_TURNS, system_prompt=prompt)
-            rows = [{"run_id": r.run_id, "path": p, "termination_reason": r.termination_reason} for r, p in runs]
+                                   max_turns=REROLL_TURNS, system_prompt=prompt,
+                                   members=_members_of(task, traces),
+                                   reference=traces.get(reference_id) if reference_id else None)
+            rows = [{"run_id": r.run_id, "path": p, "termination_reason": r.termination_reason,
+                     "user_end": user_sim.end_of_run(r)} for r, p in runs]
             _write_json(ctx.workdir / "runs" / task.id / REROLL_RECORD,
                         {"task_id": task.id, "key": key,
                          "runs": _reroll_rows(ctx.workdir, rows, relative=True)})
             return rows
 
-        rolled = {task.id: rows for (task, _, _, _), rows
+        rolled = {job[0].id: rows for job, rows
                   in zip(jobs, parallel.each(jobs, reroll, workers), strict=True)}
         out = {task.id: rolled[task.id] if task.id in rolled else reused[task.id]
                for task in tasks if task.id in rolled or task.id in reused}
@@ -1502,10 +1513,14 @@ def _rerolls_stage(model: Any, rerolls: int, workers: int = 1, only: Optional[It
         ruling = rerolls_gate(out, rerolls)
         ctx.record_gate(ruling.model_copy(update={"metrics": {
             **ruling.metrics, "reused": len(reused), "rerolled": len(rolled),
+            # D210: how the Simulated user ended each re-roll, so a round can tell a Run that did
+            # what it came for from one whose scenario ran dry or that spent its turns.
+            "user_ends_by_kind": user_sim.ends_by_kind(
+                [row for rows in out.values() for row in rows]),
             "rerolled_because": dict(sorted(reasons.items())), "note": REROLL_KEY_NOTE}}))
         return {"rerolls": out}
 
-    version = (f"{_version('rerolls', run, loop, route, user_sim, provider)}:"
+    version = (f"{_version('rerolls', run, loop, route, user_sim, intent, provider)}:"
                f"{getattr(model, 'name', 'none')}:{rerolls}")
     return pipeline.Stage(name="rerolls", fn=run, builder=True,
                           inputs=("tasks", "replays", "user_rules", "schema", "sigs", "bodies", "db",
@@ -1517,13 +1532,19 @@ def _rerolls_stage(model: Any, rerolls: int, workers: int = 1, only: Optional[It
 def _candidate_runs(workdir: Path, task: Task, model: Any, *, count: int, prefix: Optional[str], source: str,
                     schema: EntitySchema, sigs: list, db: dict, env_id: Optional[str], canon_rules: Any,
                     rules: Optional[UserRules], seed: int = 0, max_turns: int = 30,
-                    system_prompt: Optional[str] = None) -> list[tuple[Any, str]]:
+                    system_prompt: Optional[str] = None, members: Sequence[Any] = (),
+                    reference: Optional[Any] = None) -> list[tuple[Any, str]]:
     """`count` Runs of `model` against the Task's world, each in a fresh copy of it; the Runs and their paths.
 
     Every Run opens the way the recorded one did: the recorded agent's own system prompt, the
     Simulated user's opening turn, and the mined tool definitions on the model call. Without the
     three the model is asked for a first turn over an empty transcript with no tools, which is what
     the second retail build's re-rolls did.
+
+    `members` are the Task's own recordings and `reference` the one its rules came from; they are
+    what the Simulated user ends by protocol on and answers by class (D210). The Task's evidence is
+    read once here rather than per turn: the strip closure and the goal's write set are the same
+    for every Run of the Task.
     """
     overlay, overlay_rows = compile_env.load_overlay(workdir, task.id)
     vocab = _vocab_from(workdir)
@@ -1531,6 +1552,12 @@ def _candidate_runs(workdir: Path, task: Task, model: Any, *, count: int, prefix
     # The Simulated user restates its goal once rather than leaving on the first dead turn, and it
     # needs these names to tell a Run that has already written from one that has not (user_sim).
     write_tools = {sig.name for sig in sigs if getattr(sig, "kind", None) == "write"}
+    # D210: which writes the goal implies, and the D196 strip over this Task's own evidence, so no
+    # value only the tools knew reaches the Candidate through an answer. A caller that names no
+    # recordings gets the user it had, ending on any write and speaking its facts unchecked.
+    goal_writes = user_sim.goal_write_set(reference, write_tools) if reference is not None else None
+    answer_strip = intent.value_strip(list(members), schema=schema,
+                                      rules=canon_rules) if members else None
     out = []
     for number in range(count):
         run_id = f"{prefix}-{task.id}-{seed + number}" if prefix else f"{task.id}-{seed + number}"
@@ -1541,7 +1568,8 @@ def _candidate_runs(workdir: Path, task: Task, model: Any, *, count: int, prefix
                               overlay=overlay, overlay_rows=overlay_rows, tool_sigs=sigs,
                               canon_rules=canon_rules, synthetic_rows=schema.synthetic_rows)
         simulated = user_sim.SimulatedUser(rules, starting_state_reader=router.state, vocab=vocab,
-                                           write_tools=write_tools) if rules else None
+                                           write_tools=write_tools, goal_writes=goal_writes,
+                                           answer_strip=answer_strip) if rules else None
         state = loop.new_run_state(run_id, workdir=workdir / "runs" / task.id, env_id=env_id, task_id=task.id,
                                    model=getattr(model, "name", None) or (prefix or "candidate"),
                                    seed=seed + number, user=simulated, user_rules=rules, max_turns=max_turns,
@@ -1584,6 +1612,7 @@ def probe_runner(plan: BuildPlan):
     user_rules = store.get("user_rules") or {}
     replays = store.get("replays") or {}
     canon_rules = _rules_of(store)
+    traces = {t.trace_id: t for t in store.get("traces") or []}
     source = compile_env.module_source(schema, sigs, bodies)
     tools = _tool_definitions(sigs, _vocab_from(plan.workdir))
     workdir = plan.workdir
@@ -1598,9 +1627,15 @@ def probe_runner(plan: BuildPlan):
                               canon_rules=canon_rules, synthetic_rows=schema.synthetic_rows)
         reference = next((r for r in (replays.get(task.id) or {}).values() if r.get("confirmed")), None)
         rules = user_rules.get(reference["trace_id"]) if reference else None
+        writes = {sig.name for sig in sigs if getattr(sig, "kind", None) == "write"}
+        recorded = traces.get(reference["trace_id"]) if reference else None
+        members = _members_of(task, traces)
         simulated = user_sim.SimulatedUser(
             rules, starting_state_reader=router.state, vocab=_vocab_from(workdir),
-            write_tools={sig.name for sig in sigs if getattr(sig, "kind", None) == "write"},
+            write_tools=writes,
+            goal_writes=user_sim.goal_write_set(recorded, writes) if recorded is not None else None,
+            answer_strip=intent.value_strip(members, schema=schema,
+                                            rules=canon_rules) if members else None,
         ) if rules else None
         state = loop.new_run_state(f"probe-{task.id}", workdir=workdir / "probes", env_id=env_id,
                                    task_id=task.id, model=f"probe:{getattr(model, 'name', 'model')}",
@@ -1649,12 +1684,16 @@ def reroll_runner(plan: BuildPlan):
         seeds = set(anchor.seed_runs(task.id, task.run_ids)) if anchor is not None else set(task.run_ids)
         confirmed = [r for tid, r in sorted((replays.get(task.id) or {}).items())
                      if tid in seeds and r.get("confirmed")]
-        rules = next((user_rules.get(r["trace_id"]) for r in confirmed if user_rules.get(r["trace_id"])), None)
+        reference_id = next((r["trace_id"] for r in confirmed if user_rules.get(r["trace_id"])), None)
+        rules = user_rules.get(reference_id) if reference_id else None
         runs = _candidate_runs(plan.workdir, task, model, count=count, prefix=prefix, source=source,
                                schema=schema, sigs=sigs, db=db, env_id=env_id, canon_rules=canon_rules,
-                               rules=rules, system_prompt=_system_prompt_for(task, traces, store.get("policy_text")))
+                               rules=rules, system_prompt=_system_prompt_for(task, traces, store.get("policy_text")),
+                               members=_members_of(task, traces),
+                               reference=traces.get(reference_id) if reference_id else None)
         _write_runs_index(plan.workdir)
-        return [{"run_id": r.run_id, "path": p, "termination_reason": r.termination_reason} for r, p in runs]
+        return [{"run_id": r.run_id, "path": p, "termination_reason": r.termination_reason,
+                 "user_end": user_sim.end_of_run(r)} for r, p in runs]
 
     return run_rerolls
 
