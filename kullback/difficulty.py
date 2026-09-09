@@ -19,6 +19,8 @@ customer's world in it:
                          less the false-rejection fraction, and None where nothing was held out
   judge_agreement        one less the judge disagreement rate over the Task's own judged items
                          (D185), and None where no judge row names the Task
+  partial_completion     the mean share of the Verifier's atoms a Run of this Task confirms (D223),
+                         banded in fifths, and None where no Run of it was scored
 
 A Task's bucket is the triple of three of them, banded so the bands are fixed and hold on any
 corpus: writes 0, 1, 2 or 3 and more; tools 0, 1, 2 or 3 and more; paths 1 or 2 and more. Nothing
@@ -35,6 +37,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Iterable, Optional
 
+from kullback import claims
 from kullback.examiner import lifecycle
 from kullback.examiner import variants as variants_mod
 from kullback.gates import verifier_suite
@@ -45,7 +48,8 @@ from kullback.runner.records import Verifier, read_json, read_jsonl, write_json
 # bucket's boundaries change, so a file written under an older meaning reads as an older file
 # rather than as today's numbers.
 FILE_NAME = "difficulty.json"
-FORMAT = 1
+# 2 since D223 added the partial-completion band to every record.
+FORMAT = 2
 
 # The atom target kind that counts as one write. A write atom names a written entity; the value
 # atoms under it name fields of the same write, and counting those would call one write with four
@@ -153,8 +157,13 @@ def second_paths(status_row: Any) -> int:
 
 def record_for(verifier: Verifier, *, calls: Optional[list[dict]] = None, write_tools: Iterable[str] = (),
                status_row: Any = None, false_rejection: Any = None,
-               judge_rows: Iterable[dict] = ()) -> dict:
-    """One Task's difficulty record, every field a count or a rate off what is already stored."""
+               judge_rows: Iterable[dict] = (), partial_completion: Any = None) -> dict:
+    """One Task's difficulty record, every field a count or a rate off what is already stored.
+
+    `partial_completion` is D223's mean over the Task's Runs, banded here in fifths. It is a
+    difficulty reading and not a ruling: a Task every Run half finishes is a different Task from one
+    every Run never starts, and the trusted count says the same thing about both.
+    """
     calls = list(calls or [])
     paths = 1 + second_paths(status_row)
     writes, tools = write_count(verifier), tools_touched(calls)
@@ -167,6 +176,8 @@ def record_for(verifier: Verifier, *, calls: Optional[list[dict]] = None, write_
         "question_atoms": question_count(verifier),
         "held_out_solve_rate": solve_rate(false_rejection),
         "judge_agreement": judge_agreement(judge_rows, verifier.task_id),
+        "partial_completion": None if partial_completion is None else float(partial_completion),
+        "partial_band": claims.band(partial_completion),
         "bucket": bucket_key(writes, tools, paths),
     }
 
@@ -318,6 +329,16 @@ def _trusted_ruling(workdir: Path) -> dict:
     return {}
 
 
+def partial_by_task(workdir: Path) -> dict[str, Optional[float]]:
+    """The partial-completion mean per Task, off claims.json as the last round left it (D223).
+
+    A workdir whose rounds predate D223 has no file and every Task's band reads `none`, which is an
+    unmeasured Task and not a Task nothing finished.
+    """
+    return {str(task_id): (row or {}).get("partial_completion_mean")
+            for task_id, row in (claims.read_records(workdir).get("tasks") or {}).items()}
+
+
 def compute(workdir: Any, *, false_rejection: Optional[dict] = None,
             trusted_ids: Optional[Iterable[str]] = None) -> dict:
     """The difficulty record and the bucket of every Task of one workdir, plus the Tasks with none.
@@ -343,6 +364,7 @@ def compute(workdir: Any, *, false_rejection: Optional[dict] = None,
                     if lifecycle.retired_row(row) is not None})
     write_tools = write_tools_of(read_json(workdir / "tool_sigs.json", []) or [])
     judge_rows = read_jsonl(workdir / "judge_pairs.jsonl")
+    partial = partial_by_task(workdir)
     paths = run_paths(workdir)
     records: list[dict] = []
     no_record: dict[str, str] = {}
@@ -364,7 +386,7 @@ def compute(workdir: Any, *, false_rejection: Optional[dict] = None,
             continue
         records.append(record_for(verifier, calls=calls, write_tools=write_tools,
                                   status_row=status.get(task_id), false_rejection=false_rejection.get(task_id),
-                                  judge_rows=judge_rows))
+                                  judge_rows=judge_rows, partial_completion=partial.get(task_id)))
     return {"format": FORMAT, "tasks": records, "no_record": no_record,
             "buckets": bucket_rows(records, trusted_ids)}
 
@@ -391,5 +413,6 @@ def refresh(workdir: Any, *, false_rejection: Optional[dict] = None,
 __all__ = ["FILE_NAME", "FORMAT", "NO_REFERENCE_RUN", "NO_VERIFIER", "PATH_CAP", "RETIRED_VERIFIER",
            "TOOL_CAP", "WRITE_CAP",
            "branching_depth", "bucket_key", "bucket_rows", "compute", "judge_agreement", "markdown_table",
+           "partial_by_task",
            "question_count", "read_records", "record_for", "refresh", "reference_path", "round_summary",
            "run_paths", "second_paths", "solve_rate", "tools_touched", "write_count", "write_records"]
