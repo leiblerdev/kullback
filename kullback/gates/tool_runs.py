@@ -31,16 +31,21 @@ from typing import Any, Iterable, NamedTuple, Optional
 
 from kullback.gates.confinement import TOOLS_CLASS, function_confinement
 from kullback.runner.canon import (
+    DIFFERS_NOTE,
     EMPTY_CANON,
     EXEMPT_NOTE,
     PRESENCE_NOTE,
     SEMANTIC_NOTE,
     TOKEN_NOTE,
+    UNRESOLVED,
+    UNRESOLVED_NOTE,
     class_of,
     first_difference,
+    resolution_of,
 )
 from kullback.runner.canon import canonicalize as canon
 from kullback.runner.canon import compare as compare_column
+from kullback.runner.gate_support import _share
 from kullback.runner.records import EntitySchema, GateResult, ToolCall, content_hash
 
 CRASH_ERRORS = frozenset({"NameError", "AttributeError", "TypeError", "ImportError",
@@ -54,6 +59,12 @@ TOOL_RUN_STAGES = ("parses", "executes_on_s0", "deterministic", "non_trivial", "
 # comparison leaves is a hard column that parted, and those are what fail a ruling: a hard column's
 # leaf, a value only one side holds, and two values made of different domain tokens (D217).
 CLASS_NOTES = (EXEMPT_NOTE, SEMANTIC_NOTE)
+# What a build counts about its semantic columns (D219), in the order a reader wants them: how many
+# were compared, how many of those a judge was actually asked about, and how the three-valued
+# answer came out. A round writes these and a rate of unresolved over compared is the number that
+# says whether the judge is wired at all.
+SEMANTIC_COUNTS = ("semantic_compared", "semantic_judged", "semantic_equal", "semantic_different",
+                   "semantic_unresolved")
 # --- the words a column's world uses, which a forgiven difference may not change (D217) ---
 ENUM_DISTINCT = 12   # a column the corpus showed this many distinct values or fewer draws from a set
 TOKEN_MIN = 2        # a one-character value stands inside half the words there are and names nothing
@@ -307,56 +318,21 @@ def _token(value: Any, rules: Any = None) -> Optional[str]:
     return text
 
 
-# The suffixes a column that holds an id is named with, which is the same reading the miner takes
-# before it records a vocabulary at all. An id is addressed rather than named, so it lends nothing.
-ID_SUFFIXES = ("_id", "_number", "_no", "_code", "_key", "_ref", "_uuid")
-
-
-def _holds_ids(column: Any, schema: Any = None) -> bool:
-    """Whether this column holds ids rather than names, by its name, its table's key or its values.
-
-    The name rule is the customer's convention and is free wherever it fires. A column the corpus
-    showed keying its table is an id whatever it is called, which is where a `sku` or a `username`
-    is caught. And a column whose every kept sighting has a mined id shape is holding ids however
-    it is named, which is the reading that does not depend on a convention at all.
-    """
-    name = str(getattr(column, "name", "") or "")
-    if name == "id" or name.endswith(ID_SUFFIXES):
-        return True
-    keys = (getattr(schema, "composite_keys", None) or {}).get(getattr(column, "table", None)) or ()
-    if name in keys:
-        return True
-    present = [value for value in (getattr(column, "samples", None) or []) if value is not None]
-    return bool(present) and all(isinstance(value, str) and _pattern_hit(schema, value) is not None
-                                 for value in present)
-
-
-def _enumerated(column: Any, rules: Any = None, schema: Any = None) -> bool:
+def _enumerated(column: Any, rules: Any = None) -> bool:
     """Whether the corpus showed this column drawing from a set of names.
 
     The miner records the set where it found one (`Column.vocabulary`). A schema mined before it did
-    still keeps a few sightings per column, and those stand in, held to the miner's own three tests
-    rather than to one of them: every value a short name; an id column lending nothing, whatever its
-    ids look like and however it is named; and a set of names repeating, so a column whose every
-    kept sighting was a value of its own is holding data however short it is, where nothing counted
-    what it held. Without the last two a build carried over a schema mined before D217 read an id
-    column as a set of names, lent those ids to every free text column of the table, and failed
-    sound replays on ids that differ incidentally. The stand-in is deliberately the stricter
-    reading: where it says no, the comparison is what it was before D217, and a fresh mine puts the
-    real vocabulary back.
+    still keeps a few sightings per column, and those stand in, held to the same test: every value a
+    short name, and no more distinct values than a set of names has. So an id column, a number and a
+    free text column lend no names on either kind of schema.
     """
     if list(getattr(column, "vocabulary", None) or ()):
         return True
     present = [value for value in (getattr(column, "samples", None) or []) if value is not None]
-    if not present or _holds_ids(column, schema):
+    if not present:
         return False
     distinct = (getattr(column, "evidence", None) or {}).get("distinct")
-    if isinstance(distinct, int):
-        if distinct > ENUM_DISTINCT:
-            return False
-    elif len({canon(str(value), rules) for value in present}) >= len(present):
-        # No count of what the column held, so the kept sightings are the only evidence that it
-        # repeats at all, and a column whose every sighting was a value of its own does not.
+    if isinstance(distinct, int) and distinct > ENUM_DISTINCT:
         return False
     return all(_token(value, rules) is not None for value in present)
 
@@ -378,8 +354,8 @@ def domain_tokens(schema: Any, table: Optional[str], name: str, rules: Any = Non
     columns = [c for c in (getattr(schema, "columns", None) or ())
                if table is None or getattr(c, "table", None) == table]
     own = next((c for c in columns if getattr(c, "name", None) == name), None)
-    lenders = [own] if own is not None and _enumerated(own, rules, schema) else [
-        c for c in columns if _enumerated(c, rules, schema)]
+    lenders = [own] if own is not None and _enumerated(own, rules) else [
+        c for c in columns if _enumerated(c, rules)]
     tokens: set = set()
     for column in lenders:
         for value in _names_of(column):
@@ -437,17 +413,33 @@ def _present(row: dict, name: str, rules: Any = None) -> bool:
     return name in row and canon(row.get(name), rules) not in EMPTY_CANON
 
 
+def _tally(tally: Optional[dict], *names: str) -> None:
+    """Count one semantic outcome, where the caller asked to be told (D219)."""
+    if tally is None:
+        return
+    for name in names:
+        tally[name] = int(tally.get(name) or 0) + 1
+
+
 def compare_columns(schema: EntitySchema, table: Optional[str], expected: dict, got: dict,
                     rules: Any = None, judge: Any = None, equivalence: Any = None,
-                    route: str = "") -> tuple[bool, list[str]]:
+                    route: str = "", tally: Optional[dict] = None) -> tuple[bool, list[str]]:
     """Two readings of one row compared column by column under the schema's classes (D73, D84, D187).
 
     Every key either side carries is asked for its class. An exempt column is equal whatever the two
-    hold and is noted, never failed; a semantic one goes through `canon.compare`, which takes the
-    judge when one is given and otherwise leaves the pair unresolved, and either way it is reported
-    and not failed, the way a semantic column has been read here since D73; a hard one is compared by
-    canonical string and names the leaf it parted at. A column the schema does not class for this
-    table takes the rules' default, which is what `canon.compare` would have given it.
+    hold and is noted, never failed; a semantic one goes through `canon.compare` and comes back with
+    one of three answers, equal, different or unresolved, of which only the first is agreement
+    (D219); a hard one is compared by canonical string and names the leaf it parted at. A column the
+    schema does not class for this table takes the rules' default, which is what `canon.compare`
+    would have given it.
+
+    A semantic column that is not equal fails, and so does one nobody settled. Reporting a semantic
+    difference on a note the ruling forgives made "reported" mean "never failed": there was then no
+    path anywhere in the harness by which a semantic column could fail a replay, judged or not, and
+    a column class became a way of not being checked rather than a way of being checked differently.
+    An unresolved pair fails under its own name, because it is not evidence that the two sides
+    agree and it is not evidence that they part; it is the absence of an answer, and a reader has
+    to be able to see how much of a build's agreement rests on one.
 
     `route` names how the two dicts were arrived at, so a failure line says whether the comparison
     read a prose result into columns or walked a returned row.
@@ -464,9 +456,15 @@ def compare_columns(schema: EntitySchema, table: Optional[str], expected: dict, 
     hard: list[str] = []
     notes: list[str] = []
     for name in sorted(set(expected) | set(got)):
-        if _present(expected, name, rules) != _present(got, name, rules):
+        holds, theirs_holds = _present(got, name, rules), _present(expected, name, rules)
+        if holds != theirs_holds:
             hard.append(f"{prefix}{PRESENCE_NOTE}{name}: ours {_shown(got.get(name))}, "
                         f"recorded {_shown(expected.get(name))}")
+            continue
+        if not holds:
+            # Neither side holds a value, which D217 already settled is not a difference in
+            # presence. It is not a difference of any other kind either, so there is nothing here
+            # to compare, to forgive or to put to a judge, whatever the column's class.
             continue
         column_class = class_of(schema, table, name, rules)
         if column_class == "exempt":
@@ -478,12 +476,26 @@ def compare_columns(schema: EntitySchema, table: Optional[str], expected: dict, 
             ours = value_tokens(got.get(name), tokens, rules)
             theirs = value_tokens(expected.get(name), tokens, rules)
             if ours != theirs:
+                _tally(tally, "semantic_compared", "semantic_different")
                 hard.append(f"{prefix}{TOKEN_NOTE}{name}: ours {_shown_tokens(ours)}, "
                             f"recorded {_shown_tokens(theirs)}")
                 continue
             verdict = compare_column(expected.get(name), got.get(name), "semantic", rules=rules,
                                      judge=judge, table=equivalence, column=name)
-            if not verdict.equal:
+            found = resolution_of(verdict)
+            _tally(tally, "semantic_compared", f"semantic_{found}")
+            if verdict.judge_called:
+                _tally(tally, "semantic_judged")
+            if found == UNRESOLVED:
+                hard.append(f"{prefix}{UNRESOLVED_NOTE}{name}: nobody settled ours "
+                            f"{_shown(got.get(name))} against recorded {_shown(expected.get(name))}"
+                            + (f" ({verdict.note})" if verdict.note else ""))
+            elif not verdict.equal:
+                hard.append(f"{prefix}{DIFFERS_NOTE}{name}: ours {_shown(got.get(name))}, "
+                            f"recorded {_shown(expected.get(name))}")
+            elif verdict.route != "canon":
+                # Equal, but only because the judge or the table said so: the note is what lets a
+                # reader tell agreement that rests on a judgement from agreement on the values.
                 notes.append(f"{SEMANTIC_NOTE}{name}")
             continue
         found_at = first_difference(got.get(name), expected.get(name), rules, name)
@@ -493,8 +505,8 @@ def compare_columns(schema: EntitySchema, table: Optional[str], expected: dict, 
 
 
 def read_as_columns(schema: EntitySchema, tool: str, expected: Any, got: Any, rules: Any = None,
-                    readers: Any = None, judge: Any = None,
-                    equivalence: Any = None) -> Optional[tuple[bool, list[str]]]:
+                    readers: Any = None, judge: Any = None, equivalence: Any = None,
+                    tally: Optional[dict] = None) -> Optional[tuple[bool, list[str]]]:
     """Two prose results compared by the columns their reader asserts; None when no reader applies.
 
     Both sides have to be strings the tool's own reader reads to a dict. When either reads to
@@ -509,7 +521,8 @@ def read_as_columns(schema: EntitySchema, tool: str, expected: Any, got: Any, ru
     left, right = readers.read(tool, expected), readers.read(tool, got)
     if not isinstance(left, dict) or not isinstance(right, dict):
         return None
-    return compare_columns(schema, table, left, right, rules, judge, equivalence, route=COLUMN_ROUTE)
+    return compare_columns(schema, table, left, right, rules, judge, equivalence,
+                           route=COLUMN_ROUTE, tally=tally)
 
 
 class ReplayComparer:
@@ -528,16 +541,21 @@ class ReplayComparer:
         self.rules = rules
         self.judge = judge
         self.equivalence = equivalence
+        # What the semantic comparisons of this build came to, so a round can say how many pairs
+        # were compared, how many a judge was actually asked about, and how many nobody settled
+        # (D219). Without these a build cannot tell an environment with no semantic column from one
+        # whose every semantic column went unanswered.
+        self.counts: dict = {name: 0 for name in SEMANTIC_COUNTS}
 
     def agrees(self, tool: str, expected: Any, got: Any) -> tuple[bool, list[str]]:
         """Whether the replayed answer agrees with the recording, and what parted, by class."""
         reading = read_as_columns(self.schema, tool, expected, got, self.rules, self.readers,
-                                  self.judge, self.equivalence)
+                                  self.judge, self.equivalence, self.counts)
         if reading is not None:
             return reading
         ok, notes = compare_results(self.schema, expected, got, self.rules, tool=tool,
                                     readers=self.readers, judge=self.judge,
-                                    equivalence=self.equivalence)
+                                    equivalence=self.equivalence, tally=self.counts)
         return ok, notes
 
 
@@ -686,8 +704,8 @@ def _row_pairs(schema: EntitySchema, expected: list, got: list) -> list[tuple[An
 
 
 def compare_results(schema: EntitySchema, expected: Any, got: Any, rules: Any = None, tool: str = "",
-                    readers: Any = None, judge: Any = None,
-                    equivalence: Any = None) -> tuple[bool, list[str]]:
+                    readers: Any = None, judge: Any = None, equivalence: Any = None,
+                    tally: Optional[dict] = None) -> tuple[bool, list[str]]:
     """Hard columns must match after canon; exempt and semantic ones are reported, not failed (D73, D84).
 
     A list of rows and a dict wrapping rows are walked into, so the column classes decide there too.
@@ -698,7 +716,7 @@ def compare_results(schema: EntitySchema, expected: Any, got: Any, rules: Any = 
     (D176) and compared the same way (D187); when the reader reads nothing out of either side the
     strings are compared whole, and the failure line says which of the two routes it took.
     """
-    reading = read_as_columns(schema, tool, expected, got, rules, readers, judge, equivalence)
+    reading = read_as_columns(schema, tool, expected, got, rules, readers, judge, equivalence, tally)
     if reading is not None:
         return reading
     if isinstance(expected, list) and isinstance(got, list):
@@ -707,7 +725,7 @@ def compare_results(schema: EntitySchema, expected: Any, got: Any, rules: Any = 
         ok, notes = True, []
         for one, other in _row_pairs(schema, expected, got):
             one_ok, one_notes = compare_results(schema, one, other, rules, judge=judge,
-                                                equivalence=equivalence)
+                                                equivalence=equivalence, tally=tally)
             ok, notes = ok and one_ok, notes + one_notes
         return ok, notes
     found = match_table(schema, expected)
@@ -717,7 +735,7 @@ def compare_results(schema: EntitySchema, expected: Any, got: Any, rules: Any = 
         ok, notes = True, []
         for key in sorted(expected):
             key_ok, key_notes = compare_results(schema, expected[key], got[key], rules, judge=judge,
-                                                equivalence=equivalence)
+                                                equivalence=equivalence, tally=tally)
             ok, notes = ok and key_ok, notes + key_notes
         return ok, notes
     if not found or not isinstance(got, dict):
@@ -727,7 +745,7 @@ def compare_results(schema: EntitySchema, expected: Any, got: Any, rules: Any = 
         if found_at and readers is not None and tool and readers.table_of(tool) is not None:
             found_at = f"{STRING_ROUTE}: {found_at}"  # a reader exists and read nothing out of it
         return found_at is None, [found_at] if found_at else []
-    return compare_columns(schema, found[0], expected, got, rules, judge, equivalence)
+    return compare_columns(schema, found[0], expected, got, rules, judge, equivalence, tally=tally)
 
 
 def body_replay_fidelity_gate(calls: Iterable[ToolCall], results: Optional[list[dict]], schema: EntitySchema,
@@ -737,12 +755,20 @@ def body_replay_fidelity_gate(calls: Iterable[ToolCall], results: Optional[list[
 
     `readers` are the readers of D176, given where a tool's results are prose: the two sentences are
     then compared by the columns they assert rather than as one hard value (D187).
+
+    A half with no calls of its kind is unmeasured, not perfect (D219). A tool whose recordings hold
+    no error call used to score 1.0 on error fidelity by definition and clear the bar on that alone,
+    so the emptier a tool's evidence the easier its ruling was to pass. An empty pool is neither a
+    pass nor a failure: its rate is None, the ruling names which half went unmeasured, and the bar
+    is held only against the halves something was actually counted in. A ruling with nothing counted
+    at all does not pass, because no evidence is not evidence of fidelity.
     """
     calls = list(calls)
     if error is not None:
         return _ruling("replay_fidelity", False, {"split": label}, [error])
     hits = {"success_calls": 0, "success_matches": 0, "error_calls": 0, "error_matches": 0}
-    semantic, failures = 0, []
+    tally: dict = {name: 0 for name in SEMANTIC_COUNTS}
+    failures = []
     for call, result in zip(calls, results or [], strict=False):
         if call.error is not None:
             hits["error_calls"] += 1
@@ -758,18 +784,28 @@ def body_replay_fidelity_gate(calls: Iterable[ToolCall], results: Optional[list[
                             f"{result['error']}: {result['message']}")
             continue
         ok, differing = compare_results(schema, parse_result(call.result), result["value"], rules,
-                                        tool=call.name, readers=readers)
-        semantic += sum(1 for n in differing if n.startswith(SEMANTIC_NOTE))
+                                        tool=call.name, readers=readers, tally=tally)
         if ok:
             hits["success_matches"] += 1
         else:
             failures.append(f"{call.name}({args_text(call)}): hard columns differ: "
                             f"{'; '.join(hard_notes(differing)) or 'value'}")
-    success = hits["success_matches"] / hits["success_calls"] if hits["success_calls"] else 1.0
-    errors = hits["error_matches"] / hits["error_calls"] if hits["error_calls"] else 1.0
+    success = _share(hits["success_matches"], hits["success_calls"])
+    errors = _share(hits["error_matches"], hits["error_calls"])
+    unmeasured = [half for half, rate in (("success", success), ("error", errors)) if rate is None]
+    measured = [rate for rate in (success, errors) if rate is not None]
+    passed = bool(measured) and all(rate >= threshold for rate in measured)
     metrics = dict(hits, split=label, success_fidelity=success, error_fidelity=errors,
-                   semantic_differences=semantic)
-    return _ruling("replay_fidelity", success >= threshold and errors >= threshold, metrics, failures)
+                   not_measured=unmeasured,
+                   semantic_differences=tally["semantic_different"] + tally["semantic_unresolved"],
+                   **tally)
+    # A ruling says which half it could not measure in `not_measured`, and not on the failure list:
+    # a failure line is a repair instruction, read one at a time by the caller that shows it, and a
+    # half with no calls is nothing anyone can repair. A ruling that measured neither half is a
+    # different case: there the emptiness is the finding, and it fails.
+    if not measured:
+        failures.append("no recorded call of either kind: this ruling measured nothing")
+    return _ruling("replay_fidelity", passed, metrics, failures)
 
 
 def body_refuses_unknown_gate(probes: list[tuple[str, Any, ToolCall]], results: Optional[list[dict]],

@@ -26,7 +26,6 @@ from kullback.builder import pipeline, repair
 from kullback.builder.build import BuildError, BuildPlan
 from kullback.builder.tools import repair_verb_tools
 from kullback.examiner import agent as examiner_agent
-from kullback.examiner import stage
 from kullback.examiner.agent import examiner_message, examiner_round_message
 from kullback.examiner.plan import ExaminerPlan
 from kullback.examiner.stage import DERIVE_INPUTS, FORBIDDEN_INPUTS
@@ -64,11 +63,11 @@ TARGET = "environment"
 # a reading over the pool can leave out the Runs that did not finish, and the ends move again where
 # the review of D210 closed the turn that says nothing but a miss. Re-pinned for D217: a replay
 # reason now names the route the verdict was reached by, and the one reason here reads
-# `differs (columns)`. Re-pinned for D218: every row carries the round that last moved it and when,
-# so the hash is taken over the rows with those two stamps stripped; the stamp is a wall clock and
-# hashing it would pin the minute the fixture ran rather than what it wrote. The same three Tasks,
-# the same verdicts.
-TASK_STATUS_SHA256_BEFORE_THE_PHASE = "7563e5758c9391816afd8de2465ad6bb91bbeb03d299c3479404ece3e440c2c8"
+# `differs (columns)`. The same three Tasks and the same verdicts. Re-pinned for D222: the judge
+# version is one of the things a re-roll's key is made of, and it moved when the judge stopped
+# refusing a verdict for want of a tool call, so the re-roll ids under each row are new. The same
+# three Tasks, the same verdicts and the same reasons.
+TASK_STATUS_SHA256_BEFORE_THE_PHASE = "2fe278339d5b23b2186bbfa9849816441693702069b035a27c2dfb4c3e7da6fd"
 
 
 def _fixture(request) -> Path:
@@ -788,6 +787,17 @@ def test_round_end_carries_every_count_d126_lists_and_none_comes_from_a_model(dr
     assert [d for d in driven["dicts"] if d.get("kind") == "round"][-1]["counts"] == counts
 
 
+def test_a_round_says_what_its_semantic_comparisons_came_to_and_what_the_judging_cost(driven):
+    """D219: a round that cannot tell "no semantic column" from "every semantic column unanswered"
+    cannot see the judge is unwired. The counts and the judge's own spend are on every round."""
+    counts = rounds.load_rounds(driven["workdir"])[-1].counts
+    assert set(counts) >= {"semantic_compared", "semantic_judged", "semantic_equal",
+                           "semantic_different", "semantic_unresolved", "judge_spend"}
+    # The fixture's schema classes no column semantic, so nothing was compared and nothing was spent.
+    assert counts["semantic_compared"] == 0 and counts["semantic_unresolved"] == 0
+    assert counts["judge_spend"] == 0
+
+
 def test_a_rounds_counts_carry_its_clock_its_spend_its_turns_and_its_context_fill(driven):
     """A build's duration is read from these and from nothing else: pipeline/state.json records the
     stage statuses and no clock, and a repair's timestamp has no round to sit against without them."""
@@ -948,17 +958,6 @@ def test_the_examiner_runs_in_the_environment_the_builder_left_at_its_latest_bea
     assert _closed_over(loop.eplan.run_probe, plan.store["db"])
 
 
-def _without_stamps(status: dict) -> bytes:
-    """The status rows as the derivation wrote them, without D218's round and time stamps.
-
-    The two stamps are what let a reader see that the live file moved after a round closed its own
-    table, and `updated_at` is a wall clock, so they belong on the file and never in a pin.
-    """
-    rows = {task_id: {key: value for key, value in row.items() if key not in stage.STAMPS}
-            for task_id, row in status.items()}
-    return json.dumps(rows, indent=2, sort_keys=True, default=str).encode("utf-8")
-
-
 def test_the_code_driven_rounds_over_the_fixture_leave_the_task_status_the_single_pipeline_wrote(driven):
     """D130: the derivation moved to the Examiner without changing a byte of what it writes. The three
     rows of the fixture and their reasons are pinned here so CI holds the claim without the snapshot."""
@@ -972,7 +971,7 @@ def test_the_code_driven_rounds_over_the_fixture_leave_the_task_status_the_singl
     assert len(confirmed) == 2
     assert all(row.get("verifier_passed") is False for row in status.values())
     assert all(row.get("reason") for t, row in status.items() if t not in confirmed)
-    assert hashlib.sha256(_without_stamps(status)).hexdigest() == TASK_STATUS_SHA256_BEFORE_THE_PHASE
+    assert hashlib.sha256(path.read_bytes()).hexdigest() == TASK_STATUS_SHA256_BEFORE_THE_PHASE
     assert sorted(p.stem for p in (driven["workdir"] / "verifiers").glob("*.json")) == confirmed
     assert driven["result"]["rounds"][-1]["counts"]["tasks_with_reference"] == 2
 

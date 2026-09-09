@@ -110,10 +110,6 @@ NO_CORRECT_RECORDING = "no correct recording"
 SURVIVOR_CHOSEN = "survivor_chosen"
 SURVIVORS_EQUIVALENT = "survivors_equivalent"
 SURVIVORS_ALL_FAIL = "survivors_all_fail"
-# D218 rule 3: a residue that ends with nothing to derive from still says why. Every
-# surviving End state held no Run the derivation could read, so there was no survivor to
-# rule on and the Task keeps no Reference for that reason and not for an unrecorded one.
-SURVIVORS_EMPTY = "survivors_empty"
 _LABELS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
 _JSON_RE = re.compile(r"\{.*\}", re.DOTALL)
 
@@ -949,7 +945,7 @@ def parse_judgement(text: str, groups: list[dict], available: Iterable[str] = AV
 __all__ = ["RECORDING", "REROLL", "ANSWERED", "MISCOMPILED_SHARE", "AVAILABLE_SOURCES", "UNREADABLE_REPLY",
            "MAX_DIFFERING_KEYS", "NO_KEY", "NO_VALUE", "STATED_PREFIX", "WRITTEN",
            "SURVIVORS_NOT_TOLD_APART", "DIFFERING_GROUNDS", "NO_CORRECT_RECORDING",
-           "SURVIVOR_CHOSEN", "SURVIVORS_EMPTY", "SURVIVORS_EQUIVALENT", "SURVIVORS_ALL_FAIL",
+           "SURVIVOR_CHOSEN", "SURVIVORS_EQUIVALENT", "SURVIVORS_ALL_FAIL",
            "Recording", "Confirmation",
            "Judgement", "end_state", "settled_state", "describe", "stated_facts", "transferred",
            "told_line", "state_values", "differing_keys", "differs_line", "numbered_policy",

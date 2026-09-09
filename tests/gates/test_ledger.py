@@ -25,12 +25,8 @@ def test_recording_a_ruling_replaces_the_row_of_the_same_stage_and_appends_it_la
     ledger.record("derive", _ruling("derive_verifier", n=2))
     assert _stages(tmp_path) == [("probe_pool", {"n": 1}), ("derive_verifier", {"n": 2})]
     assert ledger.rulings("derive") == ["derive_verifier"] and ledger.rulings("probe") == ["probe_pool"]
-    # D218 rule 2: a per tool set goes to its own file, and the ledger offers no way at all to
-    # replace gates.json, so the rulings the other stages recorded cannot be lost to a recompile.
-    ledger.write_compile_snapshot("compile", [{"stage": "parses", "pass": True, "tool": "lookup"}], 4)
-    assert _stages(tmp_path) == [("probe_pool", {"n": 1}), ("derive_verifier", {"n": 2})]
-    assert not hasattr(ledger, "write")
-    assert ledger.rulings("compile") == ["parses"], "the stage still names what it ruled on"
+    ledger.write("compile", [_ruling("parses"), _ruling("confined")])
+    assert _stages(tmp_path) == [("parses", {}), ("confined", {})]
 
 
 def test_two_writers_taking_turns_leave_the_file_as_one_writer_would(tmp_path):
