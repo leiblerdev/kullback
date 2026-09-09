@@ -964,16 +964,24 @@ def auto_loosen(plan: ExaminerPlan) -> dict:
             continue
         verifier = plan.current(task_id)
         run = next((r for r in task_runs.get(task_id, []) if r.run_id in set(seen["rejected_ids"])), None)
-        if verifier is None or run is None:
-            continue
-        proposal = loosen_mod.proposal_for(verifier, run, canon_rules, write_tools)
-        if proposal is None:
+        # D218 rule 3: a step that ends without a proposal writes why it ended. The three ways it can
+        # are a Task with no Verifier to loosen, a Task whose rejected Runs are not on disk to read
+        # and a Verifier no rule here can relax; each left the round with nothing recorded, so a Task
+        # the loosening never touched read the same as a Task it touched and could not move.
+        stopped = loosen_mod.nothing_proposed(verifier, run)
+        if stopped is None and (proposal := loosen_mod.proposal_for(verifier, run, canon_rules,
+                                                                   write_tools)) is None:
+            stopped = loosen_mod.NO_RELAXATION
+        if stopped is not None:
+            rows.append({"task_id": task_id, "round": plan.round, "run_id": getattr(run, "run_id", ""),
+                         "kinds": [], "atoms": [], "accepted": False, "rejected_by": [],
+                         "proposed": False, "reason": stopped})
             continue
         out = propose_version(plan, task_id, drop=proposal.drop, add=proposal.add,
                               reason=proposal.reason, by="auto_loosen")
         rows.append({"task_id": task_id, "round": plan.round, "run_id": proposal.run_id,
                      "kinds": proposal.kinds, "atoms": proposal.drop, "accepted": out.accepted,
-                     "rejected_by": list(out.rejected_by),
+                     "rejected_by": list(out.rejected_by), "proposed": True,
                      "reason": proposal.reason if out.accepted
                                else f"{loosen_mod.REJECTED}: {', '.join(out.rejected_by)}"})
         if out.accepted:

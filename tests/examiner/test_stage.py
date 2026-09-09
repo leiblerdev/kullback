@@ -23,6 +23,9 @@ from kullback.gates.ledger import GateLedger
 from kullback.runner import budget
 from kullback.runner.records import Task, ToolCall, Trace, Verifier
 
+# D218 rule 2 put `round` and `updated_at` on every row of the file, so a reader can see the live file
+# move after a round closed its own table. They are on the file and not on the rows the stage answers
+# with, which is what `_read` here strips before comparing.
 STATUS_KEYS = {"reference_confirmed", "verifier_passed", "reason", "recordings", "rerolls", "judged",
                "assisted_tools", "blocking_tools", "tool_calls_replayed", "tool_calls_differing"}
 REFERENCE_KEYS = {"references", "recordings", "failed", "groups", "reason", "judged", "judge_reason",
@@ -44,7 +47,16 @@ def _fails_the_wrong_row(reason: str, *, evidence: tuple = ("end_states",)) -> s
 
 
 def _read(path: Path):
-    return json.loads(path.read_text(encoding="utf-8"))
+    """One record off disk, with D218's round and time stamps taken off each status row.
+
+    The stamps say when the live file last moved and are the file's own (rule 2); what the tests
+    below compare is the rows the derivation wrote, which is what the stage answers with.
+    """
+    body = json.loads(path.read_text(encoding="utf-8"))
+    if path.name != "task_status.json":
+        return body
+    return {task_id: {key: value for key, value in row.items() if key not in stage.STAMPS}
+            for task_id, row in body.items()}
 
 
 def _derive(workdir: Path, inputs: dict, **kwargs) -> dict:
@@ -216,8 +228,24 @@ def _counted_probe(calls: list):
 
 
 def _derived_bytes(workdir: Path, tasks: int) -> dict:
+    """What the derivation wrote, without D218's round and time stamps.
+
+    `updated_at` is a wall clock, so two runs of the same derivation write it differently and always
+    will; the claim these bytes carry is that the rows themselves are the same, which is what the
+    stamps are stripped for here and nowhere else.
+    """
     names = ["task_status.json", "references.json"] + [f"verifiers/t{n}.json" for n in range(1, tasks + 1)]
-    return {name: (workdir / name).read_bytes() for name in names}
+    return {name: without_stamps(workdir / name) for name in names}
+
+
+def without_stamps(path: Path) -> bytes:
+    """One record's bytes, with each status row's `round` and `updated_at` taken off (D218 rule 2)."""
+    body = path.read_bytes()
+    if path.name != "task_status.json":
+        return body
+    rows = {task_id: {key: value for key, value in row.items() if key not in stage.STAMPS}
+            for task_id, row in json.loads(body).items()}
+    return json.dumps(rows, indent=2, sort_keys=True, default=str).encode("utf-8")
 
 
 def test_derive_all_on_four_workers_writes_the_task_status_references_and_verifiers_one_worker_writes(tmp_path):

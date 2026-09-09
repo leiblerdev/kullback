@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import hashlib
 import threading
+import time
 from dataclasses import dataclass, field
 from functools import lru_cache
 from pathlib import Path
@@ -59,7 +60,7 @@ STAGE = "derive_verifier"
 # The per-Task cache under the workdir (D163). Bumped when the entry's shape changes, so an old entry
 # is a miss rather than a row read with the wrong meaning.
 CACHE_DIR = ("examiner", "cache")
-CACHE_FORMAT = 8  # the status row counts D190's relaxed and falsifying atoms, D206's shape sources
+CACHE_FORMAT = 9  # D218: every status row carries its second-path record with a reason
 # and the shapes dropped for rejecting their own Reference, D189's second-path batches and D198's
 # reason per check with no input, the reference record carries D193's second pass over a residue and
 # what deriving a Verifier per survivor settled (D198), the second-path row carries D199's
@@ -354,6 +355,57 @@ def second_path_row(batches: int, runs: int, *, found: bool, cap: int = SECOND_P
             "exhausted": bool(not found and batches >= cap), "reason": why,
             "synthesised": int(synthesised), "synth_kinds": sorted(set(kinds)),
             "synth_tried": int(tried), "synth_kept": int(kept), "structural": bool(structural)}
+
+
+# D218 rule 2: the two fields every status row carries so a reader can see it moved. task_status.json
+# is the live file and goes on being written after a round has closed its own table; without a round
+# and a time on the row, a row that moved reads exactly like a row the round wrote, and 64 rows of one
+# live build disagreed with the frozen ruling with nothing on either to say which had moved.
+STAMPS = ("round", "updated_at")
+
+
+def stamped(rows: dict, prior: Optional[dict], round_number: int, *, now: Optional[float] = None) -> dict:
+    """Every status row with the round it was last written in and when it was written.
+
+    A row whose content is what the round before left is not a row this round wrote: it keeps the
+    stamp it had, so the round on a row is the round that last changed it and not the round that last
+    read it. That is what makes the stamp worth reading; stamping every row every round would say
+    only that a derivation ran.
+    """
+    at = float(now if now is not None else time.time())
+    out: dict = {}
+    for task_id, row in (rows or {}).items():
+        body = {key: value for key, value in (row or {}).items() if key not in STAMPS}
+        was = (prior or {}).get(task_id)
+        before = {key: value for key, value in (was or {}).items() if key not in STAMPS} if was else None
+        if before == body and was is not None and all(key in was for key in STAMPS):
+            out[task_id] = {**body, "round": was["round"], "updated_at": was["updated_at"]}
+        else:
+            out[task_id] = {**body, "round": int(round_number), "updated_at": at}
+    return out
+
+
+class MissingReason(ValueError):
+    """A search or a check ended without a ruling and recorded no reason for it (D218 rule 3)."""
+
+
+def with_reason(record: Any, *, what: str, task_id: str) -> dict:
+    """One search's record, refused where it ended without a ruling and without a reason.
+
+    Every search the harness runs can come back with nothing: no second path was bought, no rewrite
+    reached the End state, no survivor could be derived from, no atom could be relaxed. Each of those
+    is an answer and each has to say which one it is, because the round's table reports the reason
+    and a blank one cannot be told from a search that never ran. Two Tasks of one live build carried
+    an empty record where a reason belonged, and no reading of the artifacts on disk could say what
+    had happened to them. So the writer raises rather than writing the blank.
+    """
+    if not isinstance(record, dict):
+        raise MissingReason(f"task {task_id}: {what} wrote {type(record).__name__} where a record with "
+                            "a reason belongs (D218 rule 3)")
+    if not record.get("found") and not str(record.get("reason") or "").strip():
+        raise MissingReason(f"task {task_id}: {what} found nothing and recorded no reason for it "
+                            "(D218 rule 3)")
+    return record
 
 
 def _second_path(row: Any) -> dict:
@@ -737,6 +789,13 @@ def settle_residue(task: Task, confirmation: Any, *, canon_rules: Any, write_too
         rows.append(row)
         by_label[row["label"]] = group
     if not rows:
+        # D218 rule 3: a search that ends without a ruling writes its reason. Every surviving group
+        # held no Run to derive from, so there was nothing to choose between; without this the Task
+        # kept no Reference and no record said why, which reads on the round's table as a Task the
+        # harness silently gave up on.
+        confirmation.survivor_reason = reference_mod.SURVIVORS_EMPTY
+        confirmation.reason = (f"{reference_mod.SURVIVORS_EMPTY}: {len(survivors)} End states survived "
+                               "the judgement and none of them holds a Run to derive a Verifier from")
         return
     confirmation.residue_derived = True
     confirmation.survivor_scores = sorted(rows, key=survivor_order)
@@ -828,8 +887,13 @@ def verifier_for(ctx, task: Task, confirmation: Any, *, canon_rules: Any, write_
                                   for g in gates if g.metrics.get("not_run_reason")
                                   and g.stage in verifier_suite.D79_STAGES},
               **verifier_mod.derivation_counts(record),
-              "second_path": second_path if second_path is not None else second_path_row(
-                  0, 0, found=len(confirmation.references) > 1),
+              # D218 rule 3: never a blank record. A Task that never had to search carries a row of
+              # zero batches with the words for that, and a record with neither a find nor a reason
+              # is refused here rather than written for a later reader to guess at.
+              "second_path": with_reason(
+                  second_path if second_path is not None else second_path_row(
+                      0, 0, found=len(confirmation.references) > 1),
+                  what="the second path search", task_id=task.id),
               **fidelity_fields(fidelity_row or {})}
     return record, status
 
@@ -1157,7 +1221,11 @@ def derive_all(ctx: ExamContext, inputs: dict, *, probe_model: Any = None, probe
     # round's retirement is carried onto it while the Task still has nothing on disk; a Task derived
     # afresh has its file back and its row rightly says nothing.
     lifecycle.carry_forward(ctx.workdir, status, prior_status)
-    write_json(ctx.workdir / "task_status.json", status)
+    # D218 rule 2: the live file says on every row which round last moved it, so a reader comparing it
+    # with a closed round's table can see the movement instead of reading it as a regression. The
+    # stamps go on the file and not on the rows this stage answers with: `updated_at` is a wall clock,
+    # and a clock in the value a stage returns is a clock in everything downstream compares.
+    write_json(ctx.workdir / "task_status.json", stamped(status, prior_status, round_number))
     write_json(ctx.workdir / "references.json", references)
     # Section 6: a Task whose Verifier does not clear D79 is "not verdicted, Verifier
     # immature", which is a Task the report leaves uncounted, not a failed build.
