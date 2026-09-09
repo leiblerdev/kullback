@@ -190,11 +190,17 @@ class ScoredRouter:
     """The Router with each answer compared against the call the Trace recorded for it."""
 
     def __init__(self, router: Any, expected: deque, write_tools: Iterable[str] = (), canon_rules: Any = None,
-                 comparer: Any = None, effects: Optional[dict] = None):
+                 comparer: Any = None, effects: Optional[dict] = None,
+                 holdout_values: Optional[dict] = None):
         self.inner = router
         self.expected = expected
         self.write_tools = set(write_tools)
         self.canon_rules = canon_rules
+        # D220 rule 2c: the values the world holds only because a held-out Run witnessed them, as
+        # text to the column they sit in. An answer carrying one of them was answered out of the
+        # world rather than out of anything the Builder was shown, which is a reading of how much
+        # a pass rests on the world; it is a count on the check, never a verdict.
+        self.holdout_values = dict(holdout_values or {})
         # What knows the schema's column classes and the readers' columns (D187). The Runner cannot
         # import the gates, so it is handed an object with one `agrees` method, the way it is handed
         # the canonicalizer's rules; given none, the comparison is canonical equality alone.
@@ -230,6 +236,9 @@ class ScoredRouter:
             "ours": _preview(outcome.error if outcome.error is not None else outcome.result),
             "recorded": _preview(recorded.error if recorded is not None and recorded.error is not None
                                  else (recorded.result if recorded is not None else None))}
+        answered_from = self._from_holdout(outcome.result) if self.holdout_values else []
+        if answered_from:
+            check["answered_from_holdout"] = answered_from
         if verdict not in AGREES and verdict != UNRECORDED:
             # A call that agreed needs nothing beyond the preview; a call that parted has to say
             # what parted, and 160 characters is not enough to say it (D66).
@@ -298,6 +307,27 @@ class ScoredRouter:
         if blamed:
             check[DOWNSTREAM] = blamed[-1]["call_id"]
             check["downstream_tool"] = blamed[-1]["tool"]
+
+    def _from_holdout(self, result: Any) -> list[str]:
+        """The columns of this answer whose value the world holds on a held-out Run's word alone."""
+        found: set[str] = set()
+
+        def walk(value: Any) -> None:
+            if isinstance(value, bool) or value is None:
+                return
+            if isinstance(value, (str, int, float)):
+                column = self.holdout_values.get(str(value))
+                if column is not None:
+                    found.add(column)
+            elif isinstance(value, list):
+                for item in value:
+                    walk(item)
+            elif isinstance(value, dict):
+                for item in value.values():
+                    walk(item)
+
+        walk(plain(result))
+        return sorted(found)
 
     def _take(self, name: str) -> Optional[ToolCall]:
         for index, call in enumerate(self.expected):
@@ -490,16 +520,22 @@ class Replay:
 
 def replay_trace(trace: Trace, router: Any, *, workdir: Any, task_id: str, env_id: Optional[str] = None,
                  write_tools: Iterable[str] = (), canon_rules: Any = None, run_id: Optional[str] = None,
-                 comparer: Any = None, effects: Optional[dict] = None) -> Replay:
+                 comparer: Any = None, effects: Optional[dict] = None,
+                 holdout_values: Optional[dict] = None) -> Replay:
     """Drive the loop with the Trace's own turns over `router`; the Run lands under `workdir`.
 
     `effects` is D215's write evidence, per recorded call id: the rows and columns the recording
     shows that call moving. Given none, every call is scored on its own answer, which is what this
     did before.
+
+    `holdout_values` are the world's values that only a held-out Run witnessed (D220 rule 2c): the
+    replay counts the calls whose answer carries one, so a reader can see how much of a pass rests
+    on the world rather than on the body. It is a finding on the record, not a rule.
     """
     script = _Script(trace)
     model, user = TraceModel(script), TraceUser(script)
-    scored = ScoredRouter(router, model.expected, write_tools, canon_rules, comparer, effects)
+    scored = ScoredRouter(router, model.expected, write_tools, canon_rules, comparer, effects,
+                          holdout_values=holdout_values)
     run_id = run_id or f"replay-{trace.trace_id}"
     state = loop.new_run_state(run_id, workdir=workdir, env_id=env_id, task_id=task_id,
                                trace_id=trace.trace_id, model=RECORDED, user=user,
@@ -548,6 +584,11 @@ def _score(trace: Trace, state: Any, scored: ScoredRouter, script: _Script, mode
         "effect_checks": sum(int(c.get("effect_checks") or 0) for c in scored.checks),
         "effect_failures": sum(int(c.get("effect_failures_total") or 0) for c in scored.checks),
         "effects_downstream": sum(1 for c in scored.checks if c.get(DOWNSTREAM)),
+        # D220 rule 2c: calls whose answer carried a value the world holds on a held-out Run's
+        # word alone, and the columns those values sat in.
+        "answered_from_holdout": sum(1 for c in scored.checks if c.get("answered_from_holdout")),
+        "holdout_columns": sorted({column for c in scored.checks
+                                   for column in c.get("answered_from_holdout") or ()}),
         "routes": dict(state.run.route_counts),
         # How much of this replay's agreement rests on forgiveness rather than on the answer, and
         # how much of its disagreement the token set caught before a judge was asked (D217).

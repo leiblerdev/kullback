@@ -66,9 +66,11 @@ TARGET = "environment"
 # reason now names the route the verdict was reached by, and the one reason here reads
 # `differs (columns)`. Re-pinned for D218: every row carries the round that last moved it and when,
 # so the hash is taken over the rows with those two stamps stripped; the stamp is a wall clock and
-# hashing it would pin the minute the fixture ran rather than what it wrote. The same three Tasks,
+# hashing it would pin the minute the fixture ran rather than what it wrote. Re-pinned for D220: a
+# Task's re-roll key is now a function of its seed Runs, so the key hash inside every re-rolled Run
+# id moves; the diff against the previous pin is those ids and nothing else. The same three Tasks,
 # the same verdicts.
-TASK_STATUS_SHA256_BEFORE_THE_PHASE = "7563e5758c9391816afd8de2465ad6bb91bbeb03d299c3479404ece3e440c2c8"
+TASK_STATUS_SHA256_BEFORE_THE_PHASE = "d675d9089f8bd63ef506ff56a918eb8eb3f2142148e426ecad67a1366509412c"
 
 
 def _fixture(request) -> Path:

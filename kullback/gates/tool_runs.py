@@ -46,6 +46,8 @@ from kullback.runner.records import EntitySchema, GateResult, ToolCall, content_
 CRASH_ERRORS = frozenset({"NameError", "AttributeError", "TypeError", "ImportError",
                           "ModuleNotFoundError", "IndentationError", "SyntaxError", "RecursionError"})
 MEMORISED_STAGE = "compile_tools.memorised_values"
+# D220 rule 2b: how the memorised-values gate names a value only a held-out Run witnessed.
+HOLDOUT_REASON = "holdout_value"
 SENSITIVITY_STAGE = "sensitivity"
 TOOL_RUN_STAGES = ("parses", "executes_on_s0", "deterministic", "non_trivial", "replay_fidelity",
                    "refuses_unknown", MEMORISED_STAGE, SENSITIVITY_STAGE)
@@ -1109,7 +1111,8 @@ def _pattern_hit(schema: Optional[EntitySchema], text: str) -> Optional[tuple[st
 def body_memorised_values_gate(source: str, schema: Optional[EntitySchema] = None, db: Any = None,
                                calls: Iterable[ToolCall] = (), sig: Any = None,
                                class_name: str = TOOLS_CLASS, readers: Any = None,
-                               effect_values: Optional[dict] = None) -> GateResult:
+                               effect_values: Optional[dict] = None,
+                               holdout_values: Optional[dict] = None) -> GateResult:
     """7. A body may not memorise the recordings: every id and value comes out of the world (D162).
 
     Four rules over the literals of the model's own methods, in the order that says most about
@@ -1125,10 +1128,16 @@ def body_memorised_values_gate(source: str, schema: Optional[EntitySchema] = Non
     moving is a value the body has to work out, exactly as one a result answered is, and a body
     holding it has memorised the recording just as surely.
 
+    (e) The literal is a value the world holds only because a held-out Run witnessed it (D220 rule
+    2b, `compile_env.holdout_values`). The writer was shown that column masked, so a body that
+    spells the value out did not read it off the world it was given. This rule is what the gate
+    could not do on its own: it had no notion of which Run any of its input came from, so a body
+    that answered a held-out Run's call correctly by naming its value looked like any other body.
+
     The failure names the literal as the code holds it, the rule that caught it and the table, the
     argument or the tool it came from. It is the model's own source, so quoting it back leaks
-    nothing, and the held-out split is never named: rules (c) and (d) say an argument's or a tool's
-    name, never a call.
+    nothing, and the held-out split is never named: rules (c), (d) and (e) say a column, an
+    argument's or a tool's name, never a call and never a Run.
     """
     schema = schema if schema is not None else EntitySchema()
     label = f"{getattr(sig, 'name', '')}: " if getattr(sig, "name", "") else ""
@@ -1144,6 +1153,7 @@ def body_memorised_values_gate(source: str, schema: Optional[EntitySchema] = Non
     by_argument = recorded_argument_values(calls)
     by_result = recorded_result_values(calls, readers)
     by_effect = {text: where for text, where in (effect_values or {}).items() if text not in by_result}
+    by_holdout = dict(holdout_values or {})
     failures: list[str] = []
     for literal in literals:
         text = literal if isinstance(literal, str) else str(literal)
@@ -1180,10 +1190,20 @@ def body_memorised_values_gate(source: str, schema: Optional[EntitySchema] = Non
                             f"after a recorded call of this tool, and neither the description nor "
                             f"the signature names it; work the value out from the world's rows "
                             f"instead of writing down what the recording ended up with")
+            continue
+        # Not under `_is_datum`: rule (d) excludes a word because a word may be the tool's own
+        # vocabulary, and the recordings answered it in front of the writer either way. Here the
+        # writer was shown the column masked, so a word it spells out is as unexplained as a number.
+        column = by_holdout.get(text)
+        if column is not None and text not in named and text not in description:
+            failures.append(f"{label}the literal {literal!r} is the value of {column} in the "
+                            f"{HOLDOUT_REASON} of the Starting state, which this body was shown "
+                            "masked; read the column instead of holding a value it was not given")
     return _ruling(MEMORISED_STAGE, not failures,
                    {"literals": len(literals), "memorised": len(failures),
                     "tables": len(by_table), "recorded_values": len(by_argument),
-                    "recorded_results": len(by_result), "effect_values": len(by_effect)}, failures)
+                    "recorded_results": len(by_result), "effect_values": len(by_effect),
+                    "holdout_values": len(by_holdout)}, failures)
 
 
 # --- 8. a body that reads state answers differently when that state differs (D195) ---
