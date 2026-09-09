@@ -211,6 +211,25 @@ def test_a_verifier_whose_reference_run_is_gone_carries_no_record_rather_than_an
     assert body["no_record"]["task_1"] == difficulty.NO_REFERENCE_RUN
 
 
+def test_a_verifier_whose_reference_was_withdrawn_is_not_read_as_the_tasks_difficulty(tmp_path):
+    workdir = _workdir(tmp_path)
+    write_json(workdir / "task_status.json",
+               {"task_1": {"reference_confirmed": False, "reason": "the recordings disagreed"}})
+    body = difficulty.compute(workdir)
+    assert body["tasks"] == []
+    assert body["buckets"] == []
+    assert body["no_record"] == {"task_1": difficulty.RETIRED_VERIFIER}
+
+
+def test_a_verifier_derived_over_a_run_the_reference_no_longer_names_is_not_read_either(tmp_path):
+    workdir = _workdir(tmp_path)
+    write_json(workdir / "task_status.json",
+               {"task_1": {"reference_confirmed": True, "reference_run_ids": ["run-b"]}})
+    body = difficulty.compute(workdir)
+    assert body["tasks"] == []
+    assert body["no_record"] == {"task_1": difficulty.RETIRED_VERIFIER}
+
+
 def test_the_record_is_written_beside_the_build_and_read_back_the_same(tmp_path):
     workdir = _workdir(tmp_path)
     written = difficulty.refresh(workdir)

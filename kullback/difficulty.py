@@ -35,6 +35,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Iterable, Optional
 
+from kullback.examiner import lifecycle
 from kullback.examiner import variants as variants_mod
 from kullback.gates import verifier_suite
 from kullback.gates.probes import write_tools_of
@@ -60,6 +61,10 @@ PATH_CAP = 2
 
 NO_VERIFIER = "no Verifier was derived for this Task"
 NO_REFERENCE_RUN = "the Reference Run is not on disk"
+# D208: the Verifier this Task had claims an End state derived from a Reference the Task no longer
+# holds, so it is not its difficulty either. It says so under its own phrase rather than reading as
+# a Task that never had one, because the two are different states to a person reading the table.
+RETIRED_VERIFIER = "the Verifier this Task had was retired with the Reference it was derived from"
 
 
 def _band(count: int, cap: int) -> str:
@@ -229,15 +234,25 @@ def markdown_table(rows: Iterable[dict], no_record: int = 0) -> list[str]:
 
 # --- reading a workdir --------------------------------------------------------------
 
-def _verifiers(workdir: Path) -> dict[str, Verifier]:
-    out: dict[str, Verifier] = {}
+def _verifiers(workdir: Path, task_status: Optional[dict] = None) -> tuple[dict[str, Verifier], dict[str, str]]:
+    """The live Verifiers of a workdir by Task, and the Tasks whose Verifier is retired (D208).
+
+    What sits under verifiers/ is not the live set. A Verifier derived from a Reference the Task no
+    longer holds was retired, and reading one off disk here would put a Task in a bucket on a claim
+    it has withdrawn, and count it trusted or not against that claim. The lifecycle accessor every
+    other consumer reads through answers which are live, so a workdir an older build left with
+    orphaned files reads the same as one the retirement step has been over.
+    """
+    on_disk: list[Verifier] = []
     for path in sorted((workdir / "verifiers").glob("*.json")):
         try:
             record = Verifier.model_validate(read_json(path, {}) or {})
         except (OSError, ValueError, TypeError):
             continue
-        out[record.task_id] = record
-    return out
+        on_disk.append(record)
+    live, retired = lifecycle.partition(on_disk, task_status)
+    return ({record.task_id: record for record in live},
+            {str(row["task_id"]): RETIRED_VERIFIER for row in retired})
 
 
 def _keep(out: dict[str, str], workdir: Path, row: Any) -> None:
@@ -320,18 +335,18 @@ def compute(workdir: Any, *, false_rejection: Optional[dict] = None,
         trusted_ids = list(counts.get("trusted_ids") or ruling.get("trusted") or [])
     status = read_json(workdir / "task_status.json", {}) or {}
     references = read_json(workdir / "references.json", {}) or {}
-    verifiers = _verifiers(workdir)
+    verifiers, retired = _verifiers(workdir, status)
     write_tools = write_tools_of(read_json(workdir / "tool_sigs.json", []) or [])
     judge_rows = read_jsonl(workdir / "judge_pairs.jsonl")
     paths = run_paths(workdir)
     records: list[dict] = []
     no_record: dict[str, str] = {}
-    for task_id in sorted(set(status) | set(verifiers)):
+    for task_id in sorted(set(status) | set(verifiers) | set(retired)):
         verifier = verifiers.get(task_id)
         if verifier is None:
             # The reason a Task has none is a fixed phrase, never the status row's own words: that
             # row quotes the customer's world back, and this file is read into reports.
-            no_record[task_id] = NO_VERIFIER
+            no_record[task_id] = retired.get(task_id, NO_VERIFIER)
             continue
         path = reference_path(verifier, references, paths)
         if path is None:
@@ -368,7 +383,8 @@ def refresh(workdir: Any, *, false_rejection: Optional[dict] = None,
     return body
 
 
-__all__ = ["FILE_NAME", "FORMAT", "NO_REFERENCE_RUN", "NO_VERIFIER", "PATH_CAP", "TOOL_CAP", "WRITE_CAP",
+__all__ = ["FILE_NAME", "FORMAT", "NO_REFERENCE_RUN", "NO_VERIFIER", "PATH_CAP", "RETIRED_VERIFIER",
+           "TOOL_CAP", "WRITE_CAP",
            "branching_depth", "bucket_key", "bucket_rows", "compute", "judge_agreement", "markdown_table",
            "question_count", "read_records", "record_for", "refresh", "reference_path", "round_summary",
            "run_paths", "second_paths", "solve_rate", "tools_touched", "write_count", "write_records"]
