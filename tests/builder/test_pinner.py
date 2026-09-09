@@ -315,3 +315,101 @@ def test_the_world_a_body_is_scored_on_carries_the_value_that_calls_own_read_saw
                                      {"c0": "t1", "c1": "t1"})
     assert states["c0"]["meters"]["M1"]["reading"] == "41"
     assert states["c1"]["meters"]["M1"]["reading"] == "77"
+
+
+# --- D207: a nested row is named by its own scope ------------------------------------------------
+
+def _run_schema() -> EntitySchema:
+    """The same network, with a table let out per day so its key is two columns.
+
+    A `runs` row is one leg on one day: two runs of one leg are two rows, and a result that answers
+    several of them together is where a key part taken from the wrong scope names the wrong row.
+    """
+    names = {"routes": ["route_id", "carrier"], "runs": ["run_id", "day", "seats", "surface"]}
+    return EntitySchema(
+        tables=sorted(names),
+        columns=[Column(table=table, name=name, **{"class": "hard"}, classified_by="rule")
+                 for table, columns in sorted(names.items()) for name in columns],
+        id_patterns={"routes.route_id": r"^R\d+$", "runs.run_id": r"^N\d+$"},
+        composite_keys={"runs": ["run_id", "day"]},
+    )
+
+
+def _pins(workdir):
+    return json.loads((workdir / ce.PINS_FILE).read_text(encoding="utf-8"))
+
+
+def test_a_nested_element_is_named_by_its_own_key_and_not_by_where_it_sits_in_the_list(workdir):
+    """Two elements of one list carry two keys, so they are two rows and neither takes the other's."""
+    result = [{"route_id": "R1", "carrier": "north", "runs": [
+        {"run_id": "N1", "day": "mon", "seats": 4}, {"run_id": "N1", "day": "tue", "seats": 9}]}]
+    trace = _trace("A", [_call("search_routes", {"carrier": "north"}, result=result)])
+    state = ce.build_starting_state([trace], _run_schema(), workdir, [Task(id="t1", run_ids=["A"])],
+                                    _sigs(), synthetic=False)
+    assert state.db["runs"]["N1|mon"]["seats"] == 4
+    assert state.db["runs"]["N1|tue"]["seats"] == 9
+    assert _pins(workdir)["homed_by"] == {"key": 3, "position": 0}
+
+
+def test_a_nested_element_takes_the_missing_key_part_from_the_dict_it_sits_in(workdir):
+    """The day is stated once per group; a run inside a group is that group's day, not the call's."""
+    result = [{"day": "mon", "runs": [{"run_id": "N1", "seats": 4}]},
+              {"day": "tue", "runs": [{"run_id": "N1", "seats": 9}]}]
+    trace = _trace("A", [_call("search_routes", {"day": "wed", "carrier": "north"}, result=result)])
+    state = ce.build_starting_state([trace], _run_schema(), workdir, [Task(id="t1", run_ids=["A"])],
+                                    _sigs(), synthetic=False)
+    assert sorted(state.db["runs"]) == ["N1|mon", "N1|tue"]
+    assert state.db["runs"]["N1|mon"]["seats"] == 4
+    assert _pins(workdir)["nested_key_sources"] == {"own": 0, "parent": 2, "args": 0, "missing": 0}
+
+
+def test_a_key_part_the_call_states_twice_names_no_row_and_the_sighting_keeps_a_partial_key(workdir):
+    """One candidate in the arguments can name a row; two candidates name none of them."""
+    one = _call("search_routes", {"day": "mon"}, result=[{"run_id": "N1", "seats": 4}], idx=0)
+    both = _call("search_routes", {"days": [{"day": "mon"}, {"day": "tue"}]},
+                 result=[{"run_id": "N2", "seats": 9}], idx=1)
+    state = ce.build_starting_state([_trace("A", [one, both])], _run_schema(), workdir,
+                                    [Task(id="t1", run_ids=["A"])], _sigs(), synthetic=False)
+    assert "N1|mon" in state.db["runs"]
+    assert "N2|" in state.db["runs"], "the part the call could not name is left empty, not guessed"
+    assert _pins(workdir)["nested_key_sources"]["args"] == 1
+
+
+def test_a_nested_element_a_write_named_is_marked_written_so_the_world_keeps_its_earlier_value(workdir):
+    """A write names its run one level down and answers no row; the read after it is still post-write.
+
+    The write's own key is composed from the element and the argument beside it, so the row it named
+    is the row the later sighting is about, and the inverse replay undoes the write rather than
+    keeping its value as the one the world started in.
+    """
+    sigs = _sigs() + [ToolSig(name="set_seats", kind="write", unclassified=False)]
+    seen = _call("search_routes", {"carrier": "north"},
+                 result=[{"run_id": "N1", "day": "mon", "seats": 4}], idx=0)
+    wrote = _call("set_seats", {"runs": [{"run_id": "N1"}], "day": "mon", "seats": 9},
+                  result={"changed": 1}, idx=1)
+    again = _call("search_routes", {"carrier": "north"},
+                  result=[{"run_id": "N1", "day": "mon", "seats": 9}], idx=2)
+    state = ce.build_starting_state([_trace("A", [seen, wrote, again])], _run_schema(), workdir,
+                                    [Task(id="t1", run_ids=["A"])], sigs, synthetic=False)
+    assert state.db["runs"]["N1|mon"]["seats"] == 4
+
+
+def test_one_key_naming_two_different_rows_in_one_result_is_a_finding(workdir):
+    """Two sightings that disagree under one key mean the key does not name a row."""
+    result = [{"run_id": "N1", "day": "mon", "seats": 4}, {"run_id": "N1", "day": "mon", "seats": 9}]
+    trace = _trace("A", [_call("search_routes", {"carrier": "north"}, result=result)])
+    ce.build_starting_state([trace], _run_schema(), workdir, [Task(id="t1", run_ids=["A"])],
+                            _sigs(), synthetic=False)
+    pins = _pins(workdir)
+    assert pins["nested_key_collision"] == 1
+    assert pins["nested_key_collisions"] == [{"table": "runs", "depth": 0, "key_class": "composite"}]
+
+
+def test_a_list_element_that_carries_no_key_beside_ones_that_do_is_counted(workdir):
+    """Nothing is homed by its position; an element with no key of its own is counted, not guessed."""
+    result = [{"route_id": "R1", "carrier": "north", "runs": [
+        {"run_id": "N1", "day": "mon", "seats": 4}, {"seats": 9}]}]
+    trace = _trace("A", [_call("search_routes", {"carrier": "north"}, result=result)])
+    ce.build_starting_state([trace], _run_schema(), workdir, [Task(id="t1", run_ids=["A"])],
+                            _sigs(), synthetic=False)
+    assert _pins(workdir)["list_elements_carrying_no_key"] == 1
