@@ -1196,6 +1196,10 @@ class SemanticJudging:
         self._second = judge_mod.AgenticJudge(second_model) if second_model is not None else None
         names = [judge.name for judge in (self._first, self._second) if judge is not None]
         self.identity = (f"{'+'.join(names)}:{judge_mod.JUDGE_VERSION}" if names else "none")
+        # D222: what the judging of this stage prefilled, what the models asked for on top of it,
+        # and how the forced first turn went, so a round can say whether a verdict still depends on
+        # a model's tool-calling habit. All zero where no pair reached a judge.
+        self.judge_counts: dict = {name: 0 for name in judge_mod.JUDGE_COUNTS}
 
     @property
     def judge(self) -> Optional[Any]:
@@ -1210,9 +1214,11 @@ class SemanticJudging:
 
     def _answer(self, column: Any, a: Any, b: Any, key: str) -> Any:
         if self._second is None:
-            return self._first.judge_equivalence(column, a, b)
-        answer, _ = judge_mod.two_judges(self._first, self._second, "judge_equivalence", column, a, b,
-                                         workdir=self.workdir, item_id=key)
+            answer = self._first.judge_equivalence(column, a, b)
+        else:
+            answer, _ = judge_mod.two_judges(self._first, self._second, "judge_equivalence", column, a, b,
+                                             workdir=self.workdir, item_id=key)
+        self.judge_counts = judge_mod.count_judgement(answer, self.judge_counts)
         return answer
 
     def save(self) -> None:
@@ -1292,7 +1298,8 @@ def _replay_stage(judging: Optional[SemanticJudging] = None, only: Optional[Iter
         # What the semantic comparisons of this stage came to, and every pair a judge settled, so
         # the next run of the stage asks about none of them again (D219).
         judging.save()
-        _write_json(ctx.workdir / SEMANTIC_COUNTS_FILE, dict(comparer.counts, judge=judging.identity))
+        _write_json(ctx.workdir / SEMANTIC_COUNTS_FILE,
+                    dict(comparer.counts, **judging.judge_counts, judge=judging.identity))
         _write_runs_index(ctx.workdir)
         # Section 6: a Task none of whose Traces replay to their End state is rejected for that
         # Task, which the Examiner's derivation turns into "not verdicted"; the build itself goes on.

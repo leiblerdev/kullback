@@ -507,6 +507,26 @@ def report(
     typer.echo(str(write_report(data, target.parent, target.name)))
 
 
+@app.command("judge-smoke")
+def judge_smoke(
+    model: str = typer.Option(..., "--model", help="Candidate judge model id, as provider/model."),
+    base_url: Optional[str] = typer.Option(None, "--base-url",
+                                           help="Endpoint for an OpenAI-compatible model."),
+):
+    """Ask one model two invented equivalence pairs and print resolved or refused per pair (D222).
+
+    A relaunch names a judge model beside the build model, and the only thing it has to know first
+    is whether that model returns a verdict on a semantic pair at all. This is that question in one
+    call: two pairs of an invented column, one the same and one not, with the route each took.
+    """
+    build_judge = _entry("kullback.runner.judge", "AgenticJudge")
+    name = _entry("kullback.runner.judge", "judge_name")
+    judge = build_judge(_live_model(model, base_url), name=name(model, "a"))
+    rows = _entry("kullback.runner.judge", "smoke")(judge)
+    for line in _entry("kullback.runner.judge", "smoke_lines")(rows):
+        typer.echo(line)
+
+
 @app.command("difficulty")
 def difficulty_table(
     workdir: Path = WORKDIR,

@@ -63,8 +63,11 @@ TARGET = "environment"
 # a reading over the pool can leave out the Runs that did not finish, and the ends move again where
 # the review of D210 closed the turn that says nothing but a miss. Re-pinned for D217: a replay
 # reason now names the route the verdict was reached by, and the one reason here reads
-# `differs (columns)`. The same three Tasks and the same verdicts.
-TASK_STATUS_SHA256_BEFORE_THE_PHASE = "7563e5758c9391816afd8de2465ad6bb91bbeb03d299c3479404ece3e440c2c8"
+# `differs (columns)`. The same three Tasks and the same verdicts. Re-pinned for D222: the judge
+# version is one of the things a re-roll's key is made of, and it moved when the judge stopped
+# refusing a verdict for want of a tool call, so the re-roll ids under each row are new. The same
+# three Tasks, the same verdicts and the same reasons.
+TASK_STATUS_SHA256_BEFORE_THE_PHASE = "2fe278339d5b23b2186bbfa9849816441693702069b035a27c2dfb4c3e7da6fd"
 
 
 def _fixture(request) -> Path:
