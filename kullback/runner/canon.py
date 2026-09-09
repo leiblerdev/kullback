@@ -35,12 +35,23 @@ CompareRoute = Literal["exempt", "canon", "cache", "judge", "unresolved"]
 # How a column by column comparison names what it found. The gates write these marks on their notes
 # and the Runner reads a verdict's route off them, so both sides spell them from here rather than
 # each holding its own copy of the string (D217). The first two forgive the difference they name,
-# the last two never do: a value one side holds and the other does not, and two values made of
-# different domain tokens, are differences whatever class the column has.
+# the rest never do: a value one side holds and the other does not, two values made of different
+# domain tokens, two values a judge called different, and a pair nobody settled at all.
 EXEMPT_NOTE, SEMANTIC_NOTE = "exempt:", "semantic:"
 PRESENCE_NOTE, TOKEN_NOTE = "presence:", "token_set:"
+# A semantic column that was compared and did not come back equal (D219). `semantic:` marks the
+# opposite case, a pair the judge or the table called equal, and stays forgiven; these two are
+# spelled apart from it because a note that fails a ruling and a note that explains a pass cannot
+# share a prefix without one of them being read as the other.
+DIFFERS_NOTE, UNRESOLVED_NOTE = "semantic_differs:", "unresolved:"
 # What a canonical form says is nothing there at all: both sides empty is not a presence difference.
 EMPTY_CANON = frozenset({"", "null", "[]", "{}"})
+# The three answers a comparison of one column can give (D219). A comparison is not a boolean: a
+# pair nobody settled is not the same evidence as a pair someone settled as different, and folding
+# the two together makes an unanswered question read as an answer, in whichever direction the
+# caller's own polarity happens to point.
+EQUAL, DIFFERENT, UNRESOLVED = "equal", "different", "unresolved"
+RESOLUTIONS = (EQUAL, DIFFERENT, UNRESOLVED)
 
 
 class CanonRules(BaseModel):
@@ -398,6 +409,32 @@ def compare(
     )
 
 
+def resolution_of(comparison: Comparison) -> str:
+    """One of the three answers a comparison gives: equal, different, unresolved (D219).
+
+    `Comparison.equal` is a boolean and cannot hold the third answer, so a caller reading it alone
+    turns "nobody decided" into "not equal", which a must-equal caller reads as a failure and a
+    must-not-equal caller reads as a pass. Every caller that can act on the difference reads this
+    instead, and the boolean stays for the callers that genuinely only need two.
+    """
+    if comparison.route == UNRESOLVED:
+        return UNRESOLVED
+    return EQUAL if comparison.equal else DIFFERENT
+
+
+class Unresolved(Exception):
+    """Raised where a comparison came back unresolved and the caller stated no policy for it (D219).
+
+    A caller that can carry the third answer asks for `resolution_of`; a caller whose own signature
+    is a boolean either says which way an unresolved pair should count (a policy) or is stopped
+    here, so no unanswered question is ever silently answered by the shape of the return type.
+    """
+
+    def __init__(self, column: str, a: str, b: str, note: Optional[str] = None) -> None:
+        self.column, self.a, self.b, self.note = column, a, b, note
+        super().__init__(f"{column or 'value'}: nobody settled this pair" + (f": {note}" if note else ""))
+
+
 def read_judge_answer(answer: Any) -> tuple[Optional[bool], Optional[str]]:
     """The judge's answer as (verdict, note); None is an abstain. Never coerced with bool() (D84).
 
@@ -485,6 +522,38 @@ def first_difference(
 def _shown(value: Any, limit: int) -> str:
     text = json.dumps(value, ensure_ascii=False, default=str, separators=(",", ":"))
     return text if len(text) <= limit else text[:limit] + "..."
+
+
+def leaves(value: Any, path: str = "", out: Optional[dict] = None) -> dict[str, Any]:
+    """Every leaf a value carries, under the path it sits at, with each list's length beside it.
+
+    The path is `first_difference`'s own: a key joins with a dot and an element sits under its
+    index, so a leaf named by one is the leaf the other names. The length of a list is a leaf of
+    its own, at the list's path with `[]` after it, because a column a write appends to moves at its
+    length before it moves at any element, and an appended history is exactly the kind of thing a
+    rebuilt write forgets (D215).
+
+    Here rather than beside its caller because both sides of the harness read it: the Builder states
+    which column a recorded write moved, and the Runner reads that column back out of the world once
+    the write has replayed. One walker, so the two cannot name the same leaf differently.
+    """
+    out = {} if out is None else out
+    if isinstance(value, dict):
+        for key in sorted(value):
+            leaves(value[key], _join(path, str(key)), out)
+    elif isinstance(value, (list, tuple)):
+        out[f"{path}[]" if path else "[]"] = len(value)
+        for index, item in enumerate(value):
+            leaves(item, f"{path}[{index}]", out)
+    else:
+        out[path or "value"] = value
+    return out
+
+
+def value_at(value: Any, path: str) -> tuple[bool, Any]:
+    """Whether a value holds a leaf at this path, and what that leaf holds."""
+    found = leaves(value)
+    return (path in found), found.get(path)
 
 
 # --- the equivalence table as a file ---

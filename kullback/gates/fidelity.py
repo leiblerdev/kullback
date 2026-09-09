@@ -83,6 +83,12 @@ def summarize(replays: dict[str, dict[str, dict]]) -> dict:
     `turns_absorbed` counts the recorded turns the replay cursor folded into the turn beside them
     rather than stalling on (D204), which is how a round reads how much of a corpus records a run of
     consecutive turns of one role at all.
+
+    `effect_checks`, `effect_failures` and `effects_downstream` are D215's: how many columns the
+    recording showed a write moving were read back out of the world, how many of them the replayed
+    body left where they were, and how many later calls parted over a row an earlier write had left
+    stale. A round reads the third against the second: a corpus where they move together is one
+    where the reads that failed were never the reads' own fault.
     """
     rows = [r for per_task in replays.values() for r in per_task.values()]
     tasks_confirmed = sum(any(r["confirmed"] for r in per_task.values()) for per_task in replays.values())
@@ -93,6 +99,8 @@ def summarize(replays: dict[str, dict[str, dict]]) -> dict:
             "reads": total("reads"), "reads_semantic": total("reads_semantic"),
             "reads_cosmetic": total("reads_cosmetic"), "unmade": total("unmade"),
             "turns_absorbed": total("absorbed_turns"),
+            "effect_checks": total("effect_checks"), "effect_failures": total("effect_failures"),
+            "effects_downstream": total("effects_downstream"),
             # How the agreement was reached, so a reader can see how much of it rests on a judged or
             # forgiven difference rather than on the answer itself (D217).
             "cosmetic_by_canonical": total("cosmetic_by_canonical"),
@@ -100,7 +108,12 @@ def summarize(replays: dict[str, dict[str, dict]]) -> dict:
             "cosmetic_by_judge": total("cosmetic_by_judge"),
             "cosmetic_by_columns": total("cosmetic_by_columns"),
             "differs_by_token_set": total("differs_by_token_set"),
-            "differs_by_presence": total("differs_by_presence")}
+            "differs_by_presence": total("differs_by_presence"),
+            # A check the judge settled as different, and one nobody settled at all (D219). The
+            # second is the number that says whether the judging is wired: a corpus with semantic
+            # columns and nothing but unresolved checks has no semantic comparison happening.
+            "differs_by_judge": total("differs_by_judge"),
+            "differs_unresolved": total("differs_unresolved")}
 
 
 def unconfirmed_reason(per_task: dict[str, dict]) -> str:

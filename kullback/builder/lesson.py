@@ -326,6 +326,36 @@ def _numbers(value: Any, path: str = "", out: Optional[list] = None) -> list[tup
     return out
 
 
+def arithmetic_relations(value: float, operands: Iterable[tuple[str, float]]) -> set[str]:
+    """Every way a number is one of these named numbers, or a sum, difference or product of two.
+
+    The catalogue, with the operands left to the caller. A lesson draws them from the call's own
+    arguments, because that is what a body has in front of it when it answers the call; D215 draws
+    them from the columns of the rows the call names and the rows its Run read earlier, because
+    that is what a body has in front of it when it writes. The relations are the same either way,
+    and stating them in one place is what keeps the two from drifting apart.
+
+    Each operand is a name and a number, and only the name reaches the sentence: a formula is a
+    rule a body can follow on any world, and a value is something it could write down instead.
+    """
+    operands = list(operands)
+    found: set[str] = set()
+    for name, number in operands:
+        if value == number:
+            found.add(name)
+    for index, (one_name, one) in enumerate(operands):
+        for other_name, other in operands[index + 1:]:
+            if value == one + other:
+                found.add(f"{one_name} plus {other_name}")
+            if value == one - other:
+                found.add(f"{one_name} less {other_name}")
+            if value == other - one:
+                found.add(f"{other_name} less {one_name}")
+            if value == one * other:
+                found.add(f"{one_name} times {other_name}")
+    return found
+
+
 def _arithmetic_signatures(triple: Triple, rules: Any = None) -> set[tuple[str, str, str]]:
     """A numeric leaf of the recording is a sum, difference, product or count over the call's own numbers.
 
@@ -344,19 +374,8 @@ def _arithmetic_signatures(triple: Triple, rules: Any = None) -> set[tuple[str, 
     for where, label, value in _numbers(triple.theirs):
         if where not in wanted:
             continue
-        for name, number in operands:
-            if value == number:
-                found.add(("arithmetic", where, f"{label} is {name}"))
-        for i, (one_name, one) in enumerate(operands):
-            for other_name, other in operands[i + 1:]:
-                if value == one + other:
-                    found.add(("arithmetic", where, f"{label} is {one_name} plus {other_name}"))
-                if value == one - other:
-                    found.add(("arithmetic", where, f"{label} is {one_name} less {other_name}"))
-                if value == other - one:
-                    found.add(("arithmetic", where, f"{label} is {other_name} less {one_name}"))
-                if value == one * other:
-                    found.add(("arithmetic", where, f"{label} is {one_name} times {other_name}"))
+        found |= {("arithmetic", where, f"{label} is {text}")
+                  for text in arithmetic_relations(value, operands)}
     return found
 
 
