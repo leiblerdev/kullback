@@ -53,12 +53,13 @@ def test_the_driver_builds_the_environment_and_reports_the_rulings(driven):
     result = driven["result"]
     assert result["status"] == "complete" and result["env_id"] and result["target"] == "environment"
     assert result["tool_result"]["is_error"] is False
-    assert {"ingest", "mine", "cluster", "compile_tools", "compile_policy", "intent", "vocabulary",
+    assert {"ingest", "mine", "readers", "cluster", "compile_tools", "compile_policy", "intent", "vocabulary",
             "build_user_rules", "tau2_export", "replay_reference", "rerolls"} <= set(result["rulings"])
     assert "derive_verifier" not in result["rulings"], "the Verifiers are the Examiner's (D123)"
     state = json.loads((driven["workdir"] / "pipeline" / "state.json").read_text(encoding="utf-8"))
     assert state["status"] == "complete" and state["statuses"]["build_environment"] == "ran"
-    assert set(state["statuses"]) == {"ingest", "mine", "cluster", "canon_rules", "starting_state", "compile_tools",
+    assert set(state["statuses"]) == {"ingest", "mine", "readers", "cluster", "canon_rules", "starting_state",
+                                      "compile_tools",
                                       "compile_policy", "judge_lessons", "intent", "vocabulary", "user_rules",
                                       "build_environment", "replay_reference", "rerolls"}
 
@@ -67,11 +68,11 @@ def test_stage_events_reach_the_subscribers_in_order_and_the_tool_end_comes_last
     events = driven["events"]
     starts = [e.name for e in events if isinstance(e, StageStart)]
     ends = [e.name for e in events if isinstance(e, StageEnd)]
-    assert starts == ends and starts[:3] == ["ingest", "mine", "cluster"] and starts[-1] == "rerolls"
+    assert starts == ends and starts[:3] == ["ingest", "mine", "readers"] and starts[-1] == "rerolls"
     assert isinstance(events[-1], ToolExecutionEnd) and events[-1].tool_name == "build"
     compile_end = next(e for e in events if isinstance(e, StageEnd) and e.name == "compile_tools")
     assert compile_end.counts["status"] == "ran" and "parses" in compile_end.counts["rulings"]
-    assert compile_end.counts["produced"] == ["bodies", "assisted_tools"]
+    assert compile_end.counts["produced"] == ["bodies", "assisted_tools", "tool_fidelity"]
 
 
 def test_the_tool_result_carries_a_short_text_and_the_payload_in_details(driven):
@@ -95,16 +96,14 @@ def test_the_tool_result_hook_appends_the_registered_gates_over_what_the_tool_pr
     assert {"compile_policy", "intent", "vocabulary", "build_user_rules", "replay_reference"} <= set(names)
     # The same rulings the stages recorded, decided again by the same functions over the store the
     # tool left; the hook writes nothing, so gates.json is the stages' and only theirs. ingest's
-    # ruling is a stage gate and lives in state.json; cluster's was in gates.json until the
-    # compile_tools stage overwrote the file with the sandbox rulings, as it always has.
+    # ruling is a stage gate and lives in state.json; cluster's stayed in gates.json, because the
+    # compile_tools stage now writes its per tool rows to their own file instead of over this one
+    # (D218 rule 2), and nothing a later stage does drops a ruling an earlier stage recorded.
     recorded = {g["stage"]: g for g in json.loads((driven["workdir"] / "gates.json").read_text(encoding="utf-8"))}
     state = json.loads((driven["workdir"] / "pipeline" / "state.json").read_text(encoding="utf-8"))
     recorded.update({g["stage"]: g for g in state["gates"]})
-    assert "cluster" not in recorded
+    assert "cluster" in recorded
     for ruling in rulings:
-        if ruling["stage"] == "cluster":
-            assert ruling["pass"] is True
-            continue
         assert ruling["stage"] in recorded, ruling["stage"]
         assert ruling["pass"] == recorded[ruling["stage"]]["pass"], ruling["stage"]
         assert ruling["failures"] == recorded[ruling["stage"]]["failures"], ruling["stage"]
@@ -255,11 +254,13 @@ def test_a_stage_target_after_the_build_is_served_from_the_cache_and_only_runs_u
     result = builder_agent.drive_tool(harness, "build", {"target": "cluster"})
     assert not result.is_error, result.content
     stages = {s["name"]: s for s in result.details["stages"]}
-    assert set(stages) == {"mine", "cluster"}, "no files to ingest, so the traces come off disk and mine is first"
+    assert set(stages) == {"mine", "readers", "cluster"}, ("no files to ingest, so the traces come off disk "
+                                                             "and mine is first")
     # The first build mined and clustered before the anchor existed; the anchor is in every key now
     # (D81), so the two run once more, without a model, and are served from the cache from then on.
     assert not any(s["cached"] for s in stages.values())
-    assert result.details["produced"] == ["sigs", "schema", "categories", "tasks"]
+    assert result.details["produced"] == ["mined_sigs", "mined_schema", "schema", "sigs", "readers",
+                                          "categories", "tasks"]
     assert "gate rulings: cluster pass" in result.content
     again = builder_agent.drive_tool(harness, "build", {"target": "cluster"})
     assert all(s["cached"] for s in again.details["stages"])
@@ -275,12 +276,21 @@ def test_compile_tool_recompiles_one_body_and_releases_every_body(driven):
     result = builder_agent.drive_tool(harness, "compile_tool", {"name": "get_user_details"})
     assert not result.is_error, result.content
     stages = {s["name"]: s for s in result.details["stages"]}
-    assert stages["compile_tools"]["cached"] is False and stages["starting_state"]["cached"] is True
+    assert stages["compile_tools"]["cached"] is False
     after = json.loads((driven["workdir"] / "bodies.json").read_text(encoding="utf-8"))
     assert after == before, "one tool recompiled by the same model, the rest read back: every body is still there"
     assert set(plan.store["bodies"]) == set(before)
     gates = {g["stage"] for g in json.loads((driven["workdir"] / "gates.json").read_text(encoding="utf-8"))}
-    assert {"parses", "intent", "rerolls"} <= gates, "the sandbox rulings were appended, the rest kept"
+    assert {"intent", "rerolls"} <= gates, "the stage rulings are kept, none of them dropped"
+    compiled = json.loads((driven["workdir"] / "compile_snapshot.json").read_text(encoding="utf-8"))
+    assert "parses" in {row["stage"] for row in compiled["rows"]}, "the sandbox rulings are in their own file"
+    assert not ({"parses", "confined"} & gates), "and never over the stage rulings (D218 rule 2)"
+    # D202: starting_state declares bodies.json, because a column a Task first touches with a write
+    # is pinned by running that tool's body, and the build that made this workdir wrote the bodies
+    # after the Starting state was built. So the first narrowed run rebuilds it once and the key
+    # settles from there, which is the same shape the narrowed replay below settles in.
+    again = builder_agent.drive_tool(harness, "compile_tool", {"name": "get_user_details"})
+    assert {s["name"]: s["cached"] for s in again.details["stages"]}["starting_state"] is True
 
 
 def test_replay_one_task_keeps_the_other_tasks_replays(driven):
@@ -290,7 +300,12 @@ def test_replay_one_task_keeps_the_other_tasks_replays(driven):
     task = sorted(replays)[0]
     result = builder_agent.drive_tool(harness, "replay", {"task": task})
     assert not result.is_error, result.content
-    assert {s["name"] for s in result.details["stages"] if not s["cached"]} == {"replay_reference"}
+    ran = {s["name"] for s in result.details["stages"] if not s["cached"]}
+    # D191: compile_tools declares `replay_evidence.json`, the calls the last replay could not
+    # reproduce, and the build's own replay wrote that file after compile_tools had already run. So
+    # the first narrowed replay in a workdir recompiles once and the file settles from there. What
+    # this test is about is that no other stage runs and no other Task's replays are touched.
+    assert ran <= {"replay_reference", "compile_tools"} and "replay_reference" in ran
     assert set(plan.store["replays"]) == set(replays)
     assert "replay_reference" in result.content
     missing = builder_agent.drive_tool(harness, "replay", {"task": "no_such_task"})
@@ -312,7 +327,7 @@ def test_a_scripted_model_driving_the_session_calls_build_and_reads_the_rulings(
     second = json.dumps(model.calls[1]["messages"])
     assert "gate rulings:" in second and "build environment: complete" in second
     events = model_driven["events"]
-    assert [e.name for e in events if isinstance(e, StageStart)][:3] == ["ingest", "mine", "cluster"]
+    assert [e.name for e in events if isinstance(e, StageStart)][:3] == ["ingest", "mine", "readers"]
     assert [e.type for e in events][0] == "agent_start" and events[-1].type == "agent_end"
     kinds = [e.type for e in events]
     assert kinds.index("stage_start") < kinds.index("tool_execution_end")

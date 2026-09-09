@@ -16,6 +16,19 @@ drained one message at a time, each starting a new turn; a follow-up is delivere
 run would otherwise end, which is what the Examiner's findings and a scheduler's next target want
 (D123). A steer interrupts; a follow-up waits.
 
+An empty last turn. A turn that answers nothing and calls nothing is not a stop the caller can
+read: two of one live build's three no-tool turns were empty strings right after a code compaction,
+and the round ended with no account of what was left. The loop asks once, with a one-line user
+message, for the summary the prompt's stop rule wants; a second empty turn ends the run, so a model
+with nothing to say costs one turn and not a loop.
+
+A refusal that knows the corrected call. A tool may refuse arguments with a `RetryableToolError`,
+whose `ask` is the corrected call in one line; the loop appends that ask as a user message after the
+turn that earned it, once per distinct ask in a run, which is the empty-turn ask's shape. One live
+build made a single `repair` call, had it refused for a payload of the wrong shape, and never tried
+again, so the round lost the repair and the refusal read as a dead end. The same ask a second time
+is not made: a refusal the model has already been walked through stands.
+
 Hooks. A `tool_call` hook sees the call before the tool runs and may return rewritten arguments
 or raise; a raise blocks the call, and the model reads an is_error result naming the hook. That
 is fail-safe by construction: a hook that crashes blocks the call rather than letting it through,
@@ -111,6 +124,8 @@ async def run_agent_loop(
 
     await send(AgentStart())
     turn = 0
+    asked_for_summary = False  # the empty-turn ask is made once per run, never twice
+    asked_shapes: set[str] = set()  # the retry asks already made; the same refusal twice stands
     pending: list[Message] = list(prompts or [])
     pending.extend(_drain_all(state.steering))
     while True:
@@ -149,12 +164,45 @@ async def run_agent_loop(
             await send(TurnEnd(turn=turn, message=assistant, tool_results=results))
             has_more_tools = bool(assistant.tool_calls)
             pending = _drain_all(state.steering)
+            pending += [user_message(ask, {"retry_ask": ask}) for ask in _retry_asks(results, asked_shapes)]
+            if (not has_more_tools and not pending and not state.follow_ups
+                    and not asked_for_summary and _says_nothing(assistant)):
+                asked_for_summary = True
+                pending = [user_message(EMPTY_TURN_ASK)]
         if state.follow_ups:
             pending = [state.follow_ups.popleft()]
             continue
         break
     await send(AgentEnd(messages=new))
     return new
+
+
+# What an empty last turn is answered with, once. It names no artifact of any application: the stop
+# rule the model is to follow is the one in its own prompt.
+EMPTY_TURN_ASK = ("Your last turn answered nothing and called no tool. Before the session ends, answer "
+                  "in one line with what is left and what you did about each of them, as the stop rule "
+                  "in your prompt asks.")
+
+
+def _retry_asks(results: list[ToolResultMessage], already: set[str]) -> list[str]:
+    """The corrected-call asks this turn's refusals carry and the run has not made yet.
+
+    A tool that refuses with a `RetryableToolError` puts its ask in the result's details; the loop
+    turns each new one into a user message, in the order the calls were made, and remembers it so a
+    second refusal with the same ask is left to stand on the result alone.
+    """
+    asks = []
+    for result in results:
+        ask = str((result.details or {}).get("retry_ask") or "") if result.is_error else ""
+        if ask and ask not in already:
+            already.add(ask)
+            asks.append(ask)
+    return asks
+
+
+def _says_nothing(assistant: AssistantMessage) -> bool:
+    """A turn with no tool call and no text: nothing the caller can read as a stop."""
+    return not assistant.tool_calls and not (assistant.content or "").strip()
 
 
 def _drain_all(queue: deque[Message]) -> list[Message]:

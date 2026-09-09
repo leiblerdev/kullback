@@ -17,25 +17,38 @@ from __future__ import annotations
 
 from typing import Any
 
+from kullback.gates.tool_runs import compare_results
 from kullback.runner.gate_support import MISS_REASONS, _get, _rate, _same, gate
 from kullback.runner.records import GateResult
 
 # --- the per-tool bar (compile_tools gate 5, D80) ---
 
-def replay_match(call: Any, canon_rules: Any = None) -> bool:
-    """Does the rebuilt tool answer a recorded call the way the recording did (errors by shape, D51)."""
+def replay_match(call: Any, canon_rules: Any = None, schema: Any = None, readers: Any = None) -> bool:
+    """Does the rebuilt tool answer a recorded call the way the recording did (errors by shape, D51).
+
+    Given a schema the two answers are compared column by column under its classes, so an exempt
+    column cannot fail a call and a semantic one is left to the judge (D73, D84, D187); given none,
+    the whole answer is one hard value, which is what this asked before.
+    """
     expected_error, actual_error = _get(call, "expected_error"), _get(call, "actual_error")
     if expected_error is not None:
         return actual_error is not None and _get(expected_error, "class_") == _get(actual_error, "class_")
-    return actual_error is None and _same(_get(call, "expected"), _get(call, "actual"),
-                                          canon_rules=canon_rules)
+    if actual_error is not None:
+        return False
+    if schema is not None:
+        return compare_results(schema, _get(call, "expected"), _get(call, "actual"), canon_rules,
+                               tool=str(_get(call, "tool", "") or ""), readers=readers)[0]
+    return _same(_get(call, "expected"), _get(call, "actual"), canon_rules=canon_rules)
 
 
-def replay_fidelity_gate(calls, canon_rules: Any = None) -> GateResult:
+def replay_fidelity_gate(calls, canon_rules: Any = None, schema: Any = None,
+                         readers: Any = None) -> GateResult:
     """Gate 5: replay of recorded calls, success and error fidelity reported separately (R22 item 8, D80).
 
     `canon_rules` is the customer's canonicalization: a gate given none compares under the module
     defaults and can call two values different that the Verdict calls the same (gate_support.py).
+    `schema` and `readers` are threaded the same way and for the same reason: without them this
+    ruling holds every column to a hard column's bar (D187).
     """
     failures, misses, per_tool = [], [], {}
     totals = {"success": [0, 0], "error": [0, 0]}
@@ -45,7 +58,7 @@ def replay_fidelity_gate(calls, canon_rules: Any = None) -> GateResult:
         slot = per_tool.setdefault(tool, {"success": {"total": 0, "matched": 0}, "error": {"total": 0, "matched": 0}})
         totals[kind][0] += 1
         slot[kind]["total"] += 1
-        if replay_match(call, canon_rules):
+        if replay_match(call, canon_rules, schema, readers):
             totals[kind][1] += 1
             slot[kind]["matched"] += 1
             continue
@@ -65,7 +78,18 @@ def replay_fidelity_gate(calls, canon_rules: Any = None) -> GateResult:
 # --- the per-Task bar (the replay_reference stage, D108) ---
 
 def summarize(replays: dict[str, dict[str, dict]]) -> dict:
-    """The stage's numbers over every replay: Traces, confirmed, per Task, writes and reads."""
+    """The stage's numbers over every replay: Traces, confirmed, per Task, writes and reads.
+
+    `turns_absorbed` counts the recorded turns the replay cursor folded into the turn beside them
+    rather than stalling on (D204), which is how a round reads how much of a corpus records a run of
+    consecutive turns of one role at all.
+
+    `effect_checks`, `effect_failures` and `effects_downstream` are D215's: how many columns the
+    recording showed a write moving were read back out of the world, how many of them the replayed
+    body left where they were, and how many later calls parted over a row an earlier write had left
+    stale. A round reads the third against the second: a corpus where they move together is one
+    where the reads that failed were never the reads' own fault.
+    """
     rows = [r for per_task in replays.values() for r in per_task.values()]
     tasks_confirmed = sum(any(r["confirmed"] for r in per_task.values()) for per_task in replays.values())
     total = lambda key: sum(int((r.get("counts") or {}).get(key) or 0) for r in rows)  # noqa: E731
@@ -73,7 +97,23 @@ def summarize(replays: dict[str, dict[str, dict]]) -> dict:
             "tasks": len(replays), "tasks_confirmed": tasks_confirmed,
             "writes": total("writes"), "writes_matched": total("writes_matched"),
             "reads": total("reads"), "reads_semantic": total("reads_semantic"),
-            "reads_cosmetic": total("reads_cosmetic"), "unmade": total("unmade")}
+            "reads_cosmetic": total("reads_cosmetic"), "unmade": total("unmade"),
+            "turns_absorbed": total("absorbed_turns"),
+            "effect_checks": total("effect_checks"), "effect_failures": total("effect_failures"),
+            "effects_downstream": total("effects_downstream"),
+            # How the agreement was reached, so a reader can see how much of it rests on a judged or
+            # forgiven difference rather than on the answer itself (D217).
+            "cosmetic_by_canonical": total("cosmetic_by_canonical"),
+            "cosmetic_by_exempt": total("cosmetic_by_exempt"),
+            "cosmetic_by_judge": total("cosmetic_by_judge"),
+            "cosmetic_by_columns": total("cosmetic_by_columns"),
+            "differs_by_token_set": total("differs_by_token_set"),
+            "differs_by_presence": total("differs_by_presence"),
+            # A check the judge settled as different, and one nobody settled at all (D219). The
+            # second is the number that says whether the judging is wired: a corpus with semantic
+            # columns and nothing but unresolved checks has no semantic comparison happening.
+            "differs_by_judge": total("differs_by_judge"),
+            "differs_unresolved": total("differs_unresolved")}
 
 
 def unconfirmed_reason(per_task: dict[str, dict]) -> str:

@@ -149,7 +149,7 @@ def test_an_intent_still_refused_reads_back_with_the_reason_its_own_record_carri
         f"repair_intent task_none: still refused: {repair.NO_INTENT}")
 
 
-def test_a_tool_that_cleared_the_gates_says_so_and_an_assisted_one_carries_its_last_failure(tmp_path):
+def test_a_tool_that_cleared_the_gates_says_so_and_an_assisted_one_carries_every_failing_shape(tmp_path):
     """A tool that ends assisted leaves the compile_tools stage gate passing, so the gate-wide line
     said `compile_tools pass` while the body the mechanic asked for was never written."""
     (tmp_path / "tool_builds.json").write_text(json.dumps({
@@ -166,12 +166,39 @@ def test_a_tool_that_cleared_the_gates_says_so_and_an_assisted_one_carries_its_l
     }), encoding="utf-8")
     assert repair.recompile_ruling(tmp_path, "renew_loan") == "repair_recompile renew_loan: cleared the gates"
     assert repair.recompile_ruling(tmp_path, "find_branch") == (
-        "repair_recompile find_branch: still assisted: executes_on_s0: find_branch({}) raised "
-        "NameError: name 'decimal' is not defined")
+        "repair_recompile find_branch: still assisted: executes_on_s0: 2 calls failed in 2 shapes: "
+        "find_branch({}) raised NameError: name 'decimal' is not defined (1 call); "
+        "find_branch({'city': 'x'}) raised the same (1 call)")
     assert repair.recompile_ruling(tmp_path, "no_reply") == (
         "repair_recompile no_reply: still assisted: no body was submitted")
     assert repair.recompile_ruling(tmp_path, "nothing_compiled") == (
         f"repair_recompile nothing_compiled: {repair.NO_ATTEMPT}")
+
+
+def test_calls_that_failed_the_same_way_are_one_shape_with_a_count_and_only_three_are_shown(tmp_path):
+    """A gate that ruled over sixty calls left sixty sentences and the mechanic saw one of them, so
+    its hint answered one example and the next recompile met the rest."""
+    same = [f"find_branch({{'city': 'c-{i}'}}) answered nothing, the recording answered a branch"
+            for i in range(60)]
+    others = [f"find_branch({{'city': 'c-{i}'}}) raised KeyError: 'c-{i}'" for i in range(4)]
+    (tmp_path / "tool_builds.json").write_text(json.dumps({
+        "find_branch": {"assisted": True, "nodes": [{"attempt": 0, "gates": [
+            {"stage": "replay_fidelity", "pass": False, "failures": same + others}]}]}}),
+        encoding="utf-8")
+    ruling = repair.recompile_ruling(tmp_path, "find_branch")
+    assert "64 calls failed in 2 shapes" in ruling
+    assert "(60 calls)" in ruling and "(4 calls)" in ruling
+
+
+def test_only_the_first_three_shapes_are_shown_and_the_rest_are_counted(tmp_path):
+    ways = ["answered nothing", "answered another branch", "raised", "answered a list", "timed out"]
+    failures = [f"find_branch({{'city': 'c-{i}'}}) {way}" for i, way in enumerate(ways)]
+    (tmp_path / "tool_builds.json").write_text(json.dumps({
+        "find_branch": {"assisted": True, "nodes": [{"attempt": 0, "gates": [
+            {"stage": "replay_fidelity", "pass": False, "failures": failures}]}]}}),
+        encoding="utf-8")
+    ruling = repair.recompile_ruling(tmp_path, "find_branch")
+    assert ruling.count(" call)") == 3 and ruling.endswith("; 2 more shapes")
 
 
 def test_a_grown_table_says_how_many_rows_it_holds_against_the_count_that_was_asked_for(tmp_path):
@@ -254,6 +281,47 @@ def test_a_hint_that_already_quotes_the_exception_does_not_carry_it_twice(tmp_pa
     assert text.count("no attribute 'copy_id'") == 1
 
 
+def test_a_lesson_for_a_memorising_body_says_to_write_the_lookup_over_the_worlds_tables(tmp_path):
+    """D162: the gate's failures name the literals of one attempt; the lesson belongs to the tool
+    and says the one thing every such failure is repaired by."""
+    (tmp_path / "tool_builds.json").write_text(json.dumps(
+        {"get_member": {"assisted": True, "nodes": [{"attempt": 0, "gates": [
+            {"stage": "compile_tools.memorised_values", "pass": False,
+             "failures": ["get_member: the literal 'M0042' is a row id of members in the Starting state"]}]}]}}),
+        encoding="utf-8")
+    repair.record_tool_lesson(tmp_path, "get_member", ["read the member by the argument"])
+    text = repair.lesson_for_tool(tmp_path, "get_member")
+    assert "read the member by the argument" in text
+    assert "memorised recorded ids" in text and "world's tables" in text
+
+
+def test_a_tool_whose_latest_body_memorised_nothing_leaves_no_such_lesson(tmp_path):
+    _tool_builds(tmp_path, [CRASH])
+    assert repair.memorised_values_lesson(tmp_path, "get_member") == ""
+
+
+def test_the_ratchet_does_not_keep_a_prior_body_a_gate_of_this_build_refuses():
+    """A body cleared the gates of the build it was written in. A build that adds a gate (D162) can
+    hold a prior body no gate accepts today, and ratcheting onto it is a repair that never lands."""
+    prior = {"bodies": {"a": "old-memorising", "b": "old-b"}}
+    new = {"bodies": {"a": "new-bad", "b": "new-b"}}
+    out = repair.ratchet_bodies(prior, new, {"a": False, "b": True}, refused=["a"])
+    assert out["bodies"]["a"] == "new-bad"
+    assert out["bodies"]["b"] == "new-b"
+
+
+def test_the_ratchet_hook_restores_nothing_for_a_tool_whose_prior_body_is_refused(tmp_path):
+    (tmp_path / "bodies.json").write_text(json.dumps({"bodies": {"calc": "old-memorising"}}))
+    hook = repair.ratchet_hook(tmp_path, refused=["calc"])
+    call = ToolCall(id="c1", name="compile_tool", arguments={"name": "calc"})
+    from kullback.agent.tools import ToolResult
+    failed = ToolResult(content="compile_tool calc: failed",
+                        details={"produced": ["bodies"], "payload": {},
+                                 "stage_gates": [{"stage": "compile_tools.memorised_values",
+                                                  "passed": False}]})
+    assert hook(call, failed) is None
+
+
 def test_a_workdir_with_no_tool_builds_records_the_hint_alone(tmp_path):
     assert repair.gate_exception_line(tmp_path, "get_member") == ""
     repair.record_tool_lesson(tmp_path, "get_member", ["read the loans column by key"])
@@ -273,3 +341,108 @@ def test_a_finding_records_the_tool_the_leaf_and_the_calls_it_rests_on_and_moves
     assert row["target"] == "update_booking" and row["changed"] is False
     assert row["arguments"]["evidence"] == ["call_12", "call_40"]
     assert row["arguments"]["finding"].startswith("rooms[*].rate:")
+
+
+def test_the_same_task_refused_twice_for_the_same_reason_is_refused_a_third_time(tmp_path):
+    """D181 stopped the Examiner repairing one Verifier against one check for ever; the Builder's
+    refusal had no such stop. One live build made 17 of them, had 0 admitted, and two rounds later
+    refused four Tasks again with the reason word for word. Refusing moves nothing, so two
+    identical requests are all the information there is."""
+    tools = {t.name: t for t in repair.repair_tools(tmp_path)}
+    ask = {"task_id": "task_dock", "reason": "no frontier Run docks the bike"}
+    assert not _run(tools["repair_refuse_task"], ask).is_error
+    assert not _run(tools["repair_refuse_task"], dict(ask)).is_error
+    third = _run(tools["repair_refuse_task"], dict(ask))
+    assert third.is_error and "refused 2 times for this reason" in third.content
+    assert "repair_escalate" in third.content, "and what buys something instead"
+    assert repair.refused_twice(tmp_path) == ["task_dock"]
+    # A different reason is a different thing to say, and so is a different Task.
+    assert not _run(tools["repair_refuse_task"],
+                    {"task_id": "task_dock", "reason": "its recordings disagree"}).is_error
+    assert not _run(tools["repair_refuse_task"], {"task_id": "task_rack", **{"reason": ask["reason"]}}).is_error
+    rows = _requests(tmp_path, "repair_refuse_task")
+    assert [row.get("blocked") for row in rows] == [None, None, True, None, None]
+    assert repair.refuse_repeats(tmp_path) == 2, "the second identical ask and the blocked third"
+    assert repair.refuse_repeats(tmp_path, round_no=99) == 0, "narrowed to a round that made none"
+
+
+# --- D191: the repair ruling says what the stage decided, not only what the released body scored ---
+
+
+def _kept_bodies(tmp_path, **rows):
+    (tmp_path / "kept_bodies.json").write_text(json.dumps(rows), encoding="utf-8")
+
+
+def _builds_rows(tmp_path, **rows):
+    (tmp_path / "tool_builds.json").write_text(json.dumps(rows), encoding="utf-8")
+
+
+def test_a_recompile_whose_attempt_lost_says_so_beside_the_released_bodys_ruling(tmp_path):
+    """`cleared the gates` is a reading of the body the stage released, and the released body is the
+    one that was already there whenever the attempt did not beat it. Read alone it says a repair
+    worked, over rounds in which the repair changed nothing at all."""
+    _builds_rows(tmp_path, renew_loan={"assisted": False})
+    _kept_bodies(tmp_path, renew_loan={"outcome": "kept", "attempt_score": [6, 12],
+                                       "kept_score": [6, 104], "unbeaten": 1,
+                                       "from_replay": 0, "evidence_calls": 216})
+
+    ruling = repair.recompile_ruling(tmp_path, "renew_loan")
+
+    assert ruling == ("repair_recompile renew_loan: cleared the gates (the attempt scored [6, 12] "
+                      "against the kept body's [6, 104] (gates passed, calls matched), so the body "
+                      "already there stands and this recompile changed nothing)")
+
+
+def test_a_recompile_whose_attempt_won_says_it_was_released(tmp_path):
+    _builds_rows(tmp_path, renew_loan={"assisted": False})
+    _kept_bodies(tmp_path, renew_loan={"outcome": "beaten", "attempt_score": [7, 40],
+                                       "kept_score": [6, 10], "unbeaten": 0})
+
+    assert repair.recompile_ruling(tmp_path, "renew_loan") == (
+        "repair_recompile renew_loan: cleared the gates (the attempt scored [7, 40] against the "
+        "kept body's [6, 10] (gates passed, calls matched) and was released)")
+
+
+def test_a_still_assisted_tool_carries_the_score_pair_before_the_failure_the_next_hint_answers(tmp_path):
+    _builds_rows(tmp_path, find_branch={"assisted": True, "nodes": [{"attempt": 0, "gates": [
+        {"stage": "replay_fidelity", "pass": False, "failures": ["find_branch({}) answered nothing"]}]}]})
+    _kept_bodies(tmp_path, find_branch={"outcome": "kept", "attempt_score": [6, 0],
+                                        "kept_score": [6, 10], "unbeaten": 1})
+
+    ruling = repair.recompile_ruling(tmp_path, "find_branch")
+
+    assert ruling.startswith("repair_recompile find_branch: still assisted (the attempt scored [6, 0]")
+    assert ruling.endswith(": replay_fidelity: find_branch({}) answered nothing")
+
+
+def test_the_evidence_a_replay_failure_put_back_is_counted_in_the_ruling(tmp_path):
+    _builds_rows(tmp_path, renew_loan={"assisted": False})
+    _kept_bodies(tmp_path, renew_loan={"outcome": "kept", "attempt_score": [6, 9], "kept_score": [6, 9],
+                                       "unbeaten": 1, "from_replay": 7, "evidence_calls": 43})
+
+    assert ("7 of the 43 evidence calls are from_replay, put back because the Reference replay "
+            "failed on them") in repair.recompile_ruling(tmp_path, "renew_loan")
+
+
+def test_a_tool_stalled_for_two_recompiles_says_so_and_one_recompile_does_not(tmp_path):
+    assert repair.stalled_note({"unbeaten": 1}) == ""
+    assert repair.stalled_note({}) == ""
+    assert "stalled: 2 recompiles in a row scored no higher" in repair.stalled_note({"unbeaten": 2})
+    assert "stalled: 5 recompiles in a row scored no higher" in repair.stalled_note({"unbeaten": 5})
+
+
+def test_a_workdir_with_no_kept_body_ruling_leaves_the_line_as_it_was(tmp_path):
+    """The first run of the stage for a tool has no body to have beaten, so there is no pair to
+    name and the ruling is the one it always was."""
+    _builds_rows(tmp_path, renew_loan={"assisted": False})
+    assert repair.recompile_ruling(tmp_path, "renew_loan") == "repair_recompile renew_loan: cleared the gates"
+
+
+def test_a_kept_body_that_could_not_run_says_the_attempt_took_the_tool(tmp_path):
+    _builds_rows(tmp_path, renew_loan={"assisted": False})
+    _kept_bodies(tmp_path, renew_loan={"outcome": "could_not_run", "attempt_score": [6, 3],
+                                       "kept_score": [6, 3], "unbeaten": 0})
+
+    ruling = repair.recompile_ruling(tmp_path, "renew_loan")
+
+    assert "answered no call at all under this world, so the attempt was released" in ruling

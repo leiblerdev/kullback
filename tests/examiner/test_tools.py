@@ -1,4 +1,4 @@
-"""The seven Examiner tools, driven through the harness's registry and hooks with no model turn: what each
+"""The eight Examiner tools, driven through the harness's registry and hooks with no model turn: what each
 writes, what the gates say about it, and what is refused (D120, D123, D127, D128, D133)."""
 
 from __future__ import annotations
@@ -17,7 +17,7 @@ from kullback.examiner.plan import ExaminerPlan
 from kullback.gates.probes import version_hash
 from kullback.runner.records import Intent, Verifier, VerifierHistory, as_dict, content_hash
 
-TOOL_NAMES = ["read", "derive", "probe", "repair", "refuse", "reroll", "finding"]
+TOOL_NAMES = ["read", "search", "derive", "probe", "repair", "refuse", "reroll", "finding"]
 
 
 def _read(path: Path):
@@ -117,7 +117,7 @@ def test_a_fourth_probe_after_three_rejected_ones_is_refused_by_the_admission_ga
 def test_a_probe_of_a_task_with_no_verifier_is_an_error_result(world):
     plan, harness = _harness(world)
     result = _probe(harness, VF.wrong_run())
-    assert result.is_error and "no current Verifier" in result.content and T in result.content
+    assert result.is_error and "no live Verifier" in result.content and T in result.content
     assert not (world.workdir / "probes").exists()
     missing = drive(harness, "probe", {"task_id": "nobody", "bug_class": "other", "events": []})
     assert missing.is_error and "no Task is named nobody" in missing.content
@@ -298,6 +298,13 @@ def test_reroll_runs_count_more_runs_through_the_runner_callable_and_records_the
     assert [r["run_id"] for r in derived.inputs["rerolls"][T]] == ["alt"], "the Builder's rows are not rewritten"
     again = drive(harness, "reroll", {"task_id": T, "count": 1})
     assert again.details["runs"] == [f"reroll-r3-1-{T}-0"], "a second call in the round takes a longer prefix"
+    # D212: the attempt index is read off this Task's own rows, so a re-roll of another Task in the
+    # same round starts at its own first attempt rather than at the next number nobody has used.
+    plan.extra_rerolls["other"] = [{"run_id": "reroll-r3-other-0", "path": "", "termination_reason": "success"}]
+    plan.store.setdefault("rerolls", {})["other"] = list(plan.extra_rerolls["other"])
+    third = drive(harness, "reroll", {"task_id": T, "count": 1})
+    assert third.details["runs"] == [f"reroll-r3-2-{T}-0"], \
+        "another Task's re-rolls are not an input to this Task's attempt index"
 
 
 def test_reroll_without_a_runner_is_an_error_result_not_a_crash(derived):
@@ -362,6 +369,44 @@ def test_a_finding_can_suggest_repair_intent_with_a_hint(derived):
     assert unknown.is_error, "a verb the Builder has no tool for is refused by the schema"
 
 
+def test_a_second_finding_of_the_same_kind_on_the_same_subject_is_refused_with_the_open_findings_id(derived):
+    """D170: one loss is one finding. Build 12's Examiner made 24 finding calls to put 7 on the list;
+    a model filing the same thing again is told which finding already holds it, and the answer names
+    the id so it can act on that one instead of adding a second row for one loss."""
+    plan, harness = _harness(derived, round=1)
+    first = drive(harness, "finding", {"task_id": T, "kind": "fidelity", "text": "the body differs on replay",
+                                       "tool": "cancel_pending_order", "suggested": "repair_recompile",
+                                       "hint": "the status column differs"})
+    again = drive(harness, "finding", {"task_id": T, "kind": "fidelity", "text": "said again, other words",
+                                       "tool": "cancel_pending_order", "suggested": "repair_recompile"},
+                  call_id="f2")
+    assert again.is_error and first.details["finding_id"] in again.content
+    assert "cancel_pending_order" in again.content and T in again.content
+    assert len(_read(derived.workdir / "examiner" / "findings.json")) == 1, "one loss, one row"
+    plan.close_findings([first.details["finding_id"]])
+    reopened = drive(harness, "finding", {"task_id": T, "kind": "fidelity", "text": "still differs",
+                                          "tool": "cancel_pending_order", "suggested": "repair_recompile"},
+                     call_id="f3")
+    assert reopened.is_error is False, "the loss is still there after the Builder answered: a new finding"
+
+
+def test_derive_files_the_losses_its_own_records_show_before_the_model_chooses_anything(tmp_path):
+    """D170: a finding the model chooses to write is a finding the model may not write. The derivation
+    files what the records say on its way out, so the list exists on a code-driven beat that calls
+    nothing else, and the round driver reads it off the derive result."""
+    world = make_world(tmp_path, rerolls=("rr2",))
+    plan = world.plan()
+    harness = examiner_agent.examiner_harness(plan)
+    result = drive(harness, "derive", {"target": "all"})
+    filed = result.details["findings"]
+    assert [(f["kind"], f["task_id"], f["suggested"]) for f in filed] == [
+        ("reference_disagreement", T, "repair_refuse_task")]
+    assert filed[0]["task_ids"] == [T] and filed[0]["key"] == f"reference_disagreement::{T}"
+    assert "findings filed from the records, most costly first" in result.details["summary"]
+    assert [f.finding_id for f in plan.open_findings()] == [filed[0]["finding_id"]]
+    assert _read(world.workdir / "examiner" / "findings.json")[0]["round"] == plan.round
+
+
 def test_an_examiner_reading_an_intent_record_sees_the_refused_phrases(derived):
     """`read` with kind `intent` is where the Examiner learns what the intent gate refused: the
     ungrounded phrases and, for the phrases that are grounded, the Runs that evidence them. Without
@@ -394,9 +439,11 @@ def test_read_returns_a_run_a_trace_an_intent_a_verifier_and_the_pool_as_json(de
     probe_run = json.loads(drive(harness, "read", {"kind": "run", "id": f"probe-{T}-1"}).details["text"])
     assert probe_run["model"] == "probe:examiner"
     status = json.loads(drive(harness, "read", {"kind": "task_status"}).details["text"])
-    assert set(status) == {T}
+    assert set(status["rows"]) == {T} and status["tasks"] == 1, "a read with no id is an index (D175)"
+    whole = json.loads(drive(harness, "read", {"kind": "task_status", "id": T}).details["text"])
+    assert set(whole[T]) >= {"reference_confirmed", "verifier_passed"}
     missing = drive(harness, "read", {"kind": "run", "id": "nowhere"})
-    assert missing.is_error and "nowhere" in missing.content
+    assert missing.is_error is False and "nowhere" in missing.content, "an id nothing carries is answered"
     # Traces and Intents come from a Builder store: the fixture build's.
     built = ExaminerPlan(workdir=fixture_build.workdir, inputs=fixture_build.inputs)
     reader = examiner_agent.examiner_harness(built)
@@ -480,3 +527,113 @@ def test_a_rejected_derivation_recomputes_the_scorecard_from_the_restored_rows(t
         "the scorecard must be recomputed from the restored rows, not left as the rejected derive wrote it"
     uncovered_ids = {u["task_id"] for u in on_disk["task_coverage"]["uncovered"]}
     assert T in uncovered_ids, "the restored row confirms nothing for T; a stale scorecard would count it covered"
+
+
+def test_a_whole_file_read_is_an_index_of_one_line_per_id_and_a_long_read_is_cut_with_the_cut_named(derived):
+    """One live build's Examiner reached 899 percent of its window in round 1 reading task_status,
+    gates and references whole (D175)."""
+    from kullback.examiner import tools as examiner_tools
+
+    plan, harness = _harness(derived)
+    gates = json.loads(drive(harness, "read", {"kind": "gates"}).details["text"])
+    assert set(gates) == {"stages", "note"} and all(set(v) == {"rulings", "failing"} for v in gates["stages"].values())
+    index = examiner_tools._index("task_status", {
+        "t1": {"reference_confirmed": True, "verifier_passed": False,
+               "checks": {"mutation_flips": False, "empty_fails": True}},
+        "t2": {"reference_confirmed": False, "blocking_tools": ["lookup_shelf"]}})
+    assert index["rows"] == {"t1": "reference confirmed; verifier not passed; failed mutation_flips",
+                             "t2": "no reference; verifier not passed; blocked by lookup_shelf"}
+    long = examiner_tools._clamped_text({"rows": ["x" * 100] * 1000})
+    assert len(long) < examiner_tools.READ_CHARS + 120 and "characters cut" in long.splitlines()[-1]
+    assert examiner_tools._clamped_text({"a": 1}) == examiner_tools._text({"a": 1})
+
+
+def test_a_finding_filed_under_a_ruling_name_lands_with_the_kind_that_ruling_is_about(derived):
+    """One live build's Examiner filed 17 of its 28 findings under a ruling name (`replay_reference`)
+    and every one was refused by the enum, 13 of them about real replay differences that were never
+    retried. A ruling name is what the Examiner is reading when it files, so it is taken as the kind
+    that ruling is about; a name that is neither is refused with the kinds and the mapping."""
+    plan, harness = _harness(derived, round=1)
+    filed = drive(harness, "finding", {"task_id": T, "kind": "replay_reference",
+                                       "text": "the body answers a recorded call differently",
+                                       "suggested": "repair_recompile", "hint": "the status differs"})
+    assert filed.is_error is False
+    assert filed.details["finding"]["kind"] == "fidelity", "the fidelity ruling maps to the fidelity kind"
+    assert "(fidelity)" in filed.content
+    suite = drive(harness, "finding", {"task_id": T, "kind": "mutation_flips", "text": "no atom names a value",
+                                       "suggested": "repair"}, call_id="f2")
+    assert suite.is_error is False and suite.details["finding"]["kind"] == "suite"
+    unknown = drive(harness, "finding", {"task_id": T, "kind": "not_a_ruling", "text": "x"}, call_id="f3")
+    assert unknown.is_error
+    assert "assisted_tool, fidelity, reference_disagreement" in unknown.content, "the kinds are listed"
+    assert "fidelity <- " in unknown.content, "and the mapping the model may use instead"
+    assert tools_mod.finding_kind("ledger_rebalance", ["ledger_rebalance"]) == "assisted_tool"
+
+
+def test_a_third_repair_of_one_task_against_the_check_that_rejected_the_first_two_is_refused(derived):
+    """One live build's Examiner spent a session on 13 repairs, none accepted, two Tasks repaired
+    four times each with the same gate failing every time. Two rejections by one check are what the
+    session has to learn from; the third is refused with the check and the verbs that buy something."""
+    plan, harness = _harness(derived)
+    assert _reason_repair(harness, plan, "required", "require the reason").details["accepted"] is True
+    _probe(harness, VF.other_reason_run())
+    first = _reason_repair(harness, plan, "allowed", "any reason will do", call_id="r1")
+    second = _reason_repair(harness, plan, "allowed", "said again, other words", call_id="r2")
+    assert first.details["rejected_by"] == second.details["rejected_by"] == ["probe_pool"]
+    third = _reason_repair(harness, plan, "allowed", "a third rationale", call_id="r3")
+    assert third.is_error and "probe_pool" in third.content
+    assert "any reason will do" in third.content and "said again, other words" in third.content
+    assert "refuse, reroll_then_derive" in third.content
+    assert len(_history(derived).versions) == 4, "the refused repair wrote no version"
+    # The count is per check: a Task each of whose two rejections came from a different check is open.
+    two_checks = {("t9", "verifier_mutation"): ["version 2: a"], ("t9", "loosening"): ["version 3: b"]}
+    assert tools_mod.repair_lock(two_checks, "t9") is None
+    one_check = {("t9", "verifier_mutation"): ["version 2: a", "version 3: b"]}
+    assert "verifier_mutation" in (tools_mod.repair_lock(one_check, "t9") or "")
+
+
+def test_a_repair_whose_atom_payload_is_not_an_object_is_a_validation_error_not_a_crash(derived):
+    """One live build answered `repair failed: AttributeError: 'str' object has no attribute 'get'`
+    three frames below the tool, and the Examiner had nothing to correct. The shape an atom takes is
+    said once, in the words the tool's own schema uses."""
+    plan, harness = _harness(derived)
+    result = drive(harness, "repair", {"task_id": T, "reason": "name the entity",
+                                       "add": [{"id": "a1", "kind": "required", "payload": "the entity"}]})
+    assert result.is_error and "AttributeError" not in result.content
+    assert "payload of atom a1 is str" in result.content and "`kind`" in result.content
+    nameless = drive(harness, "repair", {"task_id": T, "reason": "x", "add": [{"kind": "required"}]},
+                     call_id="r2")
+    assert nameless.is_error and "names no id" in nameless.content
+    assert len(_history(derived).versions) == 1, "no version was written for either"
+
+
+def test_a_shape_refusal_hands_back_the_same_atom_written_the_way_the_tool_takes_it(derived):
+    """Naming the rule was not enough: the one repair of a live build was refused cleanly for a
+    payload that was a string, and no second call was ever made. The refusal now carries the atom
+    the model sent, with the payload written as an object of the keys this Verifier's own atoms
+    use, and the ask the loop puts in front of the model once (agent/loop.py)."""
+    plan, harness = _harness(derived)
+    result = drive(harness, "repair", {"task_id": T, "reason": "name the entity",
+                                       "add": [{"id": "a1", "kind": "required", "payload": "the entity"}]})
+    shape = json.loads(tools_mod.corrected_atom({"id": "a1", "kind": "required", "payload": "the entity"},
+                                                plan.current(T).atoms))
+    assert shape["id"] == "a1" and shape["kind"] == "required"
+    assert set(shape["payload"]) == set(next(a.target for a in plan.current(T).atoms if a.kind == "required"))
+    assert json.dumps(shape, sort_keys=True, ensure_ascii=False) in result.content
+    assert result.details["retry_ask"].startswith("Your repair was refused for the shape of one atom")
+    assert len(_history(derived).versions) == 1, "the refused repair wrote no version"
+
+
+def test_reading_a_run_or_a_trace_id_nothing_carries_answers_the_ids_that_exist(derived):
+    """One live build spent 13 of a session's 22 turns on one Task, four of them re-reading the same
+    Run and Trace ids that were not there; the tool answered each with a KeyError and nothing to try."""
+    plan, harness = _harness(derived)
+    _probe(harness, VF.wrong_run())
+    answer = json.loads(drive(harness, "read", {"kind": "run", "id": "reroll-r9-t1-0"}).details["text"])
+    assert answer["found"] is False and answer["kind"] == "Run"
+    assert set(answer["ids"]) == {f"{T}: ref", f"{T}: alt", f"{T}: probe-{T}-1"}
+    assert "the Run ids of this build (3 of 3)" in answer["note"]
+    by_task = json.loads(drive(harness, "read", {"kind": "run", "id": T}, call_id="r2").details["text"])
+    assert by_task["found"] is False and f"of task {T}" in by_task["note"], "a Task id narrows the answer"
+    trace = json.loads(drive(harness, "read", {"kind": "trace", "id": "nowhere"}, call_id="r3").details["text"])
+    assert trace["found"] is False and trace["kind"] == "Trace" and trace["ids"] == []

@@ -88,12 +88,15 @@ from kullback.gates.fidelity import (
 )
 from kullback.gates.ledger import GateLedger
 from kullback.gates.loosening import (
+    FALSE_REJECTION_THRESHOLD,
     accepted_versions,
+    discarded_runs,
     false_rejection,
     false_rejection_gate,
     legitimate_runs,
     loosening_gate,
     newly_passed,
+    over_strict,
 )
 from kullback.gates.probes import (
     PROBE_STOP,
@@ -104,25 +107,38 @@ from kullback.gates.probes import (
     version_hash,
 )
 from kullback.gates.round_end import GATE_COUNTS, done, exit_for, round_counts, stalled
-from kullback.gates.scorecard import FROZEN_TASKS_NAME, freeze_tasks, task_coverage
+from kullback.gates.scorecard import FROZEN_TASKS_NAME, freeze_tasks, frozen_tasks, task_coverage
 from kullback.gates.scorecard import scorecard as scorecard_gate
 from kullback.gates.stages import (
     cluster_gate,
     compile_tools_gate,
     intent_gate,
+    readers_gate,
     rerolls_gate,
     task_verifiers_gate,
     tau2_export_gate,
     vocabulary_gate,
 )
 from kullback.gates.tool_runs import (
+    MEMORISED_LESSON,
+    MEMORISED_STAGE,
+    SENSITIVITY_STAGE,
     TOOL_RUN_STAGES,
+    SensitivityPair,
     body_deterministic_gate,
     body_executes_gate,
+    body_literals,
+    body_memorised_values_gate,
     body_non_trivial_gate,
     body_parses_gate,
     body_refuses_unknown_gate,
     body_replay_fidelity_gate,
+    body_sensitivity_gate,
+    column_differences,
+    differing_columns,
+    recorded_argument_values,
+    sensitivity_lesson,
+    starting_state_ids,
 )
 from kullback.gates.trust import finished_runs, refuse_gate, trusted_gate
 from kullback.gates.verifier_suite import (
@@ -231,6 +247,7 @@ def _spec(name: str, over: str, fn: Callable[..., Any], *rulings: str,
 GATES: tuple[GateSpec, ...] = (
     _spec("ingest", "the Traces after ingest (D66)", ingest_gate, artifacts=("traces",)),
     _spec("mine", "the mined ToolSigs and the calls they rest on", mine_gate),
+    _spec("readers", "one requestor's readers over every recorded prose result of its own tools", readers_gate),
     _spec("cluster", "the Tasks the Runs were clustered into, each holding at least one Run", cluster_gate,
           artifacts=("tasks", "categories")),
     _spec("confined", "one generated tool body, before it runs anywhere", gate_confined),
@@ -240,10 +257,15 @@ GATES: tuple[GateSpec, ...] = (
     _spec("deterministic", "two fresh sandbox runs of the same recorded calls (D39)", body_deterministic_gate),
     _spec("non_trivial", "the sandbox's answers across argument sets, against the recorded ones",
           body_non_trivial_gate),
+    _spec(SENSITIVITY_STAGE, "the body's two answers to two Tasks whose recordings differ in a column (D195)",
+          body_sensitivity_gate),
     _spec("replay_fidelity", "the sandbox's answers against the recorded results, column by column (D73, D84)",
           body_replay_fidelity_gate),
     _spec("refuses_unknown", "the sandbox's answers to a reference the world does not hold",
           body_refuses_unknown_gate),
+    _spec(MEMORISED_STAGE, "one generated tool body's own literals, against the mined id shapes, the "
+          "Starting state's row ids and the values the recorded calls passed (D162)",
+          body_memorised_values_gate),
     _spec("compile_tools", "the evidence a compiled tool body produced, five gates in order", compile_tools_gates,
           "compile_tools.parses", "compile_tools.executes", "compile_tools.deterministic",
           "compile_tools.non_trivial", "compile_tools.replay_fidelity"),
@@ -276,11 +298,12 @@ GATES: tuple[GateSpec, ...] = (
     _spec("loosening", "a new Verifier version newly passes only the Reference, a frontier re-roll or a production Run",
           loosening_gate, artifacts=("history", "task_runs", "replays", "rerolls", "canon_rules", "sigs")),
     _spec("false_rejection", "the held-out frontier Runs the required atoms wrongly fail, per Task",
-          false_rejection_gate, artifacts=("verifiers", "task_runs", "replays", "rerolls", "canon_rules", "sigs")),
+          false_rejection_gate, artifacts=("verifiers", "task_runs", "replays", "rerolls", "canon_rules", "sigs",
+                                           "task_status")),
     _spec("refuse", "a Task is refused only when no frontier Run of it finished", refuse_gate,
           artifacts=("refusals", "replays", "rerolls")),
-    _spec("trusted", "a Verifier is trusted when it passed the suite, rejects every probe, is an accepted version "
-          "and its Task is not refused", trusted_gate,
+    _spec("trusted", "a Verifier is trusted when it passed the suite, rejects every probe, is an accepted version, "
+          "falsely rejects fewer than every held-out Run and its Task is not refused", trusted_gate,
           artifacts=("task_status", "verifiers", "probes", "history", "refusals", "task_runs", "replays", "rerolls",
                      "canon_rules", "sigs")),
     _spec("leak_check", "what reaches the Candidate, against the Verifier's constants (D89)", leak_gate),
@@ -309,20 +332,29 @@ def gates_over(artifact: str) -> tuple[GateSpec, ...]:
 
 __all__ = [
     "D79_CHECKS", "D79_STAGES", "FROZEN_TASKS_NAME", "GATES", "GATE_COUNTS", "GRADER_FIELDS", "HELPERS_SRC",
-    "LEAK_MIN_LENGTH", "PROBE_STOP", "PROTECTED", "PROTECTED_PATH", "TAU2_FILES", "TOOL_RUN_STAGES", "VERDICT_GOLDEN_CHECKS",
+    "FALSE_REJECTION_THRESHOLD",
+    "LEAK_MIN_LENGTH", "MEMORISED_LESSON", "MEMORISED_STAGE", "PROBE_STOP", "PROTECTED", "PROTECTED_PATH",
+    "SENSITIVITY_STAGE", "SensitivityPair", "TAU2_FILES", "TOOL_RUN_STAGES", "VERDICT_GOLDEN_CHECKS",
     "VERDICT_VERSIONS", "GateLedger", "GateResult", "GateSpec", "Ruling", "accepted_versions",
-    "artifacts", "audit_gate", "body_deterministic_gate", "body_executes_gate", "body_non_trivial_gate",
-    "body_parses_gate", "body_refuses_unknown_gate", "body_replay_fidelity_gate", "budget_gate",
+    "artifacts", "audit_gate", "body_deterministic_gate", "body_executes_gate", "body_literals",
+    "body_memorised_values_gate", "body_non_trivial_gate",
+    "body_parses_gate", "body_refuses_unknown_gate", "body_replay_fidelity_gate",
+    "body_sensitivity_gate", "budget_gate",
     "candidate_runs_gate", "check_run", "cluster_gate", "compile_tools_gate", "compile_tools_gates",
-    "confinement", "consecutive_failed", "d79_results", "deterministic_gate", "done", "environment_gate",
+    "column_differences", "confinement", "consecutive_failed", "d79_results", "deterministic_gate",
+    "differing_columns",
+    "discarded_runs", "done",
+    "environment_gate",
     "executes_gate", "exit_for", "false_rejection", "false_rejection_gate", "fidelity", "finished_runs", "first_string",
-    "freeze_tasks", "gate_confined", "gate_named", "gates_over", "ingest_gate", "intent_gate", "leak_gate",
+    "freeze_tasks", "frozen_tasks", "gate_confined", "gate_named", "gates_over", "ingest_gate", "intent_gate", "leak_gate",
     "ledger", "legitimate_runs", "load_run", "loophole_probe", "loosening", "loosening_gate", "mine_gate", "names_protected_path",
-    "newly_passed", "non_trivial_gate", "oracle_replay_gate", "parses_gate", "policy_gate",
+    "newly_passed", "non_trivial_gate", "oracle_replay_gate", "over_strict", "parses_gate", "policy_gate",
     "predicate_confinement", "predicate_confinement_gate", "probe_admission_gate", "probe_pool_gate",
-    "probe_scores", "probes", "reference_replay_gate", "refuse_gate", "regrade_gate", "replay_fidelity_gate",
-    "replay_match", "rerolls_gate", "round_counts", "round_end", "ruling_line", "ruling_of", "rulings_over", "scorecard", "scorecard_gate",
-    "setup_review_gate", "source_confinement", "stages", "stalled", "summarize", "task_coverage",
+    "probe_scores", "probes", "recorded_argument_values", "reference_replay_gate", "refuse_gate",
+    "regrade_gate", "replay_fidelity_gate", "sensitivity_lesson",
+    "readers_gate", "replay_match", "rerolls_gate", "round_counts", "round_end", "ruling_line", "ruling_of", "rulings_over", "scorecard", "scorecard_gate",
+    "setup_review_gate", "source_confinement", "stages", "stalled", "starting_state_ids", "summarize",
+    "task_coverage",
     "task_verifiers_gate", "tau2_export_gate", "tool_runs", "trust", "trusted_gate", "unconfirmed_reason",
     "unfinished_run", "user_rules_gate", "validate_verifier", "verdict_golden_gate", "verifier_gate",
     "verifier_suite", "version_hash", "vocabulary_gate", "wrong_run",

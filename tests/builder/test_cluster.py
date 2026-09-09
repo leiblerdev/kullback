@@ -4,22 +4,40 @@ from __future__ import annotations
 
 import itertools
 import json
+from unittest import mock
 
 import pytest
 
 from conftest import PTR
+from kullback.builder import pipeline
 from kullback.builder.cluster import (
+    UnexplainedRegrouping,
     category_signature,
     cluster_runs,
     confirmed_write_calls,
+    grouping_fingerprint,
     idf_weights,
+    moved_input,
     name_task,
+    recordings_hash,
+    resume_frozen,
     run_tokens,
     similarity,
+    split_by_world,
     tokens,
     write_tool_names,
 )
-from kullback.runner.records import ToolCall, ToolCallError, ToolSig, Trace, Turn
+from kullback.builder.compile_env import homing_hash, trace_worlds
+from kullback.runner.records import (
+    Column,
+    EntitySchema,
+    Task,
+    ToolCall,
+    ToolCallError,
+    ToolSig,
+    Trace,
+    Turn,
+)
 
 SIGS = [
     ToolSig(name="cancel_order", kind="write"),
@@ -522,3 +540,254 @@ def test_a_group_with_no_world_information_stays_one_task():
 
     parts = split_by_world([_bare_trace("b"), _bare_trace("a")], {})
     assert [[t.trace_id for t in p] for p in parts] == [["a", "b"]]
+
+
+# --- D200: the frozen Task list is authoritative across rounds ---
+
+# The same three Runs, mined once with the shipping tool read and once with it written: the
+# Category the Runs land in moves, which is the whole point of the second signature.
+KINDS_AFTER_REMINE = [
+    ToolSig(name="cancel_order", kind="write"),
+    ToolSig(name="modify_address", kind="write"),
+    ToolSig(name="get_order", kind="write"),
+]
+
+
+def test_the_same_runs_get_the_same_task_id_in_two_clusterings():
+    traces = [cancel_trace("t1", "W1"), cancel_trace("t2", "W2")]
+    first = {t.id: t.run_ids for t in cluster_runs(traces, SIGS)[1]}
+    second = {t.id: t.run_ids for t in cluster_runs(list(reversed(traces)), SIGS)[1]}
+    assert first == second
+
+
+def test_a_task_id_survives_the_runs_landing_in_another_category():
+    """The id is over the Runs, so re-mining a tool from read to write cannot move it."""
+    traces = [cancel_trace("t1", "W1"), cancel_trace("t2", "W2")]
+    before = cluster_runs(traces, SIGS)[1]
+    after = cluster_runs(traces, KINDS_AFTER_REMINE)[1]
+    assert [t.id for t in before] == [t.id for t in after]
+    assert {t.category_id for t in before} != {t.category_id for t in after}
+
+
+def test_a_second_clustering_over_a_frozen_list_keeps_every_frozen_task():
+    traces = [cancel_trace("t1", "W1"), cancel_trace("t2", "W2"), address_trace("t3", "W3")]
+    frozen = cluster_runs(traces, SIGS)[1]
+    tasks, split = resume_frozen(cluster_runs(traces, SIGS)[1], [t.model_dump() for t in frozen])
+    assert [t.id for t in tasks] == [t.id for t in frozen]
+    assert (split["frozen"], split["added"], split["frozen_only"]) == (len(frozen), [], [])
+
+
+def test_a_new_run_adds_a_task_and_moves_no_frozen_one():
+    frozen = cluster_runs([cancel_trace("t1", "W1")], SIGS)[1]
+    grown = cluster_runs([cancel_trace("t1", "W1"), address_trace("t9", "W9")], SIGS)[1]
+    tasks, split = resume_frozen(grown, [t.model_dump() for t in frozen])
+    assert [t.id for t in tasks][: len(frozen)] == [t.id for t in frozen]
+    assert len(split["added"]) == 1
+    added = next(t for t in tasks if t.id in split["added"])
+    assert added.run_ids == ["t9"] and split["frozen_only"] == []
+
+
+def test_a_recluster_that_would_drop_a_frozen_task_marks_it_frozen_only():
+    """Two Runs frozen apart, then merged by a later round: neither frozen Task is dropped."""
+    apart = cluster_runs([cancel_trace("t1", "W1"), address_trace("t2", "W2")], SIGS)[1]
+    assert len(apart) == 2
+    merged = [Task(id="task_merged", category_id=apart[0].category_id, run_ids=["t1", "t2"])]
+    tasks, split = resume_frozen(merged, [t.model_dump() for t in apart])
+    assert [t.id for t in tasks] == [t.id for t in apart], "the merge publishes neither a new nor a lost Task"
+    assert split["frozen_only"] == [t.id for t in apart]
+    assert all(split["reasons"][t.id] for t in apart)
+
+
+def test_a_recluster_that_moves_one_run_into_a_frozen_task_keeps_only_the_free_runs():
+    frozen = cluster_runs([cancel_trace("t1", "W1")], SIGS)[1]
+    mixed = [Task(id="task_mixed", category_id=frozen[0].category_id, run_ids=["t1", "t7"])]
+    tasks, split = resume_frozen(mixed, [t.model_dump() for t in frozen])
+    assert [t.run_ids for t in tasks] == [["t1"], ["t7"]]
+    assert split["frozen_only"] == [frozen[0].id], "the frozen Task the merge would have swallowed is kept"
+    assert split["added"] == [tasks[1].id]
+
+
+def test_with_no_frozen_list_every_task_the_clustering_found_is_new():
+    tasks = cluster_runs([cancel_trace("t1", "W1")], SIGS)[1]
+    resumed, split = resume_frozen(tasks, None)
+    assert resumed == tasks
+    assert (split["frozen"], split["added"], split["frozen_only"]) == (0, [t.id for t in tasks], [])
+
+
+def test_a_frozen_task_whose_id_predates_content_addressing_is_matched_on_its_runs():
+    """A list frozen by an older harness keeps its ids; the same Runs are still the same Task."""
+    live = cluster_runs([cancel_trace("t1", "W1")], SIGS)[1]
+    older = [Task(id="task_oldstyle", category_id=live[0].category_id, run_ids=["t1"])]
+    tasks, split = resume_frozen(live, [t.model_dump() for t in older])
+    assert [t.id for t in tasks] == ["task_oldstyle"]
+    assert (split["added"], split["frozen_only"]) == ([], [])
+
+
+# --- D216: the split of Runs into Tasks is a function of the recordings alone ---
+
+# One invented domain: a greenhouse keeper's tools. `list_plots` answers a few columns of each plot,
+# `get_plot` answers all of them, `water_plot` writes. The schema below is the row identity the
+# recordings themselves give: one table, keyed by its id column.
+PLOT_SIGS = [
+    ToolSig(name="list_plots", kind="read"),
+    ToolSig(name="get_plot", kind="read"),
+    ToolSig(name="water_plot", kind="write"),
+]
+PLOT_SCHEMA_COLUMNS = [
+    {"table": "plots", "name": "plot_id", "class": "hard"},
+    {"table": "plots", "name": "state", "class": "hard"},
+    {"table": "plots", "name": "read_at", "class": "exempt"},
+]
+
+
+def plot_schema(columns=None) -> EntitySchema:
+    return EntitySchema(tables=["plots"], columns=[Column.model_validate(c) for c in
+                                                   (PLOT_SCHEMA_COLUMNS if columns is None else columns)],
+                        id_patterns={"plot_id": r"^p\d+$"})
+
+
+def plot_trace(trace_id: str, calls, said="the plot looks dry, please water it") -> Trace:
+    tool_calls = [ToolCall(id=f"c{i}", name=name, args=dict(args), result=result,
+                           requestor="assistant", raw_ptr=PTR, has_result=True, resolved=True)
+                  for i, (name, args, result) in enumerate(calls)]
+    return Trace(trace_id=trace_id, raw_hash=f"h_{trace_id}", ingest_version="1", source="test",
+                 raw_ptr=PTR, turns=[Turn(idx=0, role="user", content=said, raw_ptr=PTR)],
+                 tool_calls=tool_calls)
+
+
+def dry_and_wet_traces() -> list[Trace]:
+    """Two Runs that read one plot through one tool before writing, and were shown two states."""
+    return [
+        plot_trace("run_dry", [("get_plot", {"plot_id": "p1"},
+                                {"plot_id": "p1", "state": "dry", "read_at": "09:00"}),
+                               ("water_plot", {"plot_id": "p1"},
+                                {"plot_id": "p1", "state": "wet", "read_at": "09:01"})]),
+        plot_trace("run_wet", [("get_plot", {"plot_id": "p1"},
+                                {"plot_id": "p1", "state": "wet", "read_at": "11:00"}),
+                               ("water_plot", {"plot_id": "p1"},
+                                {"plot_id": "p1", "state": "wet", "read_at": "11:01"})]),
+    ]
+
+
+def worlds_of(traces, schema=None) -> dict:
+    return trace_worlds(traces, schema or plot_schema(), {"water_plot"})
+
+
+def test_the_same_recordings_give_the_same_grouping_whatever_the_schema_classes_say():
+    """A class is the harness's proposal about the corpus, and a proposal never groups recordings.
+
+    Every class the schema can carry is tried on every column, which is the whole of what the readers
+    and the reclassifications between two rounds can move. Row identity is not a class and is the one
+    mined input the rule keeps, so the tables and the id patterns stand still here on purpose.
+    """
+    traces = dry_and_wet_traces()
+    for class_ in ("hard", "semantic", "exempt"):
+        recast = [{**column, "class": class_} for column in PLOT_SCHEMA_COLUMNS]
+        assert worlds_of(traces) == worlds_of(traces, plot_schema(recast))
+
+
+def test_the_same_recordings_give_the_same_grouping_under_two_cache_formats():
+    """Nothing of the encoder is inside a version, so bumping the format cannot regroup a corpus."""
+    traces = dry_and_wet_traces()
+    before = worlds_of(traces)
+    with mock.patch.object(pipeline, "CACHE_FORMAT", pipeline.CACHE_FORMAT + 1):
+        assert worlds_of(traces) == before
+
+
+def test_a_list_projection_and_a_detail_projection_of_one_row_do_not_split_a_cluster():
+    """The two tools answer different columns of one row, which is a difference of shape, not of state."""
+    traces = [
+        plot_trace("run_list", [("list_plots", {}, [{"plot_id": "p1", "state": "dry"}])]),
+        plot_trace("run_detail", [("get_plot", {"plot_id": "p1"},
+                                   {"plot_id": "p1", "state": "dry", "read_at": "09:00"})]),
+    ]
+    assert len(split_by_world(traces, worlds_of(traces))) == 1
+
+
+def test_the_same_tool_showing_one_row_in_two_versions_before_a_write_does_split_it():
+    traces = dry_and_wet_traces()
+    parts = split_by_world(traces, worlds_of(traces))
+    assert [[t.trace_id for t in part] for part in parts] == [["run_dry"], ["run_wet"]]
+
+
+def test_no_reader_reaches_the_world_a_run_started_in():
+    """A prose read states the row inside its own words, and the words are the recording's (D216)."""
+    traces = [plot_trace("run_a", [("get_plot", {"plot_id": "p1"}, "Plot p1 is dry.")]),
+              plot_trace("run_b", [("get_plot", {"plot_id": "p1"}, "Plot p1 is wet.")])]
+    worlds = worlds_of(traces)
+    assert len(split_by_world(traces, worlds)) == 2
+    assert not any(isinstance(key, str) for world in worlds.values() for key in world)
+
+
+def test_the_fingerprint_names_the_input_that_moved():
+    traces = dry_and_wet_traces()
+    schema = plot_schema()
+    tasks = cluster_runs(traces, PLOT_SIGS, worlds=worlds_of(traces))[1]
+    frozen = {"fingerprint": grouping_fingerprint(tasks),
+              "recordings": recordings_hash(traces), "homing": homing_hash(schema)}
+    assert moved_input(grouping_fingerprint(tasks), dict(frozen), frozen) == ""
+
+    grown = traces + [plot_trace("run_third", [("get_plot", {"plot_id": "p2"},
+                                                {"plot_id": "p2", "state": "dry"})])]
+    now = {"recordings": recordings_hash(grown), "homing": homing_hash(schema)}
+    after = cluster_runs(grown, PLOT_SIGS, worlds=worlds_of(grown))[1]
+    assert moved_input(grouping_fingerprint(after), now, frozen) == "recordings"
+
+    wider = plot_schema()
+    wider.composite_keys = {"plots": ["plot_id", "state"]}
+    rehomed = {"recordings": recordings_hash(traces), "homing": homing_hash(wider)}
+    assert moved_input("a different fingerprint", rehomed, frozen) == "homing"
+
+
+def test_the_record_re_baselines_the_round_an_input_moved_so_a_later_bug_still_raises(tmp_path):
+    """Greptile P1 (PR 30): what a round compares against is the last grouping that was explained.
+
+    Left at the first grouping ever taken, one legitimate move would go on explaining every
+    regrouping after it and the raise could never fire again.
+    """
+    from kullback.builder import build as build_module
+
+    traces = dry_and_wet_traces()
+    schema = plot_schema()
+    tasks = cluster_runs(traces, PLOT_SIGS, worlds=worlds_of(traces))[1]
+    inputs = {"traces": traces, "schema": schema}
+    assert build_module._grouping(tmp_path, tasks, inputs)["grouping_moved"] == ""
+
+    grown = traces + [plot_trace("run_third", [("get_plot", {"plot_id": "p2"},
+                                                {"plot_id": "p2", "state": "dry"})])]
+    after = cluster_runs(grown, PLOT_SIGS, worlds=worlds_of(grown))[1]
+    grown_inputs = {"traces": grown, "schema": schema}
+    assert build_module._grouping(tmp_path, after, grown_inputs)["grouping_moved"] == "recordings"
+    assert build_module._grouping(tmp_path, after, grown_inputs)["grouping_moved"] == "", "re-baselined"
+
+    with pytest.raises(UnexplainedRegrouping):
+        build_module._grouping(tmp_path, list(after)[:1], grown_inputs)
+
+
+def test_a_grouping_that_moved_with_both_inputs_still_is_a_bug_and_raises():
+    frozen = {"fingerprint": "f1", "recordings": "r1", "homing": "h1"}
+    with pytest.raises(UnexplainedRegrouping):
+        moved_input("f2", {"recordings": "r1", "homing": "h1"}, frozen)
+
+
+def test_a_frozen_only_task_whose_runs_still_group_under_the_recordings_clears_the_flag():
+    traces = [plot_trace("run_a", [("get_plot", {"plot_id": "p1"}, {"plot_id": "p1", "state": "dry"})]),
+              plot_trace("run_b", [("get_plot", {"plot_id": "p1"}, {"plot_id": "p1", "state": "dry"})])]
+    worlds = worlds_of(traces)
+    apart = [Task(id="task_a", category_id="cat", run_ids=["run_a"]),
+             Task(id="task_b", category_id="cat", run_ids=["run_b"])]
+    merged = [Task(id="task_merged", category_id="cat", run_ids=["run_a", "run_b"])]
+    _tasks, split = resume_frozen(merged, [t.model_dump() for t in apart], worlds=worlds)
+    assert split["frozen_only"] == []
+    assert sorted(split["cleared"]) == ["task_a", "task_b"]
+
+
+def test_a_frozen_only_task_whose_runs_the_recordings_split_carries_the_reason():
+    worlds = worlds_of(dry_and_wet_traces())
+    frozen = [Task(id="task_both", category_id="cat", run_ids=["run_dry", "run_wet"])]
+    live = [Task(id="task_dry", category_id="cat", run_ids=["run_dry"]),
+            Task(id="task_wet", category_id="cat", run_ids=["run_wet"])]
+    _tasks, split = resume_frozen(live, [t.model_dump() for t in frozen], worlds=worlds)
+    assert split["frozen_only"] == ["task_both"] and split["cleared"] == {}
+    reason = split["reasons"]["task_both"]
+    assert "get_plot" in reason and "plots row p1" in reason

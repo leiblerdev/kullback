@@ -6,15 +6,20 @@ import json
 
 import pytest
 
+from kullback.ai.provider import ProviderError
 from kullback.runner.judge import (
     JUDGE_VERSION,
     AgenticJudge,
     JudgeResult,
     abstain_verdict,
     confirm_reference,
+    count_judgement,
     disagreement_rate,
+    judge_name,
     read_disagreement_queue,
     set_task_aside,
+    smoke,
+    smoke_lines,
     tasks_set_aside,
     third_judge,
     two_judges,
@@ -33,7 +38,27 @@ def list_writes() -> list:
     return [{"table": "orders", "id": "o1", "status": "cancelled"}]
 
 
+def read_row(table: str) -> dict:
+    """Read one row of a table the caller names, which only the model can choose."""
+    return {"table": table, "rows": 1}
+
+
 TOOLS = {"read_order": read_order, "list_writes": list_writes}
+
+
+class RefusesToolChoice:
+    """A provider that does not carry tool_choice and refuses the whole request when it is sent."""
+
+    def __init__(self, inner):
+        self.inner = inner
+        self.name = getattr(inner, "name", "model")
+        self.refusals = 0
+
+    def query(self, messages, tools=None, config=None):
+        if config is not None and getattr(config, "tool_choice", None):
+            self.refusals += 1
+            raise ProviderError("unknown parameter: tool_choice", status=400)
+        return self.inner.query(messages, tools=tools, config=config)
 
 
 def call(name: str = "read_order", **args) -> dict:
@@ -116,21 +141,92 @@ def test_policy_atom_prompt_carries_the_one_rule_and_the_transcript(make_test_mo
     assert "sub_answers" in prompt
 
 
-# --- the tool rule (D92: at least one tool check before a verdict) ---
+# --- the check rule (D222: the harness runs the check, then the model is asked) ---
 
 
-def test_a_verdict_with_no_tool_call_is_refused(make_test_model):
+def test_a_verdict_with_no_tool_call_stands_when_the_harness_prefilled_the_checks(make_test_model):
+    """The check the question needs was already run, so answering straight away is a whole answer."""
     model = make_test_model([answer(verdict="pass", sub_answers=[yes()])])
     result = judge_of(model).judge_policy_atom("rule", TRANSCRIPT)
+    assert result.verdict == "pass"
+    assert result.refused is False
+    assert result.tools_run == []
+    assert result.extra_tool_calls == 0
+    assert [check["tool"] for check in result.checks] == ["policy_rule", "transcript",
+                                                          "read_order", "list_writes"]
+
+
+def test_the_prompt_carries_every_prefilled_check_with_its_tool_name_and_its_result(make_test_model):
+    model = make_test_model([answer(verdict="pass", sub_answers=[yes()])])
+    judge_of(model).judge_policy_atom("cancel only what the user named", TRANSCRIPT)
+    prompt = model.calls[0]["messages"][1]["content"]
+    assert "Checks already run for you" in prompt
+    assert "- policy_rule {} ->" in prompt
+    assert "- transcript {} ->" in prompt
+    # Both tools take nothing the model has to choose, so the harness opened both views itself.
+    assert '- read_order {} -> {"order_id":"o1"' in prompt
+    assert "- list_writes {} ->" in prompt
+
+
+def test_a_tool_whose_argument_only_the_model_can_choose_is_left_out_of_the_prefilled_checks(
+    make_test_model,
+):
+    """A view that needs something chosen is the model's to open; rule 2 forces that first turn."""
+    model = make_test_model([answer(verdict="acceptable", cited_spans=["x"])])
+    judge = judge_of(model, tools={"read_row": read_row, "list_writes": list_writes})
+    result = judge.judge_dispute({"orders": {}}, [], [])
+    assert "read_row" not in [check["tool"] for check in result.checks]
+    assert "list_writes" in [check["tool"] for check in result.checks]
+    assert model.calls[0]["config"].tool_choice == "required"
+    assert result.tool_choice_forced is True
+    assert result.tool_choice_rejected is False
+
+
+def test_no_tool_choice_is_asked_for_when_every_check_was_already_run(make_test_model):
+    model = make_test_model([answer(verdict="acceptable", cited_spans=["x"])])
+    result = judge_of(model, tools={"list_writes": list_writes}).judge_dispute({}, [], [])
+    assert model.calls[0]["config"].tool_choice is None
+    assert result.tool_choice_forced is False
+
+
+def test_a_provider_that_refuses_tool_choice_is_asked_again_without_it_and_the_refusal_is_recorded(
+    make_test_model,
+):
+    """The checks are in the prompt either way, so rule 1 alone still answers the question."""
+    inner = make_test_model([answer(verdict="acceptable", cited_spans=["x"])])
+    model = RefusesToolChoice(inner)
+    judge = AgenticJudge(model, {"read_row": read_row, "list_writes": list_writes}, name="a")
+    result = judge.judge_dispute({"orders": {}}, [], [])
+    assert result.verdict == "acceptable"
+    assert result.tool_choice_rejected is True
+    assert result.tool_choice_forced is False
+
+
+def test_the_round_counts_what_was_prefilled_forced_and_refused(make_test_model):
+    inner = make_test_model([answer(verdict="acceptable", cited_spans=["x"])])
+    judge = AgenticJudge(RefusesToolChoice(inner), {"read_row": read_row, "list_writes": list_writes},
+                         name="a")
+    counts = count_judgement(judge.judge_dispute({"orders": {}}, [], []))
+    assert counts["judge_checks_prefilled"] == 4  # end_state, required_set, allowed_set, list_writes
+    assert counts["judge_tool_choice_rejected"] == 1
+    assert counts["judge_tool_choice_forced"] == 0
+    assert counts["judge_refused_no_check"] == 0
+    assert counts["judge_extra_tool_calls"] == 0
+
+
+def test_a_question_with_no_check_to_prefill_is_refused_as_a_harness_bug(make_test_model):
+    model = make_test_model([answer(verdict="acceptable")])
+    result = judge_of(model, tools={}).ask("dispute", "decide this", {})
     assert result.verdict == "abstain"
     assert result.refused is True
-    assert result.tools_run == []
+    assert result.checks == []
+    assert "D222" in (result.reason or "")
 
 
-def test_a_call_to_an_unknown_tool_does_not_count_as_a_check(make_test_model):
+def test_a_call_to_an_unknown_tool_is_not_counted_and_its_error_goes_back_to_the_judge(make_test_model):
     model = make_test_model([call(name="drop_table"), answer(verdict="pass", sub_answers=[yes()])])
     result = judge_of(model).judge_policy_atom("rule", TRANSCRIPT)
-    assert result.refused is True
+    assert result.verdict == "pass"
     assert result.tools_run == []
     tool_reply = model.calls[1]["messages"][-1]
     assert tool_reply["role"] == "tool"
@@ -215,8 +311,30 @@ def test_a_reply_that_is_not_json_abstains(make_test_model):
 
 
 def test_json_wrapped_in_prose_is_still_read(make_test_model):
-    model = make_test_model([call(), {"content": 'Here is my answer:\n{"verdict": "equivalent"}\nThat is all.'}])
+    reply = ('Here is my answer:\n{"verdict": "equivalent", "evidence": ["value_a", "value_b"]}\n'
+             "That is all.")
+    model = make_test_model([call(), {"content": reply}])
     assert judge_of(model).judge_equivalence("orders.reason", "a", "b").verdict == "equivalent"
+
+
+def test_an_equal_answer_that_names_no_check_is_unresolved_rather_than_agreement(make_test_model):
+    """D222 rule 3: an agreement rests on a named check, or nobody settled the pair (D219)."""
+    model = make_test_model([answer(verdict="equivalent", cited_spans=["they read alike"])])
+    result = judge_of(model).judge_equivalence("orders.reason", "a", "b")
+    assert result.verdict == "abstain"
+    assert (result.reason or "").startswith("uncited")
+
+
+def test_an_equal_answer_naming_a_prefilled_check_stands(make_test_model):
+    model = make_test_model([answer(verdict="equivalent", evidence=["value_a"])])
+    result = judge_of(model).judge_equivalence("orders.reason", "a", "a ")
+    assert result.verdict == "equivalent"
+    assert result.reason != "uncited: the agreeing verdict named no check it rests on"
+
+
+def test_a_different_answer_needs_no_citation_because_only_agreement_carries_the_rule(make_test_model):
+    model = make_test_model([answer(verdict="not_equivalent")])
+    assert judge_of(model).judge_equivalence("orders.reason", "a", "b").verdict == "not_equivalent"
 
 
 # --- reference confirmation (D57, Trust or Escalate) ---
@@ -388,7 +506,9 @@ def test_two_judges_that_agree_report_no_disagreement(make_test_model, workdir):
     assert [entry["verdict"] for entry in result.pair] == ["acceptable", "acceptable"]
     assert read_disagreement_queue(workdir) == []
     assert disagreement_rate(workdir) == {"pairs": 1, "disagreements": 0, "rate": 0.0,
-                                          "abstains": 0, "abstain_rate": 0.0}
+                                          "abstains": 0, "abstain_rate": 0.0,
+                                          "by_pair": {"a vs b": {"pairs": 1, "disagreements": 0,
+                                                                 "rate": 0.0}}}
 
 
 def test_two_judges_that_disagree_queue_both_verdicts_and_abstain(make_test_model, workdir):
@@ -407,6 +527,10 @@ def test_two_judges_that_disagree_queue_both_verdicts_and_abstain(make_test_mode
     assert queue[0]["verdict_b"] == "unacceptable"
     assert queue[0]["judge_a"]["cited_spans"] == ["by a"]
     assert queue[0]["judge_b"]["cited_spans"] == ["by b"]
+    # D160: the row says which two judges these verdicts came from, and names the pair the
+    # by-pair rate counts them under.
+    assert queue[0]["judge_a_name"] == "a" and queue[0]["judge_b_name"] == "b"
+    assert queue[0]["judges"] == "a vs b"
     assert queue[0]["reason"] == "split"
     assert queue[0]["disagreement"] is True
     assert disagreement_rate(workdir)["rate"] == 1.0
@@ -441,10 +565,17 @@ def test_the_disagreement_rate_can_be_read_for_one_use(make_test_model, workdir)
     d = named_judge(make_test_model, "d", "environment")
     two_judges(c, d, "judge_cause", {}, {}, workdir=workdir)
     assert disagreement_rate(workdir) == {"pairs": 2, "disagreements": 1, "rate": 0.5,
-                                          "abstains": 0, "abstain_rate": 0.0}
+                                          "abstains": 0, "abstain_rate": 0.0,
+                                          "by_pair": {"a vs b": {"pairs": 1, "disagreements": 1,
+                                                                 "rate": 1.0},
+                                                      "c vs d": {"pairs": 1, "disagreements": 0,
+                                                                 "rate": 0.0}}}
     assert disagreement_rate(workdir, use="cause") == {"pairs": 1, "disagreements": 0,
                                                        "rate": 0.0, "abstains": 0,
-                                                       "abstain_rate": 0.0}
+                                                       "abstain_rate": 0.0,
+                                                       "by_pair": {"c vs d": {"pairs": 1,
+                                                                              "disagreements": 0,
+                                                                              "rate": 0.0}}}
 
 
 def test_a_third_sample_settles_a_split_on_a_non_reference_atom(make_test_model, workdir):
@@ -458,6 +589,28 @@ def test_a_third_sample_settles_a_split_on_a_non_reference_atom(make_test_model,
     assert result.verdict == "unacceptable"
     assert [entry["verdict"] for entry in result.pair] == ["acceptable", "unacceptable", "unacceptable"]
     assert read_disagreement_queue(workdir) == []
+
+
+def test_two_judge_models_name_themselves_and_the_pair_they_disagreed_as(make_test_model, workdir):
+    """D160: a ruling names the model it ran on, so a split is between two named models, not two personas."""
+    a = named_judge(make_test_model, judge_name("vendor/large", "a"), "acceptable")
+    b = named_judge(make_test_model, judge_name("other/small", "b"), "unacceptable")
+    result, disagreement = two_judges(a, b, "judge_dispute", {}, [], [], workdir=workdir,
+                                      item_id="run1", third_sample=False)
+    assert disagreement is True
+    assert [entry["judge"] for entry in result.pair] == ["vendor/large:a", "other/small:b"]
+    assert result.judge == "vendor/large:a+other/small:b"
+    assert disagreement_rate(workdir)["by_pair"] == {
+        "vendor/large:a vs other/small:b": {"pairs": 1, "disagreements": 1, "rate": 1.0}}
+
+
+def test_a_row_written_before_the_judges_were_named_joins_no_pair(workdir):
+    """An older build's rows say nothing about which two models ran, so they count in no pair."""
+    (workdir / "judge_pairs.jsonl").write_text(
+        json.dumps({"use": "dispute", "disagreement": True}) + "\n", encoding="utf-8")
+    stats = disagreement_rate(workdir)
+    assert stats["pairs"] == 1 and stats["rate"] == 1.0
+    assert stats["by_pair"] == {}
 
 
 def test_a_three_way_split_still_abstains_to_the_queue(make_test_model, workdir):
@@ -487,6 +640,9 @@ def test_the_default_third_sample_reuses_judge_a_under_another_persona(make_test
     assert third.model is a.model
     assert third.tools == a.tools
     assert third.name == "a#3"
+    # cli.py builds its default second judge this way, and names it, so the tie-breaker that
+    # reuses judge A's model is not the same name as judge B (D160).
+    assert third_judge(a, name=judge_name("a", "b")).name == "a:b"
     assert third.persona and third.persona != a.persona
 
     # and it runs: judge A's model is scripted for two turns of its own plus two for the third sample
@@ -565,14 +721,14 @@ def test_queues_are_empty_before_anything_is_written(workdir):
     assert read_disagreement_queue(workdir) == []
     assert tasks_set_aside(workdir) == []
     assert disagreement_rate(workdir) == {"pairs": 0, "disagreements": 0, "rate": 0.0,
-                                          "abstains": 0, "abstain_rate": 0.0}
+                                          "abstains": 0, "abstain_rate": 0.0, "by_pair": {}}
 
 
 # --- helpers ---
 
 
-def judge_of(model) -> AgenticJudge:
-    return AgenticJudge(model, TOOLS, name="a")
+def judge_of(model, tools=None) -> AgenticJudge:
+    return AgenticJudge(model, TOOLS if tools is None else tools, name="a")
 
 
 def named_judge(make_test_model, name: str, verdict: str) -> AgenticJudge:
@@ -595,14 +751,17 @@ def test_two_judges_that_agree_on_abstain_are_queued_as_such(make_test_model, wo
     assert queue[0]["reason"] == "agreed_abstain"
     assert queue[0]["item_id"] == "r2"
     assert disagreement_rate(workdir) == {"pairs": 1, "disagreements": 0, "rate": 0.0,
-                                          "abstains": 1, "abstain_rate": 1.0}
+                                          "abstains": 1, "abstain_rate": 1.0,
+                                          "by_pair": {"a vs b": {"pairs": 1, "disagreements": 0,
+                                                                 "rate": 0.0}}}
 
 
 def test_two_refused_judges_are_queued_as_refused(make_test_model, workdir):
-    """Neither judge ran a tool, so neither verdict counts and nobody has decided the item."""
-    a = AgenticJudge(make_test_model([answer(verdict="pass")]), TOOLS, name="a")
-    b = AgenticJudge(make_test_model([answer(verdict="fail")]), TOOLS, name="b")
-    result, disagreement = two_judges(a, b, "judge_dispute", {}, [], [], workdir=workdir, item_id="x")
+    """The harness could prefill no check for either judge, so neither verdict counts (D222)."""
+    a = AgenticJudge(make_test_model([answer(verdict="acceptable")]), {}, name="a")
+    b = AgenticJudge(make_test_model([answer(verdict="unacceptable")]), {}, name="b")
+    result, disagreement = two_judges(a, b, lambda judge: judge.ask("dispute", "decide this", {}),
+                                      workdir=workdir, item_id="x")
     assert result.verdict == "abstain"
     assert disagreement is False
     assert [row["reason"] for row in read_disagreement_queue(workdir)] == ["refused"]
@@ -661,3 +820,34 @@ def test_judge_cause_result_names_the_cause_for_one_failed_run(make_test_model, 
     result = judge_cause_result({"run_id": "r2"}, {"run_id": "r1"}, a, b, workdir=workdir, run_id="r2")
     assert result.verdict == "environment"
     assert result.use == "cause"
+
+
+# --- judge-smoke: can this model be a judge at all (D222 rule 4) ---
+
+
+def test_judge_smoke_reports_resolved_for_a_model_that_cites_the_check_it_rests_on(make_test_model):
+    model = make_test_model([answer(verdict="equivalent", evidence=["value_a", "value_b"]),
+                             answer(verdict="not_equivalent", cited_spans=["gloss white"])])
+    rows = smoke(AgenticJudge(model, {}, name="a"))
+    assert [row["outcome"] for row in rows] == ["resolved", "resolved"]
+    assert [row["route"] for row in rows] == ["judge", "judge"]
+    assert [row["agrees"] for row in rows] == [True, True]
+    assert smoke_lines(rows)[-1] == "resolved 2 of 2, right on 2 of 2"
+
+
+def test_judge_smoke_reports_refused_for_a_model_whose_equal_answer_cites_nothing(make_test_model):
+    model = make_test_model([answer(verdict="equivalent"),
+                             answer(verdict="not_equivalent")])
+    rows = smoke(AgenticJudge(model, {}, name="a"))
+    assert [row["outcome"] for row in rows] == ["refused", "resolved"]
+    assert [row["route"] for row in rows] == ["uncited", "judge"]
+    assert smoke_lines(rows)[-1] == "resolved 1 of 2, right on 1 of 2"
+
+
+def test_judge_smoke_asks_two_invented_pairs_one_the_same_and_one_not(make_test_model):
+    model = make_test_model([answer(verdict="equivalent", evidence=["value_a"]),
+                             answer(verdict="not_equivalent")])
+    rows = smoke(AgenticJudge(model, {}, name="a"))
+    assert [row["expected"] for row in rows] == ["equal", "different"]
+    assert rows[0]["a"] != rows[0]["b"] and rows[1]["a"] != rows[1]["b"]
+    assert all(row["checks"] == 2 for row in rows)  # value_a and value_b, prefilled either way

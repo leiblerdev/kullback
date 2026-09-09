@@ -20,12 +20,13 @@ from kullback.agent.session import SessionStore
 from kullback.ai.provider import ModelReply, TestModel, ToolCallRequest
 from kullback.examiner import agent as examiner_agent
 from kullback.examiner import extension as ext
-from kullback.examiner import skills
+from kullback.examiner import skills, stage
 from kullback.examiner import tools as tools_mod
 from kullback.examiner.extension import examiner_extension
 from kullback.gates import gates_over
+from kullback.runner import budget
 
-SEVEN = ["read", "derive", "probe", "repair", "refuse", "reroll", "finding"]
+EIGHT = ["read", "search", "derive", "probe", "repair", "refuse", "reroll", "finding"]
 COMPARED = ("task_status.json", "references.json", "constraints_check.json", "gates.json", "scorecard.json")
 
 
@@ -58,8 +59,14 @@ def _probe_call(cid: str, run, bug_class: str = "other") -> tuple:
 
 
 def _tree(workdir: Path) -> dict:
+    """Every record two runs are compared on, with the workdir's own path and D218's stamps taken out.
+
+    `updated_at` on a status row is a wall clock, so two runs of the same derivation write it
+    differently whatever else they do; what is compared here is the rows.
+    """
     def read(path: Path) -> bytes:
-        return path.read_bytes().replace(str(workdir.resolve()).encode(), b"<workdir>").replace(
+        body = _without_stamps(path)
+        return body.replace(str(workdir.resolve()).encode(), b"<workdir>").replace(
             str(workdir).encode(), b"<workdir>")
     out = {name: read(workdir / name) for name in COMPARED if (workdir / name).is_file()}
     for folder in ("verifiers", "examiner/history", "probes"):
@@ -68,10 +75,26 @@ def _tree(workdir: Path) -> dict:
     return out
 
 
-def test_the_extension_registers_the_seven_tools_the_tagged_sections_the_probe_skill_and_the_two_hooks(world):
+def _rows_only(status: dict) -> dict:
+    """Status rows with D218's round and time stamps taken off (rule 2)."""
+    return {task_id: {key: value for key, value in row.items() if key not in stage.STAMPS}
+            for task_id, row in status.items()}
+
+
+def _without_stamps(path: Path) -> bytes:
+    """One record's bytes, with each status row's `round` and `updated_at` taken off (D218 rule 2)."""
+    body = path.read_bytes()
+    if path.name != "task_status.json":
+        return body
+    rows = {task_id: {key: value for key, value in row.items() if key not in stage.STAMPS}
+            for task_id, row in json.loads(body).items()}
+    return json.dumps(rows, indent=2, sort_keys=True, default=str).encode("utf-8")
+
+
+def test_the_extension_registers_the_eight_tools_the_tagged_sections_the_probe_skill_and_the_two_hooks(world):
     plan, harness = _harness(world)
     assert isinstance(harness, AgentHarness), "the Examiner is an extension on the core, not a harness of its own"
-    assert harness.registry.names() == SEVEN
+    assert harness.registry.names() == EIGHT
     assert [s.name for s in harness.sections] == ["examiner", "examiner_tools", "skills", "skill:probe",
                                                   "examiner_examples", "examiner_rules", "examiner_findings",
                                                   "examiner_tasks", "examiner_stop"]
@@ -129,12 +152,45 @@ def test_the_examiner_has_no_tool_that_writes_a_body_a_table_or_the_environment(
     assert after == before
     assert sorted(str(p.relative_to(workdir)) for p in (workdir / "env").rglob("*") if p.is_file()) == env_before
     names = [tool.name for tool in tools_mod.examiner_tools(ext.ExaminerPlan(workdir=workdir, inputs=inputs))]
-    assert names == SEVEN and not {"build", "compile_tool", "grow", "recluster", "replay"} & set(names)
+    assert names == EIGHT and not {"build", "compile_tool", "grow", "recluster", "replay"} & set(names)
     produced = {name for tool in tools_mod.examiner_tools(ext.ExaminerPlan(workdir=workdir, inputs=inputs))
                 for name in (tool.result_model.model_fields["produced"].default_factory() if "produced"
                              in tool.result_model.model_fields else [])}
     assert not produced & {"bodies", "db", "schema", "environment", "assisted_tools", "tasks"}
     assert produced == {"verifiers", "task_status", "history", "probes", "refusals", "rerolls", "task_runs", "findings"}
+
+
+def test_the_examples_show_the_calls_the_records_say_the_examiner_actually_needs():
+    """Across five builds the Examiner never called probe, refuse or reroll, and the examples it read
+    were about them; what it did call, and did badly, was finding and search."""
+    assert ext.EXAMPLES.count("finding(task_id=") == 3, "three of five file a finding"
+    assert "search(text=" in ext.EXAMPLES, "one of them grounds the finding across Tasks first"
+    assert 'kind="assisted_tool"' in ext.EXAMPLES, "one of them is a tool, with the shape it got wrong"
+    assert "refuse(task_id=" in ext.EXAMPLES, "and one refuses a Task no Run of it finished"
+    assert ext.EXAMPLES.count("probe(task_id=") == 1, "the probe example stays, at one"
+    assert len(ext.EXAMPLES) < len(ext.TOOLS), "the examples do not outgrow the tools they illustrate"
+
+
+def test_a_round_that_files_nothing_is_told_to_say_why():
+    """One build spent whole rounds deriving and closing with nothing filed and nothing said."""
+    assert "files nothing after derive" in ext.RULES
+
+
+def test_the_examiners_opening_prompt_says_what_the_round_before_it_moved(tmp_path):
+    """The Examiner filed fewer findings every round while the trusted count fell, and no round was
+    ever told the round before it had made things worse."""
+    plan = ext.ExaminerPlan(workdir=tmp_path, inputs={})
+    assert ext.what_section(plan) == ext.WHAT, "one round has nothing to compare itself against"
+    (tmp_path / "rounds.json").write_text(json.dumps([
+        {"round": 1, "counts": {"trusted": 99, "fidelity": 188, "tasks_with_reference": 135,
+                                "artifacts_changed": ["intents"]}},
+        {"round": 2, "counts": {"trusted": 66, "fidelity": 147, "tasks_with_reference": 101,
+                                "artifacts_changed": ["bodies"]}},
+    ]), encoding="utf-8")
+    section = ext.what_section(plan)
+    assert section.startswith(ext.WHAT) and section.count("\n") == ext.WHAT.count("\n") + 1
+    assert ("The round before this one: round 2 against round 1: trusted 66, down 33; "
+            "fidelity 147, down 41; References 101, down 34; it changed bodies.") in section
 
 
 def test_the_tool_result_hook_runs_the_gates_bound_to_what_the_tool_produced(derived):
@@ -220,6 +276,7 @@ def test_the_driver_derives_through_the_hooks_and_the_model_driven_session_leave
     assert [e.name for e in events if isinstance(e, StageStart)] == ["derive_verifier"]
     ended = [e for e in events if isinstance(e, StageEnd)]
     assert ended[-1].counts["status"] == "ran" and ended[-1].counts["verifiers"] == 1
+    assert ended[-1].counts["ran"] == 1 and ended[-1].counts["cached"] == 0, "the first call derives the Task (D163)"
     assert isinstance(events[-1], ToolExecutionEnd) and events[-1].tool_name == "derive"
     started = next(e for e in events if isinstance(e, ToolExecutionStart))
     assert started.tool_call_id == examiner_agent.DRIVER_CALL_ID
@@ -230,7 +287,9 @@ def test_the_driver_derives_through_the_hooks_and_the_model_driven_session_leave
                                         run_probe=probe_runner_over(), agent_model=model)
     assert len(model.calls) == 2 and other["trusted"] == [T]
     assert _tree(modelled.workdir) == _tree(driven.workdir)
-    assert other["tasks"] == result["tasks"]
+    # The summary reads the live file back, so its rows carry D218's stamps; the two runs wrote the
+    # same rows and, being two runs, two different clocks.
+    assert _rows_only(other["tasks"]) == _rows_only(result["tasks"])
 
 
 def test_the_examiner_session_is_recorded_under_its_own_file(world, tmp_path):
@@ -286,6 +345,30 @@ def test_the_round_n_examiner_steer_asks_for_derive_again():
     assert "target='t1'" in examiner_agent.examiner_round_message(3, "t1")
 
 
+def test_a_finding_suggesting_the_examiners_own_verb_comes_back_in_the_next_beats_steer():
+    """Two live builds' Examiners suggested `repair` 33 and 18 times and called it once each: the
+    suggestion was filed, read by the Builder, which owns none of it, and never acted on. What the
+    Builder is handed as `pending_line` the Examiner is now handed as its own open suggestions,
+    ranked by the Tasks each costs and cut at a handful."""
+    rows = [{"finding_id": f"finding-{n}", "status": "open", "suggested": "repair",
+             "task_id": f"task_{n}", "task_ids": [f"task_{n}"] * n, "hint": f"drop atom-{n}"}
+            for n in range(1, 8)]
+    rows += [{"finding_id": "finding-9", "status": "open", "suggested": "repair_recompile",
+              "task_id": "task_9", "task_ids": ["task_9"] * 40, "hint": "the Builder's"},
+             {"finding_id": "finding-10", "status": "closed", "suggested": "repair",
+              "task_id": "task_10", "task_ids": ["task_10"] * 40, "hint": "already answered"}]
+    owed = examiner_agent.own_suggestions(rows)
+    assert [row["finding_id"] for row in owed] == ["finding-7", "finding-6", "finding-5",
+                                                   "finding-4", "finding-3"], "costliest first, five of them"
+    assert len(examiner_agent.own_suggestions(rows, cap=None)) == 7, "no cap is every one of them"
+    steer = examiner_agent.examiner_round_message(2, "all", rows)
+    assert "finding-7 suggests repair on task_7 (drop atom-7)" in steer
+    assert "finding-9" not in steer and "finding-10" not in steer
+    assert "`payload`" in steer, "the shape a repair takes, said where the repair is asked for"
+    assert examiner_agent.suggested_line([]) == ""
+    assert "Still open" not in examiner_agent.examiner_round_message(2, "all", [])
+
+
 def test_the_probe_skill_names_the_eight_bug_classes():
     assert len(skills.BUG_CLASSES) == 8 and len(set(skills.BUG_CLASSES)) == 8
     for bug_class in skills.BUG_CLASSES:
@@ -293,3 +376,15 @@ def test_the_probe_skill_names_the_eight_bug_classes():
         assert bug_class[0].upper() + bug_class[1:] + "." in skills.PROBE_SKILL
     assert "stays in the pool forever" in skills.PROBE_SKILL and "three" in skills.PROBE_SKILL
     assert skills.PROBE_SKILL_NAME == "probe"
+
+
+def test_the_examiner_session_reports_the_window_of_the_model_it_runs_on(world):
+    """D124's line is 40 percent of the window, so the window has to be the model's own; the agent
+    core may not import runner.budget, so this caller passes `window_for` in."""
+    known = next(m for m, w in sorted(budget.CONTEXT_WINDOWS.items()) if w != budget.DEFAULT_CONTEXT_WINDOW)
+    _, harness = _harness(world, TestModel(["ok"], name=known))
+    assert harness.context.config.window == budget.window_for(known) != budget.DEFAULT_CONTEXT_WINDOW
+    assert f"of {budget.window_for(known)}," in harness.context.estimate().note()
+    # a model the catalog does not know, and the code driver, keep the default
+    assert _harness(world, TestModel(["ok"]))[1].context.config.window == budget.DEFAULT_CONTEXT_WINDOW
+    assert _harness(world)[1].context.config.window == budget.DEFAULT_CONTEXT_WINDOW

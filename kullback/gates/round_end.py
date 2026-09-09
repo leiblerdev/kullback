@@ -3,9 +3,12 @@
 `round_counts` is the state of a workdir at the end of a round, read off the rulings: Tasks clearing
 fidelity from the replay_reference ruling, Tasks with a trusted Verifier and the refusals from the
 trusted ruling, assisted Runs from the Run records, probes that scored a pass from the pool. The
-driver adds what only it knows (fallback compactions per agent, spend, findings). `done` is D126's
-state taken literally, `stalled` is `stall_rounds` consecutive rounds that moved no gate count in
-either direction, and `exit_for` applies the three exits in the order ceiling, done, stalled.
+driver adds what only it knows (fallback compactions per agent, spend, findings, and whether the
+target was built at all). `done` is D126's state taken literally over a round that built its target
+(D166), `stalled` is `stall_rounds` consecutive rounds that moved no gate count in either direction,
+and `exit_for` applies the exits in the order ceiling, done, stalled (gate counts still, or
+fidelity flat for `fidelity_stall` rounds, D169), max_rounds. A Task with no Reference is
+unfinished until it is refused (D172).
 """
 
 from __future__ import annotations
@@ -23,9 +26,16 @@ GATE_COUNTS: tuple[str, ...] = ("fidelity", "trusted", "refused_count", "assiste
 def round_counts(task_status: dict, verifiers: list[Verifier], probes: dict[str, ProbePool],
                  history: dict[str, VerifierHistory], refusals: dict[str, dict], task_runs: dict[str, list[Run]],
                  replays: dict, rerolls: dict, canon_rules: Any, sigs: list, *,
-                 record: Optional[Callable[[GateResult], Any]] = None) -> dict:
+                 record: Optional[Callable[[GateResult], Any]] = None,
+                 intents: Optional[dict] = None) -> dict:
     """D126's counts for one round, each read off a ruling; `record`, when given, receives the two
-    rulings computed here (replay_reference, trusted) so a driver can land them in its ledger."""
+    rulings computed here (replay_reference, trusted) so a driver can land them in its ledger.
+
+    `intents` is what the Builder's Intent stage left, and the three D196 counts are read straight
+    off it and off the status rows: how many Intents the strip touched, how many values it took out,
+    and how many Task and column pairs the leak check found it had missed. The three say whether the
+    strip is doing the work or the check still is, which is the only way to tell a strip that covers
+    a corpus from one that covers the two lines someone looked at."""
     fidelity_ruling = reference_replay_gate(replays or {})
     trusted_ruling = trusted_gate(task_status, verifiers, probes, history, refusals, task_runs, replays, rerolls,
                                   canon_rules, sigs)
@@ -38,8 +48,14 @@ def round_counts(task_status: dict, verifiers: list[Verifier], probes: dict[str,
     refused = dict(trusted_ruling.metrics["refused"])
     with_reference = [task_id for task_id, row in (task_status or {}).items()
                       if _get(row, "reference_confirmed", False)]
-    unfinished = [task_id for task_id in with_reference
+    # D172: every Task the corpus gave is unfinished until it is trusted and clears fidelity, or is
+    # refused; a Task with no Reference yet (a seed tool assisted, a disagreement not yet refused)
+    # is the loop's remaining work, not a Task outside it. Reading `unfinished` over the Tasks with
+    # a Reference alone closed a build on "done" at fidelity 0 of 183 with every tool assisted,
+    # because no Task had a Reference to be unfinished.
+    unfinished = [task_id for task_id in (task_status or {})
                   if not ((task_id in trusted_ids and task_id in clearing) or task_id in refused)]
+    stripped = [list(_get(record_of, "stripped", []) or []) for record_of in (intents or {}).values()]
     return {
         "fidelity": len(replays or {}) - len(fidelity_ruling.failures),
         "tasks": len(task_status or {}),
@@ -52,6 +68,10 @@ def round_counts(task_status: dict, verifiers: list[Verifier], probes: dict[str,
         "probes_passing": int(trusted_ruling.metrics["probes_passing"]),
         "false_rejection": dict(trusted_ruling.metrics["false_rejection"]),
         "unfinished": unfinished,
+        # D196: the strip, and what it missed.
+        "intents_stripped": sum(1 for values in stripped if values),
+        "values_stripped": sum(len(values) for values in stripped),
+        "leak_misses": sum(len(_get(row, "leak_columns", []) or []) for row in (task_status or {}).values()),
     }
 
 
@@ -66,9 +86,20 @@ def _counts(entry: Any) -> dict:
 
 
 def done(counts: dict) -> bool:
-    """D126's state, literal: every Task with a Reference is trusted and clears fidelity or is refused,
-    and no probe passes."""
+    """D126's state, literal, over a round that built its target (D166): every Task is trusted and
+    clears fidelity or is refused, and no probe passes.
+
+    A round whose build failed a stage holds no Task with a Reference at all, so `unfinished` was
+    empty and the literal reading called it done. That closed a build whose compile_tools stage had
+    failed three times, on the exit "done", with fidelity 0 of 183. `built` False is never done,
+    whatever the rest of the counts say; a round that does not carry the count reads as before.
+    The same build, rebuilt, closed on "done" again at fidelity 0 with every tool assisted and no
+    Task holding a Reference: `unfinished` now counts every Task without a ruling (D172), so a
+    round is done only when the number is final, and a loop that cannot move ends on stalled.
+    """
     counts = _counts(counts)
+    if counts.get("built") is False:
+        return False
     return not counts.get("unfinished") and int(counts.get("probes_passing", 0)) == 0
 
 
@@ -82,15 +113,41 @@ def stalled(rounds: list[dict], stall_rounds: int) -> bool:
     return all(len({counts.get(key) for counts in window}) == 1 for key in GATE_COUNTS)
 
 
+def fidelity_flat(rounds: list[dict], flat_rounds: int) -> bool:
+    """True when the last `flat_rounds` rounds lifted fidelity above nothing the rounds before them
+    had reached (D169). Fidelity is the count the Builder's repairs move first, and a build whose
+    fidelity has not risen in that many rounds is spending on repairs that land nowhere, whatever the
+    other counts do: build 12's model arm sat at fidelity 153 for six rounds while trusted wobbled
+    between 48 and 50, which kept every count from being still and the stalled exit from firing."""
+    flat_rounds = max(1, int(flat_rounds))
+    if len(rounds) <= flat_rounds:
+        return False
+    counts = [_counts(r) for r in rounds]
+    before = max(int(c.get("fidelity") or 0) for c in counts[:-flat_rounds])
+    recent = max(int(c.get("fidelity") or 0) for c in counts[-flat_rounds:])
+    return recent <= before
+
+
 def exit_for(rounds: list[dict], stall_rounds: int, *, ceiling_reached: bool,
-             exhausted: list[bool]) -> Optional[str]:
+             exhausted: list[bool], all_rounds: Optional[list[dict]] = None,
+             fidelity_stall: Optional[int] = None, max_rounds: Optional[int] = None) -> Optional[str]:
     """ceiling when the build ceiling was reached or the allowance was exhausted two rounds in a row,
-    else done, else stalled, else None."""
+    else done, else stalled (no gate count moved, or fidelity flat for `fidelity_stall` rounds), else
+    max_rounds when `all_rounds` holds that many, else None.
+
+    `rounds` is the tail since the last round that moved, which is what the gate-count stall reads;
+    `all_rounds` is every round so far, which is what the fidelity window and the round cap read,
+    since a round that moved a count sideways still counts against both (D169)."""
     exhausted = list(exhausted or [])
+    history = list(all_rounds) if all_rounds is not None else list(rounds)
     if ceiling_reached or (len(exhausted) >= 2 and exhausted[-1] and exhausted[-2]):
         return "ceiling"
     if rounds and done(rounds[-1]):
         return "done"
     if stalled(rounds, stall_rounds):
         return "stalled"
+    if fidelity_stall and fidelity_flat(history, fidelity_stall):
+        return "stalled"
+    if max_rounds and len(history) >= max_rounds:
+        return "max_rounds"
     return None

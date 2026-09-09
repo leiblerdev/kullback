@@ -103,6 +103,24 @@ def source_confinement(source: str, class_name: str = TOOLS_CLASS) -> list[str]:
     return sorted(set(bad))
 
 
+def function_confinement(source: str) -> list[str]:
+    """Everything a model-written plain function names that reaches outside its own arguments.
+
+    A tool body is a method of the generated toolkit, so `source_confinement` looks for it inside a
+    class. A reader (D176) is a bare `def read(result):` the model wrote for one tool, and D187 runs
+    it in this process to compare two prose results by the columns they assert. Same allowlist, same
+    denied builtins, same dunder rule; the only difference is where the function is found. It is a
+    name check, not a proof, and the caller states it as one.
+    """
+    try:
+        tree = ast.parse(source)
+    except SyntaxError as exc:
+        return [f"does not parse: {exc.msg}"]
+    return sorted({f"{node.name} {line}"
+                   for node in tree.body if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+                   for line in _body_confinement(node)})
+
+
 def _body_confinement(function: ast.AST) -> list[str]:
     out: list[str] = []
     for node in ast.walk(function):

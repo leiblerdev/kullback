@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any, NamedTuple, Optional, Sequence
 
 from kullback.ai.provider import Model
+from kullback.gates.tool_runs import SHAPELESS_PROBES, id_field, match_table
 from kullback.runner.records import (
     Column,
     EffectObservation,
@@ -28,8 +29,13 @@ GENERIC_NAME = re.compile(r"^(calculate|compute|think|reflect|transfer_to_human|
 MIN_OBSERVED_CALLS = 3
 UNKNOWN_ERROR_SHARE = 0.20  # D67: unknown above a small share on any tool is a flag on the Environment
 MAX_SAMPLES = 5
+MAX_VOCABULARY = 12    # distinct values that still read as a set of names, the class rule's own bar
+VOCAB_VALUE_LEN = 40   # a longer value is a sentence, not one of the names a column draws from
 MAX_VALUES = 400
 MIN_COUNTER_VALUES = 5
+# The floor under which "every number differs" says nothing: fewer sightings than this and a column
+# of distinct numbers is what a small sample of anything looks like (`_never_repeats`).
+MIN_UNIQUE_VALUES = 5
 JSON_TYPES = {"string": "str", "integer": "int", "number": "float", "boolean": "bool",
               "object": "dict", "array": "list", "null": "NoneType"}
 # System time and counters only: a name that merely contains a date or a version is not enough (D73).
@@ -140,15 +146,28 @@ def _ask(model: Model, system: str, payload: dict) -> Any:
 
 
 def is_assistant_call(call: Any) -> bool:
-    """Telecom's traces interleave the assistant and the simulated user's own tool calls, the user
-    running a separate toolkit against its own phone (docs/cross-domain-check.md, Judgement). Only the
-    assistant's calls describe the customer's Environment; a missing requestor is the assistant."""
+    """A customer's traces may interleave the assistant's tool calls with a simulated user's own,
+    the user running a separate toolkit of its own (docs/cross-domain-check.md, Judgement). Only the
+    assistant's calls describe the customer's system, so the schema, the observed effects and the
+    Starting state are read from these alone; a missing requestor is the assistant. The user's calls
+    are still mined into the ToolSig of a tool the user calls (D164), never into any of those three."""
     return (call.requestor or "assistant") == "assistant"
 
 
 def skipped_user_calls(traces: list[Trace]) -> int:
-    """Tool calls whose requestor is not the assistant: never mined into a ToolSig, kind or schema."""
+    """Tool calls whose requestor is not the assistant: kept out of the schema, the effects and the
+    Starting state. They do reach the ToolSig of the tool they called, under its `callers` (D164)."""
     return sum(1 for trace in traces for call in trace.tool_calls if not is_assistant_call(call))
+
+
+def _requestor_of(call: Any) -> str:
+    """The actor that made the call; a missing requestor is the assistant."""
+    return call.requestor or "assistant"
+
+
+def _is_refusal(call: Any) -> bool:
+    """The recording had no such tool for this caller: the one answer that is not evidence (D164)."""
+    return call.error is not None and call.error.class_ == "tool_not_found"
 
 
 # --- tools -------------------------------------------------------------------
@@ -156,7 +175,9 @@ def skipped_user_calls(traces: list[Trace]) -> int:
 def _new_acc() -> dict:
     return {"calls": 0, "errors": 0, "traces": [], "args": {}, "results": {},
             "arg_calls": 0, "result_calls": 0, "errors_by_class": {}, "samples": [],
-            "echoed": 0.0, "messages": 0}
+            "echoed": 0.0, "messages": 0,
+            # D164: every requestor that called this name, and the ones the recording answered.
+            "requestors": set(), "answered": set()}
 
 
 def _declared_specs(traces: list[Trace]) -> dict[str, dict]:
@@ -171,12 +192,20 @@ def _declared_specs(traces: list[Trace]) -> dict[str, dict]:
 
 
 def _accumulate(traces: list[Trace]) -> dict[str, dict]:
+    """Every requestor's calls, per tool name (D164).
+
+    A tool the simulated user calls is a tool of the recording all the same, and its arguments,
+    results, error shapes and samples are the only evidence there is for it, so they are taken from
+    whoever called. What the customer's system is (the schema, the observed effects, the Starting
+    state) is still read from the assistant's calls alone.
+    """
     stats: dict[str, dict] = {}
     for trace in traces:
         for call in trace.tool_calls:
-            if not is_assistant_call(call):
-                continue
             acc = stats.setdefault(call.name, _new_acc())
+            acc["requestors"].add(_requestor_of(call))
+            if not _is_refusal(call):
+                acc["answered"].add(_requestor_of(call))
             acc["calls"] += 1
             if trace.trace_id not in acc["traces"]:
                 acc["traces"].append(trace.trace_id)
@@ -480,6 +509,39 @@ def _decide_kind(sig: ToolSig, model: Optional[Model], samples: list, spec: Opti
         sig.unclassified = False
 
 
+def _callers_of(acc: dict, declared: bool) -> tuple[list[str], list[str]]:
+    """Who the recording answered this name for, and who it only ever refused (D164).
+
+    A declared tool no trace called is the assistant's, because the declaration is the tool list the
+    assistant was sent. A name nobody was answered for has no caller, and gets no ToolSig.
+    """
+    if not acc["requestors"]:
+        return (["assistant"] if declared else []), []
+    return sorted(acc["answered"]), sorted(acc["requestors"] - acc["answered"])
+
+
+def unknown_tools(traces: list[Trace]) -> list[dict]:
+    """The names the traces call that are no tool of the recording (D164).
+
+    Two kinds. A name every call of which came back `tool_not_found`: the recording had no such tool
+    for anyone who asked. And a name that is not a Python identifier, which a recorded agent invented
+    (`$DEVICE_ACTION`) and no generated module could ever hold. Neither gets a ToolSig, so neither is
+    compiled or gated, and the Router refuses it in a Run as the recording did. They are reported so
+    a build can see what the recorded agent reached for and found nothing.
+    """
+    rows = []
+    for name, acc in sorted(_accumulate(traces).items()):
+        if not name.isidentifier():
+            reason = "not a tool name"
+        elif not acc["answered"]:
+            reason = "refused on every call"
+        else:
+            continue
+        rows.append({"name": name, "calls": acc["calls"],
+                     "requestors": sorted(acc["requestors"]), "reason": reason})
+    return rows
+
+
 def mine_tools(traces: list[Trace], model: Optional[Model] = None) -> list[ToolSig]:
     """One ToolSig per tool the traces show: schemas as the union of everything observed (D72), kind per D68."""
     stats = _accumulate(traces)
@@ -491,7 +553,11 @@ def mine_tools(traces: list[Trace], model: Optional[Model] = None) -> list[ToolS
     sigs = []
     for name in sorted(stats):
         acc = stats[name]
+        callers, refused = _callers_of(acc, name in specs)
+        if not callers or not name.isidentifier():
+            continue  # D164: no tool of this recording; unknown_tools() reports it instead
         sig = _build_sig(name, acc, specs.get(name), effects.get(name, []))
+        sig.callers, sig.refused_callers = callers, refused
         _decide_kind(sig, model, acc["samples"], specs.get(name), acc, quiet)
         if model is not None and not sig.result_schema and acc["calls"]:
             _llm_result_schema(model, sig, acc["samples"])
@@ -920,29 +986,116 @@ def _noun_of(tool_name: str) -> Optional[str]:
     return _singular(nouns[-1]) if nouns else None
 
 
-def _table_of(tool_name: str, row: dict, id_names: Sequence[str] = (), siblings: Sequence[dict] = ()) -> Optional[str]:
-    """The entity a result row is about, from the id columns it carries and the tool's own noun.
+def _address_of(tool_name: str) -> set[str]:
+    """The entities a tool name says a row is only addressed by: the tokens after the first preposition.
 
-    In order: the id whose entity is what the tool is about; the id whose values are distinct across
-    the rows this one came back with, which is what an id does and a foreign key does not; the only
-    id there is. A row whose only id is `id`, which is how support, CRM and ticketing APIs return
-    rows (D52), takes its table from the tool name instead of being dropped.
+    A name of the shape `get_invoices_for_tenant` is about invoices and addressed by a tenant, so
+    `tenant` is here and `invoice` is not. It is the same reading `_noun_of` makes of the same
+    name, from the other side of the preposition, and it is what keeps the asked-for-id rule
+    below from filing a child row under the parent whose id the call happened to pass.
     """
-    ids = [key for key in row if isinstance(key, str) and key != "id"
-           and (key.endswith("_id") and len(key) > 3 or key in id_names)]
+    tokens = [t for t in re.split(r"[^a-z0-9]+", tool_name.lower()) if t]
+    for index, token in enumerate(tokens):
+        if token in PREPOSITIONS:
+            return {_singular(t) for t in tokens[index + 1:]}
+    return set()
+
+
+def _asked_for(row: dict, ids: Sequence[str], args: Optional[dict]) -> Optional[str]:
+    """The row's id column holding a value the call passed as an argument, or None.
+
+    The call asked for that id and the customer's tool answered this row, so the row is that
+    entity, whatever the tool is called. Where several of the row's ids were passed, the column
+    whose name is the argument's name wins, because the caller named it; otherwise the first in
+    the row's own order, so the answer does not depend on how a dict happens to be ordered
+    elsewhere. Only scalars are compared: an argument holding a list or an object is a filter, not
+    an id, and a blank value addresses nothing.
+    """
+    if not args:
+        return None
+    wanted = {canonical_json(value) for value in args.values()
+              if isinstance(value, (str, int, float)) and not isinstance(value, bool) and value != ""}
+    matched = [key for key in ids
+               if row.get(key) not in (None, "") and canonical_json(row[key]) in wanted]
+    if not matched:
+        return None
+    named = [key for key in matched if key in args]
+    return (named or matched)[0]
+
+
+def id_of_row(row: dict, id_names: Sequence[str] = ()) -> list[str]:
+    """The row's own id columns: an `_id` name, or a column the corpus shows behaving like an id."""
+    return [key for key in row if isinstance(key, str) and key != "id"
+            and (key.endswith("_id") and len(key) > 3 or key in id_names)]
+
+
+def asked_for_id(tool_name: str, row: dict, id_names: Sequence[str] = (),
+                 args: Optional[dict] = None) -> Optional[str]:
+    """The row's id column whose value the call passed as an argument, or None (D180's first rule).
+
+    Public because the same rule homes two different things: a row a result stated, which
+    `_home_of` reads below, and a keyless partial result the Starting-state pinner has to place on
+    the row the call named (`compile_env.home_partial_result`). One rule, read from one place, so
+    the two cannot drift apart. The narrowing is `_home_of`'s own: an id the tool name says is only
+    the address is ignored, and so is a column whose name carries no id suffix.
+    """
+    address = _address_of(tool_name)
+    named_entities = [key for key in id_of_row(row, id_names)
+                      if _entity_of(key) != key and _entity_of(key) not in address]
+    return _asked_for(row, named_entities, args)
+
+
+def table_for_id(column: str) -> str:
+    """The table an id column names: its entity, plural (`customer_id` is a row of `customers`)."""
+    return _plural(_entity_of(column))
+
+
+def _home_of(tool_name: str, row: dict, id_names: Sequence[str] = (), siblings: Sequence[dict] = (),
+             args: Optional[dict] = None) -> tuple[Optional[str], str]:
+    """The entity a result row is about and the rule that says so; (None, reason) when nothing does.
+
+    In order: the id the call asked for, which is the strongest evidence a corpus can give, since
+    the customer's tool was handed that id and answered this row; the id whose entity is what the
+    tool is about; the id whose values are distinct across the rows this one came back with, which
+    is what an id does and a foreign key does not; the only id there is. A row whose only id is
+    `id`, which is how support, CRM and ticketing APIs return rows (D52), takes its table from the
+    tool name instead of being dropped.
+
+    The asked-for rule is narrower than the rest in two ways, and both are what keep it from taking
+    a table nothing names. It ignores an id the tool name says is only the address (`_address_of`):
+    a call that lists a parent's children is handed the parent's id and answers the children, and
+    homing those rows under the parent is the fault `_noun_of` was written to fix. And it ignores a
+    column whose name carries no id suffix, because the entity of such a column is the column
+    itself: a search filter the corpus happens to see one value of per row is an id by
+    `id_columns` and would otherwise name a table after itself. Everything the asked-for rule
+    cannot decide falls through to the rules that were here before it, unchanged.
+    """
+    ids = id_of_row(row, id_names)
     noun = _noun_of(tool_name)
+    asked = asked_for_id(tool_name, row, id_names, args)
+    if asked is not None:
+        return table_for_id(asked), f"the call passed the value of {asked}, so the row is that entity"
     for key in ids:
         if _entity_of(key) == noun:
-            return _plural(_entity_of(key))
+            return _plural(_entity_of(key)), f"the tool name is about {noun}, which {key} names"
     if len(ids) > 1:
         distinct = [key for key in ids if _distinct_across(key, siblings)]
         if len(distinct) == 1:
-            return _plural(_entity_of(distinct[0]))
+            return (_plural(_entity_of(distinct[0])),
+                    f"{distinct[0]} is the one id distinct across the rows the call answered")
     if len(ids) == 1:
-        return _plural(_entity_of(ids[0]))
+        return _plural(_entity_of(ids[0])), f"{ids[0]} is the row's only id"
     if not ids and any(key == "id" for key in row):
-        return _plural(noun) if noun else None
-    return None
+        if noun:
+            return _plural(noun), f"the row's only id is `id`, so the table is the tool's noun {noun}"
+        return None, "the row's only id is `id` and the tool name names no entity"
+    return None, "no id of the row names an entity, and the call passed none of its values"
+
+
+def _table_of(tool_name: str, row: dict, id_names: Sequence[str] = (), siblings: Sequence[dict] = (),
+              args: Optional[dict] = None) -> Optional[str]:
+    """The entity a result row is about; `_home_of` without its reason."""
+    return _home_of(tool_name, row, id_names, siblings, args)[0]
 
 
 def _distinct_across(column: str, rows: Sequence[dict]) -> bool:
@@ -999,7 +1152,7 @@ def nested_rows(traces: list[Trace], id_names: Sequence[str] = ()) -> list[tuple
                 continue
             rows = _result_rows(_parse(call.result))
             for row in rows:
-                parent = _table_of(call.name, row, id_names, rows)
+                parent = _table_of(call.name, row, id_names, rows, call.args)
                 if parent is None:
                     continue
                 for column, value in row.items():
@@ -1030,6 +1183,32 @@ def nested_homes(traces: list[Trace], id_names: Sequence[str] = ()) -> dict[str,
         place = homes.setdefault(child, {})
         place[f"{parent}.{column}"] = place.get(f"{parent}.{column}", 0) + 1
     return homes
+
+
+def row_homes(traces: list[Trace], id_names: Optional[Sequence[str]] = None) -> dict[str, dict]:
+    """Per tool, where the miner homed its result rows, by which rule, and how many it could not home.
+
+    The decision `_home_of` makes per row, counted per tool, so a corpus where a lookup's rows reach
+    no table says so on the record instead of only in the size of a table that was never written. A
+    tool that answers rows of two kinds gets both, and the reason is the rule's own sentence.
+    """
+    names = id_columns(traces) if id_names is None else list(id_names)
+    out: dict[str, dict] = {}
+    for trace in traces:
+        for call in trace.tool_calls:
+            if not is_assistant_call(call) or call.error is not None or call.result is None:
+                continue
+            rows = _result_rows(_parse(call.result))
+            for row in rows:
+                table, reason = _home_of(call.name, row, names, rows, call.args)
+                entry = out.setdefault(call.name, {"homed": {}, "unhomed": 0, "unhomed_reason": ""})
+                if table is None:
+                    entry["unhomed"] += 1
+                    entry["unhomed_reason"] = reason
+                    continue
+                place = entry["homed"].setdefault(table, {"rule": reason, "rows": 0})
+                place["rows"] += 1
+    return out
 
 
 def _result_rows(parsed: Any) -> list[dict]:
@@ -1068,6 +1247,18 @@ def _counter_like(values: list) -> bool:
             and all(b > a for a, b in zip(numbers, numbers[1:], strict=False)))
 
 
+def _never_repeats(values: list) -> bool:
+    """Numbers, enough of them, and no two sightings alike: a reading taken, not a fact stored.
+
+    A stored number is read back the same way twice; a number the world measures when it is asked
+    is different every time it is asked. Enough of them is `MIN_UNIQUE_VALUES`: under that floor a
+    column of two or three different numbers is what any small sample looks like, so the rule waits
+    rather than exempting a price the corpus happened to show once each.
+    """
+    numbers = [v for v in values if isinstance(v, (int, float)) and not isinstance(v, bool)]
+    return len(numbers) >= MIN_UNIQUE_VALUES and len(set(numbers)) == len(numbers)
+
+
 def propose_column_class(table: str, name: str, values: list, count: Optional[int] = None) -> ClassProposal:
     """The code rule of D73: timestamps and counters exempt, ids and enums hard, long strings semantic."""
     sample = list(values[:MAX_VALUES])
@@ -1099,6 +1290,14 @@ def propose_column_class(table: str, name: str, values: list, count: Optional[in
     if _counter_like(present):
         return ClassProposal("exempt", "low", "whole numbers that only increase, so it may be a counter; "
                                               "low confidence so the review sees it", evidence)
+    if _never_repeats(present):
+        # A reading the world takes when it is asked (a measured rate, a duration) is a different
+        # number on every sighting, so comparing it exactly fails every Run and, worse, splits one
+        # Task into as many Tasks as it was read in (`compile_env.trace_worlds`). Low confidence,
+        # so the setup review sees a column the corpus simply never showed twice.
+        return ClassProposal("exempt", "low", "numbers with no value repeated over enough sightings, so a "
+                                              "reading taken rather than a fact stored; low confidence so "
+                                              "the review sees it", evidence)
     if texts and len(texts) == len(present):
         if evidence["max_len"] > 60 and evidence["distinct"] > 3:
             return ClassProposal("semantic", "medium", "long free text with many distinct values", evidence)
@@ -1134,6 +1333,31 @@ def _samples(values: list) -> list:
     return out
 
 
+def _vocabulary(values: list, is_id: bool = False) -> list[str]:
+    """The set of names this column drew from, or nothing when it held a value of its own per row.
+
+    The five kept samples are enough to show a reviewer what a column looks like and not enough to
+    say what it may hold, which is what a replayed answer has to be held to (D217). So a column the
+    class rule reads as an enum keeps its whole set: those are the words the customer's world uses
+    here, and an answer naming a word outside them is a different answer.
+
+    The test is the class rule's own, plus two things that rule does not need. A set of names is a
+    set because it repeats, so a column whose every sighting was a value of its own is holding data
+    however short it is; and an id is addressed rather than named, so an id column lends nothing
+    even where its ids are few. Either way the column keeps nothing and borrows its table's names.
+    """
+    present = [value for value in values if value is not None]
+    texts = [value.strip() for value in present if isinstance(value, str)]
+    if is_id or not texts or len(texts) != len(present):
+        return []
+    if max(len(text) for text in texts) > VOCAB_VALUE_LEN:
+        return []
+    distinct = sorted({text for text in texts if text})
+    if len(distinct) > MAX_VOCABULARY or len(distinct) >= len(texts):
+        return []
+    return distinct
+
+
 def _lit(char: str) -> str:
     return char if char.isalnum() or char in "_-#@" else re.escape(char)
 
@@ -1166,23 +1390,60 @@ def _loose_shape(text: str) -> str:
     return "".join(parts)
 
 
+def _alnum_class(chars: set[str]) -> str:
+    """The letters-and-digits class of an id, in the case its sample shows (D167)."""
+    letters = {c for c in chars if c.isalpha()}
+    if all(c.isupper() for c in letters):
+        return "[A-Z0-9]"
+    if all(c.islower() for c in letters):
+        return "[a-z0-9]"
+    return "[A-Za-z0-9]"
+
+
+def _mixes_letters_and_digits(columns: list[set[str]]) -> bool:
+    """Whether any one position of these ids holds both a letter and a digit."""
+    return any(any(c.isdigit() for c in chars) and any(c.isalpha() for c in chars)
+               and all(c.isalnum() and c.isascii() for c in chars) for chars in columns)
+
+
 def _shape_pattern(texts: list[str]) -> Optional[str]:
+    """The regex the ids share, position by position where they are all the same length.
+
+    D167: a position holding both letters and digits used to be written ".", so an id like `K1NW8N`
+    got the pattern `^.{6}$`, which any six characters match, and the memorised-values gate read an
+    ordinary word like `amount` as an id of that shape. A position that mixes says the id is
+    alphanumeric, so every varying position of that id is written in one letters-and-digits class in
+    the case the sample shows, and the six collapse to `[A-Z0-9]{6}`. Ids whose positions each hold
+    letters only or digits only keep the tighter shape they always had (`^#W\\d{7}$`).
+    """
     lengths = {len(t) for t in texts}
     if len(lengths) == 1:
+        columns = [{t[position] for t in texts} for position in range(lengths.pop())]
+        alnum = _mixes_letters_and_digits(columns)
+        klass = _alnum_class({c for chars in columns if len(chars) > 1 for c in chars})
         atoms = []
-        for position in range(lengths.pop()):
-            chars = {t[position] for t in texts}
+        for chars in columns:
             if len(chars) == 1:
-                atoms.append(_lit(chars.pop()))
+                atoms.append(_lit(next(iter(chars))))
+            elif not all(c.isalnum() and c.isascii() for c in chars):
+                atoms.append(".")
+            elif alnum:
+                atoms.append(klass)
             elif all(c.isdigit() for c in chars):
                 atoms.append(r"\d")
-            elif all(c.isalpha() and c.isascii() for c in chars):
-                atoms.append("[A-Za-z]")
             else:
-                atoms.append(".")
+                atoms.append("[A-Za-z]")
         return "^" + _collapse(atoms) + "$"
     shapes = {_loose_shape(t) for t in texts}
     return "^" + shapes.pop() + "$" if len(shapes) == 1 else None
+
+
+def _shaped(pattern: str) -> bool:
+    """An id shape an ordinary word cannot match (D167), by the probes the gates refuse one with."""
+    try:
+        return not any(re.fullmatch(pattern, probe) for probe in SHAPELESS_PROBES)
+    except re.error:
+        return False
 
 
 def id_pattern(values: list) -> Optional[str]:
@@ -1190,6 +1451,14 @@ def id_pattern(values: list) -> Optional[str]:
 
     The pattern is read off a sample and then checked against every value, because `canon.py`
     fullmatches real ids against it and a shape that first appears late must not be rejected.
+
+    The last resort is "every character is alphanumeric or one of these", and that one is refused
+    when an ordinary word matches it (`_shaped`, D167). It is not a shape the values share; it is
+    what is left when they share none, and `canon._as_id` fullmatches every string of the world
+    against every mined pattern and upper-cases a hit before any other rule runs, so one such
+    pattern reads every status, name and free-text value in the corpus as an id. A learned shape is
+    kept whatever the probes say, because a customer whose ids really are six lowercase letters has
+    that shape and the tables keyed by it are found through this pattern (`tool_runs.id_field`).
     """
     texts = [v for v in values if isinstance(v, str) and v]
     if not texts:
@@ -1199,11 +1468,205 @@ def id_pattern(values: list) -> Optional[str]:
         return pattern
     others = sorted({c for t in texts for c in t if not (c.isalnum() and c.isascii())})
     wide = "^[A-Za-z0-9" + "".join(re.escape(c) for c in others) + "]+$"
-    return wide if all(re.fullmatch(wide, t) for t in texts) else None
+    return wide if _shaped(wide) and all(re.fullmatch(wide, t) for t in texts) else None
+
+
+def composite_keys(traces: list[Trace], schema: EntitySchema,
+                   write_tools: Sequence[str] = ()) -> dict[str, list[str]]:
+    """Tables the corpus shows holding several rows under one id, and the columns that tell them apart.
+
+    The rule, read off what a corpus can show on its own. Inside one trace, with no write in between,
+    a table's rows repeat an id and their hard values differ: one id is standing for more than one
+    row, and the schema's single key is losing all but the last of them. What tells the two apart is
+    a column of the table that is also an argument of the call that returned the row, and whose
+    argument value differs between the two calls: the customer's tool was asked for one version and
+    answered it, so the argument is the part of the identity the row itself may not repeat (a search
+    that answers rows for the date it was given and leaves the date column null).
+
+    Four things it must not do, and how each is refused. A row that merely changed after a write is
+    the after_write rule's (D74), so a sighting on or after a write to that id is not compared. A
+    soft column is not identity, so only `hard` columns (D73) count, both for the difference that
+    opens the case and for the column that joins the key. A column that is not a column of the table
+    cannot be part of its key, so candidates come from the schema's own columns. And a table whose
+    ids stand for one row each is never touched, because it has no repeat to explain.
+
+    Every conflicting pair of the corpus has to be explained by the same columns: the key is the
+    intersection over all of them, so one odd pair cannot add a column, and a table whose repeats
+    no argument explains keeps its single key rather than gaining a guess.
+    """
+    writes = set(write_tools)
+    id_columns_by_table: dict[str, str] = {}
+    candidates_per_pair: dict[str, list[set[str]]] = {}
+    hard = {(c.table, c.name) for c in schema.columns if c.class_ == "hard"}
+    for trace in traces:
+        written: set[str] = set()
+        seen: dict[tuple[str, str], list[tuple[dict, dict]]] = {}
+        for call in trace.tool_calls:
+            if not is_assistant_call(call) or call.error is not None or call.result is None:
+                continue
+            args = call.args or {}
+            is_write = call.name in writes
+            rows = _result_rows(_parse(call.result))
+            for row in rows:
+                found = match_table(schema, row)
+                if found is None:
+                    continue
+                table, row_id = found
+                name = id_field(schema, table)
+                if name is None:
+                    continue
+                id_columns_by_table[table] = name
+                if is_write or row_id in written:
+                    continue
+                for previous, previous_args in seen.get((table, row_id), []):
+                    if not _hard_difference(table, previous, row, hard):
+                        continue
+                    candidates_per_pair.setdefault(table, []).append(
+                        _telling_arguments(table, name, hard, previous_args, args))
+                seen.setdefault((table, row_id), []).append((row, args))
+            if is_write:
+                written |= {row_id for row_id in (
+                    (match_table(schema, row) or (None, None))[1] for row in rows) if row_id}
+                written |= {v for v in args.values() if isinstance(v, str)}
+    out: dict[str, list[str]] = {}
+    for table, sets in sorted(candidates_per_pair.items()):
+        common = set.intersection(*sets)
+        if common:
+            out[table] = [id_columns_by_table[table]] + sorted(common)
+    return out
+
+
+def _hard_difference(table: str, first: dict, second: dict, hard: set[tuple[str, str]]) -> bool:
+    """Whether two sightings of one id disagree on a hard column, which is what makes them two rows."""
+    return any(canonical_json(first.get(name)) != canonical_json(second.get(name))
+               for name in {*first, *second} if (table, str(name)) in hard)
+
+
+def _telling_arguments(table: str, id_column: str, hard: set[tuple[str, str]],
+                       first: dict, second: dict) -> set[str]:
+    """Columns of the table both calls passed and disagreed on: what says which row was asked for."""
+    return {name for name in set(first) & set(second)
+            if name != id_column and (table, str(name)) in hard
+            and canonical_json(first[name]) != canonical_json(second[name])}
+
+
+# --- constants of the world (a no-argument tool whose answer never changes) ---
+
+CONSTANTS_TABLE = "constants"
+CONSTANTS_ROW = "world"
+MIN_CONSTANT_CALLS = 2  # one call is no evidence that a result never changes
+
+
+def is_rows_of_a_table(tool: str, value: Any, id_names: Sequence[str], args: Optional[dict]) -> bool:
+    """Whether the miner reads this result as rows some table owns, which is what a constant is not.
+
+    The question is the miner's own and is asked with the miner's own rule (`_table_of`): a scalar,
+    a list of scalars and a mapping of scalar to scalar carry no row at all and so are never rows of
+    a table, and a list of objects is rows only where one of them is homed. A result nothing homes
+    is not a table's, whatever its shape: on one corpus it is a mapping of a name to an id and on
+    another a list of objects, and in both the world held none of it and every recorded call of the
+    tool differed from the recording.
+    """
+    rows = _result_rows(value)
+    return any(_table_of(tool, row, id_names, rows, args) is not None for row in rows)
+
+
+def world_constants(traces: list[Trace], write_tools: Sequence[str] = ()) -> dict[str, Any]:
+    """Per tool whose calls never vary and whose every recorded result was one value, that value.
+
+    A catalog listing is the shape this is for: a tool the assistant calls with no arguments at all,
+    whose answer is the same list or the same mapping every time. Nothing in the rebuilt world held
+    it, because the row extractor reads rows and this is not rows, so every compiled body answered
+    it out of whatever rows the world happened to hold and differed from the recording on every
+    call: 19 of 19 on one corpus, with 15 of the recorded entries missing from ours.
+
+    Four things have to hold, and each of them is what keeps a mutable reading out:
+
+    - every recorded call carried the same arguments, none included, so the answer cannot be a
+      function of what it was asked;
+    - every call answered, none of them with an error, and every answer was the same value;
+    - the result is not rows of a table (`is_rows_of_a_table`), asked with the miner's own homing
+      rule, so a table's rows stay a table's and keep the key that identifies them;
+    - the corpus made at least `MIN_CONSTANT_CALLS` such calls, because one call says nothing about
+      whether the answer changes, and the tool is not a write, because a write that acknowledges
+      every call the same way is an acknowledgement and not a fact of the world.
+
+    Only the assistant's calls are read (R33). What is left is a fact of the customer's world that
+    the recording pins exactly, so the schema names it, the Starting state holds it and a body reads
+    it instead of assembling it out of rows.
+    """
+    id_names = id_columns(traces)
+    write_tools = set(write_tools or ())
+    per_tool: dict[str, list] = {}
+    for trace in traces:
+        for call in trace.tool_calls:
+            if is_assistant_call(call):
+                per_tool.setdefault(call.name, []).append(call)
+    out: dict[str, Any] = {}
+    for name in sorted(per_tool):
+        calls = per_tool[name]
+        if name in write_tools or len(calls) < MIN_CONSTANT_CALLS:
+            continue
+        if any(call.error is not None or call.result is None for call in calls):
+            continue
+        if len({canonical_json(call.args or {}) for call in calls}) != 1:
+            continue
+        if len({canonical_json(_parse(call.result)) for call in calls}) != 1:
+            continue
+        value = _parse(calls[0].result)
+        if is_rows_of_a_table(name, value, id_names, calls[0].args):
+            continue
+        out[name] = value
+    return out
+
+
+def constants_table_of(schema: EntitySchema) -> Optional[str]:
+    """The table holding the world's constants, or None when the corpus showed none."""
+    return next((column.table for column in schema.columns
+                 if (column.evidence or {}).get("constant_of")), None)
+
+
+def constants_row(schema: EntitySchema) -> dict:
+    """The one row the constants table holds: per column, the value the recording pinned."""
+    return {column.name: (column.evidence or {}).get("constant_value")
+            for column in schema.columns if (column.evidence or {}).get("constant_of")}
+
+
+def apply_constants(schema: EntitySchema, constants: dict) -> EntitySchema:
+    """Give the schema one table of the world's constants, one column per tool, and the value on it.
+
+    One row with a column per constant, rather than a row per constant: a body reaches the row
+    without naming a key (`next(iter(...).values())`), the way it reaches the row another requestor
+    revealed, and a literal id written into a body is refused by the memorised values gate (D162).
+    The value rides on the column's own evidence, so the Starting state reads it off the schema and
+    no stage has to mine the corpus a second time to find out what it was.
+    """
+    if not constants:
+        return schema
+    table = CONSTANTS_TABLE
+    while table in schema.tables:
+        table += "_"
+    schema.tables = sorted([*schema.tables, table])
+    for name in sorted(constants):
+        schema.columns.append(Column(
+            table=table, name=name, class_="hard", class_rule="hard", class_confidence="high",
+            class_reason="every recorded call of the tool of this name answered the same value and "
+                         "took the same arguments, so the world holds it as a constant",
+            classified_by="observed",
+            evidence={"constant_of": name, "constant_value": constants[name]},
+            samples=[constants[name]]))
+    schema.columns = sorted(schema.columns, key=lambda c: (c.table, c.name))
+    return schema
+
+
+def write_tool_names(traces: list[Trace]) -> set[str]:
+    """The tools the code rule of D68 calls writes, for a caller that has no ToolSigs to hand."""
+    return {sig.name for sig in mine_tools(traces) if sig.kind == "write"}
 
 
 def mine_schema(traces: list[Trace], db_json_path: Optional[Path] = None,
-                model: Optional[Model] = None) -> EntitySchema:
+                model: Optional[Model] = None,
+                write_tools: Optional[Sequence[str]] = None) -> EntitySchema:
     """Tables and columns from observed tool results and from a given db.json, classified per D73."""
     store: dict[str, dict] = {}
     if db_json_path is not None:
@@ -1221,7 +1684,7 @@ def mine_schema(traces: list[Trace], db_json_path: Optional[Path] = None,
                 continue
             rows = _result_rows(_parse(call.result))
             for row in rows:
-                table = _table_of(call.name, row, id_names, rows)
+                table = _table_of(call.name, row, id_names, rows, call.args)
                 if table is None:
                     continue
                 for name, value in row.items():
@@ -1244,7 +1707,8 @@ def mine_schema(traces: list[Trace], db_json_path: Optional[Path] = None,
             column = Column(table=table, name=name, class_=proposal.column_class,
                             class_rule=proposal.column_class, class_confidence=proposal.confidence,
                             class_reason=proposal.reason, classified_by="rule",
-                            evidence=proposal.evidence, samples=_samples(cell["values"]))
+                            evidence=proposal.evidence, samples=_samples(cell["values"]),
+                            vocabulary=_vocabulary(cell["values"], _is_id(name) or name in id_names))
             if model is not None:
                 verified = classify_column(model, table, name, proposal, cell["values"])
                 if verified is not None:
@@ -1257,4 +1721,12 @@ def mine_schema(traces: list[Trace], db_json_path: Optional[Path] = None,
                 pattern = id_pattern(cell["values"])
                 if pattern:
                     id_patterns[f"{table}.{name}"] = pattern
-    return EntitySchema(tables=sorted(store), columns=columns, id_patterns=id_patterns, homes=homes)
+    schema = EntitySchema(tables=sorted(store), columns=columns, id_patterns=id_patterns, homes=homes)
+    # Last, because the rule reads the columns' classes and the id column the rest of the Harness
+    # will key by, so the key it names is the one every reader forms.
+    names = write_tools if write_tools is not None else sorted(write_tool_names(traces))
+    schema.composite_keys = composite_keys(traces, schema, names)
+    # After the tables, because the rule asks the miner whether this result was rows of one, and
+    # the constants table is not mined from rows and has no key of its own.
+    apply_constants(schema, world_constants(traces, names))
+    return schema

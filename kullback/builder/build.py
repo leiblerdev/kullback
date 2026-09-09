@@ -7,6 +7,20 @@ is the CLI's entry and runs every stage; `execute(plan, target)` runs one stage 
 is upstream of it, which is what the Builder's tools (builder/tools.py) call. A tool that wants one
 tool body recompiled or one Task replayed gets a variant of the same declaration with that stage
 narrowed, so its cache key and its gates are the stage's own.
+
+The re-rolls stage keys a second time inside itself, per Task. The pipeline's key is one key for the
+whole stage, so a build that repaired one Intent or recompiled one body re-ran every Task's Runs:
+three rounds of one build re-rolled at the scale of the whole corpus and re-rolls were four fifths of the
+build's spend. `_reroll_key` is what one Task's Runs were sampled under (its overlay and the
+Starting state under it, the schema, the bodies of the tools its own recordings call, the
+canonicalizer rules, its user rules, the Vocabulary, the policy text, the system prompt it opens
+with, and the count, seed, model, turn cap and code version), recorded beside its Runs in
+`runs/<task>/rerolls.json`; a Task whose key has not moved and whose Run files are still there keeps
+them. The assumption: a body of a tool the Task's recordings never call may change without the
+Task's re-rolls going stale. A Run on disk is a sample already taken against the toolkit as it stood,
+and nothing re-scores it against the current bodies (the D79 suite reads the Run file: the second
+path and the false-rejection number score the recorded End state, they do not re-execute it). A
+Candidate could call that tool in a live Run; this Run did not.
 """
 
 from __future__ import annotations
@@ -15,10 +29,12 @@ import functools
 import json
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Iterable, Optional
+from typing import Any, Iterable, Optional, Sequence
 
+from kullback import sampling
 from kullback.ai import provider
 from kullback.builder import (
+    body_skill,
     cluster,
     compile_env,
     ingest,
@@ -28,30 +44,48 @@ from kullback.builder import (
     parallel,
     pipeline,
     policy,
+    readers,
     sandbox,
     synth,
-    user_sim,
+    templates,
+    transaction,
     vocabulary,
 )
-from kullback.gates import artifacts, fidelity, verifier_suite
+from kullback.builder import (
+    effects as effects_mod,
+)
+from kullback.builder import (
+    lesson as lesson_mod,
+)
+from kullback.builder.repair import KEPT_BODIES_FILE, SHAPES_SHOWN, failure_shapes
+from kullback.gates import artifacts, fidelity, tool_runs, verifier_suite
+from kullback.gates import ledger as ledger_mod
 from kullback.gates import scorecard as scorecard_mod
 from kullback.gates import stages as stage_gates
 from kullback.runner import budget, canon, loop, route
+from kullback.runner import judge as judge_mod
 from kullback.runner import replay as replay_mod
 from kullback.runner.canon import rules_of as _rules_of
 from kullback.runner.records import (
     EntitySchema,
     Environment,
     GateResult,
+    RawPtr,
     Task,
+    ToolCall,
     ToolSig,
     Trace,
+    Turn,
     UserRules,
     as_dict,
     content_hash,
 )
 from kullback.runner.records import read_json as _read_json
 from kullback.runner.records import write_json as _write_json
+
+# The rule-driven Simulated user under its old name (D214): it lives in kullback/user now, and the
+# stages read it from there so a stage's code version follows the module that actually changed.
+from kullback.user import rules as user_sim
 
 # This module is the graph, not the runner: assembling the stages means naming ingest, mine, cluster,
 # compile_env, policy and user_sim, and the Runner never imports the Builder (design section 3, build
@@ -63,6 +97,38 @@ from kullback.runner.records import write_json as _write_json
 # store (D120).
 
 CANON_RULES = "canon-rules.json"
+# What the cluster stage did with the frozen Task list this round (D200): read by the driver
+# so a round's status says how many Tasks it froze, added and could not reproduce.
+TASK_SPLIT = "task_split.json"
+# What the Starting state pinned from a held-out Run alone, and what a replay answered out of it.
+WORLD_PROVENANCE_FILE = "world_provenance.json"
+HOLDOUT_ANSWERS_FILE = "holdout_answers.json"
+READMISSION_FILE = "readmission_blocked.json"
+
+# D220: every stage that reads beyond the seed Runs, and why. A Builder stage not named here is
+# handed its Traces and its Tasks' Run ids withheld (pipeline.withhold) and draws from ctx.evidence;
+# a stage named here declares `sees_all_runs` or is not a Builder stage at all. The list is the
+# whole of the exemption: `tests/builder` walks the graph and fails on a stage that reads every Run
+# without being named. Ordered as a reader meets them in `stages()`.
+ALL_RUNS_STAGES: dict[str, str] = {
+    "ingest": "it is what makes the Traces; the anchor is drawn from the Tasks, further down",
+    "mine": "the signatures and the schema are the shape of the customer's system, not evidence "
+            "about a Task, and it runs before the Tasks exist for an anchor to be drawn from",
+    "readers": "it runs before the Tasks exist, and the rows a prose result reveals are rows of the "
+               "world, which has to hold what a held-out Run reads",
+    "cluster": "it makes the Tasks the anchor is drawn from, so there is no split yet to apply",
+    "canon_rules": "the canonicalizer's rules are read off every recorded value in the corpus; a "
+                   "rule that held for the seed Runs alone would judge a held-out replay wrongly",
+    "starting_state": "the world stays complete (D220 rule 2): a row a held-out Run needs and the "
+                      "world does not hold is a different failure. What it pins from a held-out Run "
+                      "alone is recorded as such and withheld from the body writer instead",
+    "user_rules": "the Examiner's false-rejection pool scores the Verifier against the held-out "
+                  "Runs (D133), so the Simulated user's rules exist for those Runs too; the one "
+                  "Builder consumer, the re-rolls, draws its persona from ctx.evidence",
+    "build_environment": "it packages what the stages above released and reads no recording",
+    "replay_reference": "it replays the anchor on purpose, so the report can say how the held-out "
+                        "Runs fare; the Examiner's derivation is what keeps them out (D81)",
+}
 
 
 class BuildError(RuntimeError):
@@ -153,37 +219,177 @@ def _mine_stage():
     def run(ctx, inputs):
         traces = inputs["traces"]
         sigs = mine.mine_tools(traces)
-        schema = mine.mine_schema(traces)
+        # The write tools are the sigs' own, so the composite-key rule reads the same kinds the rest
+        # of the build does rather than classifying the tools a second time.
+        schema = mine.mine_schema(traces, write_tools=sorted(s.name for s in sigs if s.kind == "write"))
+        # D164: the names the recording refused on every call, and the ones a recorded agent
+        # invented, are no tool of this customer. They are written beside the sigs so a build can
+        # see them, and they are never a failure: a Run refuses them as the recording did.
+        unknown = mine.unknown_tools(traces)
         _write_json(ctx.workdir / "tool_sigs.json", [as_dict(s) for s in sigs])
+        _write_json(ctx.workdir / "unknown_tools.json", unknown)
+        # Where each tool's result rows were homed and by which rule, with the rows no rule could
+        # home. A lookup whose rows reach no table is the whole of its replay fidelity, and this is
+        # where that is readable before a single body has been written.
+        _write_json(ctx.workdir / "row_homes.json", mine.row_homes(traces))
+        # The constants of the world: per tool the corpus called the same way every time and got
+        # the same answer to, that answer. They are columns of one row of the schema's own
+        # constants table; the file is what a reader of the build sees them by, since the mine gate
+        # is frozen and cannot carry a count of them.
+        _write_json(ctx.workdir / "world_constants.json",
+                    {"table": mine.constants_table_of(schema), "row": mine.CONSTANTS_ROW,
+                     "columns": sorted(mine.constants_row(schema))})
         _write_json(ctx.workdir / "schema.json", as_dict(schema))  # cli._score reads it (D39, D73)
         calls = [c for t in traces for c in t.tool_calls]
         # "flag, do not synthesize": a tool the corpus barely shows stays in the build, named in
         # the gate, rather than being invented or dropped (design section 6).
-        ctx.record_gate(artifacts.mine_gate(sigs, calls))
-        return {"sigs": sigs, "schema": schema}
+        ctx.record_gate(artifacts.mine_gate(sigs, calls, unknown=unknown))
+        return {"mined_sigs": sigs, "mined_schema": schema}
 
-    return pipeline.Stage(name="mine", fn=run, inputs=("traces",), outputs=("sigs", "schema"),
+    # The artifacts are `mined_schema` and `mined_sigs`, not `schema` and `sigs`: the readers stage
+    # is what releases both, because a requestor's prose results add tables to the schema and settle
+    # the kind of the tools that answer with prose, and every stage downstream reads them settled.
+    # With no prose results the readers stage passes both through untouched.
+    return pipeline.Stage(name="mine", fn=run, inputs=("traces",), outputs=("mined_sigs", "mined_schema"),
                           code_version=_version("mine", run, mine))
+
+
+def _readers_stage(model: Any, max_attempts: int = readers.MAX_ATTEMPTS,
+                   max_forced: int = templates.MAX_FORCED):
+    """The rows a requestor other than the assistant reveals through prose results (D176 candidate).
+
+    It runs per requestor whose own tools answer with strings the row extractor reads nothing out
+    of. Where a corpus has none, the stage records "no prose results", passes the mined schema
+    through unchanged and calls no model at all.
+
+    What a tool of that requestor changes is mined here by association over the corpus, not read off
+    the miner's kind, and closes a column at that tool's calls so a value read only after a write is
+    not the recording's starting value. Those credits then settle the kind of every tool whose
+    results are prose: a write when it is credited with a column, a read when it is not. A column no
+    recording read before a write is filled with the commonest pre-write value the corpus shows, and
+    the fill is recorded as an assumption.
+    """
+
+    def run(ctx, inputs):
+        traces, schema, sigs = inputs["traces"], inputs["mined_schema"], inputs["mined_sigs"]
+        by_requestor = readers.prose_calls(traces)
+        proposals, rows, nodes, values = {}, {}, [], {}
+        fills, assumptions, unset = {}, [], {}
+        if by_requestor and model is None:
+            raise BuildError("this corpus has prose results from a requestor of its own and the "
+                             "readers stage has no model to propose them with; pass --model")
+        for requestor in sorted(by_requestor):
+            proposal, attempts, parsed = readers.propose(
+                model, requestor, by_requestor[requestor], traces, ctx.workdir / "readers",
+                max_attempts=max_attempts)
+            read_rows = readers.starting_rows(traces, proposal, parsed)
+            filled, sentences, missing = readers.fills_for(read_rows, proposal)
+            proposals[requestor] = proposal.to_dict()
+            rows[requestor] = read_rows
+            fills[requestor] = filled
+            assumptions += sentences
+            unset[requestor] = missing
+            values[requestor] = readers.column_values(proposal, parsed)
+            nodes += attempts
+        artifact = {"proposals": proposals, "rows": rows, "fills": fills,
+                    "assumptions": assumptions, "unset": unset}
+        kept = readers.proposals_from(artifact)
+        readers.apply_to_schema(schema, kept, values)
+        # Handed on as it came where no proposal moved it: the stage's artifacts are compared by
+        # identity downstream, and a rebuilt list of the same sigs is a new artifact every build.
+        sigs = readers.apply_to_sigs(sigs, kept) if kept else sigs
+        # D203: a homed prose result no reader answers pins nothing, and the proposal stage is asked
+        # only about another requestor's toolkit. Every such tool gets a reader derived from its own
+        # recorded results, and one forced proposal where the corpus cannot settle the slots.
+        pairs, gaps = templates.close_gaps(
+            model, traces, schema, ctx.workdir,
+            readers.result_reader({**artifact, "derived": []}, traces, ctx.workdir),
+            max_forced=max_forced)
+        artifact = {**artifact, "derived": [pair.to_dict() for pair in pairs], "gaps": gaps}
+        templates.apply_revealed(schema, pairs)
+        # A corpus whose prose results are all read, or that has none, records the note and nothing
+        # else, so a build over such a corpus writes the same artifact it always wrote.
+        silent = not by_requestor and not pairs and not gaps.get("tools")
+        if silent:
+            artifact = {"note": readers.NO_PROSE, "proposals": {}, "rows": {}}
+        _write_json(ctx.workdir / readers.READERS_FILE,
+                    {"note": readers.NO_PROSE} if silent else {**artifact, "attempts": nodes})
+        _write_json(ctx.workdir / "schema.json", as_dict(schema))
+        _write_json(ctx.workdir / "tool_sigs.json", [as_dict(s) for s in sigs])
+        # Section 6: a proposal the gate could not satisfy is flagged and kept, never a failed build.
+        ctx.record_gate(stage_gates.readers_gate(proposals.values(), len(by_requestor),
+                                                 assumptions=assumptions, unset=unset,
+                                                 kinds={p.requestor: readers.kinds_for(p) for p in kept},
+                                                 derived=pairs, totals=gaps.get("totals")))
+        return {"schema": schema, "sigs": sigs, "readers": artifact}
+
+    version = (f"readers:{getattr(model, 'name', 'none')}:{max_attempts}:{max_forced}:"
+               f"{_module_hash(readers)}:{_module_hash(templates)}:{_module_hash(sandbox)}")
+    return pipeline.Stage(name="readers", fn=run, inputs=("traces", "mined_schema", "mined_sigs"),
+                          outputs=("schema", "sigs", "readers"), code_version=version)
 
 
 def _cluster_stage():
     def run(ctx, inputs):
         # D74: two Runs that saw one row in two versions before writing started in different
-        # worlds, and a Task's overlay can pin only one, so they are different Tasks.
+        # worlds, and a Task's overlay can pin only one, so they are different Tasks. D216: the
+        # version is taken over the recording alone, so nothing this build proposed about the
+        # corpus (the column classes, the readers, a cache format) can regroup it next round.
         worlds = compile_env.trace_worlds(inputs["traces"], inputs["schema"],
                                           cluster.write_tool_names(inputs["sigs"]))
         categories, tasks = cluster.cluster_runs(inputs["traces"], inputs["sigs"], worlds=worlds)
+        # Taken over what the rebuild grouped, before the frozen list is laid back over it: the
+        # question is whether this round's own split differs from the one that was frozen.
+        grouping = _grouping(ctx.workdir, tasks, inputs)
+        # D200: once a list is frozen it is the Task list. A rebuild may add Tasks for Runs nobody
+        # froze, it may not drop, re-split or re-id a frozen one, because every number the build is
+        # judged on is counted over that list and a Task that moves takes its ruling with it.
+        tasks, split = cluster.resume_frozen(tasks, scorecard_mod.frozen_tasks(ctx.workdir),
+                                             worlds=worlds)
+        split.update(grouping)
         for task in tasks:
             _write_json(ctx.workdir / "tasks" / f"{task.id}.json", as_dict(task))
         _write_json(ctx.workdir / "tasks.json", {"tasks": [as_dict(t) for t in tasks]})
+        _write_json(ctx.workdir / TASK_SPLIT, split)
         # D96: the coverage denominator is frozen once, here, before anything measures coverage.
         scorecard_mod.freeze_tasks(ctx.workdir, tasks)
         ctx.record_gate(stage_gates.cluster_gate(tasks, categories))
         return {"categories": categories, "tasks": tasks}
 
+    # The readers artifact is deliberately not an input and readers.py is deliberately not in the
+    # code version (D216). The split of Runs into Tasks is a function of the recordings and of the
+    # row identity mined from them; a reader this build wrote, improved or removed must leave the
+    # grouping where it was, and a stage that took the readers in would say the opposite by moving
+    # its cache key every time one changed. `schema` and `sigs` are the readers stage's own outputs,
+    # so this still runs after it.
     return pipeline.Stage(name="cluster", fn=run, inputs=("traces", "sigs", "schema"),
                           outputs=("categories", "tasks"),
-                          code_version=_version("cluster", run, cluster, intent, compile_env))
+                          code_version=_version("cluster", run, cluster, intent, compile_env, mine))
+
+
+def _grouping(workdir: Path, live_tasks: Iterable[Any], inputs: dict) -> dict:
+    """The grouping's fingerprint, the two inputs it may depend on, and which of them moved (D216).
+
+    The fingerprint of the first grouping is written once, beside the frozen Task list and with the
+    hashes of the recordings and of the homing it was taken over. Every later round takes the same
+    three and compares: a fingerprint that matches says the split reproduced, one that differs names
+    the input that moved, and one that differs while both inputs stand still raises, because the
+    rule is that the split is a function of those two and of nothing else.
+
+    Greptile P1 (PR 30): the record is re-baselined the round an input moved, so what a later round
+    compares against is the last grouping that was explained rather than the first one ever taken.
+    Left at the first, one legitimate move would explain every regrouping after it and the raise
+    could never fire again.
+    """
+    now = {"recordings": cluster.recordings_hash(inputs["traces"]),
+           "homing": compile_env.homing_hash(inputs["schema"])}
+    fingerprint = cluster.grouping_fingerprint(live_tasks)
+    path = Path(workdir) / cluster.GROUPING_FILE
+    first = _read_json(path, None)
+    moved = cluster.moved_input(fingerprint, now, first if isinstance(first, dict) else None)
+    if not isinstance(first, dict) or not first.get("fingerprint") or moved:
+        _write_json(path, {"format": cluster.GROUPING_FORMAT, "fingerprint": fingerprint, **now})
+    return {"grouping": fingerprint, "grouping_inputs": now, "grouping_moved": moved}
 
 
 def _canon_stage():
@@ -207,99 +413,592 @@ def _rows_of(result: Any) -> list[dict]:
     return []
 
 
+def with_synthetic_rows(schema: EntitySchema, synthetic_rows: Iterable[str]) -> EntitySchema:
+    """The schema as the Starting state left it: the same record carrying those synthetic ids.
+
+    The ids are what marks a Run that reads such a row assisted (D40, D49), and the Starting state
+    is where they are found. The schema itself is the mine stage's artifact, shared by every stage
+    downstream, and a stage must not write to what it was given: a build served the Starting state
+    from cache never runs the tagging, so the schema it passes on would differ from the one the
+    first build passed on and every stage below would miss its own cache forever. The tag goes on a
+    copy, here, from the `synthetic_rows` artifact the Starting state releases.
+    """
+    tagged = schema.model_copy(deep=True)
+    tagged.synthetic_rows = sorted(set(tagged.synthetic_rows) | set(synthetic_rows or ()))
+    return tagged
+
+
 def _state_stage(grow: Optional[dict] = None, grow_seed: int = 0):
     def run(ctx, inputs, grow=None, grow_seed=0):
-        state = compile_env.build_starting_state(inputs["traces"], inputs["schema"], ctx.workdir,
+        # Its own copy: build_starting_state tags the synthetic ids on the schema it is given, and
+        # the artifact the mine stage released is not this stage's to write to (with_synthetic_rows).
+        schema = inputs["schema"].model_copy(deep=True)
+        # D202: the bodies this workdir already holds, so a column a Task first touches with a write
+        # is pinned from what that write recorded. They are a declared input path of the stage and
+        # not an artifact, because no stage has released a body yet when this one runs; a recompile
+        # that moves bodies.json moves this stage's key and the inversion runs again.
+        bodies = dict(_read_json(ctx.workdir / "bodies.json", {}) or {})
+        state = compile_env.build_starting_state(inputs["traces"], schema, ctx.workdir,
                                                  inputs["tasks"], inputs["sigs"], grow=grow,
-                                                 grow_seed=grow_seed)
+                                                 grow_seed=grow_seed,
+                                                 revealed_rows=readers.reader_rows(inputs["readers"]),
+                                                 revealed_assumptions=readers.reader_assumptions(
+                                                     inputs["readers"]),
+                                                 read_result=readers.result_reader(
+                                                     inputs["readers"], inputs["traces"], ctx.workdir),
+                                                 bodies=bodies, rules=_rules_of(inputs),
+                                                 readers=tool_runs.load_readers(inputs["readers"]),
+                                                 guessed_columns=readers.filled_columns(
+                                                     inputs["readers"]))
         # The synthetic ids live on the schema (D40); run_batch reads them back from schema.json.
-        _write_json(ctx.workdir / "schema.json", as_dict(inputs["schema"]))
+        _write_json(ctx.workdir / "schema.json", as_dict(schema))
+        # D220 rule 2: the world is complete, and what only a held-out Run witnessed is written
+        # down beside it. This stage is not a Builder stage, so it may read the anchor; every stage
+        # below reads the provenance off this file and never the membership.
+        held_out = sorted({run_id for runs in (ctx.anchor.held_out if ctx.anchor else {}).values()
+                           for run_id in runs})
+        columns = compile_env.holdout_columns(state.witnesses, held_out)
+        _write_json(ctx.workdir / WORLD_PROVENANCE_FILE,
+                    {"witnesses": state.witnesses, "holdout_columns": columns,
+                     "holdout_rows": sum(len(rows) for rows in columns.values()),
+                     "holdout_columns_total": sum(len(names) for rows in columns.values()
+                                                  for names in rows.values())})
         return {"db": state.db, "overlays": list(state.overlays),
                 "assumptions": list(state.assumptions), "synthetic_rows": list(state.synthetic_rows)}
 
     # A partial, so the grow targets are in the stage's cache key: the same traces grown to two
     # sizes are two Starting states, not one served twice (pipeline._fn_identity).
     fn = functools.partial(run, grow=dict(grow or {}), grow_seed=grow_seed)
-    return pipeline.Stage(name="starting_state", fn=fn, inputs=("traces", "schema", "tasks", "sigs"),
+    return pipeline.Stage(name="starting_state", fn=fn,
+                          inputs=("traces", "schema", "tasks", "sigs", "readers", "canon_rules"),
                           outputs=("db", "overlays", "assumptions", "synthetic_rows"),
-                          code_version=_version("starting_state", fn, compile_env, synth))
+                          input_paths=("bodies.json",),
+                          code_version=_version("starting_state", fn, compile_env, synth, readers,
+                                                mine, sandbox, tool_runs))
 
 
-def _tools_stage(model: Any, max_attempts: int, workers: int = 1, only: Optional[Iterable[str]] = None):
+def holdout_world(workdir: Any) -> tuple[dict, dict]:
+    """What the Starting state pinned from a held-out Run alone: the columns, and their values.
+
+    Read from `world_provenance.json`, which the Starting state wrote (D220 rule 2). A workdir
+    built before this decision holds no such file and answers with nothing withheld, which is the
+    honest reading: nothing was recorded, so nothing can be masked.
+    """
+    record = _read_json(Path(workdir) / WORLD_PROVENANCE_FILE, {}) or {}
+    columns = record.get("holdout_columns") or {}
+    db = _read_json(Path(workdir) / compile_env.DB_FILE, {}) or {}
+    return columns, compile_env.holdout_values(db, columns)
+
+
+def _evidence_version() -> str:
+    """The bytes of the functions that decide what a body is written against (D191).
+
+    They are this file's own, so none of them is in a module hash of `compile_env`, `sandbox`,
+    `body_skill` or `readers`, and a change to which recorded calls reach the writer and the gates
+    is a different question that must not be answered out of the cache.
+    """
+    return content_hash([pipeline._fn_identity(fn, "compile_tools")
+                         for fn in (replay_failures, replay_failures_of, replay_difference,
+                                    replay_lesson, evidence_calls, is_evidence_call,
+                                    after_write_calls)])[:16]
+
+
+def _record_hardcoded_lesson(workdir: Any, name: str) -> None:
+    """Tell the next attempt what the gates do not say: this body never read its arguments.
+
+    Written once. The lessons file is an input of this stage, so appending the same sentence on
+    every run would change the stage's key on every run and recompile every tool that carries it.
+    """
+    if [compile_env.HARDCODED_LESSON] in memory.load_tool_lessons(workdir).get(name, []):
+        return
+    memory.record_lesson(workdir, name, [compile_env.HARDCODED_LESSON])
+
+
+# Where the body a tool already has is replayed, beside the attempt directories of the run that is
+# trying to beat it, so the two never share a sandbox directory.
+KEPT_BODY_DIR = "kept_body"
+# What the code-only lesson steps found per tool this run: relations by kind, lines no recorded call
+# reached, whether the stall limit forced a rewrite, whether the tool is held at a gate before the
+# fidelity ruling (D211). A record of the run and never an input of it, the same way the rulings
+# beside it are; `rounds.py` adds them up so a round says what the steps bought.
+LESSON_COUNTS_FILE = "tool_lesson_counts.json"
+# Who settles a semantic column pair, where the settled pairs are kept, and what the comparisons of
+# a run came to (D219). The table is an input as much as a record: a pair it holds is never asked
+# about again, so a build judges each distinct pair once and a person who overturns an entry moves
+# every Run that rested on it (D84's regrade queue).
+SEMANTIC_JUDGE_STAGE = "semantic_judge"
+EQUIVALENCE_FILE = "equivalence.json"
+SEMANTIC_COUNTS_FILE = "semantic_counts.json"
+# The stage's ruling on those replays, one row per tool (KEPT_BODIES_FILE), is a record of the run
+# and never an input of it (see the comment where it is filled). Its name is declared in repair.py,
+# because the repair ruling reads the same file back to say what the attempt scored (D191).
+
+# What the replay of the References wrote, and the two verdicts it leaves on a check that agreed.
+# Everything else is a recorded call the replay failed to reproduce (D191).
+REPLAYS_FILE = "replays.json"
+REPLAY_AGREED = frozenset({"same", "both_refused"})
+# Which recorded calls the last replay failed on, per tool, and nothing else about them. The
+# compile stage declares this and not `replays.json`: the evidence set moves when the set of failing
+# calls moves, and a replay that reproduced the same failures again has changed no question the body
+# writer is being asked. Declaring the replay record itself made every replay of one Task recompile
+# the whole toolkit first, which is a round's spend for an evidence set that did not move.
+REPLAY_EVIDENCE_FILE = "replay_evidence.json"
+# D215: what each recorded write call was seen to change beyond its own answer, per call id, as the
+# replay stage read it. Written for the round to read, not for a stage to declare: the replay
+# recomputes it from the traces it is already handed, so nothing keys on the file.
+EFFECTS_FILE = "write_effects.json"
+# The head of the lesson those failures become, said once above the shapes.
+REPLAY_LESSON_HEAD = (
+    "The replay of the References failed on recorded calls of this tool. Every one of them is a call "
+    "a Task's own recording made, and a Run of that Task cannot confirm until the body answers it the "
+    "way the recording did. Repair these first.")
+
+
+def replay_difference(check: Any) -> str:
+    """One replay-failing check as a sentence: the verdict and the leaf where the two answers part.
+
+    `runner/replay.compare_call` writes a check per recorded call with `verdict`, and for a call it
+    failed a `difference` holding either a `leaf` (the column and the two values) or the key sets
+    that differ. The leaf is what a body is repaired by: a column name and the recorded value
+    against the replayed one. A check with neither is named by its verdict alone, which still says
+    the recording refused where the body answered or the other way round.
+    """
+    if not isinstance(check, dict):
+        return ""
+    verdict = str(check.get("verdict") or "differs")
+    # D215 rule 4: a write that answered correctly and left a row the recording moved has its
+    # differing leaf on its own line, named by the column and by the formula the recording implies,
+    # so the next rewrite repairs the write rather than the read that later saw the stale value.
+    effect = _effect_sentence(check)
+    if effect:
+        return effect
+    difference = check.get("difference")
+    if isinstance(difference, dict):
+        leaf = difference.get("leaf")
+        if leaf:
+            return f"{verdict}: {leaf}"
+        changed = [str(k) for k in (difference.get("keys_changed") or [])]
+        missing = [str(k) for k in (difference.get("keys_only_theirs") or [])]
+        extra = [str(k) for k in (difference.get("keys_only_ours") or [])]
+        parts = [part for part in (
+            f"columns that differ: {', '.join(sorted(changed))}" if changed else "",
+            f"columns the recording has and the body does not: {', '.join(sorted(missing))}" if missing else "",
+            f"columns the body has and the recording does not: {', '.join(sorted(extra))}" if extra else "",
+        ) if part]
+        if parts:
+            return f"{verdict}: {'; '.join(parts)}"
+    return verdict
+
+
+def replay_failures(workdir: Any) -> dict[str, dict[str, str]]:
+    """Per tool, the recorded calls the last replay of the References failed on, and how (D191).
+
+    The compile gate scores a body against the calls that survive the evidence filters (the
+    after-write skip, the anchor hold-out, the caller filter). Those filters each answer a question
+    about what a body may be written from, and none of them answers the question the Reference
+    replay asks, which is whether a Task's own recording plays back. So a call the replay failed on
+    is evidence whatever a filter says about it: the recording made that call, and the Task cannot
+    confirm while the body answers it differently.
+
+    Read off `replays.json`, which the replay stage rewrites whole every round, so this is the
+    latest round's reasons and nothing older. A build that has not replayed yet has no file and
+    this is empty, which is the first pass: there is nothing yet to have failed.
+    """
+    return replay_failures_of(_read_json(Path(workdir) / REPLAYS_FILE, {}) or {})
+
+
+def replay_failures_of(replays: Any) -> dict[str, dict[str, str]]:
+    """`replay_failures` over the replay record in hand, so the stage that writes it can index it."""
+    rows: dict[str, dict[str, str]] = {}
+    if not isinstance(replays, dict):
+        return rows
+    for per_task in replays.values():
+        for record in (per_task or {}).values() if isinstance(per_task, dict) else ():
+            if not isinstance(record, dict) or record.get("confirmed"):
+                continue
+            for check in record.get("checks") or []:
+                if not isinstance(check, dict):
+                    continue
+                # D215: a write whose own answer agreed and whose effects did not is a call this
+                # replay could not reproduce, so it is evidence for the body like any other.
+                if check.get("verdict") in REPLAY_AGREED and not check.get("effect_failures"):
+                    continue
+                tool, call_id = check.get("tool"), check.get("call_id")
+                if not tool or not call_id:
+                    continue
+                rows.setdefault(str(tool), {}).setdefault(str(call_id), replay_difference(check))
+    return rows
+
+
+def _effect_sentence(check: dict) -> str:
+    """What a write left where the recording moved it, as the line the next body answers.
+
+    The column and the value it should have reached, then the formula where the recording's own
+    numbers held one. The formula is a rule over columns and never a value, so a writer following
+    it computes the value rather than writing it down, which is what D215 rule 5 refuses.
+    """
+    misses = [m for m in (check.get("effect_failures") or ()) if isinstance(m, dict)]
+    if not misses:
+        return ""
+    parts = []
+    for miss in misses[:SHAPES_SHOWN]:
+        where = f"{miss.get('table')}.{miss.get('path')}"
+        formulas = [str(f) for f in (miss.get("formulas") or ())]
+        rule = f", and the recording implies {formulas[0]}" if formulas else ""
+        parts.append(f"{where} should have reached {miss.get('recorded')} and the body left it at "
+                     f"{miss.get('ours')} ({miss.get('reason')}){rule}")
+    left = len(misses) - len(parts)
+    if left:
+        parts.append(f"{left} more column(s) the recording moved and the body did not")
+    return ("this call changed rows its own answer never mentions, and the body changed none of "
+            "them: " + "; ".join(parts))
+
+
+def replay_lesson(failures: dict[str, str], shown_ids: Iterable[str]) -> str:
+    """What the Reference replay failed on for this tool, as the sentence the next body answers.
+
+    Grouped by shape with counts, the way every other hint is (D181 rule 6): a tool whose replay
+    failed on a hundred calls leaves a hundred sentences, and a writer shown one of them answers one
+    of them. `shown_ids` is the calls this writer is allowed to see; a call it is not shown (the
+    held-out split, a Run held out as the anchor) is counted and never quoted, which is the same
+    masking `kept_body_hint` applies.
+    """
+    shown_ids = set(shown_ids)
+    quoted = [text for call_id, text in sorted(failures.items()) if call_id in shown_ids and text]
+    withheld = len(failures) - len(quoted)
+    shapes = failure_shapes(quoted)
+    text = "; ".join(f"{shape} ({count} call{'' if count == 1 else 's'})"
+                     for shape, count in shapes[:SHAPES_SHOWN])
+    if len(shapes) > SHAPES_SHOWN:
+        text += f"; {len(shapes) - SHAPES_SHOWN} more shapes"
+    if withheld:
+        text += ("; " if text else "") + f"{withheld} more on calls you were not shown"
+    return f"{REPLAY_LESSON_HEAD}\n- {text}" if text else ""
+
+
+def compile_snapshot_rows(kept: Iterable[dict], fresh: dict[str, list[dict]],
+                          only: Optional[Iterable[str]]) -> list[dict]:
+    """The per tool rulings a compile leaves on file: this run's, over the ones it replaces.
+
+    A narrowed rerun measured one tool and says nothing about the rest, so the rows of the tools it
+    did not touch stand exactly as the run that measured them left them; a full run measured every
+    tool and replaces the file. Rows come out in tool order and then in the order the stage recorded
+    them, so two runs over the same tool set write the same bytes.
+    """
+    rows = [] if only is None else [row for row in kept or ()
+                                    if isinstance(row, dict) and str(row.get("tool") or "") not in fresh]
+    for tool in sorted(fresh):
+        rows.extend(fresh[tool])
+    rows.sort(key=lambda row: str(row.get("tool") or ""))
+    return rows
+
+
+def _tools_stage(model: Any, max_attempts: int, workers: int = 1, only: Optional[Iterable[str]] = None,
+                 round_no: int = 1):
     """compile_tools, or with `only` the same stage narrowed to those tools: the rest of the bodies
     are read back from bodies.json, so the artifact it releases is still every body (the tool
-    `compile_tool(name)`)."""
+    `compile_tool(name)`).
+
+    A tool that already has a body in this workdir keeps it unless the run's own attempt beats it.
+    D174 made that true of a narrowed rerun by comparing the score written on the tool's row; it was
+    not true of a full run, which is what the stage does whenever one of its inputs moved (the
+    schema, the Starting state, the readers, the tables block), and a full run rewrites every body
+    from scratch. Two live rounds lost Tasks that way with nothing about the rewritten tools' own
+    inputs having moved: one took a write tool from 83 of its 139 recorded calls matched to 39 and
+    the corpus from 179 confirmed Tasks to 165, and another dropped six device tools by more than
+    five points each in the round that raised ten. So the previous body is replayed here under the
+    world as it stands now and under the gates as they stand now (`compile_env.grade_body`), and it
+    is a candidate on the same key the compiler ranks its own attempts by. The stage knows nothing
+    about which input moved; the rule is only that a body which exists competes.
+    """
     only = sorted(only) if only is not None else None
 
     def run(ctx, inputs):
         if model is None:
             raise BuildError("compile_tools has to run and this build has no model; pass --model "
                              "(an --iterate build re-runs the stage when its inputs or code changed)")
-        traces, tasks = inputs["traces"], inputs["tasks"]
-        seeds = _seed_traces(ctx, tasks, traces)
-        calls_by_tool: dict[str, list] = {}
+        # D220: the seed Traces and the Tasks' seed Runs, filtered once by the pipeline; the raw
+        # Traces and Run ids of this stage's inputs are withheld and raise on any read.
+        traces, tasks = ctx.evidence.traces, ctx.evidence.tasks
+        seeds = ctx.evidence.trace_ids
         call_tasks: dict[str, str] = {}
         # D74: every recorded call replays on the world its Task saw before any write. A call that
         # follows a write on the same row in its own trace saw the world after that write, so it
         # cannot be replayed on that world and is not evidence against the tool it called: the second
         # retail build failed get_order_details for reading back an order the trace had just changed.
         after_write = after_write_calls(traces, cluster.write_tool_names(inputs["sigs"]))
-        skipped: dict[str, int] = {}
+        # D164: a call from a requestor this tool never answered was refused by the recording, so it
+        # is not evidence for the body; the body is written against the calls of its own callers.
+        callers = callers_by_tool(inputs["sigs"])
+        # D191: whatever the three filters say, a call the last Reference replay failed on is
+        # evidence for the body of the tool it named. The filters answer what a body may be written
+        # from; this answers what a Task needs the body to reproduce, and that question is the one
+        # the corpus is scored on.
+        replay_failed = replay_failures(ctx.workdir)
+        # D220 rule 3: a replay failure on a held-out Run is not readmitted. The stage is never told
+        # which calls those were, only how many per tool, which is what the round reports.
+        readmission_blocked = ctx.evidence.blocked(
+            {tool: list(ids) for tool, ids in replay_failed.items()})
+        _write_json(ctx.workdir / READMISSION_FILE, readmission_blocked)
+        calls_by_tool, skipped, from_replay = evidence_calls(
+            traces, seeds, after_write, callers, replay_failed)
+        call_runs: dict[str, str] = {}
         for trace in traces:
             task_id = _task_of(tasks, trace.trace_id)
-            for at, call in enumerate(trace.tool_calls):
-                if (trace.trace_id, at) in after_write:
-                    skipped[call.name] = skipped.get(call.name, 0) + 1
-                elif trace.trace_id in seeds:  # D81: the anchor's calls are not Builder evidence
-                    calls_by_tool.setdefault(call.name, []).append(call)
+            for call in trace.tool_calls:
                 if call.id and task_id:
                     call_tasks[call.id] = task_id
+                    call_runs[call.id] = trace.trace_id
         # D74: each recorded call replays on the world its own Task saw, not on the shared one.
+        # D213: and on its own Run's layer of it, where the Task's Runs recorded a column in two
+        # values, so a call is never scored against the version another Run of the Task read first.
+        overlay_values = compile_env.overlay_values(ctx.workdir)
         states = compile_env.call_starting_states(inputs["db"], inputs["overlays"],
-                                                  compile_env.overlay_values(ctx.workdir), call_tasks)
+                                                  overlay_values, call_tasks,
+                                                  compile_env.load_run_overlays(ctx.workdir), call_runs)
+        # D215: what each write's recorded calls were seen to change beyond their own answers, read
+        # from the Runs the Builder may learn from and from those alone, so a held-out Run reaches
+        # no writer through this any more than through the evidence calls above.
+        observed = effects_mod.observe_effects(
+            [t for t in traces if t.trace_id in seeds], inputs["schema"],
+            cluster.write_tool_names(inputs["sigs"]), db=inputs["db"],
+            worlds=trace_worlds(inputs["db"], inputs["overlays"], overlay_values, tasks))
         tool_names = [sig.name for sig in inputs["sigs"]]
         # The transport's error wrapper is one per corpus, not one per tool: read it once over
         # every recorded call, so a tool with a single error still has it peeled.
         error_prefix = compile_env.shared_error_prefix(
             call for calls in calls_by_tool.values() for call in calls)
+        # What a body has to know about a table another requestor's own tools revealed: how to reach
+        # its one row, and the derivations of the columns nothing stores. Same bytes for every tool.
+        world_note = readers.body_note(readers.proposals_from(inputs["readers"]))
+        # The same readers as code (D176), so a gate that compares two prose results compares the
+        # columns they assert and a gate that reads a body's literals sees the values a recorded
+        # result carried inside a sentence (D187).
+        result_readers = tool_runs.load_readers(inputs["readers"])
+        # D220 rule 2: what the world holds only because a held-out Run witnessed it. lookup_rows
+        # answers those columns masked, and the memorised-values gate refuses a body that spells
+        # one of the values out. The world the bodies run on is the complete one.
+        holdout_cols, holdout_vals = holdout_world(ctx.workdir)
         bodies, gates, assisted, builds = {}, [], [], {}
+        # D218 rule 2: the same rulings keyed by the tool they were measured on, for the compile
+        # snapshot. gates.json used to be overwritten with them, which cost a reader the round's own
+        # rulings and told them nothing about which tool a row belonged to.
+        snapshot_rows: dict[str, list[dict]] = {}
+        outcomes: dict[str, list[dict]] = {}  # D171: per tool, one row per recorded call
         rules = _rules_of(inputs)
         sigs = list(inputs["sigs"])
+        # Every body this workdir already holds, whatever run of the stage left it. On a full run
+        # they are the memory of the last one; on a narrowed run they are also the bodies of the
+        # tools this run does not touch, which is why that branch reads them into its own artifact.
+        stored_bodies = dict(_read_json(ctx.workdir / "bodies.json", {}) or {})
+        stored_builds = dict(_read_json(ctx.workdir / "tool_builds.json", {}) or {})
         if only is not None:
             unknown = sorted(set(only) - {sig.name for sig in sigs})
             if unknown:
                 raise BuildError(f"no mined tool is named {', '.join(unknown)}")
-            bodies = dict(_read_json(ctx.workdir / "bodies.json", {}) or {})
-            builds = dict(_read_json(ctx.workdir / "tool_builds.json", {}) or {})
+            bodies, builds = dict(stored_bodies), dict(stored_builds)
             assisted = [name for name, row in builds.items() if row.get("assisted") and name not in only]
+            # D171: the tools this run does not recompile keep the per-call rows the last run left,
+            # so the artifact it releases still attributes every tool's fidelity, not only these.
+            all_outcomes = _read_json(ctx.workdir / "tool_call_outcomes.json", {}) or {}
+            outcomes = {name: list(rows) for name, rows in all_outcomes.items() if name not in only}
             sigs = [sig for sig in sigs if sig.name in only]
+        # D174, widened: what each tool this run writes a body for already had, so an attempt that
+        # is worse than it cannot replace it. The score is not read off the row: a row's score was
+        # measured under the world of the run that wrote it, and a run whose inputs moved is a
+        # different world, so the two are only comparable when both are measured under this one.
+        previous = {sig.name: (stored_bodies[sig.name], stored_builds.get(sig.name) or {})
+                    for sig in sigs if (stored_bodies.get(sig.name) or "").strip()}
 
         def compile_one(sig):  # one tool, its own directory and nodes; independent of every other (D118)
+            # D211: how many recompiles in a row have bought this tool nothing, and the gate both
+            # sides fell at last time, read before the body is graded because both change the ask
+            # rather than the sentence: past the stall limit the writer is asked to rewrite, and a
+            # tie at a gate before the fidelity ruling is a gate to repair, not a hint to write.
+            stall = prior_rulings.get(sig.name) or {}
+            unbeaten = int(stall.get("unbeaten") or 0)
+            blocked = str(stall.get("blocked_by_gate") or "")
+            # The body this tool already has, replayed first, so what it fails at can be said to the
+            # writer before it writes. The replay is per tool and runs on this tool's own thread.
+            kept = previous.get(sig.name)
+            # D215 rule 5: the values this tool's writes were seen to leave on rows they never
+            # named, which the memorised gate refuses a body for writing down rather than working out.
+            seen_effects = observed.get(sig.name, [])
+            effect_values = effects_mod.effect_values(seen_effects)
+            graded = compile_env.grade_body(
+                sig, kept[0], calls_by_tool.get(sig.name, []), inputs["schema"], inputs["db"],
+                ctx.workdir / "tools" / sig.name / KEPT_BODY_DIR,
+                call_states=states, rules=rules, call_tasks=call_tasks,
+                readers=result_readers, unbeaten=unbeaten, blocked=blocked,
+                effect_values=effect_values,
+                holdout_values=holdout_vals) if kept is not None else None
+            # What this tool already failed on, so a recompile asks a different question than the
+            # one that failed, and what the body it has to beat fails at now. The kept body itself
+            # is never in the prompt: shown one, the writer copies it, and a copy cannot beat it.
+            lesson = memory.lesson_for(ctx.workdir, sig.name)
+            shown, held_out = compile_env.split_calls(calls_by_tool.get(sig.name, []))
+            if graded is not None:
+                hint = compile_env.kept_body_hint(
+                    graded.gates, held_out,
+                    lesson_mod.FAILING_SET_SHOWN if lesson_mod.stalled(unbeaten) else SHAPES_SHOWN)
+                # D211: the code-only read of the body already there, which is the part no round
+                # of hints had: every leaf its failing calls part on, the relation those calls
+                # share, and the lines of it no recorded call has ever reached.
+                found = graded.diagnosis.lesson() if graded.diagnosis is not None else ""
+                lesson = "\n".join(part for part in (lesson, hint, found) if part)
+            # D191: what the Reference replay failed on, in the same lesson and under the same
+            # masking: only a call this writer is already shown is quoted with its values.
+            replay_hint = replay_lesson(replay_failed.get(sig.name, {}),
+                                        [call.id for call in shown if call.id])
+            lesson = "\n".join(part for part in (lesson, replay_hint) if part)
             return compile_env.compile_tool(model, sig, calls_by_tool.get(sig.name, []),
                                             inputs["schema"], inputs["db"],
                                             ctx.workdir / "tools" / sig.name,
                                             max_attempts=max_attempts, call_states=states,
                                             rules=rules, tool_names=tool_names,
-                                            error_prefix=error_prefix,
-                                            # What this tool already failed on, so a recompile asks
-                                            # a different question than the one that failed.
-                                            lesson=memory.lesson_for(ctx.workdir, sig.name))
+                                            error_prefix=error_prefix, world_note=world_note,
+                                            lesson=lesson, call_tasks=call_tasks,
+                                            readers=result_readers, holdout=holdout_cols,
+                                            holdout_values=holdout_vals,
+                                            effects=effects_mod.effects_block(sig.name, seen_effects),
+                                            effect_values=effect_values), graded
 
-        for sig, build in zip(sigs, parallel.each(sigs, compile_one, workers), strict=True):
-            bodies[sig.name] = build.body
-            gates.extend(build.gates)
-            builds[sig.name] = {"assisted": build.assisted, "nodes": build.nodes,
-                                "after_write_skipped": skipped.get(sig.name, 0)}
+        declined: list[str] = []
+        # Per tool, whether the body it already had was kept, beaten, or could not run at all under
+        # this world, with both scores. It is a record of what this run decided, not an input of it,
+        # so it lives beside the stage's other records rather than on the tool's row: the row is a
+        # declared input path of a narrowed rerun, and a decision written there would move the key
+        # of the next identical request and buy a recompile nobody asked for (D174's own rule that a
+        # tie leaves the stage's files untouched).
+        prior_rulings = dict(_read_json(ctx.workdir / KEPT_BODIES_FILE, {}) or {})
+        kept_rulings = dict(prior_rulings) if only is not None else {}
+        # D211: what the code-only steps found per tool this run, so a round can say how many
+        # relations it named, how many lines nothing witnesses, how many rewrites the stall limit
+        # forced and how many tools are held at a gate. A narrowed rerun keeps the other tools' rows
+        # for the same reason the rulings above are kept.
+        prior_counts = dict(_read_json(ctx.workdir / LESSON_COUNTS_FILE, {}) or {})
+        lesson_counts = dict(prior_counts) if only is not None else {}
+        for sig, (build, graded) in zip(sigs, parallel.each(sigs, compile_one, workers), strict=True):
+            score = list(compile_env.attempt_score(build.gates))
+            kept_score = list(compile_env.attempt_score(graded.gates)) if graded is not None else None
+            # A body that answers no call at all under this world is no candidate, whatever it
+            # scores: the tie below would otherwise hand the tool back to a body a schema change
+            # broke. Everything else competes, and a tie goes to the body that is already there,
+            # which the Examiner has seen and the Tasks that trusted it were trusted against.
+            #
+            # D201: this is the repair transaction with the tool's own recorded calls as its set. The
+            # target's state is the score the compiler ranks its attempts by, so a tie or a loss is
+            # still a repair with no effect and the kept body still stands; what the score alone
+            # could not see is a rewrite that gained two calls and lost one, which has cost something
+            # and is reverted for a regression the way an Intent that costs a Task its Reference is.
+            body_ruling = (transaction.rule("compile_tools.body", sig.name,
+                                            transaction.improved(kept_score, score),
+                                            transaction.call_lights(graded.call_outcomes),
+                                            transaction.call_lights(build.call_outcomes))
+                           if graded is not None else None)
+            keeps_previous = (body_ruling is not None and not graded.could_not_run
+                              and not body_ruling.accepted)
+            # gates.json is the ruling on the module this stage released, and every failing row in
+            # it becomes a red light the Builder is asked to repair (`builder/tools.red_lights`).
+            # So the rows recorded are the gates of the body that was released, not of the attempt
+            # that lost to it: under D174 a losing attempt was one narrowed rerun's one tool, and
+            # widening the rule to every full run would otherwise fill the file with failures the
+            # released bodies do not have. What the losing attempt scored is not lost with it: it
+            # is on the tool's row (`recompile_declined`) and in the run's own ruling below.
+            released = graded.gates if keeps_previous else build.gates
+            gates.extend(released)
+            snapshot_rows[sig.name] = [{"tool": sig.name, **as_dict(result)} for result in released]
+            kept_rulings.pop(sig.name, None)
+            lesson_counts.pop(sig.name, None)
+            if graded is not None:
+                # D191: how many recompiles in a row have now scored no higher than the body this
+                # tool already has. The count survives a full run of the stage, which resets the
+                # rest of the file, because the stall is the tool's and not one run's: a Builder
+                # that has bought nothing on this tool three times over should spend its next round
+                # somewhere else, and the counter is the only thing that can tell it so.
+                # A stage whose gate fails runs again on the same request, and the second run is not
+                # a second recompile: only the first attempt of a request moves the count.
+                unbeaten = int((prior_rulings.get(sig.name) or {}).get("unbeaten") or 0)
+                unbeaten += 1 if ctx.attempt <= 1 else 0
+                kept_rulings[sig.name] = {
+                    # An attempt that scored no higher is kept out for the reason D184 gives, and the
+                    # word for it stays "kept". The new outcome is the one the score alone could not
+                    # see: an attempt ahead on the score and behind on the calls.
+                    "outcome": ("could_not_run" if graded.could_not_run else
+                                "beaten" if body_ruling.accepted else
+                                transaction.REVERTED_REGRESSION if body_ruling.moved else "kept"),
+                    # The recorded calls that attempt would have cost, named: it is the lesson the
+                    # next hint has to answer (D191's shape).
+                    "broke": ([call.split(" ")[0] for call in body_ruling.broke[:transaction.NAMED]]
+                              if body_ruling.moved else []),
+                    "broke_calls": len(body_ruling.broke) if body_ruling.moved else 0,
+                    "kept_score": kept_score, "attempt_score": score,
+                    "unbeaten": unbeaten if keeps_previous else 0,
+                    # D211: the gate before the fidelity ruling that both bodies fall at, when
+                    # there is one. Two bodies that tie at a static gate tie at a fidelity number
+                    # neither of them earned, and the next round has to be spent on the gate.
+                    "blocked_by_gate": lesson_mod.blocked_gate(
+                        [{"stage": g.stage, "pass": g.passed} for g in graded.gates],
+                        [{"stage": g.stage, "pass": g.passed} for g in build.gates]),
+                    "from_replay": from_replay.get(sig.name, 0),
+                    "evidence_calls": len(calls_by_tool.get(sig.name, []))}
+                if graded.diagnosis is not None:
+                    lesson_counts[sig.name] = graded.diagnosis.counts()
+            if keeps_previous:
+                # A run of this stage is an attempt at a better body, not a replacement for the one
+                # it has. The attempt scored no higher on the key the compiler ranks its own
+                # attempts by (gates passed, then recorded calls matched), so the kept body stands.
+                # Its assisted and hardcoded readings, its score and its per-call rows are the ones
+                # just measured, not the ones the last run wrote, because those were measured under
+                # a world that has since moved; where the world has not moved they are the same
+                # values and the row is left byte for byte as it was. One live build's third round
+                # recompiled a write tool from 65 percent of its calls matched to none of them and
+                # lost 41 Tasks of fidelity in the round.
+                body = previous[sig.name][0]
+                bodies[sig.name] = compile_env.mark_hardcoded(body) if graded.hardcoded else body
+                builds[sig.name] = dict(previous[sig.name][1], assisted=graded.assisted,
+                                        hardcoded=graded.hardcoded, score=kept_score,
+                                        from_replay=from_replay.get(sig.name, 0))
+                if graded.hardcoded:  # D181's rule 7, for the body the stage releases, not the attempt
+                    _record_hardcoded_lesson(ctx.workdir, sig.name)
+                if score < kept_score:  # D174's line for the Builder: change the hint, not the request
+                    builds[sig.name]["recompile_declined"] = {"attempt_score": score,
+                                                              "kept_score": kept_score}
+                outcomes[sig.name] = graded.call_outcomes
+                if graded.assisted:
+                    assisted.append(sig.name)
+                declined.append(sig.name)
+                continue
+            bodies[sig.name] = compile_env.mark_hardcoded(build.body) if build.hardcoded else build.body
+            builds[sig.name] = {"assisted": build.assisted, "hardcoded": build.hardcoded,
+                                "nodes": build.nodes,
+                                "after_write_skipped": skipped.get(sig.name, 0), "score": score,
+                                "from_replay": from_replay.get(sig.name, 0)}
+            if build.hardcoded:
+                _record_hardcoded_lesson(ctx.workdir, sig.name)
+            outcomes[sig.name] = build.call_outcomes
             if build.assisted:
                 assisted.append(sig.name)
-        if only is None:
-            ctx.write_gates(gates)
-        else:
-            for result in gates:
-                ctx.record_gate(result)
+        # D218 rule 2: the per tool rulings go to their own file whether the run was full or narrowed,
+        # so gates.json holds the round's rulings in both cases and a reader of either file knows
+        # what it is looking at.
+        ctx.snapshot_gates(
+            compile_snapshot_rows(
+                (_read_json(ctx.workdir / ledger_mod.COMPILE_NAME, {}) or {}).get("rows") or [],
+                snapshot_rows, only),
+            round_no)
         _write_json(ctx.workdir / "bodies.json", bodies)
         _write_json(ctx.workdir / "tool_builds.json", builds)
-        return {"bodies": bodies, "assisted_tools": sorted(assisted)}
+        # D171: the per-call rows are kept whole on disk, so a narrowed rerun can read back the
+        # tools it did not touch; the artifact the stages pass on is the attribution over them.
+        _write_json(ctx.workdir / "tool_call_outcomes.json", outcomes)
+        _write_json(ctx.workdir / KEPT_BODIES_FILE, kept_rulings)
+        _write_json(ctx.workdir / LESSON_COUNTS_FILE, lesson_counts)
+        fidelity_by_task = attribute_fidelity(outcomes, call_tasks, assisted)
+        _write_json(ctx.workdir / "tool_fidelity.json", fidelity_by_task)
+        return {"bodies": bodies, "assisted_tools": sorted(assisted),
+                "tool_fidelity": fidelity_by_task, "recompile_declined": declined,
+                "kept_bodies": kept_rulings}
 
     def gate(ctx, outputs):
         return stage_gates.compile_tools_gate(outputs["bodies"], outputs["assisted_tools"])
@@ -308,28 +1007,58 @@ def _tools_stage(model: Any, max_attempts: int, workers: int = 1, only: Optional
     # compile_env and sandbox, and until the first live build it hashed neither: a fix to the
     # sandbox left every broken body in the cache and `--iterate` handed them straight back.
     version = (f"compile_tools:{getattr(model, 'name', 'none')}:"
-               f"{_module_hash(compile_env)}:{_module_hash(sandbox)}")
+               f"{_module_hash(compile_env)}:{_module_hash(sandbox)}:{_module_hash(body_skill)}:"
+               # D211: the code-only lesson steps reach the writer's prompt, so a change to what
+               # they say is a new question and the cached bodies are not an answer to it.
+               f"{_module_hash(lesson_mod)}:"
+               # The gates the sandbox runs live in the gates package, and D187 changed what two
+               # results compare as; a body kept over an older ruling is not a body this one accepts.
+               f"{_module_hash(tool_runs)}:"
+               # The readers' own source reaches the body writer through `world_note`, and the
+               # module that renders it is not one of the three above.
+               f"{_module_hash(readers)}:"
+               # D215: the effects section reaches the writer's prompt and the effect values reach
+               # the memorised gate, so a change to what either says is a new question too.
+               f"{_module_hash(effects_mod)}:"
+               # The attribution is this file's own function, so its bytes are not in any module
+               # hash above; an edit to it is a different artifact and must not hit the cache.
+               f"{content_hash(pipeline._fn_identity(attribute_fidelity, 'compile_tools'))[:16]}:"
+               # The evidence set and the lesson are this file's own functions too (D191), so their
+               # bytes are in no module hash above either: a change to which recorded calls a body
+               # is written against is a different question and must not be answered from the cache.
+               f"{_evidence_version()}")
     # The tool lessons are an input of this stage: they reach the compiler prompt (compile_one
     # above), so a new lesson is a new question and the old answer is not an answer to it. Left
     # undeclared, a recompile asked for after a lesson was recorded was served the cached bodies
     # and the stage reported "from cache" however often it was asked; the file's bytes are in the
     # key, which is what makes the narrowed rerun actually recompile that tool.
-    paths = (memory.TOOL_LESSONS_FILE,)
+    # D191: the Reference replay's own failures are an input of this stage, since a call it failed
+    # on is evidence for the body whatever the filters say. Left undeclared, a stage whose other
+    # inputs had not moved was served bodies written before that evidence existed.
+    # D220: the provenance of the world is read by this stage, so it is in its key: a build
+    # whose held-out split moved masks different columns and must compile again.
+    paths = (memory.TOOL_LESSONS_FILE, REPLAY_EVIDENCE_FILE, WORLD_PROVENANCE_FILE)
     if only is not None:
-        paths += ("bodies.json", "tool_builds.json")
+        paths += ("bodies.json", "tool_builds.json", "tool_call_outcomes.json")
     return pipeline.Stage(name="compile_tools", fn=run, builder=True,
-                          inputs=("traces", "tasks", "sigs", "schema", "db", "overlays", "canon_rules"),
-                          outputs=("bodies", "assisted_tools"), gate=gate, input_paths=paths,
+                          inputs=("traces", "tasks", "sigs", "schema", "db", "overlays", "canon_rules",
+                                  "readers"),
+                          outputs=("bodies", "assisted_tools", "tool_fidelity"), gate=gate, input_paths=paths,
                           code_version=version if only is None else f"{version}:only={','.join(only)}")
 
 
-def _seed_traces(ctx, tasks, traces) -> set[str]:
-    """Every Trace the Builder may learn from: each Task's Runs minus its anchor (D81)."""
-    seeds: set[str] = set()
-    for task in tasks:
-        seeds.update(ctx.seed_runs(task.id, task.run_ids))
-    known = {t.trace_id for task in tasks for t in traces if t.trace_id in task.run_ids}
-    return seeds | {t.trace_id for t in traces if t.trace_id not in known}
+def trace_worlds(db: dict, overlays: Iterable[Any], values: dict, tasks: Iterable[Any]) -> dict[str, dict]:
+    """Per Trace id, the world its Task starts in: the shared db with that Task's overlay merged.
+
+    The Starting-state pin, read the way `call_starting_states` reads it and by the same merge, so a
+    row a Run wrote before anything read it has a before value that is the Task's own and not the
+    shared world's (D215 rule 1). A Task with no overlay contributes nothing and its Runs fall back
+    to the shared db, which is what they would have been pinned to anyway.
+    """
+    by_task = {overlay.task_id: compile_env.merge_overlays(db, [overlay], values)
+               for overlay in overlays}
+    return {run_id: by_task[task.id] for task in tasks if task.id in by_task
+            for run_id in task.run_ids}
 
 
 def after_write_calls(traces: Iterable[Trace], write_tools: Iterable[str]) -> set[tuple[str, int]]:
@@ -353,15 +1082,124 @@ def after_write_calls(traces: Iterable[Trace], write_tools: Iterable[str]) -> se
     return out
 
 
+def evidence_calls(traces: Iterable[Trace], seeds: set[str], after_write: set[tuple[str, int]],
+                   callers: dict[str, set[str]],
+                   replay_failed: Optional[dict[str, dict[str, str]]] = None
+                   ) -> tuple[dict[str, list], dict[str, int], dict[str, int]]:
+    """Per tool, the recorded calls its body is written against and graded on, with the two counts.
+
+    Three filters say a recorded call is not evidence about a body: a call that followed a write on
+    the same row saw a world no Starting state can put back (D74), a call in a Run held out as the
+    anchor is not the Builder's to learn from (D81), and a call from a requestor the tool never
+    answered was refused for a reason of its own (D164). Each of those is about what a body may be
+    written from.
+
+    `replay_failed` is the other question: which recorded calls the last replay of the References
+    could not reproduce. A call there is evidence whatever a filter says, because a Task confirms
+    only when its own recording plays back, and a body scored on a set that leaves those calls out
+    can clear every gate while the corpus stays where it was (D191). The counts returned are the
+    after-write skips, which the tool's row has always carried, and how many calls a replay failure
+    put back over a filter, which is what says how much of the evidence is there for that reason.
+
+    D220: the seed filter is not one of the filters a replay failure overrides. D191's premise holds
+    for a Run the Builder may learn from and for no other: a held-out Run's failure belongs in the
+    corpus fidelity number, which the replay stage already reports, and putting its arguments and its
+    recorded result in front of the body writer is the leak the readmission was never meant to be.
+    """
+    replay_failed = replay_failed or {}
+    calls_by_tool: dict[str, list] = {}
+    skipped: dict[str, int] = {}
+    from_replay: dict[str, int] = {}
+    for trace in traces:
+        for at, call in enumerate(trace.tool_calls):
+            readmitted = (bool(call.id) and call.id in replay_failed.get(call.name, {})
+                          and trace.trace_id in seeds)
+            if not (readmitted or is_evidence_call(call, callers)):
+                continue
+            dropped = (trace.trace_id, at) in after_write or trace.trace_id not in seeds
+            if dropped and not readmitted:
+                if (trace.trace_id, at) in after_write:
+                    skipped[call.name] = skipped.get(call.name, 0) + 1
+                continue
+            calls_by_tool.setdefault(call.name, []).append(call)
+            if dropped:  # a filter would have dropped it and the replay failure overrode the filter
+                from_replay[call.name] = from_replay.get(call.name, 0) + 1
+    return calls_by_tool, skipped, from_replay
+
+
+def callers_by_tool(sigs: Iterable[Any]) -> dict[str, set[str]]:
+    """Each mined tool's callers as a set, for the evidence filter below (D164)."""
+    return {sig.name: set(sig.callers or ["assistant"]) for sig in sigs}
+
+
+def is_evidence_call(call: Any, callers: dict[str, set[str]]) -> bool:
+    """Whether this recorded call is evidence for the body of the tool it named (D164).
+
+    A tool the recording answers for one caller and refuses for another was refused for a reason,
+    and the refusal says nothing about what the body does. Only a call from a caller the tool
+    answers is written against; a call from anyone else is dropped, the same way the Router will
+    refuse it in a Run.
+    """
+    return (call.requestor or "assistant") in callers.get(call.name, {"assistant"})
+
+
 def _task_of(tasks, trace_id: str) -> Optional[str]:
     return next((t.id for t in tasks if trace_id in t.run_ids), None)
+
+
+# How many differing calls of one tool a Task's row spells out. The count is always whole; the
+# sentences are what a person and the repair verb read, and three of them say what one says.
+FIDELITY_REASONS = 3
+
+
+def attribute_fidelity(outcomes: dict[str, list[dict]], call_tasks: dict[str, str],
+                       assisted: Iterable[str]) -> dict:
+    """Replay fidelity at both grains: per tool over the corpus, per Task over that Task's own calls (D171).
+
+    A tool's fidelity is one number for the corpus, and it is the number the Builder repairs
+    against: a body that misses one recorded call is assisted, whatever else it answers. That number
+    says nothing about a Task that never made the call that missed. One live build measured it:
+    one body replayed 239 of its 240 recorded calls and stayed assisted, and of the 64 Task rows
+    that named an assisted tool as their blocker, 51 make no call any assisted body answers
+    differently.
+
+    `outcomes` is `ToolBuild.call_outcomes` per tool, `call_tasks` maps a recorded call's id to the
+    Task whose Trace made it (the same map `call_starting_states` uses for D74). The result has both
+    grains and neither replaces the other: `tools` is the corpus ruling as it stands, `tasks` is per
+    Task per tool how many of its own calls replayed, how many differed, and what the first few
+    differences were, in the corpus gate's own words.
+
+    A call whose id no Task claims (a Trace outside every Task, a call the recording left unnamed)
+    counts for the corpus and for no Task: it is evidence about the body and evidence about nobody's
+    Run.
+    """
+    assisted = set(assisted)
+    tools: dict[str, dict] = {}
+    tasks: dict[str, dict] = {}
+    for name, rows in sorted(outcomes.items()):
+        per_tool = {"calls": 0, "replayed": 0, "differing": 0, "assisted": name in assisted}
+        for row in rows:
+            key = "replayed" if row.get("replayed") else "differing"
+            per_tool["calls"] += 1
+            per_tool[key] += 1
+            task_id = call_tasks.get(str(row.get("call_id") or ""))
+            if not task_id:
+                continue
+            slot = tasks.setdefault(task_id, {}).setdefault(
+                name, {"replayed": 0, "differing": 0, "reasons": []})
+            slot[key] += 1
+            if key == "differing" and row.get("detail") and len(slot["reasons"]) < FIDELITY_REASONS:
+                slot["reasons"].append(str(row["detail"]))
+        tools[name] = per_tool
+    return {"tools": tools, "tasks": tasks}
 
 
 def _policy_stage(model: Any, workers: int = 1):
     """D76: the policy sentences become Constraints, and the Reference's own path has to stay legal."""
 
     def run(ctx, inputs):
-        text = _policy_text(inputs["traces"])
+        # D220: the system prompt is taken from a Trace the Builder may learn from.
+        text = _policy_text(ctx.evidence.traces)
         constraints = (policy.compile_policy(model, text, workers=workers)
                        if (text and model is not None) else [])
         _write_json(ctx.workdir / "constraints.json", [as_dict(c) for c in constraints])
@@ -442,7 +1280,8 @@ def _vocabulary_stage(model: Any, search: Any):
     """D115: what this corpus's users state and how its agents ask, from code; the web adds wording."""
 
     def run(ctx, inputs):
-        vocab = vocabulary.derive(inputs["traces"], inputs["schema"], inputs["sigs"], inputs.get("policy_text") or "")
+        vocab = vocabulary.derive(ctx.evidence.traces, inputs["schema"], inputs["sigs"],
+                                  inputs.get("policy_text") or "")
         vocab = vocabulary.enrich(vocab, search, model)
         _write_json(ctx.workdir / "vocabulary.json", as_dict(vocab))
         ctx.record_gate(stage_gates.vocabulary_gate(vocab))
@@ -465,6 +1304,15 @@ def _vocab_from(workdir: Path) -> vocabulary.Vocabulary:
 
 
 def _user_rules_stage():
+    """The Simulated user's rules per Run, for every Run of the corpus (D44).
+
+    D220: this is one of the stages named in ALL_RUNS_STAGES. The Examiner's false-rejection pool
+    scores a Verifier against the held-out Runs (D133), so those Runs need their rules too, and the
+    one Builder consumer, the re-rolls, picks its persona out of ctx.evidence. Every fact the
+    artifact carries says which Run witnessed it and whether that Run is held out, so a reader that
+    indexes this file by Run id can see the provenance instead of having to fetch the anchor.
+    """
+
     def run(ctx, inputs):
         rules: dict[str, UserRules] = {}
         vocab = _vocab_of(inputs)
@@ -473,23 +1321,29 @@ def _user_rules_stage():
         writes = {sig.name for sig in inputs["sigs"] if sig.kind == "write"}
         for trace in inputs["traces"]:
             rules[trace.trace_id] = user_sim.derive_user_rules(trace, vocab, writes=writes)
+        held_out = {tid for tid in rules if ctx.anchor is not None and ctx.anchor.is_held_out(tid)}
         for trace_id, record in rules.items():
             _write_json(ctx.workdir / "user_rules" / f"{trace_id}.json", as_dict(record))
         _write_json(ctx.workdir / "user_facts.json",
-                    {"facts": [{"run_id": tid, "field": f.field, "value": f.value}
+                    {"facts": [{"run_id": tid, "field": f.field, "value": f.value,
+                                "held_out": tid in held_out}
                                for tid, r in rules.items() for f in r.facts]})
         # Section 6: incomplete user rules flag the Run, they do not fail the build.
         ctx.record_gate(artifacts.user_rules_gate(list(rules.values())))
         return {"user_rules": rules}
 
-    return pipeline.Stage(name="user_rules", fn=run, builder=True, inputs=("traces", "vocabulary", "sigs"),
-                          outputs=("user_rules",), code_version=_version("user_rules", run, user_sim, vocabulary))
+    return pipeline.Stage(name="user_rules", fn=run, builder=True, sees_all_runs=True,
+                          inputs=("traces", "vocabulary", "sigs"), outputs=("user_rules",),
+                          code_version=_version("user_rules", run, user_sim, vocabulary))
 
 
 def _environment_stage(domain: str):
     def run(ctx, inputs):
+        # The export tags the synthetic rows and its gate checks that it did, so the schema the
+        # bundle carries has to be the one the Starting state left (with_synthetic_rows).
+        schema = with_synthetic_rows(inputs["schema"], inputs.get("synthetic_rows") or ())
         bundle = compile_env.EnvBundle(
-            environment=Environment(env_id="pending"), schema=inputs["schema"], tools=inputs["sigs"],
+            environment=Environment(env_id="pending"), schema=schema, tools=inputs["sigs"],
             bodies=inputs["bodies"], db=inputs["db"], overlays=inputs["overlays"],
             overlay_values=compile_env.overlay_values(ctx.workdir), policy_text=inputs["policy_text"],
             tasks=inputs["tasks"], verifiers=[], assumptions=inputs["assumptions"], domain=domain)
@@ -499,8 +1353,11 @@ def _environment_stage(domain: str):
         # env_id has to cover db.json and tasks.json, or two worlds holding different rows share one
         # identity and a regrade cannot tell them apart (design section 5).
         environment = compile_env.build_environment(
-            inputs["schema"], inputs["sigs"], inputs["bodies"], inputs["policy_text"], files=files,
+            schema, inputs["sigs"], inputs["bodies"], inputs["policy_text"], files=files,
             assisted_tools=inputs.get("assisted_tools") or ())
+        # A table another requestor's own tools revealed is in the world because the Runner needs it,
+        # and it is not the customer's system: the export marks it rather than passing it off as one.
+        environment.flags = sorted(set(environment.flags) | set(readers.environment_flags(inputs["schema"])))
         bundle.environment = environment
         compile_env.emit_tau2_shape(bundle, ctx.workdir / "env", files=files)
         _write_json(ctx.workdir / "environment.json", as_dict(environment))
@@ -510,7 +1367,7 @@ def _environment_stage(domain: str):
         ctx.record_gate(stage_gates.tau2_export_gate(bundle.conflicts))
         # The build_environment gate's other two halves: db.json has to hold every id a trace
         # referenced, and every synthetic row has to be tagged, or both checks are silent no-ops.
-        referenced = [row_id for _, row_id in compile_env.referenced_ids(inputs["traces"], inputs["schema"])]
+        referenced = [row_id for _, row_id in compile_env.referenced_ids(inputs["traces"], schema)]
         tagged_synthetic = [{"id": row_id, "synthetic": True} for row_id in inputs["synthetic_rows"]]
         return {"environment": environment, "referenced_ids": referenced,
                 "synthetic_rows_tagged": tagged_synthetic}
@@ -530,7 +1387,69 @@ def _environment_stage(domain: str):
                           code_version=_version("environment", run, compile_env))
 
 
-def _replay_stage(only: Optional[Iterable[str]] = None):
+class SemanticJudging:
+    """Who settles a semantic column pair for this build, and where the answers are kept (D219).
+
+    A comparer that knows the schema's classes but was handed no judge and no table cannot settle a
+    semantic column at all: every such pair comes back unresolved, and before D219 an unresolved
+    pair was forgiven, so the class read as "not checked" rather than "checked another way". The
+    collaborator was optional in the library function and mandatory at the stage, and the same
+    `=None` default served both, so nothing anywhere said the stage was running without it.
+
+    This is that collaborator, built once per build. A pair is asked about at most once, whatever
+    the answer: the table caches the settled ones and this caches the unsettled ones too, so a judge
+    that raises or abstains cannot be asked the same question by every Trace that meets the pair.
+    Where a second judge model is configured the pair goes to both under D92, so a split abstains to
+    the queue instead of being decided by one voice.
+    """
+
+    def __init__(self, workdir: Any = None, model: Any = None, second_model: Any = None) -> None:
+        self.workdir = Path(workdir) if workdir is not None else None
+        self.path = None if self.workdir is None else self.workdir / EQUIVALENCE_FILE
+        self.table = canon.load_table(self.path) if self.path else canon.EquivalenceTable()
+        self._asked: dict = {}
+        self._first = judge_mod.AgenticJudge(model) if model is not None else None
+        self._second = judge_mod.AgenticJudge(second_model) if second_model is not None else None
+        names = [judge.name for judge in (self._first, self._second) if judge is not None]
+        self.identity = (f"{'+'.join(names)}:{judge_mod.JUDGE_VERSION}" if names else "none")
+        # D222: what the judging of this stage prefilled, what the models asked for on top of it,
+        # and how the forced first turn went, so a round can say whether a verdict still depends on
+        # a model's tool-calling habit. All zero where no pair reached a judge.
+        self.judge_counts: dict = {name: 0 for name in judge_mod.JUDGE_COUNTS}
+
+    @property
+    def judge(self) -> Optional[Any]:
+        """The callable `canon.compare` asks about one pair, or None where no judge is configured."""
+        return None if self._first is None else self._ask
+
+    def _ask(self, column: Any, a: Any, b: Any) -> Any:
+        key = canon.pair_key(str(column), str(a), str(b))
+        if key not in self._asked:
+            self._asked[key] = self._answer(column, a, b, key)
+        return self._asked[key]
+
+    def _answer(self, column: Any, a: Any, b: Any, key: str) -> Any:
+        if self._second is None:
+            answer = self._first.judge_equivalence(column, a, b)
+        else:
+            answer, _ = judge_mod.two_judges(self._first, self._second, "judge_equivalence", column, a, b,
+                                             workdir=self.workdir, item_id=key)
+        self.judge_counts = judge_mod.count_judgement(answer, self.judge_counts)
+        return answer
+
+    def save(self) -> None:
+        """Keep what was settled, so the next run of the stage asks about none of it again."""
+        if self.path is not None:
+            canon.save_table(self.table, self.path)
+
+
+def _semantic_judging(plan: "BuildPlan") -> SemanticJudging:
+    """The build's semantic judging, from the models the plan already prices (D160, D219)."""
+    return SemanticJudging(plan.workdir, plan.models.get(SEMANTIC_JUDGE_STAGE),
+                           plan.models.get("second_judge"))
+
+
+def _replay_stage(judging: Optional[SemanticJudging] = None, only: Optional[Iterable[str]] = None):
     """Every Trace of every Task replayed through the built tools: the Reference Runs and Gate A (D108).
 
     The Trace's own assistant turns and user turns drive the loop; each tool call is routed the way a
@@ -541,14 +1460,28 @@ def _replay_stage(only: Optional[Iterable[str]] = None):
     """
 
     only = sorted(only) if only is not None else None
+    judging = judging if judging is not None else SemanticJudging()
 
     def run(ctx, inputs):
-        schema, sigs, bodies, db = inputs["schema"], inputs["sigs"], inputs["bodies"], inputs["db"]
+        schema = with_synthetic_rows(inputs["schema"], inputs.get("synthetic_rows") or ())
+        sigs, bodies, db = inputs["sigs"], inputs["bodies"], inputs["db"]
         env_id = getattr(inputs["environment"], "env_id", None)
         canon_rules = _rules_of(inputs)
         write_tools = {s.name for s in sigs if s.kind == "write"}
+        # What the Runner's own scoring cannot reach on its own: the schema's column classes, so an
+        # exempt column cannot fail a write and a semantic one is not held to a hard column's bar,
+        # and the readers, so a prose result is compared by the columns it asserts (D187).
+        # The judge and the equivalence table are handed over here and not defaulted away: without
+        # them every semantic column of every Trace comes back unresolved, which D219 fails rather
+        # than forgives, so a stage that ran without them would reject the corpus it cannot judge.
+        comparer = tool_runs.ReplayComparer(schema, tool_runs.load_readers(inputs["readers"]), canon_rules,
+                                            judge=judging.judge, equivalence=judging.table)
         source = compile_env.module_source(schema, sigs, bodies)
         by_trace = {t.trace_id: t for t in inputs["traces"]}
+        # D220 rule 2c: what the world holds on a held-out Run's word alone, so each call can say
+        # whether its answer came out of it. This stage is not a Builder stage and replays the
+        # anchor on purpose, which is what makes the count readable per Run.
+        _, holdout_vals = holdout_world(ctx.workdir)
         replays: dict[str, dict] = {}
         tasks = list(inputs["tasks"])
         if only is not None:
@@ -559,12 +1492,28 @@ def _replay_stage(only: Optional[Iterable[str]] = None):
             replays = {t: dict(rows) for t, rows in (_read_json(ctx.workdir / "replays.json", {}) or {}).items()
                        if t not in only}
             tasks = [task for task in tasks if task.id in only]
+        # D215: the rows and columns each recorded write was seen to move, per call id, checked
+        # once that call has replayed. Read per Task, over every Run of it, the anchor included:
+        # this is code, it is never shown to anyone who writes a body, and a held-out Run has to be
+        # scored the same way or the number the report carries is not the number the corpus earns.
+        observed: dict[str, list] = {}
         for task in tasks:
-            overlay, overlay_rows = compile_env.load_overlay(ctx.workdir, task.id)
+            # The Task's own overlay, the layer no Run of it disagrees on, is what the effects are
+            # read against: one statement per Task, where each Run below replays on its own layer.
+            task_overlay, task_overlay_rows = compile_env.load_overlay(ctx.workdir, task.id)
+            seen = effects_mod.observe_effects(
+                [by_trace[t] for t in task.run_ids if t in by_trace], schema, write_tools,
+                db=compile_env.merge_overlays(db, [task_overlay], task_overlay_rows))
+            for tool, rows in seen.items():
+                observed.setdefault(tool, []).extend(rows)
+            effect_rows = effects_mod.replay_evidence(seen)
             for trace_id in task.run_ids:
                 trace = by_trace.get(trace_id)
                 if trace is None:
                     continue
+                # D213: each Run replays against its own layer of the Task's overlay, so a column
+                # this Task's Runs recorded in two values is served each Run the version it saw.
+                overlay, overlay_rows = compile_env.load_overlay(ctx.workdir, task.id, trace_id)
                 # One fresh world per Trace: a replay must not see what the previous one wrote.
                 toolkit = compile_env.load_toolkit(source, json.loads(json.dumps(db)), overlay=overlay,
                                                    overlay_values=overlay_rows)
@@ -573,22 +1522,90 @@ def _replay_stage(only: Optional[Iterable[str]] = None):
                                       canon_rules=canon_rules, synthetic_rows=schema.synthetic_rows)
                 result = replay_mod.replay_trace(trace, router, workdir=ctx.workdir / "runs" / task.id,
                                                  task_id=task.id, env_id=env_id, write_tools=write_tools,
-                                                 canon_rules=canon_rules)
+                                                 canon_rules=canon_rules, comparer=comparer,
+                                                 effects=effect_rows,
+                                                 holdout_values=holdout_vals)
                 replays.setdefault(task.id, {})[trace_id] = result.as_dict()
         _write_json(ctx.workdir / "replays.json", replays)
+        _write_json(ctx.workdir / HOLDOUT_ANSWERS_FILE, holdout_answers(replays, ctx.anchor))
+        # D191: the calls this replay could not reproduce, per tool, which is what the compile stage
+        # adds to a body's evidence and keys its cache on.
+        _write_json(ctx.workdir / REPLAY_EVIDENCE_FILE,
+                    {tool: sorted(failures) for tool, failures in sorted(replay_failures_of(replays).items())})
+        # D215's own counters, per write tool, over the Tasks this run of the stage replayed: what
+        # the recording showed each of them moving, so a round can read the check's reach against
+        # the failures it turned up.
+        _write_json(ctx.workdir / EFFECTS_FILE,
+                    {"totals": effects_mod.counts(observed),
+                     "per_tool": effects_mod.per_tool_counts(observed)})
+        # What the semantic comparisons of this stage came to, and every pair a judge settled, so
+        # the next run of the stage asks about none of them again (D219).
+        judging.save()
+        _write_json(ctx.workdir / SEMANTIC_COUNTS_FILE,
+                    dict(comparer.counts, **judging.judge_counts, judge=judging.identity))
         _write_runs_index(ctx.workdir)
         # Section 6: a Task none of whose Traces replay to their End state is rejected for that
         # Task, which the Examiner's derivation turns into "not verdicted"; the build itself goes on.
         ctx.record_gate(fidelity.reference_replay_gate(replays))
         return {"replays": replays}
 
-    version = _version("replay_reference", run, replay_mod, fidelity, compile_env, route, loop)
+    # The verdict format rides in the key beside the module hashes: a change in what a verdict means
+    # has to recompute the replays even where the scoring code it was read off has not moved (D217).
+    # The judge's identity and the equivalence table's version ride in the key beside the verdict
+    # format: a replay scored with no judge and one scored with a judge are different readings of
+    # the same bytes, and a cache that cannot tell them apart hands back the unjudged one (D219).
+    version = (f"{_version('replay_reference', run, replay_mod, fidelity, compile_env, route, loop, tool_runs, effects_mod)}"
+               f":verdicts={replay_mod.VERDICT_FORMAT}"
+               f":judge={judging.identity}:equivalence={judging.table.version}")
     return pipeline.Stage(name="replay_reference", fn=run,
                           inputs=("traces", "tasks", "sigs", "schema", "bodies", "db", "canon_rules",
-                                  "environment"),
+                                  "environment", "readers", "synthetic_rows"),
                           outputs=("replays",),
                           input_paths=("overlays",) if only is None else ("overlays", "replays.json"),
                           code_version=version if only is None else f"{version}:only={','.join(only)}")
+
+
+def holdout_answers(replays: dict, anchor: Any = None) -> dict:
+    """How many replayed calls were answered out of a value only a held-out Run witnessed (D220 2c).
+
+    Counted per Task and over the corpus, and split by whether the Run being replayed is itself one
+    of the held-out ones, because those are the Runs the number is asked about: a held-out Run that
+    passes on a value the world holds only on its own word passed on the world, not on the body.
+    This is a finding on the record; no gate reads it.
+    """
+    per_task: dict[str, dict] = {}
+    per_tool: dict[str, dict] = {}
+    totals = {"calls": 0, "held_out_calls": 0, "runs": 0, "held_out_runs": 0}
+    columns: set[str] = set()
+    for task_id, rows in sorted((replays or {}).items()):
+        for trace_id, row in sorted((rows or {}).items()):
+            counts = (row or {}).get("counts") or {}
+            calls = int(counts.get("answered_from_holdout") or 0)
+            held = bool(anchor is not None and anchor.is_held_out(trace_id))
+            for check in (row or {}).get("checks") or ():
+                if not isinstance(check, dict) or not check.get("answered_from_holdout"):
+                    continue
+                tool = per_tool.setdefault(str(check.get("tool") or ""),
+                                           {"calls": 0, "held_out_calls": 0})
+                tool["calls"] += 1
+                if held:
+                    tool["held_out_calls"] += 1
+            if not calls:
+                continue
+            columns.update(counts.get("holdout_columns") or ())
+            slot = per_task.setdefault(task_id, {"calls": 0, "held_out_calls": 0, "runs": 0,
+                                                 "held_out_runs": 0})
+            slot["calls"] += calls
+            slot["runs"] += 1
+            totals["calls"] += calls
+            totals["runs"] += 1
+            if held:
+                slot["held_out_calls"] += calls
+                slot["held_out_runs"] += 1
+                totals["held_out_calls"] += calls
+                totals["held_out_runs"] += 1
+    return {"totals": totals, "columns": sorted(columns), "tasks": per_task,
+            "tools": dict(sorted(per_tool.items()))}
 
 
 def _write_runs_index(workdir: Path) -> Path:
@@ -648,9 +1665,14 @@ def _intent_stage(model: Any, workers: int = 1, only: Optional[Iterable[str]] = 
     code version, so the same repair asked twice with two hints is two runs and not one cache hit.
     A narrowed run rewrites its Tasks however well they already ground: a repair is an explicit ask.
 
+    The schema and the canon rules are read for the D196 strip alone: they are what gives a value's
+    column its class, so the strip and the compare read one column one way (D73).
+
     A full run ratchets (todo: a stage never replaces a passing artifact with a failing one). A Task
-    whose recorded Intent grounded and whose member Runs are unchanged keeps that record and is not
-    put to the model again; only the rest are written. The artifact still names every Task. Two
+    whose recorded Intent grounded, whose member Runs are unchanged and whose line the strip would
+    not change keeps that record and is not put to the model again; only the rest are written. The
+    strip condition is what stops a line written before D196 living on: it grounds, so the ratchet
+    would keep it, and it may still hold a value only the tools knew. The artifact still names every Task. Two
     things follow: a repaired Intent survives the next full build instead of being written over by
     a fresh line that may ground worse, and an `--iterate` build does not pay to rewrite what
     already grounds.
@@ -667,8 +1689,19 @@ def _intent_stage(model: Any, workers: int = 1, only: Optional[Iterable[str]] = 
 
     def run(ctx, inputs):
         write_tools = {s.name for s in inputs["sigs"] if s.kind == "write"}
-        tasks = list(inputs["tasks"])
+        schema, canon_rules = inputs.get("schema"), inputs.get("canon_rules")
+        # D220: the Tasks with their seed Runs, and the seed Traces those Runs recorded. The Intent
+        # is the request a Task's own recordings state, and a held-out Run states nothing the
+        # Builder may put in it.
+        tasks = ctx.evidence.tasks
+        by_id = ctx.evidence.by_trace
         recorded = _read_intents(ctx.workdir, [task.id for task in tasks])
+
+        def clean(task) -> bool:
+            """D196: a line recorded before the strip ran, or before this schema, is written again."""
+            members = [by_id[rid] for rid in task.run_ids if rid in by_id]
+            return intent.strip_holds(recorded[task.id], members, schema=schema, rules=canon_rules)
+
         if only is not None:
             unknown = sorted(set(only) - {task.id for task in tasks})
             if unknown:
@@ -676,13 +1709,14 @@ def _intent_stage(model: Any, workers: int = 1, only: Optional[Iterable[str]] = 
             kept = {task.id: recorded[task.id] for task in tasks if task.id not in set(only)}
         else:
             kept = {task.id: recorded[task.id] for task in tasks
-                    if intent.still_grounds(recorded[task.id], task.run_ids)}
+                    if intent.still_grounds(recorded[task.id], task.run_ids) and clean(task)}
         tasks = [task for task in tasks if task.id not in kept]
 
         def write_one(task):
             try:
-                record = intent.write_intent(model, task, inputs["traces"], write_tools=write_tools,
-                                             hint=hints.get(task.id))
+                record = intent.write_intent(model, task, ctx.evidence.traces, write_tools=write_tools,
+                                             hint=hints.get(task.id), schema=schema,
+                                             canon_rules=canon_rules)
             except Exception as exc:  # one Task's Intent failing is that Task ungrounded, not a dead build
                 record = intent.Intent(task_id=task.id, reason=f"{type(exc).__name__}: {exc}")
             _write_json(ctx.workdir / "intents" / f"{task.id}.json", as_dict(record))
@@ -699,68 +1733,241 @@ def _intent_stage(model: Any, workers: int = 1, only: Optional[Iterable[str]] = 
     version = f"{_version('intent', run, intent)}:{getattr(model, 'name', 'none')}"
     if only is not None:
         version += f":only={','.join(only)}:hints={content_hash(hints)[:16]}"
-    return pipeline.Stage(name="intent", fn=run, builder=True, inputs=("tasks", "traces", "sigs"),
+    return pipeline.Stage(name="intent", fn=run, builder=True,
+                          inputs=("tasks", "traces", "sigs", "schema", "canon_rules"),
                           outputs=("intents",), input_paths=("intents",), code_version=version)
 
 
 rerolls_gate = stage_gates.rerolls_gate  # the ruling moved to kullback.gates in phase 4; the name stays
 
+REROLL_RECORD = "rerolls.json"  # beside the Task's Runs, under runs/<task>/; never inside a Run file
+REROLL_KEY_FORMAT = 1
+REROLL_SEED = 0  # the stage's own first attempt index; the Examiner's reroll verb rotates its prefix (D133)
+RUN_SEED_KIND = "run_seed"  # D212: the kind a Candidate-shaped Run's seed is drawn under, keyed on its Run id
+REROLL_TURNS = 30  # the loop's cap for a re-roll, the same as a Candidate batch's default
+REROLL_KEY_NOTE = (
+    "a Task keeps its re-rolls while its own inputs hold. A body of a tool its recordings never call "
+    "may move without them going stale: a Run on disk is a sample already taken against the toolkit "
+    "as it stood, and nothing re-scores it against the current bodies")
+# The parts of a Task's key, in the order a re-rolled Task is asked what moved, and how each is said.
+REROLL_KEY_PARTS: tuple[tuple[str, str], ...] = (
+    ("bodies", "a tool body"), ("overlay", "overlay"), ("starting_state", "Starting state"),
+    ("schema", "schema"), ("canon_rules", "canonicalizer rules"), ("user_rules", "user rules"),
+    ("vocabulary", "vocabulary"), ("policy_text", "policy text"), ("system_prompt", "system prompt"),
+    ("settings", "re-roll settings"), ("format", "the shape of the key itself"),
+)
 
-def _rerolls_stage(model: Any, rerolls: int, workers: int = 1, only: Optional[Iterable[str]] = None):
+
+def _tools_called(task: Task, traces: dict) -> list[str]:
+    """The tools this Task's own recordings call, sorted (D171's grain: the Task's calls, not the corpus's)."""
+    names: set[str] = set()
+    for run_id in task.run_ids:
+        trace = traces.get(run_id)
+        for call in getattr(trace, "tool_calls", None) or ():
+            names.add(call.name)
+    return sorted(names)
+
+
+def _reroll_key(task: Task, *, traces: dict, bodies: dict, rules: Any, system_prompt: Optional[str],
+                workdir: Path, shared: dict) -> dict:
+    """What one Task's re-rolls were sampled under, part by part, so a repeat can name what moved.
+
+    Kept as named parts rather than one hash because the ruling has to say which input moved for
+    each Task it re-rolled, and "a tool body" is not the same message as "overlay". Only the bodies
+    of the tools this Task's recordings call are in it; the module docstring carries why.
+    """
+    overlay, overlay_rows = compile_env.load_overlay(workdir, task.id)
+    return {
+        "format": REROLL_KEY_FORMAT,
+        "bodies": {name: content_hash((bodies or {}).get(name)) for name in _tools_called(task, traces)},
+        "overlay": content_hash([as_dict(overlay), overlay_rows]),
+        "user_rules": content_hash(rules),
+        "system_prompt": content_hash(system_prompt),
+        **shared,
+    }
+
+
+def _reroll_reason(recorded: Any, current: dict) -> str:
+    """Which of the Task's inputs moved, in a few words; the empty string when none did."""
+    if not isinstance(recorded, dict):
+        return "no key is recorded for this Task"
+    for name, label in REROLL_KEY_PARTS:
+        if recorded.get(name) == current.get(name):
+            continue
+        if name != "bodies":
+            return label
+        before, after = recorded.get("bodies") or {}, current.get("bodies") or {}
+        moved = sorted(tool for tool in set(before) | set(after) if before.get(tool) != after.get(tool))
+        rest = f" and {len(moved) - 1} more" if len(moved) > 1 else ""
+        return f"body of tool {moved[0]}{rest}" if moved else label
+    return ""
+
+
+def _reroll_rows(workdir: Path, rows: Iterable[dict], relative: bool) -> list[dict]:
+    """The stage's rows with their paths under the workdir or absolute again.
+
+    Recorded relative so a workdir copied elsewhere reuses its own Run files rather than the
+    originals', and handed back absolute because that is what the artifact has always carried.
+    """
+    out = []
+    for row in rows:
+        path = Path(str(row.get("path") or ""))
+        if relative:
+            try:
+                path = path.resolve().relative_to(Path(workdir).resolve())
+            except ValueError:  # a Run written outside this workdir keeps the path it has
+                pass
+        else:
+            path = Path(workdir) / path
+        out.append({"run_id": row.get("run_id"), "path": path.as_posix() if relative else str(path),
+                    "termination_reason": row.get("termination_reason"),
+                    # D210: how the Simulated user ended this Run, kept so a reused row says it too.
+                    "user_end": row.get("user_end")})
+    return out
+
+
+def _members_of(task: Task, traces: dict) -> list[Any]:
+    """This Task's own recordings, which are the evidence its answers are stripped against (D196)."""
+    return [traces[run_id] for run_id in task.run_ids if run_id in traces]
+
+
+def _reroll_record(workdir: Path, task_id: str) -> dict:
+    """What the last run of the stage recorded beside this Task's Runs, or an empty record."""
+    record = _read_json(Path(workdir) / "runs" / task_id / REROLL_RECORD, None)
+    return record if isinstance(record, dict) else {}
+
+
+def _reroll_reuse(workdir: Path, task_id: str, key: dict) -> Optional[list[dict]]:
+    """This Task's recorded re-rolls as the stage's own rows, when the key holds and every file is there."""
+    record = _reroll_record(workdir, task_id)
+    if record.get("key") != key:
+        return None
+    rows = record.get("runs")
+    if not isinstance(rows, list) or not rows:
+        return None
+    out = _reroll_rows(workdir, rows, relative=False)
+    return out if all(Path(row["path"]).is_file() for row in out) else None
+
+
+def _rerolls_stage(model: Any, rerolls: int, workers: int = 1, only: Optional[Iterable[str]] = None,
+                   user_model: Any = None):
     """D112: `rerolls` Candidate-shaped Runs of the frontier per Task, inside the built Environment.
 
     A customer's traces mostly hold one recording per Task, and one recording cannot be checked
     against anything; the re-rolls give the D111 rule Runs to compare it with. They run in the built
     Environment, not the customer's system, so they corroborate only as far as fidelity does.
+
+    Each Task is re-rolled only when its own key moved (`_reroll_key`, the module docstring). A
+    narrowed run is an explicit ask, the Builder's `reroll` tool or an `--iterate` naming a Task, and
+    re-rolls whatever the key says, the way an explicit recompile does.
     """
 
     only = sorted(only) if only is not None else None
 
     def run(ctx, inputs):
-        replays = inputs.get("replays") or {}
-        user_rules = inputs.get("user_rules") or {}
+        # D220: the replays and the per-Run rules both cover every Run, the held-out ones included,
+        # because the stages that made them are declared to need every Run; a re-roll is a Builder
+        # Run and draws its reference, its persona and its members from the seed set alone.
+        replays = {task_id: ctx.evidence.by_run(rows)
+                   for task_id, rows in (inputs.get("replays") or {}).items()}
+        user_rules = ctx.evidence.by_run(inputs.get("user_rules") or {})
         env_id = getattr(inputs["environment"], "env_id", None)
         source = compile_env.module_source(inputs["schema"], inputs["sigs"], inputs["bodies"])
-        traces = {t.trace_id: t for t in inputs.get("traces") or []}
+        traces = ctx.evidence.by_trace
         canon_rules = _rules_of(inputs)
-        jobs = []
-        tasks = list(inputs["tasks"])
+        # Everything every Task's key shares, hashed once. `version` is the stage's own code version,
+        # bound below this function and read when the stage runs, so an edit here re-rolls everything
+        # once and nothing after that.
+        shared = {
+            "starting_state": content_hash(inputs["db"]),
+            "schema": content_hash(inputs["schema"]),
+            "canon_rules": content_hash(canon_rules),
+            "vocabulary": content_hash(as_dict(_vocab_from(ctx.workdir))),
+            "policy_text": content_hash(inputs.get("policy_text")),
+            "settings": content_hash({"count": rerolls, "seed": REROLL_SEED, "turns": REROLL_TURNS,
+                                      "model": getattr(model, "name", "none"), "code": version}),
+        }
+        jobs, reused, reasons = [], {}, {}
+        tasks = ctx.evidence.tasks
         if only is not None:
             unknown = sorted(set(only) - {task.id for task in tasks})
             if unknown:
                 raise BuildError(f"no Task is named {', '.join(unknown)}")
             tasks = [task for task in tasks if task.id in only]
         for task in tasks:
-            seeds = _seed_ids(ctx, task)
-            confirmed = [r for tid, r in sorted((replays.get(task.id) or {}).items())
-                         if tid in seeds and r.get("confirmed")]
+            confirmed = [r for _tid, r in sorted((replays.get(task.id) or {}).items())
+                         if r.get("confirmed")]
             if not confirmed:  # nothing to compare a re-roll with, and no Simulated user to drive it
                 # Its re-rolls from an earlier build go too: the second retail build's dead re-rolls
                 # sat under 36 Tasks a later build skipped, and every count that globs runs/ read them.
                 _discard_runs(ctx.workdir / "runs" / task.id, f"reroll-{task.id}-")
+                (ctx.workdir / "runs" / task.id / REROLL_RECORD).unlink(missing_ok=True)
                 continue
-            rules = next((user_rules.get(r["trace_id"]) for r in confirmed if user_rules.get(r["trace_id"])), None)
-            jobs.append((task, rules))
+            reference_id = next((r["trace_id"] for r in confirmed if user_rules.get(r["trace_id"])), None)
+            rules = user_rules.get(reference_id) if reference_id else None
+            prompt = _system_prompt_for(task, traces, inputs.get("policy_text"))
+            key = _reroll_key(task, traces=traces, bodies=inputs["bodies"], rules=rules,
+                              system_prompt=prompt, workdir=ctx.workdir, shared=shared)
+            rows = None if only is not None else _reroll_reuse(ctx.workdir, task.id, key)
+            if rows is not None:
+                reused[task.id] = rows
+                continue
+            reasons[task.id] = ("an explicit re-roll was asked for" if only is not None
+                                else _reroll_reason(_reroll_record(ctx.workdir, task.id).get("key"), key)
+                                or "the Run files the key names are gone")
+            jobs.append((task, rules, prompt, key, reference_id))
 
         def reroll(job):  # one Task's re-rolls, in its own world and run directory (D118)
-            task, rules = job
+            task, rules, prompt, key, reference_id = job
             _discard_runs(ctx.workdir / "runs" / task.id, f"reroll-{task.id}-")
-            runs = _candidate_runs(ctx.workdir, task, model, count=rerolls, prefix="reroll", source=source,
-                                   schema=inputs["schema"], sigs=inputs["sigs"], db=inputs["db"], env_id=env_id,
-                                   canon_rules=canon_rules, rules=rules,
-                                   system_prompt=_system_prompt_for(task, traces, inputs.get("policy_text")))
-            return [{"run_id": r.run_id, "path": p, "termination_reason": r.termination_reason} for r, p in runs]
+            # D206: the Run id carries the key these Runs are of. A re-roll replaces the Task's
+            # earlier ones, and under a name that did not move, a later round wrote different bytes
+            # under the name an earlier round's Verifier was derived from and had recorded spans
+            # into: three Tasks of one build held a write atom pointing at a call the file no longer
+            # contained. With the key in the name, a name is one set of Runs for good, and a
+            # Verifier whose Runs are gone reads as gone rather than as changed underneath it.
+            runs = _candidate_runs(ctx.workdir, task, model, count=rerolls, prefix="reroll",
+                                   tag=f"{content_hash(key)[:8]}-", source=source,
+                                   schema=with_synthetic_rows(inputs["schema"], inputs.get("synthetic_rows") or ()),
+                                   sigs=inputs["sigs"], db=inputs["db"], env_id=env_id,
+                                   canon_rules=canon_rules, rules=rules, seed=REROLL_SEED,
+                                   max_turns=REROLL_TURNS, system_prompt=prompt,
+                                   members=_members_of(task, traces),
+                                   reference=traces.get(reference_id) if reference_id else None,
+                                   user_agent_model=user_model)
+            rows = [{"run_id": r.run_id, "path": p, "termination_reason": r.termination_reason,
+                     "user_end": user_sim.end_of_run(r)} for r, p in runs]
+            _write_json(ctx.workdir / "runs" / task.id / REROLL_RECORD,
+                        {"task_id": task.id, "key": key,
+                         "runs": _reroll_rows(ctx.workdir, rows, relative=True)})
+            return rows
 
-        out = {task.id: rows for (task, _), rows in zip(jobs, parallel.each(jobs, reroll, workers), strict=True)}
+        rolled = {job[0].id: rows for job, rows
+                  in zip(jobs, parallel.each(jobs, reroll, workers), strict=True)}
+        out = {task.id: rolled[task.id] if task.id in rolled else reused[task.id]
+               for task in tasks if task.id in rolled or task.id in reused}
         _write_runs_index(ctx.workdir)
-        ctx.record_gate(rerolls_gate(out, rerolls))
+        ruling = rerolls_gate(out, rerolls)
+        ctx.record_gate(ruling.model_copy(update={"metrics": {
+            **ruling.metrics, "reused": len(reused), "rerolled": len(rolled),
+            # D210: how the Simulated user ended each re-roll, so a round can tell a Run that did
+            # what it came for from one whose scenario ran dry or that spent its turns.
+            "user_ends_by_kind": user_sim.ends_by_kind(
+                [row for rows in out.values() for row in rows]),
+            "rerolled_because": dict(sorted(reasons.items())), "note": REROLL_KEY_NOTE}}))
         return {"rerolls": out}
 
-    version = (f"{_version('rerolls', run, loop, route, user_sim, provider)}:"
+    # D214: whose turns the Runs get is part of what this stage produces, so a build that names a
+    # user driver puts it in the key. A build that names none adds nothing, so its key, its cache
+    # and the Run ids it derives from the key are the ones it had before D214.
+    version = (f"{_version('rerolls', run, loop, route, user_sim, intent, provider)}:"
                f"{getattr(model, 'name', 'none')}:{rerolls}")
+    user_name = getattr(user_model, "name", None)
+    if user_name:
+        version = f"{version}:user={user_name}"
     return pipeline.Stage(name="rerolls", fn=run, builder=True,
                           inputs=("tasks", "replays", "user_rules", "schema", "sigs", "bodies", "db",
-                                  "environment", "canon_rules", "traces", "policy_text"),
+                                  "environment", "canon_rules", "traces", "policy_text", "synthetic_rows"),
                           outputs=("rerolls",), input_paths=("overlays",),
                           code_version=version if only is None else f"{version}:only={','.join(only)}")
 
@@ -768,23 +1975,49 @@ def _rerolls_stage(model: Any, rerolls: int, workers: int = 1, only: Optional[It
 def _candidate_runs(workdir: Path, task: Task, model: Any, *, count: int, prefix: Optional[str], source: str,
                     schema: EntitySchema, sigs: list, db: dict, env_id: Optional[str], canon_rules: Any,
                     rules: Optional[UserRules], seed: int = 0, max_turns: int = 30,
-                    system_prompt: Optional[str] = None) -> list[tuple[Any, str]]:
+                    system_prompt: Optional[str] = None, tag: str = "",
+                    members: Sequence[Any] = (), reference: Optional[Any] = None,
+                    user_agent_model: Any = None) -> list[tuple[Any, str]]:
     """`count` Runs of `model` against the Task's world, each in a fresh copy of it; the Runs and their paths.
 
     Every Run opens the way the recorded one did: the recorded agent's own system prompt, the
     Simulated user's opening turn, and the mined tool definitions on the model call. Without the
     three the model is asked for a first turn over an empty transcript with no tools, which is what
-    the second retail build's re-rolls did.
+    an earlier build's re-rolls did.
+
+    `tag` goes into every Run id, so a caller whose Runs are replaced when its inputs move can say
+    which inputs these Runs are of and never write different bytes under a name something already
+    read (D206). It sits after the Task, so a caller that discards its own earlier Runs by the name
+    it built them under still finds them.
+
+    `seed` is the first attempt index of the batch, so a Run's id is its Task, its tag and its
+    attempt and nothing else; the seed the Run record carries is drawn from that id and the build
+    salt (D212), never from a counter over the batch, so a Run discarded and made again under its
+    own id draws the seed of the Run it replaces and a batch that grows takes higher attempt
+    indexes without moving the ones already taken.
+
+    `members` are the Task's own recordings and `reference` the one its rules came from; they are
+    what the Simulated user ends by protocol on and answers by class (D210). The Task's evidence is
+    read once here rather than per turn: the strip closure and the goal's write set are the same
+    for every Run of the Task.
     """
+    salt = sampling.build_salt(workdir)
     overlay, overlay_rows = compile_env.load_overlay(workdir, task.id)
     vocab = _vocab_from(workdir)
     tools = _tool_definitions(sigs, vocab)
     # The Simulated user restates its goal once rather than leaving on the first dead turn, and it
     # needs these names to tell a Run that has already written from one that has not (user_sim).
     write_tools = {sig.name for sig in sigs if getattr(sig, "kind", None) == "write"}
+    # D210: which writes the goal implies, and the D196 strip over this Task's own evidence, so no
+    # value only the tools knew reaches the Candidate through an answer. A caller that names no
+    # recordings gets the user it had, ending on any write and speaking its facts unchecked.
+    goal_writes = user_sim.goal_write_set(reference, write_tools) if reference is not None else None
+    answer_strip = intent.value_strip(list(members), schema=schema,
+                                      rules=canon_rules) if members else None
     out = []
     for number in range(count):
-        run_id = f"{prefix}-{task.id}-{seed + number}" if prefix else f"{task.id}-{seed + number}"
+        stem = f"{prefix}-{task.id}" if prefix else str(task.id)
+        run_id = f"{stem}-{tag}{seed + number}" if tag else f"{stem}-{seed + number}"
         # The Task's own overlay goes inside the toolkit, or it stays dead for every code route (D74).
         toolkit = compile_env.load_toolkit(source, json.loads(json.dumps(db)), overlay=overlay,
                                            overlay_values=overlay_rows)
@@ -792,10 +2025,15 @@ def _candidate_runs(workdir: Path, task: Task, model: Any, *, count: int, prefix
                               overlay=overlay, overlay_rows=overlay_rows, tool_sigs=sigs,
                               canon_rules=canon_rules, synthetic_rows=schema.synthetic_rows)
         simulated = user_sim.SimulatedUser(rules, starting_state_reader=router.state, vocab=vocab,
-                                           write_tools=write_tools) if rules else None
+                                           write_tools=write_tools, goal_writes=goal_writes,
+                                           answer_strip=answer_strip) if rules else None
+        simulated = _user_driver(workdir, task, simulated, user_agent_model, vocab=vocab,
+                                 write_tools=write_tools, goal_writes=goal_writes,
+                                 answer_strip=answer_strip, trace=reference)
         state = loop.new_run_state(run_id, workdir=workdir / "runs" / task.id, env_id=env_id, task_id=task.id,
                                    model=getattr(model, "name", None) or (prefix or "candidate"),
-                                   seed=seed + number, user=simulated, user_rules=rules, max_turns=max_turns,
+                                   seed=sampling.sample_seed(RUN_SEED_KIND, run_id, salt),
+                                   user=simulated, user_rules=rules, max_turns=max_turns,
                                    system_prompt=system_prompt)
         try:
             loop.open_with_user(state)
@@ -805,6 +2043,35 @@ def _candidate_runs(workdir: Path, task: Task, model: Any, *, count: int, prefix
                 raise
         out.append((state.run, str(state.path)))
     return out
+
+
+def _user_driver(workdir: Path, task: Task, fallback: Any, model: Any, *, vocab: Any,
+                 write_tools: Iterable[str], goal_writes: Optional[Iterable[str]],
+                 answer_strip: Any, trace: Optional[Trace]) -> Any:
+    """Whose turns this Task's Runs get: the agent user where it earned the Task, the rules otherwise (D214 rule 3).
+
+    Earned is not a judgement made here. The round driver scores both drivers offline against the
+    recorded turns and writes `drives` per Task into user_fidelity.json; this reads that row. A build
+    with no user model, a Task with no row, a Task the stall rule closed and a Task the agent did not
+    beat the rules on all take the same path, which is the path every Run took before D214.
+    """
+    if model is None or fallback is None or trace is None:
+        return fallback
+    from kullback.user import context as user_context
+    from kullback.user import fidelity as user_fidelity
+    from kullback.user import lesson as user_lesson
+    row = next((r for r in (user_fidelity.load_scores(workdir).get("tasks") or ())
+                if isinstance(r, dict) and r.get("task_id") == task.id), None)
+    if not row or not row.get("drives"):
+        return fallback
+    record = user_context.mine_record_values(trace)
+    lessons = user_lesson.lines_for(user_lesson.load_lessons(workdir), task.id)
+    ctx = user_context.curate(task.id, getattr(fallback, "rules", None), trace, vocab=vocab,
+                              write_tools=write_tools, record_fields=sorted(record), lessons=lessons)
+    from kullback.user.agent import AgentUser
+    return AgentUser(ctx, fallback, model, vocab=vocab, write_tools=write_tools,
+                     goal_writes=goal_writes, answer_strip=answer_strip, record_values=record,
+                     trace=trace)
 
 
 def _system_prompt_for(task: Task, traces: dict, policy_text: Optional[str] = None) -> Optional[str]:
@@ -828,12 +2095,14 @@ def probe_runner(plan: BuildPlan):
     the Examiner that calls it never does (D123).
     """
     store = _runner_store(plan)
-    schema, sigs, bodies, db = store["schema"], store["sigs"], store["bodies"], store["db"]
+    schema = with_synthetic_rows(store["schema"], store.get("synthetic_rows") or ())
+    sigs, bodies, db = store["sigs"], store["bodies"], store["db"]
     env_id = getattr(store["environment"], "env_id", None)
     tasks = {t.id: t for t in store["tasks"]}
     user_rules = store.get("user_rules") or {}
     replays = store.get("replays") or {}
     canon_rules = _rules_of(store)
+    traces = {t.trace_id: t for t in store.get("traces") or []}
     source = compile_env.module_source(schema, sigs, bodies)
     tools = _tool_definitions(sigs, _vocab_from(plan.workdir))
     workdir = plan.workdir
@@ -848,9 +2117,15 @@ def probe_runner(plan: BuildPlan):
                               canon_rules=canon_rules, synthetic_rows=schema.synthetic_rows)
         reference = next((r for r in (replays.get(task.id) or {}).values() if r.get("confirmed")), None)
         rules = user_rules.get(reference["trace_id"]) if reference else None
+        writes = {sig.name for sig in sigs if getattr(sig, "kind", None) == "write"}
+        recorded = traces.get(reference["trace_id"]) if reference else None
+        members = _members_of(task, traces)
         simulated = user_sim.SimulatedUser(
             rules, starting_state_reader=router.state, vocab=_vocab_from(workdir),
-            write_tools={sig.name for sig in sigs if getattr(sig, "kind", None) == "write"},
+            write_tools=writes,
+            goal_writes=user_sim.goal_write_set(recorded, writes) if recorded is not None else None,
+            answer_strip=intent.value_strip(members, schema=schema,
+                                            rules=canon_rules) if members else None,
         ) if rules else None
         state = loop.new_run_state(f"probe-{task.id}", workdir=workdir / "probes", env_id=env_id,
                                    task_id=task.id, model=f"probe:{getattr(model, 'name', 'model')}",
@@ -881,7 +2156,8 @@ def reroll_runner(plan: BuildPlan):
         model = _wrap(plan.model, "reroll", plan.workdir, plan.ceiling, cap_context=False, memoize=False)
     if model is None:
         raise BuildError("the plan has no model to re-roll with")
-    schema, sigs, bodies, db = store["schema"], store["sigs"], store["bodies"], store["db"]
+    schema = with_synthetic_rows(store["schema"], store.get("synthetic_rows") or ())
+    sigs, bodies, db = store["sigs"], store["bodies"], store["db"]
     env_id = getattr(store["environment"], "env_id", None)
     tasks = {t.id: t for t in store["tasks"]}
     user_rules = store.get("user_rules") or {}
@@ -898,14 +2174,94 @@ def reroll_runner(plan: BuildPlan):
         seeds = set(anchor.seed_runs(task.id, task.run_ids)) if anchor is not None else set(task.run_ids)
         confirmed = [r for tid, r in sorted((replays.get(task.id) or {}).items())
                      if tid in seeds and r.get("confirmed")]
-        rules = next((user_rules.get(r["trace_id"]) for r in confirmed if user_rules.get(r["trace_id"])), None)
+        reference_id = next((r["trace_id"] for r in confirmed if user_rules.get(r["trace_id"])), None)
+        rules = user_rules.get(reference_id) if reference_id else None
         runs = _candidate_runs(plan.workdir, task, model, count=count, prefix=prefix, source=source,
                                schema=schema, sigs=sigs, db=db, env_id=env_id, canon_rules=canon_rules,
-                               rules=rules, system_prompt=_system_prompt_for(task, traces, store.get("policy_text")))
+                               rules=rules, system_prompt=_system_prompt_for(task, traces, store.get("policy_text")),
+                               members=_members_of(task, traces),
+                               reference=traces.get(reference_id) if reference_id else None,
+                               user_agent_model=plan.models.get("user_agent"))
         _write_runs_index(plan.workdir)
-        return [{"run_id": r.run_id, "path": p, "termination_reason": r.termination_reason} for r, p in runs]
+        return [{"run_id": r.run_id, "path": p, "termination_reason": r.termination_reason,
+                 "user_end": user_sim.end_of_run(r)} for r, p in runs]
 
     return run_rerolls
+
+
+def call_trace(task_id: str, calls: Iterable[dict], transcript: Iterable[dict], run_id: str) -> Trace:
+    """A call path written by code as a Trace the replay can drive (D199, D224).
+
+    The conversation is the Run's own, turn for turn: what the agent asked and what it told the user
+    are not the rewrite's to invent, and the atoms over questions and stated facts read them. Each
+    call names the turn it belongs to, so a call that moved past a spoken turn moved in the
+    transcript too, and a call whose turn is gone joins the last turn its speaker had. A Run whose
+    transcript could not be read still replays, as one assistant turn of every call.
+    """
+    ptr = RawPtr(file_hash=run_id)
+    spoken = [dict(turn) for turn in transcript] or [{"role": "assistant", "content": ""}]
+    turns = [Turn(idx=index, role=str(turn.get("role") or "assistant"),
+                  content=str(turn.get("content") or ""), raw_ptr=ptr)
+             for index, turn in enumerate(spoken)]
+    tool_calls = []
+    for index, call in enumerate(calls):
+        call_id = str(call.get("id") or f"{run_id}-{index}")
+        requestor = str(call.get("requestor") or "assistant")
+        role = "user" if requestor == "user" else "assistant"
+        tool_calls.append(ToolCall(id=call_id, name=str(call.get("name") or ""),
+                                   args=dict(call.get("args") or {}), requestor=requestor, raw_ptr=ptr))
+        at = int(call.get("turn") or 0)
+        turn = turns[at] if 0 <= at < len(turns) and turns[at].role == role else next(
+            (t for t in reversed(turns) if t.role == role), turns[0])
+        turn.tool_call_ids.append(call_id)
+    return Trace(trace_id=run_id, raw_hash=run_id, ingest_version="variant", source="variant",
+                 turns=turns, tool_calls=tool_calls, raw_ptr=ptr)
+
+
+def variant_runner(plan: BuildPlan):
+    """A rewritten call path replayed from a Task's Starting state, as a callable for the Examiner (D199).
+
+    `run_variant(task_id, calls, run_id, transcript)` builds the Task's world the way the replay stage
+    builds it, one fresh world per variant, drives the calls through the same Router and the same
+    scoring, and answers with the Run that came out. Where the Run ended is the caller's to read:
+    this only runs it. The callable reads the plan's store, so the Examiner that calls it never does
+    (D123), and it costs no model call, since the Trace it drives was written by code.
+    """
+    store = _runner_store(plan)
+    schema = with_synthetic_rows(store["schema"], store.get("synthetic_rows") or ())
+    sigs, bodies, db = store["sigs"], store["bodies"], store["db"]
+    env_id = getattr(store["environment"], "env_id", None)
+    tasks = {t.id: t for t in store["tasks"]}
+    canon_rules = _rules_of(store)
+    write_tools = {s.name for s in sigs if s.kind == "write"}
+    judging = _semantic_judging(plan)
+    comparer = tool_runs.ReplayComparer(schema, tool_runs.load_readers(store.get("readers") or []), canon_rules,
+                                        judge=judging.judge, equivalence=judging.table)
+    source = compile_env.module_source(schema, sigs, bodies)
+    workdir = plan.workdir
+
+    def run_variant(task_id: str, calls: Iterable[dict], run_id: str,
+                    transcript: Iterable[dict] = ()) -> Optional[dict]:
+        if task_id not in tasks:
+            raise BuildError(f"no Task is named {task_id}")
+        overlay, overlay_rows = compile_env.load_overlay(workdir, task_id)
+        toolkit = compile_env.load_toolkit(source, json.loads(json.dumps(db)), overlay=overlay,
+                                           overlay_values=overlay_rows)
+        router = route.Router(env_tools_module=toolkit, starting_state=json.loads(json.dumps(db)),
+                              overlay=overlay, overlay_rows=overlay_rows, tool_sigs=sigs,
+                              canon_rules=canon_rules, synthetic_rows=schema.synthetic_rows)
+        trace = call_trace(task_id, calls, transcript, run_id)
+        result = replay_mod.replay_trace(trace, router, workdir=workdir / "runs" / task_id,
+                                         task_id=task_id, env_id=env_id, write_tools=write_tools,
+                                         canon_rules=canon_rules, comparer=comparer, run_id=run_id)
+        judging.save()
+        _write_runs_index(workdir)
+        if not result.path:
+            return None
+        return {"run_id": result.run_id, "path": result.path,
+                "termination_reason": result.termination_reason, "crashed": result.crashed}
+
+    return run_variant
 
 
 def _runner_store(plan: BuildPlan) -> dict:
@@ -983,14 +2339,6 @@ def _json_schema(node: Any) -> Any:
     return node
 
 
-def _seed_ids(ctx: Any, task: Task) -> set[str]:
-    """The Task's Runs a Builder stage may derive from: minus the anchor when one was chosen (D81)."""
-    try:
-        return set(ctx.seed_runs(task.id, task.run_ids))
-    except pipeline.PipelineError:
-        return set(task.run_ids)
-
-
 # --- the plan, the declaration, and the two entry points cli.py calls --------
 
 @dataclass
@@ -1007,10 +2355,21 @@ class BuildPlan:
     (D118) is how many tool bodies, policy sentences, Intents or Tasks' re-rolls are asked for at
     once, and how many ready stages run side by side. `on_event` gets the dict events a screen reads,
     `emit` the typed stage events the Builder extension puts on the harness's stream.
+
+    `judge_model` is the adapter the build's judge runs on (D160), and `model` when it is None: the
+    model that writes the Environment need not be the one that rules on it. `second_judge_model` is
+    the other side of a two-judge question, named here so its calls are priced and so the report can
+    say which two models the judging was done by; the build's own residue judge is one judge that may
+    only fail (D110, D111), and nothing here gives it a second. `judge_agent` is which residue judge
+    that is: off, the default, the one-shot judge of D110; on, the agent with a bounded look, which
+    costs References and so ships as an opt-in (D185).
     """
     workdir: Path
     iterate: bool = False
     model: Any = None
+    judge_model: Any = None
+    second_judge_model: Any = None
+    judge_agent: bool = False
     files: list = field(default_factory=list)
     ceiling_usd: Optional[float] = None
     domain: str = "domain"
@@ -1024,6 +2383,10 @@ class BuildPlan:
     search: Any = None
     workers: int = 1
     emit: Optional[Any] = None
+    # D214: the model the agent user runs on, when a build is paying for one. None is the harness
+    # as it was: every Run is driven by the rule-driven Simulated user and no model call is made
+    # for a user turn, so a build that names none is byte-identical to a build before D214.
+    user_agent_model: Any = None
     # Which round the driver is in, so a repair request records the round it was made in (D126);
     # a build with no round driver is one pass, which is round 1. `rounds.py` moves it.
     round: int = field(init=False, default=1)
@@ -1032,6 +2395,17 @@ class BuildPlan:
     models: dict = field(init=False, default_factory=dict)
     store: dict = field(init=False, default_factory=dict)
     last: Optional[pipeline.PipelineResult] = field(init=False, default=None)
+    # What the last `execute` ran: its target and its narrowing. A narrowed run (a repair verb's
+    # one stage) leaves `store` holding only what that run resolved, and the round driver reads
+    # these to know the store is partial and the target has to be built again (D161).
+    last_target: Optional[str] = field(init=False, default=None)
+    last_narrowing: dict = field(init=False, default_factory=dict)
+    # The targets whose own ruling a repair verb has already put in front of the model, by target,
+    # and how many `status(target=)` nudges that has spared (`builder/tools.py`, D192). A repair
+    # result opens with the target's own ruling, so a zoom on that target reads back the line the
+    # model has just read; one live build spent two to three of them per tool with no ruling change.
+    rulings_in_hand: dict = field(init=False, default_factory=dict)
+    zooms_skipped: int = field(init=False, default=0)
 
     def __post_init__(self) -> None:
         self.workdir = Path(self.workdir)
@@ -1046,9 +2420,15 @@ class BuildPlan:
 
     def _wrap_models(self) -> dict:
         model, workdir, ceiling = self.model, self.workdir, self.ceiling
+        # The judge is its own model when one was named, else the build's (D160). Both judges are
+        # wrapped like every other stage model, so a judge on a second provider is priced into
+        # budget.json and refused past the ceiling on the same terms as the Builder's own calls.
+        judge = self.judge_model if self.judge_model is not None else model
+        second_judge = self.second_judge_model
         # The loophole probe and the re-rolls are Candidate-shaped Runs: fresh samples, production
         # setting (D65, D112); the Intent and the judge are Builder calls.
         return {
+            "readers": _wrap(model, "readers", workdir, ceiling),
             "compile_tools": _wrap(model, "compile_tools", workdir, ceiling),
             "compile_policy": _wrap(model, "compile_policy", workdir, ceiling),
             "judge_lessons": _wrap(model, "judge_lessons", workdir, ceiling),
@@ -1058,8 +2438,29 @@ class BuildPlan:
             "reroll": (_wrap(model, "reroll", workdir, ceiling, cap_context=False, memoize=False)
                        if model is not None and self.rerolls > 0 else None),
             "intent": _wrap(model, "intent", workdir, ceiling) if model is not None else None,
-            "reference_judge": _wrap(model, "reference_judge", workdir, ceiling) if model is not None else None,
+            # The agent user speaks in a Run, so it is a Candidate-shaped call: fresh sample,
+            # production setting, priced into the same ledger under its own stage name (D214).
+            "user_agent": (_wrap(self.user_agent_model, "user_agent", workdir, ceiling,
+                                 cap_context=False, memoize=False)
+                           if self.user_agent_model is not None else None),
+            "reference_judge": _wrap(judge, "reference_judge", workdir, ceiling) if judge is not None else None,
+            "second_judge": (_wrap(second_judge, "second_judge", workdir, ceiling)
+                             if second_judge is not None else None),
+            # The judge a semantic column pair is settled by, priced under its own stage so a
+            # build can say what the judging of its semantic columns cost (D219).
+            SEMANTIC_JUDGE_STAGE: (_wrap(judge, SEMANTIC_JUDGE_STAGE, workdir, ceiling)
+                                   if judge is not None else None),
         }
+
+    def judge_model_ids(self) -> dict:
+        """Which model each side of the judging runs on, by the name the ledger prices it under (D160).
+
+        The report reads this to name the judge models beside the build model; a key is absent when
+        that model was never named.
+        """
+        named = {"build": self.model, "judge": self.judge_model, "second_judge": self.second_judge_model}
+        return {role: getattr(model, "name", None) or "model"
+                for role, model in named.items() if model is not None}
 
 
 def stages(plan: BuildPlan, *, tools: Optional[Iterable[str]] = None, replay_tasks: Optional[Iterable[str]] = None,
@@ -1078,10 +2479,12 @@ def stages(plan: BuildPlan, *, tools: Optional[Iterable[str]] = None, replay_tas
     declared = [
         _ingest_stage(plan.workdir, plan.files) if plan.files else None,
         _mine_stage(),
+        _readers_stage(models["readers"]),
         _cluster_stage(),
         _canon_stage(),
         _state_stage(plan.grow if grow is None else grow, plan.grow_seed),
-        _tools_stage(models["compile_tools"], plan.max_attempts, plan.workers, only=tools),
+        _tools_stage(models["compile_tools"], plan.max_attempts, plan.workers, only=tools,
+                     round_no=plan.round),
         _policy_stage(models["compile_policy"], plan.workers),
         _lessons_stage(models["judge_lessons"], plan.memory_dir),
         (_intent_stage(models["intent"], plan.workers, only=intent_tasks, hints=intent_hints)
@@ -1089,8 +2492,9 @@ def stages(plan: BuildPlan, *, tools: Optional[Iterable[str]] = None, replay_tas
         _vocabulary_stage(models["vocabulary"], plan.search),
         _user_rules_stage(),
         _environment_stage(plan.domain),
-        _replay_stage(only=replay_tasks),
-        (_rerolls_stage(models["reroll"], plan.rerolls, plan.workers, only=reroll_tasks)
+        _replay_stage(_semantic_judging(plan), only=replay_tasks),
+        (_rerolls_stage(models["reroll"], plan.rerolls, plan.workers, only=reroll_tasks,
+                        user_model=models.get("user_agent"))
          if models["reroll"] is not None else None),
     ]
     return [stage for stage in declared if stage is not None]
@@ -1128,6 +2532,7 @@ def execute(plan: BuildPlan, target: str = TARGET_ALL, **narrowing: Any) -> pipe
     _merge_pipeline_state(workdir, prior_ingest)
     _write_scorecard(workdir)
     plan.store, plan.last = dict(result.artifacts), result
+    plan.last_target, plan.last_narrowing = target, dict(narrowing)
     return result
 
 

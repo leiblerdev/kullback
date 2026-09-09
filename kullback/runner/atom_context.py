@@ -5,7 +5,16 @@ from __future__ import annotations
 
 from typing import Any, Iterable, Optional
 
-from kullback.runner.canon import canon_value, compare
+from kullback.runner.canon import (
+    DIFFERENT,
+    EQUAL,
+    RESOLUTIONS,
+    UNRESOLVED,
+    Unresolved,
+    canon_value,
+    compare,
+    resolution_of,
+)
 from kullback.runner.confinement import SAFE_BUILTINS, confine
 from kullback.runner.records import Run
 
@@ -63,6 +72,10 @@ class AtomContext:
         self.calls: list[dict] = []
         self.assistant: list[tuple[int, str]] = []
         self.user: list[tuple[int, str]] = []
+        # What the Environment handed back, in event order: a rule about where a written value came
+        # from is a rule about what the Run had read when it wrote (D206), and the Verdict has to be
+        # able to answer it the same way the gates' own scorer does.
+        self.results: list[tuple[int, Any]] = []
         self.start_state: dict = {}
         self.end_state: dict = {}
         self.covered: set[int] = set()
@@ -78,6 +91,7 @@ class AtomContext:
                                    "name": payload.get("name", ""), "error": None,
                                    "args": payload.get("args") or payload.get("arguments") or {}})
             elif event.type == "tool_result":
+                self.results.append((event.idx, payload.get("result")))
                 for call in reversed(self.calls):
                     if payload.get("id") in (None, call["id"]):
                         call["error"] = payload.get("error")
@@ -165,28 +179,54 @@ class AtomContext:
         """Compare two values the way the rest of the Verdict compares them (D39)."""
         return self.c(left) == self.c(right)
 
-    def same(self, column: str, before: Any, after: Any) -> bool:
-        """Whether two values of one End state column count as the same value.
+    def resolution(self, column: str, before: Any, after: Any) -> str:
+        """How this column's two values compare: equal, different, or unresolved (D219).
 
         A semantic column is not settled by string equality: D84 sends the pair to the customer's
         EquivalenceTable, and a pair the table does not hold comes back unresolved rather than
         judged here, because verdict.py never calls a model (D91). Every comparison is kept so the
         Verdict can say which pairs it rested on and which are still open.
+
+        This is the only reading of a semantic column that carries all three answers, and it is what
+        an atom that has to act on the difference should ask for.
         """
         if column not in self.semantic:
-            return self.c(before) == self.c(after)
+            return EQUAL if self.c(before) == self.c(after) else DIFFERENT
         comparison = compare(before, after, "semantic", rules=self.rules,
                              table=self.equivalence, column=column)
         self.comparisons.append(comparison)
-        return comparison.equal
+        return resolution_of(comparison)
 
-    def changed(self, table: str, row_id: str, field: str) -> bool:
+    def same(self, column: str, before: Any, after: Any, policy: Optional[str] = None) -> bool:
+        """Whether two values of one End state column count as the same value.
+
+        An unresolved pair has no boolean, and inventing one here is what let a forbidden-state atom
+        written as `same(column, forbidden, actual)` never fire: unresolved collapsed to False,
+        which a must-not-equal atom reads as "the forbidden state is not there" (D219). So an
+        unresolved pair raises unless the caller states a policy, `equal` or `different`, saying
+        which way it wants an unsettled pair counted for its own question.
+        """
+        found = self.resolution(column, before, after)
+        if found != UNRESOLVED:
+            return found == EQUAL
+        if policy is None:
+            raise Unresolved(column, self.t(before), self.t(after))
+        if policy not in RESOLUTIONS:
+            raise ValueError(f"a policy for an unresolved pair is one of {RESOLUTIONS}, not {policy!r}")
+        return policy == EQUAL
+
+    def changed(self, table: str, row_id: str, field: str, policy: Optional[str] = None) -> bool:
         before = ((self.start_state.get(table) or {}).get(row_id) or {}).get(field)
         after = ((self.end_state.get(table) or {}).get(row_id) or {}).get(field)
-        return not self.same(f"{table}.{field}", before, after)
+        return not self.same(f"{table}.{field}", before, after, policy)
 
     def diff(self) -> dict:
-        """The End state diff after canonicalization, with exempt columns dropped (D39, D73)."""
+        """The End state diff after canonicalization, with exempt columns dropped (D39, D73).
+
+        A diff is a list of what moved, so its policy for an unresolved column is `different`: a
+        pair nobody settled is shown rather than dropped, and the field says so, which is the
+        opposite of the silent drop a forgiving policy would give (D219).
+        """
         out: dict = {}
         for table in sorted(set(self.start_state) | set(self.end_state)):
             before_rows = self.start_state.get(table) or {}
@@ -199,7 +239,11 @@ class AtomContext:
                         continue
                     raw_before, raw_after = (before or {}).get(key), (after or {}).get(key)
                     was, now = self.c(raw_before), self.c(raw_after)
-                    if not self.same(f"{table}.{key}", raw_before, raw_after):
+                    column = f"{table}.{key}"
+                    found = self.resolution(column, raw_before, raw_after)
+                    if found == UNRESOLVED:
+                        fields[key] = {"before": was, "after": now, "unresolved": True}
+                    elif found == DIFFERENT:
                         fields[key] = {"before": was, "after": now}
                 if fields or (before is None) != (after is None):
                     out[f"{table}.{row_id}"] = {"present_before": before is not None,
@@ -218,13 +262,20 @@ class AtomContext:
         return len(self.write_calls())
 
     def transcript(self) -> list[dict]:
-        """The Run as a policy predicate reads it: role, content and tool calls, in event order."""
+        """The Run as a policy predicate reads it: role, content, results and tool calls, in event order.
+
+        A result is a turn of its own with no content and a role that is neither user nor assistant,
+        which is how `verifier_suite._transcript` writes it too: the two are read by one rule, so a
+        Verifier that holds in the gates has to hold here for the same reasons (D206).
+        """
         turns: list[tuple[int, dict]] = [
             (idx, {"role": "assistant", "content": text, "tool_calls": []}) for idx, text in self.assistant]
         turns += [(idx, {"role": "user", "content": text, "tool_calls": []}) for idx, text in self.user]
         turns += [(call["idx"], {"role": "assistant", "content": None,
                                  "tool_calls": [{"name": call["name"], "arguments": call["args"]}]})
                   for call in self.calls]
+        turns += [(idx, {"role": "tool", "content": None, "result": result, "tool_calls": []})
+                  for idx, result in self.results]
         return [turn for _, turn in sorted(turns, key=lambda pair: pair[0])]
 
     def env(self) -> dict:
@@ -235,6 +286,10 @@ class AtomContext:
                 "attempted": self.attempted, "eq": self.eq,
                 "asked": self.asked, "communicated": self.communicated, "user_said": self.user_said,
                 "user_confirmed_before": self.user_confirmed_before, "value": self.value,
+                # An atom that has to act on a semantic difference asks `resolution`, which carries
+                # all three answers; `same` and `changed` are booleans and stop on an unresolved
+                # pair unless the atom states a policy for it (D219).
+                "same": self.same, "resolution": self.resolution,
                 "changed": self.changed, "diff": self.diff, "extra_writes": self.extra_writes,
                 "writes_count": self.writes_count, "write_calls": self.write_calls,
                 "calls": [dict(c) for c in self.calls], "transcript": self.transcript(),

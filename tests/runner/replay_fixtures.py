@@ -60,8 +60,10 @@ def world() -> dict:
 
 
 def sigs() -> list[ToolSig]:
+    # D164: check_balance is the simulated user's own tool, mined from the user's calls alone, so
+    # the user is its caller and the assistant would be refused it.
     return [ToolSig(name="get_order_details", kind="read"), ToolSig(name="cancel_order", kind="write"),
-            ToolSig(name="check_balance", kind="read")]
+            ToolSig(name="check_balance", kind="read", callers=["user"])]
 
 
 def call(call_id, name, args, result, error=None, requestor="assistant") -> ToolCall:

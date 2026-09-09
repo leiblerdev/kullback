@@ -1,6 +1,6 @@
 """The Examiner as an extension on the agent core (D120, D123, D124, ADR-0007).
 
-`examiner_extension(plan)` is a `setup(api)` the harness loads: it registers the seven tools of
+`examiner_extension(plan)` is a `setup(api)` the harness loads: it registers the eight tools of
 examiner/tools.py, adds four short sections to the system prompt (what the Examiner is, what it may
 and may not do, which Builder verb a finding should suggest and with what hint, the Tasks of this
 build), catalogs the probe skill loaded from the start, and installs the hooks. The `tool_call`
@@ -20,10 +20,12 @@ from __future__ import annotations
 import re
 from typing import Any, Callable, Optional
 
+from kullback import round_delta
 from kullback.agent.extensions import ExtensionAPI, refuse_paths
 from kullback.agent.harness import prompt_block
 from kullback.agent.messages import ToolCall
 from kullback.agent.tools import ToolResult, counted_ruling_line
+from kullback.examiner import lifecycle
 from kullback.examiner.plan import ExaminerPlan
 from kullback.examiner.skills import PROBE_SKILL, PROBE_SKILL_NAME
 from kullback.examiner.tools import examiner_tools
@@ -46,6 +48,12 @@ TOOLS = ("Tools, one example call each.\n"
          "read(kind=\"intent\", id=\"task_1a2b\"): one record as JSON; kinds are task, trace, intent, run, "
          "verifier, probes, task_status, gates, rerolls, replays, references. The intent record lists "
          "`ungrounded_phrases` and `run_coverage`.\n"
+         "search(text=\"priority handling\", kinds=[\"intent\", \"run\"]): where one phrase appears across "
+         "the records, without reading any of them. Kinds are trace, run, intent, task_status, verifier; "
+         "it answers a count per kind and one line per match saying the record, the Task and where in it "
+         "the phrase is. `regex=true` reads the text as a regular expression, `tool=\"renew_membership\"` "
+         "narrows to one tool's calls, `task_id` to one Task. Search before you read: a count over every "
+         "Task costs one call, and reading the records that hold it costs one call each.\n"
          "probe(task_id=\"task_1a2b\", bug_class=\"extra-field acceptance\", note=\"writes the change "
          "and also a refund the user never asked for\", events=[...]): a hand-written Run the Verifier "
          "should reject, kept in the Task's pool forever.\n"
@@ -59,29 +67,43 @@ TOOLS = ("Tools, one example call each.\n"
          "runs say 'store credit'\", suggested=\"repair_intent\", hint=\"the runs say 'store credit'; use "
          "those words\"): what is wrong on the Builder's side, as the call the Builder can make.")
 EXAMPLES = ("Examples of a ruling and the call that answers it.\n"
-            "1. `derive_verifier: task_1a2b: the D79 suite did not pass: plausible_wrong_fails` -> read the "
-            "Verifier, then repair(task_id=\"task_1a2b\", reason=\"the required write atom names no "
-            "value, so a write to the wrong record passes\", drop=[\"atom-2\"], add=[{...}]).\n"
-            "2. `intent: task_9f3e: noun phrases with no span: refund voucher` -> "
-            "read(kind=\"intent\", id=\"task_9f3e\"), then finding(task_id=\"task_9f3e\", kind=\"fidelity\", "
-            "text=\"...\", suggested=\"repair_intent\", hint=\"the runs say 'store credit'; use those "
-            "words\").\n"
-            "3. `replay_reference: task_1a2b: update_booking write: differs` -> "
-            "read(kind=\"replays\", id=\"task_1a2b\"), then finding(task_id=\"task_1a2b\", "
-            "kind=\"fidelity\", text=\"...\", suggested=\"repair_recompile\", hint=\"update_booking "
-            "returns the whole row; the recording returns total and status only\").\n"
-            "4. `refuse: task_1a2b is not refused: a frontier Run finished` -> the Task stays; probe or "
-            "repair its Verifier instead.\n"
-            "5. A Verifier that passed the suite and every probe in its pool -> nothing to call for that "
-            "Task.")
+            "1. search(text=\"membership tier\", kinds=[\"intent\", \"run\"]) answers `4 matches (intent 4, "
+            "run 0)` -> the phrase is in four Intents and in no Run, so finding(task_id=\"task_9f3e\", "
+            "kind=\"fidelity\", text=\"the Intent of 4 Tasks says 'membership tier'; no Run says it\", "
+            "suggested=\"repair_intent\", hint=\"the Runs say 'renewal date'\"). Search first, read only "
+            "the record you quote.\n"
+            "2. `compile_tools: renew_membership is assisted (38 of 40 calls replay)` -> "
+            "read(kind=\"task_status\", id=\"task_1a2b\"), then finding(task_id=\"task_1a2b\", "
+            "kind=\"assisted_tool\", text=\"it answers the whole member row; the recording answers status "
+            "and renewed_until only\", suggested=\"repair_recompile\", hint=\"answer status and "
+            "renewed_until, not the row\"). Name the shape it got wrong, not the tool.\n"
+            "3. `intent: task_9f3e: noun phrases with no span: refund voucher` -> read(kind=\"intent\", "
+            "id=\"task_9f3e\") for what the turns say -> finding(task_id=\"task_9f3e\", "
+            "kind=\"fidelity\", text=\"the Intent says 'refund voucher'; no user turn says it\", "
+            "suggested=\"repair_intent\", hint=\"the turns say 'store credit'\").\n"
+            "4. `replay_reference: task_1a2b: no Run of the Task was replayed to the end` -> "
+            "read(kind=\"replays\", id=\"task_1a2b\"); where no frontier Run finished, "
+            "refuse(task_id=\"task_1a2b\", reason=\"all three stopped on the same tool error\"). A Task "
+            "one Run did finish is never refused.\n"
+            "5. A Verifier that passed the suite: probe(task_id=\"task_1a2b\", bug_class=\"extra-field "
+            "acceptance\", note=\"writes the change and a refund nobody asked for\", events=[...]); one "
+            "it accepts is the repair worth writing.\n"
+            "6. `repair failed: the payload of atom atom-3 is str ... as an object: {...}` -> the "
+            "reason was not the problem; call repair again with it and the atom as written there.")
 RULES = ("Choosing. Derive first, every round. Act first on the Tasks with a confirmed Reference whose "
          "Verifier failed the suite, then on the Tasks with no Verdict, and say in each finding which "
          "Builder verb answers it. You never read a tool body, the Starting state, the schema, the "
          "Environment or the sandbox: any call naming one is refused, and so is any path under "
          "kullback/gates or kullback/runner. A probe stays in its pool forever; a repair is accepted only "
          "when the D79 suite, the pool and the loosening gate all pass; a refusal is admitted only when "
-         "no frontier Run finished. The gates are the standard, not something to argue with; a failed "
-         "ruling is reported as it is.")
+         "no frontier Run finished. When one check has rejected one Task's repairs twice in a session, a "
+         "third against that check is refused: file a finding, refuse the Task, or reroll_then_derive. "
+         "A round that files nothing after derive ends with one line saying why nothing in the rulings "
+         "it read was worth filing. "
+         "A finding's `kind` is one of assisted_tool, fidelity, "
+         "reference_disagreement, suite, false_rejection, environment, other; the name of the ruling you "
+         "are answering is taken as the kind it is about, and so is the name of a tool. The gates are "
+         "the standard, not something to argue with; a failed ruling is reported as it is.")
 FINDINGS = ("A finding names the Builder verb that answers it and the one line that verb needs. When a Task "
             "has no Verdict because its Intent says something no Run says, read the Intent "
             "(`read` with kind `intent`), which lists the phrases the intent gate refused in "
@@ -89,7 +111,14 @@ FINDINGS = ("A finding names the Builder verb that answers it and the one line t
             "suggest `repair_intent` with a hint saying what the Task's Runs actually evidence. When a tool's "
             "body comes out different on replay, suggest `repair_recompile` with a hint naming the tool and "
             "the columns whose values differ. Suggest `replay`, `reroll` or `compile_tool` only when running "
-            "the same thing again with nothing new to say is what you mean; those take no hint.")
+            "the same thing again with nothing new to say is what you mean; those take no hint. "
+            "`derive` has already filed the findings its own records show, ranked by the Tasks they cost: "
+            "the assisted tools blocking Tasks with no Reference, the D79 checks that failed, the Verifiers "
+            "that reject every held-out Run, the Tasks whose recordings disagree. File what those do not say. "
+            "A finding whose kind and subject is already open is refused with the id of the one that holds "
+            "it: act on that one instead of filing it again. Two of those verbs are yours and not the "
+            "Builder's: `repair` on a Verifier, and `reroll_then_derive` on a check that had no second "
+            "finished Run to score, which is your own `reroll` of the Task and then `derive` again.")
 STOP = ("Stopping. Answer with one line and no tool call when every Task is trusted or refused, or when "
         "the rulings after your repairs and findings are the ones you already answered. Say which Tasks "
         "remain and what you filed for each.")
@@ -107,6 +136,10 @@ def task_vocabulary(plan: ExaminerPlan) -> str:
         if row:
             parts.append("Reference confirmed" if row.get("reference_confirmed") else "no Reference")
             parts.append("Verifier passed" if row.get("verifier_passed") else "no passing Verifier")
+            # D208: a Task whose Reference was withdrawn had its Verifier retired, which is a
+            # different thing from a Task that never derived one.
+            if lifecycle.retired_row(row):
+                parts.append("Verifier retired")
         if task.id in pools:
             parts.append(f"{len(pools[task.id].probes)} probes")
         if task.id in refusals:
@@ -209,13 +242,24 @@ def gate_rulings_hook(plan: ExaminerPlan, api: Optional[ExtensionAPI] = None) ->
     return guard_hooks(plan, api)[1]
 
 
+def what_section(plan: ExaminerPlan) -> str:
+    """What the Examiner is, and what the round before this one moved (`round_delta.delta_line`).
+
+    A round opened on the artifacts as they stand and on nothing else. One live build's Examiner
+    filed fewer findings every round while the trusted count fell by a third, and no round was ever
+    told that the round before it had made things worse.
+    """
+    delta = round_delta.delta_line(plan.workdir)
+    return WHAT + (f"\nThe round before this one: {delta}." if delta else "")
+
+
 def examiner_extension(plan: ExaminerPlan) -> Callable[[ExtensionAPI], None]:
     """The setup the harness loads: tools, prompt sections, the probe skill, the hooks, the plan's context calls."""
 
     def setup(api: ExtensionAPI) -> None:
         for tool in examiner_tools(plan, sink=api.harness.emit):
             api.register_tool(tool)
-        api.add_prompt_section("examiner", prompt_block("task", WHAT))
+        api.add_prompt_section("examiner", prompt_block("task", what_section(plan)))
         api.add_prompt_section("examiner_tools", prompt_block("tools", TOOLS))
         api.add_prompt_section("skills", api.context.skills_section())
         api.catalog_skill(PROBE_SKILL_NAME, PROBE_SKILL, loaded=True)

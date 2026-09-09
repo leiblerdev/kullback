@@ -427,11 +427,13 @@ def test_an_unavailable_fact_reaches_the_verdict_as_an_environment_mark(tmp_path
 # --- verifier and verdict ---
 
 def test_the_verifier_names_the_write_and_its_values(build):
+    """Every argument of the write is covered, as a literal where a user said it and a shape where
+    the agent read it off the world (D190); the atom ids carry the column either way."""
     atoms = {atom.id: atom for atom in build["verifier"].atoms}
     write = [a for a in atoms.values() if a.target.get("kind") == "write"]
     assert [a.target["tool"] for a in write] == ["exchange_delivered_order_items"]
-    values = {a.target["field"] for a in atoms.values() if a.target.get("kind") == "write_value"}
-    assert {"order_id", "item_ids", "new_item_ids", "payment_method_id"} <= values
+    covered = {name.split(".", 1)[1] for name in atoms if name.startswith("w0.")}
+    assert {"order_id", "item_ids", "new_item_ids", "payment_method_id"} <= covered
     assert all(a.predicate_src for a in atoms.values() if not a.judge)
 
 

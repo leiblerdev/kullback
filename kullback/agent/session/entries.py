@@ -62,6 +62,23 @@ class SkillChangeEntry(_Entry):
     content_hash: Optional[str] = None
 
 
+class ContentCut(BaseModel):
+    """One entry whose content the active path shows cut down, the whole still on the file (D124).
+
+    The floor writes these when dropping every unguarded entry left it over the line and what is
+    over it is one guarded tool result bigger than the line itself. The entry keeps its id and its
+    place, so a tool call stays paired with its result; only what the model reads is shorter, and
+    `recall` on that id still answers the whole of it.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    entry_id: str
+    content: str
+    tokens_before: int = 0
+    tokens_after: int = 0
+
+
 class CompactionEntry(_Entry):
     """A summary that stands in for the entries it replaces on replay.
 
@@ -69,6 +86,8 @@ class CompactionEntry(_Entry):
     summary, D124), `code_fallback` is the 40% floor (code chose the oldest entries and asked the
     model for the summary, or wrote a mechanical one when it could not; D124, D131), and `code`
     is any other code-driven compaction an application appends.
+
+    `cuts` are the entries this compaction did not drop but shortened in place (`ContentCut`).
     """
 
     type: Literal["compaction"] = "compaction"
@@ -77,6 +96,7 @@ class CompactionEntry(_Entry):
     first_kept_entry_id: Optional[str] = None
     by: Literal["model", "code", "code_fallback"] = "model"
     note: Optional[str] = None
+    cuts: list[ContentCut] = Field(default_factory=list)
 
 
 class CustomEntry(_Entry):

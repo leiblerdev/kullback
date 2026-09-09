@@ -28,6 +28,7 @@ import asyncio
 from pathlib import Path
 from typing import Any, Callable, Iterable, Optional
 
+from kullback.agent.context import ContextConfig
 from kullback.agent.events import ToolExecutionEnd
 from kullback.agent.extensions import load_extensions
 from kullback.agent.harness import AgentHarness, DriverModel
@@ -54,11 +55,22 @@ def build_harness(plan: BuildPlan, agent_model: Optional[Model] = None,
     No turn cap (D135): the run ends when the model answers with no tool call. What bounds it is the
     spend ceiling, which `ceiling_guard` watches, and the round's stalled exit (D126).
     """
-    harness = AgentHarness(model=agent_model or DriverModel("Builder"), session=session)
+    harness = AgentHarness(model=agent_model or DriverModel("Builder"), session=session,
+                           context=context_config(agent_model))
     for subscriber in subscribers:
         harness.subscribe(subscriber)
     load_extensions(harness, [builder_extension(plan)])
     return harness
+
+
+def context_config(model: Optional[Model]) -> ContextConfig:
+    """The context settings of a session on this model: its own window, which the caller has to pass
+    in because the agent core may not import `runner.budget` (D121, D124).
+
+    Without it every harness ran on the 200,000 default, so the fill line named a window the model
+    does not have and the floor fired at a fraction of the fill it was written for.
+    """
+    return ContextConfig(window=budget.window_for(getattr(model, "name", None)))
 
 
 def drive_tool(harness: AgentHarness, name: str, arguments: dict, call_id: str = DRIVER_CALL_ID) -> ToolResult:

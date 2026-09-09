@@ -56,8 +56,24 @@ def test_status_names_every_failing_gate_with_its_tool_or_task_and_the_verb_that
     assert "parses" in result.passing and "intent" in result.failing
 
 
+def test_an_assisted_tools_red_light_says_how_many_tasks_its_own_differing_calls_block(tmp_path):
+    """D171: assisted is a corpus ruling, so the light says what a recompile buys in Tasks, not
+    how many Tasks happen to call the tool."""
+    (tmp_path / "tool_builds.json").write_text(
+        json.dumps({"get_loan_details": {"assisted": True}}), encoding="utf-8")
+    (tmp_path / "tool_fidelity.json").write_text(json.dumps({
+        "tools": {"get_loan_details": {"calls": 40, "replayed": 39, "differing": 1, "assisted": True}},
+        "tasks": {"t1": {"get_loan_details": {"replayed": 7, "differing": 0, "reasons": []}},
+                  "t2": {"get_loan_details": {"replayed": 5, "differing": 1, "reasons": ["due_on differs"]}}},
+    }), encoding="utf-8")
+    light = next(light for light in builder_tools.red_lights(tmp_path) if light.stage == "compile_tools")
+    assert "39 of 40 recorded calls replay" in light.failure
+    assert "2 Tasks call it, 1 blocked by their own differing calls" in light.failure
+
+
 def test_status_reads_the_records_and_asks_no_model(built):
-    """Every red light comes off gates.json, replays.json and tool_builds.json; nothing else is read."""
+    """Every red light comes off gates.json, replays.json, tool_builds.json and tool_fidelity.json;
+    nothing else is read."""
     lights = builder_tools.red_lights(built)
     recorded = json.loads((built / "gates.json").read_text(encoding="utf-8"))
     failing = {row["stage"] for row in recorded if not row["pass"]}
@@ -73,10 +89,25 @@ def test_status_reads_the_records_and_asks_no_model(built):
 
 
 def test_status_over_a_workdir_with_nothing_built_says_so(tmp_path):
+    """D166: a fresh workdir holds no ruling, and "0 of 0 gates red" plus "the gates are green" is
+    what a model read there before answering without building anything."""
     result = builder_tools.status_of(tmp_path)
-    assert result.red_lights == [] and result.passing == []
-    assert "0 red lights" in result.summary
-    assert "the gates are green" in builder_tools.render_status(result)
+    assert result.red_lights == [] and result.passing == [] and result.unbuilt is True
+    text = builder_tools.render_status(result)
+    assert text == result.summary == builder_tools.UNBUILT_SUMMARY
+    assert "nothing has been built in this workdir" in text
+    assert "build the target" in text
+    assert "green" not in text
+
+
+def test_status_over_a_workdir_that_has_ruled_and_has_no_red_light_says_the_gates_are_green(tmp_path):
+    """One passing ruling is a build that happened, so the green wording is true there."""
+    (tmp_path / "gates.json").write_text(json.dumps([{"stage": "ingest", "pass": True, "failures": []}]),
+                                         encoding="utf-8")
+    result = builder_tools.status_of(tmp_path)
+    assert result.unbuilt is False and result.red_lights == [] and result.passing == ["ingest"]
+    text = builder_tools.render_status(result)
+    assert "0 red lights" in text and "the gates are green" in text
 
 
 # --- status at the size a live build reaches ------------------------------------
@@ -186,6 +217,42 @@ def test_the_headline_counts_the_gates_the_tasks_with_no_verdict_and_the_assiste
     assert "184 Tasks with no Verdict, most of them noun phrases with no span" in head
     assert "4 tools assisted: " + ", ".join(CROWDED_TOOLS[:4]) in head
     assert builder_tools.render_status(result).startswith(head + "\n")
+
+
+def test_the_headline_of_a_second_round_says_what_the_round_before_it_moved(tmp_path):
+    """One live build lost a third of its trusted Tasks over three rounds and every round opened on
+    the same picture: the artifacts as they stand, with nothing said about the way they were going."""
+    workdir = _crowded(tmp_path)
+    (workdir / "rounds.json").write_text(json.dumps([
+        {"round": 1, "counts": {"trusted": 99, "fidelity": 188, "tasks_with_reference": 135,
+                                "artifacts_changed": ["bodies", "intents"]}},
+        {"round": 2, "counts": {"trusted": 66, "fidelity": 188, "tasks_with_reference": 140,
+                                "artifacts_changed": ["bodies"]}},
+    ]), encoding="utf-8")
+    head = builder_tools.status_of(workdir).summary
+    assert ("round 2 against round 1: trusted 66, down 33; fidelity 188, unchanged; "
+            "References 140, up 5; it changed bodies") in head
+
+
+def test_a_first_round_has_nothing_to_compare_itself_against_and_says_nothing(tmp_path):
+    workdir = _crowded(tmp_path)
+    (workdir / "rounds.json").write_text(json.dumps([
+        {"round": 1, "counts": {"trusted": 99, "fidelity": 188, "tasks_with_reference": 135}}]),
+        encoding="utf-8")
+    assert "round 1 against" not in builder_tools.status_of(workdir).summary
+
+
+def test_a_hardcoded_tool_is_listed_apart_from_the_assisted_ones(tmp_path):
+    """A body that never read its arguments is not the repair an assisted body is: a hint written
+    against one failing call cannot reach it, so the headline does not file the two together."""
+    workdir = _crowded(tmp_path)
+    builds = json.loads((workdir / "tool_builds.json").read_text(encoding="utf-8"))
+    builds[CROWDED_TOOLS[0]]["hardcoded"] = True
+    (workdir / "tool_builds.json").write_text(json.dumps(builds), encoding="utf-8")
+    head = builder_tools.status_of(workdir).summary
+    assert "3 tools assisted: " + ", ".join(CROWDED_TOOLS[1:4]) in head
+    assert f"1 tool hardcoded, answering alike whatever they are given: {CROWDED_TOOLS[0]}" in head
+    assert CROWDED_TOOLS[0] not in head.split("assisted: ")[1].split(";")[0]
 
 
 @pytest.mark.parametrize("failure,target,kind", [
@@ -369,13 +436,17 @@ def test_a_repair_intent_result_opens_with_that_tasks_own_ruling(built):
     out = _run(_tool(plan, "repair_intent"), {"task_id": task, "hint": "say what every run of it shows"})
     assert not out.is_error, out.content
     record = _intents(built)[task]
-    first, second = out.content.splitlines()[:2]
-    assert first == out.details["target_ruling"]
-    assert first.startswith(f"repair_intent {task}: ")
-    assert ("grounded" in first) is bool(record["grounded"])
+    first, second, third, fourth = out.content.splitlines()[:4]
+    assert "\n".join([first, second]) == out.details["target_ruling"]
+    # D201: the transaction's own verdict leads, because it says whether the repair below it stands.
+    assert first.startswith(f"repair_intent {task}: ") and (
+        "accepted" in first or "reverted" in first or "unchecked" in first)
+    assert second.startswith(f"repair_intent {task}: ")
+    assert ("grounded" in second) is bool(record["grounded"])
     if not record["grounded"]:
-        assert first.endswith(f"still refused: {record['reason']}")
-    assert second.startswith("repair_intent intent: "), "the stage summary still follows it"
+        assert second.endswith(f"still refused: {record['reason']}")
+    assert third == builder_tools.NO_ZOOM.format(target=task), "and the zoom on it is taken off the table"
+    assert fourth.startswith("repair_intent intent: "), "the stage summary still follows it"
 
 
 def test_a_repair_recompile_result_says_whether_that_tool_cleared_the_gates(built, tmp_path):
@@ -386,9 +457,14 @@ def test_a_repair_recompile_result_says_whether_that_tool_cleared_the_gates(buil
     out = _run(_tool(plan, "repair_recompile"), {"name": ASSISTED, "hint": "import decimal first"})
     assert not out.is_error, out.content
     assisted = json.loads((workdir / "tool_builds.json").read_text(encoding="utf-8"))[ASSISTED]["assisted"]
-    first = out.content.splitlines()[0]
+    verdict, first = out.content.splitlines()[:2]
+    # D201: the transaction rules first, and a recompile that bought nothing says so before the
+    # gates are quoted at all.
+    assert verdict.startswith(f"repair_recompile {ASSISTED}: ") and "reverted: no effect" in verdict
     assert first.startswith(f"repair_recompile {ASSISTED}: ")
-    assert ("still assisted: " in first) is bool(assisted)
+    assert ("still assisted" in first) is bool(assisted)
+    # D191: the line also says what the attempt scored against the body already there.
+    assert "(the attempt scored " in first and ("was released" in first or "stands" in first)
     assert ("cleared the gates" in first) is (not assisted)
     gate_line = next(line for line in out.content.splitlines() if line.startswith("rulings: "))
     assert "compile_tools" in gate_line, "the gate-wide line stays, after the target's own"
@@ -399,7 +475,11 @@ def test_a_repair_grow_result_says_how_many_rows_the_table_holds(built, tmp_path
     plan = BuildPlan(workdir=workdir, iterate=True, model=Bodies(), max_attempts=0)
     out = _run(_tool(plan, "repair_grow"), {"table": "users", "count": 4})
     assert not out.is_error, out.content
-    assert out.content.splitlines()[0] == "repair_grow users: 4 rows, the 4 asked for"
+    verdict, ruling = out.content.splitlines()[:2]
+    # The table already holds the rows asked for, so the repair moved nothing and is put back (D201).
+    assert verdict == ("repair_grow users: reverted: no effect, users stands where it was "
+                       "(2 to 2 lights green over 3 Tasks, the whole corpus)")
+    assert ruling == "repair_grow users: 4 rows, the 4 asked for"
 
 
 def test_a_gate_that_fails_over_many_tasks_says_how_many_and_names_the_first_as_an_example():
@@ -462,3 +542,50 @@ def test_a_repair_whose_stage_failed_still_records_the_request_it_was_asked(buil
     assert out.is_error and "no Task is named" in out.content
     row = _requests(workdir, "repair_intent")[-1]
     assert row["target"] == "task_nobody_mined" and row["changed"] is False
+
+
+def test_a_repair_result_carrying_its_targets_ruling_takes_the_zoom_on_that_target_off_the_table(tmp_path):
+    """One live build called status(target=...) two to three times per tool and no ruling changed
+    between the calls: the repair result the model had just read already carried that tool's own
+    ruling. The nudge is withheld while the ruling is in hand, and the count says how often."""
+    workdir = tmp_path / "zoom"
+    workdir.mkdir()
+    (workdir / "gates.json").write_text(json.dumps(
+        [{"stage": "replay_fidelity", "pass": False,
+          "failures": ["dock_bike: hard columns differ: rack_id: ours 4, recorded 7"]}]), encoding="utf-8")
+    plan = BuildPlan(workdir=workdir, iterate=True)
+    grouped = builder_tools.render_status(builder_tools.status_of(workdir), plan)
+    assert grouped.endswith(builder_tools.ZOOM_HINT), "nothing is in hand yet, so the nudge stands"
+    assert plan.zooms_skipped == 0
+
+    repaired = builder_tools.BuildResult(
+        summary="repair_recompile compile_tools: complete", target="compile_tools", status="complete",
+        passed=False, ruling_target="dock_bike",
+        target_ruling="repair_recompile dock_bike: still assisted: rack_id: ours 4, recorded 7")
+    text = builder_tools.render(repaired, plan)
+    assert text.splitlines()[1] == builder_tools.NO_ZOOM.format(target="dock_bike")
+    assert plan.rulings_in_hand == {"dock_bike": repaired.target_ruling} and plan.zooms_skipped == 1
+
+    again = builder_tools.render_status(builder_tools.status_of(workdir), plan)
+    assert builder_tools.ZOOM_HINT not in again, "every red light is on a target already answered"
+    assert plan.zooms_skipped == 2
+    # A run over more than one target puts every ruling back in question, so the nudge stands again.
+    builder_tools.render(builder_tools.BuildResult(summary="build environment: complete",
+                                                   target="environment", status="complete", passed=True), plan)
+    assert plan.rulings_in_hand == {}
+    assert builder_tools.render_status(builder_tools.status_of(workdir), plan).endswith(builder_tools.ZOOM_HINT)
+
+
+def test_a_task_refused_twice_for_one_reason_is_named_in_the_status_headline(tmp_path):
+    """A third refusal of it is refused in code (repair.refuse_lock), so the picture says which
+    Tasks those are rather than leaving the session to find out by calling the verb."""
+    workdir = tmp_path / "refused"
+    workdir.mkdir()
+    (workdir / "gates.json").write_text(json.dumps(
+        [{"stage": "intent", "pass": False, "failures": ["task task_dock: noun phrases with no span: the rack"]}]),
+        encoding="utf-8")
+    assert "refused twice" not in builder_tools.status_of(workdir).summary
+    tools = {t.name: t for t in repair_module.repair_tools(workdir)}
+    for _ in range(2):
+        _run(tools["repair_refuse_task"], {"task_id": "task_dock", "reason": "no frontier Run docks it"})
+    assert "refused twice: task_dock" in builder_tools.status_of(workdir).summary

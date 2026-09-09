@@ -10,16 +10,24 @@ from pathlib import Path
 import pytest
 
 from conftest import PTR
+from kullback.builder import compile_env
 from kullback.builder.mine import (
+    CONSTANTS_ROW,
+    CONSTANTS_TABLE,
     SCALAR_RESULT_FIELD,
     classify_column,
     classify_kind,
+    constants_row,
+    constants_table_of,
     gate_tools,
     is_scalar_result,
     mine_schema,
     mine_tools,
     propose_column_class,
     propose_kind,
+    row_homes,
+    unknown_tools,
+    world_constants,
 )
 from kullback.runner.records import RawPtr, ToolCall, ToolCallError, Trace, as_dict
 
@@ -440,32 +448,107 @@ def test_gate_needs_three_observed_calls_or_the_llm_flag(fixture_traces):
         assert name in joined
 
 
-def test_a_user_requestor_call_is_never_mined_into_a_toolsig_or_schema():
-    """Telecom's traces interleave the assistant and the simulated user's own tool calls, run against
-    the user's own phone (docs/cross-domain-check.md, Judgement). Retail and airline never carry a
-    user-requestor call, so this is new coverage, not a change to their behavior."""
+def a_users_own_toolkit() -> list:
+    """A trace where the reader calls the library's tools and the reader's own shelf lamp answers
+    only the reader: the assistant's one call to it came back `tool_not_found` (D164)."""
+    return [
+        one_trace(
+            "t1",
+            [
+                {"name": "get_loan_details", "args": {"loan_id": "#L1"}, "result": '{"loan_id": "#L1"}'},
+                {"name": "get_loan_details", "args": {"loan_id": "#L2"}, "result": '{"loan_id": "#L2"}'},
+                {"name": "get_loan_details", "args": {"loan_id": "#L3"}, "result": '{"loan_id": "#L3"}'},
+                {"name": "read_shelf_lamp", "args": {"shelf": "3"}, "result": '{"lit": true}',
+                 "requestor": "user"},
+                {"name": "read_shelf_lamp", "args": {"shelf": "4"}, "result": '{"lit": false}',
+                 "requestor": "user"},
+                {"name": "read_shelf_lamp", "args": {"shelf": "4"}, "result": None,
+                 "error": ToolCallError(class_="tool_not_found",
+                                        payload="Error: Tool 'read_shelf_lamp' not found.")},
+            ],
+        )
+    ]
+
+
+def test_a_tool_only_the_user_calls_is_mined_with_the_user_as_its_caller():
+    """D164: a tool of the simulated user's own toolkit is a tool of the recording, mined from the
+    calls the user made. The assistant asked for it once and the recording refused, so the assistant
+    is not one of its callers and the Router refuses it there too."""
+    sig = sig_by_name(mine_tools(a_users_own_toolkit()), "read_shelf_lamp")
+    assert sig.callers == ["user"]
+    assert sig.refused_callers == ["assistant"]
+    assert {f.name for f in sig.args_fields} == {"shelf"}
+    assert {f.name for f in sig.result_schema} == {"lit"}
+    assert sig.evidence_strength.call_count == 3
+
+
+def test_a_tool_the_assistant_calls_is_mined_with_the_assistant_as_its_only_caller():
+    """The other side of D164: nothing about a tool with one caller changed."""
+    sig = sig_by_name(mine_tools(a_users_own_toolkit()), "get_loan_details")
+    assert sig.callers == ["assistant"]
+    assert sig.refused_callers == []
+    assert sig.evidence_strength.call_count == 3
+
+
+def test_the_schema_and_the_skipped_count_still_read_the_assistants_calls_alone():
+    """D164 leaves R33 standing: what the customer's system is, is read from the assistant's calls.
+    The user's calls reach the ToolSig of the tool they called and nothing else."""
+    traces = a_users_own_toolkit()
+    schema = mine_schema(traces)
+    assert schema.tables == ["loans"]
+    assert "lit" not in {c.name for c in schema.columns}
+
+    gate = gate_tools(mine_tools(traces), traces)
+    assert gate.metrics["skipped_user_calls"] == 2
+
+
+def test_a_name_refused_on_every_call_is_no_toolsig_and_is_reported_as_unknown():
+    """D164: the recording had no such tool for anyone who asked, so the Environment has none either."""
     traces = [
         one_trace(
             "t1",
             [
-                {"name": "get_order_details", "args": {"order_id": "#W1"}, "result": '{"order_id": "#W1"}'},
-                {"name": "get_order_details", "args": {"order_id": "#W2"}, "result": '{"order_id": "#W2"}'},
-                {"name": "get_order_details", "args": {"order_id": "#W3"}, "result": '{"order_id": "#W3"}'},
-                {"name": "check_network_status", "args": {}, "result": '{"signal": "5g"}', "requestor": "user"},
+                {"name": "get_loan_details", "args": {"loan_id": "#L1"}, "result": '{"loan_id": "#L1"}'},
+                {"name": "renew_every_loan", "args": {}, "result": None,
+                 "error": ToolCallError(class_="tool_not_found", payload="Error: Tool 'renew_every_loan' not found.")},
+                {"name": "renew_every_loan", "args": {}, "result": None,
+                 "error": ToolCallError(class_="tool_not_found", payload="Error: Tool 'renew_every_loan' not found.")},
             ],
         )
     ]
-    sigs = mine_tools(traces)
-    assert not any(s.name == "check_network_status" for s in sigs)
-    assert sig_by_name(sigs, "get_order_details").evidence_strength.call_count == 3
+    assert [s.name for s in mine_tools(traces)] == ["get_loan_details"]
+    assert unknown_tools(traces) == [
+        {"name": "renew_every_loan", "calls": 2, "requestors": ["assistant"], "reason": "refused on every call"}
+    ]
 
-    schema = mine_schema(traces)
-    assert schema.tables == ["orders"]
-    assert "signal" not in {c.name for c in schema.columns}
 
-    gate = gate_tools(sigs, traces)
-    assert gate.metrics["skipped_user_calls"] == 1
-    assert gate.metrics["tools"] == 1
+def test_a_name_that_is_not_an_identifier_is_never_a_toolsig_even_when_it_was_answered():
+    """D164: a recorded agent invents names no generated module could hold; `def $LOAN_ACTION(...)`
+    does not parse, and three of those killed a build at compile_tools."""
+    traces = [
+        one_trace(
+            "t1",
+            [
+                {"name": "$LOAN_ACTION", "args": {"loan_id": "#L1"}, "result": '{"ok": true}'},
+                {"name": "$AGENT_FUNCTION{renew_loan}", "args": {}, "result": None,
+                 "error": ToolCallError(class_="tool_not_found", payload="not found")},
+            ],
+        )
+    ]
+    assert mine_tools(traces) == []
+    assert [(row["name"], row["reason"]) for row in unknown_tools(traces)] == [
+        ("$AGENT_FUNCTION{renew_loan}", "not a tool name"),
+        ("$LOAN_ACTION", "not a tool name"),
+    ]
+
+
+def test_a_declared_tool_no_trace_called_is_still_the_assistants():
+    """D72's declared-only signature keeps its caller: the declaration is the assistant's tool list."""
+    traces = [one_trace("t1", [{"name": "get_loan_details", "args": {}, "result": "{}"}],
+                        tools_declared=[{"name": "renew_loan", "description": "renew a loan"}])]
+    sig = sig_by_name(mine_tools(traces), "renew_loan")
+    assert sig.source == "declared"
+    assert sig.callers == ["assistant"] and sig.refused_callers == []
 
 
 def test_gate_tools_without_traces_reports_zero_skipped_as_before():
@@ -1103,6 +1186,23 @@ def test_a_money_column_that_happens_to_increase_is_not_exempt():
     assert counter.confidence == "low", "a counter found by shape alone still goes to review"
 
 
+def test_a_number_no_two_sightings_repeat_is_a_reading_and_is_not_compared():
+    """A rate a probe measures when it is asked is a different number every time it is asked.
+
+    Held to a hard comparison it fails every Run and, worse, makes as many Tasks out of one as it
+    was read in, since a starting world is what a recording read before it wrote.
+    """
+    reading = propose_column_class("probes", "throughput", [11.2, 8.4, 19.7, 3.1, 14.6, 9.9])
+    assert reading.column_class == "exempt"
+    assert reading.confidence == "low", "found by shape alone, so the review still sees it"
+
+
+def test_too_few_sightings_to_repeat_leave_a_number_compared():
+    """Four different numbers are what any small sample looks like, so the rule waits for evidence."""
+    assert propose_column_class("probes", "throughput", [11.2, 8.4, 19.7, 3.1]).column_class == "hard"
+    assert propose_column_class("berths", "fee", [10.0, 25.5, 10.0, 25.5, 10.0, 25.5]).column_class == "hard"
+
+
 def test_business_dates_and_versions_are_not_high_confidence_exempt():
     for name in ["date_of_birth", "time_zone", "delivery_date", "version"]:
         proposal = propose_column_class("users", name, ["1990-01-01", "1985-05-05", "2000-02-02"])
@@ -1131,14 +1231,35 @@ def test_rows_keyed_by_a_plain_id_still_get_a_table():
 
 def test_an_id_shape_that_appears_late_is_still_matched_by_the_pattern():
     """canon.py fullmatches ids against these patterns, so a pattern read off the first 200 values
-    must not reject a real id that comes later."""
+    must not reject a real id that comes later.
+
+    Where the late id leaves the column with no shape at all, the answer is no pattern rather than
+    one that takes any word (`id_pattern`): nothing rejects the late id either way, and a pattern
+    every word matches would have read every word of the corpus as an id.
+    """
     from kullback.builder.mine import id_pattern
 
     values = [f"u_{i}" for i in range(200)] + ["u-x-9"]
-    pattern = id_pattern(values)
-    assert all(re.fullmatch(pattern, v) for v in values)
+    assert id_pattern(values) is None
     tight = id_pattern([f"u_{i}" for i in range(200)])
     assert tight == r"^[A-Za-z]+_\d+$"
+    assert all(re.fullmatch(tight, v) for v in values[:200])
+
+
+def test_a_position_that_mixes_letters_and_digits_is_that_class_and_not_any_character():
+    """D167: `^.{6}$` matches any six characters, so the memorised-values gate read an ordinary word
+    like `amount` as an id of this shape. The class the sample shows is the class the pattern says."""
+    from kullback.builder.mine import id_pattern
+
+    pattern = id_pattern(["K1NW8N", "HATHAT", "Z7GOZK"])
+    assert pattern == "^[A-Z0-9]{6}$"
+    assert re.fullmatch(pattern, "K1NW8N")
+    assert not re.fullmatch(pattern, "amount")
+    assert id_pattern(["k1nw8n", "hathat", "z7gozk"]) == "^[a-z0-9]{6}$"
+    assert id_pattern(["K1nw8N", "hAthaT", "z7GOzk"]) == "^[A-Za-z0-9]{6}$"
+    # an id whose positions each hold letters only or digits only keeps the tighter shape it had
+    assert id_pattern(["#W1234567", "#W7651432", "#W3487216"]) == r"^#W\d{7}$"
+    assert id_pattern(["TX", "NY", "CA"]) == "^[A-Za-z]{2}$"
 
 
 # --- kind and table naming, against the domains the retail rules missed ------
@@ -1287,3 +1408,286 @@ def test_the_retail_shaped_names_keep_their_old_answer():
     ])]
     schema = mine_schema(traces)
     assert schema.tables == ["orders"]
+
+
+# --- a row is homed by the id the call asked for ------------------------------
+
+# The domain is an invented marina: berths a vessel ties up at, and the tariff each berth is let on.
+
+def test_a_row_carrying_several_ids_is_homed_in_the_table_of_the_id_the_call_was_given():
+    """The tool name says nothing about an entity, so only the call says which row this is.
+
+    The customer's tool was handed one id and answered this row, so the row is that entity. Before
+    this the row had no home, was dropped by the row extractor, and every column it carried was
+    lost along with every replay of the tool that answered it.
+    """
+    berth = '{"berth_id": "b7", "vessel_id": "v3", "tariff_id": "t1", "state": "occupied"}'
+    vessel = '{"vessel_id": "v3", "berth_id": "b7", "hull": "wood"}'
+    traces = [one_trace("t1", [
+        {"name": "get_record_by_id", "args": {"id": "b7"}, "result": berth},
+        {"name": "get_record_by_id", "args": {"id": "v3"}, "result": vessel},
+    ])]
+    schema = mine_schema(traces)
+    assert "berths" in schema.tables and "vessels" in schema.tables
+    assert {c.name for c in schema.columns if c.table == "berths"} == {
+        "berth_id", "vessel_id", "tariff_id", "state"}
+    assert {c.name for c in schema.columns if c.table == "vessels"} == {"vessel_id", "berth_id", "hull"}
+
+
+def test_where_two_of_a_row_ids_were_passed_the_one_the_argument_names_wins():
+    traces = [one_trace("t1", [
+        {"name": "load_record", "args": {"vessel_id": "v3", "near": "b7"},
+         "result": '{"berth_id": "b7", "vessel_id": "v3", "hull": "wood"}'},
+    ])]
+    assert mine_schema(traces).tables == ["vessels"]
+
+
+def test_the_noun_rule_still_homes_a_row_when_no_argument_names_one_of_its_ids():
+    """A search is given filters, not ids, so nothing it was handed is an id of the rows it answers."""
+    rows = json.dumps([{"berth_id": "b7", "tariff_id": "t1", "depth_m": 3},
+                       {"berth_id": "b8", "tariff_id": "t1", "depth_m": 4}])
+    traces = [one_trace("t1", [
+        {"name": "search_berth", "args": {"marina": "north", "depth_m": 3}, "result": rows},
+    ])]
+    assert mine_schema(traces).tables == ["berths"]
+
+
+def test_the_id_of_the_parent_a_call_lists_children_by_does_not_home_the_children():
+    """`for` says the customer is the address and the bill is the row, whichever id was passed."""
+    row = '{"lease_id": "l1", "vessel_id": "v3", "state": "open"}'
+    traces = [one_trace("t1", [
+        {"name": "get_leases_for_vessel", "args": {"vessel_id": "v3"}, "result": f"[{row}]"},
+    ])]
+    assert mine_schema(traces).tables == ["leases"]
+
+
+def test_an_id_column_whose_values_share_no_shape_gets_no_pattern():
+    """A pattern an ordinary word matches is no id shape (D167), and one leaks into every comparison.
+
+    `canon._as_id` fullmatches every string of the world against every mined pattern and upper-cases
+    a hit before any other rule runs, so one shapeless pattern turns every status and name in the
+    corpus into an id. Homing a write's answer put such a column in front of the miner for the first
+    time, which is where this was found.
+    """
+    from kullback.builder.mine import id_pattern
+
+    assert id_pattern(["card_9513926", "paypal_7644869", "gift"]) is None
+    assert id_pattern(["b7", "b8"]) == "^b\\d$", "a shape the values share is kept whatever a word does"
+
+
+def test_where_each_tool_row_was_homed_and_by_which_rule_is_on_the_record():
+    traces = [one_trace("t1", [
+        {"name": "get_record_by_id", "args": {"id": "b7"},
+         "result": '{"berth_id": "b7", "vessel_id": "v3"}'},
+        {"name": "describe", "args": {}, "result": '{"state": "open"}'},
+    ])]
+    homes = row_homes(traces)
+    assert homes["get_record_by_id"]["homed"]["berths"]["rows"] == 1
+    assert "berth_id" in homes["get_record_by_id"]["homed"]["berths"]["rule"]
+    assert homes["get_record_by_id"]["unhomed"] == 0
+    assert homes["describe"]["unhomed"] == 1 and homes["describe"]["unhomed_reason"]
+
+
+# --- rows whose identity is more than one column (composite row keys) ---------
+
+def a_dock(dock_id: str, seats: int, shift=None, zone: str = "north") -> dict:
+    """One row of an invented `docks` table: a workshop dock, which is let out per shift."""
+    return {"dock_id": dock_id, "shift": shift, "seats": seats, "zone": zone}
+
+
+def dock_traces(calls: list[dict]) -> list[Trace]:
+    return [one_trace("t1", calls)]
+
+
+def test_a_table_whose_rows_repeat_an_id_gets_a_composite_key_naming_the_column():
+    traces = dock_traces([
+        {"name": "list_docks", "args": {"shift": "early", "zone": "north"},
+         "result": json.dumps([a_dock("dock_1", 4), a_dock("dock_2", 6)])},
+        {"name": "list_docks", "args": {"shift": "late", "zone": "north"},
+         "result": json.dumps([a_dock("dock_1", 1), a_dock("dock_2", 2)])},
+    ])
+    schema = mine_schema(traces)
+    assert schema.composite_keys == {"docks": ["dock_id", "shift"]}
+    assert schema.key_separator
+
+
+def test_an_argument_both_calls_agree_on_does_not_join_the_key():
+    """`zone` is an argument of both calls and never tells two sightings apart, so it is not identity."""
+    traces = dock_traces([
+        {"name": "list_docks", "args": {"shift": "early", "zone": "north"},
+         "result": json.dumps([a_dock("dock_1", 4)])},
+        {"name": "list_docks", "args": {"shift": "late", "zone": "north"},
+         "result": json.dumps([a_dock("dock_1", 1)])},
+    ])
+    assert mine_schema(traces).composite_keys == {"docks": ["dock_id", "shift"]}
+
+
+def test_a_table_with_one_version_per_id_keeps_its_single_key():
+    traces = dock_traces([
+        {"name": "list_docks", "args": {"shift": "early", "zone": "north"},
+         "result": json.dumps([a_dock("dock_1", 4), a_dock("dock_2", 6)])},
+        {"name": "list_docks", "args": {"shift": "late", "zone": "north"},
+         "result": json.dumps([a_dock("dock_1", 4), a_dock("dock_2", 6)])},
+    ])
+    assert mine_schema(traces).composite_keys == {}
+
+
+def test_a_change_after_a_write_is_not_a_second_version():
+    """The same two sightings that would name a key, with the write that explains them in between."""
+    traces = dock_traces([
+        {"name": "list_docks", "args": {"shift": "early", "zone": "north"},
+         "result": json.dumps([a_dock("dock_1", 4)])},
+        {"name": "update_dock_seats", "args": {"dock_id": "dock_1", "seats": 1},
+         "result": json.dumps(a_dock("dock_1", 1))},
+        {"name": "list_docks", "args": {"shift": "late", "zone": "north"},
+         "result": json.dumps([a_dock("dock_1", 1)])},
+    ])
+    assert mine_schema(traces).composite_keys == {}
+    assert mine_schema(traces, write_tools=["update_dock_seats"]).composite_keys == {}
+
+
+def test_the_key_column_must_be_an_argument_of_the_call_that_returned_the_rows():
+    """The rows say which shift they are, and no argument does; the corpus has not shown the tool
+    being asked for one version rather than the other, so nothing joins the key."""
+    traces = dock_traces([
+        {"name": "list_docks", "args": {"zone": "north"},
+         "result": json.dumps([a_dock("dock_1", 4, shift="early")])},
+        {"name": "list_docks", "args": {"zone": "north"},
+         "result": json.dumps([a_dock("dock_1", 1, shift="late")])},
+    ])
+    assert mine_schema(traces).composite_keys == {}
+
+
+def test_a_soft_column_does_not_join_the_key():
+    """`updated_at` is exempt under D73, so it is neither a difference nor a key column."""
+    early = dict(a_dock("dock_1", 4), updated_at="2020-01-01T00:00:00")
+    late = dict(a_dock("dock_1", 4), updated_at="2020-01-02T00:00:00")
+    traces = dock_traces([
+        {"name": "list_docks", "args": {"updated_at": "2020-01-01T00:00:00"}, "result": json.dumps([early])},
+        {"name": "list_docks", "args": {"updated_at": "2020-01-02T00:00:00"}, "result": json.dumps([late])},
+    ])
+    schema = mine_schema(traces)
+    assert col(schema, "docks", "updated_at").class_ == "exempt"
+    assert schema.composite_keys == {}
+
+
+def test_the_key_is_the_columns_every_conflicting_pair_agrees_on():
+    """One pair whose calls also disagree on `zone` cannot add `zone` to the key the others name."""
+    traces = [
+        one_trace("t1", [
+            {"name": "list_docks", "args": {"shift": "early", "zone": "north"},
+             "result": json.dumps([a_dock("dock_1", 4)])},
+            {"name": "list_docks", "args": {"shift": "late", "zone": "south"},
+             "result": json.dumps([a_dock("dock_1", 1)])},
+        ]),
+        one_trace("t2", [
+            {"name": "list_docks", "args": {"shift": "early", "zone": "north"},
+             "result": json.dumps([a_dock("dock_1", 4)])},
+            {"name": "list_docks", "args": {"shift": "late", "zone": "north"},
+             "result": json.dumps([a_dock("dock_1", 1)])},
+        ]),
+    ]
+    assert mine_schema(traces).composite_keys == {"docks": ["dock_id", "shift"]}
+
+
+def test_one_id_repeated_across_two_traces_is_not_a_composite_key():
+    """Two traces can start in two worlds (D74); only a repeat inside one trace names a key."""
+    traces = [
+        one_trace("t1", [{"name": "list_docks", "args": {"shift": "early", "zone": "north"},
+                          "result": json.dumps([a_dock("dock_1", 4)])}]),
+        one_trace("t2", [{"name": "list_docks", "args": {"shift": "late", "zone": "north"},
+                          "result": json.dumps([a_dock("dock_1", 1)])}]),
+    ]
+    assert mine_schema(traces).composite_keys == {}
+
+
+def test_the_fixture_needs_no_composite_key(fixture_traces):
+    """The rule must be silent on a corpus whose ids stand for one row each."""
+    assert mine_schema(fixture_traces).composite_keys == {}
+
+
+# --- constants of the world --------------------------------------------------
+
+
+def _listing(trace_id: str, result, name: str = "list_all_kennels", args=None) -> Trace:
+    return one_trace(trace_id, [
+        {"id": f"{trace_id}-1", "name": name, "args": args or {}, "result": result},
+        {"id": f"{trace_id}-2", "name": name, "args": args or {}, "result": result},
+    ])
+
+
+def test_a_no_argument_listing_whose_answer_never_changes_is_a_constant_of_the_world():
+    listing = {"north": "K1", "south": "K2"}
+    schema = mine_schema([_listing("A", listing), _listing("B", listing)])
+    assert constants_table_of(schema) == CONSTANTS_TABLE
+    assert constants_row(schema) == {"list_all_kennels": listing}
+
+
+def test_a_listing_that_answered_two_things_is_not_a_constant():
+    schema = mine_schema([_listing("A", {"north": "K1"}), _listing("B", {"north": "K1", "south": "K2"})])
+    assert constants_table_of(schema) is None
+
+
+def test_a_tool_called_two_ways_is_not_a_constant_however_alike_its_answers():
+    traces = [_listing("A", {"north": "K1"}, args={"zone": "north"}),
+              _listing("B", {"north": "K1"}, args={"zone": "south"})]
+    assert world_constants(traces) == {}
+
+
+def test_one_call_is_not_evidence_that_a_result_never_changes():
+    trace = one_trace("A", [{"id": "c1", "name": "list_all_kennels", "args": {}, "result": ["K1"]}])
+    assert world_constants([trace]) == {}
+
+
+def test_rows_of_a_table_are_not_a_constant_however_often_they_repeat():
+    """The answer carries an id column the calls also address rows by, so a table owns those rows."""
+    rows = [{"kennel_id": "K1", "zone": "north"}, {"kennel_id": "K2", "zone": "south"}]
+    traces = [_listing("A", rows, name="list_kennels"), _listing("B", rows, name="list_kennels"),
+              one_trace("C", [{"id": "c9", "name": "get_kennel", "args": {"kennel_id": "K1"},
+                               "result": rows[0]}])]
+    assert world_constants(traces) == {}
+
+
+def test_a_list_of_objects_no_table_owns_is_a_constant_of_the_world():
+    """Nothing addresses these by an id, so the miner homes no row and no table holds the list."""
+    listing = [{"zone": "north", "code": "NO"}, {"zone": "south", "code": "SO"}]
+    traces = [_listing("A", listing), _listing("B", listing)]
+    assert world_constants(traces) == {"list_all_kennels": listing}
+
+
+def test_a_write_that_acknowledges_every_call_the_same_way_is_not_a_constant():
+    traces = [_listing("A", "ok", name="update_kennel"), _listing("B", "ok", name="update_kennel")]
+    assert world_constants(traces, write_tools=["update_kennel"]) == {}
+
+
+def test_the_constant_is_a_column_of_one_row_so_a_body_reaches_it_without_naming_a_key():
+    schema = mine_schema([_listing("A", ["K1", "K2"]), _listing("B", ["K1", "K2"])])
+    block = compile_env._schema_block(schema)
+    assert f"self.db.{CONSTANTS_TABLE} holds one row of the world's constants" in block
+    assert f"next(iter(self.db.{CONSTANTS_TABLE}.values()))" in block
+
+
+def test_the_starting_state_holds_the_constant_the_recording_pinned(tmp_path):
+    schema = mine_schema([_listing("A", ["K1", "K2"]), _listing("B", ["K1", "K2"])])
+    state = compile_env.build_starting_state(
+        [_listing("A", ["K1", "K2"])], schema, tmp_path, tool_sigs=[], synthetic=False)
+    assert state.db[CONSTANTS_TABLE] == {CONSTANTS_ROW: {"list_all_kennels": ["K1", "K2"]}}
+
+
+def test_a_column_drawing_from_a_set_of_names_keeps_the_whole_set_and_a_column_of_ids_keeps_none():
+    """D217: five samples show a reviewer what a column looks like; only the whole set says what it
+    may hold, and a replayed answer naming a name outside it is a different answer."""
+    rows = json.dumps([
+        {"kiln_id": "KLN1", "damper": "open", "note": "the damper is open"},
+        {"kiln_id": "KLN2", "damper": "closed", "note": "the damper is closed"},
+        {"kiln_id": "KLN3", "damper": "vented", "note": "vented for the night, damper part open"},
+        {"kiln_id": "KLN4", "damper": "open", "note": "the damper is open"},
+        {"kiln_id": "KLN5", "damper": "closed", "note": "the damper is closed"},
+        {"kiln_id": "KLN6", "damper": "vented", "note": "vented while it cools"},
+    ])
+    traces = [one_trace("t1", [{"name": "list_kilns", "args": {}, "result": rows}])]
+    schema = mine_schema(traces)
+    damper = next(c for c in schema.columns if c.name == "damper")
+    kiln_id = next(c for c in schema.columns if c.name == "kiln_id")
+    assert damper.vocabulary == ["closed", "open", "vented"]
+    assert kiln_id.vocabulary == [], "six ids are six values, not a set of names"

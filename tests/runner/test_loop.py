@@ -344,3 +344,74 @@ def test_a_tool_call_without_a_router_is_refused(workdir):
     state = new_run_state("r1", workdir=workdir)
     with pytest.raises(ValueError):
         run(state, scripted(), router=None)
+
+
+# --- what the Run says about the call itself (D159) ---
+
+
+class Wired(TestModel):
+    """A model whose replies come back with an exchange, the way a live adapter's do."""
+
+    def __init__(self, replies, exchange):
+        super().__init__(replies)
+        self.exchange = exchange
+
+    def query(self, messages, tools=None, config=None):
+        reply = super().query(messages, tools, config)
+        reply.exchange = self.exchange
+        return reply
+
+
+def test_the_model_call_event_is_priced_and_timed_from_the_exchange(workdir):
+    """A Run read on its own used to say every call cost nothing and took no time: only the
+    budget ledger's own copy of the call was priced."""
+    from kullback.ai.provider import Exchange, ModelReply
+    from kullback.ai.usage import Usage
+
+    model = Wired(
+        [ModelReply(content="Your order 123 was delivered.", model="claude-opus-5",
+                    usage=Usage(input=1_000_000))],
+        Exchange(provider="anthropic", wall_ms=12.5, attempts=1, status=200),
+    )
+    state = new_run_state("r1", workdir=workdir)
+    run(state, model, router=make_router())
+    call = [e for e in lines_of(state.path) if e["type"] == "model_call"][0]
+    assert call["cost"]["provider"] == "anthropic"
+    assert call["cost"]["wall_ms"] == 12.5
+    # anthropic/claude-opus-5 is 5.00 USD per million input tokens in the offline price table.
+    assert call["cost"]["usd"] == pytest.approx(5.0)
+    assert call["cost"]["price_source"] == "table"
+
+
+def test_the_stop_event_carries_the_system_prompt_and_the_tool_specs_the_candidate_was_given(workdir):
+    tools = [{"name": "get_order_details", "description": "look one order up"}]
+    state = new_run_state("r1", workdir=workdir, system_prompt="you are support")
+    run(state, scripted(), tools=tools, router=make_router())
+    stop = [e for e in lines_of(state.path) if e["type"] == "stop"][-1]
+    assert stop["payload"]["system_prompt"] == "you are support"
+    assert stop["payload"]["tools"] == tools
+
+    bare = new_run_state("r2", workdir=workdir)
+    run(bare, scripted(), router=make_router())
+    stop = [e for e in lines_of(bare.path) if e["type"] == "stop"][-1]
+    assert stop["payload"]["system_prompt"] is None
+    assert stop["payload"]["tools"] == []
+
+
+def test_a_provider_error_ends_the_run_with_its_status_and_attempts(workdir):
+    """The class stays env_error, which is what the Verdict reads; the status and the attempts say
+    whether the provider refused the body once or was down for five tries."""
+    from kullback.ai.provider import RetryExhausted
+
+    class Down(TestModel):
+        def query(self, messages, tools=None, config=None):
+            raise RetryExhausted("anthropic/claude-opus-5: 5 attempts failed", status=503, attempts=5)
+
+    state = new_run_state("r1", workdir=workdir)
+    with pytest.raises(RetryExhausted):
+        run(state, Down([]), router=make_router())
+    error = [e for e in lines_of(state.path) if e["type"] == "error"][0]
+    assert error["payload"]["class"] == "env_error"
+    assert error["payload"]["status"] == 503
+    assert error["payload"]["attempts"] == 5
+    assert state.run.termination_reason == "env_error"

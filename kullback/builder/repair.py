@@ -27,13 +27,16 @@ one that was just repaired.
 from __future__ import annotations
 
 import json
+import re
 import time
 from pathlib import Path
-from typing import Any, Awaitable, Callable, Optional
+from typing import Any, Awaitable, Callable, Iterable, Optional
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from kullback import gates
 from kullback.agent.tools import AgentTool, ToolResult
+from kullback.builder import lesson
 from kullback.builder import memory as memory_mod
 from kullback.runner.records import content_hash
 
@@ -126,6 +129,18 @@ NO_ATTEMPT = "the compiler recorded no attempt"
 NO_FAILURE = "the gates recorded no failure"
 NO_INTENT = "no Intent is recorded for this Task"
 
+# The stage's ruling on the body each tool already had, one row per tool: the outcome (kept, beaten
+# or could not run), both scores, how many recompiles in a row have now scored no higher, and how
+# many of the evidence calls the Reference replay put back (D184, D191). It is written by the
+# compile_tools stage in `builder/build.py` and read back here, because the sentence a repair opens
+# with has to say the same thing the stage decided: "cleared the gates" is about the body that was
+# released, and the released body is often the one that was already there.
+KEPT_BODIES_FILE = "kept_bodies.json"
+# How many recompiles in a row may score no higher before the tool is called stalled. The third
+# strike shape of D181 rule 2, for the Builder's own verb: two rounds that bought nothing on one
+# tool are the evidence that a third will buy nothing either.
+STALLED_AFTER = 2
+
 
 def _json_at(workdir: Any, relative: Any, default: Any) -> Any:
     """One record file of a workdir, or the default when it is missing or half written."""
@@ -198,20 +213,57 @@ def change_of(workdir: Any, verb: str, target: str, before: Optional[str]) -> di
 # --- the target's own ruling, off the artifact the stage just wrote -----------
 
 
-def _first_failure(node: Any) -> str:
-    """The first thing that went wrong in one compile attempt, in the gate's own words.
+SHAPES_SHOWN = 3
+_LITERAL = re.compile(r"'[^']*'|\"[^\"]*\"|\b\d+\b")
 
-    An attempt that never reached the sandbox (a refusal, an empty reply) carries `failures`; one
-    that ran carries the gates it was put through, whose rulings use the record alias `pass`.
+
+def failure_shape(text: str) -> str:
+    """One failure sentence with its values generalized, so two calls that failed the same way group."""
+    return _LITERAL.sub("*", " ".join(str(text).split()))
+
+
+def failure_shapes(failures: Iterable[str]) -> list[tuple[str, int]]:
+    """The distinct kinds of failure among a gate's sentences: the first of each kind, and how many share it.
+
+    A gate that ruled over sixty recorded calls leaves sixty sentences, and one of them was all the
+    mechanic ever saw, so the hint it wrote answered one example and the next recompile met the
+    fifty-nine it had not been told about. Grouped by shape, the same sixty sentences say how many
+    kinds of failure there are, which is what a hint has to answer.
+    """
+    seen: dict[str, list[Any]] = {}
+    for failure in failures:
+        row = seen.setdefault(failure_shape(failure), [str(failure), 0])
+        row[1] += 1
+    return [(text, count) for text, count in seen.values()]
+
+
+def _failure_detail(node: Any, shapes_shown: int = SHAPES_SHOWN) -> str:
+    """What went wrong in one compile attempt: the first failure, or every shape when calls failed in more than one way.
+
+    `shapes_shown` is three by default and the whole failing set once the tool has stalled (D211):
+    a Builder that has answered the same three shapes six rounds running has answered the sample,
+    and what it has not seen is the rest of the distribution.
     """
     if not isinstance(node, dict):
         return ""
     for failure in node.get("failures") or []:
         return str(failure)
     for ruling in node.get("gates") or []:
-        if isinstance(ruling, dict) and not ruling.get("pass"):
-            failures = ruling.get("failures") or []
-            return f"{ruling.get('stage')}: {failures[0]}" if failures else f"{ruling.get('stage')} failed"
+        if not (isinstance(ruling, dict) and not ruling.get("pass")):
+            continue
+        stage = ruling.get("stage")
+        failures = [str(f) for f in (ruling.get("failures") or [])]
+        if not failures:
+            return f"{stage} failed"
+        if len(failures) == 1:
+            return f"{stage}: {failures[0]}"
+        shapes = failure_shapes(failures)
+        shown = "; ".join(f"{text} ({count} call{'' if count == 1 else 's'})"
+                          for text, count in shapes[:shapes_shown])
+        more = len(shapes) - shapes_shown
+        plural = "" if len(shapes) == 1 else "s"
+        return (f"{stage}: {len(failures)} calls failed in {len(shapes)} shape{plural}: {shown}"
+                + (f"; {more} more shapes" if more > 0 else ""))
     return ""
 
 
@@ -223,19 +275,114 @@ def intent_ruling(workdir: Any, task_id: str) -> str:
     return f"repair_intent {task_id}: still refused: {record.get('reason') or NO_INTENT}"
 
 
-def recompile_ruling(workdir: Any, name: str) -> str:
-    """Whether this tool's new body cleared the gates, off `tool_builds.json`.
+def kept_body_ruling(workdir: Any, name: str) -> dict:
+    """What the compile_tools stage decided about the body this tool already had (D184, D191)."""
+    rows = _json_at(workdir, KEPT_BODIES_FILE, {})
+    row = rows.get(name) if isinstance(rows, dict) else None
+    return row if isinstance(row, dict) else {}
 
-    A tool that ended assisted is a body no attempt got through (D49), so the line carries the first
-    failure of its last attempt: that is what the next hint has to answer.
+
+def stalled_note(row: dict) -> str:
+    """How many recompiles in a row have bought this tool nothing, once that is worth saying (D191).
+
+    Said at the second one and every one after, because the point of saying it is that the next
+    round should be spent elsewhere: a Builder that reads "still assisted" and nothing else asks the
+    same question again, which is what four live rounds of one build did on the same four tools.
+
+    Past the stall limit the note says what changed rather than repeating the count (D211): the
+    next recompile asks for a rewrite from the recorded calls instead of a patch of the incumbent,
+    and where the two bodies tie at a gate before the fidelity ruling the gate is named, because
+    the fidelity number they tie at is one neither of them earned.
+    """
+    unbeaten = int(row.get("unbeaten") or 0) if isinstance(row, dict) else 0
+    blocked = str(row.get("blocked_by_gate") or "") if isinstance(row, dict) else ""
+    held = (f"; blocked_by_gate: both bodies fail the {blocked} gate, which runs before the replay "
+            f"ruling, so no recorded call was compared and the tie is at a number neither earned; "
+            f"repair what that gate refuses before spending another recompile here") if blocked else ""
+    if unbeaten < STALLED_AFTER:
+        return held
+    if lesson.stalled(unbeaten):
+        return (f"; stalled: {unbeaten} recompiles in a row scored no higher than the body it has, "
+                f"so the next one is asked to rewrite this tool from its recorded calls and the "
+                f"relation across them rather than to patch what is there{held}")
+    return (f"; stalled: {unbeaten} recompiles in a row scored no higher than the body it has, so "
+            f"the next one will not either unless something other than the hint changes{held}")
+
+
+def score_note(workdir: Any, name: str) -> str:
+    """The score pair this recompile was judged on, and which body the stage released (D191).
+
+    The stage scores every attempt against the body the tool already has, on the key the compiler
+    ranks its own attempts by (gates passed, then recorded calls matched), and releases whichever
+    won. Until this said so, the ruling named only the released body's gates, so a recompile whose
+    attempt lost by ninety calls and a recompile that won read the same to the model.
+    """
+    row = kept_body_ruling(workdir, name)
+    outcome = str(row.get("outcome") or "")
+    if not outcome:
+        return ""
+    attempt, kept = row.get("attempt_score"), row.get("kept_score")
+    pair = f"the attempt scored {attempt} against the kept body's {kept} (gates passed, calls matched)"
+    if outcome == "beaten":
+        released = f"{pair} and was released"
+    elif outcome == "could_not_run":
+        released = (f"{pair}, and the body already there answered no call at all under this world, "
+                    f"so the attempt was released")
+    elif outcome == "reverted_regression":
+        # D201: the attempt was ahead on the score and behind on the calls. Saying only that the
+        # kept body stands would read as a tie, and the next hint would be written against nothing.
+        broke = [str(call) for call in (row.get("broke") or [])]
+        total = int(row.get("broke_calls") or len(broke))
+        named = ", ".join(broke)
+        more = total - len(broke)
+        released = (f"{pair}, but it stopped answering {total} recorded call"
+                    f"{'' if total == 1 else 's'} the body already there answers"
+                    + (f" ({named}{f' and {more} more' if more > 0 else ''})" if named else "")
+                    + ", so it was reverted and the body already there stands")
+    else:
+        released = f"{pair}, so the body already there stands and this recompile changed nothing"
+    replayed = int(row.get("from_replay") or 0)
+    evidence = int(row.get("evidence_calls") or 0)
+    from_replay = (f"; {replayed} of the {evidence} evidence calls are from_replay, put back because "
+                   f"the Reference replay failed on them") if replayed else ""
+    # D201: the stage's ruling stands, and the transaction that wrapped it may have put the release
+    # back. Saying only what the stage decided would leave the record claiming a body was released
+    # after the whole repair was undone.
+    broke = [str(task) for task in (row.get("reverted_tasks") or [])]
+    put_back = (f"; the repair was then put back because it cost {', '.join(broke)}" if broke
+                else "; the repair was then put back for no effect on the Tasks it can touch"
+                if row.get("reverted") and outcome in ("beaten", "could_not_run") else "")
+    return f" ({released}{from_replay}{put_back}{stalled_note(row)})"
+
+
+def recompile_ruling(workdir: Any, name: str) -> str:
+    """Whether this tool's new body cleared the gates, off `tool_builds.json` and `kept_bodies.json`.
+
+    A tool that ended assisted is a body no attempt got through (D49), so the line carries what went
+    wrong in its last attempt: that is what the next hint has to answer. Where the recorded calls
+    failed in more than one way, every shape is named with how many calls fell into it, since a hint
+    written against the first sentence alone repairs one call and leaves the rest as they were.
+
+    The assisted reading is the released body's, and the released body is the one the stage kept
+    whenever the attempt did not beat it, so the line goes on to say what the attempt scored against
+    it and whose body came out (D191). "cleared the gates" on its own was read as a repair that
+    worked, over rounds in which the repair had changed nothing at all.
     """
     build = tool_build(workdir, name)
     if not build:
         return f"repair_recompile {name}: {NO_ATTEMPT}"
+    score = score_note(workdir, name)
     if not build.get("assisted"):
-        return f"repair_recompile {name}: cleared the gates"
-    failures = [text for text in (_first_failure(node) for node in build.get("nodes") or []) if text]
-    return f"repair_recompile {name}: still assisted: {failures[-1] if failures else NO_FAILURE}"
+        return f"repair_recompile {name}: cleared the gates{score}"
+    # D211: a stalled tool is shown the whole failing set rather than the first three shapes of it.
+    row = kept_body_ruling(workdir, name)
+    shapes = (lesson.FAILING_SET_SHOWN if lesson.stalled(int(row.get("unbeaten") or 0))
+              else SHAPES_SHOWN)
+    failures = [text for text in (_failure_detail(node, shapes) for node in build.get("nodes") or []) if text]
+    # A body that never read its arguments is a different repair from a body with a defect in it, so
+    # the line says which one this is before it says what the gates saw.
+    stood = "still assisted and hardcoded" if build.get("hardcoded") else "still assisted"
+    return f"repair_recompile {name}: {stood}{score}: {failures[-1] if failures else NO_FAILURE}"
 
 
 def grow_ruling(workdir: Any, table: str, count: int) -> str:
@@ -296,10 +443,101 @@ def _render(result: RepairResult) -> str:
     return f"{result.verb} {result.target}: {result.status}" + (f" ({result.detail})" if result.detail else "")
 
 
+# --- the same decision, taken again --------------------------------------------
+
+# How many times one Task may be refused for one reason before the verb stops taking it. D181's
+# three strikes stopped the Examiner repairing one Verifier against one check for ever; the Builder's
+# `repair_refuse_task` had no such stop, and one live build made 17 of them, had 0 admitted, and in
+# round 3 refused four Tasks again with the reason word for word from round 1 and the same answer.
+# Refusing is not a repair: nothing about the Task moves between two identical requests, so the
+# second is the last one that can tell anybody anything.
+REFUSE_STOP = 2
+# What buys something a third refusal cannot. Whether a Task is refused is the refuse gate's, over
+# the Examiner's own `refuse` and only when no frontier Run finished (D128); on the Builder's side
+# what is left is repairing what the Task is actually blocked on, or escalating it to a person.
+REFUSE_ALTERNATIVES = "repair_recompile or repair_intent on what blocks it, or repair_escalate"
+
+
+def refusals_recorded(workdir: Any, verb: str = "repair_refuse_task") -> list[dict]:
+    """Every request this workdir has recorded for `verb`, oldest first; a half-written line is skipped."""
+    path = Path(workdir) / "repairs" / f"{verb}.jsonl"
+    if not path.is_file():
+        return []
+    rows = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        try:
+            row = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(row, dict):
+            rows.append(row)
+    return rows
+
+
+def _reason_of(row: dict) -> str:
+    return str((row.get("arguments") or {}).get("reason") or "").strip()
+
+
+def refuse_lock(workdir: Any, task_id: str, reason: str, limit: int = REFUSE_STOP) -> Optional[str]:
+    """Why this refusal is refused, or None when it is still open.
+
+    The count is per Task and per reason, so a Task refused once for one reason and once for another
+    is still open: two reasons are two things to say. The same reason `limit` times is the request
+    that has already been answered twice, and the message says so with what buys something instead.
+    """
+    reason = (reason or "").strip()
+    seen = [row for row in refusals_recorded(workdir)
+            if str(row.get("target") or "") == task_id and _reason_of(row) == reason and not row.get("blocked")]
+    if len(seen) < limit:
+        return None
+    rounds = ", ".join(str(row.get("round") or "?") for row in seen)
+    return (f"task {task_id} has already been refused {len(seen)} times for this reason (round {rounds}) "
+            f"and nothing about it has moved; a third refusal is refused. What buys something "
+            f"instead: {REFUSE_ALTERNATIVES}.")
+
+
+def refused_twice(workdir: Any, limit: int = REFUSE_STOP) -> list[str]:
+    """The Tasks refused `limit` times for one reason, for the status line: "refused twice: <task>"."""
+    counts: dict[tuple[str, str], int] = {}
+    for row in refusals_recorded(workdir):
+        if row.get("blocked"):
+            continue
+        counts[(str(row.get("target") or ""), _reason_of(row))] = \
+            counts.get((str(row.get("target") or ""), _reason_of(row)), 0) + 1
+    return sorted({task for (task, _), seen in counts.items() if task and seen >= limit})
+
+
+def refuse_repeats(workdir: Any, round_no: Optional[int] = None) -> int:
+    """How many refusals repeated a Task and reason already recorded, blocked ones counted.
+
+    A blocked third attempt is recorded with `blocked` so the count is readable off the same file
+    the round report reads and does not need the session; a repeat is any row whose Task and reason
+    an earlier row already carried. `round_no` narrows it to one round.
+    """
+    seen: set[tuple[str, str]] = set()
+    repeats = 0
+    for row in refusals_recorded(workdir):
+        key = (str(row.get("target") or ""), _reason_of(row))
+        if key in seen and (round_no is None or int(row.get("round") or 0) == int(round_no)):
+            repeats += 1
+        seen.add(key)
+    return repeats
+
+
 def _executor(workdir: Any, verb: str, target_of: Any, round_of: Optional[Callable[[], int]] = None,
-              detail: Optional[str] = None) -> Any:
+              detail: Optional[str] = None, guard: Optional[Callable[[Any, Any], Optional[str]]] = None) -> Any:
     async def execute(args: Any) -> RepairResult:
         target = target_of(args)
+        locked = guard(workdir, args) if guard is not None else None
+        if locked is not None:
+            # The blocked attempt is recorded too, marked, so the round report and `refuse_repeats`
+            # read the whole of what the session tried off the one file, and the strike count itself
+            # skips the marked rows: a block is not a third answer.
+            record_request(workdir, verb, target,
+                           {"arguments": args.model_dump(mode="json"), "blocked": True,
+                            "changed": False, "hash_before": None, "hash_after": None},
+                           round_no=int(round_of()) if round_of is not None else 1)
+            raise PermissionError(f"{verb} refused: {locked}")
         extra: dict[str, Any] = {}
         before = target_hash(workdir, verb, target)
         if verb == "repair_rewrite_skill":
@@ -343,10 +581,13 @@ def repair_tools(workdir: Any, sink: Optional[Sink] = None,
         AgentTool("repair_refuse_task", "Record that a Task is not worth deriving anything from. This "
                   "repairs nothing and moves no gate: it writes one row for the round report, and "
                   "whether the Task is refused is the Examiner's under the refuse gate. An Intent the "
-                  "evidence does not support is repaired with repair_intent, not refused here.",
+                  "evidence does not support is repaired with repair_intent, not refused here. "
+                  "The same Task refused twice for the same reason is refused a third time here, "
+                  "with what buys something instead.",
                   RefuseTaskArgs, RepairResult,
                   _executor(workdir, "repair_refuse_task", lambda a: a.task_id, round_of,
-                            detail="one row for the round report; no gate moves and no artifact changes"),
+                            detail="one row for the round report; no gate moves and no artifact changes",
+                            guard=lambda wd, a: refuse_lock(wd, a.task_id, a.reason)),
                   render=_render),
         AgentTool("repair_escalate", "Escalate a Task to a person on a named queue.",
                   EscalateArgs, RepairResult,
@@ -376,19 +617,28 @@ def load_prior_bodies(workdir: Any) -> dict:
         return {}
 
 
-def ratchet_bodies(prior: dict, new: dict, gate_passed: dict[str, bool]) -> dict:
+def ratchet_bodies(prior: dict, new: dict, gate_passed: dict[str, bool],
+                   refused: Iterable[str] = ()) -> dict:
     """Never replace a passing artifact with a failing one: keep the prior body where the new gate failed.
 
     `gate_passed` names, per tool, whether the new body cleared its gates; a tool absent from the
     map keeps its new body. Tools only in `prior` stay; tools only in `new` are kept.
+
+    `refused` names the tools whose prior body is itself refused today, and those are not kept: a
+    body cleared the gates of the build it was written in, and a build that adds a gate (D162's
+    `compile_tools.memorised_values` is the first) can hold a prior body no gate accepts any more.
+    Ratcheting onto it would keep a body every later round has to repair and never can.
     """
     out = dict(new)
+    refused = set(refused)
     prior_bodies = prior.get("bodies", prior) if isinstance(prior, dict) else {}
     new_bodies = new.get("bodies", new) if isinstance(new, dict) else {}
     if not isinstance(prior_bodies, dict) or not isinstance(new_bodies, dict):
         return new
     merged = dict(new_bodies)
     for name, body in prior_bodies.items():
+        if name in refused:
+            continue  # the prior body fails a gate of this build; there is nothing to ratchet onto
         if name not in merged:
             merged[name] = body  # the new build omits it; the last passing body stays
         elif name in gate_passed and gate_passed[name] is False:
@@ -400,13 +650,19 @@ def ratchet_bodies(prior: dict, new: dict, gate_passed: dict[str, bool]) -> dict
     return merged
 
 
-def apply_ratchet(workdir: Any, new_bodies: dict, gate_passed: dict[str, bool]) -> dict:
+def apply_ratchet(workdir: Any, new_bodies: dict, gate_passed: dict[str, bool],
+                  refused: Iterable[str] = ()) -> dict:
     """`ratchet_bodies` against this workdir's last `bodies.json`."""
-    return ratchet_bodies(load_prior_bodies(workdir), new_bodies, gate_passed)
+    return ratchet_bodies(load_prior_bodies(workdir), new_bodies, gate_passed, refused)
 
 
-def ratchet_hook(workdir: Any) -> Any:
-    """A `tool_result` handler: a `compile_tool` failure restores the prior passing body in details."""
+def ratchet_hook(workdir: Any, refused: Iterable[str] = ()) -> Any:
+    """A `tool_result` handler: a `compile_tool` failure restores the prior passing body in details.
+
+    `refused` is `ratchet_bodies`' own: a tool whose prior body fails a gate of this build is not
+    restored, because there is nothing there to ratchet onto (D162).
+    """
+    refused = set(refused)
 
     def on_result(call: Any, result: ToolResult) -> Optional[ToolResult]:
         name = getattr(call, "name", None)
@@ -418,6 +674,8 @@ def ratchet_hook(workdir: Any) -> Any:
             return None
         args = getattr(call, "arguments", {}) or {}
         tool = args.get("name", "")
+        if tool in refused:
+            return None
         prior = load_prior_bodies(workdir)
         bodies = prior.get("bodies", prior) if isinstance(prior, dict) else {}
         if not isinstance(bodies, dict) or tool not in bodies:
@@ -434,6 +692,27 @@ def ratchet_hook(workdir: Any) -> Any:
 
 # --- lesson --------------------------------------------------------------------
 
+def _rulings_of(workdir: Any, tool: str) -> list[dict]:
+    """This tool's recorded rulings off `tool_builds.json`, the latest attempt's first.
+
+    The compile_tools stage writes every attempt's rulings there, so a lesson is read off what code
+    wrote and never off a model. An empty list when the file is missing, unreadable or silent about
+    this tool.
+    """
+    path = Path(workdir) / "tool_builds.json"
+    if not path.is_file():
+        return []
+    try:
+        builds = json.loads(path.read_text(encoding="utf-8"))
+    except (ValueError, OSError):
+        return []
+    row = builds.get(tool) if isinstance(builds, dict) else None
+    nodes = row.get("nodes") if isinstance(row, dict) else None
+    return [ruling for node in reversed(nodes if isinstance(nodes, list) else [])
+            for ruling in (node.get("gates") if isinstance(node, dict) else None) or []
+            if isinstance(ruling, dict)]
+
+
 def gate_exception_line(workdir: Any, tool: str) -> str:
     """The exception this tool's latest failing gate reports, as `ExceptionClass: message`.
 
@@ -445,24 +724,44 @@ def gate_exception_line(workdir: Any, tool: str) -> str:
     # gates behind it. Nothing here needs them until a lesson is actually written.
     from kullback.builder.compile_env import exception_in
 
-    path = Path(workdir) / "tool_builds.json"
-    if not path.is_file():
-        return ""
-    try:
-        builds = json.loads(path.read_text(encoding="utf-8"))
-    except (ValueError, OSError):
-        return ""
-    row = builds.get(tool) if isinstance(builds, dict) else None
-    nodes = row.get("nodes") if isinstance(row, dict) else None
-    for node in reversed(nodes if isinstance(nodes, list) else []):
-        rulings = node.get("gates") if isinstance(node, dict) else None
-        for ruling in rulings if isinstance(rulings, list) else []:
-            if not isinstance(ruling, dict) or ruling.get("pass"):
-                continue
-            for failure in ruling.get("failures") or []:
-                found = exception_in(str(failure))
-                if found:
-                    return found
+    for ruling in _rulings_of(workdir, tool):
+        if ruling.get("pass"):
+            continue
+        for failure in ruling.get("failures") or []:
+            found = exception_in(str(failure))
+            if found:
+                return found
+    return ""
+
+
+def memorised_values_lesson(workdir: Any, tool: str) -> str:
+    """The one sentence a body refused for memorising the recordings leaves behind (D162).
+
+    Read off `tool_builds.json` the same way `gate_exception_line` is: the latest attempt first, so
+    a tool that has since been written properly leaves nothing. The gate's own failures name the
+    literals, which belong to one attempt; this is the lesson, which belongs to the tool, and it
+    says the one thing every such failure is repaired by.
+    """
+    for ruling in _rulings_of(workdir, tool):
+        if ruling.get("stage") == gates.MEMORISED_STAGE and not ruling.get("pass"):
+            return gates.MEMORISED_LESSON
+    return ""
+
+
+def sensitivity_lesson(workdir: Any, tool: str) -> str:
+    """The one sentence a body refused for answering two worlds alike leaves behind (D195).
+
+    Read off `tool_builds.json` the way the memorised-values lesson is, and it names the columns the
+    ruling recorded, because "read the world" is what the writer of a memorising body already
+    believes it did. The columns are the ruling's own metric, so nothing here parses a failure
+    sentence. Only the latest ruling of this stage is asked, whichever way it went: a tool whose
+    last attempt read the columns has learned the lesson, and repeating it to the next writer is
+    telling it to repair what it has already repaired.
+    """
+    for ruling in _rulings_of(workdir, tool):
+        if ruling.get("stage") == gates.SENSITIVITY_STAGE:
+            return ("" if ruling.get("pass") else
+                    gates.sensitivity_lesson((ruling.get("metrics") or {}).get("columns") or []))
     return ""
 
 
@@ -473,11 +772,21 @@ def record_tool_lesson(workdir: Any, tool: str, failures: list[str]) -> Path:
     and the two are not the same sentence. Both go into the lesson, so the compiler's next prompt
     (`memory.lesson_for`, read by `compile_tool`) carries the error line it must not raise again and
     not only the advice. The line is added once and only when the hint does not already quote it.
+    The memorised-values lesson (D162) is added the same way: a body refused for holding an id out
+    of a recorded call is repaired by one sentence, and the hint rarely says it.
     """
     failures = list(failures)
     error = gate_exception_line(workdir, tool)
     if error and not any(error in failure for failure in failures):
         failures.append(f"the last attempt raised {error}; do not raise it again")
+    memorised = memorised_values_lesson(workdir, tool)
+    if memorised and not any(memorised in failure for failure in failures):
+        failures.append(memorised)
+    # D195 the same way: a body that answered two Tasks alike is repaired by naming the columns it
+    # has to read off the world, and the hint almost never names a column.
+    sensitivity = sensitivity_lesson(workdir, tool)
+    if sensitivity and not any(sensitivity in failure for failure in failures):
+        failures.append(sensitivity)
     return memory_mod.record_lesson(workdir, tool, failures)
 
 

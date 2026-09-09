@@ -61,6 +61,10 @@ CURRENCY = "".join(CanonRules().currency_symbols)
 # What check 8 puts in an atom's place: a value no Run of the customer's world produced.
 _MUTANT = "harness_mutation_no_such_value"
 _NEVER_HOLDS = "def check(pre_state, write_call, transcript):\n    return False\n"
+# Why check 5 had nothing to score, when the caller passed no second path: the Task has one
+# Reference. It is the only reason the Examiner's stage leaves that Run out (`suite_for` passes the
+# second Reference or None), and a check with no input is not evidence of a narrow Verifier (D173).
+ALT_PATH_NOT_RUN = "one Reference, so there is no second path to score"
 
 # The transcript helpers a compiled Hard predicate may call, pasted into its source by `_predicate`
 # at derivation time and by the policy compiler's sandbox at build time. One text, read by both
@@ -526,6 +530,15 @@ def _before(turns, name, seen):
 # the ones the seed Runs only ever read with, so a rule about a tool the Reference never used still
 # fires. `start_state` is the state at the top of the Run; a Run records no per-write snapshot, so a
 # rule that reads state judges the second write of a Run against the first write's input.
+#
+# `judged()` says how many calls the rule was asked about, because "every call held" and "there was
+# no call" are different answers and `check()` alone cannot tell them apart: it returns True for
+# both, which is what the Verdict needs (a Run that never touched the tool broke no rule) and not
+# what a gate needs. On a Run with no write call, replacing the rule with one that never holds still
+# returns True, so the mutation check counted an atom that had nothing to say as an atom that could
+# not be falsified: 27 Tasks of one build and 28 of another, every one of them read-only (D173).
+# `hard_holds` reads `judged()` and answers None there, the way it already refuses to read a missing
+# `check` as "the constraint held".
 _HARD_WRAPPER = """{helpers}
 {spans}
 {rule}
@@ -533,10 +546,16 @@ _HARD_WRAPPER = """{helpers}
 _rule = check
 _WRITE_TOOLS = {write_tools}
 _READ_TOOLS = {read_tools}
+_judged = []
+
+
+def judged():
+    return len(_judged)
 
 
 def check():
     seen = {{}}
+    del _judged[:]
     for _call in calls:
         _name = _call.get("name") or ""
         _count = seen.get(_name, 0)
@@ -547,6 +566,7 @@ def check():
             continue
         _args = _call.get("args") or _call.get("arguments") or {{}}
         _turns = _before(transcript, _name, _count)
+        _judged.append(_name)
         if not _rule(start_state, {{"name": _name, "arguments": _args}}, _turns):
             return False
     return True
@@ -612,8 +632,22 @@ def start_state(run: Run) -> dict:
     return {}
 
 
+def _result_turn(event: Event) -> dict:
+    """One tool result as a turn: what the Run was handed, under `result`, with no content of its own.
+
+    D206 needs a rule to be able to ask what the Run had already read when it wrote, and a rule that
+    cannot see a result can only ask about the row. The content stays None and the role is neither
+    user nor assistant, so every helper and every rule written before this one reads the turn as it
+    read the tool-call turns that already carry no content: `user_confirmed` looks for the last user
+    turn and the assistant turn before it, `said_before` reads assistant turns, `_elicited` skips a
+    turn with no content, and `_before` counts calls. One turn per result, in event order, so a rule
+    handed the turns before a call sees exactly the results that call came after.
+    """
+    return {"role": "tool", "content": None, "result": _payload(event).get("result"), "tool_calls": []}
+
+
 def _transcript(run: Run) -> list[dict]:
-    """The Run as a policy predicate reads it: role, content and tool calls, in event order."""
+    """The Run as a policy predicate reads it: role, content, results and tool calls, in event order."""
     out: list[dict] = []
     for event in run.events:
         if event.type == "model_call" and _assistant_text(event):
@@ -624,12 +658,21 @@ def _transcript(run: Run) -> list[dict]:
             out.append({"role": "assistant", "content": None, "tool_calls": [
                 {"name": str(_payload(event).get("name") or ""),
                  "arguments": _payload(event).get("args") or _payload(event).get("arguments") or {}}]})
+        elif event.type == "tool_result":
+            out.append(_result_turn(event))
     return out
 
 
 def hard_holds(atom: Atom, run: Run, write_tools: Optional[set[str]] = None,
                 fn: Optional[Callable] = None) -> Optional[bool]:
-    """Does this compiled Hard constraint hold over the Run? None when the atom is not code (D76).
+    """Does this compiled Hard constraint hold over the Run? None when it judged nothing (D76, D173).
+
+    None is "no answer", and there are two ways to have none: the atom is not code (a judge atom,
+    D76), or the rule was asked about no call at all, which is every Run of a Task whose frontier
+    only ever read. The wrapper's `check()` returns True in that second case because that is what
+    the Verdict needs, so the count of calls it judged is read back off the namespace here rather
+    than inferred from the answer. A caller must not report None as "the constraint held": nothing
+    was checked, and on a read-only Run no compiled constraint is checked at all.
 
     A predicate that raises is a Verifier defect and returns False, so the D79 oracle check reports
     it; returning None used to read as "the constraint held" and hid a rule that never ran. A
@@ -654,7 +697,13 @@ def hard_holds(atom: Atom, run: Run, write_tools: Optional[set[str]] = None,
     try:
         exec(compile(source, "<hard>", "exec"), namespace)  # noqa: S102
         check = namespace.get("check")
-        return None if check is None else bool(check())
+        if check is None:
+            return None
+        held = bool(check())
+        judged = namespace.get("judged")
+        # An atom stored before `judged` existed answers as it always did; a rule that judged a call
+        # and failed on it is a real False whatever the count says.
+        return None if held and callable(judged) and not judged() else held
     except Exception:
         return False
 
@@ -731,6 +780,20 @@ def scored_write_tools(verifier: Verifier, run: Run, write_tools: Optional[Itera
     return resolve_write_tools([run], verifier_write_tools(verifier))
 
 
+def names_no_row(payload: dict) -> bool:
+    """Is this write atom about the tool rather than about one row?
+
+    A write payload that names no entity, no raw entity and no id field carries the predicate
+    `wrote(tool)` with no fields, which the Runner satisfies with any successful call of the tool and
+    marks every one of them covered. The scorer here has to read the same atom the same way or the
+    two would disagree about the very Runs the D79 gates are made of: a Verifier the gates rejected
+    for a row it never wrote would be passed by the Verdict. It is the shape an over-specific write
+    atom is relaxed to (D205), and it is the shape the derivation writes whenever a write leaves no
+    id field behind, so nothing about it belongs to one relaxation.
+    """
+    return not (payload.get("entity") or payload.get("entity_raw") or payload.get("id_field"))
+
+
 def check_run(verifier: Verifier, run: Any, canon: Any = None, *,
               write_tools: Optional[Iterable[str]] = None) -> tuple[bool, Optional[str]]:
     """Does this Run satisfy the atoms? Used by the D79 checks below, never by the Runner."""
@@ -739,6 +802,7 @@ def check_run(verifier: Verifier, run: Any, canon: Any = None, *,
     tools = scored_write_tools(verifier, run, write_tools)
     effects = write_effects(run, tools, fn)
     present = {(e["tool"], e["entity"]) for e in effects.values()}
+    wrote_with = {e["tool"] for e in effects.values()}
     values = {(e["tool"], e["entity"], f, v) for e in effects.values() for f, v in e["values"].items()}
     asked, said = set(question_keys(run, effects, fn)), set(communicate_values(run, fn))
     for atom in verifier.atoms:
@@ -754,7 +818,8 @@ def check_run(verifier: Verifier, run: Any, canon: Any = None, *,
             continue
         if atom.kind != "required" and kind not in ("question", "communicate"):
             continue
-        if kind == "write" and target not in present:
+        if kind == "write" and (payload.get("tool") not in wrote_with if names_no_row(payload)
+                                else target not in present):
             return False, atom.id
         if kind == "write_value" and target + (payload.get("field"), payload.get("value")) not in values:
             return False, atom.id
@@ -781,12 +846,17 @@ def _extra_write(verifier: Verifier, effects: dict, write_tools: Optional[Iterab
     if not write_tools:
         return None
     covered = set()
+    whole_tool = set()
     for atom in verifier.atoms:
         payload = atom_payload(atom)
         if atom.kind != "forbidden" and payload.get("kind") in ("write", "write_value"):
             covered.add((payload.get("tool"), payload.get("entity")))
+            if names_no_row(payload):
+                # `wrote(tool)` with no fields marks every call of the tool covered on the Runner's
+                # side, so an atom about the tool covers every row it wrote here too.
+                whole_tool.add(payload.get("tool"))
     for effect in effects.values():
-        if (effect["tool"], effect["entity"]) not in covered:
+        if effect["tool"] not in whole_tool and (effect["tool"], effect["entity"]) not in covered:
             return f"extra_write:{effect['tool']}"
     return None
 
@@ -818,13 +888,18 @@ def validate_verifier(verifier: Verifier, reference_run: Any, empty_run: Any = N
                       user_rules: Optional[UserRules] = None, *, canon: Any = None,
                       write_tools: Optional[Iterable[str]] = None, model: Any = None,
                       run_probe: Optional[Callable] = None,
-                      seed_runs: Optional[Iterable[Any]] = None) -> list[GateResult]:
+                      seed_runs: Optional[Iterable[Any]] = None,
+                      intent: Any = None) -> list[GateResult]:
     """The nine D79 checks as GateResults. A check whose input is missing fails as "not run".
 
     Nothing here executes a Run (D91), so the wrong Run, the second path and the loophole probe are
     the caller's to supply; a check the caller left out is reported as not run, the way artifacts.py
     counts it, and never as a pass. The empty Run and the unfinished Run need no input and are
     synthesized from the Reference.
+
+    `intent` is the Task's Intent record where the caller has it, which turns check 7 into an audit
+    of the D196 strip: the record says which columns the miner already took out, and the check names
+    the column of anything it missed.
     """
     reference = as_run(reference_run)
     runs = {r.trace_id or r.run_id: r for r in [as_run(s) for s in (seed_runs or [])] + [reference]}
@@ -841,11 +916,12 @@ def validate_verifier(verifier: Verifier, reference_run: Any, empty_run: Any = N
         _run_gate("verifier_empty_run", scored,
                   empty_run if empty_run is not None else _empty_run(reference), expect_pass=False),
         _run_gate("verifier_wrong_run", scored, wrong_run, expect_pass=False),
-        _run_gate("verifier_unfinished_run", scored, unfinished_run(verifier, reference), expect_pass=False),
-        _run_gate("verifier_alt_path", scored, alt_path_run, expect_pass=True),
+        _run_gate("verifier_unfinished_run", scored, unfinished_run(verifier, reference, canon),
+                  expect_pass=False),
+        _run_gate("verifier_alt_path", scored, alt_path_run, expect_pass=True, missing=ALT_PATH_NOT_RUN),
         loophole_probe(verifier, model, run_probe=run_probe, canon=canon, write_tools=write_tools),
-        _leak_gate(verifier, reference, intent_text, user_rules, runs.values()),
-        _mutation_gate(verifier, reference, score, canon_fn(canon)),
+        _leak_gate(verifier, reference, intent_text, user_rules, runs.values(), intent),
+        _mutation_gate(verifier, reference, score, canon_fn(canon), write_tools),
     ]
 
 
@@ -913,15 +989,26 @@ def _values_named(run: Run, field: str) -> list[Any]:
     return out
 
 
-def unfinished_run(verifier: Verifier, reference: Any) -> Optional[Run]:
+def unfinished_run(verifier: Verifier, reference: Any, canon: Any = None) -> Optional[Run]:
     """Check 9's Run: the Reference stopped one step short, which must not score a pass (D119).
 
     GLM 5.3's unsolved-state check, beside the oracle and the no-op: a Verifier that rewards a Run
-    that got most of the way there rewards leaving the job unfinished. The cut is made just before
-    the last required write when the Verifier requires one, else before the last tool call, else
-    before the final assistant turn; a Reference with nothing to cut has no unfinished Run and the
-    check stays not run. Nothing after the cut survives, so the Run reads as one that ran out of
-    turns, not one that did the write and skipped the goodbye.
+    that got most of the way there rewards leaving the job unfinished. Where the cut falls depends
+    on what the Task's outcome is (D156, D173):
+
+      - the Verifier requires a write: just before the last required write, so the Run reads as one
+        that did the reading and never acted;
+      - the Verifier requires no write: the outcome is the answer, so the cut falls before the first
+        assistant turn that states a fact a communicate atom asks for, else before the last
+        assistant turn. The first, not the last: a recorded conversation states the facts and then
+        repeats them in a closing turn, so cutting before the closing turn leaves the answer
+        standing earlier in the Run and the cut Run passes. Cutting before the first statement is
+        the state this check is about, an agent that read the world and never told the user;
+      - nothing else to go on: before the last tool call, else before the final assistant turn.
+
+    A Reference with nothing to cut has no unfinished Run and the check stays not run. Nothing after
+    the cut survives, so the Run reads as one that ran out of turns rather than one that did the
+    write and skipped the goodbye.
     """
     reference = as_run(reference)
     run = reference.model_copy(deep=True)
@@ -930,6 +1017,8 @@ def unfinished_run(verifier: Verifier, reference: Any) -> Optional[Run]:
               if a.kind == "required" and atom_payload(a).get("kind") == "write"]
     present = {e.idx for e in run.events if e.type == "tool_call"}
     cut = max((at for at in writes if isinstance(at, int) and at in present), default=None)
+    if cut is None and not writes:
+        cut = _first_answer(verifier, run, canon_fn(canon))
     for kind in ("tool_call", "model_call"):
         if cut is not None:
             break
@@ -939,6 +1028,21 @@ def unfinished_run(verifier: Verifier, reference: Any) -> Optional[Run]:
     run.events = [e for e in run.events if e.idx < cut]
     run.termination_reason = "max_turns"
     return run
+
+
+def _first_answer(verifier: Verifier, run: Run, fn: Callable) -> Optional[int]:
+    """The idx of the first assistant turn stating a fact this Verifier's communicate atoms ask for,
+    or of the last assistant turn when it asks for none. None when the Run has no assistant turn.
+
+    The facts are keyed the way `communicate_values` keys them, so an atom and the turn that states
+    it are compared as one canonical value and not as two spellings of it (D39).
+    """
+    wanted = {p.get("value") for p in map(atom_payload, verifier.atoms) if p.get("kind") == "communicate"}
+    answers = [e for e in run.events if e.type == "model_call" and _assistant_text(e)]
+    for event in answers:
+        if wanted & {_key(fn, token) for token in _tokens(_assistant_text(event))}:
+            return event.idx
+    return answers[-1].idx if answers else None
 
 
 def _empty_run(reference: Run) -> Run:
@@ -980,11 +1084,17 @@ def _spans_gate(verifier: Verifier, runs: dict[str, Run], fn: Callable) -> GateR
                       metrics={"atoms_checked": checked}, failures=failures)
 
 
-def _run_gate(stage: str, scored: Callable, run: Any, *, expect_pass: bool) -> GateResult:
-    """Checks 2 to 5: one Run, one expected outcome. No Run, no evidence, so no pass."""
+def _run_gate(stage: str, scored: Callable, run: Any, *, expect_pass: bool,
+              missing: str = "no Run was supplied for this check") -> GateResult:
+    """Checks 2 to 5: one Run, one expected outcome. No Run, no evidence, so no pass.
+
+    A check with no Run is still a failure, and `missing` says which kind it is: the second path is
+    missing because the Task has one Reference and not because the Verifier turned a second path
+    away, and a reader that cannot tell those apart reaches for the wrong repair (D173).
+    """
     if run is None:
-        return GateResult(stage=stage, passed=False, metrics={"skipped": True},
-                          failures=["not run: no Run was supplied for this check"])
+        return GateResult(stage=stage, passed=False, metrics={"skipped": True, "not_run_reason": missing},
+                          failures=[f"not run: {missing}"])
     passed, failing_atom = scored(run)
     want = "pass" if expect_pass else "fail"
     failures = [] if passed is expect_pass else [f"expected {want}, got {'pass' if passed else 'fail'}"]
@@ -992,16 +1102,24 @@ def _run_gate(stage: str, scored: Callable, run: Any, *, expect_pass: bool) -> G
                       metrics={"run_passed": passed, "failing_atom": failing_atom})
 
 
-def _mutation_gate(verifier: Verifier, reference: Run, score: Callable, fn: Callable) -> GateResult:
+def _mutation_gate(verifier: Verifier, reference: Run, score: Callable, fn: Callable,
+                   write_tools: Optional[Iterable[str]] = None) -> GateResult:
     """Check 8: change what an atom demands and the Reference must stop passing.
 
     An atom nothing can fail is an atom that is not being checked, which is how a Hard constraint
-    that never gets evaluated, or a value the scorer never compares, hides in a passing suite.
+    that never gets evaluated, or a value the scorer never compares, hides in a passing suite. An
+    atom with nothing to mutate is a different thing and is not counted as a failed flip (D173): a
+    write cap of 0 has no smaller cap to ask for, and a Hard rule the Run gave no call to judge
+    would answer the same whatever rule it carried. Both are skipped and neither is a failure of
+    the atom. What is a failure is a Verifier in which no atom at all can be mutated, since nothing
+    in it can be made to say something false about its own Reference.
     """
-    failures, mutated = [], 0
+    tools = scored_write_tools(verifier, reference, write_tools)
+    failures, mutated, inert = [], 0, 0
     for atom in verifier.atoms:
         mutant = _mutant(atom, fn)
-        if mutant is None:
+        if mutant is None or _judged_no_call(atom, reference, tools, fn):
+            inert += 1
             continue
         mutated += 1
         changed = Verifier(task_id=verifier.task_id, verifier_version=verifier.verifier_version,
@@ -1009,8 +1127,20 @@ def _mutation_gate(verifier: Verifier, reference: Run, score: Callable, fn: Call
                            atoms=[mutant if a.id == atom.id else a for a in verifier.atoms])
         if score(changed, reference)[0]:
             failures.append(f"{atom.id}: the Reference still passes when this atom is changed")
+    if not mutated:
+        failures.append(f"no atom of this Verifier can be mutated ({inert} of them have nothing to "
+                        "mutate or judged no call of the Reference), so nothing in it can be falsified")
     return GateResult(stage="verifier_mutation", passed=not failures,
-                      metrics={"atoms_mutated": mutated}, failures=failures)
+                      metrics={"atoms_mutated": mutated, "atoms_not_mutable": inert}, failures=failures)
+
+
+def _judged_no_call(atom: Atom, run: Run, write_tools: set[str], fn: Callable) -> bool:
+    """Was this compiled Hard atom asked about no call of the Run, so that no rule in its place
+    would answer differently? `hard_holds` says so by answering None over an atom that is code."""
+    payload = atom_payload(atom)
+    if payload.get("kind") != "hard" or atom.judge or not atom.predicate_src:
+        return False
+    return hard_holds(atom, run, write_tools, fn) is None
 
 
 def _mutant(atom: Atom, fn: Callable) -> Optional[Atom]:
@@ -1026,8 +1156,13 @@ def _mutant(atom: Atom, fn: Callable) -> Optional[Atom]:
         return make_atom(atom.id, atom.kind, dict(payload, value=_key(fn, _MUTANT), raw=_MUTANT),
                      provenance=atom.provenance, spans=atom.spans, description=atom.description)
     if kind == "entity_count":
-        return make_atom(atom.id, atom.kind, dict(payload, count=max(int(payload.get("count", 0)) - 1, 0)),
-                     description=atom.description)
+        # A cap of 0 has no smaller cap: max(count - 1, 0) is the atom itself, so the "mutant" asked
+        # for exactly what the original asked for and the Reference rightly still passed. Nothing to
+        # mutate is not an atom that cannot be failed, and the gate is told so rather than shown a
+        # flip that was never made (D173).
+        count = int(payload.get("count", 0))
+        return None if count <= 0 else make_atom(atom.id, atom.kind, dict(payload, count=count - 1),
+                                                 description=atom.description)
     if kind == "question":
         return make_atom(atom.id, atom.kind, dict(payload, key=f"{payload.get('key')}.{_MUTANT}",
                                               field=_MUTANT), description=atom.description)
@@ -1040,8 +1175,23 @@ def _mutant(atom: Atom, fn: Callable) -> Optional[Atom]:
     return None
 
 
+def atom_column(atom: Atom) -> str:
+    """The column an atom's value sat under, as the Intent strip and a finding name it (D196).
+
+    A write value names its tool and its field; a fact the answer states names the atom's own kind,
+    because a communicated token is not a column of anything. Nothing here is a value.
+    """
+    payload = atom_payload(atom)
+    field = payload.get("field") or payload.get("id_field") or payload.get("key")
+    tool = payload.get("tool")
+    if field and tool:
+        return f"{tool}.{field}"
+    return str(field or tool or atom.kind)
+
+
 def _leak_gate(verifier: Verifier, reference: Run, intent_text: Optional[str],
-               user_rules: Optional[UserRules], runs: Iterable[Run] = ()) -> GateResult:
+               user_rules: Optional[UserRules], runs: Iterable[Run] = (),
+               intent: Any = None) -> GateResult:
     """Check 7: constants only the Verifier should know, found in the Intent or the Simulated user rules.
 
     A value is only a secret when no user said it, and the users who count are the users of every
@@ -1051,10 +1201,17 @@ def _leak_gate(verifier: Verifier, reference: Run, intent_text: Optional[str],
     were spoken by a user in another recording of the same Task, and those 14 Tasks were blocked for
     nothing. `runs` is the Task's other seed Runs; the Reference is read whether or not it is among
     them, so a caller that has only the Reference keeps the behaviour it always had.
+
+    With `intent`, the Intent record itself, this is an audit of the D196 strip rather than the first
+    time anyone looked: the miner has already taken every system-known value out of the line and said
+    on the record which columns it took, so what reaches here is what the strip missed. The check
+    still fails, exactly as it did before, and it names the column each missed value came from, which
+    is what a finding can be keyed on and what the next build's strip has to cover. A caller with no
+    record passes none and the check reads as it always did.
     """
     said_by_user = " ".join(_user_text(e) for run in [reference, *runs]
                             for e in run.events if e.type == "user_turn")
-    secrets = set()
+    secrets: dict[str, str] = {}
     for atom in verifier.atoms:
         payload = atom_payload(atom)
         if atom.provenance not in ("system_derived", "agent_chosen"):
@@ -1064,14 +1221,18 @@ def _leak_gate(verifier: Verifier, reference: Run, intent_text: Optional[str],
         value = payload["text"] if payload.get("text") is not None else payload.get("raw")
         for text in _texts(value) if value is not None else []:
             if len(text) > 1 and text not in ("true", "false", "null") and not _token_in(said_by_user, text):
-                secrets.add(text)
+                secrets.setdefault(text, atom_column(atom))
     blobs = {"intent": intent_text or ""}
     if user_rules is not None:
         blobs["user_rules"] = canonical_json(as_dict(user_rules))
-    failures = [f"{where} leaks {text}" for text in sorted(secrets)
-                for where, blob in blobs.items() if _token_in(blob, text)]
+    missed = [(text, secrets[text], where) for text in sorted(secrets)
+              for where, blob in blobs.items() if _token_in(blob, text)]
+    failures = [f"{where} leaks {text} (column {column})" for text, column, where in missed]
+    stripped = list(getattr(intent, "stripped", ()) or ())
     return GateResult(stage="verifier_leak", passed=not failures,
-                      metrics={"constants": len(secrets)}, failures=failures)
+                      metrics={"constants": len(secrets), "columns": sorted({c for _, c, _ in missed}),
+                               "stripped": len(stripped), "audited": intent is not None},
+                      failures=failures)
 
 
 def loophole_probe(verifier: Verifier, model: Any, *, run_probe: Optional[Callable] = None, canon: Any = None,
@@ -1083,8 +1244,10 @@ def loophole_probe(verifier: Verifier, model: Any, *, run_probe: Optional[Callab
     """
     if model is None or run_probe is None:
         missing = "no model" if model is None else "no run_probe"
-        return GateResult(stage="verifier_loophole", passed=False, metrics={"skipped": True},
-                          failures=[f"not run: {missing}, so the Verifier is not known to be tight"])
+        why = f"{missing}, so the Verifier is not known to be tight"
+        return GateResult(stage="verifier_loophole", passed=False,
+                          metrics={"skipped": True, "not_run_reason": why},
+                          failures=[f"not run: {why}"])
     passed, failing_atom = check_run(verifier, run_probe(model, verifier), canon, write_tools=write_tools)
     return GateResult(stage="verifier_loophole", passed=not passed,
                       metrics={"probe_passed": passed, "failing_atom": failing_atom},

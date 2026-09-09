@@ -35,6 +35,22 @@ class ToolResult(BaseModel):
     is_error: bool = False
 
 
+class RetryableToolError(ValueError):
+    """A refusal that already knows what the corrected call looks like.
+
+    A tool that refuses arguments for a shape it can state exactly is a refusal the model can answer
+    on its next turn, and one live build's session shows it does not: the one refusal of that build
+    was clean, carried the reason, and was never answered. The `ask` is the one line the loop puts
+    in front of the model after the result, once per distinct ask in a run (agent/loop.py); the same
+    refusal a second time stands on its own. Nothing here knows what any application's shapes are:
+    the tool that raises writes the ask.
+    """
+
+    def __init__(self, message: str, ask: str = ""):
+        super().__init__(message)
+        self.ask = ask or str(message)
+
+
 class AgentTool(Generic[Args, Result]):
     """One tool: args model, result model, executor. `run` is the only way the loop calls it."""
 
@@ -86,6 +102,11 @@ class AgentTool(Generic[Args, Result]):
             raw = await self.execute(args)
         except asyncio.CancelledError:
             raise
+        except RetryableToolError as exc:
+            # The refusal names the corrected call; the ask rides in details so the loop can put it
+            # in front of the model once, and never twice for the same ask.
+            return ToolResult(content=f"{self.name} failed: {type(exc).__name__}: {exc}",
+                              details={"retry_ask": exc.ask}, is_error=True)
         except Exception as exc:  # noqa: BLE001 - a tool is an isolation boundary
             return ToolResult(content=f"{self.name} failed: {type(exc).__name__}: {exc}", is_error=True)
         try:

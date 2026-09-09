@@ -84,6 +84,40 @@ def test_a_verifier_that_failed_the_suite_is_not_trusted(tmp_path):
     world["task_status"] = {TASK: status(verifier_passed=False)}
     ruling = T.trusted_gate(**world)
     assert ruling.failures == ["task t1: the D79 suite did not pass"] and ruling.metrics["trusted"] == []
+    assert ruling.metrics["checks_not_run"] == {}
+
+
+def test_a_task_with_one_reference_says_the_second_path_check_was_not_run_rather_than_failed(tmp_path):
+    """The rule is unchanged: a Task the suite refused is untrusted whatever the reason. What the
+    ruling says changes, because a check with no input asks for more Runs of the Task and a check
+    that failed asks for a looser Verifier, and until D173 both read the same."""
+    world = _world(tmp_path)
+    world["task_status"] = {TASK: status(verifier_passed=False, not_run=["verifier_alt_path"],
+                                         checks={"second_path_passes": False, "oracle_passes": True})}
+    ruling = T.trusted_gate(**world)
+    assert ruling.metrics["trusted"] == []
+    assert ruling.metrics["checks_not_run"] == {TASK: ["second_path_passes"]}
+    assert ruling.metrics["untrusted"] == {
+        TASK: "the D79 suite did not pass: second_path_passes not run (one Reference, so there is no "
+              "second path to score)"}
+    # A check that really failed is still reported as a failure, beside the one nobody could run.
+    world["task_status"] = {TASK: status(verifier_passed=False, not_run=["verifier_alt_path"],
+                                         checks={"second_path_passes": False, "mutation_flips": False})}
+    assert T.trusted_gate(**world).metrics["untrusted"][TASK].endswith("mutation_flips failed")
+
+
+def test_a_suite_failure_names_every_failing_check_and_every_check_with_no_input(tmp_path):
+    """A reader groups the Tasks that stop at the suite by what stopped them, so the reason names
+    each check in the suite's own order and says why the ones with no input had none."""
+    world = _world(tmp_path)
+    checks = {name: True for name in T.D79_STAGES.values()}
+    checks["mutation_flips"] = checks["plausible_wrong_fails"] = checks["loophole_probe_fails"] = False
+    world["task_status"] = {TASK: status(verifier_passed=False, checks=checks,
+                                         not_run=["verifier_loophole"],
+                                         not_run_reasons={"loophole_probe_fails": "no model"})}
+    assert T.trusted_gate(**world).metrics["untrusted"] == {
+        TASK: "the D79 suite did not pass: plausible_wrong_fails failed, "
+              "loophole_probe_fails not run (no model), mutation_flips failed"}
 
 
 def test_a_verifier_that_is_not_the_last_accepted_version_is_not_trusted(tmp_path):
@@ -134,13 +168,46 @@ def test_a_verifier_of_a_refused_task_is_not_counted_as_trusted(tmp_path):
     assert ruling.metrics["trusted"] == [TASK] and ruling.metrics["refused"] == {}
 
 
-def test_the_trusted_ruling_carries_the_false_rejection_number_per_task(tmp_path):
+def test_a_false_rejection_under_the_threshold_is_trusted_and_the_ruling_carries_the_fraction_and_the_pool_size(tmp_path):
     strict = tighten(base(tmp_path)).model_copy(update={"seed_run_ids": ["ref"]})
-    world = _world(tmp_path, strict)
-    ruling = T.trusted_gate(**world)
+    ruling = T.trusted_gate(**_world(tmp_path, strict))
     # rr2 gives another reason and is rejected; alt is held out and passes: one in two.
     assert ruling.metrics["false_rejection"] == {TASK: 0.5}
-    assert ruling.metrics["trusted"] == [TASK], "over-strict is reported next to trusted, not hidden by it"
+    assert ruling.metrics["false_rejection_pool"] == {TASK: 2}
+    assert ruling.metrics["false_rejection_ruling"] == {TASK: "0.50 of 2 held-out Runs"}
+    assert ruling.passed and ruling.metrics["trusted"] == [TASK], \
+        "a Verifier that recognises some path other than its seeds is a check of the Task"
+
+
+def test_a_verifier_that_rejects_every_held_out_run_is_not_trusted_and_the_reason_names_the_false_rejection(tmp_path):
+    """D194: the number was measured from the start and never read, so a Verifier the false-rejection
+    gate calls over-strict was trusted anyway. Rejecting every Run that reached the Reference makes it
+    a check of one path, not of the Task."""
+    strict = tighten(base(tmp_path)).model_copy(update={"seed_run_ids": ["ref"]})
+    world = _world(tmp_path, strict)
+    # Only the Run giving another reason is left in the pool, and the strict version rejects it.
+    world["rerolls"] = {TASK: [reroll_row("rr2", "success"), reroll_row("alt", "max_steps")]}
+    ruling = T.trusted_gate(**world)
+    assert not ruling.passed and ruling.metrics["trusted"] == []
+    assert ruling.metrics["false_rejection"] == {TASK: 1.0} and ruling.metrics["false_rejection_pool"] == {TASK: 1}
+    assert ruling.failures == [
+        "task t1: false_rejection 1.00 of 1 held-out Runs: the required atoms reject every held-out Run that "
+        "reached the Reference, so the Verifier checks one path and not the Task"]
+    assert ruling.metrics["untrusted"][TASK].startswith("false_rejection 1.00 of 1 held-out Runs")
+
+
+def test_a_task_with_nothing_held_out_says_no_pool_and_is_trusted_on_the_other_gates(tmp_path):
+    """An empty sample is not a rate and not a failure: no held-out Run reached the Reference, so the
+    step has nothing to rule on and the Task stands or falls on the checks that do."""
+    strict = tighten(base(tmp_path)).model_copy(update={"seed_run_ids": ["ref"]})
+    world = _world(tmp_path, strict)
     world["rerolls"] = {}
     world["replays"] = {TASK: {"tr1": replay_row("tr1", True, run_id="ref")}}
-    assert T.trusted_gate(**world).metrics["false_rejection"] == {TASK: None}
+    ruling = T.trusted_gate(**world)
+    assert ruling.metrics["false_rejection"] == {TASK: None} and ruling.metrics["false_rejection_pool"] == {TASK: 0}
+    assert ruling.metrics["false_rejection_ruling"] == {TASK: "no_pool"}
+    assert ruling.passed and ruling.metrics["trusted"] == [TASK]
+    # The other gates still rule: the same empty pool does not carry a Task the suite turned away.
+    world["task_status"] = {TASK: status(verifier_passed=False)}
+    denied = T.trusted_gate(**world)
+    assert denied.metrics["trusted"] == [] and denied.metrics["false_rejection_ruling"] == {TASK: "no_pool"}

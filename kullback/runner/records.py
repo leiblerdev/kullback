@@ -237,6 +237,12 @@ class ToolSig(Record):
     evidence_strength: EvidenceStrength = Field(default_factory=EvidenceStrength)
     source: SigSource = "observed"
     classified_by: ClassifiedBy = "rule"
+    # D164: who the recording answered this tool for. A customer's traces may carry a simulated user
+    # running a toolkit of its own beside the assistant's, and a tool is not the same tool for both:
+    # the Router refuses a caller outside this list the way the recording refused it. `refused_callers`
+    # are the requestors that called and were only ever refused, kept so the build can say why.
+    callers: list[str] = Field(default_factory=lambda: ["assistant"])
+    refused_callers: list[str] = Field(default_factory=list)
 
 
 class Column(Record):
@@ -250,6 +256,12 @@ class Column(Record):
     classified_by: ClassifiedBy = "rule"
     evidence: dict = Field(default_factory=dict)
     samples: list[Any] = Field(default_factory=list)
+    # The distinct short names this column drew from, where the corpus showed it drawing from a set
+    # of them rather than holding a value of its own per row. It is the world's own vocabulary for
+    # this column, and a replayed answer is held to it: two answers made of different names are
+    # different answers whatever a judge would say of the sentences they are written in (D217). A
+    # column the miner found no such set for keeps this empty and borrows its table's names.
+    vocabulary: list[str] = Field(default_factory=list)
 
 
 class EntitySchema(Record):
@@ -263,6 +275,12 @@ class EntitySchema(Record):
     # still a table, because some rows are only ever shown on their own, but the home is where a
     # tool has to look first on the customer's real database.
     homes: dict[str, str] = Field(default_factory=dict)
+    # table -> the columns whose values together identify one row, id column first, for a table the
+    # corpus showed holding several rows under one id. A table absent here is keyed by its id column
+    # alone, which is every table until the miner finds otherwise. A row id stays a string either
+    # way: the key columns' values joined by `key_separator`, so nothing that reads a row id changes.
+    composite_keys: dict[str, list[str]] = Field(default_factory=dict)
+    key_separator: str = "|"
 
 # --- policy and the simulated user ---
 
@@ -348,10 +366,27 @@ class OverlayRow(Record):
     after_write: bool = False  # the sighting came after a write in its own trace (D74 merge order)
 
 
+class OverlayStep(Record):
+    """One row's time-varying columns as one recorded call saw them, in call order (D197).
+
+    A pinned row is one version of the world and cannot say that a live system's row moved between
+    two reads with no write between them. A step says it: the columns that moved, the call that saw
+    them, and how many calls of that shape came before it in the Task's own recording.
+    """
+    table: str
+    id: str
+    call: str  # the call's fingerprint: its tool name and canonical arguments, with no world in it
+    index: int = 0  # the nth call of that fingerprint in the Task's own order, counting from zero
+    call_id: Optional[str] = None  # the recorded call, so a body is scored on the world it ran on
+    values: dict[str, Any] = Field(default_factory=dict)
+
+
 class TaskOverlay(Record):
     """A Task's Starting state: rows read before the shared db.json (D74)."""
     task_id: str
     rows: list[OverlayRow] = Field(default_factory=list)
+    # D197: the rows whose columns moved between two reads of the Task, in the order the reads came.
+    steps: list[OverlayStep] = Field(default_factory=list)
 
 
 class Category(Record):
@@ -379,6 +414,28 @@ class Task(Record):
 # an Intent without importing the Builder (D123); builder/intent.py re-exports the three names.
 
 SpanSource = Literal["user_utterance", "tool_arg", "written_value"]
+# Where a value the strip took out of an Intent was known from, and the shape left in its place
+# (D196). "removed" leaves nothing, "last4" leaves the last characters of a code, "month" leaves the
+# month of a date: the three things a user of the customer's line says about a value they half know.
+KnownSource = Literal["tool_arg", "tool_result", "start_state"]
+StripShape = Literal["removed", "last4", "month"]
+
+
+class StrippedValue(Record):
+    """One system-known value taken out of an Intent before the Intent existed (D196).
+
+    The column and the class the compare gives that column, the shape left behind and where the
+    value was known from. Never the value: this record is written to the workdir and read back by
+    the leak check as an audit, and a record of what was stripped that carries the value would leak
+    it exactly where the strip was there to stop it. `replacement` is what now stands in the Intent
+    text, so it holds only what the Intent itself already says out loud.
+    """
+    column: str
+    table: Optional[str] = None
+    class_: ColumnClass = Field("hard", alias="class")
+    shape: StripShape = "removed"
+    source: KnownSource = "tool_result"
+    replacement: str = ""
 
 
 class IntentSpan(Record):
@@ -402,6 +459,9 @@ class Intent(Record):
     run_coverage: dict[str, list[str]] = Field(default_factory=dict)  # phrase -> every member Run that evidences it
     reason: Optional[str] = None
     model: Optional[str] = None
+    # What the D196 strip took out before this line was graded, so the leak check reads the strip as
+    # an audit rather than re-deciding it. Empty means the strip found nothing, not that it never ran.
+    stripped: list[StrippedValue] = Field(default_factory=list)
 
 
 def apply_intent(task: Task, intent: Intent) -> Task:
@@ -647,9 +707,21 @@ class GateResult(Record):
 
 # --- the Examiner's records (phase 5) ---
 
-VersionBy = Literal["derive", "repair"]
-FindingKind = Literal["assisted_tool", "fidelity", "reference_disagreement", "environment", "other"]
-FindingVerb = Literal["compile_tool", "replay", "reroll", "repair_intent", "repair_recompile", "none"]
+# Who proposed a version. `auto_loosen` is the harness's own loosening step (D205): the derivation
+# relaxing an atom that rejects a held-out Run which reached the Reference. It is a third proposer
+# and not a third path: it goes through the gates a repair goes through, and the word is here so a
+# reader of a history can tell a version the model asked for from one the records asked for.
+VersionBy = Literal["derive", "repair", "auto_loosen"]
+# `suite` and `false_rejection` name the two losses the findings never used to reach: a D79 check
+# that failed across many Tasks, and a Verifier whose required atoms reject every held-out Run
+# (D170). A corpus disagreement keeps the name it already had rather than gaining a second one.
+FindingKind = Literal["assisted_tool", "fidelity", "reference_disagreement", "suite", "false_rejection",
+                      "environment", "intent_leak", "other"]
+# `repair` is the Examiner's own verb, the one answer to a Verifier the Builder cannot touch (D123),
+# and `reroll_then_derive` is its other one, for a check that had no second Run to score (D173);
+# `repair_refuse_task` is the Builder's, for a Task the corpus itself does not settle.
+FindingVerb = Literal["compile_tool", "replay", "reroll", "repair_intent", "repair_recompile",
+                      "repair_refuse_task", "repair", "reroll_then_derive", "none"]
 FindingStatus = Literal["open", "delivered", "closed"]
 
 
@@ -712,6 +784,11 @@ class Finding(Record):
     `suggested` is the Builder verb that answers it and `hint` the one line that verb is given: the
     repair verbs take a hint, so a finding that names one without a hint asks for the same repair
     again with nothing new to go on. The round driver renders the two together as a callable line.
+
+    `task_ids` is every Task the finding costs and `task_id` the first of them, so one loss that
+    blocks fifty Tasks is one finding with a count rather than fifty (D170). `key` is what makes two
+    findings the same finding: the kind and the thing they are about. Both default, so a findings
+    file written before D170 still validates.
     """
     finding_id: str
     task_id: Optional[str] = None
@@ -724,6 +801,13 @@ class Finding(Record):
     about_entry_id: Optional[str] = None
     round: int = 0
     status: FindingStatus = "open"
+    task_ids: list[str] = Field(default_factory=list)
+    key: str = ""
+
+    @property
+    def cost(self) -> int:
+        """How many Tasks this finding costs: what the list is ranked on and what the Builder is told."""
+        return len(self.task_ids) or (1 if self.task_id else 0)
 
 
 class RoundRecord(Record):

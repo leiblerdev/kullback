@@ -150,6 +150,11 @@ def test_defaults_carry_the_decisions_they_encode():
     # D70: a tool with no evidence is read, and flagged unclassified.
     sig = ToolSig(name="get_order_details")
     assert sig.kind == "read" and sig.unclassified is True and sig.kind_confidence == "low"
+    # D164: a tool answers the assistant unless the mining says otherwise, so a tool_sigs.json
+    # written before the decision loads as the assistant-only surface it was.
+    assert sig.callers == ["assistant"] and sig.refused_callers == []
+    old_row = {"name": "get_order_details", "kind": "read", "args_schema": {}, "source": "observed"}
+    assert ToolSig.model_validate(old_row).callers == ["assistant"]
     # D97: the three sub-versions sit on Environment and are copied onto Verdict.
     env = Environment(env_id="e1", schema_version="s1", tools_version="t1", policy_version="p1")
     verdict = Verdict(
@@ -351,14 +356,17 @@ def test_the_examiner_records_round_trip_through_as_dict_and_hash_by_content():
 
 
 def test_a_finding_can_suggest_a_repair_verb_and_carry_the_hint_that_verb_needs():
-    """A finding's verb is a Builder tool name, and the two repair verbs are among them: an Examiner
-    that can only say `replay` asks for a cached result again. The hint is the line the verb is given
-    and defaults to empty, so a findings file written before the verbs existed still validates."""
-    from kullback.builder.tools import BUILD_TOOLS
+    """A finding's verb is a verb some agent has: a Builder tool, or one of the Examiner's own two,
+    `repair` for the Verifier no Builder tool touches (D123) and `reroll_then_derive` for a check
+    that had no second finished Run to score (D173). An Examiner that can only say `replay` asks for
+    a cached result again. The hint is the line the verb is given and defaults to empty, so a
+    findings file written before the verbs existed still validates."""
+    from kullback.rounds import BUILDER_VERBS, EXAMINER_VERBS
 
     verbs = set(get_args(FindingVerb))
     assert {"repair_intent", "repair_recompile"} <= verbs
-    assert verbs - {"none"} <= set(BUILD_TOOLS), "every verb a finding suggests is a Builder tool"
+    assert verbs - {"none"} <= BUILDER_VERBS | EXAMINER_VERBS, "every verb is one agent's tool"
+    assert not (BUILDER_VERBS & EXAMINER_VERBS), "and the driver can tell whose it is"
     finding = Finding(finding_id="f1", task_id="t1", kind="fidelity", text="the Intent names what no Run says",
                       suggested="repair_intent", hint="the Runs only cancel one order")
     assert finding.hint == "the Runs only cancel one order"

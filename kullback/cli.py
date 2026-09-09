@@ -1,5 +1,6 @@
-"""The seven commands of the Harness: ingest, build, freeze-runner, run, verdict, regrade and report, each
-reading and writing records under one workdir with no hidden state."""
+"""The commands of the Harness: ingest, build, freeze-runner, run, verdict, regrade, report, status,
+difficulty, export, publish and fetch, each reading and writing records under one workdir with no
+hidden state."""
 
 from __future__ import annotations
 
@@ -12,6 +13,7 @@ from typing import Any, Optional
 
 import typer
 
+from kullback import difficulty, round_snapshot
 from kullback.report import coverage_rows, load, load_tool_sigs, write_report
 from kullback.runner import feed, heartbeat
 from kullback.runner.records import (
@@ -30,6 +32,9 @@ WORKDIR = typer.Option(Path("."), "--workdir", "-w", help="Directory every recor
 JUDGE_MODEL = typer.Option(None, "--judge-model",
                           help="Model id for the two agentic judges, as provider/model. Without it, judge atoms "
                                "are left unevaluated and a failure keeps no cause.")
+SECOND_JUDGE_MODEL = typer.Option(None, "--second-judge-model",
+                                 help="Model id for the second judge, as provider/model (D160). Without it the "
+                                      "second judge is --judge-model's own model under a second persona (D97).")
 BASE_URL = typer.Option(None, "--base-url", help="Endpoint for an OpenAI-compatible model.")
 
 
@@ -74,19 +79,25 @@ def _schema(workdir: Path):
     return _load(path, EntitySchema) if path.is_file() else None
 
 
-def _judges(model_id: Optional[str], base_url: Optional[str] = None):
+def _judges(model_id: Optional[str], base_url: Optional[str] = None,
+            second_model_id: Optional[str] = None):
     """The two agentic judges of D92, or None when the caller named no judge model.
 
     Both are constructed here and never inside the Runner: `verdict.py` takes judge answers as data
-    and calls no model itself (D76, build brief rule 2). The second judge is the same adapter under
-    judge.py's own second persona, which is the D97 default; a second model id would be better and is
-    what `--judge-model` should grow when a customer has two providers configured.
+    and calls no model itself (D76, build brief rule 2). With `--second-judge-model` the second judge
+    is a judge of its own on that model (D160), which is what makes a disagreement a disagreement
+    between two models rather than between two personas; without it the second judge is the same
+    adapter under judge.py's own second persona, the D97 default. Either way each judge is named
+    `<provider/model>:<persona letter>`, so every ruling says which model it ran on.
     """
     if not model_id:
         return None
-    first = _entry("kullback.runner.judge", "AgenticJudge")(_live_model(model_id, base_url),
-                                                           name=f"{model_id}:a")
-    return first, _entry("kullback.runner.judge", "third_judge")(first)
+    build_judge = _entry("kullback.runner.judge", "AgenticJudge")
+    name = _entry("kullback.runner.judge", "judge_name")
+    first = build_judge(_live_model(model_id, base_url), name=name(model_id, "a"))
+    if second_model_id:
+        return first, build_judge(_live_model(second_model_id, base_url), name=name(second_model_id, "b"))
+    return first, _entry("kullback.runner.judge", "third_judge")(first, name=name(model_id, "b"))
 
 
 def _judged_atoms(verifier: Verifier, paths: list, judges, workdir: Path) -> dict:
@@ -161,19 +172,21 @@ def _rescorer(score_one, verifier: Verifier, canon_value, out_dir: Path, judge_v
 
 
 def _score(workdir: Path, task_id: Optional[str], what: str, use_queue: bool = False,
-           judge_model: Optional[str] = None, base_url: Optional[str] = None) -> None:
+           judge_model: Optional[str] = None, base_url: Optional[str] = None,
+           second_judge_model: Optional[str] = None) -> None:
     """Score stored Runs against their Task's Verifier. Nothing is re-executed; the version cache makes a repeat free.
 
     With `--judge-model` the judge atoms of each Verifier are answered before the Verdict and the
     cause of each unexplained failure after it (D76, D88). Without one, a judge atom stays
     unevaluated and a failure keeps `cause_pending_judge`; both are said out loud rather than
-    silently passing.
+    silently passing. `--second-judge-model` puts a second model on the other side of every question
+    (D160); without it the second judge is the same model under a second persona.
     """
     score = _entry("kullback.runner.regrade", "regrade")
     score_one = _entry("kullback.runner.regrade", "regrade_run")
     regrade_gate = _entry("kullback.gates.artifacts", "regrade_gate")
     judge_version = _entry("kullback.runner.judge", "JUDGE_VERSION") if judge_model else None
-    judges = _judges(judge_model, base_url)
+    judges = _judges(judge_model, base_url, second_judge_model)
     canon_value = _entry("kullback.runner.canon", "canon_value")
     env_path, version_path = Path(workdir) / "environment.json", Path(workdir) / "runner_version.json"
     environment = _load(env_path, Environment) if env_path.is_file() else None
@@ -266,6 +279,16 @@ def build(
     workdir: Path = WORKDIR,
     iterate: bool = typer.Option(False, "--iterate", help="Resume the content-addressed build and keep improving."),
     model: Optional[str] = typer.Option(None, "--model", help="Builder model id, as provider/model."),
+    judge_model: Optional[str] = typer.Option(None, "--judge-model",
+                                              help="Model id for the build's judge, as provider/model (D160); "
+                                                   "the default is --model."),
+    second_judge_model: Optional[str] = typer.Option(None, "--second-judge-model",
+                                                     help="Model id for the second judge, as provider/model "
+                                                          "(D160); the default is the judge's own model under "
+                                                          "a second persona."),
+    judge_agent: bool = typer.Option(False, "--judge-agent",
+                                     help="The reference judge is an agent with a bounded look over the Task; "
+                                          "default is the one-shot judge."),
     base_url: Optional[str] = typer.Option(None, "--base-url", help="Endpoint for an OpenAI-compatible model."),
     files: Optional[list[Path]] = typer.Option(None, "--file", help="Customer export to ingest first."),  # noqa: B008
     ceiling_usd: Optional[float] = typer.Option(None, "--ceiling-usd", help="Per-build spend ceiling (D86)."),
@@ -287,6 +310,11 @@ def build(
                                                         "the Examiner's; without it code issues the tool calls."),
     stall_rounds: int = typer.Option(1, "--stall-rounds", help="Rounds that move no gate count before the loop "
                                                               "exits stalled (D126)."),
+    fidelity_stall: int = typer.Option(3, "--fidelity-stall", help="Rounds without a rise in fidelity before the "
+                                                                  "loop exits stalled, whatever the other counts "
+                                                                  "do; 0 turns it off (D169)."),
+    max_rounds: int = typer.Option(12, "--max-rounds", help="Rounds after which the loop exits max_rounds; "
+                                                            "0 is no cap (D169)."),
     allowance_usd: Optional[float] = typer.Option(None, "--allowance-usd",
                                                   help="Per-agent spend allowance per round; the default is "
                                                        "each agent's own round-1 spend from round 2 on (D123)."),
@@ -296,11 +324,19 @@ def build(
     Both agents are extensions on the agent core, driven in turns on one stream (D128): the Builder
     builds the target, the Examiner derives and examines the Verifiers, and the round ends with the
     counts the gates report. By default code issues the tool calls, so the build is deterministic and
-    byte-identical offline; `--agent` hands both sessions to the model.
+    byte-identical offline; `--agent` hands both sessions to the model. The judge is a model of its
+    own when `--judge-model` names one (D160), so the model that writes the Environment need not be
+    the one that rules on it. The judge that settles a Task whose Runs disagree is the one-shot judge
+    unless `--judge-agent` asks for the one with a bounded look, which reads before it rules and
+    costs References (D185).
     """
     adapter = _live_model(model, base_url) if model else None
     if agent and adapter is None:
         raise typer.BadParameter("--agent needs --model: a model has to drive the session")
+    if second_judge_model and not (judge_model or model):
+        raise typer.BadParameter("--second-judge-model needs a first judge: name --judge-model or --model")
+    judge_adapter = _live_model(judge_model, base_url) if judge_model else None
+    second_judge_adapter = _live_model(second_judge_model, base_url) if second_judge_model else None
     search = _entry("kullback.builder.search", "search_for")(workdir)  # None unless live is on or a memo exists
     # The screen lists running builds from these heartbeats; the pid tells it who is alive. The
     # pulse keeps beating while the build runs so a screen watching from another directory sees
@@ -313,10 +349,12 @@ def build(
         # The provider owns an http client when it made one; close it on the way out rather than at exit.
         with contextlib.closing(search) if search is not None else contextlib.nullcontext():
             result = _entry("kullback.rounds", "run_rounds")(
-                workdir=workdir, iterate=iterate, model=adapter, files=list(files or []),
+                workdir=workdir, iterate=iterate, model=adapter, judge_model=judge_adapter,
+                second_judge_model=second_judge_adapter, judge_agent=judge_agent, files=list(files or []),
                 ceiling_usd=ceiling_usd, grow=_grow_targets(grow), grow_seed=grow_seed,
                 probe_limit=probe_limit, rerolls=rerolls, search=search, workers=workers, target=target,
                 agent_model=adapter if agent else None, stall_rounds=stall_rounds,
+                fidelity_stall=fidelity_stall, max_rounds=max_rounds,
                 allowance_usd=allowance_usd, subscribers=[_echo_round])
     except Exception:
         pulse.stop()
@@ -335,6 +373,18 @@ def build(
         raise typer.Exit(1)
 
 
+def _regrouped(counts: dict) -> str:
+    """What the round says about a grouping that no longer matches the frozen one (D216).
+
+    Nothing at all on the ordinary round, because the split of one recording set reproduces and a
+    line that said so every round would only be noise. Where it did move, the line names the input
+    that moved it, which is the whole of the finding: a corpus that grew regrouped for a reason, and
+    the harness raises rather than print anything else here.
+    """
+    moved = str(counts.get("tasks_grouping_moved") or "")
+    return f" regrouped ({moved} moved)" if moved else ""
+
+
 def _round_line(counts: dict) -> str:
     """One round's counts as one line, every number a gate's (D126)."""
     compactions = counts.get("fallback_compactions") or {}
@@ -342,8 +392,26 @@ def _round_line(counts: dict) -> str:
     return (f"fidelity {counts.get('fidelity', 0)}/{counts.get('tasks', 0)} tasks, "
             f"trusted {counts.get('trusted', 0)}, refused {counts.get('refused_count', 0)}, "
             f"assisted runs {counts.get('assisted_runs', 0)}, probes passing {counts.get('probes_passing', 0)}, "
+            f"tasks frozen {counts.get('tasks_frozen', 0)} added {counts.get('tasks_added', 0)} "
+            f"(${float(counts.get('tasks_added_cost') or 0.0):.4f}) "
+            f"frozen only {counts.get('tasks_frozen_only', 0)} cleared {counts.get('tasks_cleared', 0)}"
+            f"{_regrouped(counts)}, "
             f"compactions builder {compactions.get('builder', 0)} examiner {compactions.get('examiner', 0)}, "
-            f"spend ${float(spend.get('total') or 0.0):.4f}, cache saved ${float(spend.get('cache_saved') or 0.0):.4f}")
+            f"spend ${float(spend.get('total') or 0.0):.4f}, cache saved ${float(spend.get('cache_saved') or 0.0):.4f}, "
+            f"buckets: {difficulty.round_summary(counts.get('buckets') or [])}"
+            + _synthetic_line(counts))
+
+
+def _synthetic_line(counts: dict) -> str:
+    """What the round's synthetic store holds, appended to the line under its own names (D224).
+
+    A round that generated nothing says nothing, so a reader never mistakes a build that was never
+    asked for synthetic Tasks for one that asked and got none.
+    """
+    if not counts.get("synthetic_tasks"):
+        return ""
+    return (f", synthetic {counts.get('synthetic_tasks', 0)} verified "
+            f"{counts.get('synthetic_verified', 0)}")
 
 
 def _echo_round(event: Any) -> None:
@@ -399,20 +467,24 @@ def run(
 
 @app.command()
 def verdict(workdir: Path = WORKDIR, task: Optional[str] = typer.Option(None, "--task", help="One Task id."),
-            judge_model: Optional[str] = JUDGE_MODEL, base_url: Optional[str] = BASE_URL):
+            judge_model: Optional[str] = JUDGE_MODEL, base_url: Optional[str] = BASE_URL,
+            second_judge_model: Optional[str] = SECOND_JUDGE_MODEL):
     """Score the stored Runs of one Task, or of every Task, on their End state."""
-    _score(Path(workdir), task, "scored", judge_model=judge_model, base_url=base_url)
+    _score(Path(workdir), task, "scored", judge_model=judge_model, base_url=base_url,
+           second_judge_model=second_judge_model)
 
 
 @app.command()
 def regrade(workdir: Path = WORKDIR, task: Optional[str] = typer.Option(None, "--task", help="One Task id."),
-            judge_model: Optional[str] = JUDGE_MODEL, base_url: Optional[str] = BASE_URL):
+            judge_model: Optional[str] = JUDGE_MODEL, base_url: Optional[str] = BASE_URL,
+            second_judge_model: Optional[str] = SECOND_JUDGE_MODEL):
     """Re-score stored Runs against the current Environment and Verifier versions, without re-executing them.
 
     A Run whose equivalence entry a person overturned is in canon.py's regrade queue (D84): its
     versions have not moved, so only the queue makes it score again.
     """
-    _score(Path(workdir), task, "regraded", use_queue=True, judge_model=judge_model, base_url=base_url)
+    _score(Path(workdir), task, "regraded", use_queue=True, judge_model=judge_model, base_url=base_url,
+           second_judge_model=second_judge_model)
 
 
 def _coverage_runs(runs: list) -> list:
@@ -461,6 +533,337 @@ def report(
         typer.echo(f"not read, so it is not counted: {name}")
     target = Path(out) if out else Path(workdir) / "report.md"
     typer.echo(str(write_report(data, target.parent, target.name)))
+
+
+@app.command("status")
+def status(
+    workdir: Path = WORKDIR,
+    round_number: Optional[int] = typer.Option(None, "--round", help="Which closed round to read."),
+    named: int = typer.Option(3, "--named", help="How many drifted Task ids to name."),
+):
+    """Read one closed round's Task table and say how far the live files have moved from it (D218).
+
+    The table is what the round ruled, in one pass, and nothing rewrites it. task_status.json is the
+    live file and goes on moving under a loosening, a re-derive or a cache recompute, which is right
+    and is exactly what made the numbers unreadable: a reader joining the two could not tell a
+    harness regression from that movement. So this prints the round it read, the counts that round
+    ruled, and the Tasks whose live status now disagrees with it, at the stage each moved.
+    """
+    root = Path(workdir)
+    snapshot = round_snapshot.read_snapshot(root, round_number)
+    report = round_snapshot.drift(snapshot, task_status=_json_at(root, "task_status.json"),
+                                  replays=_json_at(root, "replays.json"), named=named)
+    typer.echo(round_snapshot.drift_line(report))
+    counts = dict((snapshot or {}).get("counts") or {})
+    for name in ("tasks", "fidelity", "reference", "verifier_passed", "trusted", "refused"):
+        if name in counts:
+            typer.echo(f"{name}: {counts[name]}")
+    for row in report.get("first") or ():
+        typer.echo(f"moved: {row['task_id']} at {row['stage']}")
+
+
+def _json_at(root: Path, name: str) -> dict:
+    """One JSON record of a workdir, or nothing where the file is missing or half-written."""
+    path = root / name
+    if not path.is_file():
+        return {}
+    try:
+        body = json.loads(path.read_text(encoding="utf-8"))
+    except ValueError:
+        return {}
+    return body if isinstance(body, dict) else {}
+
+@app.command("judge-smoke")
+def judge_smoke(
+    model: str = typer.Option(..., "--model", help="Candidate judge model id, as provider/model."),
+    base_url: Optional[str] = typer.Option(None, "--base-url",
+                                           help="Endpoint for an OpenAI-compatible model."),
+):
+    """Ask one model two invented equivalence pairs and print resolved or refused per pair (D222).
+
+    A relaunch names a judge model beside the build model, and the only thing it has to know first
+    is whether that model returns a verdict on a semantic pair at all. This is that question in one
+    call: two pairs of an invented column, one the same and one not, with the route each took.
+    """
+    build_judge = _entry("kullback.runner.judge", "AgenticJudge")
+    name = _entry("kullback.runner.judge", "judge_name")
+    judge = build_judge(_live_model(model, base_url), name=name(model, "a"))
+    rows = _entry("kullback.runner.judge", "smoke")(judge)
+    for line in _entry("kullback.runner.judge", "smoke_lines")(rows):
+        typer.echo(line)
+
+
+def _buckets(pairs: Optional[list[str]]) -> dict[str, int]:
+    """`--bucket w1t2p1=20` as {bucket: count}; a name no bucket is spelled with is refused."""
+    from kullback.graph import bands
+
+    out: dict[str, int] = {}
+    for pair in pairs or []:
+        name, sep, count = pair.partition("=")
+        if not sep or not count.isdigit() or bands(name)[0] < 0:
+            typer.echo(f"not a bucket and a count: {pair}")
+            raise typer.Exit(2)
+        out[name] = int(count)
+    return out
+
+
+def _synthesis_lines(body: dict) -> list[str]:
+    """What a synthesis request generated, as the lines both commands print."""
+    counts = dict(body.get("counts") or {})
+    rows = body.get("tasks") or []
+    lines = [f"walks tried {counts.get('walks_tried', 0)}, refused {counts.get('walks_refused', 0)}, "
+             f"crashed {counts.get('walks_crashed', 0)}, unbound {counts.get('walks_unbound', 0)}",
+             "", "| bucket asked | bucket reached | Tasks | suite passed | mean pool |",
+             "| --- | --- | --- | --- | --- |"]
+    grouped: dict = {}
+    for row in rows:
+        key = (str(row.get("bucket_requested") or ""), str(row.get("bucket") or ""))
+        held = grouped.setdefault(key, {"tasks": 0, "passed": 0, "pool": 0})
+        held["tasks"] += 1
+        held["passed"] += 1 if row.get("suite_passed") else 0
+        held["pool"] += int(row.get("pool") or 0)
+    for (asked, reached), held in sorted(grouped.items()):
+        lines.append(f"| {asked} | {reached} | {held['tasks']} | {held['passed']} | "
+                     f"{held['pool'] / held['tasks'] if held['tasks'] else 0:.1f} |")
+    if not grouped:
+        lines.append("| none |  |  |  |  |")
+    return lines
+
+
+@app.command("difficulty")
+def difficulty_table(
+    workdir: Path = WORKDIR,
+    write: bool = typer.Option(True, "--write/--no-write",
+                               help="Rewrite difficulty.json from what the workdir holds."),
+    fill: Optional[list[str]] = typer.Option(None, "--fill",  # noqa: B008
+                                             help="Generate synthetic Tasks into a bucket, as "
+                                                  "bucket=count; repeatable (D224)."),
+    seed: Optional[str] = typer.Option(None, "--seed", help="Seed the walks are drawn under (D212)."),
+):
+    """Print the difficulty buckets of a finished build: Tasks, trusted and solve rate per bucket (D209).
+
+    `--fill` walks the mined dependency graph for the bucket asked for and reports what came out
+    (D224); what it generates is stored apart and is never added to the trusted column above.
+    """
+    body = (difficulty.refresh(workdir) if write else difficulty.compute(workdir))
+    for line in difficulty.markdown_table(body.get("buckets") or [], len(body.get("no_record") or {})):
+        typer.echo(line)
+    targets = _buckets(fill)
+    if not targets:
+        return
+    made = _entry("kullback.synthesise", "synthesise")(workdir, targets, seed=seed)
+    typer.echo("")
+    typer.echo("Synthetic Tasks, generated and counted apart from everything above (D224):")
+    for line in _synthesis_lines(made):
+        typer.echo(line)
+
+
+@app.command()
+def synthesise(
+    workdir: Path = WORKDIR,
+    bucket: Optional[list[str]] = typer.Option(None, "--bucket",  # noqa: B008
+                                               help="A difficulty bucket and how many Tasks to "
+                                                    "generate into it, as bucket=count; repeatable."),
+    seed: Optional[str] = typer.Option(None, "--seed", help="Seed the walks are drawn under (D212)."),
+    model: Optional[str] = typer.Option(None, "--model",
+                                        help="Model id for the Intent writer, as provider/model. "
+                                             "Without it the Intent is written by code from the walk."),
+    base_url: Optional[str] = typer.Option(None, "--base-url", help="Endpoint for an OpenAI-compatible model."),
+    ceiling_usd: Optional[float] = typer.Option(None, "--ceiling-usd",
+                                                help="Spend ceiling for the Intent writer (D86)."),
+):
+    """Walk the mined tool-call graph, run the walks in the rebuilt world and store them apart (D224).
+
+    Nothing generated here enters tasks.json, replay fidelity, a confirmed Reference or the trusted
+    count: it lands under synthetic/ in the workdir and is reported under its own heading.
+    """
+    targets = _buckets(bucket)
+    if not targets:
+        typer.echo("nothing asked for: pass --bucket <bucket>=<count>")
+        raise typer.Exit(2)
+    # Every model call the harness makes is priced into budget.json and refused past the ceiling
+    # (D65, D86); the Intent writer is no exception because it is the only model call here.
+    writer = _live_model(model, base_url) if model else None
+    if writer is not None:
+        writer = _entry("kullback.builder.build", "_wrap")(
+            writer, "synthetic_intent", Path(workdir),
+            _entry("kullback.builder.build", "_ceiling")(Path(workdir), ceiling_usd), model_id=model)
+    body = _entry("kullback.synthesise", "synthesise")(workdir, targets, seed=seed, model=writer)
+    for line in _synthesis_lines(body):
+        typer.echo(line)
+
+
+user_app = typer.Typer(add_completion=False,
+                       help="The Simulated user: how close its turns are to the recorded ones, and how "
+                            "often it runs out of scenario (D214).")
+app.add_typer(user_app, name="user")
+
+
+@user_app.command("fidelity")
+def user_fidelity(
+    workdir: Path = WORKDIR,
+    agent_model: Optional[str] = typer.Option(None, "--agent-model",
+                                              help="Model id for the agent user, as provider/model. Without it "
+                                                   "only the rule-driven baseline is scored, which costs nothing."),
+    base_url: Optional[str] = typer.Option(None, "--base-url", help="Endpoint for an OpenAI-compatible model."),
+    task: Optional[str] = typer.Option(None, "--task", help="Score one Task instead of every Task."),
+    limit: Optional[int] = typer.Option(None, "--limit", help="Score only the first N Tasks, in id order."),
+    ceiling_usd: Optional[float] = typer.Option(None, "--ceiling-usd",
+                                                help="Stop the scoring when the agent user has spent this much (D86)."),
+    write: bool = typer.Option(True, "--write/--no-write", help="Rewrite user_fidelity.json."),
+):
+    """Score the Simulated user against the recorded turns, per Task and per corpus (D214 rule 5)."""
+    fidelity = importlib.import_module("kullback.user.fidelity")
+    budget = importlib.import_module("kullback.runner.budget")
+    ceiling = budget.Ceiling(usd=ceiling_usd) if ceiling_usd else None
+    make_agent = _agent_user_factory(workdir, agent_model, base_url, ceiling) if agent_model else None
+    wanted = [task] if task else fidelity.task_ids(workdir, limit=limit)
+    try:
+        out = fidelity.score_workdir(workdir, make_agent=make_agent, write=write, tasks=wanted)
+    except budget.BudgetExceeded as stop:
+        typer.echo(f"stopped on the ceiling: {stop}")
+        raise typer.Exit(1) from None
+    for line in fidelity.markdown_table(out["body"]):
+        typer.echo(line)
+    if ceiling is not None:
+        typer.echo(f"spend: ${ceiling.spent:.4f} of ${ceiling.usd:.2f}")
+
+
+def _agent_user_factory(workdir: Path, model_id: str, base_url: Optional[str], ceiling: Any = None):
+    """A callable the score uses to build one Task's agent user, on a live model (D214 rule 3).
+
+    The model is wrapped the way a build wraps its own (D86), so every turn this scoring pays for is
+    priced, charged against the ceiling and stopped at it, rather than counted after the fact.
+    """
+    agent_mod = importlib.import_module("kullback.user.agent")
+    fidelity = importlib.import_module("kullback.user.fidelity")
+    budget = importlib.import_module("kullback.runner.budget")
+    model = _live_model(model_id, base_url)
+    if ceiling is not None:
+        model = budget.BudgetedModel(model, stage="user_fidelity", workdir=workdir,
+                                     model_id=model_id, ceiling=ceiling, cap_context=True)
+    writes = fidelity.write_tools_of(workdir)
+    vocab = fidelity.vocabulary_of(workdir)
+
+    def make(ctx, fallback, record_values):
+        return agent_mod.AgentUser(ctx, fallback, model, vocab=vocab, write_tools=writes,
+                                   record_values=record_values)
+
+    return make
+
+
+@user_app.command("dry-run")
+def user_dry_run(workdir: Path = WORKDIR):
+    """How the Simulated user ended this build's Runs, and how often its scenario ran out (D210)."""
+    fidelity = importlib.import_module("kullback.user.fidelity")
+    counts = fidelity.dry_run_counts(workdir)
+    typer.echo(f"{counts['runs']} Run(s) over {counts['tasks']} Task(s); "
+               f"{counts['classified']} carry an end kind")
+    for kind, count in (counts.get("ends") or {}).items():
+        typer.echo(f"  {kind}: {count}")
+    if counts["classified"] < counts["runs"]:
+        typer.echo("  Runs with no end kind were written before the kinds existed; their "
+                   "termination reasons are " + ", ".join(
+                       f"{name} {n}" for name, n in (counts.get("termination_reasons") or {}).items()))
+
+
+CORPUS = typer.Option(None, "--corpus", help="Name of the corpus the traces came from, for the manifest "
+                                             "and the card.")
+CORPUS_LICENSE = typer.Option(None, "--corpus-license", help="Licence of that corpus, as an SPDX id; the "
+                                                             "card states it and the front matter indexes it.")
+CORPUS_URL = typer.Option(None, "--corpus-url", help="Where that corpus came from.")
+
+
+def _echo_manifest(manifest: dict) -> None:
+    """The numbers a person needs to see before a package leaves the machine."""
+    fidelity = manifest.get("replay_fidelity") or {}
+    scan = manifest.get("leak_scan") or {}
+    typer.echo(f"round {manifest.get('round')}, {manifest.get('tasks_total', 0)} Tasks, "
+               f"replay fidelity {_rate(fidelity.get('tasks_rate'))} over Tasks and "
+               f"{_rate(fidelity.get('runs_rate'))} over Runs, "
+               f"{manifest.get('reference_confirmed', 0)} References confirmed, "
+               f"{manifest.get('verifier_derived', 0)} Verifiers derived, "
+               f"{manifest.get('trusted', 0)} trusted")
+    typer.echo(f"leak scan: {scan.get('leaks', 0)} recorded strings and {scan.get('value_echoes', 0)} "
+               f"value echoes over {scan.get('files_scanned', 0)} graded files, of "
+               f"{scan.get('values_checked', 0)} strings checked against {scan.get('corpus_strings', 0)} "
+               f"the corpus holds ({scan.get('strict_env_only_unaccounted', 0)} against env/ alone)")
+    typer.echo(f"content hash {manifest.get('content_hash')}")
+
+
+def _rate(value: Optional[float]) -> str:
+    return "not measured" if value is None else f"{float(value):.1%}"
+
+
+@app.command()
+def export(
+    workdir: Path = WORKDIR,
+    out: Path = typer.Option(..., "--out", help="Directory the package is written to."),  # noqa: B008
+    name: Optional[str] = typer.Option(None, "--name", help="Name of the Environment, which is also its "
+                                                            "domain tag; environment.json carries none."),
+    corpus: Optional[str] = CORPUS,
+    corpus_license: Optional[str] = CORPUS_LICENSE,
+    corpus_url: Optional[str] = CORPUS_URL,
+    preview: bool = typer.Option(False, "--preview", help="Mark the package as below the fidelity bar."),
+):
+    """Write a self-contained Environment package: the rebuilt world, the Task list, the Verifiers, a manifest.
+
+    Nothing of the recordings the world was rebuilt from goes in, and a leak scan over the customer's
+    export refuses the package if anything repeats a string only a recording could have said (D221).
+    """
+    build = _entry("kullback.hub.package", "export")
+    manifest = build(workdir, out, name=name, corpus=corpus, corpus_license=corpus_license,
+                     corpus_url=corpus_url, preview=preview)
+    _echo_manifest(manifest)
+    typer.echo(str(Path(out) / "manifest.json"))
+
+
+@app.command()
+def publish(
+    workdir: Path = WORKDIR,
+    repo: str = typer.Option(..., "--repo", help="Dataset repository, as organisation/name."),
+    name: Optional[str] = typer.Option(None, "--name", help="Name of the Environment; the default is the "
+                                                            "last segment of --repo."),
+    corpus: Optional[str] = CORPUS,
+    corpus_license: Optional[str] = CORPUS_LICENSE,
+    corpus_url: Optional[str] = CORPUS_URL,
+    preview: bool = typer.Option(False, "--preview", help="Publish below the fidelity bar, with a banner "
+                                                          "on the card saying so."),
+    keep: Optional[Path] = typer.Option(None, "--keep", help="Keep the staged package here instead of a "  # noqa: B008
+                                                             "temporary directory."),
+):
+    """Export the Environment, write its card and upload it as one commit, tagged with its round (D221).
+
+    A release needs replay fidelity at or above 0.90 over Tasks; below that only --preview is
+    allowed. Publishing again writes a new commit on the same repository and rewrites the card's
+    numbers; older rounds stay reachable by their tags.
+    """
+    push = _entry("kullback.hub.publish", "publish")
+    hosted, manifest = push(workdir, repo, name=name, preview=preview, corpus=corpus,
+                            corpus_license=corpus_license, corpus_url=corpus_url, keep=keep)
+    _echo_manifest(manifest)
+    typer.echo(f"{manifest.get('status', 'preview')} at {hosted.url}, tag {hosted.tag}")
+
+
+@app.command()
+def fetch(
+    repo: str = typer.Argument(..., help="Dataset repository, as organisation/name."),
+    out: Path = typer.Option(..., "--out", help="Directory the Environment is laid out in."),  # noqa: B008
+    revision: Optional[str] = typer.Option(None, "--revision", help="Tag, branch or commit; the default "
+                                                                     "is the newest."),
+):
+    """Download a published Environment, verify it against its content hash, and lay it out as a workdir.
+
+    What lands is what `kullback run --workdir <out>` takes: the world, the Task list, the Verifiers
+    and the manifest, with no builder state. A package that does not verify is not laid out.
+    """
+    pull = _entry("kullback.hub.publish", "fetch")
+    manifest = pull(repo, out, revision=revision)
+    _echo_manifest(manifest)
+    missing = manifest.get("missing_run_inputs") or []
+    if missing:
+        typer.echo("this package cannot be run as a workdir: it is missing " + ", ".join(missing))
+    typer.echo(f"{out}")
 
 
 @app.command()

@@ -10,6 +10,8 @@ from typing import Any, Literal, Optional
 
 from pydantic import BaseModel, Field, ValidationError
 
+from kullback import claims, difficulty, round_snapshot
+from kullback.examiner import lifecycle
 from kullback.runner.records import (
     Constraint,
     Environment,
@@ -26,8 +28,9 @@ from kullback.runner.records import (
     disagreement_stats,
 )
 
-SECTIONS = ("## Environment", "## Rounds", "## Tasks", "## Disagreement queue", "## Lessons set aside")
-ENVIRONMENT, ROUNDS, TASKS, QUEUE, LESSONS = SECTIONS
+SECTIONS = ("## Environment", "## Rounds", "## Tasks", "## Synthetic Tasks", "## Disagreement queue",
+            "## The Simulated user", "## Lessons set aside")
+ENVIRONMENT, ROUNDS, TASKS, SYNTHETIC, QUEUE, USER_FIDELITY, LESSONS = SECTIONS
 
 
 class ScorecardItem(Record):
@@ -86,13 +89,34 @@ class ReportData(BaseModel):
     frontier_models: list[str] = Field(default_factory=list)
     assisted_share: dict[str, float] = Field(default_factory=dict)
     judge_disagreement: dict = Field(default_factory=dict)
+    # Which model each side of the judging ran on, by role (D160): "build", "judge", "second_judge".
+    judge_models: dict = Field(default_factory=dict)
     audit_rate: Optional[float] = None
     disagreement_queue: list[dict] = Field(default_factory=list)
     tasks_aside: list[dict] = Field(default_factory=list)
     lessons_set_aside: list[SetAsideLesson] = Field(default_factory=list)
+    # D171: tool_fidelity.json, the compile_tools artifact: `tools` per tool over the corpus,
+    # `tasks` per Task per tool over that Task's own recorded calls.
+    tool_fidelity: dict = Field(default_factory=dict)
+    # D214: user_fidelity.json, the round driver's artifact: how close each driver's turns are to
+    # the recorded ones, per Task and per corpus. Empty on a build written before D214.
+    user_fidelity: dict = Field(default_factory=dict)
     rounds: list[RoundRecord] = Field(default_factory=list)
     trusted: Optional[GateResult] = None
+    # D209: difficulty.json, the record and the bucket per Task with the Tasks that carry neither.
+    difficulty: dict = Field(default_factory=dict)
+    # D224: synthetic/index.json, the walks that became Tasks. Its own field and its own section,
+    # never added into `tasks`: nothing generated may be counted where the recorded Tasks are.
+    synthetic: dict = Field(default_factory=dict)
+    # D223: claims.json, what the transcripts claimed against what the state received, per Run, per
+    # Task and over the corpus, with the Tasks flagged for the Simulated user's end protocol.
+    claims: dict = Field(default_factory=dict)
     findings: list[dict] = Field(default_factory=list)  # repairs/repair_record_finding.jsonl (D155)
+    # D218: the last closed round's Task table and how far the live files have moved from it. The
+    # report reads the table, so its Task level numbers are one round's answer rather than a join
+    # over three files that move at different times, and it says how much has moved since.
+    snapshot: dict = Field(default_factory=dict)
+    drift: dict = Field(default_factory=dict)
 
 
 # --- numbers ---------------------------------------------------------------
@@ -393,6 +417,7 @@ def _headline(data: ReportData) -> list[str]:
     if data.stopped_reason:
         lines.append(f"Stopped: {data.stopped_reason}.")
     lines += _stop_lines(data)
+    lines += _snapshot_lines(data)
     lines += _round_lines(data)
     if data.records_not_read:
         lines += ["", "### Records not read", "",
@@ -401,9 +426,48 @@ def _headline(data: ReportData) -> list[str]:
     return lines
 
 
+def _snapshot_lines(data: ReportData) -> list[str]:
+    """Which round's Task table these numbers are read from, and how far the live files have moved
+    from it (D218 rule 4).
+
+    Every Task level number below is one round's answer, taken in one pass at that round's close.
+    The live files go on being written afterwards, which is right, so the sentence that follows says
+    how many Tasks now disagree with the table and at which stage: a reader who sees a number here
+    that the workdir no longer agrees with is looking at movement and not at a regression.
+    """
+    if not data.drift:
+        return []
+    lines = [round_snapshot.drift_line(data.drift)]
+    counts = dict((data.snapshot or {}).get("counts") or {})
+    if counts:
+        lines.append(f"That round ruled on {counts.get('tasks', 0)} Tasks: "
+                     f"{counts.get('fidelity', 0)} clearing fidelity, "
+                     f"{counts.get('reference', 0)} with a Reference, "
+                     f"{counts.get('verifier_passed', 0)} whose Verifier passed the suite, "
+                     f"{counts.get('trusted', 0)} trusted and {counts.get('refused', 0)} refused.")
+    return lines
+
+
+def _reverted_lines(data: ReportData) -> list[str]:
+    """The repairs every round put back, by kind and by why (D201).
+
+    One line per round that reverted anything, because a round that closed its red lights while
+    three of its repairs were reverted for breaking Tasks elsewhere did less than its findings say,
+    and the kind is what says which verb keeps buying nothing. The sentence is the driver's, off the
+    round's own counts: this file reads records and works nothing out for itself.
+    """
+    lines = []
+    for record in data.rounds:
+        said = str((record.counts or {}).get("repairs_reverted") or "")
+        if said:
+            lines.append(f"round {record.round}: {said}.")
+    return lines
+
+
 def _round_lines(data: ReportData) -> list[str]:
     """What the rounds left: how many Tasks have a trusted Verifier, with the false-rejection number
-    per Task beside it (D133), how many were refused and why, and what a stalled exit hands a person."""
+    per Task beside it (D133), how many were refused and why, what the repairs of each round bought
+    and what they were put back for (D201), and what a stalled exit hands a person."""
     if not data.rounds:
         return []
     last = data.rounds[-1].counts or {}
@@ -415,9 +479,13 @@ def _round_lines(data: ReportData) -> list[str]:
     lines.append(f"{len(refused)} Tasks refused" + (": " + "; ".join(
         f"{task_id} ({reason or 'no reason recorded'})" for task_id, reason in sorted(refused.items()))
         if refused else "") + ".")
+    lines += _reverted_lines(data)
     if data.rounds[-1].exit == "stalled":
         unfinished = list(last.get("unfinished") or [])
         lines.append("stalled: these Tasks need a person: " + (", ".join(unfinished) or "none named") + ".")
+    elif data.rounds[-1].exit == "max_rounds":
+        lines.append("round cap reached (D169): the loop stopped with "
+                     f"{len(list(last.get('unfinished') or []))} Tasks unfinished.")
     return lines
 
 
@@ -463,17 +531,159 @@ def _scorecard_table(data: ReportData) -> list[str]:
     return lines if data.scorecard else lines + ["| none recorded |  |  |  |"]
 
 
+def _difficulty_table(data: ReportData) -> list[str]:
+    """The trusted count and the held-out solve rate per difficulty bucket (D209), off difficulty.json.
+
+    One trusted count says nothing about what kind of Task it holds, so it is reported per bucket
+    beside it and never instead of it. A build whose workdir has no difficulty.json says so rather
+    than printing an empty table that reads as a build with no Tasks.
+    """
+    body = data.difficulty or {}
+    rows = list(body.get("buckets") or [])
+    if not rows and not body:
+        return ["", "### Difficulty buckets", "",
+                "No difficulty record was written for this build, so no bucket table is shown."]
+    return ["", "### Difficulty buckets", ""] + difficulty.markdown_table(rows, len(body.get("no_record") or {}))
+
+
+def _synthetic(data: ReportData) -> list[str]:
+    """The Tasks walked over the mined graph, under their own heading and in nobody else's count (D224).
+
+    A synthetic Task is a walk of the dependency graph the recordings showed, run in the rebuilt
+    world, with a Verifier derived from where it landed. No recording gates it, so it is never
+    trusted, never part of replay fidelity and never a Reference: what it buys is a pool wide enough
+    to measure over-strictness on a thin corpus and Tasks at a difficulty a round asked for. The
+    walks a body refused are printed beside the Tasks, because a corpus whose walks are mostly
+    refused has a graph missing a precondition edge and the count is what says so.
+    """
+    lines = [SYNTHETIC, ""]
+    body = data.synthetic or {}
+    rows = list(body.get("tasks") or [])
+    if not rows:
+        return lines + ["No synthetic Tasks were generated for this build."]
+    counts = dict(body.get("counts") or {})
+    graph_row = dict(counts.get("graph") or {})
+    verified = sum(1 for row in rows if row.get("suite_passed"))
+    lines += [f"{len(rows)} synthetic Tasks, {verified} of them verified by the D79 suite. None of them "
+              "counts toward replay fidelity, a confirmed Reference or the trusted count.", "",
+              f"Graph: {graph_row.get('nodes', 0)} tools, {graph_row.get('edges', 0)} edges "
+              f"({graph_row.get('value_edges', 0)} carrying a value, {graph_row.get('row_edges', 0)} "
+              f"joining a read to a write on one row), mined over {graph_row.get('runs', 0)} Runs.", "",
+              f"Walks tried {counts.get('walks_tried', 0)}, refused by a body "
+              f"{counts.get('walks_refused', 0)}, crashed {counts.get('walks_crashed', 0)}, "
+              f"unbound {counts.get('walks_unbound', 0)}.", ""]
+    lines += ["| bucket asked | bucket reached | Tasks | suite passed | mean pool |",
+              "| --- | --- | --- | --- | --- |"]
+    grouped: dict = {}
+    for row in rows:
+        key = (str(row.get("bucket_requested") or ""), str(row.get("bucket") or ""))
+        held = grouped.setdefault(key, {"tasks": 0, "passed": 0, "pool": 0})
+        held["tasks"] += 1
+        held["passed"] += 1 if row.get("suite_passed") else 0
+        held["pool"] += int(row.get("pool") or 0)
+    for (asked, reached), held in sorted(grouped.items()):
+        mean = held["pool"] / held["tasks"] if held["tasks"] else 0.0
+        lines.append(f"| {asked} | {reached} | {held['tasks']} | {held['passed']} | {mean:.1f} |")
+    return lines
+
+
+def _claims_table(data: ReportData) -> list[str]:
+    """What the transcripts claimed against what the state received, per Task and over the corpus (D223).
+
+    The Verdict already grades state alone (D46), so a false claim never earned a pass; what this
+    adds is the class. A Candidate that answered "done" and wrote nothing and one that wrote the
+    wrong row were one failure count, and they ask for two different repairs. The Tasks flagged
+    below are the ones where every failing held-out Run claimed a write the state never received,
+    which is where the Simulated user's end protocol accepted words for a state change.
+    """
+    body = data.claims or {}
+    totals = body.get("totals") or {}
+    if not body:
+        return ["", "### Claims against state", "",
+                "No claim record was written for this build, so no claim table is shown."]
+    lines = ["", "### Claims against state", "",
+             f"{totals.get('runs_with_claims', 0)} of {totals.get('runs', 0)} Runs claim a write in "
+             f"words: {totals.get('claims', 0)} claims, {totals.get('claims_written', 0)} answered by "
+             f"a write the state received and {totals.get('claims_unwritten', 0)} answered by none. "
+             f"{totals.get('writes_unclaimed', 0)} writes happened that no transcript mentions.",
+             f"Of {totals.get('failing_runs', 0)} failing Runs, "
+             f"{totals.get('claimed_unwritten_failures', 0)} claimed a write nothing received "
+             f"({_percent(totals.get('claimed_unwritten_share'))}). Mean partial completion "
+             f"{_percent(totals.get('partial_completion_mean'))}.",
+             "", claims.LEGEND, ""]
+    lines += claims.markdown_table(body.get("tasks") or {})
+    flagged = list(body.get("flagged") or [])
+    lines += ["", ("Flagged for the Simulated user's end protocol: " + ", ".join(flagged)
+                   + ". Every failing held-out Run of each claimed a write the state never received."
+                   if flagged else
+                   "No Task is flagged for the Simulated user's end protocol: no Task fails only on "
+                   "claims the state never received.")]
+    return lines
+
+
+def claims_for_task(data: ReportData, task_id: str) -> dict:
+    """One Task's row of the claim record, or an empty row where the build wrote none."""
+    row = ((data.claims or {}).get("tasks") or {}).get(task_id)
+    return dict(row) if isinstance(row, dict) else {}
+
+
+def _claim_task_lines(data: ReportData, task_id: str) -> list[str]:
+    """The two lines D223 puts beside a Task's numbers: what it claimed, and how far its Runs got."""
+    row = claims_for_task(data, task_id)
+    if not row:
+        return []
+    flagged = task_id in list((data.claims or {}).get("flagged") or [])
+    lines = [f"- Claims: {row.get('claims', 0)}, of which {row.get('claims_unwritten', 0)} name a "
+             f"write the state never received; {row.get('writes_unclaimed', 0)} writes no transcript "
+             f"mentions",
+             f"- Partial completion: {_percent(row.get('partial_completion_mean'))} of atoms confirmed "
+             f"per Run (band {row.get('partial_completion_band', 'none')}), beside trusted and not "
+             f"instead of it"]
+    if flagged:
+        lines.append("- Flagged: every failing held-out Run of this Task claimed a write the state "
+                     "never received, so the Simulated user's end protocol is what to read next")
+    return lines
+
+
+def tool_fidelity_counts(data: ReportData, name: str) -> dict:
+    """Both grains of one tool's replay fidelity, off tool_fidelity.json (D171).
+
+    `calls` and `replayed` are the corpus number the compile_tools gate ruled on and the Builder
+    repairs against. `tasks` is how many Tasks made a recorded call of the tool at all, and `blocked`
+    how many of them have an own call the body answers differently, which is the only count that
+    costs a Reference. The two part company: a tool can miss one call in the corpus and block one
+    Task while forty others call it and are answered correctly.
+    """
+    tools = (data.tool_fidelity or {}).get("tools") or {}
+    tasks = (data.tool_fidelity or {}).get("tasks") or {}
+    per_tool = tools.get(name) or {}
+    calling = [row for row in tasks.values() if name in (row or {})]
+    return {"calls": int(per_tool.get("calls") or 0), "replayed": int(per_tool.get("replayed") or 0),
+            "tasks": len(calling), "blocked": sum(1 for row in calling if row[name].get("differing"))}
+
+
+def assisted_tool_note(data: ReportData, name: str) -> str:
+    """The sentence beside one assisted tool: what it stood in for, and what it actually costs (D171)."""
+    parts = []
+    if name in data.assisted_share:
+        parts.append(f"{_percent(data.assisted_share[name])} of its calls stood in")
+    counts = tool_fidelity_counts(data, name)
+    if counts["calls"]:
+        parts.append(f"{counts['replayed']} of {counts['calls']} recorded calls replayed")
+    if counts["tasks"]:
+        parts.append(f"{counts['tasks']} Tasks call it, {counts['blocked']} blocked by their own "
+                     f"differing calls")
+    return f": {'; '.join(parts)}" if parts else ""
+
+
 def _tool_notes(data: ReportData) -> list[str]:
     """What a person has to look at before trusting the numbers: tools that stood in, Tasks with
     no anchor, tools nobody classed read or write (D70), and the Environment's open flags."""
     env = data.environment
     assisted = list(env.assisted_tools) if env is not None else []
     lines = ["", "### Assisted tools", ""]
-    lines += _bullets(
-        [f"- {name}" + (f": {_percent(data.assisted_share[name])} of its calls stood in"
-                        if name in data.assisted_share else "")
-         for name in assisted],
-        "No assisted tools: every tool here is real code.")
+    lines += _bullets([f"- {name}{assisted_tool_note(data, name)}" for name in assisted],
+                      "No assisted tools: every tool here is real code.")
 
     lines += ["", "### Unguarded Tasks", ""]
     lines += _bullets([f"- {t.id}: {t.name or t.intent or 'no name yet'}" for t in data.tasks if t.unguarded],
@@ -532,6 +742,7 @@ def _environment(data: ReportData) -> list[str]:
     """The Environment section, in the order a person reads it: what was built, what the gates and
     the scorecard said, what still needs a look, and what the pipeline did and cost."""
     return ([ENVIRONMENT, ""] + _headline(data) + _gates_table(data) + _scorecard_table(data)
+            + _difficulty_table(data) + _claims_table(data)
             + _tool_notes(data) + _finding_lines(data) + _overlay_lines(data)
             + ["", "### Coverage", ""] + _coverage(data) + _pipeline_lines(data))
 
@@ -603,6 +814,7 @@ def _tasks(data: ReportData) -> list[str]:
             lines.append(f"Not gradeable, Reference disputed ({aside[task.id]}).")
             lines.append("")
         lines += _task_numbers_lines(data, numbers)
+        lines += _claim_task_lines(data, task.id)
         if data.trusted is not None:
             lines += _trust_lines(data, task.id, fractions)
         lines += ["", suggestion(numbers, data.built, aside.get(task.id)), ""]
@@ -684,6 +896,53 @@ def _counts(counts: dict) -> str:
     return ", ".join(f"{name} {number}" for name, number in sorted(counts.items()))
 
 
+def _by_pair(rows: list[dict]) -> dict:
+    """Judge disagreement per pair of judges, off the pair name each row carries (D160).
+
+    The counting is `records.disagreement_stats`, the same rule as the rate over every row, and the
+    pair's name is the one judge.py wrote into the row, so neither number nor name is invented here.
+    The grouping is repeated rather than imported: the report reads records and reaches into no other
+    Runner module (design section 4 item 18). A row from before D160 names no pair and joins none.
+    """
+    grouped: dict[str, list[dict]] = {}
+    for row in rows:
+        name = str(row.get("judges") or "")
+        if name:
+            grouped.setdefault(name, []).append(row)
+    return {name: {key: disagreement_stats(group)[key] for key in ("pairs", "disagreements", "rate")}
+            for name, group in sorted(grouped.items())}
+
+
+def _judge_models_lines(data: ReportData) -> list[str]:
+    """The judge models this build used, named when they are not the model that built it (D160).
+
+    A judge on the build's own model is the default and says nothing new; a judge on another model,
+    or two judges on two models, is what a reader has to know to read the rate below.
+    """
+    models = data.judge_models or {}
+    build = models.get("build")
+    named = [models[role] for role in ("judge", "second_judge") if models.get(role) and models[role] != build]
+    if not named:
+        return []
+    against = f", where the build model is {build}" if build else ""
+    return [f"Judge models: {', '.join(named)}{against}.", ""]
+
+
+def _by_pair_lines(by_pair: dict) -> list[str]:
+    """One line per pair of judges: how often those two parted (D160).
+
+    Nothing is printed for a build whose pair rows predate the judge names, which is a silence about
+    a number that was never recorded rather than a zero that was never measured.
+    """
+    if not by_pair:
+        return []
+    lines = ["", "Disagreement by judge pair:"]
+    for name, row in sorted(by_pair.items()):
+        lines.append(f"- {name}: {row.get('disagreements', 0)} of {row.get('pairs', 0)} pairs "
+                     f"({_percent(row.get('rate'))})")
+    return lines
+
+
 def _queue(data: ReportData) -> list[str]:
     lines = [QUEUE, ""]
     pairs = data.judge_disagreement.get("pairs", 0)
@@ -692,10 +951,12 @@ def _queue(data: ReportData) -> list[str]:
              "which is the labelled set this number is bounded by (D92)."
              if data.audit_rate is not None
              else " No human labels yet, so this number has no error bound.")
+    lines += _judge_models_lines(data)
     lines.append(
         f"Judge disagreement: {disagreements} of {pairs} pairs "
         f"({_percent(data.judge_disagreement.get('rate'))})." + bound
     )
+    lines += _by_pair_lines(data.judge_disagreement.get("by_pair") or {})
     abstains = data.judge_disagreement.get("abstains")
     if abstains is not None:
         lines.append(
@@ -766,6 +1027,28 @@ def _cited_spans(row: dict) -> list[str]:
     return lines
 
 
+
+
+def _user_fidelity(data: ReportData) -> list[str]:
+    """How close the Simulated user's turns are to the recorded ones (D214 rule 5).
+
+    Half of an Environment is the person the Candidate is talking to, and a report that says nothing
+    about it lets a corpus with a user that runs out of scenario read as a corpus with hard Tasks.
+    A build written before D214 has no such file and says so in one line.
+    """
+    from kullback.user.fidelity import markdown_table
+    lines = [USER_FIDELITY, ""]
+    if not data.user_fidelity:
+        lines.append("This build recorded no user fidelity: nothing scored the Simulated user's "
+                     "turns against the recorded ones.")
+        return lines
+    lines.append("Each driver's turns against the turns the recording holds, per Task, meaned over "
+                 "the corpus. The rule-driven user is the baseline and costs nothing.")
+    lines.append("")
+    lines += markdown_table(data.user_fidelity)
+    return lines
+
+
 def _lessons(data: ReportData) -> list[str]:
     lines = [LESSONS, ""]
     if not data.lessons_set_aside:
@@ -784,7 +1067,9 @@ def render(data: ReportData) -> str:
     lines += _environment(data) + [""]
     lines += _rounds(data) + [""]
     lines += _tasks(data) + [""]
+    lines += _synthetic(data) + [""]
     lines += _queue(data) + [""]
+    lines += _user_fidelity(data) + [""]
     lines += _lessons(data) + [""]
     return "\n".join(lines)
 
@@ -1050,6 +1335,12 @@ def _list_of_bodies(body: Any, model: type) -> list:
     return out
 
 
+def _difficulty_body(root: Path) -> dict:
+    """difficulty.json as the last round left it (D209); a workdir without one reads as no record."""
+    body = _json(root / difficulty.FILE_NAME)
+    return body if isinstance(body, dict) else {}
+
+
 def _rounds_of(path: Path, unread: Optional[list] = None) -> list[RoundRecord]:
     """rounds.json as records: a file that is there and is not a list of RoundRecord is named, since a
     round that did not load would leave the trusted count and the exit unsaid."""
@@ -1090,12 +1381,24 @@ def load_tool_sigs(workdir: Any) -> list[ToolSig]:
     return _list_of(root / "tool_sigs.json", ToolSig)
 
 
+SYNTHETIC_INDEX = ("synthetic", "index.json")
+"""Where the generated Tasks keep their index (D224). Named here rather than imported: the report
+reads records and never reaches into the Builder (design section 4 item 18)."""
+
+
+def _synthetic_body(root: Path) -> dict:
+    """synthetic/index.json as the last request left it, or nothing where none has run (D224)."""
+    body = _json(root.joinpath(*SYNTHETIC_INDEX))
+    return body if isinstance(body, dict) else {}
+
+
 def load(workdir: Any) -> ReportData:
     """Read every record the report shows from one workdir. Missing files mean a shorter report, not an error."""
     root = Path(workdir)
     unread: list[str] = []
     env_body = _json(root / "environment.json")
     environment = Environment.model_validate(env_body) if isinstance(env_body, dict) else None
+    fidelity_body = _json(root / "tool_fidelity.json")
     state = _json(root / "pipeline" / "state.json")
     state = state if isinstance(state, dict) else {}
     stopped = state.get("stopped") if isinstance(state.get("stopped"), dict) else {}
@@ -1108,6 +1411,7 @@ def load(workdir: Any) -> ReportData:
     gates = (_list_of(root / "gates.json", GateResult) + _list_of_bodies(state.get("gates"), GateResult))
     trusted = next((g for g in reversed(_list_of(root / "gates.json", GateResult)) if g.stage == "trusted"), None)
     status = str(state.get("status", "complete"))
+    snapshot = round_snapshot.read_snapshot(root)
     data = ReportData(
         title=config.get("title") or ("Run batch report" if config.get("kind") == "batch" else "Harness build report"),
         kind=config.get("kind", "build"),
@@ -1120,7 +1424,11 @@ def load(workdir: Any) -> ReportData:
         scorecard=scorecard_rows(_json(root / "scorecard.json")),
         stages=stages,
         tasks=tasks,
-        verifiers=_records(root / "verifiers", Verifier, unread),
+        # D208: the live ones only. A workdir an older build left holds a file per Task that ever
+        # had a Reference, and a report that counted one whose Reference has since been withdrawn
+        # would say the harness stands behind a check it has retired.
+        verifiers=lifecycle.live(_records(root / "verifiers", Verifier, unread),
+                                 _json(root / "task_status.json") or {}),
         tool_sigs=load_tool_sigs(root),
         runs=runs,
         verdicts=_records(root / "verdicts", Verdict, unread),
@@ -1130,14 +1438,25 @@ def load(workdir: Any) -> ReportData:
         task_coverage=_list_of(root / "coverage.json", TaskCoverage),
         frontier_models=config.get("frontier_models", []),
         assisted_share=config.get("assisted_share") or assisted_share_from_runs(runs),
-        judge_disagreement=disagreement_stats(pairs),
+        judge_disagreement=dict(disagreement_stats(pairs), by_pair=_by_pair(pairs)),
+        judge_models=config.get("judge_models") or {},
         audit_rate=config.get("audit_rate"),
         disagreement_queue=_jsonl(root / "disagreement_queue.jsonl", unread),
         tasks_aside=_jsonl(root / "tasks_aside.jsonl", unread),
         lessons_set_aside=_list_of(root / "lessons_set_aside.json", SetAsideLesson),
+        tool_fidelity=fidelity_body if isinstance(fidelity_body, dict) else {},
+        user_fidelity=_json(root / "user_fidelity.json") if isinstance(
+            _json(root / "user_fidelity.json"), dict) else {},
         rounds=_rounds_of(root / "rounds.json", unread),
         trusted=trusted,
+        difficulty=_difficulty_body(root),
+        synthetic=_synthetic_body(root),
+        claims=claims.read_records(root),
         findings=_jsonl(root / "repairs" / "repair_record_finding.jsonl", unread),
+        # D218 rule 4: the last closed round's table, and the drift of the live files from it.
+        snapshot=snapshot or {},
+        drift=round_snapshot.drift(snapshot, task_status=_json(root / "task_status.json") or {},
+                                   replays=_json(root / "replays.json") or {}),
     )
     gate = environment_gate(data)
     if gate is not None and not gate.passed:

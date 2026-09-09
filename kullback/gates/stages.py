@@ -39,9 +39,78 @@ def compile_tools_gate(bodies: dict, assisted_tools: Iterable[str] = ()) -> Gate
 
 
 def intent_gate(intents: dict) -> GateResult:
-    """An ungrounded Intent is a Task with no Verdict, never a failed build (D47, section 6)."""
+    """An ungrounded Intent is a Task with no Verdict, never a failed build (D47, section 6).
+
+    The two strip counts ride in the metrics (D196): how many of these lines held a value only the
+    system knew, and how many values were taken out of them. A build whose strip counts are zero on
+    a corpus whose leak check still fails is a strip that is not reading the same values the check is.
+    """
     failures = [f"task {t}: {_get(r, 'reason')}" for t, r in sorted(intents.items()) if not _get(r, "grounded")]
-    return gate("intent", failures, tasks=len(intents), grounded=sum(1 for r in intents.values() if _get(r, "grounded")))
+    stripped = [list(_get(r, "stripped", []) or []) for r in intents.values()]
+    return gate("intent", failures, tasks=len(intents), grounded=sum(1 for r in intents.values() if _get(r, "grounded")),
+                intents_stripped=sum(1 for values in stripped if values),
+                values_stripped=sum(len(values) for values in stripped))
+
+
+def readers_gate(proposals: Iterable[Any], requestors: int = 0, assumptions: Iterable[Any] = (),
+                 unset: Any = None, kinds: Any = None, derived: Iterable[Any] = (),
+                 totals: Any = None) -> GateResult:
+    """A proposal the readers gate could not satisfy is flagged and kept, never a failed build.
+
+    Section 6 again: a requestor whose readers stayed assisted still leaves a world, and what that
+    world is worth is replay fidelity's to say, not this gate's. Each proposal is the plain dict the
+    stage wrote to readers.json, so nothing in the gates package has to know the Builder's records.
+
+    Three things are reported and none of them fails a build: the shapes a reader read nothing out
+    of, per tool, which is the strictness one arm of the 2026-09-07 experiment refused on and this
+    one only counts; the columns filled from the corpus because no recording read them before a
+    write, one assumption each; and the columns left unset because no recording read them before any
+    write, which are named so a reader of the build can see what the world is guessing at. The kind
+    these credits give each prose-result tool is reported beside them, because it overrides the
+    miner's own.
+
+    A fourth thing is reported the same way and fails nothing either (D203): the readers this build
+    derived from a tool's own recorded results for a homed prose result no proposal covered, the
+    ones a forced call had to settle, the slots the corpus could not bind to a column, and the
+    results still unread per tool. A corpus reading zero on all four is one whose prose results were
+    already read, which is what says the mechanism is off rather than that it did nothing.
+    """
+    proposals = list(proposals)
+    derived = list(derived)
+    totals = dict(totals or {})
+    assisted = [p for p in proposals if _get(p, "assisted")]
+    unset = dict(unset or {})
+    kinds = dict(kinds or {})
+    failures = [f"{_get(p, 'requestor')}: kept after {_get(p, 'attempts')} attempts with "
+                f"{len(_get(p, 'failures') or [])} shape(s) still failing: "
+                f"{(_get(p, 'failures') or ['no reason recorded'])[0]}"
+                for p in assisted]
+    silent = {}
+    effects = 0
+    for p in proposals:
+        for tool, count in sorted((_get(p, "silent") or {}).items()):
+            silent[str(tool)] = int(count)
+        effects += sum(len(columns or []) for columns in (_get(p, "effects") or {}).values())
+    return gate("readers", failures, requestors=requestors, proposals=len(proposals),
+                assisted=len(assisted),
+                columns=sum(len(_get(p, "columns") or []) for p in proposals),
+                readers=sum(len(_get(p, "readers") or []) for p in proposals),
+                silent_shapes=sum(silent.values()), silent_by_tool=silent,
+                changed_columns=effects, filled_columns=len(list(assumptions)),
+                unset_columns={str(k): sorted(v or []) for k, v in unset.items()},
+                write_tools=sorted(name for per in kinds.values()
+                                   for name, kind in (per or {}).items() if kind == "write"),
+                read_tools=sorted(name for per in kinds.values()
+                                  for name, kind in (per or {}).items() if kind != "write"),
+                readers_derived=int(totals.get("readers_derived") or 0),
+                readers_forced=int(totals.get("readers_forced") or 0),
+                columns_revealed=int(totals.get("columns_revealed") or 0),
+                forced_calls=int(totals.get("forced_calls") or 0),
+                slots_unbound=int(totals.get("slots_unbound") or 0),
+                results_unread=int(totals.get("results_unread") or 0),
+                results_unread_by_tool={str(k): int(v) for k, v in
+                                        sorted((totals.get("results_unread_by_tool") or {}).items())},
+                derived_tools=sorted(str(_get(d, "tool")) for d in derived))
 
 
 def rerolls_gate(rerolls: dict, per_task: int) -> GateResult:

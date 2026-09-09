@@ -11,6 +11,7 @@ import pytest
 from conftest import PTR
 from kullback.builder import compile_env as ce
 from kullback.builder import sandbox as sandbox_mod
+from kullback.builder import tools as builder_tools
 from kullback.gates.confinement import PROVIDED_HELPERS, gate_confined
 from kullback.runner.records import (
     Atom,
@@ -24,6 +25,7 @@ from kullback.runner.records import (
     ToolSig,
     Trace,
     Verifier,
+    as_dict,
 )
 
 # --- hand-written tool bodies, standing in for what a model would write ---
@@ -259,7 +261,10 @@ def test_each_task_overlay_pins_the_version_its_runs_saw(sample, schema, sigs, w
     assert {o.task_id for o in state.overlays} == {"t_cancel", "t_after"}
     cancel_overlay, cancel_values = ce.load_overlay(workdir, "t_cancel")
     after_overlay, after_values = ce.load_overlay(workdir, "t_after")
-    assert [(r.table, r.id) for r in cancel_overlay.rows] == [("orders", oid)]
+    # The order's own row, and the rows the order mentions inside itself (D188 walks a result to
+    # any depth), the order first because the rows are sorted by table.
+    assert cancel_overlay.rows[0].table == "orders" and cancel_overlay.rows[0].id == oid
+    assert {r.table for r in cancel_overlay.rows} == {"orders", "products"}
     assert cancel_values[cancel_overlay.rows[0].version_hash]["status"] == "pending"
     assert after_values[after_overlay.rows[0].version_hash]["status"] == "cancelled"
     assert cancel_overlay.rows[0].version_hash != after_overlay.rows[0].version_hash
@@ -334,8 +339,9 @@ def test_a_correct_body_passes_all_five_gates(schema, sigs, db0, workdir, order_
     # "confined" is the gate that stands in for the deferred sandbox: the same module is exec'd
     # in the Runner's process by load_toolkit, so a body that reaches past the customer's world
     # is refused before it ever executes anywhere.
-    assert [g.stage for g in gates][:5] == [
-        "parses", "confined", "executes_on_s0", "deterministic", "non_trivial"]
+    assert [g.stage for g in gates][:6] == [
+        "parses", "confined", "compile_tools.memorised_values", "executes_on_s0", "deterministic",
+        "non_trivial"]
     assert all(g.passed for g in gates), [g.failures for g in gates if not g.passed]
 
 
@@ -450,7 +456,8 @@ def test_a_later_attempt_that_crashes_does_not_replace_an_earlier_one_that_repla
     assert build.assisted is True and all(not node["passed"] for node in build.nodes)
     assert build.kept_attempt == 0
     assert build.body.strip() == WRONG_BODY.strip()
-    assert [gate.stage for gate in build.gates if gate.passed][:3] == ["parses", "confined", "executes_on_s0"]
+    assert [gate.stage for gate in build.gates if gate.passed][:4] == [
+        "parses", "confined", "compile_tools.memorised_values", "executes_on_s0"]
     written = json.loads((workdir / ce.NODE_DIR / "get_order_details.json").read_text(encoding="utf-8"))
     assert written["kept_attempt"] == 0
     assert [node["attempt"] for node in written["nodes"] if node.get("kept")] == [0]
@@ -498,6 +505,97 @@ def _library_world():
                    result={"member_id": member_id, "copy_id": row["loans"][0]["copy_id"]}, idx=i)
              for i, (member_id, row) in enumerate(sorted(db["members"].items()))]
     return db, _library_schema(), sig, calls
+
+
+MEMBER_BY_A_KEY_NOBODY_HOLDS = """
+return self.db.members[member_id + "-x"]
+"""
+
+WRONG_MEMBER_BODY = """
+member = self.db.members[member_id]
+return {"member_id": member.member_id}
+"""
+
+
+def test_a_body_that_raises_on_a_missing_row_is_told_the_table_and_that_the_id_is_absent(
+    make_test_model, workdir
+):
+    """A bare KeyError says nothing about what the body was reading, so the next attempt guesses.
+    The crashing line names the table and the world in front of it answers for the id."""
+    db, schema, sig, calls = _library_world()
+    model = make_test_model([MEMBER_BY_A_KEY_NOBODY_HOLDS] * 4)
+    ce.compile_tool(model, sig, calls, schema, db, workdir)
+    retry = model.calls[1]["messages"][-1]["content"]
+    assert "raised KeyError at `return self.db.members[member_id + \"-x\"]`" in retry
+    assert "`members` holds 4 rows and not `m-1-x`" in retry
+    assert "its ids look like a-#" in retry, retry
+    assert "m-2" not in retry.split("holds 4 rows")[1], "the other ids are shapes, not values"
+
+
+def test_a_body_that_does_not_raise_gets_no_table_note(make_test_model, workdir):
+    db, schema, sig, calls = _library_world()
+    model = make_test_model([WRONG_MEMBER_BODY] * 4)
+    ce.compile_tool(model, sig, calls, schema, db, workdir)
+    retry = model.calls[1]["messages"][-1]["content"]
+    assert "holds" not in retry and "look like" not in retry
+
+
+CONSTANT_MEMBER_BODY = """
+return {"member_id": "none", "copy_id": "none"}
+"""
+
+
+def test_a_body_that_answers_one_constant_to_calls_with_different_arguments_is_marked_hardcoded(
+    make_test_model, workdir
+):
+    """One live build kept a body that picked the first row and raised one fixed refusal on every
+    call, round after round: assisted was all anyone was told, and no hint reaches a body with no
+    argument in it."""
+    db, schema, sig, calls = _library_world()
+    model = make_test_model([CONSTANT_MEMBER_BODY] * 4)
+    build = ce.compile_tool(model, sig, calls, schema, db, workdir)
+    assert build.assisted is True and build.hardcoded is True
+    written = json.loads((workdir / ce.NODE_DIR / "get_member.json").read_text(encoding="utf-8"))
+    assert written["hardcoded"] is True
+    assert ce.mark_hardcoded(build.body).splitlines()[0] == ce.HARDCODED_MARK
+    assert ce.mark_hardcoded(ce.mark_hardcoded(build.body)).count(ce.HARDCODED_MARK) == 1
+
+
+def test_a_body_that_answers_per_argument_is_assisted_but_not_hardcoded(make_test_model, workdir):
+    db, schema, sig, calls = _library_world()
+    model = make_test_model([WRONG_MEMBER_BODY] * 4)
+    build = ce.compile_tool(model, sig, calls, schema, db, workdir)
+    assert build.assisted is True and build.hardcoded is False
+
+
+def test_a_tool_whose_own_recordings_answer_alike_is_not_called_hardcoded():
+    """Where the recorded calls share one answer, one answer is what the tool does."""
+    calls = [_call("close_ticket", {"ticket_id": f"t-{i}"}, result={"status": "closed"}, idx=i)
+             for i in range(3)]
+    rows = [{"call_id": call.id, "answer": "one", "world": "w"} for call in calls]
+    assert ce.hardcoded_body(calls, rows) is False
+    differing = [_call("close_ticket", {"ticket_id": f"t-{i}"}, result={"status": f"s-{i}"}, idx=i)
+                 for i in range(3)]
+    rows = [{"call_id": c.id, "answer": "one", "world": "w"} for c in differing]
+    assert ce.hardcoded_body(differing, rows) is True
+    assert ce.hardcoded_body(differing[:1], rows[:1]) is False
+
+
+def test_a_tool_with_no_arguments_is_hardcoded_when_it_answers_two_worlds_the_same_way():
+    """The live build's own case: every recorded call carried no arguments at all, the recordings
+    answered two ways out of the Task's own world, and the body answered one way on both."""
+    calls = [_call("current_balance", {}, result={"balance": f"{i}"}, idx=i) for i in range(4)]
+    worlds = [{"call_id": call.id, "answer": "one", "world": f"w-{i}"} for i, call in enumerate(calls)]
+    assert ce.hardcoded_body(calls, worlds) is True
+    one_world = [dict(row, world="w") for row in worlds]
+    assert ce.hardcoded_body(calls, one_world) is False, "one input, so one answer says nothing"
+
+
+def test_the_shape_of_an_id_generalizes_its_characters_and_keeps_the_rest():
+    assert ce.value_shape("m-14") == "a-##"
+    assert ce.value_shape("AB_9") == "AA_#"
+    assert ce.table_read("row = self.db.members[member_id]") == "members"
+    assert ce.table_read("return {}") == ""
 
 
 def test_an_attempt_that_raises_what_the_attempt_before_raised_is_told_so_with_the_exception(
@@ -770,7 +868,15 @@ def test_a_write_tool_passes_all_five_gates_on_calls_two_runs_recorded(cancel_wo
     gates = ce.run_gates(source, box, shown, held_out, schema)
     assert all(g.passed for g in gates), [g.failures for g in gates if not g.passed]
     fidelity = [g for g in gates if g.stage == "replay_fidelity"]
-    assert all(g.metrics["success_fidelity"] == 1.0 for g in fidelity)
+    # D219: a half with no call of its kind is unmeasured, not perfect. The held-out split here is
+    # the one recorded error call, so its success half has nothing in it and says so.
+    for ruling in fidelity:
+        measured = [half for half in ("success", "error")
+                    if ruling.metrics[f"{half}_fidelity"] is not None]
+        assert measured, ruling.metrics
+        assert all(ruling.metrics[f"{half}_fidelity"] == 1.0 for half in measured)
+        assert ruling.metrics["not_measured"] == [half for half in ("success", "error")
+                                                  if half not in measured]
 
 
 def test_the_same_write_call_twice_answers_from_the_starting_state_both_times(
@@ -976,8 +1082,8 @@ def test_a_body_that_is_nondeterministic_on_a_later_call_fails_the_deterministic
     orders = list(sample["orders"].values())
     db = {"orders": {o["order_id"]: o for o in orders}, "users": {}, "products": {}}
     schema = _schema_for(db)
-    third = orders[2]["order_id"]
-    body = (f"import random\nif order_id == {third!r}:\n"
+    third = orders[2]["status"]
+    body = (f"import random\nif self.db.orders[order_id].status == {third!r}:\n"
             "    return {'order_id': order_id, 'status': str(random.random())}\n"
             "return self.db.orders[order_id]\n")
     calls = [_call("get_order_details", {"order_id": o["order_id"]}, result=o, idx=i)
@@ -1081,9 +1187,18 @@ def test_load_toolkit_puts_the_tasks_overlay_inside_the_toolkit(sample, schema, 
 # --- the held-out split stays hidden through the whole repair loop (D51, D75) ---
 
 
-def _held_out_body(shown_ids):
-    return ("if order_id in %r:\n    return self.db.orders[order_id]\n"
-            "raise ValueError('Order not found')\n" % (shown_ids,))
+def _held_out_body(refused_status):
+    """A body that reads the world for every id and gets only the held-out call wrong.
+
+    It refuses the one status the shown calls never carry, so the shown split replays whole and the
+    hidden call does not. It names no id of its own: a body that memorised the shown ids is refused
+    by the memorised_values gate before any call replays (D162), and this fixture is about the
+    held-out split staying hidden, not about memorisation.
+    """
+    return (f"order = self.db.orders.get(order_id)\n"
+            f"if order is None or order.status == {refused_status!r}:\n"
+            "    raise ValueError('Order not found')\n"
+            "return order\n")
 
 
 @pytest.fixture
@@ -1104,7 +1219,7 @@ def test_no_held_out_call_reaches_the_model_through_the_repair_prompts(
 ):
     db, schema, calls = split_world
     shown, held_out = ce.split_calls(calls)
-    body = _held_out_body([c.args["order_id"] for c in shown if c.error is None])
+    body = _held_out_body(held_out[0].result["status"])
     model = make_test_model([body] * 4)
     build = ce.compile_tool(model, sigs[0], calls, schema, db, workdir)
 
@@ -1122,7 +1237,7 @@ def test_the_node_says_so_when_only_the_held_out_split_failed(
 ):
     db, schema, calls = split_world
     shown, held_out = ce.split_calls(calls)
-    body = _held_out_body([c.args["order_id"] for c in shown if c.error is None])
+    body = _held_out_body(held_out[0].result["status"])
     model = make_test_model([body] * 4)
     build = ce.compile_tool(model, sigs[0], calls, schema, db, workdir)
     assert build.nodes[0]["evidence"] == "initial"
@@ -1747,6 +1862,43 @@ def test_a_constant_body_passes_non_trivial_when_the_recorded_tool_was_constant(
     assert result.metrics["recorded_answers"] == 1 and result.metrics["arg_sets"] == 3
 
 
+# --- gate 7: a body may not memorise the recordings (D162) ---
+
+
+MEMORISING_BODY = """
+statuses = {"#W1006327": "pending", "#W2611340": "processed"}
+return {"order_id": order_id, "status": statuses[order_id]}
+"""
+
+
+def test_the_compile_stage_retries_a_memorising_body_and_its_red_light_asks_for_a_recompile(
+    make_test_model, schema, sigs, db0, workdir, order_calls
+):
+    """Build 13's tool that replaces items on an order held three recorded item ids in a dict, so
+    every other id raised KeyError: 126 of the 150 replay calls that differed. A body like it is
+    refused before a subprocess runs, every attempt, and the red light names the verb that owns it."""
+    model = make_test_model([MEMORISING_BODY] * 4)
+    build = ce.compile_tool(model, sigs[0], order_calls, schema, db0, workdir)
+
+    assert len(model.calls) == 4, "the stage retried the refused body up to max_attempts"
+    assert build.assisted is True
+    ruling = next(g for g in build.gates if g.stage == "compile_tools.memorised_values")
+    assert ruling.passed is False
+    assert any("'#W1006327'" in f for f in ruling.failures)
+    assert all("does not execute" not in f for f in ruling.failures), "refused before it ran anywhere"
+    assert [g.stage for g in build.gates][-1] == "compile_tools.memorised_values", \
+        "no later gate ran on a body the memorised_values gate refused"
+    failure_shown = model.calls[1]["messages"][-1]["content"]
+    assert "gate compile_tools.memorised_values" in failure_shown
+
+    (workdir / "gates.json").write_text(json.dumps([as_dict(g) for g in build.gates]), encoding="utf-8")
+    lights = [light for light in builder_tools.red_lights(workdir)
+              if light.stage == "compile_tools.memorised_values"]
+    assert lights, "a refused body leaves no red light"
+    assert {light.verb for light in lights} == {"repair_recompile"}
+    assert {light.target for light in lights} == {"get_order_details"}
+
+
 def test_reference_args_are_the_arguments_whose_values_the_world_holds(schema, sigs, db0, workdir, sample):
     source, box = _both_tools(schema, sigs, db0, workdir, STRICT_CANCEL_BODY)
     assert list(sandbox_mod.reference_args(box, _cancel_calls(sample))) == ["order_id"]  # reason is free text
@@ -1882,3 +2034,227 @@ def test_builder_tools_false_sends_no_tools_and_keeps_the_old_behaviour(
     assert build.body.strip() == CORRECT_BODY.strip()
     assert build.assisted is False
     assert "tool_uses" not in build.nodes[0]
+
+
+# --- per-call replay outcomes, the per-Task grain of the fidelity ruling (D171) ---
+
+LIBRARY_DB = {
+    "loans": {
+        "L1": {"loan_id": "L1", "member_id": "m_ada_1", "due_on": "2026-01-05"},
+        "L2": {"loan_id": "L2", "member_id": "m_bo_2", "due_on": "2026-02-11"},
+        "L3": {"loan_id": "L3", "member_id": "m_cy_3", "due_on": "2026-03-19"},
+    }
+}
+LIBRARY_SCHEMA = EntitySchema(
+    tables=["loans"],
+    columns=[Column(table="loans", name=name, **{"class": "hard"}, classified_by="rule")
+             for name in ("loan_id", "member_id", "due_on")],
+    id_patterns={"loans": r"^L\d+$"},
+)
+LIBRARY_SIG = ToolSig(
+    name="get_loan_details",
+    description="Get one loan by its id.",
+    args_fields=[FieldStat(name="loan_id", types=["str"], optional=False)],
+    kind="read",
+    unclassified=False,
+)
+# Right on every loan but one, which is the shape a corpus-wide fidelity number hides: the tool is
+# assisted, and only the Task whose Trace asked for that loan is answered differently.
+ONE_LOAN_WRONG = """
+loan = self.db.loans[loan_id]
+if loan_id == "L2":
+    return {"loan_id": loan.loan_id, "member_id": loan.member_id, "due_on": "2099-12-31"}
+return loan
+"""
+
+
+def _loan_calls():
+    return [_call("get_loan_details", {"loan_id": loan_id}, result=row, idx=index)
+            for index, (loan_id, row) in enumerate(sorted(LIBRARY_DB["loans"].items()))]
+
+
+def test_replay_outcomes_names_the_one_recorded_call_a_body_answers_differently(workdir):
+    rows = ce.replay_outcomes(LIBRARY_SIG, ONE_LOAN_WRONG, _loan_calls(), LIBRARY_SCHEMA, LIBRARY_DB, workdir)
+    assert [(row["call_id"], row["replayed"]) for row in rows] == [("c0", True), ("c1", False), ("c2", True)]
+    assert "due_on" in rows[1]["detail"] and rows[0]["detail"] == ""
+
+
+def test_a_call_replay_outcomes_counts_replayed_is_a_call_the_corpus_gate_counts_matched(workdir, tmp_path):
+    """The two grains are the same ruling: what the per-call rows say has to add up to the gate's
+    own success count, or a Task could be cleared by a call the corpus gate failed."""
+    calls = _loan_calls()
+    source = ce.module_source(LIBRARY_SCHEMA, [LIBRARY_SIG], {LIBRARY_SIG.name: ONE_LOAN_WRONG})
+    box = ce.Sandbox(source, LIBRARY_DB, tmp_path / "corpus")
+    corpus = ce.gate_replay_fidelity(box, calls, LIBRARY_SCHEMA)
+    rows = ce.replay_outcomes(LIBRARY_SIG, ONE_LOAN_WRONG, calls, LIBRARY_SCHEMA, LIBRARY_DB, workdir)
+    assert corpus.passed is False
+    assert sum(1 for row in rows if row["replayed"]) == corpus.metrics["success_matches"]
+
+
+def test_a_tool_with_no_body_replays_none_of_its_recorded_calls(workdir):
+    rows = ce.replay_outcomes(LIBRARY_SIG, "", _loan_calls(), LIBRARY_SCHEMA, LIBRARY_DB, workdir)
+    assert [row["replayed"] for row in rows] == [False, False, False]
+    assert all("no body" in row["detail"] for row in rows)
+
+
+def test_a_compiled_tool_carries_one_call_outcome_per_recorded_call(
+    make_test_model, schema, sigs, db0, workdir, order_calls
+):
+    """D171: every build carries the rows, and a build that cleared the gates replayed every call."""
+    build = ce.compile_tool(make_test_model([CORRECT_BODY]), sigs[0], order_calls, schema, db0, workdir)
+    assert build.assisted is False
+    assert [row["call_id"] for row in build.call_outcomes] == [c.id for c in order_calls]
+    assert all(row["replayed"] for row in build.call_outcomes)
+    written = json.loads((workdir / ce.NODE_DIR / "get_order_details.json").read_text(encoding="utf-8"))
+    assert written["call_outcomes"] == build.call_outcomes
+
+
+# --- rows whose identity is more than one column (composite row keys) ---------
+
+def dock_schema(**extra) -> EntitySchema:
+    """An invented `docks` table let out per shift, keyed by dock_id and shift together."""
+    names = {"dock_id": "hard", "shift": "hard", "seats": "hard", "zone": "hard", "updated_at": "exempt"}
+    return EntitySchema(
+        tables=["docks"],
+        columns=[Column(table="docks", name=name, **{"class": kind}, classified_by="rule")
+                 for name, kind in sorted(names.items())],
+        id_patterns={"docks.dock_id": r"^dock_\d$"},
+        composite_keys={"docks": ["dock_id", "shift"]},
+        **extra,
+    )
+
+
+def a_dock(dock_id: str, seats: int, shift=None) -> dict:
+    return {"dock_id": dock_id, "shift": shift, "seats": seats, "zone": "north"}
+
+
+def test_a_composite_key_keeps_both_versions_of_one_id(workdir):
+    schema = dock_schema()
+    trace = _trace("A", [
+        _call("list_docks", {"shift": "early"}, result=[a_dock("dock_1", 4)], idx=0),
+        _call("list_docks", {"shift": "late"}, result=[a_dock("dock_1", 1)], idx=1),
+    ])
+    state = ce.build_starting_state([trace], schema, workdir, tool_sigs=[], synthetic=False)
+    assert sorted(state.db["docks"]) == ["dock_1|early", "dock_1|late"]
+    assert state.db["docks"]["dock_1|early"]["seats"] == 4
+    assert state.db["docks"]["dock_1|late"]["seats"] == 1
+
+
+def test_a_key_column_the_row_leaves_null_is_taken_from_the_call_that_returned_it():
+    schema = dock_schema()
+    row = a_dock("dock_1", 4)
+    assert ce.match_table(schema, row, {"shift": "early"}) == ("docks", "dock_1|early")
+    assert ce.match_table(schema, row) == ("docks", "dock_1|")
+    assert ce.match_table(schema, dict(row, shift="late"), {"shift": "early"}) == ("docks", "dock_1|late")
+
+
+def test_a_single_key_table_is_keyed_exactly_as_it_was(schema, sample):
+    order = sample["by_status"]["pending"]
+    assert ce.match_table(schema, order, {"anything": "at all"}) == ("orders", order["order_id"])
+
+
+def test_a_partial_sighting_folds_into_the_rows_whose_known_key_columns_match(workdir):
+    """It is not a new row and not a contradiction: it fills only what the keyed rows never showed."""
+    schema = dock_schema()
+    trace = _trace("A", [
+        _call("list_docks", {"shift": "early"}, result=[a_dock("dock_1", 4)], idx=0),
+        _call("list_docks", {"shift": "late"}, result=[a_dock("dock_1", 1)], idx=1),
+        _call("find_dock", {"dock_id": "dock_1"}, result={"dock_id": "dock_1", "zone": "south",
+                                                          "seats": 9, "berth": "outer"}, idx=2),
+    ])
+    state = ce.build_starting_state([trace], schema, workdir, tool_sigs=[], synthetic=False)
+    assert sorted(state.db["docks"]) == ["dock_1|early", "dock_1|late"]
+    assert state.db["docks"]["dock_1|early"]["seats"] == 4  # what the keyed sighting showed stands
+    assert state.db["docks"]["dock_1|early"]["berth"] == "outer"  # what it never showed is filled
+    assert any("without every part of its key" in line for line in state.assumptions)
+
+
+def test_a_partial_sighting_no_keyed_row_matches_is_kept_as_the_partial_sighting_it_is(workdir):
+    schema = dock_schema()
+    trace = _trace("A", [
+        _call("list_docks", {"shift": "early"}, result=[a_dock("dock_1", 4)], idx=0),
+        _call("find_dock", {"dock_id": "dock_2"}, result={"dock_id": "dock_2", "seats": 9}, idx=1),
+    ])
+    state = ce.build_starting_state([trace], schema, workdir, tool_sigs=[], synthetic=False)
+    assert sorted(state.db["docks"]) == ["dock_1|early", "dock_2|"]
+
+
+def test_an_id_a_call_named_without_every_key_column_owes_no_synthetic_row(workdir):
+    schema = dock_schema()
+    trace = _trace("A", [
+        _call("list_docks", {"shift": "early"}, result=[a_dock("dock_1", 4)], idx=0),
+        _call("find_dock", {"dock_id": "dock_9"}, result=None, idx=1),
+        _call("find_dock", {"dock_id": "dock_8", "shift": "late"}, result=None, idx=2),
+    ])
+    assert ce.referenced_ids([trace], schema) == [("docks", "dock_8|late")]
+    state = ce.build_starting_state([trace], schema, workdir, tool_sigs=[])
+    assert sorted(state.db["docks"]) == ["dock_1|early", "dock_8|late"]
+    assert state.db["docks"]["dock_8|late"]["shift"] == "late"  # the key's own parts, not the modal row
+    assert state.synthetic_rows == ["dock_8|late"]
+
+
+def test_the_tables_block_tells_the_body_writer_how_to_form_a_composite_key():
+    block = ce._schema_block(dock_schema())
+    assert 'f"{dock_id}|{shift}"' in block
+    assert "never look one up by dock_id alone" in block
+
+
+def test_the_tables_block_says_nothing_about_keys_for_a_single_key_table(schema):
+    assert "keyed by" not in ce._schema_block(schema)
+
+
+# --- ids named below the top level of a call's arguments ---------------------
+
+
+def _berth_schema() -> EntitySchema:
+    """Two invented tables, one of them let out per shift so its key is two columns (D179)."""
+    names = {"docks": ["dock_id", "shift", "seats"], "vessels": ["vessel_id", "hull"]}
+    return EntitySchema(
+        tables=sorted(names),
+        columns=[Column(table=table, name=name, **{"class": "hard"}, classified_by="rule")
+                 for table, columns in sorted(names.items()) for name in columns],
+        id_patterns={"docks.dock_id": r"^dock_\d+$", "vessels.vessel_id": r"^VSL\d+$"},
+        composite_keys={"docks": ["dock_id", "shift"]},
+    )
+
+
+def test_an_id_two_levels_down_in_a_list_of_dicts_is_a_referenced_id():
+    schema = _berth_schema()
+    trace = _trace("A", [_call("book_berths", {"booking": {"legs": [{"vessel_id": "VSL4"},
+                                                                   {"vessel_id": "VSL7"}]}},
+                               result={"booked": 2}, idx=0)])
+    assert ce.referenced_ids([trace], schema) == [("vessels", "VSL4"), ("vessels", "VSL7")]
+
+
+def test_a_nested_row_completes_its_composite_key_from_the_object_it_sits_in():
+    """Each object in the list names its own shift, so the two rows are two keys, not one."""
+    schema = _berth_schema()
+    trace = _trace("A", [_call("book_berths", {"legs": [{"dock_id": "dock_4", "shift": "early"},
+                                                        {"dock_id": "dock_4", "shift": "late"}]},
+                               result={"booked": 2}, idx=0)])
+    assert ce.referenced_ids([trace], schema) == [("docks", "dock_4|early"), ("docks", "dock_4|late")]
+
+
+def test_a_nested_row_takes_the_key_part_the_call_states_once_at_the_top_level():
+    schema = _berth_schema()
+    trace = _trace("A", [_call("book_berths", {"shift": "late", "legs": [{"dock_id": "dock_4"}]},
+                               result={"booked": 1}, idx=0)])
+    assert ce.referenced_ids([trace], schema) == [("docks", "dock_4|late")]
+
+
+def test_a_nested_value_the_id_pattern_rejects_owes_no_row():
+    schema = _berth_schema()
+    trace = _trace("A", [_call("book_berths", {"legs": [{"vessel_id": "not-a-vessel"}]}, result={}, idx=0)])
+    assert ce.referenced_ids([trace], schema) == []
+
+
+def test_a_nested_id_owes_a_synthetic_row_shaped_like_the_rows_the_traces_showed(workdir):
+    schema = _berth_schema()
+    trace = _trace("A", [
+        _call("find_vessel", {"vessel_id": "VSL1"}, result={"vessel_id": "VSL1", "hull": "steel"}, idx=0),
+        _call("book_berths", {"legs": [{"vessel_id": "VSL9"}]}, result={"booked": 1}, idx=1),
+    ])
+    state = ce.build_starting_state([trace], schema, workdir, tool_sigs=[])
+    assert sorted(state.db["vessels"]) == ["VSL1", "VSL9"]
+    assert state.db["vessels"]["VSL9"]["hull"] == "steel"  # the modal row's shape, the id its own
+    assert state.synthetic_rows == ["VSL9"]

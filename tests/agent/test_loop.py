@@ -6,9 +6,15 @@ import asyncio
 from collections import deque
 
 from kullback.agent.events import AgentEnd, ToolExecutionEnd, TurnEnd
-from kullback.agent.loop import Hooks, LoopState, interrupted_tool_results, run_agent_loop
+from kullback.agent.loop import (
+    EMPTY_TURN_ASK,
+    Hooks,
+    LoopState,
+    interrupted_tool_results,
+    run_agent_loop,
+)
 from kullback.agent.messages import AssistantMessage, ToolResultMessage, UserMessage
-from kullback.agent.tools import AgentTool, ToolRegistry, ToolResult
+from kullback.agent.tools import AgentTool, RetryableToolError, ToolRegistry, ToolResult
 from kullback.ai.provider import TestModel
 from tests.agent.conftest import AddArgs, AddResult, call, reply, types_of
 
@@ -313,3 +319,48 @@ def test_no_prompts_and_empty_queues_still_asks_the_model_once():
     events, state = run(TestModel(["hi"]), prompts=[])
     assert [m.role for m in state.messages] == ["assistant"]
     assert types_of(events).count("turn_start") == 1
+
+
+def test_an_empty_last_turn_is_asked_once_for_the_summary_and_a_second_one_ends_the_run():
+    """On one build, two of the Examiner's three no-tool turns were empty strings right after a
+    code compaction, so the round ended with no account of what was left. The loop asks once."""
+    events, state = run(TestModel([reply(""), reply("")]))
+    asks = [m for m in state.messages if m.role == "user" and m.content == EMPTY_TURN_ASK]
+    assert len(asks) == 1, "asked once, not twice"
+    assert [m.role for m in state.messages] == ["user", "assistant", "user", "assistant"]
+    assert types_of(events).count("turn_end") == 2
+
+
+def test_a_last_turn_that_says_something_is_not_asked_again():
+    events, state = run(TestModel(["nothing left to do."]))
+    assert [m.role for m in state.messages] == ["user", "assistant"]
+    assert not [m for m in state.messages if m.role == "user" and m.content == EMPTY_TURN_ASK]
+
+
+def test_a_refusal_that_names_the_corrected_call_is_put_to_the_model_once_and_not_a_second_time():
+    """A tool that can say exactly what a corrected call looks like should not have to hope the
+    model reads it: one live session had its single repair refused for a payload shape, read the
+    refusal, and never called the tool again. The loop asks once; the same refusal again stands."""
+
+    async def refuse(args: AddArgs) -> AddResult:
+        raise RetryableToolError("a is a word, not an integer", ask='call add again with a=1, b=2')
+
+    tool = AgentTool("add", "Add two integers.", AddArgs, AddResult, refuse)
+    model = TestModel([reply("try", call("add", {"a": 1, "b": 2})),
+                       reply("again", call("add", {"a": 1, "b": 2})),
+                       reply("giving up")])
+    _, state = run(model, [tool])
+    asks = [m for m in state.messages if m.role == "user" and m.content == "call add again with a=1, b=2"]
+    assert len(asks) == 1, "the corrected call is put to the model once, not after every refusal"
+    assert asks[0].details == {"retry_ask": "call add again with a=1, b=2"}
+    assert [m.role for m in state.messages] == ["user", "assistant", "tool", "user",
+                                                "assistant", "tool", "assistant"]
+
+
+def test_a_tool_that_fails_without_a_corrected_call_is_left_to_the_model_to_answer():
+    async def boom(args: AddArgs) -> AddResult:
+        raise ValueError("no")
+
+    tool = AgentTool("add", "Add two integers.", AddArgs, AddResult, boom)
+    _, state = run(TestModel([reply("try", call("add", {"a": 1, "b": 2})), reply("stopping")]), [tool])
+    assert [m.role for m in state.messages] == ["user", "assistant", "tool", "assistant"]

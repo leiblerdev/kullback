@@ -45,15 +45,18 @@ import asyncio
 import json
 import textwrap
 from pathlib import Path
-from typing import Any, Awaitable, Callable, Optional
+from typing import Any, Awaitable, Callable, Iterable, Optional
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from kullback import round_delta
 from kullback.agent.tools import AgentTool, NoArgs, counted_ruling_line
 from kullback.builder import build as build_module
 from kullback.builder import repair as repair_module
+from kullback.builder import transaction
 from kullback.builder.build import TARGET_ALL, BuildPlan
 from kullback.gates import Ruling, ruling_of
+from kullback.gates import ledger as ledger_mod
 from kullback.gates.fidelity import unconfirmed_reason
 
 Sink = Callable[[Any], Awaitable[None]]
@@ -94,6 +97,9 @@ class BuildResult(BaseModel):
     # How the one Task, tool or table a repair verb was called on came out, read off the artifact
     # the stage just wrote (`repair.target_ruling`). Empty for a tool that has no single target.
     target_ruling: str = ""
+    # The name of that one target. `target` is the stage the verb ran (`intent`, `compile_tools`),
+    # which is not what the ruling is about, and the ruling in hand is kept per target (D192).
+    ruling_target: str = ""
     stage_gates: list[Ruling] = Field(default_factory=list)
     stages: list[StageReport] = Field(default_factory=list)
     produced: list[str] = Field(default_factory=list)
@@ -102,15 +108,36 @@ class BuildResult(BaseModel):
     payload: dict[str, Any] = Field(default_factory=dict)
 
 
-def render(result: BuildResult) -> str:
+# What a result says instead of leaving a zoom to be guessed at. The ruling is already there, so
+# the only thing a `status(target=)` on it would add is the same line again: one live build zoomed
+# two to three times per tool with no ruling change between the calls. `plan.zooms_skipped` counts
+# every nudge withheld this way, here and in `render_status`.
+NO_ZOOM = ("this is {target}'s own ruling as it stands after this call, so status(target=\"{target}\") "
+           "in this turn would read back the same line")
+
+
+def render(result: BuildResult, plan: Optional[BuildPlan] = None) -> str:
     """The lines the model reads: the target's own ruling, the status, the stages, the rulings.
 
     A repair verb's result opens with what happened to the one target it was called on, before
     anything a gate says. The gate-wide line still follows, and a gate failing over many targets
     now says how many and names its first as an example (`counted_ruling_line`), so neither line
     can be read as a verdict on the target the other one is about. The payload stays in details.
+
+    A result carrying its target's own ruling says so and takes the zoom off the table (`NO_ZOOM`);
+    with a `plan` the target is remembered as being in hand, and a result that carries no target
+    ruling is a run over more than one target, which puts every ruling back in question and empties
+    the hand.
     """
+    named = result.ruling_target or result.target
     lines = [result.target_ruling] if result.target_ruling else []
+    if plan is not None and result.target_ruling:
+        plan.rulings_in_hand[named] = result.target_ruling
+        plan.zooms_skipped += 1
+    elif plan is not None:
+        plan.rulings_in_hand.clear()
+    if result.target_ruling:
+        lines.append(NO_ZOOM.format(target=named))
     lines.append(result.summary)
     # status is already "cached" for a stage the cache served, so the flag would only say it twice.
     ran = [f"{s.name} ({s.status})" for s in result.stages if s.status != "pending"]
@@ -181,6 +208,12 @@ REPAIR_VERB_FOR: dict[str, str] = {
     "compile_tools.deterministic": "repair_recompile",
     "compile_tools.non_trivial": "repair_recompile",
     "compile_tools.replay_fidelity": "repair_recompile",
+    # A body holding an id or a value it copied out of a recorded call is written again, with the
+    # lookup over the world's tables the hint asks for (D162).
+    "compile_tools.memorised_values": "repair_recompile",
+    # A body that answered two Tasks alike where their recordings differ is written again, with the
+    # columns it has to read off the world named (D195).
+    "sensitivity": "repair_recompile",
     # A Task whose Traces do not replay to their End state is a tool that answers differently.
     "replay_reference": "repair_recompile",
     # A row the Traces name that the built world does not hold is a table to grow (D107).
@@ -200,6 +233,9 @@ NO_BODY = " has no body"
 # A tool that ended assisted is the one red light no ruling names, so it is written here and read
 # back here; the headline counts the assisted tools off this wording and off nothing else.
 ASSISTED = " is assisted: no generated body cleared the gates (D49)"
+# Read back the same way, off `tool_builds.json`: an assisted body that answered every recorded call
+# the same way whatever its arguments were, which a hint written against one failing call cannot reach.
+HARDCODED = " and hardcoded: it answers every recorded call alike, whatever it is given"
 
 
 def verb_for(stage: str) -> str:
@@ -226,6 +262,9 @@ class StatusResult(BaseModel):
     and `failing` are the whole picture either way, so a zoom never hides which gates are red.
     `zoom` is the filter in the words the model passed it, empty when there was none, and it is
     what tells the rendering to list every red light in full instead of grouping them.
+
+    `unbuilt` is the workdir that holds no ruling at all: nothing has been built, so no gate has
+    ruled and the green wording would be a lie (D166).
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -235,6 +274,7 @@ class StatusResult(BaseModel):
     passing: list[str] = Field(default_factory=list)
     failing: list[str] = Field(default_factory=list)
     zoom: str = ""
+    unbuilt: bool = False
 
 
 class StatusArgs(BaseModel):
@@ -276,26 +316,45 @@ def _named_by(failure: str) -> tuple[str, str]:
     return "", "build"
 
 
+def ruling_rows(workdir: Any) -> list[dict]:
+    """Every gate ruling this workdir holds, the stages' own and the last compile's per tool rows.
+
+    Two files since D218 rule 2, where the per tool rulings moved out of `gates.json` into
+    `compile_snapshot.json` instead of overwriting it. A reader that wants the whole picture,
+    passing gates included, wants both, so both are read in one place.
+    """
+    workdir = Path(workdir)
+    stage_rows = [row for row in (_read_json(workdir / "gates.json", []) or []) if isinstance(row, dict)]
+    compiled = (_read_json(workdir / ledger_mod.COMPILE_NAME, {}) or {}).get("rows") or []
+    return stage_rows + [row for row in compiled if isinstance(row, dict)]
+
+
 def red_lights(workdir: Any) -> list[RedLight]:
     """Every failing gate this workdir holds, off the records code wrote and never off a model.
 
-    Three files, because one is not enough: `gates.json` is every ruling the stages recorded, but
-    the compile_tools stage overwrites it with its own per-tool rulings, so the fidelity records in
-    `replays.json` are read for the Tasks whose replay ruling is no longer in the file, and
-    `tool_builds.json` for the tools that ended assisted, which is a body the Builder could not
-    write (D49) and the one red light no ruling names.
+    Five files, because one is not enough. `gates.json` is the rulings the stages recorded and
+    `compile_snapshot.json` the per tool rulings of the last compile, which used to be written over
+    the first and now sit beside it (D218 rule 2); `replays.json` carries the fidelity records for
+    the Tasks whose replay ruling is not in either; and `tool_builds.json` names the tools that
+    ended assisted, which is a body the Builder could not write (D49) and the one red light no
+    ruling names. `tool_fidelity.json` says what an assisted tool costs in Tasks (D171), which the
+    assisted light alone does not.
     """
     workdir = Path(workdir)
     out: list[RedLight] = []
-    for row in _read_json(workdir / "gates.json", []) or []:
-        if not isinstance(row, dict) or row.get("pass"):
+    for row in ruling_rows(workdir):
+        if row.get("pass"):
             continue
         stage = str(row.get("stage") or "")
         failures = [str(f) for f in (row.get("failures") or [])] or [f"{stage} did not pass"]
         for failure in failures:
             target, kind = _named_by(failure)
-            out.append(RedLight(stage=stage, kind=kind, target=target, failure=failure,
-                                verb=verb_for(stage)))
+            # A compile snapshot row names its own tool, which is what a red light wants: the
+            # failure text names the call that broke, and cutting a tool name out of that was
+            # guesswork the row now makes unnecessary.
+            named = str(row.get("tool") or "")
+            out.append(RedLight(stage=stage, kind="tool" if named else kind,
+                                target=named or target, failure=failure, verb=verb_for(stage)))
     seen = {(light.stage, light.target) for light in out}
     for task_id, per_task in sorted((_read_json(workdir / "replays.json", {}) or {}).items()):
         rows = per_task if isinstance(per_task, dict) else {}
@@ -304,11 +363,50 @@ def red_lights(workdir: Any) -> list[RedLight]:
         out.append(RedLight(stage="replay_reference", kind="task", target=task_id,
                             failure=f"task {task_id}: {unconfirmed_reason(rows)}",
                             verb=verb_for("replay_reference")))
+    fidelity = _read_json(workdir / "tool_fidelity.json", {}) or {}
+    # D191: how many recompiles in a row this tool has bought nothing with, so a Builder reading a
+    # red light knows the difference between one it has not tried and one it has tried four times.
+    kept = _read_json(workdir / repair_module.KEPT_BODIES_FILE, {}) or {}
     for name, row in sorted((_read_json(workdir / "tool_builds.json", {}) or {}).items()):
         if isinstance(row, dict) and row.get("assisted"):
             out.append(RedLight(stage="compile_tools", kind="tool", target=name,
-                                failure=f"{name}{ASSISTED}", verb="repair_recompile"))
+                                failure=f"{name}{ASSISTED}"
+                                        f"{HARDCODED if row.get('hardcoded') else ''}"
+                                        f"{_blocked_note(fidelity, name)}"
+                                        f"{_declined_note(row)}"
+                                        f"{repair_module.stalled_note(kept.get(name) or {} if isinstance(kept, dict) else {})}",
+                                verb="repair_recompile"))
     return out
+
+
+def _declined_note(row: dict) -> str:
+    """The last recompile of this tool scored no higher than the body kept, so it was declined
+    (D174); saying so is what stops the next request from asking the same question."""
+    declined = row.get("recompile_declined")
+    if not isinstance(declined, dict):
+        return ""
+    attempt, kept = declined.get("attempt_score") or [], declined.get("kept_score") or []
+    return (f"; the last recompile scored {attempt} against the kept body's {kept} "
+            f"(gates passed, calls matched) and was declined: change the hint, not the request")
+
+
+def _blocked_note(fidelity: Any, name: str) -> str:
+    """What an assisted tool actually costs, off tool_fidelity.json (D171).
+
+    Assisted is a corpus ruling: one recorded call the body answers differently is enough. Left at
+    that, the model reads the tool as the blocker of every Task that calls it, and on one live
+    build 51 of the 64 Tasks that read as blocked have no own call any assisted body answers
+    differently. This says how many Tasks call the tool and how many have an own call it answers
+    differently, which is what a recompile of it buys.
+    """
+    rows = [row[name] for row in ((fidelity or {}).get("tasks") or {}).values()
+            if isinstance(row, dict) and name in row]
+    if not rows:
+        return ""
+    per_tool = ((fidelity or {}).get("tools") or {}).get(name) or {}
+    blocked = sum(1 for row in rows if row.get("differing"))
+    return (f" ({per_tool.get('replayed', 0)} of {per_tool.get('calls', 0)} recorded calls replay; "
+            f"{_count(len(rows), 'Task')} call it, {blocked} blocked by their own differing calls)")
 
 
 def _kinded(light: RedLight) -> tuple[str, str]:
@@ -346,20 +444,47 @@ def _assisted(lights: list[RedLight]) -> list[str]:
     return sorted({light.target for light in lights if light.target and ASSISTED in light.failure})
 
 
+def _hardcoded(lights: list[RedLight]) -> list[str]:
+    """The assisted tools whose kept body never read its arguments, off the same wording."""
+    return sorted({light.target for light in lights if light.target and HARDCODED in light.failure})
+
+
 def _count(n: int, noun: str, plural: str = "s") -> str:
     return f"{n} {noun}{'' if n == 1 else plural}"
 
 
-def _headline(lights: list[RedLight], passing: list[str], failing: list[str]) -> str:
-    """The one line the model reads first: how much is red, how many Tasks it costs, what is assisted."""
+def _headline(lights: list[RedLight], passing: list[str], failing: list[str], delta: str = "",
+              refused: Iterable[str] = ()) -> str:
+    """The one line the model reads first: how much is red, how many Tasks it costs, what is assisted.
+
+    `delta` is what the round before moved (`round_delta.delta_line`). Without it the picture is of
+    the artifacts as they stand, and one live build lost a third of its trusted Tasks over three
+    rounds with every round reading the same as the last.
+
+    `refused` are the Tasks already refused twice for one reason (`repair.refused_twice`). A third
+    refusal of them is refused in code, so the status says which they are rather than leaving the
+    session to find out by calling the verb: one live build made 17 refusals, had 0 admitted, and
+    repeated four Tasks word for word two rounds later.
+    """
     tasks, top = _no_verdict(lights)
-    assisted = _assisted(lights)
+    hardcoded = _hardcoded(lights)
+    # Listed apart, because they are not the same repair: an assisted body has a defect a hint can
+    # name, and a hardcoded one has no argument in it at all.
+    assisted = [name for name in _assisted(lights) if name not in hardcoded]
     gates = len(set(passing) | set(failing))
     parts = [_count(len(lights), "red light"), f"{len(failing)} of {_count(gates, 'gate')} red"]
     parts.append(f"{_count(len(tasks), 'Task')} with no Verdict" + (f", most of them {top}" if top else "")
                  if tasks else "no Task left without a Verdict")
     parts.append(f"{_count(len(assisted), 'tool')} assisted: " + ", ".join(assisted)
                  if assisted else "no assisted tool")
+    if hardcoded:
+        parts.append(f"{_count(len(hardcoded), 'tool')} hardcoded, answering alike whatever they are "
+                     f"given: " + ", ".join(hardcoded))
+    twice = list(refused)
+    if twice:
+        parts.append("refused twice: " + ", ".join(twice))
+    if delta:
+        parts.append(delta)
     return "status: " + "; ".join(parts)
 
 
@@ -433,25 +558,39 @@ def _gate_block(stage: str, lights: list[RedLight]) -> list[str]:
     return lines
 
 
+UNBUILT_SUMMARY = ("status: nothing has been built in this workdir; no gate has ruled yet, so build "
+                   "the target before reading the gates")
+
+
 def status_of(workdir: Any, gate: str = "", target: str = "") -> StatusResult:
     """The red lights and the rulings that are passing, as the status tool returns them.
 
     `gate` and `target` narrow which red lights come back; the rulings passing and the gates failing
     are the whole picture either way, so a zoom answers about one gate without hiding the rest.
+
+    A workdir holding no ruling at all says so instead of reading as green (D166): "0 red lights;
+    0 of 0 gates red" and "the gates are green" is what a model read on a fresh workdir, after which
+    it answered without building anything and the round closed.
     """
+    workdir = Path(workdir)
     lights = red_lights(workdir)
-    rows = [r for r in (_read_json(Path(workdir) / "gates.json", []) or []) if isinstance(r, dict)]
+    rows = ruling_rows(workdir)
     passing = sorted({str(r.get("stage") or "") for r in rows if r.get("pass")})
     failing = list(dict.fromkeys(light.stage for light in lights))
+    unbuilt = not rows and not (_read_json(workdir / "replays.json", {}) or {}) \
+        and not (_read_json(workdir / "tool_builds.json", {}) or {})
     asked = [part for part in (f"gate={gate}" if gate else "", f"target={target}" if target else "") if part]
     shown = [light for light in lights
              if (not gate or light.stage == gate) and (not target or light.target == target)]
-    summary = _headline(lights, passing, failing)
-    if asked:
+    summary = _headline(lights, passing, failing, round_delta.delta_line(workdir),
+                        repair_module.refused_twice(workdir))
+    if unbuilt:
+        summary = UNBUILT_SUMMARY
+    elif asked:
         summary = (f"status({', '.join(asked)}): {_count(len(shown), 'red light')} "
                    f"of {len(lights)} in all, each in full")
     return StatusResult(summary=summary, red_lights=shown, passing=passing, failing=failing,
-                        zoom=", ".join(asked))
+                        zoom=", ".join(asked), unbuilt=unbuilt)
 
 
 def _in_full(result: StatusResult) -> list[str]:
@@ -466,7 +605,7 @@ def _in_full(result: StatusResult) -> list[str]:
     return lines
 
 
-def render_status(result: StatusResult) -> str:
+def render_status(result: StatusResult, plan: Optional[BuildPlan] = None) -> str:
     """The headline, then every gate grouped; a zoom prints its red lights one by one instead.
 
     Nothing is cut from the grouped picture: every failing gate is a block, every tool it names is a
@@ -474,7 +613,11 @@ def render_status(result: StatusResult) -> str:
     one thing that is shortened is a single very long failure text, which says how much is left and
     is shown whole by the zoom the last line names. The order is the order the records were read in
     and then alphabetical, so two runs over one workdir render the same text.
+
+    A workdir with no ruling in it renders one line, and not the green one (D166).
     """
+    if result.unbuilt:
+        return result.summary
     if result.zoom:
         return "\n".join([result.summary, *_in_full(result)])
     if not result.red_lights:
@@ -485,8 +628,25 @@ def render_status(result: StatusResult) -> str:
     lines = [result.summary]
     for stage, lights in by_gate.items():
         lines += _gate_block(stage, lights)
-    lines.append(ZOOM_HINT)
+    # The nudge is withheld when every target in the picture has already handed the model its own
+    # ruling this turn (`NO_ZOOM`): the zoom would read back lines the model is holding.
+    targets = {light.target for light in result.red_lights if light.target}
+    hand = set((plan.rulings_in_hand if plan is not None else {}) or {})
+    if targets and targets <= hand:
+        plan.zooms_skipped += 1
+    else:
+        lines.append(ZOOM_HINT)
     return "\n".join(lines)
+
+
+def _render_for(plan: BuildPlan) -> Callable[[BuildResult], str]:
+    """`render` bound to one session's plan, which is where the rulings in hand are kept."""
+    return lambda result: render(result, plan)
+
+
+def _render_status_for(plan: BuildPlan) -> Callable[[StatusResult], str]:
+    """`render_status` bound to one session's plan, for the same reason."""
+    return lambda result: render_status(result, plan)
 
 
 def result_of(plan: BuildPlan, target: str, result: Any, verb: str) -> BuildResult:
@@ -575,6 +735,13 @@ def _repair_executor(plan: BuildPlan, sink: Optional[Sink], verb: str, target_of
     moved anything of its own (D142); the record is written in a `finally`, so a stage that raises
     still leaves the row the round's report reads. The result then opens with that target's own
     ruling, read back off the artifact the stage just wrote.
+
+    The stage runs inside a transaction (D201). Before it, the lights of every Task this repair can
+    touch are recorded; after it, they are read again off the artifacts the stage wrote, and the
+    repair is kept only where its own target moved up and no Task in that set lost a light. Where it
+    is not kept the files that kind writes are put back byte for byte, so the target ruling read
+    afterwards is the artifact as it stands, and the transaction's own sentence goes in front of it:
+    that sentence is what the next attempt has to answer.
     """
     run_stage = _executor(plan, sink, verb, lambda _a: stage, narrowing_of)
 
@@ -582,15 +749,21 @@ def _repair_executor(plan: BuildPlan, sink: Optional[Sink], verb: str, target_of
         extra = before(args) if before is not None else {}
         target = target_of(args)
         hash_before = repair_module.target_hash(plan.workdir, verb, target)
+        txn = transaction.open_transaction(plan.workdir, verb, target, round_no=plan.round)
         try:
             result = await run_stage(args)
         finally:
+            # The revert happens here, so a stage that raised leaves the artifacts as it found them
+            # and the row the round's report reads says which of the three outcomes this repair had.
+            ruling = transaction.close(txn)
             repair_module.record_request(
                 plan.workdir, verb, target,
-                {"arguments": args.model_dump(mode="json"), **extra,
+                {"arguments": args.model_dump(mode="json"), **extra, **ruling.as_row(),
                  **repair_module.change_of(plan.workdir, verb, target, hash_before)},
                 round_no=plan.round)
-        result.target_ruling = repair_module.target_ruling(plan.workdir, verb, args)
+        result.target_ruling = "\n".join(
+            [f"{verb} {target}: {ruling.line}", repair_module.target_ruling(plan.workdir, verb, args)])
+        result.ruling_target = target
         return result
 
     return execute
@@ -628,14 +801,14 @@ def repair_verb_tools(plan: BuildPlan, sink: Optional[Sink] = None) -> list[Agen
                   repair_module.RecompileArgs, BuildResult,
                   _repair_executor(plan, sink, "repair_recompile", lambda a: a.name,
                                    lambda a: {"tools": [a.name]}, "compile_tools",
-                                   before=_keep_hint(plan)), render=render),
+                                   before=_keep_hint(plan)), render=_render_for(plan)),
         AgentTool("repair_grow",
                   "Repair the Starting state: grow one table to a row count with synthetic rows (D107). "
                   "The result opens with how many rows that table holds now.",
                   repair_module.GrowRepairArgs, BuildResult,
                   _repair_executor(plan, sink, "repair_grow", lambda a: a.table,
                                    lambda a: {"grow": {**dict(plan.grow or {}), a.table: a.count}},
-                                   "starting_state"), render=render),
+                                   "starting_state"), render=_render_for(plan)),
         AgentTool("repair_intent",
                   "Repair one Task's Intent: write it again with a hint saying what the Task's Runs "
                   "evidence. An Intent with a noun phrase no Run says in those words leaves the Task "
@@ -646,7 +819,7 @@ def repair_verb_tools(plan: BuildPlan, sink: Optional[Sink] = None) -> list[Agen
                   _repair_executor(plan, sink, "repair_intent", lambda a: a.task_id,
                                    lambda a: {"intent_tasks": [a.task_id],
                                               "intent_hints": {a.task_id: a.hint}},
-                                   "intent"), render=render),
+                                   "intent"), render=_render_for(plan)),
         recording["repair_refuse_task"],
         recording["repair_escalate"],
         recording["repair_record_finding"],
@@ -661,28 +834,28 @@ def builder_tools(plan: BuildPlan, sink: Optional[Sink] = None) -> list[AgentToo
                   "grouped by the kind of failure, with the repair verb that answers it. Nothing is cut "
                   "from the list. Pass `gate` or `target` to zoom: that one gate's or that one tool's or "
                   "Task's red lights, each in full. Read off the records, never off a model.",
-                  StatusArgs, StatusResult, _status_executor(plan), render=render_status),
+                  StatusArgs, StatusResult, _status_executor(plan), render=_render_status_for(plan)),
         AgentTool("build", "Build a target of the Environment: `environment` for everything, or one stage "
                   "or artifact by name; whatever it reads that is stale is rebuilt first.",
                   BuildArgs, BuildResult,
-                  _executor(plan, sink, "build", lambda a: a.target, lambda a: {}), render=render),
+                  _executor(plan, sink, "build", lambda a: a.target, lambda a: {}), render=_render_for(plan)),
         AgentTool("recluster", "Cluster the Runs into Tasks again under the fixed configuration.",
                   NoArgs, BuildResult,
-                  _executor(plan, sink, "recluster", lambda a: "cluster", lambda a: {}), render=render),
+                  _executor(plan, sink, "recluster", lambda a: "cluster", lambda a: {}), render=_render_for(plan)),
         AgentTool("grow", "Grow one table of the Starting state to a row count with synthetic rows (D107).",
                   GrowArgs, BuildResult,
                   _executor(plan, sink, "grow", lambda a: "starting_state",
-                            lambda a: {"grow": {**dict(plan.grow or {}), a.table: a.count}}), render=render),
+                            lambda a: {"grow": {**dict(plan.grow or {}), a.table: a.count}}), render=_render_for(plan)),
         AgentTool("compile_tool", "Compile one tool's body again from its recorded calls, through the sandbox gates.",
                   CompileToolArgs, BuildResult,
                   _executor(plan, sink, "compile_tool", lambda a: "compile_tools",
-                            lambda a: {"tools": [a.name]}), render=render),
+                            lambda a: {"tools": [a.name]}), render=_render_for(plan)),
         AgentTool("replay", "Replay one Task's Traces through the built tools (the Reference Runs, D108).",
                   ReplayArgs, BuildResult,
                   _executor(plan, sink, "replay", lambda a: "replay_reference",
-                            lambda a: {"replay_tasks": [a.task]}), render=render),
+                            lambda a: {"replay_tasks": [a.task]}), render=_render_for(plan)),
         AgentTool("reroll", "Re-roll one Task with the frontier model inside the built Environment (D112).",
                   RerollArgs, BuildResult,
                   _executor(plan, sink, "reroll", lambda a: "rerolls",
-                            lambda a: {"reroll_tasks": [a.task]}), render=render),
+                            lambda a: {"reroll_tasks": [a.task]}), render=_render_for(plan)),
     ]

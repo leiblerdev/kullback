@@ -7,6 +7,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Optional
 
+from kullback.ai.provider import ProviderError
+from kullback.runner import budget
 from kullback.runner.records import Cost, Event, Run, as_dict
 
 TRANSFER = "###TRANSFER###"
@@ -19,6 +21,9 @@ class RunState:
     run: Run
     messages: list[dict] = field(default_factory=list)
     path: Optional[Path] = None
+    # The tool specs the Candidate was given, kept so the stop event can say what it had to work
+    # with; `step` fills it from the list it is called with (D159).
+    tools: list[dict] = field(default_factory=list)
     user: Any = None
     max_turns: int = 20
     turn: int = 0
@@ -73,11 +78,13 @@ def step(state: RunState, model: Any, tools: Optional[list[dict]] = None, router
     """Advance one turn: one model call, each tool call it made, then the user or a stop."""
     if state.stopped:
         return state
+    if tools is not None:
+        state.tools = list(tools)
     state.turn += 1
     try:
         reply = model.query(state.messages, tools)
         emit(state, "model_call", {"reply": reply.model_dump(mode="json")},
-             cost=Cost(model=reply.model or getattr(model, "name", None), usage=reply.usage))
+             cost=_call_cost(reply, model))
         state.messages.append(_assistant_message(reply))
         for call in reply.tool_calls:
             _tool_call(state, call, router)
@@ -105,9 +112,40 @@ def run(state: RunState, model: Any, tools: Optional[list[dict]] = None, router:
     return finish(state, router)
 
 
+def _call_cost(reply: Any, model: Any) -> Cost:
+    """One model call priced and timed on the Run's own event (D159).
+
+    The budget ledger prices its own copy of the call, and that copy lives in budget.json, not in
+    the Run: a Run read on its own said the call cost nothing and took no time. The provider and the
+    wall time come from the exchange the adapter recorded, the price from the same budget tables the
+    ledger uses, under the id the provider is known by. `record_call` is not called from here: it
+    writes the ledger and needs a stage, which the loop does not have.
+    """
+    exchange = getattr(reply, "exchange", None)
+    cost = Cost(
+        provider=getattr(exchange, "provider", None),
+        model=reply.model or getattr(model, "name", None),
+        usage=reply.usage,
+        wall_ms=getattr(exchange, "wall_ms", 0.0) or 0.0,
+    )
+    priced_id = budget.priced_model_id(cost)
+    cost.usd = budget.call_cost(cost.usage, priced_id)
+    cost.price_source = budget.price_source(priced_id)
+    return cost
+
+
 def _crashed(state: RunState, exc: Exception, router: Any) -> None:
-    """An environment failure ends the Run in the file too: an error event, a reason and a footer."""
-    emit(state, "error", {"class": "env_error", "message": f"{type(exc).__name__}: {exc}"})
+    """An environment failure ends the Run in the file too: an error event, a reason and a footer.
+
+    `class` stays `env_error` whatever the failure was, because verdict.py reads that name. A
+    provider failure adds what it knows beside it: the status it came back on and how many attempts
+    were made, so a Run that died on a rate limit is told from one that died on a bad body (D159).
+    """
+    payload: dict = {"class": "env_error", "message": f"{type(exc).__name__}: {exc}"}
+    if isinstance(exc, ProviderError):
+        payload["status"] = exc.status
+        payload["attempts"] = exc.attempts
+    emit(state, "error", payload)
     _stop(state, "env_error")
     finish(state, router)
 
@@ -131,6 +169,10 @@ def _close_stop(state: RunState, router: Any) -> None:
     and a `Run` forbids unknown keys like every other record, so a state written there would have to
     be smuggled past the schema. `_stop` holds the line back until here because the End state is not
     known when the Run decides to stop.
+
+    What the Candidate was given rides the same payload for the same reason (D159): the system
+    prompt it was told to work under and the tool specs it could call, so a stored Run says what the
+    Candidate could have done and not only what it did.
     """
     stop = next((event for event in reversed(state.run.events) if event.type == "stop"), None)
     if stop is None:
@@ -138,8 +180,19 @@ def _close_stop(state: RunState, router: Any) -> None:
     if router is not None and hasattr(router, "world"):
         stop.payload["start_state"] = getattr(router, "start_world", None) or {}
         stop.payload["end_state"] = router.world()
+    stop.payload["system_prompt"] = _system_prompt(state)
+    stop.payload["tools"] = list(state.tools)
     stop.payload["end_state_hash"] = state.run.end_state_hash
     _write_event(state, stop)
+
+
+def _system_prompt(state: RunState) -> Optional[str]:
+    """The system message the Candidate was given, or None where it was given none."""
+    for message in state.messages:
+        if message.get("role") == "system":
+            content = message.get("content")
+            return content if isinstance(content, str) else json.dumps(content, ensure_ascii=False, default=str)
+    return None
 
 
 def _footer(state: RunState) -> None:

@@ -139,7 +139,9 @@ def test_the_artifact_bindings_name_artifacts_the_build_declares():
     produced = set()
     for spec in gates.GATES:
         produced.update(spec.artifacts)
-    declared = {"traces", "sigs", "schema", "categories", "tasks", "canon_rules", "db", "overlays", "assumptions",
+    declared = {"traces", "sigs", "mined_sigs", "mined_schema", "readers", "schema", "categories", "tasks",
+                "canon_rules", "db",
+                "overlays", "assumptions",
                 "synthetic_rows", "bodies", "assisted_tools", "constraints", "policy_text", "lessons_applied",
                 "lessons_set_aside", "intents", "vocabulary", "user_rules", "environment", "replays", "rerolls",
                 "verifiers", "task_status", "probes", "history", "task_runs", "refusals"}
@@ -160,7 +162,7 @@ def test_every_gate_returns_the_one_ruling_record():
         "cluster": ([],), "compile_tools.bodies": ({},), "intent": ({},), "vocabulary": ({},),
         "tau2_export": ([],), "rerolls": ({}, 3), "derive_verifier.tasks": ({},),
         "parses": ("",), "executes_on_s0": ([], []), "deterministic": ([], [], []), "non_trivial": ([], []),
-        "refuses_unknown": ([], []),
+        "refuses_unknown": ([], []), "compile_tools.memorised_values": ("",),
         "probe_pool": ([], {}, None, []), "probe_admission": ({}, []),
         "loosening": ({}, {}, {}, {}, None, []), "false_rejection": ([], {}, {}, {}, None, []),
         "refuse": ({}, {}, {}), "trusted": ({}, [], {}, {}, {}, {}, {}, {}, None, []),

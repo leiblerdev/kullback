@@ -215,9 +215,10 @@ def test_rulings_recorded_from_stages_on_two_threads_land_in_stage_order(tmp_pat
     assert [g["stage"] for g in json.loads(one)] == ["root", "left", "right", "join"]
 
 
-def test_write_gates_replaces_the_file_and_a_later_record_appends_to_it(tmp_path):
+def test_a_per_tool_snapshot_lands_in_its_own_file_and_leaves_the_stage_rulings_where_they_are(tmp_path):
     def writer(ctx, inputs):
-        ctx.write_gates([GateResult(stage="parses", passed=True), GateResult(stage="confined", passed=True)])
+        ctx.snapshot_gates([{"tool": "lookup", "stage": "parses", "pass": True},
+                            {"tool": "lookup", "stage": "confined", "pass": True}], 4)
         return {"bodies": {}}
 
     def recorder(ctx, inputs):
@@ -225,10 +226,13 @@ def test_write_gates_replaces_the_file_and_a_later_record_appends_to_it(tmp_path
         return {"intents": {}}
 
     (tmp_path / "gates.json").write_text(json.dumps([{"stage": "mine", "pass": True}]), encoding="utf-8")
-    result = Pipeline([_stage("tools", [], ["bodies"], writer), _stage("intent", ["bodies"], ["intents"], recorder)],
-                      tmp_path).run()
-    assert [g["stage"] for g in json.loads((tmp_path / "gates.json").read_text())] == ["parses", "confined", "intent"]
-    assert result.reports["tools"].rulings == ["parses", "confined"] and result.rulings == ["parses", "confined", "intent"]
+    Pipeline([_stage("tools", [], ["bodies"], writer), _stage("intent", ["bodies"], ["intents"], recorder)],
+             tmp_path).run()
+    assert [g["stage"] for g in json.loads((tmp_path / "gates.json").read_text())] == ["mine", "intent"]
+    snapshot = json.loads((tmp_path / "compile_snapshot.json").read_text())
+    assert snapshot["round"] == 4 and snapshot["stage"] == "tools"
+    assert [(row["tool"], row["stage"]) for row in snapshot["rows"]] == [("lookup", "parses"),
+                                                                        ("lookup", "confined")]
 
 
 # --- the anchor and the ceiling under the scheduler --------------------------

@@ -35,11 +35,17 @@ from gates.verifier_fixtures import (
 from kullback.examiner import derive as V
 from kullback.gates import verifier_suite as S
 from kullback.runner.canon import CanonRules, canon_value
-from kullback.runner.records import Constraint, Verifier, as_dict, content_hash
+from kullback.runner.records import Constraint, Task, Verifier, as_dict, content_hash
 
-# The derivation over verifier_fixtures.derive(tmp_path) on main at the commit the move started from
-# (a40812c): seven atoms, seeds ref, alt and rr2. The move changed no byte of the artifact (D130).
-DERIVATION_HASH_ON_MAIN = "77d497a99ac9e8c194e5116d7be8d5e420e158b71c2731edb560216bf1077a16"
+# The derivation over verifier_fixtures.derive(tmp_path): seven atoms, seeds ref, alt and rr2. It was
+# pinned at the commit the phase 5 move started from (a40812c, 77d497a99ac9e8c1) to hold that the
+# move changed no byte of the artifact (D130). It has moved three times since: when a stated fact the
+# request never asked about stopped being a demand, when the write cap moved to the end of the atom
+# list so the rule on a cap of 0 could see what else the Verifier demands, and at D190, when a
+# demanded fact took the provenance of the value it carries and a reported one stopped carrying any.
+# A change to this value is a change to every Verifier of every build, so it is moved deliberately
+# or not at all.
+DERIVATION_HASH = "15c3e65d0651f92e539d80f0e9215b7c4bc76a499d7327acaeebfcc814fc65d0"
 
 
 def test_the_derivation_never_imports_the_builder_the_runner_internals_or_anything_that_runs(tmp_path):
@@ -70,11 +76,11 @@ def test_the_derivation_never_imports_the_builder_the_runner_internals_or_anythi
                 and "verifier_suite" not in line], "derive.py reads the suite and nothing else in gates"
 
 
-def test_the_derivation_over_the_fixture_runs_hashes_to_the_value_recorded_on_main(tmp_path):
-    """The move is a move: the same Runs derive the same atoms, byte for byte (D130)."""
+def test_the_derivation_over_the_fixture_runs_hashes_to_the_pinned_value(tmp_path):
+    """The same Runs derive the same atoms, byte for byte, until a decision moves the pin (D130)."""
     verifier = derive(tmp_path)
     assert len(verifier.atoms) == 7 and verifier.seed_run_ids == ["ref", "alt", "rr2"]
-    assert content_hash(as_dict(verifier)) == DERIVATION_HASH_ON_MAIN
+    assert content_hash(as_dict(verifier)) == DERIVATION_HASH
 
 
 # --- write-set diff, agreement, provenance --------------------------------
@@ -98,19 +104,25 @@ def test_user_stated_value_is_required_and_elicited_value_is_allowed(tmp_path):
 
 
 def test_system_derived_and_agent_chosen_provenance(tmp_path):
-    run = make_run("p", [
+    """The classification is unchanged; what the derivation writes for a system_derived value is not.
+
+    D190: the caller never said #W555, so the id the agent looked up is written as a shape over its
+    own column rather than as the literal, while the reason the agent invented stays allowed.
+    """
+    events = [
         user("Refund my order please."),
         call("get_order_details", {"order_id": "#W555"}, kind="read", cid="c0"),
         result({"order_id": "#W555", "total": 42.5}, cid="c0"),
         call("cancel_pending_order", {"order_id": "#W555", "reason": "goodwill"}, cid="c1"),
         result({"status": "cancelled"}, cid="c1"),
         assistant("Refunded 42.5."),
-    ])
+    ]
+    run = make_run("p", events)
+    assert S.classify_provenance(run, 5, "#W555", S.canon_fn(None))[0] == "system_derived"
     verifier = V.derive_verifier(TASK, run, [], None, write_tools=WRITE_TOOLS)
-    order = [a for a in verifier.atoms if S.atom_payload(a).get("field") == "order_id"][0]
+    order = atom_by_id(verifier, "w0.order_id")
     reason = [a for a in verifier.atoms if S.atom_payload(a).get("field") == "reason"][0]
-    assert order.provenance == "system_derived"
-    assert order.kind == "required"
+    assert order.kind == "hard" and S.atom_payload(order)["derived_as"] == V.SHAPE_ATOM
     assert reason.provenance == "agent_chosen"
     assert reason.kind == "allowed"
 
@@ -137,7 +149,8 @@ def test_every_atom_span_points_at_the_event_holding_its_value(tmp_path):
     checked = 0
     for atom in verifier.atoms:
         payload = S.atom_payload(atom)
-        if payload["kind"] not in ("write", "write_value", "question", "communicate"):
+        if payload["kind"] not in ("write", "write_value", "question", "communicate",
+                                   V.REPORTED_COMMUNICATE):
             continue
         assert atom.spans, atom.id
         span = atom.spans[0]
@@ -290,8 +303,10 @@ def test_a_run_that_skips_the_required_question_fails(tmp_path):
 
 
 def test_communicate_facts_agreed_across_reruns(tmp_path):
+    """Both facts become atoms; which of them the answer must repeat is the request's business."""
     verifier = derive(tmp_path)
-    stated = sorted(S.atom_payload(a)["text"] for a in verifier.atoms if a.kind == "communicate")
+    stated = sorted(S.atom_payload(a)["text"] for a in verifier.atoms
+                    if S.atom_payload(a)["kind"] in ("communicate", V.REPORTED_COMMUNICATE))
     assert stated == ["#W123", "150.0"]
 
 
@@ -411,3 +426,111 @@ def test_export_can_be_limited_to_required_writes(tmp_path):
     assert [a["arguments"]["order_id"] for a in required_only] == ["#W123"]
 
 
+
+
+# --- which stated facts the answer must repeat (D43) ----------------------
+#
+# An invented domain: a repair shop whose agent looks a pump up and answers the caller. The
+# recorded answer states three facts read from the world, and the request asks about one of them.
+
+PUMP = {"part_id": "P-2044", "warranty_months": 36, "list_price": 249.0}
+SHOP_TOOLS = {"open_repair_ticket"}
+
+
+def pump_run(run_id: str = "shop-ref",
+             final: str = "Pump P-2044 has 36 warranty months left and lists at 249.0.",
+             asked: str = "How long is the warranty on pump P-2044?") -> object:
+    return make_run(run_id, [
+        user(asked),
+        call("get_part_record", {"part_id": "P-2044"}, kind="read", cid="r0"),
+        result(PUMP, cid="r0"),
+        assistant(final),
+    ], task_id="shop")
+
+
+def pump_verifier(intent_text: str) -> Verifier:
+    return V.derive_verifier(Task(id="shop", intent=intent_text), pump_run(), [], None,
+                             write_tools=SHOP_TOOLS)
+
+
+def stated(verifier: Verifier, kind: str) -> list[str]:
+    return sorted(S.atom_payload(a)["text"] for a in verifier.atoms if S.atom_payload(a)["kind"] == kind)
+
+
+def fact_atom(verifier: Verifier, text: str):
+    return [a for a in verifier.atoms if S.atom_payload(a).get("text") == text][0]
+
+
+def test_a_fact_the_caller_named_must_be_stated_back(tmp_path):
+    verifier = pump_verifier("tell the caller about the pump they asked about")
+    assert stated(verifier, "communicate") == ["P-2044"]
+    assert fact_atom(verifier, "P-2044").kind == "communicate"
+
+
+def test_a_fact_the_request_never_asked_about_is_reported_and_rejects_no_run(tmp_path):
+    """The recorded agent volunteered the price; a Run that answers without it has still done the job."""
+    verifier = pump_verifier("tell the caller about the pump they asked about")
+    assert stated(verifier, V.REPORTED_COMMUNICATE) == ["249.0", "36"]
+    quieter = pump_run("shop-alt", final="Your pump P-2044 is still under warranty.")
+    assert S.check_run(verifier, quieter, write_tools=SHOP_TOOLS) == (True, None)
+
+
+def test_a_fact_the_request_names_by_its_field_must_be_stated_back(tmp_path):
+    """The caller asked in words, not in numbers: the field the fact was read from is the link."""
+    verifier = pump_verifier("tell the caller how many warranty months the pump has left")
+    assert stated(verifier, "communicate") == ["36", "P-2044"]
+    assert stated(verifier, V.REPORTED_COMMUNICATE) == ["249.0"]
+    silent = pump_run("shop-alt", final="Your pump P-2044 is still under warranty.")
+    assert S.check_run(verifier, silent, write_tools=SHOP_TOOLS)[0] is False
+
+
+def test_a_reported_fact_keeps_the_value_the_span_and_a_predicate_that_can_answer(tmp_path):
+    """Reported is not dropped: the Verdict can still say whether the Run stated the fact."""
+    verifier = pump_verifier("tell the caller about the pump they asked about")
+    price = fact_atom(verifier, "249.0")
+    # No provenance since D190: provenance is what evidences a demand, and this atom makes none.
+    assert price.kind == "allowed" and price.provenance is None
+    assert price.predicate_src and "249.0" in price.predicate_src
+    assert price.spans and price.spans[0].msg_index == 2
+    assert "rejects no Run" in (price.description or "")
+
+
+# --- the write cap on a Task whose Reference wrote nothing -----------------
+
+def cap_atoms(verifier: Verifier) -> list[str]:
+    return [a.id for a in verifier.atoms if S.atom_payload(a)["kind"] == "entity_count"]
+
+
+def test_a_reference_that_wrote_nothing_caps_writes_at_zero(tmp_path):
+    """Nothing else of this Task wrote, so "do not write" is what its Runs say."""
+    verifier = pump_verifier("tell the caller how many warranty months the pump has left")
+    assert cap_atoms(verifier) == ["entity_count"]
+    assert S.atom_payload(atom_by_id(verifier, "entity_count"))["count"] == 0
+
+
+def test_a_cap_of_zero_is_not_written_when_another_run_of_the_task_wrote_and_nothing_else_is_asked(tmp_path):
+    """The Task's own Runs contradict the cap, and the request named no fact to keep it for."""
+    vague = pump_run(asked="Can you look into my pump for me?")
+    verifier = V.derive_verifier(Task(id="shop", intent="look into the pump the caller asked about"),
+                                 vague, [], None, write_tools=SHOP_TOOLS, writes_elsewhere=True)
+    assert cap_atoms(verifier) == []
+
+
+def test_a_verifier_that_would_ask_nothing_at_all_keeps_the_facts_the_reference_stated(tmp_path):
+    """An empty Run has to fail: with no write and no fact named, what was said is the only evidence."""
+    vague = pump_run(asked="Can you look into my pump for me?")
+    verifier = V.derive_verifier(Task(id="shop", intent="look into the pump the caller asked about"),
+                                 vague, [], None, write_tools=SHOP_TOOLS)
+    assert stated(verifier, V.REPORTED_COMMUNICATE) == []
+    assert stated(verifier, "communicate") == ["249.0", "36", "P-2044"]
+    assert "asks nothing else" in (fact_atom(verifier, "249.0").description or "")
+    silent = pump_run("shop-alt", asked="Can you look into my pump for me?", final="I have looked.")
+    assert S.check_run(verifier, silent, write_tools=SHOP_TOOLS)[0] is False
+
+
+def test_the_cap_stays_when_the_verifier_asks_for_something_else(tmp_path):
+    """It is only the Verifier that is nothing but the cap that the writing Run contradicts."""
+    verifier = V.derive_verifier(Task(id="shop", intent="tell the caller how many warranty months are left"),
+                                 pump_run(), [], None, write_tools=SHOP_TOOLS, writes_elsewhere=True)
+    assert cap_atoms(verifier) == ["entity_count"]
+    assert [a.id for a in verifier.atoms if a.kind == "communicate"] == ["c1", "c2"]
