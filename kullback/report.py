@@ -584,6 +584,8 @@ def _synthetic(data: ReportData) -> list[str]:
     for (asked, reached), held in sorted(grouped.items()):
         mean = held["pool"] / held["tasks"] if held["tasks"] else 0.0
         lines.append(f"| {asked} | {reached} | {held['tasks']} | {held['passed']} | {mean:.1f} |")
+    return lines
+
 
 def _claims_table(data: ReportData) -> list[str]:
     """What the transcripts claimed against what the state received, per Task and over the corpus (D223).
