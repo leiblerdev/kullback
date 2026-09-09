@@ -1611,6 +1611,20 @@ Measured on copies of both Task lists, code only, spend zero. Probe membership m
 
 Read sample_salt and the draws counts per round; two builds whose sample_salt differs are not comparable draw for draw.
 
+### D214. The Simulated user is an agent of the harness: its own package, curated context, guards, fidelity score and lesson loop (2026-09-09)
+
+The founder said the Simulated user is the weakest component and that we need agentic user simulations made "just like the builder agent and examiner agent" and "grounded in the context we curate for it". This replaces the older fallback-only plan for D214, which would have left the rules primary and put a model behind them. The evidence for going further is the pool: D210 counted 198 re-rolls of 264 on one corpus ending because the user ran out of scenario, and 81 Tasks across two corpora whose held-out pool holds only Runs that never finished, and that pool decides whether a Verifier is over-strict.
+
+The user is a package beside the Builder and the Examiner on the same agent core. The rule-driven user moved into it whole with a re-export left behind, the vocabulary split so its shape lives with the user and the mining with the Builder, and a contract holds that direction. Each Task gets a context curated from its recording and nothing else, every item a section under a stable tag: the typed facts with their askable and record classes, the goal in the recorded user's own words, a persona kept as counted classes rather than quotes, the write arguments the Reference chose, the conversation so far and last round's lessons. Its tools show what a person on the phone can see, and a consult tool appears only where a recording shows that user reading out a value only the world's records hold.
+
+Code decides everything after the model. A value-shaped token that is not one of this user's own facts drops the turn, a record fact becomes the sentence that points at it, the D196 strip runs, and a turn volunteering more than the recorded user had by the same point is cut back, counted in facts so a Candidate cannot farm them by asking. The end kind is code's and the model may only request one. Every dropped turn is answered by the rule-driven user, which is also the floor: both drivers are scored offline against the recorded turns on the same facts carried, none added, no record fact spoken and the same ending, and the model drives only the Tasks it beats. What it got wrong becomes that Task's lesson next round, and a Task it has not beaten after three rounds stops paying until its facts or persona change.
+
+Thirty five tests on an invented domain cover the imports, the mined classes, each guard, the end protocol, the driver choice, the fallback, the score, the lesson and stall rules, and the two CLI verbs.
+
+Measured on copies and read-only workdirs. The rule-driven baseline per corpus is 0.822 over 203 Tasks, 0.798 over 88 and 0.840 over 19, with 12, 3 and 6 Tasks at 1.0. Live on the second corpus with the contributor model, first four Tasks in id order: the agent means 0.785 against 0.779 and beats the rules on three of the four, for 0.0060 USD. A wall-clock cap cut it there, and a twelve Task run stopped at 0.0045 USD having scored under two, since a turn costs about twenty five seconds on this model.
+
+Three things cut against the premise. The dry-run count that motivated the decision cannot be read off any of the three workdirs: all 942 stored Runs predate D210's kinds, so what is there is termination reasons and not ends. The rule-driven baseline is higher than the premise implies, so this score reads turns and not whether a Run finished. And the agent's margin is thin, 0.006 of a mean over four Tasks, so what the driver choice buys stays unmeasured until a build launched with a user model reads ends by kind and runs_recovered over the held-out re-rolls.
+
 ## Pending (asked, not yet answered)
 
 - ~~The user's own tools and the world they act on (D71, first part).~~ Decided as D176 (2026-09-07): one world, rows revealed by a requestor marked by it, readers as code under the free gate.

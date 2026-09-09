@@ -63,7 +63,10 @@ TARGET = "environment"
 # a reading over the pool can leave out the Runs that did not finish, and the ends move again where
 # the review of D210 closed the turn that says nothing but a miss. The same three Tasks, the same
 # verdicts and the same reasons.
-TASK_STATUS_SHA256_BEFORE_THE_PHASE = "b09715ea295247be485c0d76b0ec4a19d3f4ccca4d27ba0396d37b7972cc2ed4"
+# Re-pinned for D214: the rule-driven Simulated user moved into kullback/user, so the re-roll stage's
+# code version moved with it and the Run ids derived from that key moved too. The same three Tasks,
+# the same verdicts and the same reasons.
+TASK_STATUS_SHA256_BEFORE_THE_PHASE = "3c59e00288ccb2f1dae5eda91a96945182ec49ef78377be5c9c101606b6f673d"
 
 
 def _fixture(request) -> Path:

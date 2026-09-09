@@ -1,6 +1,6 @@
 # Architecture
 
-Kullback is two agents, one runner and one set of gates on a layering inspired by [huggingface/tau](https://github.com/huggingface/tau): a provider layer, an agent core that knows nothing about the application, and the applications as extensions on that core. This page is the map; the decisions are in `decision-log.md` and `adr/`, and each phase of the rebuild left a note in `tech/`.
+Kullback is three agents, one runner and one set of gates on a layering inspired by [huggingface/tau](https://github.com/huggingface/tau): a provider layer, an agent core that knows nothing about the application, and the applications as extensions on that core. This page is the map; the decisions are in `decision-log.md` and `adr/`, and each phase of the rebuild left a note in `tech/`.
 
 ## Packages
 
@@ -13,6 +13,7 @@ kullback/
               the session tree, context management with a code floor
   builder/    the Environment agent
   examiner/   the Verifier and probe agent (phase 5)
+  user/       the Simulated user: the rules, the curated context, the guards, the score
   runner/     records, the frozen loop, route, the Verdict, judges, replay, regrade
   gates/      every accept-or-reject check and the registry that names them; no model call
   cli.py      the command line
@@ -20,7 +21,7 @@ kullback/
   report.py   the customer-facing report
 ```
 
-Builder and Examiner import agent, gates and runner. Gates import runner and never the agent core. Runner and agent import ai. Nothing imports the frontends.
+Builder and Examiner import agent, gates, runner and user. The Simulated user imports agent, gates, runner and ai, and never the Builder or the Examiner: they derive its vocabulary and drive its Runs, so a package they depend on may not depend back. Gates import runner and never the agent core. Runner and agent import ai. Nothing imports the frontends.
 
 ## The agent core
 
@@ -33,6 +34,12 @@ The Builder turns traces into an Environment: the rows the runs touched, one fun
 ## The Examiner
 
 The Examiner derives each Task's Verifier from the Intent and the frontier's re-rolls, writes probes against it, repairs it when a gate rejects it, refuses a Task no frontier Run finishes, and sends findings about the Environment to the Builder as follow-ups. It never reads a tool body and never writes the Environment (ADR-0007).
+
+## The Simulated user
+
+The person on the other end of the conversation is an agent too. Underneath sits the rule-driven user read off one recording: the facts that user gave, exact, typed askable or record, when it gives each of them, how it refuses, and the protocol that decides which of four kinds a Run ended in. On top of that sits a model, on the same agent core, with a context curated per Task from the recording alone: the typed facts, the goal in the recorded user's own words, a persona stored as counted classes rather than quotes, the values this user chooses when asked to choose, the conversation so far, and the lessons the last round left. Its tools read only what a person on the phone can see, never the Environment's tables. After the model, code guards every turn: a value-shaped token that is not one of this user's own facts drops the turn, a record fact is replaced by the sentence that points at it, and a turn that volunteers more than the recorded user had volunteered by the same point is cut back. The end is decided in code; the model may only ask for one.
+
+Which driver speaks is measured rather than assumed. Each Task's two drivers are scored offline against the recorded turns on carrying the same facts, adding none, speaking no record fact and ending the same way; the model drives the Tasks where it beats the rules and the rules drive the rest, and on every Task the rules answer any beat a guard drops. The score names what went wrong per Task, that becomes the next round's lesson, and a Task the model has not beaten after three rounds of lessons stops paying for it until its facts or persona change.
 
 ## The gates
 

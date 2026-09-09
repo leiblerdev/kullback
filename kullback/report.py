@@ -28,8 +28,9 @@ from kullback.runner.records import (
     disagreement_stats,
 )
 
-SECTIONS = ("## Environment", "## Rounds", "## Tasks", "## Disagreement queue", "## Lessons set aside")
-ENVIRONMENT, ROUNDS, TASKS, QUEUE, LESSONS = SECTIONS
+SECTIONS = ("## Environment", "## Rounds", "## Tasks", "## Disagreement queue",
+            "## The Simulated user", "## Lessons set aside")
+ENVIRONMENT, ROUNDS, TASKS, QUEUE, USER_FIDELITY, LESSONS = SECTIONS
 
 
 class ScorecardItem(Record):
@@ -97,6 +98,9 @@ class ReportData(BaseModel):
     # D171: tool_fidelity.json, the compile_tools artifact: `tools` per tool over the corpus,
     # `tasks` per Task per tool over that Task's own recorded calls.
     tool_fidelity: dict = Field(default_factory=dict)
+    # D214: user_fidelity.json, the round driver's artifact: how close each driver's turns are to
+    # the recorded ones, per Task and per corpus. Empty on a build written before D214.
+    user_fidelity: dict = Field(default_factory=dict)
     rounds: list[RoundRecord] = Field(default_factory=list)
     trusted: Optional[GateResult] = None
     # D209: difficulty.json, the record and the bucket per Task with the Tasks that carry neither.
@@ -888,6 +892,28 @@ def _cited_spans(row: dict) -> list[str]:
     return lines
 
 
+
+
+def _user_fidelity(data: ReportData) -> list[str]:
+    """How close the Simulated user's turns are to the recorded ones (D214 rule 5).
+
+    Half of an Environment is the person the Candidate is talking to, and a report that says nothing
+    about it lets a corpus with a user that runs out of scenario read as a corpus with hard Tasks.
+    A build written before D214 has no such file and says so in one line.
+    """
+    from kullback.user.fidelity import markdown_table
+    lines = [USER_FIDELITY, ""]
+    if not data.user_fidelity:
+        lines.append("This build recorded no user fidelity: nothing scored the Simulated user's "
+                     "turns against the recorded ones.")
+        return lines
+    lines.append("Each driver's turns against the turns the recording holds, per Task, meaned over "
+                 "the corpus. The rule-driven user is the baseline and costs nothing.")
+    lines.append("")
+    lines += markdown_table(data.user_fidelity)
+    return lines
+
+
 def _lessons(data: ReportData) -> list[str]:
     lines = [LESSONS, ""]
     if not data.lessons_set_aside:
@@ -907,6 +933,7 @@ def render(data: ReportData) -> str:
     lines += _rounds(data) + [""]
     lines += _tasks(data) + [""]
     lines += _queue(data) + [""]
+    lines += _user_fidelity(data) + [""]
     lines += _lessons(data) + [""]
     return "\n".join(lines)
 
@@ -1270,6 +1297,8 @@ def load(workdir: Any) -> ReportData:
         tasks_aside=_jsonl(root / "tasks_aside.jsonl", unread),
         lessons_set_aside=_list_of(root / "lessons_set_aside.json", SetAsideLesson),
         tool_fidelity=fidelity_body if isinstance(fidelity_body, dict) else {},
+        user_fidelity=_json(root / "user_fidelity.json") if isinstance(
+            _json(root / "user_fidelity.json"), dict) else {},
         rounds=_rounds_of(root / "rounds.json", unread),
         trusted=trusted,
         difficulty=_difficulty_body(root),

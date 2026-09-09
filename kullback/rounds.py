@@ -94,6 +94,9 @@ from kullback.runner.records import (
     read_json,
     write_json,
 )
+from kullback.user import agent as user_agent_mod
+from kullback.user import fidelity as user_fidelity_mod
+from kullback.user import lesson as user_lesson_mod
 
 ROUNDS_NAME = "rounds.json"
 GATES_NAME = "gates.json"
@@ -921,8 +924,75 @@ class Loop:
             store.get("replays") or {}, store.get("rerolls") or {}, store.get("canon_rules"),
             store.get("sigs") or [], record=self._land, intents=store.get("intents") or {})
         counts.update(self.driver_counts())
+        counts.update(self.user_fidelity_counts())
         counts.update(self.difficulty_counts(counts))
         return counts
+
+    def user_fidelity_counts(self) -> dict:
+        """The Simulated user's own fidelity this round, and which driver each Task earned (D214).
+
+        The score is offline: both drivers are asked for the turns the recording holds, and the mean
+        over the Task's turns is what each one is worth on it. The rule-driven baseline costs
+        nothing and is computed every round; the agent user is scored only where the plan carries a
+        model for it, because one model call per recorded turn is not something a build pays for
+        unasked. The rows carry `drives`, which the next round's Runs read to know whose turn it is
+        (build.py), and the lessons this round learned go on the file the stall rule counts.
+
+        A workdir the scoring cannot read leaves the counts without it rather than failing the
+        round: this is a measurement in this decision, not a ruling (D214 rule 5).
+        """
+        model = self.plan.models.get("user_agent")
+        lessons = user_lesson_mod.load_lessons(self.plan.workdir)
+        try:
+            out = user_fidelity_mod.score_workdir(
+                self.plan.workdir, round=self.plan.round, write=False,
+                make_agent=self._agent_user_factory(model) if model is not None else None)
+        except (OSError, ValueError, TypeError):
+            return {}
+        rows, learned = [], []
+        for row in out["body"].get("tasks") or []:
+            task_id = str(row.get("task_id") or "")
+            scored = (out["scores"] or {}).get(task_id) or {}
+            key = self._user_content_key(task_id)
+            lesson = user_lesson_mod.lesson_from(scored.get(user_fidelity_mod.AGENT_DRIVER),
+                                                scored.get(user_fidelity_mod.RULES_DRIVER),
+                                                task_id=task_id, round=self.plan.round, key=key)
+            learned.append(lesson)
+            row["drives"] = user_lesson_mod.drives(lessons, task_id, lesson.agent, lesson.rules, key)
+            row["stalled"] = user_lesson_mod.stalled(lessons, task_id, key)
+            rows.append(row)
+        user_fidelity_mod.write_scores(self.plan.workdir, rows, round=self.plan.round)
+        user_lesson_mod.append_round(self.plan.workdir, learned)
+        summary = user_fidelity_mod.summarise(rows)
+        return {"user_fidelity": summary,
+                "tasks_agent_driven": sum(1 for row in rows if row.get("drives")),
+                "tasks_rule_driven": sum(1 for row in rows if not row.get("drives")),
+                **user_lesson_mod.counts([*lessons, *learned], self.plan.round),
+                "agent_turns_dropped": _guard_counts(rows)}
+
+    def _user_content_key(self, task_id: str) -> str:
+        """The facts-and-persona key the stall rule watches, or empty where the Task has none."""
+        contexts = getattr(self, "_user_contexts", None)
+        if contexts is None:
+            try:
+                contexts = user_fidelity_mod.contexts_of(self.plan.workdir)
+            except (OSError, ValueError, TypeError):
+                contexts = {}
+            self._user_contexts = contexts
+        row = contexts.get(task_id)
+        return user_context_key(row[0]) if row else ""
+
+    def _agent_user_factory(self, model: Any):
+        """How one Task's agent user is built for the scoring, on the plan's own user model."""
+        workdir = self.plan.workdir
+        writes = user_fidelity_mod.write_tools_of(workdir)
+        vocab = user_fidelity_mod.vocabulary_of(workdir)
+
+        def make(ctx, fallback, record_values):
+            return user_agent_mod.AgentUser(ctx, fallback, model, vocab=vocab, write_tools=writes,
+                                            record_values=record_values)
+
+        return make
 
     def difficulty_counts(self, counts: dict) -> dict:
         """The bucket table of the round in hand, written to its own file and summarised on the line.
@@ -1187,6 +1257,22 @@ class Loop:
         out["examiner"] = {"rulings": list(self.eplan.last_rulings) if self.eplan is not None else [],
                            "tool_result": _tool_result(self.examiner_result)}
         return out
+
+
+def user_context_key(ctx: Any) -> str:
+    from kullback.user.context import content_key
+    return content_key(ctx)
+
+
+def _guard_counts(rows: Iterable[dict]) -> dict:
+    """Every guard reason summed over the Tasks the agent user was scored on (D214 rule 4)."""
+    out: dict[str, int] = {}
+    for row in rows or ():
+        for reason, count in ((row or {}).get("guards") or {}).items():
+            out[reason] = out.get(reason, 0) + int(count or 0)
+        for reason, count in ((row or {}).get("driver_counts") or {}).items():
+            out[reason] = out.get(reason, 0) + int(count or 0)
+    return dict(sorted(out.items()))
 
 
 def _tool_result(result: Optional[ToolResult]) -> Optional[dict]:
