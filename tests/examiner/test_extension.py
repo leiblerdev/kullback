@@ -20,7 +20,7 @@ from kullback.agent.session import SessionStore
 from kullback.ai.provider import ModelReply, TestModel, ToolCallRequest
 from kullback.examiner import agent as examiner_agent
 from kullback.examiner import extension as ext
-from kullback.examiner import skills
+from kullback.examiner import skills, stage
 from kullback.examiner import tools as tools_mod
 from kullback.examiner.extension import examiner_extension
 from kullback.gates import gates_over
@@ -59,14 +59,36 @@ def _probe_call(cid: str, run, bug_class: str = "other") -> tuple:
 
 
 def _tree(workdir: Path) -> dict:
+    """Every record two runs are compared on, with the workdir's own path and D218's stamps taken out.
+
+    `updated_at` on a status row is a wall clock, so two runs of the same derivation write it
+    differently whatever else they do; what is compared here is the rows.
+    """
     def read(path: Path) -> bytes:
-        return path.read_bytes().replace(str(workdir.resolve()).encode(), b"<workdir>").replace(
+        body = _without_stamps(path)
+        return body.replace(str(workdir.resolve()).encode(), b"<workdir>").replace(
             str(workdir).encode(), b"<workdir>")
     out = {name: read(workdir / name) for name in COMPARED if (workdir / name).is_file()}
     for folder in ("verifiers", "examiner/history", "probes"):
         for path in sorted((workdir / folder).rglob("*.json")):
             out[str(path.relative_to(workdir))] = read(path)
     return out
+
+
+def _rows_only(status: dict) -> dict:
+    """Status rows with D218's round and time stamps taken off (rule 2)."""
+    return {task_id: {key: value for key, value in row.items() if key not in stage.STAMPS}
+            for task_id, row in status.items()}
+
+
+def _without_stamps(path: Path) -> bytes:
+    """One record's bytes, with each status row's `round` and `updated_at` taken off (D218 rule 2)."""
+    body = path.read_bytes()
+    if path.name != "task_status.json":
+        return body
+    rows = {task_id: {key: value for key, value in row.items() if key not in stage.STAMPS}
+            for task_id, row in json.loads(body).items()}
+    return json.dumps(rows, indent=2, sort_keys=True, default=str).encode("utf-8")
 
 
 def test_the_extension_registers_the_eight_tools_the_tagged_sections_the_probe_skill_and_the_two_hooks(world):
@@ -265,7 +287,9 @@ def test_the_driver_derives_through_the_hooks_and_the_model_driven_session_leave
                                         run_probe=probe_runner_over(), agent_model=model)
     assert len(model.calls) == 2 and other["trusted"] == [T]
     assert _tree(modelled.workdir) == _tree(driven.workdir)
-    assert other["tasks"] == result["tasks"]
+    # The summary reads the live file back, so its rows carry D218's stamps; the two runs wrote the
+    # same rows and, being two runs, two different clocks.
+    assert _rows_only(other["tasks"]) == _rows_only(result["tasks"])
 
 
 def test_the_examiner_session_is_recorded_under_its_own_file(world, tmp_path):

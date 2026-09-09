@@ -1672,3 +1672,22 @@ def test_the_starting_state_holds_the_constant_the_recording_pinned(tmp_path):
     state = compile_env.build_starting_state(
         [_listing("A", ["K1", "K2"])], schema, tmp_path, tool_sigs=[], synthetic=False)
     assert state.db[CONSTANTS_TABLE] == {CONSTANTS_ROW: {"list_all_kennels": ["K1", "K2"]}}
+
+
+def test_a_column_drawing_from_a_set_of_names_keeps_the_whole_set_and_a_column_of_ids_keeps_none():
+    """D217: five samples show a reviewer what a column looks like; only the whole set says what it
+    may hold, and a replayed answer naming a name outside it is a different answer."""
+    rows = json.dumps([
+        {"kiln_id": "KLN1", "damper": "open", "note": "the damper is open"},
+        {"kiln_id": "KLN2", "damper": "closed", "note": "the damper is closed"},
+        {"kiln_id": "KLN3", "damper": "vented", "note": "vented for the night, damper part open"},
+        {"kiln_id": "KLN4", "damper": "open", "note": "the damper is open"},
+        {"kiln_id": "KLN5", "damper": "closed", "note": "the damper is closed"},
+        {"kiln_id": "KLN6", "damper": "vented", "note": "vented while it cools"},
+    ])
+    traces = [one_trace("t1", [{"name": "list_kilns", "args": {}, "result": rows}])]
+    schema = mine_schema(traces)
+    damper = next(c for c in schema.columns if c.name == "damper")
+    kiln_id = next(c for c in schema.columns if c.name == "kiln_id")
+    assert damper.vocabulary == ["closed", "open", "vented"]
+    assert kiln_id.vocabulary == [], "six ids are six values, not a set of names"
