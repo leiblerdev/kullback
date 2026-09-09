@@ -466,3 +466,25 @@ def test_a_run_the_user_ended_on_a_refused_write_is_counted_for_the_round(tmp_pa
     counts = fidelity_mod.refused_write_ends(tmp_path, ["move_delivery"])
     assert counts[fidelity_mod.REFUSED_WRITE_ENDS] == 1
     assert counts["runs_read"] == 2 and counts["runs_with_a_write"] == 2
+
+
+def test_a_run_handed_off_over_a_refused_write_is_not_counted_as_a_goal_the_user_closed(tmp_path):
+    """The count is of the one end kind the old rule reached over a refusal. A Run the Candidate
+    closed ended the way it would have ended anyway, so counting it would overstate the change."""
+    handed = [{"type": "tool_result", "payload": {"name": "move_delivery",
+                                                  "error": {"class": "business_error"}}},
+              {"type": "user_turn", "payload": {"user_end": rules_mod.HANDED_OFF}}]
+    _run_file(tmp_path / "runs" / "task_1" / "reroll-task_1-0.jsonl", handed)
+    counts = fidelity_mod.refused_write_ends(tmp_path, ["move_delivery"])
+    assert counts[fidelity_mod.REFUSED_WRITE_ENDS] == 0
+    assert counts["runs_with_a_write"] == 1 and counts["runs_with_no_end_kind"] == 0
+
+
+def test_a_run_written_before_the_end_kinds_existed_is_counted_as_unclassified(tmp_path):
+    old = [{"type": "tool_result", "payload": {"name": "move_delivery",
+                                               "error": {"class": "business_error"}}},
+           {"type": "stop", "payload": {"reason": "user_stop"}}]
+    _run_file(tmp_path / "runs" / "task_1" / "reroll-task_1-0.jsonl", old)
+    counts = fidelity_mod.refused_write_ends(tmp_path, ["move_delivery"])
+    assert counts[fidelity_mod.REFUSED_WRITE_ENDS] == 0
+    assert counts["runs_with_no_end_kind"] == 1

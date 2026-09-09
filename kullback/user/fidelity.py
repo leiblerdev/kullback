@@ -406,24 +406,30 @@ def refused_write_ends(workdir: Any, write_tools: Optional[Iterable[str]] = None
     before this decision as readily as after it.
     """
     names = frozenset(write_tools if write_tools is not None else write_tools_of(workdir))
-    out = {REFUSED_WRITE_ENDS: 0, "runs_read": 0, "runs_with_a_write": 0}
+    out = {REFUSED_WRITE_ENDS: 0, "runs_read": 0, "runs_with_a_write": 0, "runs_with_no_end_kind": 0}
     folder = Path(workdir) / RUNS_DIR
     if not names or not folder.is_dir():
         return out
     for path in sorted(folder.glob("*/*.jsonl")):
-        called, took_effect, ended = False, False, False
+        called, took_effect, satisfied, classified = False, False, False, False
         for event in _events(path):
             kind, payload = event.get("type"), event.get("payload") or {}
             if kind == "tool_result" and payload.get("name") in names:
                 called = True
                 took_effect = took_effect or payload.get("error") is None
             elif kind == "user_turn" and payload.get("user_end"):
-                ended = True
-            elif kind == "stop" and str(payload.get("reason") or "").startswith("user_"):
-                ended = True
+                classified = True
+                # Only the one kind the old rule reached over a refused write. A Run the Candidate
+                # closed or the user ran out of scenario on ended the way it would have ended
+                # anyway, so counting those would say this decision moved Runs it never touched.
+                satisfied = satisfied or payload.get("user_end") == rules_mod.GOAL_SATISFIED
         out["runs_read"] += 1
         out["runs_with_a_write"] += int(called)
-        out[REFUSED_WRITE_ENDS] += int(called and not took_effect and ended)
+        # A Run written before the end kinds existed carries none, and its stop reason is `user_stop`
+        # whichever way the user ended it, so it cannot be classified either way and is counted here
+        # rather than folded into the refusal count on the strength of a reason that says nothing.
+        out["runs_with_no_end_kind"] += int(called and not classified)
+        out[REFUSED_WRITE_ENDS] += int(called and not took_effect and satisfied)
     return out
 
 
