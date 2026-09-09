@@ -1483,7 +1483,14 @@ def _rerolls_stage(model: Any, rerolls: int, workers: int = 1, only: Optional[It
         def reroll(job):  # one Task's re-rolls, in its own world and run directory (D118)
             task, rules, prompt, key = job
             _discard_runs(ctx.workdir / "runs" / task.id, f"reroll-{task.id}-")
-            runs = _candidate_runs(ctx.workdir, task, model, count=rerolls, prefix="reroll", source=source,
+            # D206: the Run id carries the key these Runs are of. A re-roll replaces the Task's
+            # earlier ones, and under a name that did not move, a later round wrote different bytes
+            # under the name an earlier round's Verifier was derived from and had recorded spans
+            # into: three Tasks of one build held a write atom pointing at a call the file no longer
+            # contained. With the key in the name, a name is one set of Runs for good, and a
+            # Verifier whose Runs are gone reads as gone rather than as changed underneath it.
+            runs = _candidate_runs(ctx.workdir, task, model, count=rerolls, prefix="reroll",
+                                   tag=f"{content_hash(key)[:8]}-", source=source,
                                    schema=with_synthetic_rows(inputs["schema"], inputs.get("synthetic_rows") or ()),
                                    sigs=inputs["sigs"], db=inputs["db"], env_id=env_id,
                                    canon_rules=canon_rules, rules=rules, seed=REROLL_SEED,
@@ -1517,13 +1524,18 @@ def _rerolls_stage(model: Any, rerolls: int, workers: int = 1, only: Optional[It
 def _candidate_runs(workdir: Path, task: Task, model: Any, *, count: int, prefix: Optional[str], source: str,
                     schema: EntitySchema, sigs: list, db: dict, env_id: Optional[str], canon_rules: Any,
                     rules: Optional[UserRules], seed: int = 0, max_turns: int = 30,
-                    system_prompt: Optional[str] = None) -> list[tuple[Any, str]]:
+                    system_prompt: Optional[str] = None, tag: str = "") -> list[tuple[Any, str]]:
     """`count` Runs of `model` against the Task's world, each in a fresh copy of it; the Runs and their paths.
 
     Every Run opens the way the recorded one did: the recorded agent's own system prompt, the
     Simulated user's opening turn, and the mined tool definitions on the model call. Without the
     three the model is asked for a first turn over an empty transcript with no tools, which is what
     the second retail build's re-rolls did.
+
+    `tag` goes into every Run id, so a caller whose Runs are replaced when its inputs move can say
+    which inputs these Runs are of and never write different bytes under a name something already
+    read (D206). It sits after the Task, so a caller that discards its own earlier Runs by the name
+    it built them under still finds them.
     """
     overlay, overlay_rows = compile_env.load_overlay(workdir, task.id)
     vocab = _vocab_from(workdir)
@@ -1533,7 +1545,8 @@ def _candidate_runs(workdir: Path, task: Task, model: Any, *, count: int, prefix
     write_tools = {sig.name for sig in sigs if getattr(sig, "kind", None) == "write"}
     out = []
     for number in range(count):
-        run_id = f"{prefix}-{task.id}-{seed + number}" if prefix else f"{task.id}-{seed + number}"
+        stem = f"{prefix}-{task.id}" if prefix else str(task.id)
+        run_id = f"{stem}-{tag}{seed + number}" if tag else f"{stem}-{seed + number}"
         # The Task's own overlay goes inside the toolkit, or it stays dead for every code route (D74).
         toolkit = compile_env.load_toolkit(source, json.loads(json.dumps(db)), overlay=overlay,
                                            overlay_values=overlay_rows)

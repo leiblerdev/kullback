@@ -26,6 +26,7 @@ from typing import Any, Callable, Iterable, Optional
 
 from kullback.examiner import derive as verifier_mod
 from kullback.examiner import judge as judge_mod
+from kullback.examiner import lifecycle
 from kullback.examiner import reference as reference_mod
 from kullback.examiner import variants as variants_mod
 from kullback.gates import artifacts, fidelity, loosening, verifier_suite
@@ -58,11 +59,13 @@ STAGE = "derive_verifier"
 # The per-Task cache under the workdir (D163). Bumped when the entry's shape changes, so an old entry
 # is a miss rather than a row read with the wrong meaning.
 CACHE_DIR = ("examiner", "cache")
-CACHE_FORMAT = 7  # the status row counts D190's relaxed and falsifying atoms, D189's second-path
-# batches and D198's reason per check with no input, the reference record carries D193's second pass
-# over a residue and what deriving a Verifier per survivor settled (D198), and the second-path row
-# carries D199's synthesised paths, what they were rewritten from and whether the Task's path is
-# single by structure
+CACHE_FORMAT = 8  # the status row counts D190's relaxed and falsifying atoms, D206's shape sources
+# and the shapes dropped for rejecting their own Reference, D189's second-path batches and D198's
+# reason per check with no input, the reference record carries D193's second pass over a residue and
+# what deriving a Verifier per survivor settled (D198), the second-path row carries D199's
+# synthesised paths, what they were rewritten from and whether the Task's path is single by
+# structure, and the status row names the Reference's own Run ids, which is what says whether a
+# Verifier on disk was derived from the Reference the Task holds (D208)
 # The modules a Task's derivation runs through, hashed into every key: an edit to any of them is a
 # different derivation and must not be served a stale entry (the Builder's stages hash the same way,
 # build.py's `_version`).
@@ -806,6 +809,10 @@ def verifier_for(ctx, task: Task, confirmation: Any, *, canon_rules: Any, write_
     status = {"reference_confirmed": True, "verifier_passed": bool(passed or waived),
               "second_path_waived": waived, "pool_at_reference": at_reference,
               "references": len(confirmation.references), "reference_kind": first.kind,
+              # D208: which Reference this is, by the Run ids it is made of. The Verifier written
+              # beside it names the same ids as its seeds, so a later round can ask whether the file
+              # on disk was derived from the Reference the Task holds or from one since withdrawn.
+              "reference_run_ids": [r.run_id for r in confirmation.references],
               "recordings": recordings, "rerolls": rerolls,
               "failed_recordings": {**dict(confirmation.failed), **left_out},
               "did_not_reach_reference": sorted(left_out), "judged": confirmation.judged,
@@ -1141,6 +1148,10 @@ def derive_all(ctx: ExamContext, inputs: dict, *, probe_model: Any = None, probe
     if only is not None:
         status = {**(read_json(ctx.workdir / "task_status.json", {}) or {}), **status}
         references = {**(read_json(ctx.workdir / "references.json", {}) or {}), **references}
+    # D208: a Verifier is derived from a Reference and lives only while the Task holds that
+    # Reference. The rows above are what says which Reference each Task holds now, so the artefacts
+    # the withdrawn ones left behind are retired here, in the same step, before anything reads them.
+    retired = lifecycle.retire(ctx.workdir, status, round_number=round_number)
     write_json(ctx.workdir / "task_status.json", status)
     write_json(ctx.workdir / "references.json", references)
     # Section 6: a Task whose Verifier does not clear D79 is "not verdicted, Verifier
@@ -1150,6 +1161,9 @@ def derive_all(ctx: ExamContext, inputs: dict, *, probe_model: Any = None, probe
         verifiers=len(verifiers), references=sum(1 for r in status.values() if r["reference_confirmed"]),
         passed=sum(1 for r in status.values() if r["verifier_passed"]), tasks=len(status),
         probed=probed, constraints_demoted=len(demoted),
+        # D208: how many derived artefacts this round retired because the Reference they were
+        # derived from is no longer the one their Task holds, and under which of the two reasons.
+        **lifecycle.counts(retired),
         # D171: how many Tasks a tool actually blocks, which is how many have a differing own call.
         blocked_by_own_calls=sum(1 for r in status.values() if r.get("blocking_tools")),
         failed_recordings=sum(len(r.get("failed") or {}) for r in references.values()),
@@ -1202,4 +1216,4 @@ def derive_all(ctx: ExamContext, inputs: dict, *, probe_model: Any = None, probe
     write_json(ctx.workdir / "scorecard.json", scorecard_mod.scorecard(ctx.workdir))
     return {"verifiers": verifiers, "task_status": status, "cached": cached, "ran": len(jobs) - cached,
             "second_path_runs": sum(_second_path(r)["runs"] for r in status.values()),
-            "ceiling_reached": ceiling_reached.is_set()}
+            "retired": retired, "ceiling_reached": ceiling_reached.is_set()}
