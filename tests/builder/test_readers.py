@@ -337,7 +337,7 @@ def test_a_column_the_corpus_never_shows_before_a_write_is_left_unset_and_named(
     assert unset == ["lamp"] and fills == {} and assumptions == []
 
 
-def test_the_fills_reach_the_world_and_the_split_is_left_to_what_was_read(tmp_path):
+def test_the_fills_reach_the_world_and_carry_the_assumption_they_were_made_under(tmp_path):
     traces = three_traces()
     proposal, ruling = gated(tmp_path, proposal_json(), traces=traces, effects={"open_vent": ["vent"]})
     rows = readers.starting_rows(traces, proposal, ruling.parsed)
@@ -346,11 +346,6 @@ def test_the_fills_reach_the_world_and_the_split_is_left_to_what_was_read(tmp_pa
                 "fills": {CARETAKER: fills}, "assumptions": assumptions}
     reached = readers.reader_rows(artifact)[("greenhouse", CARETAKER)]
     assert reached["run_c"]["vent"] == fills["vent"], "the world holds a value the corpus showed"
-    worlds: dict = {}
-    readers.merge_worlds(worlds, artifact)
-    key = ("greenhouse", CARETAKER, "vent")
-    assert key not in worlds["run_c"], "a filled column is the same everywhere and splits nothing"
-    assert worlds["run_a"][key] != worlds["run_b"][key]
     assert readers.reader_assumptions(artifact) == assumptions
 
 
@@ -406,30 +401,20 @@ def test_a_revealed_reading_is_exempt_and_a_revealed_switch_is_hard(tmp_path):
     assert all(column.classified_by == "rule" for column in schema.columns)
 
 
-def test_a_revealed_reading_splits_no_task_and_a_revealed_switch_still_does(tmp_path):
-    from kullback.builder.cluster import split_by_world
+def test_nothing_this_stage_reveals_can_split_a_task(tmp_path):
+    """D216: a revealed row is this stage's proposal, and a proposal never groups the recordings.
+
+    This stage used to hand its rows to the split, so a corpus was regrouped every time a reader was
+    written, improved or dropped, with no new recording. The split is a function of the recordings
+    now, so this module offers the world nothing at all.
+    """
+    from kullback.builder.compile_env import trace_worlds
 
     traces, schema, artifact = probe_proposal(tmp_path)
-    worlds = readers.merge_worlds({}, artifact, schema)
-    keys = {key for world in worlds.values() for key in world}
-    assert ("greenhouse", CARETAKER, "vent_open") in keys
-    assert ("greenhouse", CARETAKER, "warmth") not in keys, "no two recordings read the same warmth"
-    parts = split_by_world(traces, worlds)
-    assert len(parts) == 2, "one Task per state of the switch, not one per reading"
-    assert sorted(len(part) for part in parts) == [3, 3]
-
-
-def test_with_no_classes_to_hand_every_revealed_column_still_counts(tmp_path):
-    """A caller with no schema says every column, which is what merge_worlds did before the classes."""
-    traces, _schema, artifact = probe_proposal(tmp_path)
-    worlds = readers.merge_worlds({}, artifact)
-    assert len(split_by_world_of(traces, worlds)) == 6
-
-
-def split_by_world_of(traces, worlds):
-    from kullback.builder.cluster import split_by_world
-
-    return split_by_world(traces, worlds)
+    assert readers.reader_rows(artifact), "the stage still reveals rows for the Starting state"
+    revealed = set(readers.revealed_tables(schema))
+    worlds = trace_worlds(traces, schema, {"open_vent"})
+    assert revealed and not any(key[1] in revealed for world in worlds.values() for key in world)
 
 
 # --- what the proposal leaves for the rest of the build ----------------------
@@ -523,7 +508,8 @@ def test_a_corpus_with_no_prose_results_records_the_note_and_asks_no_model(tmp_p
         "note": readers.NO_PROSE}
 
 
-def test_the_stage_puts_the_revealed_row_in_the_world_and_splits_the_tasks_that_disagree(tmp_path):
+def test_the_stage_puts_the_revealed_row_in_the_world_and_the_recordings_split_the_tasks(tmp_path):
+    """The row is this stage's, the split is the recordings' (D216): the two are no longer one step."""
     _write_traces(tmp_path, two_traces())
     plan = BuildPlan(workdir=tmp_path, model=TestModel([proposal_json()], loop=True))
     result = execute(plan, "db")

@@ -372,6 +372,18 @@ def build(
         raise typer.Exit(1)
 
 
+def _regrouped(counts: dict) -> str:
+    """What the round says about a grouping that no longer matches the frozen one (D216).
+
+    Nothing at all on the ordinary round, because the split of one recording set reproduces and a
+    line that said so every round would only be noise. Where it did move, the line names the input
+    that moved it, which is the whole of the finding: a corpus that grew regrouped for a reason, and
+    the harness raises rather than print anything else here.
+    """
+    moved = str(counts.get("tasks_grouping_moved") or "")
+    return f" regrouped ({moved} moved)" if moved else ""
+
+
 def _round_line(counts: dict) -> str:
     """One round's counts as one line, every number a gate's (D126)."""
     compactions = counts.get("fallback_compactions") or {}
@@ -380,7 +392,9 @@ def _round_line(counts: dict) -> str:
             f"trusted {counts.get('trusted', 0)}, refused {counts.get('refused_count', 0)}, "
             f"assisted runs {counts.get('assisted_runs', 0)}, probes passing {counts.get('probes_passing', 0)}, "
             f"tasks frozen {counts.get('tasks_frozen', 0)} added {counts.get('tasks_added', 0)} "
-            f"frozen only {counts.get('tasks_frozen_only', 0)}, "
+            f"(${float(counts.get('tasks_added_cost') or 0.0):.4f}) "
+            f"frozen only {counts.get('tasks_frozen_only', 0)} cleared {counts.get('tasks_cleared', 0)}"
+            f"{_regrouped(counts)}, "
             f"compactions builder {compactions.get('builder', 0)} examiner {compactions.get('examiner', 0)}, "
             f"spend ${float(spend.get('total') or 0.0):.4f}, cache saved ${float(spend.get('cache_saved') or 0.0):.4f}, "
             f"buckets: {difficulty.round_summary(counts.get('buckets') or [])}")

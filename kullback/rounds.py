@@ -104,6 +104,10 @@ ALLOWANCE_STEER = "Your allowance for this round is spent: finish with what you 
 # which only the plan's own registry knows (builder.agent.nothing_changed_message).
 STALL_FOLLOW_UP = builder_agent.NOTHING_CHANGED
 EXAMINER_TARGET = "all"
+# The ledger's stages whose work is done once per Task, so their spend is what grows when the Task
+# list grows (D216, `Round.added_cost`). A stage that runs once for the corpus, however expensive,
+# costs the same whether the list holds a hundred Tasks or two hundred and is deliberately absent.
+PER_TASK_STAGES = ("intent", "loophole_probe", "reference_judge", "reroll")
 # The verbs a Builder beat can actually call: the stage tools plus the two deciding verbs of
 # `builder/repair.py`. A finding suggesting anything else names an artifact the Builder does not own
 # (the Examiner's `repair` over a Verifier, D123); it is delivered as a report and never driven.
@@ -413,6 +417,9 @@ class Loop:
     turns_seen: dict[str, int] = field(default_factory=dict)
     round_started: float = 0.0
     round_saved_start: float = 0.0
+    # Per stage, what the ledger held when this round opened, so a round's own spend on a stage is a
+    # subtraction rather than the build's running total (D216, `added_cost`).
+    round_stage_start: dict[str, float] = field(default_factory=dict)
     driver_built: list[int] = field(default_factory=list)  # rounds whose target the driver built itself
     builder_stop: dict = field(default_factory=dict)
     stall_told: int = 0
@@ -868,11 +875,19 @@ class Loop:
                 for name in ("columns_time_varying", "sequences_served")}
 
     def task_split(self) -> dict:
-        """What the cluster stage did with the frozen Task list (D200), as three counts.
+        """What the cluster stage did with the frozen Task list (D200), and whether it regrouped (D216).
 
         A round that added Tasks grew the corpus; a round whose `tasks_frozen_only` is above zero
         re-clustered Runs the frozen list had already grouped, so the Task list and the numbers
         counted over it are still comparable, and the drift is visible instead of silent.
+
+        `tasks_grouping_moved` is the name of the input that moved under a grouping that no longer
+        matches the frozen one, and empty on the ordinary round where the split reproduced. It can
+        only ever be the recordings or the homing: the cluster stage raises rather than write
+        anything else here, so an empty value on a round that stranded Tasks says the strand came
+        from the intent clustering and not from the world. `tasks_cleared` counts the frozen Tasks
+        whose flag this round's re-examination took off. `tasks_added_cost` is what the Tasks beyond
+        the frozen list cost, so a corpus whose additions eat the ceiling is a number on the line.
         """
         try:
             split = json.loads((Path(self.plan.workdir) / TASK_SPLIT).read_text(encoding="utf-8"))
@@ -880,9 +895,35 @@ class Loop:
             return {}
         if not isinstance(split, dict):
             return {}
+        added = len(split.get("added") or [])
         return {"tasks_frozen": int(split.get("frozen") or 0),
-                "tasks_added": len(split.get("added") or []),
-                "tasks_frozen_only": len(split.get("frozen_only") or [])}
+                "tasks_added": added,
+                "tasks_frozen_only": len(split.get("frozen_only") or []),
+                "tasks_cleared": len(split.get("cleared") or {}),
+                "tasks_grouping_moved": str(split.get("grouping_moved") or ""),
+                "tasks_added_cost": self.added_cost(added, int(split.get("frozen") or 0) + added)}
+
+    def stage_spend(self) -> dict[str, float]:
+        """What the ledger has charged each stage so far, in dollars."""
+        stages = (budget.load_totals(self.plan.workdir).get("stages") or {})
+        return {name: float((bucket or {}).get("usd") or 0.0) for name, bucket in stages.items()}
+
+    def added_cost(self, added: int, tasks: int) -> float:
+        """What this round spent on the Tasks beyond the frozen list, as the ledger can say it (D216).
+
+        The ledger is keyed by stage and not by Task, so this is the round's own spend on the stages
+        that run once per Task, taken at the added Tasks' share of the list, and not a charge read
+        off each added Task. That is stated rather than hidden: the number answers whether the
+        additions are eating the ceiling, which is what it is for, and answering more finely would
+        take a per-Task item on every model call. A round with nothing added costs nothing added,
+        whatever those stages spent.
+        """
+        if added <= 0 or tasks <= 0:
+            return 0.0
+        now = self.stage_spend()
+        spent = sum(max(0.0, now.get(name, 0.0) - self.round_stage_start.get(name, 0.0))
+                    for name in PER_TASK_STAGES)
+        return round(spent * added / tasks, 6)
 
     def findings_now(self) -> list:
         """The finding rows as the Examiner's store holds them, or none when no beat has opened."""
@@ -1067,6 +1108,7 @@ class Loop:
         """One round: the Builder's beat, the Examiner's beat, the counts, the exit, rounds.json."""
         self.round_started = time.time()
         self.round_saved_start = self.cache_saved()
+        self.round_stage_start = self.stage_spend()
         self.plan.round = n  # the round a repair request records itself under (D126)
         self.emit(RoundStart(round=n))
         self.sent, self.beat_spend, self.spent_allowance = [], {}, {}
