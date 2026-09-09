@@ -1,5 +1,5 @@
-"""The commands of the Harness: ingest, build, freeze-runner, run, verdict, regrade, report and difficulty,
-each reading and writing records under one workdir with no hidden state."""
+"""The commands of the Harness: ingest, build, freeze-runner, run, verdict, regrade, report, difficulty,
+export, publish and fetch, each reading and writing records under one workdir with no hidden state."""
 
 from __future__ import annotations
 
@@ -517,6 +517,105 @@ def difficulty_table(
     body = (difficulty.refresh(workdir) if write else difficulty.compute(workdir))
     for line in difficulty.markdown_table(body.get("buckets") or [], len(body.get("no_record") or {})):
         typer.echo(line)
+
+
+CORPUS = typer.Option(None, "--corpus", help="Name of the corpus the traces came from, for the manifest "
+                                             "and the card.")
+CORPUS_LICENSE = typer.Option(None, "--corpus-license", help="Licence of that corpus, as an SPDX id; the "
+                                                             "card states it and the front matter indexes it.")
+CORPUS_URL = typer.Option(None, "--corpus-url", help="Where that corpus came from.")
+
+
+def _echo_manifest(manifest: dict) -> None:
+    """The numbers a person needs to see before a package leaves the machine."""
+    fidelity = manifest.get("replay_fidelity") or {}
+    scan = manifest.get("leak_scan") or {}
+    typer.echo(f"round {manifest.get('round')}, {manifest.get('tasks_total', 0)} Tasks, "
+               f"replay fidelity {_rate(fidelity.get('tasks_rate'))} over Tasks and "
+               f"{_rate(fidelity.get('runs_rate'))} over Runs, "
+               f"{manifest.get('reference_confirmed', 0)} References confirmed, "
+               f"{manifest.get('verifier_derived', 0)} Verifiers derived, "
+               f"{manifest.get('trusted', 0)} trusted")
+    typer.echo(f"leak scan: {scan.get('leaks', 0)} recorded strings and {scan.get('value_echoes', 0)} "
+               f"value echoes over {scan.get('files_scanned', 0)} graded files, of "
+               f"{scan.get('values_checked', 0)} strings checked against {scan.get('corpus_strings', 0)} "
+               f"the corpus holds ({scan.get('strict_env_only_unaccounted', 0)} against env/ alone)")
+    typer.echo(f"content hash {manifest.get('content_hash')}")
+
+
+def _rate(value: Optional[float]) -> str:
+    return "not measured" if value is None else f"{float(value):.1%}"
+
+
+@app.command()
+def export(
+    workdir: Path = WORKDIR,
+    out: Path = typer.Option(..., "--out", help="Directory the package is written to."),  # noqa: B008
+    name: Optional[str] = typer.Option(None, "--name", help="Name of the Environment, which is also its "
+                                                            "domain tag; environment.json carries none."),
+    corpus: Optional[str] = CORPUS,
+    corpus_license: Optional[str] = CORPUS_LICENSE,
+    corpus_url: Optional[str] = CORPUS_URL,
+    preview: bool = typer.Option(False, "--preview", help="Mark the package as below the fidelity bar."),
+):
+    """Write a self-contained Environment package: the rebuilt world, the Task list, the Verifiers, a manifest.
+
+    Nothing of the recordings the world was rebuilt from goes in, and a leak scan over the customer's
+    export refuses the package if anything repeats a string only a recording could have said (D221).
+    """
+    build = _entry("kullback.hub.package", "export")
+    manifest = build(workdir, out, name=name, corpus=corpus, corpus_license=corpus_license,
+                     corpus_url=corpus_url, preview=preview)
+    _echo_manifest(manifest)
+    typer.echo(str(Path(out) / "manifest.json"))
+
+
+@app.command()
+def publish(
+    workdir: Path = WORKDIR,
+    repo: str = typer.Option(..., "--repo", help="Dataset repository, as organisation/name."),
+    name: Optional[str] = typer.Option(None, "--name", help="Name of the Environment; the default is the "
+                                                            "last segment of --repo."),
+    corpus: Optional[str] = CORPUS,
+    corpus_license: Optional[str] = CORPUS_LICENSE,
+    corpus_url: Optional[str] = CORPUS_URL,
+    preview: bool = typer.Option(False, "--preview", help="Publish below the fidelity bar, with a banner "
+                                                          "on the card saying so."),
+    keep: Optional[Path] = typer.Option(None, "--keep", help="Keep the staged package here instead of a "  # noqa: B008
+                                                             "temporary directory."),
+):
+    """Export the Environment, write its card and upload it as one commit, tagged with its round (D221).
+
+    A release needs replay fidelity at or above 0.90 over Tasks; below that only --preview is
+    allowed. Publishing again writes a new commit on the same repository and rewrites the card's
+    numbers; older rounds stay reachable by their tags.
+    """
+    push = _entry("kullback.hub.publish", "publish")
+    hosted, manifest = push(workdir, repo, name=name, preview=preview, corpus=corpus,
+                            corpus_license=corpus_license, corpus_url=corpus_url, keep=keep)
+    _echo_manifest(manifest)
+    typer.echo(f"{manifest.get('status', 'preview')} at {hosted.url}, tag {hosted.tag}")
+
+
+@app.command()
+def fetch(
+    repo: str = typer.Argument(..., help="Dataset repository, as organisation/name."),
+    out: Path = typer.Option(..., "--out", help="Directory the Environment is laid out in."),  # noqa: B008
+    revision: Optional[str] = typer.Option(None, "--revision", help="Tag, branch or commit; the default "
+                                                                     "is the newest."),
+):
+    """Download a published Environment, verify it against its content hash, and lay it out as a workdir.
+
+    What lands is what `kullback run --workdir <out>` takes: the world, the Task list, the Verifiers
+    and the manifest, with no builder state. A package that does not verify is not laid out.
+    """
+    pull = _entry("kullback.hub.publish", "fetch")
+    manifest = pull(repo, out, revision=revision)
+    _echo_manifest(manifest)
+    missing = manifest.get("missing_run_inputs") or []
+    if missing:
+        typer.echo("this package cannot be run as a workdir: it is missing " + ", ".join(missing))
+    typer.echo(f"{out}")
 
 
 @app.command()

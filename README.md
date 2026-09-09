@@ -43,6 +43,27 @@ uv run kullback report --workdir work
 
 The screen shows the build as it runs: stages, gates, rounds and spend. `build --iterate` resumes from the cache, `--target` builds one stage and what it needs, `--agent` lets the model drive the Builder. Live model calls need `HARNESS_ALLOW_MODEL_REQUESTS=1` and an API key, from the environment or a `.env` in the working directory.
 
+## Environments on Hugging Face
+
+The Environments this harness has built are published as datasets under [huggingface.co/leibler](https://huggingface.co/leibler), each with a card carrying its own numbers. A release replays at least 90% of its Tasks; a preview is below that bar and is published anyway, with the numbers on its card, so the work is visible while it improves.
+
+| Environment | Replay fidelity | Trusted Tasks | Round | Status | Link |
+| --- | --- | --- | --- | --- | --- |
+| retail | 95.1% | 122 of 205 | 1 | release | [leibler/retail](https://huggingface.co/datasets/leibler/retail) |
+| airline | 72.3% | 38 of 119 | 3 | preview | [leibler/airline](https://huggingface.co/datasets/leibler/airline) |
+| telecom | 9.3% | 0 of 183 | 5 | preview | [leibler/telecom](https://huggingface.co/datasets/leibler/telecom) |
+
+All three are built from the public [tau2-bench](https://github.com/sierra-research/tau2-bench) corpora, which are MIT licensed. The packages hold the rebuilt world, the Task list and the Verifiers, and none of the recordings they were built from.
+
+```bash
+uv run kullback fetch leibler/retail --out env-retail
+uv run kullback run --workdir env-retail --task <task id> --model provider/model
+uv run kullback verdict --workdir env-retail
+uv run kullback report --workdir env-retail
+```
+
+`fetch` verifies every file against the package's content hash before laying it out and refuses one that does not match. `--revision round-<n>` fetches an earlier round instead of the newest. To publish one of your own builds, see `docs/hf/environment-card-template.md`.
+
 ## Why Kullback
 
 - **Grade what changed, not what was said.** The Verdict is a code-only pass over the End state: required writes present, forbidden writes absent, policy never broken, the user's questions answered. Where judgment is unavoidable, two judges each cite a span and a disagreement goes to a person; a judge can never award a pass.
@@ -98,6 +119,9 @@ kullback/
 | `verdict --workdir` | Code-only Verdict over what changed (`--task` for one Task) |
 | `regrade --workdir` | Re-score stored Runs against a new Verifier |
 | `report --workdir` | The customer-facing report (`--out`, `--batch`) |
+| `export --workdir --out` | Write a self-contained Environment package: the world, the Tasks, the Verifiers, a manifest and a leak scan |
+| `publish --workdir --repo` | Export, write the dataset card and upload it as one commit tagged with its round (`--preview` below the fidelity bar) |
+| `fetch REPO --out` | Download a published Environment, verify its content hash and lay it out as a workdir (`--revision` for a tag) |
 | `tui --workdir` | The terminal screen over a live build |
 
 ## Environment Variables
