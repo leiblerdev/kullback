@@ -52,6 +52,9 @@ from kullback.builder import (
     vocabulary,
 )
 from kullback.builder import (
+    effects as effects_mod,
+)
+from kullback.builder import (
     lesson as lesson_mod,
 )
 from kullback.builder.repair import KEPT_BODIES_FILE, SHAPES_SHOWN, failure_shapes
@@ -441,6 +444,10 @@ REPLAY_AGREED = frozenset({"same", "both_refused"})
 # writer is being asked. Declaring the replay record itself made every replay of one Task recompile
 # the whole toolkit first, which is a round's spend for an evidence set that did not move.
 REPLAY_EVIDENCE_FILE = "replay_evidence.json"
+# D215: what each recorded write call was seen to change beyond its own answer, per call id, as the
+# replay stage read it. Written for the round to read, not for a stage to declare: the replay
+# recomputes it from the traces it is already handed, so nothing keys on the file.
+EFFECTS_FILE = "write_effects.json"
 # The head of the lesson those failures become, said once above the shapes.
 REPLAY_LESSON_HEAD = (
     "The replay of the References failed on recorded calls of this tool. Every one of them is a call "
@@ -460,6 +467,12 @@ def replay_difference(check: Any) -> str:
     if not isinstance(check, dict):
         return ""
     verdict = str(check.get("verdict") or "differs")
+    # D215 rule 4: a write that answered correctly and left a row the recording moved has its
+    # differing leaf on its own line, named by the column and by the formula the recording implies,
+    # so the next rewrite repairs the write rather than the read that later saw the stale value.
+    effect = _effect_sentence(check)
+    if effect:
+        return effect
     difference = check.get("difference")
     if isinstance(difference, dict):
         leaf = difference.get("leaf")
@@ -505,13 +518,41 @@ def replay_failures_of(replays: Any) -> dict[str, dict[str, str]]:
             if not isinstance(record, dict) or record.get("confirmed"):
                 continue
             for check in record.get("checks") or []:
-                if not isinstance(check, dict) or check.get("verdict") in REPLAY_AGREED:
+                if not isinstance(check, dict):
+                    continue
+                # D215: a write whose own answer agreed and whose effects did not is a call this
+                # replay could not reproduce, so it is evidence for the body like any other.
+                if check.get("verdict") in REPLAY_AGREED and not check.get("effect_failures"):
                     continue
                 tool, call_id = check.get("tool"), check.get("call_id")
                 if not tool or not call_id:
                     continue
                 rows.setdefault(str(tool), {}).setdefault(str(call_id), replay_difference(check))
     return rows
+
+
+def _effect_sentence(check: dict) -> str:
+    """What a write left where the recording moved it, as the line the next body answers.
+
+    The column and the value it should have reached, then the formula where the recording's own
+    numbers held one. The formula is a rule over columns and never a value, so a writer following
+    it computes the value rather than writing it down, which is what D215 rule 5 refuses.
+    """
+    misses = [m for m in (check.get("effect_failures") or ()) if isinstance(m, dict)]
+    if not misses:
+        return ""
+    parts = []
+    for miss in misses[:SHAPES_SHOWN]:
+        where = f"{miss.get('table')}.{miss.get('path')}"
+        formulas = [str(f) for f in (miss.get("formulas") or ())]
+        rule = f", and the recording implies {formulas[0]}" if formulas else ""
+        parts.append(f"{where} should have reached {miss.get('recorded')} and the body left it at "
+                     f"{miss.get('ours')} ({miss.get('reason')}){rule}")
+    left = len(misses) - len(parts)
+    if left:
+        parts.append(f"{left} more column(s) the recording moved and the body did not")
+    return ("this call changed rows its own answer never mentions, and the body changed none of "
+            "them: " + "; ".join(parts))
 
 
 def replay_lesson(failures: dict[str, str], shown_ids: Iterable[str]) -> str:
@@ -583,8 +624,16 @@ def _tools_stage(model: Any, max_attempts: int, workers: int = 1, only: Optional
                 if call.id and task_id:
                     call_tasks[call.id] = task_id
         # D74: each recorded call replays on the world its own Task saw, not on the shared one.
+        overlay_values = compile_env.overlay_values(ctx.workdir)
         states = compile_env.call_starting_states(inputs["db"], inputs["overlays"],
-                                                  compile_env.overlay_values(ctx.workdir), call_tasks)
+                                                  overlay_values, call_tasks)
+        # D215: what each write's recorded calls were seen to change beyond their own answers, read
+        # from the Runs the Builder may learn from and from those alone, so a held-out Run reaches
+        # no writer through this any more than through the evidence calls above.
+        observed = effects_mod.observe_effects(
+            [t for t in traces if t.trace_id in seeds], inputs["schema"],
+            cluster.write_tool_names(inputs["sigs"]), db=inputs["db"],
+            worlds=trace_worlds(inputs["db"], inputs["overlays"], overlay_values, tasks))
         tool_names = [sig.name for sig in inputs["sigs"]]
         # The transport's error wrapper is one per corpus, not one per tool: read it once over
         # every recorded call, so a tool with a single error still has it peeled.
@@ -635,11 +684,16 @@ def _tools_stage(model: Any, max_attempts: int, workers: int = 1, only: Optional
             # The body this tool already has, replayed first, so what it fails at can be said to the
             # writer before it writes. The replay is per tool and runs on this tool's own thread.
             kept = previous.get(sig.name)
+            # D215 rule 5: the values this tool's writes were seen to leave on rows they never
+            # named, which the memorised gate refuses a body for writing down rather than working out.
+            seen_effects = observed.get(sig.name, [])
+            effect_values = effects_mod.effect_values(seen_effects)
             graded = compile_env.grade_body(
                 sig, kept[0], calls_by_tool.get(sig.name, []), inputs["schema"], inputs["db"],
                 ctx.workdir / "tools" / sig.name / KEPT_BODY_DIR,
                 call_states=states, rules=rules, call_tasks=call_tasks,
-                readers=result_readers, unbeaten=unbeaten, blocked=blocked) if kept is not None else None
+                readers=result_readers, unbeaten=unbeaten, blocked=blocked,
+                effect_values=effect_values) if kept is not None else None
             # What this tool already failed on, so a recompile asks a different question than the
             # one that failed, and what the body it has to beat fails at now. The kept body itself
             # is never in the prompt: shown one, the writer copies it, and a copy cannot beat it.
@@ -666,7 +720,9 @@ def _tools_stage(model: Any, max_attempts: int, workers: int = 1, only: Optional
                                             rules=rules, tool_names=tool_names,
                                             error_prefix=error_prefix, world_note=world_note,
                                             lesson=lesson, call_tasks=call_tasks,
-                                            readers=result_readers), graded
+                                            readers=result_readers,
+                                            effects=effects_mod.effects_block(sig.name, seen_effects),
+                                            effect_values=effect_values), graded
 
         declined: list[str] = []
         # Per tool, whether the body it already had was kept, beaten, or could not run at all under
@@ -817,6 +873,9 @@ def _tools_stage(model: Any, max_attempts: int, workers: int = 1, only: Optional
                # The readers' own source reaches the body writer through `world_note`, and the
                # module that renders it is not one of the three above.
                f"{_module_hash(readers)}:"
+               # D215: the effects section reaches the writer's prompt and the effect values reach
+               # the memorised gate, so a change to what either says is a new question too.
+               f"{_module_hash(effects_mod)}:"
                # The attribution is this file's own function, so its bytes are not in any module
                # hash above; an edit to it is a different artifact and must not hit the cache.
                f"{content_hash(pipeline._fn_identity(attribute_fidelity, 'compile_tools'))[:16]}:"
@@ -840,6 +899,20 @@ def _tools_stage(model: Any, max_attempts: int, workers: int = 1, only: Optional
                                   "readers"),
                           outputs=("bodies", "assisted_tools", "tool_fidelity"), gate=gate, input_paths=paths,
                           code_version=version if only is None else f"{version}:only={','.join(only)}")
+
+
+def trace_worlds(db: dict, overlays: Iterable[Any], values: dict, tasks: Iterable[Any]) -> dict[str, dict]:
+    """Per Trace id, the world its Task starts in: the shared db with that Task's overlay merged.
+
+    The Starting-state pin, read the way `call_starting_states` reads it and by the same merge, so a
+    row a Run wrote before anything read it has a before value that is the Task's own and not the
+    shared world's (D215 rule 1). A Task with no overlay contributes nothing and its Runs fall back
+    to the shared db, which is what they would have been pinned to anyway.
+    """
+    by_task = {overlay.task_id: compile_env.merge_overlays(db, [overlay], values)
+               for overlay in overlays}
+    return {run_id: by_task[task.id] for task in tasks if task.id in by_task
+            for run_id in task.run_ids}
 
 
 def _seed_traces(ctx, tasks, traces) -> set[str]:
@@ -1191,8 +1264,19 @@ def _replay_stage(only: Optional[Iterable[str]] = None):
             replays = {t: dict(rows) for t, rows in (_read_json(ctx.workdir / "replays.json", {}) or {}).items()
                        if t not in only}
             tasks = [task for task in tasks if task.id in only]
+        # D215: the rows and columns each recorded write was seen to move, per call id, checked
+        # once that call has replayed. Read per Task, over every Run of it, the anchor included:
+        # this is code, it is never shown to anyone who writes a body, and a held-out Run has to be
+        # scored the same way or the number the report carries is not the number the corpus earns.
+        observed: dict[str, list] = {}
         for task in tasks:
             overlay, overlay_rows = compile_env.load_overlay(ctx.workdir, task.id)
+            seen = effects_mod.observe_effects(
+                [by_trace[t] for t in task.run_ids if t in by_trace], schema, write_tools,
+                db=compile_env.merge_overlays(db, [overlay], overlay_rows))
+            for tool, rows in seen.items():
+                observed.setdefault(tool, []).extend(rows)
+            effect_rows = effects_mod.replay_evidence(seen)
             for trace_id in task.run_ids:
                 trace = by_trace.get(trace_id)
                 if trace is None:
@@ -1205,20 +1289,28 @@ def _replay_stage(only: Optional[Iterable[str]] = None):
                                       canon_rules=canon_rules, synthetic_rows=schema.synthetic_rows)
                 result = replay_mod.replay_trace(trace, router, workdir=ctx.workdir / "runs" / task.id,
                                                  task_id=task.id, env_id=env_id, write_tools=write_tools,
-                                                 canon_rules=canon_rules, comparer=comparer)
+                                                 canon_rules=canon_rules, comparer=comparer,
+                                                 effects=effect_rows)
                 replays.setdefault(task.id, {})[trace_id] = result.as_dict()
         _write_json(ctx.workdir / "replays.json", replays)
         # D191: the calls this replay could not reproduce, per tool, which is what the compile stage
         # adds to a body's evidence and keys its cache on.
         _write_json(ctx.workdir / REPLAY_EVIDENCE_FILE,
                     {tool: sorted(failures) for tool, failures in sorted(replay_failures_of(replays).items())})
+        # D215's own counters, per write tool, over the Tasks this run of the stage replayed: what
+        # the recording showed each of them moving, so a round can read the check's reach against
+        # the failures it turned up.
+        _write_json(ctx.workdir / EFFECTS_FILE,
+                    {"totals": effects_mod.counts(observed),
+                     "per_tool": effects_mod.per_tool_counts(observed)})
         _write_runs_index(ctx.workdir)
         # Section 6: a Task none of whose Traces replay to their End state is rejected for that
         # Task, which the Examiner's derivation turns into "not verdicted"; the build itself goes on.
         ctx.record_gate(fidelity.reference_replay_gate(replays))
         return {"replays": replays}
 
-    version = _version("replay_reference", run, replay_mod, fidelity, compile_env, route, loop, tool_runs)
+    version = _version("replay_reference", run, replay_mod, fidelity, compile_env, route, loop,
+                       tool_runs, effects_mod)
     return pipeline.Stage(name="replay_reference", fn=run,
                           inputs=("traces", "tasks", "sigs", "schema", "bodies", "db", "canon_rules",
                                   "environment", "readers", "synthetic_rows"),

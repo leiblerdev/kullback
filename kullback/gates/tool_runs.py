@@ -926,7 +926,8 @@ def _pattern_hit(schema: Optional[EntitySchema], text: str) -> Optional[tuple[st
 
 def body_memorised_values_gate(source: str, schema: Optional[EntitySchema] = None, db: Any = None,
                                calls: Iterable[ToolCall] = (), sig: Any = None,
-                               class_name: str = TOOLS_CLASS, readers: Any = None) -> GateResult:
+                               class_name: str = TOOLS_CLASS, readers: Any = None,
+                               effect_values: Optional[dict] = None) -> GateResult:
     """7. A body may not memorise the recordings: every id and value comes out of the world (D162).
 
     Four rules over the literals of the model's own methods, in the order that says most about
@@ -937,7 +938,10 @@ def body_memorised_values_gate(source: str, schema: Optional[EntitySchema] = Non
     with is not. (d) The literal is a value one of this tool's own recorded results carried and is a
     datum rather than a word (`_is_datum`), under the same exclusions (D187): a fee the body picks by
     leg count, a timestamp it spells out, a row it matches by an amount it once saw answered, are
-    all values it should have derived.
+    all values it should have derived. `effect_values` widens rule (d) to what a write was seen to
+    leave behind (D215): the value a column ended up holding on a row the recording shows the write
+    moving is a value the body has to work out, exactly as one a result answered is, and a body
+    holding it has memorised the recording just as surely.
 
     The failure names the literal as the code holds it, the rule that caught it and the table, the
     argument or the tool it came from. It is the model's own source, so quoting it back leaks
@@ -957,6 +961,7 @@ def body_memorised_values_gate(source: str, schema: Optional[EntitySchema] = Non
     by_table = starting_state_ids(schema, db)
     by_argument = recorded_argument_values(calls)
     by_result = recorded_result_values(calls, readers)
+    by_effect = {text: where for text, where in (effect_values or {}).items() if text not in by_result}
     failures: list[str] = []
     for literal in literals:
         text = literal if isinstance(literal, str) else str(literal)
@@ -986,10 +991,17 @@ def body_memorised_values_gate(source: str, schema: Optional[EntitySchema] = Non
                             f"{answered} carried, and neither the description nor the signature "
                             "names it; derive it from the world's rows instead of holding a value a "
                             "recorded result answered")
+            continue
+        moved = by_effect.get(text) if _is_datum(literal) else None
+        if moved is not None and text not in named and text not in description:
+            failures.append(f"{label}the literal {literal!r} is the value {moved} was left holding "
+                            f"after a recorded call of this tool, and neither the description nor "
+                            f"the signature names it; work the value out from the world's rows "
+                            f"instead of writing down what the recording ended up with")
     return _ruling(MEMORISED_STAGE, not failures,
                    {"literals": len(literals), "memorised": len(failures),
                     "tables": len(by_table), "recorded_values": len(by_argument),
-                    "recorded_results": len(by_result)}, failures)
+                    "recorded_results": len(by_result), "effect_values": len(by_effect)}, failures)
 
 
 # --- 8. a body that reads state answers differently when that state differs (D195) ---

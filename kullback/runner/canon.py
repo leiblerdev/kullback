@@ -478,6 +478,38 @@ def _shown(value: Any, limit: int) -> str:
     return text if len(text) <= limit else text[:limit] + "..."
 
 
+def leaves(value: Any, path: str = "", out: Optional[dict] = None) -> dict[str, Any]:
+    """Every leaf a value carries, under the path it sits at, with each list's length beside it.
+
+    The path is `first_difference`'s own: a key joins with a dot and an element sits under its
+    index, so a leaf named by one is the leaf the other names. The length of a list is a leaf of
+    its own, at the list's path with `[]` after it, because a column a write appends to moves at its
+    length before it moves at any element, and an appended history is exactly the kind of thing a
+    rebuilt write forgets (D215).
+
+    Here rather than beside its caller because both sides of the harness read it: the Builder states
+    which column a recorded write moved, and the Runner reads that column back out of the world once
+    the write has replayed. One walker, so the two cannot name the same leaf differently.
+    """
+    out = {} if out is None else out
+    if isinstance(value, dict):
+        for key in sorted(value):
+            leaves(value[key], _join(path, str(key)), out)
+    elif isinstance(value, (list, tuple)):
+        out[f"{path}[]" if path else "[]"] = len(value)
+        for index, item in enumerate(value):
+            leaves(item, f"{path}[{index}]", out)
+    else:
+        out[path or "value"] = value
+    return out
+
+
+def value_at(value: Any, path: str) -> tuple[bool, Any]:
+    """Whether a value holds a leaf at this path, and what that leaf holds."""
+    found = leaves(value)
+    return (path in found), found.get(path)
+
+
 # --- the equivalence table as a file ---
 
 def pair_key(column: str, a: str, b: str) -> str:
