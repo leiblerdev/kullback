@@ -63,6 +63,10 @@ class AtomContext:
         self.calls: list[dict] = []
         self.assistant: list[tuple[int, str]] = []
         self.user: list[tuple[int, str]] = []
+        # What the Environment handed back, in event order: a rule about where a written value came
+        # from is a rule about what the Run had read when it wrote (D206), and the Verdict has to be
+        # able to answer it the same way the gates' own scorer does.
+        self.results: list[tuple[int, Any]] = []
         self.start_state: dict = {}
         self.end_state: dict = {}
         self.covered: set[int] = set()
@@ -78,6 +82,7 @@ class AtomContext:
                                    "name": payload.get("name", ""), "error": None,
                                    "args": payload.get("args") or payload.get("arguments") or {}})
             elif event.type == "tool_result":
+                self.results.append((event.idx, payload.get("result")))
                 for call in reversed(self.calls):
                     if payload.get("id") in (None, call["id"]):
                         call["error"] = payload.get("error")
@@ -218,13 +223,20 @@ class AtomContext:
         return len(self.write_calls())
 
     def transcript(self) -> list[dict]:
-        """The Run as a policy predicate reads it: role, content and tool calls, in event order."""
+        """The Run as a policy predicate reads it: role, content, results and tool calls, in event order.
+
+        A result is a turn of its own with no content and a role that is neither user nor assistant,
+        which is how `verifier_suite._transcript` writes it too: the two are read by one rule, so a
+        Verifier that holds in the gates has to hold here for the same reasons (D206).
+        """
         turns: list[tuple[int, dict]] = [
             (idx, {"role": "assistant", "content": text, "tool_calls": []}) for idx, text in self.assistant]
         turns += [(idx, {"role": "user", "content": text, "tool_calls": []}) for idx, text in self.user]
         turns += [(call["idx"], {"role": "assistant", "content": None,
                                  "tool_calls": [{"name": call["name"], "arguments": call["args"]}]})
                   for call in self.calls]
+        turns += [(idx, {"role": "tool", "content": None, "result": result, "tool_calls": []})
+                  for idx, result in self.results]
         return [turn for _, turn in sorted(turns, key=lambda pair: pair[0])]
 
     def env(self) -> dict:

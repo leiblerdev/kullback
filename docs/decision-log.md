@@ -1532,6 +1532,22 @@ The rule. After a Task is ruled over_strict the derivation runs the loosening st
 
 Twelve tests on an invented domain cover the four relaxations, both caps, an atom no rule relaxes, an accepted proposal, one the pool turns down, and the closing rule. Measured offline over copies of both workdirs, spend zero, over the two rounds the cap allows. First corpus: 15 of 19 relaxed, over_strict 19 to 11, mean false rejection over the pooled Tasks 0.604 to 0.406, trusted 126 to 128. Second: all 6 relaxed, over_strict 6 to 5, mean 0.722 to 0.698, trusted unmoved at 39. Two numbers cut against the premise. Two trusted Tasks is nothing like a fix for the founder's count, because most over-strict Verifiers already failed another check. And in round two, eight Tasks on the first corpus and two on the second answer no rule relaxes write: the held-out Run reached the Reference End state while never calling the write tool, a shape neither the pool filter nor this step reads. The loophole probe could not be re-run offline, so those counts are an upper bound; a live round buys one probe Run per proposal.
 
+### D206. A shape atom is checked against what the Run read, not against the row it writes (2026-09-09)
+
+The ask is to observe from the errors and fix generally, without overfitting. The error is a Verifier rejecting its own Reference. On the first corpus 49 Tasks stopped at the D79 suite, and 17 of the 20 oracle failures and all 17 second-path failures with a real second path were one D190 shape atom: it demanded a system_derived write value already sit under its column in the row the write acts on, while the value was genuine and read off a result, only off another row, an ordinary copy across rows.
+
+The rule. A system_derived value is one the Candidate read for itself, so the shape is checked against the Run and not only against the row: a result the Run received under that column before the write, off any call and any row, satisfies it, and so does a prose result stating it as a token, as a D203 reader answers. The world at large is still not searched, so a value the Run never read is still rejected. The widening is spent only where needed: the derivation asks the rule which source accepts its own Reference and stores no more than that rung, so a Task the row rule already accepted keeps D190's rule. Beside that, an empty column holds nothing rather than the emptiness back, a shape no source accepts is a derivation defect and is dropped as shape_self_reject rather than stored, and a tool result is now a turn of its own in all three transcript builders, which moved two frozen files, verifier_suite.py and runner/atom_context.py.
+
+A re-roll's Run id also gained the key it was rolled under, because a re-roll replaced a Task's Runs under a name that did not move and a later round wrote new bytes under it. On a static copy three Tasks point a write atom at a call their file no longer holds, every re-roll file is younger than the Verifier reading it, and a fourth is gone.
+
+Nine tests on an invented domain cover the four sources, a value never read, an empty column, the self-reject and a swap the row rule turns away.
+
+Measured offline over copies of both workdirs, spend zero. First corpus, 172 confirmed Tasks: oracle failures 15 to 1 and second-path failures with a real second path 13 to 1, the one left in each a policy constraint, not a shape; the suite passes whole on 123 then 135, trusted 119 then 129, none lost; shapes 308 own row, 58 prior result, 30 no column, two dropped. Second corpus, 62 Tasks: oracle failures 4 to 0, trusted 38 either way. No check newly fails anywhere.
+
+Three numbers cut against the premise. The report counted 20 and 17; on a static copy they are 15 and 13, because later rounds moved Tasks. Trusted moves 10, not 17, because blocked Tasks fail other checks behind the shape. And the second corpus never uses the widening: every shape there is satisfied by the row, and its four fixes come from the empty-column reading alone. A first version widening every atom let the wrong Run through on five Tasks and cost four trusted, which is what the rung rule answers.
+
+Next builds: whether the two dropped shapes are a class, and the constraint behind the last oracle failure.
+
 ## Pending (asked, not yet answered)
 
 - ~~The user's own tools and the world they act on (D71, first part).~~ Decided as D176 (2026-09-07): one world, rows revealed by a requestor marked by it, readers as code under the free gate.

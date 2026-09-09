@@ -58,11 +58,11 @@ STAGE = "derive_verifier"
 # The per-Task cache under the workdir (D163). Bumped when the entry's shape changes, so an old entry
 # is a miss rather than a row read with the wrong meaning.
 CACHE_DIR = ("examiner", "cache")
-CACHE_FORMAT = 7  # the status row counts D190's relaxed and falsifying atoms, D189's second-path
-# batches and D198's reason per check with no input, the reference record carries D193's second pass
-# over a residue and what deriving a Verifier per survivor settled (D198), and the second-path row
-# carries D199's synthesised paths, what they were rewritten from and whether the Task's path is
-# single by structure
+CACHE_FORMAT = 8  # the status row counts D190's relaxed and falsifying atoms, D206's shape sources
+# and the shapes dropped for rejecting their own Reference, D189's second-path batches and D198's
+# reason per check with no input, the reference record carries D193's second pass over a residue and
+# what deriving a Verifier per survivor settled (D198), and the second-path row carries D199's
+# synthesised paths, what they were rewritten from and whether the Task's path is single by structure
 # The modules a Task's derivation runs through, hashed into every key: an edit to any of them is a
 # different derivation and must not be served a stale entry (the Builder's stages hash the same way,
 # build.py's `_version`).

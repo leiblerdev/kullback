@@ -53,8 +53,12 @@ TARGET = "environment"
 # row gained the leak columns the strip missed (D196), the reason each check with no input gave
 # (D198), and the synthesised second path (D199), and the verdicts are the same three. Re-pinned
 # once more for D200, which takes the Category out of a Task's id so the id is over the Runs alone:
-# the same three Tasks with the same verdicts, keyed by the id those Runs now address.
-TASK_STATUS_SHA256_BEFORE_THE_PHASE = "d9b12e5974f2eb7f2e3d00a28f0ad2ae891da6b9b4e3de6071cd7ef1a5e85d58"
+# the same three Tasks with the same verdicts, keyed by the id those Runs now address. Re-pinned for
+# D206: every row says which source satisfied each of its shape atoms and how many were dropped for
+# rejecting their own Reference, and a re-roll's Run id carries the key it was rolled under, so the
+# Runs named in `did_not_reach_reference` and `failed_recordings` are named by that id. The same
+# three Tasks, the same verdicts and the same reasons.
+TASK_STATUS_SHA256_BEFORE_THE_PHASE = "4905ea6bd3b2a656d2099726fe9c6335a0f203ae72d444f94b2c7fddff6f8416"
 
 
 def _fixture(request) -> Path:
