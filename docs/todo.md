@@ -290,3 +290,7 @@ The harness satisfies a stated distribution in ascending cost order, and each st
 4. Where a Task's derivation left more than one surviving End state (D198), split it into easier single-state Tasks; where two Tasks share a Category (D200), merge them into one harder multi-step Task.
 
 Measurement follows D133's pattern: solve rate per bucket over the held-out pool, reported the way D185 reports two-sample agreement, so a curriculum states bucket sizes and confirmed solve rate per bucket beside the single trusted count and never instead of it. Every proxy is a count or a rate; none names a corpus, a tool or a column.
+
+## Learned from tau-tau-Bench (asked 2026-09-09)
+
+The founder asked how tau-tau-Bench (arXiv 2609.04611) has simulated users. Reading in the session's reports. Taken as D210 (the Simulated user ends by protocol with a reason kind, typed askable and record facts, the D196 strip on its answers). Deferred: a private held-out mirror of the gate suite, checked before a release and never tuned against, turning D51's principle into an artifact; an LLM-driven Simulated user for held-out Runs, only if the rule-driven one is measured to end scenario_exhausted on Tasks the recording shows completing; their deterministic client-API defect catalog and their authored-artifact realism catalog are benchmark design choices, not harness mechanisms, and are not taken.
