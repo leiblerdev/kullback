@@ -2,6 +2,23 @@
 
 Kullback is three agents, one runner and one set of gates on a layering inspired by [huggingface/tau](https://github.com/huggingface/tau): a provider layer, an agent core that knows nothing about the application, and the applications as extensions on that core. This page is the map; the decisions are in `decision-log.md` and `adr/`, and each phase of the rebuild left a note in `tech/`.
 
+## The shape
+
+Traces go in, an Environment comes out, candidates run in it, code grades what they changed, you read the report.
+
+```mermaid
+flowchart TB
+    AI[ai: every model behind one interface] --> AG[agent: the loop, tools, session, context]
+    AG --> BU[Builder: the agent over the Environment]
+    AG --> EX[Examiner: the agent over Verifiers and probes]
+    RU[runner: the frozen loop and the Verdict] --> GA[gates: code no agent can write]
+    GA --> BU
+    GA --> EX
+    BU --> E[(Environment: db, tools, policy, user, tasks, verifiers)]
+    E --> RU
+    RU --> P[Report per Task]
+```
+
 ## Packages
 
 Each package imports only what sits below it. An import-linter contract in the pre-commit hook enforces the direction.
