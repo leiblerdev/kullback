@@ -106,13 +106,19 @@ def under(url: str, other: str) -> bool:
     A repository URL and a paper URL both name a host and a path, and everything below that path is
     the same publication. Host alone would refuse a whole code host; path alone would refuse an
     unrelated site that happens to spell the same words.
+
+    A path sits under another only at a segment boundary. Comparing the text alone puts /paperwork
+    under /paper, which refuses a page that has nothing to do with the publication and takes its
+    archetypes out of the reading with it; the two are siblings, and only /paper and /paper/... are
+    the publication.
     """
     if not url or not other:
         return False
     if host_of(url) != host_of(other):
         return False
     base = _path_of(other).rstrip("/")
-    return not base or _path_of(url).rstrip("/").startswith(base)
+    path = _path_of(url).rstrip("/")
+    return not base or path == base or path.startswith(base + "/")
 
 
 def refusal(url: str, corpus_url: Optional[str], exclude: Iterable[str]) -> str:

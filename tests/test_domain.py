@@ -177,6 +177,16 @@ def test_a_source_under_the_excluded_corpus_url_is_refused_and_counted(shop: Pat
     assert [row["reason"] for row in read["refused"]] == [domain.CORPUS_URL]
 
 
+def test_a_sibling_path_that_only_spells_the_excluded_one_is_not_under_it():
+    """A path sits under another at a segment boundary and nowhere else, so /paperwork is not the
+    publication at /paper and the pages under it keep their archetypes."""
+    corpus = f"{HOST}/paper"
+    assert domain.under(f"{corpus}/tasks", corpus) and domain.under(corpus, corpus)
+    assert not domain.under(f"{HOST}/paperwork/help", corpus)
+    assert domain.refusal(f"{HOST}/paperwork/help", corpus, []) == ""
+    assert domain.refusal(f"{corpus}/tasks", corpus, []) == domain.CORPUS_URL
+
+
 def test_a_page_lands_in_the_workdir_cache_and_never_in_the_package(shop: Path):
     import kullback
 
