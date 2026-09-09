@@ -417,12 +417,12 @@ def refused_write_ends(workdir: Any, write_tools: Optional[Iterable[str]] = None
             if kind == "tool_result" and payload.get("name") in names:
                 called = True
                 took_effect = took_effect or payload.get("error") is None
-            elif kind == "user_turn" and payload.get("user_end"):
+            elif kind == "user_turn" and rules_mod.end_kind_of(payload) is not None:
                 classified = True
                 # Only the one kind the old rule reached over a refused write. A Run the Candidate
                 # closed or the user ran out of scenario on ended the way it would have ended
                 # anyway, so counting those would say this decision moved Runs it never touched.
-                satisfied = satisfied or payload.get("user_end") == rules_mod.GOAL_SATISFIED
+                satisfied = satisfied or rules_mod.end_kind_of(payload) == rules_mod.GOAL_SATISFIED
         out["runs_read"] += 1
         out["runs_with_a_write"] += int(called)
         # A Run written before the end kinds existed carries none, and its stop reason is `user_stop`

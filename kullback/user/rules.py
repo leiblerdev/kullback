@@ -576,6 +576,24 @@ def goal_write_set(trace: Optional[Trace], writes: Iterable[str]) -> set[str]:
             if call.name in names and call.error is None}
 
 
+def end_kind_of(payload: Any) -> Optional[str]:
+    """The end kind one recorded user turn carries, in either shape the two users write it in.
+
+    The rule-driven user tags the turn it ends on and the Runner copies the tags into the Run's own
+    file; the agent user writes the kind under `user_end`. Both are the same fact, and a reader that
+    knows only one of the two shapes silently reads every Run written in the other as a Run that
+    ended in no kind at all. One function, so there is one answer.
+    """
+    if not isinstance(payload, dict):
+        return None
+    if payload.get("user_end") in USER_END_KINDS:
+        return str(payload["user_end"])
+    for tag in payload.get("tags") or ():
+        if tag in USER_END_KINDS:
+            return str(tag)
+    return None
+
+
 def end_of_run(run: Any) -> Optional[str]:
     """How this Run ended, in the four kinds (D210), or nothing where it ended in neither vocabulary.
 
@@ -588,9 +606,9 @@ def end_of_run(run: Any) -> Optional[str]:
     for event in reversed(list(getattr(run, "events", None) or [])):
         if getattr(event, "type", None) != "user_turn":
             continue
-        for tag in (getattr(event, "payload", None) or {}).get("tags") or ():
-            if tag in USER_END_KINDS:
-                return tag
+        kind = end_kind_of(getattr(event, "payload", None))
+        if kind is not None:
+            return kind
     reason = getattr(run, "termination_reason", None) or ""
     if reason in TURN_LIMIT_REASONS:
         return GAVE_UP

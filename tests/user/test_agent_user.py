@@ -480,6 +480,17 @@ def test_a_run_handed_off_over_a_refused_write_is_not_counted_as_a_goal_the_user
     assert counts["runs_with_a_write"] == 1 and counts["runs_with_no_end_kind"] == 0
 
 
+def test_a_run_whose_end_kind_is_a_tag_is_read_the_same_as_one_that_names_it(tmp_path):
+    """The rule-driven user tags the turn it ends on and the Runner copies the tags into the file;
+    the agent user writes the kind under its own name. One reader, so neither shape is missed."""
+    tagged = [{"type": "tool_result", "payload": {"name": "move_delivery",
+                                                  "error": {"class": "business_error"}}},
+              {"type": "user_turn", "payload": {"tags": [rules_mod.GOAL_SATISFIED]}}]
+    _run_file(tmp_path / "runs" / "task_1" / "reroll-task_1-0.jsonl", tagged)
+    counts = fidelity_mod.refused_write_ends(tmp_path, ["move_delivery"])
+    assert counts[fidelity_mod.REFUSED_WRITE_ENDS] == 1 and counts["runs_with_no_end_kind"] == 0
+
+
 def test_a_run_written_before_the_end_kinds_existed_is_counted_as_unclassified(tmp_path):
     old = [{"type": "tool_result", "payload": {"name": "move_delivery",
                                                "error": {"class": "business_error"}}},
