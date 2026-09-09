@@ -56,8 +56,10 @@ TARGET = "environment"
 # the same three Tasks with the same verdicts, keyed by the id those Runs now address. Re-pinned for
 # D208: a confirmed row names the Run ids of the Reference it holds, which is what says whether the
 # Verifier beside it was derived from that Reference or from one since withdrawn; the same three
-# Tasks with the same verdicts.
-TASK_STATUS_SHA256_BEFORE_THE_PHASE = "32822289ecbc3fe6263da7526fdbe50e7f794680726ff47f21543226ffb44017"
+# Tasks with the same verdicts. Re-pinned for D210: every row names, per held-out Run in its pool,
+# which of the four kinds that Run ended in, so a reading over the pool can leave out the Runs that
+# did not finish; the same three Tasks with the same verdicts.
+TASK_STATUS_SHA256_BEFORE_THE_PHASE = "9876f7ee7e0a34de95fc9bd708409a423532799d9e7c3e07269b2b5410866e35"
 
 
 def _fixture(request) -> Path:
