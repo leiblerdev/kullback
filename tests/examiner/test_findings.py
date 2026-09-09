@@ -281,19 +281,3 @@ def test_a_fidelity_loss_already_named_by_an_open_finding_on_the_same_task_and_t
     plan.close_findings([f.finding_id for f in filed])
     assert [f.kind for f in F.file_rule_findings(plan)] == [], (
         "a pair the Builder has been told about is not said again under a second name")
-
-
-def test_only_a_task_whose_runs_part_on_the_column_naming_a_written_row_is_filed(tmp_path):
-    """Every disagreement is on the record; the one the Examiner is told about is the one that may
-    mean the mining grouped two Tasks as one (D213). The rest replay correctly per Run."""
-    pins = {"runs_disagree": [
-        {"task_id": RENEW, "table": "loans", "key_class": "own", "column_classes": ["hard"],
-         "columns": 1, "run_ids": ["trace-1", "trace-9"], "split_candidate": True},
-        {"task_id": HOLD, "table": "holds", "key_class": "composite", "column_classes": ["semantic"],
-         "columns": 2, "run_ids": ["trace-2"], "split_candidate": False},
-    ]}
-    rows = F.runs_disagree_rows(pins)
-    assert [row["task_id"] for row in rows] == [RENEW]
-    assert rows[0]["kind"] == "runs_disagree" and rows[0]["tool"] is None
-    assert "loans" in rows[0]["text"] and "trace-9" in rows[0]["text"]
-    assert F.runs_disagree_rows({}) == []

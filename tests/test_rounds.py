@@ -61,9 +61,11 @@ TARGET = "environment"
 # the Verifier beside it was derived from that Reference or from one since withdrawn. Re-pinned for
 # D210: every row names, per held-out Run in its pool, which of the four kinds that Run ended in, so
 # a reading over the pool can leave out the Runs that did not finish, and the ends move again where
-# the review of D210 closed the turn that says nothing but a miss. The same three Tasks, the same
-# verdicts and the same reasons.
-TASK_STATUS_SHA256_BEFORE_THE_PHASE = "b09715ea295247be485c0d76b0ec4a19d3f4ccca4d27ba0396d37b7972cc2ed4"
+# the review of D210 closed the turn that says nothing but a miss. Re-pinned for D220: a Task's
+# re-roll key is now a function of its seed Runs, so the key hash inside every re-rolled Run id
+# moves; the diff against the previous pin is those ids and nothing else. The same three Tasks, the
+# same verdicts and the same reasons.
+TASK_STATUS_SHA256_BEFORE_THE_PHASE = "d675d9089f8bd63ef506ff56a918eb8eb3f2142148e426ecad67a1366509412c"
 
 
 def _fixture(request) -> Path:
