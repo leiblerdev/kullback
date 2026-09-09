@@ -61,12 +61,10 @@ TARGET = "environment"
 # the Verifier beside it was derived from that Reference or from one since withdrawn. Re-pinned for
 # D210: every row names, per held-out Run in its pool, which of the four kinds that Run ended in, so
 # a reading over the pool can leave out the Runs that did not finish, and the ends move again where
-# the review of D210 closed the turn that says nothing but a miss. The same three Tasks, the same
-# verdicts and the same reasons.
-# Re-pinned for D214: the rule-driven Simulated user moved into kullback/user, so the re-roll stage's
-# code version moved with it and the Run ids derived from that key moved too. The same three Tasks,
-# the same verdicts and the same reasons.
-TASK_STATUS_SHA256_BEFORE_THE_PHASE = "3c59e00288ccb2f1dae5eda91a96945182ec49ef78377be5c9c101606b6f673d"
+# the review of D210 closed the turn that says nothing but a miss. Re-pinned for D217: a replay
+# reason now names the route the verdict was reached by, and the one reason here reads
+# `differs (columns)`. The same three Tasks, the same verdicts.
+TASK_STATUS_SHA256_BEFORE_THE_PHASE = "7563e5758c9391816afd8de2465ad6bb91bbeb03d299c3479404ece3e440c2c8"
 
 
 def _fixture(request) -> Path:

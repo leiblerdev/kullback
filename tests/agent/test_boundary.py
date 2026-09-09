@@ -17,10 +17,8 @@ PACKAGE = Path(__file__).resolve().parents[2] / "kullback"
 CORE = ("kullback.agent", "kullback.ai.stream", "kullback.ai.messages")
 # The stream and its message shapes are the core's own; the applications sit on the core (D121,
 # D123); the frontends consume the event stream and call the applications' entrypoints (D129).
-# D214 added the Simulated user as the third application on the core, beside the Builder and the
-# Examiner.
-MAY_IMPORT = ("kullback/ai/stream.py", "kullback/builder/", "kullback/examiner/", "kullback/user/",
-              "kullback/rounds.py", "kullback/cli.py", "kullback/tui/")
+MAY_IMPORT = ("kullback/ai/stream.py", "kullback/builder/", "kullback/examiner/", "kullback/rounds.py",
+              "kullback/cli.py", "kullback/tui/")
 
 
 def imported_modules(path: Path) -> set[str]:

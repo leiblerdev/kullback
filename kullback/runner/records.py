@@ -256,6 +256,12 @@ class Column(Record):
     classified_by: ClassifiedBy = "rule"
     evidence: dict = Field(default_factory=dict)
     samples: list[Any] = Field(default_factory=list)
+    # The distinct short names this column drew from, where the corpus showed it drawing from a set
+    # of them rather than holding a value of its own per row. It is the world's own vocabulary for
+    # this column, and a replayed answer is held to it: two answers made of different names are
+    # different answers whatever a judge would say of the sentences they are written in (D217). A
+    # column the miner found no such set for keeps this empty and borrows its table's names.
+    vocabulary: list[str] = Field(default_factory=list)
 
 
 class EntitySchema(Record):

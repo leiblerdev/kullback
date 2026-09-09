@@ -787,13 +787,9 @@ def test_a_candidate_run_opens_with_the_system_prompt_the_user_and_the_tools(bui
 
 def test_every_stage_hashes_the_modules_it_delegates_to():
     """R42 for every stage, not only compile_tools: the first live build was served a schema mined before D106."""
-    from kullback.builder import cluster, compile_env, mine, synth
+    from kullback.builder import cluster, compile_env, mine, synth, user_sim
     from kullback.gates import fidelity
     from kullback.runner import replay as replay_mod
-
-    # D214: the rule-driven Simulated user lives in kullback/user now, and the stage hashes the
-    # module that can actually change, not the name that re-exports it.
-    from kullback.user import rules as user_sim
     assert build_module._mine_stage().code_version.endswith(build_module._module_hash(mine))
     assert build_module._module_hash(cluster) in build_module._cluster_stage().code_version
     assert build_module._module_hash(user_sim) in build_module._user_rules_stage().code_version

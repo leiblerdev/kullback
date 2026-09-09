@@ -26,11 +26,20 @@ from __future__ import annotations
 import ast
 import json
 import re
+import weakref
 from typing import Any, Iterable, NamedTuple, Optional
 
 from kullback.gates.confinement import TOOLS_CLASS, function_confinement
+from kullback.runner.canon import (
+    EMPTY_CANON,
+    EXEMPT_NOTE,
+    PRESENCE_NOTE,
+    SEMANTIC_NOTE,
+    TOKEN_NOTE,
+    class_of,
+    first_difference,
+)
 from kullback.runner.canon import canonicalize as canon
-from kullback.runner.canon import class_of, first_difference
 from kullback.runner.canon import compare as compare_column
 from kullback.runner.records import EntitySchema, GateResult, ToolCall, content_hash
 
@@ -42,8 +51,15 @@ TOOL_RUN_STAGES = ("parses", "executes_on_s0", "deterministic", "non_trivial", "
                    "refuses_unknown", MEMORISED_STAGE, SENSITIVITY_STAGE)
 # A note that names a column class is a reading, not a failure: an exempt column is equal whatever
 # it holds and a semantic one is reported and left to the judge (D73, D84). Every other note the
-# comparison leaves is a hard column that parted, and those are what fail a ruling.
-CLASS_NOTES = ("exempt:", "semantic:")
+# comparison leaves is a hard column that parted, and those are what fail a ruling: a hard column's
+# leaf, a value only one side holds, and two values made of different domain tokens (D217).
+CLASS_NOTES = (EXEMPT_NOTE, SEMANTIC_NOTE)
+# --- the words a column's world uses, which a forgiven difference may not change (D217) ---
+ENUM_DISTINCT = 12   # a column the corpus showed this many distinct values or fewer draws from a set
+TOKEN_MIN = 2        # a one-character value stands inside half the words there are and names nothing
+TOKEN_MAX = 60       # a longer value is a sentence, not one of the names a column draws from
+TOKEN_LIMIT = 400    # names read for one comparison, so a wide table cannot make this quadratic
+WORD_EDGE = re.compile(r"[0-9A-Za-z]")
 # A prose result the reader read no columns out of falls back to comparing the whole string, and
 # the failure line says which of the two routes it took (D187).
 STRING_ROUTE = "string differs"
@@ -274,6 +290,153 @@ def hard_notes(notes: Iterable[str]) -> list[str]:
     return [note for note in notes if not note.startswith(CLASS_NOTES)]
 
 
+# --- domain tokens: the names the world uses, which no forgiveness may change (D217) ---
+
+def _token(value: Any, rules: Any = None) -> Optional[str]:
+    """One recorded value as a domain token, or None when it is not one of the world's names.
+
+    A name carries a letter and stands on its own: a bare number is a quantity that means nothing
+    without the column it sits in, a single character stands inside half the words there are, and a
+    long string is a sentence rather than a name.
+    """
+    if not isinstance(value, str):
+        return None
+    text = canon(value, rules)
+    if not TOKEN_MIN <= len(text) <= TOKEN_MAX or not any(char.isalpha() for char in text):
+        return None
+    return text
+
+
+# The suffixes a column that holds an id is named with, which is the same reading the miner takes
+# before it records a vocabulary at all. An id is addressed rather than named, so it lends nothing.
+ID_SUFFIXES = ("_id", "_number", "_no", "_code", "_key", "_ref", "_uuid")
+
+
+def _holds_ids(column: Any, schema: Any = None) -> bool:
+    """Whether this column holds ids rather than names, by its name, its table's key or its values.
+
+    The name rule is the customer's convention and is free wherever it fires. A column the corpus
+    showed keying its table is an id whatever it is called, which is where a `sku` or a `username`
+    is caught. And a column whose every kept sighting has a mined id shape is holding ids however
+    it is named, which is the reading that does not depend on a convention at all.
+    """
+    name = str(getattr(column, "name", "") or "")
+    if name == "id" or name.endswith(ID_SUFFIXES):
+        return True
+    keys = (getattr(schema, "composite_keys", None) or {}).get(getattr(column, "table", None)) or ()
+    if name in keys:
+        return True
+    present = [value for value in (getattr(column, "samples", None) or []) if value is not None]
+    return bool(present) and all(isinstance(value, str) and _pattern_hit(schema, value) is not None
+                                 for value in present)
+
+
+def _enumerated(column: Any, rules: Any = None, schema: Any = None) -> bool:
+    """Whether the corpus showed this column drawing from a set of names.
+
+    The miner records the set where it found one (`Column.vocabulary`). A schema mined before it did
+    still keeps a few sightings per column, and those stand in, held to the miner's own three tests
+    rather than to one of them: every value a short name; an id column lending nothing, whatever its
+    ids look like and however it is named; and a set of names repeating, so a column whose every
+    kept sighting was a value of its own is holding data however short it is, where nothing counted
+    what it held. Without the last two a build carried over a schema mined before D217 read an id
+    column as a set of names, lent those ids to every free text column of the table, and failed
+    sound replays on ids that differ incidentally. The stand-in is deliberately the stricter
+    reading: where it says no, the comparison is what it was before D217, and a fresh mine puts the
+    real vocabulary back.
+    """
+    if list(getattr(column, "vocabulary", None) or ()):
+        return True
+    present = [value for value in (getattr(column, "samples", None) or []) if value is not None]
+    if not present or _holds_ids(column, schema):
+        return False
+    distinct = (getattr(column, "evidence", None) or {}).get("distinct")
+    if isinstance(distinct, int):
+        if distinct > ENUM_DISTINCT:
+            return False
+    elif len({canon(str(value), rules) for value in present}) >= len(present):
+        # No count of what the column held, so the kept sightings are the only evidence that it
+        # repeats at all, and a column whose every sighting was a value of its own does not.
+        return False
+    return all(_token(value, rules) is not None for value in present)
+
+
+def _names_of(column: Any) -> list:
+    """Every value of this column the schema kept: its own vocabulary, else its sightings."""
+    return list(getattr(column, "vocabulary", None) or getattr(column, "samples", None) or ())
+
+
+def domain_tokens(schema: Any, table: Optional[str], name: str, rules: Any = None) -> frozenset:
+    """The names this column's world is known to use, for the token set test of D217.
+
+    A column that draws from a set of names lends its own. A free text column lends its table's,
+    because a sentence about a row names that row's states with the words the world stores them
+    under: "the line is disabled" is written out of the same vocabulary the state column holds.
+    A world that lent no names at all answers the empty set, and then two values always carry the
+    same tokens and the comparison is what it was before this rule.
+    """
+    columns = [c for c in (getattr(schema, "columns", None) or ())
+               if table is None or getattr(c, "table", None) == table]
+    own = next((c for c in columns if getattr(c, "name", None) == name), None)
+    lenders = [own] if own is not None and _enumerated(own, rules, schema) else [
+        c for c in columns if _enumerated(c, rules, schema)]
+    tokens: set = set()
+    for column in lenders:
+        for value in _names_of(column):
+            token = _token(value, rules)
+            if token is not None:
+                tokens.add(token)
+            if len(tokens) >= TOKEN_LIMIT:
+                return frozenset(tokens)
+    return frozenset(tokens)
+
+
+_TOKEN_CACHE: "weakref.WeakKeyDictionary" = weakref.WeakKeyDictionary()
+
+
+def tokens_for(schema: Any, table: Optional[str], name: str, rules: Any = None) -> frozenset:
+    """`domain_tokens` held per schema, since one comparison asks for the same column many times."""
+    try:
+        per_schema = _TOKEN_CACHE.setdefault(schema, {})
+    except TypeError:  # a schema nothing can hold a weak reference to is simply not cached
+        return domain_tokens(schema, table, name, rules)
+    key = (table, name)
+    if key not in per_schema:
+        per_schema[key] = domain_tokens(schema, table, name, rules)
+    return per_schema[key]
+
+
+def value_tokens(value: Any, tokens: Iterable[str], rules: Any = None) -> frozenset:
+    """The domain tokens one value carries, whether it is one name or a sentence made of them."""
+    text = canon(value, rules)
+    return frozenset(token for token in tokens if _carries(text, token))
+
+
+def _carries(text: str, token: str) -> bool:
+    """Whether the token stands in the text as a word of its own, not inside a longer one."""
+    start = text.find(token)
+    while start >= 0:
+        before, after = text[start - 1:start], text[start + len(token):start + len(token) + 1]
+        if not WORD_EDGE.match(before or " ") and not WORD_EDGE.match(after or " "):
+            return True
+        start = text.find(token, start + 1)
+    return False
+
+
+def _shown_tokens(tokens: Iterable[str]) -> str:
+    return "[" + ", ".join(sorted(tokens)) + "]"
+
+
+def _shown(value: Any, limit: int = 60) -> str:
+    text = json.dumps(value, ensure_ascii=False, default=str, separators=(",", ":"))
+    return text if len(text) <= limit else text[:limit] + "..."
+
+
+def _present(row: dict, name: str, rules: Any = None) -> bool:
+    """Whether this side holds a value for the column at all, empty being no value (D217)."""
+    return name in row and canon(row.get(name), rules) not in EMPTY_CANON
+
+
 def compare_columns(schema: EntitySchema, table: Optional[str], expected: dict, got: dict,
                     rules: Any = None, judge: Any = None, equivalence: Any = None,
                     route: str = "") -> tuple[bool, list[str]]:
@@ -288,21 +451,40 @@ def compare_columns(schema: EntitySchema, table: Optional[str], expected: dict, 
 
     `route` names how the two dicts were arrived at, so a failure line says whether the comparison
     read a prose result into columns or walked a returned row.
+
+    Two differences are failures whatever the column's class, because forgiving them would let the
+    two sides say different things about the world and still be called the same answer (D217). The
+    first is presence: a value one side holds and the other does not is a difference, and only two
+    sides the canonical form calls empty are not. The second is the domain tokens two values carry:
+    a judge is asked whether two sentences mean the same thing only once both are written out of the
+    same set of the world's own names, and where they are not the answer is that they differ, which
+    also spares the judge the call.
     """
     prefix = f"{route}: " if route else ""
     hard: list[str] = []
     notes: list[str] = []
     for name in sorted(set(expected) | set(got)):
+        if _present(expected, name, rules) != _present(got, name, rules):
+            hard.append(f"{prefix}{PRESENCE_NOTE}{name}: ours {_shown(got.get(name))}, "
+                        f"recorded {_shown(expected.get(name))}")
+            continue
         column_class = class_of(schema, table, name, rules)
         if column_class == "exempt":
             if canon(expected.get(name), rules) != canon(got.get(name), rules):
-                notes.append(f"exempt:{name}")
+                notes.append(f"{EXEMPT_NOTE}{name}")
             continue
         if column_class == "semantic":
+            tokens = tokens_for(schema, table, name, rules)
+            ours = value_tokens(got.get(name), tokens, rules)
+            theirs = value_tokens(expected.get(name), tokens, rules)
+            if ours != theirs:
+                hard.append(f"{prefix}{TOKEN_NOTE}{name}: ours {_shown_tokens(ours)}, "
+                            f"recorded {_shown_tokens(theirs)}")
+                continue
             verdict = compare_column(expected.get(name), got.get(name), "semantic", rules=rules,
                                      judge=judge, table=equivalence, column=name)
             if not verdict.equal:
-                notes.append(f"semantic:{name}")
+                notes.append(f"{SEMANTIC_NOTE}{name}")
             continue
         found_at = first_difference(got.get(name), expected.get(name), rules, name)
         if found_at:
@@ -577,7 +759,7 @@ def body_replay_fidelity_gate(calls: Iterable[ToolCall], results: Optional[list[
             continue
         ok, differing = compare_results(schema, parse_result(call.result), result["value"], rules,
                                         tool=call.name, readers=readers)
-        semantic += sum(1 for n in differing if n.startswith("semantic:"))
+        semantic += sum(1 for n in differing if n.startswith(SEMANTIC_NOTE))
         if ok:
             hits["success_matches"] += 1
         else:

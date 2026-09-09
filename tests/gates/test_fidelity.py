@@ -151,5 +151,5 @@ def test_summarize_counts_traces_tasks_and_calls_and_names_the_common_miss(tmp_p
     assert summary["traces"] == 3 and summary["confirmed"] == 1
     assert summary["tasks"] == 2 and summary["tasks_confirmed"] == 1
     assert summary["writes"] == 3 and summary["writes_matched"] == 1
-    assert unconfirmed_reason({"tr1": bad, "tr2": bad}) == "cancel_order write: differs"
+    assert unconfirmed_reason({"tr1": bad, "tr2": bad}) == "cancel_order write: differs (value)"
     assert unconfirmed_reason({}) == "no Trace of the Task was replayed"

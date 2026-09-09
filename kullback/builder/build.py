@@ -49,6 +49,7 @@ from kullback.builder import (
     synth,
     templates,
     transaction,
+    user_sim,
     vocabulary,
 )
 from kullback.builder import (
@@ -77,10 +78,6 @@ from kullback.runner.records import (
 )
 from kullback.runner.records import read_json as _read_json
 from kullback.runner.records import write_json as _write_json
-
-# The rule-driven Simulated user under its old name (D214): it lives in kullback/user now, and the
-# stages read it from there so a stage's code version follows the module that actually changed.
-from kullback.user import rules as user_sim
 
 # This module is the graph, not the runner: assembling the stages means naming ingest, mine, cluster,
 # compile_env, policy and user_sim, and the Runner never imports the Builder (design section 3, build
@@ -581,14 +578,19 @@ def _tools_stage(model: Any, max_attempts: int, workers: int = 1, only: Optional
         replay_failed = replay_failures(ctx.workdir)
         calls_by_tool, skipped, from_replay = evidence_calls(
             traces, seeds, after_write, callers, replay_failed)
+        call_runs: dict[str, str] = {}
         for trace in traces:
             task_id = _task_of(tasks, trace.trace_id)
             for call in trace.tool_calls:
                 if call.id and task_id:
                     call_tasks[call.id] = task_id
+                    call_runs[call.id] = trace.trace_id
         # D74: each recorded call replays on the world its own Task saw, not on the shared one.
+        # D213: and on its own Run's layer of it, where the Task's Runs recorded a column in two
+        # values, so a call is never scored against the version another Run of the Task read first.
         states = compile_env.call_starting_states(inputs["db"], inputs["overlays"],
-                                                  compile_env.overlay_values(ctx.workdir), call_tasks)
+                                                  compile_env.overlay_values(ctx.workdir), call_tasks,
+                                                  compile_env.load_run_overlays(ctx.workdir), call_runs)
         tool_names = [sig.name for sig in inputs["sigs"]]
         # The transport's error wrapper is one per corpus, not one per tool: read it once over
         # every recorded call, so a tool with a single error still has it peeled.
@@ -1196,11 +1198,13 @@ def _replay_stage(only: Optional[Iterable[str]] = None):
                        if t not in only}
             tasks = [task for task in tasks if task.id in only]
         for task in tasks:
-            overlay, overlay_rows = compile_env.load_overlay(ctx.workdir, task.id)
             for trace_id in task.run_ids:
                 trace = by_trace.get(trace_id)
                 if trace is None:
                     continue
+                # D213: each Run replays against its own layer of the Task's overlay, so a column
+                # this Task's Runs recorded in two values is served each Run the version it saw.
+                overlay, overlay_rows = compile_env.load_overlay(ctx.workdir, task.id, trace_id)
                 # One fresh world per Trace: a replay must not see what the previous one wrote.
                 toolkit = compile_env.load_toolkit(source, json.loads(json.dumps(db)), overlay=overlay,
                                                    overlay_values=overlay_rows)
@@ -1222,7 +1226,10 @@ def _replay_stage(only: Optional[Iterable[str]] = None):
         ctx.record_gate(fidelity.reference_replay_gate(replays))
         return {"replays": replays}
 
-    version = _version("replay_reference", run, replay_mod, fidelity, compile_env, route, loop, tool_runs)
+    # The verdict format rides in the key beside the module hashes: a change in what a verdict means
+    # has to recompute the replays even where the scoring code it was read off has not moved (D217).
+    version = (f"{_version('replay_reference', run, replay_mod, fidelity, compile_env, route, loop, tool_runs)}"
+               f":verdicts={replay_mod.VERDICT_FORMAT}")
     return pipeline.Stage(name="replay_reference", fn=run,
                           inputs=("traces", "tasks", "sigs", "schema", "bodies", "db", "canon_rules",
                                   "environment", "readers", "synthetic_rows"),
@@ -1469,8 +1476,7 @@ def _reroll_reuse(workdir: Path, task_id: str, key: dict) -> Optional[list[dict]
     return out if all(Path(row["path"]).is_file() for row in out) else None
 
 
-def _rerolls_stage(model: Any, rerolls: int, workers: int = 1, only: Optional[Iterable[str]] = None,
-                   user_model: Any = None):
+def _rerolls_stage(model: Any, rerolls: int, workers: int = 1, only: Optional[Iterable[str]] = None):
     """D112: `rerolls` Candidate-shaped Runs of the frontier per Task, inside the built Environment.
 
     A customer's traces mostly hold one recording per Task, and one recording cannot be checked
@@ -1550,8 +1556,7 @@ def _rerolls_stage(model: Any, rerolls: int, workers: int = 1, only: Optional[It
                                    canon_rules=canon_rules, rules=rules, seed=REROLL_SEED,
                                    max_turns=REROLL_TURNS, system_prompt=prompt,
                                    members=_members_of(task, traces),
-                                   reference=traces.get(reference_id) if reference_id else None,
-                                   user_agent_model=user_model)
+                                   reference=traces.get(reference_id) if reference_id else None)
             rows = [{"run_id": r.run_id, "path": p, "termination_reason": r.termination_reason,
                      "user_end": user_sim.end_of_run(r)} for r, p in runs]
             _write_json(ctx.workdir / "runs" / task.id / REROLL_RECORD,
@@ -1574,14 +1579,8 @@ def _rerolls_stage(model: Any, rerolls: int, workers: int = 1, only: Optional[It
             "rerolled_because": dict(sorted(reasons.items())), "note": REROLL_KEY_NOTE}}))
         return {"rerolls": out}
 
-    # D214: whose turns the Runs get is part of what this stage produces, so a build that names a
-    # user driver puts it in the key. A build that names none adds nothing, so its key, its cache
-    # and the Run ids it derives from the key are the ones it had before D214.
     version = (f"{_version('rerolls', run, loop, route, user_sim, intent, provider)}:"
                f"{getattr(model, 'name', 'none')}:{rerolls}")
-    user_name = getattr(user_model, "name", None)
-    if user_name:
-        version = f"{version}:user={user_name}"
     return pipeline.Stage(name="rerolls", fn=run, builder=True,
                           inputs=("tasks", "replays", "user_rules", "schema", "sigs", "bodies", "db",
                                   "environment", "canon_rules", "traces", "policy_text", "synthetic_rows"),
@@ -1593,8 +1592,7 @@ def _candidate_runs(workdir: Path, task: Task, model: Any, *, count: int, prefix
                     schema: EntitySchema, sigs: list, db: dict, env_id: Optional[str], canon_rules: Any,
                     rules: Optional[UserRules], seed: int = 0, max_turns: int = 30,
                     system_prompt: Optional[str] = None, tag: str = "",
-                    members: Sequence[Any] = (), reference: Optional[Any] = None,
-                    user_agent_model: Any = None) -> list[tuple[Any, str]]:
+                    members: Sequence[Any] = (), reference: Optional[Any] = None) -> list[tuple[Any, str]]:
     """`count` Runs of `model` against the Task's world, each in a fresh copy of it; the Runs and their paths.
 
     Every Run opens the way the recorded one did: the recorded agent's own system prompt, the
@@ -1644,9 +1642,6 @@ def _candidate_runs(workdir: Path, task: Task, model: Any, *, count: int, prefix
         simulated = user_sim.SimulatedUser(rules, starting_state_reader=router.state, vocab=vocab,
                                            write_tools=write_tools, goal_writes=goal_writes,
                                            answer_strip=answer_strip) if rules else None
-        simulated = _user_driver(workdir, task, simulated, user_agent_model, vocab=vocab,
-                                 write_tools=write_tools, goal_writes=goal_writes,
-                                 answer_strip=answer_strip, trace=reference)
         state = loop.new_run_state(run_id, workdir=workdir / "runs" / task.id, env_id=env_id, task_id=task.id,
                                    model=getattr(model, "name", None) or (prefix or "candidate"),
                                    seed=sampling.sample_seed(RUN_SEED_KIND, run_id, salt),
@@ -1660,35 +1655,6 @@ def _candidate_runs(workdir: Path, task: Task, model: Any, *, count: int, prefix
                 raise
         out.append((state.run, str(state.path)))
     return out
-
-
-def _user_driver(workdir: Path, task: Task, fallback: Any, model: Any, *, vocab: Any,
-                 write_tools: Iterable[str], goal_writes: Optional[Iterable[str]],
-                 answer_strip: Any, trace: Optional[Trace]) -> Any:
-    """Whose turns this Task's Runs get: the agent user where it earned the Task, the rules otherwise (D214 rule 3).
-
-    Earned is not a judgement made here. The round driver scores both drivers offline against the
-    recorded turns and writes `drives` per Task into user_fidelity.json; this reads that row. A build
-    with no user model, a Task with no row, a Task the stall rule closed and a Task the agent did not
-    beat the rules on all take the same path, which is the path every Run took before D214.
-    """
-    if model is None or fallback is None or trace is None:
-        return fallback
-    from kullback.user import context as user_context
-    from kullback.user import fidelity as user_fidelity
-    from kullback.user import lesson as user_lesson
-    row = next((r for r in (user_fidelity.load_scores(workdir).get("tasks") or ())
-                if isinstance(r, dict) and r.get("task_id") == task.id), None)
-    if not row or not row.get("drives"):
-        return fallback
-    record = user_context.mine_record_values(trace)
-    lessons = user_lesson.lines_for(user_lesson.load_lessons(workdir), task.id)
-    ctx = user_context.curate(task.id, getattr(fallback, "rules", None), trace, vocab=vocab,
-                              write_tools=write_tools, record_fields=sorted(record), lessons=lessons)
-    from kullback.user.agent import AgentUser
-    return AgentUser(ctx, fallback, model, vocab=vocab, write_tools=write_tools,
-                     goal_writes=goal_writes, answer_strip=answer_strip, record_values=record,
-                     trace=trace)
 
 
 def _system_prompt_for(task: Task, traces: dict, policy_text: Optional[str] = None) -> Optional[str]:
@@ -1797,8 +1763,7 @@ def reroll_runner(plan: BuildPlan):
                                schema=schema, sigs=sigs, db=db, env_id=env_id, canon_rules=canon_rules,
                                rules=rules, system_prompt=_system_prompt_for(task, traces, store.get("policy_text")),
                                members=_members_of(task, traces),
-                               reference=traces.get(reference_id) if reference_id else None,
-                               user_agent_model=plan.models.get("user_agent"))
+                               reference=traces.get(reference_id) if reference_id else None)
         _write_runs_index(plan.workdir)
         return [{"run_id": r.run_id, "path": p, "termination_reason": r.termination_reason,
                  "user_end": user_sim.end_of_run(r)} for r, p in runs]
@@ -2005,10 +1970,6 @@ class BuildPlan:
     search: Any = None
     workers: int = 1
     emit: Optional[Any] = None
-    # D214: the model the agent user runs on, when a build is paying for one. None is the harness
-    # as it was: every Run is driven by the rule-driven Simulated user and no model call is made
-    # for a user turn, so a build that names none is byte-identical to a build before D214.
-    user_agent_model: Any = None
     # Which round the driver is in, so a repair request records the round it was made in (D126);
     # a build with no round driver is one pass, which is round 1. `rounds.py` moves it.
     round: int = field(init=False, default=1)
@@ -2060,11 +2021,6 @@ class BuildPlan:
             "reroll": (_wrap(model, "reroll", workdir, ceiling, cap_context=False, memoize=False)
                        if model is not None and self.rerolls > 0 else None),
             "intent": _wrap(model, "intent", workdir, ceiling) if model is not None else None,
-            # The agent user speaks in a Run, so it is a Candidate-shaped call: fresh sample,
-            # production setting, priced into the same ledger under its own stage name (D214).
-            "user_agent": (_wrap(self.user_agent_model, "user_agent", workdir, ceiling,
-                                 cap_context=False, memoize=False)
-                           if self.user_agent_model is not None else None),
             "reference_judge": _wrap(judge, "reference_judge", workdir, ceiling) if judge is not None else None,
             "second_judge": (_wrap(second_judge, "second_judge", workdir, ceiling)
                              if second_judge is not None else None),
@@ -2110,8 +2066,7 @@ def stages(plan: BuildPlan, *, tools: Optional[Iterable[str]] = None, replay_tas
         _user_rules_stage(),
         _environment_stage(plan.domain),
         _replay_stage(only=replay_tasks),
-        (_rerolls_stage(models["reroll"], plan.rerolls, plan.workers, only=reroll_tasks,
-                        user_model=models.get("user_agent"))
+        (_rerolls_stage(models["reroll"], plan.rerolls, plan.workers, only=reroll_tasks)
          if models["reroll"] is not None else None),
     ]
     return [stage for stage in declared if stage is not None]
