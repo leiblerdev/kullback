@@ -298,6 +298,13 @@ def test_reroll_runs_count_more_runs_through_the_runner_callable_and_records_the
     assert [r["run_id"] for r in derived.inputs["rerolls"][T]] == ["alt"], "the Builder's rows are not rewritten"
     again = drive(harness, "reroll", {"task_id": T, "count": 1})
     assert again.details["runs"] == [f"reroll-r3-1-{T}-0"], "a second call in the round takes a longer prefix"
+    # D212: the attempt index is read off this Task's own rows, so a re-roll of another Task in the
+    # same round starts at its own first attempt rather than at the next number nobody has used.
+    plan.extra_rerolls["other"] = [{"run_id": "reroll-r3-other-0", "path": "", "termination_reason": "success"}]
+    plan.store.setdefault("rerolls", {})["other"] = list(plan.extra_rerolls["other"])
+    third = drive(harness, "reroll", {"task_id": T, "count": 1})
+    assert third.details["runs"] == [f"reroll-r3-2-{T}-0"], \
+        "another Task's re-rolls are not an input to this Task's attempt index"
 
 
 def test_reroll_without_a_runner_is_an_error_result_not_a_crash(derived):

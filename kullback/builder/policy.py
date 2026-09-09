@@ -576,11 +576,6 @@ def _run_cases(run: Any, write_tools: Optional[Iterable[str]]) -> list[dict]:
                               "transcript": [dict(m) for m in transcript]})
             transcript.append({"role": "assistant", "content": None,
                                "tool_calls": [{"name": name, "arguments": args}]})
-        elif event.type == "tool_result":
-            # What the Run was handed, as its own turn with no content of its own: the same shape
-            # the two scorers write (D206), so a rule tested here is tested on what it will be run on.
-            transcript.append({"role": "tool", "content": None,
-                               "result": payload.get("result"), "tool_calls": []})
     return cases
 
 

@@ -24,6 +24,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any, Callable, Iterable, Optional
 
+from kullback import sampling
 from kullback.examiner import derive as verifier_mod
 from kullback.examiner import judge as judge_mod
 from kullback.examiner import lifecycle
@@ -59,13 +60,12 @@ STAGE = "derive_verifier"
 # The per-Task cache under the workdir (D163). Bumped when the entry's shape changes, so an old entry
 # is a miss rather than a row read with the wrong meaning.
 CACHE_DIR = ("examiner", "cache")
-CACHE_FORMAT = 8  # the status row counts D190's relaxed and falsifying atoms, D206's shape sources
-# and the shapes dropped for rejecting their own Reference, D189's second-path batches and D198's
-# reason per check with no input, the reference record carries D193's second pass over a residue and
-# what deriving a Verifier per survivor settled (D198), the second-path row carries D199's
-# synthesised paths, what they were rewritten from and whether the Task's path is single by
-# structure, and the status row names the Reference's own Run ids, which is what says whether a
-# Verifier on disk was derived from the Reference the Task holds (D208)
+CACHE_FORMAT = 8  # the status row counts D190's relaxed and falsifying atoms, D189's second-path
+# batches and D198's reason per check with no input, the reference record carries D193's second pass
+# over a residue and what deriving a Verifier per survivor settled (D198), the second-path row
+# carries D199's synthesised paths, what they were rewritten from and whether the Task's path is
+# single by structure, and the status row names the Reference's own Run ids, which is what says
+# whether a Verifier on disk was derived from the Reference the Task holds (D208)
 # The modules a Task's derivation runs through, hashed into every key: an edit to any of them is a
 # different derivation and must not be served a stale entry (the Builder's stages hash the same way,
 # build.py's `_version`).
@@ -248,6 +248,7 @@ SECOND_PATH_REASON = "second_path"
 SECOND_PATH_BATCHES = 3
 SECOND_PATH_RUNS = 3  # the Runs one batch buys, the count the re-roll stage samples per Task (D112)
 SECOND_PATH_PREFIX = "second-path"
+PROBE_KIND = "probe_slot"  # D212: the kind the probe budget's order is keyed under, per Task id
 NO_REROLL_RUNNER = "no re-roll Runner in this session"
 CEILING_REACHED = "the budget ceiling was reached"
 # Where the Examiner's own re-roll rows live, the file `ExaminerPlan` reads back and merges into the
@@ -274,6 +275,18 @@ def second_path_rows(workdir: Path, task_id: str) -> list[dict]:
     return [dict(row) for row in (rows.get(task_id) or [])
             if isinstance(row, dict) and row.get("reason") == SECOND_PATH_REASON
             and row.get("path") and Path(row["path"]).is_file()]
+
+
+def next_batch(workdir: Path, task_id: str) -> int:
+    """The attempt index the next batch for this Task takes: one above the highest already recorded.
+
+    D212: a batch count that must grow grows by adding higher attempt indexes and never by
+    reshuffling the ones already taken. The counter used to restart at one on every call, so a
+    second search over the same Task in the same round wrote its Runs over the first search's files
+    under the same names and the batch the row counted was not the batch on disk.
+    """
+    rows = second_path_rows(workdir, task_id)
+    return max((int(row.get("batch") or 0) for row in rows), default=0) + 1
 
 
 def record_second_path(workdir: Path, task_id: str, rows: Iterable[dict], batch: int) -> list[dict]:
@@ -384,9 +397,10 @@ def second_path_search(task_id: str, confirmation: Any, *, workdir: Path, run_re
     they reached, so the round can be read for what the search cost.
     """
     bought, runs, ceiling = 0, 0, False
+    attempt = next_batch(workdir, task_id)
     recordings: list = []
     while run_rerolls is not None and bought < cap and len(confirmation.references) < 2:
-        prefix = f"{SECOND_PATH_PREFIX}-r{round_number}-b{bought + 1}"
+        prefix = f"{SECOND_PATH_PREFIX}-r{round_number}-b{attempt}"
         try:
             rows = [dict(row) for row in run_rerolls(task_id, count, prefix) or []]
         except budget.BudgetExceeded:
@@ -394,7 +408,8 @@ def second_path_search(task_id: str, confirmation: Any, *, workdir: Path, run_re
             break
         bought += 1
         runs += len(rows)
-        record_second_path(workdir, task_id, rows, bought)
+        record_second_path(workdir, task_id, rows, attempt)
+        attempt += 1
         fresh = finished_recordings(rows, write_tools=write_tools, fn=fn, atoms=atoms)
         recordings.extend(fresh)
         merge_second_path(confirmation, fresh)
@@ -987,9 +1002,11 @@ def derive_all(ctx: ExamContext, inputs: dict, *, probe_model: Any = None, probe
     running anything: build 13 spent 13.7 of its 16 hours in two of these calls over the same
     artifacts, most of it in the probe Run and the re-rolls of the D79 suite (D163). The results are
     gathered in Task order and the two files are written once, after the pool, so both give the
-    bytes the serial run gave; the probe budget is handed out between the two pools, in Task order,
-    for the same reason. `cached` and `ran` in the result count which Tasks came from where.
+    bytes the serial run gave; the probe budget is handed out between the two pools by the Tasks'
+    own keys (D212), so which Tasks get check 6 does not move when a Task is added or dropped.
+    `cached` and `ran` in the result count which Tasks came from where.
     """
+    sample_salt = sampling.build_salt(ctx.workdir)
     canon_rules = rules_of(inputs)
     fn = verifier_suite.canon_fn(canon_rules)
     write_tools = {s.name for s in inputs["sigs"] if s.kind == "write"}
@@ -1060,15 +1077,23 @@ def derive_all(ctx: ExamContext, inputs: dict, *, probe_model: Any = None, probe
                     recordings=recordings + extra, extra=extra)
 
     jobs = parallel.each(tasks, prepare, workers)
-    # The probe budget is spent in Task order whatever order the threads ran in, so which Tasks get
-    # check 6 is the serial run's answer; a Task served from the cache spent its slot when it ran.
-    probed = 0
-    for job in jobs:
-        if job.cached:
-            probed += int(bool(job.entry.get("probed")))
-        elif job.confirmation.references:
-            job.may_probe = probe is not None and (probe_limit is None or probed < probe_limit)
-            probed += int(job.may_probe)
+    # D212: the probe budget goes out in the order the Tasks' own keys give, not in Task order and
+    # not in the order the threads finished. A Task added to the build used to push every Task after
+    # it one place down the list, so a bounded budget landed on a different set of Tasks and check 6
+    # moved for Tasks nothing else about had changed. A Task served from the cache spent its slot
+    # when it ran, so the slots left are the limit minus those.
+    probed = sum(1 for job in jobs if job.cached and job.entry.get("probed"))
+    eligible = [job for job in jobs if not job.cached and job.confirmation.references]
+    if probe is None:
+        chosen: set[str] = set()
+    elif probe_limit is None:
+        chosen = {job.task.id for job in eligible}
+    else:
+        order = sampling.keyed_order(PROBE_KIND, [job.task.id for job in eligible], sample_salt)
+        chosen = set(order[:max(0, probe_limit - probed)])
+    for job in eligible:
+        job.may_probe = job.task.id in chosen
+        probed += int(job.may_probe)
 
     # Set when a second-path batch hit the run ceiling, so the caller can stop the round rather than
     # read a derivation that quietly bought nothing (the re-roll tool raises for the same reason).

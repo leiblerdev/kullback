@@ -40,7 +40,6 @@ from kullback.gates.verifier_suite import (
     canon_fn,
     classify_provenance,
     communicate_values,
-    hard_holds,
     make_atom,
     ptr,
     question_keys,
@@ -117,35 +116,21 @@ def user_said(spoken: str, value: Any) -> bool:
     return all(len(text) <= 1 or text in NEVER_SECRET or _token_in(spoken, text) for text in parts)
 
 
-# --- shapes, for a value no user said (D190, scoped by D206) ----------------
+# --- shapes, for a value no user said (D190) --------------------------------
 
-# A required value the world produced is checked as a shape over its own column, and D206 says which
-# world the shape is checked against: the Run's own, not the row's. A system_derived value is by
-# definition one the Candidate read for itself, so the value written has to be one the Run received
-# under that column in a result before the write (any call, any row), or one the write's own row of
-# the Starting state holds under it, and where a prose result is what the Run got, one that result
-# states as a token (D203 readers). The literal never enters the atom, so a Verifier holding this
-# keeps no constant the Intent could give away, and the rule reads the Run and the Starting state at
-# Verdict time instead. A plural column is looked up under its singular too, because a list argument
-# (`..._ids`) is usually a list of what one row holds one of (`..._id`).
-#
-# The world at large is still not searched, which is what keeps the demand real: a value the Run
-# never read is rejected however common it is elsewhere, so the mutation check still flips and a
-# swap to something nobody produced still fails. Scoping it to the row instead, which is what D190
-# wrote, rejects the ordinary copy across rows (a value read off one entity and written onto
-# another), and it rejected the very Reference the atom was derived from on 17 Tasks of one build.
-#
-# `_SOURCES` names which of the four ways may satisfy the rule, and a stored atom carries no more of
-# them than its own Reference needed. The derivation builds the same rule with one source at a time
-# to find out which one answers, so the count on the status row is read off the rule rather than off
-# a second copy of it in Python, and then stores the rung that source sits on (`SHAPE_LADDER`). A
-# Task whose Reference the row rule already accepted therefore keeps D190's rule exactly, and the
-# widening is spent only where the row rule rejected the Run it was read from.
+# A required value the world produced is checked as a shape over its own column: the value written
+# has to be one the Starting state holds under that column inside the very row this write acts on,
+# and where the row names no such column, that the Run wrote something there at all. The literal
+# never enters the atom, so a Verifier holding this keeps no constant the Intent could give away,
+# and the rule reads the Starting state at Verdict time instead. A plural column is looked up under
+# its singular too, because a list argument (`..._ids`) is usually a list of what one row holds one
+# of (`..._id`). The world outside the row is not searched: a value that appears anywhere at all is
+# barely a demand, and the search would run once per call per atom, which the mutation check then
+# runs once per atom again.
 _SHAPE_SRC = '''
 _TOOL = {tool!r}
 _FIELD = {field!r}
 _ID_FIELD = {id_field!r}
-_SOURCES = {sources!r}
 
 
 def _names(field):
@@ -153,13 +138,7 @@ def _names(field):
 
 
 def _under(node, field):
-    """Every scalar this part of the world holds under one of these column names, canonical.
-
-    An empty column holds nothing: a row that names the column and has nothing in it is a row the
-    shape has no value to demand, not a row demanding the word null. A row seeded before the write
-    it is about carries every column empty, and reading those as values asked the Run to write the
-    emptiness back.
-    """
+    """Every scalar this part of the world holds under one of these column names, canonical."""
     wanted = _names(field)
     out = []
     stack = [node]
@@ -168,8 +147,7 @@ def _under(node, field):
         if isinstance(item, dict):
             for name, value in item.items():
                 if name in wanted and not isinstance(value, (dict, list, tuple)):
-                    if value is not None and value != "":
-                        out.append(str(canon(value)))
+                    out.append(str(canon(value)))
                 else:
                     stack.append(value)
         elif isinstance(item, (list, tuple)):
@@ -197,27 +175,6 @@ def _row(state, id_field, id_value):
     return None
 
 
-def _results(transcript):
-    """Every result the Run received before this write, in order."""
-    return [turn.get("result") for turn in transcript or [] if turn.get("role") == "tool"]
-
-
-def _read_before(transcript, field):
-    """Every value the Run was handed under this column, by any call, before this write."""
-    out = []
-    for result in _results(transcript):
-        out.extend(_under(result, field))
-    return out
-
-
-def _stated_before(transcript, value):
-    """Did a prose result state this value as a token? The reader's answer is text, not a column."""
-    for result in _results(transcript):
-        if isinstance(result, str) and _holds(result, value):
-            return True
-    return False
-
-
 def check(pre_state, write_call, transcript):
     if write_call.get("name") != _TOOL:
         return True
@@ -227,38 +184,13 @@ def check(pre_state, write_call, transcript):
     value = args[_FIELD]
     if value is None or value == "" or value == [] or value == {{}}:
         return False
-    parts = value if isinstance(value, (list, tuple)) else [value]
-    wanted = [str(canon(part)) for part in parts]
     row = _row(pre_state, _ID_FIELD, args.get(_ID_FIELD)) if _ID_FIELD in args else None
     known = _under(row, _FIELD) if row is not None else []
-    if "own_row" in _SOURCES and known and all(part in known for part in wanted):
+    if not known:
         return True
-    if "prior_result" in _SOURCES:
-        read = _read_before(transcript, _FIELD)
-        if read and all(part in read for part in wanted):
-            return True
-    if "result_text" in _SOURCES and _stated_before(transcript, value):
-        return True
-    # The row the write acts on names no such column, so the shape has nothing of its own to demand
-    # and the Run only has to have written something there, which it did.
-    return "no_column" in _SOURCES and not known
+    parts = value if isinstance(value, (list, tuple)) else [value]
+    return all(str(canon(part)) in known for part in parts)
 '''
-
-# The four ways a shape may be satisfied, in the order the derivation asks about them, and the rungs
-# the stored rule is allowed to stand on. The first rung is D190's rule unchanged, the row and its
-# own fallback, which are one demand and never separated: a rule that took the fallback alone would
-# reject the Candidate whose row does hold the column, which is stricter than D190 and not what
-# either decision asks. Widening past it is what D206 adds, and the derivation climbs no further
-# than the Reference it read makes it: a Task the row rule already accepted keeps the row rule, so
-# the wrong Run and the mutation still fail on it exactly as they did.
-SHAPE_SOURCES = ("own_row", "no_column", "prior_result", "result_text")
-_ROW_SOURCES = ("own_row", "no_column")
-SHAPE_LADDER = (_ROW_SOURCES, _ROW_SOURCES + ("prior_result",),
-                _ROW_SOURCES + ("prior_result", "result_text"))
-# Which rung a source first appears on, so one probe of the rule answers both what to store and what
-# to call it.
-_RUNG_OF = {source: min(i for i, rung in enumerate(SHAPE_LADDER) if source in rung)
-            for source in SHAPE_SOURCES}
 
 # The claim a Task whose Reference wrote nothing still makes about its End state: on the tables these
 # tools touch, the End state is the Starting state. A Run that wrote fails it, which is what the
@@ -287,51 +219,11 @@ def _rule_atom(atom_id: str, source: str, tools: Iterable[str], derived_as: str,
                  judge=False, description=description)
 
 
-def shape_atom(atom_id: str, tool: str, field: str, id_field: str, tools: Iterable[str],
-               sources: Iterable[str] = SHAPE_SOURCES, source: Optional[str] = None) -> Atom:
-    """The shape a required write value keeps when no user said the value itself.
-
-    `sources` says which of `SHAPE_SOURCES` may satisfy the rule, which is how the derivation asks
-    the rule itself which ones its own Reference needs; `source` is the name of the one that
-    answered, recorded on the atom as a name and never as the value it stands for. The rule calls
-    `_holds` for a prose result, which the Hard wrapper defines beside it
-    (`verifier_suite._SPANS_SRC`), the same way it reads `canon` out of the namespace it is run in.
-    """
-    payload_source = _SHAPE_SRC.format(tool=tool, field=field, id_field=id_field,
-                                       sources=tuple(sources))
-    atom = _rule_atom(atom_id, payload_source, tools, SHAPE_ATOM,
-                      f"{tool} writes under {field} a value this Run read for itself")
-    if source:
-        atom.target["shape_source"] = source
-    return atom
-
-
-def shape_for(atom_id: str, tool: str, field: str, id_field: str, tools: Iterable[str],
-              run: Run, fn: Any) -> tuple[Optional[Atom], Optional[str]]:
-    """The shape atom for this write value, and which source satisfies it on the Run it came from.
-
-    The rule is asked one source at a time, so what the status row counts is read off the rule
-    rather than off a second copy of it written in Python, and the rung the answering source sits on
-    is what gets stored: no wider than the Reference needs. A Task the row rule already accepted is
-    stored with the row rule, which is why widening it here takes nothing off the wrong Run or the
-    mutation on any Task D190 was already right about.
-
-    None for the atom is the rule rejecting the very Reference it was derived from, which is a
-    derivation defect and not a demand: it is counted as `shape_self_reject` and nothing is stored.
-    "mixed" is a rung holding over the Run while no single source holds over all of its calls, which
-    is one Run writing the same column twice from two different sources.
-    """
-    tools = sorted(tools)
-    for source in SHAPE_SOURCES:
-        one = shape_atom(atom_id, tool, field, id_field, tools, sources=(source,))
-        if hard_holds(one, run, set(tools), fn) is not False:
-            rung = SHAPE_LADDER[_RUNG_OF[source]]
-            return shape_atom(atom_id, tool, field, id_field, tools, sources=rung, source=source), source
-    for rung in SHAPE_LADDER:
-        whole = shape_atom(atom_id, tool, field, id_field, tools, sources=rung, source="mixed")
-        if hard_holds(whole, run, set(tools), fn) is not False:
-            return whole, "mixed"
-    return None, None
+def shape_atom(atom_id: str, tool: str, field: str, id_field: str, tools: Iterable[str]) -> Atom:
+    """The shape a required write value keeps when no user said the value itself."""
+    return _rule_atom(atom_id, _SHAPE_SRC.format(tool=tool, field=field, id_field=id_field), tools,
+                      SHAPE_ATOM,
+                      f"{tool} writes under {field} a value the world holds there for the row it acts on")
 
 
 def no_write_atom(tools: Iterable[str]) -> Atom:
@@ -340,24 +232,10 @@ def no_write_atom(tools: Iterable[str]) -> Atom:
                       "the End state is the Starting state: the Run wrote nothing")
 
 
-def shape_sources(verifier: Verifier) -> dict[str, int]:
-    """How many of this Task's shape atoms each source satisfied at derive time (D206), by name.
-
-    A name, never a value: what the row says is that the Run read the value off an earlier result
-    rather than off the row it wrote, not what the value was.
-    """
-    named = [atom_payload(atom).get("shape_source") for atom in verifier.atoms
-             if atom_payload(atom).get("derived_as") == SHAPE_ATOM]
-    return {source: named.count(source) for source in sorted(set(named)) if source}
-
-
-def derivation_counts(verifier: Verifier) -> dict[str, Any]:
-    """How many atoms D190 rewrote or added on this Task, and what satisfied each shape (D206)."""
+def derivation_counts(verifier: Verifier) -> dict[str, int]:
+    """How many atoms D190 rewrote or added on this Task, for the status row."""
     marks = [atom_payload(atom).get("derived_as") for atom in verifier.atoms]
-    return {"shape_sources": shape_sources(verifier),
-            "atoms_dropped_as_shape_self_reject": sum(
-                len(atom_payload(atom).get("shape_self_reject") or ()) for atom in verifier.atoms),
-            "atoms_relaxed_to_shape": marks.count(SHAPE_ATOM),
+    return {"atoms_relaxed_to_shape": marks.count(SHAPE_ATOM),
             "atoms_added_for_falsification": marks.count(NO_WRITE_ATOM)}
 
 
@@ -495,11 +373,9 @@ def derive_verifier(task: Any, reference_run: Any, rerun_paths: Optional[list[st
                 "id_field": effect["id_field"], "at": effect["idx"]}
         if effect["requestor"]:
             base["requestor"] = effect["requestor"]  # D71: a user-side write says so on the atom
-        write_atom = _atom(atom_id, kind, dict(base, kind="write"),
+        atoms.append(_atom(atom_id, kind, dict(base, kind="write"),
                            spans=[ptr(run, effect["idx"])],
-                           description=f"{effect['tool']} writes {effect['entity'] or 'an entity'}")
-        atoms.append(write_atom)
-        self_rejected: list[str] = []
+                           description=f"{effect['tool']} writes {effect['entity'] or 'an entity'}"))
         for field in sorted(effect["values"]):
             value, canon_key = effect["args"][field], effect["values"][field]
             provenance, span = classify_provenance(run, effect["pos"], value, fn)
@@ -518,28 +394,14 @@ def derive_verifier(task: Any, reference_run: Any, rerun_paths: Optional[list[st
                 # compares canonically ("$150" and 150.0 are one value, D39) where the check
                 # compares text; taking the check's stricter reading over an atom it never looks at
                 # would relax a value the customer themself gave.
-                #
-                # D206: the value is one this Run read, so the shape is checked against what the Run
-                # read and not only against the row it wrote. The rule is asked here whether it
-                # accepts the Run it was derived from: an atom that rejects its own Reference is a
-                # derivation defect, and it is dropped and counted rather than stored to fail every
-                # Candidate and the Reference alike.
-                shape, source = shape_for(f"{atom_id}.{field}", effect["tool"], field,
-                                          effect["id_field"], tools, run, fn)
-                if shape is None:
-                    self_rejected.append(field)
-                    continue
-                atoms.append(shape)
+                atoms.append(shape_atom(f"{atom_id}.{field}", effect["tool"], field,
+                                        effect["id_field"], tools))
                 continue
             atoms.append(_atom(f"{atom_id}.{field}",
                                "required" if demanded else "allowed",
                                dict(base, kind="write_value", field=field, value=canon_key, raw=value),
                                provenance=provenance, spans=[span] if span else [],
                                description=f"{effect['tool']} {field} is {text_of(value)}"))
-        if self_rejected:
-            # The columns whose shape was not stored, on the write they belong to: the count is what
-            # the status row reads, and the names are what a person re-derives from (D206).
-            write_atom.target["shape_self_reject"] = sorted(self_rejected)
 
     asked = [question_keys(r, e, fn) for r, e in zip(good, good_effects, strict=False)]
     for key in sorted(set.intersection(*[set(a) for a in asked]) if asked else set()):
