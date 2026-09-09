@@ -58,9 +58,12 @@ TARGET = "environment"
 # rejecting their own Reference, and a re-roll's Run id carries the key it was rolled under, so the
 # Runs named in `did_not_reach_reference` and `failed_recordings` are named by that id. Re-pinned
 # for D208: a confirmed row names the Run ids of the Reference it holds, which is what says whether
-# the Verifier beside it was derived from that Reference or from one since withdrawn. The same
-# three Tasks, the same verdicts and the same reasons.
-TASK_STATUS_SHA256_BEFORE_THE_PHASE = "67d46c8cf7fb4f735a2d22e72b3d0e1a3f93e79d263af170ea244d748807f46c"
+# the Verifier beside it was derived from that Reference or from one since withdrawn. Re-pinned for
+# D210: every row names, per held-out Run in its pool, which of the four kinds that Run ended in, so
+# a reading over the pool can leave out the Runs that did not finish, and the ends move again where
+# the review of D210 closed the turn that says nothing but a miss. The same three Tasks, the same
+# verdicts and the same reasons.
+TASK_STATUS_SHA256_BEFORE_THE_PHASE = "b09715ea295247be485c0d76b0ec4a19d3f4ccca4d27ba0396d37b7972cc2ed4"
 
 
 def _fixture(request) -> Path:
@@ -799,18 +802,6 @@ def test_a_rounds_counts_say_how_many_tasks_it_froze_added_and_could_not_reprodu
     assert counts["tasks_frozen"] == split["frozen"] == 0, "the first build has no list to resume from"
     assert counts["tasks_added"] == len(split["added"]) == len(tasks)
     assert counts["tasks_frozen_only"] == len(split["frozen_only"]) == 0
-
-
-def test_a_rounds_counts_say_whether_the_grouping_moved_and_what_the_added_tasks_cost(driven):
-    """D216: the split reproduces or an input moved, and the growth carries its own price."""
-    counts = rounds.load_rounds(driven["workdir"])[-1].counts
-    split = json.loads((driven["workdir"] / "task_split.json").read_text(encoding="utf-8"))
-    grouping = json.loads((driven["workdir"] / "grouping.json").read_text(encoding="utf-8"))
-    assert split["grouping"] == grouping["fingerprint"], "the first build writes the fingerprint it took"
-    assert set(split["grouping_inputs"]) == {"recordings", "homing"}
-    assert counts["tasks_grouping_moved"] == "", "nothing can have moved before there is a frozen list"
-    assert counts["tasks_cleared"] == 0
-    assert counts["tasks_added_cost"] == 0.0, "this build spends nothing on the stages that run per Task"
 
 
 def test_every_rounds_gate_rulings_are_kept_beside_gates_json_round_by_round(driven):

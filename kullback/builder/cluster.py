@@ -203,14 +203,9 @@ def _cluster_by_intent(
 def split_by_world(group: Sequence[Trace], worlds: dict[str, dict]) -> list[list[Trace]]:
     """Runs that saw one row in two versions before writing started in different worlds: different Tasks.
 
-    `worlds` is compile_env.trace_worlds: per trace, a key to the version hash of its pre-write
-    sightings under that key. The key names the tool that answered and the row it answered about,
-    and the version is the canonical form of the recording alone (D216), so this split is a function
-    of the recordings and the split of one recording set never moves between rounds. Nothing of the
-    schema or of the readers is passed here or is inside a version.
-
-    Greedy and order free in effect: traces are taken by id and each joins the first subgroup whose
-    rows it does not contradict, so the same traces always land the same way.
+    `worlds` is compile_env.trace_worlds: per trace, row key to version hash of its pre-write
+    sightings. Greedy and order free in effect: traces are taken by id and each joins the first
+    subgroup whose rows it does not contradict, so the same traces always land the same way.
     """
     subgroups: list[tuple[list[Trace], dict]] = []
     for trace in sorted(group, key=lambda t: t.trace_id):
@@ -272,100 +267,6 @@ def cluster_runs(
 # measured over the frozen list stays comparable across rounds, and it is named, so the drift is a
 # finding rather than a silently smaller denominator.
 FROZEN_ONLY_REASON = "the rebuild grouped this Task's Runs differently; the frozen Task is kept"
-# D216: the same Task, re-examined against the recordings alone. The world split is not what
-# stranded it, so whatever moved sits in the intent clustering and the flag is wrong to carry.
-CLEARED_REASON = ("the recordings alone still group this Task's Runs together, so the starting "
-                  "world did not strand it; the rebuild's intent clustering did")
-GROUPING_FILE = "grouping.json"
-# 1: the fingerprint of the frozen grouping and the two inputs it was taken over (D216).
-GROUPING_FORMAT = 1
-
-
-class UnexplainedRegrouping(RuntimeError):
-    """The grouping moved while both of its inputs stood still, which the rule says cannot happen.
-
-    The split of Runs into Tasks is a function of the recordings and of the row identity mined from
-    them (D216). If the fingerprint of a round's grouping differs from the frozen one while the
-    recording set and the homing are byte identical, some third thing reached the split, and that is
-    a bug in the harness rather than a finding about the corpus. It raises here rather than being
-    counted, because a count would let the very drift this rule exists to remove pass as weather.
-    """
-
-
-def _run_ids(task: Any) -> tuple[str, ...]:
-    """A Task's Run ids, sorted, whether it arrives as a record or as a Task."""
-    ids = task.get("run_ids") if isinstance(task, dict) else getattr(task, "run_ids", None)
-    return tuple(sorted(str(run_id) for run_id in (ids or ())))
-
-
-def grouping_fingerprint(tasks: Iterable[Any]) -> str:
-    """The identity of a grouping: its sorted Run sets and nothing else.
-
-    Task ids are hashed over the Run set already, so they would say the same thing, but only while
-    the id scheme stands still. The Run sets are what two rounds are actually comparable on: the
-    same recordings grouped the same way have one fingerprint however the ids were made.
-    """
-    return content_hash(sorted(_run_ids(task) for task in tasks))
-
-
-def recordings_hash(traces: Iterable[Trace]) -> str:
-    """The recording set as one hash: every Run's id with the hash of the raw recording behind it.
-
-    This is one of the two inputs the split is allowed to depend on. A corpus that grew, shrank or
-    was re-ingested moves it; a rebuild over the same recordings cannot.
-    """
-    return content_hash(sorted([str(trace.trace_id), str(trace.raw_hash)] for trace in traces))
-
-
-def moved_input(fingerprint: str, inputs: dict, frozen: Optional[dict]) -> str:
-    """Which input moved under a grouping that differs from the frozen one: the name, or "".
-
-    The empty string is the ordinary answer: the fingerprint matches, so nothing moved and there is
-    nothing to say on the round line. A fingerprint that differs is explained by the first input
-    that differs, and a fingerprint that differs while both inputs stand still raises, because the
-    rule says the grouping is a function of those two and nothing else.
-    """
-    if not isinstance(frozen, dict) or not frozen.get("fingerprint"):
-        return ""
-    if fingerprint == frozen.get("fingerprint"):
-        return ""
-    for name in ("recordings", "homing"):
-        if inputs.get(name) != frozen.get(name):
-            return name
-    raise UnexplainedRegrouping(
-        f"the grouping fingerprint moved from {frozen['fingerprint'][:12]} to {fingerprint[:12]} "
-        f"while the recordings and the homing both stood still")
-
-
-def world_split_reason(run_ids: Sequence[str], worlds: dict[str, dict]) -> Optional[str]:
-    """Why the recordings alone split these Runs, or None when they would still group together.
-
-    The same greedy rule `split_by_world` applies, run over Run ids rather than over records, so a
-    frozen Task can be asked the question without the traces being on hand. The reason names the
-    tool and the row, because that pair is what the Examiner has to go and look at: one tool showed
-    one row in two versions before either Run wrote, and no overlay can hold both.
-    """
-    world: dict = {}
-    for run_id in sorted(str(r) for r in run_ids):
-        seen = worlds.get(run_id) or {}
-        against = [key for key, version in sorted(seen.items()) if world.get(key, version) != version]
-        if against:
-            return f"Run {run_id} disagrees on {_where(against[0])} before either Run wrote"
-        world.update(seen)
-    return None
-
-
-def _where(key: Any) -> str:
-    """A world key as a sentence part: the tool that answered and the row it answered about.
-
-    A key with no table is another requestor's own state, which no table of the customer's holds,
-    so it is named by the requestor rather than by a row that does not exist.
-    """
-    if isinstance(key, (tuple, list)) and len(key) == 3:
-        tool, table, row_id = (str(part) for part in key)
-        named = f"{table} row {row_id}" if table else f"the state of the {row_id} requestor"
-        return f"{named} as {tool or 'an unnamed tool'} showed it"
-    return str(key)
 
 
 def _as_task(record: Any) -> Task:
@@ -374,8 +275,7 @@ def _as_task(record: Any) -> Task:
 
 
 def resume_frozen(tasks: Sequence[Task], frozen: Optional[Sequence[Any]],
-                  *, min_runs: int = MIN_RUNS_GUARDED,
-                  worlds: Optional[dict[str, dict]] = None) -> tuple[list[Task], dict]:
+                  *, min_runs: int = MIN_RUNS_GUARDED) -> tuple[list[Task], dict]:
     """The Task list a rebuild is allowed to publish once a list has been frozen (D200).
 
     Every number a build is judged on is counted over the frozen list, so a re-split that drops a
@@ -389,19 +289,11 @@ def resume_frozen(tasks: Sequence[Task], frozen: Optional[Sequence[Any]],
     Returns the Task list and the split status: how many Tasks came off the frozen list, how many
     the rebuild grouped, which are new, and which are `frozen_only`, meaning the rebuild would have
     removed them. A `frozen_only` count above zero is a finding, not a failure: the build goes on.
-
-    Given `worlds`, every `frozen_only` Task is re-examined against the recordings alone (D216).
-    D200 could only say the rebuild grouped a Task's Runs differently, which named no cause and left
-    the flag standing for as long as the corpus lived. Now a Task whose Runs the recordings would
-    still put in one world loses the flag with the reason, because the starting world did not strand
-    it and the difference is the intent clustering's; a Task whose Runs the recordings really do
-    split keeps the flag and carries the split's own reason, naming the tool and the row, which is a
-    finding the Examiner can file rather than a count nobody can act on.
     """
     live = list(tasks)
     if frozen is None:
         return live, {"frozen": 0, "live": len(live), "added": [t.id for t in live],
-                      "frozen_only": [], "reasons": {}, "cleared": {}}
+                      "frozen_only": [], "reasons": {}}
 
     kept = [_as_task(record) for record in frozen]
     home = {run_id: task.id for task in kept for run_id in task.run_ids}
@@ -432,22 +324,9 @@ def resume_frozen(tasks: Sequence[Task], frozen: Optional[Sequence[Any]],
         if task.name is None and task.id in named:
             task.name = named[task.id]
 
-    unreproduced = [task for task in kept if task.id not in reproduced]
-    frozen_only: list[str] = []
-    reasons: dict[str, str] = {}
-    cleared: dict[str, str] = {}
-    for task in unreproduced:
-        if worlds is None:
-            frozen_only.append(task.id)
-            reasons[task.id] = FROZEN_ONLY_REASON
-            continue
-        reason = world_split_reason(task.run_ids, worlds)
-        if reason is None:
-            cleared[task.id] = CLEARED_REASON
-        else:
-            frozen_only.append(task.id)
-            reasons[task.id] = reason
+    frozen_only = [task.id for task in kept if task.id not in reproduced]
     return kept + added, {
         "frozen": len(kept), "live": len(live), "added": [t.id for t in added],
-        "frozen_only": frozen_only, "reasons": reasons, "cleared": cleared,
+        "frozen_only": frozen_only,
+        "reasons": {task_id_: FROZEN_ONLY_REASON for task_id_ in frozen_only},
     }

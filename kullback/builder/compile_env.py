@@ -419,12 +419,6 @@ class _Obs:
     call: str = ""
     call_id: str = ""
     from_write: bool = False
-    # The tool that answered, by name. `call` fingerprints the name together with the arguments, so
-    # two reads of one row through one tool with different filters carry different fingerprints;
-    # `trace_worlds` needs the tool alone, because a list projection and a detail projection of one
-    # row are two tools' statements and are never compared to each other. A sighting no call made
-    # (a row another requestor's prose revealed) carries no tool.
-    tool: str = ""
 
     @property
     def partial(self) -> bool:
@@ -481,7 +475,7 @@ def _observations(traces: list[Trace], schema: EntitySchema, write_tools: set[st
             for table, row_id, row, depth in rows:
                 out.append(_Obs(table, row_id, row, trace.trace_id, (trace_index, call_index),
                                 is_write or row_id in written, depth, bool(homed and homed.row),
-                                fingerprint, str(call.id or ""), is_write, call.name))
+                                fingerprint, str(call.id or ""), is_write))
             if is_write:
                 written |= {row_id for _, row_id, _, _ in rows}
                 # A write names the rows it changes wherever its own shape puts them, and a row it
@@ -500,112 +494,38 @@ def _observations(traces: list[Trace], schema: EntitySchema, write_tools: set[st
     return [obs for obs in out if not obs.depth or (obs.table, obs.row_id) not in stated]
 
 
-# A column name a recording cannot produce: the tag keeps it out of reach of any real key (D39's
-# rule for STRING_TAG, borrowed here for the same reason).
-RECORDED_TEXT = "\x00recorded_result"
-
-
-def _recorded_text(_tool: str, result: Any) -> dict:
-    """A keyless result as the recording's own words, with nothing read out of it (D216).
-
-    A read that answers a sentence and leaves which row it is about to the call states the row's
-    state inside that sentence, and only a reader can say which columns are in there. `trace_worlds`
-    is not allowed a reader, but it does not need one: two recordings whose sentences differ before
-    either wrote disagree about the row whatever the columns turn out to be, and two whose sentences
-    match agree. So the version of such a sighting is the sentence, canonicalized.
-    """
-    return {RECORDED_TEXT: canon(result)}
-
-
-def homing_hash(schema: EntitySchema) -> str:
-    """The row identity mined off the recordings, as one hash: each table with its key fields.
-
-    This is the second and last input `cluster.split_by_world` is allowed to depend on (D216), so a
-    round whose grouping moved can say whether the homing moved with it. The column classes are
-    deliberately absent: they are the harness's own proposals about the corpus and no longer reach
-    the split, so a schema reclassified between two rounds leaves this hash where it was.
-    """
-    return content_hash({table: list(key_fields(schema, table)) for table in sorted(schema.tables)})
-
-
-def trace_worlds(traces: Iterable[Trace], schema: EntitySchema, write_tools: set[str]) -> dict[str, dict]:
+def trace_worlds(traces: Iterable[Trace], schema: EntitySchema, write_tools: set[str],
+                 read_result: Optional[Callable[[str, Any], Any]] = None) -> dict[str, dict]:
     """Per trace, the version of every row it saw before any write touched it: the world it started in.
 
     Two traces that saw one row in two such versions started in different worlds. cluster.py keeps
     them in different Tasks, because a Task's overlay can pin one version only (D74), and a trace
-    replayed on the other version differs on every read of that row; one corpus's single customer
-    seen across 456 recordings in as many states is where this was found.
+    replayed on the other version differs on every read of that row; telecom's one customer seen
+    across 456 traces in as many states is where this was found.
 
-    A version is a function of the recordings and of nothing else (D216). It is the canonical form
-    (`runner/canon.canonicalize`, default rules) of the recorded result projected to that row, and
-    the key it is filed under is the tool that answered together with the row's identity. Nothing
-    the harness proposed about the corpus reaches it: not the column classes, not the readers, not
-    a cache format. The split used to be taken over the `hard` columns of the mined schema, and a
-    grouping that depends on the harness's own proposals is not reproducible, so every reader or
-    schema improvement regrouped the corpus and stranded Tasks a frozen list still held.
+    A version is the row's `hard` columns and nothing else (D73). An exempt column is never compared
+    anywhere, and a semantic one is compared by meaning, so neither can make a replayed read differ,
+    and hashing the whole row split one Task per value of every reading the world takes when it is
+    asked. A table with no hard column has one version, which is the same statement: nothing about
+    it is compared, so nothing about it can disagree.
 
-    Row identity, which recorded values name a row, is the one mined input that stays. It is itself
-    a function of the recordings: the key fields come off the shapes the recordings returned, so two
-    rounds over one recording set home a result the same way, and without it there is no row to
-    compare a sighting to at all.
-
-    Keying by tool is what makes the comparison honest. A tool that lists rows answers a few columns
-    of each and a tool that details one answers all of them, and the two disagree by shape on every
-    row in the corpus; compared to each other they split every Task. Filed apart, a trace
-    contradicts another only where the same tool showed the same row differently before either
-    wrote, which is the disagreement D74 is about.
-
-    A trace's version of a row through one tool is built column by column from that tool's own
-    sightings, each column taking the value of the earliest sighting that carried it, so a trace
-    that read part of a row and then the whole of it states one version and not two. A result the
-    call homed onto a row without stating a column of it is its own recorded sentence
-    (`_recorded_text`), which is what the recording says about the row when no reader is allowed.
+    A trace's version of a row is built column by column from its own sightings, each column taking
+    the value of the earliest sighting that carried it, so a trace that read part of a row and then
+    the whole of it states one version and not two. Reading the first sighting alone would split two
+    traces that agree on every column merely because one of them saw the row through a tool that
+    answers fewer of them.
     """
-    traces = list(traces)
-    seen: dict[str, dict[tuple[str, str, str], dict]] = {}
-    for obs in _observations(traces, schema, write_tools, read_result=_recorded_text):
+    hard = {(column.table, column.name) for column in schema.columns if column.class_ == "hard"}
+    seen: dict[str, dict[tuple[str, str], dict]] = {}
+    for obs in _observations(list(traces), schema, write_tools, read_result=read_result):
         if obs.after_write:
             continue
-        version = seen.setdefault(obs.trace_id, {}).setdefault((obs.tool, obs.table, obs.row_id), {})
+        version = seen.setdefault(obs.trace_id, {}).setdefault((obs.table, obs.row_id), {})
         for name, value in obs.row.items():
-            version.setdefault(str(name), value)
-    worlds = {trace_id: {key: content_hash(canon(version)) for key, version in rows.items()}
-              for trace_id, rows in seen.items()}
-    for trace_id, rows in _requestor_worlds(traces, write_tools).items():
-        worlds.setdefault(trace_id, {}).update(rows)
-    return worlds
-
-
-def _requestor_worlds(traces: Iterable[Trace], write_tools: set[str]) -> dict[str, dict]:
-    """Per trace, what another requestor's own tools said about it before that requestor wrote.
-
-    R33 keeps a requestor's calls out of the customer's world: they describe the requestor's own
-    device and not the customer's system. They are recordings all the same, and two Runs whose
-    recordings show one requestor's device in two states before either wrote can no more share one
-    overlay than two Runs that disagree about a customer's row (D164, D74).
-
-    That split used to come from the readers stage, out of the columns it had proposed for the
-    requestor's prose, so it moved whenever a reader was written, improved or dropped. Here the
-    version is the recorded result itself and the row is the requestor, which the recording names on
-    every call; no proposal of the harness's is anywhere in it (D216). The requestor's own writes
-    close its world, because after one of those the device is in the state the Run put it in rather
-    than the state it started in.
-    """
-    out: dict[str, dict] = {}
-    for trace in traces:
-        written: set[str] = set()
-        for call in trace.tool_calls:
-            requestor = str(getattr(call, "requestor", "") or "")
-            if call.error is not None or is_assistant_call(call) or not requestor:
-                continue
-            if call.name in write_tools:
-                written.add(requestor)
-                continue
-            if requestor in written:
-                continue
-            out.setdefault(trace.trace_id, {}).setdefault(
-                (call.name, "", requestor), content_hash(canon(parse_result(call.result))))
-    return out
+            if (obs.table, str(name)) in hard:
+                version.setdefault(str(name), value)
+    return {trace_id: {key: content_hash(version) for key, version in rows.items()}
+            for trace_id, rows in seen.items()}
 
 
 def build_starting_state(
