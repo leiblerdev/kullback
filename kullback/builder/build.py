@@ -31,6 +31,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable, Optional
 
+from kullback import sampling
 from kullback.ai import provider
 from kullback.builder import (
     body_skill,
@@ -1318,7 +1319,8 @@ rerolls_gate = stage_gates.rerolls_gate  # the ruling moved to kullback.gates in
 
 REROLL_RECORD = "rerolls.json"  # beside the Task's Runs, under runs/<task>/; never inside a Run file
 REROLL_KEY_FORMAT = 1
-REROLL_SEED = 0  # the stage's own seed; the Examiner's reroll verb rotates its prefix instead (D133)
+REROLL_SEED = 0  # the stage's own first attempt index; the Examiner's reroll verb rotates its prefix (D133)
+RUN_SEED_KIND = "run_seed"  # D212: the kind a Candidate-shaped Run's seed is drawn under, keyed on its Run id
 REROLL_TURNS = 30  # the loop's cap for a re-roll, the same as a Candidate batch's default
 REROLL_KEY_NOTE = (
     "a Task keeps its re-rolls while its own inputs hold. A body of a tool its recordings never call "
@@ -1523,8 +1525,15 @@ def _candidate_runs(workdir: Path, task: Task, model: Any, *, count: int, prefix
     Every Run opens the way the recorded one did: the recorded agent's own system prompt, the
     Simulated user's opening turn, and the mined tool definitions on the model call. Without the
     three the model is asked for a first turn over an empty transcript with no tools, which is what
-    the second retail build's re-rolls did.
+    an earlier build's re-rolls did.
+
+    `seed` is the first attempt index of the batch, so a Run's id is its Task and its attempt and
+    nothing else; the seed the Run record carries is drawn from that id and the build salt (D212),
+    never from a counter over the batch, so a Run discarded and made again under its own id draws
+    the seed of the Run it replaces and a batch that grows takes higher attempt indexes without
+    moving the ones already taken.
     """
+    salt = sampling.build_salt(workdir)
     overlay, overlay_rows = compile_env.load_overlay(workdir, task.id)
     vocab = _vocab_from(workdir)
     tools = _tool_definitions(sigs, vocab)
@@ -1544,7 +1553,8 @@ def _candidate_runs(workdir: Path, task: Task, model: Any, *, count: int, prefix
                                            write_tools=write_tools) if rules else None
         state = loop.new_run_state(run_id, workdir=workdir / "runs" / task.id, env_id=env_id, task_id=task.id,
                                    model=getattr(model, "name", None) or (prefix or "candidate"),
-                                   seed=seed + number, user=simulated, user_rules=rules, max_turns=max_turns,
+                                   seed=sampling.sample_seed(RUN_SEED_KIND, run_id, salt),
+                                   user=simulated, user_rules=rules, max_turns=max_turns,
                                    system_prompt=system_prompt)
         try:
             loop.open_with_user(state)
