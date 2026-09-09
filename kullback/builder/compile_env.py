@@ -17,7 +17,6 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Iterable, Optional
 
-from kullback.builder import lesson as lesson_mod
 from kullback.builder import mine, synth
 from kullback.builder.body_skill import BODY_SKILL
 from kullback.builder.mine import is_assistant_call, is_scalar_result
@@ -158,18 +157,54 @@ class ToolBuild:
     # Only ever set by `grade_body`: a body carried over from an earlier run of the stage that
     # answered none of the recorded calls under the world as it stands now.
     could_not_run: bool = False
-    # D211: what the code-only steps read off this body's own replay, as a `lesson.Diagnosis`. Set
-    # by `grade_body` alone, since it is a reading of the body a tool already has and what it is
-    # for is the ask the next writer is given. It is never serialized: the lesson it renders is.
-    diagnosis: Any = None
 
 # --- reading rows out of recorded tool results ---
 
 ROW_WALK_DEPTH = 8  # how deep a result is walked for rows; generous, and a cycle never reaches it
 
 
+def _scalars(value: dict) -> dict:
+    """The names a dict states a plain value under, which are the key parts it can lend a child."""
+    return {str(name): item for name, item in value.items()
+            if isinstance(item, (str, int, float)) and not isinstance(item, bool)}
+
+
+def argument_key_parts(args: Any) -> dict:
+    """Every name the call's arguments state exactly one value for, at any depth of the arguments.
+
+    A key part a row leaves out can be read off the call, because a tool can be told which row it is
+    answering by the call and not repeat it in the row (`tool_runs.row_key`). That is only ever
+    sound when the call names one candidate: a call whose own arguments carry two values under a
+    name (a list of objects each with its own date) names none of its rows in particular, and
+    filling the part from it would give several different rows one key. So a name the arguments
+    state twice in two values is dropped here, and the sighting keeps a key it is missing a part of,
+    which is what `partial_key` is for.
+
+    The walk goes to any depth for the same reason `argument_ids` does: a call names what it acts on
+    wherever its own shape puts it, and a part stated once inside a nested object is still stated
+    once by the call.
+    """
+    seen: dict[str, list] = {}
+
+    def walk(value: Any) -> None:
+        if isinstance(value, dict):
+            for name, item in value.items():
+                if isinstance(item, (str, int, float)) and not isinstance(item, bool):
+                    seen.setdefault(str(name), []).append(item)
+                else:
+                    walk(item)
+        elif isinstance(value, (list, tuple)):
+            for item in value:
+                walk(item)
+
+    walk(args if isinstance(args, dict) else {})
+    return {name: values[0] for name, values in seen.items()
+            if len({canon(item) for item in values}) == 1}
+
+
 def walk_result_rows(schema: EntitySchema, result: Any, args: Optional[dict] = None,
-                     depth_cap: int = ROW_WALK_DEPTH) -> tuple[list[tuple[str, str, dict, int]], int]:
+                     depth_cap: int = ROW_WALK_DEPTH,
+                     stats: Optional[dict] = None) -> tuple[list[tuple[str, str, dict, int]], int]:
     """Every row a result states at any depth, with how deep it sat, and how often the cap was hit.
 
     A result is a tree, and the customer's tools put rows anywhere in it: a list of routes each
@@ -186,16 +221,41 @@ def walk_result_rows(schema: EntitySchema, result: Any, args: Optional[dict] = N
 
     The walk carries the containers on the current path so a structure that points back at itself
     ends, and stops at `depth_cap` levels, counting each stop so the count can be read back rather
-    than the rows quietly going missing. The call's arguments are passed to every test, because a
-    table with a composite key can be told which row it is answering by the call rather than by the
-    row (`tool_runs.row_key`).
+    than the rows quietly going missing.
+
+    A nested row is named by its own scope (D207). A key part the row itself leaves out is taken
+    from the dicts it sits inside, nearest first, and only then from the call's arguments, and only
+    where the arguments name one candidate for it (`argument_key_parts`). Handing the same flat
+    arguments to a dict at every depth is what let a part meant for the result's top level name a
+    row three levels down, and a part is never taken from a sibling at the same depth, because a
+    sibling is another row and not this row's scope. Where each part came from is counted into
+    `stats` as nested_key_sources, so a build can see the rule working rather than be told it does.
+
+    Two dicts of one call that compose the same key and disagree on a column are a collision
+    (nested_key_collision): a key that names two rows is a finding about the shape of the result,
+    counted with the depth it happened at, not an earliest sighting silently winning.
     """
     rows: list[tuple[str, str, dict, int]] = []
     path: set[int] = set()
     capped = 0
+    sources: dict[str, int] = {}
+    keyless = 0
+    from_args = argument_key_parts(args)
 
-    def walk(value: Any, depth: int) -> None:
-        nonlocal capped
+    def note(table: str, row: dict, inherited: dict) -> None:
+        for name in key_fields(schema, table)[1:]:
+            if row.get(name) is not None:
+                where = "own"
+            elif inherited.get(name) is not None:
+                where = "parent"
+            elif from_args.get(name) is not None:
+                where = "args"
+            else:
+                where = "missing"
+            sources[where] = sources.get(where, 0) + 1
+
+    def walk(value: Any, depth: int, inherited: dict) -> None:
+        nonlocal capped, keyless
         if not isinstance(value, (dict, list, tuple)):
             return
         if depth > depth_cap:
@@ -206,20 +266,59 @@ def walk_result_rows(schema: EntitySchema, result: Any, args: Optional[dict] = N
             return
         path.add(marker)
         if isinstance(value, dict):
-            match = match_table(schema, value, args)
+            match = match_table(schema, value, {**from_args, **inherited})
             if match:
                 rows.append((match[0], match[1], value, depth))
+                note(match[0], value, inherited)
+            # What this dict states is the scope of everything inside it; the call's arguments stay
+            # underneath, so the nearest enclosing dict wins and the call loses to both.
+            scope = {**inherited, **_scalars(value)}
             for item in value.values():
-                walk(item, depth + 1)
+                walk(item, depth + 1, scope)
         else:
             # A list is how a result holds several of one thing, not a level of nesting: the rows of
             # a list the result answers are the result's own rows, however many lists deep it sits.
+            before = len(rows)
             for item in value:
-                walk(item, depth)
+                walk(item, depth, inherited)
+            if len(rows) > before:
+                # A list some of whose elements are rows: an element that matched nothing carries no
+                # key of its own, and its position in the list is all there is to name it by.
+                keyless += sum(1 for item in value if isinstance(item, dict)
+                               and not any(item is row for _, _, row, _ in rows[before:]))
         path.discard(marker)
 
-    walk(result, 0)
+    walk(result, 0, {})
+    if stats is not None:
+        for where, count in sources.items():
+            stats[f"nested_key_sources.{where}"] = stats.get(f"nested_key_sources.{where}", 0) + count
+        # Every row here was named by a key it composed; nothing is homed by where it sat.
+        stats["homed_by.key"] = stats.get("homed_by.key", 0) + len(rows)
+        if keyless:
+            stats["list_elements_carrying_no_key"] = stats.get("list_elements_carrying_no_key", 0) + keyless
+        for table, _key, depth in _key_collisions(rows):
+            stats["nested_key_collision"] = stats.get("nested_key_collision", 0) + 1
+            found = stats.setdefault("nested_key_collisions", [])
+            entry = {"table": table, "depth": depth,
+                     "key_class": "composite" if len(key_fields(schema, table)) > 1 else "own"}
+            if entry not in found:
+                found.append(entry)
     return rows, capped
+
+
+def _key_collisions(rows: list[tuple[str, str, dict, int]]) -> list[tuple[str, str, int]]:
+    """(table, key, deepest sighting) for a key two dicts of one result compose and disagree under.
+
+    Two sightings of one row that say the same thing are one row seen twice, which is ordinary. Two
+    that differ under one key mean the key does not name a row, and a pinner that takes the earliest
+    of them is choosing between two rows by call order. That is a finding, not a value.
+    """
+    seen: dict[tuple[str, str], list[tuple[dict, int]]] = {}
+    for table, key, row, depth in rows:
+        seen.setdefault((table, key), []).append((row, depth))
+    return [(table, key, max(depth for _, depth in group))
+            for (table, key), group in seen.items()
+            if len({canon(row) for row, _ in group}) > 1]
 
 
 def extract_rows(schema: EntitySchema, result: Any, args: Optional[dict] = None) -> list[tuple[str, str, dict]]:
@@ -358,7 +457,7 @@ def _observations(traces: list[Trace], schema: EntitySchema, write_tools: set[st
                 continue
             is_write = call.name in write_tools
             result = parse_result(call.result)
-            rows, capped = walk_result_rows(schema, result, call.args)
+            rows, capped = walk_result_rows(schema, result, call.args, stats=stats)
             if stats is not None and capped:
                 stats["depth_capped"] = stats.get("depth_capped", 0) + capped
             # A result that states no row of its own is still about a row when the call named one.
@@ -374,7 +473,14 @@ def _observations(traces: list[Trace], schema: EntitySchema, write_tools: set[st
                                 fingerprint, str(call.id or ""), is_write))
             if is_write:
                 written |= {row_id for _, row_id, _, _ in rows}
-                written |= {v for v in call.args.values() if isinstance(v, str)}
+                # A write names the rows it changes wherever its own shape puts them, and a row it
+                # named one level down is as touched as one it named at the top (D207). Reading only
+                # the top level left a nested row's post-write sighting looking untouched, so the
+                # inverse replay could keep it as the value the world started in. A composite key is
+                # composed the way `named_rows` composes it, from beside the id and then from the
+                # top level, because the parts alone name no row.
+                written |= {value for _, value, _ in argument_ids(call.args)}
+                written |= {row_id for _, row_id in named_rows(schema, call.args or {})}
     stated = {(obs.table, obs.row_id) for obs in out if not obs.depth}
     dropped = [obs for obs in out if obs.depth and (obs.table, obs.row_id) in stated]
     if stats is not None and dropped:
@@ -642,30 +748,38 @@ def referenced_ids(traces: Iterable[Trace], schema: EntitySchema) -> list[tuple[
     value sits under is what names the table, at any depth; the pattern the miner recorded is the
     guard it always was.
     """
-    keys = {table: key_fields(schema, table) for table in schema.tables}
     out: set[tuple[str, str]] = set()
     for trace in traces:
         for call in trace.tool_calls:
             if call.error is not None:  # an id the customer's tool refused is not a row we owe
                 continue
-            args = call.args or {}
-            for name, value, scope in argument_ids(args):
-                for table, fields in keys.items():
-                    if not fields or name != fields[0]:
-                        continue
-                    pattern = id_pattern_for(schema, table, fields[0])
-                    if pattern and not re.match(pattern, value):
-                        continue
-                    # A composite key the call does not complete names no row: a partial id would be
-                    # a row of its own, which is exactly what the composite key exists to prevent.
-                    # Each part is read from beside the id first and from the top level second, so a
-                    # list of rows that each carry their own date completes each row's own key, and
-                    # a call that states one date for every row it names still completes them all.
-                    parts = [scope.get(part, args.get(part)) for part in fields[1:]]
-                    if any(part is None for part in parts):
-                        continue
-                    out.add((table, key_separator(schema).join([value] + [str(p) for p in parts])))
+            out |= named_rows(schema, call.args or {})
     return sorted(out)
+
+
+def named_rows(schema: EntitySchema, args: dict) -> set[tuple[str, str]]:
+    """(table, key) for every row a call's own arguments name, at any depth of the arguments.
+
+    Each part of a composite key is read from beside the id first and from the top level second, so
+    a list of rows that each carry their own date completes each row's own key, and a call that
+    states one date for every row it names still completes them all. A composite key the call does
+    not complete names no row: a partial id would be a row of its own, which is exactly what the
+    composite key exists to prevent.
+    """
+    keys = {table: key_fields(schema, table) for table in schema.tables}
+    out: set[tuple[str, str]] = set()
+    for name, value, scope in argument_ids(args):
+        for table, fields in keys.items():
+            if not fields or name != fields[0]:
+                continue
+            pattern = id_pattern_for(schema, table, fields[0])
+            if pattern and not re.match(pattern, value):
+                continue
+            parts = [scope.get(part, args.get(part)) for part in fields[1:]]
+            if any(part is None for part in parts):
+                continue
+            out.add((table, key_separator(schema).join([value] + [str(p) for p in parts])))
+    return out
 
 
 def add_synthetic_rows(db: dict, schema: EntitySchema, traces: Iterable[Trace]) -> list[tuple[str, str]]:
@@ -1195,6 +1309,15 @@ def _write_pins(workdir: Path, pins: dict, stats: dict,
                    int(stats.get("nested_sightings_of_a_row_already_stated") or 0),
                "inversion_by_tool": dict(sorted((stats.get("inversion_by_tool") or {}).items())),
                "writes_without_a_body": int(stats.get("writes_without_a_body") or 0),
+               # D207: where each part of a composed key came from, whether anything was named by
+               # its position rather than by a key, and the keys that named two rows at once.
+               "nested_key_sources": {where: int(stats.get(f"nested_key_sources.{where}") or 0)
+                                      for where in ("own", "parent", "args", "missing")},
+               "homed_by": {"key": int(stats.get("homed_by.key") or 0),
+                            "position": int(stats.get("homed_by.position") or 0)},
+               "list_elements_carrying_no_key": int(stats.get("list_elements_carrying_no_key") or 0),
+               "nested_key_collision": int(stats.get("nested_key_collision") or 0),
+               "nested_key_collisions": list(stats.get("nested_key_collisions") or ()),
                "totals": totals, "tasks": dict(sorted(pins.items()))}
     path = Path(workdir) / PINS_FILE
     path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
@@ -2213,86 +2336,10 @@ def body_could_not_run(gates: Iterable[GateResult], rows: Iterable[dict]) -> boo
                                   for row in answered)
 
 
-def _read_pair(tool: str, theirs: Any, ours: Any, readers: Any) -> tuple[Any, Any]:
-    """Two prose answers of one tool as the columns its reader finds in them (D176, D187).
-
-    The same rule `column_differences` compares under: a tool that answers with one sentence is
-    read into its columns first, and where the reader finds none on either side the two sentences
-    stay one value and part or do not part as a whole. Without it every relation over a prose tool
-    is asked of a string, which holds no elements to be broadcast and no list to be ordered.
-    """
-    if readers is None or not tool or not isinstance(theirs, str) or not isinstance(ours, str):
-        return theirs, ours
-    if readers.table_of(tool) is None:
-        return theirs, ours
-    left, right = readers.read(tool, theirs), readers.read(tool, ours)
-    return (left, right) if isinstance(left, dict) and isinstance(right, dict) else (theirs, ours)
-
-
-def call_triples(toolsig: ToolSig, calls: Iterable[ToolCall], results: Iterable[dict],
-                 outcomes: Iterable[dict], readers: Any = None) -> list[lesson_mod.Triple]:
-    """One recorded call, what it answered and what the body answered, as the relation step reads it (D211).
-
-    The triples are built here and not off `tool_call_outcomes.json`, which keeps a digest of each
-    answer and not the answer: a digest says two answers differ and can say nothing about how, and
-    every relation in the catalogue is a statement about how. The recorded side is the call's own
-    result or the class it raised; ours is what the sandbox just answered for the same call, which
-    the gates have already run and the memo already holds.
-    """
-    matched = {str(row.get("call_id") or ""): bool(row.get("replayed"))
-               for row in outcomes if isinstance(row, dict)}
-    triples: list[lesson_mod.Triple] = []
-    for call, result in zip(calls, results, strict=False):
-        ours = result.get("value") if isinstance(result, dict) and result.get("ok") else None
-        our_error = "" if not isinstance(result, dict) or result.get("ok") else str(
-            result.get("error") or "an error")
-        theirs = parse_result(call.result) if call.error is None else None
-        theirs, ours = _read_pair(toolsig.name, theirs, ours, readers)
-        triples.append(lesson_mod.Triple(
-            call_id=str(call.id or ""), args=dict(call.args or {}),
-            theirs=theirs,
-            ours=ours,
-            their_error="" if call.error is None else str(getattr(call.error, "class_", "") or "an error"),
-            our_error=our_error,
-            matched=matched.get(str(call.id or ""), False)))
-    return triples
-
-
-def diagnose_body(toolsig: ToolSig, source: str, sandbox: Sandbox, calls: list[ToolCall],
-                  shown: list[ToolCall], outcomes: list[dict], gates: list[GateResult],
-                  unbeaten: int = 0, blocked: str = "", rules: Any = None, readers: Any = None) -> Any:
-    """The code-only read of one body that is already there: full diff, relation, witnessed lines (D211).
-
-    Nothing here calls a model. The answers are the sandbox's memo, already paid for by the gates
-    that just ran; the one new subprocess is the traced run behind `executed_lines`, and it is
-    started only for a body whose calls the sandbox reached at all, since a body that does not
-    parse has no lines to have run and no answers to compare.
-
-    The triples are the shown split's alone (D51, D75): a lesson is written into a prompt, and the
-    held-out calls' arguments and outcomes may not travel there, which is the same rule
-    `_failure_text` and `kept_body_hint` are filtered by. The witnessed-branch read is over every
-    recorded call, because it carries no value of any of them: a line number is a fact about the
-    body, and a branch reached only by a held-out call is a branch the evidence supports.
-    """
-    ran = any(gate.stage == "executes_on_s0" for gate in gates)
-    if not calls or not ran:
-        return lesson_mod.diagnose(toolsig.name, (), unbeaten=unbeaten, blocked=blocked)
-    try:
-        results = sandbox.run(shown)
-    except SandboxError:
-        return lesson_mod.diagnose(toolsig.name, (), unbeaten=unbeaten, blocked=blocked)
-    triples = call_triples(toolsig, shown, results, outcomes, readers)
-    carried = (lesson_mod.FAILING_SET_SHOWN if lesson_mod.stalled(unbeaten)
-               else lesson_mod.EXCEPTIONS_NAMED)
-    return lesson_mod.diagnose(toolsig.name, triples, source=source, function=toolsig.name,
-                               executed=sandbox.executed_lines(calls), unbeaten=unbeaten,
-                               blocked=blocked, rules=rules, shown=carried)
-
-
 def grade_body(toolsig: ToolSig, body: str, calls: Iterable[ToolCall], schema: EntitySchema, db: dict,
                workdir: Path | str, call_states: Optional[dict] = None, rules: Any = None,
                timeout: float = 30.0, readers: Any = None,
-               call_tasks: Optional[dict] = None, unbeaten: int = 0, blocked: str = "") -> ToolBuild:
+               call_tasks: Optional[dict] = None) -> ToolBuild:
     """Run one body that already exists through the gates and the per-call replay, with no model call.
 
     This is `compile_tool` with the writing taken out: the same gates in the same order, the same
@@ -2322,10 +2369,6 @@ def grade_body(toolsig: ToolSig, body: str, calls: Iterable[ToolCall], schema: E
         [{"tool": toolsig.name, "call_id": call.id, "replayed": True, "detail": ""} for call in calls])
     build.could_not_run = body_could_not_run(build.gates, build.call_outcomes)
     build.hardcoded = build.assisted and hardcoded_body(calls, build.call_outcomes)
-    if build.assisted:
-        build.diagnosis = diagnose_body(toolsig, source, sandbox, calls, shown, build.call_outcomes,
-                                        build.gates, unbeaten=unbeaten, blocked=blocked, rules=rules,
-                                        readers=readers)
     return build
 
 
@@ -2335,8 +2378,7 @@ KEPT_BODY_HEAD = ("This tool already has a body in this build. It was replayed u
                   "your own, and do not fail in these ways.")
 
 
-def kept_body_hint(gates: Iterable[GateResult], held_out: Iterable[ToolCall] = (),
-                   shapes_shown: int = SHAPES_SHOWN) -> str:
+def kept_body_hint(gates: Iterable[GateResult], held_out: Iterable[ToolCall] = ()) -> str:
     """What the body already kept for this tool fails at, grouped by shape; "" when it fails at nothing.
 
     The hint goes where every other hint goes (the lesson in the first user turn), and it is grouped
@@ -2344,10 +2386,6 @@ def kept_body_hint(gates: Iterable[GateResult], held_out: Iterable[ToolCall] = (
     leaves sixty sentences, and a writer shown one of them answers one of them. The held-out split
     is filtered the way `_failure_text` filters it, so a body the writer is asked to beat still
     cannot hand it the calls it was never shown.
-
-    `shapes_shown` is three by default and the whole failing set once the tool has stalled (D211):
-    three shapes is a sample, and a writer that has answered the sample six times over and bought
-    nothing needs the rest of the distribution rather than the same three again.
     """
     hidden = [args_text(call) for call in held_out]
     lines = []
@@ -2358,9 +2396,9 @@ def kept_body_hint(gates: Iterable[GateResult], held_out: Iterable[ToolCall] = (
         kept = [] if split == "held_out" else [f for f in gate.failures if not any(h in f for h in hidden)]
         shapes = failure_shapes(kept)
         text = "; ".join(f"{shape} ({count} call{'' if count == 1 else 's'})"
-                         for shape, count in shapes[:shapes_shown])
-        if len(shapes) > shapes_shown:
-            text += f"; {len(shapes) - shapes_shown} more shapes"
+                         for shape, count in shapes[:SHAPES_SHOWN])
+        if len(shapes) > SHAPES_SHOWN:
+            text += f"; {len(shapes) - SHAPES_SHOWN} more shapes"
         withheld = len(gate.failures) - len(kept)
         if withheld:
             text += ("; " if text else "") + f"{withheld} more on calls you were not shown"

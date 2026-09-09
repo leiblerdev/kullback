@@ -116,29 +116,6 @@ def _source_line(exc, source):
     return out
 
 
-def _traced(function, args, seen):
-    # Which lines of the generated module this one call actually ran (D211). Only frames of the
-    # generated module are traced, so the cost is the body's own lines and nothing of the world
-    # model or pydantic behind it. A body that no call reaches a branch of is what the caller is
-    # after, and line coverage per call is the only reading that can say so.
-    def line_of(frame, event, arg):
-        if event == "line":
-            seen.add(frame.f_lineno)
-        return line_of
-
-    def entered(frame, event, arg):
-        if frame.f_code.co_filename != "<generated>":
-            return None
-        seen.add(frame.f_lineno)
-        return line_of
-
-    sys.settrace(entered)
-    try:
-        return function(**args)
-    finally:
-        sys.settrace(None)
-
-
 def _plain(value):
     if isinstance(value, pydantic.BaseModel):
         return value.model_dump(mode="json")
@@ -174,7 +151,6 @@ def main():
     exec(compile(job["source"], "<generated>", "exec", dont_inherit=True), namespace)
     toolkit, db_class = namespace[job["class_name"]], namespace[job["db_class"]]
     results = []
-    trace = bool(job.get("trace"))
     for call in job["calls"]:
         # Every call starts on the Starting state its own trace ran on: a fresh toolkit over a
         # freshly validated world, so a write cannot leave the next call standing on its output.
@@ -186,19 +162,11 @@ def main():
             # recorded invalid_arguments class, not a crash of the module.
             results.append({"ok": False, "error": "TypeError", "message": str(exc), "binding": True})
             continue
-        # The traced run carries the lines it ran and the untraced one carries nothing extra: a
-        # result is compared whole by the deterministic ruling and digested whole by the per-call
-        # rows, so a field only some runs hold would be a difference the body never made.
-        seen = set()
         try:
-            value = _traced(function, call["args"], seen) if trace else function(**call["args"])
-            result = {"ok": True, "value": _plain(value)}
+            results.append({"ok": True, "value": _plain(function(**call["args"]))})
         except Exception as exc:
-            result = {"ok": False, "error": type(exc).__name__, "message": str(exc),
-                      "line": _source_line(exc, job["source"])}
-        if trace:
-            result["lines"] = sorted(seen)
-        results.append(result)
+            results.append({"ok": False, "error": type(exc).__name__, "message": str(exc),
+                            "line": _source_line(exc, job["source"])})
     with open(sys.argv[2], "w", encoding="utf-8") as handle:
         json.dump({"nonce": nonce, "results": results}, handle, default=str)
 
@@ -283,26 +251,7 @@ class Sandbox:
             self.cache[key] = result
         return [dict(self.cache[k]) for k in keys]
 
-    def executed_lines(self, calls: Iterable[ToolCall]) -> set[int]:
-        """Every line of the generated module the recorded calls between them actually ran (D211).
-
-        One traced subprocess over the calls given, never memoised, since the memo holds answers
-        and this asks a different question of the same run. What it is for is the other half of a
-        lesson: the failures say which calls the body gets wrong, and this says which of the body's
-        own branches, loops and assignments no recorded call has ever reached, which is the part a
-        writer cannot see from a failure list at all. It rules on nothing; a sandbox that will not
-        run answers with no lines, and the gates have already said so in their own words.
-        """
-        calls = list(calls)
-        if not calls:
-            return set()
-        try:
-            results = self._execute(calls, trace=True)
-        except SandboxError:
-            return set()
-        return {int(line) for result in results for line in (result.get("lines") or [])}
-
-    def _execute(self, calls: list[ToolCall], trace: bool = False) -> list[dict]:
+    def _execute(self, calls: list[ToolCall]) -> list[dict]:
         """One subprocess for one batch of calls; a crash or a timeout is a SandboxError."""
         job, out = self.dir / "job.json", self.dir / "out.json"
         out.unlink(missing_ok=True)
@@ -317,7 +266,6 @@ class Sandbox:
         nonce = secrets.token_hex(16)
         job.write_text(json.dumps({"source": self.source, "dbs": states, "db_class": self.db_class,
                                    "class_name": self.class_name, "helpers": sorted(HELPERS),
-                                   "trace": bool(trace),
                                    "calls": [{"name": c.name, "args": c.args, "db": i}
                                              for c, i in zip(calls, indexes, strict=False)]},
                                   default=str), encoding="utf-8")

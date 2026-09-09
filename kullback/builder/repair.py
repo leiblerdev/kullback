@@ -36,7 +36,6 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from kullback import gates
 from kullback.agent.tools import AgentTool, ToolResult
-from kullback.builder import lesson
 from kullback.builder import memory as memory_mod
 from kullback.runner.records import content_hash
 
@@ -237,13 +236,8 @@ def failure_shapes(failures: Iterable[str]) -> list[tuple[str, int]]:
     return [(text, count) for text, count in seen.values()]
 
 
-def _failure_detail(node: Any, shapes_shown: int = SHAPES_SHOWN) -> str:
-    """What went wrong in one compile attempt: the first failure, or every shape when calls failed in more than one way.
-
-    `shapes_shown` is three by default and the whole failing set once the tool has stalled (D211):
-    a Builder that has answered the same three shapes six rounds running has answered the sample,
-    and what it has not seen is the rest of the distribution.
-    """
+def _failure_detail(node: Any) -> str:
+    """What went wrong in one compile attempt: the first failure, or every shape when calls failed in more than one way."""
     if not isinstance(node, dict):
         return ""
     for failure in node.get("failures") or []:
@@ -259,8 +253,8 @@ def _failure_detail(node: Any, shapes_shown: int = SHAPES_SHOWN) -> str:
             return f"{stage}: {failures[0]}"
         shapes = failure_shapes(failures)
         shown = "; ".join(f"{text} ({count} call{'' if count == 1 else 's'})"
-                          for text, count in shapes[:shapes_shown])
-        more = len(shapes) - shapes_shown
+                          for text, count in shapes[:SHAPES_SHOWN])
+        more = len(shapes) - SHAPES_SHOWN
         plural = "" if len(shapes) == 1 else "s"
         return (f"{stage}: {len(failures)} calls failed in {len(shapes)} shape{plural}: {shown}"
                 + (f"; {more} more shapes" if more > 0 else ""))
@@ -288,25 +282,12 @@ def stalled_note(row: dict) -> str:
     Said at the second one and every one after, because the point of saying it is that the next
     round should be spent elsewhere: a Builder that reads "still assisted" and nothing else asks the
     same question again, which is what four live rounds of one build did on the same four tools.
-
-    Past the stall limit the note says what changed rather than repeating the count (D211): the
-    next recompile asks for a rewrite from the recorded calls instead of a patch of the incumbent,
-    and where the two bodies tie at a gate before the fidelity ruling the gate is named, because
-    the fidelity number they tie at is one neither of them earned.
     """
     unbeaten = int(row.get("unbeaten") or 0) if isinstance(row, dict) else 0
-    blocked = str(row.get("blocked_by_gate") or "") if isinstance(row, dict) else ""
-    held = (f"; blocked_by_gate: both bodies fail the {blocked} gate, which runs before the replay "
-            f"ruling, so no recorded call was compared and the tie is at a number neither earned; "
-            f"repair what that gate refuses before spending another recompile here") if blocked else ""
     if unbeaten < STALLED_AFTER:
-        return held
-    if lesson.stalled(unbeaten):
-        return (f"; stalled: {unbeaten} recompiles in a row scored no higher than the body it has, "
-                f"so the next one is asked to rewrite this tool from its recorded calls and the "
-                f"relation across them rather than to patch what is there{held}")
+        return ""
     return (f"; stalled: {unbeaten} recompiles in a row scored no higher than the body it has, so "
-            f"the next one will not either unless something other than the hint changes{held}")
+            f"the next one will not either unless something other than the hint changes")
 
 
 def score_note(workdir: Any, name: str) -> str:
@@ -374,11 +355,7 @@ def recompile_ruling(workdir: Any, name: str) -> str:
     score = score_note(workdir, name)
     if not build.get("assisted"):
         return f"repair_recompile {name}: cleared the gates{score}"
-    # D211: a stalled tool is shown the whole failing set rather than the first three shapes of it.
-    row = kept_body_ruling(workdir, name)
-    shapes = (lesson.FAILING_SET_SHOWN if lesson.stalled(int(row.get("unbeaten") or 0))
-              else SHAPES_SHOWN)
-    failures = [text for text in (_failure_detail(node, shapes) for node in build.get("nodes") or []) if text]
+    failures = [text for text in (_failure_detail(node) for node in build.get("nodes") or []) if text]
     # A body that never read its arguments is a different repair from a body with a defect in it, so
     # the line says which one this is before it says what the gates saw.
     stood = "still assisted and hardcoded" if build.get("hardcoded") else "still assisted"

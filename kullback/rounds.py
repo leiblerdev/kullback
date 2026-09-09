@@ -60,23 +60,15 @@ from kullback.agent.tools import ToolResult
 from kullback.ai.provider import Model
 from kullback.builder import agent as builder_agent
 from kullback.builder import build as build_module
-from kullback.builder import lesson as lesson_mod
 from kullback.builder import pipeline, transaction
 from kullback.builder import readers as readers_mod
 from kullback.builder import repair as repair_module
 from kullback.builder.agent import builder_message
-from kullback.builder.build import (
-    DEFAULT_REROLLS,
-    LESSON_COUNTS_FILE,
-    TARGET_ALL,
-    TASK_SPLIT,
-    BuildError,
-    BuildPlan,
-)
+from kullback.builder.build import DEFAULT_REROLLS, TARGET_ALL, TASK_SPLIT, BuildError, BuildPlan
 from kullback.builder.compile_env import PINS_FILE
 from kullback.builder.tools import BUILD_TOOLS, EXAMINER_OWNS
 from kullback.examiner import agent as examiner_agent
-from kullback.examiner import loosen
+from kullback.examiner import lifecycle, loosen
 from kullback.examiner import stage as examiner_stage
 from kullback.examiner.agent import ExaminerError, examiner_message, examiner_round_message
 from kullback.examiner.plan import STATE_DIR, ExaminerPlan
@@ -805,12 +797,20 @@ class Loop:
             # D205: what the harness's own loosening step proposed this round, what the gates took
             # and what they turned down, with the atom kinds it relaxed.
             **loosen.round_counts(self.loosenings_now(), self.plan.round),
+            # D208: how many derived artefacts this round retired because the source they were
+            # derived from was withdrawn, and under which reason. A round that retires many is a
+            # round whose References moved, which is worth reading beside what it trusted.
+            **lifecycle.counts(self.retirements_now()),
             "artifacts": fingerprint, "artifact_hashes": per, "artifacts_changed": changed,
             **self._pin_counts(),
             **self._reader_counts(),
-            **self._lesson_counts(),
             **self.task_split(),
         }
+
+    def retirements_now(self) -> list:
+        """The Verifiers this round retired, read off the status rows the derivation left (D208)."""
+        store = self.eplan.store if self.eplan is not None else {}
+        return lifecycle.retired_in_round(store.get("task_status") or {}, self.plan.round)
 
     def loosenings_now(self) -> list:
         """The automatic loosening rows as the Examiner's store holds them, none before a beat opened."""
@@ -828,22 +828,6 @@ class Loop:
         totals = totals.get("totals") or {}
         return {name: int(totals.get(name) or 0)
                 for name in ("readers_derived", "readers_forced", "slots_unbound", "results_unread")}
-
-    def _lesson_counts(self) -> dict:
-        """D211: what the code-only lesson steps found for the tools this round compiled.
-
-        `relations_found` is how many relations the catalogue named, by kind, over the failing calls
-        of every tool with a body that still fails; `unwitnessed_lines` how many branches, loops and
-        assignments no recorded call reached; `rewrites_forced` how many tools passed the stall
-        limit and were asked to rewrite rather than patch; `blocked_by_gate` how many tie at a gate
-        before the fidelity ruling, where no recorded call is ever compared. All zero is a build
-        whose bodies replay, not a mechanism that did nothing.
-        """
-        rows = _read_json(self.plan.workdir / LESSON_COUNTS_FILE, {}) or {}
-        totals = lesson_mod.merge_counts(row for row in rows.values() if isinstance(row, dict))
-        return {"relations_found": totals["relations_found"],
-                **{name: totals[name] for name in
-                   ("unwitnessed_lines", "rewrites_forced", "blocked_by_gate")}}
 
     def _pin_counts(self) -> dict:
         """D197: what the pinner found moving between two reads, so a round says it without a report.
