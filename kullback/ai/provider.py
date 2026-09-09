@@ -1317,9 +1317,17 @@ def _openai_tool(tool: dict) -> dict:
     }
 
 
+# The keys a chat message is allowed to carry on the wire. A transcript is the harness's own record
+# as well as the model's input, and a stage that needs to write something beside a message writes it
+# on the message: the Runner marks a refused tool result so the Simulated user can read it (D227).
+# The wire shape is a whitelist so no such mark can reach a provider and be rejected there; a key
+# the API learns is added here once, rather than every writer having to know what the wire holds.
+OPENAI_MESSAGE_KEYS = frozenset(("role", "content", "name", "tool_calls", "tool_call_id", "refusal"))
+
+
 def _openai_message(message: dict) -> dict:
-    """Clean ids, and put our canonical tool calls into the wire shape."""
-    out = _clean_ids(dict(message))
+    """Clean ids, drop what the wire does not carry, and put our tool calls into the wire shape."""
+    out = _clean_ids({key: value for key, value in message.items() if key in OPENAI_MESSAGE_KEYS})
     if isinstance(out.get("content"), dict):
         out["content"] = _text_of(out)  # JSON, not a Python repr; same rule as _text_of
     calls = out.get("tool_calls")

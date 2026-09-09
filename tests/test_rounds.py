@@ -62,13 +62,16 @@ TARGET = "environment"
 # the Verifier beside it was derived from that Reference or from one since withdrawn. Re-pinned for
 # D210: every row names, per held-out Run in its pool, which of the four kinds that Run ended in, so
 # a reading over the pool can leave out the Runs that did not finish, and the ends move again where
-# the review of D210 closed the turn that says nothing but a miss. Re-pinned for D217: a replay
-# reason now names the route the verdict was reached by, and the one reason here reads
-# `differs (columns)`. Re-pinned for D218: every row carries the round that last moved it and when,
-# so the hash is taken over the rows with those two stamps stripped; the stamp is a wall clock and
-# hashing it would pin the minute the fixture ran rather than what it wrote. The same three Tasks,
-# the same verdicts.
-TASK_STATUS_SHA256_BEFORE_THE_PHASE = "7563e5758c9391816afd8de2465ad6bb91bbeb03d299c3479404ece3e440c2c8"
+# the review of D210 closed the turn that says nothing but a miss. Re-pinned for D214: the
+# rule-driven Simulated user moved into kullback/user, so the re-roll stage's code version moved
+# with it and the Run ids derived from that key moved too. Re-pinned for D217: a replay reason now
+# names the route the verdict was reached by, and the one reason here reads `differs (columns)`.
+# Re-pinned for D218: every row carries the round that last moved it and when, so the hash is taken
+# over the rows with those two stamps stripped; the stamp is a wall clock and hashing it would pin
+# the minute the fixture ran rather than what it wrote. Re-pinned for D227, which moved the goal
+# rule inside the Simulated user, so the re-roll stage's code version moved with it the way D214
+# moved it. The same three Tasks, the same verdicts and the same reasons.
+TASK_STATUS_SHA256_BEFORE_THE_PHASE = "48bc871da9448e02bec2bc7be67e6c53062416b863bde4988ce1e76b94452db3"
 
 
 def _fixture(request) -> Path:

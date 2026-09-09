@@ -671,6 +671,79 @@ def fetch(
         typer.echo("this package cannot be run as a workdir: it is missing " + ", ".join(missing))
     typer.echo(f"{out}")
 
+user_app = typer.Typer(add_completion=False,
+                       help="The Simulated user: how close its turns are to the recorded ones, and how "
+                            "often it runs out of scenario (D214).")
+app.add_typer(user_app, name="user")
+
+
+@user_app.command("fidelity")
+def user_fidelity(
+    workdir: Path = WORKDIR,
+    agent_model: Optional[str] = typer.Option(None, "--agent-model",
+                                              help="Model id for the agent user, as provider/model. Without it "
+                                                   "only the rule-driven baseline is scored, which costs nothing."),
+    base_url: Optional[str] = typer.Option(None, "--base-url", help="Endpoint for an OpenAI-compatible model."),
+    task: Optional[str] = typer.Option(None, "--task", help="Score one Task instead of every Task."),
+    limit: Optional[int] = typer.Option(None, "--limit", help="Score only the first N Tasks, in id order."),
+    ceiling_usd: Optional[float] = typer.Option(None, "--ceiling-usd",
+                                                help="Stop the scoring when the agent user has spent this much (D86)."),
+    write: bool = typer.Option(True, "--write/--no-write", help="Rewrite user_fidelity.json."),
+):
+    """Score the Simulated user against the recorded turns, per Task and per corpus (D214 rule 5)."""
+    fidelity = importlib.import_module("kullback.user.fidelity")
+    budget = importlib.import_module("kullback.runner.budget")
+    ceiling = budget.Ceiling(usd=ceiling_usd) if ceiling_usd else None
+    make_agent = _agent_user_factory(workdir, agent_model, base_url, ceiling) if agent_model else None
+    wanted = [task] if task else fidelity.task_ids(workdir, limit=limit)
+    try:
+        out = fidelity.score_workdir(workdir, make_agent=make_agent, write=write, tasks=wanted)
+    except budget.BudgetExceeded as stop:
+        typer.echo(f"stopped on the ceiling: {stop}")
+        raise typer.Exit(1) from None
+    for line in fidelity.markdown_table(out["body"]):
+        typer.echo(line)
+    if ceiling is not None:
+        typer.echo(f"spend: ${ceiling.spent:.4f} of ${ceiling.usd:.2f}")
+
+
+def _agent_user_factory(workdir: Path, model_id: str, base_url: Optional[str], ceiling: Any = None):
+    """A callable the score uses to build one Task's agent user, on a live model (D214 rule 3).
+
+    The model is wrapped the way a build wraps its own (D86), so every turn this scoring pays for is
+    priced, charged against the ceiling and stopped at it, rather than counted after the fact.
+    """
+    agent_mod = importlib.import_module("kullback.user.agent")
+    fidelity = importlib.import_module("kullback.user.fidelity")
+    budget = importlib.import_module("kullback.runner.budget")
+    model = _live_model(model_id, base_url)
+    if ceiling is not None:
+        model = budget.BudgetedModel(model, stage="user_fidelity", workdir=workdir,
+                                     model_id=model_id, ceiling=ceiling, cap_context=True)
+    writes = fidelity.write_tools_of(workdir)
+    vocab = fidelity.vocabulary_of(workdir)
+
+    def make(ctx, fallback, record_values):
+        return agent_mod.AgentUser(ctx, fallback, model, vocab=vocab, write_tools=writes,
+                                   record_values=record_values)
+
+    return make
+
+
+@user_app.command("dry-run")
+def user_dry_run(workdir: Path = WORKDIR):
+    """How the Simulated user ended this build's Runs, and how often its scenario ran out (D210)."""
+    fidelity = importlib.import_module("kullback.user.fidelity")
+    counts = fidelity.dry_run_counts(workdir)
+    typer.echo(f"{counts['runs']} Run(s) over {counts['tasks']} Task(s); "
+               f"{counts['classified']} carry an end kind")
+    for kind, count in (counts.get("ends") or {}).items():
+        typer.echo(f"  {kind}: {count}")
+    if counts["classified"] < counts["runs"]:
+        typer.echo("  Runs with no end kind were written before the kinds existed; their "
+                   "termination reasons are " + ", ".join(
+                       f"{name} {n}" for name, n in (counts.get("termination_reasons") or {}).items()))
+
 
 @app.command()
 def tui(
