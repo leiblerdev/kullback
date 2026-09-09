@@ -29,8 +29,9 @@ import functools
 import json
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Iterable, Optional
+from typing import Any, Iterable, Optional, Sequence
 
+from kullback import sampling
 from kullback.ai import provider
 from kullback.builder import (
     body_skill,
@@ -596,14 +597,19 @@ def _tools_stage(model: Any, max_attempts: int, workers: int = 1, only: Optional
         replay_failed = replay_failures(ctx.workdir)
         calls_by_tool, skipped, from_replay = evidence_calls(
             traces, seeds, after_write, callers, replay_failed)
+        call_runs: dict[str, str] = {}
         for trace in traces:
             task_id = _task_of(tasks, trace.trace_id)
             for call in trace.tool_calls:
                 if call.id and task_id:
                     call_tasks[call.id] = task_id
+                    call_runs[call.id] = trace.trace_id
         # D74: each recorded call replays on the world its own Task saw, not on the shared one.
+        # D213: and on its own Run's layer of it, where the Task's Runs recorded a column in two
+        # values, so a call is never scored against the version another Run of the Task read first.
         states = compile_env.call_starting_states(inputs["db"], inputs["overlays"],
-                                                  compile_env.overlay_values(ctx.workdir), call_tasks)
+                                                  compile_env.overlay_values(ctx.workdir), call_tasks,
+                                                  compile_env.load_run_overlays(ctx.workdir), call_runs)
         tool_names = [sig.name for sig in inputs["sigs"]]
         # The transport's error wrapper is one per corpus, not one per tool: read it once over
         # every recorded call, so a tool with a single error still has it peeled.
@@ -1220,11 +1226,13 @@ def _replay_stage(only: Optional[Iterable[str]] = None):
                        if t not in only}
             tasks = [task for task in tasks if task.id in only]
         for task in tasks:
-            overlay, overlay_rows = compile_env.load_overlay(ctx.workdir, task.id)
             for trace_id in task.run_ids:
                 trace = by_trace.get(trace_id)
                 if trace is None:
                     continue
+                # D213: each Run replays against its own layer of the Task's overlay, so a column
+                # this Task's Runs recorded in two values is served each Run the version it saw.
+                overlay, overlay_rows = compile_env.load_overlay(ctx.workdir, task.id, trace_id)
                 # One fresh world per Trace: a replay must not see what the previous one wrote.
                 toolkit = compile_env.load_toolkit(source, json.loads(json.dumps(db)), overlay=overlay,
                                                    overlay_values=overlay_rows)
@@ -1246,7 +1254,10 @@ def _replay_stage(only: Optional[Iterable[str]] = None):
         ctx.record_gate(fidelity.reference_replay_gate(replays))
         return {"replays": replays}
 
-    version = _version("replay_reference", run, replay_mod, fidelity, compile_env, route, loop, tool_runs)
+    # The verdict format rides in the key beside the module hashes: a change in what a verdict means
+    # has to recompute the replays even where the scoring code it was read off has not moved (D217).
+    version = (f"{_version('replay_reference', run, replay_mod, fidelity, compile_env, route, loop, tool_runs)}"
+               f":verdicts={replay_mod.VERDICT_FORMAT}")
     return pipeline.Stage(name="replay_reference", fn=run,
                           inputs=("traces", "tasks", "sigs", "schema", "bodies", "db", "canon_rules",
                                   "environment", "readers", "synthetic_rows"),
@@ -1386,7 +1397,8 @@ rerolls_gate = stage_gates.rerolls_gate  # the ruling moved to kullback.gates in
 
 REROLL_RECORD = "rerolls.json"  # beside the Task's Runs, under runs/<task>/; never inside a Run file
 REROLL_KEY_FORMAT = 1
-REROLL_SEED = 0  # the stage's own seed; the Examiner's reroll verb rotates its prefix instead (D133)
+REROLL_SEED = 0  # the stage's own first attempt index; the Examiner's reroll verb rotates its prefix (D133)
+RUN_SEED_KIND = "run_seed"  # D212: the kind a Candidate-shaped Run's seed is drawn under, keyed on its Run id
 REROLL_TURNS = 30  # the loop's cap for a re-roll, the same as a Candidate batch's default
 REROLL_KEY_NOTE = (
     "a Task keeps its re-rolls while its own inputs hold. A body of a tool its recordings never call "
@@ -1463,8 +1475,15 @@ def _reroll_rows(workdir: Path, rows: Iterable[dict], relative: bool) -> list[di
         else:
             path = Path(workdir) / path
         out.append({"run_id": row.get("run_id"), "path": path.as_posix() if relative else str(path),
-                    "termination_reason": row.get("termination_reason")})
+                    "termination_reason": row.get("termination_reason"),
+                    # D210: how the Simulated user ended this Run, kept so a reused row says it too.
+                    "user_end": row.get("user_end")})
     return out
+
+
+def _members_of(task: Task, traces: dict) -> list[Any]:
+    """This Task's own recordings, which are the evidence its answers are stripped against (D196)."""
+    return [traces[run_id] for run_id in task.run_ids if run_id in traces]
 
 
 def _reroll_record(workdir: Path, task_id: str) -> dict:
@@ -1535,7 +1554,8 @@ def _rerolls_stage(model: Any, rerolls: int, workers: int = 1, only: Optional[It
                 _discard_runs(ctx.workdir / "runs" / task.id, f"reroll-{task.id}-")
                 (ctx.workdir / "runs" / task.id / REROLL_RECORD).unlink(missing_ok=True)
                 continue
-            rules = next((user_rules.get(r["trace_id"]) for r in confirmed if user_rules.get(r["trace_id"])), None)
+            reference_id = next((r["trace_id"] for r in confirmed if user_rules.get(r["trace_id"])), None)
+            rules = user_rules.get(reference_id) if reference_id else None
             prompt = _system_prompt_for(task, traces, inputs.get("policy_text"))
             key = _reroll_key(task, traces=traces, bodies=inputs["bodies"], rules=rules,
                               system_prompt=prompt, workdir=ctx.workdir, shared=shared)
@@ -1546,10 +1566,10 @@ def _rerolls_stage(model: Any, rerolls: int, workers: int = 1, only: Optional[It
             reasons[task.id] = ("an explicit re-roll was asked for" if only is not None
                                 else _reroll_reason(_reroll_record(ctx.workdir, task.id).get("key"), key)
                                 or "the Run files the key names are gone")
-            jobs.append((task, rules, prompt, key))
+            jobs.append((task, rules, prompt, key, reference_id))
 
         def reroll(job):  # one Task's re-rolls, in its own world and run directory (D118)
-            task, rules, prompt, key = job
+            task, rules, prompt, key, reference_id = job
             _discard_runs(ctx.workdir / "runs" / task.id, f"reroll-{task.id}-")
             # D206: the Run id carries the key these Runs are of. A re-roll replaces the Task's
             # earlier ones, and under a name that did not move, a later round wrote different bytes
@@ -1562,14 +1582,17 @@ def _rerolls_stage(model: Any, rerolls: int, workers: int = 1, only: Optional[It
                                    schema=with_synthetic_rows(inputs["schema"], inputs.get("synthetic_rows") or ()),
                                    sigs=inputs["sigs"], db=inputs["db"], env_id=env_id,
                                    canon_rules=canon_rules, rules=rules, seed=REROLL_SEED,
-                                   max_turns=REROLL_TURNS, system_prompt=prompt)
-            rows = [{"run_id": r.run_id, "path": p, "termination_reason": r.termination_reason} for r, p in runs]
+                                   max_turns=REROLL_TURNS, system_prompt=prompt,
+                                   members=_members_of(task, traces),
+                                   reference=traces.get(reference_id) if reference_id else None)
+            rows = [{"run_id": r.run_id, "path": p, "termination_reason": r.termination_reason,
+                     "user_end": user_sim.end_of_run(r)} for r, p in runs]
             _write_json(ctx.workdir / "runs" / task.id / REROLL_RECORD,
                         {"task_id": task.id, "key": key,
                          "runs": _reroll_rows(ctx.workdir, rows, relative=True)})
             return rows
 
-        rolled = {task.id: rows for (task, _, _, _), rows
+        rolled = {job[0].id: rows for job, rows
                   in zip(jobs, parallel.each(jobs, reroll, workers), strict=True)}
         out = {task.id: rolled[task.id] if task.id in rolled else reused[task.id]
                for task in tasks if task.id in rolled or task.id in reused}
@@ -1577,10 +1600,14 @@ def _rerolls_stage(model: Any, rerolls: int, workers: int = 1, only: Optional[It
         ruling = rerolls_gate(out, rerolls)
         ctx.record_gate(ruling.model_copy(update={"metrics": {
             **ruling.metrics, "reused": len(reused), "rerolled": len(rolled),
+            # D210: how the Simulated user ended each re-roll, so a round can tell a Run that did
+            # what it came for from one whose scenario ran dry or that spent its turns.
+            "user_ends_by_kind": user_sim.ends_by_kind(
+                [row for rows in out.values() for row in rows]),
             "rerolled_because": dict(sorted(reasons.items())), "note": REROLL_KEY_NOTE}}))
         return {"rerolls": out}
 
-    version = (f"{_version('rerolls', run, loop, route, user_sim, provider)}:"
+    version = (f"{_version('rerolls', run, loop, route, user_sim, intent, provider)}:"
                f"{getattr(model, 'name', 'none')}:{rerolls}")
     return pipeline.Stage(name="rerolls", fn=run, builder=True,
                           inputs=("tasks", "replays", "user_rules", "schema", "sigs", "bodies", "db",
@@ -1592,25 +1619,44 @@ def _rerolls_stage(model: Any, rerolls: int, workers: int = 1, only: Optional[It
 def _candidate_runs(workdir: Path, task: Task, model: Any, *, count: int, prefix: Optional[str], source: str,
                     schema: EntitySchema, sigs: list, db: dict, env_id: Optional[str], canon_rules: Any,
                     rules: Optional[UserRules], seed: int = 0, max_turns: int = 30,
-                    system_prompt: Optional[str] = None, tag: str = "") -> list[tuple[Any, str]]:
+                    system_prompt: Optional[str] = None, tag: str = "",
+                    members: Sequence[Any] = (), reference: Optional[Any] = None) -> list[tuple[Any, str]]:
     """`count` Runs of `model` against the Task's world, each in a fresh copy of it; the Runs and their paths.
 
     Every Run opens the way the recorded one did: the recorded agent's own system prompt, the
     Simulated user's opening turn, and the mined tool definitions on the model call. Without the
     three the model is asked for a first turn over an empty transcript with no tools, which is what
-    the second retail build's re-rolls did.
+    an earlier build's re-rolls did.
 
     `tag` goes into every Run id, so a caller whose Runs are replaced when its inputs move can say
     which inputs these Runs are of and never write different bytes under a name something already
     read (D206). It sits after the Task, so a caller that discards its own earlier Runs by the name
     it built them under still finds them.
+
+    `seed` is the first attempt index of the batch, so a Run's id is its Task, its tag and its
+    attempt and nothing else; the seed the Run record carries is drawn from that id and the build
+    salt (D212), never from a counter over the batch, so a Run discarded and made again under its
+    own id draws the seed of the Run it replaces and a batch that grows takes higher attempt
+    indexes without moving the ones already taken.
+
+    `members` are the Task's own recordings and `reference` the one its rules came from; they are
+    what the Simulated user ends by protocol on and answers by class (D210). The Task's evidence is
+    read once here rather than per turn: the strip closure and the goal's write set are the same
+    for every Run of the Task.
     """
+    salt = sampling.build_salt(workdir)
     overlay, overlay_rows = compile_env.load_overlay(workdir, task.id)
     vocab = _vocab_from(workdir)
     tools = _tool_definitions(sigs, vocab)
     # The Simulated user restates its goal once rather than leaving on the first dead turn, and it
     # needs these names to tell a Run that has already written from one that has not (user_sim).
     write_tools = {sig.name for sig in sigs if getattr(sig, "kind", None) == "write"}
+    # D210: which writes the goal implies, and the D196 strip over this Task's own evidence, so no
+    # value only the tools knew reaches the Candidate through an answer. A caller that names no
+    # recordings gets the user it had, ending on any write and speaking its facts unchecked.
+    goal_writes = user_sim.goal_write_set(reference, write_tools) if reference is not None else None
+    answer_strip = intent.value_strip(list(members), schema=schema,
+                                      rules=canon_rules) if members else None
     out = []
     for number in range(count):
         stem = f"{prefix}-{task.id}" if prefix else str(task.id)
@@ -1622,10 +1668,12 @@ def _candidate_runs(workdir: Path, task: Task, model: Any, *, count: int, prefix
                               overlay=overlay, overlay_rows=overlay_rows, tool_sigs=sigs,
                               canon_rules=canon_rules, synthetic_rows=schema.synthetic_rows)
         simulated = user_sim.SimulatedUser(rules, starting_state_reader=router.state, vocab=vocab,
-                                           write_tools=write_tools) if rules else None
+                                           write_tools=write_tools, goal_writes=goal_writes,
+                                           answer_strip=answer_strip) if rules else None
         state = loop.new_run_state(run_id, workdir=workdir / "runs" / task.id, env_id=env_id, task_id=task.id,
                                    model=getattr(model, "name", None) or (prefix or "candidate"),
-                                   seed=seed + number, user=simulated, user_rules=rules, max_turns=max_turns,
+                                   seed=sampling.sample_seed(RUN_SEED_KIND, run_id, salt),
+                                   user=simulated, user_rules=rules, max_turns=max_turns,
                                    system_prompt=system_prompt)
         try:
             loop.open_with_user(state)
@@ -1665,6 +1713,7 @@ def probe_runner(plan: BuildPlan):
     user_rules = store.get("user_rules") or {}
     replays = store.get("replays") or {}
     canon_rules = _rules_of(store)
+    traces = {t.trace_id: t for t in store.get("traces") or []}
     source = compile_env.module_source(schema, sigs, bodies)
     tools = _tool_definitions(sigs, _vocab_from(plan.workdir))
     workdir = plan.workdir
@@ -1679,9 +1728,15 @@ def probe_runner(plan: BuildPlan):
                               canon_rules=canon_rules, synthetic_rows=schema.synthetic_rows)
         reference = next((r for r in (replays.get(task.id) or {}).values() if r.get("confirmed")), None)
         rules = user_rules.get(reference["trace_id"]) if reference else None
+        writes = {sig.name for sig in sigs if getattr(sig, "kind", None) == "write"}
+        recorded = traces.get(reference["trace_id"]) if reference else None
+        members = _members_of(task, traces)
         simulated = user_sim.SimulatedUser(
             rules, starting_state_reader=router.state, vocab=_vocab_from(workdir),
-            write_tools={sig.name for sig in sigs if getattr(sig, "kind", None) == "write"},
+            write_tools=writes,
+            goal_writes=user_sim.goal_write_set(recorded, writes) if recorded is not None else None,
+            answer_strip=intent.value_strip(members, schema=schema,
+                                            rules=canon_rules) if members else None,
         ) if rules else None
         state = loop.new_run_state(f"probe-{task.id}", workdir=workdir / "probes", env_id=env_id,
                                    task_id=task.id, model=f"probe:{getattr(model, 'name', 'model')}",
@@ -1730,12 +1785,16 @@ def reroll_runner(plan: BuildPlan):
         seeds = set(anchor.seed_runs(task.id, task.run_ids)) if anchor is not None else set(task.run_ids)
         confirmed = [r for tid, r in sorted((replays.get(task.id) or {}).items())
                      if tid in seeds and r.get("confirmed")]
-        rules = next((user_rules.get(r["trace_id"]) for r in confirmed if user_rules.get(r["trace_id"])), None)
+        reference_id = next((r["trace_id"] for r in confirmed if user_rules.get(r["trace_id"])), None)
+        rules = user_rules.get(reference_id) if reference_id else None
         runs = _candidate_runs(plan.workdir, task, model, count=count, prefix=prefix, source=source,
                                schema=schema, sigs=sigs, db=db, env_id=env_id, canon_rules=canon_rules,
-                               rules=rules, system_prompt=_system_prompt_for(task, traces, store.get("policy_text")))
+                               rules=rules, system_prompt=_system_prompt_for(task, traces, store.get("policy_text")),
+                               members=_members_of(task, traces),
+                               reference=traces.get(reference_id) if reference_id else None)
         _write_runs_index(plan.workdir)
-        return [{"run_id": r.run_id, "path": p, "termination_reason": r.termination_reason} for r, p in runs]
+        return [{"run_id": r.run_id, "path": p, "termination_reason": r.termination_reason,
+                 "user_end": user_sim.end_of_run(r)} for r, p in runs]
 
     return run_rerolls
 

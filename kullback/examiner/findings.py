@@ -52,6 +52,9 @@ SHAPES_NAMED = 3
 # The build's readers artifact, read for the results no reader answers (D203). Named here rather
 # than imported from the builder so the examiner package keeps its one-way dependency on the records.
 READERS_FILE = "readers.json"
+# What the Starting-state pinner ruled, read for the Tasks whose own Runs part on the column that
+# names a row they write (D213). Named here for the same reason READERS_FILE is.
+PINS_FILE = "overlay_pins.json"
 # The kinds whose rows are deduplicated on the Task and tool pairs they cover (D192), beside the key.
 # Both name a tool and the Tasks it costs rather than a loss ranked by a moving set of Tasks, so a
 # pair another finding already carries is that finding's news and not a second message.
@@ -482,6 +485,43 @@ def unread_result_rows(readers_artifact: dict, status: dict) -> list[dict]:
     return rows
 
 
+def runs_disagree_rows(pins: dict) -> list[dict]:
+    """One row per Task whose own Runs recorded a row of the world in two versions (D213).
+
+    The Starting state no longer settles this by call order: what the Runs agree on is the Task's
+    overlay and each Run replays against its own value, so the disagreement costs no fidelity. It is
+    still a fact about the grouping the Examiner has to see, because a Task whose Runs part on the
+    column that names a row one of its writes touched may be two Tasks the mining ran together, and
+    that is what `split_candidate` says. Only the split candidates are filed: the rest is a world
+    the build already serves correctly and would be a message with nothing to do about it.
+
+    The row names the table, how the table's rows are keyed and which classes of column parted, and
+    never a value out of a record.
+    """
+    by_task: dict[str, list[dict]] = {}
+    for row in (pins or {}).get("runs_disagree") or ():
+        if isinstance(row, dict) and row.get("split_candidate") and row.get("task_id"):
+            by_task.setdefault(str(row["task_id"]), []).append(row)
+    rows = []
+    for task_id, found in sorted(by_task.items()):
+        tables = sorted({str(row.get("table")) for row in found})
+        classes = sorted({str(name) for row in found for name in row.get("column_classes") or ()})
+        runs = sorted({str(run) for row in found for run in row.get("run_ids") or ()})
+        rows.append({
+            "kind": "runs_disagree", "tool": None, "task_ids": [task_id], "task_id": task_id,
+            "key": finding_key("runs_disagree", "", task_id), "suggested": "none",
+            "hint": (f"{len(runs)} runs part on a {found[0].get('key_class')} key column of "
+                     f"{tables[0]}"),
+            "text": (f"The Task's own Runs recorded {len(found)} row(s) of {', '.join(tables)} in "
+                     f"different versions, parting on a column that names the row and that one of "
+                     f"its writes touched ({', '.join(classes)}). Each Run replays against its own "
+                     f"version, so no fidelity is lost, but a goal that writes a row the Runs do "
+                     f"not agree is the same row may be two Tasks grouped as one; the Runs are "
+                     f"{', '.join(runs)}."),
+        })
+    return rows
+
+
 # --- the whole pass ---------------------------------------------------------------------
 
 def rule_rows(plan: ExaminerPlan) -> list[dict]:
@@ -493,10 +533,11 @@ def rule_rows(plan: ExaminerPlan) -> list[dict]:
     fidelity = plan.store.get("tool_fidelity") or _json(plan.workdir / "tool_fidelity.json", {}) or {}
     references = _json(plan.workdir / "references.json", {}) or {}
     reader_gaps = _json(plan.workdir / READERS_FILE, {}) or {}
+    pins = _json(plan.workdir / PINS_FILE, {}) or {}
     rows = (assisted_tool_rows(status, fidelity) + suite_rows(status)
             + false_rejection_rows(plan.store) + disagreement_rows(status, references)
             + fidelity_rows(status, fidelity, plan.store.get("replays") or {})
-            + unread_result_rows(reader_gaps, status))
+            + unread_result_rows(reader_gaps, status) + runs_disagree_rows(pins))
     return sorted(rows, key=lambda row: (-len(row["task_ids"]), row["key"]))
 
 

@@ -1322,11 +1322,13 @@ def _reroll(plan: ExaminerPlan):
         if plan.allowance_remaining is not None and plan.allowance_remaining <= 0:
             raise RuntimeError(f"the round's allowance is spent ({plan.allowance_remaining:.2f} USD left)")
         prefix = f"reroll-r{plan.round}"
-        existing = {row.get("run_id") for rows in (plan.store.get("rerolls") or {}).values() for row in rows}
-        number = 0
         # `_candidate_runs` numbers Runs from zero under the prefix, so a second call in the same round
-        # takes a longer prefix rather than writing over the first call's files.
-        while any(str(run_id).startswith(f"{prefix}-{args.task_id}-") for run_id in existing):
+        # takes a longer prefix rather than writing over the first call's files. D212: the attempt
+        # index is read off this Task's own rows and grows upward, so no other Task's re-rolls are an
+        # input to it and the indexes already taken are never reshuffled.
+        existing = {str(row.get("run_id")) for row in (plan.store.get("rerolls") or {}).get(args.task_id) or []}
+        number = 0
+        while any(run_id.startswith(f"{prefix}-{args.task_id}-") for run_id in existing):
             number += 1
             prefix = f"reroll-r{plan.round}-{number}"
         before = plan.spend()

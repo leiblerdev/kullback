@@ -34,7 +34,7 @@ def test_a_write_whose_effect_differs_does_not_confirm(tmp_path):
 
     out = do_replay(tmp_path, Misspelt)
     assert not out.confirmed
-    assert out.reasons == ["cancel_order write: differs"]
+    assert out.reasons == ["cancel_order write: differs (value)"]
     assert out.counts["writes_matched"] == 0
 
 
@@ -54,7 +54,7 @@ def test_a_tool_that_refuses_where_the_real_one_answered_is_a_semantic_miss(tmp_
 
     out = do_replay(tmp_path, Broken)
     assert not out.confirmed
-    assert out.reasons == ["get_order_details read: ours_refused"]
+    assert out.reasons == ["get_order_details read: ours_refused (error)"]
 
 
 def test_compare_call_names_every_way_two_answers_part():
@@ -79,7 +79,7 @@ def test_a_check_that_agreed_carries_no_difference_record(tmp_path):
     out = do_replay(tmp_path)
     assert out.confirmed and out.checks
     assert all("difference" not in check for check in out.checks)
-    assert all(set(check) == {"tool", "kind", "requestor", "verdict", "route", "call_id", "ours", "recorded"}
+    assert all(set(check) == {"tool", "kind", "requestor", "verdict", "verdict_route", "route", "call_id", "ours", "recorded"}
                for check in out.checks)
 
 
@@ -248,7 +248,7 @@ def test_a_user_turns_own_call_that_parts_is_named_a_user_call_in_the_reasons(tm
         _turn(3, "user", "Thanks."),
         _turn(4, "assistant", "Anything else?"),
     ], [call("u1", "check_balance", {}, {"balance": 99}, requestor="user")])
-    assert out.reasons == ["check_balance user_call: differs"]
+    assert out.reasons == ["check_balance user_call: differs (value)"]
 
 
 def test_two_assistant_turns_in_a_row_are_one_turn_and_the_user_is_asked_once(tmp_path):
@@ -293,3 +293,74 @@ def test_a_trace_whose_roles_alternate_absorbs_nothing_and_replays_as_it_did(tmp
     assert out.counts["absorbed_user_runs"] == 0 and out.counts["absorbed_model_runs"] == 0
     assert out.counts["absorbed_turns"] == 0 and out.counts["gaps"] == 0
     assert out.counts["writes"] == 1 and out.counts["reads"] == 1
+
+
+# --- D217: a cosmetic verdict says which way it was reached, and states are not cosmetic ---
+
+def _kiln_state_comparer():
+    """A comparer over an invented kiln whose report is prose and whose states are named."""
+    from kullback.gates.tool_runs import ReplayComparer
+    from kullback.runner.records import Column, EntitySchema
+
+    schema = EntitySchema(tables=["firings"], id_patterns={"firings.firing_id": r"^F\d+$"}, columns=[
+        Column(table="firings", name="firing_id", **{"class": "hard"}),
+        Column(table="firings", name="damper", **{"class": "hard"},
+               vocabulary=["closed", "open", "vented"]),
+        Column(table="firings", name="firing_report", **{"class": "semantic"}),
+        Column(table="firings", name="logged_at", **{"class": "exempt"})])
+    return ReplayComparer(schema)
+
+
+def test_the_same_bytes_and_the_same_canonical_form_are_told_apart_by_the_route():
+    same = call("x", "t", {}, {"a": 1})
+    assert replay.compare_call_route(same, {"a": 1}, None) == (replay.SAME, [], replay.BY_BYTES)
+    assert replay.compare_call_route(same, {"a": 1.0}, None) == (replay.COSMETIC, [], replay.BY_CANONICAL)
+
+
+def test_whitespace_and_key_order_stay_cosmetic_by_the_canonical_route():
+    recorded = call("x", "t", {}, {"firing_id": "F9", "firing_report": "damper open"})
+    ours = {"firing_report": "  damper   open ", "firing_id": "F9"}
+    verdict, _notes, route = replay.compare_call_route(recorded, ours, None,
+                                                       comparer=_kiln_state_comparer())
+    assert verdict == replay.COSMETIC and route == replay.BY_CANONICAL
+
+
+def test_a_forgiven_column_and_a_judged_one_are_told_apart_by_the_route():
+    exempt_only = call("x", "t", {}, {"firing_id": "F9", "logged_at": "2031-01-01T00:00:00"})
+    verdict, _notes, route = replay.compare_call_route(
+        exempt_only, {"firing_id": "F9", "logged_at": "2031-07-04T18:00:00"}, None,
+        comparer=_kiln_state_comparer())
+    assert verdict == replay.COSMETIC and route == replay.BY_EXEMPT
+    prose = call("x", "t", {}, {"firing_id": "F9", "firing_report": "the damper is open"})
+    verdict, _notes, route = replay.compare_call_route(
+        prose, {"firing_id": "F9", "firing_report": "open damper, that is"}, None,
+        comparer=_kiln_state_comparer())
+    assert verdict == replay.COSMETIC and route == replay.BY_JUDGE
+
+
+def test_an_answer_naming_a_different_state_parts_and_names_the_states_on_each_side():
+    recorded = call("x", "t", {}, {"firing_id": "F9", "firing_report": "damper open, kiln loaded"})
+    ours = {"firing_id": "F9", "firing_report": "damper closed, kiln loaded"}
+    verdict, notes, route = replay.compare_call_route(recorded, ours, None,
+                                                      comparer=_kiln_state_comparer())
+    assert verdict == replay.DIFFERS and route == replay.BY_TOKEN_SET
+    assert notes == ["token_set:firing_report: ours [closed], recorded [open]"]
+
+
+def test_a_value_only_one_side_answers_parts_and_the_route_says_so():
+    recorded = call("x", "t", {}, {"firing_id": "F9", "logged_at": "2031-01-01T00:00:00"})
+    verdict, _notes, route = replay.compare_call_route(recorded, {"firing_id": "F9"}, None,
+                                                       comparer=_kiln_state_comparer())
+    assert verdict == replay.DIFFERS and route == replay.BY_PRESENCE
+
+
+def test_the_round_counts_how_much_of_its_agreement_rested_on_each_route(tmp_path):
+    class Floaty(Toolkit):
+        total_as = float
+
+    out = do_replay(tmp_path, Floaty)
+    assert out.confirmed, out.reasons
+    assert out.counts["cosmetic_by_canonical"] == 1
+    assert out.counts["cosmetic_by_exempt"] == 0 and out.counts["cosmetic_by_judge"] == 0
+    assert out.counts["differs_by_token_set"] == 0 and out.counts["differs_by_presence"] == 0
+    assert all(check["verdict_route"] for check in out.checks)

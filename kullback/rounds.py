@@ -44,7 +44,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, AsyncIterator, Callable, Iterable, Optional
 
-from kullback import difficulty, round_snapshot
+from kullback import difficulty, round_snapshot, sampling
 from kullback.agent.events import (
     BeatEnd,
     BeatStart,
@@ -424,6 +424,9 @@ class Loop:
     retry_asks: int = 0
     retries_seen: int = 0
     zooms_seen: int = 0  # `plan.zooms_skipped` at the round's start; the plan's counter is cumulative
+    # D212: the keyed draws taken by the time the last round closed, so a round reports its own
+    # share of a counter that is cumulative over the process.
+    draws_seen: dict = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         """A new Loop resumes the workdir's unfinished business: findings an earlier invocation
@@ -441,6 +444,10 @@ class Loop:
         # than a second computation over files that have since moved.
         self.landed: dict[str, GateResult] = {}
         self.difficulty_body: dict = {}
+        # D212, Greptile P1 (PR 26): the draw counter is process-global, so a Loop built after
+        # something already drew has to start from what the process has taken, not from nothing.
+        # Otherwise its first round reports another Loop's draws as its own.
+        self.draws_seen = self.draws_seen or sampling.draws_by_kind()
         seen = {finding.finding_id for finding in self.pending_findings}
         self.pending_findings = list(self.pending_findings) + [
             finding for finding in _open_findings(self.plan.workdir) if finding.finding_id not in seen]
@@ -824,7 +831,23 @@ class Loop:
             **self._reader_counts(),
             **self._lesson_counts(),
             **self.task_split(),
+            **self._sampling_counts(),
         }
+
+    def _sampling_counts(self) -> dict:
+        """D212: the build salt every keyed draw ran under, and how many draws of each kind this round took.
+
+        `sample_salt` is eight characters of the salt's digest, so two rounds of two builds can be
+        read for whether they sampled alike without the salt itself going into a record. `draws_`
+        counts say which draws the round actually took: a round whose stages all came from the cache
+        drew nothing, which is the honest reading and not a mechanism that is off. The counts are a
+        difference against the totals at the round's start, because a round's counts are assembled
+        more than once and a destructive read would give the second caller nothing.
+        """
+        out = {"sample_salt": sampling.salt_label(sampling.read_salt(self.plan.workdir))}
+        for kind, count in sampling.draws_since(self.draws_seen).items():
+            out[f"draws_{kind}"] = int(count)
+        return out
 
     def retirements_now(self) -> list:
         """The Verifiers this round retired, read off the status rows the derivation left (D208)."""
@@ -1139,6 +1162,7 @@ class Loop:
         # The driver's own numbers last and freshest: a round that failed comes here with no counts
         # at all, and its clock, spend and turns are as true as a round that finished.
         record = RoundRecord(round=n, counts={**counts, **self.driver_counts()})
+        self.draws_seen = sampling.draws_by_kind()  # the next round's draws start counting from here
         record.counts["moved"] = self.round_moved(n, record.counts)
         record.counts["repairs"] = self.repairs_made(n)
         history = self.rounds + [record]
