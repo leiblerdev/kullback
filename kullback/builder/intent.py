@@ -900,6 +900,8 @@ def write_intent(
     rewrite that answers it is the next attempt, told which columns were taken out and never their
     values; that attempt is stripped again, by the same code, before it too is graded.
     """
+    # D220: `task` and `traces` arrive already filtered to the seed set, because the Intent stage
+    # draws both from ctx.evidence; this reads the Task's members and does not decide which they are.
     wanted = list(task.run_ids)
     members = [t for t in traces if t.trace_id in set(wanted)]
     if not members:

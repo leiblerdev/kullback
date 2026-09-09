@@ -66,9 +66,12 @@ TARGET = "environment"
 # reason now names the route the verdict was reached by, and the one reason here reads
 # `differs (columns)`. Re-pinned for D218: every row carries the round that last moved it and when,
 # so the hash is taken over the rows with those two stamps stripped; the stamp is a wall clock and
-# hashing it would pin the minute the fixture ran rather than what it wrote. The same three Tasks,
-# the same verdicts.
-TASK_STATUS_SHA256_BEFORE_THE_PHASE = "7563e5758c9391816afd8de2465ad6bb91bbeb03d299c3479404ece3e440c2c8"
+# hashing it would pin the minute the fixture ran rather than what it wrote. Re-pinned for D220: a
+# Task's re-roll key is now a function of its seed Runs, so the key hash inside every re-rolled Run
+# id moves. Re-pinned for D214: the rule-driven Simulated user moved into kullback/user, so the
+# re-roll stage's code version moved with it and the Run ids derived from that key moved again. The
+# same three Tasks, the same verdicts and the same reasons.
+TASK_STATUS_SHA256_BEFORE_THE_PHASE = "3c59e00288ccb2f1dae5eda91a96945182ec49ef78377be5c9c101606b6f673d"
 
 
 def _fixture(request) -> Path:
@@ -786,6 +789,17 @@ def test_round_end_carries_every_count_d126_lists_and_none_comes_from_a_model(dr
     assert counts["findings"] and all(f.startswith("finding-") for f in counts["findings"])
     assert rounds.load_rounds(driven["workdir"])[-1].counts == counts
     assert [d for d in driven["dicts"] if d.get("kind") == "round"][-1]["counts"] == counts
+
+
+def test_a_round_says_what_its_semantic_comparisons_came_to_and_what_the_judging_cost(driven):
+    """D219: a round that cannot tell "no semantic column" from "every semantic column unanswered"
+    cannot see the judge is unwired. The counts and the judge's own spend are on every round."""
+    counts = rounds.load_rounds(driven["workdir"])[-1].counts
+    assert set(counts) >= {"semantic_compared", "semantic_judged", "semantic_equal",
+                           "semantic_different", "semantic_unresolved", "judge_spend"}
+    # The fixture's schema classes no column semantic, so nothing was compared and nothing was spent.
+    assert counts["semantic_compared"] == 0 and counts["semantic_unresolved"] == 0
+    assert counts["judge_spend"] == 0
 
 
 def test_a_rounds_counts_carry_its_clock_its_spend_its_turns_and_its_context_fill(driven):
