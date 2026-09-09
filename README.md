@@ -1,59 +1,39 @@
 <div align="center">
   <h1>Kullback</h1>
-  <p><strong>Generate synthetic evaluation and RL environment from your traces - then train a model on it.</strong></p>
+  <p><strong>Rebuild an executable environment from your agent's traces, then grade and train models on it.</strong></p>
   <p>
-    <a href="#quick-start"><strong>Quick Start</strong></a> ·
-    <a href="#why-kullback"><strong>Why Kullback</strong></a> ·
+    <a href="https://huggingface.co/leibler"><strong>Environments on Hugging Face</strong></a> ·
+    <a href="#quick-start"><strong>Quick start</strong></a> ·
     <a href="#commands"><strong>Commands</strong></a> ·
-    <a href="#how-it-works"><strong>How It Works</strong></a> ·
-    <a href="#explore"><strong>Explore</strong></a>
+    <a href="docs/architecture.md"><strong>Architecture</strong></a>
   </p>
 
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-Apache_2.0-blue" alt="Apache License, Version 2.0"></a>
   <a href="https://www.python.org"><img src="https://img.shields.io/badge/python-%3E%3D3.11-blue" alt="Python 3.11 or newer"></a>
-  <img src="https://img.shields.io/badge/tests-offline_first-green" alt="Offline-first tests">
+  <a href="https://huggingface.co/leibler"><img src="https://img.shields.io/badge/%F0%9F%A4%97%20Hugging%20Face-leibler-yellow" alt="Environments on Hugging Face"></a>
 
   <br><br>
   <img src="docs/assets/kullback-tui.webp" alt="The kullback terminal screen: the commands, and the builds running now" width="820">
 </div>
 
-Your traces already hold the tasks, the tool signatures, what the tools returned, and the effect of every write. That is enough to rebuild an executable copy of your system and grade any model on what it changed in it. The grader is code, so it is cheap and has no opinions.
+Your traces already hold the tasks, the tool signatures, what the tools returned and the effect of every write. That is enough to rebuild a copy of your system that runs, and to grade any model on what it changed in that copy. The grader is code, so it is cheap and has no opinions.
 
-Kullback rebuilds the world your agent works in from the traces it already produced, checks the rebuild by replaying those traces, grows the rebuilt database with synthetic rows shaped by the real ones, and runs other models through it, graded on what they changed. The runs that pass are the training data for the next model.
+Kullback is the open-source Builder and Runner behind [Leibler](https://leibler.dev), under Apache-2.0. It is under active development: the numbers below move every build round, and the interfaces can still change.
 
-It is the open-source Builder and Runner behind [Leibler](https://leibler.dev). Apache-2.0.
+## News
 
-## Quick Start
-
-Start the screen, then run these in order:
-
-```bash
-uv sync
-uv run kullback tui
-```
-
-```bash
-uv run kullback ingest path/to/traces.json --workdir work
-uv run kullback build --workdir work --model provider/model --grow users=500 --workers 8
-uv run kullback freeze-runner --workdir work --yes
-uv run kullback run --workdir work --task <task id> --model provider/candidate --count 3
-uv run kullback verdict --workdir work
-uv run kullback report --workdir work
-```
-
-The screen shows the build as it runs: stages, gates, rounds and spend. `build --iterate` resumes from the cache, `--target` builds one stage and what it needs, `--agent` lets the model drive the Builder. Live model calls need `HARNESS_ALLOW_MODEL_REQUESTS=1` and an API key, from the environment or a `.env` in the working directory.
+- **2026-09-09.** The first three Environments are on Hugging Face under [leibler](https://huggingface.co/leibler). Retail is a release, airline and telecom are previews. New commands `export`, `publish` and `fetch` move an Environment between a build and the Hub, and every package carries a leak scan and a content hash.
+- **Next.** Raise the trusted Task count on each Environment, then generate Tasks synthetically over the rebuilt world on top of the recorded ones.
 
 ## Environments on Hugging Face
 
-The Environments this harness has built are published as datasets under [huggingface.co/leibler](https://huggingface.co/leibler), each with a card carrying its own numbers. A release replays at least 90% of its Tasks; a preview is below that bar and is published anyway, with the numbers on its card, so the work is visible while it improves.
+| Environment | Replay fidelity | Trusted Tasks | Round | Status |
+| --- | --- | --- | --- | --- |
+| [leibler/retail](https://huggingface.co/datasets/leibler/retail) | 95.1% | 122 of 205 | 1 | release |
+| [leibler/airline](https://huggingface.co/datasets/leibler/airline) | 72.3% | 38 of 119 | 3 | preview |
+| [leibler/telecom](https://huggingface.co/datasets/leibler/telecom) | 9.3% | 0 of 183 | 5 | preview |
 
-| Environment | Replay fidelity | Trusted Tasks | Round | Status | Link |
-| --- | --- | --- | --- | --- | --- |
-| retail | 95.1% | 122 of 205 | 1 | release | [leibler/retail](https://huggingface.co/datasets/leibler/retail) |
-| airline | 72.3% | 38 of 119 | 3 | preview | [leibler/airline](https://huggingface.co/datasets/leibler/airline) |
-| telecom | 9.3% | 0 of 183 | 5 | preview | [leibler/telecom](https://huggingface.co/datasets/leibler/telecom) |
-
-All three are built from the public [tau2-bench](https://github.com/sierra-research/tau2-bench) corpora, which are MIT licensed. The packages hold the rebuilt world, the Task list and the Verifiers, and none of the recordings they were built from.
+A release replays at least 90% of its Tasks. A preview is below that bar and is published anyway, with its numbers on its card, so the work stays visible while it improves. All three come from the public [tau2-bench](https://github.com/sierra-research/tau2-bench) corpora (MIT). A package holds the rebuilt world, the Task list and the Verifiers, and none of the recordings it was built from.
 
 ```bash
 uv run kullback fetch leibler/retail --out env-retail
@@ -62,93 +42,53 @@ uv run kullback verdict --workdir env-retail
 uv run kullback report --workdir env-retail
 ```
 
-`fetch` verifies every file against the package's content hash before laying it out and refuses one that does not match. `--revision round-<n>` fetches an earlier round instead of the newest. To publish one of your own builds, see `docs/hf/environment-card-template.md`.
+`fetch` checks every file against the package's content hash and refuses one that does not match. `--revision round-<n>` fetches an earlier round. To publish a build of your own, see `docs/hf/environment-card-template.md`.
 
-## Why Kullback
+## Quick start
 
-- **Grade what changed, not what was said.** The Verdict is a code-only pass over the End state: required writes present, forbidden writes absent, policy never broken, the user's questions answered. Where judgment is unavoidable, two judges each cite a span and a disagreement goes to a person; a judge can never award a pass.
-- **A stand-in is reported, never counted.** Tool calls go to code first, then to an exact recording, then to a model stand-in - and the route taken is on the event. A run served by a stand-in anywhere is excluded from every number.
-- **Use any model behind one id.** `provider/model` resolves through built-in adapters or the models.dev registry, so a provider nobody wrote code for is one flag away. Keys come from the environment, never from a command line.
-- **Rebuilds you can trust.** Every Builder stage ends in a code gate; the Runner freezes on a person's confirmation; every Verdict carries the hash of both. A hand-built eval takes weeks and drifts - this one replays your own traces.
-- **Synthetic rows that confess.** The database grows with rows composed by rules read off the observed ones, tagged as synthetic, so nothing built on them is mistaken for the real thing.
-
-## How It Works
-
-Traces go in, an Environment comes out, candidates run in it, code grades what they changed, you read the report. Two agents, one runner and one set of gates, on a layering inspired by [huggingface/tau](https://github.com/huggingface/tau).
-
-```mermaid
-flowchart TB
-    AI[ai: every model behind one interface] --> AG[agent: the loop, tools, session, context]
-    AG --> BU[Builder: the agent over the Environment]
-    AG --> EX[Examiner: the agent over Verifiers and probes]
-    RU[runner: the frozen loop and the Verdict] --> GA[gates: code no agent can write]
-    GA --> BU
-    GA --> EX
-    BU --> E[(Environment: db, tools, policy, user, tasks, verifiers)]
-    E --> RU
-    RU --> P[Report per Task]
+```bash
+uv sync
+uv run kullback ingest path/to/traces.json --workdir work
+uv run kullback build --workdir work --model provider/model --grow users=500 --workers 8
+uv run kullback freeze-runner --workdir work --yes
+uv run kullback run --workdir work --task <task id> --model provider/candidate --count 3
+uv run kullback verdict --workdir work
+uv run kullback report --workdir work
 ```
 
-The Builder turns traces into an Environment: a database with the rows your runs touched, one function per tool that behaves as the real tool was observed to behave, the policy rules compiled into checks that run before every write, a simulated user who knows what the real user knew, and a Verifier per Task derived from the recorded runs. A model writes a tool body; five gates judge it.
+`kullback tui` shows a build as it runs: stages, gates, rounds and spend. Live model calls need `HARNESS_ALLOW_MODEL_REQUESTS=1` and an API key, from the environment or a `.env` in the working directory (see `.env.example`). Any `provider/model` id resolves through the built-in adapters or the models.dev registry.
 
-The Runner takes an Environment, a recorded run and a candidate model, and advances one turn at a time. When the run stops, the Verdict is code over what changed. The report opens with whether the Environment was built at all (gates passed, assisted tools, Tasks with too few runs), then gives per-Task numbers and a suggestion.
+## What it does
 
-The gates are the part no model may touch. They run on every artifact the Builder makes, the Runner is frozen once a person confirms it, and every Verdict carries the hash of both.
+The Builder turns traces into an Environment: a database with the rows your runs touched, one function per tool that behaves as the real tool was observed to behave, the policy compiled into checks that run before every write, a simulated user who knows what the real user knew, and a Verifier per Task derived from the recorded runs. A model writes each piece and code gates judge it.
 
-```
-kullback/
-  ai/         models, the provider stream, pricing
-  agent/      the agent core: loop, tools, session, context
-  builder/    the Environment agent
-  examiner/   the Verifier and probe agent: derivation, probes, repairs, refusals, findings
-  runner/     the frozen loop and the Verdict; serves both agents
-  gates/      every accept-or-reject check; serves both agents, no model call
-  cli.py      the command line
-  tui/        the terminal screen
-  report.py   the customer-facing report
-```
+The Runner takes an Environment and a candidate model and advances one turn at a time. Tool calls go to code first, then to an exact recording, then to a model stand-in, and the route taken is on the event. A Run served by a stand-in is reported and never counted. The Verdict is code over what changed. The Runner is frozen once a person confirms it, and every Verdict carries the hash of the Runner and the gates.
+
+The full map, package by package, is in [docs/architecture.md](docs/architecture.md).
 
 ## Commands
 
 | Command | What it does |
 | --- | --- |
-| `ingest FILES --workdir` | Load customer trace exports into the workdir |
-| `build --workdir --model` | Build the Environment (`--iterate` resumes, `--target` builds one stage, `--agent` lets the model drive, `--grow`/`--workers`/`--ceiling-usd` bound it) |
-| `freeze-runner --workdir` | Freeze the Runner on a person's confirmation (`--by`; `--yes` skips the prompt, for CI) |
+| `ingest FILES --workdir` | Load trace exports into the workdir |
+| `build --workdir --model` | Build the Environment (`--iterate` resumes, `--target` builds one stage, `--agent` lets the model drive) |
+| `freeze-runner --workdir` | Freeze the Runner on a person's confirmation |
 | `run --workdir --task --model` | Run a candidate (`--count`, `--seed` for batches) |
-| `verdict --workdir` | Code-only Verdict over what changed (`--task` for one Task) |
+| `verdict --workdir` | Code-only Verdict over what changed |
 | `regrade --workdir` | Re-score stored Runs against a new Verifier |
-| `report --workdir` | The customer-facing report (`--out`, `--batch`) |
-| `export --workdir --out` | Write a self-contained Environment package: the world, the Tasks, the Verifiers, a manifest and a leak scan |
-| `publish --workdir --repo` | Export, write the dataset card and upload it as one commit tagged with its round (`--preview` below the fidelity bar) |
-| `fetch REPO --out` | Download a published Environment, verify its content hash and lay it out as a workdir (`--revision` for a tag) |
+| `report --workdir` | The report (`--out`, `--batch`) |
+| `export --workdir --out` | Write a self-contained Environment package with a manifest and a leak scan |
+| `publish --workdir --repo` | Export, write the dataset card and upload it, tagged with its round (`--preview` below the fidelity bar) |
+| `fetch REPO --out` | Download a published Environment, verify its hash and lay it out as a workdir |
 | `tui --workdir` | The terminal screen over a live build |
 
-## Environment Variables
+## Read more
 
-| Variable | Purpose |
-| --- | --- |
-| `HARNESS_ALLOW_MODEL_REQUESTS` | Set to `1` to allow live model calls (tests stay offline without it) |
-| `OPENAI_API_KEY` | Key for OpenAI models |
-| `ANTHROPIC_API_KEY` | Key for Anthropic models |
-| Provider-specific variable | Key for any other registry provider; use the exact variable named by the models.dev snapshot (`/login` reports it, `/keys` shows whether it is set) |
-
-Keys come from the environment or a `.env` in the working directory (see `.env.example`). They are never printed and never written to a workdir.
-
-## Ways to Run It
-
-- **As a pipeline.** The six commands above, end to end, in CI or on a dev box.
-- **As a screen.** `kullback tui` watches stages, gates and spend as the build runs.
-- **As a loop.** `build --iterate` resumes from the content-addressed cache and keeps improving; `build --agent` hands the session to the model.
-- **Fully offline.** Tests run on `TestModel`/`RecordedModel` with no network; builds reproduce byte-identical artifacts from fixtures.
-
-## Explore
-
-- `CONTRIBUTING.md` - how to get a change in
-- `DEVELOPING.md` - the records, the offline models, the fixtures
-- `docs/harness-design.md` - the spec
-- `docs/decision-log.md` - why
-- `docs/todo.md` - what comes next
+- [docs/architecture.md](docs/architecture.md), the map
+- [docs/harness-design.md](docs/harness-design.md), the spec
+- [docs/decision-log.md](docs/decision-log.md), why
+- [docs/todo.md](docs/todo.md), what comes next
+- [CONTRIBUTING.md](CONTRIBUTING.md) and [DEVELOPING.md](DEVELOPING.md)
 
 ## Citation
 

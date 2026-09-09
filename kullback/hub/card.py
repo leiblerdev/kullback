@@ -13,6 +13,8 @@ from __future__ import annotations
 
 from typing import Any, Iterable, Optional
 
+from kullback.hub.package import TASKS_ROWS_NAME
+
 # What every Environment published from this harness is tagged with, before its own domain.
 BASE_TAGS: tuple[str, ...] = ("kullback", "environment", "agent-evaluation", "rl-environment")
 # The licence a card states when the caller named none for the source corpus. A host will not index
@@ -35,6 +37,9 @@ def front_matter(manifest: dict, tags: Iterable[str] = ()) -> str:
             ordered.append(tag)
     lines = ["---", f"license: {license_id}", "tags:"]
     lines += [f"  - {tag}" for tag in ordered]
+    # The viewer renders one flat file; the rest of the package is the world and the graders.
+    lines += ["configs:", "  - config_name: tasks", "    data_files:",
+              "      - split: tasks", f"        path: {TASKS_ROWS_NAME}"]
     lines += ["---"]
     return "\n".join(lines)
 
@@ -45,9 +50,8 @@ def _pct(value: Any) -> str:
 
 def _numbers_table(manifest: dict) -> list[str]:
     fidelity = manifest.get("replay_fidelity") or {}
-    total = int(manifest.get("tasks_total") or 0)
     rows = [
-        ("Tasks", str(total)),
+        ("Tasks", str(int(manifest.get("tasks_total") or 0))),
         ("Replay fidelity, Tasks", f"{_pct(fidelity.get('tasks_rate'))} "
                                    f"({fidelity.get('tasks', 0)} of {fidelity.get('tasks_total', 0)})"),
         ("Replay fidelity, Runs", f"{_pct(fidelity.get('runs_rate'))} "
@@ -57,12 +61,9 @@ def _numbers_table(manifest: dict) -> list[str]:
         ("Trusted Tasks", str(manifest.get("trusted", 0))),
         ("Refused Tasks", str(manifest.get("refused", 0))),
         ("Round", str(manifest.get("round") if manifest.get("round") is not None else "not recorded")),
-        ("Runner version", _short(manifest.get("runner_version"))),
-        ("Gates version", _short(manifest.get("gates_version"))),
-        ("Environment id", _short(manifest.get("env_id"))),
         ("Content hash", _short(manifest.get("content_hash"))),
     ]
-    lines = ["| Number | Value |", "| --- | --- |"]
+    lines = ["| | |", "| --- | --- |"]
     lines += [f"| {name} | {value} |" for name, value in rows]
     return lines
 
@@ -76,9 +77,10 @@ def _bucket_table(manifest: dict) -> list[str]:
     rows = list(manifest.get("buckets") or ())
     if not rows:
         return []
-    lines = ["", "### Difficulty buckets", "",
-             "A bucket names the Task's writes, the tools its Reference called and the paths to its "
-             "End state, each banded, so the same bucket means the same thing on any corpus.", "",
+    lines = ["", "### By difficulty", "",
+             "A bucket is the number of writes a Task makes, the tools its Reference called and the "
+             "paths to its End state, each banded. The same bucket means the same thing in every "
+             "Environment.", "",
              "| Bucket | Tasks | Trusted |", "| --- | --- | --- |"]
     lines += [f"| {row.get('bucket', '')} | {row.get('tasks', 0)} | {row.get('trusted', 0)} |" for row in rows]
     return lines
@@ -86,30 +88,28 @@ def _bucket_table(manifest: dict) -> list[str]:
 
 def _limits(manifest: dict) -> list[str]:
     untrusted = manifest.get("untrusted") or {}
-    lines = ["", "## Known limits", ""]
-    lines.append(f"- {untrusted.get('count', 0)} of {manifest.get('tasks_total', 0)} Tasks are not trusted: "
-                 "their Verifier is not one the harness will grade a candidate on yet.")
+    lines = ["", "## What it cannot do yet", ""]
+    lines.append(f"- {untrusted.get('count', 0)} of {manifest.get('tasks_total', 0)} Tasks are not trusted. "
+                 "Their Verifier has not passed the suite, so the harness will not grade a candidate on them.")
     for entry in untrusted.get("reasons") or ():
         lines.append(f"- {entry.get('tasks', 0)} Tasks: {entry.get('reason', '')}.")
     assisted = list(manifest.get("assisted_tools") or ())
     if assisted:
-        lines.append(f"- {len(assisted)} tools were served by a stand-in somewhere in the build "
-                     f"({', '.join(sorted(assisted))}); a Run that touches one is reported, never counted.")
+        lines.append(f"- {len(assisted)} tools were served by a stand-in at some point in the build "
+                     f"({', '.join(sorted(assisted))}). A Run that touches one is reported and never counted.")
     added = int(manifest.get("tasks_added_later") or 0)
     if added:
-        lines.append(f"- {added} further Tasks appeared after the Task list was frozen. They are outside "
-                     "every number here, because the denominator a build is measured against is fixed "
-                     "once and never moved.")
-    lines.append("- The Simulated user is not in this package. Its facts are read off the recordings, "
-                 "which do not ship, so a Task whose answer the user only gives mid conversation cannot "
-                 "be reached by a candidate here even though its Verifier still grades it.")
+        lines.append(f"- {added} more Tasks appeared after the Task list was frozen. They are outside every "
+                     "number on this page, because the denominator is fixed once and never moved.")
+    lines.append("- The simulated user does not ship. Its facts come from the recordings, which stay private, "
+                 "so a Task whose answer the user only gives mid conversation cannot be finished here, even "
+                 "though its Verifier still grades it.")
     leaks = manifest.get("leak_scan") or {}
-    lines.append(f"- The export checked {leaks.get('values_checked', 0)} strings over "
-                 f"{leaks.get('files_scanned', 0)} graded files against the "
-                 f"{leaks.get('corpus_strings', 0)} the source corpus holds. It found "
-                 f"{leaks.get('leaks', 0)} recorded strings, which would have stopped the export, and "
-                 f"{leaks.get('value_echoes', 0)} shorter values that only a Verifier's answer key "
-                 "accounts for.")
+    lines.append(f"- The export checked {leaks.get('values_checked', 0)} strings across "
+                 f"{leaks.get('files_scanned', 0)} graded files against the {leaks.get('corpus_strings', 0)} "
+                 f"strings in the source corpus. It found {leaks.get('leaks', 0)} recorded strings (any would "
+                 f"have stopped the export) and {leaks.get('value_echoes', 0)} short values that only a "
+                 "Verifier's answer key accounts for.")
     return lines
 
 
@@ -117,22 +117,26 @@ def _banner(manifest: dict) -> list[str]:
     if not manifest.get("preview"):
         return []
     fidelity = (manifest.get("replay_fidelity") or {}).get("tasks_rate")
-    return ["", f"> **Preview.** This Environment is below the {FIDELITY_BAR:.0%} replay fidelity bar this "
-                f"harness publishes a release at. It replays {_pct(fidelity)} of its Tasks and holds "
-                f"{manifest.get('trusted', 0)} trusted Tasks of {manifest.get('tasks_total', 0)}. Read the "
-                "numbers below before using it for anything: it is here so the numbers are public while it "
-                "is improved, not because it is finished.", ""]
+    return ["", f"> **Preview.** This Environment is below the {FIDELITY_BAR:.0%} replay fidelity bar for a "
+                f"release. It replays {_pct(fidelity)} of its Tasks and has {manifest.get('trusted', 0)} "
+                f"trusted Tasks of {manifest.get('tasks_total', 0)}. It is published so the numbers are "
+                "public while it improves. Read them before you use it.", ""]
 
 
 FUNNEL_PROSE = (
-    "Every Task starts as a cluster of recordings and climbs a funnel, and each rung is a code gate, "
-    "never an opinion. It clears replay fidelity when the rebuilt tools answer its recorded calls the "
-    "way the real ones did, keeps a Reference when the recordings agree on an End state, and gets a "
-    "Verifier derived from that Reference. It is trusted only once that Verifier passes the full "
-    "suite: it rejects an empty Run, a plausible wrong one and a mutated one, scores no pass on any "
-    "loophole probe, accepts a second path to the same End state, and turns away few enough held-out "
-    "Runs that reached the Reference. The counts on this page are that funnel, rung by rung, so a "
-    "Task that stops early is visible instead of quietly leaving the denominator."
+    "Every Task climbs a funnel, and every rung is a code check. A Task clears replay fidelity when the "
+    "rebuilt tools answer its recorded calls the way the real ones did. It keeps a Reference when the "
+    "recordings agree on an End state, and gets a Verifier derived from that Reference. It counts as "
+    "trusted once that Verifier rejects an empty Run, a plausible wrong Run and a mutated Run, passes no "
+    "loophole probe, accepts a second route to the same End state, and turns away few enough held-out Runs "
+    "that did reach the Reference. The table above is that funnel, rung by rung, so a Task that stops early "
+    "stays visible instead of dropping out of the denominator."
+)
+
+DEVELOPMENT_NOTE = (
+    "This Environment is under active development. Each build round republishes it with new numbers, "
+    "and earlier rounds stay reachable by their tags. The next stage is to raise the trusted count, "
+    "then to generate Tasks synthetically over the rebuilt world, on top of the recorded ones."
 )
 
 
@@ -145,34 +149,38 @@ def card_markdown(manifest: dict, repo_id: str, *, github_url: str = "https://gi
     license_name = source.get("license") or "not stated"
     lines = [front_matter(manifest, tags=[str(name)]), ""]
     lines += [f"# {name}", ""]
-    lines += ["An executable Environment for evaluating and training tool-using agents, built by "
-              f"[Kullback]({github_url}) from recorded traces of a working agent and published by "
-              f"[Leibler]({site_url}).", ""]
-    lines += ["It holds the rebuilt world (a database, one function per tool that behaves as the real tool "
-              "was observed to behave, a compiled policy, and the Starting state each Task begins from), "
-              "the Task list with the instruction a candidate is given, and a code-only Verifier per Task "
-              "that grades the candidate on what it changed in that world. It holds none of the recordings "
-              "it was built from.", ""]
+    lines += [f"An executable Environment for evaluating and training tool-using agents. [Kullback]({github_url}) "
+              f"built it from recorded traces of a working agent, and [Leibler]({site_url}) publishes it.", ""]
+    lines += ["The package holds the rebuilt world: a database, one function per tool that behaves the way the "
+              "real tool was observed to behave, the compiled policy, and the Starting state each Task begins "
+              "from. It also holds the Task list with the instruction a candidate gets, and a code-only "
+              "Verifier per Task that grades the candidate on what it changed. It holds none of the "
+              "recordings it was built from.", ""]
+    lines += [f"`{TASKS_ROWS_NAME}` is the Task list as one row per line, which is what the viewer shows: "
+              "the id, the instruction, how far the Task got up the funnel and its difficulty bucket. "
+              "Everything else in the package is the world and the graders, and only the harness reads "
+              "those.", ""]
+    lines += [DEVELOPMENT_NOTE, ""]
     lines += _banner(manifest)
     lines += ["## Numbers", ""]
     lines += _numbers_table(manifest)
     lines += _bucket_table(manifest)
-    lines += ["", "## The funnel", "", FUNNEL_PROSE, ""]
+    lines += ["", "## How a Task becomes trusted", "", FUNNEL_PROSE, ""]
     lines += ["## Fetch and run", "", "```bash", f"uv run kullback fetch {repo_id} --out env-{name}",
               f"uv run kullback run --workdir env-{name} --task <task id> --model provider/model",
               f"uv run kullback verdict --workdir env-{name}",
               f"uv run kullback report --workdir env-{name}", "```", "",
-              "`fetch` verifies the package against the content hash above before laying it out, and "
-              "refuses a package that does not hash to it. Pass `--revision round-<n>` to fetch an "
-              "earlier round instead of the newest one.", ""]
+              "`fetch` checks the package against the content hash above before laying it out, and refuses "
+              "one that does not match. `--revision round-<n>` fetches an earlier round.", ""]
     lines += ["## Source", "",
               f"- Corpus: {corpus}", f"- Corpus licence: {license_name}"]
     if source.get("url"):
         lines.append(f"- Corpus source: {source['url']}")
     lines += [f"- Harness: kullback {manifest.get('kullback_version', 'unknown')}, "
-              f"git {_short(manifest.get('git_sha'))}",
-              f"- Built at: {manifest.get('created_at', 'not recorded')}",
-              "- The card is rewritten every publish; older rounds stay reachable by their tags."]
+              f"git {_short(manifest.get('git_sha'))}, runner {_short(manifest.get('runner_version'))}, "
+              f"gates {_short(manifest.get('gates_version'))}",
+              f"- Environment id: {_short(manifest.get('env_id'))}",
+              f"- Built at: {manifest.get('created_at', 'not recorded')}"]
     lines += _limits(manifest)
     lines += ["", "## Licence", "",
               f"The harness and this package are Apache-2.0. The source corpus keeps its own licence "
@@ -189,14 +197,17 @@ def organisation_card(rows: Iterable[dict], *, organisation: str = "leibler",
     disagree about a number.
     """
     lines = [f"# {organisation}", ""]
-    lines += [f"Leibler turns the traces a working agent already produced into an executable copy of the "
-              f"system it worked in, and grades other models on what they change in that copy. The graders "
+    lines += ["Leibler turns the traces a working agent already produced into an executable copy of the "
+              "system it worked in, then grades other models on what they change in that copy. The graders "
               f"are code, so they are cheap and have no opinions. [leibler.dev]({site_url})", ""]
-    lines += [f"[Kullback]({github_url}) is the open-source Builder and Runner behind it, Apache-2.0. It "
-              "rebuilds the world from traces, checks the rebuild by replaying those traces, derives a "
-              "Verifier per Task from the recorded runs, and puts every artifact through a code gate no "
-              "model may touch. The Environments below are what it produced; each carries its own numbers "
-              "and says what it cannot do yet.", ""]
+    lines += [f"[Kullback]({github_url}) is the open-source Builder and Runner behind it, under Apache-2.0. "
+              "It rebuilds the world from traces, checks the rebuild by replaying them, derives a Verifier "
+              "per Task from the recorded runs, and puts every artifact through a code gate no model may "
+              "touch. The Environments below came out of it. Each one carries its own numbers and says what "
+              "it cannot do yet.", ""]
+    lines += ["Everything here is under active development. Environments are republished after each build "
+              "round, and earlier rounds stay reachable by their tags. The next stage is to raise the trusted "
+              "count on each Environment, then to generate Tasks synthetically over the rebuilt world.", ""]
     lines += ["## Environments", "",
               "| Environment | Replay fidelity | Trusted Tasks | Round | Status |",
               "| --- | --- | --- | --- | --- |"]
@@ -208,9 +219,8 @@ def organisation_card(rows: Iterable[dict], *, organisation: str = "leibler",
         lines.append(f"| [{row.get('name', repo_id)}](https://huggingface.co/datasets/{repo_id}) | "
                      f"{_pct(fidelity)} | {manifest.get('trusted', 0)} of {manifest.get('tasks_total', 0)} | "
                      f"{manifest.get('round', 'not recorded')} | {status} |")
-    lines += ["", "A release replays at least 90% of its Tasks. A preview is below that bar and is "
-                  "published anyway, with its numbers on its card, so the work is visible while it "
-                  "improves.", ""]
+    lines += ["", "A release replays at least 90% of its Tasks. A preview is below that bar. It is published "
+                  "anyway, with its numbers on its card, so the work stays visible while it improves.", ""]
     lines += ["## Fetch and run", "", "```bash",
               "uv pip install git+" + github_url + ".git",
               f"uv run kullback fetch {organisation}/<environment> --out env",
@@ -218,8 +228,8 @@ def organisation_card(rows: Iterable[dict], *, organisation: str = "leibler",
               "uv run kullback verdict --workdir env",
               "uv run kullback report --workdir env", "```", ""]
     lines += ["## Links", "", f"- Harness: {github_url}", f"- Site: {site_url}",
-              "- Licence: Apache-2.0 for the harness and every package here; each source corpus keeps "
-              "its own licence, named on the Environment's card.", ""]
+              "- Licence: Apache-2.0 for the harness and every package here. Each source corpus keeps its "
+              "own licence, named on the Environment's card.", ""]
     return "\n".join(lines) + "\n"
 
 

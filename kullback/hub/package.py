@@ -40,6 +40,9 @@ from kullback.runner.records import content_hash, read_json, write_json
 PACKAGE_FORMAT = 1
 MANIFEST_NAME = "manifest.json"
 TASKS_INDEX_NAME = "tasks_index.json"
+# The same Task list as one flat row per line, which is the shape a dataset host's viewer renders.
+# It repeats what tasks/ and the index already carry, so it adds nothing a scan has not seen.
+TASKS_ROWS_NAME = "tasks.jsonl"
 # The card publish.py writes beside the package. Named here because the hashes have to leave it out.
 CARD_NAME = "README.md"
 
@@ -362,11 +365,15 @@ def _strings(body: Any, out: set[str], min_length: int) -> None:
 
 def _file_strings(path: Path, min_length: int) -> set[str]:
     out: set[str] = set()
-    if path.suffix == ".json":
-        try:
+    try:
+        if path.suffix == ".json":
             _strings(json.loads(path.read_text(encoding="utf-8")), out, min_length)
-        except (OSError, ValueError):
-            return out
+        elif path.suffix == ".jsonl":
+            for line in path.read_text(encoding="utf-8").splitlines():
+                if line.strip():
+                    _strings(json.loads(line), out, min_length)
+    except (OSError, ValueError):
+        return out
     return out
 
 
@@ -453,8 +460,9 @@ def leak_scan(package: Path, raw_dir: Path, *, min_length: int = LEAK_MIN_LENGTH
     later_text = world_text + "\n" + task_text
     for path in sorted((package / "verifiers").rglob("*.json")) if (package / "verifiers").is_dir() else ():
         scanned.append((path, later, later_text))
-    if (package / TASKS_INDEX_NAME).is_file():
-        scanned.append((package / TASKS_INDEX_NAME, later, later_text))
+    for name in (TASKS_INDEX_NAME, TASKS_ROWS_NAME):
+        if (package / name).is_file():
+            scanned.append((package / name, later, later_text))
 
     checked, leaking_files, echo_files, strict = 0, [], [], 0
     for path, values, text in scanned:
@@ -577,6 +585,7 @@ def export(workdir: Any, out: Any, *, name: Optional[str] = None, corpus: Option
     _lay_out(workdir, out, task_ids)
     rows = task_index(workdir, task_ids)
     write_json(out / TASKS_INDEX_NAME, {"format": PACKAGE_FORMAT, "tasks": rows})
+    write_task_rows(out, rows)
     counts = last_round(workdir)
     environment = read_json(workdir / "environment.json", {}) or {}
     versions = read_json(workdir / "runner_version.json", {}) or {}
@@ -627,6 +636,32 @@ def export(workdir: Any, out: Any, *, name: Optional[str] = None, corpus: Option
     manifest["content_hash"] = content_hash(manifest["files"])
     write_json(out / MANIFEST_NAME, manifest)
     return manifest
+
+
+def task_rows(package: Path, index_rows: Iterable[dict]) -> list[dict]:
+    """The flat row per Task a dataset viewer shows: id, instruction, funnel stage, bucket, trust."""
+    rows = []
+    for row in index_rows:
+        task = read_json(package / "tasks" / f"{row['task_id']}.json", {}) or {}
+        rows.append({
+            "task_id": row["task_id"],
+            "instruction": str(task.get("intent") or ""),
+            "stage": row["stage"],
+            "trusted": bool(row["trusted"]),
+            "refused": bool(row["refused"]),
+            "stopped_because": row.get("stopped_because"),
+            "bucket": row.get("bucket"),
+            "replay_confirmed": bool(row["replay_confirmed"]),
+            "recordings": int(row["recordings"]),
+        })
+    return rows
+
+
+def write_task_rows(package: Path, index_rows: Iterable[dict]) -> Path:
+    target = package / TASKS_ROWS_NAME
+    lines = [json.dumps(row, ensure_ascii=False, sort_keys=True) for row in task_rows(package, index_rows)]
+    target.write_text("\n".join(lines) + ("\n" if lines else ""), encoding="utf-8")
+    return target
 
 
 def _buckets(rows: Iterable[dict]) -> list[dict]:

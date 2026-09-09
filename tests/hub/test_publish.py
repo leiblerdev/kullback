@@ -372,3 +372,23 @@ def test_a_file_the_host_lays_down_beside_the_package_does_not_stop_it_verifying
     (out / ".cache" / "downloads").mkdir(parents=True)
     (out / ".cache" / "downloads" / "lock").write_text("", encoding="utf-8")
     assert package_mod.verify_package(out) == []
+
+
+# --- the viewer rows -----------------------------------------------------------------
+
+
+def test_the_package_carries_one_flat_row_per_task_for_a_dataset_viewer_and_the_front_matter_names_it(
+        nursery, tmp_path):
+    out = tmp_path / "package"
+    manifest = package_mod.export(nursery, out, name="nursery", preview=True)
+    lines = (out / package_mod.TASKS_ROWS_NAME).read_text(encoding="utf-8").splitlines()
+    rows = [json.loads(line) for line in lines]
+    assert [row["task_id"] for row in rows] == [row["task_id"] for row in read_json(out / package_mod.TASKS_INDEX_NAME)["tasks"]]
+    for row in rows:
+        task = read_json(out / "tasks" / f"{row['task_id']}.json")
+        assert row["instruction"] == task.get("intent", "")
+        assert row["stage"] and isinstance(row["trusted"], bool)
+    assert package_mod.TASKS_ROWS_NAME in manifest["files"]
+    body = card_mod.card_markdown(manifest, "leibler/nursery")
+    front = body.split("---")[1]
+    assert "configs:" in front and package_mod.TASKS_ROWS_NAME in front
