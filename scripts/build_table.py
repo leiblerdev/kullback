@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 from collections import Counter, defaultdict
 from datetime import datetime, timezone
@@ -32,6 +33,10 @@ from env_fidelity import cause as fidelity_cause  # noqa: E402
 # The Runner's own words for how one replayed call compared with the recording (runner/replay.py).
 AGREES = ("same", "cosmetic", "both_refused")
 PARTS = ("differs", "ours_refused", "theirs_refused", "unrecorded")
+# A replay reason reads "<tool> <label>: <verdict>", and since D217 the route the verdict was
+# reached by follows it in brackets. A rule matches on the verdict, so it reads the word out of the
+# line rather than off its tail, and a reason written before the route existed still matches.
+REASON_VERDICT = re.compile(r": ([a-z_]+)(?: \(([a-z_]+)\))?$")
 
 # A call that missed and kept neither its two answers whole nor a difference the cause can be read
 # off. replay.py writes a `difference` record for every check that did not agree, so this is what is
@@ -752,16 +757,22 @@ def failing_runs(build: Build) -> list[dict]:
     return rows
 
 
+def _verdict_of(reason: str) -> str:
+    """The verdict a replay reason names, with or without the route it was reached by (D217)."""
+    found = REASON_VERDICT.search(reason)
+    return found.group(1) if found else ""
+
+
 def classify(found: dict, reasons: list[str], aside: Optional[str]) -> tuple[str, str]:
     """The first rule that matches, and the words in the record that matched it."""
     if found["provider"]:
         return "provider_error", found["provider"][:160]
     if found["exception"]:
         return "body_exception", found["exception"][:160]
-    refused = [reason for reason in reasons if reason.endswith("ours_refused")]
+    refused = [reason for reason in reasons if _verdict_of(reason) == "ours_refused"]
     if refused:
         return "replay_refused", refused[0]
-    differs = [reason for reason in reasons if reason.endswith("differs")]
+    differs = [reason for reason in reasons if _verdict_of(reason) == "differs"]
     if differs:
         return "answer_differs", differs[0]
     if found["fact_unavailable"]:

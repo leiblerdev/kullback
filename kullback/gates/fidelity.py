@@ -92,7 +92,15 @@ def summarize(replays: dict[str, dict[str, dict]]) -> dict:
             "writes": total("writes"), "writes_matched": total("writes_matched"),
             "reads": total("reads"), "reads_semantic": total("reads_semantic"),
             "reads_cosmetic": total("reads_cosmetic"), "unmade": total("unmade"),
-            "turns_absorbed": total("absorbed_turns")}
+            "turns_absorbed": total("absorbed_turns"),
+            # How the agreement was reached, so a reader can see how much of it rests on a judged or
+            # forgiven difference rather than on the answer itself (D217).
+            "cosmetic_by_canonical": total("cosmetic_by_canonical"),
+            "cosmetic_by_exempt": total("cosmetic_by_exempt"),
+            "cosmetic_by_judge": total("cosmetic_by_judge"),
+            "cosmetic_by_columns": total("cosmetic_by_columns"),
+            "differs_by_token_set": total("differs_by_token_set"),
+            "differs_by_presence": total("differs_by_presence")}
 
 
 def unconfirmed_reason(per_task: dict[str, dict]) -> str:
