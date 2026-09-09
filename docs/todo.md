@@ -276,4 +276,17 @@ Founder: "learn from pi.dev and others on how to improve the harness." Survey in
 
 ## Learned from FrogNano's TaskPilot (asked 2026-09-09)
 
-The founder asked for a difficulty knob: "there we can change the difficulty of the tasks for the models to learn as the training proceeds." Reading in the session's reports. Taken as D209 (difficulty record per Task, buckets, trusted and held-out solve rate per bucket). Deferred as the second half of the knob: a target distribution a customer states per checkpoint (histogram or schedule), satisfied in ascending cost order by selection from the trusted pool, then re-roll allowance on thin buckets, then variants from the Reference that insert or drop a step (D199 machinery), then split by surviving End state (D198) or merge by Category (D200); and the learnable-region admission band (solve rate strictly between zero and one against a named checkpoint). Every proxy is a count or rate; none names a corpus.
+The founder asked for a difficulty knob: "we also need this knob, there we can change the difficulty of the tasks for the models to learn as the training proceeds." Reading in the session's reports. Taken as D209 (difficulty record per Task, buckets, trusted and held-out solve rate per bucket), which is the measurement half.
+
+### Difficulty knob, second half (asked 2026-09-09)
+
+Founder, 2026-09-09: "we also need this knob, there we can change the difficulty of the tasks for the models to learn as the training proceeds." The measurement half ships as D209: every Task with a derived Verifier carries a difficulty record, every Task is bucketed by write count, tools touched and paths, and the round line and the scorecard report trusted count and mean held-out solve rate per bucket. What is deferred is the knob itself: a target distribution a customer states, either as a histogram of Tasks wanted per bucket or as a schedule by build round, the way --grow already takes a target per table, and a learnable-region admission band read as the solve rate against a named checkpoint, strictly between zero and one, so a Task always solved and a Task never solved are both out of band and the band moves as the checkpoint improves.
+
+The harness satisfies a stated distribution in ascending cost order, and each step is a Builder or an Examiner operation the harness already names, so nothing new is built until a step is shown to be thin:
+
+1. Select from the trusted pool: the Tasks already in the bucket cost nothing at all.
+2. Where a bucket is thin, spend more of D133's adaptive re-roll allowance on the Categories whose Tasks land in it, since more Runs of the same Task grow the held-out pool and can move a solve rate into the band.
+3. Where it is still thin, synthesise variants from the Reference with D199's rewrite machinery tuned for difficulty rather than for a second path: inserting an optional step raises the write count or the branching depth, dropping one lowers it, and every variant is replayed before it is believed.
+4. Where a Task's derivation left more than one surviving End state (D198), split it into easier single-state Tasks; where two Tasks share a Category (D200), merge them into one harder multi-step Task.
+
+Measurement follows D133's pattern: solve rate per bucket over the held-out pool, reported the way D185 reports two-sample agreement, so a curriculum states bucket sizes and confirmed solve rate per bucket beside the single trusted count and never instead of it. Every proxy is a count or a rate; none names a corpus, a tool or a column.
