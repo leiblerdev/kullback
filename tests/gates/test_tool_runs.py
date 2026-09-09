@@ -12,6 +12,7 @@ from kullback.gates.tool_runs import (
     body_replay_fidelity_gate,
     compare_columns,
     compare_results,
+    domain_tokens,
     load_readers,
 )
 from kullback.runner.canon import CanonRules
@@ -182,3 +183,106 @@ def test_two_lists_of_rows_carrying_no_key_are_still_paired_by_position():
     ok, notes = compare_results(schema, [{"amount": 10}, {"amount": 20}], [{"amount": 20}, {"amount": 10}])
     assert ok is False
     assert notes == ['value: ours 20, recorded 10', 'value: ours 10, recorded 20']
+
+
+# --- D217: a forgiven difference may not change what the two sides say about the world ---
+
+KILN_SCHEMA = EntitySchema(tables=["kilns"], columns=[
+    Column(table="kilns", name="kiln_id", **{"class": "hard"}),
+    Column(table="kilns", name="kiln_state", **{"class": "hard"},
+           vocabulary=["cooling", "firing", "idle", "vented"]),
+    Column(table="kilns", name="kiln_report", **{"class": "semantic"}),
+    Column(table="kilns", name="kiln_reading", **{"class": "exempt"})])
+
+
+def _judge_saying_equivalent(asked: list):
+    def judge(column, ours, theirs):
+        asked.append(column)
+        return {"verdict": "equivalent"}
+    return judge
+
+
+def test_a_value_only_one_side_holds_fails_even_on_a_column_the_schema_exempts():
+    recorded = {"kiln_id": "K1", "kiln_reading": 640}
+    ours = {"kiln_id": "K1"}
+    ok, notes = compare_columns(KILN_SCHEMA, "kilns", recorded, ours)
+    assert ok is False
+    assert notes == ["presence:kiln_reading: ours null, recorded 640"]
+
+
+def test_a_value_only_one_side_holds_fails_even_where_the_judge_would_forgive_it():
+    asked: list = []
+    recorded = {"kiln_id": "K1", "kiln_report": "the kiln is firing"}
+    ours = {"kiln_id": "K1"}
+    ok, notes = compare_columns(KILN_SCHEMA, "kilns", recorded, ours,
+                                judge=_judge_saying_equivalent(asked))
+    assert ok is False
+    assert notes == ['presence:kiln_report: ours null, recorded "the kiln is firing"']
+    assert asked == [], "a difference in presence is not a question for the judge"
+
+
+def test_a_column_both_sides_leave_empty_is_not_a_difference_in_presence():
+    recorded = {"kiln_id": "K1", "kiln_reading": None, "kiln_report": ""}
+    ours = {"kiln_id": "K1"}
+    assert compare_columns(KILN_SCHEMA, "kilns", recorded, ours) == (True, ["semantic:kiln_report"])
+    empty_shapes = {"kiln_id": "K1", "kiln_reading": [], "kiln_report": ""}
+    ok, notes = compare_columns(KILN_SCHEMA, "kilns", recorded, empty_shapes)
+    assert ok is True and notes == ["exempt:kiln_reading"]
+
+
+def test_two_sentences_carrying_the_same_states_are_put_to_the_judge():
+    asked: list = []
+    recorded = {"kiln_id": "K1", "kiln_report": "the kiln is firing"}
+    ours = {"kiln_id": "K1", "kiln_report": "firing, as it happens"}
+    assert compare_columns(KILN_SCHEMA, "kilns", recorded, ours,
+                           judge=_judge_saying_equivalent(asked)) == (True, [])
+    assert asked == ["kiln_report"]
+
+
+def test_two_sentences_carrying_different_states_part_without_asking_the_judge():
+    asked: list = []
+    recorded = {"kiln_id": "K1", "kiln_report": "the kiln is firing and vented"}
+    ours = {"kiln_id": "K1", "kiln_report": "the kiln is firing"}
+    ok, notes = compare_columns(KILN_SCHEMA, "kilns", recorded, ours,
+                                judge=_judge_saying_equivalent(asked))
+    assert ok is False
+    assert notes == ["token_set:kiln_report: ours [firing], recorded [firing, vented]"]
+    assert asked == [], "the states differ, so there is nothing to weigh the wording of"
+
+
+def test_a_state_named_inside_a_longer_word_is_not_that_state():
+    asked: list = []
+    recorded = {"kiln_id": "K1", "kiln_report": "the kiln is idle"}
+    ours = {"kiln_id": "K1", "kiln_report": "the kiln is idled"}
+    ok, notes = compare_columns(KILN_SCHEMA, "kilns", recorded, ours,
+                                judge=_judge_saying_equivalent(asked))
+    assert ok is False and notes[0].startswith("token_set:kiln_report")
+
+
+def test_a_world_that_named_no_states_leaves_the_judge_the_question_it_always_had():
+    asked: list = []
+    schema = EntitySchema(tables=["kilns"], columns=[
+        Column(table="kilns", name="kiln_id", **{"class": "hard"}),
+        Column(table="kilns", name="kiln_report", **{"class": "semantic"})])
+    recorded = {"kiln_id": "K1", "kiln_report": "the kiln is firing and vented"}
+    ours = {"kiln_id": "K1", "kiln_report": "the kiln is firing"}
+    assert compare_columns(schema, "kilns", recorded, ours,
+                           judge=_judge_saying_equivalent(asked)) == (True, [])
+    assert asked == ["kiln_report"]
+
+
+def test_a_free_text_column_borrows_the_states_its_own_table_names():
+    tokens = domain_tokens(KILN_SCHEMA, "kilns", "kiln_report")
+    assert tokens == {"cooling", "firing", "idle", "vented"}
+    assert domain_tokens(KILN_SCHEMA, "kilns", "kiln_state") == tokens
+    assert domain_tokens(KILN_SCHEMA, "kilns", "kiln_id") == tokens
+
+
+def test_a_schema_mined_before_the_vocabulary_lends_the_states_its_samples_showed():
+    """An id column has too many distinct values to be a set of names, so it lends none."""
+    schema = EntitySchema(tables=["kilns"], columns=[
+        Column(table="kilns", name="kiln_id", **{"class": "hard"}, samples=["K1", "K2"],
+               evidence={"distinct": 400}),
+        Column(table="kilns", name="kiln_state", **{"class": "hard"}, samples=["firing", "idle"],
+               evidence={"distinct": 2})])
+    assert domain_tokens(schema, "kilns", "kiln_state") == {"firing", "idle"}

@@ -59,8 +59,9 @@ TARGET = "environment"
 # Runs named in `did_not_reach_reference` and `failed_recordings` are named by that id. Re-pinned
 # for D208: a confirmed row names the Run ids of the Reference it holds, which is what says whether
 # the Verifier beside it was derived from that Reference or from one since withdrawn. The same
-# three Tasks, the same verdicts and the same reasons.
-TASK_STATUS_SHA256_BEFORE_THE_PHASE = "67d46c8cf7fb4f735a2d22e72b3d0e1a3f93e79d263af170ea244d748807f46c"
+# three Tasks, the same verdicts and the same reasons. Re-pinned for D217: a replay reason
+# now names the route the verdict was reached by, and the one reason here reads `differs (columns)`.
+TASK_STATUS_SHA256_BEFORE_THE_PHASE = "7df5b576940550718a4380b180b64486d547163a78a67b00fb2502aa1b7e6796"
 
 
 def _fixture(request) -> Path:
