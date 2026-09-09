@@ -301,3 +301,19 @@ def test_a_schema_that_counted_nothing_lends_no_ids_however_short_they_are():
         Column(table="kilns", name="note", **{"class": "semantic"}, samples=["the kiln is firing"])])
     assert domain_tokens(schema, "kilns", "note") == frozenset()
     assert domain_tokens(schema, "kilns", "kiln_id") == frozenset()
+
+
+def test_a_column_the_corpus_showed_keying_its_table_lends_no_names_whatever_it_is_called():
+    """Greptile P1 (PR 28, round 2): an id is not always named like one.
+
+    A column the table is keyed by, and a column whose every sighting has a mined id shape, are
+    both holding ids under a name no suffix rule would catch.
+    """
+    schema = EntitySchema(
+        tables=["kilns"], id_patterns={"kilns.slug": r"[a-z]{2}-\d{3}"},
+        composite_keys={"kilns": ["slug", "bay"]},
+        columns=[
+            Column(table="kilns", name="slug", **{"class": "hard"}, samples=["ab-100", "cd-200"]),
+            Column(table="kilns", name="bay", **{"class": "hard"}, samples=["ef-300", "gh-400"]),
+            Column(table="kilns", name="note", **{"class": "semantic"}, samples=["the kiln is firing"])])
+    assert domain_tokens(schema, "kilns", "note") == frozenset()
