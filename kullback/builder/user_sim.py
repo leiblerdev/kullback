@@ -109,7 +109,7 @@ HANDOFF_CUE = re.compile(
     r"###TRANSFER###|\b(transfer(?:ring)? you|transfer this|connect(?:ing)? you (?:with|to)|"
     r"hand(?:ing)? (?:you |this )?(?:over|off)|escalat(?:e|ing) (?:this|you)|"
     r"pass(?:ing)? you (?:on|to)|a (?:human|colleague|specialist) (?:agent )?will)\b", re.I)
-# How many asks the user can have nothing at all for before its scenario has run out, and how many
+# How many turns the user can have nothing at all for before its scenario has run out, and how many
 # turns of nothing to say. Both were already the inputs the close was taken on; they are inputs to
 # a kind now, never the end itself.
 UNANSWERABLE_LIMIT = 2
@@ -720,7 +720,9 @@ class SimulatedUser:
         self._silent = 0
         self._refused = 0
         self._restated = False
-        # Asks this user had nothing at all for: the scenario running out, counted (D210).
+        # Turns this user had nothing at all for what was asked on: the scenario running out,
+        # counted (D210). One turn, however many fields it named: the rule is a Candidate asking
+        # twice, so a single turn naming two unknown fields is one ask and not two.
         self._unanswerable = 0
         self._end_tagged = False
 
@@ -765,7 +767,7 @@ class SimulatedUser:
             self._respond(question, sources, spoken, unavailable, self._writes_made(transcript))
             said_something = bool(spoken or unavailable)
         self._silent = 0 if said_something else self._silent + 1
-        self._unanswerable += len(unavailable)
+        self._unanswerable += int(bool(unavailable))
         # D210, Greptile P1 (PR 25): a turn whose only content is that this user has no record of
         # what was asked is not the user having something to say, it is the exhaustion signal
         # itself. Without this the unanswerable limit is reachable only on the turns where nothing
@@ -892,7 +894,7 @@ class SimulatedUser:
         """Which of the four kinds this end is, or nothing where the user has not ended (D210).
 
         More than one can hold at once, so they are read in one order. A Run whose goal writes are
-        all confirmed is done whatever the Candidate said next. A Candidate that keeps asking for
+        all confirmed is done whatever the Candidate said next. A Candidate that twice asks for
         what nobody ever told this user has run the scenario out, whatever it says while doing it.
         A Candidate that then closes or passes the conversation on ended it, and that is a handoff
         rather than the user running dry. Last comes the user with nothing left to say and no close

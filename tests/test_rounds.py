@@ -63,7 +63,7 @@ TARGET = "environment"
 # a reading over the pool can leave out the Runs that did not finish, and the ends move again where
 # the review of D210 closed the turn that says nothing but a miss. The same three Tasks, the same
 # verdicts and the same reasons.
-TASK_STATUS_SHA256_BEFORE_THE_PHASE = "c711d0c53dfe418a4760b0042890e7ffe1ff51a80f33bc84d4ab8d8cbcba318b"
+TASK_STATUS_SHA256_BEFORE_THE_PHASE = "b09715ea295247be485c0d76b0ec4a19d3f4ccca4d27ba0396d37b7972cc2ed4"
 
 
 def _fixture(request) -> Path:

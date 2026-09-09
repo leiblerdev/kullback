@@ -1251,6 +1251,18 @@ def test_a_candidate_that_only_ever_asks_for_unknown_fields_ends_rather_than_run
     assert user.end_reason == SCENARIO_EXHAUSTED
 
 
+def test_one_turn_asking_two_fields_the_user_has_no_record_of_is_one_ask_and_not_two():
+    """Greptile P1 (PR 25, round 2): the limit counts the Candidate's asks, not the fields it named."""
+    user = renewal_user(write_tools={"renew_loan"}, goal_writes={"renew_loan"})
+    user.reply(ask("Hi! How can I help you today?"))
+    user.reply(ask("What is your member id and your email address?"))
+    assert len([f for f, source in said(user).items() if source == "unavailable"]) == 2
+    assert user.done is False
+    user.reply(ask("Could you give me your phone number?"))
+    assert user.done is True
+    assert user.end_reason == SCENARIO_EXHAUSTED
+
+
 def test_a_turn_that_answers_one_field_and_misses_another_is_not_an_end():
     """The exhaustion signal is a turn with nothing on it but a miss; a turn that answered still speaks."""
     user = renewal_user(write_tools={"renew_loan"}, goal_writes={"renew_loan"})
