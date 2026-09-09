@@ -44,7 +44,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, AsyncIterator, Callable, Iterable, Optional
 
-from kullback import difficulty
+from kullback import difficulty, round_snapshot, sampling
 from kullback.agent.events import (
     BeatEnd,
     BeatStart,
@@ -431,6 +431,9 @@ class Loop:
     retry_asks: int = 0
     retries_seen: int = 0
     zooms_seen: int = 0  # `plan.zooms_skipped` at the round's start; the plan's counter is cumulative
+    # D212: the keyed draws taken by the time the last round closed, so a round reports its own
+    # share of a counter that is cumulative over the process.
+    draws_seen: dict = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         """A new Loop resumes the workdir's unfinished business: findings an earlier invocation
@@ -443,6 +446,15 @@ class Loop:
         already holds bodies and Intents is exactly the run where round 1 rewrites the most.
         """
         self.started_hashes = artifact_hashes(self.plan.workdir)
+        # D218: the rulings `round_counts` hands back through `_land`, and the difficulty record the
+        # same pass wrote, kept in memory so the round's snapshot is one reading of one state rather
+        # than a second computation over files that have since moved.
+        self.landed: dict[str, GateResult] = {}
+        self.difficulty_body: dict = {}
+        # D212, Greptile P1 (PR 26): the draw counter is process-global, so a Loop built after
+        # something already drew has to start from what the process has taken, not from nothing.
+        # Otherwise its first round reports another Loop's draws as its own.
+        self.draws_seen = self.draws_seen or sampling.draws_by_kind()
         seen = {finding.finding_id for finding in self.pending_findings}
         self.pending_findings = list(self.pending_findings) + [
             finding for finding in _open_findings(self.plan.workdir) if finding.finding_id not in seen]
@@ -743,7 +755,11 @@ class Loop:
 
         A round the Examiner never opened on (a target earlier than the derivation's inputs) has no
         Examiner plan, so the ledger is the workdir's own, the same one `keep_gate_history` falls
-        back to."""
+        back to.
+
+        The ruling is kept in memory as well (D218): the round's Task table is built from the same
+        objects the counts were read off, so a row and the count over it cannot disagree."""
+        self.landed[ruling.stage] = ruling
         ledger = self.eplan.ledger if self.eplan is not None else GateLedger(self.plan.workdir)
         try:
             rows = json.loads(ledger.path.read_text(encoding="utf-8")) if ledger.path.is_file() else []
@@ -822,7 +838,23 @@ class Loop:
             **self._reader_counts(),
             **self._lesson_counts(),
             **self.task_split(),
+            **self._sampling_counts(),
         }
+
+    def _sampling_counts(self) -> dict:
+        """D212: the build salt every keyed draw ran under, and how many draws of each kind this round took.
+
+        `sample_salt` is eight characters of the salt's digest, so two rounds of two builds can be
+        read for whether they sampled alike without the salt itself going into a record. `draws_`
+        counts say which draws the round actually took: a round whose stages all came from the cache
+        drew nothing, which is the honest reading and not a mechanism that is off. The counts are a
+        difference against the totals at the round's start, because a round's counts are assembled
+        more than once and a destructive read would give the second caller nothing.
+        """
+        out = {"sample_salt": sampling.salt_label(sampling.read_salt(self.plan.workdir))}
+        for kind, count in sampling.draws_since(self.draws_seen).items():
+            out[f"draws_{kind}"] = int(count)
+        return out
 
     def retirements_now(self) -> list:
         """The Verifiers this round retired, read off the status rows the derivation left (D208)."""
@@ -955,17 +987,45 @@ class Loop:
                                       false_rejection=dict(counts.get("false_rejection") or {}),
                                       trusted_ids=list(counts.get("trusted_ids") or []))
         except (OSError, ValueError, TypeError):
+            self.difficulty_body = {}
             return {}
+        self.difficulty_body = body
         return {"buckets": list(body.get("buckets") or []),
                 "tasks_without_difficulty": len(body.get("no_record") or {})}
 
-    def keep_gate_history(self, n: int) -> None:
+    def snapshot_round(self, n: int) -> dict:
+        """The round's Task table, written once at close and never rewritten (D218 rule 1).
+
+        Every stage ruling of every Task in one pass over the state this driver already holds: the
+        status rows and the replays the Examiner's beat left, the trusted ruling `_land` took as the
+        counts were read, the difficulty record the same pass wrote and the bodies the round
+        released. A reader who wants one row per Task reads this file and nothing else; the three
+        files it replaces go on saying what they each say, and `drift` is what says how far the live
+        one has moved since.
+
+        A round whose Examiner never opened has no status rows, so the table is what the replays
+        alone can say, which is a shorter table and not a missing one.
+        """
+        store = self.eplan.store if self.eplan is not None else {}
+        rows = round_snapshot.task_rows(
+            n, task_status=store.get("task_status") or {}, replays=store.get("replays") or {},
+            trusted=self.landed.get("trusted"),
+            bodies=_read_json(Path(self.plan.workdir) / "bodies.json", {}) or {},
+            buckets=round_snapshot.buckets_by_task(self.difficulty_body))
+        return round_snapshot.write_snapshot(self.plan.workdir, n, rows)
+
+    def keep_gate_history(self, n: int, snapshot: Optional[dict] = None) -> None:
         """gates.json as this round leaves it, kept per round in gates_by_round.json.
 
         gates.json holds the last ruling per stage, so the next round overwrites it; a repair can
-        only be said to have turned a red gate green if the round before it is still readable."""
+        only be said to have turned a red gate green if the round before it is still readable.
+
+        The row's Task level counts are the snapshot's own (D218 rule 1), derived from the rows and
+        never counted a second time here: the history row and the table are then two readings of one
+        answer, and a reader who finds them disagreeing has found a bug and not a drift.
+        """
         ledger = self.eplan.ledger if self.eplan is not None else GateLedger(self.plan.workdir)
-        ledger.snapshot(n)
+        ledger.snapshot(n, tasks=dict((snapshot or {}).get("counts") or {}))
 
     def ceiling_reached(self) -> bool:
         last = self.plan.last
@@ -1112,6 +1172,10 @@ class Loop:
         self.plan.round = n  # the round a repair request records itself under (D126)
         self.emit(RoundStart(round=n))
         self.sent, self.beat_spend, self.spent_allowance = [], {}, {}
+        # D218, Greptile P1 (PR 29): a round's snapshot says what this round measured, so the
+        # rulings and the difficulty record start empty. A round that ends on an error before its
+        # counts were read would otherwise write the round before it into its own table.
+        self.landed, self.difficulty_body = {}, {}
         self.compactions_seen = {agent: self.compactions(agent) for agent in AGENTS}
         self.cuts_seen = {agent: self.floor_cuts(agent) for agent in AGENTS}
         self.turns_seen = {agent: len(self.fills(agent)) for agent in AGENTS}
@@ -1144,6 +1208,7 @@ class Loop:
         # The driver's own numbers last and freshest: a round that failed comes here with no counts
         # at all, and its clock, spend and turns are as true as a round that finished.
         record = RoundRecord(round=n, counts={**counts, **self.driver_counts()})
+        self.draws_seen = sampling.draws_by_kind()  # the next round's draws start counting from here
         record.counts["moved"] = self.round_moved(n, record.counts)
         record.counts["repairs"] = self.repairs_made(n)
         history = self.rounds + [record]
@@ -1178,7 +1243,10 @@ class Loop:
                                     "the round continues")
         self.rounds.append(record)
         write_rounds(self.plan.workdir, self.rounds)
-        self.keep_gate_history(n)
+        # D218: the table first, then the history row derived from it. A round that failed before an
+        # Examiner beat writes a table of what its replays alone can say, which is still a closed
+        # round's answer and still never rewritten.
+        self.keep_gate_history(n, self.snapshot_round(n))
         return record
 
     def result(self) -> dict:

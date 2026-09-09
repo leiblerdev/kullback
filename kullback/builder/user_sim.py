@@ -1,11 +1,17 @@
 """The Simulated user: rules taken exactly from one trace (D44), answers from the trace or the
 world, never invented (D77). What a fact is, how a turn states it and how an agent asks for it come
-from the Vocabulary the build derived (D115); the generic core is the default."""
+from the Vocabulary the build derived (D115); the generic core is the default.
+
+It ends by protocol and answers from typed facts (D210). Every end carries one of four reason
+kinds, so a report can tell a Run that finished from one that ran dry; a fact the user itself never
+gave is a record fact it points at rather than speaks; and every answer goes through the same
+class-generic strip an Intent goes through (D196), so no value only the system knew is handed over.
+"""
 
 from __future__ import annotations
 
 import re
-from typing import Any, Iterable, NamedTuple, Optional
+from typing import Any, Callable, Iterable, NamedTuple, Optional
 
 from kullback.builder.vocabulary import GENERIC, Vocabulary
 from kullback.runner.records import DisclosureRule, Event, Trace, UserFact, UserRules
@@ -84,6 +90,42 @@ EMPHASIS = re.compile(r"[*_`~]+")
 # answered from one `name` fact, so the parts of one call are joined, in this order.
 NAME_PARTS = ("first_name", "last_name")
 NAME_ASK = "What is your full name?"
+
+# --- how a conversation ends, in one vocabulary (D210) -------------------------------------
+# Four kinds, read in this order wherever more than one is true at once. They live here and not in
+# the Runner because the Runner is frozen; the Runner's own end reasons are read below and mapped
+# into them, so a replayed Run and a Simulated one are reported in one vocabulary.
+GOAL_SATISFIED = "goal_satisfied"        # every write the goal implies is confirmed done
+SCENARIO_EXHAUSTED = "scenario_exhausted"  # the user has nothing left that answers this Candidate
+HANDED_OFF = "handed_off"                # the Candidate closed the conversation or passed it on
+GAVE_UP = "gave_up"                      # the turn limit, which the loop holds and the user never sees
+USER_END_KINDS = (GOAL_SATISFIED, SCENARIO_EXHAUSTED, HANDED_OFF, GAVE_UP)
+# The Runner's own end reasons, read for the Runs the Simulated user did not end itself.
+TURN_LIMIT_REASONS = frozenset(("max_turns", "max_steps"))
+STOP_REASONS = frozenset(("transfer", "user_stop", "agent_stop"))
+# The Runner's handoff token, spelled here so this module reads it without importing the loop.
+TRANSFER_MARKER = "###TRANSFER###"
+HANDOFF_CUE = re.compile(
+    r"###TRANSFER###|\b(transfer(?:ring)? you|transfer this|connect(?:ing)? you (?:with|to)|"
+    r"hand(?:ing)? (?:you |this )?(?:over|off)|escalat(?:e|ing) (?:this|you)|"
+    r"pass(?:ing)? you (?:on|to)|a (?:human|colleague|specialist) (?:agent )?will)\b", re.I)
+# How many turns the user can have nothing at all for before its scenario has run out, and how many
+# turns of nothing to say. Both were already the inputs the close was taken on; they are inputs to
+# a kind now, never the end itself.
+UNANSWERABLE_LIMIT = 2
+SILENCE_LIMIT = 1
+
+# --- what class a fact is in (D210) --------------------------------------------------------
+# Askable facts are typed apart from record facts, so a leak cannot happen by the user answering.
+ASKABLE = "askable"  # a user of this Task said it, so this user says it once asked
+RECORD = "record"    # only the world holds it, so the user points the Candidate at the tools
+# The source names a turn records for the two answers that are not a value.
+RECORD_SOURCE = "record"
+STRIPPED_SOURCE = "stripped"
+RECORD_LINE = "I do not have my {} to hand, you can look it up."
+# Tags the turn carries so its end and its non-answers reach the Run's own file through the loop.
+IN_RECORD_TAG = "fact_in_record"
+STRIPPED_TAG = "user_answer_stripped"
 
 GENERIC_CLOSE = "No, that is all. Thank you."
 # The source name a restated goal carries, so a report can tell the opening request from the same
@@ -448,6 +490,12 @@ def _wrote_after(trace: Trace, confirmed_at: Optional[int], writes: Iterable[str
                for turn in trace.turns)
 
 
+def _closes(text: Optional[str]) -> bool:
+    """This Candidate turn closed the conversation or passed it on, which is a handoff (D210)."""
+    said = text or ""
+    return bool(CLOSE_CUE.search(said) or HANDOFF_CUE.search(said))
+
+
 def _names_change(text: Optional[str]) -> bool:
     """This sentence states a value the user is moving to rather than the one it holds today."""
     return bool(CHANGE_CUE.search(text or ""))
@@ -488,6 +536,70 @@ def _shared(asked: str, context: Optional[str], own: set) -> int:
     """Words the question and the recorded sentence share, the field's own words apart: what the
     question says about the value it wants ("the order with the lamp") picks between two of them."""
     return len((set(_tokens(asked)) & set(_tokens(context))) - own)
+
+
+def fact_class(rules: UserRules, field: str, value: Any = None) -> str:
+    """Which class an answer is in: askable when the recording holds this user saying it, record
+    when only the world does (D210).
+
+    The class is not a new thing to mine. D77 already says a fact is mined from a user turn or from
+    an argument a user turn said, and nothing else; so the rules are exactly the askable facts, and
+    a value the Starting state answers with that the rules do not hold is a record fact. Typing them
+    apart is what keeps a value only the system knew out of the user's mouth structurally, rather
+    than by a check run afterwards. The class is of the value and not of the field, because one
+    field holds two values where a user is moving from one to the other: it said the one it is
+    moving to, so that one is askable and the one on the account is the world's.
+    """
+    if value is None:
+        return ASKABLE if any(fact.field == field for fact in rules.facts) else RECORD
+    return ASKABLE if any(fact.field == field and str(fact.value) == str(value)
+                          for fact in rules.facts) else RECORD
+
+
+def goal_write_set(trace: Optional[Trace], writes: Iterable[str]) -> set[str]:
+    """The writes the Task's goal implies: the write-kind tools the Reference called and the world
+    did not refuse (D210).
+
+    `writes` names the tools that change the world (`ToolSig.kind`), which is the only class read
+    here; which tools those are is the build's answer, not this module's. A recording that changed
+    nothing gives the empty set, and a goal that implies no write is satisfied as soon as the
+    Candidate has nothing left to do, which is what the empty set says.
+    """
+    names = set(writes)
+    return {call.name for call in (trace.tool_calls if trace is not None else ())
+            if call.name in names and call.error is None}
+
+
+def end_of_run(run: Any) -> Optional[str]:
+    """How this Run ended, in the four kinds (D210), or nothing where it ended in neither vocabulary.
+
+    The Simulated user tags the turn it ends on, and the loop copies a turn's tags into the Run's
+    own file, so the kind survives into the record without the Runner having to know about it. A
+    Run the user never ended is read from the Runner's own end reason instead: the turn limit is
+    `gave_up`, and a Candidate that stopped or was handed over is `handed_off`. A Run that crashed
+    ended in neither vocabulary and is left unclassified rather than guessed at.
+    """
+    for event in reversed(list(getattr(run, "events", None) or [])):
+        if getattr(event, "type", None) != "user_turn":
+            continue
+        for tag in (getattr(event, "payload", None) or {}).get("tags") or ():
+            if tag in USER_END_KINDS:
+                return tag
+    reason = getattr(run, "termination_reason", None) or ""
+    if reason in TURN_LIMIT_REASONS:
+        return GAVE_UP
+    return HANDED_OFF if reason in STOP_REASONS else None
+
+
+def ends_by_kind(rows: Iterable[Any]) -> dict[str, int]:
+    """How many Runs ended each way, over rows carrying a `user_end` (D210). Every kind is named,
+    zero included, so a round that stopped ending one way says so rather than dropping the line."""
+    counts = {kind: 0 for kind in USER_END_KINDS}
+    for row in rows or ():
+        kind = row.get("user_end") if isinstance(row, dict) else getattr(row, "user_end", None)
+        if kind in counts:
+            counts[kind] += 1
+    return counts
 
 
 class FactLookup(NamedTuple):
@@ -573,7 +685,8 @@ class SimulatedUser:
 
     def __init__(self, rules: UserRules, starting_state_reader: Any = None, model: Any = None,
                  identity: Optional[dict] = None, vocab: Vocabulary = GENERIC,
-                 write_tools: Iterable[str] = ()):
+                 write_tools: Iterable[str] = (), goal_writes: Optional[Iterable[str]] = None,
+                 answer_strip: Optional[Callable[[str], tuple[str, list]]] = None):
         self.rules = rules
         self.reader = starting_state_reader
         self.model = model
@@ -583,8 +696,18 @@ class SimulatedUser:
         # carries the calls and their results, so nothing new has to be plumbed to the user; the
         # vocabulary knows fields and not tool kinds, which is why the names are passed in here.
         self.write_tools = frozenset(write_tools or ())
+        # The writes the Task's goal implies (D210, `goal_write_set`). None means the caller named
+        # none, and the end then falls back to D158's reading, that any write is the Run acting; an
+        # empty set is a goal that implies no write and is satisfied without one.
+        self.goal_writes = None if goal_writes is None else frozenset(goal_writes)
+        # D196's strip, prepared over this Task's own evidence and applied to what this user is
+        # about to say. Without one the user speaks its facts unchecked, as it did before D210.
+        self.answer_strip = answer_strip
         self.events: list[Event] = []
         self.done = False
+        # Which of the four kinds ended this Run, set on the turn that ends it (D210).
+        self.end_reason: Optional[str] = None
+        self.stripped = 0
         identity_fields = vocab.by_kind("identity")
         # A value the recorded user stated as the one it is moving to is not the value the world
         # keys its row by, so it never joins the identity a row is matched on.
@@ -597,6 +720,11 @@ class SimulatedUser:
         self._silent = 0
         self._refused = 0
         self._restated = False
+        # Turns this user had nothing at all for what was asked on: the scenario running out,
+        # counted (D210). One turn, however many fields it named: the rule is a Candidate asking
+        # twice, so a single turn naming two unknown fields is one ask and not two.
+        self._unanswerable = 0
+        self._end_tagged = False
 
     def reply(self, transcript: list) -> str:
         question = ""
@@ -607,13 +735,14 @@ class SimulatedUser:
         sources: dict[str, str] = {}
         spoken: list[str] = []
         unavailable: list[str] = []
+        record: list[str] = []
         assisted = False
         for field in self._asked(question):
             fact = self._fact(field, question)
             if fact is not None and _asks_stored(question) and _names_change(fact.context):
                 found = self._from_world(field)  # the question asks for the value on the account
                 if found is not None:
-                    answers[field], sources[field] = found.value, "world"
+                    self._speak(found.value, field, answers, sources, record)
                     assisted = assisted or found.synthetic
                     continue
             if fact is not None:
@@ -627,18 +756,38 @@ class SimulatedUser:
                 unavailable.append(field)
                 sources[field] = "unavailable"
                 continue
-            answers[field], sources[field] = found.value, "world"
+            self._speak(found.value, field, answers, sources, record)
             assisted = assisted or found.synthetic
+        self._strip_answers(answers, sources, unavailable)
         if not self.events:
             self._open(answers, sources, spoken)
-        if not (answers or unavailable or spoken):
-            self._respond(question, sources, spoken, unavailable, self._saw_write(transcript))
-        self._silent = 0 if (answers or unavailable or spoken) else self._silent + 1
-        text = self._say(question, answers, sources, spoken, unavailable)
+            self._strip_answers(answers, sources, unavailable)
+        said_something = bool(answers or unavailable or record or spoken)
+        if not said_something:
+            self._respond(question, sources, spoken, unavailable, self._writes_made(transcript))
+            said_something = bool(spoken or unavailable)
+        self._silent = 0 if said_something else self._silent + 1
+        self._unanswerable += int(bool(unavailable))
+        # D210, Greptile P1 (PR 25): a turn whose only content is that this user has no record of
+        # what was asked is not the user having something to say, it is the exhaustion signal
+        # itself. Without this the unanswerable limit is reachable only on the turns where nothing
+        # was asked by name, so a Candidate that keeps asking for fields nobody ever told this user
+        # about runs to the turn limit and is reported as gave_up instead of scenario_exhausted.
+        if not self.done and unavailable and not (answers or record or spoken):
+            self._close(question, sources, spoken, self._writes_made(transcript))
+        text = self._say(question, answers, sources, spoken, unavailable, record)
         # How many of this turn's asks went unanswered, and how many the Run has left unanswered so
-        # far: the refusal rate a build reports, read off the Simulated user's own turns.
-        refused = sum(1 for source in sources.values() if source in ("refused", "unavailable"))
+        # far: the refusal rate a build reports, read off the Simulated user's own turns. A record
+        # fact counts here too: the Candidate asked and got no value, whoever holds it.
+        refused = sum(1 for source in sources.values()
+                      if source in ("refused", "unavailable", RECORD_SOURCE, STRIPPED_SOURCE))
         self._refused += refused
+        tags = (["fact_unavailable"] if unavailable else []) + ([IN_RECORD_TAG] if record else [])
+        if any(source == STRIPPED_SOURCE for source in sources.values()):
+            tags.append(STRIPPED_TAG)
+        if self.end_reason is not None and not self._end_tagged:
+            tags.append(self.end_reason)
+            self._end_tagged = True
         self.events.append(Event(
             idx=len(self.events),
             type="user_turn",
@@ -647,9 +796,12 @@ class SimulatedUser:
                 "fields": list(sources),
                 "sources": sources,
                 "unavailable_fields": unavailable,
-                "tags": ["fact_unavailable"] if unavailable else [],
+                "record_fields": record,
+                "tags": tags,
                 "refused": refused,
                 "refused_so_far": self._refused,
+                "user_end": self.end_reason,
+                "stripped_so_far": self.stripped,
             },
             assisted=assisted,
         ))
@@ -683,7 +835,7 @@ class SimulatedUser:
         self._volunteer(answers, sources)
 
     def _respond(self, question: str, sources: dict, spoken: list, unavailable: list,
-                 wrote: bool = False) -> None:
+                 made: Optional[set] = None) -> None:
         """Nothing was asked by name: a confirmation, a stated choice, the goal again, or the close.
 
         A real user whose request has not been acted on says it again before it leaves. Build 12's
@@ -694,6 +846,10 @@ class SimulatedUser:
         recording opened with, once (D44: the recorded sentence, D77: nothing invented). The second
         such turn closes, which is why the close is gated on `self._restated` and not on `_silent`
         alone: the restatement speaks, so it resets the silence counter the turn it happens.
+
+        D210: the close is a protocol and not a cue. `_end_kind` says which of the four kinds this
+        turn is, and a turn that is none of them does not end the Run, so a Candidate that says
+        goodbye over a goal whose writes are not done is answered rather than agreed with.
         """
         for field, reuse_last, cue in ((CONFIRMATION, True, CONFIRM_REQUEST),
                                        (CHOICE, False, OPEN_REQUEST)):
@@ -710,33 +866,80 @@ class SimulatedUser:
                 unavailable.append(field)
                 sources[field] = "unavailable"
             return
+        satisfied = self._goal_done(made or set())
         goal = self._fact(GOAL)
-        if goal is not None and not self._restated and not wrote:
+        if goal is not None and not self._restated and not satisfied:
             spoken.append(str(goal.value))
             sources[GOAL] = GOAL_RESTATED
             self._restated = True
             return
-        if self._restated or CLOSE_CUE.search(question or "") or self._silent >= 1:
-            closing = self._fact(CLOSING)
-            spoken.append(str(closing.value) if closing is not None else GENERIC_CLOSE)
-            sources[CLOSING] = "rules" if closing is not None else "generic_close"
-            self.done = True
+        self._close(question, sources, spoken, made or set())
 
-    def _saw_write(self, transcript: list) -> bool:
-        """This Run has already changed the world, so a "was there anything else" is the real end.
+    def _close(self, question: str, sources: dict, spoken: list, made: set) -> None:
+        """End the Run where this turn is one of the four kinds, and say nothing where it is not (D210).
+
+        The one place a Run ends, so the protocol reads the same whether the turn asked for fields
+        this user has no record of or asked nothing by name at all.
+        """
+        kind = self._end_kind(question, self._goal_done(made))
+        if kind is None:
+            return
+        closing = self._fact(CLOSING)
+        spoken.append(str(closing.value) if closing is not None else GENERIC_CLOSE)
+        sources[CLOSING] = "rules" if closing is not None else "generic_close"
+        self.end_reason = kind
+        self.done = True
+
+    def _end_kind(self, question: str, satisfied: bool) -> Optional[str]:
+        """Which of the four kinds this end is, or nothing where the user has not ended (D210).
+
+        More than one can hold at once, so they are read in one order. A Run whose goal writes are
+        all confirmed is done whatever the Candidate said next. A Candidate that twice asks for
+        what nobody ever told this user has run the scenario out, whatever it says while doing it.
+        A Candidate that then closes or passes the conversation on ended it, and that is a handoff
+        rather than the user running dry. Last comes the user with nothing left to say and no close
+        to answer, which is the scenario out in the other way. The closing cue and the silence
+        counter are still read, but each is an input to a kind and neither is the end on its own.
+        `gave_up` is never reached here: it is the turn limit, which the loop holds and the user
+        never sees.
+        """
+        if satisfied:
+            return GOAL_SATISFIED
+        if self._unanswerable >= UNANSWERABLE_LIMIT:
+            return SCENARIO_EXHAUSTED
+        if _closes(question):
+            return HANDED_OFF
+        return SCENARIO_EXHAUSTED if (self._restated or self._silent >= SILENCE_LIMIT) else None
+
+    def _goal_done(self, made: set) -> bool:
+        """Every write the Task's goal implies has been made in this Run (D210).
+
+        `made` is the write-kind tools this transcript shows called. A caller that named the goal's
+        own writes is answered against them; one that named none falls back to D158's reading, that
+        a Run which wrote at all has acted, so a caller passing nothing gets the user it had.
+        """
+        if self.goal_writes is not None:
+            return self.goal_writes <= made
+        return bool(self.write_tools) and bool(made)
+
+    def _writes_made(self, transcript: list) -> set[str]:
+        """The write-kind tools this Run has called so far, so the user can tell a Run that has done
+        what it came for from one that has not.
 
         Read off the transcript `reply` is handed, which holds the assistant turns with their tool
         calls and the tool results by name; no other state is kept, so a caller that passes no
         `write_tools` gets a user that restates its goal once whatever the Run has done.
         """
+        made: set[str] = set()
         if not self.write_tools:
-            return False
+            return made
         for message in transcript or []:
-            if _field_of(message, "name") in self.write_tools:
-                return True
-            if any(_field_of(call, "name") in self.write_tools for call in _calls_of(message)):
-                return True
-        return False
+            name = _field_of(message, "name")
+            if name in self.write_tools:
+                made.add(name)
+            made.update(call_name for call in _calls_of(message)
+                        if (call_name := _field_of(call, "name")) in self.write_tools)
+        return made
 
     def _declined(self) -> bool:
         """The recording holds a no where a yes was asked for; then no yes is representative.
@@ -820,15 +1023,54 @@ class SimulatedUser:
             if fact is not None:
                 answers[rule.field], sources[rule.field] = fact.value, "volunteered"
 
-    def _say(self, question: str, answers: dict, sources: dict, spoken: list, unavailable: list) -> str:
+    def _speak(self, value: Any, field: str, answers: dict, sources: dict, record: list) -> None:
+        """A value the world holds, said or pointed at by its class (D210).
+
+        Askable is a value this user itself gave, so it is said. Record exists only in the world,
+        and the Candidate has the tools that read it: the user says so and names no value, which is
+        the leak D79 check 7 fails a Task for, closed where the answer is chosen rather than after.
+        """
+        if fact_class(self.rules, field, value) == ASKABLE:
+            answers[field], sources[field] = value, "world"
+            return
+        record.append(field)
+        sources[field] = RECORD_SOURCE
+
+    def _strip_answers(self, answers: dict, sources: dict, unavailable: list) -> None:
+        """D196's strip, run again on what this user is about to say (D210).
+
+        A value the strip takes out is one the system held and no user of this Task ever said, so it
+        is not this user's to give however it reached the rules; the fact is answered as absent and
+        the removal counted, which is what stops the leak check being passed by the user handing the
+        value over. The check is per value and not per line: a line is many facts, and only the fact
+        whose value the strip would take is lost.
+        """
+        if self.answer_strip is None:
+            return
+        for field in [field for field, value in answers.items() if self._removed(str(value))]:
+            answers.pop(field)
+            sources[field] = STRIPPED_SOURCE
+            unavailable.append(field)
+            self.stripped += 1
+
+    def _removed(self, text: str) -> bool:
+        """The strip would take something out of this text, so no user of this Task ever said it."""
+        if self.answer_strip is None or not text:
+            return False
+        _, taken = self.answer_strip(text)
+        return bool(taken)
+
+    def _say(self, question: str, answers: dict, sources: dict, spoken: list, unavailable: list,
+             record: Iterable[str] = ()) -> str:
         plain = list(spoken)
         plain += [f"My {_words(field)} is {value}." for field, value in answers.items()]
         plain += [f"I would rather not share my {_words(f)}."
                   for f, source in sources.items() if source == "refused"]
+        plain += [RECORD_LINE.format(_words(field)) for field in record]
         plain += ["I do not have an answer for that." if field in SPOKEN_FIELDS
                   else f"I do not have my {_words(field)}." for field in unavailable]
         sentence = " ".join(plain) or "Okay, thank you."
-        if self.model is None or unavailable or spoken or not answers:
+        if self.model is None or unavailable or spoken or list(record) or not answers:
             return sentence
         return self._word(question, sentence, answers, sources)
 
@@ -847,6 +1089,8 @@ class SimulatedUser:
             spoken_value = value.lower()
             if not any(spoken_value in known or known in spoken_value for known in allowed):
                 return sentence  # the model added a fact the rules and the world never gave
+        if self._removed(text):
+            return sentence  # D210: the wording carried a value no user of this Task ever said
         return text
 
 

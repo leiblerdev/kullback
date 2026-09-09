@@ -421,7 +421,7 @@ def test_a_failing_run_is_ours_or_the_models_by_the_rule_that_matched_it(printed
     assert listed, "the fixture's third Trace does not replay its reads the way it recorded them"
     for row in listed:
         assert row[2] == "ours" and row[3] == "answer_differs"
-        assert row[4].endswith("read: differs") or row[4].endswith("write: differs")
+        assert ": differs (" in row[4] and ("read" in row[4] or "write" in row[4])
         assert row[5].startswith("`runs/")
 
 
