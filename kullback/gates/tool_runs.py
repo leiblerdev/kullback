@@ -318,21 +318,56 @@ def _token(value: Any, rules: Any = None) -> Optional[str]:
     return text
 
 
-def _enumerated(column: Any, rules: Any = None) -> bool:
+# The suffixes a column that holds an id is named with, which is the same reading the miner takes
+# before it records a vocabulary at all. An id is addressed rather than named, so it lends nothing.
+ID_SUFFIXES = ("_id", "_number", "_no", "_code", "_key", "_ref", "_uuid")
+
+
+def _holds_ids(column: Any, schema: Any = None) -> bool:
+    """Whether this column holds ids rather than names, by its name, its table's key or its values.
+
+    The name rule is the customer's convention and is free wherever it fires. A column the corpus
+    showed keying its table is an id whatever it is called, which is where a `sku` or a `username`
+    is caught. And a column whose every kept sighting has a mined id shape is holding ids however
+    it is named, which is the reading that does not depend on a convention at all.
+    """
+    name = str(getattr(column, "name", "") or "")
+    if name == "id" or name.endswith(ID_SUFFIXES):
+        return True
+    keys = (getattr(schema, "composite_keys", None) or {}).get(getattr(column, "table", None)) or ()
+    if name in keys:
+        return True
+    present = [value for value in (getattr(column, "samples", None) or []) if value is not None]
+    return bool(present) and all(isinstance(value, str) and _pattern_hit(schema, value) is not None
+                                 for value in present)
+
+
+def _enumerated(column: Any, rules: Any = None, schema: Any = None) -> bool:
     """Whether the corpus showed this column drawing from a set of names.
 
     The miner records the set where it found one (`Column.vocabulary`). A schema mined before it did
-    still keeps a few sightings per column, and those stand in, held to the same test: every value a
-    short name, and no more distinct values than a set of names has. So an id column, a number and a
-    free text column lend no names on either kind of schema.
+    still keeps a few sightings per column, and those stand in, held to the miner's own three tests
+    rather than to one of them: every value a short name; an id column lending nothing, whatever its
+    ids look like and however it is named; and a set of names repeating, so a column whose every
+    kept sighting was a value of its own is holding data however short it is, where nothing counted
+    what it held. Without the last two a build carried over a schema mined before D217 read an id
+    column as a set of names, lent those ids to every free text column of the table, and failed
+    sound replays on ids that differ incidentally. The stand-in is deliberately the stricter
+    reading: where it says no, the comparison is what it was before D217, and a fresh mine puts the
+    real vocabulary back.
     """
     if list(getattr(column, "vocabulary", None) or ()):
         return True
     present = [value for value in (getattr(column, "samples", None) or []) if value is not None]
-    if not present:
+    if not present or _holds_ids(column, schema):
         return False
     distinct = (getattr(column, "evidence", None) or {}).get("distinct")
-    if isinstance(distinct, int) and distinct > ENUM_DISTINCT:
+    if isinstance(distinct, int):
+        if distinct > ENUM_DISTINCT:
+            return False
+    elif len({canon(str(value), rules) for value in present}) >= len(present):
+        # No count of what the column held, so the kept sightings are the only evidence that it
+        # repeats at all, and a column whose every sighting was a value of its own does not.
         return False
     return all(_token(value, rules) is not None for value in present)
 
@@ -354,8 +389,8 @@ def domain_tokens(schema: Any, table: Optional[str], name: str, rules: Any = Non
     columns = [c for c in (getattr(schema, "columns", None) or ())
                if table is None or getattr(c, "table", None) == table]
     own = next((c for c in columns if getattr(c, "name", None) == name), None)
-    lenders = [own] if own is not None and _enumerated(own, rules) else [
-        c for c in columns if _enumerated(c, rules)]
+    lenders = [own] if own is not None and _enumerated(own, rules, schema) else [
+        c for c in columns if _enumerated(c, rules, schema)]
     tokens: set = set()
     for column in lenders:
         for value in _names_of(column):

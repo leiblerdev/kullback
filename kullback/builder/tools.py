@@ -56,6 +56,7 @@ from kullback.builder import repair as repair_module
 from kullback.builder import transaction
 from kullback.builder.build import TARGET_ALL, BuildPlan
 from kullback.gates import Ruling, ruling_of
+from kullback.gates import ledger as ledger_mod
 from kullback.gates.fidelity import unconfirmed_reason
 
 Sink = Callable[[Any], Awaitable[None]]
@@ -315,27 +316,45 @@ def _named_by(failure: str) -> tuple[str, str]:
     return "", "build"
 
 
+def ruling_rows(workdir: Any) -> list[dict]:
+    """Every gate ruling this workdir holds, the stages' own and the last compile's per tool rows.
+
+    Two files since D218 rule 2, where the per tool rulings moved out of `gates.json` into
+    `compile_snapshot.json` instead of overwriting it. A reader that wants the whole picture,
+    passing gates included, wants both, so both are read in one place.
+    """
+    workdir = Path(workdir)
+    stage_rows = [row for row in (_read_json(workdir / "gates.json", []) or []) if isinstance(row, dict)]
+    compiled = (_read_json(workdir / ledger_mod.COMPILE_NAME, {}) or {}).get("rows") or []
+    return stage_rows + [row for row in compiled if isinstance(row, dict)]
+
+
 def red_lights(workdir: Any) -> list[RedLight]:
     """Every failing gate this workdir holds, off the records code wrote and never off a model.
 
-    Four files, because one is not enough: `gates.json` is every ruling the stages recorded, but
-    the compile_tools stage overwrites it with its own per-tool rulings, so the fidelity records in
-    `replays.json` are read for the Tasks whose replay ruling is no longer in the file, and
-    `tool_builds.json` for the tools that ended assisted, which is a body the Builder could not
-    write (D49) and the one red light no ruling names. `tool_fidelity.json` says what an assisted
-    tool costs in Tasks (D171), which the assisted light alone does not.
+    Five files, because one is not enough. `gates.json` is the rulings the stages recorded and
+    `compile_snapshot.json` the per tool rulings of the last compile, which used to be written over
+    the first and now sit beside it (D218 rule 2); `replays.json` carries the fidelity records for
+    the Tasks whose replay ruling is not in either; and `tool_builds.json` names the tools that
+    ended assisted, which is a body the Builder could not write (D49) and the one red light no
+    ruling names. `tool_fidelity.json` says what an assisted tool costs in Tasks (D171), which the
+    assisted light alone does not.
     """
     workdir = Path(workdir)
     out: list[RedLight] = []
-    for row in _read_json(workdir / "gates.json", []) or []:
-        if not isinstance(row, dict) or row.get("pass"):
+    for row in ruling_rows(workdir):
+        if row.get("pass"):
             continue
         stage = str(row.get("stage") or "")
         failures = [str(f) for f in (row.get("failures") or [])] or [f"{stage} did not pass"]
         for failure in failures:
             target, kind = _named_by(failure)
-            out.append(RedLight(stage=stage, kind=kind, target=target, failure=failure,
-                                verb=verb_for(stage)))
+            # A compile snapshot row names its own tool, which is what a red light wants: the
+            # failure text names the call that broke, and cutting a tool name out of that was
+            # guesswork the row now makes unnecessary.
+            named = str(row.get("tool") or "")
+            out.append(RedLight(stage=stage, kind="tool" if named else kind,
+                                target=named or target, failure=failure, verb=verb_for(stage)))
     seen = {(light.stage, light.target) for light in out}
     for task_id, per_task in sorted((_read_json(workdir / "replays.json", {}) or {}).items()):
         rows = per_task if isinstance(per_task, dict) else {}
@@ -555,7 +574,7 @@ def status_of(workdir: Any, gate: str = "", target: str = "") -> StatusResult:
     """
     workdir = Path(workdir)
     lights = red_lights(workdir)
-    rows = [r for r in (_read_json(workdir / "gates.json", []) or []) if isinstance(r, dict)]
+    rows = ruling_rows(workdir)
     passing = sorted({str(r.get("stage") or "") for r in rows if r.get("pass")})
     failing = list(dict.fromkeys(light.stage for light in lights))
     unbuilt = not rows and not (_read_json(workdir / "replays.json", {}) or {}) \

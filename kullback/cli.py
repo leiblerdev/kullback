@@ -1,5 +1,5 @@
-"""The commands of the Harness: ingest, build, freeze-runner, run, verdict, regrade, report and difficulty,
-each reading and writing records under one workdir with no hidden state."""
+"""The commands of the Harness: ingest, build, freeze-runner, run, verdict, regrade, report, status and
+difficulty, each reading and writing records under one workdir with no hidden state."""
 
 from __future__ import annotations
 
@@ -12,7 +12,7 @@ from typing import Any, Optional
 
 import typer
 
-from kullback import difficulty
+from kullback import difficulty, round_snapshot
 from kullback.report import coverage_rows, load, load_tool_sigs, write_report
 from kullback.runner import feed, heartbeat
 from kullback.runner.records import (
@@ -506,6 +506,44 @@ def report(
     target = Path(out) if out else Path(workdir) / "report.md"
     typer.echo(str(write_report(data, target.parent, target.name)))
 
+
+@app.command("status")
+def status(
+    workdir: Path = WORKDIR,
+    round_number: Optional[int] = typer.Option(None, "--round", help="Which closed round to read."),
+    named: int = typer.Option(3, "--named", help="How many drifted Task ids to name."),
+):
+    """Read one closed round's Task table and say how far the live files have moved from it (D218).
+
+    The table is what the round ruled, in one pass, and nothing rewrites it. task_status.json is the
+    live file and goes on moving under a loosening, a re-derive or a cache recompute, which is right
+    and is exactly what made the numbers unreadable: a reader joining the two could not tell a
+    harness regression from that movement. So this prints the round it read, the counts that round
+    ruled, and the Tasks whose live status now disagrees with it, at the stage each moved.
+    """
+    root = Path(workdir)
+    snapshot = round_snapshot.read_snapshot(root, round_number)
+    report = round_snapshot.drift(snapshot, task_status=_json_at(root, "task_status.json"),
+                                  replays=_json_at(root, "replays.json"), named=named)
+    typer.echo(round_snapshot.drift_line(report))
+    counts = dict((snapshot or {}).get("counts") or {})
+    for name in ("tasks", "fidelity", "reference", "verifier_passed", "trusted", "refused"):
+        if name in counts:
+            typer.echo(f"{name}: {counts[name]}")
+    for row in report.get("first") or ():
+        typer.echo(f"moved: {row['task_id']} at {row['stage']}")
+
+
+def _json_at(root: Path, name: str) -> dict:
+    """One JSON record of a workdir, or nothing where the file is missing or half-written."""
+    path = root / name
+    if not path.is_file():
+        return {}
+    try:
+        body = json.loads(path.read_text(encoding="utf-8"))
+    except ValueError:
+        return {}
+    return body if isinstance(body, dict) else {}
 
 @app.command("judge-smoke")
 def judge_smoke(
