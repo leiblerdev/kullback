@@ -26,10 +26,12 @@ from typing import Any, Iterable, Optional
 from kullback.ai.provider import Model, ModelConfig, ModelReply, ToolCallRequest
 from kullback.runner import loop
 from kullback.runner.canon import (
+    DIFFERS_NOTE,
     EXEMPT_NOTE,
     PRESENCE_NOTE,
     SEMANTIC_NOTE,
     TOKEN_NOTE,
+    UNRESOLVED_NOTE,
     canonicalize,
     first_difference,
     value_at,
@@ -59,10 +61,15 @@ EFFECTS_NAMED = 20  # columns one failing write names, against a body that moved
 # Trace confirmed by a forgiven difference as a Trace that replayed (D217).
 BY_BYTES, BY_CANONICAL, BY_EXEMPT, BY_JUDGE = "bytes", "canonical", "exempt", "judge"
 BY_COLUMNS, BY_TOKEN_SET, BY_PRESENCE, BY_VALUE, BY_ERROR = "columns", "token_set", "presence", "value", "error"
+# A check nobody could settle: the two sides hold different values on a semantic column and no
+# judge and no table answered for them. It is a route of its own because it is not a difference
+# anyone found, it is a question nobody answered, and a build cannot repair what it cannot name
+# (D219).
+BY_UNRESOLVED = "unresolved"
 # The meaning of a recorded verdict. Bump it where that meaning changes, so a cached replay written
 # under the older rule is recomputed rather than read back (D217): the stage's code version carries
 # it, beside the hashes of the modules the scoring is done by.
-VERDICT_FORMAT = 2
+VERDICT_FORMAT = 3
 
 
 class _Script:
@@ -379,7 +386,11 @@ def _route_of(agreed: bool, notes: Iterable[str]) -> str:
     if not agreed:
         if any(TOKEN_NOTE in note for note in marks):
             return BY_TOKEN_SET
-        return BY_PRESENCE if any(PRESENCE_NOTE in note for note in marks) else BY_COLUMNS
+        if any(UNRESOLVED_NOTE in note for note in marks):
+            return BY_UNRESOLVED
+        if any(PRESENCE_NOTE in note for note in marks):
+            return BY_PRESENCE
+        return BY_JUDGE if any(DIFFERS_NOTE in note for note in marks) else BY_COLUMNS
     if any(note.startswith(SEMANTIC_NOTE) for note in marks):
         return BY_JUDGE
     return BY_EXEMPT if any(note.startswith(EXEMPT_NOTE) for note in marks) else BY_COLUMNS
@@ -598,6 +609,8 @@ def _score(trace: Trace, state: Any, scored: ScoredRouter, script: _Script, mode
         "cosmetic_by_columns": _by_route(scored.checks, COSMETIC, BY_COLUMNS),
         "differs_by_token_set": _by_route(scored.checks, DIFFERS, BY_TOKEN_SET),
         "differs_by_presence": _by_route(scored.checks, DIFFERS, BY_PRESENCE),
+        "differs_by_judge": _by_route(scored.checks, DIFFERS, BY_JUDGE),
+        "differs_unresolved": _by_route(scored.checks, DIFFERS, BY_UNRESOLVED),
     }
     # The route is part of the reason: "differs" alone does not say whether the two answers were
     # made of different domain tokens, held different columns, or simply parted at a value (D217).

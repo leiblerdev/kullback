@@ -69,6 +69,8 @@ from kullback.builder.agent import builder_message
 from kullback.builder.build import (
     DEFAULT_REROLLS,
     LESSON_COUNTS_FILE,
+    SEMANTIC_COUNTS_FILE,
+    SEMANTIC_JUDGE_STAGE,
     TARGET_ALL,
     TASK_SPLIT,
     BuildError,
@@ -82,7 +84,7 @@ from kullback.examiner import stage as examiner_stage
 from kullback.examiner.agent import ExaminerError, examiner_message, examiner_round_message
 from kullback.examiner.plan import STATE_DIR, ExaminerPlan
 from kullback.examiner.stage import DERIVE_INPUTS
-from kullback.gates import round_end
+from kullback.gates import round_end, tool_runs
 from kullback.gates.ledger import HISTORY_NAME, GateLedger
 from kullback.runner import budget, feed
 from kullback.runner.records import (
@@ -837,6 +839,7 @@ class Loop:
             **self._pin_counts(),
             **self._reader_counts(),
             **self._lesson_counts(),
+            **self._semantic_counts(),
             **self.task_split(),
             **self._sampling_counts(),
             **self._evidence_counts(),
@@ -865,6 +868,23 @@ class Loop:
             "readmission_blocked": sum(int(n or 0) for n in blocked.values()),
             "answered_from_holdout": int(answers.get("calls") or 0),
         }
+
+    def _semantic_counts(self) -> dict:
+        """D219: what the round's semantic column comparisons came to, and what the judging cost.
+
+        `semantic_compared` is how many semantic columns were compared at all, `semantic_judged` how
+        many of those a judge was actually asked about, and the three answers are counted apart:
+        equal, different, and the pairs nobody settled. `judge_spend` is the ledger's own number for
+        the judge that settles them, so the cost of judging is read off the same file the build's
+        other spend is. All zero on an Environment whose schema classes no column semantic; many
+        unresolved with nothing judged is a judge that is not wired, which is what D219 was written
+        for and is the reading nothing on the record could give before.
+        """
+        counts = _read_json(self.plan.workdir / SEMANTIC_COUNTS_FILE, {}) or {}
+        out = {name: int(counts.get(name) or 0) for name in tool_runs.SEMANTIC_COUNTS}
+        stages = (budget.load_totals(self.plan.workdir).get("stages") or {})
+        out["judge_spend"] = round(float((stages.get(SEMANTIC_JUDGE_STAGE) or {}).get("usd") or 0.0), 4)
+        return out
 
     def _sampling_counts(self) -> dict:
         """D212: the build salt every keyed draw ran under, and how many draws of each kind this round took.
