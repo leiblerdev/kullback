@@ -27,7 +27,7 @@ from __future__ import annotations
 
 import json
 import re
-from typing import Any, Iterable, Optional, Sequence
+from typing import Any, Callable, Iterable, Optional, Sequence
 
 from kullback.ai.provider import Model
 from kullback.builder.cluster import APOSTROPHE_RE, STOPWORDS
@@ -632,9 +632,31 @@ def strip_intent(text: str, traces: Sequence[Trace], *, start_state: Any = None,
     reads a value it has itself written in: the words a shape leaves are frozen, and `protected`
     freezes the words an earlier strip of the same line left, so stripping twice is stripping once.
     """
+    return value_strip(traces, start_state=start_state, schema=schema, rules=rules)(text, protected)
+
+
+def value_strip(traces: Sequence[Trace], *, start_state: Any = None, schema: Any = None,
+                rules: Any = None) -> Callable[..., tuple[str, list[StrippedValue]]]:
+    """The same strip over one Task's evidence, read once and applied to many lines (D210).
+
+    `strip_intent` grades one line per Task and can afford to walk the Task's recorded calls again
+    each time. The Simulated user runs the strip over every answer of every turn of every Run, so
+    what it holds is this closure: the values the system knew, sorted once, and a pass over the
+    line that reads them. What is stripped and what is left is `strip_intent`'s, unchanged.
+    """
     known = system_values(traces, start_state=start_state, schema=schema, rules=rules)
     spoken = spoken_text(traces)
     wanted = sorted((v for v in known if not _said(spoken, v)), key=lambda v: (-len(v), v))
+
+    def strip(text: str, protected: Sequence[str] = ()) -> tuple[str, list[StrippedValue]]:
+        return _strip_known(text, known, wanted, protected)
+
+    return strip
+
+
+def _strip_known(text: str, known: dict[str, StrippedValue], wanted: Sequence[str],
+                 protected: Sequence[str]) -> tuple[str, list[StrippedValue]]:
+    """One line with each wanted value taken out of it, longest first, and what was taken."""
     out, frozen = text or "", _protected_spans(text or "", protected)
     taken: list[StrippedValue] = []
     for value in wanted:

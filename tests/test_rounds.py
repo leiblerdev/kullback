@@ -58,10 +58,13 @@ TARGET = "environment"
 # rejecting their own Reference, and a re-roll's Run id carries the key it was rolled under, so the
 # Runs named in `did_not_reach_reference` and `failed_recordings` are named by that id. Re-pinned
 # for D208: a confirmed row names the Run ids of the Reference it holds, which is what says whether
-# the Verifier beside it was derived from that Reference or from one since withdrawn. The same
-# three Tasks, the same verdicts and the same reasons. Re-pinned for D217: a replay reason
-# now names the route the verdict was reached by, and the one reason here reads `differs (columns)`.
-TASK_STATUS_SHA256_BEFORE_THE_PHASE = "7df5b576940550718a4380b180b64486d547163a78a67b00fb2502aa1b7e6796"
+# the Verifier beside it was derived from that Reference or from one since withdrawn. Re-pinned for
+# D210: every row names, per held-out Run in its pool, which of the four kinds that Run ended in, so
+# a reading over the pool can leave out the Runs that did not finish, and the ends move again where
+# the review of D210 closed the turn that says nothing but a miss. Re-pinned for D217: a replay
+# reason now names the route the verdict was reached by, and the one reason here reads
+# `differs (columns)`. The same three Tasks, the same verdicts.
+TASK_STATUS_SHA256_BEFORE_THE_PHASE = "7563e5758c9391816afd8de2465ad6bb91bbeb03d299c3479404ece3e440c2c8"
 
 
 def _fixture(request) -> Path:
