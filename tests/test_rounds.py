@@ -53,8 +53,11 @@ TARGET = "environment"
 # row gained the leak columns the strip missed (D196), the reason each check with no input gave
 # (D198), and the synthesised second path (D199), and the verdicts are the same three. Re-pinned
 # once more for D200, which takes the Category out of a Task's id so the id is over the Runs alone:
-# the same three Tasks with the same verdicts, keyed by the id those Runs now address.
-TASK_STATUS_SHA256_BEFORE_THE_PHASE = "d9b12e5974f2eb7f2e3d00a28f0ad2ae891da6b9b4e3de6071cd7ef1a5e85d58"
+# the same three Tasks with the same verdicts, keyed by the id those Runs now address. Re-pinned for
+# D208: a confirmed row names the Run ids of the Reference it holds, which is what says whether the
+# Verifier beside it was derived from that Reference or from one since withdrawn; the same three
+# Tasks with the same verdicts.
+TASK_STATUS_SHA256_BEFORE_THE_PHASE = "32822289ecbc3fe6263da7526fdbe50e7f794680726ff47f21543226ffb44017"
 
 
 def _fixture(request) -> Path:

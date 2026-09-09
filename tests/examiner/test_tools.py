@@ -117,7 +117,7 @@ def test_a_fourth_probe_after_three_rejected_ones_is_refused_by_the_admission_ga
 def test_a_probe_of_a_task_with_no_verifier_is_an_error_result(world):
     plan, harness = _harness(world)
     result = _probe(harness, VF.wrong_run())
-    assert result.is_error and "no current Verifier" in result.content and T in result.content
+    assert result.is_error and "no live Verifier" in result.content and T in result.content
     assert not (world.workdir / "probes").exists()
     missing = drive(harness, "probe", {"task_id": "nobody", "bug_class": "other", "events": []})
     assert missing.is_error and "no Task is named nobody" in missing.content
