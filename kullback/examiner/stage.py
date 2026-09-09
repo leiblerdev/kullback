@@ -19,11 +19,13 @@ from __future__ import annotations
 
 import hashlib
 import threading
+from collections import Counter
 from dataclasses import dataclass, field
 from functools import lru_cache
 from pathlib import Path
 from typing import Any, Callable, Iterable, Optional
 
+from kullback import sampling
 from kullback.examiner import derive as verifier_mod
 from kullback.examiner import judge as judge_mod
 from kullback.examiner import lifecycle
@@ -215,6 +217,21 @@ def not_at_reference(confirmation: Any, pool_runs: Iterable[tuple[str, str]], wr
     return out
 
 
+def pool_user_ends(task_id: str, rerolls: dict) -> dict[str, str]:
+    """How the Simulated user ended each held-out Run of this Task, by the four kinds (D210, D133).
+
+    A Run that ended `scenario_exhausted` or `gave_up` did not stop because the Task was done: its
+    user ran out of what it could say, or the Run ran out of turns. Counting such a Run as a false
+    rejection says the Verifier is over-strict when what happened was that the Run never finished,
+    which is the same reading D133 already fixed for Runs that reached another End state. The kinds
+    are named per Run here so a reading over the pool can leave them out; nothing is filtered on
+    them yet, because the pool's own rule is the settled End state and this is a second opinion.
+    """
+    return {str(row["run_id"]): str(row["user_end"])
+            for row in rerolls.get(task_id) or []
+            if row.get("run_id") and row.get("user_end")}
+
+
 def pool_runs_of(task_id: str, replays: dict, rerolls: dict) -> list[tuple[str, str]]:
     """The Runs D133's pool holds for one Task, as (run id, path): the confirmed replays, the anchor
     among them (D81), and the re-rolls of any round that reached a success termination.
@@ -248,6 +265,7 @@ SECOND_PATH_REASON = "second_path"
 SECOND_PATH_BATCHES = 3
 SECOND_PATH_RUNS = 3  # the Runs one batch buys, the count the re-roll stage samples per Task (D112)
 SECOND_PATH_PREFIX = "second-path"
+PROBE_KIND = "probe_slot"  # D212: the kind the probe budget's order is keyed under, per Task id
 NO_REROLL_RUNNER = "no re-roll Runner in this session"
 CEILING_REACHED = "the budget ceiling was reached"
 # Where the Examiner's own re-roll rows live, the file `ExaminerPlan` reads back and merges into the
@@ -274,6 +292,18 @@ def second_path_rows(workdir: Path, task_id: str) -> list[dict]:
     return [dict(row) for row in (rows.get(task_id) or [])
             if isinstance(row, dict) and row.get("reason") == SECOND_PATH_REASON
             and row.get("path") and Path(row["path"]).is_file()]
+
+
+def next_batch(workdir: Path, task_id: str) -> int:
+    """The attempt index the next batch for this Task takes: one above the highest already recorded.
+
+    D212: a batch count that must grow grows by adding higher attempt indexes and never by
+    reshuffling the ones already taken. The counter used to restart at one on every call, so a
+    second search over the same Task in the same round wrote its Runs over the first search's files
+    under the same names and the batch the row counted was not the batch on disk.
+    """
+    rows = second_path_rows(workdir, task_id)
+    return max((int(row.get("batch") or 0) for row in rows), default=0) + 1
 
 
 def record_second_path(workdir: Path, task_id: str, rows: Iterable[dict], batch: int) -> list[dict]:
@@ -384,9 +414,10 @@ def second_path_search(task_id: str, confirmation: Any, *, workdir: Path, run_re
     they reached, so the round can be read for what the search cost.
     """
     bought, runs, ceiling = 0, 0, False
+    attempt = next_batch(workdir, task_id)
     recordings: list = []
     while run_rerolls is not None and bought < cap and len(confirmation.references) < 2:
-        prefix = f"{SECOND_PATH_PREFIX}-r{round_number}-b{bought + 1}"
+        prefix = f"{SECOND_PATH_PREFIX}-r{round_number}-b{attempt}"
         try:
             rows = [dict(row) for row in run_rerolls(task_id, count, prefix) or []]
         except budget.BudgetExceeded:
@@ -394,7 +425,8 @@ def second_path_search(task_id: str, confirmation: Any, *, workdir: Path, run_re
             break
         bought += 1
         runs += len(rows)
-        record_second_path(workdir, task_id, rows, bought)
+        record_second_path(workdir, task_id, rows, attempt)
+        attempt += 1
         fresh = finished_recordings(rows, write_tools=write_tools, fn=fn, atoms=atoms)
         recordings.extend(fresh)
         merge_second_path(confirmation, fresh)
@@ -767,7 +799,7 @@ def verifier_for(ctx, task: Task, confirmation: Any, *, canon_rules: Any, write_
                  intents: dict, user_rules: dict, recordings: int, rerolls: int, probe: Any,
                  probe_model: Any, may_probe: bool, fidelity_row: Optional[dict] = None,
                  pool_runs: Iterable[tuple[str, str]] = (), fn: Optional[Callable] = None,
-                 second_path: Optional[dict] = None,
+                 second_path: Optional[dict] = None, user_ends: Optional[dict] = None,
                  verifier_version: str = "1") -> tuple[Verifier, dict]:
     """One Task's Verifier from its References, through the whole D79 suite, with its status row.
 
@@ -816,6 +848,10 @@ def verifier_for(ctx, task: Task, confirmation: Any, *, canon_rules: Any, write_
               "recordings": recordings, "rerolls": rerolls,
               "failed_recordings": {**dict(confirmation.failed), **left_out},
               "did_not_reach_reference": sorted(left_out), "judged": confirmation.judged,
+              # D210: how the Simulated user of each held-out Run ended it, so a false-rejection
+              # reading can tell a Run that finished from one whose scenario ran out or that spent
+              # its turns, rather than reading every success termination as a Run that did the Task.
+              "user_ends": dict(sorted((user_ends or {}).items())),
               "checks": results,
               "not_run": [g.stage for g in gates if g.metrics.get("skipped")],
               # D196: the columns the leak check found the strip had missed, so a finding can be
@@ -987,9 +1023,11 @@ def derive_all(ctx: ExamContext, inputs: dict, *, probe_model: Any = None, probe
     running anything: build 13 spent 13.7 of its 16 hours in two of these calls over the same
     artifacts, most of it in the probe Run and the re-rolls of the D79 suite (D163). The results are
     gathered in Task order and the two files are written once, after the pool, so both give the
-    bytes the serial run gave; the probe budget is handed out between the two pools, in Task order,
-    for the same reason. `cached` and `ran` in the result count which Tasks came from where.
+    bytes the serial run gave; the probe budget is handed out between the two pools by the Tasks'
+    own keys (D212), so which Tasks get check 6 does not move when a Task is added or dropped.
+    `cached` and `ran` in the result count which Tasks came from where.
     """
+    sample_salt = sampling.build_salt(ctx.workdir)
     canon_rules = rules_of(inputs)
     fn = verifier_suite.canon_fn(canon_rules)
     write_tools = {s.name for s in inputs["sigs"] if s.kind == "write"}
@@ -1060,15 +1098,23 @@ def derive_all(ctx: ExamContext, inputs: dict, *, probe_model: Any = None, probe
                     recordings=recordings + extra, extra=extra)
 
     jobs = parallel.each(tasks, prepare, workers)
-    # The probe budget is spent in Task order whatever order the threads ran in, so which Tasks get
-    # check 6 is the serial run's answer; a Task served from the cache spent its slot when it ran.
-    probed = 0
-    for job in jobs:
-        if job.cached:
-            probed += int(bool(job.entry.get("probed")))
-        elif job.confirmation.references:
-            job.may_probe = probe is not None and (probe_limit is None or probed < probe_limit)
-            probed += int(job.may_probe)
+    # D212: the probe budget goes out in the order the Tasks' own keys give, not in Task order and
+    # not in the order the threads finished. A Task added to the build used to push every Task after
+    # it one place down the list, so a bounded budget landed on a different set of Tasks and check 6
+    # moved for Tasks nothing else about had changed. A Task served from the cache spent its slot
+    # when it ran, so the slots left are the limit minus those.
+    probed = sum(1 for job in jobs if job.cached and job.entry.get("probed"))
+    eligible = [job for job in jobs if not job.cached and job.confirmation.references]
+    if probe is None:
+        chosen: set[str] = set()
+    elif probe_limit is None:
+        chosen = {job.task.id for job in eligible}
+    else:
+        order = sampling.keyed_order(PROBE_KIND, [job.task.id for job in eligible], sample_salt)
+        chosen = set(order[:max(0, probe_limit - probed)])
+    for job in eligible:
+        job.may_probe = job.task.id in chosen
+        probed += int(job.may_probe)
 
     # Set when a second-path batch hit the run ceiling, so the caller can stop the round rather than
     # read a derivation that quietly bought nothing (the re-roll tool raises for the same reason).
@@ -1130,7 +1176,8 @@ def derive_all(ctx: ExamContext, inputs: dict, *, probe_model: Any = None, probe
                 recordings=len(seed_replays[task.id]), rerolls=len(rerolls.get(task.id, [])),
                 probe=probe, probe_model=probe_model, may_probe=job.may_probe,
                 fidelity_row=fidelity_row, second_path=second,
-                pool_runs=pool_runs_of(task.id, replays, rerolls) + extra_pool, fn=fn)
+                pool_runs=pool_runs_of(task.id, replays, rerolls) + extra_pool, fn=fn,
+                user_ends=pool_user_ends(task.id, rerolls))
             verifier = as_dict(record)
         entry = {"format": CACHE_FORMAT, "task_id": task.id, "key": job.key, "status": row,
                  "references": confirmation.as_dict(), "verifier": verifier, "probed": job.may_probe}
@@ -1200,6 +1247,12 @@ def derive_all(ctx: ExamContext, inputs: dict, *, probe_model: Any = None, probe
         # D133: the held-out Runs the pool leaves out because they did not reach the Reference's
         # End state, named per Task on the status row and counted here for the Examiner.
         did_not_reach_reference=sum(len(r.get("did_not_reach_reference") or ()) for r in status.values()),
+        # D210: how the held-out Runs of every Task ended, counted per round in the kinds the
+        # Simulated user reports, so a round that stops finishing what it starts says so in one
+        # number rather than per Task. The kinds are counted as they come rather than read from the
+        # Builder's list, because the Examiner does not import the Builder (D123).
+        user_ends_by_kind=dict(sorted(Counter(
+            kind for r in status.values() for kind in (r.get("user_ends") or {}).values()).items())),
         # D189: what the search for a second path cost and bought this round. `second_path_runs` is
         # the whole extra frontier, about ten model calls a Run; `second_path_exhausted` is the
         # Tasks that spent the cap and still have check 5 not run.

@@ -44,7 +44,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, AsyncIterator, Callable, Iterable, Optional
 
-from kullback import difficulty
+from kullback import difficulty, sampling
 from kullback.agent.events import (
     BeatEnd,
     BeatStart,
@@ -61,11 +61,19 @@ from kullback.agent.tools import ToolResult
 from kullback.ai.provider import Model
 from kullback.builder import agent as builder_agent
 from kullback.builder import build as build_module
+from kullback.builder import lesson as lesson_mod
 from kullback.builder import pipeline, transaction
 from kullback.builder import readers as readers_mod
 from kullback.builder import repair as repair_module
 from kullback.builder.agent import builder_message
-from kullback.builder.build import DEFAULT_REROLLS, TARGET_ALL, TASK_SPLIT, BuildError, BuildPlan
+from kullback.builder.build import (
+    DEFAULT_REROLLS,
+    LESSON_COUNTS_FILE,
+    TARGET_ALL,
+    TASK_SPLIT,
+    BuildError,
+    BuildPlan,
+)
 from kullback.builder.compile_env import PINS_FILE
 from kullback.builder.tools import BUILD_TOOLS, EXAMINER_OWNS
 from kullback.examiner import agent as examiner_agent
@@ -416,6 +424,9 @@ class Loop:
     retry_asks: int = 0
     retries_seen: int = 0
     zooms_seen: int = 0  # `plan.zooms_skipped` at the round's start; the plan's counter is cumulative
+    # D212: the keyed draws taken by the time the last round closed, so a round reports its own
+    # share of a counter that is cumulative over the process.
+    draws_seen: dict = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         """A new Loop resumes the workdir's unfinished business: findings an earlier invocation
@@ -428,6 +439,10 @@ class Loop:
         already holds bodies and Intents is exactly the run where round 1 rewrites the most.
         """
         self.started_hashes = artifact_hashes(self.plan.workdir)
+        # D212, Greptile P1 (PR 26): the draw counter is process-global, so a Loop built after
+        # something already drew has to start from what the process has taken, not from nothing.
+        # Otherwise its first round reports another Loop's draws as its own.
+        self.draws_seen = self.draws_seen or sampling.draws_by_kind()
         seen = {finding.finding_id for finding in self.pending_findings}
         self.pending_findings = list(self.pending_findings) + [
             finding for finding in _open_findings(self.plan.workdir) if finding.finding_id not in seen]
@@ -805,8 +820,25 @@ class Loop:
             "artifacts": fingerprint, "artifact_hashes": per, "artifacts_changed": changed,
             **self._pin_counts(),
             **self._reader_counts(),
+            **self._lesson_counts(),
             **self.task_split(),
+            **self._sampling_counts(),
         }
+
+    def _sampling_counts(self) -> dict:
+        """D212: the build salt every keyed draw ran under, and how many draws of each kind this round took.
+
+        `sample_salt` is eight characters of the salt's digest, so two rounds of two builds can be
+        read for whether they sampled alike without the salt itself going into a record. `draws_`
+        counts say which draws the round actually took: a round whose stages all came from the cache
+        drew nothing, which is the honest reading and not a mechanism that is off. The counts are a
+        difference against the totals at the round's start, because a round's counts are assembled
+        more than once and a destructive read would give the second caller nothing.
+        """
+        out = {"sample_salt": sampling.salt_label(sampling.read_salt(self.plan.workdir))}
+        for kind, count in sampling.draws_since(self.draws_seen).items():
+            out[f"draws_{kind}"] = int(count)
+        return out
 
     def retirements_now(self) -> list:
         """The Verifiers this round retired, read off the status rows the derivation left (D208)."""
@@ -829,6 +861,22 @@ class Loop:
         totals = totals.get("totals") or {}
         return {name: int(totals.get(name) or 0)
                 for name in ("readers_derived", "readers_forced", "slots_unbound", "results_unread")}
+
+    def _lesson_counts(self) -> dict:
+        """D211: what the code-only lesson steps found for the tools this round compiled.
+
+        `relations_found` is how many relations the catalogue named, by kind, over the failing calls
+        of every tool with a body that still fails; `unwitnessed_lines` how many branches, loops and
+        assignments no recorded call reached; `rewrites_forced` how many tools passed the stall
+        limit and were asked to rewrite rather than patch; `blocked_by_gate` how many tie at a gate
+        before the fidelity ruling, where no recorded call is ever compared. All zero is a build
+        whose bodies replay, not a mechanism that did nothing.
+        """
+        rows = _read_json(self.plan.workdir / LESSON_COUNTS_FILE, {}) or {}
+        totals = lesson_mod.merge_counts(row for row in rows.values() if isinstance(row, dict))
+        return {"relations_found": totals["relations_found"],
+                **{name: totals[name] for name in
+                   ("unwitnessed_lines", "rewrites_forced", "blocked_by_gate")}}
 
     def _pin_counts(self) -> dict:
         """D197: what the pinner found moving between two reads, so a round says it without a report.
@@ -1077,6 +1125,7 @@ class Loop:
         # The driver's own numbers last and freshest: a round that failed comes here with no counts
         # at all, and its clock, spend and turns are as true as a round that finished.
         record = RoundRecord(round=n, counts={**counts, **self.driver_counts()})
+        self.draws_seen = sampling.draws_by_kind()  # the next round's draws start counting from here
         record.counts["moved"] = self.round_moved(n, record.counts)
         record.counts["repairs"] = self.repairs_made(n)
         history = self.rounds + [record]

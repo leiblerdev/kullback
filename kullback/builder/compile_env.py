@@ -17,6 +17,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Iterable, Optional
 
+from kullback.builder import lesson as lesson_mod
 from kullback.builder import mine, synth
 from kullback.builder.body_skill import BODY_SKILL
 from kullback.builder.mine import is_assistant_call, is_scalar_result
@@ -157,6 +158,10 @@ class ToolBuild:
     # Only ever set by `grade_body`: a body carried over from an earlier run of the stage that
     # answered none of the recorded calls under the world as it stands now.
     could_not_run: bool = False
+    # D211: what the code-only steps read off this body's own replay, as a `lesson.Diagnosis`. Set
+    # by `grade_body` alone, since it is a reading of the body a tool already has and what it is
+    # for is the ask the next writer is given. It is never serialized: the lesson it renders is.
+    diagnosis: Any = None
 
 # --- reading rows out of recorded tool results ---
 
@@ -2572,10 +2577,86 @@ def body_could_not_run(gates: Iterable[GateResult], rows: Iterable[dict]) -> boo
                                   for row in answered)
 
 
+def _read_pair(tool: str, theirs: Any, ours: Any, readers: Any) -> tuple[Any, Any]:
+    """Two prose answers of one tool as the columns its reader finds in them (D176, D187).
+
+    The same rule `column_differences` compares under: a tool that answers with one sentence is
+    read into its columns first, and where the reader finds none on either side the two sentences
+    stay one value and part or do not part as a whole. Without it every relation over a prose tool
+    is asked of a string, which holds no elements to be broadcast and no list to be ordered.
+    """
+    if readers is None or not tool or not isinstance(theirs, str) or not isinstance(ours, str):
+        return theirs, ours
+    if readers.table_of(tool) is None:
+        return theirs, ours
+    left, right = readers.read(tool, theirs), readers.read(tool, ours)
+    return (left, right) if isinstance(left, dict) and isinstance(right, dict) else (theirs, ours)
+
+
+def call_triples(toolsig: ToolSig, calls: Iterable[ToolCall], results: Iterable[dict],
+                 outcomes: Iterable[dict], readers: Any = None) -> list[lesson_mod.Triple]:
+    """One recorded call, what it answered and what the body answered, as the relation step reads it (D211).
+
+    The triples are built here and not off `tool_call_outcomes.json`, which keeps a digest of each
+    answer and not the answer: a digest says two answers differ and can say nothing about how, and
+    every relation in the catalogue is a statement about how. The recorded side is the call's own
+    result or the class it raised; ours is what the sandbox just answered for the same call, which
+    the gates have already run and the memo already holds.
+    """
+    matched = {str(row.get("call_id") or ""): bool(row.get("replayed"))
+               for row in outcomes if isinstance(row, dict)}
+    triples: list[lesson_mod.Triple] = []
+    for call, result in zip(calls, results, strict=False):
+        ours = result.get("value") if isinstance(result, dict) and result.get("ok") else None
+        our_error = "" if not isinstance(result, dict) or result.get("ok") else str(
+            result.get("error") or "an error")
+        theirs = parse_result(call.result) if call.error is None else None
+        theirs, ours = _read_pair(toolsig.name, theirs, ours, readers)
+        triples.append(lesson_mod.Triple(
+            call_id=str(call.id or ""), args=dict(call.args or {}),
+            theirs=theirs,
+            ours=ours,
+            their_error="" if call.error is None else str(getattr(call.error, "class_", "") or "an error"),
+            our_error=our_error,
+            matched=matched.get(str(call.id or ""), False)))
+    return triples
+
+
+def diagnose_body(toolsig: ToolSig, source: str, sandbox: Sandbox, calls: list[ToolCall],
+                  shown: list[ToolCall], outcomes: list[dict], gates: list[GateResult],
+                  unbeaten: int = 0, blocked: str = "", rules: Any = None, readers: Any = None) -> Any:
+    """The code-only read of one body that is already there: full diff, relation, witnessed lines (D211).
+
+    Nothing here calls a model. The answers are the sandbox's memo, already paid for by the gates
+    that just ran; the one new subprocess is the traced run behind `executed_lines`, and it is
+    started only for a body whose calls the sandbox reached at all, since a body that does not
+    parse has no lines to have run and no answers to compare.
+
+    The triples are the shown split's alone (D51, D75): a lesson is written into a prompt, and the
+    held-out calls' arguments and outcomes may not travel there, which is the same rule
+    `_failure_text` and `kept_body_hint` are filtered by. The witnessed-branch read is over every
+    recorded call, because it carries no value of any of them: a line number is a fact about the
+    body, and a branch reached only by a held-out call is a branch the evidence supports.
+    """
+    ran = any(gate.stage == "executes_on_s0" for gate in gates)
+    if not calls or not ran:
+        return lesson_mod.diagnose(toolsig.name, (), unbeaten=unbeaten, blocked=blocked)
+    try:
+        results = sandbox.run(shown)
+    except SandboxError:
+        return lesson_mod.diagnose(toolsig.name, (), unbeaten=unbeaten, blocked=blocked)
+    triples = call_triples(toolsig, shown, results, outcomes, readers)
+    carried = (lesson_mod.FAILING_SET_SHOWN if lesson_mod.stalled(unbeaten)
+               else lesson_mod.EXCEPTIONS_NAMED)
+    return lesson_mod.diagnose(toolsig.name, triples, source=source, function=toolsig.name,
+                               executed=sandbox.executed_lines(calls), unbeaten=unbeaten,
+                               blocked=blocked, rules=rules, shown=carried)
+
+
 def grade_body(toolsig: ToolSig, body: str, calls: Iterable[ToolCall], schema: EntitySchema, db: dict,
                workdir: Path | str, call_states: Optional[dict] = None, rules: Any = None,
                timeout: float = 30.0, readers: Any = None,
-               call_tasks: Optional[dict] = None) -> ToolBuild:
+               call_tasks: Optional[dict] = None, unbeaten: int = 0, blocked: str = "") -> ToolBuild:
     """Run one body that already exists through the gates and the per-call replay, with no model call.
 
     This is `compile_tool` with the writing taken out: the same gates in the same order, the same
@@ -2605,6 +2686,10 @@ def grade_body(toolsig: ToolSig, body: str, calls: Iterable[ToolCall], schema: E
         [{"tool": toolsig.name, "call_id": call.id, "replayed": True, "detail": ""} for call in calls])
     build.could_not_run = body_could_not_run(build.gates, build.call_outcomes)
     build.hardcoded = build.assisted and hardcoded_body(calls, build.call_outcomes)
+    if build.assisted:
+        build.diagnosis = diagnose_body(toolsig, source, sandbox, calls, shown, build.call_outcomes,
+                                        build.gates, unbeaten=unbeaten, blocked=blocked, rules=rules,
+                                        readers=readers)
     return build
 
 
@@ -2614,7 +2699,8 @@ KEPT_BODY_HEAD = ("This tool already has a body in this build. It was replayed u
                   "your own, and do not fail in these ways.")
 
 
-def kept_body_hint(gates: Iterable[GateResult], held_out: Iterable[ToolCall] = ()) -> str:
+def kept_body_hint(gates: Iterable[GateResult], held_out: Iterable[ToolCall] = (),
+                   shapes_shown: int = SHAPES_SHOWN) -> str:
     """What the body already kept for this tool fails at, grouped by shape; "" when it fails at nothing.
 
     The hint goes where every other hint goes (the lesson in the first user turn), and it is grouped
@@ -2622,6 +2708,10 @@ def kept_body_hint(gates: Iterable[GateResult], held_out: Iterable[ToolCall] = (
     leaves sixty sentences, and a writer shown one of them answers one of them. The held-out split
     is filtered the way `_failure_text` filters it, so a body the writer is asked to beat still
     cannot hand it the calls it was never shown.
+
+    `shapes_shown` is three by default and the whole failing set once the tool has stalled (D211):
+    three shapes is a sample, and a writer that has answered the sample six times over and bought
+    nothing needs the rest of the distribution rather than the same three again.
     """
     hidden = [args_text(call) for call in held_out]
     lines = []
@@ -2632,9 +2722,9 @@ def kept_body_hint(gates: Iterable[GateResult], held_out: Iterable[ToolCall] = (
         kept = [] if split == "held_out" else [f for f in gate.failures if not any(h in f for h in hidden)]
         shapes = failure_shapes(kept)
         text = "; ".join(f"{shape} ({count} call{'' if count == 1 else 's'})"
-                         for shape, count in shapes[:SHAPES_SHOWN])
-        if len(shapes) > SHAPES_SHOWN:
-            text += f"; {len(shapes) - SHAPES_SHOWN} more shapes"
+                         for shape, count in shapes[:shapes_shown])
+        if len(shapes) > shapes_shown:
+            text += f"; {len(shapes) - shapes_shown} more shapes"
         withheld = len(gate.failures) - len(kept)
         if withheld:
             text += ("; " if text else "") + f"{withheld} more on calls you were not shown"
