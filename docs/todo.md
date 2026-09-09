@@ -302,3 +302,6 @@ The founder asked how mastra-ai/mastra designed the harness for Factory (their a
 ## Agent user as a fallback (asked 2026-09-09)
 
 The founder asked whether the rule-driven Simulated user should be an agent grounded in curated context, and what it gains. Reading in the session's reports: of seventy dry held-out Runs sampled on two corpora, the record-fact class is closed by D210 without a model, the mining missed nothing, most of the rest are infeasible goals, misread handoffs, withdrawn goals or Candidate and environment defects, and only novel disambiguation (ten Runs on one corpus) is a class a model recovers, which is also where it invents. Decision: rule-driven stays the default; D214 builds the agent user as a fallback behind the same code guards, with a fidelity score for the user itself against the recorded user turns and a disclosure gate, after the first contributor round is read.
+
+## Learnings page (2026-09-09)
+The founder asked for every learning written down: docs/learnings.md synthesises D184 to D218 (how to read a failure, where the funnel loses Tasks, the design rules the loop kept confirming, what outside work contributed, process). Keep it current at each loop iteration; the decision log stays the record.
