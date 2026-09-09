@@ -1259,7 +1259,7 @@ def test_a_written_call_path_becomes_a_trace_the_replay_can_drive():
              {"name": "stock_shelf", "args": {"shelf_id": "s1", "units": 4}, "id": "c1", "turn": 1},
              {"name": "read_shelf", "args": {"shelf_id": "s1"}, "id": "c2", "requestor": "user", "turn": 3}]
 
-    trace = build_module._variant_trace("t1", calls, spoken, "synth-path-r1-t1-1")
+    trace = build_module.call_trace("t1", calls, spoken, "synth-path-r1-t1-1")
 
     assert [(turn.role, turn.content, turn.tool_call_ids) for turn in trace.turns] == [
         ("user", "please stock shelf s1", []), ("assistant", "let me look", ["c0", "c1"]),
@@ -1271,6 +1271,6 @@ def test_a_written_call_path_becomes_a_trace_the_replay_can_drive():
 
 def test_a_call_whose_turn_is_gone_joins_the_last_turn_its_speaker_had():
     spoken = [{"role": "assistant", "content": "done"}]
-    trace = build_module._variant_trace("t1", [{"name": "read_shelf", "args": {}, "turn": 9}], spoken, "synth-1")
+    trace = build_module.call_trace("t1", [{"name": "read_shelf", "args": {}, "turn": 9}], spoken, "synth-1")
     assert [call.id for call in trace.tool_calls] == ["synth-1-0"]
     assert [(turn.role, turn.tool_call_ids) for turn in trace.turns] == [("assistant", ["synth-1-0"])]
