@@ -44,6 +44,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, AsyncIterator, Callable, Iterable, Optional
 
+from kullback import difficulty
 from kullback.agent.events import (
     BeatEnd,
     BeatStart,
@@ -863,7 +864,8 @@ class Loop:
         return list(self.eplan.store.get("findings") or []) if self.eplan is not None else []
 
     def counts(self) -> dict:
-        """D126's counts off the gates, plus what only the driver knows (`driver_counts`)."""
+        """D126's counts off the gates, plus what only the driver knows (`driver_counts`), plus the
+        difficulty buckets (D209)."""
         store = self.eplan.store if self.eplan is not None else {}
         counts = round_end.round_counts(
             store.get("task_status") or {}, store.get("verifiers") or [], store.get("probes") or {},
@@ -871,7 +873,25 @@ class Loop:
             store.get("replays") or {}, store.get("rerolls") or {}, store.get("canon_rules"),
             store.get("sigs") or [], record=self._land, intents=store.get("intents") or {})
         counts.update(self.driver_counts())
+        counts.update(self.difficulty_counts(counts))
         return counts
+
+    def difficulty_counts(self, counts: dict) -> dict:
+        """The bucket table of the round in hand, written to its own file and summarised on the line.
+
+        `round_end` is frozen and the trusted count is its business, so the buckets are computed here
+        off the round's own false-rejection rows and trusted ids and land in difficulty.json rather
+        than in a gate's metrics. A workdir the computation cannot read leaves the counts without
+        buckets rather than failing the round: this is a report and never a ruling.
+        """
+        try:
+            body = difficulty.refresh(self.plan.workdir,
+                                      false_rejection=dict(counts.get("false_rejection") or {}),
+                                      trusted_ids=list(counts.get("trusted_ids") or []))
+        except (OSError, ValueError, TypeError):
+            return {}
+        return {"buckets": list(body.get("buckets") or []),
+                "tasks_without_difficulty": len(body.get("no_record") or {})}
 
     def keep_gate_history(self, n: int) -> None:
         """gates.json as this round leaves it, kept per round in gates_by_round.json.
