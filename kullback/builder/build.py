@@ -1226,7 +1226,10 @@ def _replay_stage(only: Optional[Iterable[str]] = None):
         ctx.record_gate(fidelity.reference_replay_gate(replays))
         return {"replays": replays}
 
-    version = _version("replay_reference", run, replay_mod, fidelity, compile_env, route, loop, tool_runs)
+    # The verdict format rides in the key beside the module hashes: a change in what a verdict means
+    # has to recompute the replays even where the scoring code it was read off has not moved (D217).
+    version = (f"{_version('replay_reference', run, replay_mod, fidelity, compile_env, route, loop, tool_runs)}"
+               f":verdicts={replay_mod.VERDICT_FORMAT}")
     return pipeline.Stage(name="replay_reference", fn=run,
                           inputs=("traces", "tasks", "sigs", "schema", "bodies", "db", "canon_rules",
                                   "environment", "readers", "synthetic_rows"),

@@ -29,6 +29,8 @@ GENERIC_NAME = re.compile(r"^(calculate|compute|think|reflect|transfer_to_human|
 MIN_OBSERVED_CALLS = 3
 UNKNOWN_ERROR_SHARE = 0.20  # D67: unknown above a small share on any tool is a flag on the Environment
 MAX_SAMPLES = 5
+MAX_VOCABULARY = 12    # distinct values that still read as a set of names, the class rule's own bar
+VOCAB_VALUE_LEN = 40   # a longer value is a sentence, not one of the names a column draws from
 MAX_VALUES = 400
 MIN_COUNTER_VALUES = 5
 # The floor under which "every number differs" says nothing: fewer sightings than this and a column
@@ -1331,6 +1333,31 @@ def _samples(values: list) -> list:
     return out
 
 
+def _vocabulary(values: list, is_id: bool = False) -> list[str]:
+    """The set of names this column drew from, or nothing when it held a value of its own per row.
+
+    The five kept samples are enough to show a reviewer what a column looks like and not enough to
+    say what it may hold, which is what a replayed answer has to be held to (D217). So a column the
+    class rule reads as an enum keeps its whole set: those are the words the customer's world uses
+    here, and an answer naming a word outside them is a different answer.
+
+    The test is the class rule's own, plus two things that rule does not need. A set of names is a
+    set because it repeats, so a column whose every sighting was a value of its own is holding data
+    however short it is; and an id is addressed rather than named, so an id column lends nothing
+    even where its ids are few. Either way the column keeps nothing and borrows its table's names.
+    """
+    present = [value for value in values if value is not None]
+    texts = [value.strip() for value in present if isinstance(value, str)]
+    if is_id or not texts or len(texts) != len(present):
+        return []
+    if max(len(text) for text in texts) > VOCAB_VALUE_LEN:
+        return []
+    distinct = sorted({text for text in texts if text})
+    if len(distinct) > MAX_VOCABULARY or len(distinct) >= len(texts):
+        return []
+    return distinct
+
+
 def _lit(char: str) -> str:
     return char if char.isalnum() or char in "_-#@" else re.escape(char)
 
@@ -1680,7 +1707,8 @@ def mine_schema(traces: list[Trace], db_json_path: Optional[Path] = None,
             column = Column(table=table, name=name, class_=proposal.column_class,
                             class_rule=proposal.column_class, class_confidence=proposal.confidence,
                             class_reason=proposal.reason, classified_by="rule",
-                            evidence=proposal.evidence, samples=_samples(cell["values"]))
+                            evidence=proposal.evidence, samples=_samples(cell["values"]),
+                            vocabulary=_vocabulary(cell["values"], _is_id(name) or name in id_names))
             if model is not None:
                 verified = classify_column(model, table, name, proposal, cell["values"])
                 if verified is not None:
