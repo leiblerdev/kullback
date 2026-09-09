@@ -190,6 +190,21 @@ def test_a_reference_that_has_grown_a_run_is_the_same_source_and_retires_nothing
     assert lifecycle.live([verifier], rows) == [verifier]
 
 
+def test_an_earlier_rounds_retirement_stays_on_a_row_a_cached_derivation_wrote_again(tmp_path):
+    """A derivation served from its cache writes back the row the entry holds, which was written
+    before the artefact was retired. While the Task still has nothing on disk the marker is what
+    answers why, so it is carried onto the new row rather than read as a Task that never had one."""
+    (tmp_path / "verifiers").mkdir()
+    marker = {"reason": lifecycle.REFERENCE_WITHDRAWN, "text": "withdrawn", "round": 2,
+              "source_run_ids": ["r1"]}
+    prior = {WITHDRAWN: {lifecycle.RETIRED_FIELD: marker}, KEPT: {lifecycle.RETIRED_FIELD: marker}}
+    (tmp_path / "verifiers" / f"{KEPT}.json").write_text("{}", encoding="utf-8")
+    status = {WITHDRAWN: {"reference_confirmed": False}, KEPT: {"reference_confirmed": True}}
+    assert lifecycle.carry_forward(tmp_path, status, prior) == [WITHDRAWN]
+    assert lifecycle.retired_row(status[WITHDRAWN]) == marker
+    assert lifecycle.retired_row(status[KEPT]) is None, "a Task derived afresh has its Verifier back"
+
+
 def test_a_row_that_does_not_name_its_reference_is_judged_on_confirmation_alone():
     """A status row written before the Run ids were recorded says nothing about which Reference is
     held, so the identity half of the rule cannot be asked of it and only the other half is."""
