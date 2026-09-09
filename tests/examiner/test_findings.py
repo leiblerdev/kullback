@@ -297,3 +297,23 @@ def test_only_a_task_whose_runs_part_on_the_column_naming_a_written_row_is_filed
     assert rows[0]["kind"] == "runs_disagree" and rows[0]["tool"] is None
     assert "loans" in rows[0]["text"] and "trace-9" in rows[0]["text"]
     assert F.runs_disagree_rows({}) == []
+
+
+def test_a_runs_disagree_finding_validates_and_is_filed(tmp_path):
+    """The kind D213 files under was not one FindingKind carried, so every such filing raised on
+    validation and the finding never reached the Builder (D227)."""
+    from kullback.runner.records import Finding
+
+    assert Finding(finding_id="finding-1", kind="runs_disagree", text="two versions of one row",
+                   key="k", suggested="none").kind == "runs_disagree"
+    pins = {"runs_disagree": [
+        {"task_id": RENEW, "table": "loans", "key_class": "own", "column_classes": ["hard"],
+         "columns": 1, "run_ids": ["trace-1", "trace-9"], "split_candidate": True},
+    ]}
+    row = F.runs_disagree_rows(pins)[0]
+    plan = _plan(tmp_path, status=_status(), fidelity=_fidelity(), references={})
+    filed = F.file_finding(plan, kind=row["kind"], text=row["text"], key=row["key"],
+                           suggested=row["suggested"], task_id=row["task_id"],
+                           task_ids=row["task_ids"])
+    assert filed.kind == "runs_disagree" and filed.suggested == "none"
+    assert plan.store["findings"][-1]["kind"] == "runs_disagree"

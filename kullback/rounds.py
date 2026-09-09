@@ -1076,6 +1076,12 @@ class Loop:
                 "tasks_agent_driven": sum(1 for row in rows if row.get("drives")),
                 "tasks_rule_driven": sum(1 for row in rows if not row.get("drives")),
                 **user_lesson_mod.counts([*lessons, *learned], self.plan.round),
+                # How often the goal rule this replaces would have ended a Run on a write the world
+                # refused (D227). A number that stays above zero across rounds is the Environment
+                # refusing writes a Candidate is being asked to make, not the user misreading them.
+                user_fidelity_mod.REFUSED_WRITE_ENDS:
+                    user_fidelity_mod.refused_write_ends(self.plan.workdir)[
+                        user_fidelity_mod.REFUSED_WRITE_ENDS],
                 "agent_turns_dropped": _guard_counts(rows)}
 
     def _user_content_key(self, task_id: str) -> str:
