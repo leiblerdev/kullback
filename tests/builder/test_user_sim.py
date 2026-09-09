@@ -8,6 +8,7 @@ import pytest
 
 from conftest import PTR
 from kullback.builder import intent as intent_mod
+from kullback.builder import user_sim
 from kullback.builder.user_sim import (
     ASKABLE,
     CHOICE,
@@ -1394,3 +1395,86 @@ def test_the_goal_write_set_is_the_writes_the_recording_made_and_the_world_took(
     )
     assert goal_write_set(trace, {"renew_loan", "pay_fine"}) == {"renew_loan"}
     assert goal_write_set(None, {"renew_loan"}) == set()
+
+
+# --- D227: a write counts as made only when its result shows it took effect --------------------
+
+
+REFUSED = [
+    RENEWED[0],
+    RENEWED[1],
+    {"role": "tool", "tool_call_id": "c1", "name": "renew_loan",
+     "content": "this loan cannot be renewed while a fine is outstanding",
+     "error": {"class": "business_error",
+               "payload": "this loan cannot be renewed while a fine is outstanding"}},
+    RENEWED[3],
+]
+
+
+def test_a_write_the_world_refused_leaves_the_goal_open_and_the_user_restates_it_once():
+    user = renewal_user(write_tools={"renew_loan"}, goal_writes={"renew_loan"})
+    user.reply(ask("Hi! How can I help you today?"))
+    text = user.reply(REFUSED)
+    assert user.done is False and user.end_reason is None
+    assert said(user) == {GOAL: "goal_restated"} and "L2201" in text
+
+
+def test_a_write_that_took_effect_satisfies_the_goal():
+    user = renewal_user(write_tools={"renew_loan"}, goal_writes={"renew_loan"})
+    user.reply(ask("Hi! How can I help you today?"))
+    user.reply(RENEWED)
+    assert user.done is True and user.end_reason == GOAL_SATISFIED
+
+
+def test_a_refused_write_restated_once_still_reaches_an_end_kind():
+    """The Run goes on to the end kinds it always had: the refusal opens the goal, it does not hang."""
+    user = renewal_user(write_tools={"renew_loan"}, goal_writes={"renew_loan"})
+    user.reply(ask("Hi! How can I help you today?"))
+    user.reply(REFUSED)
+    user.reply(ask("Thanks for contacting us, have a great day."))
+    assert user.done is True and user.end_reason == HANDED_OFF
+
+
+def test_an_effect_record_holding_no_row_is_not_a_write_that_happened():
+    made = user_sim.writes_made(
+        [{"role": "tool", "name": "renew_loan", "content": "{}", "write_effect": []}],
+        {"renew_loan"})
+    assert made == set()
+
+
+def test_an_effect_row_whose_column_holds_what_it_held_is_not_a_write_that_happened():
+    made = user_sim.writes_made(
+        [{"role": "tool", "name": "renew_loan", "content": "{}",
+          "write_effect": [{"table": "loans", "row": "L2201", "path": "due_on",
+                            "before": "2026-03-01", "after": "2026-03-01"}]}], {"renew_loan"})
+    assert made == set()
+
+
+def test_an_effect_row_whose_column_moved_is_a_write_that_happened():
+    made = user_sim.writes_made(
+        [{"role": "tool", "name": "renew_loan", "content": "{}",
+          "write_effect": [{"table": "loans", "row": "L2201", "path": "due_on",
+                            "before": "2026-03-01", "after": "2026-04-01"}]}], {"renew_loan"})
+    assert made == {"renew_loan"}
+
+
+def test_a_replay_effect_check_that_failed_is_not_a_write_that_happened():
+    """The replay's own record of the D215 checks: a column that never reached its after value."""
+    made = user_sim.writes_made(
+        [{"role": "tool", "name": "renew_loan", "content": "{}",
+          "write_effect": {"effect_checks": 2, "effect_failures_total": 1,
+                           "effect_failures": [{"table": "loans", "row": "L2201", "path": "due_on",
+                                                "reason": "the column did not move"}]}}],
+        {"renew_loan"})
+    assert made == set()
+
+
+def test_a_replay_effect_check_that_passed_is_a_write_that_happened():
+    made = user_sim.writes_made(
+        [{"role": "tool", "name": "renew_loan", "content": "{}",
+          "write_effect": {"effect_checks": 2}}], {"renew_loan"})
+    assert made == {"renew_loan"}
+
+
+def test_a_write_requested_whose_result_never_came_back_is_not_a_write_that_happened():
+    assert user_sim.writes_made(RENEWED[:2], {"renew_loan"}) == set()

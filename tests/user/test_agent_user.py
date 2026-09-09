@@ -9,9 +9,16 @@ from __future__ import annotations
 
 import pytest
 
-from conftest import PTR
 from kullback.ai.provider import TestModel
-from kullback.runner.records import DisclosureRule, ToolCall, Trace, Turn, UserFact, UserRules
+from kullback.runner.records import (
+    DisclosureRule,
+    RawPtr,
+    ToolCall,
+    Trace,
+    Turn,
+    UserFact,
+    UserRules,
+)
 from kullback.user import context as context_mod
 from kullback.user import fidelity as fidelity_mod
 from kullback.user import guards as guards_mod
@@ -20,6 +27,10 @@ from kullback.user import rules as rules_mod
 from kullback.user.agent import AgentUser
 from kullback.user.tools import Toolbox, user_tools
 from kullback.user.vocabulary import GENERIC_FIELDS, FieldSpec, Vocabulary
+
+# The shared conftest defines this too, but two test folders both name a module `conftest` and
+# which one answers `from conftest import ...` depends on the order pytest put them on the path.
+PTR = RawPtr(file_hash="testfile", sim_index=0)
 
 VOCAB = Vocabulary(domain="garden", fields=[
     *[f.model_copy(deep=True) for f in GENERIC_FIELDS],
@@ -382,3 +393,109 @@ def test_the_cli_says_how_the_simulated_user_ended_a_builds_runs(tmp_path):
     result = CliRunner().invoke(cli.app, ["user", "dry-run", "--workdir", str(tmp_path)])
     assert result.exit_code == 0, result.output
     assert rules_mod.SCENARIO_EXHAUSTED in result.output
+
+
+# --- D227: both users read one function, and the refused-write count is a round count ------------
+
+
+DELIVERY_MOVED = {"role": "tool", "tool_call_id": "c1", "name": "move_delivery", "content": "{}"}
+DELIVERY_REFUSED = {**DELIVERY_MOVED,
+                    "content": "that slot is full",
+                    "error": {"class": "business_error", "payload": "that slot is full"}}
+
+
+def test_the_agent_users_end_and_the_rules_read_writes_through_one_function():
+    assert guards_mod.writes_made is not rules_mod.writes_made
+    transcript = [{"role": "user", "content": "Hi."}, DELIVERY_REFUSED]
+    assert guards_mod.writes_made(transcript, ["move_delivery"]) == \
+        rules_mod.writes_made(transcript, ["move_delivery"]) == set()
+
+
+def test_the_end_protocol_does_not_satisfy_a_goal_on_a_write_the_world_refused():
+    protocol = guards_mod.EndProtocol(goal_writes=["move_delivery"], write_tools=["move_delivery"])
+    made = guards_mod.writes_made([{"role": "user", "content": "Hi."}, DELIVERY_REFUSED],
+                                  ["move_delivery"])
+    assert protocol.goal_done(made) is False
+    assert protocol.kind("Anything else?", said_anything=True, had_nothing=False,
+                         made=made) == rules_mod.HANDED_OFF
+
+
+def test_the_end_protocol_satisfies_a_goal_on_a_write_that_took_effect():
+    protocol = guards_mod.EndProtocol(goal_writes=["move_delivery"], write_tools=["move_delivery"])
+    made = guards_mod.writes_made([{"role": "user", "content": "Hi."}, DELIVERY_MOVED],
+                                  ["move_delivery"])
+    assert protocol.goal_done(made) is True
+    assert protocol.kind("Anything else?", said_anything=True, had_nothing=False,
+                         made=made) == rules_mod.GOAL_SATISFIED
+
+
+def test_the_end_protocol_does_not_satisfy_a_goal_on_a_write_whose_effect_record_moved_nothing():
+    """D215's record rides with the call, so a write that answered cleanly and left every column
+    where it was is not a write the agent user may end its Run on."""
+    protocol = guards_mod.EndProtocol(goal_writes=["move_delivery"], write_tools=["move_delivery"])
+    unmoved = {**DELIVERY_MOVED,
+               "write_effect": [{"table": "deliveries", "row": "D77", "path": "slot",
+                                 "before": "morning", "after": "morning"}]}
+    made = guards_mod.writes_made([{"role": "user", "content": "Hi."}, unmoved], ["move_delivery"])
+    assert protocol.goal_done(made) is False
+
+
+def test_the_end_protocol_satisfies_a_goal_on_a_write_whose_effect_record_moved_a_column():
+    protocol = guards_mod.EndProtocol(goal_writes=["move_delivery"], write_tools=["move_delivery"])
+    moved = {**DELIVERY_MOVED,
+             "write_effect": [{"table": "deliveries", "row": "D77", "path": "slot",
+                               "before": "morning", "after": "evening"}]}
+    made = guards_mod.writes_made([{"role": "user", "content": "Hi."}, moved], ["move_delivery"])
+    assert protocol.goal_done(made) is True
+
+
+def _run_file(path, events):
+    import json
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("\n".join(json.dumps(event) for event in events), encoding="utf-8")
+
+
+def test_a_run_the_user_ended_on_a_refused_write_is_counted_for_the_round(tmp_path):
+    refused = [{"type": "tool_result", "payload": {"name": "move_delivery",
+                                                   "error": {"class": "business_error"}}},
+               {"type": "user_turn", "payload": {"user_end": rules_mod.GOAL_SATISFIED}}]
+    moved = [{"type": "tool_result", "payload": {"name": "move_delivery"}},
+             {"type": "user_turn", "payload": {"user_end": rules_mod.GOAL_SATISFIED}}]
+    _run_file(tmp_path / "runs" / "task_1" / "reroll-task_1-0.jsonl", refused)
+    _run_file(tmp_path / "runs" / "task_1" / "reroll-task_1-1.jsonl", moved)
+    counts = fidelity_mod.refused_write_ends(tmp_path, ["move_delivery"])
+    assert counts[fidelity_mod.REFUSED_WRITE_ENDS] == 1
+    assert counts["runs_read"] == 2 and counts["runs_with_a_write"] == 2
+
+
+def test_a_run_handed_off_over_a_refused_write_is_not_counted_as_a_goal_the_user_closed(tmp_path):
+    """The count is of the one end kind the old rule reached over a refusal. A Run the Candidate
+    closed ended the way it would have ended anyway, so counting it would overstate the change."""
+    handed = [{"type": "tool_result", "payload": {"name": "move_delivery",
+                                                  "error": {"class": "business_error"}}},
+              {"type": "user_turn", "payload": {"user_end": rules_mod.HANDED_OFF}}]
+    _run_file(tmp_path / "runs" / "task_1" / "reroll-task_1-0.jsonl", handed)
+    counts = fidelity_mod.refused_write_ends(tmp_path, ["move_delivery"])
+    assert counts[fidelity_mod.REFUSED_WRITE_ENDS] == 0
+    assert counts["runs_with_a_write"] == 1 and counts["runs_with_no_end_kind"] == 0
+
+
+def test_a_run_whose_end_kind_is_a_tag_is_read_the_same_as_one_that_names_it(tmp_path):
+    """The rule-driven user tags the turn it ends on and the Runner copies the tags into the file;
+    the agent user writes the kind under its own name. One reader, so neither shape is missed."""
+    tagged = [{"type": "tool_result", "payload": {"name": "move_delivery",
+                                                  "error": {"class": "business_error"}}},
+              {"type": "user_turn", "payload": {"tags": [rules_mod.GOAL_SATISFIED]}}]
+    _run_file(tmp_path / "runs" / "task_1" / "reroll-task_1-0.jsonl", tagged)
+    counts = fidelity_mod.refused_write_ends(tmp_path, ["move_delivery"])
+    assert counts[fidelity_mod.REFUSED_WRITE_ENDS] == 1 and counts["runs_with_no_end_kind"] == 0
+
+
+def test_a_run_written_before_the_end_kinds_existed_is_counted_as_unclassified(tmp_path):
+    old = [{"type": "tool_result", "payload": {"name": "move_delivery",
+                                               "error": {"class": "business_error"}}},
+           {"type": "stop", "payload": {"reason": "user_stop"}}]
+    _run_file(tmp_path / "runs" / "task_1" / "reroll-task_1-0.jsonl", old)
+    counts = fidelity_mod.refused_write_ends(tmp_path, ["move_delivery"])
+    assert counts[fidelity_mod.REFUSED_WRITE_ENDS] == 0
+    assert counts["runs_with_no_end_kind"] == 1

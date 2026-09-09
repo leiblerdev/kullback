@@ -19,8 +19,9 @@ becomes a gate in a later one, once a corpus has shown what it is worth.
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
-from typing import Any, Iterable, Optional, Sequence
+from typing import Any, Iterable, Iterator, Optional, Sequence
 
 from kullback.runner.records import Record, Trace, UserFact, read_json, write_json
 from kullback.user import rules as rules_mod
@@ -389,6 +390,64 @@ def score_workdir(workdir: Any, *, make_agent: Any = None, tasks: Optional[Itera
 # --- the dry run: how often the rule-driven user runs out of scenario --------------------------
 RUNS_DIR = "runs"
 REROLL_RECORD = "rerolls.json"
+REFUSED_WRITE_ENDS = "user_ended_on_refused_write"
+
+
+def refused_write_ends(workdir: Any, write_tools: Optional[Iterable[str]] = None) -> dict:
+    """How often the old goal rule would have ended a Run on a write the world refused (D227).
+
+    The count a live build reads to see this decision working: a Run lands here when its transcript
+    shows a write-kind tool called, every one of those calls came back carrying the D67 error marker,
+    and the user ended the Run anyway. Under the rule this replaces those Runs ended goal_satisfied
+    while the same Run was graded as claiming a write it never made; under the new one the goal stays
+    open, the user restates it once and the Run runs on to its own end kind.
+
+    Off the stored Runs and nothing else, so it costs no model call and reads workdirs written
+    before this decision as readily as after it.
+    """
+    names = frozenset(write_tools if write_tools is not None else write_tools_of(workdir))
+    out = {REFUSED_WRITE_ENDS: 0, "runs_read": 0, "runs_with_a_write": 0, "runs_with_no_end_kind": 0}
+    folder = Path(workdir) / RUNS_DIR
+    if not names or not folder.is_dir():
+        return out
+    for path in sorted(folder.glob("*/*.jsonl")):
+        called, took_effect, satisfied, classified = False, False, False, False
+        for event in _events(path):
+            kind, payload = event.get("type"), event.get("payload") or {}
+            if kind == "tool_result" and payload.get("name") in names:
+                called = True
+                took_effect = took_effect or payload.get("error") is None
+            elif kind == "user_turn" and rules_mod.end_kind_of(payload) is not None:
+                classified = True
+                # Only the one kind the old rule reached over a refused write. A Run the Candidate
+                # closed or the user ran out of scenario on ended the way it would have ended
+                # anyway, so counting those would say this decision moved Runs it never touched.
+                satisfied = satisfied or rules_mod.end_kind_of(payload) == rules_mod.GOAL_SATISFIED
+        out["runs_read"] += 1
+        out["runs_with_a_write"] += int(called)
+        # A Run written before the end kinds existed carries none, and its stop reason is `user_stop`
+        # whichever way the user ended it, so it cannot be classified either way and is counted here
+        # rather than folded into the refusal count on the strength of a reason that says nothing.
+        out["runs_with_no_end_kind"] += int(called and not classified)
+        out[REFUSED_WRITE_ENDS] += int(called and not took_effect and satisfied)
+    return out
+
+
+def _events(path: Path) -> Iterator[dict]:
+    """One stored Run's events, skipping a line the file was cut off in the middle of writing."""
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        return
+    for line in text.splitlines():
+        if not line.strip():
+            continue
+        try:
+            event = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(event, dict):
+            yield event
 
 
 def dry_run_counts(workdir: Any) -> dict:
@@ -421,4 +480,5 @@ def dry_run_counts(workdir: Any) -> dict:
     return {"tasks": tasks, "runs": total, "ends": counts,
             "termination_reasons": dict(sorted(reasons.items())),
             "classified": total - counts["unclassified"],
-            "exhausted_share": round(counts["scenario_exhausted"] / total, 4) if total else None}
+            "exhausted_share": round(counts["scenario_exhausted"] / total, 4) if total else None,
+            **refused_write_ends(workdir)}
