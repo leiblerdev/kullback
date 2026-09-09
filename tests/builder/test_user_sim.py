@@ -1233,17 +1233,51 @@ def test_two_asks_the_user_has_no_record_of_end_the_run_scenario_exhausted():
     user.reply(ask("Hi! How can I help you today?"))
     user.reply(ask("What is your member id?"))
     user.reply(ask("Could you give me your email address?"))
-    user.reply(ask("Thanks for contacting us, have a great day."))  # the goal is said once more
-    user.reply(ask("Thanks for contacting us, have a great day."))
+    assert user.done is True
     assert user.end_reason == SCENARIO_EXHAUSTED
+
+
+def test_a_candidate_that_only_ever_asks_for_unknown_fields_ends_rather_than_running_the_turns_out():
+    """Greptile P1 (PR 25): the unanswerable limit has to be reachable on the turns that ask by name.
+
+    A turn answered with nothing but "I have no record of that" used to count as the user having
+    said something, so the close was never evaluated and the Run reached the turn limit instead.
+    """
+    user = renewal_user(write_tools={"renew_loan"}, goal_writes={"renew_loan"})
+    user.reply(ask("What is your member id?"))
+    assert user.done is False
+    user.reply(ask("Could you give me your email address?"))
+    assert user.done is True
+    assert user.end_reason == SCENARIO_EXHAUSTED
+
+
+def test_one_turn_asking_two_fields_the_user_has_no_record_of_is_one_ask_and_not_two():
+    """Greptile P1 (PR 25, round 2): the limit counts the Candidate's asks, not the fields it named."""
+    user = renewal_user(write_tools={"renew_loan"}, goal_writes={"renew_loan"})
+    user.reply(ask("Hi! How can I help you today?"))
+    user.reply(ask("What is your member id and your email address?"))
+    assert len([f for f, source in said(user).items() if source == "unavailable"]) == 2
+    assert user.done is False
+    user.reply(ask("Could you give me your phone number?"))
+    assert user.done is True
+    assert user.end_reason == SCENARIO_EXHAUSTED
+
+
+def test_a_turn_that_answers_one_field_and_misses_another_is_not_an_end():
+    """The exhaustion signal is a turn with nothing on it but a miss; a turn that answered still speaks."""
+    user = renewal_user(write_tools={"renew_loan"}, goal_writes={"renew_loan"})
+    user.reply(ask("Can you confirm the loan number and your member id?"))
+    assert said(user)["member_id"] == "unavailable"
+    assert user.done is False
+    assert user.end_reason is None
 
 
 def test_a_run_that_spends_its_turns_without_ending_gave_up(make_test_model):
     from kullback.runner import loop
 
     user = renewal_user(write_tools={"renew_loan"}, goal_writes={"renew_loan"})
-    model = make_test_model([{"content": "What is your member id?"}], loop=True)
-    state = loop.new_run_state("spent", user=user, max_turns=4)
+    model = make_test_model([{"content": "Which loan would you like to renew?"}], loop=True)
+    state = loop.new_run_state("spent", user=user, max_turns=2)
     loop.run(state, model)
     assert state.run.termination_reason == "max_turns"
     assert end_of_run(state.run) == GAVE_UP
