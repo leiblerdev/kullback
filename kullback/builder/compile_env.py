@@ -168,8 +168,48 @@ class ToolBuild:
 ROW_WALK_DEPTH = 8  # how deep a result is walked for rows; generous, and a cycle never reaches it
 
 
+def _scalars(value: dict) -> dict:
+    """The names a dict states a plain value under, which are the key parts it can lend a child."""
+    return {str(name): item for name, item in value.items()
+            if isinstance(item, (str, int, float)) and not isinstance(item, bool)}
+
+
+def argument_key_parts(args: Any) -> dict:
+    """Every name the call's arguments state exactly one value for, at any depth of the arguments.
+
+    A key part a row leaves out can be read off the call, because a tool can be told which row it is
+    answering by the call and not repeat it in the row (`tool_runs.row_key`). That is only ever
+    sound when the call names one candidate: a call whose own arguments carry two values under a
+    name (a list of objects each with its own date) names none of its rows in particular, and
+    filling the part from it would give several different rows one key. So a name the arguments
+    state twice in two values is dropped here, and the sighting keeps a key it is missing a part of,
+    which is what `partial_key` is for.
+
+    The walk goes to any depth for the same reason `argument_ids` does: a call names what it acts on
+    wherever its own shape puts it, and a part stated once inside a nested object is still stated
+    once by the call.
+    """
+    seen: dict[str, list] = {}
+
+    def walk(value: Any) -> None:
+        if isinstance(value, dict):
+            for name, item in value.items():
+                if isinstance(item, (str, int, float)) and not isinstance(item, bool):
+                    seen.setdefault(str(name), []).append(item)
+                else:
+                    walk(item)
+        elif isinstance(value, (list, tuple)):
+            for item in value:
+                walk(item)
+
+    walk(args if isinstance(args, dict) else {})
+    return {name: values[0] for name, values in seen.items()
+            if len({canon(item) for item in values}) == 1}
+
+
 def walk_result_rows(schema: EntitySchema, result: Any, args: Optional[dict] = None,
-                     depth_cap: int = ROW_WALK_DEPTH) -> tuple[list[tuple[str, str, dict, int]], int]:
+                     depth_cap: int = ROW_WALK_DEPTH,
+                     stats: Optional[dict] = None) -> tuple[list[tuple[str, str, dict, int]], int]:
     """Every row a result states at any depth, with how deep it sat, and how often the cap was hit.
 
     A result is a tree, and the customer's tools put rows anywhere in it: a list of routes each
@@ -186,16 +226,41 @@ def walk_result_rows(schema: EntitySchema, result: Any, args: Optional[dict] = N
 
     The walk carries the containers on the current path so a structure that points back at itself
     ends, and stops at `depth_cap` levels, counting each stop so the count can be read back rather
-    than the rows quietly going missing. The call's arguments are passed to every test, because a
-    table with a composite key can be told which row it is answering by the call rather than by the
-    row (`tool_runs.row_key`).
+    than the rows quietly going missing.
+
+    A nested row is named by its own scope (D207). A key part the row itself leaves out is taken
+    from the dicts it sits inside, nearest first, and only then from the call's arguments, and only
+    where the arguments name one candidate for it (`argument_key_parts`). Handing the same flat
+    arguments to a dict at every depth is what let a part meant for the result's top level name a
+    row three levels down, and a part is never taken from a sibling at the same depth, because a
+    sibling is another row and not this row's scope. Where each part came from is counted into
+    `stats` as nested_key_sources, so a build can see the rule working rather than be told it does.
+
+    Two dicts of one call that compose the same key and disagree on a column are a collision
+    (nested_key_collision): a key that names two rows is a finding about the shape of the result,
+    counted with the depth it happened at, not an earliest sighting silently winning.
     """
     rows: list[tuple[str, str, dict, int]] = []
     path: set[int] = set()
     capped = 0
+    sources: dict[str, int] = {}
+    keyless = 0
+    from_args = argument_key_parts(args)
 
-    def walk(value: Any, depth: int) -> None:
-        nonlocal capped
+    def note(table: str, row: dict, inherited: dict) -> None:
+        for name in key_fields(schema, table)[1:]:
+            if row.get(name) is not None:
+                where = "own"
+            elif inherited.get(name) is not None:
+                where = "parent"
+            elif from_args.get(name) is not None:
+                where = "args"
+            else:
+                where = "missing"
+            sources[where] = sources.get(where, 0) + 1
+
+    def walk(value: Any, depth: int, inherited: dict) -> None:
+        nonlocal capped, keyless
         if not isinstance(value, (dict, list, tuple)):
             return
         if depth > depth_cap:
@@ -206,20 +271,59 @@ def walk_result_rows(schema: EntitySchema, result: Any, args: Optional[dict] = N
             return
         path.add(marker)
         if isinstance(value, dict):
-            match = match_table(schema, value, args)
+            match = match_table(schema, value, {**from_args, **inherited})
             if match:
                 rows.append((match[0], match[1], value, depth))
+                note(match[0], value, inherited)
+            # What this dict states is the scope of everything inside it; the call's arguments stay
+            # underneath, so the nearest enclosing dict wins and the call loses to both.
+            scope = {**inherited, **_scalars(value)}
             for item in value.values():
-                walk(item, depth + 1)
+                walk(item, depth + 1, scope)
         else:
             # A list is how a result holds several of one thing, not a level of nesting: the rows of
             # a list the result answers are the result's own rows, however many lists deep it sits.
+            before = len(rows)
             for item in value:
-                walk(item, depth)
+                walk(item, depth, inherited)
+            if len(rows) > before:
+                # A list some of whose elements are rows: an element that matched nothing carries no
+                # key of its own, and its position in the list is all there is to name it by.
+                keyless += sum(1 for item in value if isinstance(item, dict)
+                               and not any(item is row for _, _, row, _ in rows[before:]))
         path.discard(marker)
 
-    walk(result, 0)
+    walk(result, 0, {})
+    if stats is not None:
+        for where, count in sources.items():
+            stats[f"nested_key_sources.{where}"] = stats.get(f"nested_key_sources.{where}", 0) + count
+        # Every row here was named by a key it composed; nothing is homed by where it sat.
+        stats["homed_by.key"] = stats.get("homed_by.key", 0) + len(rows)
+        if keyless:
+            stats["list_elements_carrying_no_key"] = stats.get("list_elements_carrying_no_key", 0) + keyless
+        for table, _key, depth in _key_collisions(rows):
+            stats["nested_key_collision"] = stats.get("nested_key_collision", 0) + 1
+            found = stats.setdefault("nested_key_collisions", [])
+            entry = {"table": table, "depth": depth,
+                     "key_class": "composite" if len(key_fields(schema, table)) > 1 else "own"}
+            if entry not in found:
+                found.append(entry)
     return rows, capped
+
+
+def _key_collisions(rows: list[tuple[str, str, dict, int]]) -> list[tuple[str, str, int]]:
+    """(table, key, deepest sighting) for a key two dicts of one result compose and disagree under.
+
+    Two sightings of one row that say the same thing are one row seen twice, which is ordinary. Two
+    that differ under one key mean the key does not name a row, and a pinner that takes the earliest
+    of them is choosing between two rows by call order. That is a finding, not a value.
+    """
+    seen: dict[tuple[str, str], list[tuple[dict, int]]] = {}
+    for table, key, row, depth in rows:
+        seen.setdefault((table, key), []).append((row, depth))
+    return [(table, key, max(depth for _, depth in group))
+            for (table, key), group in seen.items()
+            if len({canon(row) for row, _ in group}) > 1]
 
 
 def extract_rows(schema: EntitySchema, result: Any, args: Optional[dict] = None) -> list[tuple[str, str, dict]]:
@@ -358,7 +462,7 @@ def _observations(traces: list[Trace], schema: EntitySchema, write_tools: set[st
                 continue
             is_write = call.name in write_tools
             result = parse_result(call.result)
-            rows, capped = walk_result_rows(schema, result, call.args)
+            rows, capped = walk_result_rows(schema, result, call.args, stats=stats)
             if stats is not None and capped:
                 stats["depth_capped"] = stats.get("depth_capped", 0) + capped
             # A result that states no row of its own is still about a row when the call named one.
@@ -374,7 +478,14 @@ def _observations(traces: list[Trace], schema: EntitySchema, write_tools: set[st
                                 fingerprint, str(call.id or ""), is_write))
             if is_write:
                 written |= {row_id for _, row_id, _, _ in rows}
-                written |= {v for v in call.args.values() if isinstance(v, str)}
+                # A write names the rows it changes wherever its own shape puts them, and a row it
+                # named one level down is as touched as one it named at the top (D207). Reading only
+                # the top level left a nested row's post-write sighting looking untouched, so the
+                # inverse replay could keep it as the value the world started in. A composite key is
+                # composed the way `named_rows` composes it, from beside the id and then from the
+                # top level, because the parts alone name no row.
+                written |= {value for _, value, _ in argument_ids(call.args)}
+                written |= {row_id for _, row_id in named_rows(schema, call.args or {})}
     stated = {(obs.table, obs.row_id) for obs in out if not obs.depth}
     dropped = [obs for obs in out if obs.depth and (obs.table, obs.row_id) in stated]
     if stats is not None and dropped:
@@ -642,30 +753,38 @@ def referenced_ids(traces: Iterable[Trace], schema: EntitySchema) -> list[tuple[
     value sits under is what names the table, at any depth; the pattern the miner recorded is the
     guard it always was.
     """
-    keys = {table: key_fields(schema, table) for table in schema.tables}
     out: set[tuple[str, str]] = set()
     for trace in traces:
         for call in trace.tool_calls:
             if call.error is not None:  # an id the customer's tool refused is not a row we owe
                 continue
-            args = call.args or {}
-            for name, value, scope in argument_ids(args):
-                for table, fields in keys.items():
-                    if not fields or name != fields[0]:
-                        continue
-                    pattern = id_pattern_for(schema, table, fields[0])
-                    if pattern and not re.match(pattern, value):
-                        continue
-                    # A composite key the call does not complete names no row: a partial id would be
-                    # a row of its own, which is exactly what the composite key exists to prevent.
-                    # Each part is read from beside the id first and from the top level second, so a
-                    # list of rows that each carry their own date completes each row's own key, and
-                    # a call that states one date for every row it names still completes them all.
-                    parts = [scope.get(part, args.get(part)) for part in fields[1:]]
-                    if any(part is None for part in parts):
-                        continue
-                    out.add((table, key_separator(schema).join([value] + [str(p) for p in parts])))
+            out |= named_rows(schema, call.args or {})
     return sorted(out)
+
+
+def named_rows(schema: EntitySchema, args: dict) -> set[tuple[str, str]]:
+    """(table, key) for every row a call's own arguments name, at any depth of the arguments.
+
+    Each part of a composite key is read from beside the id first and from the top level second, so
+    a list of rows that each carry their own date completes each row's own key, and a call that
+    states one date for every row it names still completes them all. A composite key the call does
+    not complete names no row: a partial id would be a row of its own, which is exactly what the
+    composite key exists to prevent.
+    """
+    keys = {table: key_fields(schema, table) for table in schema.tables}
+    out: set[tuple[str, str]] = set()
+    for name, value, scope in argument_ids(args):
+        for table, fields in keys.items():
+            if not fields or name != fields[0]:
+                continue
+            pattern = id_pattern_for(schema, table, fields[0])
+            if pattern and not re.match(pattern, value):
+                continue
+            parts = [scope.get(part, args.get(part)) for part in fields[1:]]
+            if any(part is None for part in parts):
+                continue
+            out.add((table, key_separator(schema).join([value] + [str(p) for p in parts])))
+    return out
 
 
 def add_synthetic_rows(db: dict, schema: EntitySchema, traces: Iterable[Trace]) -> list[tuple[str, str]]:
@@ -1195,6 +1314,15 @@ def _write_pins(workdir: Path, pins: dict, stats: dict,
                    int(stats.get("nested_sightings_of_a_row_already_stated") or 0),
                "inversion_by_tool": dict(sorted((stats.get("inversion_by_tool") or {}).items())),
                "writes_without_a_body": int(stats.get("writes_without_a_body") or 0),
+               # D207: where each part of a composed key came from, whether anything was named by
+               # its position rather than by a key, and the keys that named two rows at once.
+               "nested_key_sources": {where: int(stats.get(f"nested_key_sources.{where}") or 0)
+                                      for where in ("own", "parent", "args", "missing")},
+               "homed_by": {"key": int(stats.get("homed_by.key") or 0),
+                            "position": int(stats.get("homed_by.position") or 0)},
+               "list_elements_carrying_no_key": int(stats.get("list_elements_carrying_no_key") or 0),
+               "nested_key_collision": int(stats.get("nested_key_collision") or 0),
+               "nested_key_collisions": list(stats.get("nested_key_collisions") or ()),
                "totals": totals, "tasks": dict(sorted(pins.items()))}
     path = Path(workdir) / PINS_FILE
     path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")

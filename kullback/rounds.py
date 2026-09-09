@@ -76,7 +76,7 @@ from kullback.builder.build import (
 from kullback.builder.compile_env import PINS_FILE
 from kullback.builder.tools import BUILD_TOOLS, EXAMINER_OWNS
 from kullback.examiner import agent as examiner_agent
-from kullback.examiner import loosen
+from kullback.examiner import lifecycle, loosen
 from kullback.examiner import stage as examiner_stage
 from kullback.examiner.agent import ExaminerError, examiner_message, examiner_round_message
 from kullback.examiner.plan import STATE_DIR, ExaminerPlan
@@ -805,12 +805,21 @@ class Loop:
             # D205: what the harness's own loosening step proposed this round, what the gates took
             # and what they turned down, with the atom kinds it relaxed.
             **loosen.round_counts(self.loosenings_now(), self.plan.round),
+            # D208: how many derived artefacts this round retired because the source they were
+            # derived from was withdrawn, and under which reason. A round that retires many is a
+            # round whose References moved, which is worth reading beside what it trusted.
+            **lifecycle.counts(self.retirements_now()),
             "artifacts": fingerprint, "artifact_hashes": per, "artifacts_changed": changed,
             **self._pin_counts(),
             **self._reader_counts(),
             **self._lesson_counts(),
             **self.task_split(),
         }
+
+    def retirements_now(self) -> list:
+        """The Verifiers this round retired, read off the status rows the derivation left (D208)."""
+        store = self.eplan.store if self.eplan is not None else {}
+        return lifecycle.retired_in_round(store.get("task_status") or {}, self.plan.round)
 
     def loosenings_now(self) -> list:
         """The automatic loosening rows as the Examiner's store holds them, none before a beat opened."""
