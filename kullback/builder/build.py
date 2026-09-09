@@ -29,7 +29,7 @@ import functools
 import json
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Iterable, Optional
+from typing import Any, Iterable, Optional, Sequence
 
 from kullback import sampling
 from kullback.ai import provider
@@ -51,6 +51,9 @@ from kullback.builder import (
     transaction,
     user_sim,
     vocabulary,
+)
+from kullback.builder import (
+    lesson as lesson_mod,
 )
 from kullback.builder.repair import KEPT_BODIES_FILE, SHAPES_SHOWN, failure_shapes
 from kullback.gates import artifacts, fidelity, tool_runs, verifier_suite
@@ -420,6 +423,11 @@ def _record_hardcoded_lesson(workdir: Any, name: str) -> None:
 # Where the body a tool already has is replayed, beside the attempt directories of the run that is
 # trying to beat it, so the two never share a sandbox directory.
 KEPT_BODY_DIR = "kept_body"
+# What the code-only lesson steps found per tool this run: relations by kind, lines no recorded call
+# reached, whether the stall limit forced a rewrite, whether the tool is held at a gate before the
+# fidelity ruling (D211). A record of the run and never an input of it, the same way the rulings
+# beside it are; `rounds.py` adds them up so a round says what the steps bought.
+LESSON_COUNTS_FILE = "tool_lesson_counts.json"
 # The stage's ruling on those replays, one row per tool (KEPT_BODIES_FILE), is a record of the run
 # and never an input of it (see the comment where it is filled). Its name is declared in repair.py,
 # because the repair ruling reads the same file back to say what the attempt scored (D191).
@@ -618,6 +626,13 @@ def _tools_stage(model: Any, max_attempts: int, workers: int = 1, only: Optional
                     for sig in sigs if (stored_bodies.get(sig.name) or "").strip()}
 
         def compile_one(sig):  # one tool, its own directory and nodes; independent of every other (D118)
+            # D211: how many recompiles in a row have bought this tool nothing, and the gate both
+            # sides fell at last time, read before the body is graded because both change the ask
+            # rather than the sentence: past the stall limit the writer is asked to rewrite, and a
+            # tie at a gate before the fidelity ruling is a gate to repair, not a hint to write.
+            stall = prior_rulings.get(sig.name) or {}
+            unbeaten = int(stall.get("unbeaten") or 0)
+            blocked = str(stall.get("blocked_by_gate") or "")
             # The body this tool already has, replayed first, so what it fails at can be said to the
             # writer before it writes. The replay is per tool and runs on this tool's own thread.
             kept = previous.get(sig.name)
@@ -625,15 +640,21 @@ def _tools_stage(model: Any, max_attempts: int, workers: int = 1, only: Optional
                 sig, kept[0], calls_by_tool.get(sig.name, []), inputs["schema"], inputs["db"],
                 ctx.workdir / "tools" / sig.name / KEPT_BODY_DIR,
                 call_states=states, rules=rules, call_tasks=call_tasks,
-                readers=result_readers) if kept is not None else None
+                readers=result_readers, unbeaten=unbeaten, blocked=blocked) if kept is not None else None
             # What this tool already failed on, so a recompile asks a different question than the
             # one that failed, and what the body it has to beat fails at now. The kept body itself
             # is never in the prompt: shown one, the writer copies it, and a copy cannot beat it.
             lesson = memory.lesson_for(ctx.workdir, sig.name)
             shown, held_out = compile_env.split_calls(calls_by_tool.get(sig.name, []))
             if graded is not None:
-                hint = compile_env.kept_body_hint(graded.gates, held_out)
-                lesson = "\n".join(part for part in (lesson, hint) if part)
+                hint = compile_env.kept_body_hint(
+                    graded.gates, held_out,
+                    lesson_mod.FAILING_SET_SHOWN if lesson_mod.stalled(unbeaten) else SHAPES_SHOWN)
+                # D211: the code-only read of the body already there, which is the part no round
+                # of hints had: every leaf its failing calls part on, the relation those calls
+                # share, and the lines of it no recorded call has ever reached.
+                found = graded.diagnosis.lesson() if graded.diagnosis is not None else ""
+                lesson = "\n".join(part for part in (lesson, hint, found) if part)
             # D191: what the Reference replay failed on, in the same lesson and under the same
             # masking: only a call this writer is already shown is quoted with its values.
             replay_hint = replay_lesson(replay_failed.get(sig.name, {}),
@@ -657,6 +678,12 @@ def _tools_stage(model: Any, max_attempts: int, workers: int = 1, only: Optional
         # tie leaves the stage's files untouched).
         prior_rulings = dict(_read_json(ctx.workdir / KEPT_BODIES_FILE, {}) or {})
         kept_rulings = dict(prior_rulings) if only is not None else {}
+        # D211: what the code-only steps found per tool this run, so a round can say how many
+        # relations it named, how many lines nothing witnesses, how many rewrites the stall limit
+        # forced and how many tools are held at a gate. A narrowed rerun keeps the other tools' rows
+        # for the same reason the rulings above are kept.
+        prior_counts = dict(_read_json(ctx.workdir / LESSON_COUNTS_FILE, {}) or {})
+        lesson_counts = dict(prior_counts) if only is not None else {}
         for sig, (build, graded) in zip(sigs, parallel.each(sigs, compile_one, workers), strict=True):
             score = list(compile_env.attempt_score(build.gates))
             kept_score = list(compile_env.attempt_score(graded.gates)) if graded is not None else None
@@ -686,6 +713,7 @@ def _tools_stage(model: Any, max_attempts: int, workers: int = 1, only: Optional
             # is on the tool's row (`recompile_declined`) and in the run's own ruling below.
             gates.extend(graded.gates if keeps_previous else build.gates)
             kept_rulings.pop(sig.name, None)
+            lesson_counts.pop(sig.name, None)
             if graded is not None:
                 # D191: how many recompiles in a row have now scored no higher than the body this
                 # tool already has. The count survives a full run of the stage, which resets the
@@ -710,8 +738,16 @@ def _tools_stage(model: Any, max_attempts: int, workers: int = 1, only: Optional
                     "broke_calls": len(body_ruling.broke) if body_ruling.moved else 0,
                     "kept_score": kept_score, "attempt_score": score,
                     "unbeaten": unbeaten if keeps_previous else 0,
+                    # D211: the gate before the fidelity ruling that both bodies fall at, when
+                    # there is one. Two bodies that tie at a static gate tie at a fidelity number
+                    # neither of them earned, and the next round has to be spent on the gate.
+                    "blocked_by_gate": lesson_mod.blocked_gate(
+                        [{"stage": g.stage, "pass": g.passed} for g in graded.gates],
+                        [{"stage": g.stage, "pass": g.passed} for g in build.gates]),
                     "from_replay": from_replay.get(sig.name, 0),
                     "evidence_calls": len(calls_by_tool.get(sig.name, []))}
+                if graded.diagnosis is not None:
+                    lesson_counts[sig.name] = graded.diagnosis.counts()
             if keeps_previous:
                 # A run of this stage is an attempt at a better body, not a replacement for the one
                 # it has. The attempt scored no higher on the key the compiler ranks its own
@@ -758,6 +794,7 @@ def _tools_stage(model: Any, max_attempts: int, workers: int = 1, only: Optional
         # tools it did not touch; the artifact the stages pass on is the attribution over them.
         _write_json(ctx.workdir / "tool_call_outcomes.json", outcomes)
         _write_json(ctx.workdir / KEPT_BODIES_FILE, kept_rulings)
+        _write_json(ctx.workdir / LESSON_COUNTS_FILE, lesson_counts)
         fidelity_by_task = attribute_fidelity(outcomes, call_tasks, assisted)
         _write_json(ctx.workdir / "tool_fidelity.json", fidelity_by_task)
         return {"bodies": bodies, "assisted_tools": sorted(assisted),
@@ -772,6 +809,9 @@ def _tools_stage(model: Any, max_attempts: int, workers: int = 1, only: Optional
     # sandbox left every broken body in the cache and `--iterate` handed them straight back.
     version = (f"compile_tools:{getattr(model, 'name', 'none')}:"
                f"{_module_hash(compile_env)}:{_module_hash(sandbox)}:{_module_hash(body_skill)}:"
+               # D211: the code-only lesson steps reach the writer's prompt, so a change to what
+               # they say is a new question and the cached bodies are not an answer to it.
+               f"{_module_hash(lesson_mod)}:"
                # The gates the sandbox runs live in the gates package, and D187 changed what two
                # results compare as; a body kept over an older ruling is not a body this one accepts.
                f"{_module_hash(tool_runs)}:"
@@ -1397,8 +1437,15 @@ def _reroll_rows(workdir: Path, rows: Iterable[dict], relative: bool) -> list[di
         else:
             path = Path(workdir) / path
         out.append({"run_id": row.get("run_id"), "path": path.as_posix() if relative else str(path),
-                    "termination_reason": row.get("termination_reason")})
+                    "termination_reason": row.get("termination_reason"),
+                    # D210: how the Simulated user ended this Run, kept so a reused row says it too.
+                    "user_end": row.get("user_end")})
     return out
+
+
+def _members_of(task: Task, traces: dict) -> list[Any]:
+    """This Task's own recordings, which are the evidence its answers are stripped against (D196)."""
+    return [traces[run_id] for run_id in task.run_ids if run_id in traces]
 
 
 def _reroll_record(workdir: Path, task_id: str) -> dict:
@@ -1469,7 +1516,8 @@ def _rerolls_stage(model: Any, rerolls: int, workers: int = 1, only: Optional[It
                 _discard_runs(ctx.workdir / "runs" / task.id, f"reroll-{task.id}-")
                 (ctx.workdir / "runs" / task.id / REROLL_RECORD).unlink(missing_ok=True)
                 continue
-            rules = next((user_rules.get(r["trace_id"]) for r in confirmed if user_rules.get(r["trace_id"])), None)
+            reference_id = next((r["trace_id"] for r in confirmed if user_rules.get(r["trace_id"])), None)
+            rules = user_rules.get(reference_id) if reference_id else None
             prompt = _system_prompt_for(task, traces, inputs.get("policy_text"))
             key = _reroll_key(task, traces=traces, bodies=inputs["bodies"], rules=rules,
                               system_prompt=prompt, workdir=ctx.workdir, shared=shared)
@@ -1480,10 +1528,10 @@ def _rerolls_stage(model: Any, rerolls: int, workers: int = 1, only: Optional[It
             reasons[task.id] = ("an explicit re-roll was asked for" if only is not None
                                 else _reroll_reason(_reroll_record(ctx.workdir, task.id).get("key"), key)
                                 or "the Run files the key names are gone")
-            jobs.append((task, rules, prompt, key))
+            jobs.append((task, rules, prompt, key, reference_id))
 
         def reroll(job):  # one Task's re-rolls, in its own world and run directory (D118)
-            task, rules, prompt, key = job
+            task, rules, prompt, key, reference_id = job
             _discard_runs(ctx.workdir / "runs" / task.id, f"reroll-{task.id}-")
             # D206: the Run id carries the key these Runs are of. A re-roll replaces the Task's
             # earlier ones, and under a name that did not move, a later round wrote different bytes
@@ -1496,14 +1544,17 @@ def _rerolls_stage(model: Any, rerolls: int, workers: int = 1, only: Optional[It
                                    schema=with_synthetic_rows(inputs["schema"], inputs.get("synthetic_rows") or ()),
                                    sigs=inputs["sigs"], db=inputs["db"], env_id=env_id,
                                    canon_rules=canon_rules, rules=rules, seed=REROLL_SEED,
-                                   max_turns=REROLL_TURNS, system_prompt=prompt)
-            rows = [{"run_id": r.run_id, "path": p, "termination_reason": r.termination_reason} for r, p in runs]
+                                   max_turns=REROLL_TURNS, system_prompt=prompt,
+                                   members=_members_of(task, traces),
+                                   reference=traces.get(reference_id) if reference_id else None)
+            rows = [{"run_id": r.run_id, "path": p, "termination_reason": r.termination_reason,
+                     "user_end": user_sim.end_of_run(r)} for r, p in runs]
             _write_json(ctx.workdir / "runs" / task.id / REROLL_RECORD,
                         {"task_id": task.id, "key": key,
                          "runs": _reroll_rows(ctx.workdir, rows, relative=True)})
             return rows
 
-        rolled = {task.id: rows for (task, _, _, _), rows
+        rolled = {job[0].id: rows for job, rows
                   in zip(jobs, parallel.each(jobs, reroll, workers), strict=True)}
         out = {task.id: rolled[task.id] if task.id in rolled else reused[task.id]
                for task in tasks if task.id in rolled or task.id in reused}
@@ -1511,10 +1562,14 @@ def _rerolls_stage(model: Any, rerolls: int, workers: int = 1, only: Optional[It
         ruling = rerolls_gate(out, rerolls)
         ctx.record_gate(ruling.model_copy(update={"metrics": {
             **ruling.metrics, "reused": len(reused), "rerolled": len(rolled),
+            # D210: how the Simulated user ended each re-roll, so a round can tell a Run that did
+            # what it came for from one whose scenario ran dry or that spent its turns.
+            "user_ends_by_kind": user_sim.ends_by_kind(
+                [row for rows in out.values() for row in rows]),
             "rerolled_because": dict(sorted(reasons.items())), "note": REROLL_KEY_NOTE}}))
         return {"rerolls": out}
 
-    version = (f"{_version('rerolls', run, loop, route, user_sim, provider)}:"
+    version = (f"{_version('rerolls', run, loop, route, user_sim, intent, provider)}:"
                f"{getattr(model, 'name', 'none')}:{rerolls}")
     return pipeline.Stage(name="rerolls", fn=run, builder=True,
                           inputs=("tasks", "replays", "user_rules", "schema", "sigs", "bodies", "db",
@@ -1526,7 +1581,8 @@ def _rerolls_stage(model: Any, rerolls: int, workers: int = 1, only: Optional[It
 def _candidate_runs(workdir: Path, task: Task, model: Any, *, count: int, prefix: Optional[str], source: str,
                     schema: EntitySchema, sigs: list, db: dict, env_id: Optional[str], canon_rules: Any,
                     rules: Optional[UserRules], seed: int = 0, max_turns: int = 30,
-                    system_prompt: Optional[str] = None, tag: str = "") -> list[tuple[Any, str]]:
+                    system_prompt: Optional[str] = None, tag: str = "",
+                    members: Sequence[Any] = (), reference: Optional[Any] = None) -> list[tuple[Any, str]]:
     """`count` Runs of `model` against the Task's world, each in a fresh copy of it; the Runs and their paths.
 
     Every Run opens the way the recorded one did: the recorded agent's own system prompt, the
@@ -1544,6 +1600,11 @@ def _candidate_runs(workdir: Path, task: Task, model: Any, *, count: int, prefix
     salt (D212), never from a counter over the batch, so a Run discarded and made again under its
     own id draws the seed of the Run it replaces and a batch that grows takes higher attempt
     indexes without moving the ones already taken.
+
+    `members` are the Task's own recordings and `reference` the one its rules came from; they are
+    what the Simulated user ends by protocol on and answers by class (D210). The Task's evidence is
+    read once here rather than per turn: the strip closure and the goal's write set are the same
+    for every Run of the Task.
     """
     salt = sampling.build_salt(workdir)
     overlay, overlay_rows = compile_env.load_overlay(workdir, task.id)
@@ -1552,6 +1613,12 @@ def _candidate_runs(workdir: Path, task: Task, model: Any, *, count: int, prefix
     # The Simulated user restates its goal once rather than leaving on the first dead turn, and it
     # needs these names to tell a Run that has already written from one that has not (user_sim).
     write_tools = {sig.name for sig in sigs if getattr(sig, "kind", None) == "write"}
+    # D210: which writes the goal implies, and the D196 strip over this Task's own evidence, so no
+    # value only the tools knew reaches the Candidate through an answer. A caller that names no
+    # recordings gets the user it had, ending on any write and speaking its facts unchecked.
+    goal_writes = user_sim.goal_write_set(reference, write_tools) if reference is not None else None
+    answer_strip = intent.value_strip(list(members), schema=schema,
+                                      rules=canon_rules) if members else None
     out = []
     for number in range(count):
         stem = f"{prefix}-{task.id}" if prefix else str(task.id)
@@ -1563,7 +1630,8 @@ def _candidate_runs(workdir: Path, task: Task, model: Any, *, count: int, prefix
                               overlay=overlay, overlay_rows=overlay_rows, tool_sigs=sigs,
                               canon_rules=canon_rules, synthetic_rows=schema.synthetic_rows)
         simulated = user_sim.SimulatedUser(rules, starting_state_reader=router.state, vocab=vocab,
-                                           write_tools=write_tools) if rules else None
+                                           write_tools=write_tools, goal_writes=goal_writes,
+                                           answer_strip=answer_strip) if rules else None
         state = loop.new_run_state(run_id, workdir=workdir / "runs" / task.id, env_id=env_id, task_id=task.id,
                                    model=getattr(model, "name", None) or (prefix or "candidate"),
                                    seed=sampling.sample_seed(RUN_SEED_KIND, run_id, salt),
@@ -1607,6 +1675,7 @@ def probe_runner(plan: BuildPlan):
     user_rules = store.get("user_rules") or {}
     replays = store.get("replays") or {}
     canon_rules = _rules_of(store)
+    traces = {t.trace_id: t for t in store.get("traces") or []}
     source = compile_env.module_source(schema, sigs, bodies)
     tools = _tool_definitions(sigs, _vocab_from(plan.workdir))
     workdir = plan.workdir
@@ -1621,9 +1690,15 @@ def probe_runner(plan: BuildPlan):
                               canon_rules=canon_rules, synthetic_rows=schema.synthetic_rows)
         reference = next((r for r in (replays.get(task.id) or {}).values() if r.get("confirmed")), None)
         rules = user_rules.get(reference["trace_id"]) if reference else None
+        writes = {sig.name for sig in sigs if getattr(sig, "kind", None) == "write"}
+        recorded = traces.get(reference["trace_id"]) if reference else None
+        members = _members_of(task, traces)
         simulated = user_sim.SimulatedUser(
             rules, starting_state_reader=router.state, vocab=_vocab_from(workdir),
-            write_tools={sig.name for sig in sigs if getattr(sig, "kind", None) == "write"},
+            write_tools=writes,
+            goal_writes=user_sim.goal_write_set(recorded, writes) if recorded is not None else None,
+            answer_strip=intent.value_strip(members, schema=schema,
+                                            rules=canon_rules) if members else None,
         ) if rules else None
         state = loop.new_run_state(f"probe-{task.id}", workdir=workdir / "probes", env_id=env_id,
                                    task_id=task.id, model=f"probe:{getattr(model, 'name', 'model')}",
@@ -1672,12 +1747,16 @@ def reroll_runner(plan: BuildPlan):
         seeds = set(anchor.seed_runs(task.id, task.run_ids)) if anchor is not None else set(task.run_ids)
         confirmed = [r for tid, r in sorted((replays.get(task.id) or {}).items())
                      if tid in seeds and r.get("confirmed")]
-        rules = next((user_rules.get(r["trace_id"]) for r in confirmed if user_rules.get(r["trace_id"])), None)
+        reference_id = next((r["trace_id"] for r in confirmed if user_rules.get(r["trace_id"])), None)
+        rules = user_rules.get(reference_id) if reference_id else None
         runs = _candidate_runs(plan.workdir, task, model, count=count, prefix=prefix, source=source,
                                schema=schema, sigs=sigs, db=db, env_id=env_id, canon_rules=canon_rules,
-                               rules=rules, system_prompt=_system_prompt_for(task, traces, store.get("policy_text")))
+                               rules=rules, system_prompt=_system_prompt_for(task, traces, store.get("policy_text")),
+                               members=_members_of(task, traces),
+                               reference=traces.get(reference_id) if reference_id else None)
         _write_runs_index(plan.workdir)
-        return [{"run_id": r.run_id, "path": p, "termination_reason": r.termination_reason} for r, p in runs]
+        return [{"run_id": r.run_id, "path": p, "termination_reason": r.termination_reason,
+                 "user_end": user_sim.end_of_run(r)} for r, p in runs]
 
     return run_rerolls
 

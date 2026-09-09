@@ -276,7 +276,20 @@ Founder: "learn from pi.dev and others on how to improve the harness." Survey in
 
 ## Learned from FrogNano's TaskPilot (asked 2026-09-09)
 
-The founder asked for a difficulty knob: "there we can change the difficulty of the tasks for the models to learn as the training proceeds." Reading in the session's reports. Taken as D209 (difficulty record per Task, buckets, trusted and held-out solve rate per bucket). Deferred as the second half of the knob: a target distribution a customer states per checkpoint (histogram or schedule), satisfied in ascending cost order by selection from the trusted pool, then re-roll allowance on thin buckets, then variants from the Reference that insert or drop a step (D199 machinery), then split by surviving End state (D198) or merge by Category (D200); and the learnable-region admission band (solve rate strictly between zero and one against a named checkpoint). Every proxy is a count or rate; none names a corpus.
+The founder asked for a difficulty knob: "we also need this knob, there we can change the difficulty of the tasks for the models to learn as the training proceeds." Reading in the session's reports. Taken as D209 (difficulty record per Task, buckets, trusted and held-out solve rate per bucket), which is the measurement half.
+
+### Difficulty knob, second half (asked 2026-09-09)
+
+Founder, 2026-09-09: "we also need this knob, there we can change the difficulty of the tasks for the models to learn as the training proceeds." The measurement half ships as D209: every Task with a derived Verifier carries a difficulty record, every Task is bucketed by write count, tools touched and paths, and the round line and the scorecard report trusted count and mean held-out solve rate per bucket. What is deferred is the knob itself: a target distribution a customer states, either as a histogram of Tasks wanted per bucket or as a schedule by build round, the way --grow already takes a target per table, and a learnable-region admission band read as the solve rate against a named checkpoint, strictly between zero and one, so a Task always solved and a Task never solved are both out of band and the band moves as the checkpoint improves.
+
+The harness satisfies a stated distribution in ascending cost order, and each step is a Builder or an Examiner operation the harness already names, so nothing new is built until a step is shown to be thin:
+
+1. Select from the trusted pool: the Tasks already in the bucket cost nothing at all.
+2. Where a bucket is thin, spend more of D133's adaptive re-roll allowance on the Categories whose Tasks land in it, since more Runs of the same Task grow the held-out pool and can move a solve rate into the band.
+3. Where it is still thin, synthesise variants from the Reference with D199's rewrite machinery tuned for difficulty rather than for a second path: inserting an optional step raises the write count or the branching depth, dropping one lowers it, and every variant is replayed before it is believed.
+4. Where a Task's derivation left more than one surviving End state (D198), split it into easier single-state Tasks; where two Tasks share a Category (D200), merge them into one harder multi-step Task.
+
+Measurement follows D133's pattern: solve rate per bucket over the held-out pool, reported the way D185 reports two-sample agreement, so a curriculum states bucket sizes and confirmed solve rate per bucket beside the single trusted count and never instead of it. Every proxy is a count or a rate; none names a corpus, a tool or a column.
 
 ## Learned from tau-tau-Bench (asked 2026-09-09)
 
@@ -285,3 +298,7 @@ The founder asked how tau-tau-Bench (arXiv 2609.04611) has simulated users. Read
 ## Learned from Mastra (asked 2026-09-09)
 
 The founder asked how mastra-ai/mastra designed the harness for Factory (their agent-staffed software delivery product on the AgentController harness). Reading in the session's reports. Taken as D212 (every sample the harness draws per Task or Run is keyed on the id and a build salt, never on a count or position, so builds of one Environment stay comparable). Deferred: a call-boundary schema check in route.py that fails a Candidate call on shape mismatch against the mined ToolSig, after a read counts how many held-out calls would fail it and how recordings show the real tool answering malformed calls (D51 matches errors by shape, so a check answering differently from the recording lowers fidelity); the declared sandbox boundary for generated bodies remains the open item above. Factory's board phases and approval transitions are a product layer and are not taken; Mastra's gate and verdict words differ from Kullback's (D122) and are not imported.
+
+## Agent user as a fallback (asked 2026-09-09)
+
+The founder asked whether the rule-driven Simulated user should be an agent grounded in curated context, and what it gains. Reading in the session's reports: of seventy dry held-out Runs sampled on two corpora, the record-fact class is closed by D210 without a model, the mining missed nothing, most of the rest are infeasible goals, misread handoffs, withdrawn goals or Candidate and environment defects, and only novel disambiguation (ten Runs on one corpus) is a class a model recovers, which is also where it invents. Decision: rule-driven stays the default; D214 builds the agent user as a fallback behind the same code guards, with a fidelity score for the user itself against the recorded user turns and a disclosure gate, after the first contributor round is read.
