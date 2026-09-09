@@ -44,7 +44,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, AsyncIterator, Callable, Iterable, Optional
 
-from kullback import difficulty, round_snapshot, sampling, synthesise
+from kullback import difficulty, domain, round_snapshot, sampling, synthesise
 from kullback.agent.events import (
     BeatEnd,
     BeatStart,
@@ -973,6 +973,7 @@ class Loop:
         counts.update(self.driver_counts())
         counts.update(self.difficulty_counts(counts))
         counts.update(self.synthetic_counts())
+        counts.update(self.domain_counts())
         return counts
 
     def difficulty_counts(self, counts: dict) -> dict:
@@ -1027,6 +1028,24 @@ class Loop:
         except (OSError, ValueError, TypeError):
             return {}
         return {key: counts[key] for key in ("synthetic_tasks", "synthetic_verified", "synthetic_buckets")
+                if counts.get(key)}
+
+    def domain_counts(self) -> dict:
+        """What the domain reading and the shaping left, read and never computed here (D225).
+
+        Archetypes, gaps and shaped Tasks go on the round line under their own names, beside the
+        synthetic counts and never inside the trusted one: an archetype is read off a public page
+        and is evidence about a domain, not about a recording. A workdir where nothing has read a
+        domain carries none of them rather than carrying zeros.
+        """
+        try:
+            counts = dict(domain.counts_of(self.plan.workdir))
+            counts.update(synthesise.shaped_counts(self.plan.workdir))
+        except (OSError, ValueError, TypeError):
+            return {}
+        return {key: counts[key] for key in ("archetypes_extracted", "archetypes_mapped",
+                                             "archetype_gaps", "tasks_shaped", "shaped_fell",
+                                             "shaped_per_source")
                 if counts.get(key)}
 
     def keep_gate_history(self, n: int, snapshot: Optional[dict] = None) -> None:

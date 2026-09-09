@@ -204,3 +204,98 @@ def test_a_bucket_nobody_spells_that_way_is_refused_by_the_command(kite_world: P
     result = CliRunner().invoke(cli.app, ["synthesise", "--workdir", str(kite_world),
                                           "--bucket", "wobble=2"])
     assert result.exit_code == 2 and "not a bucket" in result.output
+
+
+# --- walks shaped to what the domain's own material attests (D225) ---------------------
+
+def _archetype(**extra) -> dict:
+    """One archetype of the kite world, as a domain reading would have left it in the store."""
+    row = {"id": "arch_kite_1", "goal": "I want my kite tied at a different length",
+           "preconditions": ["I know the colour of my kite"],
+           "effects": ["my kite hangs at the length I asked for"], "constraints": [],
+           "source": "https://help.kites.invalid/retying", "sources": ["https://help.kites.invalid/retying"],
+           "tools": ["find_kite", "retie_kite"], "write_tools": ["retie_kite"],
+           "effects_unrealised": []}
+    row.update(extra)
+    return row
+
+
+def _read_domain(workdir: Path, *rows: dict) -> None:
+    write_json(workdir / "domain" / "archetypes.json",
+               {"format": 1, "archetypes": list(rows) or [_archetype()],
+                "counts": {"archetypes_extracted": len(rows) or 1}})
+    write_json(workdir / "domain" / "gaps.json", {"format": 1, "gaps": []})
+
+
+def test_a_shaped_walk_visits_the_write_the_archetype_maps_onto(kite_world: Path):
+    _read_domain(kite_world)
+    body = synthesise.shape(kite_world, per_archetype=1)
+    assert body["counts"]["tasks_shaped"] >= 1, body["counts"]
+    row = body["tasks"][0]
+    assert row["archetype"] == "arch_kite_1" and row["source"].startswith("https://")
+    stored = json.loads((kite_world / synthesise.DIR / "tasks" / f"{row['task_id']}.json").read_text())
+    assert "retie_kite" in [step["tool"] for step in stored["walk"]]
+
+
+def test_a_shaped_walk_takes_only_edges_the_recordings_showed(kite_world: Path):
+    _read_domain(kite_world)
+    body = synthesise.shape(kite_world, per_archetype=1)
+    edges = {(edge["from"], edge["to"])
+             for edge in json.loads((kite_world / graph.FILE_NAME).read_text())["edges"]}
+    stored = json.loads(
+        (kite_world / synthesise.DIR / "tasks" / f"{body['tasks'][0]['task_id']}.json").read_text())
+    steps = [step["tool"] for step in stored["walk"]]
+    for before, after in zip(steps, steps[1:], strict=False):
+        assert any(src == before or src in steps[:steps.index(after)] for src, to in edges if to == after)
+
+
+def test_an_archetype_mapping_onto_no_write_is_never_shaped(kite_world: Path):
+    _read_domain(kite_world, _archetype(id="arch_kite_2", write_tools=[], tools=["get_kite"]))
+    body = synthesise.shape(kite_world, per_archetype=1)
+    assert body["counts"]["tasks_shaped"] == 0 and body["counts"]["archetypes_read"] == 0
+
+
+def test_the_read_only_band_is_refused_with_a_reason(kite_world: Path):
+    _read_domain(kite_world)
+    body = synthesise.shape(kite_world, bucket="w0t2p1")
+    assert body["tasks"] == [] and "Starting state" in body["refused"]
+    plain = synthesise.synthesise(kite_world, {"w0t2p1": 2})
+    assert plain["tasks"] == [] and plain["bands_refused"]["w0t2p1"]
+
+
+def test_a_judge_rejection_removes_a_task_and_is_counted(kite_world: Path):
+    _read_domain(kite_world)
+
+    class Rejecting:
+        def query(self, messages, tools=None, config=None):
+            return type("Reply", (), {"content": json.dumps(
+                {"reject": True, "citation": "my kite hangs at the length I asked for"})})()
+
+    body = synthesise.shape(kite_world, per_archetype=1, judges=[Rejecting(), Rejecting()])
+    assert body["counts"]["tasks_shaped"] == 0
+    assert body["counts"]["fell"]["plausible"] >= 1
+
+
+def test_a_judge_that_rejects_nothing_adds_no_task(kite_world: Path):
+    _read_domain(kite_world)
+
+    class Passing:
+        def query(self, messages, tools=None, config=None):
+            return type("Reply", (), {"content": json.dumps({"reject": False})})()
+
+    judged = synthesise.shape(kite_world, per_archetype=1, seed="one",
+                              judges=[Passing(), Passing()])
+    alone = synthesise.shape(kite_world, per_archetype=1, seed="one")
+    assert judged["counts"]["tasks_shaped"] == alone["counts"]["tasks_shaped"]
+
+
+def test_the_round_line_and_the_report_carry_the_archetype_counts(kite_world: Path):
+    from kullback import report
+
+    _read_domain(kite_world)
+    synthesise.shape(kite_world, per_archetype=1)
+    counts = synthesise.shaped_counts(kite_world)
+    assert counts["tasks_shaped"] >= 1 and counts["shaped_per_source"]
+    text = report.render(report.load(kite_world))
+    assert "archetypes extracted" in text and "Tasks shaped" in text
+    assert "realism rung" in text

@@ -585,6 +585,22 @@ def _buckets(pairs: Optional[list[str]]) -> dict[str, int]:
     return out
 
 
+def _shaped_lines(body: dict) -> list[str]:
+    """What a shaping request made, per realism rung and per source (D225)."""
+    if body.get("refused"):
+        return [f"refused: {body['refused']}"]
+    counts = dict(body.get("counts") or {})
+    fell = dict(counts.get("fell") or {})
+    lines = [f"archetypes read {counts.get('archetypes_read', 0)}, "
+             f"Tasks shaped {counts.get('tasks_shaped', 0)}", "",
+             "| rung | fell |", "| --- | --- |"]
+    lines += [f"| {rung} | {fell.get(rung, 0)} |" for rung in fell]
+    lines += ["", "| source | Tasks |", "| --- | --- |"]
+    lines += [f"| {row.get('source')} | {row.get('tasks')} |"
+              for row in counts.get("per_source") or []] or ["| none |  |"]
+    return lines
+
+
 def _synthesis_lines(body: dict) -> list[str]:
     """What a synthesis request generated, as the lines both commands print."""
     counts = dict(body.get("counts") or {})
@@ -649,12 +665,36 @@ def synthesise(
     base_url: Optional[str] = typer.Option(None, "--base-url", help="Endpoint for an OpenAI-compatible model."),
     ceiling_usd: Optional[float] = typer.Option(None, "--ceiling-usd",
                                                 help="Spend ceiling for the Intent writer (D86)."),
+    archetype: Optional[list[str]] = typer.Option(None, "--archetype",  # noqa: B008
+                                                  help="Shape walks to one archetype the domain "
+                                                       "reading extracted; repeatable (D225)."),
+    from_domain: bool = typer.Option(False, "--from-domain",
+                                     help="Shape walks to every mapped archetype the domain "
+                                          "reading extracted (D225)."),
+    per_archetype: int = typer.Option(1, "--per-archetype", help="How many Tasks per archetype."),
 ):
     """Walk the mined tool-call graph, run the walks in the rebuilt world and store them apart (D224).
 
     Nothing generated here enters tasks.json, replay fidelity, a confirmed Reference or the trusted
     count: it lands under synthetic/ in the workdir and is reported under its own heading.
+
+    `--from-domain` and `--archetype` shape the walks to what the domain's own public material
+    attests (D225): the walk must visit the tools the archetype's expected effects were mapped onto,
+    and every Task it makes climbs the realism bar, whose fallen are counted per rung.
     """
+    if archetype or from_domain:
+        writer = _live_model(model, base_url) if model else None
+        if writer is not None:
+            writer = _entry("kullback.builder.build", "_wrap")(
+                writer, "synthetic_intent", Path(workdir),
+                _entry("kullback.builder.build", "_ceiling")(Path(workdir), ceiling_usd),
+                model_id=model)
+        made = _entry("kullback.synthesise", "shape")(
+            workdir, archetype_ids=list(archetype or []), per_archetype=per_archetype, seed=seed,
+            model=writer, judges=[writer, writer] if writer is not None else ())
+        for line in _shaped_lines(made):
+            typer.echo(line)
+        return
     targets = _buckets(bucket)
     if not targets:
         typer.echo("nothing asked for: pass --bucket <bucket>=<count>")
@@ -669,6 +709,70 @@ def synthesise(
     body = _entry("kullback.synthesise", "synthesise")(workdir, targets, seed=seed, model=writer)
     for line in _synthesis_lines(body):
         typer.echo(line)
+
+
+@app.command("read-domain")
+def read_domain(
+    workdir: Path = WORKDIR,
+    source: Optional[list[str]] = typer.Option(None, "--source",  # noqa: B008
+                                               help="A public page to read; repeatable (D225)."),
+    sources_file: Optional[Path] = typer.Option(None, "--sources",  # noqa: B008
+                                                help="A file of source URLs, one per line."),
+    domain_line: Optional[str] = typer.Option(None, "--domain",
+                                              help="One line describing the business; the model "
+                                                   "names the public pages worth reading for it."),
+    depth: int = typer.Option(1, "--depth", help="How far links on the same host are followed."),
+    search: Optional[str] = typer.Option(None, "--search",
+                                         help="A search query; runs only where a search key is set "
+                                              "in KULLBACK_SEARCH_KEY, whose value is never printed."),
+    corpus_url: Optional[str] = typer.Option(None, "--corpus-url",
+                                             help="The source corpus's own repository or paper. "
+                                                  "Nothing under it is ever read."),
+    exclude: Optional[list[str]] = typer.Option(None, "--exclude",  # noqa: B008
+                                                help="A URL nothing under may be read; repeatable."),
+    model: Optional[str] = typer.Option(None, "--model",
+                                        help="Model id for the reader and the mapper, as provider/model."),
+    base_url: Optional[str] = typer.Option(None, "--base-url", help="Endpoint for an OpenAI-compatible model."),
+    ceiling_usd: Optional[float] = typer.Option(None, "--ceiling-usd", help="Spend ceiling (D86)."),
+):
+    """Read a domain's public material into task archetypes and coverage gaps (D225).
+
+    What is fetched is kept only in a content addressed cache under the workdir, never in the
+    package and never in git. Anything under the source corpus's own repository or paper is refused
+    and counted, whoever proposed it: a benchmark that reads its own published task list back in has
+    attested nothing.
+    """
+    from kullback import domain as domain_mod
+
+    urls = list(source or [])
+    if sources_file:
+        urls += [line.strip() for line in Path(sources_file).read_text(encoding="utf-8").splitlines()
+                 if line.strip() and not line.strip().startswith("#")]
+    if not urls and not domain_line and not search:
+        typer.echo("nothing to read: pass --source, --sources, --domain or --search")
+        raise typer.Exit(2)
+    reader = _live_model(model, base_url) if model else None
+    if reader is not None:
+        reader = _entry("kullback.builder.build", "_wrap")(
+            reader, "domain_reading", Path(workdir),
+            _entry("kullback.builder.build", "_ceiling")(Path(workdir), ceiling_usd), model_id=model)
+    body = domain_mod.read(workdir, sources=urls, depth=depth, corpus_url=corpus_url,
+                           exclude=list(exclude or []), reader=reader, mapper=reader, judge=reader,
+                           description=str(domain_line or ""), search_query=str(search or ""))
+    counts = dict(body.get("counts") or {})
+    for note in (body.get("sources") or {}).get("notes") or []:
+        typer.echo(note)
+    for row in (body.get("sources") or {}).get("refused") or []:
+        typer.echo(f"refused, {row.get('reason')}: {row.get('url')}")
+    for name in ("sources_read", "sources_named", "sources_refused", "archetypes_extracted",
+                 "archetypes_copied", "archetypes_contaminated", "archetypes_folded",
+                 "archetypes_kept", "archetypes_mapped", "archetype_gaps"):
+        typer.echo(f"{name}: {counts.get(name, 0)}")
+    typer.echo("")
+    typer.echo("| source | archetypes | mapped |")
+    typer.echo("| --- | --- | --- |")
+    for row in domain_mod.per_source(body):
+        typer.echo(f"| {row['source']} | {row['archetypes']} | {row['mapped']} |")
 
 
 @app.command()

@@ -105,6 +105,13 @@ class ReportData(BaseModel):
     # D224: synthetic/index.json, the walks that became Tasks. Its own field and its own section,
     # never added into `tasks`: nothing generated may be counted where the recorded Tasks are.
     synthetic: dict = Field(default_factory=dict)
+    # D225: domain/archetypes.json, domain/gaps.json and synthetic/shaped.json. What the domain's own
+    # public material attests, what this Environment cannot execute of it, and the Tasks shaped to
+    # the rest. Its own fields for the same reason the synthetic one is its own: nothing read off a
+    # public page is evidence about a recording.
+    domain: dict = Field(default_factory=dict)
+    domain_gaps: list[dict] = Field(default_factory=list)
+    shaped: dict = Field(default_factory=dict)
     findings: list[dict] = Field(default_factory=list)  # repairs/repair_record_finding.jsonl (D155)
     # D218: the last closed round's Task table and how far the live files have moved from it. The
     # report reads the table, so its Task level numbers are one round's answer rather than a join
@@ -554,7 +561,7 @@ def _synthetic(data: ReportData) -> list[str]:
     body = data.synthetic or {}
     rows = list(body.get("tasks") or [])
     if not rows:
-        return lines + ["No synthetic Tasks were generated for this build."]
+        return lines + ["No walk was generated into a bucket for this build."] + _domain_lines(data)
     counts = dict(body.get("counts") or {})
     graph_row = dict(counts.get("graph") or {})
     verified = sum(1 for row in rows if row.get("suite_passed"))
@@ -578,6 +585,60 @@ def _synthetic(data: ReportData) -> list[str]:
     for (asked, reached), held in sorted(grouped.items()):
         mean = held["pool"] / held["tasks"] if held["tasks"] else 0.0
         lines.append(f"| {asked} | {reached} | {held['tasks']} | {held['passed']} | {mean:.1f} |")
+    return lines + _domain_lines(data)
+
+
+def _per_source_rows(rows: list) -> list[str]:
+    """How many archetypes each page yielded and how many of those mapped, one row per URL."""
+    held: dict = {}
+    for row in rows or ():
+        for url in row.get("sources") or [row.get("source")]:
+            seen = held.setdefault(str(url), [0, 0])
+            seen[0] += 1
+            seen[1] += 1 if row.get("write_tools") else 0
+    return [f"| {url} | {held[url][0]} | {held[url][1]} |" for url in sorted(held)]
+
+
+def _domain_lines(data: ReportData) -> list[str]:
+    """What the domain's own material attested, what could not be executed, and what was shaped (D225).
+
+    Three numbers a reader wants beside the walks: how many task archetypes the public pages
+    attested, how many of them this Environment can execute, and what fell at each rung of the
+    realism bar. The gaps are the interesting half: they are what this domain does that this
+    Environment does not, in the words of the page, and they are the first input to a specification
+    environment rather than a defect of the reading.
+    """
+    body = data.domain or {}
+    rows = list(body.get("archetypes") or [])
+    if not rows and not data.domain_gaps:
+        return []
+    counts = dict(body.get("counts") or {})
+    shaped = dict((data.shaped or {}).get("counts") or {})
+    fell = dict(shaped.get("fell") or {})
+    lines = ["", "### Task archetypes read off the domain's own material (D225)", "",
+             f"{counts.get('sources_read', 0)} public pages read, "
+             f"{counts.get('sources_refused', 0)} refused; "
+             f"{counts.get('archetypes_extracted', 0)} archetypes extracted, "
+             f"{counts.get('archetypes_contaminated', 0)} dropped as contaminated, "
+             f"{counts.get('archetypes_copied', 0)} dropped for copying the page, "
+             f"{counts.get('archetypes_folded', 0)} folded as one goal said twice.", "",
+             f"{counts.get('archetypes_mapped', 0)} archetypes map onto tools this Environment can "
+             f"reach, and {len(data.domain_gaps)} do not. Nothing here is trusted, part of replay "
+             "fidelity or a confirmed Reference.", ""]
+    if shaped:
+        lines += [f"Tasks shaped: {shaped.get('tasks_shaped', 0)} over "
+                  f"{shaped.get('archetypes_read', 0)} archetypes.", "",
+                  "| realism rung | fell |", "| --- | --- |"]
+        lines += [f"| {rung} | {fell.get(rung, 0)} |" for rung in fell]
+        lines += ["", "| source | Tasks shaped |", "| --- | --- |"]
+        lines += [f"| {row.get('source')} | {row.get('tasks')} |"
+                  for row in shaped.get("per_source") or []] or ["| none |  |"]
+        lines.append("")
+    lines += ["| source | archetypes | mapped |", "| --- | --- | --- |"]
+    lines += _per_source_rows(rows)
+    if data.domain_gaps:
+        lines += ["", "Coverage gaps: what this domain does that this Environment cannot execute.", ""]
+        lines += [f"- {row.get('goal')}" for row in data.domain_gaps]
     return lines
 
 
@@ -1297,6 +1358,20 @@ SYNTHETIC_INDEX = ("synthetic", "index.json")
 reads records and never reaches into the Builder (design section 4 item 18)."""
 
 
+DOMAIN_ARCHETYPES = ("domain", "archetypes.json")
+DOMAIN_GAPS = ("domain", "gaps.json")
+SHAPED_INDEX = ("synthetic", "shaped.json")
+"""Where the domain reading and the shaped Tasks keep their records (D225). Named here rather than
+imported, for the reason SYNTHETIC_INDEX is: the report reads records and never reaches into the
+Builder (design section 4 item 18)."""
+
+
+def _domain_body(root: Path, parts: tuple) -> dict:
+    """One of D225's records as the last reading left it, or nothing where none has run."""
+    body = _json(root.joinpath(*parts))
+    return body if isinstance(body, dict) else {}
+
+
 def _synthetic_body(root: Path) -> dict:
     """synthetic/index.json as the last request left it, or nothing where none has run (D224)."""
     body = _json(root.joinpath(*SYNTHETIC_INDEX))
@@ -1360,6 +1435,9 @@ def load(workdir: Any) -> ReportData:
         trusted=trusted,
         difficulty=_difficulty_body(root),
         synthetic=_synthetic_body(root),
+        domain=_domain_body(root, DOMAIN_ARCHETYPES),
+        domain_gaps=list((_domain_body(root, DOMAIN_GAPS).get("gaps") or [])),
+        shaped=_domain_body(root, SHAPED_INDEX),
         findings=_jsonl(root / "repairs" / "repair_record_finding.jsonl", unread),
         # D218 rule 4: the last closed round's table, and the drift of the live files from it.
         snapshot=snapshot or {},

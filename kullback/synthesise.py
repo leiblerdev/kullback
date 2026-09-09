@@ -571,7 +571,13 @@ def synthesise(workdir: Any, buckets: dict[str, int], *, seed: Optional[str] = N
     tried = refused = crashed = unbound = 0
     rows: list[dict] = []
     _grow_for(world, max(buckets.values() or [0]))
+    refused_bands: dict[str, str] = {}
     for bucket in sorted(buckets):
+        # D224's own finding, taken as a rule: a walk that writes nothing leaves the Starting state,
+        # so nothing was derived from it and nothing could be. The band is refused, with the reason.
+        if graph_mod.bands(bucket)[0] == 0:
+            refused_bands[bucket] = READ_ONLY_REFUSED
+            continue
         wanted = int(buckets[bucket])
         made = 0
         for attempt in range(wanted * ATTEMPTS_PER_TASK):
@@ -601,9 +607,10 @@ def synthesise(workdir: Any, buckets: dict[str, int], *, seed: Optional[str] = N
             if on_task is not None:
                 on_task(row)
     index = {"format": FORMAT, "requested": {str(k): int(v) for k, v in buckets.items()},
-             "salt": str(salt),
+             "salt": str(salt), "bands_refused": refused_bands,
              "counts": {"walks_tried": tried, "walks_refused": refused, "walks_crashed": crashed,
-                        "walks_unbound": unbound, "graph": graph_mod.summary(body)},
+                        "walks_unbound": unbound, "bands_refused": len(refused_bands),
+                        "graph": graph_mod.summary(body)},
              "tasks": rows}
     write_json(store_dir(workdir) / INDEX, index)
     return index
@@ -668,7 +675,208 @@ def _suite(world: World, verifier: Verifier, run: dict, alternates: list[dict],
     return (not failed), failed
 
 
-__all__ = ["ATTEMPTS_PER_TASK", "CRASHED", "DIR", "FORMAT", "INDEX", "REFUSED", "SECOND_PATH_LIMIT",
-           "UNBOUND", "World", "askable_fields", "bind", "counts_of", "facts_of", "intent_text",
-           "load_graph", "mine_graph", "read_index", "record_run", "run_walk", "second_paths",
-           "spoken_for", "store_dir", "synthesise", "user_rules_for", "written_intent"]
+# --- shaped walks: a Task that is an instance of something the domain attests (D225) ---
+
+# The rungs of the realism bar, in the order they are climbed. A Task falls at the first it misses
+# and the fall is counted there, so a reader sees which rung is the bottleneck rather than a total.
+RUNGS = ("attested", "executable", "graded", "uncontaminated", "plausible")
+
+# The band a shaped walk is filed under when its archetype maps onto n writes. A read only band is
+# refused outright (D224's own finding), so this never returns a w0 name.
+SHAPED_PATHS = 1
+
+READ_ONLY_REFUSED = ("a walk that writes nothing leaves the Starting state unchanged, so the derive "
+                     "path has no claim to make and no Verifier to check: the read only band is "
+                     "refused rather than filled (D224)")
+
+
+def shaped_bucket(write_tools: Iterable[str], tools: Iterable[str]) -> str:
+    """The band a shaped walk asks for: the writes its archetype maps onto and the tools it names."""
+    writes = len({str(name) for name in write_tools or ()})
+    return difficulty.bucket_key(writes, max(len({str(name) for name in tools or ()}), writes),
+                                 SHAPED_PATHS)
+
+
+ARCHETYPE_INTENT = (
+    "A person is writing to a support agent about a problem they want solved. Write their first "
+    "message.\n\n"
+    "This is what they want, in their own words:\n  {goal}\n\n"
+    "Write the symptom and the outcome they want, in their own words, in one or two sentences. Do "
+    "not name any tool, any system, any table or any step, and do not say how the agent should do "
+    "it. Do not include any value that is not in the list below.\n\n"
+    "The only values this person knows and may state:\n{facts}\n\n"
+    "Write the message and nothing else.")
+
+
+def archetype_intent(model: Any, record: dict, said: list[dict], held: list[dict],
+                     fallback: str) -> tuple[str, str]:
+    """The Intent of a shaped Task: symptom form (D196) written from the archetype's own goal line.
+
+    The goal is the customer's voice, so the Intent is written from it rather than from the walk;
+    the askable values are still D210's, and a draft carrying a value only the world knows is
+    refused rather than edited, exactly as the unshaped writer refuses one.
+    """
+    if model is None:
+        return fallback, "no Intent writer was given"
+    lines = "\n".join(f"- {row['field']}: {row['value']}" for row in said) or "- nothing"
+    try:
+        reply = model.query([{"role": "user", "content": ARCHETYPE_INTENT.format(
+            goal=str(record.get("goal") or ""), facts=lines)}])
+    except Exception as error:  # noqa: BLE001 - a provider failure leaves the code-written Intent
+        return fallback, f"the Intent writer failed: {type(error).__name__}"
+    text = str(getattr(reply, "content", "") or "").strip()
+    if not text:
+        return fallback, "the Intent writer answered nothing"
+    if [row for row in held if str(row["value"]) and str(row["value"]) in text]:
+        return fallback, "the draft stated a value only the world knows"
+    return text, ""
+
+
+def shape(workdir: Any, *, archetype_ids: Iterable[str] = (), per_archetype: int = 1,
+          seed: Optional[str] = None, model: Any = None, judges: Iterable[Any] = (),
+          bucket: Optional[str] = None) -> dict:
+    """Tasks shaped to what the domain's own material attests, each climbing the realism bar (D225).
+
+    An archetype says what a person asks for; the graph says what this Environment can do; a shaped
+    walk is the intersection, and it is still a walk of recorded edges bound to reachable rows. The
+    D224 bands stay as filters over it: the band is read off the archetype's mapped writes, and the
+    read only band is refused with a reason rather than filled.
+
+    Every Task climbs five rungs in order, and the count of what fell at each is the measurement:
+    attested, so the Task names an archetype and the archetype a source; executable, so the walk ran
+    in the rebuilt world and left an End state; graded, so the Verifier passes the D79 suite;
+    uncontaminated, so no string of the corpus's own Task list is in the Intent; and plausible, so
+    neither judge could cite a line of the archetype the Task contradicts. A judge can never pass a
+    Task, only remove one.
+    """
+    from kullback import domain as domain_mod
+
+    workdir = Path(workdir)
+    if bucket is not None and graph_mod.bands(bucket)[0] == 0:
+        return {"format": FORMAT, "refused": READ_ONLY_REFUSED, "tasks": [],
+                "counts": {rung: 0 for rung in RUNGS}}
+    world = World(workdir)
+    salt = seed if seed is not None else build_salt(workdir)
+    body = load_graph(workdir)
+    if not body.get("edges"):
+        body = mine_graph(workdir, world)
+    observed = body.get("args") or {}
+    fn = verifier_suite.canon_fn(world.canon_rules)
+    read = domain_mod.read_domain(workdir)
+    wanted = {str(name) for name in archetype_ids or ()}
+    records = [row for row in read.get("archetypes") or ()
+               if row.get("write_tools") and (not wanted or str(row.get("id")) in wanted)]
+    strings = domain_mod.corpus_strings(workdir)
+    fell = {rung: 0 for rung in RUNGS}
+    rows: list[dict] = []
+    per_source_rows: dict[str, int] = {}
+    _grow_for(world, max(int(per_archetype), 1) * max(len(records), 1))
+    for record in records:
+        asked = shaped_bucket(record.get("write_tools"), record.get("tools"))
+        if graph_mod.bands(asked)[0] == 0:
+            fell["attested"] += 1
+            continue
+        made = 0
+        for attempt in range(max(int(per_archetype), 1) * ATTEMPTS_PER_TASK):
+            if made >= max(int(per_archetype), 1):
+                break
+            ident = f"{salt}:{record.get('id')}:{attempt}"
+            steps = graph_mod.walk(body, asked, ident, must_visit=record.get("write_tools") or ())
+            if not steps:
+                fell["attested"] += 1
+                continue
+            calls, why = run_walk(world, steps, observed, ident)
+            if why or not calls:
+                fell["executable"] += 1
+                continue
+            row = _shaped_task(world, calls, record, asked, ident, salt, strings, judges,
+                               model=model, fn=fn, fell=fell)
+            if row is None:
+                continue
+            rows.append(row)
+            made += 1
+            for url in record.get("sources") or [record.get("source")]:
+                per_source_rows[str(url)] = per_source_rows.get(str(url), 0) + 1
+    index = {"format": FORMAT, "salt": str(salt), "shaped": True,
+             "counts": {"archetypes_read": len(records), "tasks_shaped": len(rows),
+                        "fell": fell,
+                        "per_source": [{"source": key, "tasks": per_source_rows[key]}
+                                       for key in sorted(per_source_rows)]},
+             "tasks": rows}
+    write_json(store_dir(workdir) / "shaped.json", index)
+    return index
+
+
+def _shaped_task(world: World, calls: list[dict], record: dict, bucket: str, ident: str, salt: str,
+                 strings: list[str], judges: Iterable[Any], *, model: Any = None, fn: Any = None,
+                 fell: dict) -> Optional[dict]:
+    """One shaped walk climbing the rungs above the executable one, or nothing and a count."""
+    from kullback import domain as domain_mod
+
+    task_id = _task_id(ident)
+    said, held = facts_of(calls, askable_fields(world.workdir))
+    fallback = written_intent(calls, world.write_tools)
+    text, refusal = archetype_intent(model, record, said, held, fallback)
+    transcript, spoken = spoken_for(text, calls)
+    run = record_run(world, task_id, spoken, f"synth-{task_id}", transcript)
+    if run is None:
+        fell["executable"] += 1
+        return None
+    try:
+        reference = reference_mod.load(run["path"], reference_mod.REROLL, run_id=run["run_id"],
+                                       write_tools=world.write_tools, fn=fn, atoms=())
+    except (OSError, ValueError, TypeError):
+        fell["executable"] += 1
+        return None
+    alternates = second_paths(world, task_id, spoken, transcript, reference, f"synth-{task_id}")
+    task = Task(id=task_id, run_ids=[run["run_id"]], intent=text, name=None)
+    verifier = derive_mod.derive_verifier(task, run["path"],
+                                          rerun_paths=[row["path"] for row in alternates],
+                                          canon=world.canon_rules, write_tools=world.write_tools,
+                                          intent=text)
+    passed, failures = _suite(world, verifier, run, alternates, text)
+    if not passed:
+        fell["graded"] += 1
+        return None
+    if domain_mod.contaminated({"goal": text}, strings):
+        fell["uncontaminated"] += 1
+        return None
+    rejections = domain_mod.judged(judges, record, text, [call["name"] for call in calls])
+    if rejections:
+        fell["plausible"] += 1
+        return None
+    writes, tools = graph_mod.reached([{"tool": call["name"]} for call in calls], world.write_tools)
+    reached = difficulty.bucket_key(difficulty.write_count(verifier), tools, 1 + len(alternates))
+    store = store_dir(world.workdir)
+    write_json(store / "tasks" / f"{task_id}.json",
+               {"format": FORMAT, "synthetic": True, "task": as_dict(task),
+                "archetype": record.get("id"), "source": record.get("source"),
+                "bucket_requested": bucket, "bucket": reached, "seed": str(salt),
+                "walk": [{"tool": c["name"], "args": c["args"]} for c in calls],
+                "user_rules": as_dict(user_rules_for(said)),
+                "record_facts": [row["field"] for row in held],
+                "intent_refused": refusal})
+    write_json(store / "verifiers" / f"{task_id}.json", as_dict(verifier))
+    return {"task_id": task_id, "archetype": record.get("id"), "source": record.get("source"),
+            "bucket_requested": bucket, "bucket": reached, "writes": writes, "tools": tools,
+            "pool": len(alternates), "suite_passed": passed, "suite_failures": failures,
+            "intent_written": bool(model is not None and not refusal), "run_id": run["run_id"]}
+
+
+def shaped_counts(workdir: Any) -> dict:
+    """What the last shaping left, as a round line and a report read it (D225)."""
+    body = read_json(store_dir(workdir) / "shaped.json", None)
+    if not isinstance(body, dict):
+        return {}
+    counts = dict(body.get("counts") or {})
+    return {"tasks_shaped": int(counts.get("tasks_shaped") or 0),
+            "shaped_fell": dict(counts.get("fell") or {}),
+            "shaped_per_source": list(counts.get("per_source") or [])}
+
+
+__all__ = ["ARCHETYPE_INTENT", "ATTEMPTS_PER_TASK", "CRASHED", "DIR", "FORMAT", "INDEX",
+           "READ_ONLY_REFUSED", "REFUSED", "RUNGS", "SECOND_PATH_LIMIT", "SHAPED_PATHS", "UNBOUND",
+           "World", "archetype_intent", "askable_fields", "bind", "counts_of", "facts_of",
+           "intent_text", "load_graph", "mine_graph", "read_index", "record_run", "run_walk",
+           "second_paths", "shape", "shaped_bucket", "shaped_counts", "spoken_for", "store_dir",
+           "synthesise", "user_rules_for", "written_intent"]
