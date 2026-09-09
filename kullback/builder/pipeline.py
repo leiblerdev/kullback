@@ -20,23 +20,22 @@ import functools
 import hashlib
 import inspect
 import json
+import random
 import time
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
-from dataclasses import asdict, dataclass, field, fields
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Iterable, Optional, Sequence
 
 from pydantic import BaseModel
 
-from kullback import sampling
 from kullback.agent.events import StageEnd, StageStart
 from kullback.gates.ledger import GateLedger
 from kullback.runner.records import ALL_RECORDS, GateResult, Task, as_dict, content_hash
 
 ANCHOR_SHARE = 0.20
 ANCHOR_MIN_RUNS = 3
-ANCHOR_SEED = 20260827  # kept on the record for the anchors drawn before D212; nothing draws from it now
-ANCHOR_KIND = "anchor"  # the kind of draw the held-out membership is keyed under (D212)
+ANCHOR_SEED = 20260827
 ANCHOR_NAME = "anchor.json"
 MAX_ATTEMPTS = 3
 CACHE_FORMAT = 2  # part of every cache key, so entries written by an older encoder are never read back
@@ -84,9 +83,6 @@ class Anchor:
     share: float = ANCHOR_SHARE
     min_runs: int = ANCHOR_MIN_RUNS
     seed: int = ANCHOR_SEED
-    # D212: the build salt every membership was keyed under. Empty on an anchor drawn before D212,
-    # which is how such an anchor is told apart from one whose Runs were picked by their own keys.
-    salt: str = ""
 
     def anchor_runs(self, task_id: str) -> list[str]:
         return list(self.held_out.get(task_id, []))
@@ -115,22 +111,11 @@ class Anchor:
         return out
 
     def to_dict(self) -> dict:
-        """The record as it is stored and as it is hashed into every stage's cache key.
-
-        An anchor drawn before D212 carries no salt and is written without the field, so its hash
-        is what it always was and a build already under way is not invalidated by this decision;
-        an anchor drawn by key carries its salt, and a build whose held-out Runs really did move
-        is invalidated, which is what should happen.
-        """
-        body = asdict(self)
-        if not self.salt:
-            body.pop("salt", None)
-        return body
+        return asdict(self)
 
     @classmethod
     def from_dict(cls, data: dict) -> "Anchor":
-        known = {f.name for f in fields(cls)}
-        return cls(**{k: v for k, v in data.items() if k in known})
+        return cls(**data)
 
 
 def _task(task: Any) -> tuple[str, list[str]]:
@@ -151,31 +136,18 @@ def load_anchor(workdir: str | Path) -> Optional[Anchor]:
 
 
 def choose_anchor(tasks: Sequence[Any], workdir: str | Path, share: float = ANCHOR_SHARE,
-                  min_runs: int = ANCHOR_MIN_RUNS, seed: int = ANCHOR_SEED,
-                  salt: Optional[str] = None) -> Anchor:
-    """Hold out each Task's Runs by their own keys and store what was held out.
+                  min_runs: int = ANCHOR_MIN_RUNS, seed: int = ANCHOR_SEED) -> Anchor:
+    """Pick the held-out Runs once with a fixed seed and store them.
 
     Every Task the stored anchor already knows keeps exactly the Runs it was given. A Task that
     appeared afterwards (an iterate build, a split) is drawn now under the stored settings and
     appended, because a Task with nothing held out is a Task the Builder can fit to (D81).
-
-    D212: a Run is in the anchor by its own key, not by the position a shuffle of the Task's sorted
-    Run list gave it. The share is still exactly what D81 guarantees, at least one Run and the share
-    of the Task's Runs otherwise, so the threshold on the key is filled and trimmed to that count
-    from the lowest keys. What changes is what the membership is a function of: the Run's own id and
-    the build salt, and nothing about how many Runs the Task has or where the Run sat in the list.
-    Two builds of one Environment therefore hold out the same Runs of the Runs they share, and the
-    delta between the two builds is the code.
     """
     stored = load_anchor(workdir)
     held_out: dict[str, list[str]] = dict(stored.held_out) if stored is not None else {}
     unguarded: list[str] = list(stored.unguarded) if stored is not None else []
     if stored is not None:
-        # An anchor already on disk keeps its own salt, the empty one included: a Task appended to a
-        # pre-D212 anchor is drawn under what that anchor drew under, so one build has one rule.
-        share, min_runs, seed, salt = stored.share, stored.min_runs, stored.seed, stored.salt
-    elif salt is None:
-        salt = sampling.build_salt(workdir)
+        share, min_runs, seed = stored.share, stored.min_runs, stored.seed
     added = False
     for task in tasks:
         task_id, run_ids = _task(task)
@@ -188,10 +160,8 @@ def choose_anchor(tasks: Sequence[Any], workdir: str | Path, share: float = ANCH
             unguarded.append(task_id)
             continue
         count = max(1, int(len(run_ids) * share))
-        held_out[task_id] = sampling.keyed_share(ANCHOR_KIND, run_ids, salt, share,
-                                                 minimum=count, maximum=count)
-    anchor = Anchor(held_out=held_out, unguarded=sorted(set(unguarded)), share=share, min_runs=min_runs,
-                    seed=seed, salt=salt)
+        held_out[task_id] = sorted(random.Random(f"{seed}:{task_id}").sample(run_ids, count))
+    anchor = Anchor(held_out=held_out, unguarded=sorted(set(unguarded)), share=share, min_runs=min_runs, seed=seed)
     if stored is None or added:
         path = anchor_path(workdir)
         path.parent.mkdir(parents=True, exist_ok=True)

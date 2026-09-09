@@ -44,7 +44,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, AsyncIterator, Callable, Iterable, Optional
 
-from kullback import sampling
+from kullback import difficulty
 from kullback.agent.events import (
     BeatEnd,
     BeatStart,
@@ -416,9 +416,6 @@ class Loop:
     retry_asks: int = 0
     retries_seen: int = 0
     zooms_seen: int = 0  # `plan.zooms_skipped` at the round's start; the plan's counter is cumulative
-    # D212: the keyed draws taken by the time the last round closed, so a round reports its own
-    # share of a counter that is cumulative over the process.
-    draws_seen: dict = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         """A new Loop resumes the workdir's unfinished business: findings an earlier invocation
@@ -809,23 +806,7 @@ class Loop:
             **self._pin_counts(),
             **self._reader_counts(),
             **self.task_split(),
-            **self._sampling_counts(),
         }
-
-    def _sampling_counts(self) -> dict:
-        """D212: the build salt every keyed draw ran under, and how many draws of each kind this round took.
-
-        `sample_salt` is eight characters of the salt's digest, so two rounds of two builds can be
-        read for whether they sampled alike without the salt itself going into a record. `draws_`
-        counts say which draws the round actually took: a round whose stages all came from the cache
-        drew nothing, which is the honest reading and not a mechanism that is off. The counts are a
-        difference against the totals at the round's start, because a round's counts are assembled
-        more than once and a destructive read would give the second caller nothing.
-        """
-        out = {"sample_salt": sampling.salt_label(sampling.read_salt(self.plan.workdir))}
-        for kind, count in sampling.draws_since(self.draws_seen).items():
-            out[f"draws_{kind}"] = int(count)
-        return out
 
     def retirements_now(self) -> list:
         """The Verifiers this round retired, read off the status rows the derivation left (D208)."""
@@ -883,7 +864,8 @@ class Loop:
         return list(self.eplan.store.get("findings") or []) if self.eplan is not None else []
 
     def counts(self) -> dict:
-        """D126's counts off the gates, plus what only the driver knows (`driver_counts`)."""
+        """D126's counts off the gates, plus what only the driver knows (`driver_counts`), plus the
+        difficulty buckets (D209)."""
         store = self.eplan.store if self.eplan is not None else {}
         counts = round_end.round_counts(
             store.get("task_status") or {}, store.get("verifiers") or [], store.get("probes") or {},
@@ -891,7 +873,25 @@ class Loop:
             store.get("replays") or {}, store.get("rerolls") or {}, store.get("canon_rules"),
             store.get("sigs") or [], record=self._land, intents=store.get("intents") or {})
         counts.update(self.driver_counts())
+        counts.update(self.difficulty_counts(counts))
         return counts
+
+    def difficulty_counts(self, counts: dict) -> dict:
+        """The bucket table of the round in hand, written to its own file and summarised on the line.
+
+        `round_end` is frozen and the trusted count is its business, so the buckets are computed here
+        off the round's own false-rejection rows and trusted ids and land in difficulty.json rather
+        than in a gate's metrics. A workdir the computation cannot read leaves the counts without
+        buckets rather than failing the round: this is a report and never a ruling.
+        """
+        try:
+            body = difficulty.refresh(self.plan.workdir,
+                                      false_rejection=dict(counts.get("false_rejection") or {}),
+                                      trusted_ids=list(counts.get("trusted_ids") or []))
+        except (OSError, ValueError, TypeError):
+            return {}
+        return {"buckets": list(body.get("buckets") or []),
+                "tasks_without_difficulty": len(body.get("no_record") or {})}
 
     def keep_gate_history(self, n: int) -> None:
         """gates.json as this round leaves it, kept per round in gates_by_round.json.
@@ -1077,7 +1077,6 @@ class Loop:
         # The driver's own numbers last and freshest: a round that failed comes here with no counts
         # at all, and its clock, spend and turns are as true as a round that finished.
         record = RoundRecord(round=n, counts={**counts, **self.driver_counts()})
-        self.draws_seen = sampling.draws_by_kind()  # the next round's draws start counting from here
         record.counts["moved"] = self.round_moved(n, record.counts)
         record.counts["repairs"] = self.repairs_made(n)
         history = self.rounds + [record]

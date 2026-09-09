@@ -632,8 +632,22 @@ def start_state(run: Run) -> dict:
     return {}
 
 
+def _result_turn(event: Event) -> dict:
+    """One tool result as a turn: what the Run was handed, under `result`, with no content of its own.
+
+    D206 needs a rule to be able to ask what the Run had already read when it wrote, and a rule that
+    cannot see a result can only ask about the row. The content stays None and the role is neither
+    user nor assistant, so every helper and every rule written before this one reads the turn as it
+    read the tool-call turns that already carry no content: `user_confirmed` looks for the last user
+    turn and the assistant turn before it, `said_before` reads assistant turns, `_elicited` skips a
+    turn with no content, and `_before` counts calls. One turn per result, in event order, so a rule
+    handed the turns before a call sees exactly the results that call came after.
+    """
+    return {"role": "tool", "content": None, "result": _payload(event).get("result"), "tool_calls": []}
+
+
 def _transcript(run: Run) -> list[dict]:
-    """The Run as a policy predicate reads it: role, content and tool calls, in event order."""
+    """The Run as a policy predicate reads it: role, content, results and tool calls, in event order."""
     out: list[dict] = []
     for event in run.events:
         if event.type == "model_call" and _assistant_text(event):
@@ -644,6 +658,8 @@ def _transcript(run: Run) -> list[dict]:
             out.append({"role": "assistant", "content": None, "tool_calls": [
                 {"name": str(_payload(event).get("name") or ""),
                  "arguments": _payload(event).get("args") or _payload(event).get("arguments") or {}}]})
+        elif event.type == "tool_result":
+            out.append(_result_turn(event))
     return out
 
 
