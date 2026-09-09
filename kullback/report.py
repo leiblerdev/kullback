@@ -10,7 +10,6 @@ from typing import Any, Literal, Optional
 
 from pydantic import BaseModel, Field, ValidationError
 
-from kullback import difficulty
 from kullback.runner.records import (
     Constraint,
     Environment,
@@ -98,8 +97,6 @@ class ReportData(BaseModel):
     tool_fidelity: dict = Field(default_factory=dict)
     rounds: list[RoundRecord] = Field(default_factory=list)
     trusted: Optional[GateResult] = None
-    # D209: difficulty.json, the record and the bucket per Task with the Tasks that carry neither.
-    difficulty: dict = Field(default_factory=dict)
     findings: list[dict] = Field(default_factory=list)  # repairs/repair_record_finding.jsonl (D155)
 
 
@@ -492,21 +489,6 @@ def _scorecard_table(data: ReportData) -> list[str]:
     return lines if data.scorecard else lines + ["| none recorded |  |  |  |"]
 
 
-def _difficulty_table(data: ReportData) -> list[str]:
-    """The trusted count and the held-out solve rate per difficulty bucket (D209), off difficulty.json.
-
-    One trusted count says nothing about what kind of Task it holds, so it is reported per bucket
-    beside it and never instead of it. A build whose workdir has no difficulty.json says so rather
-    than printing an empty table that reads as a build with no Tasks.
-    """
-    body = data.difficulty or {}
-    rows = list(body.get("buckets") or [])
-    if not rows and not body:
-        return ["", "### Difficulty buckets", "",
-                "No difficulty record was written for this build, so no bucket table is shown."]
-    return ["", "### Difficulty buckets", ""] + difficulty.markdown_table(rows, len(body.get("no_record") or {}))
-
-
 def tool_fidelity_counts(data: ReportData, name: str) -> dict:
     """Both grains of one tool's replay fidelity, off tool_fidelity.json (D171).
 
@@ -604,7 +586,7 @@ def _environment(data: ReportData) -> list[str]:
     """The Environment section, in the order a person reads it: what was built, what the gates and
     the scorecard said, what still needs a look, and what the pipeline did and cost."""
     return ([ENVIRONMENT, ""] + _headline(data) + _gates_table(data) + _scorecard_table(data)
-            + _difficulty_table(data) + _tool_notes(data) + _finding_lines(data) + _overlay_lines(data)
+            + _tool_notes(data) + _finding_lines(data) + _overlay_lines(data)
             + ["", "### Coverage", ""] + _coverage(data) + _pipeline_lines(data))
 
 
@@ -1171,12 +1153,6 @@ def _list_of_bodies(body: Any, model: type) -> list:
     return out
 
 
-def _difficulty_body(root: Path) -> dict:
-    """difficulty.json as the last round left it (D209); a workdir without one reads as no record."""
-    body = _json(root / difficulty.FILE_NAME)
-    return body if isinstance(body, dict) else {}
-
-
 def _rounds_of(path: Path, unread: Optional[list] = None) -> list[RoundRecord]:
     """rounds.json as records: a file that is there and is not a list of RoundRecord is named, since a
     round that did not load would leave the trusted count and the exit unsaid."""
@@ -1267,7 +1243,6 @@ def load(workdir: Any) -> ReportData:
         tool_fidelity=fidelity_body if isinstance(fidelity_body, dict) else {},
         rounds=_rounds_of(root / "rounds.json", unread),
         trusted=trusted,
-        difficulty=_difficulty_body(root),
         findings=_jsonl(root / "repairs" / "repair_record_finding.jsonl", unread),
     )
     gate = environment_gate(data)
