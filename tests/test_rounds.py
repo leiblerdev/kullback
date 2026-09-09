@@ -69,9 +69,11 @@ TARGET = "environment"
 # hashing it would pin the minute the fixture ran rather than what it wrote. Re-pinned for D220: a
 # Task's re-roll key is now a function of its seed Runs, so the key hash inside every re-rolled Run
 # id moves. Re-pinned for D214: the rule-driven Simulated user moved into kullback/user, so the
-# re-roll stage's code version moved with it and the Run ids derived from that key moved again. The
-# same three Tasks, the same verdicts and the same reasons.
-TASK_STATUS_SHA256_BEFORE_THE_PHASE = "3c59e00288ccb2f1dae5eda91a96945182ec49ef78377be5c9c101606b6f673d"
+# re-roll stage's code version moved with it. Re-pinned for D222: the judge version is one of the
+# things a re-roll's key is made of, and it moved when the judge stopped refusing a verdict for want
+# of a tool call, so the re-roll ids under each row are new once more. The same three Tasks, the
+# same verdicts and the same reasons.
+TASK_STATUS_SHA256_BEFORE_THE_PHASE = "2fe278339d5b23b2186bbfa9849816441693702069b035a27c2dfb4c3e7da6fd"
 
 
 def _fixture(request) -> Path:

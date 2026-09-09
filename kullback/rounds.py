@@ -87,6 +87,7 @@ from kullback.examiner.stage import DERIVE_INPUTS
 from kullback.gates import round_end, tool_runs
 from kullback.gates.ledger import HISTORY_NAME, GateLedger
 from kullback.runner import budget, feed
+from kullback.runner import judge as judge_mod
 from kullback.runner.records import (
     Finding,
     GateResult,
@@ -882,9 +883,15 @@ class Loop:
         other spend is. All zero on an Environment whose schema classes no column semantic; many
         unresolved with nothing judged is a judge that is not wired, which is what D219 was written
         for and is the reading nothing on the record could give before.
+
+        The judge counts beside them are D222's: how many reads the harness ran before asking,
+        how many calls the models made on top of those, how many questions the harness could
+        prefill no check for, and how the forced first turn went. `judge_refused_no_check` above
+        zero is a bug here, not a model that would not look.
         """
         counts = _read_json(self.plan.workdir / SEMANTIC_COUNTS_FILE, {}) or {}
-        out = {name: int(counts.get(name) or 0) for name in tool_runs.SEMANTIC_COUNTS}
+        out = {name: int(counts.get(name) or 0)
+               for name in tool_runs.SEMANTIC_COUNTS + judge_mod.JUDGE_COUNTS}
         stages = (budget.load_totals(self.plan.workdir).get("stages") or {})
         out["judge_spend"] = round(float((stages.get(SEMANTIC_JUDGE_STAGE) or {}).get("usd") or 0.0), 4)
         return out
