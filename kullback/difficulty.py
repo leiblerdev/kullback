@@ -336,6 +336,11 @@ def compute(workdir: Any, *, false_rejection: Optional[dict] = None,
     status = read_json(workdir / "task_status.json", {}) or {}
     references = read_json(workdir / "references.json", {}) or {}
     verifiers, retired = _verifiers(workdir, status)
+    # A Task the retirement step has already been over has no file left to filter, and its row is
+    # what remembers the retirement (D208). Both readings are needed: the file is there when this
+    # runs before the next derivation, and only the row is there once it has run.
+    retired.update({str(task_id): RETIRED_VERIFIER for task_id, row in status.items()
+                    if lifecycle.retired_row(row) is not None})
     write_tools = write_tools_of(read_json(workdir / "tool_sigs.json", []) or [])
     judge_rows = read_jsonl(workdir / "judge_pairs.jsonl")
     paths = run_paths(workdir)

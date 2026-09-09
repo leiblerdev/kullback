@@ -11,7 +11,7 @@ import json
 from pathlib import Path
 
 from kullback import cli, difficulty, report
-from kullback.examiner import variants
+from kullback.examiner import lifecycle, variants
 from kullback.runner.records import Atom, Event, Run, Verifier, as_dict, write_json
 
 WATER = "water_pot"
@@ -225,6 +225,18 @@ def test_a_verifier_derived_over_a_run_the_reference_no_longer_names_is_not_read
     workdir = _workdir(tmp_path)
     write_json(workdir / "task_status.json",
                {"task_1": {"reference_confirmed": True, "reference_run_ids": ["run-b"]}})
+    body = difficulty.compute(workdir)
+    assert body["tasks"] == []
+    assert body["no_record"] == {"task_1": difficulty.RETIRED_VERIFIER}
+
+
+def test_a_task_whose_verifier_the_retirement_step_already_took_away_says_it_was_retired(tmp_path):
+    workdir = _workdir(tmp_path)
+    status = {"task_1": {"reference_confirmed": False,
+                         lifecycle.RETIRED_FIELD: {"reason": lifecycle.REFERENCE_WITHDRAWN,
+                                                   "round": 2, "source_run_ids": ["run-a"]}}}
+    (workdir / "verifiers" / "task_1.json").unlink()
+    write_json(workdir / "task_status.json", status)
     body = difficulty.compute(workdir)
     assert body["tasks"] == []
     assert body["no_record"] == {"task_1": difficulty.RETIRED_VERIFIER}
