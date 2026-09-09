@@ -60,6 +60,7 @@ from kullback.gates import artifacts, fidelity, tool_runs, verifier_suite
 from kullback.gates import scorecard as scorecard_mod
 from kullback.gates import stages as stage_gates
 from kullback.runner import budget, canon, loop, route
+from kullback.runner import judge as judge_mod
 from kullback.runner import replay as replay_mod
 from kullback.runner.canon import rules_of as _rules_of
 from kullback.runner.records import (
@@ -428,6 +429,13 @@ KEPT_BODY_DIR = "kept_body"
 # fidelity ruling (D211). A record of the run and never an input of it, the same way the rulings
 # beside it are; `rounds.py` adds them up so a round says what the steps bought.
 LESSON_COUNTS_FILE = "tool_lesson_counts.json"
+# Who settles a semantic column pair, where the settled pairs are kept, and what the comparisons of
+# a run came to (D219). The table is an input as much as a record: a pair it holds is never asked
+# about again, so a build judges each distinct pair once and a person who overturns an entry moves
+# every Run that rested on it (D84's regrade queue).
+SEMANTIC_JUDGE_STAGE = "semantic_judge"
+EQUIVALENCE_FILE = "equivalence.json"
+SEMANTIC_COUNTS_FILE = "semantic_counts.json"
 # The stage's ruling on those replays, one row per tool (KEPT_BODIES_FILE), is a record of the run
 # and never an input of it (see the comment where it is filled). Its name is declared in repair.py,
 # because the repair ruling reads the same file back to say what the attempt scored (D191).
@@ -1158,7 +1166,63 @@ def _environment_stage(domain: str):
                           code_version=_version("environment", run, compile_env))
 
 
-def _replay_stage(only: Optional[Iterable[str]] = None):
+class SemanticJudging:
+    """Who settles a semantic column pair for this build, and where the answers are kept (D219).
+
+    A comparer that knows the schema's classes but was handed no judge and no table cannot settle a
+    semantic column at all: every such pair comes back unresolved, and before D219 an unresolved
+    pair was forgiven, so the class read as "not checked" rather than "checked another way". The
+    collaborator was optional in the library function and mandatory at the stage, and the same
+    `=None` default served both, so nothing anywhere said the stage was running without it.
+
+    This is that collaborator, built once per build. A pair is asked about at most once, whatever
+    the answer: the table caches the settled ones and this caches the unsettled ones too, so a judge
+    that raises or abstains cannot be asked the same question by every Trace that meets the pair.
+    Where a second judge model is configured the pair goes to both under D92, so a split abstains to
+    the queue instead of being decided by one voice.
+    """
+
+    def __init__(self, workdir: Any = None, model: Any = None, second_model: Any = None) -> None:
+        self.workdir = Path(workdir) if workdir is not None else None
+        self.path = None if self.workdir is None else self.workdir / EQUIVALENCE_FILE
+        self.table = canon.load_table(self.path) if self.path else canon.EquivalenceTable()
+        self._asked: dict = {}
+        self._first = judge_mod.AgenticJudge(model) if model is not None else None
+        self._second = judge_mod.AgenticJudge(second_model) if second_model is not None else None
+        names = [judge.name for judge in (self._first, self._second) if judge is not None]
+        self.identity = (f"{'+'.join(names)}:{judge_mod.JUDGE_VERSION}" if names else "none")
+
+    @property
+    def judge(self) -> Optional[Any]:
+        """The callable `canon.compare` asks about one pair, or None where no judge is configured."""
+        return None if self._first is None else self._ask
+
+    def _ask(self, column: Any, a: Any, b: Any) -> Any:
+        key = canon.pair_key(str(column), str(a), str(b))
+        if key not in self._asked:
+            self._asked[key] = self._answer(column, a, b, key)
+        return self._asked[key]
+
+    def _answer(self, column: Any, a: Any, b: Any, key: str) -> Any:
+        if self._second is None:
+            return self._first.judge_equivalence(column, a, b)
+        answer, _ = judge_mod.two_judges(self._first, self._second, "judge_equivalence", column, a, b,
+                                         workdir=self.workdir, item_id=key)
+        return answer
+
+    def save(self) -> None:
+        """Keep what was settled, so the next run of the stage asks about none of it again."""
+        if self.path is not None:
+            canon.save_table(self.table, self.path)
+
+
+def _semantic_judging(plan: "BuildPlan") -> SemanticJudging:
+    """The build's semantic judging, from the models the plan already prices (D160, D219)."""
+    return SemanticJudging(plan.workdir, plan.models.get(SEMANTIC_JUDGE_STAGE),
+                           plan.models.get("second_judge"))
+
+
+def _replay_stage(judging: Optional[SemanticJudging] = None, only: Optional[Iterable[str]] = None):
     """Every Trace of every Task replayed through the built tools: the Reference Runs and Gate A (D108).
 
     The Trace's own assistant turns and user turns drive the loop; each tool call is routed the way a
@@ -1169,6 +1233,7 @@ def _replay_stage(only: Optional[Iterable[str]] = None):
     """
 
     only = sorted(only) if only is not None else None
+    judging = judging if judging is not None else SemanticJudging()
 
     def run(ctx, inputs):
         schema = with_synthetic_rows(inputs["schema"], inputs.get("synthetic_rows") or ())
@@ -1179,7 +1244,11 @@ def _replay_stage(only: Optional[Iterable[str]] = None):
         # What the Runner's own scoring cannot reach on its own: the schema's column classes, so an
         # exempt column cannot fail a write and a semantic one is not held to a hard column's bar,
         # and the readers, so a prose result is compared by the columns it asserts (D187).
-        comparer = tool_runs.ReplayComparer(schema, tool_runs.load_readers(inputs["readers"]), canon_rules)
+        # The judge and the equivalence table are handed over here and not defaulted away: without
+        # them every semantic column of every Trace comes back unresolved, which D219 fails rather
+        # than forgives, so a stage that ran without them would reject the corpus it cannot judge.
+        comparer = tool_runs.ReplayComparer(schema, tool_runs.load_readers(inputs["readers"]), canon_rules,
+                                            judge=judging.judge, equivalence=judging.table)
         source = compile_env.module_source(schema, sigs, bodies)
         by_trace = {t.trace_id: t for t in inputs["traces"]}
         replays: dict[str, dict] = {}
@@ -1213,6 +1282,10 @@ def _replay_stage(only: Optional[Iterable[str]] = None):
         # adds to a body's evidence and keys its cache on.
         _write_json(ctx.workdir / REPLAY_EVIDENCE_FILE,
                     {tool: sorted(failures) for tool, failures in sorted(replay_failures_of(replays).items())})
+        # What the semantic comparisons of this stage came to, and every pair a judge settled, so
+        # the next run of the stage asks about none of them again (D219).
+        judging.save()
+        _write_json(ctx.workdir / SEMANTIC_COUNTS_FILE, dict(comparer.counts, judge=judging.identity))
         _write_runs_index(ctx.workdir)
         # Section 6: a Task none of whose Traces replay to their End state is rejected for that
         # Task, which the Examiner's derivation turns into "not verdicted"; the build itself goes on.
@@ -1221,8 +1294,12 @@ def _replay_stage(only: Optional[Iterable[str]] = None):
 
     # The verdict format rides in the key beside the module hashes: a change in what a verdict means
     # has to recompute the replays even where the scoring code it was read off has not moved (D217).
+    # The judge's identity and the equivalence table's version ride in the key beside the verdict
+    # format: a replay scored with no judge and one scored with a judge are different readings of
+    # the same bytes, and a cache that cannot tell them apart hands back the unjudged one (D219).
     version = (f"{_version('replay_reference', run, replay_mod, fidelity, compile_env, route, loop, tool_runs)}"
-               f":verdicts={replay_mod.VERDICT_FORMAT}")
+               f":verdicts={replay_mod.VERDICT_FORMAT}"
+               f":judge={judging.identity}:equivalence={judging.table.version}")
     return pipeline.Stage(name="replay_reference", fn=run,
                           inputs=("traces", "tasks", "sigs", "schema", "bodies", "db", "canon_rules",
                                   "environment", "readers", "synthetic_rows"),
@@ -1809,7 +1886,9 @@ def variant_runner(plan: BuildPlan):
     tasks = {t.id: t for t in store["tasks"]}
     canon_rules = _rules_of(store)
     write_tools = {s.name for s in sigs if s.kind == "write"}
-    comparer = tool_runs.ReplayComparer(schema, tool_runs.load_readers(store.get("readers") or []), canon_rules)
+    judging = _semantic_judging(plan)
+    comparer = tool_runs.ReplayComparer(schema, tool_runs.load_readers(store.get("readers") or []), canon_rules,
+                                        judge=judging.judge, equivalence=judging.table)
     source = compile_env.module_source(schema, sigs, bodies)
     workdir = plan.workdir
 
@@ -1827,6 +1906,7 @@ def variant_runner(plan: BuildPlan):
         result = replay_mod.replay_trace(trace, router, workdir=workdir / "runs" / task_id,
                                          task_id=task_id, env_id=env_id, write_tools=write_tools,
                                          canon_rules=canon_rules, comparer=comparer, run_id=run_id)
+        judging.save()
         _write_runs_index(workdir)
         if not result.path:
             return None
@@ -2017,6 +2097,10 @@ class BuildPlan:
             "reference_judge": _wrap(judge, "reference_judge", workdir, ceiling) if judge is not None else None,
             "second_judge": (_wrap(second_judge, "second_judge", workdir, ceiling)
                              if second_judge is not None else None),
+            # The judge a semantic column pair is settled by, priced under its own stage so a
+            # build can say what the judging of its semantic columns cost (D219).
+            SEMANTIC_JUDGE_STAGE: (_wrap(judge, SEMANTIC_JUDGE_STAGE, workdir, ceiling)
+                                   if judge is not None else None),
         }
 
     def judge_model_ids(self) -> dict:
@@ -2058,7 +2142,7 @@ def stages(plan: BuildPlan, *, tools: Optional[Iterable[str]] = None, replay_tas
         _vocabulary_stage(models["vocabulary"], plan.search),
         _user_rules_stage(),
         _environment_stage(plan.domain),
-        _replay_stage(only=replay_tasks),
+        _replay_stage(_semantic_judging(plan), only=replay_tasks),
         (_rerolls_stage(models["reroll"], plan.rerolls, plan.workers, only=reroll_tasks)
          if models["reroll"] is not None else None),
     ]

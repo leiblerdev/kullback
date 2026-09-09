@@ -16,6 +16,7 @@ from kullback.builder import pipeline
 from kullback.builder import repair as repair_module
 from kullback.builder import tools as builder_tools
 from kullback.builder.build import BuildPlan
+from kullback.gates import tool_runs
 from kullback.runner.records import Task, ToolCall, ToolSig, Trace, Turn, Verifier
 from test_e2e import TOOL_BODIES
 
@@ -799,6 +800,38 @@ def test_every_stage_hashes_the_modules_it_delegates_to():
     assert build_module._module_hash(compile_env) in grown and build_module._module_hash(synth) in grown
     assert grown != build_module._state_stage({"users": 20}, 0).code_version
     assert grown == build_module._state_stage({"users": 10}, 0).code_version
+
+
+def test_the_replay_stage_key_moves_when_the_judge_that_settles_a_column_moves(tmp_path):
+    """D219: a replay scored with no judge and one scored with a judge are two readings of the same
+    bytes. The judge's identity and the table's version ride in the stage key, so a cache written
+    under the first is never handed back for the second."""
+    class _Model:
+        name = "invented/judge-one"
+
+    class _Other:
+        name = "invented/judge-two"
+
+    unjudged = build_module._replay_stage(build_module.SemanticJudging(tmp_path)).code_version
+    judged = build_module._replay_stage(build_module.SemanticJudging(tmp_path, _Model())).code_version
+    other = build_module._replay_stage(build_module.SemanticJudging(tmp_path, _Other())).code_version
+    assert unjudged != judged != other and unjudged != other
+    assert "judge=none" in unjudged and "invented/judge-one" in judged
+    again = build_module._replay_stage(build_module.SemanticJudging(tmp_path, _Model())).code_version
+    assert again == judged, "the same judge and the same table key the same stage"
+
+
+def test_the_replay_stage_hands_its_comparer_a_judge_rather_than_defaulting_it_away(tmp_path):
+    """The wiring itself, which is what nothing asserted before: the object that reaches the Runner
+    knows how to settle a semantic column, or the build says out loud that it has no judge."""
+    class _Model:
+        name = "invented/judge-one"
+
+    judging = build_module.SemanticJudging(tmp_path, _Model())
+    assert judging.judge is not None and judging.identity.startswith("invented/judge-one")
+    assert build_module.SemanticJudging(tmp_path).judge is None
+    comparer = tool_runs.ReplayComparer(judge=judging.judge, equivalence=judging.table)
+    assert comparer.judge is not None and comparer.equivalence is judging.table
 
 
 def test_tool_definitions_speak_json_schema():

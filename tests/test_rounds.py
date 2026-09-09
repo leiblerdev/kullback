@@ -784,6 +784,17 @@ def test_round_end_carries_every_count_d126_lists_and_none_comes_from_a_model(dr
     assert [d for d in driven["dicts"] if d.get("kind") == "round"][-1]["counts"] == counts
 
 
+def test_a_round_says_what_its_semantic_comparisons_came_to_and_what_the_judging_cost(driven):
+    """D219: a round that cannot tell "no semantic column" from "every semantic column unanswered"
+    cannot see the judge is unwired. The counts and the judge's own spend are on every round."""
+    counts = rounds.load_rounds(driven["workdir"])[-1].counts
+    assert set(counts) >= {"semantic_compared", "semantic_judged", "semantic_equal",
+                           "semantic_different", "semantic_unresolved", "judge_spend"}
+    # The fixture's schema classes no column semantic, so nothing was compared and nothing was spent.
+    assert counts["semantic_compared"] == 0 and counts["semantic_unresolved"] == 0
+    assert counts["judge_spend"] == 0
+
+
 def test_a_rounds_counts_carry_its_clock_its_spend_its_turns_and_its_context_fill(driven):
     """A build's duration is read from these and from nothing else: pipeline/state.json records the
     stage statuses and no clock, and a repair's timestamp has no round to sit against without them."""
