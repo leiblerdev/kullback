@@ -7,10 +7,11 @@ columns; the Runs are hand-built the way tests/gates/verifier_fixtures.py builds
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Optional
 
 from kullback.examiner import derive as V
 from kullback.gates import verifier_suite as S
+from kullback.runner.atom_context import AtomContext
 from kullback.runner.records import Event, Run
 
 ASSIGN = "assign_locker"
@@ -52,12 +53,16 @@ def run(run_id: str, events: list[dict]) -> Run:
                        for number, e in enumerate(events + [stop()])])
 
 
-def assignment_events(badge: str = "QX41") -> list[dict]:
-    """The user names the locker; the desk reads the roster for the badge code and assigns it."""
+def assignment_events(badge: str = "QX41", read_badge: Optional[str] = None) -> list[dict]:
+    """The user names the locker; the desk reads the roster for the badge code and assigns it.
+
+    `read_badge` is what the roster answered, when that is not what was written: a Run that wrote a
+    badge code it never read is the case a shape atom has to keep rejecting.
+    """
     return [
         user("Please assign locker L9 to me."),
         call(ROSTER, {"locker_id": "L9"}, kind="read", cid="c0"),
-        result({"locker_id": "L9", "badge_code": badge}, cid="c0"),
+        result({"locker_id": "L9", "badge_code": badge if read_badge is None else read_badge}, cid="c0"),
         call(ASSIGN, {"locker_id": "L9", "badge_code": badge}, cid="c1"),
         result({"locker_id": "L9", "assigned": True}, cid="c1"),
         says("Locker L9 is yours."),
@@ -95,11 +100,11 @@ def test_the_leak_check_passes_over_a_shape_atom_whose_value_the_intent_spells_o
     assert gate.passed, gate.failures
 
 
-def test_a_shape_atom_still_rejects_a_value_the_row_does_not_hold():
-    """Relaxed is not empty: the badge code written has to be the one the world holds for that row."""
+def test_a_shape_atom_still_rejects_a_value_the_run_never_read():
+    """Relaxed is not empty: the badge code written has to be one this Run was given."""
     verifier = derive(run("ref", assignment_events()))
-    passed, failing = S.check_run(verifier, run("other", assignment_events(badge="TM08")),
-                                  write_tools=WRITE_TOOLS)
+    wrong = run("other", assignment_events(badge="TM08", read_badge="QX41"))
+    passed, failing = S.check_run(verifier, wrong, write_tools=WRITE_TOOLS)
     assert not passed and failing == "w0.badge_code"
 
 
@@ -121,6 +126,141 @@ def test_what_a_user_said_is_read_the_way_the_leak_check_reads_it():
         held = S.Verifier(task_id="t1", atoms=[one])
         gate = S._leak_gate(held, reference, " ".join(S._texts(value)), None)
         assert gate.passed is V.user_said(spoken, value), value
+
+
+# --- D206: the shape is checked against what the Run read, not against the row it wrote ------
+
+def copy_across_rows_events() -> list[dict]:
+    """The member wants locker L4 issued against the badge code the roster holds for L9.
+
+    The value is real and was read off the roster, but off another locker's row than the one the
+    desk writes, which is an ordinary copy across rows and not an invention.
+    """
+    return [
+        user("Please assign locker L4 to me, under the badge code locker L9 is issued against."),
+        call(ROSTER, {"locker_id": "L9"}, kind="read", cid="c0"),
+        result({"locker_id": "L9", "badge_code": "QX41"}, cid="c0"),
+        call(ASSIGN, {"locker_id": "L4", "badge_code": "QX41"}, cid="c1"),
+        result({"locker_id": "L4", "assigned": True}, cid="c1"),
+        says("Locker L4 is yours, under badge QX41."),
+    ]
+
+
+def prose_events() -> list[dict]:
+    """The roster answers in prose, the way a reader-built tool does, and the desk writes what it read."""
+    return [
+        user("Please assign locker L4 to me, under the badge code locker L9 is issued against."),
+        call(ROSTER, {"locker_id": "L9"}, kind="read", cid="c0"),
+        result("Locker L9 on floor 27 is issued against badge QX41.", cid="c0"),
+        call(ASSIGN, {"locker_id": "L4", "badge_code": "QX41"}, cid="c1"),
+        result({"locker_id": "L4", "assigned": True}, cid="c1"),
+        says("Locker L4 is yours, under badge QX41."),
+    ]
+
+
+def unread_value_events() -> list[dict]:
+    """The desk writes a badge code no result of this Run ever held under that column or as a word."""
+    return [
+        user("Please assign locker L4 to me."),
+        call(ROSTER, {"locker_id": "L4"}, kind="read", cid="c0"),
+        result({"locker_id": "L4", "spare_badge": "ZZ01"}, cid="c0"),
+        call(ASSIGN, {"locker_id": "L4", "badge_code": "ZZ01"}, cid="c1"),
+        result({"locker_id": "L4", "assigned": True}, cid="c1"),
+        says("Locker L4 is yours."),
+    ]
+
+
+def source_of(verifier: Any, atom_id: str) -> str:
+    return S.atom_payload(atom(verifier, atom_id)).get("shape_source")
+
+
+def test_a_value_read_off_another_rows_result_satisfies_the_shape():
+    reference = run("ref", copy_across_rows_events())
+    verifier = derive(reference)
+    assert source_of(verifier, "w0.badge_code") == "prior_result"
+    assert S.check_run(verifier, reference, write_tools=WRITE_TOOLS)[0]
+
+
+def test_a_value_a_prose_result_states_satisfies_the_shape():
+    """A tool that answers in words is still the Run reading the value for itself."""
+    reference = run("ref", prose_events())
+    verifier = derive(reference)
+    assert source_of(verifier, "w0.badge_code") == "result_text"
+    assert S.check_run(verifier, reference, write_tools=WRITE_TOOLS)[0]
+
+
+def test_the_shape_is_satisfied_by_the_write_s_own_row_as_it_always_was():
+    verifier = derive(run("ref", assignment_events()))
+    assert source_of(verifier, "w0.badge_code") == "own_row"
+    assert S.check_run(verifier, run("again", assignment_events()), write_tools=WRITE_TOOLS)[0]
+
+
+def test_a_value_the_run_never_read_is_rejected_wherever_the_write_lands():
+    """The demand stays real: a copy across rows passes, a value out of nowhere does not."""
+    verifier = derive(run("ref", copy_across_rows_events()))
+    invented = run("other", copy_across_rows_events()[:3] + [
+        call(ASSIGN, {"locker_id": "L4", "badge_code": "ZZ99"}, cid="c1"),
+        result({"locker_id": "L4", "assigned": True}, cid="c1"),
+        says("Locker L4 is yours."),
+    ])
+    passed, failing = S.check_run(verifier, invented, write_tools=WRITE_TOOLS)
+    assert not passed and failing == "w0.badge_code"
+
+
+def test_a_shape_that_would_reject_its_own_reference_is_counted_and_not_stored():
+    """A rule the Reference itself fails is a derivation defect, and a Verifier no Run can pass."""
+    reference = run("ref", unread_value_events())
+    verifier = derive(reference)
+    assert [a.id for a in verifier.atoms if a.id == "w0.badge_code"] == []
+    assert V.derivation_counts(verifier)["atoms_dropped_as_shape_self_reject"] == 1
+    assert S.atom_payload(atom(verifier, "w0"))["shape_self_reject"] == ["badge_code"]
+    assert S.check_run(verifier, reference, write_tools=WRITE_TOOLS)[0]
+
+
+def test_a_row_whose_column_is_empty_demands_nothing_under_it():
+    """A row seeded before the write it is about holds every column empty, and empty is not a value."""
+    empty = {"lockers": {"L4": {"locker_id": "L4", "badge_code": None}}}
+    seeded = Run(run_id="ref", task_id="t1", termination_reason="success",
+                 events=[Event(idx=number, type=e["type"], payload=e["payload"])
+                         for number, e in enumerate(unread_value_events()
+                                                    + [_event("stop", start_state=empty)])])
+    verifier = derive(seeded)
+    assert source_of(verifier, "w0.badge_code") == "no_column"
+    assert S.check_run(verifier, seeded, write_tools=WRITE_TOOLS)[0]
+
+
+def test_a_shape_the_row_rule_accepted_keeps_the_row_rule_and_turns_a_swap_away():
+    """The widening is spent only where the row rule rejected the Run it was read from.
+
+    Here it did not, so the stored rule is D190's: a Candidate that writes another locker's badge
+    code onto this one is turned away even though it read that code off a result of its own, which
+    is the swap the wrong Run and the mutation check are made of.
+    """
+    verifier = derive(run("ref", assignment_events()))
+    assert source_of(verifier, "w0.badge_code") == "own_row"
+    swapped = run("other", [
+        user("Please assign locker L9 to me."),
+        call(ROSTER, {"locker_id": "L4"}, kind="read", cid="c0"),
+        result({"locker_id": "L4", "badge_code": "TM08"}, cid="c0"),
+        call(ASSIGN, {"locker_id": "L9", "badge_code": "TM08"}, cid="c1"),
+        result({"locker_id": "L9", "assigned": True}, cid="c1"),
+        says("Locker L9 is yours."),
+    ])
+    passed, failing = S.check_run(verifier, swapped, write_tools=WRITE_TOOLS)
+    assert not passed and failing == "w0.badge_code"
+
+
+def test_the_status_row_counts_which_source_satisfied_each_shape_and_keeps_no_value():
+    verifier = derive(run("ref", copy_across_rows_events()))
+    counts = V.derivation_counts(verifier)
+    assert counts["shape_sources"] == {"prior_result": 1}
+    assert "QX41" not in str(counts)
+
+
+def test_the_two_scorers_hand_a_rule_the_same_transcript():
+    """The gates score a Verifier and the Verdict scores it again; a rule reads one Run either way."""
+    reference = run("ref", copy_across_rows_events())
+    assert S._transcript(reference) == AtomContext(reference).transcript()
 
 
 # --- rule 2: a Task with no write still carries something to falsify ---------

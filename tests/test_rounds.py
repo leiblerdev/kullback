@@ -54,12 +54,15 @@ TARGET = "environment"
 # (D198), and the synthesised second path (D199), and the verdicts are the same three. Re-pinned
 # once more for D200, which takes the Category out of a Task's id so the id is over the Runs alone:
 # the same three Tasks with the same verdicts, keyed by the id those Runs now address. Re-pinned for
-# D208: a confirmed row names the Run ids of the Reference it holds, which is what says whether the
-# Verifier beside it was derived from that Reference or from one since withdrawn; the same three
-# Tasks with the same verdicts. Re-pinned for D210: every row names, per held-out Run in its pool,
-# which of the four kinds that Run ended in, so a reading over the pool can leave out the Runs that
-# did not finish; the same three Tasks with the same verdicts.
-TASK_STATUS_SHA256_BEFORE_THE_PHASE = "9876f7ee7e0a34de95fc9bd708409a423532799d9e7c3e07269b2b5410866e35"
+# D206: every row says which source satisfied each of its shape atoms and how many were dropped for
+# rejecting their own Reference, and a re-roll's Run id carries the key it was rolled under, so the
+# Runs named in `did_not_reach_reference` and `failed_recordings` are named by that id. Re-pinned
+# for D208: a confirmed row names the Run ids of the Reference it holds, which is what says whether
+# the Verifier beside it was derived from that Reference or from one since withdrawn. Re-pinned for
+# D210: every row names, per held-out Run in its pool, which of the four kinds that Run ended in, so
+# a reading over the pool can leave out the Runs that did not finish. The same three Tasks, the same
+# verdicts and the same reasons.
+TASK_STATUS_SHA256_BEFORE_THE_PHASE = "b5f1a7644fa7d9b72377249d84d1971748381c8fa0c5afb3bffd4ed6df0d5de5"
 
 
 def _fixture(request) -> Path:

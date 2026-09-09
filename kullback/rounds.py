@@ -44,6 +44,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, AsyncIterator, Callable, Iterable, Optional
 
+from kullback import difficulty
 from kullback.agent.events import (
     BeatEnd,
     BeatStart,
@@ -60,11 +61,19 @@ from kullback.agent.tools import ToolResult
 from kullback.ai.provider import Model
 from kullback.builder import agent as builder_agent
 from kullback.builder import build as build_module
+from kullback.builder import lesson as lesson_mod
 from kullback.builder import pipeline, transaction
 from kullback.builder import readers as readers_mod
 from kullback.builder import repair as repair_module
 from kullback.builder.agent import builder_message
-from kullback.builder.build import DEFAULT_REROLLS, TARGET_ALL, TASK_SPLIT, BuildError, BuildPlan
+from kullback.builder.build import (
+    DEFAULT_REROLLS,
+    LESSON_COUNTS_FILE,
+    TARGET_ALL,
+    TASK_SPLIT,
+    BuildError,
+    BuildPlan,
+)
 from kullback.builder.compile_env import PINS_FILE
 from kullback.builder.tools import BUILD_TOOLS, EXAMINER_OWNS
 from kullback.examiner import agent as examiner_agent
@@ -804,6 +813,7 @@ class Loop:
             "artifacts": fingerprint, "artifact_hashes": per, "artifacts_changed": changed,
             **self._pin_counts(),
             **self._reader_counts(),
+            **self._lesson_counts(),
             **self.task_split(),
         }
 
@@ -828,6 +838,22 @@ class Loop:
         totals = totals.get("totals") or {}
         return {name: int(totals.get(name) or 0)
                 for name in ("readers_derived", "readers_forced", "slots_unbound", "results_unread")}
+
+    def _lesson_counts(self) -> dict:
+        """D211: what the code-only lesson steps found for the tools this round compiled.
+
+        `relations_found` is how many relations the catalogue named, by kind, over the failing calls
+        of every tool with a body that still fails; `unwitnessed_lines` how many branches, loops and
+        assignments no recorded call reached; `rewrites_forced` how many tools passed the stall
+        limit and were asked to rewrite rather than patch; `blocked_by_gate` how many tie at a gate
+        before the fidelity ruling, where no recorded call is ever compared. All zero is a build
+        whose bodies replay, not a mechanism that did nothing.
+        """
+        rows = _read_json(self.plan.workdir / LESSON_COUNTS_FILE, {}) or {}
+        totals = lesson_mod.merge_counts(row for row in rows.values() if isinstance(row, dict))
+        return {"relations_found": totals["relations_found"],
+                **{name: totals[name] for name in
+                   ("unwitnessed_lines", "rewrites_forced", "blocked_by_gate")}}
 
     def _pin_counts(self) -> dict:
         """D197: what the pinner found moving between two reads, so a round says it without a report.
@@ -863,7 +889,8 @@ class Loop:
         return list(self.eplan.store.get("findings") or []) if self.eplan is not None else []
 
     def counts(self) -> dict:
-        """D126's counts off the gates, plus what only the driver knows (`driver_counts`)."""
+        """D126's counts off the gates, plus what only the driver knows (`driver_counts`), plus the
+        difficulty buckets (D209)."""
         store = self.eplan.store if self.eplan is not None else {}
         counts = round_end.round_counts(
             store.get("task_status") or {}, store.get("verifiers") or [], store.get("probes") or {},
@@ -871,7 +898,25 @@ class Loop:
             store.get("replays") or {}, store.get("rerolls") or {}, store.get("canon_rules"),
             store.get("sigs") or [], record=self._land, intents=store.get("intents") or {})
         counts.update(self.driver_counts())
+        counts.update(self.difficulty_counts(counts))
         return counts
+
+    def difficulty_counts(self, counts: dict) -> dict:
+        """The bucket table of the round in hand, written to its own file and summarised on the line.
+
+        `round_end` is frozen and the trusted count is its business, so the buckets are computed here
+        off the round's own false-rejection rows and trusted ids and land in difficulty.json rather
+        than in a gate's metrics. A workdir the computation cannot read leaves the counts without
+        buckets rather than failing the round: this is a report and never a ruling.
+        """
+        try:
+            body = difficulty.refresh(self.plan.workdir,
+                                      false_rejection=dict(counts.get("false_rejection") or {}),
+                                      trusted_ids=list(counts.get("trusted_ids") or []))
+        except (OSError, ValueError, TypeError):
+            return {}
+        return {"buckets": list(body.get("buckets") or []),
+                "tasks_without_difficulty": len(body.get("no_record") or {})}
 
     def keep_gate_history(self, n: int) -> None:
         """gates.json as this round leaves it, kept per round in gates_by_round.json.

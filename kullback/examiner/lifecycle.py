@@ -148,6 +148,28 @@ def retire(workdir: Path, task_status: dict, *, round_number: int = 0) -> list[d
     return sorted(rows, key=lambda r: r["task_id"])
 
 
+def carry_forward(workdir: Path, task_status: dict, prior: Optional[dict]) -> list[str]:
+    """Keep an earlier round's retirement on a row that has been written again without it.
+
+    A derivation served from its cache writes back the row the entry holds, and that row was written
+    before the artefact was retired, so the marker would be dropped every time a Task that still has
+    no Verifier is derived again. The marker is the answer to why the Task has none, so it stays
+    while that is still the answer: a Task whose file is back on disk has been derived afresh and
+    its row rightly carries nothing. Run after the retirement step, whose deletions it reads.
+    """
+    carried: list[str] = []
+    for task_id, row in (task_status or {}).items():
+        if not isinstance(row, dict) or retired_row(row) is not None:
+            continue
+        if (Path(workdir) / "verifiers" / f"{task_id}.json").is_file():
+            continue
+        earlier = retired_row((prior or {}).get(task_id))
+        if earlier is not None:
+            row[RETIRED_FIELD] = earlier
+            carried.append(str(task_id))
+    return sorted(carried)
+
+
 def retired_row(row: Any) -> Optional[dict]:
     """The retirement a status row carries, or None: how a reader tells a retired Task from a loss."""
     value = _get(row or {}, RETIRED_FIELD, None)
