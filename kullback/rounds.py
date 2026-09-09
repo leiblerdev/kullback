@@ -44,7 +44,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, AsyncIterator, Callable, Iterable, Optional
 
-from kullback import difficulty, sampling
+from kullback import difficulty, sampling, synthesise
 from kullback.agent.events import (
     BeatEnd,
     BeatStart,
@@ -922,6 +922,7 @@ class Loop:
             store.get("sigs") or [], record=self._land, intents=store.get("intents") or {})
         counts.update(self.driver_counts())
         counts.update(self.difficulty_counts(counts))
+        counts.update(self.synthetic_counts())
         return counts
 
     def difficulty_counts(self, counts: dict) -> dict:
@@ -940,6 +941,20 @@ class Loop:
             return {}
         return {"buckets": list(body.get("buckets") or []),
                 "tasks_without_difficulty": len(body.get("no_record") or {})}
+
+    def synthetic_counts(self) -> dict:
+        """What the synthetic store holds, read and never computed here (D224).
+
+        The numbers are carried on the round line under their own names so a reader sees them beside
+        the trusted count and never inside it. A workdir with no synthetic store carries none of
+        them rather than carrying zeros, because zero generated and never asked are not the same.
+        """
+        try:
+            counts = synthesise.counts_of(self.plan.workdir)
+        except (OSError, ValueError, TypeError):
+            return {}
+        return {key: counts[key] for key in ("synthetic_tasks", "synthetic_verified", "synthetic_buckets")
+                if counts.get(key)}
 
     def keep_gate_history(self, n: int) -> None:
         """gates.json as this round leaves it, kept per round in gates_by_round.json.

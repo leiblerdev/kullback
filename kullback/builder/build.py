@@ -1768,8 +1768,8 @@ def reroll_runner(plan: BuildPlan):
     return run_rerolls
 
 
-def _variant_trace(task_id: str, calls: Iterable[dict], transcript: Iterable[dict], run_id: str) -> Trace:
-    """A rewritten call path as a Trace the replay can drive (D199).
+def call_trace(task_id: str, calls: Iterable[dict], transcript: Iterable[dict], run_id: str) -> Trace:
+    """A call path written by code as a Trace the replay can drive (D199, D224).
 
     The conversation is the Run's own, turn for turn: what the agent asked and what it told the user
     are not the rewrite's to invent, and the atoms over questions and stated facts read them. Each
@@ -1827,7 +1827,7 @@ def variant_runner(plan: BuildPlan):
         router = route.Router(env_tools_module=toolkit, starting_state=json.loads(json.dumps(db)),
                               overlay=overlay, overlay_rows=overlay_rows, tool_sigs=sigs,
                               canon_rules=canon_rules, synthetic_rows=schema.synthetic_rows)
-        trace = _variant_trace(task_id, calls, transcript, run_id)
+        trace = call_trace(task_id, calls, transcript, run_id)
         result = replay_mod.replay_trace(trace, router, workdir=workdir / "runs" / task_id,
                                          task_id=task_id, env_id=env_id, write_tools=write_tools,
                                          canon_rules=canon_rules, comparer=comparer, run_id=run_id)

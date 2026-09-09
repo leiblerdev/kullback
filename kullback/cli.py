@@ -383,7 +383,20 @@ def _round_line(counts: dict) -> str:
             f"frozen only {counts.get('tasks_frozen_only', 0)}, "
             f"compactions builder {compactions.get('builder', 0)} examiner {compactions.get('examiner', 0)}, "
             f"spend ${float(spend.get('total') or 0.0):.4f}, cache saved ${float(spend.get('cache_saved') or 0.0):.4f}, "
-            f"buckets: {difficulty.round_summary(counts.get('buckets') or [])}")
+            f"buckets: {difficulty.round_summary(counts.get('buckets') or [])}"
+            + _synthetic_line(counts))
+
+
+def _synthetic_line(counts: dict) -> str:
+    """What the round's synthetic store holds, appended to the line under its own names (D224).
+
+    A round that generated nothing says nothing, so a reader never mistakes a build that was never
+    asked for synthetic Tasks for one that asked and got none.
+    """
+    if not counts.get("synthetic_tasks"):
+        return ""
+    return (f", synthetic {counts.get('synthetic_tasks', 0)} verified "
+            f"{counts.get('synthetic_verified', 0)}")
 
 
 def _echo_round(event: Any) -> None:
@@ -507,15 +520,103 @@ def report(
     typer.echo(str(write_report(data, target.parent, target.name)))
 
 
+def _buckets(pairs: Optional[list[str]]) -> dict[str, int]:
+    """`--bucket w1t2p1=20` as {bucket: count}; a name no bucket is spelled with is refused."""
+    from kullback.graph import bands
+
+    out: dict[str, int] = {}
+    for pair in pairs or []:
+        name, sep, count = pair.partition("=")
+        if not sep or not count.isdigit() or bands(name)[0] < 0:
+            typer.echo(f"not a bucket and a count: {pair}")
+            raise typer.Exit(2)
+        out[name] = int(count)
+    return out
+
+
+def _synthesis_lines(body: dict) -> list[str]:
+    """What a synthesis request generated, as the lines both commands print."""
+    counts = dict(body.get("counts") or {})
+    rows = body.get("tasks") or []
+    lines = [f"walks tried {counts.get('walks_tried', 0)}, refused {counts.get('walks_refused', 0)}, "
+             f"crashed {counts.get('walks_crashed', 0)}, unbound {counts.get('walks_unbound', 0)}",
+             "", "| bucket asked | bucket reached | Tasks | suite passed | mean pool |",
+             "| --- | --- | --- | --- | --- |"]
+    grouped: dict = {}
+    for row in rows:
+        key = (str(row.get("bucket_requested") or ""), str(row.get("bucket") or ""))
+        held = grouped.setdefault(key, {"tasks": 0, "passed": 0, "pool": 0})
+        held["tasks"] += 1
+        held["passed"] += 1 if row.get("suite_passed") else 0
+        held["pool"] += int(row.get("pool") or 0)
+    for (asked, reached), held in sorted(grouped.items()):
+        lines.append(f"| {asked} | {reached} | {held['tasks']} | {held['passed']} | "
+                     f"{held['pool'] / held['tasks'] if held['tasks'] else 0:.1f} |")
+    if not grouped:
+        lines.append("| none |  |  |  |  |")
+    return lines
+
+
 @app.command("difficulty")
 def difficulty_table(
     workdir: Path = WORKDIR,
     write: bool = typer.Option(True, "--write/--no-write",
                                help="Rewrite difficulty.json from what the workdir holds."),
+    fill: Optional[list[str]] = typer.Option(None, "--fill",  # noqa: B008
+                                             help="Generate synthetic Tasks into a bucket, as "
+                                                  "bucket=count; repeatable (D224)."),
+    seed: Optional[str] = typer.Option(None, "--seed", help="Seed the walks are drawn under (D212)."),
 ):
-    """Print the difficulty buckets of a finished build: Tasks, trusted and solve rate per bucket (D209)."""
+    """Print the difficulty buckets of a finished build: Tasks, trusted and solve rate per bucket (D209).
+
+    `--fill` walks the mined dependency graph for the bucket asked for and reports what came out
+    (D224); what it generates is stored apart and is never added to the trusted column above.
+    """
     body = (difficulty.refresh(workdir) if write else difficulty.compute(workdir))
     for line in difficulty.markdown_table(body.get("buckets") or [], len(body.get("no_record") or {})):
+        typer.echo(line)
+    targets = _buckets(fill)
+    if not targets:
+        return
+    made = _entry("kullback.synthesise", "synthesise")(workdir, targets, seed=seed)
+    typer.echo("")
+    typer.echo("Synthetic Tasks, generated and counted apart from everything above (D224):")
+    for line in _synthesis_lines(made):
+        typer.echo(line)
+
+
+@app.command()
+def synthesise(
+    workdir: Path = WORKDIR,
+    bucket: Optional[list[str]] = typer.Option(None, "--bucket",  # noqa: B008
+                                               help="A difficulty bucket and how many Tasks to "
+                                                    "generate into it, as bucket=count; repeatable."),
+    seed: Optional[str] = typer.Option(None, "--seed", help="Seed the walks are drawn under (D212)."),
+    model: Optional[str] = typer.Option(None, "--model",
+                                        help="Model id for the Intent writer, as provider/model. "
+                                             "Without it the Intent is written by code from the walk."),
+    base_url: Optional[str] = typer.Option(None, "--base-url", help="Endpoint for an OpenAI-compatible model."),
+    ceiling_usd: Optional[float] = typer.Option(None, "--ceiling-usd",
+                                                help="Spend ceiling for the Intent writer (D86)."),
+):
+    """Walk the mined tool-call graph, run the walks in the rebuilt world and store them apart (D224).
+
+    Nothing generated here enters tasks.json, replay fidelity, a confirmed Reference or the trusted
+    count: it lands under synthetic/ in the workdir and is reported under its own heading.
+    """
+    targets = _buckets(bucket)
+    if not targets:
+        typer.echo("nothing asked for: pass --bucket <bucket>=<count>")
+        raise typer.Exit(2)
+    # Every model call the harness makes is priced into budget.json and refused past the ceiling
+    # (D65, D86); the Intent writer is no exception because it is the only model call here.
+    writer = _live_model(model, base_url) if model else None
+    if writer is not None:
+        writer = _entry("kullback.builder.build", "_wrap")(
+            writer, "synthetic_intent", Path(workdir),
+            _entry("kullback.builder.build", "_ceiling")(Path(workdir), ceiling_usd), model_id=model)
+    body = _entry("kullback.synthesise", "synthesise")(workdir, targets, seed=seed, model=writer)
+    for line in _synthesis_lines(body):
         typer.echo(line)
 
 

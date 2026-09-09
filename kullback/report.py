@@ -28,8 +28,9 @@ from kullback.runner.records import (
     disagreement_stats,
 )
 
-SECTIONS = ("## Environment", "## Rounds", "## Tasks", "## Disagreement queue", "## Lessons set aside")
-ENVIRONMENT, ROUNDS, TASKS, QUEUE, LESSONS = SECTIONS
+SECTIONS = ("## Environment", "## Rounds", "## Tasks", "## Synthetic Tasks", "## Disagreement queue",
+            "## Lessons set aside")
+ENVIRONMENT, ROUNDS, TASKS, SYNTHETIC, QUEUE, LESSONS = SECTIONS
 
 
 class ScorecardItem(Record):
@@ -101,6 +102,9 @@ class ReportData(BaseModel):
     trusted: Optional[GateResult] = None
     # D209: difficulty.json, the record and the bucket per Task with the Tasks that carry neither.
     difficulty: dict = Field(default_factory=dict)
+    # D224: synthetic/index.json, the walks that became Tasks. Its own field and its own section,
+    # never added into `tasks`: nothing generated may be counted where the recorded Tasks are.
+    synthetic: dict = Field(default_factory=dict)
     findings: list[dict] = Field(default_factory=list)  # repairs/repair_record_finding.jsonl (D155)
 
 
@@ -508,6 +512,47 @@ def _difficulty_table(data: ReportData) -> list[str]:
     return ["", "### Difficulty buckets", ""] + difficulty.markdown_table(rows, len(body.get("no_record") or {}))
 
 
+def _synthetic(data: ReportData) -> list[str]:
+    """The Tasks walked over the mined graph, under their own heading and in nobody else's count (D224).
+
+    A synthetic Task is a walk of the dependency graph the recordings showed, run in the rebuilt
+    world, with a Verifier derived from where it landed. No recording gates it, so it is never
+    trusted, never part of replay fidelity and never a Reference: what it buys is a pool wide enough
+    to measure over-strictness on a thin corpus and Tasks at a difficulty a round asked for. The
+    walks a body refused are printed beside the Tasks, because a corpus whose walks are mostly
+    refused has a graph missing a precondition edge and the count is what says so.
+    """
+    lines = [SYNTHETIC, ""]
+    body = data.synthetic or {}
+    rows = list(body.get("tasks") or [])
+    if not rows:
+        return lines + ["No synthetic Tasks were generated for this build."]
+    counts = dict(body.get("counts") or {})
+    graph_row = dict(counts.get("graph") or {})
+    verified = sum(1 for row in rows if row.get("suite_passed"))
+    lines += [f"{len(rows)} synthetic Tasks, {verified} of them verified by the D79 suite. None of them "
+              "counts toward replay fidelity, a confirmed Reference or the trusted count.", "",
+              f"Graph: {graph_row.get('nodes', 0)} tools, {graph_row.get('edges', 0)} edges "
+              f"({graph_row.get('value_edges', 0)} carrying a value, {graph_row.get('row_edges', 0)} "
+              f"joining a read to a write on one row), mined over {graph_row.get('runs', 0)} Runs.", "",
+              f"Walks tried {counts.get('walks_tried', 0)}, refused by a body "
+              f"{counts.get('walks_refused', 0)}, crashed {counts.get('walks_crashed', 0)}, "
+              f"unbound {counts.get('walks_unbound', 0)}.", ""]
+    lines += ["| bucket asked | bucket reached | Tasks | suite passed | mean pool |",
+              "| --- | --- | --- | --- | --- |"]
+    grouped: dict = {}
+    for row in rows:
+        key = (str(row.get("bucket_requested") or ""), str(row.get("bucket") or ""))
+        held = grouped.setdefault(key, {"tasks": 0, "passed": 0, "pool": 0})
+        held["tasks"] += 1
+        held["passed"] += 1 if row.get("suite_passed") else 0
+        held["pool"] += int(row.get("pool") or 0)
+    for (asked, reached), held in sorted(grouped.items()):
+        mean = held["pool"] / held["tasks"] if held["tasks"] else 0.0
+        lines.append(f"| {asked} | {reached} | {held['tasks']} | {held['passed']} | {mean:.1f} |")
+    return lines
+
+
 def tool_fidelity_counts(data: ReportData, name: str) -> dict:
     """Both grains of one tool's replay fidelity, off tool_fidelity.json (D171).
 
@@ -906,6 +951,7 @@ def render(data: ReportData) -> str:
     lines += _environment(data) + [""]
     lines += _rounds(data) + [""]
     lines += _tasks(data) + [""]
+    lines += _synthetic(data) + [""]
     lines += _queue(data) + [""]
     lines += _lessons(data) + [""]
     return "\n".join(lines)
@@ -1218,6 +1264,17 @@ def load_tool_sigs(workdir: Any) -> list[ToolSig]:
     return _list_of(root / "tool_sigs.json", ToolSig)
 
 
+SYNTHETIC_INDEX = ("synthetic", "index.json")
+"""Where the generated Tasks keep their index (D224). Named here rather than imported: the report
+reads records and never reaches into the Builder (design section 4 item 18)."""
+
+
+def _synthetic_body(root: Path) -> dict:
+    """synthetic/index.json as the last request left it, or nothing where none has run (D224)."""
+    body = _json(root.joinpath(*SYNTHETIC_INDEX))
+    return body if isinstance(body, dict) else {}
+
+
 def load(workdir: Any) -> ReportData:
     """Read every record the report shows from one workdir. Missing files mean a shorter report, not an error."""
     root = Path(workdir)
@@ -1273,6 +1330,7 @@ def load(workdir: Any) -> ReportData:
         rounds=_rounds_of(root / "rounds.json", unread),
         trusted=trusted,
         difficulty=_difficulty_body(root),
+        synthetic=_synthetic_body(root),
         findings=_jsonl(root / "repairs" / "repair_record_finding.jsonl", unread),
     )
     gate = environment_gate(data)
