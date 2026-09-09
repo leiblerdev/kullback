@@ -66,8 +66,8 @@ class Scripted:
         self.prompts.append(prompt)
         for phrase, reply in self.replies.items():
             if phrase in prompt:
-                return type("Reply", (), {"content": reply})()
-        return type("Reply", (), {"content": self.default})()
+                return type("Reply", (), {"content": reply, "tool_calls": []})()
+        return type("Reply", (), {"content": self.default, "tool_calls": []})()
 
 
 def _archetype(goal: str, effects: list[str], **extra) -> dict:
@@ -225,12 +225,31 @@ def test_a_goal_written_at_the_customer_rather_than_by_them_is_dropped_and_count
     assert all(domain.customer_voice(row["goal"]) for row in body["archetypes"])
 
 
-def test_two_goals_are_folded_only_where_the_judge_cites_words_both_of_them_use(shop: Path):
+def test_two_goals_are_folded_only_where_the_harness_judge_settles_the_pair_as_equal(shop: Path):
+    """The pair goes through the one comparison the harness settles a semantic pair with (D219),
+    so the citation rule it enforces is that judge's and not a second copy kept here."""
     first, second = "I want to keep my lantern longer", "I would like my lantern kept longer"
-    uncited = Scripted({"Decide whether": json.dumps({"same": True})})
+    uncited = Scripted({"Value A": json.dumps({"verdict": "equivalent"})})
     assert domain.same_goal(uncited, first, second) == (False, "")
-    cited = Scripted({"Decide whether": json.dumps({"same": True, "citation": "my lantern"})})
-    assert domain.same_goal(cited, first, second)[0] is True
+    cited = Scripted({"Value A": json.dumps({"verdict": "equivalent",
+                                             "evidence": ["value_a", "value_b"]})})
+    assert domain.same_goal(cited, first, second) == (True, "judge")
+
+
+def test_a_pair_nobody_settled_leaves_both_archetypes_standing(shop: Path):
+    """Unresolved is not agreement (D219): with no judge at all the two goals stay two."""
+    records = [_archetype("I want to keep my lantern longer", ["my hire runs longer"]),
+               _archetype("I would like my lantern kept longer", ["my hire runs longer"])]
+    kept, folded = domain.dedup(records, None)
+    assert len(kept) == 2 and folded == []
+
+
+def test_a_fold_records_the_route_that_settled_it(shop: Path):
+    """Two goals that read the same after normalising need no judge, and the fold says so."""
+    records = [_archetype("I want to keep my lantern longer", ["my hire runs longer"]),
+               _archetype("I want to keep my lantern longer", ["my hire runs longer"])]
+    kept, folded = domain.dedup(records, None)
+    assert len(kept) == 1 and [row["settled_by"] for row in folded] == ["canon"]
 
 
 # --- the mapping and the gaps ---------------------------------------------------------------
@@ -289,6 +308,28 @@ def test_a_judge_removes_a_task_only_by_citing_a_line_of_the_archetype(shop: Pat
         {"reject": True, "citation": "my hire runs longer"})})
     assert domain.rejection(cited, domain.SHAPE_JUDGE, record, "keep it longer",
                             ["extend_hire"]) == "my hire runs longer"
+
+
+def test_the_archetype_lines_reach_a_judge_as_the_checks_run_before_it_is_asked(shop: Path):
+    """D222 rule 1: the reads the question needs are run first and named in the prompt, so the judge
+    is answering over evidence the harness gathered rather than over prose it was handed."""
+    record = _archetype("I want to keep my lantern for more nights", ["my hire runs longer"])
+    model = Scripted({"Your only power": json.dumps({"reject": False})})
+    domain.rejection(model, domain.SHAPE_JUDGE, record, "keep it longer", ["extend_hire"])
+    prompt = model.prompts[-1]
+    assert "Checks already run for you" in prompt
+    assert "my hire runs longer" in prompt and "effects" in prompt
+
+
+def test_an_archetype_with_no_line_to_cite_is_never_put_to_a_judge(shop: Path):
+    """A question with no check behind it is refused the way D222 refuses one, and a refusal removes
+    nothing: these judges hold the power to reject and nothing else."""
+    empty = {"goal": "", "preconditions": [], "effects": [], "constraints": []}
+    model = Scripted({"Your only power": json.dumps({"reject": True, "citation": "anything"})})
+    assert domain.archetype_checks(empty) == []
+    assert domain.rejection(model, domain.SHAPE_JUDGE, empty, "keep it longer", ["extend_hire"]) == ""
+    assert domain.judged([model, model], empty, "keep it longer", ["extend_hire"]) == []
+    assert model.prompts == []
 
 
 def test_a_judge_that_would_pass_a_task_adds_nothing(shop: Path):

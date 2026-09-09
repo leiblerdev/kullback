@@ -16,6 +16,7 @@ from kullback.builder import pipeline
 from kullback.builder import repair as repair_module
 from kullback.builder import tools as builder_tools
 from kullback.builder.build import BuildPlan
+from kullback.gates import tool_runs
 from kullback.runner.records import Task, ToolCall, ToolSig, Trace, Turn, Verifier
 from test_e2e import TOOL_BODIES
 
@@ -200,9 +201,11 @@ def _record_intent(workdir: Path, task_id: str, text: str, run_ids: list[str], g
                                 "run_coverage": {text: sorted(run_ids)}}), encoding="utf-8")
 
 
-def _run_intent_stage(stage, workdir: Path, inputs: dict) -> dict:
-    ctx = pipeline.StageContext(stage, workdir, None, lambda usd, item="": None)
-    return stage.fn(ctx, inputs)
+def _run_intent_stage(stage, workdir: Path, inputs: dict, anchor=None) -> dict:
+    """One stage driven on its own, the way the scheduler drives it: the context knows the inputs,
+    so a Builder stage's ctx.evidence is the seed set of exactly these (D220)."""
+    ctx = pipeline.StageContext(stage, workdir, anchor, lambda usd, item="": None, inputs=inputs)
+    return stage.fn(ctx, pipeline.withhold(stage, inputs) if stage.filtered else inputs)
 
 
 def test_a_full_intent_run_keeps_a_grounded_record_and_never_asks_the_model_for_it(tmp_path):
@@ -577,8 +580,9 @@ def _run_rerolls(workdir: Path, inputs: dict, model, only=None) -> tuple[dict, d
     """The re-rolls stage over this workdir as a build runs it: its rows, and its ruling's metrics."""
     stage = build_module._rerolls_stage(model, build_module.DEFAULT_REROLLS, only=only)
     ledger = Rulings()
-    ctx = pipeline.StageContext(stage, workdir, None, lambda usd, item="": None, ledger=ledger)
-    rows = stage.fn(ctx, inputs)["rerolls"]
+    ctx = pipeline.StageContext(stage, workdir, None, lambda usd, item="": None, ledger=ledger,
+                                inputs=inputs)
+    rows = stage.fn(ctx, pipeline.withhold(stage, inputs))["rerolls"]
     return rows, ledger.results[-1].metrics
 
 
@@ -787,9 +791,13 @@ def test_a_candidate_run_opens_with_the_system_prompt_the_user_and_the_tools(bui
 
 def test_every_stage_hashes_the_modules_it_delegates_to():
     """R42 for every stage, not only compile_tools: the first live build was served a schema mined before D106."""
-    from kullback.builder import cluster, compile_env, mine, synth, user_sim
+    from kullback.builder import cluster, compile_env, mine, synth
     from kullback.gates import fidelity
     from kullback.runner import replay as replay_mod
+
+    # D214: the rule-driven Simulated user lives in kullback/user now, and the stage hashes the
+    # module that can actually change, not the name that re-exports it.
+    from kullback.user import rules as user_sim
     assert build_module._mine_stage().code_version.endswith(build_module._module_hash(mine))
     assert build_module._module_hash(cluster) in build_module._cluster_stage().code_version
     assert build_module._module_hash(user_sim) in build_module._user_rules_stage().code_version
@@ -799,6 +807,38 @@ def test_every_stage_hashes_the_modules_it_delegates_to():
     assert build_module._module_hash(compile_env) in grown and build_module._module_hash(synth) in grown
     assert grown != build_module._state_stage({"users": 20}, 0).code_version
     assert grown == build_module._state_stage({"users": 10}, 0).code_version
+
+
+def test_the_replay_stage_key_moves_when_the_judge_that_settles_a_column_moves(tmp_path):
+    """D219: a replay scored with no judge and one scored with a judge are two readings of the same
+    bytes. The judge's identity and the table's version ride in the stage key, so a cache written
+    under the first is never handed back for the second."""
+    class _Model:
+        name = "invented/judge-one"
+
+    class _Other:
+        name = "invented/judge-two"
+
+    unjudged = build_module._replay_stage(build_module.SemanticJudging(tmp_path)).code_version
+    judged = build_module._replay_stage(build_module.SemanticJudging(tmp_path, _Model())).code_version
+    other = build_module._replay_stage(build_module.SemanticJudging(tmp_path, _Other())).code_version
+    assert unjudged != judged != other and unjudged != other
+    assert "judge=none" in unjudged and "invented/judge-one" in judged
+    again = build_module._replay_stage(build_module.SemanticJudging(tmp_path, _Model())).code_version
+    assert again == judged, "the same judge and the same table key the same stage"
+
+
+def test_the_replay_stage_hands_its_comparer_a_judge_rather_than_defaulting_it_away(tmp_path):
+    """The wiring itself, which is what nothing asserted before: the object that reaches the Runner
+    knows how to settle a semantic column, or the build says out loud that it has no judge."""
+    class _Model:
+        name = "invented/judge-one"
+
+    judging = build_module.SemanticJudging(tmp_path, _Model())
+    assert judging.judge is not None and judging.identity.startswith("invented/judge-one")
+    assert build_module.SemanticJudging(tmp_path).judge is None
+    comparer = tool_runs.ReplayComparer(judge=judging.judge, equivalence=judging.table)
+    assert comparer.judge is not None and comparer.equivalence is judging.table
 
 
 def test_tool_definitions_speak_json_schema():
@@ -1179,13 +1219,22 @@ def test_a_call_the_reference_replay_failed_on_is_evidence_whatever_a_filter_dro
     """The filters answer what a body may be written from. Whether a Task confirms is a different
     question, and a call the replay of the References failed on is the whole of that question: the
     recording made it, so a Run of that Task cannot confirm until the body answers it."""
-    failed = {"read_kennel_row": {"c_after_write": "differs: status: ours \"open\", recorded \"held\"",
-                                  "c_anchor": "differs: status: ours \"open\", recorded \"held\""}}
+    failed = {"read_kennel_row": {"c_after_write": "differs: status: ours \"open\", recorded \"held\""}}
     calls, skipped, from_replay = _kennel_evidence(failed)
 
-    assert sorted(c.id for c in calls["read_kennel_row"]) == ["c_after_write", "c_anchor", "c_plain"]
-    assert from_replay == {"read_kennel_row": 2}, "and the ruling says how many are there for that reason"
+    assert sorted(c.id for c in calls["read_kennel_row"]) == ["c_after_write", "c_plain"]
+    assert from_replay == {"read_kennel_row": 1}, "and the ruling says how many are there for that reason"
     assert skipped == {}, "a call put back is not also counted as skipped"
+
+
+def test_a_replay_failure_in_a_held_out_run_is_not_put_back_as_evidence():
+    """The held-out split is not one of the filters a replay failure overrides: that Run's failure
+    is the corpus fidelity number, and its arguments and result are not the writer's to see."""
+    failed = {"read_kennel_row": {"c_after_write": "differs", "c_anchor": "differs"}}
+    calls, _skipped, from_replay = _kennel_evidence(failed)
+
+    assert "c_anchor" not in {c.id for c in calls["read_kennel_row"]}
+    assert from_replay == {"read_kennel_row": 1}, "only the seed Run's call was put back"
 
 
 def test_a_call_the_replay_agreed_on_is_left_where_its_filter_put_it(tmp_path):

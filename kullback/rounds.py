@@ -44,7 +44,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, AsyncIterator, Callable, Iterable, Optional
 
-from kullback import difficulty, domain, round_snapshot, sampling, synthesise
+from kullback import claims, difficulty, domain, round_snapshot, sampling, synthesise
 from kullback.agent.events import (
     BeatEnd,
     BeatStart,
@@ -69,6 +69,8 @@ from kullback.builder.agent import builder_message
 from kullback.builder.build import (
     DEFAULT_REROLLS,
     LESSON_COUNTS_FILE,
+    SEMANTIC_COUNTS_FILE,
+    SEMANTIC_JUDGE_STAGE,
     TARGET_ALL,
     TASK_SPLIT,
     BuildError,
@@ -82,9 +84,10 @@ from kullback.examiner import stage as examiner_stage
 from kullback.examiner.agent import ExaminerError, examiner_message, examiner_round_message
 from kullback.examiner.plan import STATE_DIR, ExaminerPlan
 from kullback.examiner.stage import DERIVE_INPUTS
-from kullback.gates import round_end
+from kullback.gates import round_end, tool_runs
 from kullback.gates.ledger import HISTORY_NAME, GateLedger
 from kullback.runner import budget, feed
+from kullback.runner import judge as judge_mod
 from kullback.runner.records import (
     Finding,
     GateResult,
@@ -94,6 +97,9 @@ from kullback.runner.records import (
     read_json,
     write_json,
 )
+from kullback.user import agent as user_agent_mod
+from kullback.user import fidelity as user_fidelity_mod
+from kullback.user import lesson as user_lesson_mod
 
 ROUNDS_NAME = "rounds.json"
 GATES_NAME = "gates.json"
@@ -837,9 +843,58 @@ class Loop:
             **self._pin_counts(),
             **self._reader_counts(),
             **self._lesson_counts(),
+            **self._semantic_counts(),
             **self.task_split(),
             **self._sampling_counts(),
+            **self._evidence_counts(),
         }
+
+    def _evidence_counts(self) -> dict:
+        """D220: the held-out split as this round applied it, and what it cost or found.
+
+        `evidence_traces` and `anchor_traces` are the Runs the Builder learned from and the Runs it
+        did not, summed over the Tasks; `holdout_columns` is what the Starting state pinned on a
+        held-out Run's word alone and showed the body writer masked; `readmission_blocked` is how
+        many replay failures D191 would have put back and the seed set refused; `answered_from_
+        holdout` is how many replayed calls were answered out of one of those values, which is a
+        finding about how much a pass rests on the world and not a failure.
+        """
+        rows = _read_json(self.plan.workdir / pipeline.EVIDENCE_COUNTS, {}) or {}
+        world = _read_json(self.plan.workdir / build_module.WORLD_PROVENANCE_FILE, {}) or {}
+        blocked = _read_json(self.plan.workdir / build_module.READMISSION_FILE, {}) or {}
+        answers = (_read_json(self.plan.workdir / build_module.HOLDOUT_ANSWERS_FILE, {}) or {}).get("totals") or {}
+        return {
+            "evidence_traces": sum(int((row or {}).get("evidence_traces") or 0)
+                                   for row in rows.values() if isinstance(row, dict)),
+            "anchor_traces": sum(int((row or {}).get("anchor_traces") or 0)
+                                 for row in rows.values() if isinstance(row, dict)),
+            "holdout_columns": int(world.get("holdout_columns_total") or 0),
+            "readmission_blocked": sum(int(n or 0) for n in blocked.values()),
+            "answered_from_holdout": int(answers.get("calls") or 0),
+        }
+
+    def _semantic_counts(self) -> dict:
+        """D219: what the round's semantic column comparisons came to, and what the judging cost.
+
+        `semantic_compared` is how many semantic columns were compared at all, `semantic_judged` how
+        many of those a judge was actually asked about, and the three answers are counted apart:
+        equal, different, and the pairs nobody settled. `judge_spend` is the ledger's own number for
+        the judge that settles them, so the cost of judging is read off the same file the build's
+        other spend is. All zero on an Environment whose schema classes no column semantic; many
+        unresolved with nothing judged is a judge that is not wired, which is what D219 was written
+        for and is the reading nothing on the record could give before.
+
+        The judge counts beside them are D222's: how many reads the harness ran before asking,
+        how many calls the models made on top of those, how many questions the harness could
+        prefill no check for, and how the forced first turn went. `judge_refused_no_check` above
+        zero is a bug here, not a model that would not look.
+        """
+        counts = _read_json(self.plan.workdir / SEMANTIC_COUNTS_FILE, {}) or {}
+        out = {name: int(counts.get(name) or 0)
+               for name in tool_runs.SEMANTIC_COUNTS + judge_mod.JUDGE_COUNTS}
+        stages = (budget.load_totals(self.plan.workdir).get("stages") or {})
+        out["judge_spend"] = round(float((stages.get(SEMANTIC_JUDGE_STAGE) or {}).get("usd") or 0.0), 4)
+        return out
 
     def _sampling_counts(self) -> dict:
         """D212: the build salt every keyed draw ran under, and how many draws of each kind this round took.
@@ -963,7 +1018,7 @@ class Loop:
 
     def counts(self) -> dict:
         """D126's counts off the gates, plus what only the driver knows (`driver_counts`), plus the
-        difficulty buckets (D209)."""
+        claim and partial-completion counters (D223) and the difficulty buckets (D209)."""
         store = self.eplan.store if self.eplan is not None else {}
         counts = round_end.round_counts(
             store.get("task_status") or {}, store.get("verifiers") or [], store.get("probes") or {},
@@ -971,10 +1026,95 @@ class Loop:
             store.get("replays") or {}, store.get("rerolls") or {}, store.get("canon_rules"),
             store.get("sigs") or [], record=self._land, intents=store.get("intents") or {})
         counts.update(self.driver_counts())
+        counts.update(self.user_fidelity_counts())
+        # The claim rows are written before the buckets are: the difficulty record carries D223's
+        # band, and reading it off a file the round before left would band this round on last
+        # round's Runs.
+        counts.update(self.claim_counts(store))
         counts.update(self.difficulty_counts(counts))
         counts.update(self.synthetic_counts())
         counts.update(self.domain_counts())
         return counts
+
+    def user_fidelity_counts(self) -> dict:
+        """The Simulated user's own fidelity this round, and which driver each Task earned (D214).
+
+        The score is offline: both drivers are asked for the turns the recording holds, and the mean
+        over the Task's turns is what each one is worth on it. The rule-driven baseline costs
+        nothing and is computed every round; the agent user is scored only where the plan carries a
+        model for it, because one model call per recorded turn is not something a build pays for
+        unasked. The rows carry `drives`, which the next round's Runs read to know whose turn it is
+        (build.py), and the lessons this round learned go on the file the stall rule counts.
+
+        A workdir the scoring cannot read leaves the counts without it rather than failing the
+        round: this is a measurement in this decision, not a ruling (D214 rule 5).
+        """
+        model = self.plan.models.get("user_agent")
+        lessons = user_lesson_mod.load_lessons(self.plan.workdir)
+        try:
+            out = user_fidelity_mod.score_workdir(
+                self.plan.workdir, round=self.plan.round, write=False,
+                make_agent=self._agent_user_factory(model) if model is not None else None)
+        except (OSError, ValueError, TypeError):
+            return {}
+        rows, learned = [], []
+        for row in out["body"].get("tasks") or []:
+            task_id = str(row.get("task_id") or "")
+            scored = (out["scores"] or {}).get(task_id) or {}
+            key = self._user_content_key(task_id)
+            lesson = user_lesson_mod.lesson_from(scored.get(user_fidelity_mod.AGENT_DRIVER),
+                                                scored.get(user_fidelity_mod.RULES_DRIVER),
+                                                task_id=task_id, round=self.plan.round, key=key)
+            learned.append(lesson)
+            row["drives"] = user_lesson_mod.drives(lessons, task_id, lesson.agent, lesson.rules, key)
+            row["stalled"] = user_lesson_mod.stalled(lessons, task_id, key)
+            rows.append(row)
+        user_fidelity_mod.write_scores(self.plan.workdir, rows, round=self.plan.round)
+        user_lesson_mod.append_round(self.plan.workdir, learned)
+        summary = user_fidelity_mod.summarise(rows)
+        return {"user_fidelity": summary,
+                "tasks_agent_driven": sum(1 for row in rows if row.get("drives")),
+                "tasks_rule_driven": sum(1 for row in rows if not row.get("drives")),
+                **user_lesson_mod.counts([*lessons, *learned], self.plan.round),
+                "agent_turns_dropped": _guard_counts(rows)}
+
+    def _user_content_key(self, task_id: str) -> str:
+        """The facts-and-persona key the stall rule watches, or empty where the Task has none."""
+        contexts = getattr(self, "_user_contexts", None)
+        if contexts is None:
+            try:
+                contexts = user_fidelity_mod.contexts_of(self.plan.workdir)
+            except (OSError, ValueError, TypeError):
+                contexts = {}
+            self._user_contexts = contexts
+        row = contexts.get(task_id)
+        return user_context_key(row[0]) if row else ""
+
+    def _agent_user_factory(self, model: Any):
+        """How one Task's agent user is built for the scoring, on the plan's own user model."""
+        workdir = self.plan.workdir
+        writes = user_fidelity_mod.write_tools_of(workdir)
+        vocab = user_fidelity_mod.vocabulary_of(workdir)
+
+        def make(ctx, fallback, record_values):
+            return user_agent_mod.AgentUser(ctx, fallback, model, vocab=vocab, write_tools=writes,
+                                            record_values=record_values)
+
+        return make
+
+    def claim_counts(self, store: dict) -> dict:
+        """What the round's Runs claimed against what their state received (D223), on its own file.
+
+        Four counters: how many claims the transcripts made, how many of them no write atom answered,
+        how many writes no transcript mentioned, and the mean partial completion over the Runs. None
+        of them rules on anything: `trusted` stays the count and a Verdict stays binary (D46). A
+        workdir the computation cannot read leaves the counters out rather than failing the round.
+        """
+        try:
+            body = claims.refresh(self.plan.workdir, store=store)
+        except (OSError, ValueError, TypeError):
+            return {}
+        return claims.round_counters(body)
 
     def difficulty_counts(self, counts: dict) -> dict:
         """The bucket table of the round in hand, written to its own file and summarised on the line.
@@ -1307,6 +1447,22 @@ class Loop:
         out["examiner"] = {"rulings": list(self.eplan.last_rulings) if self.eplan is not None else [],
                            "tool_result": _tool_result(self.examiner_result)}
         return out
+
+
+def user_context_key(ctx: Any) -> str:
+    from kullback.user.context import content_key
+    return content_key(ctx)
+
+
+def _guard_counts(rows: Iterable[dict]) -> dict:
+    """Every guard reason summed over the Tasks the agent user was scored on (D214 rule 4)."""
+    out: dict[str, int] = {}
+    for row in rows or ():
+        for reason, count in ((row or {}).get("guards") or {}).items():
+            out[reason] = out.get(reason, 0) + int(count or 0)
+        for reason, count in ((row or {}).get("driver_counts") or {}).items():
+            out[reason] = out.get(reason, 0) + int(count or 0)
+    return dict(sorted(out.items()))
 
 
 def _tool_result(result: Optional[ToolResult]) -> Optional[dict]:

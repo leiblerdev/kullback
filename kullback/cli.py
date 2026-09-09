@@ -1,5 +1,6 @@
-"""The commands of the Harness: ingest, build, freeze-runner, run, verdict, regrade, report, status and
-difficulty, each reading and writing records under one workdir with no hidden state."""
+"""The commands of the Harness: ingest, build, freeze-runner, run, verdict, regrade, report, status,
+difficulty, export, publish and fetch, each reading and writing records under one workdir with no
+hidden state."""
 
 from __future__ import annotations
 
@@ -571,6 +572,26 @@ def _json_at(root: Path, name: str) -> dict:
     except ValueError:
         return {}
     return body if isinstance(body, dict) else {}
+@app.command("judge-smoke")
+def judge_smoke(
+    model: str = typer.Option(..., "--model", help="Candidate judge model id, as provider/model."),
+    base_url: Optional[str] = typer.Option(None, "--base-url",
+                                           help="Endpoint for an OpenAI-compatible model."),
+):
+    """Ask one model two invented equivalence pairs and print resolved or refused per pair (D222).
+
+    A relaunch names a judge model beside the build model, and the only thing it has to know first
+    is whether that model returns a verdict on a semantic pair at all. This is that question in one
+    call: two pairs of an invented column, one the same and one not, with the route each took.
+    """
+    build_judge = _entry("kullback.runner.judge", "AgenticJudge")
+    name = _entry("kullback.runner.judge", "judge_name")
+    judge = build_judge(_live_model(model, base_url), name=name(model, "a"))
+    rows = _entry("kullback.runner.judge", "smoke")(judge)
+    for line in _entry("kullback.runner.judge", "smoke_lines")(rows):
+        typer.echo(line)
+
+
 def _buckets(pairs: Optional[list[str]]) -> dict[str, int]:
     """`--bucket w1t2p1=20` as {bucket: count}; a name no bucket is spelled with is refused."""
     from kullback.graph import bands
@@ -711,6 +732,179 @@ def synthesise(
         typer.echo(line)
 
 
+user_app = typer.Typer(add_completion=False,
+                       help="The Simulated user: how close its turns are to the recorded ones, and how "
+                            "often it runs out of scenario (D214).")
+app.add_typer(user_app, name="user")
+
+
+@user_app.command("fidelity")
+def user_fidelity(
+    workdir: Path = WORKDIR,
+    agent_model: Optional[str] = typer.Option(None, "--agent-model",
+                                              help="Model id for the agent user, as provider/model. Without it "
+                                                   "only the rule-driven baseline is scored, which costs nothing."),
+    base_url: Optional[str] = typer.Option(None, "--base-url", help="Endpoint for an OpenAI-compatible model."),
+    task: Optional[str] = typer.Option(None, "--task", help="Score one Task instead of every Task."),
+    limit: Optional[int] = typer.Option(None, "--limit", help="Score only the first N Tasks, in id order."),
+    ceiling_usd: Optional[float] = typer.Option(None, "--ceiling-usd",
+                                                help="Stop the scoring when the agent user has spent this much (D86)."),
+    write: bool = typer.Option(True, "--write/--no-write", help="Rewrite user_fidelity.json."),
+):
+    """Score the Simulated user against the recorded turns, per Task and per corpus (D214 rule 5)."""
+    fidelity = importlib.import_module("kullback.user.fidelity")
+    budget = importlib.import_module("kullback.runner.budget")
+    ceiling = budget.Ceiling(usd=ceiling_usd) if ceiling_usd else None
+    make_agent = _agent_user_factory(workdir, agent_model, base_url, ceiling) if agent_model else None
+    wanted = [task] if task else fidelity.task_ids(workdir, limit=limit)
+    try:
+        out = fidelity.score_workdir(workdir, make_agent=make_agent, write=write, tasks=wanted)
+    except budget.BudgetExceeded as stop:
+        typer.echo(f"stopped on the ceiling: {stop}")
+        raise typer.Exit(1) from None
+    for line in fidelity.markdown_table(out["body"]):
+        typer.echo(line)
+    if ceiling is not None:
+        typer.echo(f"spend: ${ceiling.spent:.4f} of ${ceiling.usd:.2f}")
+
+
+def _agent_user_factory(workdir: Path, model_id: str, base_url: Optional[str], ceiling: Any = None):
+    """A callable the score uses to build one Task's agent user, on a live model (D214 rule 3).
+
+    The model is wrapped the way a build wraps its own (D86), so every turn this scoring pays for is
+    priced, charged against the ceiling and stopped at it, rather than counted after the fact.
+    """
+    agent_mod = importlib.import_module("kullback.user.agent")
+    fidelity = importlib.import_module("kullback.user.fidelity")
+    budget = importlib.import_module("kullback.runner.budget")
+    model = _live_model(model_id, base_url)
+    if ceiling is not None:
+        model = budget.BudgetedModel(model, stage="user_fidelity", workdir=workdir,
+                                     model_id=model_id, ceiling=ceiling, cap_context=True)
+    writes = fidelity.write_tools_of(workdir)
+    vocab = fidelity.vocabulary_of(workdir)
+
+    def make(ctx, fallback, record_values):
+        return agent_mod.AgentUser(ctx, fallback, model, vocab=vocab, write_tools=writes,
+                                   record_values=record_values)
+
+    return make
+
+
+@user_app.command("dry-run")
+def user_dry_run(workdir: Path = WORKDIR):
+    """How the Simulated user ended this build's Runs, and how often its scenario ran out (D210)."""
+    fidelity = importlib.import_module("kullback.user.fidelity")
+    counts = fidelity.dry_run_counts(workdir)
+    typer.echo(f"{counts['runs']} Run(s) over {counts['tasks']} Task(s); "
+               f"{counts['classified']} carry an end kind")
+    for kind, count in (counts.get("ends") or {}).items():
+        typer.echo(f"  {kind}: {count}")
+    if counts["classified"] < counts["runs"]:
+        typer.echo("  Runs with no end kind were written before the kinds existed; their "
+                   "termination reasons are " + ", ".join(
+                       f"{name} {n}" for name, n in (counts.get("termination_reasons") or {}).items()))
+
+
+CORPUS = typer.Option(None, "--corpus", help="Name of the corpus the traces came from, for the manifest "
+                                             "and the card.")
+CORPUS_LICENSE = typer.Option(None, "--corpus-license", help="Licence of that corpus, as an SPDX id; the "
+                                                             "card states it and the front matter indexes it.")
+CORPUS_URL = typer.Option(None, "--corpus-url", help="Where that corpus came from.")
+
+
+def _echo_manifest(manifest: dict) -> None:
+    """The numbers a person needs to see before a package leaves the machine."""
+    fidelity = manifest.get("replay_fidelity") or {}
+    scan = manifest.get("leak_scan") or {}
+    typer.echo(f"round {manifest.get('round')}, {manifest.get('tasks_total', 0)} Tasks, "
+               f"replay fidelity {_rate(fidelity.get('tasks_rate'))} over Tasks and "
+               f"{_rate(fidelity.get('runs_rate'))} over Runs, "
+               f"{manifest.get('reference_confirmed', 0)} References confirmed, "
+               f"{manifest.get('verifier_derived', 0)} Verifiers derived, "
+               f"{manifest.get('trusted', 0)} trusted")
+    typer.echo(f"leak scan: {scan.get('leaks', 0)} recorded strings and {scan.get('value_echoes', 0)} "
+               f"value echoes over {scan.get('files_scanned', 0)} graded files, of "
+               f"{scan.get('values_checked', 0)} strings checked against {scan.get('corpus_strings', 0)} "
+               f"the corpus holds ({scan.get('strict_env_only_unaccounted', 0)} against env/ alone)")
+    typer.echo(f"content hash {manifest.get('content_hash')}")
+
+
+def _rate(value: Optional[float]) -> str:
+    return "not measured" if value is None else f"{float(value):.1%}"
+
+
+@app.command()
+def export(
+    workdir: Path = WORKDIR,
+    out: Path = typer.Option(..., "--out", help="Directory the package is written to."),  # noqa: B008
+    name: Optional[str] = typer.Option(None, "--name", help="Name of the Environment, which is also its "
+                                                            "domain tag; environment.json carries none."),
+    corpus: Optional[str] = CORPUS,
+    corpus_license: Optional[str] = CORPUS_LICENSE,
+    corpus_url: Optional[str] = CORPUS_URL,
+    preview: bool = typer.Option(False, "--preview", help="Mark the package as below the fidelity bar."),
+):
+    """Write a self-contained Environment package: the rebuilt world, the Task list, the Verifiers, a manifest.
+
+    Nothing of the recordings the world was rebuilt from goes in, and a leak scan over the customer's
+    export refuses the package if anything repeats a string only a recording could have said (D221).
+    """
+    build = _entry("kullback.hub.package", "export")
+    manifest = build(workdir, out, name=name, corpus=corpus, corpus_license=corpus_license,
+                     corpus_url=corpus_url, preview=preview)
+    _echo_manifest(manifest)
+    typer.echo(str(Path(out) / "manifest.json"))
+
+
+@app.command()
+def publish(
+    workdir: Path = WORKDIR,
+    repo: str = typer.Option(..., "--repo", help="Dataset repository, as organisation/name."),
+    name: Optional[str] = typer.Option(None, "--name", help="Name of the Environment; the default is the "
+                                                            "last segment of --repo."),
+    corpus: Optional[str] = CORPUS,
+    corpus_license: Optional[str] = CORPUS_LICENSE,
+    corpus_url: Optional[str] = CORPUS_URL,
+    preview: bool = typer.Option(False, "--preview", help="Publish below the fidelity bar, with a banner "
+                                                          "on the card saying so."),
+    keep: Optional[Path] = typer.Option(None, "--keep", help="Keep the staged package here instead of a "  # noqa: B008
+                                                             "temporary directory."),
+):
+    """Export the Environment, write its card and upload it as one commit, tagged with its round (D221).
+
+    A release needs replay fidelity at or above 0.90 over Tasks; below that only --preview is
+    allowed. Publishing again writes a new commit on the same repository and rewrites the card's
+    numbers; older rounds stay reachable by their tags.
+    """
+    push = _entry("kullback.hub.publish", "publish")
+    hosted, manifest = push(workdir, repo, name=name, preview=preview, corpus=corpus,
+                            corpus_license=corpus_license, corpus_url=corpus_url, keep=keep)
+    _echo_manifest(manifest)
+    typer.echo(f"{manifest.get('status', 'preview')} at {hosted.url}, tag {hosted.tag}")
+
+
+@app.command()
+def fetch(
+    repo: str = typer.Argument(..., help="Dataset repository, as organisation/name."),
+    out: Path = typer.Option(..., "--out", help="Directory the Environment is laid out in."),  # noqa: B008
+    revision: Optional[str] = typer.Option(None, "--revision", help="Tag, branch or commit; the default "
+                                                                     "is the newest."),
+):
+    """Download a published Environment, verify it against its content hash, and lay it out as a workdir.
+
+    What lands is what `kullback run --workdir <out>` takes: the world, the Task list, the Verifiers
+    and the manifest, with no builder state. A package that does not verify is not laid out.
+    """
+    pull = _entry("kullback.hub.publish", "fetch")
+    manifest = pull(repo, out, revision=revision)
+    _echo_manifest(manifest)
+    missing = manifest.get("missing_run_inputs") or []
+    if missing:
+        typer.echo("this package cannot be run as a workdir: it is missing " + ", ".join(missing))
+    typer.echo(f"{out}")
+
+
 @app.command("read-domain")
 def read_domain(
     workdir: Path = WORKDIR,
@@ -773,6 +967,8 @@ def read_domain(
     typer.echo("| --- | --- | --- |")
     for row in domain_mod.per_source(body):
         typer.echo(f"| {row['source']} | {row['archetypes']} | {row['mapped']} |")
+
+
 
 
 @app.command()

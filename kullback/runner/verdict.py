@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Any, Iterable, Optional
 
 from kullback.runner.atom_context import AtomContext, _evaluate, gate
-from kullback.runner.canon import record_use
+from kullback.runner.canon import UNRESOLVED, Unresolved, record_use
 from kullback.runner.records import Atom, Run, Verdict, Verifier, load_run_jsonl
 
 # AtomContext, gate and _evaluate live in runner/atom_context.py: they are what a Verdict evaluates
@@ -124,6 +124,7 @@ def _evaluate_atoms(verifier: Verifier, context: AtomContext, judge_results: Opt
     failures: list[Atom] = []
     unevaluable: list[Atom] = []
     judge_used = False
+    unresolved_ids: set[str] = set()
     # Hard atoms run last: without a write-tool set write_calls() is what the other atoms covered,
     # so a hard atom placed first in the Verifier would see an empty list and hold vacuously.
     for atom in sorted(verifier.atoms, key=lambda a: a.kind == "hard"):
@@ -145,20 +146,30 @@ def _evaluate_atoms(verifier: Verifier, context: AtomContext, judge_results: Opt
             context.marking = atom.kind != "forbidden"
             try:
                 holds = _evaluate(atom.predicate_src, context.env())
+            except Unresolved as open_pair:
+                # Not a defect and not an answer: the evidence this atom rests on is a semantic pair
+                # nobody has settled. Its own outcome, whatever the atom's kind, because collapsing
+                # it to a boolean passes a forbidden atom and fails a required one for one and the
+                # same missing answer (D219).
+                unresolved_ids.add(atom.id)
+                notes.append(f"atom_unresolved:{atom.id}:{open_pair.column}")
             except Exception as error:  # a broken atom is a Verifier defect, not a Candidate failure
                 notes.append(f"atom_error:{atom.id}:{type(error).__name__}")
             finally:
                 context.marking = True
         if holds is None:
-            # An atom that had to hold and could not be checked leaves the Run not verdicted; a
-            # counted pass here would hide a Verifier defect or an unrun judge (D76, D79).
-            if atom.kind in MUST_HOLD:
+            # An atom that could not be checked leaves the Run not verdicted; a counted pass here
+            # would hide a Verifier defect, an unrun judge or an unsettled pair (D76, D79, D219).
+            # A forbidden atom is included: nothing said its forbidden state is absent either.
+            if atom.kind in MUST_HOLD or atom.id in unresolved_ids:
                 unevaluable.append(atom)
             continue
         if atom.kind in MUST_HOLD and not holds:
             failures.append(atom)
         elif atom.kind == "forbidden" and holds:
             failures.append(atom)
+    if unresolved_ids:
+        notes.append(f"atoms_unresolved={len(unresolved_ids)}")
     return failures, unevaluable, judge_used
 
 
@@ -208,7 +219,7 @@ def verdict(run_jsonl: Any, verifier: Verifier, canon: Any = None, judge_results
         # A semantic pair the judge settled makes this a judged Verdict (D84), and a pair nobody has
         # settled is named so the report can put it in front of a person rather than bury it.
         judge_used = judge_used or bool(getattr(comparison, "judge_used", False))
-        if getattr(comparison, "route", None) == "unresolved":
+        if getattr(comparison, "route", None) == UNRESOLVED:
             notes.append(f"semantic_unresolved:{comparison.key}")
         if workdir is not None:
             record_use(workdir, comparison, run.run_id, verifier.task_id)

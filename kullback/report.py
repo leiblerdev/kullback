@@ -10,7 +10,7 @@ from typing import Any, Literal, Optional
 
 from pydantic import BaseModel, Field, ValidationError
 
-from kullback import difficulty, round_snapshot
+from kullback import claims, difficulty, round_snapshot
 from kullback.examiner import lifecycle
 from kullback.runner.records import (
     Constraint,
@@ -29,8 +29,8 @@ from kullback.runner.records import (
 )
 
 SECTIONS = ("## Environment", "## Rounds", "## Tasks", "## Synthetic Tasks", "## Disagreement queue",
-            "## Lessons set aside")
-ENVIRONMENT, ROUNDS, TASKS, SYNTHETIC, QUEUE, LESSONS = SECTIONS
+            "## The Simulated user", "## Lessons set aside")
+ENVIRONMENT, ROUNDS, TASKS, SYNTHETIC, QUEUE, USER_FIDELITY, LESSONS = SECTIONS
 
 
 class ScorecardItem(Record):
@@ -98,6 +98,9 @@ class ReportData(BaseModel):
     # D171: tool_fidelity.json, the compile_tools artifact: `tools` per tool over the corpus,
     # `tasks` per Task per tool over that Task's own recorded calls.
     tool_fidelity: dict = Field(default_factory=dict)
+    # D214: user_fidelity.json, the round driver's artifact: how close each driver's turns are to
+    # the recorded ones, per Task and per corpus. Empty on a build written before D214.
+    user_fidelity: dict = Field(default_factory=dict)
     rounds: list[RoundRecord] = Field(default_factory=list)
     trusted: Optional[GateResult] = None
     # D209: difficulty.json, the record and the bucket per Task with the Tasks that carry neither.
@@ -105,6 +108,9 @@ class ReportData(BaseModel):
     # D224: synthetic/index.json, the walks that became Tasks. Its own field and its own section,
     # never added into `tasks`: nothing generated may be counted where the recorded Tasks are.
     synthetic: dict = Field(default_factory=dict)
+    # D223: claims.json, what the transcripts claimed against what the state received, per Run, per
+    # Task and over the corpus, with the Tasks flagged for the Simulated user's end protocol.
+    claims: dict = Field(default_factory=dict)
     # D225: domain/archetypes.json, domain/gaps.json and synthetic/shaped.json. What the domain's own
     # public material attests, what this Environment cannot execute of it, and the Tasks shaped to
     # the rest. Its own fields for the same reason the synthetic one is its own: nothing read off a
@@ -642,6 +648,64 @@ def _domain_lines(data: ReportData) -> list[str]:
     return lines
 
 
+def _claims_table(data: ReportData) -> list[str]:
+    """What the transcripts claimed against what the state received, per Task and over the corpus (D223).
+
+    The Verdict already grades state alone (D46), so a false claim never earned a pass; what this
+    adds is the class. A Candidate that answered "done" and wrote nothing and one that wrote the
+    wrong row were one failure count, and they ask for two different repairs. The Tasks flagged
+    below are the ones where every failing held-out Run claimed a write the state never received,
+    which is where the Simulated user's end protocol accepted words for a state change.
+    """
+    body = data.claims or {}
+    totals = body.get("totals") or {}
+    if not body:
+        return ["", "### Claims against state", "",
+                "No claim record was written for this build, so no claim table is shown."]
+    lines = ["", "### Claims against state", "",
+             f"{totals.get('runs_with_claims', 0)} of {totals.get('runs', 0)} Runs claim a write in "
+             f"words: {totals.get('claims', 0)} claims, {totals.get('claims_written', 0)} answered by "
+             f"a write the state received and {totals.get('claims_unwritten', 0)} answered by none. "
+             f"{totals.get('writes_unclaimed', 0)} writes happened that no transcript mentions.",
+             f"Of {totals.get('failing_runs', 0)} failing Runs, "
+             f"{totals.get('claimed_unwritten_failures', 0)} claimed a write nothing received "
+             f"({_percent(totals.get('claimed_unwritten_share'))}). Mean partial completion "
+             f"{_percent(totals.get('partial_completion_mean'))}.",
+             "", claims.LEGEND, ""]
+    lines += claims.markdown_table(body.get("tasks") or {})
+    flagged = list(body.get("flagged") or [])
+    lines += ["", ("Flagged for the Simulated user's end protocol: " + ", ".join(flagged)
+                   + ". Every failing held-out Run of each claimed a write the state never received."
+                   if flagged else
+                   "No Task is flagged for the Simulated user's end protocol: no Task fails only on "
+                   "claims the state never received.")]
+    return lines
+
+
+def claims_for_task(data: ReportData, task_id: str) -> dict:
+    """One Task's row of the claim record, or an empty row where the build wrote none."""
+    row = ((data.claims or {}).get("tasks") or {}).get(task_id)
+    return dict(row) if isinstance(row, dict) else {}
+
+
+def _claim_task_lines(data: ReportData, task_id: str) -> list[str]:
+    """The two lines D223 puts beside a Task's numbers: what it claimed, and how far its Runs got."""
+    row = claims_for_task(data, task_id)
+    if not row:
+        return []
+    flagged = task_id in list((data.claims or {}).get("flagged") or [])
+    lines = [f"- Claims: {row.get('claims', 0)}, of which {row.get('claims_unwritten', 0)} name a "
+             f"write the state never received; {row.get('writes_unclaimed', 0)} writes no transcript "
+             f"mentions",
+             f"- Partial completion: {_percent(row.get('partial_completion_mean'))} of atoms confirmed "
+             f"per Run (band {row.get('partial_completion_band', 'none')}), beside trusted and not "
+             f"instead of it"]
+    if flagged:
+        lines.append("- Flagged: every failing held-out Run of this Task claimed a write the state "
+                     "never received, so the Simulated user's end protocol is what to read next")
+    return lines
+
+
 def tool_fidelity_counts(data: ReportData, name: str) -> dict:
     """Both grains of one tool's replay fidelity, off tool_fidelity.json (D171).
 
@@ -739,7 +803,8 @@ def _environment(data: ReportData) -> list[str]:
     """The Environment section, in the order a person reads it: what was built, what the gates and
     the scorecard said, what still needs a look, and what the pipeline did and cost."""
     return ([ENVIRONMENT, ""] + _headline(data) + _gates_table(data) + _scorecard_table(data)
-            + _difficulty_table(data) + _tool_notes(data) + _finding_lines(data) + _overlay_lines(data)
+            + _difficulty_table(data) + _claims_table(data)
+            + _tool_notes(data) + _finding_lines(data) + _overlay_lines(data)
             + ["", "### Coverage", ""] + _coverage(data) + _pipeline_lines(data))
 
 
@@ -810,6 +875,7 @@ def _tasks(data: ReportData) -> list[str]:
             lines.append(f"Not gradeable, Reference disputed ({aside[task.id]}).")
             lines.append("")
         lines += _task_numbers_lines(data, numbers)
+        lines += _claim_task_lines(data, task.id)
         if data.trusted is not None:
             lines += _trust_lines(data, task.id, fractions)
         lines += ["", suggestion(numbers, data.built, aside.get(task.id)), ""]
@@ -1022,6 +1088,28 @@ def _cited_spans(row: dict) -> list[str]:
     return lines
 
 
+
+
+def _user_fidelity(data: ReportData) -> list[str]:
+    """How close the Simulated user's turns are to the recorded ones (D214 rule 5).
+
+    Half of an Environment is the person the Candidate is talking to, and a report that says nothing
+    about it lets a corpus with a user that runs out of scenario read as a corpus with hard Tasks.
+    A build written before D214 has no such file and says so in one line.
+    """
+    from kullback.user.fidelity import markdown_table
+    lines = [USER_FIDELITY, ""]
+    if not data.user_fidelity:
+        lines.append("This build recorded no user fidelity: nothing scored the Simulated user's "
+                     "turns against the recorded ones.")
+        return lines
+    lines.append("Each driver's turns against the turns the recording holds, per Task, meaned over "
+                 "the corpus. The rule-driven user is the baseline and costs nothing.")
+    lines.append("")
+    lines += markdown_table(data.user_fidelity)
+    return lines
+
+
 def _lessons(data: ReportData) -> list[str]:
     lines = [LESSONS, ""]
     if not data.lessons_set_aside:
@@ -1042,6 +1130,7 @@ def render(data: ReportData) -> str:
     lines += _tasks(data) + [""]
     lines += _synthetic(data) + [""]
     lines += _queue(data) + [""]
+    lines += _user_fidelity(data) + [""]
     lines += _lessons(data) + [""]
     return "\n".join(lines)
 
@@ -1431,10 +1520,13 @@ def load(workdir: Any) -> ReportData:
         tasks_aside=_jsonl(root / "tasks_aside.jsonl", unread),
         lessons_set_aside=_list_of(root / "lessons_set_aside.json", SetAsideLesson),
         tool_fidelity=fidelity_body if isinstance(fidelity_body, dict) else {},
+        user_fidelity=_json(root / "user_fidelity.json") if isinstance(
+            _json(root / "user_fidelity.json"), dict) else {},
         rounds=_rounds_of(root / "rounds.json", unread),
         trusted=trusted,
         difficulty=_difficulty_body(root),
         synthetic=_synthetic_body(root),
+        claims=claims.read_records(root),
         domain=_domain_body(root, DOMAIN_ARCHETYPES),
         domain_gaps=list((_domain_body(root, DOMAIN_GAPS).get("gaps") or [])),
         shaped=_domain_body(root, SHAPED_INDEX),

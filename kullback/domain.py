@@ -45,6 +45,8 @@ from typing import Any, Callable, Iterable, Optional
 from urllib.parse import urljoin, urlsplit
 
 from kullback.gates.artifacts import leak_gate
+from kullback.runner import canon
+from kullback.runner import judge as judge_mod
 from kullback.runner.records import read_json, write_json
 from kullback.sampling import sample_key
 
@@ -503,56 +505,62 @@ def contaminated(record: dict, strings: Iterable[str]) -> str:
 
 # --- deduplication by goal ------------------------------------------------------------
 
-SAME_PROMPT = (
-    "Two people each described something they want done. Decide whether they are asking for the "
-    "same thing.\n\n"
-    "A: {first}\nB: {second}\n\n"
-    "Answer with JSON only. If they are the same request, answer "
-    '{{"same": true, "citation": "the words both of them use for it"}}. The citation must be words '
-    "that appear in both lines; without one, answer {{\"same\": false}}. If they differ in what "
-    'would have to change in the world, answer {{"same": false}}.')
+# Two archetype goals are a semantic pair, so they are compared under the column class the rest of
+# the harness compares such a pair under (D219). The name is the harness's own and no customer's.
+GOAL_COLUMN = "archetype_goal"
 
 
-def same_goal(model: Any, first: str, second: str) -> tuple[bool, str]:
-    """Whether two goals are one, and the words both of them use for it.
+def equivalence_judge(model: Any) -> Optional[Callable[[str, str, str], Any]]:
+    """The callable `canon.compare` asks about one pair, over the harness's own judge (D219, D222).
 
-    Equal only with a citation: a judge that answers same and cannot point at the words both lines
-    use has not read them, and two archetypes collapsing on that answer would lose a real request.
-    Without a model, only two goals that read the same after normalising are one.
+    This module used to carry its own prompt for the question and its own citation rule beside it.
+    Both already exist: the equivalence use is the harness's one way of asking whether two values
+    mean the same thing, the checks it needs are prefilled before the model is asked, and an
+    agreeing verdict that cites none of them abstains rather than agreeing. A second copy of that
+    rule here would be a second thing to keep true.
     """
-    if _norm(first) == _norm(second):
-        return True, _norm(first)
-    body = _json_reply(model, SAME_PROMPT.format(first=str(first), second=str(second)))
-    if not isinstance(body, dict) or not body.get("same"):
+    return None if model is None else judge_mod.AgenticJudge(model).judge_equivalence
+
+
+def same_goal(model: Any, first: str, second: str,
+              table: Optional[Any] = None) -> tuple[bool, str]:
+    """Whether two goals are one, and the route that settled it (D219).
+
+    Equal, different or unresolved, and only equal folds. A pair nobody settled, because no judge
+    was configured or because the judge abstained, leaves both archetypes standing: losing a real
+    request costs more than carrying a repeat, and the fold record says which route decided.
+    """
+    comparison = canon.compare(str(first or ""), str(second or ""), "semantic",
+                               judge=equivalence_judge(model), table=table, column=GOAL_COLUMN)
+    if canon.resolution_of(comparison) != canon.EQUAL:
         return False, ""
-    citation = _norm(body.get("citation") or "")
-    if not citation or citation not in _norm(first) or citation not in _norm(second):
-        return False, ""
-    return True, citation
+    return True, str(comparison.route)
 
 
 def dedup(records: Iterable[dict], model: Any = None) -> tuple[list[dict], list[dict]]:
-    """The archetypes with the repeats folded in, and the folds, each with the citation that made it.
+    """The archetypes with the repeats folded in, and the folds, each with the route that made it.
 
     A fold keeps the first record and adds the second's source to it, so an archetype two pages
-    attest says so and is not counted twice.
+    attest says so and is not counted twice. One equivalence table serves the whole reading, so a
+    pair two archetypes put to the judge twice is asked once and answered from the table after.
     """
     kept: list[dict] = []
     folded: list[dict] = []
+    table = canon.EquivalenceTable()
     for record in records or ():
         match = None
         for held in kept:
-            same, citation = same_goal(model, held.get("goal"), record.get("goal"))
+            same, route = same_goal(model, held.get("goal"), record.get("goal"), table=table)
             if same:
-                match = (held, citation)
+                match = (held, route)
                 break
         if match is None:
             kept.append(dict(record, sources=[str(record.get("source"))]))
             continue
-        held, citation = match
+        held, route = match
         if str(record.get("source")) not in held["sources"]:
             held["sources"].append(str(record.get("source")))
-        folded.append({"id": record.get("id"), "into": held.get("id"), "citation": citation})
+        folded.append({"id": record.get("id"), "into": held.get("id"), "settled_by": route})
     return kept, folded
 
 
@@ -808,19 +816,39 @@ def read(workdir: Any, *, sources: Iterable[str] = (), fetch: Callable[[str], st
 PLAUSIBLE_PROMPT = (
     "{persona}\n\n"
     "Someone wrote down a request a customer might send in, and the steps a support agent would "
-    "take for it. The request was supposed to be an instance of this archetype, which was read off "
-    "the business's own public material:\n"
-    "  the customer wants: {goal}\n"
-    "  they are in this situation: {preconditions}\n"
-    "  they expect afterwards: {effects}\n"
-    "  the material states these rules: {constraints}\n\n"
+    "take for it. The request was supposed to be an instance of an archetype read off the "
+    "business's own public material; the lines of that archetype have been read for you and are "
+    "at the end of this message.\n\n"
     "The request as written:\n{intent}\n\n"
     "The steps taken: {steps}\n\n"
     "Your only power is to reject. If a real customer would not send this, or the steps do not do "
     'what the archetype says they expect, answer {{"reject": true, "citation": "the line of the '
-    'archetype above that it contradicts"}}. The citation must be one of the archetype lines you '
-    'were shown. Otherwise answer {{"reject": false}}. You cannot approve anything; a false answer '
+    'archetype that it contradicts"}}. The citation must be one of the archetype lines you were '
+    'shown. Otherwise answer {{"reject": false}}. You cannot approve anything; a false answer '
     "means only that you found no reason to remove it.")
+
+# The archetype fields a judge is shown, in the order the checks are prefilled in. Each one is a
+# read the harness runs before the model is asked, which is what a check is (D222 rule 1).
+CHECK_FIELDS = (("goal", "the customer wants"), ("preconditions", "they are in this situation"),
+                ("effects", "they expect afterwards"), ("constraints", "the material states"))
+
+
+def archetype_checks(record: dict) -> list[dict]:
+    """The archetype's own lines as the checks this question rests on, run before asking (D222).
+
+    A judge here can only remove a Task, and only by citing a line it was shown, so the lines are
+    the evidence and reading them is the read the question needs. They are prefilled and named the
+    way every other judged question's checks are, rather than pasted into the prompt as prose, so
+    an archetype that carries no line at all is a question with nothing behind it and the model is
+    not asked: `judged` records the refusal rather than a rejection nobody could have cited.
+    """
+    checks = []
+    for field, asked in CHECK_FIELDS:
+        lines = [str(record.get("goal") or "")] if field == "goal" else _lines(record.get(field))
+        lines = [line for line in lines if line]
+        if lines:
+            checks.append({"tool": field, "args": {"asked": asked}, "result": lines})
+    return checks
 
 SHAPE_JUDGE = ("You read requests for whether their shape is one a person would write: what they "
                "say, what they leave out, and whether the outcome they ask for is one they would "
@@ -836,16 +864,18 @@ def rejection(model: Any, persona: str, record: dict, intent: str,
 
     A judge can never pass a Task. It can only remove one, and only by citing a line of the
     archetype it was shown: an unciting rejection is a judge disliking a sentence, and a generator
-    that lets that through is one whose Task count is a model's mood.
+    that lets that through is one whose Task count is a model's mood. The lines reach it as the
+    checks the harness ran first (D222), so a question with no check behind it is refused here and
+    never asked of a model.
     """
-    lines = [str(record.get("goal") or "")] + [line for field in FIELDS
-                                               for line in _lines(record.get(field))]
+    checks = archetype_checks(record)
+    if not checks:
+        return ""
+    lines = [line for check in checks for line in check["result"]]
     body = _json_reply(model, PLAUSIBLE_PROMPT.format(
-        persona=str(persona), goal=record.get("goal"),
-        preconditions="; ".join(_lines(record.get("preconditions"))) or "nothing stated",
-        effects="; ".join(_lines(record.get("effects"))) or "nothing stated",
-        constraints="; ".join(_lines(record.get("constraints"))) or "nothing stated",
-        intent=str(intent), steps=", ".join(str(step) for step in steps or ()) or "none"))
+        persona=str(persona), intent=str(intent),
+        steps=", ".join(str(step) for step in steps or ()) or "none")
+        + "\n\n" + judge_mod.checks_text(checks))
     if not isinstance(body, dict) or not body.get("reject"):
         return ""
     citation = _norm(body.get("citation") or "")
@@ -856,7 +886,12 @@ def rejection(model: Any, persona: str, record: dict, intent: str,
 
 
 def judged(models: Iterable[Any], record: dict, intent: str, steps: Iterable[str]) -> list[dict]:
-    """Every rejection the judges made, one row each, with the persona and the line it cited."""
+    """Every rejection the judges made, one row each, with the persona and the line it cited.
+
+    An archetype with no line to cite is refused for the reason D222 refuses a judgement with no
+    check prefilled, and a refusal removes nothing: the judges hold the power to reject and nothing
+    else, so a question none of them was asked leaves the Task exactly where it was.
+    """
     out = []
     for model, persona in zip(list(models or ()), PERSONAS, strict=False):
         cited = rejection(model, persona, record, intent, steps)
@@ -873,9 +908,10 @@ def pick(records: Iterable[dict], ident: str) -> Optional[dict]:
     return rows[sample_key("domain-archetype", str(ident), "") % len(rows)]
 
 
-__all__ = ["ARCHETYPES", "CACHE", "CORPUS_URL", "CUSTOMER_WORDS", "DIR", "EXCLUDED", "FIELDS",
-           "FORMAT", "GAPS", "GIVEN", "LINKED", "NAMED", "PAGE_LIMIT", "PERSONAS", "SEARCHED",
-           "SEARCH_KEY_VAR", "UNREACHABLE", "archetype_id", "cache_dir", "cached_text",
+__all__ = ["ARCHETYPES", "CACHE", "CHECK_FIELDS", "CORPUS_URL", "CUSTOMER_WORDS", "DIR", "EXCLUDED",
+           "FIELDS", "FORMAT", "GAPS", "GIVEN", "GOAL_COLUMN", "LINKED", "NAMED", "PAGE_LIMIT",
+           "PERSONAS", "SEARCHED", "SEARCH_KEY_VAR", "UNREACHABLE", "archetype_checks",
+           "archetype_id", "cache_dir", "cached_text",
            "check_mapping", "contaminated", "copies_page", "corpus_strings", "counts_of", "crawl",
            "customer_voice", "dedup",
            "host_of", "http_fetch", "judged", "links", "map_archetype", "named_sources",

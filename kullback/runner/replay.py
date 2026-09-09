@@ -7,6 +7,13 @@ Reference and the first live build derived zero Verifiers. Here the Trace's assi
 model, its user turns are the user, and every tool call it made goes through the same Router a
 Candidate gets. The loop writes the Run the way it writes any other; this module only scores each
 routed result against the recorded one and says whether the replay confirms the Reference (D108).
+
+A write is scored on two things, not one (D215). Its own answer, as it always was; and the rows the
+recording shows it moving that its answer never mentions, read back out of the world once the write
+has replayed. A body that answers correctly and leaves another table's row, a history list or a
+recomputed total where it found them fails the write check with the reason kind `effect`, and the
+later read that saw the stale value is marked `downstream_of` that write rather than blamed on its
+own account.
 """
 
 from __future__ import annotations
@@ -18,7 +25,17 @@ from typing import Any, Iterable, Optional
 
 from kullback.ai.provider import Model, ModelConfig, ModelReply, ToolCallRequest
 from kullback.runner import loop
-from kullback.runner.canon import EXEMPT_NOTE, PRESENCE_NOTE, SEMANTIC_NOTE, TOKEN_NOTE, canonicalize, first_difference
+from kullback.runner.canon import (
+    DIFFERS_NOTE,
+    EXEMPT_NOTE,
+    PRESENCE_NOTE,
+    SEMANTIC_NOTE,
+    TOKEN_NOTE,
+    UNRESOLVED_NOTE,
+    canonicalize,
+    first_difference,
+    value_at,
+)
 from kullback.runner.records import ToolCall, Trace, Turn, as_dict, plain
 
 RECORDED = "recorded"
@@ -33,15 +50,26 @@ REASKED_AFTER_CALLS = {"assistant": True, "user": False}
 SAME, COSMETIC, BOTH_REFUSED = "same", "cosmetic", "both_refused"
 DIFFERS, OURS_REFUSED, THEIRS_REFUSED, UNRECORDED = "differs", "ours_refused", "theirs_refused", "unrecorded"
 AGREES = frozenset({SAME, COSMETIC, BOTH_REFUSED})
+# D215. A write is judged on every row it changed, not only on the answer it gave. `EFFECT` is the
+# reason kind a write fails under when the recording shows it moving a column and the replayed body
+# left that column where it was; `DOWNSTREAM` marks the later read that saw the stale value, so a
+# reader groups the two under one cause instead of repairing the read.
+EFFECT, DOWNSTREAM = "effect", "downstream_of"
+EFFECTS_NAMED = 20  # columns one failing write names, against a body that moved none of forty
 # Which way a verdict was reached, written on every check. Agreement that rests on the judge is not
 # the same evidence as agreement on the bytes, and a report that cannot tell them apart reads a
 # Trace confirmed by a forgiven difference as a Trace that replayed (D217).
 BY_BYTES, BY_CANONICAL, BY_EXEMPT, BY_JUDGE = "bytes", "canonical", "exempt", "judge"
 BY_COLUMNS, BY_TOKEN_SET, BY_PRESENCE, BY_VALUE, BY_ERROR = "columns", "token_set", "presence", "value", "error"
+# A check nobody could settle: the two sides hold different values on a semantic column and no
+# judge and no table answered for them. It is a route of its own because it is not a difference
+# anyone found, it is a question nobody answered, and a build cannot repair what it cannot name
+# (D219).
+BY_UNRESOLVED = "unresolved"
 # The meaning of a recorded verdict. Bump it where that meaning changes, so a cached replay written
 # under the older rule is recomputed rather than read back (D217): the stage's code version carries
 # it, beside the hashes of the modules the scoring is done by.
-VERDICT_FORMAT = 2
+VERDICT_FORMAT = 3
 
 
 class _Script:
@@ -169,16 +197,30 @@ class ScoredRouter:
     """The Router with each answer compared against the call the Trace recorded for it."""
 
     def __init__(self, router: Any, expected: deque, write_tools: Iterable[str] = (), canon_rules: Any = None,
-                 comparer: Any = None):
+                 comparer: Any = None, effects: Optional[dict] = None,
+                 holdout_values: Optional[dict] = None):
         self.inner = router
         self.expected = expected
         self.write_tools = set(write_tools)
         self.canon_rules = canon_rules
+        # D220 rule 2c: the values the world holds only because a held-out Run witnessed them, as
+        # text to the column they sit in. An answer carrying one of them was answered out of the
+        # world rather than out of anything the Builder was shown, which is a reading of how much
+        # a pass rests on the world; it is a count on the check, never a verdict.
+        self.holdout_values = dict(holdout_values or {})
         # What knows the schema's column classes and the readers' columns (D187). The Runner cannot
         # import the gates, so it is handed an object with one `agrees` method, the way it is handed
         # the canonicalizer's rules; given none, the comparison is canonical equality alone.
         self.comparer = comparer
+        # D215: per recorded call id, the rows and columns the recording shows that call moving, as
+        # plain dicts the Builder wrote (`builder/effects.replay_evidence`). Given none, this scores
+        # exactly what it scored before. The evidence is code, not a hint, so a held-out Run is
+        # checked the same way: nothing about it reaches anyone who writes a body.
+        self.effects = dict(effects or {})
         self.checks: list[dict] = []
+        # The rows a write was supposed to move and did not, kept so a later read that answered the
+        # stale value is marked as the write's consequence rather than as a fault of its own.
+        self.stale: list[dict] = []
 
     def __getattr__(self, name: str) -> Any:  # state_hash, world, start_world, state: the loop's reads
         return getattr(self.inner, name)
@@ -201,6 +243,9 @@ class ScoredRouter:
             "ours": _preview(outcome.error if outcome.error is not None else outcome.result),
             "recorded": _preview(recorded.error if recorded is not None and recorded.error is not None
                                  else (recorded.result if recorded is not None else None))}
+        answered_from = self._from_holdout(outcome.result) if self.holdout_values else []
+        if answered_from:
+            check["answered_from_holdout"] = answered_from
         if verdict not in AGREES and verdict != UNRECORDED:
             # A call that agreed needs nothing beyond the preview; a call that parted has to say
             # what parted, and 160 characters is not enough to say it (D66).
@@ -208,8 +253,88 @@ class ScoredRouter:
             if notes:
                 # Which columns parted and under which class, which the leaf path cannot say (D187).
                 check["difference"]["columns"] = notes[:COLUMN_NOTES]
+        self._check_effects(check, recorded, outcome)
+        self._mark_downstream(check, recorded)
         self.checks.append(check)
         return outcome
+
+    def _check_effects(self, check: dict, recorded: Optional[ToolCall], outcome: Any) -> None:
+        """D215 rule 3: the rows the recording shows this write moving, read back out of the world.
+
+        The write's own answer is already scored; this asks the other half of the question, which
+        nothing asked before: did the body leave the world the way the recording left it. Every
+        column the evidence names is read at its own path out of the world as it now stands, and one
+        that did not reach the value the recording shows is a failure of this write, whatever its
+        answer looked like. A row the world no longer holds is the same failure, said as a missing
+        row, since a write that deleted what it should have amended moved that column too.
+
+        A column the recording could only credit ambiguously (more than one write between the two
+        sightings) still arrives, and says so, but only against the last write credited with it: the
+        recording says where such a column ended once every write between the sightings has run, and
+        holding an earlier one to it fails a write for a column the next was always going to move.
+        Dropping them instead would check nothing wherever a Run wrote twice, which is most of them.
+        """
+        expected = self.effects.get(str(recorded.id or "")) if recorded is not None else None
+        if not expected or check["kind"] != "write" or outcome.error is not None:
+            return
+        world = self.inner.world() if hasattr(self.inner, "world") else {}
+        misses = []
+        for row in expected:
+            held = ((world.get(str(row.get("table"))) or {}) if isinstance(world, dict) else {})
+            record = held.get(str(row.get("row"))) if isinstance(held, dict) else None
+            path = str(row.get("path") or "")
+            if record is None:
+                misses.append({**_effect_note(row), "ours": None, "reason": "the row is not there"})
+                continue
+            found, value = value_at(plain(record), path)
+            if found and canonicalize(value, self.canon_rules) == canonicalize(row.get("after"),
+                                                                              self.canon_rules):
+                continue
+            misses.append({**_effect_note(row), "ours": _preview(value if found else None),
+                           "reason": "the column is not there" if not found else "the column did not move"})
+        check["effect_checks"] = len(expected)
+        if misses:
+            check["effect_failures"] = misses[:EFFECTS_NAMED]
+            check["effect_failures_total"] = len(misses)
+            self.stale.extend({"call_id": check["call_id"], "tool": check["tool"],
+                               "table": miss["table"], "row": miss["row"]} for miss in misses)
+
+    def _mark_downstream(self, check: dict, recorded: Optional[ToolCall]) -> None:
+        """A later call that parted over a row an earlier write left stale is that write's doing.
+
+        The mark carries the write's call id, so the two lines a reader sees group under one cause.
+        It is never a pass: the read still parted and still counts. What it stops is the next round
+        spending itself repairing the read, which answered the world it was given correctly.
+        """
+        if not self.stale or check["verdict"] in AGREES or check["verdict"] == UNRECORDED:
+            return
+        text = _dumps(plain(recorded.args if recorded is not None else None)) + " " + str(
+            check.get("recorded") or "")
+        blamed = [row for row in self.stale if row["row"] and str(row["row"]) in text]
+        if blamed:
+            check[DOWNSTREAM] = blamed[-1]["call_id"]
+            check["downstream_tool"] = blamed[-1]["tool"]
+
+    def _from_holdout(self, result: Any) -> list[str]:
+        """The columns of this answer whose value the world holds on a held-out Run's word alone."""
+        found: set[str] = set()
+
+        def walk(value: Any) -> None:
+            if isinstance(value, bool) or value is None:
+                return
+            if isinstance(value, (str, int, float)):
+                column = self.holdout_values.get(str(value))
+                if column is not None:
+                    found.add(column)
+            elif isinstance(value, list):
+                for item in value:
+                    walk(item)
+            elif isinstance(value, dict):
+                for item in value.values():
+                    walk(item)
+
+        walk(plain(result))
+        return sorted(found)
 
     def _take(self, name: str) -> Optional[ToolCall]:
         for index, call in enumerate(self.expected):
@@ -217,6 +342,23 @@ class ScoredRouter:
                 del self.expected[index]
                 return call
         return None
+
+
+def _effect_note(row: dict) -> dict:
+    """One expected effect as the fields a reason and a lesson are written from (D215 rules 3, 4)."""
+    return {"table": str(row.get("table") or ""), "row": str(row.get("row") or ""),
+            "path": str(row.get("path") or ""), "recorded": _preview(row.get("after")),
+            "before": _preview(row.get("before")), "ambiguous": bool(row.get("ambiguous")),
+            "formulas": list(row.get("formulas") or [])}
+
+
+def effect_reasons(check: dict) -> list[str]:
+    """The reason lines one write's missed effects leave: the kind, then the table and column path."""
+    out = []
+    for miss in (check.get("effect_failures") or ()):
+        out.append(f"{check.get('tool')} write: {EFFECT} {miss.get('table')}.{miss.get('path')} "
+                   f"{miss.get('reason')}")
+    return out
 
 
 def compare_call(recorded: ToolCall, result: Any, error: Any, rules: Any = None,
@@ -244,7 +386,11 @@ def _route_of(agreed: bool, notes: Iterable[str]) -> str:
     if not agreed:
         if any(TOKEN_NOTE in note for note in marks):
             return BY_TOKEN_SET
-        return BY_PRESENCE if any(PRESENCE_NOTE in note for note in marks) else BY_COLUMNS
+        if any(UNRESOLVED_NOTE in note for note in marks):
+            return BY_UNRESOLVED
+        if any(PRESENCE_NOTE in note for note in marks):
+            return BY_PRESENCE
+        return BY_JUDGE if any(DIFFERS_NOTE in note for note in marks) else BY_COLUMNS
     if any(note.startswith(SEMANTIC_NOTE) for note in marks):
         return BY_JUDGE
     return BY_EXEMPT if any(note.startswith(EXEMPT_NOTE) for note in marks) else BY_COLUMNS
@@ -385,11 +531,22 @@ class Replay:
 
 def replay_trace(trace: Trace, router: Any, *, workdir: Any, task_id: str, env_id: Optional[str] = None,
                  write_tools: Iterable[str] = (), canon_rules: Any = None, run_id: Optional[str] = None,
-                 comparer: Any = None) -> Replay:
-    """Drive the loop with the Trace's own turns over `router`; the Run lands under `workdir`."""
+                 comparer: Any = None, effects: Optional[dict] = None,
+                 holdout_values: Optional[dict] = None) -> Replay:
+    """Drive the loop with the Trace's own turns over `router`; the Run lands under `workdir`.
+
+    `effects` is D215's write evidence, per recorded call id: the rows and columns the recording
+    shows that call moving. Given none, every call is scored on its own answer, which is what this
+    did before.
+
+    `holdout_values` are the world's values that only a held-out Run witnessed (D220 rule 2c): the
+    replay counts the calls whose answer carries one, so a reader can see how much of a pass rests
+    on the world rather than on the body. It is a finding on the record, not a rule.
+    """
     script = _Script(trace)
     model, user = TraceModel(script), TraceUser(script)
-    scored = ScoredRouter(router, model.expected, write_tools, canon_rules, comparer)
+    scored = ScoredRouter(router, model.expected, write_tools, canon_rules, comparer, effects,
+                          holdout_values=holdout_values)
     run_id = run_id or f"replay-{trace.trace_id}"
     state = loop.new_run_state(run_id, workdir=workdir, env_id=env_id, task_id=task_id,
                                trace_id=trace.trace_id, model=RECORDED, user=user,
@@ -417,7 +574,11 @@ def _score(trace: Trace, state: Any, scored: ScoredRouter, script: _Script, mode
            user: TraceUser, crashed: Optional[str]) -> Replay:
     writes = [c for c in scored.checks if c["kind"] == "write"]
     reads = [c for c in scored.checks if c["kind"] == "read"]
-    writes_off = [c for c in writes if c["verdict"] not in AGREES]
+    # D215: a write that answered the way the recording did and left a row the recording moved where
+    # it was has not replayed the recording, so it counts among the writes that are off. The verdict
+    # on its own answer is left as it was: the two say different things and both are worth reading.
+    effect_off = [c for c in scored.checks if c.get("effect_failures")]
+    writes_off = [c for c in writes if c["verdict"] not in AGREES or c.get("effect_failures")]
     reads_off = [c for c in reads if c["verdict"] not in AGREES]
     unmade = [call.name for call in model.expected]
     counts = {
@@ -429,6 +590,16 @@ def _score(trace: Trace, state: Any, scored: ScoredRouter, script: _Script, mode
         # What the cursor read as one logical turn rather than as a gap it could never resync from.
         "absorbed_user_runs": script.absorbed["user"], "absorbed_model_runs": script.absorbed["assistant"],
         "absorbed_turns": sum(script.absorbed_turns.values()),
+        # D215's own counters: columns checked after a write replayed, columns that did not reach
+        # the value the recording shows, and the later calls those columns are blamed for.
+        "effect_checks": sum(int(c.get("effect_checks") or 0) for c in scored.checks),
+        "effect_failures": sum(int(c.get("effect_failures_total") or 0) for c in scored.checks),
+        "effects_downstream": sum(1 for c in scored.checks if c.get(DOWNSTREAM)),
+        # D220 rule 2c: calls whose answer carried a value the world holds on a held-out Run's
+        # word alone, and the columns those values sat in.
+        "answered_from_holdout": sum(1 for c in scored.checks if c.get("answered_from_holdout")),
+        "holdout_columns": sorted({column for c in scored.checks
+                                   for column in c.get("answered_from_holdout") or ()}),
         "routes": dict(state.run.route_counts),
         # How much of this replay's agreement rests on forgiveness rather than on the answer, and
         # how much of its disagreement the token set caught before a judge was asked (D217).
@@ -438,11 +609,19 @@ def _score(trace: Trace, state: Any, scored: ScoredRouter, script: _Script, mode
         "cosmetic_by_columns": _by_route(scored.checks, COSMETIC, BY_COLUMNS),
         "differs_by_token_set": _by_route(scored.checks, DIFFERS, BY_TOKEN_SET),
         "differs_by_presence": _by_route(scored.checks, DIFFERS, BY_PRESENCE),
+        "differs_by_judge": _by_route(scored.checks, DIFFERS, BY_JUDGE),
+        "differs_unresolved": _by_route(scored.checks, DIFFERS, BY_UNRESOLVED),
     }
     # The route is part of the reason: "differs" alone does not say whether the two answers were
     # made of different domain tokens, held different columns, or simply parted at a value (D217).
+    # A write that agreed on its own answer and failed on the rows it moved is named by its effects
+    # instead, and the read that saw the stale value carries the write it came from (D215).
     reasons = [f"{c['tool']} {_label(c)}: {c['verdict']} ({c.get('verdict_route') or BY_VALUE})"
-               for c in writes_off + reads_off]
+               for c in writes_off if c["verdict"] not in AGREES]
+    reasons += [line for c in effect_off for line in effect_reasons(c)]
+    reasons += [f"{c['tool']} {_label(c)}: {c['verdict']} ({c.get('verdict_route') or BY_VALUE})"
+                + (f", {DOWNSTREAM} {c['downstream_tool']}" if c.get(DOWNSTREAM) else "")
+                for c in reads_off]
     reasons += [f"{name} was recorded and never called" for name in unmade]
     if counts["gaps"]:
         reasons.append(f"{counts['gaps']} turn(s) out of order")
@@ -459,4 +638,4 @@ def _score(trace: Trace, state: Any, scored: ScoredRouter, script: _Script, mode
 # The per-Task ruling over these records (some Trace confirmed, or why none did) is
 # `kullback.gates.fidelity.reference_replay_gate`; this module scores one replay and stops.
 __all__ = ["Replay", "ScoredRouter", "TraceModel", "TraceUser", "compare_call", "compare_call_notes",
-           "compare_call_route", "difference", "replay_trace"]
+           "compare_call_route", "difference", "effect_reasons", "replay_trace"]
