@@ -10,7 +10,7 @@ from typing import Any, Literal, Optional
 
 from pydantic import BaseModel, Field, ValidationError
 
-from kullback import difficulty
+from kullback import difficulty, round_snapshot
 from kullback.examiner import lifecycle
 from kullback.runner.records import (
     Constraint,
@@ -102,6 +102,11 @@ class ReportData(BaseModel):
     # D209: difficulty.json, the record and the bucket per Task with the Tasks that carry neither.
     difficulty: dict = Field(default_factory=dict)
     findings: list[dict] = Field(default_factory=list)  # repairs/repair_record_finding.jsonl (D155)
+    # D218: the last closed round's Task table and how far the live files have moved from it. The
+    # report reads the table, so its Task level numbers are one round's answer rather than a join
+    # over three files that move at different times, and it says how much has moved since.
+    snapshot: dict = Field(default_factory=dict)
+    drift: dict = Field(default_factory=dict)
 
 
 # --- numbers ---------------------------------------------------------------
@@ -402,11 +407,34 @@ def _headline(data: ReportData) -> list[str]:
     if data.stopped_reason:
         lines.append(f"Stopped: {data.stopped_reason}.")
     lines += _stop_lines(data)
+    lines += _snapshot_lines(data)
     lines += _round_lines(data)
     if data.records_not_read:
         lines += ["", "### Records not read", "",
                   "These files are on disk and did not load, so every number below is counted without them."]
         lines += [f"- {name}" for name in data.records_not_read]
+    return lines
+
+
+def _snapshot_lines(data: ReportData) -> list[str]:
+    """Which round's Task table these numbers are read from, and how far the live files have moved
+    from it (D218 rule 4).
+
+    Every Task level number below is one round's answer, taken in one pass at that round's close.
+    The live files go on being written afterwards, which is right, so the sentence that follows says
+    how many Tasks now disagree with the table and at which stage: a reader who sees a number here
+    that the workdir no longer agrees with is looking at movement and not at a regression.
+    """
+    if not data.drift:
+        return []
+    lines = [round_snapshot.drift_line(data.drift)]
+    counts = dict((data.snapshot or {}).get("counts") or {})
+    if counts:
+        lines.append(f"That round ruled on {counts.get('tasks', 0)} Tasks: "
+                     f"{counts.get('fidelity', 0)} clearing fidelity, "
+                     f"{counts.get('reference', 0)} with a Reference, "
+                     f"{counts.get('verifier_passed', 0)} whose Verifier passed the suite, "
+                     f"{counts.get('trusted', 0)} trusted and {counts.get('refused', 0)} refused.")
     return lines
 
 
@@ -1237,6 +1265,7 @@ def load(workdir: Any) -> ReportData:
     gates = (_list_of(root / "gates.json", GateResult) + _list_of_bodies(state.get("gates"), GateResult))
     trusted = next((g for g in reversed(_list_of(root / "gates.json", GateResult)) if g.stage == "trusted"), None)
     status = str(state.get("status", "complete"))
+    snapshot = round_snapshot.read_snapshot(root)
     data = ReportData(
         title=config.get("title") or ("Run batch report" if config.get("kind") == "batch" else "Harness build report"),
         kind=config.get("kind", "build"),
@@ -1274,6 +1303,10 @@ def load(workdir: Any) -> ReportData:
         trusted=trusted,
         difficulty=_difficulty_body(root),
         findings=_jsonl(root / "repairs" / "repair_record_finding.jsonl", unread),
+        # D218 rule 4: the last closed round's table, and the drift of the live files from it.
+        snapshot=snapshot or {},
+        drift=round_snapshot.drift(snapshot, task_status=_json(root / "task_status.json") or {},
+                                   replays=_json(root / "replays.json") or {}),
     )
     gate = environment_gate(data)
     if gate is not None and not gate.passed:

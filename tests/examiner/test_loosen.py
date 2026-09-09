@@ -224,6 +224,9 @@ def test_the_derivation_loosens_an_over_strict_verifier_itself_and_the_gates_acc
     assert "over-specific" in history["versions"][-1]["reason"]
     assert loosen.round_counts(rows, 2) == {
         "auto_loosen_proposed": 1, "auto_loosen_accepted": 1, "auto_loosen_rejected": 0,
+        # D218 rule 3: the Tasks the step looked at and could propose nothing for. None here: the
+        # one over-strict Task had a Verifier, a rejected Run and an atom the rules can relax.
+        "auto_loosen_unproposed": 0,
         "relaxations_by_kind": {"path": 1, "read": 0, "write": 0, "write_value": 0, "answer": 0}}
 
 

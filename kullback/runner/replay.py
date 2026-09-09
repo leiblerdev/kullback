@@ -25,7 +25,15 @@ from typing import Any, Iterable, Optional
 
 from kullback.ai.provider import Model, ModelConfig, ModelReply, ToolCallRequest
 from kullback.runner import loop
-from kullback.runner.canon import canonicalize, first_difference, value_at
+from kullback.runner.canon import (
+    EXEMPT_NOTE,
+    PRESENCE_NOTE,
+    SEMANTIC_NOTE,
+    TOKEN_NOTE,
+    canonicalize,
+    first_difference,
+    value_at,
+)
 from kullback.runner.records import ToolCall, Trace, Turn, as_dict, plain
 
 RECORDED = "recorded"
@@ -46,6 +54,15 @@ AGREES = frozenset({SAME, COSMETIC, BOTH_REFUSED})
 # reader groups the two under one cause instead of repairing the read.
 EFFECT, DOWNSTREAM = "effect", "downstream_of"
 EFFECTS_NAMED = 20  # columns one failing write names, against a body that moved none of forty
+# Which way a verdict was reached, written on every check. Agreement that rests on the judge is not
+# the same evidence as agreement on the bytes, and a report that cannot tell them apart reads a
+# Trace confirmed by a forgiven difference as a Trace that replayed (D217).
+BY_BYTES, BY_CANONICAL, BY_EXEMPT, BY_JUDGE = "bytes", "canonical", "exempt", "judge"
+BY_COLUMNS, BY_TOKEN_SET, BY_PRESENCE, BY_VALUE, BY_ERROR = "columns", "token_set", "presence", "value", "error"
+# The meaning of a recorded verdict. Bump it where that meaning changes, so a cached replay written
+# under the older rule is recomputed rather than read back (D217): the stage's code version carries
+# it, beside the hashes of the modules the scoring is done by.
+VERDICT_FORMAT = 2
 
 
 class _Script:
@@ -200,10 +217,13 @@ class ScoredRouter:
         # D164: the caller goes through, so the inner Router can refuse a tool this caller never had.
         outcome = self.inner.route(name, args, requestor=requestor)
         recorded = recorded if recorded is not None else self._take(name)
-        verdict, notes = (UNRECORDED, []) if recorded is None else compare_call_notes(
+        verdict, notes, verdict_route = (UNRECORDED, [], BY_VALUE) if recorded is None else compare_call_route(
             recorded, outcome.result, outcome.error, self.canon_rules, self.comparer)
         check = {
             "tool": name, "kind": "write" if name in self.write_tools else "read", "verdict": verdict,
+            # How that verdict was reached, so a reader can see how much agreement rests on the
+            # judge and how much on the bytes (D217). `route` below is the Router's, not this.
+            "verdict_route": verdict_route,
             # Who the call was made by, so a reason can say a user turn's own call parted (D204).
             "requestor": requestor,
             "route": outcome.route, "call_id": recorded.id if recorded is not None else None,
@@ -312,7 +332,32 @@ def compare_call(recorded: ToolCall, result: Any, error: Any, rules: Any = None,
 
 def compare_call_notes(recorded: ToolCall, result: Any, error: Any, rules: Any = None,
                        comparer: Any = None) -> tuple[str, list[str]]:
-    """The verdict and, where the two answers were compared column by column, what parted (D187).
+    """The verdict and what parted, for a caller that does not read the route it was reached by."""
+    scored = compare_call_route(recorded, result, error, rules, comparer)
+    return scored[0], scored[1]
+
+
+def _route_of(agreed: bool, notes: Iterable[str]) -> str:
+    """Which of the comparer's ways a verdict was reached, read off the notes it left (D217).
+
+    A difference the token set found is named before a presence one and a presence one before a
+    plain column, because that is the order a reader wants: the coarsest reason first. Agreement is
+    read the same way round, so agreement that a judge had any hand in never counts as agreement on
+    a column class alone.
+    """
+    marks = list(notes)
+    if not agreed:
+        if any(TOKEN_NOTE in note for note in marks):
+            return BY_TOKEN_SET
+        return BY_PRESENCE if any(PRESENCE_NOTE in note for note in marks) else BY_COLUMNS
+    if any(note.startswith(SEMANTIC_NOTE) for note in marks):
+        return BY_JUDGE
+    return BY_EXEMPT if any(note.startswith(EXEMPT_NOTE) for note in marks) else BY_COLUMNS
+
+
+def compare_call_route(recorded: ToolCall, result: Any, error: Any, rules: Any = None,
+                       comparer: Any = None) -> tuple[str, list[str], str]:
+    """The verdict, what parted, and the route the verdict was reached by (D187, D217).
 
     The first two routes are whole-answer equality: the same bytes, then the same canonical string.
     Both hold every value to a hard column's bar, because `canonicalize` takes no column and no
@@ -323,23 +368,28 @@ def compare_call_notes(recorded: ToolCall, result: Any, error: Any, rules: Any =
     cosmetically: the effect is the same and the bytes are not.
 
     Given no comparer the two old routes stand alone, which is what every caller had before.
+
+    The route is kept beside the verdict, because a cosmetic verdict reached on the bytes and one
+    reached because a judge called two sentences equivalent are not the same evidence that the
+    replay reproduced the recording, and a reader with only the word "cosmetic" cannot tell them
+    apart (D217).
     """
     ours_failed, theirs_failed = error is not None, recorded.error is not None
     if ours_failed and theirs_failed:
-        return BOTH_REFUSED, []
+        return BOTH_REFUSED, [], BY_ERROR
     if ours_failed:
-        return OURS_REFUSED, []
+        return OURS_REFUSED, [], BY_ERROR
     if theirs_failed:
-        return THEIRS_REFUSED, []
+        return THEIRS_REFUSED, [], BY_ERROR
     ours, theirs = _norm(result), _norm(recorded.result)
     if _dumps(ours) == _dumps(theirs):
-        return SAME, []
+        return SAME, [], BY_BYTES
     if canonicalize(ours, rules) == canonicalize(theirs, rules):
-        return COSMETIC, []
+        return COSMETIC, [], BY_CANONICAL
     if comparer is None:
-        return DIFFERS, []
+        return DIFFERS, [], BY_VALUE
     agreed, notes = comparer.agrees(recorded.name, theirs, ours)
-    return (COSMETIC if agreed else DIFFERS), list(notes)
+    return (COSMETIC if agreed else DIFFERS), list(notes), _route_of(agreed, notes)
 
 
 def _norm(value: Any) -> Any:
@@ -463,6 +513,11 @@ def replay_trace(trace: Trace, router: Any, *, workdir: Any, task_id: str, env_i
     return _score(trace, state, scored, script, model, user, crashed)
 
 
+def _by_route(checks: Iterable[dict], verdict: str, route: str) -> int:
+    """How many checks reached this verdict this way (D217)."""
+    return sum(1 for c in checks if c.get("verdict") == verdict and c.get("verdict_route") == route)
+
+
 def _label(check: dict) -> str:
     """How a check is named in a reason: a call a user turn made itself says so, not read or write."""
     return "user_call" if check.get("requestor") == "user" else check["kind"]
@@ -494,11 +549,23 @@ def _score(trace: Trace, state: Any, scored: ScoredRouter, script: _Script, mode
         "effect_failures": sum(int(c.get("effect_failures_total") or 0) for c in scored.checks),
         "effects_downstream": sum(1 for c in scored.checks if c.get(DOWNSTREAM)),
         "routes": dict(state.run.route_counts),
+        # How much of this replay's agreement rests on forgiveness rather than on the answer, and
+        # how much of its disagreement the token set caught before a judge was asked (D217).
+        "cosmetic_by_canonical": _by_route(scored.checks, COSMETIC, BY_CANONICAL),
+        "cosmetic_by_exempt": _by_route(scored.checks, COSMETIC, BY_EXEMPT),
+        "cosmetic_by_judge": _by_route(scored.checks, COSMETIC, BY_JUDGE),
+        "cosmetic_by_columns": _by_route(scored.checks, COSMETIC, BY_COLUMNS),
+        "differs_by_token_set": _by_route(scored.checks, DIFFERS, BY_TOKEN_SET),
+        "differs_by_presence": _by_route(scored.checks, DIFFERS, BY_PRESENCE),
     }
-    reasons = [f"{c['tool']} {_label(c)}: {c['verdict']}"
+    # The route is part of the reason: "differs" alone does not say whether the two answers were
+    # made of different domain tokens, held different columns, or simply parted at a value (D217).
+    # A write that agreed on its own answer and failed on the rows it moved is named by its effects
+    # instead, and the read that saw the stale value carries the write it came from (D215).
+    reasons = [f"{c['tool']} {_label(c)}: {c['verdict']} ({c.get('verdict_route') or BY_VALUE})"
                for c in writes_off if c["verdict"] not in AGREES]
     reasons += [line for c in effect_off for line in effect_reasons(c)]
-    reasons += [f"{c['tool']} {_label(c)}: {c['verdict']}"
+    reasons += [f"{c['tool']} {_label(c)}: {c['verdict']} ({c.get('verdict_route') or BY_VALUE})"
                 + (f", {DOWNSTREAM} {c['downstream_tool']}" if c.get(DOWNSTREAM) else "")
                 for c in reads_off]
     reasons += [f"{name} was recorded and never called" for name in unmade]
@@ -517,4 +584,4 @@ def _score(trace: Trace, state: Any, scored: ScoredRouter, script: _Script, mode
 # The per-Task ruling over these records (some Trace confirmed, or why none did) is
 # `kullback.gates.fidelity.reference_replay_gate`; this module scores one replay and stops.
 __all__ = ["Replay", "ScoredRouter", "TraceModel", "TraceUser", "compare_call", "compare_call_notes",
-           "difference", "effect_reasons", "replay_trace"]
+           "compare_call_route", "difference", "effect_reasons", "replay_trace"]

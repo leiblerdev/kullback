@@ -32,6 +32,15 @@ EQUIVALENCE_VERDICTS: dict[str, Optional[bool]] = {
     "equivalent": True, "not_equivalent": False, "abstain": None,
 }
 CompareRoute = Literal["exempt", "canon", "cache", "judge", "unresolved"]
+# How a column by column comparison names what it found. The gates write these marks on their notes
+# and the Runner reads a verdict's route off them, so both sides spell them from here rather than
+# each holding its own copy of the string (D217). The first two forgive the difference they name,
+# the last two never do: a value one side holds and the other does not, and two values made of
+# different domain tokens, are differences whatever class the column has.
+EXEMPT_NOTE, SEMANTIC_NOTE = "exempt:", "semantic:"
+PRESENCE_NOTE, TOKEN_NOTE = "presence:", "token_set:"
+# What a canonical form says is nothing there at all: both sides empty is not a presence difference.
+EMPTY_CANON = frozenset({"", "null", "[]", "{}"})
 
 
 class CanonRules(BaseModel):

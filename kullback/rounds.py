@@ -44,7 +44,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, AsyncIterator, Callable, Iterable, Optional
 
-from kullback import difficulty
+from kullback import difficulty, round_snapshot, sampling
 from kullback.agent.events import (
     BeatEnd,
     BeatStart,
@@ -104,6 +104,10 @@ ALLOWANCE_STEER = "Your allowance for this round is spent: finish with what you 
 # which only the plan's own registry knows (builder.agent.nothing_changed_message).
 STALL_FOLLOW_UP = builder_agent.NOTHING_CHANGED
 EXAMINER_TARGET = "all"
+# The ledger's stages whose work is done once per Task, so their spend is what grows when the Task
+# list grows (D216, `Round.added_cost`). A stage that runs once for the corpus, however expensive,
+# costs the same whether the list holds a hundred Tasks or two hundred and is deliberately absent.
+PER_TASK_STAGES = ("intent", "loophole_probe", "reference_judge", "reroll")
 # The verbs a Builder beat can actually call: the stage tools plus the two deciding verbs of
 # `builder/repair.py`. A finding suggesting anything else names an artifact the Builder does not own
 # (the Examiner's `repair` over a Verifier, D123); it is delivered as a report and never driven.
@@ -413,6 +417,9 @@ class Loop:
     turns_seen: dict[str, int] = field(default_factory=dict)
     round_started: float = 0.0
     round_saved_start: float = 0.0
+    # Per stage, what the ledger held when this round opened, so a round's own spend on a stage is a
+    # subtraction rather than the build's running total (D216, `added_cost`).
+    round_stage_start: dict[str, float] = field(default_factory=dict)
     driver_built: list[int] = field(default_factory=list)  # rounds whose target the driver built itself
     builder_stop: dict = field(default_factory=dict)
     stall_told: int = 0
@@ -424,6 +431,9 @@ class Loop:
     retry_asks: int = 0
     retries_seen: int = 0
     zooms_seen: int = 0  # `plan.zooms_skipped` at the round's start; the plan's counter is cumulative
+    # D212: the keyed draws taken by the time the last round closed, so a round reports its own
+    # share of a counter that is cumulative over the process.
+    draws_seen: dict = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         """A new Loop resumes the workdir's unfinished business: findings an earlier invocation
@@ -436,6 +446,15 @@ class Loop:
         already holds bodies and Intents is exactly the run where round 1 rewrites the most.
         """
         self.started_hashes = artifact_hashes(self.plan.workdir)
+        # D218: the rulings `round_counts` hands back through `_land`, and the difficulty record the
+        # same pass wrote, kept in memory so the round's snapshot is one reading of one state rather
+        # than a second computation over files that have since moved.
+        self.landed: dict[str, GateResult] = {}
+        self.difficulty_body: dict = {}
+        # D212, Greptile P1 (PR 26): the draw counter is process-global, so a Loop built after
+        # something already drew has to start from what the process has taken, not from nothing.
+        # Otherwise its first round reports another Loop's draws as its own.
+        self.draws_seen = self.draws_seen or sampling.draws_by_kind()
         seen = {finding.finding_id for finding in self.pending_findings}
         self.pending_findings = list(self.pending_findings) + [
             finding for finding in _open_findings(self.plan.workdir) if finding.finding_id not in seen]
@@ -736,7 +755,11 @@ class Loop:
 
         A round the Examiner never opened on (a target earlier than the derivation's inputs) has no
         Examiner plan, so the ledger is the workdir's own, the same one `keep_gate_history` falls
-        back to."""
+        back to.
+
+        The ruling is kept in memory as well (D218): the round's Task table is built from the same
+        objects the counts were read off, so a row and the count over it cannot disagree."""
+        self.landed[ruling.stage] = ruling
         ledger = self.eplan.ledger if self.eplan is not None else GateLedger(self.plan.workdir)
         try:
             rows = json.loads(ledger.path.read_text(encoding="utf-8")) if ledger.path.is_file() else []
@@ -815,7 +838,23 @@ class Loop:
             **self._reader_counts(),
             **self._lesson_counts(),
             **self.task_split(),
+            **self._sampling_counts(),
         }
+
+    def _sampling_counts(self) -> dict:
+        """D212: the build salt every keyed draw ran under, and how many draws of each kind this round took.
+
+        `sample_salt` is eight characters of the salt's digest, so two rounds of two builds can be
+        read for whether they sampled alike without the salt itself going into a record. `draws_`
+        counts say which draws the round actually took: a round whose stages all came from the cache
+        drew nothing, which is the honest reading and not a mechanism that is off. The counts are a
+        difference against the totals at the round's start, because a round's counts are assembled
+        more than once and a destructive read would give the second caller nothing.
+        """
+        out = {"sample_salt": sampling.salt_label(sampling.read_salt(self.plan.workdir))}
+        for kind, count in sampling.draws_since(self.draws_seen).items():
+            out[f"draws_{kind}"] = int(count)
+        return out
 
     def retirements_now(self) -> list:
         """The Verifiers this round retired, read off the status rows the derivation left (D208)."""
@@ -868,11 +907,19 @@ class Loop:
                 for name in ("columns_time_varying", "sequences_served")}
 
     def task_split(self) -> dict:
-        """What the cluster stage did with the frozen Task list (D200), as three counts.
+        """What the cluster stage did with the frozen Task list (D200), and whether it regrouped (D216).
 
         A round that added Tasks grew the corpus; a round whose `tasks_frozen_only` is above zero
         re-clustered Runs the frozen list had already grouped, so the Task list and the numbers
         counted over it are still comparable, and the drift is visible instead of silent.
+
+        `tasks_grouping_moved` is the name of the input that moved under a grouping that no longer
+        matches the frozen one, and empty on the ordinary round where the split reproduced. It can
+        only ever be the recordings or the homing: the cluster stage raises rather than write
+        anything else here, so an empty value on a round that stranded Tasks says the strand came
+        from the intent clustering and not from the world. `tasks_cleared` counts the frozen Tasks
+        whose flag this round's re-examination took off. `tasks_added_cost` is what the Tasks beyond
+        the frozen list cost, so a corpus whose additions eat the ceiling is a number on the line.
         """
         try:
             split = json.loads((Path(self.plan.workdir) / TASK_SPLIT).read_text(encoding="utf-8"))
@@ -880,9 +927,35 @@ class Loop:
             return {}
         if not isinstance(split, dict):
             return {}
+        added = len(split.get("added") or [])
         return {"tasks_frozen": int(split.get("frozen") or 0),
-                "tasks_added": len(split.get("added") or []),
-                "tasks_frozen_only": len(split.get("frozen_only") or [])}
+                "tasks_added": added,
+                "tasks_frozen_only": len(split.get("frozen_only") or []),
+                "tasks_cleared": len(split.get("cleared") or {}),
+                "tasks_grouping_moved": str(split.get("grouping_moved") or ""),
+                "tasks_added_cost": self.added_cost(added, int(split.get("frozen") or 0) + added)}
+
+    def stage_spend(self) -> dict[str, float]:
+        """What the ledger has charged each stage so far, in dollars."""
+        stages = (budget.load_totals(self.plan.workdir).get("stages") or {})
+        return {name: float((bucket or {}).get("usd") or 0.0) for name, bucket in stages.items()}
+
+    def added_cost(self, added: int, tasks: int) -> float:
+        """What this round spent on the Tasks beyond the frozen list, as the ledger can say it (D216).
+
+        The ledger is keyed by stage and not by Task, so this is the round's own spend on the stages
+        that run once per Task, taken at the added Tasks' share of the list, and not a charge read
+        off each added Task. That is stated rather than hidden: the number answers whether the
+        additions are eating the ceiling, which is what it is for, and answering more finely would
+        take a per-Task item on every model call. A round with nothing added costs nothing added,
+        whatever those stages spent.
+        """
+        if added <= 0 or tasks <= 0:
+            return 0.0
+        now = self.stage_spend()
+        spent = sum(max(0.0, now.get(name, 0.0) - self.round_stage_start.get(name, 0.0))
+                    for name in PER_TASK_STAGES)
+        return round(spent * added / tasks, 6)
 
     def findings_now(self) -> list:
         """The finding rows as the Examiner's store holds them, or none when no beat has opened."""
@@ -914,17 +987,45 @@ class Loop:
                                       false_rejection=dict(counts.get("false_rejection") or {}),
                                       trusted_ids=list(counts.get("trusted_ids") or []))
         except (OSError, ValueError, TypeError):
+            self.difficulty_body = {}
             return {}
+        self.difficulty_body = body
         return {"buckets": list(body.get("buckets") or []),
                 "tasks_without_difficulty": len(body.get("no_record") or {})}
 
-    def keep_gate_history(self, n: int) -> None:
+    def snapshot_round(self, n: int) -> dict:
+        """The round's Task table, written once at close and never rewritten (D218 rule 1).
+
+        Every stage ruling of every Task in one pass over the state this driver already holds: the
+        status rows and the replays the Examiner's beat left, the trusted ruling `_land` took as the
+        counts were read, the difficulty record the same pass wrote and the bodies the round
+        released. A reader who wants one row per Task reads this file and nothing else; the three
+        files it replaces go on saying what they each say, and `drift` is what says how far the live
+        one has moved since.
+
+        A round whose Examiner never opened has no status rows, so the table is what the replays
+        alone can say, which is a shorter table and not a missing one.
+        """
+        store = self.eplan.store if self.eplan is not None else {}
+        rows = round_snapshot.task_rows(
+            n, task_status=store.get("task_status") or {}, replays=store.get("replays") or {},
+            trusted=self.landed.get("trusted"),
+            bodies=_read_json(Path(self.plan.workdir) / "bodies.json", {}) or {},
+            buckets=round_snapshot.buckets_by_task(self.difficulty_body))
+        return round_snapshot.write_snapshot(self.plan.workdir, n, rows)
+
+    def keep_gate_history(self, n: int, snapshot: Optional[dict] = None) -> None:
         """gates.json as this round leaves it, kept per round in gates_by_round.json.
 
         gates.json holds the last ruling per stage, so the next round overwrites it; a repair can
-        only be said to have turned a red gate green if the round before it is still readable."""
+        only be said to have turned a red gate green if the round before it is still readable.
+
+        The row's Task level counts are the snapshot's own (D218 rule 1), derived from the rows and
+        never counted a second time here: the history row and the table are then two readings of one
+        answer, and a reader who finds them disagreeing has found a bug and not a drift.
+        """
         ledger = self.eplan.ledger if self.eplan is not None else GateLedger(self.plan.workdir)
-        ledger.snapshot(n)
+        ledger.snapshot(n, tasks=dict((snapshot or {}).get("counts") or {}))
 
     def ceiling_reached(self) -> bool:
         last = self.plan.last
@@ -1067,9 +1168,14 @@ class Loop:
         """One round: the Builder's beat, the Examiner's beat, the counts, the exit, rounds.json."""
         self.round_started = time.time()
         self.round_saved_start = self.cache_saved()
+        self.round_stage_start = self.stage_spend()
         self.plan.round = n  # the round a repair request records itself under (D126)
         self.emit(RoundStart(round=n))
         self.sent, self.beat_spend, self.spent_allowance = [], {}, {}
+        # D218, Greptile P1 (PR 29): a round's snapshot says what this round measured, so the
+        # rulings and the difficulty record start empty. A round that ends on an error before its
+        # counts were read would otherwise write the round before it into its own table.
+        self.landed, self.difficulty_body = {}, {}
         self.compactions_seen = {agent: self.compactions(agent) for agent in AGENTS}
         self.cuts_seen = {agent: self.floor_cuts(agent) for agent in AGENTS}
         self.turns_seen = {agent: len(self.fills(agent)) for agent in AGENTS}
@@ -1102,6 +1208,7 @@ class Loop:
         # The driver's own numbers last and freshest: a round that failed comes here with no counts
         # at all, and its clock, spend and turns are as true as a round that finished.
         record = RoundRecord(round=n, counts={**counts, **self.driver_counts()})
+        self.draws_seen = sampling.draws_by_kind()  # the next round's draws start counting from here
         record.counts["moved"] = self.round_moved(n, record.counts)
         record.counts["repairs"] = self.repairs_made(n)
         history = self.rounds + [record]
@@ -1136,7 +1243,10 @@ class Loop:
                                     "the round continues")
         self.rounds.append(record)
         write_rounds(self.plan.workdir, self.rounds)
-        self.keep_gate_history(n)
+        # D218: the table first, then the history row derived from it. A round that failed before an
+        # Examiner beat writes a table of what its replays alone can say, which is still a closed
+        # round's answer and still never rewritten.
+        self.keep_gate_history(n, self.snapshot_round(n))
         return record
 
     def result(self) -> dict:

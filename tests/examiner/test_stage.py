@@ -14,6 +14,7 @@ import pytest
 from conftest import PTR
 from examiner.worlds import anchor_of, make_world, probe_runner_over
 from gates import verifier_fixtures as VF
+from kullback import sampling
 from kullback.ai.provider import ModelReply, TestModel, ToolCallRequest
 from kullback.builder.pipeline import Anchor
 from kullback.examiner import reference, stage
@@ -23,6 +24,9 @@ from kullback.gates.ledger import GateLedger
 from kullback.runner import budget
 from kullback.runner.records import Task, ToolCall, Trace, Verifier
 
+# D218 rule 2 put `round` and `updated_at` on every row of the file, so a reader can see the live file
+# move after a round closed its own table. They are on the file and not on the rows the stage answers
+# with, which is what `_read` here strips before comparing.
 STATUS_KEYS = {"reference_confirmed", "verifier_passed", "reason", "recordings", "rerolls", "judged",
                "assisted_tools", "blocking_tools", "tool_calls_replayed", "tool_calls_differing"}
 REFERENCE_KEYS = {"references", "recordings", "failed", "groups", "reason", "judged", "judge_reason",
@@ -44,7 +48,16 @@ def _fails_the_wrong_row(reason: str, *, evidence: tuple = ("end_states",)) -> s
 
 
 def _read(path: Path):
-    return json.loads(path.read_text(encoding="utf-8"))
+    """One record off disk, with D218's round and time stamps taken off each status row.
+
+    The stamps say when the live file last moved and are the file's own (rule 2); what the tests
+    below compare is the rows the derivation wrote, which is what the stage answers with.
+    """
+    body = json.loads(path.read_text(encoding="utf-8"))
+    if path.name != "task_status.json":
+        return body
+    return {task_id: {key: value for key, value in row.items() if key not in stage.STAMPS}
+            for task_id, row in body.items()}
 
 
 def _derive(workdir: Path, inputs: dict, **kwargs) -> dict:
@@ -216,8 +229,24 @@ def _counted_probe(calls: list):
 
 
 def _derived_bytes(workdir: Path, tasks: int) -> dict:
+    """What the derivation wrote, without D218's round and time stamps.
+
+    `updated_at` is a wall clock, so two runs of the same derivation write it differently and always
+    will; the claim these bytes carry is that the rows themselves are the same, which is what the
+    stamps are stripped for here and nowhere else.
+    """
     names = ["task_status.json", "references.json"] + [f"verifiers/t{n}.json" for n in range(1, tasks + 1)]
-    return {name: (workdir / name).read_bytes() for name in names}
+    return {name: without_stamps(workdir / name) for name in names}
+
+
+def without_stamps(path: Path) -> bytes:
+    """One record's bytes, with each status row's `round` and `updated_at` taken off (D218 rule 2)."""
+    body = path.read_bytes()
+    if path.name != "task_status.json":
+        return body
+    rows = {task_id: {key: value for key, value in row.items() if key not in stage.STAMPS}
+            for task_id, row in json.loads(body).items()}
+    return json.dumps(rows, indent=2, sort_keys=True, default=str).encode("utf-8")
 
 
 def test_derive_all_on_four_workers_writes_the_task_status_references_and_verifiers_one_worker_writes(tmp_path):
@@ -731,3 +760,70 @@ def test_a_task_derives_at_most_the_capped_number_of_survivors_and_says_it_chose
     assert {row["label"] for row in confirmation.survivor_scores} == {"A", "B"}, \
         "the two states the recordings reached first, and not the two the cap left out"
     assert confirmation.survivor_chosen in {"A", "B"}
+
+
+# --- keyed draws in the derivation (D212) -----------------------------------
+
+def _probed(workdir: Path) -> set[str]:
+    """The Tasks that spent a probe slot, off the cache entry each derivation wrote."""
+    out = set()
+    for entry in (workdir / "examiner" / "cache").glob("*/*.json"):
+        body = _read(entry)
+        if body.get("probed"):
+            out.add(body["task_id"])
+    return out
+
+
+def test_which_tasks_spend_the_probe_budget_does_not_depend_on_the_order_the_tasks_are_handed_over(tmp_path):
+    """D212: a bounded budget goes out by the Tasks' own keys, so re-clustering the list moves nobody."""
+    forward = make_world(tmp_path / "forward", tasks=5)
+    backward = make_world(tmp_path / "backward", tasks=5)
+    backward.inputs["tasks"] = list(reversed(backward.inputs["tasks"]))
+    kwargs = dict(probe_model=object(), run_probe=probe_runner_over(), probe_limit=2)
+    _derive(forward.workdir, forward.inputs, **kwargs)
+    first = _probed(forward.workdir)
+    _derive(backward.workdir, backward.inputs, **kwargs)
+    second = _probed(backward.workdir)
+    assert len(first) == 2 and first == second
+
+
+def test_a_task_added_to_the_build_does_not_take_the_probe_slot_of_a_task_whose_key_outranks_it(tmp_path):
+    """The budget is still bounded, so a slot can change hands; what it must not do is change hands
+    because a Task appeared earlier in the list than the Task already holding it."""
+    four = make_world(tmp_path / "four", tasks=4)
+    five = make_world(tmp_path / "five", tasks=5)
+    kwargs = dict(probe_model=object(), run_probe=probe_runner_over(), probe_limit=2)
+    _derive(four.workdir, four.inputs, **kwargs)
+    before = _probed(four.workdir)
+    order = sampling.keyed_order(stage.PROBE_KIND, [t.id for t in five.inputs["tasks"]],
+                                 sampling.build_salt(five.workdir))
+    _derive(five.workdir, five.inputs, **kwargs)
+    after = _probed(five.workdir)
+    assert after == set(order[:2])
+    assert before <= set(sampling.keyed_order(stage.PROBE_KIND, [t.id for t in four.inputs["tasks"]],
+                                              sampling.build_salt(four.workdir))[:2])
+
+
+def test_a_second_search_for_a_second_path_takes_batch_numbers_above_the_ones_already_bought(tmp_path):
+    """D212: a count that must grow adds higher attempt indexes; it never writes over an earlier one."""
+    world = _lone_reference_world(tmp_path)
+    calls: list = []
+    runner = _reroll_runner_over(world, VF.wrong_run, calls)
+    stage.second_path_search("t1", _confirmation_of(world), workdir=world.workdir, run_rerolls=runner,
+                             round_number=1, write_tools=set(VF.WRITE_TOOLS),
+                             fn=verifier_suite.canon_fn({}), atoms=[], cap=2)
+    stage.second_path_search("t1", _confirmation_of(world), workdir=world.workdir, run_rerolls=runner,
+                             round_number=1, write_tools=set(VF.WRITE_TOOLS),
+                             fn=verifier_suite.canon_fn({}), atoms=[], cap=2)
+    assert [prefix for _, _, prefix in calls] == [
+        "second-path-r1-b1", "second-path-r1-b2", "second-path-r1-b3", "second-path-r1-b4"]
+    assert {row["batch"] for row in stage.second_path_rows(world.workdir, "t1")} == {1, 2, 3, 4}
+    assert stage.next_batch(world.workdir, "t1") == 5
+
+
+def _confirmation_of(world) -> reference.Confirmation:
+    """The world's Reference as a settled Confirmation, so the search has something to look past."""
+    fn = verifier_suite.canon_fn({})
+    record = reference.load(world.paths["ref"], reference.RECORDING, run_id="ref",
+                            write_tools=VF.WRITE_TOOLS, fn=fn)
+    return reference.Confirmation(recordings=[record], references=[record])
