@@ -801,6 +801,18 @@ def test_a_rounds_counts_say_how_many_tasks_it_froze_added_and_could_not_reprodu
     assert counts["tasks_frozen_only"] == len(split["frozen_only"]) == 0
 
 
+def test_a_rounds_counts_say_whether_the_grouping_moved_and_what_the_added_tasks_cost(driven):
+    """D216: the split reproduces or an input moved, and the growth carries its own price."""
+    counts = rounds.load_rounds(driven["workdir"])[-1].counts
+    split = json.loads((driven["workdir"] / "task_split.json").read_text(encoding="utf-8"))
+    grouping = json.loads((driven["workdir"] / "grouping.json").read_text(encoding="utf-8"))
+    assert split["grouping"] == grouping["fingerprint"], "the first build writes the fingerprint it took"
+    assert set(split["grouping_inputs"]) == {"recordings", "homing"}
+    assert counts["tasks_grouping_moved"] == "", "nothing can have moved before there is a frozen list"
+    assert counts["tasks_cleared"] == 0
+    assert counts["tasks_added_cost"] == 0.0, "this build spends nothing on the stages that run per Task"
+
+
 def test_every_rounds_gate_rulings_are_kept_beside_gates_json_round_by_round(driven):
     """gates.json holds the last ruling per stage, so the next round overwrites it; the per-round
     rows are what lets a repair be read against the rulings before and after its round."""
