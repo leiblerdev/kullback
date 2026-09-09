@@ -286,3 +286,18 @@ def test_a_schema_mined_before_the_vocabulary_lends_the_states_its_samples_showe
         Column(table="kilns", name="kiln_state", **{"class": "hard"}, samples=["firing", "idle"],
                evidence={"distinct": 2})])
     assert domain_tokens(schema, "kilns", "kiln_state") == {"firing", "idle"}
+
+
+def test_a_schema_that_counted_nothing_lends_no_ids_however_short_they_are():
+    """Greptile P1 (PR 28): an older schema kept short id sightings and no count of what the column held.
+
+    Read as a set of names those ids reach every free text column of the table and fail replays on
+    an id that differs incidentally, so the stand-in takes the miner's own two other tests: an id
+    column lends nothing, and a set of names repeats.
+    """
+    schema = EntitySchema(tables=["kilns"], columns=[
+        Column(table="kilns", name="kiln_id", **{"class": "hard"}, samples=["K1A", "K2B"]),
+        Column(table="kilns", name="tag", **{"class": "hard"}, samples=["wx7", "yz8"]),
+        Column(table="kilns", name="note", **{"class": "semantic"}, samples=["the kiln is firing"])])
+    assert domain_tokens(schema, "kilns", "note") == frozenset()
+    assert domain_tokens(schema, "kilns", "kiln_id") == frozenset()

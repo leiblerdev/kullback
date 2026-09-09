@@ -307,21 +307,43 @@ def _token(value: Any, rules: Any = None) -> Optional[str]:
     return text
 
 
+# The suffixes a column that holds an id is named with, which is the same reading the miner takes
+# before it records a vocabulary at all. An id is addressed rather than named, so it lends nothing.
+ID_SUFFIXES = ("_id", "_number", "_no", "_code", "_key", "_ref", "_uuid")
+
+
+def _named_id(column: Any) -> bool:
+    """Whether this column's own name says it holds an id."""
+    name = str(getattr(column, "name", "") or "")
+    return name == "id" or name.endswith(ID_SUFFIXES)
+
+
 def _enumerated(column: Any, rules: Any = None) -> bool:
     """Whether the corpus showed this column drawing from a set of names.
 
     The miner records the set where it found one (`Column.vocabulary`). A schema mined before it did
-    still keeps a few sightings per column, and those stand in, held to the same test: every value a
-    short name, and no more distinct values than a set of names has. So an id column, a number and a
-    free text column lend no names on either kind of schema.
+    still keeps a few sightings per column, and those stand in, held to the miner's own three tests
+    rather than to one of them: every value a short name, an id column lending nothing whatever its
+    ids look like, and a set of names repeating, so a column whose every kept sighting was a value
+    of its own is holding data however short it is, where nothing counted what it held. Without the
+    last two a build carried over a schema mined before D217 read an id column as a set of names,
+    lent those ids to every free text column of the table, and failed sound replays on ids that
+    differ incidentally. The stand-in is
+    deliberately the stricter reading: where it says no, the comparison is what it was before D217,
+    and a fresh mine puts the real vocabulary back.
     """
     if list(getattr(column, "vocabulary", None) or ()):
         return True
     present = [value for value in (getattr(column, "samples", None) or []) if value is not None]
-    if not present:
+    if not present or _named_id(column):
         return False
     distinct = (getattr(column, "evidence", None) or {}).get("distinct")
-    if isinstance(distinct, int) and distinct > ENUM_DISTINCT:
+    if isinstance(distinct, int):
+        if distinct > ENUM_DISTINCT:
+            return False
+    elif len({canon(str(value), rules) for value in present}) >= len(present):
+        # No count of what the column held, so the kept sightings are the only evidence that it
+        # repeats at all, and a column whose every sighting was a value of its own does not.
         return False
     return all(_token(value, rules) is not None for value in present)
 
