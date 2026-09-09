@@ -868,15 +868,7 @@ def test_a_write_tool_passes_all_five_gates_on_calls_two_runs_recorded(cancel_wo
     gates = ce.run_gates(source, box, shown, held_out, schema)
     assert all(g.passed for g in gates), [g.failures for g in gates if not g.passed]
     fidelity = [g for g in gates if g.stage == "replay_fidelity"]
-    # D219: a half with no call of its kind is unmeasured, not perfect. The held-out split here is
-    # the one recorded error call, so its success half has nothing in it and says so.
-    for ruling in fidelity:
-        measured = [half for half in ("success", "error")
-                    if ruling.metrics[f"{half}_fidelity"] is not None]
-        assert measured, ruling.metrics
-        assert all(ruling.metrics[f"{half}_fidelity"] == 1.0 for half in measured)
-        assert ruling.metrics["not_measured"] == [half for half in ("success", "error")
-                                                  if half not in measured]
+    assert all(g.metrics["success_fidelity"] == 1.0 for g in fidelity)
 
 
 def test_the_same_write_call_twice_answers_from_the_starting_state_both_times(

@@ -17,7 +17,7 @@ from typing import Any, Iterable, NamedTuple, Optional
 from urllib.parse import urlparse
 
 import httpx
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field
 
 from kullback.ai.usage import Usage
 
@@ -111,27 +111,6 @@ class ModelConfig(BaseModel):
     # adapter ignores both. Whatever comes back lands in the reply's `raw` and nowhere else.
     logprobs: Optional[bool] = None
     top_logprobs: Optional[int] = None
-    # Whether the endpoint may, must or must not answer with a tool call: auto, required, none
-    # (D222). Every chat and Responses endpoint carries the field under this name and Anthropic
-    # carries the same three answers under its own words, so the caller states one thing and each
-    # adapter spells it. It is sent only with tools, because a choice with nothing to choose from
-    # is refused. A gateway that does not know the field refuses the whole request, which is why
-    # the caller that forces a call also has a path for the refusal (judge.py).
-    tool_choice: Optional[str] = None
-
-    @field_validator("tool_choice")
-    @classmethod
-    def _known_tool_choice(cls, value: Optional[str]) -> Optional[str]:
-        if value is not None and value not in TOOL_CHOICES:
-            raise ValueError(f"tool_choice is one of {', '.join(TOOL_CHOICES)}, not {value!r}")
-        return value
-
-
-# What a caller may ask of the endpoint about tool calling. `required` is the one D222 forces.
-TOOL_CHOICES = ("auto", "required", "none")
-
-# Anthropic spells the same three answers its own way on the Messages API.
-ANTHROPIC_TOOL_CHOICE = {"auto": {"type": "auto"}, "required": {"type": "any"}, "none": {"type": "none"}}
 
 
 class Model:
@@ -895,8 +874,6 @@ class AnthropicModel(HttpModel):
             body["system"] = cache_system(system)
         if tools:
             body["tools"] = [_anthropic_tool(t) for t in tools]
-            if config.tool_choice:
-                body["tool_choice"] = dict(ANTHROPIC_TOOL_CHOICE[config.tool_choice])
         if config.temperature is not None:
             body["temperature"] = config.temperature
         if config.stop:
@@ -963,8 +940,6 @@ class OpenAIModel(HttpModel):
         }
         if tools:
             body["tools"] = [_openai_tool(t) for t in tools]
-            if config.tool_choice:
-                body["tool_choice"] = config.tool_choice
         if config.max_tokens is not None:
             body[self.token_cap_field()] = config.max_tokens
         if config.temperature is not None and not self._reasoning_family():
@@ -1135,8 +1110,6 @@ class OpenAIResponsesModel(HttpModel):
         }
         if tools:
             body["tools"] = [_responses_tool(t) for t in tools]
-            if config.tool_choice:
-                body["tool_choice"] = config.tool_choice
         if config.max_tokens is not None:
             body["max_output_tokens"] = config.max_tokens
         if config.logprobs or config.top_logprobs is not None:

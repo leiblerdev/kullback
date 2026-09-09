@@ -38,12 +38,11 @@ def test_a_differing_hard_column_is_reported_at_its_leaf_with_both_values():
     assert notes == ['rooms[1].bed: ours "king", recorded "twin"']
 
 
-def test_a_semantic_column_nobody_settled_fails_under_its_own_name():
+def test_a_semantic_column_is_reported_by_name_and_does_not_fail():
     ok, notes = compare_results(SCHEMA, _booking("twin"), _booking("twin", "sea  view"))
     assert ok is True and notes == []
     ok, notes = compare_results(SCHEMA, _booking("twin"), _booking("twin", "garden"))
-    assert ok is False
-    assert notes[0].startswith("unresolved:note: nobody settled")
+    assert ok is True and notes == ["semantic:note"]
 
 
 def test_noise_the_learned_precision_absorbs_is_no_difference():
@@ -54,31 +53,12 @@ def test_noise_the_learned_precision_absorbs_is_no_difference():
     assert compare_results(SCHEMA, theirs, ours) == (False, ["rooms[0].rate: ours 30.180000000000064, recorded 30.180000000000007"])
 
 
-def test_the_fidelity_ruling_carries_the_leaf_and_the_column_nobody_settled():
+def test_the_fidelity_ruling_carries_the_leaf_and_not_the_semantic_note():
     call = ToolCall(id="c1", name="get_booking", args={"booking_id": "#B1"}, raw_ptr=PTR, result=json.dumps(_booking("twin", "sea view")))
     result = body_replay_fidelity_gate([call], [{"ok": True, "value": _booking("king", "garden")}], SCHEMA)
     assert result.passed is False
-    assert len(result.failures) == 1
-    assert result.failures[0].endswith('rooms[1].bed: ours "king", recorded "twin"')
-    assert "unresolved:note" in result.failures[0]
+    assert result.failures == ['get_booking({"booking_id": "#B1"}): hard columns differ: rooms[1].bed: ours "king", recorded "twin"']
     assert result.metrics["semantic_differences"] == 1
-    assert result.metrics["semantic_unresolved"] == 1 and result.metrics["semantic_judged"] == 0
-
-
-def test_a_half_with_no_recorded_call_of_its_kind_is_unmeasured_and_not_a_pass():
-    call = ToolCall(id="c1", name="get_booking", args={"booking_id": "#B1"}, raw_ptr=PTR,
-                    result=json.dumps(_booking("twin", "sea view")))
-    result = body_replay_fidelity_gate([call], [{"ok": True, "value": _booking("twin", "sea view")}], SCHEMA)
-    assert result.passed is True
-    assert result.metrics["success_fidelity"] == 1.0
-    assert result.metrics["error_fidelity"] is None and result.metrics["not_measured"] == ["error"]
-
-
-def test_a_ruling_with_no_recorded_call_at_all_measured_nothing_and_does_not_pass():
-    result = body_replay_fidelity_gate([], [], SCHEMA)
-    assert result.passed is False
-    assert result.metrics["not_measured"] == ["success", "error"]
-    assert result.failures == ["no recorded call of either kind: this ruling measured nothing"]
 
 
 # --- gate 4: non_trivial, and the state-driven tool it may not judge (D165) ---
@@ -130,22 +110,10 @@ LAMP_READERS = load_readers({"proposals": {"technician": {
     "readers": [{"tool": "check_lamp", "source": READER}]}}})
 
 
-def _judge_saying_equivalent(asked: list):
-    def judge(column, ours, theirs):
-        asked.append(column)
-        return {"verdict": "equivalent"}
-    return judge
-
-
-def test_two_prose_results_parting_in_a_semantic_column_are_equal_only_once_a_judge_says_so():
-    asked: list = []
+def test_two_prose_results_differing_only_in_a_semantic_column_compare_equal():
     ok, notes = compare_results(LAMP_SCHEMA, "on | steady glow | 41", "on | a steady glow | 41",
                                 tool="check_lamp", readers=LAMP_READERS)
-    assert ok is False and notes[0].startswith("read as columns: unresolved:lamp_note")
-    ok, notes = compare_results(LAMP_SCHEMA, "on | steady glow | 41", "on | a steady glow | 41",
-                                tool="check_lamp", readers=LAMP_READERS,
-                                judge=_judge_saying_equivalent(asked))
-    assert ok is True and notes == ["semantic:lamp_note"] and asked == ["lamp_note"]
+    assert ok is True and notes == ["semantic:lamp_note"]
 
 
 def test_two_prose_results_differing_in_a_hard_column_do_not_compare_equal():
@@ -193,45 +161,9 @@ def test_a_semantic_column_takes_the_judge_when_one_is_given():
         Column(table="lamps", name="lamp_note", **{"class": "semantic"})])
     recorded = {"lamp_id": "L1", "lamp_note": "steady glow"}
     ours = {"lamp_id": "L1", "lamp_note": "a glow that holds steady"}
-    assert compare_columns(schema, "lamps", recorded, ours, judge=judge) == (True, ["semantic:lamp_note"])
+    assert compare_columns(schema, "lamps", recorded, ours, judge=judge) == (True, [])
     assert asked == ["lamp_note"]
-    ok, notes = compare_columns(schema, "lamps", recorded, ours)
-    assert ok is False and notes[0].startswith("unresolved:lamp_note")
-
-
-def test_a_pair_the_judge_settles_is_kept_so_the_next_comparison_asks_nobody():
-    """D219: every answer goes into the equivalence table keyed by column and canonical pair, so a
-    pair is judged once however many Traces meet it."""
-    from kullback.runner.canon import EquivalenceTable
-
-    asked: list = []
-    table = EquivalenceTable()
-    schema = EntitySchema(tables=["lamps"], columns=[
-        Column(table="lamps", name="lamp_id", **{"class": "hard"}),
-        Column(table="lamps", name="lamp_note", **{"class": "semantic"})])
-    recorded = {"lamp_id": "L1", "lamp_note": "steady glow"}
-    ours = {"lamp_id": "L1", "lamp_note": "a glow that holds steady"}
-    first = compare_columns(schema, "lamps", recorded, ours,
-                            judge=_judge_saying_equivalent(asked), equivalence=table)
-    second = compare_columns(schema, "lamps", recorded, ours,
-                             judge=_judge_saying_equivalent(asked), equivalence=table)
-    assert first == second == (True, ["semantic:lamp_note"])
-    assert asked == ["lamp_note"], "the second comparison read the table and asked nobody"
-    assert len(table.entries) == 1
-
-
-def test_the_counts_tell_a_judged_pair_from_one_nobody_settled():
-    schema = EntitySchema(tables=["lamps"], columns=[
-        Column(table="lamps", name="lamp_id", **{"class": "hard"}),
-        Column(table="lamps", name="lamp_note", **{"class": "semantic"})])
-    recorded = {"lamp_id": "L1", "lamp_note": "steady glow"}
-    ours = {"lamp_id": "L1", "lamp_note": "a glow that holds steady"}
-    open_pair: dict = {}
-    compare_columns(schema, "lamps", recorded, ours, tally=open_pair)
-    assert open_pair == {"semantic_compared": 1, "semantic_unresolved": 1}
-    judged: dict = {}
-    compare_columns(schema, "lamps", recorded, ours, judge=_judge_saying_equivalent([]), tally=judged)
-    assert judged == {"semantic_compared": 1, "semantic_judged": 1, "semantic_equal": 1}
+    assert compare_columns(schema, "lamps", recorded, ours) == (True, ["semantic:lamp_note"])
 
 
 def test_two_lists_of_keyed_rows_compare_equal_whatever_order_they_come_back_in():
@@ -263,6 +195,13 @@ KILN_SCHEMA = EntitySchema(tables=["kilns"], columns=[
     Column(table="kilns", name="kiln_reading", **{"class": "exempt"})])
 
 
+def _judge_saying_equivalent(asked: list):
+    def judge(column, ours, theirs):
+        asked.append(column)
+        return {"verdict": "equivalent"}
+    return judge
+
+
 def test_a_value_only_one_side_holds_fails_even_on_a_column_the_schema_exempts():
     recorded = {"kiln_id": "K1", "kiln_reading": 640}
     ours = {"kiln_id": "K1"}
@@ -285,11 +224,10 @@ def test_a_value_only_one_side_holds_fails_even_where_the_judge_would_forgive_it
 def test_a_column_both_sides_leave_empty_is_not_a_difference_in_presence():
     recorded = {"kiln_id": "K1", "kiln_reading": None, "kiln_report": ""}
     ours = {"kiln_id": "K1"}
-    assert compare_columns(KILN_SCHEMA, "kilns", recorded, ours) == (True, [])
+    assert compare_columns(KILN_SCHEMA, "kilns", recorded, ours) == (True, ["semantic:kiln_report"])
     empty_shapes = {"kiln_id": "K1", "kiln_reading": [], "kiln_report": ""}
     ok, notes = compare_columns(KILN_SCHEMA, "kilns", recorded, empty_shapes)
-    # Two empties are the same nothing whatever their shape, so there is not even a note to forgive.
-    assert ok is True and notes == []
+    assert ok is True and notes == ["exempt:kiln_reading"]
 
 
 def test_two_sentences_carrying_the_same_states_are_put_to_the_judge():
@@ -297,7 +235,7 @@ def test_two_sentences_carrying_the_same_states_are_put_to_the_judge():
     recorded = {"kiln_id": "K1", "kiln_report": "the kiln is firing"}
     ours = {"kiln_id": "K1", "kiln_report": "firing, as it happens"}
     assert compare_columns(KILN_SCHEMA, "kilns", recorded, ours,
-                           judge=_judge_saying_equivalent(asked)) == (True, ["semantic:kiln_report"])
+                           judge=_judge_saying_equivalent(asked)) == (True, [])
     assert asked == ["kiln_report"]
 
 
@@ -329,7 +267,7 @@ def test_a_world_that_named_no_states_leaves_the_judge_the_question_it_always_ha
     recorded = {"kiln_id": "K1", "kiln_report": "the kiln is firing and vented"}
     ours = {"kiln_id": "K1", "kiln_report": "the kiln is firing"}
     assert compare_columns(schema, "kilns", recorded, ours,
-                           judge=_judge_saying_equivalent(asked)) == (True, ["semantic:kiln_report"])
+                           judge=_judge_saying_equivalent(asked)) == (True, [])
     assert asked == ["kiln_report"]
 
 

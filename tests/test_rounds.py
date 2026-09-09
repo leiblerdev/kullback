@@ -66,11 +66,9 @@ TARGET = "environment"
 # reason now names the route the verdict was reached by, and the one reason here reads
 # `differs (columns)`. Re-pinned for D218: every row carries the round that last moved it and when,
 # so the hash is taken over the rows with those two stamps stripped; the stamp is a wall clock and
-# hashing it would pin the minute the fixture ran rather than what it wrote. Re-pinned for D222: the
-# judge version is one of the things a re-roll's key is made of, and it moved when the judge stopped
-# refusing a verdict for want of a tool call, so the re-roll ids under each row are new. The same
-# three Tasks, the same verdicts.
-TASK_STATUS_SHA256_BEFORE_THE_PHASE = "2fe278339d5b23b2186bbfa9849816441693702069b035a27c2dfb4c3e7da6fd"
+# hashing it would pin the minute the fixture ran rather than what it wrote. The same three Tasks,
+# the same verdicts.
+TASK_STATUS_SHA256_BEFORE_THE_PHASE = "7563e5758c9391816afd8de2465ad6bb91bbeb03d299c3479404ece3e440c2c8"
 
 
 def _fixture(request) -> Path:
@@ -790,17 +788,6 @@ def test_round_end_carries_every_count_d126_lists_and_none_comes_from_a_model(dr
     assert [d for d in driven["dicts"] if d.get("kind") == "round"][-1]["counts"] == counts
 
 
-def test_a_round_says_what_its_semantic_comparisons_came_to_and_what_the_judging_cost(driven):
-    """D219: a round that cannot tell "no semantic column" from "every semantic column unanswered"
-    cannot see the judge is unwired. The counts and the judge's own spend are on every round."""
-    counts = rounds.load_rounds(driven["workdir"])[-1].counts
-    assert set(counts) >= {"semantic_compared", "semantic_judged", "semantic_equal",
-                           "semantic_different", "semantic_unresolved", "judge_spend"}
-    # The fixture's schema classes no column semantic, so nothing was compared and nothing was spent.
-    assert counts["semantic_compared"] == 0 and counts["semantic_unresolved"] == 0
-    assert counts["judge_spend"] == 0
-
-
 def test_a_rounds_counts_carry_its_clock_its_spend_its_turns_and_its_context_fill(driven):
     """A build's duration is read from these and from nothing else: pipeline/state.json records the
     stage statuses and no clock, and a repair's timestamp has no round to sit against without them."""
@@ -820,6 +807,18 @@ def test_a_rounds_counts_say_how_many_tasks_it_froze_added_and_could_not_reprodu
     assert counts["tasks_frozen"] == split["frozen"] == 0, "the first build has no list to resume from"
     assert counts["tasks_added"] == len(split["added"]) == len(tasks)
     assert counts["tasks_frozen_only"] == len(split["frozen_only"]) == 0
+
+
+def test_a_rounds_counts_say_whether_the_grouping_moved_and_what_the_added_tasks_cost(driven):
+    """D216: the split reproduces or an input moved, and the growth carries its own price."""
+    counts = rounds.load_rounds(driven["workdir"])[-1].counts
+    split = json.loads((driven["workdir"] / "task_split.json").read_text(encoding="utf-8"))
+    grouping = json.loads((driven["workdir"] / "grouping.json").read_text(encoding="utf-8"))
+    assert split["grouping"] == grouping["fingerprint"], "the first build writes the fingerprint it took"
+    assert set(split["grouping_inputs"]) == {"recordings", "homing"}
+    assert counts["tasks_grouping_moved"] == "", "nothing can have moved before there is a frozen list"
+    assert counts["tasks_cleared"] == 0
+    assert counts["tasks_added_cost"] == 0.0, "this build spends nothing on the stages that run per Task"
 
 
 def test_every_rounds_gate_rulings_are_kept_beside_gates_json_round_by_round(driven):

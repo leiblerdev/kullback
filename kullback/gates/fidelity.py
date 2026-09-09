@@ -100,12 +100,7 @@ def summarize(replays: dict[str, dict[str, dict]]) -> dict:
             "cosmetic_by_judge": total("cosmetic_by_judge"),
             "cosmetic_by_columns": total("cosmetic_by_columns"),
             "differs_by_token_set": total("differs_by_token_set"),
-            "differs_by_presence": total("differs_by_presence"),
-            # A check the judge settled as different, and one nobody settled at all (D219). The
-            # second is the number that says whether the judging is wired: a corpus with semantic
-            # columns and nothing but unresolved checks has no semantic comparison happening.
-            "differs_by_judge": total("differs_by_judge"),
-            "differs_unresolved": total("differs_unresolved")}
+            "differs_by_presence": total("differs_by_presence")}
 
 
 def unconfirmed_reason(per_task: dict[str, dict]) -> str:

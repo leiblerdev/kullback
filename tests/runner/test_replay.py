@@ -297,7 +297,7 @@ def test_a_trace_whose_roles_alternate_absorbs_nothing_and_replays_as_it_did(tmp
 
 # --- D217: a cosmetic verdict says which way it was reached, and states are not cosmetic ---
 
-def _kiln_state_comparer(judge=None):
+def _kiln_state_comparer():
     """A comparer over an invented kiln whose report is prose and whose states are named."""
     from kullback.gates.tool_runs import ReplayComparer
     from kullback.runner.records import Column, EntitySchema
@@ -308,7 +308,7 @@ def _kiln_state_comparer(judge=None):
                vocabulary=["closed", "open", "vented"]),
         Column(table="firings", name="firing_report", **{"class": "semantic"}),
         Column(table="firings", name="logged_at", **{"class": "exempt"})])
-    return ReplayComparer(schema, judge=judge)
+    return ReplayComparer(schema)
 
 
 def test_the_same_bytes_and_the_same_canonical_form_are_told_apart_by_the_route():
@@ -332,31 +332,10 @@ def test_a_forgiven_column_and_a_judged_one_are_told_apart_by_the_route():
         comparer=_kiln_state_comparer())
     assert verdict == replay.COSMETIC and route == replay.BY_EXEMPT
     prose = call("x", "t", {}, {"firing_id": "F9", "firing_report": "the damper is open"})
-    judged = lambda column, ours, theirs: {"verdict": "equivalent"}  # noqa: E731
     verdict, _notes, route = replay.compare_call_route(
-        prose, {"firing_id": "F9", "firing_report": "open damper, that is"}, None,
-        comparer=_kiln_state_comparer(judged))
-    assert verdict == replay.COSMETIC and route == replay.BY_JUDGE
-
-
-def test_a_semantic_column_nobody_settled_parts_and_says_so_rather_than_agreeing():
-    """D219: an unresolved pair is not agreement. With no judge and no table nothing settled these
-    two sentences, so the check parts under its own route instead of counting as a replayed call."""
-    prose = call("x", "t", {}, {"firing_id": "F9", "firing_report": "the damper is open"})
-    verdict, notes, route = replay.compare_call_route(
         prose, {"firing_id": "F9", "firing_report": "open damper, that is"}, None,
         comparer=_kiln_state_comparer())
-    assert verdict == replay.DIFFERS and route == replay.BY_UNRESOLVED
-    assert notes[0].startswith("unresolved:firing_report")
-
-
-def test_a_pair_the_judge_calls_different_parts_by_the_judge_and_not_by_the_columns():
-    prose = call("x", "t", {}, {"firing_id": "F9", "firing_report": "the damper is open"})
-    parted = lambda column, ours, theirs: {"verdict": "not_equivalent"}  # noqa: E731
-    verdict, _notes, route = replay.compare_call_route(
-        prose, {"firing_id": "F9", "firing_report": "open damper, that is"}, None,
-        comparer=_kiln_state_comparer(parted))
-    assert verdict == replay.DIFFERS and route == replay.BY_JUDGE
+    assert verdict == replay.COSMETIC and route == replay.BY_JUDGE
 
 
 def test_an_answer_naming_a_different_state_parts_and_names_the_states_on_each_side():

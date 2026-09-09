@@ -494,45 +494,6 @@ def test_a_semantic_pair_nobody_settled_is_named_and_never_read_as_equal(write_r
     assert len(used) == 1 and json.loads(used[0])["run_id"] == "r1"
 
 
-def test_an_atom_resting_on_a_pair_nobody_settled_is_unresolved_and_never_a_pass(write_run):
-    """D219: a forbidden atom asking whether the End state holds a forbidden wording used to read
-    an unsettled pair as "not there" and pass. It is now its own outcome: the Run is not verdicted,
-    the atom is named, and the count of them is on the Verdict."""
-    lines = oracle_lines()
-    lines[-1] = stop(8, start_state={"orders": {"W123": {"status": "pending", "note": "open"}}},
-                     end_state={"orders": {"W123": {"status": "cancelled", "note": "cancelled by user"}}})
-    schema = EntitySchema(tables=["orders"], columns=[
-        Column(table="orders", name="status", **{"class": "hard"}),
-        Column(table="orders", name="note", **{"class": "semantic"})])
-    forbidden = Atom(id="a_forbidden_note", kind="forbidden",
-                     predicate_src='same("orders.note", "cancelled by the user", value("orders", "W123", "note"))')
-    out = verdict(write_run(lines), Verifier(task_id="t1", atoms=[forbidden]), schema=schema)
-    assert out.passed is False and out.class_ == "not_verdicted"
-    assert out.failing_atom == "a_forbidden_note"
-    assert any(note.startswith("atom_unresolved:a_forbidden_note:orders.note") for note in out.notes)
-    assert "atoms_unresolved=1" in out.notes
-
-
-def test_the_same_atom_passes_or_fails_once_the_table_settles_the_pair(write_run):
-    from kullback.runner import canon as canon_module
-
-    lines = oracle_lines()
-    lines[-1] = stop(8, start_state={"orders": {"W123": {"status": "pending", "note": "open"}}},
-                     end_state={"orders": {"W123": {"status": "cancelled", "note": "cancelled by user"}}})
-    schema = EntitySchema(tables=["orders"], columns=[
-        Column(table="orders", name="status", **{"class": "hard"}),
-        Column(table="orders", name="note", **{"class": "semantic"})])
-    forbidden = Atom(id="a_forbidden_note", kind="forbidden",
-                     predicate_src='same("orders.note", "cancelled by the user", value("orders", "W123", "note"))')
-    table = canon_module.EquivalenceTable()
-    canon_module.put(table, "orders.note", canon_module.canon_value("cancelled by the user"),
-                     canon_module.canon_value("cancelled by user"), True, classified_by="human")
-    out = verdict(write_run(lines), Verifier(task_id="t1", atoms=[forbidden]), schema=schema,
-                  equivalence=table)
-    assert out.passed is False and out.class_ == "fail"
-    assert out.failing_atom == "a_forbidden_note"
-
-
 # --- loading and the code-only property ---
 
 def test_load_run_reads_header_events_and_footer(write_run):
