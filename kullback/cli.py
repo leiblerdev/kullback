@@ -1,5 +1,6 @@
-"""The commands of the Harness: ingest, build, freeze-runner, run, verdict, regrade, report, difficulty,
-export, publish and fetch, each reading and writing records under one workdir with no hidden state."""
+"""The commands of the Harness: ingest, build, freeze-runner, run, verdict, regrade, report, status,
+difficulty, export, publish and fetch, each reading and writing records under one workdir with no
+hidden state."""
 
 from __future__ import annotations
 
@@ -12,7 +13,7 @@ from typing import Any, Optional
 
 import typer
 
-from kullback import difficulty
+from kullback import difficulty, round_snapshot
 from kullback.report import coverage_rows, load, load_tool_sigs, write_report
 from kullback.runner import feed, heartbeat
 from kullback.runner.records import (
@@ -372,6 +373,18 @@ def build(
         raise typer.Exit(1)
 
 
+def _regrouped(counts: dict) -> str:
+    """What the round says about a grouping that no longer matches the frozen one (D216).
+
+    Nothing at all on the ordinary round, because the split of one recording set reproduces and a
+    line that said so every round would only be noise. Where it did move, the line names the input
+    that moved it, which is the whole of the finding: a corpus that grew regrouped for a reason, and
+    the harness raises rather than print anything else here.
+    """
+    moved = str(counts.get("tasks_grouping_moved") or "")
+    return f" regrouped ({moved} moved)" if moved else ""
+
+
 def _round_line(counts: dict) -> str:
     """One round's counts as one line, every number a gate's (D126)."""
     compactions = counts.get("fallback_compactions") or {}
@@ -380,7 +393,9 @@ def _round_line(counts: dict) -> str:
             f"trusted {counts.get('trusted', 0)}, refused {counts.get('refused_count', 0)}, "
             f"assisted runs {counts.get('assisted_runs', 0)}, probes passing {counts.get('probes_passing', 0)}, "
             f"tasks frozen {counts.get('tasks_frozen', 0)} added {counts.get('tasks_added', 0)} "
-            f"frozen only {counts.get('tasks_frozen_only', 0)}, "
+            f"(${float(counts.get('tasks_added_cost') or 0.0):.4f}) "
+            f"frozen only {counts.get('tasks_frozen_only', 0)} cleared {counts.get('tasks_cleared', 0)}"
+            f"{_regrouped(counts)}, "
             f"compactions builder {compactions.get('builder', 0)} examiner {compactions.get('examiner', 0)}, "
             f"spend ${float(spend.get('total') or 0.0):.4f}, cache saved ${float(spend.get('cache_saved') or 0.0):.4f}, "
             f"buckets: {difficulty.round_summary(counts.get('buckets') or [])}")
@@ -505,6 +520,45 @@ def report(
         typer.echo(f"not read, so it is not counted: {name}")
     target = Path(out) if out else Path(workdir) / "report.md"
     typer.echo(str(write_report(data, target.parent, target.name)))
+
+
+@app.command("status")
+def status(
+    workdir: Path = WORKDIR,
+    round_number: Optional[int] = typer.Option(None, "--round", help="Which closed round to read."),
+    named: int = typer.Option(3, "--named", help="How many drifted Task ids to name."),
+):
+    """Read one closed round's Task table and say how far the live files have moved from it (D218).
+
+    The table is what the round ruled, in one pass, and nothing rewrites it. task_status.json is the
+    live file and goes on moving under a loosening, a re-derive or a cache recompute, which is right
+    and is exactly what made the numbers unreadable: a reader joining the two could not tell a
+    harness regression from that movement. So this prints the round it read, the counts that round
+    ruled, and the Tasks whose live status now disagrees with it, at the stage each moved.
+    """
+    root = Path(workdir)
+    snapshot = round_snapshot.read_snapshot(root, round_number)
+    report = round_snapshot.drift(snapshot, task_status=_json_at(root, "task_status.json"),
+                                  replays=_json_at(root, "replays.json"), named=named)
+    typer.echo(round_snapshot.drift_line(report))
+    counts = dict((snapshot or {}).get("counts") or {})
+    for name in ("tasks", "fidelity", "reference", "verifier_passed", "trusted", "refused"):
+        if name in counts:
+            typer.echo(f"{name}: {counts[name]}")
+    for row in report.get("first") or ():
+        typer.echo(f"moved: {row['task_id']} at {row['stage']}")
+
+
+def _json_at(root: Path, name: str) -> dict:
+    """One JSON record of a workdir, or nothing where the file is missing or half-written."""
+    path = root / name
+    if not path.is_file():
+        return {}
+    try:
+        body = json.loads(path.read_text(encoding="utf-8"))
+    except ValueError:
+        return {}
+    return body if isinstance(body, dict) else {}
 
 
 @app.command("difficulty")

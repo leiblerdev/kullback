@@ -255,9 +255,16 @@ class StageContext:
         """Record one ruling in gates.json without rolling the stage back (design section 6)."""
         return self._ledger.record(self.name, result)
 
-    def write_gates(self, results: Iterable[GateResult]) -> None:
-        """Replace gates.json with these rulings."""
-        self._ledger.write(self.name, results)
+    def snapshot_gates(self, rows: Iterable[dict], round_no: int) -> list[dict]:
+        """This stage's per tool rulings into their own file, with the round and the tool (D218 rule 2).
+
+        A stage that measures one ruling per tool is taking a snapshot of its own tool set, not
+        stating the workdir's gates, and the two used to share gates.json: the compile step wrote
+        its rows over the round's rulings, so the file held neither the round that had closed nor
+        the one running. There is no way for a stage to overwrite gates.json any more; a stage that
+        wants a ruling in it records one.
+        """
+        return self._ledger.write_compile_snapshot(self.name, rows, round_no)
 
 
 @dataclass

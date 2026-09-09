@@ -57,6 +57,7 @@ from kullback.builder import (
 )
 from kullback.builder.repair import KEPT_BODIES_FILE, SHAPES_SHOWN, failure_shapes
 from kullback.gates import artifacts, fidelity, tool_runs, verifier_suite
+from kullback.gates import ledger as ledger_mod
 from kullback.gates import scorecard as scorecard_mod
 from kullback.gates import stages as stage_gates
 from kullback.runner import budget, canon, loop, route
@@ -295,19 +296,21 @@ def _readers_stage(model: Any, max_attempts: int = readers.MAX_ATTEMPTS,
 def _cluster_stage():
     def run(ctx, inputs):
         # D74: two Runs that saw one row in two versions before writing started in different
-        # worlds, and a Task's overlay can pin only one, so they are different Tasks.
+        # worlds, and a Task's overlay can pin only one, so they are different Tasks. D216: the
+        # version is taken over the recording alone, so nothing this build proposed about the
+        # corpus (the column classes, the readers, a cache format) can regroup it next round.
         worlds = compile_env.trace_worlds(inputs["traces"], inputs["schema"],
-                                          cluster.write_tool_names(inputs["sigs"]),
-                                          readers.result_reader(inputs["readers"], inputs["traces"],
-                                                                ctx.workdir))
-        # A row another requestor revealed splits Tasks the same way (D74): two recordings that read
-        # one of its columns differently before either wrote started in different worlds.
-        readers.merge_worlds(worlds, inputs["readers"], inputs["schema"])
+                                          cluster.write_tool_names(inputs["sigs"]))
         categories, tasks = cluster.cluster_runs(inputs["traces"], inputs["sigs"], worlds=worlds)
+        # Taken over what the rebuild grouped, before the frozen list is laid back over it: the
+        # question is whether this round's own split differs from the one that was frozen.
+        grouping = _grouping(ctx.workdir, tasks, inputs)
         # D200: once a list is frozen it is the Task list. A rebuild may add Tasks for Runs nobody
         # froze, it may not drop, re-split or re-id a frozen one, because every number the build is
         # judged on is counted over that list and a Task that moves takes its ruling with it.
-        tasks, split = cluster.resume_frozen(tasks, scorecard_mod.frozen_tasks(ctx.workdir))
+        tasks, split = cluster.resume_frozen(tasks, scorecard_mod.frozen_tasks(ctx.workdir),
+                                             worlds=worlds)
+        split.update(grouping)
         for task in tasks:
             _write_json(ctx.workdir / "tasks" / f"{task.id}.json", as_dict(task))
         _write_json(ctx.workdir / "tasks.json", {"tasks": [as_dict(t) for t in tasks]})
@@ -317,9 +320,40 @@ def _cluster_stage():
         ctx.record_gate(stage_gates.cluster_gate(tasks, categories))
         return {"categories": categories, "tasks": tasks}
 
-    return pipeline.Stage(name="cluster", fn=run, inputs=("traces", "sigs", "schema", "readers"),
+    # The readers artifact is deliberately not an input and readers.py is deliberately not in the
+    # code version (D216). The split of Runs into Tasks is a function of the recordings and of the
+    # row identity mined from them; a reader this build wrote, improved or removed must leave the
+    # grouping where it was, and a stage that took the readers in would say the opposite by moving
+    # its cache key every time one changed. `schema` and `sigs` are the readers stage's own outputs,
+    # so this still runs after it.
+    return pipeline.Stage(name="cluster", fn=run, inputs=("traces", "sigs", "schema"),
                           outputs=("categories", "tasks"),
-                          code_version=_version("cluster", run, cluster, intent, compile_env, readers, mine))
+                          code_version=_version("cluster", run, cluster, intent, compile_env, mine))
+
+
+def _grouping(workdir: Path, live_tasks: Iterable[Any], inputs: dict) -> dict:
+    """The grouping's fingerprint, the two inputs it may depend on, and which of them moved (D216).
+
+    The fingerprint of the first grouping is written once, beside the frozen Task list and with the
+    hashes of the recordings and of the homing it was taken over. Every later round takes the same
+    three and compares: a fingerprint that matches says the split reproduced, one that differs names
+    the input that moved, and one that differs while both inputs stand still raises, because the
+    rule is that the split is a function of those two and of nothing else.
+
+    Greptile P1 (PR 30): the record is re-baselined the round an input moved, so what a later round
+    compares against is the last grouping that was explained rather than the first one ever taken.
+    Left at the first, one legitimate move would explain every regrouping after it and the raise
+    could never fire again.
+    """
+    now = {"recordings": cluster.recordings_hash(inputs["traces"]),
+           "homing": compile_env.homing_hash(inputs["schema"])}
+    fingerprint = cluster.grouping_fingerprint(live_tasks)
+    path = Path(workdir) / cluster.GROUPING_FILE
+    first = _read_json(path, None)
+    moved = cluster.moved_input(fingerprint, now, first if isinstance(first, dict) else None)
+    if not isinstance(first, dict) or not first.get("fingerprint") or moved:
+        _write_json(path, {"format": cluster.GROUPING_FORMAT, "fingerprint": fingerprint, **now})
+    return {"grouping": fingerprint, "grouping_inputs": now, "grouping_moved": moved}
 
 
 def _canon_stage():
@@ -537,7 +571,25 @@ def replay_lesson(failures: dict[str, str], shown_ids: Iterable[str]) -> str:
     return f"{REPLAY_LESSON_HEAD}\n- {text}" if text else ""
 
 
-def _tools_stage(model: Any, max_attempts: int, workers: int = 1, only: Optional[Iterable[str]] = None):
+def compile_snapshot_rows(kept: Iterable[dict], fresh: dict[str, list[dict]],
+                          only: Optional[Iterable[str]]) -> list[dict]:
+    """The per tool rulings a compile leaves on file: this run's, over the ones it replaces.
+
+    A narrowed rerun measured one tool and says nothing about the rest, so the rows of the tools it
+    did not touch stand exactly as the run that measured them left them; a full run measured every
+    tool and replaces the file. Rows come out in tool order and then in the order the stage recorded
+    them, so two runs over the same tool set write the same bytes.
+    """
+    rows = [] if only is None else [row for row in kept or ()
+                                    if isinstance(row, dict) and str(row.get("tool") or "") not in fresh]
+    for tool in sorted(fresh):
+        rows.extend(fresh[tool])
+    rows.sort(key=lambda row: str(row.get("tool") or ""))
+    return rows
+
+
+def _tools_stage(model: Any, max_attempts: int, workers: int = 1, only: Optional[Iterable[str]] = None,
+                 round_no: int = 1):
     """compile_tools, or with `only` the same stage narrowed to those tools: the rest of the bodies
     are read back from bodies.json, so the artifact it releases is still every body (the tool
     `compile_tool(name)`).
@@ -604,6 +656,10 @@ def _tools_stage(model: Any, max_attempts: int, workers: int = 1, only: Optional
         # result carried inside a sentence (D187).
         result_readers = tool_runs.load_readers(inputs["readers"])
         bodies, gates, assisted, builds = {}, [], [], {}
+        # D218 rule 2: the same rulings keyed by the tool they were measured on, for the compile
+        # snapshot. gates.json used to be overwritten with them, which cost a reader the round's own
+        # rulings and told them nothing about which tool a row belonged to.
+        snapshot_rows: dict[str, list[dict]] = {}
         outcomes: dict[str, list[dict]] = {}  # D171: per tool, one row per recorded call
         rules = _rules_of(inputs)
         sigs = list(inputs["sigs"])
@@ -716,7 +772,9 @@ def _tools_stage(model: Any, max_attempts: int, workers: int = 1, only: Optional
             # widening the rule to every full run would otherwise fill the file with failures the
             # released bodies do not have. What the losing attempt scored is not lost with it: it
             # is on the tool's row (`recompile_declined`) and in the run's own ruling below.
-            gates.extend(graded.gates if keeps_previous else build.gates)
+            released = graded.gates if keeps_previous else build.gates
+            gates.extend(released)
+            snapshot_rows[sig.name] = [{"tool": sig.name, **as_dict(result)} for result in released]
             kept_rulings.pop(sig.name, None)
             lesson_counts.pop(sig.name, None)
             if graded is not None:
@@ -788,11 +846,14 @@ def _tools_stage(model: Any, max_attempts: int, workers: int = 1, only: Optional
             outcomes[sig.name] = build.call_outcomes
             if build.assisted:
                 assisted.append(sig.name)
-        if only is None:
-            ctx.write_gates(gates)
-        else:
-            for result in gates:
-                ctx.record_gate(result)
+        # D218 rule 2: the per tool rulings go to their own file whether the run was full or narrowed,
+        # so gates.json holds the round's rulings in both cases and a reader of either file knows
+        # what it is looking at.
+        ctx.snapshot_gates(
+            compile_snapshot_rows(
+                (_read_json(ctx.workdir / ledger_mod.COMPILE_NAME, {}) or {}).get("rows") or [],
+                snapshot_rows, only),
+            round_no)
         _write_json(ctx.workdir / "bodies.json", bodies)
         _write_json(ctx.workdir / "tool_builds.json", builds)
         # D171: the per-call rows are kept whole on disk, so a narrowed rerun can read back the
@@ -1226,7 +1287,10 @@ def _replay_stage(only: Optional[Iterable[str]] = None):
         ctx.record_gate(fidelity.reference_replay_gate(replays))
         return {"replays": replays}
 
-    version = _version("replay_reference", run, replay_mod, fidelity, compile_env, route, loop, tool_runs)
+    # The verdict format rides in the key beside the module hashes: a change in what a verdict means
+    # has to recompute the replays even where the scoring code it was read off has not moved (D217).
+    version = (f"{_version('replay_reference', run, replay_mod, fidelity, compile_env, route, loop, tool_runs)}"
+               f":verdicts={replay_mod.VERDICT_FORMAT}")
     return pipeline.Stage(name="replay_reference", fn=run,
                           inputs=("traces", "tasks", "sigs", "schema", "bodies", "db", "canon_rules",
                                   "environment", "readers", "synthetic_rows"),
@@ -2054,7 +2118,8 @@ def stages(plan: BuildPlan, *, tools: Optional[Iterable[str]] = None, replay_tas
         _cluster_stage(),
         _canon_stage(),
         _state_stage(plan.grow if grow is None else grow, plan.grow_seed),
-        _tools_stage(models["compile_tools"], plan.max_attempts, plan.workers, only=tools),
+        _tools_stage(models["compile_tools"], plan.max_attempts, plan.workers, only=tools,
+                     round_no=plan.round),
         _policy_stage(models["compile_policy"], plan.workers),
         _lessons_stage(models["judge_lessons"], plan.memory_dir),
         (_intent_stage(models["intent"], plan.workers, only=intent_tasks, hints=intent_hints)
