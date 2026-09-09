@@ -1435,17 +1435,44 @@ def test_a_refused_write_restated_once_still_reaches_an_end_kind():
     assert user.done is True and user.end_reason == HANDED_OFF
 
 
-def test_a_write_effect_record_naming_no_moved_column_is_not_a_write_that_happened():
+def test_an_effect_record_holding_no_row_is_not_a_write_that_happened():
     made = user_sim.writes_made(
-        [{"role": "tool", "name": "renew_loan", "content": "{}", "write_effect": {"moved": []}}],
+        [{"role": "tool", "name": "renew_loan", "content": "{}", "write_effect": []}],
         {"renew_loan"})
     assert made == set()
 
 
-def test_a_write_effect_record_naming_a_moved_column_is_a_write_that_happened():
+def test_an_effect_row_whose_column_holds_what_it_held_is_not_a_write_that_happened():
     made = user_sim.writes_made(
         [{"role": "tool", "name": "renew_loan", "content": "{}",
-          "write_effect": {"moved": ["due_on"]}}], {"renew_loan"})
+          "write_effect": [{"table": "loans", "row": "L2201", "path": "due_on",
+                            "before": "2026-03-01", "after": "2026-03-01"}]}], {"renew_loan"})
+    assert made == set()
+
+
+def test_an_effect_row_whose_column_moved_is_a_write_that_happened():
+    made = user_sim.writes_made(
+        [{"role": "tool", "name": "renew_loan", "content": "{}",
+          "write_effect": [{"table": "loans", "row": "L2201", "path": "due_on",
+                            "before": "2026-03-01", "after": "2026-04-01"}]}], {"renew_loan"})
+    assert made == {"renew_loan"}
+
+
+def test_a_replay_effect_check_that_failed_is_not_a_write_that_happened():
+    """The replay's own record of the D215 checks: a column that never reached its after value."""
+    made = user_sim.writes_made(
+        [{"role": "tool", "name": "renew_loan", "content": "{}",
+          "write_effect": {"effect_checks": 2, "effect_failures_total": 1,
+                           "effect_failures": [{"table": "loans", "row": "L2201", "path": "due_on",
+                                                "reason": "the column did not move"}]}}],
+        {"renew_loan"})
+    assert made == set()
+
+
+def test_a_replay_effect_check_that_passed_is_a_write_that_happened():
+    made = user_sim.writes_made(
+        [{"role": "tool", "name": "renew_loan", "content": "{}",
+          "write_effect": {"effect_checks": 2}}], {"renew_loan"})
     assert made == {"renew_loan"}
 
 

@@ -660,29 +660,63 @@ def write_took_effect(message: Any) -> bool:
     every route it can refuse on, whatever payload the tool answered with. A call carrying it
     changed nothing, which is the reading the Verifier suite's own write_effects has always taken.
 
-    Where the call also carries a write effect record, the record decides: the effect has to show a
-    column moved. A record naming no moved column is a write that returned cleanly and left the
-    world where it was. A call carrying no record at all is answered on the error marker alone, so
-    a Runner that does not record effects yet gets the reading its own records support.
+    Where the call also carries D215's write effect record, the record decides: the effect has to
+    show a column of the world moved. A record naming no moved column is a write that returned
+    cleanly and left the world where it was. A call carrying no record at all is answered on the
+    error marker alone, so a Runner on a route that records no effect gets the reading its own
+    records support rather than a goal refused for want of evidence.
     """
     if _attr(message, "error") is not None:
         return False
     effect = _attr(message, "write_effect")
     if effect is None:
         return True
-    return bool(_moved_columns(effect))
+    return _effect_moved_a_column(effect)
 
 
-def _moved_columns(effect: Any) -> list[str]:
-    """The columns one write effect record shows moved, in the shapes such a record is written in."""
-    if isinstance(effect, dict):
-        for key in ("moved", "columns", "changed", "fields"):
-            if key in effect:
-                return [str(column) for column in (effect.get(key) or ())]
-        return [str(column) for column in effect]
-    if isinstance(effect, (list, tuple, set, frozenset)):
-        return [str(column) for column in effect]
-    return [str(effect)] if effect else []
+def _effect_moved_a_column(effect: Any) -> bool:
+    """Whether one D215 write effect record shows a column of the world moved.
+
+    D215 writes two records per write, and both are read here because either may be the one riding
+    with the call. The evidence the Builder mined off the recording is a list of rows, one per
+    column, each naming the table, the row, the column path and what that column held before and
+    after the write (`builder/effects.replay_evidence`); such a column moved when its after value
+    differs from its before value. The replay's own record of running those checks counts the
+    columns it checked and names the ones that never reached their after value
+    (`runner/replay.ScoredRouter._check_effects`); a write moved a column there when it was checked
+    on at least one and failed none of them, since a failure is a column the write left where it was.
+
+    Neither record is read for its column names, only for whether any column moved, so a record
+    written in either shape answers the same question and a shape neither knows falls back to
+    whether the record holds anything at all.
+    """
+    if isinstance(effect, dict) and _is_replay_check(effect):
+        checked = _count(effect.get("effect_checks"))
+        failed = _count(effect.get("effect_failures_total")) or len(effect.get("effect_failures") or ())
+        return checked > 0 and failed == 0
+    rows = [effect] if isinstance(effect, dict) else list(effect or ())
+    return any(_column_moved(row) for row in rows)
+
+
+def _is_replay_check(effect: dict) -> bool:
+    """Whether this record is the replay's own count of the effect checks it ran, not one column."""
+    return any(key in effect for key in ("effect_checks", "effect_failures", "effect_failures_total"))
+
+
+def _column_moved(row: Any) -> bool:
+    """Whether one mined effect row shows its column holding something else after the write."""
+    if not isinstance(row, dict):
+        return bool(row)
+    if "before" not in row and "after" not in row:
+        return bool(row)
+    return row.get("before") != row.get("after")
+
+
+def _count(value: Any) -> int:
+    try:
+        return int(value or 0)
+    except (TypeError, ValueError):
+        return 0
 
 
 def writes_made(transcript: Any, write_tools: Iterable[str]) -> set[str]:

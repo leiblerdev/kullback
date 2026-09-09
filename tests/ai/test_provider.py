@@ -1237,6 +1237,8 @@ def test_a_mark_the_harness_writes_beside_a_message_does_not_go_on_the_wire():
     out = pv._openai_message({"role": "tool", "tool_call_id": "c1", "name": "renew_loan",
                               "content": "that is not allowed",
                               "error": {"class": "business_error"},
-                              "write_effect": {"moved": []}})
+                              "write_effect": [{"table": "loans", "row": "L2201",
+                                                "path": "due_on", "before": "2026-03-01",
+                                                "after": "2026-04-01"}]})
     assert out == {"role": "tool", "tool_call_id": "c1", "name": "renew_loan",
                    "content": "that is not allowed"}

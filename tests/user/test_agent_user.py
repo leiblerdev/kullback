@@ -429,6 +429,26 @@ def test_the_end_protocol_satisfies_a_goal_on_a_write_that_took_effect():
                          made=made) == rules_mod.GOAL_SATISFIED
 
 
+def test_the_end_protocol_does_not_satisfy_a_goal_on_a_write_whose_effect_record_moved_nothing():
+    """D215's record rides with the call, so a write that answered cleanly and left every column
+    where it was is not a write the agent user may end its Run on."""
+    protocol = guards_mod.EndProtocol(goal_writes=["move_delivery"], write_tools=["move_delivery"])
+    unmoved = {**DELIVERY_MOVED,
+               "write_effect": [{"table": "deliveries", "row": "D77", "path": "slot",
+                                 "before": "morning", "after": "morning"}]}
+    made = guards_mod.writes_made([{"role": "user", "content": "Hi."}, unmoved], ["move_delivery"])
+    assert protocol.goal_done(made) is False
+
+
+def test_the_end_protocol_satisfies_a_goal_on_a_write_whose_effect_record_moved_a_column():
+    protocol = guards_mod.EndProtocol(goal_writes=["move_delivery"], write_tools=["move_delivery"])
+    moved = {**DELIVERY_MOVED,
+             "write_effect": [{"table": "deliveries", "row": "D77", "path": "slot",
+                               "before": "morning", "after": "evening"}]}
+    made = guards_mod.writes_made([{"role": "user", "content": "Hi."}, moved], ["move_delivery"])
+    assert protocol.goal_done(made) is True
+
+
 def _run_file(path, events):
     import json
     path.parent.mkdir(parents=True, exist_ok=True)
