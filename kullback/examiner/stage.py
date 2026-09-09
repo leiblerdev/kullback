@@ -1145,13 +1145,18 @@ def derive_all(ctx: ExamContext, inputs: dict, *, probe_model: Any = None, probe
         if entry["verifier"] is not None:
             verifiers.append(Verifier.model_validate(entry["verifier"]))
     cached = sum(1 for job in jobs if job.cached)
+    prior_status = read_json(ctx.workdir / "task_status.json", {}) or {}
     if only is not None:
-        status = {**(read_json(ctx.workdir / "task_status.json", {}) or {}), **status}
+        status = {**prior_status, **status}
         references = {**(read_json(ctx.workdir / "references.json", {}) or {}), **references}
     # D208: a Verifier is derived from a Reference and lives only while the Task holds that
     # Reference. The rows above are what says which Reference each Task holds now, so the artefacts
     # the withdrawn ones left behind are retired here, in the same step, before anything reads them.
     retired = lifecycle.retire(ctx.workdir, status, round_number=round_number)
+    # A row served from the cache was written before its Task's artefact was retired, so an earlier
+    # round's retirement is carried onto it while the Task still has nothing on disk; a Task derived
+    # afresh has its file back and its row rightly says nothing.
+    lifecycle.carry_forward(ctx.workdir, status, prior_status)
     write_json(ctx.workdir / "task_status.json", status)
     write_json(ctx.workdir / "references.json", references)
     # Section 6: a Task whose Verifier does not clear D79 is "not verdicted, Verifier
