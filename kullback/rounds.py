@@ -823,6 +823,31 @@ class Loop:
             **self._lesson_counts(),
             **self.task_split(),
             **self._sampling_counts(),
+            **self._evidence_counts(),
+        }
+
+    def _evidence_counts(self) -> dict:
+        """D220: the held-out split as this round applied it, and what it cost or found.
+
+        `evidence_traces` and `anchor_traces` are the Runs the Builder learned from and the Runs it
+        did not, summed over the Tasks; `holdout_columns` is what the Starting state pinned on a
+        held-out Run's word alone and showed the body writer masked; `readmission_blocked` is how
+        many replay failures D191 would have put back and the seed set refused; `answered_from_
+        holdout` is how many replayed calls were answered out of one of those values, which is a
+        finding about how much a pass rests on the world and not a failure.
+        """
+        rows = _read_json(self.plan.workdir / pipeline.EVIDENCE_COUNTS, {}) or {}
+        world = _read_json(self.plan.workdir / build_module.WORLD_PROVENANCE_FILE, {}) or {}
+        blocked = _read_json(self.plan.workdir / build_module.READMISSION_FILE, {}) or {}
+        answers = (_read_json(self.plan.workdir / build_module.HOLDOUT_ANSWERS_FILE, {}) or {}).get("totals") or {}
+        return {
+            "evidence_traces": sum(int((row or {}).get("evidence_traces") or 0)
+                                   for row in rows.values() if isinstance(row, dict)),
+            "anchor_traces": sum(int((row or {}).get("anchor_traces") or 0)
+                                 for row in rows.values() if isinstance(row, dict)),
+            "holdout_columns": int(world.get("holdout_columns_total") or 0),
+            "readmission_blocked": sum(int(n or 0) for n in blocked.values()),
+            "answered_from_holdout": int(answers.get("calls") or 0),
         }
 
     def _sampling_counts(self) -> dict:
