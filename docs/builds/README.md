@@ -1,3 +1,23 @@
+# Builds
+Latest documented build: retail build 14 with airline and telecom first rounds (2026-09-07).
+Builds 14 (retail, three arms), airline and telecom are running under workdirs that are not yet documented.
+Placeholder rows below mark builds 9, 10, 12-agent and 14; rows only, no retroactive tables.
+Machine generated tables in this directory are frozen; each carries an archived flag at the top.
+
+## Index
+
+| Build | Table | Notes |
+|---|---|---|
+| 8 | build-8.md | First Tasks with a Verdict, 20 of 205 |
+| 9 | none, prose below | Retail crash in compile_tools, found 2026-09-06 |
+| 10 | none, prose below | Airline two rounds, stalled, found 2026-09-06 |
+| 11 code driver | build-11-code-driver.md | D135 experiment, code arm |
+| 11 model driving | build-11-model-driving.md | D135 experiment, model arm |
+| 12 code driver | build-12-code-driver.md | Ten round comparison, code arm |
+| 12 model driving | build-12-model-driving.md | Ten round comparison, model arm |
+| 13 model driving | build-13-model-driving.md | D145 to D153 code, died in round 2 |
+| 14 | none, prose below | Retail, airline and telecom generalisation test |
+
 # The first live build (2026-08-29)
 
 Retail, 456 tau2 simulations, `openai/gpt-5.6-luna`. Nothing in the Builder above `starting_state`
@@ -332,7 +352,7 @@ The other half of the D135 experiment: the same retail corpus and code as build 
 
 **The rounds.** Fidelity sat at 153 for six rounds while the model repaired Intents (rounds 2, 4, 5) and bodies (round 3, which cost one trusted Task, and round 6, five repairs). Round 7 built on those five repairs and jumped to fidelity 196 of 205 and trusted 63 with no repair of its own; round 8 spent 16 repairs to move nothing, round 9 gained one trusted Task, round 10 moved nothing and the stalled exit fired. The model driving reached the code driver's fidelity (196 against the code arm's 432 confirming Traces read as 196 Tasks) but not its trusted count, and took 24 times the clock to get there: the D150 triage habits were written from this session before it ended (repairs from the grouped line, the assisted tool named as "existing" and never recompiled), and build 13 ran with them.
 
-**What it says about the goal.** Trusted 64 to 65 at fidelity 196 is the same shape as build 13's funnel: fidelity is not the gap any more, the Reference and the D79 suite are (`docs/live-build.md`, build 13, "the trust funnel"). The path to 200 runs through the corpus-disagreement rule and the answer atom for read-only Tasks, not through more rounds of the model repairing bodies.
+**What it says about the goal.** Trusted 64 to 65 at fidelity 196 is the same shape as build 13's funnel: fidelity is not the gap any more, the Reference and the D79 suite are (build 13 below, "the trust funnel"). The path to 200 runs through the corpus-disagreement rule and the answer atom for read-only Tasks, not through more rounds of the model repairing bodies.
 
 ## Build 13 (2026-09-06 to 2026-09-07): the model driving on the D145 to D153 code, 16 hours, dead in round 2
 
