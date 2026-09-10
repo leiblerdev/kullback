@@ -81,6 +81,21 @@ TAGLINE = "Rebuilds your environment from traces, checks the rebuild by replay, 
 # calls going by, few enough that the board itself is never pushed off the top.
 FEED_LINES = 12
 
+# The providers /login walks to by name, and the model each one starts at: a cheap, tool-capable
+# model the provider actually serves, since the menu is where a person tries a provider for the
+# first time. deepseek-flash is the id the DeepSeek endpoint serves (its docs' quick start, and a
+# GET of its own model list, 2026-09-10); the OpenRouter default is the cheapest tool-capable model
+# in the registry snapshot at a whole megatoken of context, and its nested id is deliberate, since
+# an id with a second slash is the shape OpenRouter mostly speaks. Providers the local registry
+# adds are appended to this in _login_defaults, never repeated here.
+LOGIN_DEFAULT_MODELS = {
+    "anthropic": "anthropic/claude-opus-5",
+    "openai": "openai/gpt-4.1-mini",
+    "opencode-go": "opencode-go/glm-5.3-flash",
+    "deepseek": "deepseek/deepseek-flash",
+    "openrouter": "openrouter/qwen/qwen3.7-flash",
+}
+
 # Every command in one table: name, usage, what it does. The entry screen and the / menu
 # are rendered from this, so a command added here appears in both; HELP stays a literal
 # beside it, and a test fails when a table name is missing from HELP, so the two cannot drift.
@@ -644,21 +659,21 @@ class Screen:
         only asks the same questions one at a time."""
         import getpass
 
-        providers = ["anthropic", "openai", "opencode-go"]
+        defaults = self._login_defaults()
+        providers = list(defaults)
         self.console.print(Text("  log in where?", style="bold"))
         for i, name in enumerate(providers, 1):
             self.console.print(Text(f"    {i}  {name}", style="white"))
-        choice = self._ask("    provider [1-3 or name]: ").strip().lower()
+        span = f"1-{len(providers)}"
+        choice = self._ask(f"    provider [{span} or name]: ").strip().lower()
         if choice.isdigit() and 1 <= int(choice) <= len(providers):
             provider_name = providers[int(choice) - 1]
         elif choice in providers:
             provider_name = choice
         else:
-            self.console.print(Text("pick 1-3 or a provider name", style="red"))
+            self.console.print(Text(f"pick {span} or a provider name", style="red"))
             return
-        default_model = {"anthropic": "anthropic/claude-opus-5",
-                         "openai": "openai/gpt-4.1-mini",
-                         "opencode-go": "opencode-go/glm-5.3-flash"}[provider_name]
+        default_model = defaults[provider_name]
         model = self._ask(f"    model [{default_model}]: ").strip() or default_model
         key_var = self._key_var_for(provider_name, model)
         self.console.print(Text(f"    {key_var} holds the key (names only, value stays hidden)",
@@ -696,6 +711,31 @@ class Screen:
         os.environ[name] = value
 
     @staticmethod
+    def _login_defaults() -> dict[str, str]:
+        """The providers /login offers and the model each starts at.
+
+        The named ones first, in the order a person is most likely to want them, then every
+        provider the local registry adds, at its first model, so a provider models.dev does not
+        list is one entry in that file away from being offered here too. Nothing is hand-listed
+        twice: the local rows come from the same lookup that resolves the model.
+        """
+        from kullback.ai import pricing
+        from kullback.ai import provider as pv
+
+        defaults = dict(LOGIN_DEFAULT_MODELS)
+        try:
+            # The snapshot the resolver reads, so the menu and the model it then resolves are
+            # always looking at the same two files.
+            local = pricing.local_providers(pv.REGISTRY_SNAPSHOT_PATH)
+        except Exception:
+            local = {}
+        for name, entry in local.items():
+            models = list((entry.get("models") or {})) if isinstance(entry, dict) else []
+            if name not in defaults and models:
+                defaults[name] = f"{name}/{models[0]}"
+        return defaults
+
+    @staticmethod
     def _key_var_for(provider_name: str, model: str) -> str:
         """Which variable holds this model's key: the adapter's, else the registry's."""
         from kullback.ai import provider as pv
@@ -709,7 +749,7 @@ class Screen:
             endpoint = None
         if endpoint is not None and endpoint.key_env_var:
             return endpoint.key_env_var
-        return f"{provider_name.upper().replace('-', '_')}_API_KEY"
+        return pv.key_var_for_provider(provider_name)
 
     def _live(self, title: str, work: Any) -> None:
         board = Board(self.workdir, title=title, ceiling=self.ceiling_usd)

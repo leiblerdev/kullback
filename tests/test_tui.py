@@ -753,6 +753,53 @@ def test_login_menu_walks_to_a_key_without_printing_it(tmp_path, monkeypatch):
     assert "keys held for this session: OPENCODE_API_KEY" in out
 
 
+def test_the_login_menu_offers_every_provider_it_can_resolve_and_says_the_range_it_offers(
+        tmp_path, monkeypatch):
+    """The range in both prompts is counted off the list, so adding a provider cannot leave the
+    menu telling a person to pick a number that is not there."""
+    from kullback.tui import LOGIN_DEFAULT_MODELS
+
+    _snapshot(monkeypatch, tmp_path)
+    console = _console()
+    screen = Screen(tmp_path, console=console)
+    offered = screen._login_defaults()
+    screen._ask = lambda prompt: "999"
+    screen.command("/login")
+    out = _text(console)
+    for name in LOGIN_DEFAULT_MODELS:
+        assert name in out
+    assert f"pick 1-{len(offered)}" in out
+    assert "deepseek" in offered and "openrouter" in offered
+
+
+def test_the_login_menu_offers_the_providers_only_the_local_registry_names(tmp_path, monkeypatch):
+    """A provider models.dev does not list is one entry in the local registry away from being
+    logged into by name, at the first model that entry carries."""
+    from kullback.ai import pricing
+
+    _snapshot(monkeypatch, tmp_path)
+    (tmp_path / pricing.LOCAL_PROVIDERS_NAME).write_text(json.dumps(
+        {"a-host": {"id": "a-host", "npm": "@ai-sdk/openai-compatible",
+                    "api": "https://a-host.invalid/v1", "env": ["A_HOST_API_KEY"],
+                    "models": {"quick-1": {"cost": {"input": 1.0, "output": 2.0}}}}}),
+        encoding="utf-8")
+    offered = Screen(tmp_path, console=_console())._login_defaults()
+    assert offered["a-host"] == "a-host/quick-1"
+
+
+def test_the_login_menu_starts_each_provider_at_a_model_the_key_variable_rule_can_answer_for(
+        tmp_path, monkeypatch):
+    """Every default is a full provider/model id, so the menu can name the variable to set before
+    a key is ever typed."""
+    from kullback.tui import LOGIN_DEFAULT_MODELS
+
+    _snapshot(monkeypatch, tmp_path)
+    screen = Screen(tmp_path, console=_console())
+    for name, model in LOGIN_DEFAULT_MODELS.items():
+        assert model.startswith(f"{name}/") and model.count("/") >= 1
+        assert screen._key_var_for(name, model).endswith("_API_KEY")
+
+
 def test_help_keeps_the_bracketed_arguments_a_command_takes(tmp_path):
     """rich reads [provider/model] as a style tag and drops it, which left /login in the help
     looking like it takes no model."""
