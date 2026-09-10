@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import copy
 import json
+import os
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, NamedTuple, Optional
@@ -50,7 +51,23 @@ def snapshot_path(path: Optional[str | Path] = None) -> Path:
 #
 # A provider named in both wins on its own top-level fields, and its model rows are merged into the
 # catalog's row by row, so one missing model can be added without restating the provider.
+#
+# A row may also name the provider's own price list, which is the only source that cannot go stale:
+#
+#   "prices": {"url": "https://.../v1/models", "field": "pricing"}
+#
+# url is the provider's model listing, field is the key each listed model carries its rates under,
+# in this catalog's own cost shape and unit (input, output, cache_read, cache_write, USD per 1M
+# tokens). refresh reads that listing when live calls are on and lays the rates it finds over the
+# model rows the row already names, matched by the same lookup that resolves a call. It adds no
+# models: the written row says which models the Harness offers and what they cost when the listing
+# cannot be read, so a vendor that renames a field, answers an error, or is unreachable leaves the
+# prices below standing rather than leaving a call unpriced.
 LOCAL_PROVIDERS_NAME = "providers.local.json"
+
+# The key of the row naming a provider's live price list, and the model listing's own list of rows.
+PRICES_FIELD = "prices"
+LISTING_ROWS_FIELD = "data"
 
 # Providers the Harness ships knowing about because their docs were read, kept in code so a fresh
 # machine has them without a file to write, and overridable by the file above. CheaperInference is
@@ -60,6 +77,14 @@ LOCAL_PROVIDERS_NAME = "providers.local.json"
 # (platform.cheaperinference.com/llms.txt and /docs, read 2026-09-10). The model row is copied from
 # that day's GET /v1/models, which prices every model it lists: the rates the gateway charges, which
 # is what the wallet is billed, rather than the list rates it discounts from.
+#
+# That listing is also where the prices come from now, because the gateway's docs say a rate moves
+# whenever the upstream it buys from moves, and a written number is stale the day after it is read:
+# the first copy of this row, taken 2026-09-10, already priced input at 0.060426 against the
+# 0.105 the same endpoint served hours later, which is the ledger under-billing by a factor of
+# nearly two. The cost below is the listing's reading at 2026-09-10 12:40 UTC and is a fallback,
+# not the price: refresh replaces it from GET /v1/models whenever live calls are on and that call
+# comes back, and falls back to it when the call fails or the listing prices nothing.
 BUILTIN_LOCAL_PROVIDERS: dict[str, dict] = {
     "cheaperinference": {
         "id": "cheaperinference",
@@ -68,6 +93,7 @@ BUILTIN_LOCAL_PROVIDERS: dict[str, dict] = {
         "api": "https://api.cheaperinference.com/v1",
         "env": ["CHEAPER_INFERENCE_API_KEY"],
         "doc": "https://platform.cheaperinference.com/docs",
+        "prices": {"url": "https://api.cheaperinference.com/v1/models", "field": "pricing"},
         "models": {
             "glm-5.3-flash": {
                 "id": "glm-5.3-flash",
@@ -75,8 +101,9 @@ BUILTIN_LOCAL_PROVIDERS: dict[str, dict] = {
                 "reasoning": True,
                 "tool_call": True,
                 "limit": {"context": 1_048_576, "output": 131_072},
-                "cost": {"input": 0.060426, "output": 0.201421, "cache_read": 0.012085,
-                         "cache_write": 0.060426},
+                # Fallback rates, per 1M tokens, read 2026-09-10. Live rates win over them.
+                "cost": {"input": 0.105, "output": 0.35, "cache_read": 0.01275,
+                         "cache_write": 0.105},
             },
         },
     },
@@ -87,8 +114,13 @@ BUILTIN_LOCAL_PROVIDERS: dict[str, dict] = {
     # The row is the vendor's own published price per 1M tokens: cache miss 0.30, cache hit 0.006,
     # output 1.20, context 1M (api-docs.deepseek.com/quick_start/pricing, read 2026-09-10). Those
     # are the peak rates; the page halves them off peak, and a ledger that must never under-bill
-    # takes the higher of the two. Only the model row is given, so the host, the key variable and
-    # every other model of the provider keep coming from models.dev.
+    # takes the higher of the two. The same page charges nothing to write a cache, which is what
+    # the 0.0 cache_write says, and announces that from 2026-09-14 deepseek-v4-pro is routed to
+    # V4.1 Flash and billed as V4.1 Flash, so a Run on that id after the 14th is billed at these
+    # rates and not at the pro rates the snapshot carries. Prices checked 2026-09-10. There is no
+    # prices url here: DeepSeek publishes its rates on that page and not in its model listing, so
+    # this row is read by hand and dated rather than refreshed. Only the model row is given, so the
+    # host, the key variable and every other model of the provider keep coming from models.dev.
     "deepseek": {
         "models": {
             "deepseek-flash": {
@@ -217,22 +249,108 @@ def _snapshot_age_days(stored: dict) -> Optional[float]:
     return age.total_seconds() / 86400.0
 
 
-def _fetch(client: Any) -> Optional[dict]:
-    """One GET of the catalog. Any failure, network or parsing, returns None rather than raising."""
+def _get_json(client: Any, url: str, headers: Optional[dict[str, str]] = None) -> Any:
+    """One GET, parsed. Any failure, network or parsing, returns None rather than raising.
+
+    A header here can carry a provider key. It is never returned, stored or written anywhere: this
+    module has no log for a key to reach, and the failure path answers None and not the request.
+    """
     try:
         owns_client = client is None
         http_client = client if client is not None else httpx.Client()
         try:
-            response = http_client.get(MODELS_DEV_URL, timeout=30.0)
+            response = http_client.get(url, timeout=30.0, headers=headers or {})
             response.raise_for_status()
-            catalog = response.json()
+            return response.json()
         finally:
             if owns_client:
                 http_client.close()
     except Exception:
         return None
-    if not isinstance(catalog, dict):
+
+
+def _fetch(client: Any) -> Optional[dict]:
+    """One GET of the models.dev catalog, or None when it cannot be read."""
+    catalog = _get_json(client, MODELS_DEV_URL)
+    return catalog if isinstance(catalog, dict) else None
+
+
+def _key_for(entry: dict, env: Optional[dict[str, str]]) -> str:
+    """The provider key the row's own env field names, or "" when nothing holds one."""
+    names = entry.get("env")
+    name = names[0] if isinstance(names, list) and names and isinstance(names[0], str) else ""
+    values = os.environ if env is None else env
+    return str(values.get(name) or "") if name else ""
+
+
+def _cost_numbers(cost: Any) -> Optional[dict[str, float]]:
+    """One listed rate read as a cost row, or None when it is not one.
+
+    input and output have to be there, since a row missing either prices nothing, and every value
+    has to be a number that is not negative: a rate below zero is a field read wrong, not a
+    discount, and a misread rate is worse than a dated one.
+    """
+    if not isinstance(cost, dict) or "input" not in cost or "output" not in cost:
         return None
+    numbers: dict[str, float] = {}
+    for key in ("input", "output", "cache_read", "cache_write"):
+        if key not in cost:
+            continue
+        try:
+            value = float(cost[key])
+        except (TypeError, ValueError):
+            return None
+        if value < 0:
+            return None
+        numbers[key] = value
+    return numbers
+
+
+def _listed_prices(listing: Any, field: str) -> dict[str, dict[str, float]]:
+    """The rates a provider's model listing carries, by wire id.
+
+    The listing is the OpenAI one every gateway here serves, {"data": [{"id": ..., "<field>": ...}]},
+    and a bare list of rows is read the same way. A row that prices nothing is passed over rather
+    than answered for, so one unreadable row does not cost the others their live rates.
+    """
+    rows = listing.get(LISTING_ROWS_FIELD) if isinstance(listing, dict) else listing
+    if not isinstance(rows, list):
+        return {}
+    prices: dict[str, dict[str, float]] = {}
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        wire_id = row.get("id")
+        cost = _cost_numbers(row.get(field))
+        if isinstance(wire_id, str) and wire_id and cost is not None:
+            prices[wire_id] = cost
+    return prices
+
+
+def _overlay_live_prices(catalog: Optional[dict], client: Any, env: Optional[dict[str, str]]) -> Optional[dict]:
+    """Every provider row that names its own price list, repriced from that list.
+
+    A written rate is stale the day the vendor moves it, and one gateway here moved by a factor of
+    nearly two inside a day, so a row says where its prices live and this reads them. The row's own
+    rates are the fallback and never the other way round: the call happens only when live calls are
+    on, and an unreachable listing, an error, a renamed field or a rate that does not read as a
+    number all leave the written rates standing. No model is added, so the listing can only change
+    the price of a model the row already offers.
+    """
+    if not catalog or not live_calls_requested(env):
+        return catalog
+    for entry in catalog.values():
+        source = entry.get(PRICES_FIELD) if isinstance(entry, dict) else None
+        url = source.get("url") if isinstance(source, dict) else None
+        field = source.get("field") if isinstance(source, dict) else None
+        if not isinstance(url, str) or not url or not isinstance(field, str) or not field:
+            continue
+        key = _key_for(entry, env)
+        headers = {"Authorization": f"Bearer {key}"} if key else None
+        for wire_id, cost in _listed_prices(_get_json(client, url, headers), field).items():
+            row = model_row(entry, wire_id)
+            if isinstance(row, dict):
+                row["cost"] = cost
     return catalog
 
 
@@ -248,22 +366,25 @@ def refresh(
     to None when there is nothing to fall back to.
 
     The local provider registry is laid over whatever comes back, always and last, so a provider
-    models.dev does not list is answered here rather than by a second lookup somewhere else. The
-    overlay is never written into the snapshot: the snapshot stays what models.dev said.
+    models.dev does not list is answered here rather than by a second lookup somewhere else. A row
+    of that registry naming its own price list is then repriced from it, so a rate the vendor moved
+    today is what the ledger bills at. Neither overlay is written into the snapshot: the snapshot
+    stays what models.dev said.
     """
     snap_path = snapshot_path(path)
     stored = _read_snapshot(snap_path)
+    catalog = stored.get("catalog") if stored is not None else None
     if live_calls_requested(env):
         age = _snapshot_age_days(stored) if stored else None
         stale = stored is None or age is None or age > max_age_days
         if stale:
-            catalog = _fetch(client)
-            if catalog is not None:
-                wrapped = {"fetched_at": datetime.now(timezone.utc).isoformat(), "catalog": catalog}
+            fetched = _fetch(client)
+            if fetched is not None:
+                wrapped = {"fetched_at": datetime.now(timezone.utc).isoformat(), "catalog": fetched}
                 snap_path.parent.mkdir(parents=True, exist_ok=True)
                 snap_path.write_text(json.dumps(wrapped), encoding="utf-8")
-                return overlay_local(catalog, path)
-    return overlay_local(stored.get("catalog") if stored is not None else None, path)
+                catalog = fetched
+    return _overlay_live_prices(overlay_local(catalog, path), client, env)
 
 
 # The npm adapters models.dev names for providers that speak the OpenAI request shape. A provider

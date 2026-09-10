@@ -141,14 +141,19 @@ def test_refresh_live_off_reads_the_existing_snapshot_regardless_of_age(tmp_path
 
 
 def test_refresh_live_on_fetches_when_there_is_no_snapshot(tmp_path):
+    seen = []
+
     def handler(request):
-        assert str(request.url) == pricing.MODELS_DEV_URL
+        seen.append(str(request.url))
+        if str(request.url) != pricing.MODELS_DEV_URL:
+            return httpx.Response(404, json={})  # a provider price list this test does not stub
         return httpx.Response(200, json=CATALOG)
 
     path = tmp_path / "models.dev.json"
     result = pricing.refresh(
         client=transport_of(handler), path=path, env={pricing.LIVE_ENV_VAR: "1"}
     )
+    assert pricing.MODELS_DEV_URL in seen
     assert from_models_dev(result) == CATALOG
     stored = json.loads(path.read_text(encoding="utf-8"))
     assert stored["catalog"] == CATALOG, "the snapshot stays what models.dev said, overlay apart"
@@ -156,14 +161,18 @@ def test_refresh_live_on_fetches_when_there_is_no_snapshot(tmp_path):
 
 
 def test_refresh_live_on_does_not_refetch_a_fresh_snapshot(tmp_path):
+    seen = []
+
     def handler(request):
-        raise AssertionError("a fresh snapshot must not be refetched")
+        seen.append(str(request.url))
+        return httpx.Response(404, json={})  # a provider price list this test does not stub
 
     path = tmp_path / "models.dev.json"
     write_snapshot(path, CATALOG)
     result = pricing.refresh(
         client=transport_of(handler), path=path, max_age_days=7, env={pricing.LIVE_ENV_VAR: "1"}
     )
+    assert pricing.MODELS_DEV_URL not in seen, "a fresh snapshot must not be refetched"
     assert from_models_dev(result) == CATALOG
 
 
@@ -415,6 +424,122 @@ def test_a_model_row_that_is_a_string_is_dropped_and_its_well_formed_siblings_st
     assert pricing.price_from_catalog(catalog, "d-host/swift-3")["output"] == 1.5
     assert pricing.window_from_catalog(catalog, "d-host/swift-3") == 64_000
     assert pricing.endpoint_from_catalog(catalog, "d-host/swift-3").base_url == "https://d-host.invalid/v1"
+
+
+# --- a provider row that names its own price list ---
+
+
+PRICE_LIST_URL = "https://e-host.invalid/v1/models"
+
+LIVE_PRICED = {
+    "e-host": {
+        "id": "e-host", "npm": "@ai-sdk/openai-compatible", "api": "https://e-host.invalid/v1",
+        "env": ["E_HOST_API_KEY"],
+        "prices": {"url": PRICE_LIST_URL, "field": "rates"},
+        "models": {"brisk-4": {"limit": {"context": 128_000},
+                               "cost": {"input": 1.0, "output": 2.0, "cache_read": 0.1,
+                                        "cache_write": 1.0}}},
+    },
+}
+
+WRITTEN_RATES = {"input": 1.0, "output": 2.0, "cache_read": 0.1, "cache_write": 1.0}
+
+
+def price_list_transport(listing, seen=None, status=200):
+    """The provider's price list, stubbed. models.dev and every other host answer an empty body, so
+    a test says what one listing serves and nothing leaves the machine."""
+    def handler(request):
+        if seen is not None:
+            seen.append(request)
+        if str(request.url) != PRICE_LIST_URL:
+            return httpx.Response(200, json={})
+        if listing is None:
+            raise httpx.ConnectError("the price list is unreachable", request=request)
+        return httpx.Response(status, json=listing)
+    return transport_of(handler)
+
+
+def refresh_with(listing, path, seen=None, status=200, env=None):
+    write_snapshot(path, CATALOG)
+    write_local(path, LIVE_PRICED)
+    return pricing.refresh(client=price_list_transport(listing, seen, status), path=path,
+                           env=env if env is not None else {pricing.LIVE_ENV_VAR: "1"})
+
+
+def test_a_row_that_names_a_price_list_is_billed_at_the_rates_that_list_serves_now(tmp_path):
+    """A written rate is stale the day the vendor moves one, and one gateway here moved by nearly a
+    factor of two inside a day, so the row's own rates give way to the list it names."""
+    listing = {"data": [{"id": "brisk-4", "rates": {"input": 0.5, "output": 1.25,
+                                                    "cache_read": 0.05, "cache_write": 0.5}}]}
+    catalog = refresh_with(listing, tmp_path / "models.dev.json")
+    assert pricing.price_from_catalog(catalog, "e-host/brisk-4") == {
+        "input": 0.5, "output": 1.25, "cache_read": 0.05, "cache_write": 0.5}
+    assert pricing.window_from_catalog(catalog, "e-host/brisk-4") == 128_000, \
+        "the list prices the model, it does not restate the rest of the row"
+
+
+def test_a_price_list_that_does_not_carry_the_named_field_leaves_the_written_rates_standing(tmp_path):
+    """A vendor that renames the field, or lists a model it does not price, must leave the ledger
+    with a rate rather than with none."""
+    listing = {"data": [{"id": "brisk-4", "cost_per_token": {"input": 0.5, "output": 1.25}}]}
+    catalog = refresh_with(listing, tmp_path / "models.dev.json")
+    assert pricing.price_from_catalog(catalog, "e-host/brisk-4") == WRITTEN_RATES
+
+
+def test_a_price_list_that_cannot_be_reached_leaves_the_written_rates_standing(tmp_path):
+    catalog = refresh_with(None, tmp_path / "models.dev.json")
+    assert pricing.price_from_catalog(catalog, "e-host/brisk-4") == WRITTEN_RATES
+
+
+def test_a_price_list_that_answers_an_error_leaves_the_written_rates_standing(tmp_path):
+    listing = {"error": "no key"}
+    catalog = refresh_with(listing, tmp_path / "models.dev.json", status=503)
+    assert pricing.price_from_catalog(catalog, "e-host/brisk-4") == WRITTEN_RATES
+
+
+def test_a_rate_that_does_not_read_as_a_number_leaves_the_written_rates_standing(tmp_path):
+    """A misread rate is worse than a dated one: it bills every call of the Run wrong."""
+    listing = {"data": [{"id": "brisk-4", "rates": {"input": "half a cent", "output": 1.25}},
+                        {"id": "brisk-5", "rates": {"input": -1.0, "output": 1.25}}]}
+    catalog = refresh_with(listing, tmp_path / "models.dev.json")
+    assert pricing.price_from_catalog(catalog, "e-host/brisk-4") == WRITTEN_RATES
+
+
+def test_the_price_list_is_asked_for_with_the_key_the_row_names_and_only_when_live_is_on(tmp_path):
+    """The list is behind the provider's own key, and reaching for it is a call off the machine, so
+    it happens under the one switch every other call is under."""
+    listing = {"data": [{"id": "brisk-4", "rates": {"input": 0.5, "output": 1.25}}]}
+    seen = []
+    refresh_with(listing, tmp_path / "models.dev.json", seen=seen,
+                 env={pricing.LIVE_ENV_VAR: "1", "E_HOST_API_KEY": "e-host-test-key"})
+    asked = [request for request in seen if str(request.url) == PRICE_LIST_URL]
+    assert len(asked) == 1
+    assert asked[0].headers["authorization"] == "Bearer e-host-test-key"
+
+    off = []
+    catalog = refresh_with(listing, tmp_path / "off.json", seen=off, env={})
+    assert [request for request in off if str(request.url) == PRICE_LIST_URL] == []
+    assert pricing.price_from_catalog(catalog, "e-host/brisk-4") == WRITTEN_RATES
+
+
+def test_a_price_list_cannot_add_a_model_the_row_does_not_offer(tmp_path):
+    """The written row says what the Harness offers. A list that prices two hundred other models
+    changes the price of the one it names and adds nothing, so nothing is offered unsized."""
+    listing = {"data": [{"id": "brisk-4", "rates": {"input": 0.5, "output": 1.25}},
+                        {"id": "brisk-9", "rates": {"input": 0.7, "output": 1.4}}]}
+    catalog = refresh_with(listing, tmp_path / "models.dev.json")
+    assert set(catalog["e-host"]["models"]) == {"brisk-4"}
+    assert pricing.price_from_catalog(catalog, "e-host/brisk-9") is None
+
+
+def test_the_built_in_gateway_row_names_its_price_list_and_carries_a_fallback_rate():
+    """The row that went stale inside a day: it says where its prices live, and what to bill at
+    when that list cannot be read."""
+    row = pricing.BUILTIN_LOCAL_PROVIDERS["cheaperinference"]
+    assert row["prices"]["url"].startswith(row["api"])
+    assert row["prices"]["field"]
+    for model in row["models"].values():
+        assert model["cost"]["input"] > 0 and model["cost"]["output"] > 0
 
 
 def test_a_built_in_provider_given_a_misshapen_models_field_keeps_the_rows_it_shipped_with(tmp_path):
