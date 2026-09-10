@@ -1027,6 +1027,100 @@ class _Job:
         return self.entry is not None
 
 
+@dataclass
+class _DeriveState:
+    """Everything one `derive_all` call shares: what it loaded, what it demoted, what it judges with."""
+    ctx: Any
+    sample_salt: str
+    canon_rules: Any
+    fn: Any
+    write_tools: set
+    read_tools: set
+    replays: dict
+    rerolls: dict
+    intents: dict
+    user_rules: dict
+    traces: dict
+    policy_lines: list
+    seed_replays: dict
+    constraints: list
+    demoted: list
+    assisted_tools: set
+    tool_fidelity: dict
+    atoms: Any
+    judge: Any
+    probe: Any
+    probe_model: Any
+    probe_limit: Any
+    run_rerolls: Any
+    run_variant: Any
+    round_number: int
+    common: dict
+
+
+def _init_state(ctx: ExamContext, inputs: dict, *, probe_model: Any = None,
+                probe_limit: Optional[int] = None, judge_model: Any = None,
+                judge_agent: bool = False, run_probe: Any = None, run_rerolls: Any = None,
+                run_variant: Any = None, round_number: int = 0, only: Optional[str] = None,
+                code_hash: Optional[str] = None) -> tuple[_DeriveState, list]:
+    """Load the call's shared inputs, demote the broken rules, build the judge and the cache key base.
+
+    The demotion writes constraints_check.json and records its gate before anything else reads the
+    constraints, which is the order the reference check runs in; the `only` check comes after it,
+    so a bad name still leaves the demotion behind, as it did.
+    """
+    sample_salt = sampling.build_salt(ctx.workdir)
+    canon_rules = rules_of(inputs)
+    fn = verifier_suite.canon_fn(canon_rules)
+    write_tools = {s.name for s in inputs["sigs"] if s.kind == "write"}
+    read_tools = {s.name for s in inputs["sigs"] if s.kind != "write"}
+    replays = inputs.get("replays") or {}
+    rerolls = inputs.get("rerolls") or {}
+    intents = {t: Intent.model_validate(d) for t, d in (inputs.get("intents") or {}).items()}
+    user_rules = inputs.get("user_rules") or {}
+    traces = {t.trace_id: t for t in inputs.get("traces") or []}
+    policy_lines = [c.text for c in inputs["constraints"]]
+    seed_replays = {task.id: [r for tid, r in sorted((replays.get(task.id) or {}).items())
+                              if tid in seed_ids(ctx, task) and r.get("confirmed") and r.get("path")]
+                    for task in inputs["tasks"]}
+    constraints, demoted = final_constraints(ctx, inputs, seed_replays, write_tools, read_tools, fn)
+    assisted_tools = set(inputs.get("assisted_tools") or ())
+    tool_fidelity = inputs.get("tool_fidelity") or {}
+    atoms = reference_mod.hard_atoms(constraints, write_tools, read_tools)
+    if judge_model is None:
+        judge = None
+    elif judge_agent:
+        judge = judge_mod.AgentJudge(judge_model, constraints=constraints, write_tools=write_tools,
+                                     read_tools=read_tools, fn=fn)
+    else:
+        judge = judge_model
+    probe = run_probe if probe_model is not None else None
+    tasks = list(inputs["tasks"])
+    if only is not None:
+        tasks = [task for task in tasks if task.id == only]
+        if not tasks:
+            raise ValueError(f"no Task is named {only}")
+    common = {"format": CACHE_FORMAT,
+              "code": code_hash if code_hash is not None else module_code_hash(),
+              "canon_rules": canon_rules,
+              "constraints": [as_dict(c) for c in constraints],
+              "policy_lines": list(policy_lines),
+              "write_tools": sorted(write_tools),
+              "probe": {"model": model_name(probe_model), "limit": probe_limit,
+                        "runner": probe is not None},
+              "judge": model_name(judge_model), "judge_agent": bool(judge_agent)}
+    state = _DeriveState(ctx=ctx, sample_salt=sample_salt, canon_rules=canon_rules, fn=fn,
+                         write_tools=write_tools, read_tools=read_tools, replays=replays,
+                         rerolls=rerolls, intents=intents, user_rules=user_rules, traces=traces,
+                         policy_lines=policy_lines, seed_replays=seed_replays,
+                         constraints=constraints, demoted=demoted, assisted_tools=assisted_tools,
+                         tool_fidelity=tool_fidelity, atoms=atoms, judge=judge, probe=probe,
+                         probe_model=probe_model, probe_limit=probe_limit,
+                         run_rerolls=run_rerolls, run_variant=run_variant,
+                         round_number=round_number, common=common)
+    return state, tasks
+
+
 # --- the stage body --------------------------------------------------------------
 
 def derive_all(ctx: ExamContext, inputs: dict, *, probe_model: Any = None, probe_limit: Optional[int] = None,
@@ -1091,50 +1185,29 @@ def derive_all(ctx: ExamContext, inputs: dict, *, probe_model: Any = None, probe
     own keys (D212), so which Tasks get check 6 does not move when a Task is added or dropped.
     `cached` and `ran` in the result count which Tasks came from where.
     """
-    sample_salt = sampling.build_salt(ctx.workdir)
-    canon_rules = rules_of(inputs)
-    fn = verifier_suite.canon_fn(canon_rules)
-    write_tools = {s.name for s in inputs["sigs"] if s.kind == "write"}
-    read_tools = {s.name for s in inputs["sigs"] if s.kind != "write"}
-    replays = inputs.get("replays") or {}
-    rerolls = inputs.get("rerolls") or {}
-    intents = {t: Intent.model_validate(d) for t, d in (inputs.get("intents") or {}).items()}
-    user_rules = inputs.get("user_rules") or {}
-    traces = {t.trace_id: t for t in inputs.get("traces") or []}
-    policy_lines = [c.text for c in inputs["constraints"]]
-    seed_replays = {task.id: [r for tid, r in sorted((replays.get(task.id) or {}).items())
-                              if tid in seed_ids(ctx, task) and r.get("confirmed") and r.get("path")]
-                    for task in inputs["tasks"]}
-    # D76, D111: a compiled rule the confirmed recordings mostly break is demoted before any
-    # Verifier is derived from them.
-    constraints, demoted = final_constraints(ctx, inputs, seed_replays, write_tools, read_tools, fn)
-    assisted_tools = set(inputs.get("assisted_tools") or ())
-    tool_fidelity = inputs.get("tool_fidelity") or {}
-    atoms = reference_mod.hard_atoms(constraints, write_tools, read_tools)
-    # D185: the residue judge is the one-shot judge unless the build asked for the agent with a
-    # bounded look, which wraps the one-shot judge as its own fallback. Either way it is built once
-    # for the build and asked once per disagreeing Task; `judge_groups` dispatches on the object.
-    if judge_model is None:
-        judge = None
-    elif judge_agent:
-        judge = judge_mod.AgentJudge(judge_model, constraints=constraints, write_tools=write_tools,
-                                     read_tools=read_tools, fn=fn)
-    else:
-        judge = judge_model
-    probe = run_probe if probe_model is not None else None
-    tasks = list(inputs["tasks"])
-    if only is not None:
-        tasks = [task for task in tasks if task.id == only]
-        if not tasks:
-            raise ValueError(f"no Task is named {only}")
-    common = {"format": CACHE_FORMAT,
-              "code": code_hash if code_hash is not None else module_code_hash(),
-              "canon_rules": canon_rules,
-              "constraints": [as_dict(c) for c in constraints],
-              "policy_lines": list(policy_lines),
-              "write_tools": sorted(write_tools),
-              "probe": {"model": model_name(probe_model), "limit": probe_limit, "runner": probe is not None},
-              "judge": model_name(judge_model), "judge_agent": bool(judge_agent)}
+    state, tasks = _init_state(ctx, inputs, probe_model=probe_model, probe_limit=probe_limit,
+                               judge_model=judge_model, judge_agent=judge_agent, run_probe=run_probe,
+                               run_rerolls=run_rerolls, run_variant=run_variant,
+                               round_number=round_number, only=only, code_hash=code_hash)
+    sample_salt = state.sample_salt
+    canon_rules = state.canon_rules
+    fn = state.fn
+    write_tools = state.write_tools
+    replays = state.replays
+    rerolls = state.rerolls
+    intents = state.intents
+    user_rules = state.user_rules
+    traces = state.traces
+    policy_lines = state.policy_lines
+    seed_replays = state.seed_replays
+    constraints = state.constraints
+    demoted = state.demoted
+    assisted_tools = state.assisted_tools
+    tool_fidelity = state.tool_fidelity
+    atoms = state.atoms
+    judge = state.judge
+    probe = state.probe
+    common = state.common
 
     def prepare(task: Task) -> _Job:
         """The Task's Runs, its key, and the D111 answer when the key is not on disk."""
