@@ -212,9 +212,10 @@ def split_by_world(group: Sequence[Trace], worlds: dict[str, dict]) -> list[list
     Greedy and order free in effect: traces are taken by id and each joins the first subgroup whose
     rows it does not contradict, so the same traces always land the same way.
 
-    A requestor's homed row (D233) arrives as one key per hard column, each carrying its version
-    hash and its class, so two Runs that differ only in a semantic or exempt column share every
-    key and stay together. A requestor with no mined table arrives as one opaque key, as before.
+    A requestor's homed row (D233) arrives as one key per hard or unclassified column, each
+    carrying its version hash and its class, so two Runs that differ only in a semantic or exempt
+    column share every key and stay together. A requestor with no mined table arrives as one
+    opaque key, as does a prose sighting, as before.
     """
     subgroups: list[tuple[list[Trace], dict]] = []
     for trace in sorted(group, key=lambda t: t.trace_id):
@@ -375,7 +376,7 @@ def _where(key: Any, version: Any = None) -> str:
         column_class = version[1] if isinstance(version, (tuple, list)) and len(version) == 2 else "hard"
         return (f"{column_class} column {column} of {table} row {row_id} "
                 f"as {tool or 'an unnamed tool'} showed it "
-                f"(homed to {table}; only hard columns split)")
+                f"(homed to {table}; semantic and exempt columns do not split)")
     if isinstance(key, (tuple, list)) and len(key) == 3:
         tool, table, row_id = (str(part) for part in key)
         if table:
