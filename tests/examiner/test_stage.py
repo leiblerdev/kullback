@@ -8,6 +8,7 @@ import os
 import shutil
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -921,8 +922,10 @@ def test_one_tasks_surviving_end_states_derive_on_the_shared_pool_at_once(tmp_pa
 
 
 def test_one_tasks_rewrite_runs_replay_on_the_shared_pool_at_once(tmp_path):
-    """The synth variant runs are independent replays: on eight workers more than one is in flight,
-    and the rows and the bought batches read exactly as the one-worker run's read."""
+    """The synth variant runs stay serial while the variant gate holds (docs/todo.md "Next
+    re-freeze: flip the speed-1 variant gate"): one at a time on any worker count, and the rows
+    and the bought batches read exactly as the one-worker run's read. Restore the overlap half
+    when the gate flips."""
     peaks, bodies, tried = {}, {}, {}
     for name, workers in (("serial", 1), ("threaded", 8)):
         world = _rich_lone_world(tmp_path / name)
@@ -939,7 +942,7 @@ def test_one_tasks_rewrite_runs_replay_on_the_shared_pool_at_once(tmp_path):
         bodies[name] = (_derived_bytes(world.workdir, 1), _reroll_rows(world.workdir))
     assert tried["serial"] == tried["threaded"] >= 2, "the world offers several rewrites"
     assert peaks["serial"] == 1
-    assert peaks["threaded"] > 1, "the rewrites replay without waiting for each other"
+    assert peaks["threaded"] == 1, "gated serial until the tally lock re-freezes"
     assert bodies["threaded"] == bodies["serial"]
 
 
@@ -979,3 +982,61 @@ def test_three_bought_batches_leave_the_same_rows_and_files_on_one_worker_and_on
         "second-path-r2-b1", "second-path-r2-b2", "second-path-r2-b3"]
     assert calls["threaded"] == calls["serial"]
     assert bodies["threaded"] == bodies["serial"]
+
+
+def test_a_failed_first_gather_item_cancels_the_jobs_that_never_start():
+    """A gather whose first item fails raises that failure in item order and never starts the
+    pending jobs: on two threads six items run at most the failed one and the in-flight ones."""
+    started = {"count": 0}
+    lock = threading.Lock()
+    release = threading.Event()
+
+    def job(index: int) -> int:
+        with lock:
+            started["count"] += 1
+        if index == 0:
+            raise ValueError("the first rewrite fell over")
+        assert release.wait(timeout=10)
+        return index
+
+    pool = ThreadPoolExecutor(max_workers=2)
+    try:
+        with pytest.raises(ValueError, match="fell over"):
+            stage._ordered_gather(pool, list(range(6)), job)
+        assert started["count"] <= 3, "the failed item plus at most the two in flight ran"
+    finally:
+        release.set()
+        pool.shutdown(cancel_futures=True)
+
+
+def test_the_two_pools_together_never_run_more_jobs_than_they_were_given():
+    """The outer per-Task pool and the inner per-survivor pool share one ceiling: with both busy
+    the peak in flight never passes the worker count."""
+    sem = threading.Semaphore(2)
+    track = {"in_flight": 0, "max": 0}
+    lock = threading.Lock()
+
+    def job(index: int) -> int:
+        with lock:
+            track["in_flight"] += 1
+            track["max"] = max(track["max"], track["in_flight"])
+        try:
+            time.sleep(0.15)
+            return index
+        finally:
+            with lock:
+                track["in_flight"] -= 1
+
+    outer = ThreadPoolExecutor(max_workers=2)
+    inner = ThreadPoolExecutor(max_workers=2)
+    try:
+        outers = [outer.submit(stage._guarded, sem, lambda index=index: job(index))
+                  for index in range(4)]
+        inners = stage._ordered_gather(inner, list(range(4, 8)), job, sem=sem)
+        outs = [future.result() for future in outers]
+    finally:
+        outer.shutdown(cancel_futures=True)
+        inner.shutdown(cancel_futures=True)
+    assert sorted(outs) == [0, 1, 2, 3]
+    assert inners == [4, 5, 6, 7]
+    assert track["max"] <= 2, "the two pools share one ceiling of two"
