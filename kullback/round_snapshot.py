@@ -192,6 +192,12 @@ def write_snapshot(workdir: Any, round_number: int, rows: Iterable[dict],
     Nothing rewrites a closed round: a later loosening, re-derive or cache recompute moves the live
     file and leaves this one byte for byte as the round left it, which is the only way a reader can
     tell the two apart.
+
+    That holds only while a round number is used once, so the counter and this agree on what a round
+    number means: the driver takes the next number past every round the workdir has closed, this
+    file's `closed_rounds` among them (`rounds.last_round`, D231). Until it did, a second run over
+    the same workdir opened at 1 again and was handed the previous run's table here, so its round
+    reported a table written hours before the work it describes.
     """
     path = snapshot_path(workdir, round_number)
     existing = read_json(path, None)

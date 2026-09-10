@@ -944,3 +944,28 @@ def test_a_finding_the_builder_recorded_is_printed_for_the_customer_with_its_cal
     block = block_of(render(data), "### Findings")
     assert "update_booking: rooms[*].rate: the recording writes" in block
     assert "recorded calls: call_12, call_40" in block
+
+
+def test_a_round_a_beat_raised_in_says_so_in_the_exit_cell(workdir: Path):
+    """D231: the counts on the row are what the round measured before the raise, so without this a
+    reader takes a round that stopped half way for a round that measured that much and stopped."""
+    rows = _rounds_rows()
+    rows[-1]["exit"] = "stalled"
+    rows[-1]["counts"]["beat_error"] = {"beat": "examiner", "kind": "ExaminerError",
+                                        "message_class": "derive failed: LookupError"}
+    (workdir / "rounds.json").write_text(json.dumps(rows), encoding="utf-8")
+    section = block_of(render(load(workdir)), "## Rounds")
+    assert "stalled (ended by examiner error)" in section
+    assert "| 1 | 1/2 | 0 | 0 | 1 | 0 | $0.0000 |  |" in section, "a round that closed on its own says nothing"
+
+
+def test_the_exit_cell_reads_the_beat_error_under_the_key_the_driver_writes_it_under(workdir: Path):
+    """One key, one spelling. The driver, the round line and this cell held three literals of it, two
+    of them uncheckable, so a rename would have left the readers quietly printing nothing at all."""
+    from kullback import rounds
+
+    rows = _rounds_rows()
+    rows[-1]["exit"] = "stalled"
+    rows[-1]["counts"][rounds.BEAT_ERROR] = {"beat": "builder", "kind": "LedgerUnreadable"}
+    (workdir / "rounds.json").write_text(json.dumps(rows), encoding="utf-8")
+    assert "stalled (ended by builder error)" in block_of(render(load(workdir)), "## Rounds")

@@ -991,7 +991,8 @@ def test_a_round_that_failed_still_records_its_clock_its_spend_and_its_turns(tmp
         counts["turns"]["examiner"]
     assert counts["context_fill"]["builder"] > 0.0
     assert set(counts["spend"]) == {"builder", "examiner", "total", "cache_saved"}
-    assert "fidelity" not in counts, "a round that failed computed no gate count"
+    assert counts["tasks"] == 3 >= counts["fidelity"], \
+        "D231: it computed the gate counts it still could, over the Tasks it ruled on"
     assert json.loads((workdir / "gates_by_round.json").read_text(encoding="utf-8"))[-1]["round"] == 1
 
 
@@ -1560,3 +1561,367 @@ def test_the_driver_counts_the_four_things_the_loop_repairs_are_read_on(tmp_path
     assert counts["shape_retries"] == 2 and counts["zooms_skipped"] == 3
     assert counts["refuse_repeats"] == 2, "the second identical ask and the blocked third"
     assert counts["suggested_open"] == 0, "no Examiner beat has opened, so it has suggested nothing"
+
+
+# --- a round that a beat raised in (D231) ----------------------------------------------------
+
+def test_a_round_whose_examiner_beat_raised_still_closes_with_the_counts_it_measured(tmp_path, request):
+    """D231: the beat that raised costs the round the rest of its work, never the work it had done.
+
+    The Builder's beat replayed every Trace of every Task before the Examiner's beat raised, so the
+    round has a fidelity reading over a real denominator. It used to be closed on an empty dict and
+    print `fidelity 0/0 tasks`, which reads as a round that measured nothing.
+    """
+    workdir = tmp_path / "examiner-raised"
+    agent_model = TestModel([
+        _reply(None, ("build", {"target": TARGET})),
+        _reply("built."),
+        _reply("I have read everything and all is well."),
+    ])
+    result = rounds.run_rounds(workdir, model=Bodies(), agent_model=agent_model, files=[_fixture(request)],
+                               max_attempts=0, allowance_usd=0.0)
+    assert result["failed"] is True
+    counts = rounds.load_rounds(workdir)[-1].counts
+    assert counts["tasks"] == 3, "the Tasks it ruled on, off the replays the derivation never read"
+    assert 0 <= counts["fidelity"] <= counts["tasks"], "a reading over a real denominator"
+    assert "trusted" in counts, "the ruling the round did reach is on the record and not the defaults"
+    assert set(round_end.GATE_COUNTS) <= set(counts)
+
+
+def test_a_round_whose_beat_raised_names_the_beat_the_kind_and_the_class_of_the_message(tmp_path, request):
+    """D231: three fields a line, a table and a report can read, beside the sentence on `exit_note`.
+
+    Without them a round the Builder's provider timed out on and a round an Examiner tool refused
+    one Task on print the same counts and read alike.
+    """
+    workdir = tmp_path / "beat-error-row"
+    agent_model = TestModel([
+        _reply(None, ("build", {"target": TARGET})),
+        _reply("built."),
+        _reply("I have read everything and all is well."),
+    ])
+    rounds.run_rounds(workdir, model=Bodies(), agent_model=agent_model, files=[_fixture(request)],
+                      max_attempts=0, allowance_usd=0.0)
+    row = rounds.load_rounds(workdir)[-1].counts["beat_error"]
+    assert row["beat"] == "examiner" and row["kind"] == "ExaminerError"
+    assert "never called derive" in row["message_class"]
+
+
+def test_a_round_that_closed_on_its_own_carries_no_beat_error_at_all(driven):
+    """A field of zeros on every ordinary round would be a field a reader has to check; the row is
+    absent instead, so its presence is the whole of the reading."""
+    assert "beat_error" not in rounds.load_rounds(driven["workdir"])[-1].counts
+
+
+def test_the_class_of_a_beat_error_message_holds_what_failed_and_never_the_values(tmp_path):
+    """A count is grouped over: two rounds that lost the same beat the same way have to read as one
+    class whatever Task, tool or model the message went on to name."""
+    assert rounds.message_class("derive failed: LookupError: task ferry-91 has no Reference on disk") == \
+        "derive failed: LookupError"
+    assert rounds.message_class("build failed: RetryExhausted: kite-mill/loom-2: 5 attempts failed") == \
+        "build failed: RetryExhausted"
+    assert rounds.message_class("the model never called derive('all')") == "the model never called derive('all')"
+
+
+def test_only_a_clause_shaped_like_an_exception_name_is_promoted_into_the_class(tmp_path):
+    """A spaceless capitalised word is as often a model, an order id or a CamelCase column as it is a
+    raise, and each of those is a value the class exists to leave out. The class is worth more
+    carrying the head alone than it is carrying one of them."""
+    assert rounds.message_class("model call failed: Nimbus-7b: rate limit on account acct_99") == \
+        "model call failed", "a model name is a value, not the exception"
+    assert rounds.message_class("derive failed: XQ-4821: no row for it") == "derive failed"
+    assert rounds.message_class("column missing: LoftedGauge: on the ledger") == "column missing"
+    assert rounds.message_class("derive failed: LookupError: XQ-4821") == "derive failed: LookupError", \
+        "and the exception itself still joins it"
+
+
+def test_a_value_in_the_first_clause_of_a_message_is_grouped_out_of_the_class_too(tmp_path):
+    """Plenty of raises interpolate an id or a path straight into the sentence and carry no colon at
+    all, so the whole sentence was the class and every round that failed that way was its own group,
+    which is the opposite of what a grouped count is for."""
+    assert rounds.message_class("no Task is named task_ferry_91") == "no Task is named <value>"
+    assert rounds.message_class("no Task is named task_dock_02") == "no Task is named <value>"
+    assert rounds.message_class("no Traces under /var/lofted/wharf-4/traces and no file to ingest") == \
+        "no Traces under <value> and no file to ingest"
+    assert rounds.message_class("no mined tool is named lofted_gauge, wharf_gauge") == \
+        "no mined tool is named <value>", "a run of values leaves one mark, not one per value"
+
+
+def test_the_counts_of_a_round_whose_state_cannot_be_read_are_empty_and_the_record_still_closes(tmp_path,
+                                                                                               monkeypatch):
+    """The state a raised beat leaves is half written by definition, so the read is guarded: a
+    reader that raises over it costs the round its numbers and never its record."""
+    loop = _bare_loop(tmp_path)
+    monkeypatch.setattr(type(loop), "counts", lambda self: (_ for _ in ()).throw(ValueError("half written")))
+    assert loop.counts_now() == {}
+    record = loop.close_round(1, loop.counts_now())
+    assert record.round == 1 and record.counts["turns"]["total"] == 0
+
+
+def test_a_reader_that_raises_over_the_end_kinds_costs_the_round_its_split_and_never_its_record(tmp_path,
+                                                                                                monkeypatch):
+    """The split is read inside `driver_counts`, which `close_round` calls unguarded on the failure
+    path, so anything the reader raises would take the record of exactly the round this decision
+    exists to keep. The guard is the one `counts_now` draws and is drawn as wide."""
+    from kullback.user import fidelity as fidelity_mod
+
+    class LedgerUnreadable(Exception):
+        """Neither an OSError, a ValueError nor a TypeError: the guard may not turn on the kind."""
+
+    def raises(_workdir):
+        raise LedgerUnreadable("the Runs are half written")
+
+    monkeypatch.setattr(fidelity_mod, "ends_by_driver", raises)
+    loop = _bare_loop(tmp_path)
+    record = loop.close_round(1, {})
+    assert record.round == 1, "the round still closes"
+    assert fidelity_mod.ENDS_BY_DRIVER not in record.counts, "and carries no split rather than a guess"
+
+
+# --- what a beat spent, however it ended (D231) -----------------------------------------------
+
+def test_a_builder_beat_that_raised_still_credits_what_it_spent_to_the_round(tmp_path, monkeypatch):
+    """D231: the beat that raises is the one a reader most wants the cost of. The credit used to sit
+    on the last line of the beat, which a raise jumps over, so a round that spent 0.1746 on the
+    calls that broke it reported 0.0000 and read as a round that cost nothing."""
+    from kullback.agent.tools import ToolResult
+
+    loop = _bare_loop(tmp_path)
+    spent = iter([1.5, 1.9])
+    monkeypatch.setattr(type(loop), "spend", lambda self: next(spent))
+    monkeypatch.setattr(builder_agent, "drive_tool",
+                        lambda *args, **kwargs: ToolResult(content="the build broke", is_error=True))
+    with pytest.raises(BuildError):
+        loop.builder_beat(1)
+    assert round(loop.beat_spend["builder"], 4) == 0.4
+    assert round(loop.driver_counts()["spend"]["total"], 4) == 0.4
+
+
+def test_a_beat_that_raised_ends_on_the_stream_like_any_other_beat(tmp_path, monkeypatch):
+    """A screen that saw a beat start and never end has a beat still running on it for the rest of
+    the run, and the spend on the event is the same subtraction the round's counts carry."""
+    from kullback.agent.tools import ToolResult
+
+    seen: list = []
+    loop = _bare_loop(tmp_path, subscribers=[seen.append])
+    spent = iter([2.0, 2.25])
+    monkeypatch.setattr(type(loop), "spend", lambda self: next(spent))
+    monkeypatch.setattr(builder_agent, "drive_tool",
+                        lambda *args, **kwargs: ToolResult(content="the build broke", is_error=True))
+    with pytest.raises(BuildError):
+        loop.builder_beat(1)
+    assert _beats(seen) == [("beat_start", "builder", 1), ("beat_end", "builder", 1)]
+    assert round([e for e in seen if isinstance(e, BeatEnd)][0].spend, 4) == 0.25
+
+
+def test_a_screen_that_breaks_on_the_end_of_a_failed_beat_does_not_replace_the_beats_own_error(tmp_path,
+                                                                                                monkeypatch):
+    """The bookkeeping on the way out of a beat is not allowed to become the error the driver sees.
+    The driver closes the round on a broken agent contract; a subscriber's own error is not that,
+    so a screen that broke on the beat end would have carried the round off unclosed and unrecorded,
+    which is the failure this decision exists to repair."""
+    from kullback.agent.tools import ToolResult
+
+    def breaks(event: Any) -> None:
+        if isinstance(event, BeatEnd):
+            raise RuntimeError("the screen is gone")
+
+    loop = _bare_loop(tmp_path, subscribers=[breaks])
+    spent = iter([3.0, 3.5])
+    monkeypatch.setattr(type(loop), "spend", lambda self: next(spent))
+    monkeypatch.setattr(builder_agent, "drive_tool",
+                        lambda *args, **kwargs: ToolResult(content="the build broke", is_error=True))
+    with pytest.raises(BuildError):
+        loop.run_beat("builder", 1)
+    assert loop.beat_error["beat"] == "builder", "the round still knows which beat it died in"
+    assert round(loop.beat_spend["builder"], 4) == 0.5, "and what that beat cost it"
+
+
+def test_a_cancelled_screen_on_the_end_of_a_failed_beat_does_not_replace_the_beats_own_error(tmp_path,
+                                                                                             monkeypatch):
+    """A subscriber is awaited, so a cancelled one raises past the ordinary errors and would carry
+    the beat's error off with it. A stop asked for from outside the process is a different thing and
+    still travels: a round record is not worth swallowing an interrupt for."""
+    from kullback.agent.tools import ToolResult
+
+    def cancelled(event: Any) -> None:
+        if isinstance(event, BeatEnd):
+            raise asyncio.CancelledError()
+
+    loop = _bare_loop(tmp_path, subscribers=[cancelled])
+    spent = iter([4.0, 4.25])
+    monkeypatch.setattr(type(loop), "spend", lambda self: next(spent))
+    monkeypatch.setattr(builder_agent, "drive_tool",
+                        lambda *args, **kwargs: ToolResult(content="the build broke", is_error=True))
+    with pytest.raises(BuildError):
+        loop.run_beat("builder", 1)
+    assert loop.beat_error["beat"] == "builder" and round(loop.beat_spend["builder"], 4) == 0.25
+
+
+def test_the_screen_that_broke_on_a_failed_beat_is_named_on_the_rounds_own_counts(tmp_path, monkeypatch):
+    """The raise is swallowed so it cannot replace the beat's own error, and swallowed is where it
+    used to end: a subscriber that breaks on every failed beat was invisible to the operator
+    forever. It rides in the row that already names the beat it broke on."""
+    from kullback.agent.tools import ToolResult
+
+    def breaks(event: Any) -> None:
+        if isinstance(event, BeatEnd):
+            raise RuntimeError("the screen is gone")
+
+    loop = _bare_loop(tmp_path, subscribers=[breaks])
+    monkeypatch.setattr(builder_agent, "drive_tool",
+                        lambda *args, **kwargs: ToolResult(content="the build broke", is_error=True))
+    with pytest.raises(BuildError):
+        loop.run_beat("builder", 1)
+    row = loop.driver_counts()[rounds.BEAT_ERROR]
+    assert row["beat"] == "builder", "the beat that raised is still the reading"
+    assert row["end_emit_error"] == "RuntimeError: the screen is gone", "and the screen is named beside it"
+
+
+def test_a_round_whose_screens_all_held_carries_no_word_about_them(tmp_path, monkeypatch):
+    """A field naming a subscriber that did not break would be a field a reader has to check, so its
+    presence is the whole of the reading, the way the beat error row itself is."""
+    from kullback.agent.tools import ToolResult
+
+    loop = _bare_loop(tmp_path)
+    monkeypatch.setattr(builder_agent, "drive_tool",
+                        lambda *args, **kwargs: ToolResult(content="the build broke", is_error=True))
+    with pytest.raises(BuildError):
+        loop.run_beat("builder", 1)
+    assert "end_emit_error" not in loop.driver_counts()[rounds.BEAT_ERROR]
+
+
+def test_an_interrupt_on_the_end_of_a_failed_beat_is_not_swallowed_by_the_bookkeeping(tmp_path, monkeypatch):
+    """The line the guard draws: a stop the operator asked for is not the beat's bookkeeping noise."""
+    from kullback.agent.tools import ToolResult
+
+    def interrupted(event: Any) -> None:
+        if isinstance(event, BeatEnd):
+            raise KeyboardInterrupt()
+
+    loop = _bare_loop(tmp_path, subscribers=[interrupted])
+    monkeypatch.setattr(builder_agent, "drive_tool",
+                        lambda *args, **kwargs: ToolResult(content="the build broke", is_error=True))
+    with pytest.raises(KeyboardInterrupt):
+        loop.run_beat("builder", 1)
+
+
+def test_a_screen_that_breaks_on_the_end_of_a_beat_that_went_well_is_still_heard(tmp_path, monkeypatch):
+    """Only a beat already carrying its own error out is protected from its bookkeeping. A beat that
+    ended well has nothing to lose to the raise, so the raise travels as it always did."""
+    def breaks(event: Any) -> None:
+        if isinstance(event, BeatEnd):
+            raise RuntimeError("the screen is gone")
+
+    loop = _bare_loop(tmp_path, subscribers=[breaks])
+    monkeypatch.setattr(type(loop), "_builder_work", lambda self, n: None)
+    with pytest.raises(RuntimeError, match="the screen is gone"):
+        loop.builder_beat(1)
+
+
+# --- the round number continues across a restart (D231) ---------------------------------------
+
+def test_the_next_round_is_numbered_past_every_round_the_workdir_has_closed(tmp_path):
+    """Read off both files a closed round leaves, because either can outlive the other: rounds.json
+    is rewritten by each process with its own rounds, and the tables under rounds/ stay whatever
+    wrote them. A number either one has used is a number the next run may not reuse."""
+    from kullback import round_snapshot
+
+    workdir = tmp_path / "work"
+    assert rounds.last_round(workdir) == 0, "a fresh workdir has closed nothing and opens at 1"
+    rounds.write_rounds(workdir, [_record(1), _record(2)])
+    assert rounds.last_round(workdir) == 2
+    round_snapshot.write_snapshot(workdir, 5, [{"task_id": "task_dock"}])
+    assert rounds.last_round(workdir) == 5, "a table the counter would otherwise be handed again"
+    (workdir / rounds.ROUNDS_NAME).write_text("{ not json", encoding="utf-8")
+    assert rounds.last_round(workdir) == 5, "a half-written file says nothing about which rounds closed"
+
+
+def test_a_rounds_directory_that_cannot_be_listed_does_not_stop_the_run_before_its_first_round(tmp_path,
+                                                                                               monkeypatch):
+    """The tables are the second of the two reads and neither is worth the run. A directory the
+    process may not list says nothing about which rounds closed, so the number the file did reach
+    stands and the run opens past it rather than dying before round 1."""
+    from kullback import round_snapshot
+
+    workdir = tmp_path / "work"
+    rounds.write_rounds(workdir, [_record(1), _record(2)])
+
+    def refuses(_workdir):
+        raise PermissionError("the tables may not be listed")
+
+    monkeypatch.setattr(round_snapshot, "closed_rounds", refuses)
+    assert rounds.last_round(workdir) == 2, "what the file did read is kept, and the run opens at 3"
+
+
+def test_a_second_run_over_a_workdir_numbers_its_rounds_after_the_first_runs_and_writes_its_own_table(tmp_path):
+    """D231: an --iterate run used to open at 1 again, so it was handed the previous run's Task
+    table (a closed round's table is never rewritten) and its history row was derived from it, which
+    is how three workdirs came to hold an all-zero round-1 table beside a round that had measured."""
+    from kullback import round_snapshot
+
+    workdir = tmp_path / "work"
+    first = rounds.run_rounds(workdir, files=[])  # nothing to build: the beat raises, the round closes
+    assert first["failed"] is True
+    second = rounds.run_rounds(workdir, files=[], iterate=True)
+    assert [r["round"] for r in second["rounds"]] == [2]
+    assert round_snapshot.closed_rounds(workdir) == [1, 2]
+    assert round_snapshot.read_snapshot(workdir, 2)["round"] == 2
+    assert rounds.last_round(workdir) == 2
+    history = json.loads((workdir / "gates_by_round.json").read_text(encoding="utf-8"))
+    assert [row["round"] for row in history] == [1, 2], "one history row per round, not one overwritten"
+
+
+# --- the end kinds per driver, and what the judging cost this round (D231) ---------------------
+
+def _run_events(path: Path, events: list) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("\n".join(json.dumps(event) for event in events), encoding="utf-8")
+
+
+def _charge(workdir: Path, stage: str, usd: float) -> None:
+    """One stage charged in the workdir's own ledger, the file the round reads its spend off."""
+    totals = budget.load_totals(workdir)
+    bucket = totals["stages"].setdefault(stage, budget.empty_bucket())
+    bucket["usd"] = float(bucket.get("usd") or 0.0) + usd
+    totals["total"]["usd"] = float(totals["total"].get("usd") or 0.0) + usd
+    budget.save_totals(workdir, totals)
+
+
+def test_a_rounds_counts_say_how_its_runs_ended_under_each_user_that_drove_them(tmp_path):
+    """D231: the end-kind split rode on the build result and on a re-roll's gate metrics and nowhere
+    a round could read it, so the number D214 exists to move, how often a user runs out of scenario,
+    had to be recovered by aggregating the status rows by hand."""
+    from kullback.user import rules as user_rules
+
+    loop = _bare_loop(tmp_path)
+    workdir = loop.plan.workdir
+    _run_events(workdir / "runs" / "task_dock" / "reroll-task_dock-0.jsonl",
+                [{"type": "user_turn", "payload": {"driver": "agent",
+                                                   "user_end": user_rules.GOAL_SATISFIED}}])
+    _run_events(workdir / "runs" / "task_dock" / "reroll-task_dock-1.jsonl",
+                [{"type": "user_turn", "payload": {"tags": [user_rules.SCENARIO_EXHAUSTED]}}])
+    split = loop.driver_counts()["user_ends_by_kind"]
+    assert split["agent"][user_rules.GOAL_SATISFIED] == 1
+    assert split["rules"][user_rules.SCENARIO_EXHAUSTED] == 1
+    assert split["rules"][user_rules.GOAL_SATISFIED] == 0, "every kind for a driver that spoke"
+
+
+def test_a_round_whose_runs_carry_no_end_kind_carries_no_split_rather_than_zeros(tmp_path):
+    """Zero Runs ended and no Run classified are not the same reading, so the split is absent where
+    nothing ended rather than a row of zeros a reader has to interpret."""
+    assert "user_ends_by_kind" not in _bare_loop(tmp_path).driver_counts()
+
+
+def test_the_judge_spend_on_a_round_is_what_that_round_was_charged(tmp_path):
+    """D231: read as the workdir's running total, it put an earlier build's charge beside this
+    round's `semantic_judged` of 0 and read as a counter disagreeing with itself. The two counters
+    it was read against measure different passes: `semantic_judged` is the pairs a model was asked
+    about, and the replay ruling's `differs_by_judge` the differences reached on the semantic route,
+    which the equivalence table settles for nothing once an earlier round has answered that pair."""
+    loop = _bare_loop(tmp_path)
+    _charge(loop.plan.workdir, rounds.SEMANTIC_JUDGE_STAGE, 0.9)  # an earlier run of this workdir
+    loop.round_stage_start = loop.stage_spend()
+    assert loop.counts()["judge_spend"] == 0.0, "a round that asked no judge is charged for none"
+    _charge(loop.plan.workdir, rounds.SEMANTIC_JUDGE_STAGE, 0.25)
+    assert loop.counts()["judge_spend"] == 0.25
