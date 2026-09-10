@@ -513,6 +513,15 @@ def _agreed_formulas(effects: Iterable[WriteEffect]) -> list[str]:
 UNATTRIBUTED = "\x00unattributed"
 
 
+def _stray_key(effects: dict[str, list[WriteEffect]]) -> str:
+    """First key under the tag no recorded call claimed, bumping past forgeries."""
+    claimed = {effect.call_id for rows in effects.values() for effect in rows}
+    key = UNATTRIBUTED
+    while key in claimed:
+        key += "\x00"
+    return key
+
+
 def replay_evidence(effects: dict[str, list[WriteEffect]]) -> dict[str, list[dict]]:
     """Per recorded call id, the rows and columns the replay checks once that call has replayed.
 
@@ -546,11 +555,7 @@ def replay_evidence(effects: dict[str, list[WriteEffect]]) -> dict[str, list[dic
         # The tag is a convention, not an invariant, since a recorded id is an unconstrained
         # string: bump the key past any id the recordings claim, so the strays land where no
         # call looks them up. The frozen check finds flagged rows by scanning, never by key.
-        claimed = {effect.call_id for rows in effects.values() for effect in rows}
-        key = UNATTRIBUTED
-        while key in claimed:
-            key += "\x00"
-        out.setdefault(key, []).extend(stray)
+        out.setdefault(_stray_key(effects), []).extend(stray)
     return out
 
 
