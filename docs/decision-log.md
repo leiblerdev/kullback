@@ -1827,6 +1827,18 @@ The read timeout is now a field of the posting client (`kullback/ai/provider.py`
 
 Five tests in `tests/ai/test_timeout.py` on an invented domain cover the default split, the override, the unparseable value, a timed-out first attempt that then answers with attempts 2 and the timeout in the incident fields, and five timeouts raising with the budget in the message. Left out: the default is not surfaced beside the model flags in the README, since no section there lists environment variables yet.
 
+### D232. A build names the model that drives the Simulated user (2026-09-10)
+
+The third environment's round 1 ended 91 of 135 Runs with the scripted user running out of turns (end kind scenario_exhausted) while the agent user drove 0 Tasks against 48 rule driven, because `kullback build` had no way to name a user model. D214 built the agent user as a package with the driver choice and the fallback already implemented, and `kullback/builder/build.py` already threads a `user_model` read from `models.get("user_agent")`; what was missing was the flag and the plumbing from the CLI and the rounds loop into that dict.
+
+The rule is one flag. `--user-model <provider/model>` on `kullback build` resolves through the same live model path as `--judge-model` and lands in `models["user_agent"]`, so the agent user drives every Task it beats the rules on while the rules stay the floor and the fallback exactly as D214 built them. Without the flag nothing changes: the entry is None and the keys, the cache and the Run ids are the ones they were before. `--user-model` without `--model` is allowed, since the Builder may be code driven; without a Builder model there are no re-rolls, so the user model pays only for the offline driver scoring. The user model id is recorded in report_config.json beside the judge models, so the build's report config says which model drove the user; a rebuild that drops the flag clears a stale user model id, so a rule-driven build is never attributed to an earlier model, while a workdir that never carried the flag still has nothing written. No report names the user model yet; the reader is left for the report package's owner (docs/todo.md). The round counts already carried `tasks_agent_driven`, and no other command runs re-rolls with a user, so only `build` takes the flag.
+
+Five tests on an invented garden centre domain: the flag reaches the driver with the named model id and defaults to None, the model lands wrapped under `user_agent` with the rules alone without it, the workdir record carries the user model id, a rebuild without the flag clears a stale user model id, and a stub user model that wins the driver choice is counted, so `tasks_agent_driven` reads 1 where the same round without it reads 0.
+
+Not measured live; the next launch of the third environment passes it. No build was run here, so the 91 of 135 and the 0 against 48 are the brief's counts, unread on this branch.
+
+No disagreements. One smaller reading was taken: the `run` command's Candidate batches keep their rule-driven user, since they are batches and not re-rolls.
+
 ## Pending (asked, not yet answered)
 
 - ~~The user's own tools and the world they act on (D71, first part).~~ Decided as D176 (2026-09-07): one world, rows revealed by a requestor marked by it, readers as code under the free gate.
