@@ -6,8 +6,11 @@ These are the items I pushed past the first build. Each line says what it buys a
 
 - Next re-freeze: apply docs/frozen-patches/speed-3.patch (ledger batching; the Plan.spend memory read already rides on the branch), re-run tests/runner.
 - Apply `docs/frozen-patches/speed-1.patch` and re-freeze: lock-only thread safety for the
-  runner's shared semantic judging memo and save and the replay comparer's tally, needed now that
-  the Examiner replays synth variants as pooled jobs (speed-1, Greptile P1 on PR #53).
+  replay comparer's tally increment, needed before the Examiner replays synth variants as pooled
+  jobs (speed-1, Greptile P1 on PR #53).
+- Flip the speed-1 variant gate in `kullback/examiner/stage.py` (`_second_path_outcome` passes
+  `state.pool` to `synth_second_path` again) once the tally lock above is in: the variant part of
+  the gain stays deferred until then.
 
 ## After the first Replica clears Gate A
 
