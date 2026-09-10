@@ -606,7 +606,12 @@ def test_tool_sigs_are_read_off_disk(tmp_path):
 
 # --- house rules ------------------------------------------------------------
 
-SOURCE = Path(__file__).resolve().parents[1] / "kullback" / "report.py"
+PACKAGE = Path(__file__).resolve().parents[1] / "kullback" / "report"
+
+
+def package_source() -> str:
+    """Every module of the report package as one string, so a house rule reads all of them."""
+    return "\n".join(path.read_text(encoding="utf-8") for path in sorted(PACKAGE.rglob("*.py")))
 
 
 def test_report_never_computes_a_verdict():
@@ -618,14 +623,14 @@ def test_report_never_computes_a_verdict():
     """
     import re
 
-    source = SOURCE.read_text(encoding="utf-8")
+    source = package_source()
     assert "runner.verdict" not in source
     assert re.search(r"kullback\.runner\.(?!records\b)\w", source) is None
     assert "kullback.builder" not in source
 
 
 def test_no_em_dashes_in_the_source_or_the_output(data):
-    source = SOURCE.read_text(encoding="utf-8")
+    source = package_source()
     assert "\u2014" not in source and "\u2013" not in source
     text = render(data)
     assert "\u2014" not in text and "\u2013" not in text
