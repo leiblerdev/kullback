@@ -477,141 +477,16 @@ def derive_verifier(task: Any, reference_run: Any, rerun_paths: Optional[list[st
     tools = resolve_write_tools([reference] + reruns, write_tools)
     good = [reference] + [r for r in reruns if successful(r, successful_run_ids)]
     good_effects = [write_effects(r, tools, fn) for r in good]
-    everywhere = set.intersection(*[set(e) for e in good_effects]) if good_effects else set()
-    somewhere = set().union(*[set(e) for e in good_effects]) if good_effects else set()
-    reads = {c["name"] for r in [reference] + reruns for c in run_calls(r)} - tools
     spoken = spoken_text(good)
-    atoms: list[Atom] = []
 
-    # D43: present in every successful re-run is required, in some is allowed, in none is not an
-    # atom. A write only a failed re-run made is therefore not a forbidden atom; the write cap below
-    # and verdict.py's extra-write check are what keep a Candidate from writing more than the good
-    # Runs did.
-    for number, key in enumerate(sorted(somewhere)):
-        run, effect = _first_with(good, good_effects, key)
-        atom_id = f"w{number}"
-        kind = "required" if key in everywhere else "allowed"
-        base = {"tool": effect["tool"], "entity": effect["entity"], "entity_raw": effect["entity_raw"],
-                "id_field": effect["id_field"], "at": effect["idx"]}
-        if effect["requestor"]:
-            base["requestor"] = effect["requestor"]  # D71: a user-side write says so on the atom
-        write_atom = _atom(atom_id, kind, dict(base, kind="write"),
-                           spans=[ptr(run, effect["idx"])],
-                           description=f"{effect['tool']} writes {effect['entity'] or 'an entity'}")
-        atoms.append(write_atom)
-        self_rejected: list[str] = []
-        for field in sorted(effect["values"]):
-            value, canon_key = effect["args"][field], effect["values"][field]
-            provenance, span = classify_provenance(run, effect["pos"], value, fn)
-            agreed = all(key in e and e[key]["values"].get(field) == canon_key for e in good_effects)
-            demanded = agreed and provenance in REQUIRED_PROVENANCE
-            if demanded and provenance == "system_derived" and not user_said(spoken, value):
-                # D190: no user of this Task said this value, so it is one the world knows and the
-                # Candidate has to read for itself. Demanding the literal asks it to reproduce a
-                # constant it was never told, and it is the constant the leak check finds in the
-                # Intent. The column keeps its demand as a shape; the row the write acts on is still
-                # the row the write atom above names, because which row the Task is about is the
-                # Task and not a value the derivation chose.
-                #
-                # Only a system_derived value is read this way, which is the only kind the leak
-                # check reads. D42 has already said a user_stated value came from a user, and it
-                # compares canonically ("$150" and 150.0 are one value, D39) where the check
-                # compares text; taking the check's stricter reading over an atom it never looks at
-                # would relax a value the customer themself gave.
-                #
-                # D206: the value is one this Run read, so the shape is checked against what the Run
-                # read and not only against the row it wrote. The rule is asked here whether it
-                # accepts the Run it was derived from: an atom that rejects its own Reference is a
-                # derivation defect, and it is dropped and counted rather than stored to fail every
-                # Candidate and the Reference alike.
-                shape, source = shape_for(f"{atom_id}.{field}", effect["tool"], field,
-                                          effect["id_field"], tools, run, fn)
-                if shape is None:
-                    self_rejected.append(field)
-                    continue
-                atoms.append(shape)
-                continue
-            atoms.append(_atom(f"{atom_id}.{field}",
-                               "required" if demanded else "allowed",
-                               dict(base, kind="write_value", field=field, value=canon_key, raw=value),
-                               provenance=provenance, spans=[span] if span else [],
-                               description=f"{effect['tool']} {field} is {text_of(value)}"))
-        if self_rejected:
-            # The columns whose shape was not stored, on the write they belong to: the count is what
-            # the status row reads, and the names are what a person re-derives from (D206).
-            write_atom.target["shape_self_reject"] = sorted(self_rejected)
-
-    asked = [question_keys(r, e, fn) for r, e in zip(good, good_effects, strict=False)]
-    for key in sorted(set.intersection(*[set(a) for a in asked]) if asked else set()):
-        seen = asked[0][key]
-        atoms.append(_atom(f"q.{key}", "question",
-                           {"kind": "question", "key": key, "tool": seen.get("tool"),
-                            "field": seen.get("field")},
-                           spans=[seen["span"]] if seen.get("span") else [],
-                           description=f"the agent asks the user about {key.split(':', 1)[-1]}"))
-
-    said = [communicate_values(r, fn) for r in good]
-    request = asked_facts([intent, task], good, fn)
-    common = set.intersection(*[set(s) for s in said]) if said else set()
-    if not common and not _demands_something(atoms):
-        # D190: agreement across the good Runs is the rule while there is anything else to fail, and
-        # on a Task with nothing else it leaves a Verifier no Run can fail at all. What the Reference
-        # itself told the user is then the evidence of the work, and the facts of it the request
-        # asked for are demanded; the ones it did not ask for stay reported, as D182 says.
-        common = set(said[0]) if said else set()
-    reported: list[int] = []
-    for number, key in enumerate(sorted(common)):
-        fact = said[0][key]
-        payload = {"kind": "communicate", "value": key, "text": fact["text"]}
-        if communicate_kind(fact, key, reference, request):
-            atoms.append(_demanded_fact(f"c{number}", payload, fact["span"],
-                                        spoken=user_said(spoken, fact["text"])))
-            continue
-        # Same value, same predicate, reported and never a rejection: the request did not ask for
-        # this fact, so a Run that solved the Task without repeating it has done the job.
-        reported.append(len(atoms))
-        atoms.append(_reported_fact(f"c{number}", payload, fact["span"]))
-    request_asked = _demands_something(atoms)  # read before the fallback below, which the cap ignores
-    if reported and not request_asked:
-        # Nothing else in this Verifier can be falsified, so the facts stand: on a Task whose request
-        # names no fact and whose Reference wrote nothing, reporting them all leaves a Verifier an
-        # empty Run passes, which the D79 suite is right to distrust. What the Reference told the
-        # user is then the only evidence of the work, and it is demanded again.
-        for at in reported:
-            payload = dict(atoms[at].target, kind="communicate")
-            atoms[at] = _demanded_fact(atoms[at].id, payload,
-                                       atoms[at].spans[0] if atoms[at].spans else None,
-                                       asked=False, spoken=user_said(spoken, payload.get("text")))
-
-    # The cap comes last so the rule can see whether the request asked for anything else.
-    #
-    # A cap of 0 is what the Reference did, and on a Task whose other Runs wrote it is also a claim
-    # the Task's own evidence contradicts. Where the request asked for nothing else (nothing
-    # required, no question, no fact it named), it is not written: an
-    # atom no Run can fail but a writing one is not a bar, it is the shape D173 names, an empty Run
-    # and the wrong Run both satisfy it, and every held-out Run that took the writing path is
-    # rejected by it. The D133 route is taken rather than a cap widened to the writing group: those
-    # Runs are held out as evidence that the Task has more than one path, the false-rejection number
-    # counts them, and the D79 suite says a Verifier with nothing in it that can be falsified is not
-    # trusted, which is the honest reading and the one that sends the Examiner to re-roll and repair.
-    # Widening the cap instead would pass a path the D111 rule had just set aside, on the strength of
-    # a Run no rule ruled good, and it would still not admit the writing Run: with no write atom
-    # covering it the Verdict's extra-write check rejects it whatever the cap says.
-    if good_effects:
-        cap = max(len(e) for e in good_effects)
-        if cap or not writes_elsewhere or request_asked:
-            atoms.append(_atom("entity_count", "required", {"kind": "entity_count", "count": cap},
-                               description=f"the Run makes at most {cap} write calls"))
-
-    for rule in constraints or []:
-        if not (rule.compiled or rule.judge_atom):
-            continue  # a residual constraint is reported, never verdicted (D76)
-        atoms.append(_atom(f"hard.{rule.id}", "hard",
-                           {"kind": "hard", "constraint_id": rule.id, "judge": rule.judge_atom,
-                            "predicate_src": rule.predicate_src, "write_tools": sorted(tools),
-                            "read_tools": sorted(reads)},
-                           judge=bool(rule.judge_atom), description=rule.text,
-                           spans=[rule.span] if rule.span else []))
+    atoms = _write_atoms(good, good_effects, tools, spoken, fn)
+    atoms += _question_atoms(good, good_effects, fn)
+    facts, request_asked = _communicate_atoms(reference, good, spoken,
+                                              asked_facts([intent, task], good, fn), atoms, fn)
+    atoms += facts
+    # The cap comes after the facts so the rule on a cap of 0 can see what else the request asked for.
+    atoms += _cap_atoms(good_effects, writes_elsewhere, request_asked)
+    atoms += _constraint_atoms(constraints, tools, [reference] + reruns)
 
     if _nothing_to_fail(atoms):
         # D190: the Reference wrote nothing and its answer stated no fact read from the world, so
@@ -621,9 +496,230 @@ def derive_verifier(task: Any, reference_run: Any, rerun_paths: Optional[list[st
         # says something a Run can contradict.
         atoms.append(no_write_atom(tools))
 
-    task_id = task if isinstance(task, str) else (task.id if isinstance(task, Task) else str(task))
-    return Verifier(task_id=task_id, atoms=atoms, verifier_version=verifier_version,
+    return Verifier(task_id=_task_id(task), atoms=atoms, verifier_version=verifier_version,
                     seed_run_ids=[r.run_id for r in good])
+
+
+def _demand_kind(demanded: bool) -> str:
+    """The two kinds the write-set diff writes: what the Candidate has to do, and what it may do."""
+    return "required" if demanded else "allowed"
+
+
+def _task_id(task: Any) -> str:
+    """The id of the Task this Verifier is for, whichever of the three shapes the caller passed."""
+    if isinstance(task, str):
+        return task
+    return task.id if isinstance(task, Task) else str(task)
+
+
+# --- writes (D42, D43) ------------------------------------------------------
+
+def _agreed_and_seen(effects: list[dict]) -> tuple[set[str], set[str]]:
+    """The write keys every good Run made, and the keys any of them made."""
+    keys = [set(effect) for effect in effects]
+    if not keys:
+        return set(), set()
+    return set.intersection(*keys), set().union(*keys)
+
+
+def _agreed_fields(key: str, effect: dict, effects: list[dict]) -> set[str]:
+    """The columns of this write every good Run wrote the same value under (D39 canonical)."""
+    return {field for field, value in effect["values"].items()
+            if all(key in e and e[key]["values"].get(field) == value for e in effects)}
+
+
+def _write_atoms(good: list[Run], good_effects: list[dict], tools: set[str], spoken: str,
+                 fn: Any) -> list[Atom]:
+    """One atom per write the good Runs made, each followed by the atoms for its columns.
+
+    D43: present in every successful re-run is required, in some is allowed, in none is not an atom.
+    A write only a failed re-run made is therefore not a forbidden atom; the write cap and verdict.py's
+    extra-write check are what keep a Candidate from writing more than the good Runs did.
+    """
+    everywhere, somewhere = _agreed_and_seen(good_effects)
+    atoms: list[Atom] = []
+    for number, key in enumerate(sorted(somewhere)):
+        run, effect = _first_with(good, good_effects, key)
+        atom_id = f"w{number}"
+        base = {"tool": effect["tool"], "entity": effect["entity"], "entity_raw": effect["entity_raw"],
+                "id_field": effect["id_field"], "at": effect["idx"]}
+        if effect["requestor"]:
+            base["requestor"] = effect["requestor"]  # D71: a user-side write says so on the atom
+        write_atom = _atom(atom_id, _demand_kind(key in everywhere), dict(base, kind="write"),
+                           spans=[ptr(run, effect["idx"])],
+                           description=f"{effect['tool']} writes {effect['entity'] or 'an entity'}")
+        atoms.append(write_atom)
+        values, self_rejected = _value_atoms(atom_id, base, run, effect, tools, spoken, fn,
+                                             _agreed_fields(key, effect, good_effects))
+        atoms += values
+        if self_rejected:
+            # The columns whose shape was not stored, on the write they belong to: the count is what
+            # the status row reads, and the names are what a person re-derives from (D206).
+            write_atom.target["shape_self_reject"] = self_rejected
+    return atoms
+
+
+def _kept_as_shape(demanded: bool, provenance: str, spoken: str, value: Any) -> bool:
+    """Is this required value one no user said, so that the column is demanded as a shape (D190)?
+
+    No user of this Task said the value, so it is one the world knows and the Candidate has to read
+    for itself. Demanding the literal asks it to reproduce a constant it was never told, and it is
+    the constant the leak check finds in the Intent. The column keeps its demand as a shape; the row
+    the write acts on is still the row the write atom names, because which row the Task is about is
+    the Task and not a value the derivation chose.
+
+    Only a system_derived value is read this way, which is the only kind the leak check reads. D42
+    has already said a user_stated value came from a user, and it compares canonically ("$150" and
+    150.0 are one value, D39) where the check compares text; taking the check's stricter reading over
+    an atom it never looks at would relax a value the customer themself gave.
+    """
+    return demanded and provenance == "system_derived" and not user_said(spoken, value)
+
+
+def _value_atoms(atom_id: str, base: dict, run: Run, effect: dict, tools: set[str], spoken: str,
+                 fn: Any, agreed: set[str]) -> tuple[list[Atom], list[str]]:
+    """The atoms for one write's columns, and the columns whose shape rejected its own Reference.
+
+    D206: a shape is checked against what the Run read, so the rule is asked here whether it accepts
+    the Run it was derived from. An atom that rejects its own Reference is a derivation defect, and
+    it is dropped and counted rather than stored to fail every Candidate and the Reference alike.
+    """
+    atoms: list[Atom] = []
+    self_rejected: list[str] = []
+    for field in sorted(effect["values"]):
+        value, canon_key = effect["args"][field], effect["values"][field]
+        provenance, span = classify_provenance(run, effect["pos"], value, fn)
+        demanded = field in agreed and provenance in REQUIRED_PROVENANCE
+        if _kept_as_shape(demanded, provenance, spoken, value):
+            shape, _source = shape_for(f"{atom_id}.{field}", effect["tool"], field,
+                                       effect["id_field"], tools, run, fn)
+            if shape is None:
+                self_rejected.append(field)
+                continue
+            atoms.append(shape)
+            continue
+        atoms.append(_atom(f"{atom_id}.{field}", _demand_kind(demanded),
+                           dict(base, kind="write_value", field=field, value=canon_key, raw=value),
+                           provenance=provenance, spans=[span] if span else [],
+                           description=f"{effect['tool']} {field} is {text_of(value)}"))
+    return atoms, sorted(self_rejected)
+
+
+# --- questions and facts ----------------------------------------------------
+
+def _question_atoms(good: list[Run], good_effects: list[dict], fn: Any) -> list[Atom]:
+    """One atom per thing every good Run asked the user about before it wrote."""
+    asked = [question_keys(r, e, fn) for r, e in zip(good, good_effects, strict=False)]
+    common = set.intersection(*[set(a) for a in asked]) if asked else set()
+    atoms: list[Atom] = []
+    for key in sorted(common):
+        seen = asked[0][key]
+        atoms.append(_atom(f"q.{key}", "question",
+                           {"kind": "question", "key": key, "tool": seen.get("tool"),
+                            "field": seen.get("field")},
+                           spans=[seen["span"]] if seen.get("span") else [],
+                           description=f"the agent asks the user about {key.split(':', 1)[-1]}"))
+    return atoms
+
+
+def _stated_facts(said: list[dict], atoms: list[Atom]) -> set[str]:
+    """The facts this Task's answer is derived from: the ones every good Run stated, else the Reference's.
+
+    D190: agreement across the good Runs is the rule while there is anything else to fail, and on a
+    Task with nothing else it leaves a Verifier no Run can fail at all. What the Reference itself told
+    the user is then the evidence of the work, and the facts of it the request asked for are demanded;
+    the ones it did not ask for stay reported, as D182 says.
+    """
+    common = set.intersection(*[set(s) for s in said]) if said else set()
+    if common or _demands_something(atoms):
+        return common
+    return set(said[0]) if said else set()
+
+
+def _redemand_reported(atoms: list[Atom], reported: list[int], spoken: str) -> None:
+    """Demand the facts that were reported, in place.
+
+    Nothing else in this Verifier can be falsified, so the facts stand: on a Task whose request names
+    no fact and whose Reference wrote nothing, reporting them all leaves a Verifier an empty Run
+    passes, which the D79 suite is right to distrust. What the Reference told the user is then the
+    only evidence of the work, and it is demanded again.
+    """
+    for at in reported:
+        payload = dict(atoms[at].target, kind="communicate")
+        atoms[at] = _demanded_fact(atoms[at].id, payload,
+                                   atoms[at].spans[0] if atoms[at].spans else None,
+                                   asked=False, spoken=user_said(spoken, payload.get("text")))
+
+
+def _communicate_atoms(reference: Run, good: list[Run], spoken: str, request: tuple[set[str], set[str]],
+                       atoms: list[Atom], fn: Any) -> tuple[list[Atom], bool]:
+    """The atoms for the facts the answer states, and whether this Verifier demands anything else.
+
+    `atoms` is what the derivation has written so far, which is what says whether there is anything
+    else a Run can fail; the flag is read before the fallback below, which the cap ignores.
+    """
+    said = [communicate_values(r, fn) for r in good]
+    facts: list[Atom] = []
+    reported: list[int] = []
+    for number, key in enumerate(sorted(_stated_facts(said, atoms))):
+        fact = said[0][key]
+        payload = {"kind": "communicate", "value": key, "text": fact["text"]}
+        if communicate_kind(fact, key, reference, request):
+            facts.append(_demanded_fact(f"c{number}", payload, fact["span"],
+                                        spoken=user_said(spoken, fact["text"])))
+            continue
+        # Same value, same predicate, reported and never a rejection: the request did not ask for
+        # this fact, so a Run that solved the Task without repeating it has done the job.
+        reported.append(len(facts))
+        facts.append(_reported_fact(f"c{number}", payload, fact["span"]))
+    request_asked = _demands_something(atoms + facts)
+    if reported and not request_asked:
+        _redemand_reported(facts, reported, spoken)
+    return facts, request_asked
+
+
+# --- the cap and the compiled constraints -----------------------------------
+
+def _cap_atoms(good_effects: list[dict], writes_elsewhere: bool, request_asked: bool) -> list[Atom]:
+    """How many entities the Run may write, which is what the good Runs wrote.
+
+    A cap of 0 is what the Reference did, and on a Task whose other Runs wrote it is also a claim
+    the Task's own evidence contradicts. Where the request asked for nothing else (nothing required,
+    no question, no fact it named), it is not written: an atom no Run can fail but a writing one is
+    not a bar, it is the shape D173 names, an empty Run and the wrong Run both satisfy it, and every
+    held-out Run that took the writing path is rejected by it. The D133 route is taken rather than a
+    cap widened to the writing group: those Runs are held out as evidence that the Task has more than
+    one path, the false-rejection number counts them, and the D79 suite says a Verifier with nothing
+    in it that can be falsified is not trusted, which is the honest reading and the one that sends
+    the Examiner to re-roll and repair. Widening the cap instead would pass a path the D111 rule had
+    just set aside, on the strength of a Run no rule ruled good, and it would still not admit the
+    writing Run: with no write atom covering it the Verdict's extra-write check rejects it whatever
+    the cap says.
+    """
+    if not good_effects:
+        return []
+    cap = max(len(effect) for effect in good_effects)
+    if cap or not writes_elsewhere or request_asked:
+        return [_atom("entity_count", "required", {"kind": "entity_count", "count": cap},
+                      description=f"the Run makes at most {cap} write calls")]
+    return []
+
+
+def _constraint_atoms(constraints: Optional[Iterable[Constraint]], tools: set[str],
+                      runs: list[Run]) -> list[Atom]:
+    """One atom per constraint the Builder compiled or handed to a judge."""
+    reads = {c["name"] for r in runs for c in run_calls(r)} - tools
+    atoms: list[Atom] = []
+    for rule in constraints or []:
+        if not (rule.compiled or rule.judge_atom):
+            continue  # a residual constraint is reported, never verdicted (D76)
+        atoms.append(_atom(f"hard.{rule.id}", "hard",
+                           {"kind": "hard", "constraint_id": rule.id, "judge": rule.judge_atom,
+                            "predicate_src": rule.predicate_src, "write_tools": sorted(tools),
+                            "read_tools": sorted(reads)},
+                           judge=bool(rule.judge_atom), description=rule.text,
+                           spans=[rule.span] if rule.span else []))
+    return atoms
 
 
 def _demanded_fact(atom_id: str, payload: dict, span: Any, asked: bool = True, spoken: bool = False) -> Atom:
