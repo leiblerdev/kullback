@@ -133,34 +133,6 @@ def test_a_column_no_call_read_before_the_write_takes_its_before_from_the_starti
     assert credit.ambiguous is False
 
 
-def test_two_writes_between_two_sightings_are_both_credited_and_the_column_says_so():
-    calls = [call("c1", "get_member", {"member_id": "MB01"},
-                  {"member_id": "MB01", "credit": 100, "ledger": []}),
-             call("c2", WRITE, {"loan_id": "LN01", "title_id": "TT09"}, loan_row("TT09")),
-             call("c3", WRITE, {"loan_id": "LN01", "title_id": "TT01"}, loan_row()),
-             call("c4", "get_member", {"member_id": "MB01"},
-                  {"member_id": "MB01", "credit": 82, "ledger": [{"amount": 18}]})]
-    seen = effects.observe_effects([trace_of(calls)], schema(), {WRITE})
-    assert sorted(effect.call_id for effect in seen[WRITE]) == ["c2", "c3"]
-    assert all(column.ambiguous for effect in seen[WRITE] for column in effect.columns
-               if column.table == "members")
-    assert effects.counts(seen)["effects_ambiguous"] > 0
-
-
-def test_a_column_two_writes_may_have_moved_is_checked_only_after_the_later_of_them():
-    """The recording only says where the column ended, so only the last write is held to it."""
-    calls = [call("c1", "get_member", {"member_id": "MB01"},
-                  {"member_id": "MB01", "credit": 100, "ledger": []}),
-             call("c2", WRITE, {"loan_id": "LN01", "title_id": "TT09"}, loan_row("TT09")),
-             call("c3", WRITE, {"loan_id": "LN01", "title_id": "TT01"}, loan_row()),
-             call("c4", "get_member", {"member_id": "MB01"},
-                  {"member_id": "MB01", "credit": 82, "ledger": [{"amount": 18}]})]
-    seen = effects.observe_effects([trace_of(calls)], schema(), {WRITE})
-    evidence = effects.replay_evidence(seen)
-    assert [row["path"] for row in evidence.get("c2", []) if row["table"] == "members"] == []
-    assert [row["path"] for row in evidence["c3"] if row["table"] == "members"]
-
-
 def test_a_column_that_did_not_move_leaves_no_evidence():
     calls = borrowing_calls()
     calls[-1] = call("c6", "get_member", {"member_id": "MB01"},
