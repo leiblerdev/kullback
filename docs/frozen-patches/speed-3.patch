@@ -1,0 +1,398 @@
+diff --git a/kullback/runner/budget.py b/kullback/runner/budget.py
+index 041b4af..ca5e36d 100644
+--- a/kullback/runner/budget.py
++++ b/kullback/runner/budget.py
+@@ -2,6 +2,7 @@
+ 
+ from __future__ import annotations
+ 
++import atexit
+ import json
+ import os
+ import threading
+@@ -67,6 +68,21 @@ TOTALS_NAME = "budget.json"
+ # and record_call is a read-modify-write of budget.json. Process-wide rather than per model,
+ # since every wrapper in a build writes the same file.
+ _LEDGER_LOCK = threading.RLock()
++# Spend ledger batching: record_call accumulates rows in memory under the same lock and the
++# file is written when a fresh ledger takes its first row (so budget.json exists as soon as a
++# build starts spending), on stage end, on process exit, on reads past the interval, and at most
++# every LEDGER_FLUSH_INTERVAL_S seconds or LEDGER_FLUSH_MAX_ROWS rows. The ceiling gate reads the
++# in memory totals through load_totals, never the file, so a ceilinged call follows the same dirty
++# rows or elapsed check as every other call. The file shape, row order and every total stay identical
++# to the per call write through. Readers through load_totals (the ceiling gate, the TUI status line)
++# see every row; readers of budget.json itself (the TUI boards, report.py, scripts/build_table.py)
++# may lag by at most one interval or one row batch. A flush on read holds _LEDGER_LOCK across one
++# write per interval per workdir. A hard kill loses at most one interval of rows, and
++# Ceiling.from_totals resumes from the file, so a resumed build restarts under counted by that much.
++LEDGER_FLUSH_INTERVAL_S = 5.0
++LEDGER_FLUSH_MAX_ROWS = 200
++_LEDGER_CACHE: dict[str, dict] = {}
++_LEDGER_ATEXIT_REGISTERED = False
+ # memo_hits: how many of "calls" were served from provider.MemoModel's on-disk memo rather than
+ # the network. A hit's usage is zeroed at the source, so it already costs 0.00 in the other
+ # fields; this is only the count, so a stage's cache effectiveness is a number, not a feeling.
+@@ -278,9 +294,21 @@ def totals_path(workdir: str | Path) -> Path:
+     return Path(workdir) / TOTALS_NAME
+ 
+ 
+-def load_totals(workdir: str | Path) -> dict:
+-    """The build's ledger. Every bucket is filled out over an empty one, so a file written
+-    before a field existed still loads and resumes instead of raising a KeyError."""
++def _ledger_key(workdir: str | Path) -> str:
++    return str(Path(workdir).resolve())
++
++
++def _file_sig(workdir: str | Path) -> tuple[Optional[int], Optional[int]]:
++    """What this process did not write: the ledger file's mtime and size, or Nones when absent."""
++    try:
++        stat = totals_path(workdir).stat()
++    except OSError:
++        return (None, None)
++    return (stat.st_mtime_ns, stat.st_size)
++
++
++def _read_totals_file(workdir: str | Path) -> dict:
++    """The ledger as stored on disk, filled out over an empty bucket."""
+     path = totals_path(workdir)
+     if not path.exists():
+         return empty_totals()
+@@ -291,13 +319,125 @@ def load_totals(workdir: str | Path) -> dict:
+     return totals
+ 
+ 
+-def save_totals(workdir: str | Path, totals: dict) -> Path:
+-    path = totals_path(workdir)
++def _copy_totals(totals: dict) -> dict:
++    return {
++        "stages": {stage: dict(bucket) for stage, bucket in (totals.get("stages") or {}).items()},
++        "total": dict(totals.get("total") or empty_bucket()),
++    }
++
++
++def _ensure_atexit_locked() -> None:
++    global _LEDGER_ATEXIT_REGISTERED
++    if not _LEDGER_ATEXIT_REGISTERED:
++        atexit.register(_flush_all_at_exit)
++        _LEDGER_ATEXIT_REGISTERED = True
++
++
++def _live_totals_locked(workdir: str | Path) -> dict:
++    """The mutable in memory ledger for this workdir. Assumes the ledger lock is held."""
++    key = _ledger_key(workdir)
++    entry = _LEDGER_CACHE.get(key)
++    if entry is None:
++        resolved = str(Path(workdir).resolve())
++        entry = {"totals": _read_totals_file(workdir), "dirty": 0,
++                 "last_flush": time.monotonic(), "workdir": resolved,
++                 "sig": _file_sig(workdir)}
++        _LEDGER_CACHE[key] = entry
++        _ensure_atexit_locked()
++        return entry["totals"]
++    if entry["dirty"] == 0 and entry.get("sig") != _file_sig(entry["workdir"]):
++        entry["totals"] = _read_totals_file(entry["workdir"])
++        entry["sig"] = _file_sig(entry["workdir"])
++    return entry["totals"]
++
++
++def _flush_locked(workdir: str | Path) -> Optional[Path]:
++    """Write the in memory ledger for this workdir to disk. Assumes the lock is held."""
++    key = _ledger_key(workdir)
++    entry = _LEDGER_CACHE.get(key)
++    if entry is None:
++        return None
++    path = totals_path(entry["workdir"])
+     path.parent.mkdir(parents=True, exist_ok=True)
+-    path.write_text(json.dumps(totals, indent=2, sort_keys=True) + "\n", encoding="utf-8")
++    path.write_text(json.dumps(entry["totals"], indent=2, sort_keys=True) + "\n", encoding="utf-8")
++    entry["dirty"] = 0
++    entry["last_flush"] = time.monotonic()
++    entry["sig"] = _file_sig(entry["workdir"])
+     return path
+ 
+ 
++def flush_ledger(workdir: Optional[str | Path] = None) -> None:
++    """Write pending ledger rows to disk: one workdir, or every cached workdir when None.
++
++    A workdir this process recorded nothing in has no cache entry, or a clean one, and is left
++    alone, so flushing never creates a zeroed budget.json where no model call has spent."""
++    with _LEDGER_LOCK:
++        if workdir is not None:
++            entry = _LEDGER_CACHE.get(_ledger_key(workdir))
++            if entry is None or not entry["dirty"]:
++                return
++            _flush_locked(workdir)
++            return
++        for entry in list(_LEDGER_CACHE.values()):
++            if entry["dirty"]:
++                _flush_locked(entry["workdir"])
++
++
++def end_stage(workdir: str | Path, stage: Optional[str] = None) -> None:
++    """Stage end hook: flush the pending rows for this workdir. The stage name is kept so
++    call sites read as a stage boundary; the whole workdir ledger is what is written."""
++    _ = stage
++    flush_ledger(workdir)
++
++
++def _flush_all_at_exit() -> None:
++    try:
++        with _LEDGER_LOCK:
++            for entry in list(_LEDGER_CACHE.values()):
++                if entry["dirty"]:
++                    try:
++                        _flush_locked(entry["workdir"])
++                    except Exception:
++                        pass
++    except Exception:
++        pass
++
++
++def load_totals(workdir: str | Path) -> dict:
++    """The build's ledger, including rows recorded since the last flush.
++
++    Every bucket is filled out over an empty one, so a file written before a field existed
++    still loads and resumes instead of raising a KeyError. The ceiling gate reads through
++    here, so it never sees stale file totals. When this process recorded nothing since the last
++    read and the file moved underneath, the file is re-read, so a reader process never freezes
++    on its first snapshot. As a side effect, a read past the flush interval writes pending rows
++    first, so the file stays at most that old whenever the ledger is read and a quiet stage end
++    still lands on disk through its readers."""
++    with _LEDGER_LOCK:
++        live = _live_totals_locked(workdir)
++        entry = _LEDGER_CACHE[_ledger_key(workdir)]
++        if entry["dirty"] and (time.monotonic() - entry["last_flush"]) >= LEDGER_FLUSH_INTERVAL_S:
++            _flush_locked(workdir)
++        return _copy_totals(live)
++
++
++def save_totals(workdir: str | Path, totals: dict) -> Path:
++    """Write-through for tests and tooling only: the given totals replace the cached ledger
++    outright with nothing marked dirty, so rows recorded since the last flush are dropped rather
++    than merged. Production paths record through record_call and write through flush_ledger."""
++    with _LEDGER_LOCK:
++        path = totals_path(workdir)
++        path.parent.mkdir(parents=True, exist_ok=True)
++        path.write_text(json.dumps(totals, indent=2, sort_keys=True) + "\n", encoding="utf-8")
++        key = _ledger_key(workdir)
++        _LEDGER_CACHE[key] = {"totals": _copy_totals(totals), "dirty": 0,
++                              "last_flush": time.monotonic(),
++                              "workdir": str(Path(workdir).resolve()),
++                              "sig": _file_sig(workdir)}
++        _ensure_atexit_locked()
++        return path
++
++
+ def record_call(
+     event: Event,
+     stage: str,
+@@ -329,7 +469,7 @@ def record_call(
+ def _record_locked(event: Event, usage: Usage, source: Optional[str], stage: str, workdir: str | Path,
+                    ceiling: Optional["Ceiling"], item: str, items_left: int, memo_hit: bool,
+                    saved: float = 0.0) -> Event:
+-    totals = load_totals(workdir)
++    totals = _live_totals_locked(workdir)
+     bucket = totals["stages"].setdefault(stage, empty_bucket())
+     for target in (bucket, totals["total"]):
+         target["calls"] += 1
+@@ -346,18 +486,26 @@ def _record_locked(event: Event, usage: Usage, source: Optional[str], stage: str
+             target["models_dev_calls"] += 1
+         if memo_hit:
+             target["memo_hits"] += 1
+-    save_totals(workdir, totals)
++    key = _ledger_key(workdir)
++    entry = _LEDGER_CACHE[key]
++    entry["dirty"] += 1
+     # The same numbers, once as state and once as story: the ledger says what the build has spent,
+     # the feed says what it just did. Written here, under the ledger lock, so the feed's order is
+     # the order the calls were recorded in and a watcher can never read a call the ledger has not
+-    # counted. feed.append never raises (see feed.py).
++    # counted. feed.append never raises (see feed.py). The feed carries the in memory totals, so it
++    # stays ahead of the file between flushes.
+     feed.append(workdir, "model_call", stage=stage, model=priced_model_id(event.cost),
+                 input=usage.input, output=usage.output, cache_read=usage.cache_read,
+                 usd=event.cost.usd, wall_ms=event.cost.wall_ms, item=item or None,
+                 calls=totals["total"]["calls"], spend_usd=totals["total"]["usd"],
+                 cache_saved_usd=totals["total"]["cache_saved_usd"])
++    now = time.monotonic()
++    if (entry["dirty"] >= LEDGER_FLUSH_MAX_ROWS
++            or (now - entry["last_flush"]) >= LEDGER_FLUSH_INTERVAL_S
++            or not totals_path(entry["workdir"]).exists()):
++        _flush_locked(workdir)
+     if ceiling is not None:
+-        ceiling.charge_recorded(totals, stage, item or str(event.idx), items_left)
++        ceiling.charge_recorded(_copy_totals(totals), stage, item or str(event.idx), items_left)
+     return event
+ 
+ 
+@@ -484,12 +632,13 @@ class Ceiling:
+         """One ledger: a charge that did not come through record_call still lands in the file."""
+         if self.workdir is None:
+             return
+-        totals = load_totals(self.workdir)
++        totals = _live_totals_locked(self.workdir)
+         bucket = totals["stages"].setdefault(stage, empty_bucket())
+         for target in (bucket, totals["total"]):
+             target["calls"] += 1
+             target["usd"] += usd
+-        save_totals(self.workdir, totals)
++        _LEDGER_CACHE[_ledger_key(self.workdir)]["dirty"] += 1
++        _flush_locked(self.workdir)
+ 
+ 
+ class BudgetedModel(Model):
+diff --git a/tests/runner/test_budget.py b/tests/runner/test_budget.py
+index 5be4471..cf0d1b0 100644
+--- a/tests/runner/test_budget.py
++++ b/tests/runner/test_budget.py
+@@ -102,6 +102,7 @@ def test_record_call_writes_per_stage_and_per_build_totals(workdir):
+     budget.record_call(call_event(input=1_000_000), stage="mine", workdir=workdir)
+     budget.record_call(call_event(idx=1, input=1_000_000), stage="mine", workdir=workdir)
+     budget.record_call(call_event(idx=2, output=1_000_000), stage="compile_tools", workdir=workdir)
++    budget.flush_ledger(workdir)
+ 
+     totals = json.loads((workdir / budget.TOTALS_NAME).read_text(encoding="utf-8"))
+     assert totals["stages"]["mine"]["calls"] == 2
+@@ -343,6 +344,7 @@ def test_every_call_through_the_wrapper_is_priced_and_written_to_the_ledger(work
+     )
+     model = budget.BudgetedModel(inner, stage="mine", workdir=workdir, model_id="anthropic/claude-opus-5")
+     assert model.query([{"role": "user", "content": "hi"}]).content == "ok"
++    budget.flush_ledger(workdir)
+ 
+     totals = budget.load_totals(workdir)
+     assert totals["stages"]["mine"]["calls"] == 1
+diff --git a/tests/runner/test_ledger_batching.py b/tests/runner/test_ledger_batching.py
+new file mode 100644
+index 0000000..002da11
+--- /dev/null
++++ b/tests/runner/test_ledger_batching.py
+@@ -0,0 +1,129 @@
++"""Ledger batching: rows accumulate in memory and the file is written on flush points.
++
++These tests run on the patched tree only (they import flush_ledger and end_stage, which do
++not exist on the unpatched tree). They state the behaviours the patch keeps: rows survive a
++flush, totals match the write through ledger, the ceiling gate sees unflushed spend, a stage
++end flushes, ceilinged calls batch like every other call, a reader process sees a file that
++moved underneath, flushing a workdir that spent nothing writes nothing, two spellings of one
++workdir share one ledger, and the first row of a fresh ledger lands on disk at once.
++"""
++
++from __future__ import annotations
++
++import json
++import os
++
++import pytest
++
++from kullback.runner import budget
++from kullback.runner.records import Cost, Event, Usage
++
++
++def call_event(idx=0, model="anthropic/claude-opus-5", **usage):
++    return Event(
++        idx=idx,
++        type="model_call",
++        cost=Cost(provider=model.split("/")[0], model=model, usage=Usage(**usage), wall_ms=1.0),
++    )
++
++
++def test_rows_survive_a_flush(workdir):
++    for idx in range(5):
++        budget.record_call(call_event(idx=idx, input=100), stage="mine", workdir=workdir)
++    budget.flush_ledger(workdir)
++    totals = json.loads((workdir / budget.TOTALS_NAME).read_text(encoding="utf-8"))
++    assert totals["stages"]["mine"]["calls"] == 5
++    assert totals["total"]["calls"] == 5
++
++
++def test_totals_match_after_flush(workdir):
++    for idx in range(10):
++        budget.record_call(call_event(idx=idx, input=100 + idx, output=idx), stage="mine",
++                           workdir=workdir)
++        budget.record_call(call_event(idx=100 + idx, input=50), stage="reroll", workdir=workdir)
++    budget.flush_ledger(workdir)
++    file_totals = json.loads((workdir / budget.TOTALS_NAME).read_text(encoding="utf-8"))
++    mem_totals = budget.load_totals(workdir)
++    assert file_totals == mem_totals
++    assert file_totals["total"]["calls"] == 20
++    assert file_totals["total"]["usd"] == pytest.approx(mem_totals["total"]["usd"])
++
++
++def test_the_ceiling_gate_sees_unflushed_spend(workdir):
++    ceiling = budget.Ceiling(usd=100.0, workdir=workdir)
++    budget.record_call(call_event(input=1_000_000), stage="mine", workdir=workdir,
++                       ceiling=None)
++    # No flush yet, but the gate reads the in memory totals, not the file.
++    assert budget.load_totals(workdir)["total"]["usd"] > 0
++    assert ceiling.spent == 0.0
++    budget.record_call(call_event(idx=1, input=1_000_000), stage="mine", workdir=workdir,
++                       ceiling=ceiling)
++    assert ceiling.spent > 0
++    assert budget.load_totals(workdir)["total"]["usd"] == pytest.approx(ceiling.spent)
++
++
++def test_a_stage_end_flushes(workdir):
++    budget.record_call(call_event(input=100), stage="mine", workdir=workdir)
++    budget.end_stage(workdir, "mine")
++    totals = json.loads((workdir / budget.TOTALS_NAME).read_text(encoding="utf-8"))
++    assert totals["stages"]["mine"]["calls"] == 1
++
++
++def test_ceilinged_calls_batch_between_flushes(workdir):
++    ceiling = budget.Ceiling(usd=10_000.0, workdir=workdir)
++    for idx in range(10):
++        budget.record_call(call_event(idx=idx, input=100), stage="mine", workdir=workdir,
++                           ceiling=ceiling)
++    assert ceiling.spent > 0
++    assert budget.load_totals(workdir)["total"]["calls"] == 10
++    # Only the first row forced a write; the other nine are still in memory.
++    file_totals = json.loads((workdir / budget.TOTALS_NAME).read_text(encoding="utf-8"))
++    assert file_totals["total"]["calls"] == 1
++    budget.flush_ledger(workdir)
++    file_totals = json.loads((workdir / budget.TOTALS_NAME).read_text(encoding="utf-8"))
++    assert file_totals["total"]["calls"] == 10
++
++
++def test_a_reader_sees_a_file_that_moved_underneath(tmp_path):
++    other = tmp_path / "elsewhere"
++    other.mkdir()
++    first = budget.empty_totals()
++    first["stages"]["mine"] = {**budget.empty_bucket(), "calls": 1, "usd": 1.0}
++    first["total"] = {**budget.empty_bucket(), "calls": 1, "usd": 1.0}
++    (other / budget.TOTALS_NAME).write_text(json.dumps(first), encoding="utf-8")
++    assert budget.load_totals(other)["total"]["usd"] == pytest.approx(1.0)
++    second = budget.empty_totals()
++    second["stages"]["another-stage-with-a-longer-name"] = {
++        **budget.empty_bucket(), "calls": 2, "usd": 2.0}
++    second["total"] = {**budget.empty_bucket(), "calls": 2, "usd": 2.0}
++    (other / budget.TOTALS_NAME).write_text(json.dumps(second), encoding="utf-8")
++    assert budget.load_totals(other)["total"]["usd"] == pytest.approx(2.0)
++
++
++def test_flushing_a_workdir_that_spent_nothing_writes_nothing(workdir, tmp_path):
++    fresh = tmp_path / "fresh"
++    fresh.mkdir()
++    budget.flush_ledger(fresh)
++    budget.end_stage(fresh, "mine")
++    assert not (fresh / budget.TOTALS_NAME).exists()
++
++
++def test_two_spellings_of_one_workdir_share_one_ledger(workdir, monkeypatch):
++    monkeypatch.chdir(workdir.parent)
++    relative = os.path.basename(str(workdir))
++    absolute = str(workdir)
++    for idx in range(3):
++        budget.record_call(call_event(idx=idx, input=100), stage="mine", workdir=relative)
++    for idx in range(3, 6):
++        budget.record_call(call_event(idx=idx, input=100), stage="mine", workdir=absolute)
++    budget.flush_ledger(absolute)
++    totals = json.loads((workdir / budget.TOTALS_NAME).read_text(encoding="utf-8"))
++    assert totals["total"]["calls"] == 6
++
++
++def test_the_first_row_of_a_fresh_ledger_lands_on_disk(workdir, tmp_path):
++    fresh = tmp_path / "fresh"
++    fresh.mkdir()
++    budget.record_call(call_event(input=100), stage="mine", workdir=fresh)
++    totals = json.loads((fresh / budget.TOTALS_NAME).read_text(encoding="utf-8"))
++    assert totals["stages"]["mine"]["calls"] == 1
