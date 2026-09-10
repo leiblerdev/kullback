@@ -131,11 +131,19 @@ def assisted_share_from_runs(runs: list[Run]) -> dict[str, float]:
     return {name: assisted.get(name, 0) / count for name, count in sorted(total.items()) if count}
 
 
-def task_numbers(data: ReportData, task: Task) -> dict:
-    """Count one Task's stored Verdicts. Assisted Runs and environment-suspected Runs are not counted (D49, D88)."""
-    runs = {run.run_id: run for run in data.runs}
+def _runs_by_id(data: ReportData) -> dict[str, Run]:
+    """Every stored Run by id, so a Verdict finds the Run it grades."""
+    return {run.run_id: run for run in data.runs}
+
+
+def _member_verdicts(data: ReportData, task: Task) -> tuple[list[Verdict], list[Verdict]]:
+    """This Task's Verdicts, one per Run under the versions on disk now."""
     members = set(task.run_ids) | {r.run_id for r in data.runs if r.task_id == task.id}
-    verdicts, superseded = current_verdicts(data, task, [v for v in data.verdicts if v.run_id in members])
+    return current_verdicts(data, task, [v for v in data.verdicts if v.run_id in members])
+
+
+def _split_graded(verdicts: list[Verdict], runs: dict[str, Run]) -> tuple[list[Verdict], list[Verdict]]:
+    """The counted Verdicts and the ones an assisted Run or a suspect Environment excludes."""
     graded, uncounted = [], []
     for record in verdicts:
         run = runs.get(record.run_id)
@@ -143,32 +151,67 @@ def task_numbers(data: ReportData, task: Task) -> dict:
             uncounted.append(record)
         else:
             graded.append(record)
-    not_counted = len(uncounted)
+    return graded, uncounted
 
-    def split(frontier: bool) -> list[Verdict]:
-        out = []
-        for record in graded:
-            run = runs.get(record.run_id)
-            model = run.model if run is not None else None
-            if (model in data.frontier_models) is frontier:
-                out.append(record)
-        return out
 
-    frontier, candidate = split(True), split(False)
-    frontier_rate = _rate(sum(1 for v in frontier if v.passed), len(frontier))
-    candidate_rate = _rate(sum(1 for v in candidate if v.passed), len(candidate))
-    kinds = {a.id: a.kind for v in data.verifiers if v.task_id == task.id for a in v.atoms}
+def _split_frontier(
+    graded: list[Verdict], runs: dict[str, Run], frontier_models: list[str]
+) -> tuple[list[Verdict], list[Verdict]]:
+    """The graded Verdicts on frontier models and the ones on the Candidate."""
+    frontier, candidate = [], []
+    for record in graded:
+        run = runs.get(record.run_id)
+        model = run.model if run is not None else None
+        if (model in frontier_models) is True:
+            frontier.append(record)
+        else:
+            candidate.append(record)
+    return frontier, candidate
+
+
+def _atom_kinds(data: ReportData, task: Task) -> dict[str, str]:
+    """The class of every atom this Task's Verifier holds."""
+    return {a.id: a.kind for v in data.verifiers if v.task_id == task.id for a in v.atoms}
+
+
+def _failing_counts(graded: list[Verdict], kinds: dict[str, str]) -> dict[str, int]:
+    """The counted failures by atom class, unknown where the atom is gone."""
     failing: dict[str, int] = {}
-    causes: dict[str, int] = {}
     for record in graded:
         if record.failing_atom:
             kind = kinds.get(record.failing_atom, "unknown")
             failing[kind] = failing.get(kind, 0) + 1
+    return failing
+
+
+def _cause_counts(graded: list[Verdict]) -> dict[str, int]:
+    """The counted failures by cause, counted only where a cause is named."""
+    causes: dict[str, int] = {}
+    for record in graded:
         if not record.passed and record.cause:
             causes[record.cause] = causes.get(record.cause, 0) + 1
+    return causes
+
+
+def _margin_of(frontier_rate: Optional[float], candidate_rate: Optional[float]) -> Optional[float]:
+    """How far the Candidate stands above frontier, or nothing where either side is missing."""
+    if frontier_rate is None or candidate_rate is None:
+        return None
+    return candidate_rate - frontier_rate
+
+
+def task_numbers(data: ReportData, task: Task) -> dict:
+    """Count one Task's stored Verdicts. Assisted Runs and environment-suspected Runs are not counted (D49, D88)."""
+    runs = _runs_by_id(data)
+    verdicts, superseded = _member_verdicts(data, task)
+    graded, uncounted = _split_graded(verdicts, runs)
+    frontier, candidate = _split_frontier(graded, runs, data.frontier_models)
+    frontier_rate = _rate(sum(1 for v in frontier if v.passed), len(frontier))
+    candidate_rate = _rate(sum(1 for v in candidate if v.passed), len(candidate))
+    kinds = _atom_kinds(data, task)
     return {
         "runs_graded": len(graded),
-        "assisted_not_counted": not_counted,
+        "assisted_not_counted": len(uncounted),
         "overlay_rows": overlay_rows(data, task.id),
         "judge_atoms": sum(1 for v in data.verifiers if v.task_id == task.id for a in v.atoms if a.judge),
         "judge_disagreement_rate": data.judge_disagreement.get("rate"),
@@ -176,9 +219,9 @@ def task_numbers(data: ReportData, task: Task) -> dict:
         "frontier_pass_rate": frontier_rate,
         "candidate_runs": len(candidate),
         "candidate_pass_rate": candidate_rate,
-        "margin": None if (frontier_rate is None or candidate_rate is None) else candidate_rate - frontier_rate,
-        "failing_atoms": failing,
-        "causes": causes,
+        "margin": _margin_of(frontier_rate, candidate_rate),
+        "failing_atoms": _failing_counts(graded, kinds),
+        "causes": _cause_counts(graded),
         "superseded": len(superseded),
         "counted": graded,
         "uncounted": uncounted,
