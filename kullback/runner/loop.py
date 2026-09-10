@@ -220,8 +220,17 @@ def _tool_call(state: RunState, call: Any, router: Any) -> None:
         payload["overlay_miss"] = outcome.overlay_miss
     emit(state, "tool_result", payload, route=outcome.route, assisted=outcome.assisted)
     state.run.route_counts[outcome.route] = state.run.route_counts.get(outcome.route, 0) + 1
-    state.messages.append({"role": "tool", "tool_call_id": call.id, "name": call.name,
-                           "content": _as_text(outcome.result)})
+    # The Simulated user is handed this transcript and nothing else, so a refusal it cannot see is
+    # one it cannot act on: before D227 a write the world refused read to the user exactly like a
+    # write that took effect, and the user said goodbye over it. The two markers ride beside the
+    # content and never on the wire, which `_openai_message` enforces by naming the wire's own keys.
+    message: dict = {"role": "tool", "tool_call_id": call.id, "name": call.name,
+                     "content": _as_text(outcome.result)}
+    if outcome.error is not None:
+        message["error"] = as_dict(outcome.error)
+    if getattr(outcome, "write_effect", None) is not None:
+        message["write_effect"] = outcome.write_effect
+    state.messages.append(message)
 
 
 def open_with_user(state: RunState) -> Optional[str]:
