@@ -363,14 +363,14 @@ def test_a_build_records_the_judge_models_only_when_one_was_named(tmp_path):
     """The report names the judge models beside the build model; a build that judges with its own
     model records nothing, so its files are what they were before this."""
     own = BuildPlan(workdir=tmp_path / "own", model=TestModel(["hi"], name="vendor/large"))
-    rounds._record_judge_models(own)
+    rounds._record_model_ids(own)
     assert not (own.workdir / "report_config.json").exists()
 
     named = BuildPlan(workdir=tmp_path / "named", model=TestModel(["hi"], name="vendor/large"),
                       judge_model=TestModel(["hi"], name="other/small"),
                       second_judge_model=TestModel(["hi"], name="third/tiny"))
     (named.workdir / "report_config.json").write_text(json.dumps({"audit_rate": 0.5}), encoding="utf-8")
-    rounds._record_judge_models(named)
+    rounds._record_model_ids(named)
     body = json.loads((named.workdir / "report_config.json").read_text(encoding="utf-8"))
     assert body["judge_models"] == {"build": "vendor/large", "judge": "other/small",
                                     "second_judge": "third/tiny"}
@@ -382,7 +382,7 @@ def test_a_build_records_the_user_model_beside_the_judge_models(tmp_path):
     model nor a user model still writes nothing."""
     user_only = BuildPlan(workdir=tmp_path / "user", user_agent_model=TestModel(["hi"], name="other/small"))
     (user_only.workdir / "report_config.json").write_text(json.dumps({"audit_rate": 0.5}), encoding="utf-8")
-    rounds._record_judge_models(user_only)
+    rounds._record_model_ids(user_only)
     body = json.loads((user_only.workdir / "report_config.json").read_text(encoding="utf-8"))
     assert body["user_model"] == "other/small"
     assert "judge_models" not in body and body["audit_rate"] == 0.5
@@ -390,7 +390,7 @@ def test_a_build_records_the_user_model_beside_the_judge_models(tmp_path):
     both = BuildPlan(workdir=tmp_path / "both", model=TestModel(["hi"], name="vendor/large"),
                      judge_model=TestModel(["hi"], name="other/small"),
                      user_agent_model=TestModel(["hi"], name="fourth/huge"))
-    rounds._record_judge_models(both)
+    rounds._record_model_ids(both)
     body = json.loads((both.workdir / "report_config.json").read_text(encoding="utf-8"))
     assert body["judge_models"]["judge"] == "other/small" and body["user_model"] == "fourth/huge"
 
@@ -399,11 +399,11 @@ def test_a_rebuild_without_the_user_model_clears_a_stale_user_model_id(tmp_path)
     """D232: dropping the flag must not leave the earlier model's id on a rule-driven build."""
     work = tmp_path / "rebuilt"
     first = BuildPlan(workdir=work, user_agent_model=TestModel(["hi"], name="other/small"))
-    rounds._record_judge_models(first)
+    rounds._record_model_ids(first)
     assert json.loads((work / "report_config.json").read_text(encoding="utf-8"))["user_model"] == \
         "other/small"
     second = BuildPlan(workdir=work)
-    rounds._record_judge_models(second)
+    rounds._record_model_ids(second)
     body = json.loads((work / "report_config.json").read_text(encoding="utf-8"))
     assert "user_model" not in body
 
@@ -450,7 +450,7 @@ def _garden_workdir(path: Path) -> Path:
     return path
 
 
-def test_a_stub_user_model_drives_the_user_through_the_build_path_and_is_counted(tmp_path):
+def test_a_stub_user_model_wins_the_driver_choice_and_the_round_counts_it(tmp_path):
     """D232: a stub user model on the plan drives the agent user past the rules, so the round
     counts the Task agent driven; with no user model the same round counts it rule driven."""
     replies = ["Thanks, my plot number is PLOT-4471.", "Please make it 16:00.",

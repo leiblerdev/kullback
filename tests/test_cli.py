@@ -216,6 +216,8 @@ def test_build_takes_a_user_model_for_the_simulated_user_and_defaults_to_the_rul
                    "--user-model", "other/small")
     assert named.exit_code == 0, named.output
     assert fake_modules["kullback.rounds.run_rounds"][1]["kwargs"]["user_agent_model"] is not None
+    assert fake_modules["kullback.ai.provider.live_model"][-1]["args"][0] == "other/small", \
+        "the user adapter is resolved from --user-model, not borrowed from another flag"
 
     code_driven = invoke("build", "--workdir", str(workdir), "--user-model", "other/small")
     assert code_driven.exit_code == 0, code_driven.output
