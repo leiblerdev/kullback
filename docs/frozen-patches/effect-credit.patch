@@ -17,7 +17,8 @@
 @@ -295,5 +301,7 @@ class ScoredRouter:
              misses.append({**_effect_note(row), "ours": _preview(value if found else None),
                             "reason": "the column is not there" if not found else "the column did not move"})
-         check["effect_checks"] = len(expected)
+-        check["effect_checks"] = len(expected)
++        check["effect_checks"] = len(expected) - unattributed
 +        if unattributed:
 +            check["unattributed_effects"] = unattributed
          if misses:
