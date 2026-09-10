@@ -515,6 +515,11 @@ class Loop:
     tool_errors: list[dict] = field(default_factory=list)
     beat_spend: dict[str, float] = field(default_factory=dict)
     beat_error: dict = field(default_factory=dict)  # what ended the round's beat, where one raised (D231)
+    # D231: what a screen raised on the way out of a failed beat. The raise is swallowed there, since
+    # it would otherwise replace the beat's own error and cost the round its record, but a swallowed
+    # error belongs on the round's counts and not nowhere: it rides in the beat_error row, which
+    # already names the beat it broke on.
+    end_emit_error: str = ""
     # D231: the round's end kinds per driver, read off the stored Runs once and kept for the round.
     _user_ends: Optional[dict] = None
     spent_allowance: dict[str, bool] = field(default_factory=dict)
@@ -685,6 +690,11 @@ class Loop:
         is awaited, so a cancelled screen raises past `Exception` and would take the beat's error with
         it. A stop asked for from outside the process is not noise and still travels: a round record
         is not worth swallowing an interrupt for, and the round's own error is on the way out anyway.
+
+        Swallowed is not unrecorded: what the screen raised is kept and rides in the round's
+        `beat_error` row. A subscriber that breaks on every failed beat's BeatEnd would otherwise be
+        invisible to the operator forever, and D230 already settled that an error the harness reads
+        and goes on from belongs on the round's counts.
         """
         try:
             spent = self.spend() - before
@@ -693,9 +703,10 @@ class Loop:
             if allowance is not None and spent >= allowance:
                 self.spent_allowance[agent] = True
             self.emit(BeatEnd(agent=agent, round=n, spend=spent))
-        except (Exception, asyncio.CancelledError):
+        except (Exception, asyncio.CancelledError) as exc:
             if not failing:
                 raise
+            self.end_emit_error = f"{type(exc).__name__}: {exc}".rstrip(": ")[:TOOL_ERROR_CHARS]
 
     def run_beat(self, agent: str, n: int) -> None:
         """One beat, with whatever ended it recorded on the round before it is re-raised (D231).
@@ -1045,10 +1056,7 @@ class Loop:
             # round whose References moved, which is worth reading beside what it trusted.
             **lifecycle.counts(self.retirements_now()),
             "artifacts": fingerprint, "artifact_hashes": per, "artifacts_changed": changed,
-            # D231: which beat raised, what it raised and the class of message it carried, on the
-            # rounds that ended that way and absent from the rounds that closed on their own, so a
-            # reader never has to tell an ordinary round from a broken one by a field of zeros.
-            **({BEAT_ERROR: dict(self.beat_error)} if self.beat_error else {}),
+            **self._beat_error_counts(),
             **self._user_end_counts(),
             **self._pin_counts(),
             **self._reader_counts(),
@@ -1058,6 +1066,20 @@ class Loop:
             **self._sampling_counts(),
             **self._evidence_counts(),
         }
+
+    def _beat_error_counts(self) -> dict:
+        """Which beat raised, what it raised and the class of message it carried (D231), with what a
+        screen raised on the way out of that beat beside them.
+
+        Absent from a round that closed on its own, so the row's presence is the whole of the
+        reading and a reader never has to tell an ordinary round from a broken one by a field of
+        zeros. `end_emit_error` is the one error the harness swallows on this path, kept here
+        because a broken subscriber the operator cannot see is a broken subscriber forever.
+        """
+        row = dict(self.beat_error)
+        if self.end_emit_error:
+            row["end_emit_error"] = self.end_emit_error
+        return {BEAT_ERROR: row} if row else {}
 
     def _user_end_counts(self) -> dict:
         """How the round's Runs ended, in the kinds of D210, under the user that ended each (D231).
@@ -1606,7 +1628,8 @@ class Loop:
         self.emit(RoundStart(round=n))
         self.sent, self.beat_spend, self.spent_allowance = [], {}, {}
         self.tool_errors = []
-        self.beat_error, self._user_ends = {}, None  # D231: this round's, not the round before's
+        # D231: this round's, not the round before's
+        self.beat_error, self.end_emit_error, self._user_ends = {}, "", None
         # D218, Greptile P1 (PR 29): a round's snapshot says what this round measured, so the
         # rulings and the difficulty record start empty. A round that ends on an error before its
         # counts were read would otherwise write the round before it into its own table.
