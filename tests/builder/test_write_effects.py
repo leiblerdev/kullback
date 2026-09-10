@@ -365,19 +365,28 @@ def two_writer_calls() -> list[ToolCall]:
     ]
 
 
-def test_an_ambiguous_column_is_charged_to_the_write_naming_its_row():
-    seen = effects.observe_effects([trace_of(two_writer_calls())], schema(), {CREATE, LOOKUP})
+def naming_row_seen():
+    """A create names the member row; a later lookup names only the loan."""
+    return effects.observe_effects([trace_of(two_writer_calls())], schema(), {CREATE, LOOKUP})
+
+
+def test_the_write_naming_the_row_takes_the_credit():
+    seen = naming_row_seen()
     assert sorted(effect.call_id for effect in seen[CREATE]) == ["c2"]
     assert LOOKUP not in seen
+    evidence = effects.replay_evidence(seen)
+    assert [row["path"] for row in evidence["c2"] if row["table"] == "members"] != []
+    assert all(row["table"] != "members" for row in evidence.get("c3", []))
+
+
+def test_the_named_row_credit_is_checked_and_owned():
+    seen = naming_row_seen()
     credit = next(column for effect in seen[CREATE] for column in effect.columns
                   if column.table == "members" and column.path == "credit")
     assert (credit.before, credit.after) == (100, 82)
     assert credit.ambiguous is True
     assert credit.checked is True
     assert credit.unattributed is False
-    evidence = effects.replay_evidence(seen)
-    assert [row["path"] for row in evidence["c2"] if row["table"] == "members"] != []
-    assert all(row["table"] != "members" for row in evidence.get("c3", []))
 
 
 def test_a_tool_seen_moving_the_column_alone_elsewhere_keeps_the_credit():
@@ -480,7 +489,8 @@ def test_a_recorded_call_claiming_the_reserved_key_loses_no_evidence():
     assert [row["path"] for row in evidence[bumped] if row["unattributed"]] == ["credit"]
 
 
-def test_a_span_with_two_owners_checks_only_the_last_one():
+def two_owner_seen():
+    """Two writes both naming the member row, read again after each."""
     calls = [
         call("c1", "get_member", {"member_id": "MB01"},
              {"member_id": "MB01", "credit": 100, "ledger": []}),
@@ -489,13 +499,21 @@ def test_a_span_with_two_owners_checks_only_the_last_one():
         call("c4", "get_member", {"member_id": "MB01"},
              {"member_id": "MB01", "credit": 90, "ledger": []}),
     ]
-    seen = effects.observe_effects([trace_of(calls)], schema(), {ADJUST, SETTLE})
+    return effects.observe_effects([trace_of(calls)], schema(), {ADJUST, SETTLE})
+
+
+def test_two_owners_check_only_the_later_write():
+    seen = two_owner_seen()
     first = next(column for effect in seen[ADJUST] for column in effect.columns
                  if column.table == "members" and column.path == "credit")
     second = next(column for effect in seen[SETTLE] for column in effect.columns
                   if column.table == "members" and column.path == "credit")
     assert first.checked is False
     assert second.checked is True
+
+
+def test_two_owner_evidence_and_counts_stay_with_the_last():
+    seen = two_owner_seen()
     evidence = effects.replay_evidence(seen)
     assert all(row["table"] != "members" for row in evidence.get("c2", []))
     assert [row["path"] for row in evidence["c3"] if row["table"] == "members"] == ["credit"]
