@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import ast
 import hashlib
 import inspect
 import json
+import tokenize
 
 import pytest
 
@@ -2258,3 +2260,111 @@ def test_a_nested_id_owes_a_synthetic_row_shaped_like_the_rows_the_traces_showed
     assert sorted(state.db["vessels"]) == ["VSL1", "VSL9"]
     assert state.db["vessels"]["VSL9"]["hull"] == "steel"  # the modal row's shape, the id its own
     assert state.synthetic_rows == ["VSL9"]
+
+
+# --- a typographic character in generated code (a live build stalled a round on one) ---
+
+# Written as escapes so no editor or lint pass can quietly alter the characters under test.
+DASH = "\u2014"
+QUOTE = "\u201c"
+UNQUOTE = "\u201d"
+ELLIPSIS = "\u2026"
+PLUS_MINUS = "\u00b1"
+
+
+def _parses(body: str) -> bool:
+    try:
+        ast.parse(body)
+    except SyntaxError:
+        return False
+    return True
+
+
+def test_a_dash_in_code_is_replaced_and_the_same_dash_in_a_string_is_kept():
+    body = f'def f(x):\n    note = "keep {DASH} inside strings"\n    return x {DASH} 1  # trailing {DASH}\n'
+    fixed, note = ce.sanitize_body(body)
+    assert _parses(fixed)
+    assert f'"keep {DASH} inside strings"' in fixed
+    assert "return x - 1  # trailing -" in fixed
+    assert "replaced typographic characters outside strings" in note
+
+
+def test_a_dash_inside_an_f_string_expression_is_replaced_and_the_printed_text_is_kept():
+    """The expression inside a replacement field is code, and a confusable there fails the parse
+    exactly as one on a line of its own does. What the f-string prints around it is not."""
+    body = f'def f(value):\n    return f"keep {DASH} here {{value {DASH} 1}}"\n'
+    fixed, note = ce.sanitize_body(body)
+    assert _parses(fixed)
+    assert fixed == f'def f(value):\n    return f"keep {DASH} here {{value - 1}}"\n'
+    assert note is not None
+
+
+def test_an_f_string_keeps_its_format_spec_its_conversion_and_its_nested_string():
+    """Everything an f-string prints stays as written: the spec after the colon, the text after a
+    conversion, the doubled braces and a string nested inside a replacement field."""
+    for printed in [f'f"{{v:{DASH}>10}}"', f'f"{{v!r}} {DASH} x"', f'f"{{{{{DASH}}}}} x"',
+                    f"f\"{{d['a{DASH}b']}}\""]:
+        body = f"def f(v, d):\n    return {printed}\n"
+        assert ce.sanitize_body(body) == (body, None), printed
+
+
+def test_a_clean_body_is_returned_untouched_and_unremarked():
+    body = "def f(x):\n    return x + 1\n"
+    assert ce.sanitize_body(body) == (body, None)
+
+
+def test_a_non_ascii_character_with_no_replacement_is_named_rather_than_guessed_at():
+    body = f"def f(x):\n    return x {PLUS_MINUS} 1\n"
+    fixed, note = ce.sanitize_body(body)
+    assert fixed == body
+    assert "U+00B1" in note
+
+
+def test_a_body_the_tokenizer_refuses_is_returned_unchanged_and_unremarked():
+    """A body that does not tokenize has nothing to stand on, and the compile gate already tells the
+    model where it does not parse."""
+    assert ce.sanitize_body(f"def f(x):\n  return (x {DASH} 1\n") == (
+        f"def f(x):\n  return (x {DASH} 1\n", None)
+
+
+def test_a_smart_quote_becomes_a_straight_quote_and_an_ellipsis_becomes_three_dots():
+    fixed, _ = ce.sanitize_body(f"def f():\n    return 1  # {QUOTE}a{UNQUOTE} and {ELLIPSIS}\n")
+    assert fixed == 'def f():\n    return 1  # "a" and ...\n'
+
+
+def test_the_expression_halves_of_an_f_string_are_found_without_help_from_the_tokenizer():
+    """Up to Python 3.11 the tokenizer hands a whole f-string back as one string token, so what the
+    field runs has to be told apart from what the string prints here. From 3.12 the tokenizer does
+    it, and both readings have to agree."""
+    token = f"f\"keep {DASH} here {{d['a{DASH}b'] {DASH} 1}} {{w:>{{n}}}}\""
+    runs = [token[begin:end] for begin, end in ce._fstring_expression_spans(token)]
+    assert runs == ["d[", f"] {DASH} 1", "w", "n"]
+    assert ce._fstring_expression_spans(f'"plain {DASH} string"') == []
+
+
+def test_a_whole_f_string_arriving_as_one_token_protects_only_what_it_prints():
+    """The reading Python 3.11 produces, spelled out as tokens so it is checked on every version."""
+    line = f'x = f"keep {DASH} here {{value {DASH} 1}}"\n'
+    tokens = [tokenize.TokenInfo(tokenize.STRING, line[4:-1], (1, 4), (1, len(line) - 1), line)]
+    printed = ce._printed_positions(tokens, [line])
+    assert (1, line.index(DASH)) in printed
+    assert (1, line.index(DASH, line.index("value"))) not in printed
+
+
+def test_the_confinement_prompt_asks_for_ascii_only():
+    assert "ASCII only" in ce._confinement_block()
+
+
+def test_a_sanitized_body_is_recorded_on_the_node_and_shown_to_the_next_attempt(
+    make_test_model, schema, sigs, db0, workdir, order_calls
+):
+    """The change is free and deterministic, so it never costs an attempt, but the attempt is told it
+    happened, so the model stops writing the character."""
+    poisoned = WRONG_BODY.replace("return {", f"# a note {DASH} in a comment\nreturn {{")
+    model = make_test_model([poisoned, CORRECT_BODY])
+    build = ce.compile_tool(model, sigs[0], order_calls, schema, db0, workdir)
+    assert build.nodes[0]["sanitized"].startswith("replaced typographic characters outside strings")
+    assert "sanitized" not in build.nodes[1]
+    assert build.nodes[0]["passed"] is False  # sanitizing repairs the character, not the body
+    assert DASH in model.calls[1]["messages"][-1]["content"]
+    assert build.body.strip() == CORRECT_BODY.strip()
