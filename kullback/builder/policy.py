@@ -386,6 +386,13 @@ def _sandbox(predicate_src: str, cases: list[dict], timeout_s: float) -> dict:
 # --- compiling ---
 
 
+def _head_for(policy_text: str, system_head: Optional[str]) -> str:
+    """The build's head: the one built once per build, or one built here for a lone sentence."""
+    if system_head is not None:
+        return system_head
+    return _stable_system(policy_text)
+
+
 def compile_rule(model: Any, sentence: PolicySentence, timeout_s: float = 5.0,
                  policy_text: str = "", system_head: Optional[str] = None) -> Constraint:
     """One sentence into a Constraint: compiled, or rewritten for review, or a judge atom, or residual.
@@ -398,8 +405,7 @@ def compile_rule(model: Any, sentence: PolicySentence, timeout_s: float = 5.0,
     these same first two messages and appends the model's first reply and the rewrite request as
     new turns, so the cached prefix never changes between the two calls.
     """
-    if system_head is None:
-        system_head = _stable_system(policy_text)
+    system_head = _head_for(policy_text, system_head)
     constraint = Constraint(
         id="c_" + content_hash({"text": sentence.text, "file": sentence.file_hash})[:12],
         text=sentence.text,
@@ -481,7 +487,7 @@ def compile_policy(
         policy_text = "\n".join(s.text for s in sorted(sentences, key=lambda s: s.index))
     if limit is not None:
         sentences = sentences[:limit]
-    head = system_head if system_head is not None else _stable_system(policy_text)
+    head = _head_for(policy_text, system_head)
     return parallel.each(sentences, lambda sentence: compile_rule(model, sentence, timeout_s, policy_text=policy_text,
                          system_head=head),
                          workers)

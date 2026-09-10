@@ -2580,6 +2580,15 @@ def _stable_system(schema: Optional[EntitySchema] = None, tool_names: Iterable[s
     return "\n\n".join(parts)
 
 
+def _head_for_tools(schema: Optional[EntitySchema], tool_names: Iterable[str],
+                    builder_tools: bool, world_note: str,
+                    system_head: Optional[str]) -> str:
+    """The tool's head: the one built once per tool, or one built here for a lone call."""
+    if system_head is not None:
+        return system_head
+    return _stable_system(schema, tool_names, builder_tools, world_note)
+
+
 def _tool_block(toolsig: ToolSig, examples: Iterable[ToolCall], error_prefix: Optional[str] = None,
                 effects: str = "") -> str:
     """What differs call to call: this one tool, its signature, its recorded calls and its effects.
@@ -2628,8 +2637,7 @@ def body_messages(toolsig: ToolSig, examples: Iterable[ToolCall], schema: Option
     `effects` (D215) belongs to this tool for the same reason and goes in the same turn: it is what
     this tool's own recorded calls were seen to change beyond their own answers.
     """
-    if system_head is None:
-        system_head = _stable_system(schema, tool_names, builder_tools, world_note)
+    system_head = _head_for_tools(schema, tool_names, builder_tools, world_note, system_head)
     user = _tool_block(toolsig, examples, error_prefix, effects)
     if lesson:
         user += "\n\n" + lesson
@@ -2721,6 +2729,13 @@ TEST_BODY_TOOL = {
 }
 
 BUILDER_TOOLS = [LOOKUP_ROWS_TOOL, TEST_BODY_TOOL]
+
+
+def _specs_for(tool_specs: Optional[list] = None) -> list:
+    """The frozen helper spec list: the one object per build, or the module's own."""
+    if tool_specs is not None:
+        return tool_specs
+    return BUILDER_TOOLS
 
 
 def _find_row(schema: EntitySchema, world: dict, table: str, key: str) -> tuple[Optional[dict], Optional[str]]:
@@ -2875,7 +2890,7 @@ def _reply_with_tools(model, messages: list[dict], tools_impl: dict[str, Callabl
     tool_uses: list[dict] = []
     reply = None
     draft = ""
-    specs = BUILDER_TOOLS if tool_specs is None else tool_specs
+    specs = _specs_for(tool_specs)
     for _ in range(max_rounds):
         reply = model.query(working, tools=specs)
         if not reply.tool_calls:
@@ -3576,9 +3591,8 @@ def compile_tool(model, toolsig: ToolSig, calls: Iterable[ToolCall], schema: Ent
     workdir, calls = Path(workdir), list(calls)
     if error_prefix is None:  # build.py passes the corpus-wide prefix; alone, this tool's own calls
         error_prefix = shared_error_prefix(calls)
-    if system_head is None:
-        system_head = _stable_system(schema, tool_names, builder_tools, world_note)
-    specs = BUILDER_TOOLS if tool_specs is None else tool_specs
+    system_head = _head_for_tools(schema, tool_names, builder_tools, world_note, system_head)
+    specs = _specs_for(tool_specs)
     shown, held_out = split_calls(calls)
     build, failure = ToolBuild(name=toolsig.name, body=""), ""
     skeleton = gate_parses(module_source(schema, [toolsig], {toolsig.name: "pass"}))
