@@ -257,6 +257,8 @@ def function_complexities(source):
                 name = f"{prefix}{child.name}" if prefix else child.name
                 found[name] = complexity_of(child)
                 visit(child, name + ".")
+            elif isinstance(child, ast.ClassDef):
+                visit(child, f"{prefix}{child.name}.")
             else:
                 visit(child, prefix)
 

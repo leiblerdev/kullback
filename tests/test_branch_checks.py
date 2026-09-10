@@ -155,6 +155,27 @@ def test_new_function_over_ceiling_fails_complexity_ceiling(tmp_path):
     assert "FAIL complexity-ceiling: big.py evaluate is new at 16 (ceiling 15)" in lines
 
 
+def test_same_method_name_in_two_classes_is_tracked_per_class(tmp_path):
+    repo = make_repo(tmp_path)
+    write_file(
+        repo,
+        "kullback/shapes.py",
+        "class Circle:\n    def run(self, n):\n        if n:\n            return 1\n        return 0\n"
+        "\n\nclass Square:\n    def run(self, n):\n        return 0\n",
+    )
+    base = commit_paths(repo, "add shapes", ["kullback/shapes.py"])
+    write_file(
+        repo,
+        "kullback/shapes.py",
+        "class Circle:\n    def run(self, n):\n        if n:\n            return 1\n"
+        "        if n > 1:\n            return 2\n        return 0\n\n\nclass Square:\n    def run(self, n):\n        return 0\n",
+    )
+    commit_paths(repo, "grow circle", ["kullback/shapes.py"])
+    code, lines = run_checks(repo, base)
+    assert code == 1
+    assert "FAIL complexity-ceiling: kullback/shapes.py Circle.run rose from 2 to 3" in lines
+
+
 def test_long_subject_fails_subject_length(tmp_path):
     repo = make_repo(tmp_path)
     write_file(repo, "notes.txt", "plain line\n")
