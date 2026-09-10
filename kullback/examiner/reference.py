@@ -850,6 +850,64 @@ def one_state_left(groups: list[dict]) -> str:
     ])
 
 
+def _judge_head() -> str:
+    """The fixed prologue, the same bytes for every Task and every pass (D245).
+
+    Sent as the system message so the provider reads a stable prefix; the per Task case rides in
+    the user turn. Every sentence here also stands in `judge_prompt`, moved and never reworded.
+    The second pass stop rule names the surviving states, so it stays in the user turn.
+    """
+    return "\n".join([
+        "Recordings of one Task ended in different states. Say which of the states did NOT do what "
+        "the Intent asked, or did something the policy does not allow.",
+        "",
+        "You have three sources and your answer may rest on nothing else: "
+        + ", ".join(AVAILABLE_SOURCES) + ".",
+        "You do not have the transcript. Whether the agent authenticated the user, asked for and was "
+        "given a confirmation, said the right thing or called its tools in the right order cannot be "
+        "seen from here, and no state is ever failed for want of evidence you were not given.",
+        "",
+        "The user may have revised the opening request during the Run, so judge the Intent and never "
+        "the opening request.",
+        "", "Policy, by line number:",
+        "", "End states. Each says what the state's Runs wrote, which keys it differs from the other "
+        "states on, what their answers told the user and whether they handed the conversation on. "
+        "What the user was told is an effect of the Run and part of the End state (D43); the values "
+        "are given without the sentences they were said in, and you still do not have the transcript. "
+        "A state that told the user no value read from the world may still have answered in words "
+        "that carry none, so that on its own is not a state failed.",
+        "", cited_shape(AVAILABLE_SOURCES),
+    ])
+
+
+def _judge_body(intent: str, policy_lines: Iterable[str], groups: list[dict],
+               final: bool = False) -> str:
+    """The per Task case: the intent, the policy lines and the end states (D245).
+
+    Sent as the user message under `_judge_head`. The stop rule of a second pass names the
+    survivors, so it rides here too.
+    """
+    lines = ["Intent, the ground truth of what the user wanted by the end of the Run: "
+             + (' '.join((intent or '').split())[:MAX_REQUEST_CHARS] or '(not recorded)')]
+    lines += [f"{n}. {text[:MAX_LINE_CHARS]}"
+              for n, text in numbered_policy(policy_lines)[:MAX_POLICY_LINES]]
+    differing = differing_keys(groups)
+    for g in groups:
+        lines.append(f"{g['label']} ({len(g['runs'])} run{'s' if len(g['runs']) != 1 else ''}): {g['state']}")
+        lines.append("    " + differs_line(differing.get(str(g["label"])) or (), state_values(g)))
+        lines.append("    " + told_line(g))
+    if final:
+        lines += ["", one_state_left(groups)]
+    return "\n".join(lines)
+
+
+def _judge_messages(intent: str, policy_lines: Iterable[str], groups: list[dict],
+                   final: bool = False) -> list[dict]:
+    """The request messages: the stable prologue as system, the case as user (D245)."""
+    return [{"role": "system", "content": _judge_head()},
+            {"role": "user", "content": _judge_body(intent, policy_lines, groups, final)}]
+
+
 def judge_prompt(intent: str, policy_lines: Iterable[str], groups: list[dict], final: bool = False) -> str:
     lines = ["Recordings of one Task ended in different states. Say which of the states did NOT do what "
              "the Intent asked, or did something the policy does not allow.",
@@ -901,8 +959,7 @@ def judge_groups(model: Any, intent: str, policy_lines: Iterable[str], groups: l
     if callable(ruler):
         return ruler(intent, policy_lines, groups, phrases, final)
     try:
-        reply = model.query([{"role": "user",
-                              "content": judge_prompt(intent, policy_lines, groups, final)}])
+        reply = model.query(_judge_messages(intent, policy_lines, groups, final))
     except Exception as exc:
         return Judgement(reason=f"judge call failed: {type(exc).__name__}")
     return parse_judgement(getattr(reply, "content", None) or "", groups,

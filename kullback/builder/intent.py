@@ -706,6 +706,53 @@ def strip_holds(record: Intent, traces: Sequence[Trace], *, start_state: Any = N
     return not taken and text == (record.text or "").strip()
 
 
+def _intent_head() -> str:
+    """The invariant instruction lines, the same bytes for every Task and every attempt (D245).
+
+    Sent as the system message so the provider reads a stable prefix; the evidence, the repair
+    hint and the attempt feedback ride in the user turn. Every sentence here also stands in
+    `_intent_prompt`, moved and never reworded.
+    """
+    return "\n".join([
+        "Write one line saying what the user wanted, common to all these runs.",
+        "Start with the verb (as in: cancel order #W1). Do not write 'the user wanted'.",
+        "Use only words evidenced below; every noun must appear in the evidence.",
+        "",
+        "Reply with the one line only.",
+    ])
+
+
+def _intent_body(traces: Sequence[Trace], write_tools: Optional[set[str]], *,
+                 hint: Optional[str] = None, feedback: Optional[str] = None) -> str:
+    """The per Task evidence with the per attempt hint and feedback (D245).
+
+    Sent as the user message under `_intent_head`. The count line depends on the Task's size, the
+    hint on the repair and the feedback on the last attempt, so none of them can stand in the head.
+    """
+    shown = list(traces[:MAX_PROMPT_RUNS])
+    lines = []
+    if len(traces) > len(shown):
+        lines.append(f"These are {len(shown)} of the task's {len(traces)} runs; say only what all of them show.")
+    if hint:
+        lines.append(f"A repair asks for this: {hint}")
+    lines.append("")
+    for trace in shown:
+        for span in span_candidates(trace, write_tools):
+            text = " ".join(span.text.split())[:MAX_PROMPT_SPAN_CHARS]
+            label = f" {span.label}" if span.label else ""
+            lines.append(f"{trace.trace_id} {span.source}{label}: {text}")
+    if feedback:
+        lines += ["", feedback]
+    return "\n".join(lines)
+
+
+def _intent_messages(traces: Sequence[Trace], write_tools: Optional[set[str]], *,
+                     hint: Optional[str] = None, feedback: Optional[str] = None) -> list[dict]:
+    """The request messages: the stable head as system, the evidence as user (D245)."""
+    return [{"role": "system", "content": _intent_head()},
+            {"role": "user", "content": _intent_body(traces, write_tools, hint=hint, feedback=feedback)}]
+
+
 def _intent_prompt(traces: Sequence[Trace], write_tools: Optional[set[str]], *,
                    hint: Optional[str] = None, feedback: Optional[str] = None) -> str:
     """The evidence from a bounded sample of the Task's Runs (D65: no call may grow with the corpus).
@@ -915,8 +962,7 @@ def write_intent(
     best: Optional[Intent] = None
     feedback: Optional[str] = None
     for _ in range(MAX_INTENT_ATTEMPTS):
-        prompt = _intent_prompt(members, write_tools, hint=hint, feedback=feedback)
-        reply = model.query([{"role": "user", "content": prompt}])
+        reply = model.query(_intent_messages(members, write_tools, hint=hint, feedback=feedback))
         text, stripped = strip_intent(_first_line(reply.content), members, start_state=start_state,
                                       schema=schema, rules=canon_rules)
         intent = _graded(task, text, members, write_tools, model, stripped)

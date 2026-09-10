@@ -1691,3 +1691,20 @@ def test_a_column_drawing_from_a_set_of_names_keeps_the_whole_set_and_a_column_o
     kiln_id = next(c for c in schema.columns if c.name == "kiln_id")
     assert damper.vocabulary == ["closed", "open", "vented"]
     assert kiln_id.vocabulary == [], "six ids are six values, not a set of names"
+
+
+# --- D245 sorted payload ---
+
+
+def test_the_mine_payload_dump_is_byte_identical_whichever_order_the_items_arrived_in():
+    """D245: identical logical payloads produce identical bytes for the memo key and the prefix."""
+    from kullback.ai.provider import TestModel
+    from kullback.builder.mine import _ask
+
+    first = TestModel(["{}"])
+    _ask(first, "system", {"kind": "write", "tool": "shelve_books",
+                           "args": {"shelf": "B", "book": "tide charts"}})
+    second = TestModel(["{}"])
+    _ask(second, "system", {"args": {"book": "tide charts", "shelf": "B"},
+                            "tool": "shelve_books", "kind": "write"})
+    assert first.calls[0]["messages"][1] == second.calls[0]["messages"][1]
