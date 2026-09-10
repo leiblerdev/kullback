@@ -348,3 +348,7 @@ Items closed by a landed decision. Nothing was deleted; each moved here with the
 ## Grouping record format (D233, for the owner of the cluster stage wiring)
 
 - `_grouping` in build.py should treat a grouping record whose format differs from GROUPING_FORMAT as absent, and the comment at build.py:336 (no proposed column class, reader, or cache format can regroup the next round) is false for revealed tables since D233 and contradicts it.
+
+## Report package follow-ups (2026-09-10, q-report)
+
+- **Stale report.py tree maps and the untyped numbers dict.** DEVELOPING.md:29, docs/architecture.md:38 and docs/tech/rebuild-phases.md:18 still print report.py in the tree map; each needs the one word report/. review.md:73 also asks to type the numbers dict. Left out of q-report (files outside the branch) for the founder to land.
