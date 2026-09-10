@@ -435,12 +435,21 @@ def last_round(workdir: Any) -> int:
     Both files a closed round leaves are read, because either can outlive the other: rounds.json is
     rewritten by each process with that process's own rounds, and the tables under rounds/ stay
     whatever wrote them. A number either one has used is a number this run may not reuse.
+
+    Both reads are guarded, and each on its own, because either can fail while the other answers: a
+    half-written or hand-edited rounds.json and a rounds/ directory the process may not list each
+    say nothing about which rounds closed, and the run then opens past the number the other one
+    reached rather than dying before round 1 or reopening at 1 over a table it cannot see.
     """
     try:
         recorded = max((int(record.round) for record in load_rounds(workdir)), default=0)
     except (OSError, ValueError, TypeError):
         recorded = 0  # a half-written or hand-edited file says nothing about which rounds closed
-    return max([recorded, *round_snapshot.closed_rounds(workdir)])
+    try:
+        closed = round_snapshot.closed_rounds(workdir)
+    except (OSError, ValueError, TypeError):
+        closed = []  # a directory that cannot be listed is not worth the run either
+    return max([recorded, *closed])
 
 
 def _session(workdir: Path, name: Path) -> SessionStore:

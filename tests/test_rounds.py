@@ -1743,6 +1743,23 @@ def test_the_next_round_is_numbered_past_every_round_the_workdir_has_closed(tmp_
     assert rounds.last_round(workdir) == 5, "a half-written file says nothing about which rounds closed"
 
 
+def test_a_rounds_directory_that_cannot_be_listed_does_not_stop_the_run_before_its_first_round(tmp_path,
+                                                                                               monkeypatch):
+    """The tables are the second of the two reads and neither is worth the run. A directory the
+    process may not list says nothing about which rounds closed, so the number the file did reach
+    stands and the run opens past it rather than dying before round 1."""
+    from kullback import round_snapshot
+
+    workdir = tmp_path / "work"
+    rounds.write_rounds(workdir, [_record(1), _record(2)])
+
+    def refuses(_workdir):
+        raise PermissionError("the tables may not be listed")
+
+    monkeypatch.setattr(round_snapshot, "closed_rounds", refuses)
+    assert rounds.last_round(workdir) == 2, "what the file did read is kept, and the run opens at 3"
+
+
 def test_a_second_run_over_a_workdir_numbers_its_rounds_after_the_first_runs_and_writes_its_own_table(tmp_path):
     """D231: an --iterate run used to open at 1 again, so it was handed the previous run's Task
     table (a closed round's table is never rewritten) and its history row was derived from it, which
