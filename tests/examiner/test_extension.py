@@ -326,9 +326,15 @@ def test_a_model_that_never_calls_derive_is_an_examiner_error(world):
     with pytest.raises(examiner_agent.ExaminerError, match="never called derive"):
         examiner_agent.run_examiner(world.workdir, inputs=world.inputs, agent_model=model)
     assert not (world.workdir / "task_status.json").is_file()
+
+
+def test_a_model_driven_derive_that_errors_is_reported_on_the_summary_and_is_not_an_examiner_error(world):
+    """D230: the model called derive and read the error, so the session had output; only a session
+    with none at all is the broken contract. The error rides on the summary for the caller to count."""
     broken = TestModel([_reply(None, ("c1", "derive", {"target": "no-such-task"})), _reply("gave up")])
-    with pytest.raises(examiner_agent.ExaminerError, match="no Task is named no-such-task"):
-        examiner_agent.run_examiner(world.workdir, inputs=world.inputs, agent_model=broken)
+    result = examiner_agent.run_examiner(world.workdir, inputs=world.inputs, agent_model=broken)
+    assert "no Task is named no-such-task" in result["derive_error"]
+    assert result["tool_result"]["is_error"] is True
 
 
 def test_the_round_n_examiner_steer_asks_for_derive_again():
