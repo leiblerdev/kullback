@@ -1,5 +1,5 @@
 diff --git a/kullback/runner/budget.py b/kullback/runner/budget.py
-index 041b4af..3a5b60a 100644
+index 041b4af..a0a3108 100644
 --- a/kullback/runner/budget.py
 +++ b/kullback/runner/budget.py
 @@ -2,6 +2,7 @@
@@ -15,8 +15,8 @@ index 041b4af..3a5b60a 100644
  # since every wrapper in a build writes the same file.
  _LEDGER_LOCK = threading.RLock()
 +# Spend ledger batching: record_call accumulates rows in memory under the same lock and the
-+# file is written on stage end, on every ceiling charge, on process exit, and at most every
-+# few seconds or rows. The file shape, row order and every total stay identical to the
++# file is written on stage end, on every ceiling charge, on process exit, on reads past the
++# interval, and at most every few seconds or rows. The file shape, row order and every total stay identical to the
 +# per call write through; a crash between flushes loses at most the unflushed rows.
 +LEDGER_FLUSH_INTERVAL_S = 5.0
 +LEDGER_FLUSH_MAX_ROWS = 200
@@ -41,7 +41,7 @@ index 041b4af..3a5b60a 100644
      path = totals_path(workdir)
      if not path.exists():
          return empty_totals()
-@@ -291,13 +303,101 @@ def load_totals(workdir: str | Path) -> dict:
+@@ -291,13 +303,107 @@ def load_totals(workdir: str | Path) -> dict:
      return totals
  
  
@@ -126,9 +126,15 @@ index 041b4af..3a5b60a 100644
 +
 +    Every bucket is filled out over an empty one, so a file written before a field existed
 +    still loads and resumes instead of raising a KeyError. The ceiling gate reads through
-+    here, so it never sees stale file totals."""
++    here, so it never sees stale file totals. As a side effect, a read past the flush
++    interval writes pending rows first, so the file stays at most that old whenever the
++    ledger is read and a quiet stage end still lands on disk through its readers."""
 +    with _LEDGER_LOCK:
-+        return _copy_totals(_live_totals_locked(workdir))
++        live = _live_totals_locked(workdir)
++        entry = _LEDGER_CACHE[_ledger_key(workdir)]
++        if entry["dirty"] and (time.monotonic() - entry["last_flush"]) >= LEDGER_FLUSH_INTERVAL_S:
++            _flush_locked(workdir)
++        return _copy_totals(live)
 +
 +
 +def save_totals(workdir: str | Path, totals: dict) -> Path:
@@ -146,7 +152,7 @@ index 041b4af..3a5b60a 100644
  def record_call(
      event: Event,
      stage: str,
-@@ -329,7 +429,7 @@ def record_call(
+@@ -329,7 +435,7 @@ def record_call(
  def _record_locked(event: Event, usage: Usage, source: Optional[str], stage: str, workdir: str | Path,
                     ceiling: Optional["Ceiling"], item: str, items_left: int, memo_hit: bool,
                     saved: float = 0.0) -> Event:
@@ -155,7 +161,7 @@ index 041b4af..3a5b60a 100644
      bucket = totals["stages"].setdefault(stage, empty_bucket())
      for target in (bucket, totals["total"]):
          target["calls"] += 1
-@@ -346,16 +446,26 @@ def _record_locked(event: Event, usage: Usage, source: Optional[str], stage: str
+@@ -346,16 +452,26 @@ def _record_locked(event: Event, usage: Usage, source: Optional[str], stage: str
              target["models_dev_calls"] += 1
          if memo_hit:
              target["memo_hits"] += 1
@@ -184,7 +190,7 @@ index 041b4af..3a5b60a 100644
      if ceiling is not None:
          ceiling.charge_recorded(totals, stage, item or str(event.idx), items_left)
      return event
-@@ -484,12 +594,13 @@ class Ceiling:
+@@ -484,12 +600,13 @@ class Ceiling:
          """One ledger: a charge that did not come through record_call still lands in the file."""
          if self.workdir is None:
              return
