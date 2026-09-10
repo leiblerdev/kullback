@@ -1781,17 +1781,30 @@ def _tool_result(result: Optional[ToolResult]) -> Optional[dict]:
     return {"content": result.content, "is_error": result.is_error} if result is not None else None
 
 
-def _record_judge_models(plan: BuildPlan) -> None:
-    """Write which model each side of the judging ran on into report_config.json (D160).
+def _record_model_ids(plan: BuildPlan) -> None:
+    """Write which model each side of the judging ran on, and which drove the user (D160, D232).
 
-    Only when a judge model was named: a build that judges with its own model writes nothing here,
-    so its records are what they were before this, byte for byte.
+    Only when a model was named for the judging or the user: a build that judges with its own
+    model and drives its user with the rules writes nothing here, so its records are what they
+    were before this, byte for byte. The user model id lands beside the judge models in the
+    build's report config. A rebuild that drops the flag clears a stale user model id, so the
+    record never attributes a rule-driven build to an earlier model. A stale judge id is kept on
+    purpose: the judge record is D160's, so its rebuild behavior stays as it was until that
+    record's owner changes it; this branch clears only the user id it added.
     """
-    if plan.judge_model is None and plan.second_judge_model is None:
-        return
     path = plan.workdir / "report_config.json"
     config = dict(_read_config(path))
-    config["judge_models"] = plan.judge_model_ids()
+    if plan.judge_model is None and plan.second_judge_model is None and plan.user_agent_model is None:
+        if "user_model" not in config:
+            return
+        del config["user_model"]
+    else:
+        if plan.judge_model is not None or plan.second_judge_model is not None:
+            config["judge_models"] = plan.judge_model_ids()
+        if plan.user_agent_model is not None:
+            config["user_model"] = getattr(plan.user_agent_model, "name", None) or "model"
+        else:
+            config.pop("user_model", None)
     write_json(path, config)
 
 
@@ -1802,6 +1815,7 @@ def _read_config(path: Path) -> dict:
 
 def run_rounds(workdir: Any, model: Any = None, *, agent_model: Optional[Model] = None, files: Optional[list] = None,
                judge_model: Any = None, second_judge_model: Any = None, judge_agent: bool = False,
+               user_agent_model: Any = None,
                iterate: bool = False, ceiling_usd: Optional[float] = None, allowance_usd: Optional[float] = None,
                stall_rounds: int = 1, fidelity_stall: int = 0, max_rounds: int = 0,
                target: str = TARGET_ALL, domain: str = "domain", max_attempts: int = 3,
@@ -1816,16 +1830,19 @@ def run_rounds(workdir: Any, model: Any = None, *, agent_model: Optional[Model] 
     tool calls (build for the Builder, derive for the Examiner). `judge_model` is the model the
     build's judge runs on and `model` when it is None; `second_judge_model` is the other side of a
     two-judge question (D160); `judge_agent` asks for the residue judge with a bounded look instead
-    of the one-shot judge (D185). The dict is run_builder's plus the rounds, the exit, the trusted
+    of the one-shot judge (D185). `user_agent_model` is the model the agent user drives its Tasks
+    with and None for the rule-driven user alone; it lands in the plan's wrapped models under
+    `user_agent`, so the re-rolls and the Examiner's reroll runner drive through it, and its id is
+    recorded beside the judge models (D232). The dict is run_builder's plus the rounds, the exit, the trusted
     Tasks, the refusals and the Examiner's rulings.
     """
     plan = BuildPlan(workdir=Path(workdir), iterate=iterate, model=model, judge_model=judge_model,
                      second_judge_model=second_judge_model, judge_agent=judge_agent,
-                     files=list(files or []),
+                     user_agent_model=user_agent_model, files=list(files or []),
                      ceiling_usd=ceiling_usd, domain=domain, max_attempts=max_attempts, memory_dir=memory_dir,
                      on_event=on_event, grow=grow, grow_seed=grow_seed, probe_limit=probe_limit, rerolls=rerolls,
                      search=search, workers=workers)
-    _record_judge_models(plan)
+    _record_model_ids(plan)
     # The feed subscribes like anything else. Attaching here rather than inside the two harnesses
     # means both agents' streams reach it through the one seam the harness already offers: the
     # stages in either arm, and the messages and tool calls in the arm where a model drives.
