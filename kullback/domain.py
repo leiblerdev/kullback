@@ -261,6 +261,12 @@ def destination_refusal(url: str, *, resolve: Optional[Callable[[str], Iterable[
     handing a resolver that answers with one and never touches a network. Every address a name holds
     has to be public: a name that answers with a public address and a loopback one is refused, since
     which of the two a connection lands on is not the caller's to choose.
+
+    What this does not close: a name whose owner answers publicly here and privately when the socket
+    is opened a moment later, since the connection resolves the name again. Closing that means
+    connecting to the address this check approved rather than to the name, which replaces the
+    connection layer under urllib and cannot be exercised by any test that opens no socket. The
+    reading takes the smaller rule and states the gap rather than shipping an untested one.
     """
     parts = urlsplit(str(url or ""))
     scheme = (parts.scheme or "").lower()
