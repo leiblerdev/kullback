@@ -548,10 +548,31 @@ def homing_hash(schema: EntitySchema) -> str:
 
     This is the second and last input `cluster.split_by_world` is allowed to depend on (D216), so a
     round whose grouping moved can say whether the homing moved with it. The column classes are
-    deliberately absent: they are the harness's own proposals about the corpus and no longer reach
-    the split, so a schema reclassified between two rounds leaves this hash where it was.
+    deliberately absent, except on the tables another requestor's tools revealed: D233 homes that
+    state to a row and hashes only its hard columns, so a reclassification there moves the split
+    and has to move this hash with it. Every other table keeps key fields alone, so a schema
+    reclassified between two rounds leaves this hash where it was.
     """
-    return content_hash({table: list(key_fields(schema, table)) for table in sorted(schema.tables)})
+    homing = {table: list(key_fields(schema, table)) for table in sorted(schema.tables)}
+    revealed: dict[str, dict[str, str]] = {}
+    for column in getattr(schema, "columns", None) or ():
+        if (column.evidence or {}).get("revealed_by"):
+            revealed.setdefault(column.table, {})[column.name] = str(column.class_)
+    if not revealed:
+        return content_hash(homing)
+    return content_hash({"homing": homing, "revealed_classes": revealed})
+
+
+def _accumulate_version(seen: dict, trace_id: str, key: tuple, row: dict) -> dict:
+    """One row's version, column by column, with the earliest sighting winning each column.
+
+    Shared by the customer path and the requestor path (D233): a trace that read part of a row
+    and then the whole of it states one version and not two, whoever made the call.
+    """
+    version = seen.setdefault(trace_id, {}).setdefault(key, {})
+    for name, value in (row or {}).items():
+        version.setdefault(str(name), value)
+    return version
 
 
 def trace_worlds(traces: Iterable[Trace], schema: EntitySchema, write_tools: set[str]) -> dict[str, dict]:
@@ -586,38 +607,70 @@ def trace_worlds(traces: Iterable[Trace], schema: EntitySchema, write_tools: set
     that read part of a row and then the whole of it states one version and not two. A result the
     call homed onto a row without stating a column of it is its own recorded sentence
     (`_recorded_text`), which is what the recording says about the row when no reader is allowed.
+
+    Another requestor's own state is homed the same way (D233): `_requestor_worlds` files a
+    sighting that states columns of the mined table under that table, one row per requestor,
+    accumulated with the same earliest-wins loop, and the split compares it per column under
+    the schema's column classes, so a semantic or exempt part of the sighting no longer splits
+    Tasks. A prose sighting keeps the opaque sentence key, since no reader may read its columns
+    in the split. That is a deliberate departure from D216, which kept every class out of the
+    split: the classes of the revealed tables now reach it, and `homing_hash` carries them for
+    exactly those tables.
     """
     traces = list(traces)
-    seen: dict[str, dict[tuple[str, str, str], dict]] = {}
+    seen: dict = {}
     for obs in _observations(traces, schema, write_tools, read_result=_recorded_text):
         if obs.after_write or obs.shadowed:
             continue
-        version = seen.setdefault(obs.trace_id, {}).setdefault((obs.tool, obs.table, obs.row_id), {})
-        for name, value in obs.row.items():
-            version.setdefault(str(name), value)
+        _accumulate_version(seen, obs.trace_id, (obs.tool, obs.table, obs.row_id), obs.row)
     worlds = {trace_id: {key: content_hash(canon(version)) for key, version in rows.items()}
               for trace_id, rows in seen.items()}
-    for trace_id, rows in _requestor_worlds(traces, write_tools).items():
+    for trace_id, rows in _requestor_worlds(traces, write_tools, schema).items():
         worlds.setdefault(trace_id, {}).update(rows)
     return worlds
 
 
-def _requestor_worlds(traces: Iterable[Trace], write_tools: set[str]) -> dict[str, dict]:
-    """Per trace, what another requestor's own tools said about it before that requestor wrote.
+def _requestor_table_of(schema: Optional[EntitySchema], requestor: str) -> Optional[str]:
+    """The table the schema mined for this requestor's own state, or None (D233).
 
-    R33 keeps a requestor's calls out of the customer's world: they describe the requestor's own
-    device and not the customer's system. They are recordings all the same, and two Runs whose
-    recordings show one requestor's device in two states before either wrote can no more share one
-    overlay than two Runs that disagree about a customer's row (D164, D74).
-
-    That split used to come from the readers stage, out of the columns it had proposed for the
-    requestor's prose, so it moved whenever a reader was written, improved or dropped. Here the
-    version is the recorded result itself and the row is the requestor, which the recording names on
-    every call; no proposal of the harness's is anywhere in it (D216). The requestor's own writes
-    close its world, because after one of those the device is in the state the Run put it in rather
-    than the state it started in.
+    A table another requestor's tools revealed carries that requestor on every column's evidence
+    under `revealed_by` (`readers.apply_to_schema`, `templates.apply_revealed`). The first such
+    table in schema order is the row's home; a requestor with no mined table keeps the opaque key.
     """
-    out: dict[str, dict] = {}
+    if schema is None:
+        return None
+    for table in sorted(getattr(schema, "tables", None) or ()):
+        for column in getattr(schema, "columns", None) or ():
+            if column.table == table and (column.evidence or {}).get("revealed_by") == requestor:
+                return table
+    return None
+
+
+def _requestor_row_of(schema: EntitySchema, table: str, result: Any) -> Optional[dict]:
+    """A requestor result as that requestor's row, or None where it states no column of it.
+
+    A dict result states columns the way any result states them; only the table's own columns
+    are kept, because anything else is about another row. Prose states its columns inside the
+    sentence, and with no reader allowed in the split there is nothing to build columns from,
+    so such a sighting keeps the opaque sentence key (the fallback), exactly as before.
+    """
+    parsed = parse_result(result)
+    if isinstance(parsed, dict) and parsed:
+        names = {column.name for column in (getattr(schema, "columns", None) or ())
+                 if column.table == table}
+        row = {str(name): value for name, value in parsed.items() if str(name) in names}
+        if row:
+            return row
+    return None
+
+
+def _requestor_pre_write_calls(traces: Iterable[Trace], write_tools: set[str]):
+    """(trace id, call, requestor) for every caller-side sighting before that requestor wrote.
+
+    R33 is unchanged: only another requestor's own calls qualify, error calls never do, and the
+    requestor's own writes close its world, because after one of those the device is in the
+    state the Run put it in rather than the state it started in.
+    """
     for trace in traces:
         written: set[str] = set()
         for call in trace.tool_calls:
@@ -629,8 +682,52 @@ def _requestor_worlds(traces: Iterable[Trace], write_tools: set[str]) -> dict[st
                 continue
             if requestor in written:
                 continue
-            out.setdefault(trace.trace_id, {}).setdefault(
+            yield trace.trace_id, call, requestor
+
+
+def _requestor_worlds(traces: Iterable[Trace], write_tools: set[str],
+                      schema: Optional[EntitySchema] = None) -> dict[str, dict]:
+    """Per trace, what another requestor's own tools said about it before that requestor wrote.
+
+    R33 keeps a requestor's calls out of the customer's world: they describe the requestor's own
+    device and not the customer's system. They are recordings all the same, and two Runs whose
+    recordings show one requestor's device in two states before either wrote can no more share one
+    overlay than two Runs that disagree about a customer's row (D164, D74).
+
+    Where the schema mined a table for the requestor (D233) and the sighting states columns
+    of it, its state is homed to that table, one row per requestor, accumulated column by column
+    with the same earliest-wins loop `trace_worlds` uses for a customer row. The split then
+    compares it per column: each hard or unclassified column is its own world key carrying its
+    version hash and its class, and a semantic or exempt column is left out, so it no longer
+    splits Tasks. (The brief calls that class cosmetic; the schema record calls it semantic.)
+    A prose sighting states its columns inside the sentence, and no reader may read them in the
+    split, so it keeps the opaque sentence key even where a table is mined, as does a requestor
+    the schema mines no table for: the version is the recorded result itself keyed by the
+    requestor, exactly as before, so nothing that used to split is silently merged. The requestor's own writes close
+    its world either way, because after one of those the device is in the state the Run put it
+    in rather than the state it started in.
+    """
+    rows: dict = {}
+    fallback: dict[str, dict] = {}
+    for trace_id, call, requestor in _requestor_pre_write_calls(traces, write_tools):
+        table = _requestor_table_of(schema, requestor)
+        row = _requestor_row_of(schema, table, call.result) if table is not None else None
+        if table is None or row is None:
+            fallback.setdefault(trace_id, {}).setdefault(
                 (call.name, "", requestor), content_hash(canon(parse_result(call.result))))
+            continue
+        _accumulate_version(rows, trace_id, (call.name, table, requestor), row)
+    out: dict[str, dict] = {}
+    for trace_id, keys in rows.items():
+        for (tool, table, requestor), version in keys.items():
+            for name in sorted(version):
+                column_class = _column_class(schema, table, name)
+                if column_class in ("semantic", "exempt"):
+                    continue
+                out.setdefault(trace_id, {})[(tool, table, requestor, name)] = (
+                    content_hash(canon(version[name])), column_class)
+    for trace_id, keys in fallback.items():
+        out.setdefault(trace_id, {}).update(keys)
     return out
 
 
