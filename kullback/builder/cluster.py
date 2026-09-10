@@ -211,6 +211,10 @@ def split_by_world(group: Sequence[Trace], worlds: dict[str, dict]) -> list[list
 
     Greedy and order free in effect: traces are taken by id and each joins the first subgroup whose
     rows it does not contradict, so the same traces always land the same way.
+
+    A requestor's homed row (D233) arrives as one key per hard column, each carrying its version
+    hash and its class, so two Runs that differ only in a semantic or exempt column share every
+    key and stay together. A requestor with no mined table arrives as one opaque key, as before.
     """
     subgroups: list[tuple[list[Trace], dict]] = []
     for trace in sorted(group, key=lambda t: t.trace_id):
@@ -277,7 +281,9 @@ FROZEN_ONLY_REASON = "the rebuild grouped this Task's Runs differently; the froz
 CLEARED_REASON = ("the recordings alone still group this Task's Runs together, so the starting "
                   "world did not strand it; the rebuild's intent clustering did")
 GROUPING_FILE = "grouping.json"
-# 1: the fingerprint of the frozen grouping and the two inputs it was taken over (D216).
+# 2: the split compares a requestor's homed row per column under the schema's column classes
+# (D233), so the revealed classes join the recordings and the homing as what the grouping may
+# depend on. 1 was the recordings and the homing alone (D216).
 GROUPING_FORMAT = 1
 
 
@@ -350,21 +356,32 @@ def world_split_reason(run_ids: Sequence[str], worlds: dict[str, dict]) -> Optio
         seen = worlds.get(run_id) or {}
         against = [key for key, version in sorted(seen.items()) if world.get(key, version) != version]
         if against:
-            return f"Run {run_id} disagrees on {_where(against[0])} before either Run wrote"
+            key = against[0]
+            return f"Run {run_id} disagrees on {_where(key, seen[key])} before either Run wrote"
         world.update(seen)
     return None
 
 
-def _where(key: Any) -> str:
+def _where(key: Any, version: Any = None) -> str:
     """A world key as a sentence part: the tool that answered and the row it answered about.
 
-    A key with no table is another requestor's own state, which no table of the customer's holds,
-    so it is named by the requestor rather than by a row that does not exist.
+    A key with no table is another requestor's own state with no mined table, which no table of
+    the customer's holds, so it is named by the requestor and by the opaque sentence it carries.
+    A key with a column is that requestor's homed row (D233): it names the column and the class
+    the split compared it under, so the reason says which case applied.
     """
+    if isinstance(key, (tuple, list)) and len(key) == 4:
+        tool, table, row_id, column = (str(part) for part in key)
+        column_class = version[1] if isinstance(version, (tuple, list)) and len(version) == 2 else "hard"
+        return (f"{column_class} column {column} of {table} row {row_id} "
+                f"as {tool or 'an unnamed tool'} showed it "
+                f"(homed to {table}; only hard columns split)")
     if isinstance(key, (tuple, list)) and len(key) == 3:
         tool, table, row_id = (str(part) for part in key)
-        named = f"{table} row {row_id}" if table else f"the state of the {row_id} requestor"
-        return f"{named} as {tool or 'an unnamed tool'} showed it"
+        if table:
+            return f"{table} row {row_id} as {tool or 'an unnamed tool'} showed it"
+        return (f"the state of the {row_id} requestor as {tool or 'an unnamed tool'} showed it "
+                "(no table of the world holds this state; the whole recorded sentence is the version)")
     return str(key)
 
 
