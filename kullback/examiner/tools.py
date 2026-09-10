@@ -696,48 +696,102 @@ async def _emit(plan: ExaminerPlan, sink: Optional[Sink], event: Any) -> None:
 
 # --- the executors -----------------------------------------------------------------------
 
+# One kind of read: what the Examiner asked for by id, or the whole file as an index when it asked
+# for no id. One function per kind, and the table below is the whole surface `read` answers.
+ReadHandler = Callable[[ExaminerPlan, Optional[str]], Any]
+
+
+def _read_task(plan: ExaminerPlan, key: Optional[str]) -> Any:
+    return as_dict(_task(plan, key or ""))
+
+
+def _read_trace(plan: ExaminerPlan, key: Optional[str]) -> Any:
+    trace = next((t for t in plan.inputs.get("traces") or [] if t.trace_id == key), None)
+    if trace is None:
+        return _unknown_id("Trace", key, _trace_ids(plan), _task_id_of(plan, key))
+    return as_dict(trace)
+
+
+def _read_intent(plan: ExaminerPlan, key: Optional[str]) -> Any:
+    intents = plan.inputs.get("intents") or {}
+    if key not in intents:
+        raise KeyError(f"no Intent for task {key}")
+    return as_dict(Intent.model_validate(intents[key]))
+
+
+def _read_run(plan: ExaminerPlan, key: Optional[str]) -> Any:
+    try:
+        return as_dict(_find_run(plan, key or ""))
+    except KeyError:
+        return _unknown_id("Run", key, _run_ids(plan), _task_id_of(plan, key))
+
+
+def _read_verifier(plan: ExaminerPlan, key: Optional[str]) -> Any:
+    return as_dict(_current(plan, key or ""))
+
+
+def _read_probes(plan: ExaminerPlan, key: Optional[str]) -> Any:
+    pool = (plan.store.get("probes") or {}).get(key)
+    return as_dict(pool) if pool is not None else as_dict(ProbePool(task_id=key or ""))
+
+
+def _rows_or_index(kind: str, rows: Any, key: Optional[str], missing: Any = None) -> Any:
+    """A whole-file kind that is a mapping of id to rows: the index with no id, else the one row.
+
+    `missing` is what an id no row carries answers, which is the empty shape of that kind's rows so
+    a reader is not handed a null where it reads a list or an object.
+    """
+    return _index(kind, rows) if key is None else {key: rows.get(key, missing)}
+
+
+def _read_task_status(plan: ExaminerPlan, key: Optional[str]) -> Any:
+    return _rows_or_index("task_status", plan.store.get("task_status") or {}, key)
+
+
+def _read_gates(plan: ExaminerPlan, key: Optional[str]) -> Any:
+    rows = read_json(plan.workdir / "gates.json", []) or []
+    if key is None:
+        return _index("gates", rows)
+    return [row for row in rows if row.get("stage") == key]
+
+
+def _read_rerolls(plan: ExaminerPlan, key: Optional[str]) -> Any:
+    return _rows_or_index("rerolls", plan.store.get("rerolls") or {}, key, missing=[])
+
+
+def _read_replays(plan: ExaminerPlan, key: Optional[str]) -> Any:
+    return _rows_or_index("replays", plan.store.get("replays") or {}, key, missing={})
+
+
+def _read_references(plan: ExaminerPlan, key: Optional[str]) -> Any:
+    return _rows_or_index("references", read_json(plan.workdir / "references.json", {}) or {}, key)
+
+
+READ_HANDLERS: dict[str, ReadHandler] = {
+    "task": _read_task,
+    "trace": _read_trace,
+    "intent": _read_intent,
+    "run": _read_run,
+    "verifier": _read_verifier,
+    "probes": _read_probes,
+    "task_status": _read_task_status,
+    "gates": _read_gates,
+    "rerolls": _read_rerolls,
+    "replays": _read_replays,
+    "references": _read_references,
+}
+
+
 def _read(plan: ExaminerPlan):
     async def read(args: ReadArgs) -> ReadResult:
-        kind, key = args.kind, args.id
-        store = plan.store
-        if kind == "task":
-            body = as_dict(_task(plan, key or ""))
-        elif kind == "trace":
-            trace = next((t for t in plan.inputs.get("traces") or [] if t.trace_id == key), None)
-            body = (as_dict(trace) if trace is not None
-                    else _unknown_id("Trace", key, _trace_ids(plan), _task_id_of(plan, key)))
-        elif kind == "intent":
-            intents = plan.inputs.get("intents") or {}
-            if key not in intents:
-                raise KeyError(f"no Intent for task {key}")
-            body = as_dict(Intent.model_validate(intents[key]))
-        elif kind == "run":
-            try:
-                body = as_dict(_find_run(plan, key or ""))
-            except KeyError:
-                body = _unknown_id("Run", key, _run_ids(plan), _task_id_of(plan, key))
-        elif kind == "verifier":
-            body = as_dict(_current(plan, key or ""))
-        elif kind == "probes":
-            pool = (store.get("probes") or {}).get(key)
-            body = as_dict(pool) if pool is not None else as_dict(ProbePool(task_id=key or ""))
-        elif kind == "task_status":
-            status = store.get("task_status") or {}
-            body = _index(kind, status) if key is None else {key: status.get(key)}
-        elif kind == "gates":
-            rows = read_json(plan.workdir / "gates.json", []) or []
-            body = _index(kind, rows) if key is None else [row for row in rows if row.get("stage") == key]
-        elif kind == "rerolls":
-            rows = store.get("rerolls") or {}
-            body = _index(kind, rows) if key is None else {key: rows.get(key, [])}
-        elif kind == "replays":
-            rows = store.get("replays") or {}
-            body = _index(kind, rows) if key is None else {key: rows.get(key, {})}
-        else:
-            rows = read_json(plan.workdir / "references.json", {}) or {}
-            body = _index(kind, rows) if key is None else {key: rows.get(key)}
+        handler = READ_HANDLERS.get(args.kind)
+        if handler is None:
+            # The schema's own kinds are the table's keys, so this is reached only by a caller that
+            # went round the schema; it says what may be read instead of reading the References.
+            raise KeyError(f"read does not know the kind {args.kind!r}; what it reads: "
+                           f"{', '.join(READ_HANDLERS)}")
         # D175: a whole-file read is an index, and no read is longer than READ_CHARS.
-        return ReadResult(kind=kind, id=key, text=_clamped_text(body))
+        return ReadResult(kind=args.kind, id=args.id, text=_clamped_text(handler(plan, args.id)))
 
     return read
 
