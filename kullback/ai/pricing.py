@@ -354,11 +354,31 @@ def _overlay_live_prices(catalog: Optional[dict], client: Any, env: Optional[dic
         if key_var and not key:
             continue
         headers = {"Authorization": f"Bearer {key}"} if key else None
-        for wire_id, cost in _listed_prices(_get_json(client, url, headers), field).items():
-            row = model_row(entry, wire_id)
-            if isinstance(row, dict):
-                row["cost"] = cost
+        models = entry.get("models")
+        listed = _listed_prices(_get_json(client, url, headers), field)
+        for row_key, cost in _by_row_key(models, listed).items():
+            models[row_key]["cost"] = cost
     return catalog
+
+
+def _by_row_key(models: Any, listed: dict[str, dict[str, float]]) -> dict[str, dict[str, float]]:
+    """Listed rates keyed by the model row each one names, with the disagreements left out.
+
+    A gateway lists one model under two spellings, its own and the lab's, and both resolve to the
+    same row here. When the two rates agree it does not matter which is read; when they disagree
+    there is no telling which the wallet will be billed at, so the row keeps the rate written
+    beside it, which is the rule the cross-provider price lookup already follows.
+    """
+    priced: dict[str, dict[str, float]] = {}
+    disagreed: set[str] = set()
+    for wire_id, cost in listed.items():
+        row_key = model_row_key(models, wire_id)
+        if row_key is None:
+            continue
+        if row_key in priced and priced[row_key] != cost:
+            disagreed.add(row_key)
+        priced[row_key] = cost
+    return {row_key: cost for row_key, cost in priced.items() if row_key not in disagreed}
 
 
 def refresh(
@@ -469,13 +489,22 @@ def model_row(provider_entry: Any, wire_id: str) -> Optional[dict]:
     is the rule the cross-provider lookup below already follows.
     """
     models = provider_entry.get("models") if isinstance(provider_entry, dict) else None
+    key = model_row_key(models, wire_id)
+    return models.get(key) if key is not None else None
+
+
+def model_row_key(models: Any, wire_id: str) -> Optional[str]:
+    """Which key of a provider's models a wire id names, under the rule model_row is written to.
+
+    The key rather than the row, for a caller that has to write back into the mapping and cannot
+    tell two rows apart by value.
+    """
     if not isinstance(models, dict) or not wire_id:
         return None
-    row = models.get(wire_id)
-    if isinstance(row, dict):
-        return row
+    if isinstance(models.get(wire_id), dict):
+        return wire_id
     tail = wire_id.rpartition("/")[2]
-    found = [candidate for key, candidate in models.items()
+    found = [key for key, candidate in models.items()
              if isinstance(candidate, dict) and key.rpartition("/")[2] == tail]
     return found[0] if len(found) == 1 else None
 

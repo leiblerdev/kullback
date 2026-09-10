@@ -535,6 +535,21 @@ def test_no_key_for_a_provider_means_its_price_list_is_never_asked_for(tmp_path)
     assert pricing.price_from_catalog(catalog, "e-host/brisk-4") == WRITTEN_RATES
 
 
+def test_two_listed_spellings_of_one_model_that_disagree_leave_the_written_rate_standing(tmp_path):
+    """A gateway lists a model under its own name and the lab's, and both name the same row here.
+    Agreeing rates can be read from either; disagreeing ones say nothing about what the wallet is
+    billed, so the row keeps the rate written beside it."""
+    listing = {"data": [{"id": "brisk-4", "rates": {"input": 0.5, "output": 1.25}},
+                        {"id": "a-lab/brisk-4", "rates": {"input": 0.9, "output": 3.0}}]}
+    catalog = refresh_with(listing, tmp_path / "models.dev.json")
+    assert pricing.price_from_catalog(catalog, "e-host/brisk-4") == WRITTEN_RATES
+
+    agreeing = {"data": [{"id": "brisk-4", "rates": {"input": 0.5, "output": 1.25}},
+                         {"id": "a-lab/brisk-4", "rates": {"input": 0.5, "output": 1.25}}]}
+    catalog = refresh_with(agreeing, tmp_path / "agreed.json")
+    assert pricing.price_from_catalog(catalog, "e-host/brisk-4")["input"] == 0.5
+
+
 def test_a_price_list_cannot_add_a_model_the_row_does_not_offer(tmp_path):
     """The written row says what the Harness offers. A list that prices two hundred other models
     changes the price of the one it names and adds nothing, so nothing is offered unsized."""
