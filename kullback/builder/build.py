@@ -1201,7 +1201,10 @@ def _policy_stage(model: Any, workers: int = 1):
     def run(ctx, inputs):
         # D220: the system prompt is taken from a Trace the Builder may learn from.
         text = _policy_text(ctx.evidence.traces)
-        constraints = (policy.compile_policy(model, text, workers=workers)
+        # The system head (contract plus policy text) is built once per build and the same
+        # string object reaches every sentence, so per sentence builders cannot drift a byte.
+        head = policy._stable_system(text)
+        constraints = (policy.compile_policy(model, text, workers=workers, system_head=head)
                        if (text and model is not None) else [])
         _write_json(ctx.workdir / "constraints.json", [as_dict(c) for c in constraints])
         _write_json(ctx.workdir / "policy_coverage.json",

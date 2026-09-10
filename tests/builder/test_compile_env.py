@@ -2434,3 +2434,47 @@ def test_an_argument_named_like_the_receiver_or_mined_twice_is_refused():
                     result_schema=[])
     assert ce.unsafe_names(schema, [twice]) == [
         "argument 'berth_id' of find_berth is a name the signature already carries"]
+
+
+# --- D246: the compile_tools envelope is frozen per build ---
+
+def _invented_sig(name):
+    return ToolSig(name=name, kind="read", unclassified=False,
+                   args_fields=[FieldStat(name="berth_id", types=["str"])],
+                   result_schema=[])
+
+
+def test_the_system_head_is_byte_identical_across_ten_tools_of_one_build(schema):
+    """D246: one build, one head. Ten invented tools hash to a single value."""
+    names = [f"check_berth_{word}" for word in
+             ("alder", "birch", "cedar", "dune", "elm", "fern", "grove", "heath", "iris", "juniper")]
+    sigs = [_invented_sig(name) for name in names]
+    heads = [ce.body_messages(sig, [], schema=schema, tool_names=names,
+                              builder_tools=True)[0]["content"] for sig in sigs]
+    assert len(heads) == 10
+    assert len(set(heads)) == 1
+    digest = hashlib.sha256(heads[0].encode("utf-8")).hexdigest()
+    assert all(hashlib.sha256(h.encode("utf-8")).hexdigest() == digest for h in heads)
+
+
+def test_the_helper_paragraph_is_last_so_the_shared_prefix_caches(schema):
+    """D246: the helper on path keeps the helper off bytes as its prefix."""
+    names = ["check_berth_alder", "check_berth_birch"]
+    off = ce._stable_system(schema, names, False, "")
+    on = ce._stable_system(schema, names, True, "")
+    assert on == off + "\n\n" + ce._BUILDER_TOOLS_PARAGRAPH
+
+
+def test_every_attempt_sends_the_same_head_bytes_and_the_same_spec_object(
+    make_test_model, schema, sigs, db0, workdir, order_calls
+):
+    """D246: attempts share one head string and one spec list object."""
+    model = make_test_model([WRONG_BODY] * 4)
+    ce.compile_tool(model, sigs[0], order_calls, schema, db0, workdir)
+    assert len(model.calls) == 4
+    heads = [call["messages"][0]["content"] for call in model.calls]
+    assert len(set(heads)) == 1
+    first_specs = model.calls[0]["tools"]
+    assert first_specs == ce.BUILDER_TOOLS
+    assert all(call["tools"] == first_specs for call in model.calls)
+    assert all(call["tools"] is first_specs for call in model.calls)
