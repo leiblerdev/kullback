@@ -206,11 +206,13 @@ def _laid_over(under: Any, over: Any) -> Any:
     must refuse. A rate that went to nothing is written as 0.0 rather than left out, so no override
     ever needs to remove a key.
 
-    Where the value underneath is a mapping and the one over it is not, the one over it is left
-    where it is. A cost or a limit written as a number or a string is not a correction anyone can
+    A value only lands where it is written to the shape of the one underneath: a mapping over a
+    mapping, a number over a number, a string over a string, a list over a list. A cost or a limit
+    given as a string, at the mapping or at the rate inside it, is not a correction anyone can
     read: taking it would leave the model unpriced, which the budget gate reads as a call it must
     refuse, and unsized, which sends the context cap to the generic limit. The written value is
-    the better answer of the two, so it stands.
+    the better answer of the two, so it stands, and the fields beside the unreadable one still
+    land. A key with nothing underneath is new rather than wrong, so it is taken as written.
     """
     if isinstance(under, dict):
         if not isinstance(over, dict):
@@ -219,7 +221,20 @@ def _laid_over(under: Any, over: Any) -> Any:
         for key, value in over.items():
             merged[key] = _laid_over(merged.get(key), value)
         return merged
-    return over
+    if under is None or _same_shape(under, over):
+        return over
+    return under
+
+
+def _same_shape(under: Any, over: Any) -> bool:
+    """Whether one value is written to the shape of another. Whole numbers and fractions count as
+    one shape, since a rate of 3 and a rate of 3.0 are the same rate written two ways, and true
+    and false are their own shape rather than the numbers Python also reads them as."""
+    if isinstance(under, bool) or isinstance(over, bool):
+        return isinstance(under, bool) and isinstance(over, bool)
+    if isinstance(under, (int, float)) and isinstance(over, (int, float)):
+        return True
+    return isinstance(over, type(under))
 
 
 def _merge_provider(under: Optional[dict], over: dict) -> dict:
