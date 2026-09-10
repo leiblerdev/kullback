@@ -54,7 +54,7 @@ uv run kullback verdict --workdir work
 uv run kullback report --workdir work
 ```
 
-`kullback tui` watches a build as it runs. `kullback publish --workdir work --repo <org>/<name>` puts the result on Hugging Face. Live model calls need `HARNESS_ALLOW_MODEL_REQUESTS=1` and an API key in the environment or a `.env` file. Any `provider/model` id works.
+`kullback tui` watches a build as it runs. `kullback publish --workdir work --repo <org>/<name>` puts the result on Hugging Face. Live model calls need `HARNESS_ALLOW_MODEL_REQUESTS=1` and an API key in the environment or a `.env` file. Any `provider/model` id works. `--model provider/model` reaches any provider models.dev lists with an OpenAI-shaped API (Anthropic, OpenAI, OpenCode Go, DeepSeek, OpenRouter and others), with the key in the variable models.dev names for it, and `--base-url` reaches anything else.
 
 ## How it works
 
