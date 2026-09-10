@@ -138,7 +138,9 @@ def _merge_provider(under: Optional[dict], over: dict) -> dict:
         return copy.deepcopy(over)
     merged = {**copy.deepcopy(under), **copy.deepcopy(over)}
     models = dict(under.get("models") or {})
-    models.update(over.get("models") or {})
+    over_models = over.get("models")
+    if isinstance(over_models, dict):
+        models.update(over_models)
     if models:
         merged["models"] = models
     return merged

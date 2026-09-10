@@ -375,6 +375,17 @@ def test_a_local_registry_file_that_cannot_be_read_is_ignored_not_raised_on(tmp_
     assert set(pricing.local_providers(path)) == set(pricing.BUILTIN_LOCAL_PROVIDERS)
 
 
+def test_a_provider_row_whose_models_field_is_not_an_object_keeps_the_built_in_model_rows(tmp_path):
+    """A misshapen optional file must not take every model call down: the row's other fields land,
+    its models value is ignored, and the built-in model rows still price."""
+    path = tmp_path / "models.dev.json"
+    name = next(iter(pricing.BUILTIN_LOCAL_PROVIDERS))
+    write_local(path, {name: {"api": "https://elsewhere.invalid/v1", "models": ["not", "an", "object"]}})
+    row = pricing.local_providers(path)[name]
+    assert row["api"] == "https://elsewhere.invalid/v1"
+    assert row["models"] == pricing.BUILTIN_LOCAL_PROVIDERS[name]["models"]
+
+
 def test_the_local_file_wins_over_a_built_in_row_of_the_same_name(tmp_path):
     path = tmp_path / "models.dev.json"
     name = next(iter(pricing.BUILTIN_LOCAL_PROVIDERS))
