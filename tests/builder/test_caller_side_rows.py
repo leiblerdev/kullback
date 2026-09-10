@@ -95,8 +95,13 @@ def test_the_row_is_built_column_by_column_with_the_earliest_sighting_winning():
     assert worlds["keep_a"][("check_hive", "hives", KEEPER, "brood")][1] == "hard"
 
 
-def test_the_row_pins_into_the_overlay_and_a_read_body_reads_it(tmp_path):
-    """Once homed, the keeper's row pins like any other row and a body can serve it."""
+def test_a_revealed_row_pins_into_the_overlay_and_a_read_body_reads_it(tmp_path):
+    """The revealed row pins like any other row and a body can serve it; the split names its row.
+
+    The pinning half rides the pre-existing readers path (`revealed_rows`); what D233 adds is
+    that the same row id, the requestor, is the row of the split key, so the overlay and the
+    split name one row.
+    """
     row = {"brood": "capped", "hum": "low", "scent": "sweet"}
     traces = [keeper_trace("keep_a", row)]
     sigs = [ToolSig(name="check_hive", kind="read")]
@@ -112,6 +117,8 @@ def test_the_row_pins_into_the_overlay_and_a_read_body_reads_it(tmp_path):
     source = ce.module_source(hive_schema(), sigs, {"check_hive": body})
     toolkit = ce.load_toolkit(source, state.db, overlay=overlay, overlay_values=values)
     assert toolkit.check_hive() == {"brood": "capped"}
+    worlds = ce.trace_worlds(traces, hive_schema(), set())
+    assert ("check_hive", "hives", KEEPER, "brood") in worlds["keep_a"]
 
 
 def test_runs_differing_only_in_exempt_or_semantic_columns_share_a_task():
@@ -132,6 +139,36 @@ def test_a_hard_difference_splits_with_a_reason_naming_the_column_class():
     reason = world_split_reason(["keep_a", "keep_c"], worlds)
     assert "hard" in reason and "brood" in reason
     assert "hives" in reason and "check_hive" in reason
+
+
+def test_a_column_no_mined_table_carries_still_splits_as_unclassified():
+    """A stated column outside the mined tables is its own unclassified key, never dropped."""
+    traces = [keeper_trace("keep_a", {"brood": "capped", "dust": "settled"}),
+              keeper_trace("keep_b", {"brood": "capped", "dust": "cleared"})]
+    worlds = ce.trace_worlds(traces, hive_schema(), set())
+    key = ("check_hive", "hives", KEEPER, "dust")
+    assert worlds["keep_a"][key][1] == "unclassified"
+    assert [[t.trace_id for t in part] for part in split_by_world(traces, worlds)] == [
+        ["keep_a"], ["keep_b"]]
+    reason = world_split_reason(["keep_a", "keep_b"], worlds)
+    assert "unclassified" in reason and "dust" in reason
+
+
+def test_each_stated_column_is_homed_to_the_revealed_table_that_carries_it():
+    """A requestor with two revealed tables homes each column to the table carrying it."""
+    schema = hive_schema()
+    schema.tables = sorted([*schema.tables, "perches"])
+    schema.columns = sorted([*schema.columns, _column("perches", "comb", "hard", KEEPER)],
+                            key=lambda c: (c.table, c.name))
+    traces = [keeper_trace("keep_a", {"brood": "capped", "comb": "full"}),
+              keeper_trace("keep_b", {"brood": "capped", "comb": "empty"})]
+    worlds = ce.trace_worlds(traces, schema, set())
+    assert set(worlds["keep_a"]) == {("check_hive", "hives", KEEPER, "brood"),
+                                      ("check_hive", "perches", KEEPER, "comb")}
+    assert [[t.trace_id for t in part] for part in split_by_world(traces, worlds)] == [
+        ["keep_a"], ["keep_b"]]
+    reason = world_split_reason(["keep_a", "keep_b"], worlds)
+    assert "perches" in reason and "comb" in reason
 
 
 def test_a_requestor_write_closes_its_world():
@@ -177,4 +214,6 @@ def test_the_homing_moves_with_a_revealed_reclassification_and_nowhere_else():
     schema.columns[0].class_ = "exempt"
     assert ce.homing_hash(schema) != before
     customer = bare_schema()
-    assert ce.homing_hash(customer) == ce.homing_hash(bare_schema())
+    first = ce.homing_hash(customer)
+    customer.columns[0].class_ = "exempt"
+    assert ce.homing_hash(customer) == first
