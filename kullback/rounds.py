@@ -1092,11 +1092,16 @@ class Loop:
 
         Read once per round and kept: the stored Runs do not move while a round closes, and a
         round's counts are assembled more than once.
+
+        The read is guarded the way `counts_now` is, and on `Exception` for the same reason: a
+        reader that raises costs the round its split and never its record. This one runs inside
+        `driver_counts`, which `close_round` calls unguarded on the failure path, so a narrower
+        guard here would take the record of exactly the round D231 exists to keep.
         """
         if self._user_ends is None:
             try:
                 self._user_ends = user_fidelity_mod.ends_by_driver(self.plan.workdir)
-            except (OSError, ValueError, TypeError):
+            except Exception:
                 self._user_ends = {}
         return {user_fidelity_mod.ENDS_BY_DRIVER: self._user_ends} if self._user_ends else {}
 

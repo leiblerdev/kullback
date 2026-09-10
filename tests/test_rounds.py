@@ -1564,6 +1564,26 @@ def test_the_counts_of_a_round_whose_state_cannot_be_read_are_empty_and_the_reco
     assert record.round == 1 and record.counts["turns"]["total"] == 0
 
 
+def test_a_reader_that_raises_over_the_end_kinds_costs_the_round_its_split_and_never_its_record(tmp_path,
+                                                                                                monkeypatch):
+    """The split is read inside `driver_counts`, which `close_round` calls unguarded on the failure
+    path, so anything the reader raises would take the record of exactly the round this decision
+    exists to keep. The guard is the one `counts_now` draws and is drawn as wide."""
+    from kullback.user import fidelity as fidelity_mod
+
+    class LedgerUnreadable(Exception):
+        """Neither an OSError, a ValueError nor a TypeError: the guard may not turn on the kind."""
+
+    def raises(_workdir):
+        raise LedgerUnreadable("the Runs are half written")
+
+    monkeypatch.setattr(fidelity_mod, "ends_by_driver", raises)
+    loop = _bare_loop(tmp_path)
+    record = loop.close_round(1, {})
+    assert record.round == 1, "the round still closes"
+    assert fidelity_mod.ENDS_BY_DRIVER not in record.counts, "and carries no split rather than a guess"
+
+
 # --- what a beat spent, however it ended (D231) -----------------------------------------------
 
 def test_a_builder_beat_that_raised_still_credits_what_it_spent_to_the_round(tmp_path, monkeypatch):
