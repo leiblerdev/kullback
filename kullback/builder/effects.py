@@ -76,8 +76,9 @@ class EffectColumn:
     # asking it of an earlier one fails a write for a column a later write was going to move.
     checked: bool = True
     # No write between the two sightings owes this column: none named its row and none of their
-    # tools was seen moving it alone elsewhere in the corpus. Filed once, under the last write,
-    # and never checked against any call (D234).
+    # tools was seen moving it alone elsewhere in the recordings this pass was given (on the
+    # replay-evidence path, that Task's Runs). Filed once, under the last write, and never
+    # checked against any call (D234).
     unattributed: bool = False
     # The rule the recording implies for a numeric column, as a formula over other columns; empty
     # where the numbers hold none. Never a value: the operands are named by table and column path.
@@ -226,11 +227,12 @@ def observe_effects(traces: Iterable[Trace], schema: EntitySchema, write_tools: 
     sightings of each row are walked in recorded order. Where two consecutive sightings of a row
     differ, the writes that sit between them owe the columns that moved, under D234's narrowing:
     where more than one sits between, a write owes a column only where its own arguments name the
-    row the column sits on or where the same tool has elsewhere in the corpus moved that column
-    with no other write between, and a column no write in the span owes is filed once as
-    unattributed rather than charged to the last call. A row whose first sighting comes after a write takes its before
-    value from the world that Run started in (`worlds` for that Run, else the shared `db`), which is
-    the Starting-state pin and the only evidence there is for a row nothing read first.
+    row the column sits on or where the same tool moved that column alone elsewhere in the
+    recordings this pass was given (on the replay-evidence path, that Task's Runs), and a column
+    no write in the span owes is filed once as unattributed rather than charged to the last call.
+    A row whose first sighting comes after a write takes its before value from the world that Run
+    started in (`worlds` for that Run, else the shared `db`), which is the Starting-state pin and
+    the only evidence there is for a row nothing read first.
 
     Only the rows a Run's own calls returned are read as sightings, so the same R33 rule that keeps
     another requestor's results out of the world keeps them out of this. A write by any requestor is
@@ -325,7 +327,8 @@ def _proven_moves(traces: Iterable[Trace], schema: EntitySchema, writes: set[str
 
     Only a span with a single write in it proves anything: where several sat between, the
     recording does not say which of them moved the column, so such a span proves nothing about
-    any of them. Read over the recordings alone, before any credit is narrowed by it.
+    any of them. Read over the recordings this pass was given alone, before any credit is
+    narrowed by it, which on the replay-evidence path is that Task's Runs.
     """
     proven: set[tuple[str, str, str]] = set()
     for trace in traces:
@@ -341,7 +344,8 @@ def _proven_moves(traces: Iterable[Trace], schema: EntitySchema, writes: set[str
 def _owners(credited: list, obs: Any, path: str, schema: EntitySchema, named_rows: Callable,
             proven: set[tuple[str, str, str]]) -> list:
     """The writes of one span that owe one column: the span itself where it holds one write,
-    else the writes naming the row and the tools proven on that column elsewhere in the corpus."""
+    else the writes naming the row and the tools proven on that column elsewhere in the
+    recordings this pass was given (on the replay-evidence path, that Task's Runs)."""
     if len(credited) == 1:
         return list(credited)
     return [call for call in credited
@@ -374,8 +378,9 @@ def _credit(effects: dict[str, WriteEffect], credited: list, obs: Any, before: d
 
     Where one write sat between the sightings it is filed under it, as before. Where several sat
     between, a write owes a column only where its own arguments name the row the column sits on
-    or where the same tool has elsewhere in the corpus moved that column with no other write
-    between; both tests are over the recordings alone. A column no write in the span owes is filed
+    or where the same tool moved that column alone elsewhere in the recordings this pass was
+    given (on the replay-evidence path, that Task's Runs); both tests are over the recordings
+    alone. A column no write in the span owes is filed
     once, under the last write, as unattributed and unchecked: the recording shows it moving and
     says nothing about which call moved it, so checking it against any of them fails whichever
     call happened to come last. The view is the Run's rows as they stood before this sighting,
@@ -501,10 +506,10 @@ def _agreed_formulas(effects: Iterable[WriteEffect]) -> list[str]:
 
 #: Key of `replay_evidence` carrying the columns no write in their span owed (D234). It is not
 #: a call id: no recorded call is checked against it, so a runner that does not know it ignores
-#: it, and no per-call evidence is emitted for such a column. The leading tag keeps it out of
-#: reach of any real key, the way D39's rule keeps the recorded-text key out of reach, so no
-#: recorded call id can collide with it. The re-freeze teaches the check to count what sits under
-#: it instead of failing the last call.
+#: it, and no per-call evidence is emitted for such a column. The leading tag follows D39's rule
+#: for the recorded-text key, and the writer bumps it past any recorded id that claims it, so the
+#: strays land under a key no call looks up. The re-freeze teaches the check to count what sits
+#: under it instead of failing the last call.
 UNATTRIBUTED = "\x00unattributed"
 
 
@@ -538,11 +543,14 @@ def replay_evidence(effects: dict[str, list[WriteEffect]]) -> dict[str, list[dic
              if column.unattributed]
     out = {call_id: rows for call_id, rows in out.items() if rows}
     if stray:
-        # A recorded call id never claims the tagged key, by the rule that keeps the
-        # recorded-text key out of reach (D39). Should one ever do so, its rows stay and the
-        # stray rows ride along flagged: the frozen check counts flagged rows instead of failing
-        # them, so no evidence is lost either way.
-        out.setdefault(UNATTRIBUTED, []).extend(stray)
+        # The tag is a convention, not an invariant, since a recorded id is an unconstrained
+        # string: bump the key past any id the recordings claim, so the strays land where no
+        # call looks them up. The frozen check finds flagged rows by scanning, never by key.
+        claimed = {effect.call_id for rows in effects.values() for effect in rows}
+        key = UNATTRIBUTED
+        while key in claimed:
+            key += "\x00"
+        out.setdefault(key, []).extend(stray)
     return out
 
 
