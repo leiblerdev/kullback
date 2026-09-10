@@ -46,7 +46,7 @@ class Exchange(BaseModel):
 
     Recorded so a stored Run says what was asked of the provider and not only what came back: the
     sampling a renderer has to reproduce, fingerprints of the prompt it has to rebuild, and the
-    timing, attempts and provider request id an incident is read from (D159).
+    timing, attempts, read timeout in force, and provider request id an incident is read from (D159).
     """
 
     model_config = ConfigDict(populate_by_name=True)
@@ -63,6 +63,7 @@ class Exchange(BaseModel):
     attempts: int = 0
     status: Optional[int] = None
     request_id: Optional[str] = None
+    read_timeout_s: Optional[float] = None  # the read budget in force on this call, in seconds
 
 
 class ModelReply(BaseModel):
@@ -496,6 +497,30 @@ RESPONSES_LOGPROBS_INCLUDE = "message.output_text.logprobs"
 # which the current Anthropic API rejects: prefill is gone on 4.6 and later), and it cannot be
 # sent empty either, so it goes as one placeholder block.
 EMPTY_USER_PLACEHOLDER = "(no content)"
+# The read budget for one model call. A code-generating answer at the size the compile_tools
+# stage asks for can take minutes, while a dead host should still fail fast, so the default is
+# generous and only establishing contact stays short. One variable overrides it per process.
+MODEL_TIMEOUT_ENV_VAR = "KULLBACK_MODEL_TIMEOUT_S"
+DEFAULT_READ_TIMEOUT_S = 300.0
+CONNECT_TIMEOUT_S = 10.0
+
+
+def model_read_timeout_s(env: dict[str, str], explicit: Optional[float] = None) -> float:
+    """The read timeout in seconds: an explicit argument wins, then the environment, then 300 s.
+
+    A set variable that is not a number is an error naming the variable, never a silent default.
+    """
+    if explicit is not None:
+        return float(explicit)
+    raw = env.get(MODEL_TIMEOUT_ENV_VAR)
+    if raw is None:
+        return DEFAULT_READ_TIMEOUT_S
+    try:
+        return float(raw)
+    except (TypeError, ValueError):
+        raise ValueError(
+            f"{MODEL_TIMEOUT_ENV_VAR} must be a number of seconds, got {raw!r}"
+        ) from None
 
 
 def split_model_id(model_id: str) -> tuple[str, str]:
@@ -719,7 +744,7 @@ class HttpModel(Model):
         env: Optional[dict[str, str]] = None,
         sleep: Any = None,
         rng: Optional[random.Random] = None,
-        timeout: float = 60.0,
+        timeout: Optional[float] = None,
     ):
         self.name = model_id
         self.provider, derived = split_model_id(model_id)
@@ -728,7 +753,16 @@ class HttpModel(Model):
         self.base_url = substitute_env(base_url or self.default_base_url, self.env).rstrip("/")
         self.api_key = api_key or self.env.get(self.key_env_var)
         self.retry = retry or RetryPolicy()
-        self.timeout = timeout
+        # The read budget, resolved once here: explicit argument, then the environment,
+        # then 300 s. Reads and writes share it; only establishing contact stays short, so
+        # the post below carries a split timeout object rather than one number.
+        self.timeout = model_read_timeout_s(self.env, timeout)
+        self.request_timeout = httpx.Timeout(
+            connect=CONNECT_TIMEOUT_S,
+            read=self.timeout,
+            write=self.timeout,
+            pool=CONNECT_TIMEOUT_S,
+        )
         self.sleep = sleep or time.sleep
         self.rng = rng or random.Random()
         self._client = client
@@ -781,6 +815,7 @@ class HttpModel(Model):
             attempts=posted.attempts,
             status=posted.status,
             request_id=request_id_of(posted.headers),
+            read_timeout_s=self.timeout,
         )
 
     def post(self, body: dict) -> dict:
@@ -796,10 +831,17 @@ class HttpModel(Model):
         for attempt in range(1, self.retry.attempts + 1):
             last_attempt = attempt == self.retry.attempts
             try:
-                response = self.client().post(url, headers=headers, json=body, timeout=self.timeout)
+                response = self.client().post(url, headers=headers, json=body, timeout=self.request_timeout)
             except httpx.HTTPError as exc:
                 if last_attempt:
-                    raise RetryExhausted(f"{self.name}: {self.retry.attempts} attempts failed: {exc}",
+                    # A timeout names the budget that was in force, so the log line that lands
+                    # says whether the answer was slow or the host was down.
+                    suffix = (
+                        f" (read timeout {self.timeout:g}s)"
+                        if isinstance(exc, httpx.TimeoutException)
+                        else ""
+                    )
+                    raise RetryExhausted(f"{self.name}: {self.retry.attempts} attempts failed: {exc}{suffix}",
                                          attempts=attempt) from exc
                 self.sleep(backoff_delay(attempt, self.retry, self.rng))
                 continue
