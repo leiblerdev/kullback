@@ -200,6 +200,117 @@ def test_allowed_readme_change_passes_frozen_trees(tmp_path):
     assert code == 0
 
 
+def test_branch_behind_moved_base_still_passes(tmp_path):
+    repo = make_repo(tmp_path)
+    write_file(repo, "docs/decision-log.md", "## Log\n\n- First entry kept.\n")
+    write_file(repo, "kullback/toolbox.py", "def double(n):\n    if n:\n        return 2 * n\n    return 0\n")
+    commit_paths(repo, "add base files", ["docs/decision-log.md", "kullback/toolbox.py"])
+    branch = subprocess.run(
+        ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    subprocess.run(["git", "branch", "mainline"], cwd=repo, check=True)
+    write_file(
+        repo,
+        "kullback/toolbox.py",
+        "def double(n):\n    if n:\n        return 2 * n\n    return 0\n\n\ndef triple(n):\n    if n:\n        return 3 * n\n    return 0\n",
+    )
+    commit_paths(repo, "add a small function", ["kullback/toolbox.py"])
+    subprocess.run(["git", "checkout", "-q", "mainline"], cwd=repo, check=True)
+    write_file(repo, "docs/decision-log.md", "## Log\n\n- First entry kept.\n- Main appended this line.\n")
+    commit_paths(repo, "main moves on", ["docs/decision-log.md"])
+    subprocess.run(["git", "checkout", "-q", branch], cwd=repo, check=True)
+    raw = subprocess.run(
+        ["git", "diff", "mainline", "HEAD", "--", "docs/decision-log.md"],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert "-- Main appended this line." in raw.stdout
+    code, lines = run_checks(repo, "mainline")
+    assert code == 0
+    assert not any(line.startswith("FAIL ") for line in lines)
+
+
+def test_unresolvable_base_fails_setup(tmp_path):
+    repo = make_repo(tmp_path)
+    write_file(repo, "notes.txt", "plain line\n")
+    commit_paths(repo, "add notes", ["notes.txt"])
+    out = subprocess.run(
+        [sys.executable, str(SCRIPT), "origin/nonexistent", "HEAD"],
+        cwd=repo,
+        capture_output=True,
+        text=True,
+    )
+    assert out.returncode == 1
+    assert "FAIL setup: origin/nonexistent does not resolve" in out.stdout.splitlines()
+
+
+def test_renamed_into_forbidden_path_fails_no_forbidden_paths(tmp_path):
+    repo = make_repo(tmp_path)
+    write_file(repo, "keep.txt", "plain line\n")
+    base = commit_paths(repo, "add keep", ["keep.txt"])
+    (Path(repo) / "data" / "raw").mkdir(parents=True, exist_ok=True)
+    subprocess.run(["git", "mv", "keep.txt", "data/raw/leaked.txt"], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "move into raw"], cwd=repo, check=True)
+    code, lines = run_checks(repo, base)
+    assert code == 1
+    assert "FAIL no-forbidden-paths: data/raw/leaked.txt is on a forbidden path" in lines
+
+
+def test_allowed_adr_change_passes_frozen_trees(tmp_path):
+    repo = make_repo(tmp_path)
+    write_file(repo, "docs/adr/0001-choice.md", "Choice\n")
+    base = commit_paths(repo, "add adr", ["docs/adr/0001-choice.md"])
+    write_file(repo, "docs/adr/0001-choice.md", "Choice again\n")
+    commit_paths(repo, "update adr", ["docs/adr/0001-choice.md"], body="Allow: adr")
+    code, lines = run_checks(repo, base)
+    assert "ok frozen-trees" in lines
+    assert code == 0
+
+
+def test_configured_import_contract_passes(tmp_path):
+    repo = make_repo(tmp_path)
+    write_file(repo, "pack/__init__.py", "")
+    write_file(repo, "pack/one/__init__.py", "")
+    write_file(repo, "pack/two/__init__.py", "")
+    write_file(repo, "pack/one/a.py", "VALUE = 1\n")
+    write_file(repo, "pack/two/b.py", "VALUE = 2\n")
+    write_file(
+        repo,
+        "pyproject.toml",
+        '[tool.importlinter]\nroot_package = "pack"\n\n'
+        "[[tool.importlinter.contracts]]\nname = \"layers hold\"\ntype = \"layers\"\n"
+        'containers = ["pack"]\nlayers = ["one", "two"]\n',
+    )
+    base = commit_paths(
+        repo,
+        "add layered pack",
+        ["pack/__init__.py", "pack/one/__init__.py", "pack/two/__init__.py",
+         "pack/one/a.py", "pack/two/b.py", "pyproject.toml"],
+    )
+    write_file(repo, "pack/one/a.py", "VALUE = 1\nEXTRA = 2\n")
+    commit_paths(repo, "extend pack", ["pack/one/a.py"])
+    code, lines = run_checks(repo, base)
+    assert code == 0
+    assert "ok import-contract" in lines
+
+
+def test_changed_gates_file_fails_frozen_trees(tmp_path):
+    repo = make_repo(tmp_path)
+    write_file(repo, "kullback/gates/policy.py", "VALUE = 1\n")
+    base = commit_paths(repo, "add policy", ["kullback/gates/policy.py"])
+    write_file(repo, "kullback/gates/policy.py", "VALUE = 2\n")
+    commit_paths(repo, "tweak policy", ["kullback/gates/policy.py"])
+    code, lines = run_checks(repo, base)
+    assert code == 1
+    assert f"FAIL frozen-trees: kullback/gates differs between {base} and HEAD" in lines
+
+
 def test_clean_change_passes_every_check(tmp_path):
     repo = make_repo(tmp_path)
     write_file(repo, "README.md", "Hello\n")
