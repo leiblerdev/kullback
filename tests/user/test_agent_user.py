@@ -499,3 +499,34 @@ def test_a_run_written_before_the_end_kinds_existed_is_counted_as_unclassified(t
     counts = fidelity_mod.refused_write_ends(tmp_path, ["move_delivery"])
     assert counts[fidelity_mod.REFUSED_WRITE_ENDS] == 0
     assert counts["runs_with_no_end_kind"] == 1
+
+
+def test_the_end_kinds_are_counted_under_the_user_whose_turn_ended_the_run(tmp_path):
+    """D231: a round could only say how many Runs ended each way over both users at once, so the
+    one number D214 exists to move, how often a user runs out of scenario, could not be read per
+    driver at all. The turn that ends a Run names its own driver, and that is what the split reads."""
+    agent_ended = [{"type": "user_turn", "payload": {"driver": "agent", "text": "Any news?"}},
+                   {"type": "user_turn", "payload": {"driver": "agent",
+                                                     "user_end": rules_mod.GOAL_SATISFIED}}]
+    rules_ended = [{"type": "user_turn", "payload": {"driver": "agent", "text": "Any news?"}},
+                   {"type": "user_turn", "payload": {"driver": "rules",
+                                                     "user_end": rules_mod.SCENARIO_EXHAUSTED}}]
+    _run_file(tmp_path / "runs" / "task_1" / "reroll-task_1-0.jsonl", agent_ended)
+    _run_file(tmp_path / "runs" / "task_1" / "reroll-task_1-1.jsonl", rules_ended)
+    split = fidelity_mod.ends_by_driver(tmp_path)
+    assert split["agent"][rules_mod.GOAL_SATISFIED] == 1
+    assert split["rules"][rules_mod.SCENARIO_EXHAUSTED] == 1
+    assert split["agent"][rules_mod.SCENARIO_EXHAUSTED] == 0, "every kind is named for a driver that spoke"
+
+
+def test_a_run_the_rule_driven_user_ended_alone_needs_no_driver_written_on_its_turn(tmp_path):
+    """The rule-driven user writes no driver on its own turns, so an unnamed one is its own; a Run
+    that ended in no kind at all is in neither driver's count rather than guessed at."""
+    tagged = [{"type": "user_turn", "payload": {"tags": [rules_mod.HANDED_OFF]}}]
+    unclassified = [{"type": "user_turn", "payload": {"text": "Thanks."}}]
+    _run_file(tmp_path / "runs" / "task_1" / "reroll-task_1-0.jsonl", tagged)
+    _run_file(tmp_path / "runs" / "task_1" / "reroll-task_1-1.jsonl", unclassified)
+    split = fidelity_mod.ends_by_driver(tmp_path)
+    assert list(split) == ["rules"] and split["rules"][rules_mod.HANDED_OFF] == 1
+    assert sum(split["rules"].values()) == 1
+    assert fidelity_mod.ends_by_driver(tmp_path / "nowhere") == {}

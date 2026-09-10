@@ -712,3 +712,24 @@ def test_tui_defaults_to_work_when_it_holds_a_build(tmp_path, monkeypatch):
     (work / "budget.json").write_text("{}", encoding="utf-8")
     assert _default_workdir(Path(".")) == Path("work")
     assert _default_workdir(Path("/elsewhere")) == Path("/elsewhere")
+
+
+def test_the_round_line_says_which_beat_ended_the_round_before_the_counts_it_measured():
+    """D231: a round that lost a beat used to print its defaults and say nothing about why, so a
+    round that measured 75 Tasks of 119 and then lost its Examiner read as a round that measured
+    none. The counts beside the note are what it did measure."""
+    line = cli._round_line({"fidelity": 75, "tasks": 119,
+                            "beat_error": {"beat": "examiner", "kind": "ExaminerError",
+                                           "message_class": "derive failed: LookupError"}})
+    assert line.startswith("ended by examiner error (ExaminerError), fidelity 75/119 tasks")
+    assert not cli._round_line({"fidelity": 75, "tasks": 119}).startswith("ended by")
+
+
+def test_the_round_line_reads_the_beat_error_under_the_key_the_driver_writes_it_under():
+    """One key, one spelling. The driver, the line and the report held three literals of it, two of
+    them uncheckable, so a rename would have left the readers quietly printing nothing at all."""
+    from kullback import rounds
+
+    line = cli._round_line({"fidelity": 4, "tasks": 9,
+                            rounds.BEAT_ERROR: {"beat": "builder", "kind": "LedgerUnreadable"}})
+    assert line.startswith("ended by builder error (LedgerUnreadable), fidelity 4/9 tasks")

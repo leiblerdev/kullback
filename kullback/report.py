@@ -10,7 +10,7 @@ from typing import Any, Literal, Optional
 
 from pydantic import BaseModel, Field, ValidationError
 
-from kullback import claims, difficulty, round_snapshot
+from kullback import claims, difficulty, round_snapshot, rounds
 from kullback.examiner import lifecycle
 from kullback.runner.records import (
     Constraint,
@@ -496,6 +496,17 @@ def _round_lines(data: ReportData) -> list[str]:
     return lines
 
 
+def _exit_cell(record: RoundRecord) -> str:
+    """The exit a round ended on, with the beat that raised named beside it where one did (D231).
+
+    The counts on the row are what the round measured before the raise, so without this a reader
+    takes a round that stopped half way for a round that measured that much and stopped.
+    """
+    beat = str(((record.counts or {}).get(rounds.BEAT_ERROR) or {}).get("beat") or "")
+    ended = record.exit or ""
+    return f"{ended} (ended by {beat} error)".strip() if beat else ended
+
+
 def _rounds_table(data: ReportData) -> list[str]:
     """One row per round: the counts the gates reported and the exit on the last (D126)."""
     lines = ["| round | fidelity | trusted | refused | assisted runs | probes passing | spend | exit |",
@@ -508,7 +519,7 @@ def _rounds_table(data: ReportData) -> list[str]:
         lines.append(f"| {record.round} | {counts.get('fidelity', 0)}/{counts.get('tasks', 0)} | "
                      f"{counts.get('trusted', 0)} | {counts.get('refused_count', 0)} | "
                      f"{counts.get('assisted_runs', 0)} | {counts.get('probes_passing', 0)} | "
-                     f"${spend:.4f}{cache} | {_cell(record.exit or '')} |")
+                     f"${spend:.4f}{cache} | {_cell(_exit_cell(record))} |")
     return lines
 
 

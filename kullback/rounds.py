@@ -39,6 +39,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 import json
+import re
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -127,6 +128,20 @@ BUILDER_VERBS: frozenset = frozenset(BUILD_TOOLS) | {"repair_refuse_task", "repa
 EXAMINER_VERBS: frozenset = frozenset({"repair", "reroll_then_derive"})
 BUILDER_SESSION = Path("builder") / "session.jsonl"
 EXAMINER_SESSION = Path("examiner") / "session.jsonl"
+# What a round whose beat raised carries on its counts (D231), and how much of the message's first
+# clause a class is allowed to hold. A count is grouped over, so it holds what failed and never the
+# values the message goes on to name.
+BEAT_ERROR = "beat_error"
+MESSAGE_CLASS_CHARS = 80
+# What stands in a class where a value stood, and the characters that say a word is one. An id, a
+# number, a path or a dotted name carries the round it happened in into the group, so the word is
+# dropped and the sentence around it is what two rounds are grouped by.
+VALUE_MARK = "<value>"
+VALUE_CHARS = re.compile(r"[0-9_/\\.\-]")
+# What a clause has to look like to be read as the exception the message names. Anything spaceless
+# and capitalised used to pass, which is every model name, order id and CamelCase column a message
+# happens to carry, and each of those is a value the class exists to leave out.
+EXCEPTION_NAME = re.compile(r"[A-Z][A-Za-z]*(?:Error|Exception|Exhausted|Timeout|Interrupt)")
 
 # The artifacts a model writes and a repair verb rewrites, by the name a round's counts call them.
 # Each is a stage output of `builder.build`: `compile_tools` writes bodies.json, `starting_state`
@@ -205,6 +220,60 @@ def _since_last_move(records: list[RoundRecord]) -> list[RoundRecord]:
     """
     moved = [i for i, record in enumerate(records) if (record.counts or {}).get("moved")]
     return records[moved[-1]:] if moved else records
+
+
+def beat_error_row(agent: str, exc: BaseException) -> dict:
+    """What a beat that raised leaves on the round's counts: which beat it was, the exception's own
+    kind, and the class of message it carried (D231).
+
+    A round used to say this in one sentence of prose on `exit_note` and in nothing a table or a
+    line could read, so a round the Builder's provider timed out on and a round an Examiner tool
+    refused one Task on printed the same defaults and read alike. Three fields is what lets a
+    reader group rounds by how they ended without reading the sentence.
+    """
+    return {"beat": str(agent), "kind": type(exc).__name__, "message_class": message_class(str(exc))}
+
+
+def _class_head(clause: str) -> str:
+    """A message's first clause with the values in it replaced by one mark each (D231).
+
+    A well-formed message keeps its values in the third clause, but plenty of raises interpolate one
+    straight into the sentence (`no Task is named ...`, `no Traces under <a workdir path>`), and
+    those messages carry no colon at all, so the whole sentence used to be the class and every round
+    that failed that way was its own group. That is the opposite of what a grouped count is for. A
+    word that holds a digit, an underscore, a slash, a dot or a hyphen is a value and is dropped;
+    the words around it are what says how the beat failed, and a run of dropped words leaves one
+    mark, so the sentence still reads.
+    """
+    kept: list[str] = []
+    for word in clause.split():
+        if VALUE_CHARS.search(word):
+            if kept[-1:] != [VALUE_MARK]:
+                kept.append(VALUE_MARK)
+        else:
+            kept.append(word)
+    return " ".join(kept)
+
+
+def message_class(message: str) -> str:
+    """The class of a beat error's message: what failed, and the exception named inside it where the
+    message carries one.
+
+    The values a message names never join it, wherever in the message they stand. A message is
+    usually written `<what failed>: <the exception raised>: <the ids, models and columns it happened
+    to>`, so the class is the first clause and the one exception name after it, and two rounds that
+    failed the same way group together whatever their third clause named. Where the first clause
+    interpolates a value of its own it is dropped there too (`_class_head`). A message with no
+    exception name in it is its own class, capped, since there is nothing else to read it by.
+
+    A clause joins the class only where it is shaped like an exception name (`EXCEPTION_NAME`): a
+    spaceless capitalised word is as often a model, an id or a column as it is a raise, and the
+    class is worth less carrying one of those than it is carrying the head alone.
+    """
+    parts = [part.strip() for part in str(message).split(":")]
+    head = _class_head(parts[0])[:MESSAGE_CLASS_CHARS]
+    named = next((part for part in parts[1:] if EXCEPTION_NAME.fullmatch(part)), "")
+    return f"{head}: {named}" if named else head
 
 
 def finding_message(finding: Finding) -> str:
@@ -353,6 +422,36 @@ def load_rounds(workdir: Any) -> list[RoundRecord]:
     return [RoundRecord.model_validate(row) for row in (body if isinstance(body, list) else [])]
 
 
+def last_round(workdir: Any) -> int:
+    """The highest round this workdir has already closed, and 0 when it has closed none (D231).
+
+    What the next round is numbered. A process used to start counting at 1 whatever the workdir
+    held, so an `--iterate` run wrote its first round over the last run's round 1: the Task table
+    under rounds/1 is written once and never rewritten (`round_snapshot.write_snapshot`), so the new
+    round was handed the old round's table and the history row derived from it, and every count
+    keyed by round number, the repair requests and the retirements among them, read the round before
+    the build as this one's.
+
+    Both files a closed round leaves are read, because either can outlive the other: rounds.json is
+    rewritten by each process with that process's own rounds, and the tables under rounds/ stay
+    whatever wrote them. A number either one has used is a number this run may not reuse.
+
+    Both reads are guarded, and each on its own, because either can fail while the other answers: a
+    half-written or hand-edited rounds.json and a rounds/ directory the process may not list each
+    say nothing about which rounds closed, and the run then opens past the number the other one
+    reached rather than dying before round 1 or reopening at 1 over a table it cannot see.
+    """
+    try:
+        recorded = max((int(record.round) for record in load_rounds(workdir)), default=0)
+    except (OSError, ValueError, TypeError):
+        recorded = 0  # a half-written or hand-edited file says nothing about which rounds closed
+    try:
+        closed = round_snapshot.closed_rounds(workdir)
+    except (OSError, ValueError, TypeError):
+        closed = []  # a directory that cannot be listed is not worth the run either
+    return max([recorded, *closed])
+
+
 def _session(workdir: Path, name: Path) -> SessionStore:
     """A fresh session file for this run: one run of the loop is one session per agent."""
     path = Path(workdir) / name
@@ -424,6 +523,14 @@ class Loop:
     # round's counts and not in an exception; a round with one on it may not exit `done`.
     tool_errors: list[dict] = field(default_factory=list)
     beat_spend: dict[str, float] = field(default_factory=dict)
+    beat_error: dict = field(default_factory=dict)  # what ended the round's beat, where one raised (D231)
+    # D231: what a screen raised on the way out of a failed beat. The raise is swallowed there, since
+    # it would otherwise replace the beat's own error and cost the round its record, but a swallowed
+    # error belongs on the round's counts and not nowhere: it rides in the beat_error row, which
+    # already names the beat it broke on.
+    end_emit_error: str = ""
+    # D231: the round's end kinds per driver, read off the stored Runs once and kept for the round.
+    _user_ends: Optional[dict] = None
     spent_allowance: dict[str, bool] = field(default_factory=dict)
     compactions_seen: dict[str, int] = field(default_factory=dict)
     cuts_seen: dict[str, int] = field(default_factory=dict)
@@ -573,13 +680,79 @@ class Loop:
             if stop:
                 self.builder_stop = dict(stop)
 
-    def _beat_done(self, agent: str, n: int, before: float) -> None:
-        spent = self.spend() - before
-        self.beat_spend[agent] = spent
+    def _credit_allowance(self, agent: str, spent: float) -> None:
+        """Mark the agent over its allowance where the beat's spend reached it."""
         allowance = self.allowance.get(agent)
         if allowance is not None and spent >= allowance:
             self.spent_allowance[agent] = True
-        self.emit(BeatEnd(agent=agent, round=n, spend=spent))
+
+    def _beat_done(self, agent: str, n: int, before: float, *, failing: bool = False) -> None:
+        """What this beat spent, on the round and on the stream, whichever way the beat ended.
+
+        Called on the way out of the beat, the raised path included (D231). A beat that raised used
+        to skip this, since the raise jumped over the last line of the beat, so the round's line
+        reported a spend of 0.0000 against a real 0.1746 and the beat that cost the round its work
+        read as the beat that cost nothing. The ledger is the workdir's own file and has already
+        been charged either way, so the number is a subtraction that the raise cannot change.
+
+        `failing` says the beat is already carrying its own error out. Bookkeeping never replaces
+        that error: a subscriber that raises on the BeatEnd would otherwise become the exception the
+        driver sees, and the driver closes the round on a broken agent contract and not on that, so
+        the round would go unclosed and unrecorded, which is the whole thing this decision repairs.
+        On a beat that ended well the raise is left to travel as it always did.
+
+        A cancellation counts as bookkeeping noise the same way an ordinary error does: the subscriber
+        is awaited, so a cancelled screen raises past `Exception` and would take the beat's error with
+        it. A stop asked for from outside the process is not noise and still travels: a round record
+        is not worth swallowing an interrupt for, and the round's own error is on the way out anyway.
+
+        Swallowed is not unrecorded: what the screen raised is kept and rides in the round's
+        `beat_error` row. A subscriber that breaks on every failed beat's BeatEnd would otherwise be
+        invisible to the operator forever, and D230 already settled that an error the harness reads
+        and goes on from belongs on the round's counts.
+        """
+        try:
+            spent = self.spend() - before
+            self.beat_spend[agent] = spent
+            self._credit_allowance(agent, spent)
+            self.emit(BeatEnd(agent=agent, round=n, spend=spent))
+        except (Exception, asyncio.CancelledError) as exc:
+            if not failing:
+                raise
+            self.end_emit_error = f"{type(exc).__name__}: {exc}".rstrip(": ")[:TOOL_ERROR_CHARS]
+
+    def run_beat(self, agent: str, n: int) -> None:
+        """One beat, with whatever ended it recorded on the round before it is re-raised (D231).
+
+        The driver above catches a broken agent contract and closes the round on it (`run_rounds`),
+        and until this seam existed the only thing that survived the raise was the message. The row
+        goes on the round's counts, which is where every other thing only the driver knows already
+        rides, so the round line, the report's table and rounds.json all read one fact.
+
+        Anything else a beat raises is recorded the same way and re-raised untouched: it is not the
+        driver's to handle, and a round that dies on it still says which beat it died in.
+        """
+        beat = self.builder_beat if agent == "builder" else self.examiner_beat
+        try:
+            beat(n)
+        except Exception as exc:
+            self.beat_error = beat_error_row(agent, exc)
+            raise
+
+    def counts_now(self) -> dict:
+        """The counts as they can still be read after a beat raised, and an empty dict when even
+        that cannot be read (D231).
+
+        A round that measured 75 Tasks of 119 and then lost its Examiner beat to a raised tool used
+        to be closed on an empty dict, so the round line printed its defaults and every number the
+        round had earned was thrown away by a later beat. The read is guarded because the state a
+        raised beat leaves is half-written by definition: a reader that raises over it costs the
+        round its numbers, never its record.
+        """
+        try:
+            return self.counts()
+        except Exception:
+            return {}
 
     # --- the Builder's beat ------------------------------------------------------------
 
@@ -593,55 +766,91 @@ class Loop:
 
         The code path calls the suggested verb through the same registry the model has, so
         `repair_intent` runs the narrowed intent stage and `repair_recompile` the narrowed
-        compile_tools stage (builder/tools.py, `repair_verb_tools`) with the Examiner's hint."""
+        compile_tools stage (builder/tools.py, `repair_verb_tools`) with the Examiner's hint.
+
+        What the beat spent is credited on the way out, however the beat ended (D231): a beat that
+        raises spent what it spent, and the round's line has to say so."""
         if self.examiner is not None and self.examiner.is_running:
             raise RuntimeError("the Examiner is still running; one agent at a time (D128)")
         self.emit(BeatStart(agent="builder", round=n))
         before = self.spend()
-        # Most costly first (D170): the order the findings are acted on and delivered in is the
-        # order of the Tasks they cost, so a tool blocking fifty Tasks is worked before an Intent.
-        delivered = sorted(self.pending_findings, key=lambda f: -f.cost)
+        try:
+            self._builder_work(n)
+        except BaseException:
+            self._beat_done("builder", n, before, failing=True)
+            raise
+        else:
+            self._beat_done("builder", n, before)
+
+    def _builder_work(self, n: int) -> None:
+        """The Builder's beat itself: the findings acted on and delivered, then the target built."""
+        delivered = self._costliest_findings_first()
         failed: set[str] = set()
         if self.agent_model is None:
-            for finding in delivered:
-                if finding.suggested in BUILDER_VERBS:
-                    action = builder_agent.drive_tool(self.builder, finding.suggested,
-                                                      finding_arguments(finding))
-                    if action.is_error:
-                        failed.add(finding.finding_id)
-            self.build_result = builder_agent.drive_tool(self.builder, "build", {"target": self.target})
+            self._drive_code_repairs(delivered, failed)
         else:
-            if n == 1:
-                events = self.builder.prompt(builder_message(self.target))
-            else:
-                # D170: the steer names the finding that costs the most Tasks and how many, so the
-                # Environment is repaired before the Intents rather than after them.
-                lead = leading_finding(delivered)
-                head = (f"round {n}: start with {lead.finding_id}, which costs "
-                        f"{task_count(lead.cost)}: "
-                        f"{suggested_call(lead)}. " if lead is not None else f"round {n}: ")
-                self.builder.steer(head + "the Examiner's findings follow, one per message, the costliest "
-                                   f"first; act on each, then build {self.target!r} again and read the rulings.")
-                events = self.builder.continue_()
-            # Every beat, including round 1: a resumed finding that never reaches the model would be
-            # dequeued as delivered and later closed without ever being acted on. Queued follow-ups
-            # fire when the run would otherwise stop, inside the same watched stream.
-            for finding in delivered:
-                self.builder.follow_up(finding_message(finding), {"finding": as_dict(finding)})
-            self.build_result = self._watched(self.builder, "builder", events, "build", BUILD_TOOLS)
-            if self.build_result is None or self._store_is_partial():
-                # The model repaired and answered without building the target (build 13, round 1),
-                # or built it and then repaired again on a follow-up finding (build 13, round 2): the
-                # store then holds only what the last repair's stage ran, and the Examiner's derive
-                # read an artifact that was not there (KeyError on the Constraints, both times). The
-                # driver builds the target, as the code path does; every stage the repairs left
-                # current comes from the cache (D153, D161).
-                self.build_result = builder_agent.drive_tool(self.builder, "build", {"target": self.target})
-                self.driver_built.append(n)
-        result = self.build_result
+            events = self._open_model_build(n, delivered)
+            self._watch_model_build(n, delivered, events)
+        self._raise_unbuilt(self.build_result)
+        self._dequeue_delivered(delivered, failed)
+
+    def _costliest_findings_first(self) -> list:
+        """The findings in the order they are acted on and delivered: the costliest first."""
+        # Most costly first (D170): the order the findings are acted on and delivered in is the
+        # order of the Tasks they cost, so a tool blocking fifty Tasks is worked before an Intent.
+        return sorted(self.pending_findings, key=lambda f: -f.cost)
+
+    def _drive_code_repairs(self, delivered: list, failed: set[str]) -> None:
+        """Act on each finding through the registry, then build the target, all by code."""
+        for finding in delivered:
+            if finding.suggested in BUILDER_VERBS:
+                action = builder_agent.drive_tool(self.builder, finding.suggested,
+                                                  finding_arguments(finding))
+                if action.is_error:
+                    failed.add(finding.finding_id)
+        self.build_result = builder_agent.drive_tool(self.builder, "build", {"target": self.target})
+
+    def _open_model_build(self, n: int, delivered: list):
+        """Open the model's build: a prompt on round 1, a steer onto the findings after."""
+        if n == 1:
+            return self.builder.prompt(builder_message(self.target))
+        # D170: the steer names the finding that costs the most Tasks and how many, so the
+        # Environment is repaired before the Intents rather than after them.
+        lead = leading_finding(delivered)
+        head = (f"round {n}: start with {lead.finding_id}, which costs "
+                f"{task_count(lead.cost)}: "
+                f"{suggested_call(lead)}. " if lead is not None else f"round {n}: ")
+        self.builder.steer(head + "the Examiner's findings follow, one per message, the costliest "
+                           f"first; act on each, then build {self.target!r} again and read the rulings.")
+        return self.builder.continue_()
+
+    def _watch_model_build(self, n: int, delivered: list, events) -> None:
+        """Deliver the findings as follow-ups and watch the build, rebuilding the target where
+        the model left the store partial."""
+        # Every beat, including round 1: a resumed finding that never reaches the model would be
+        # dequeued as delivered and later closed without ever being acted on. Queued follow-ups
+        # fire when the run would otherwise stop, inside the same watched stream.
+        for finding in delivered:
+            self.builder.follow_up(finding_message(finding), {"finding": as_dict(finding)})
+        self.build_result = self._watched(self.builder, "builder", events, "build", BUILD_TOOLS)
+        if self.build_result is None or self._store_is_partial():
+            # The model repaired and answered without building the target (build 13, round 1),
+            # or built it and then repaired again on a follow-up finding (build 13, round 2): the
+            # store then holds only what the last repair's stage ran, and the Examiner's derive
+            # read an artifact that was not there (KeyError on the Constraints, both times). The
+            # driver builds the target, as the code path does; every stage the repairs left
+            # current comes from the cache (D153, D161).
+            self.build_result = builder_agent.drive_tool(self.builder, "build", {"target": self.target})
+            self.driver_built.append(n)
+
+    def _raise_unbuilt(self, result) -> None:
+        """Raise unless the beat built the target, by code or through the model."""
         if self.plan.last is None or (result is not None and result.is_error):
             raise BuildError(result.content if result is not None
                              else f"the model never called build({self.target!r})")
+
+    def _dequeue_delivered(self, delivered: list, failed: set[str]) -> None:
+        """Close what the Builder may close and dequeue what the beat delivered."""
         handled = [finding for finding in delivered if finding.finding_id not in failed]
         # D205, closing D192's gap: a finding suggesting a verb only the Examiner can call is not the
         # Builder's to close. The Builder was shown it and could not act on it, and closing it there
@@ -658,7 +867,6 @@ class Loop:
         delivered_ids = {finding.finding_id for finding in handled}
         self.pending_findings = [finding for finding in self.pending_findings
                                  if finding.finding_id not in delivered_ids]
-        self._beat_done("builder", n, before)
 
     def _store_is_partial(self) -> bool:
         """Whether the last `execute` was anything but the round's target in full: a narrowed stage
@@ -722,6 +930,9 @@ class Loop:
         nothing to derive from, so the beat does not happen and the round ends on the build. The
         beat used to open on such a store and fail on the first input it reached, which read as a
         broken Examiner rather than as a build that was asked for less than a Verifier needs.
+
+        What the beat spent is credited on the way out, however the beat ended (D231): a derive that
+        raises has already been paid for.
         """
         if self.builder.is_running:
             raise RuntimeError("the Builder is still running; one agent at a time (D128)")
@@ -730,6 +941,17 @@ class Loop:
             return
         self.emit(BeatStart(agent="examiner", round=n))
         before = self.spend()
+        try:
+            self._examiner_work(n)
+        except BaseException:
+            self._beat_done("examiner", n, before, failing=True)
+            raise
+        else:
+            self._beat_done("examiner", n, before)
+
+    def _examiner_work(self, n: int) -> None:
+        """The Examiner's beat itself: the plan opened or refreshed on the artifacts as they stand,
+        then the derivation."""
         if self.eplan is None:
             self._open_examiner(n)
         self.eplan.round = n
@@ -779,7 +1001,6 @@ class Loop:
                 self.tool_errors.append({"agent": "examiner", "tool": "derive", "round": n,
                                          "derived": bool(derived),
                                          "error": self.examiner_result.content[:TOOL_ERROR_CHARS]})
-        self._beat_done("examiner", n, before)
 
     # --- the round ------------------------------------------------------------
 
@@ -809,8 +1030,8 @@ class Loop:
         make for it, and the findings it filed.
 
         These ride on the round's counts rather than on a record of their own, so a round that
-        failed carries them too (`close_round` is given empty counts there) and rounds.json is the
-        one file a report reads a round's clock and turns from.
+        failed carries them too (whatever the gate counts beside them came to) and rounds.json is
+        the one file a report reads a round's clock and turns from.
 
         `built` is whether this round left a target built: a pipeline ran and no stage of it failed.
         A round whose build failed has no Task with a Reference, so the gate counts alone read as
@@ -871,6 +1092,8 @@ class Loop:
             # round whose References moved, which is worth reading beside what it trusted.
             **lifecycle.counts(self.retirements_now()),
             "artifacts": fingerprint, "artifact_hashes": per, "artifacts_changed": changed,
+            **self._beat_error_counts(),
+            **self._user_end_counts(),
             **self._pin_counts(),
             **self._reader_counts(),
             **self._lesson_counts(),
@@ -879,6 +1102,44 @@ class Loop:
             **self._sampling_counts(),
             **self._evidence_counts(),
         }
+
+    def _beat_error_counts(self) -> dict:
+        """Which beat raised, what it raised and the class of message it carried (D231), with what a
+        screen raised on the way out of that beat beside them.
+
+        Absent from a round that closed on its own, so the row's presence is the whole of the
+        reading and a reader never has to tell an ordinary round from a broken one by a field of
+        zeros. `end_emit_error` is the one error the harness swallows on this path, kept here
+        because a broken subscriber the operator cannot see is a broken subscriber forever.
+        """
+        row = dict(self.beat_error)
+        if self.end_emit_error:
+            row["end_emit_error"] = self.end_emit_error
+        return {BEAT_ERROR: row} if row else {}
+
+    def _user_end_counts(self) -> dict:
+        """How the round's Runs ended, in the kinds of D210, under the user that ended each (D231).
+
+        The split was on the build result and on a re-roll's gate metrics and nowhere a round could
+        read, so the one number D214 exists to move, how often a Simulated user runs out of scenario,
+        had to be recovered by aggregating the status rows by hand. It is one number per driver here,
+        beside the Tasks each driver was given, and a workdir whose Runs carry no end kind at all
+        carries no split rather than a row of zeros.
+
+        Read once per round and kept: the stored Runs do not move while a round closes, and a
+        round's counts are assembled more than once.
+
+        The read is guarded the way `counts_now` is, and on `Exception` for the same reason: a
+        reader that raises costs the round its split and never its record. This one runs inside
+        `driver_counts`, which `close_round` calls unguarded on the failure path, so a narrower
+        guard here would take the record of exactly the round D231 exists to keep.
+        """
+        if self._user_ends is None:
+            try:
+                self._user_ends = user_fidelity_mod.ends_by_driver(self.plan.workdir)
+            except Exception:
+                self._user_ends = {}
+        return {user_fidelity_mod.ENDS_BY_DRIVER: self._user_ends} if self._user_ends else {}
 
     def _evidence_counts(self) -> dict:
         """D220: the held-out split as this round applied it, and what it cost or found.
@@ -909,11 +1170,21 @@ class Loop:
 
         `semantic_compared` is how many semantic columns were compared at all, `semantic_judged` how
         many of those a judge was actually asked about, and the three answers are counted apart:
-        equal, different, and the pairs nobody settled. `judge_spend` is the ledger's own number for
-        the judge that settles them, so the cost of judging is read off the same file the build's
-        other spend is. All zero on an Environment whose schema classes no column semantic; many
-        unresolved with nothing judged is a judge that is not wired, which is what D219 was written
-        for and is the reading nothing on the record could give before.
+        equal, different, and the pairs nobody settled. `judge_spend` is what the ledger charged the
+        judge that settles them over this round, the same subtraction the round's other spend is.
+        All zero on an Environment whose schema classes no column semantic; many unresolved with
+        nothing judged is a judge that is not wired, which is what D219 was written for and is the
+        reading nothing on the record could give before.
+
+        `semantic_judged` and the replay ruling's `differs_by_judge` count different things and a
+        round can hold 0 and 7 without either being wrong (D231). This one counts the pairs a model
+        was actually asked about; the other counts the checks whose difference was reached on the
+        semantic route, past the token set, the presence and the plain column, which the equivalence
+        table settles for nothing wherever an earlier round's judge already answered that pair. So a
+        round that asks no judge and reads seven differences off the table is the two counters
+        agreeing. `judge_spend` used to be read as the workdir's running total for the stage, which
+        put a charge from an earlier build beside this round's `semantic_judged` of 0 and read as
+        the third disagreement; it is this round's own charge now.
 
         The judge counts beside them are D222's: how many reads the harness ran before asking,
         how many calls the models made on top of those, how many questions the harness could
@@ -924,7 +1195,8 @@ class Loop:
         out = {name: int(counts.get(name) or 0)
                for name in tool_runs.SEMANTIC_COUNTS + judge_mod.JUDGE_COUNTS}
         stages = (budget.load_totals(self.plan.workdir).get("stages") or {})
-        out["judge_spend"] = round(float((stages.get(SEMANTIC_JUDGE_STAGE) or {}).get("usd") or 0.0), 4)
+        charged = float((stages.get(SEMANTIC_JUDGE_STAGE) or {}).get("usd") or 0.0)
+        out["judge_spend"] = round(max(0.0, charged - self.round_stage_start.get(SEMANTIC_JUDGE_STAGE, 0.0)), 4)
         return out
 
     def _sampling_counts(self) -> dict:
@@ -1047,15 +1319,38 @@ class Loop:
         """The finding rows as the Examiner's store holds them, or none when no beat has opened."""
         return list(self.eplan.store.get("findings") or []) if self.eplan is not None else []
 
+    def _counts_store(self) -> dict:
+        """The store the round is read off: the Examiner's where it opened, else the Builder's
+        own handover (D231)."""
+        return self.eplan.store if self.eplan is not None else _handover(self.plan.store)
+
+    def _counts_with_tasks(self, counts: dict, store: dict) -> dict:
+        """The denominator is the Tasks the round ruled on (D231)."""
+        # The derivation writes a status row per Task and that is the count on a round whose
+        # Examiner beat finished; a round whose beat raised before it, or whose target never
+        # released the derivation's inputs, has ruled on the Tasks it replayed and on no others,
+        # and leaving the count at zero prints a real reading of 75 confirmed as `75/0` or, with
+        # the fidelity thrown away too, as `0/0`.
+        if not counts.get("tasks"):
+            counts["tasks"] = len(store.get("replays") or {})
+        return counts
+
     def counts(self) -> dict:
         """D126's counts off the gates, plus what only the driver knows (`driver_counts`), plus the
-        claim and partial-completion counters (D223) and the difficulty buckets (D209)."""
-        store = self.eplan.store if self.eplan is not None else {}
+        claim and partial-completion counters (D223) and the difficulty buckets (D209).
+
+        A round with no Examiner plan is read off the Builder's own handover rather than off nothing
+        (D231): a beat that raised before the Examiner opened, or a target that never released the
+        derivation's inputs, still replayed every Trace the build compiled, and counting that as an
+        empty workdir throws the round's one real reading away.
+        """
+        store = self._counts_store()
         counts = round_end.round_counts(
             store.get("task_status") or {}, store.get("verifiers") or [], store.get("probes") or {},
             store.get("history") or {}, store.get("refusals") or {}, store.get("task_runs") or {},
             store.get("replays") or {}, store.get("rerolls") or {}, store.get("canon_rules"),
             store.get("sigs") or [], record=self._land, intents=store.get("intents") or {})
+        counts = self._counts_with_tasks(counts, store)
         counts.update(self.driver_counts())
         counts.update(self.user_fidelity_counts())
         # The claim rows are written before the buckets are: the difficulty record carries D223's
@@ -1384,6 +1679,8 @@ class Loop:
         self.emit(RoundStart(round=n))
         self.sent, self.beat_spend, self.spent_allowance = [], {}, {}
         self.tool_errors = []
+        # D231: this round's, not the round before's
+        self.beat_error, self.end_emit_error, self._user_ends = {}, "", None
         # D218, Greptile P1 (PR 29): a round's snapshot says what this round measured, so the
         # rulings and the difficulty record start empty. A round that ends on an error before its
         # counts were read would otherwise write the round before it into its own table.
@@ -1394,8 +1691,8 @@ class Loop:
         self.retries_seen = self.retry_asks
         self.zooms_seen = self.plan.zooms_skipped
         self.allowance = {agent: self.allowance_for(agent) for agent in AGENTS}
-        self.builder_beat(n)
-        self.examiner_beat(n)
+        self.run_beat("builder", n)
+        self.run_beat("examiner", n)
         counts = self.counts()
         if not self.round_moved(n, counts) and not self.ceiling_reached():
             self.tell_the_builder_nothing_changed(n)
@@ -1419,8 +1716,9 @@ class Loop:
         `exit_for` is given, so `stall_rounds` counts only the rounds that moved nothing
         (`_since_last_move`)."""
         self.exhausted.append(any(self.spent_allowance.values()))
-        # The driver's own numbers last and freshest: a round that failed comes here with no counts
-        # at all, and its clock, spend and turns are as true as a round that finished.
+        # The driver's own numbers last and freshest: a round that failed comes here with whatever
+        # its beats left readable (D231), and its clock, spend, turns and the beat that raised are
+        # as true as a round that finished.
         record = RoundRecord(round=n, counts={**counts, **self.driver_counts()})
         self.draws_seen = sampling.draws_by_kind()  # the next round's draws start counting from here
         record.counts["moved"] = self.round_moved(n, record.counts)
@@ -1590,7 +1888,10 @@ def run_rounds(workdir: Any, model: Any = None, *, agent_model: Optional[Model] 
                 agent_model=agent_model, allowance_usd=allowance_usd, stall_rounds=stall_rounds,
                 fidelity_stall=fidelity_stall, max_rounds=max_rounds,
                 subscribers=shared, on_event=on_event, max_turns=max_turns)
-    n = 0
+    # D231: the count continues from what this workdir has already closed, so a second invocation
+    # over the same workdir (`--iterate`) writes its own tables and its own history rows instead of
+    # the last run's. A fresh workdir has closed nothing and starts, as before, at 1.
+    n = last_round(plan.workdir)
     while True:
         n += 1
         try:
@@ -1600,7 +1901,10 @@ def run_rounds(workdir: Any, model: Any = None, *, agent_model: Optional[Model] 
             # never dies without a record. The round is stalled with the reason on it, so rounds.json
             # tells the whole story, and findings still queued ride on the record (close_round
             # persists them) instead of dying with the process.
-            record = loop.close_round(n, {})
+            # D231: it closes on what it measured. The counts the round can still produce are read
+            # here rather than replaced by an empty dict, so a beat that raised costs the round the
+            # rest of its work and never the work it had already done.
+            record = loop.close_round(n, loop.counts_now())
             # A ceiling that ended the build left the other agent nothing to work on, and D86 says
             # to stop and report as is; that is the ceiling exit, not a broken agent.
             ceiling = loop.ceiling_reached()
