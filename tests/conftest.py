@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -44,6 +45,22 @@ def isolated_price_catalog(tmp_path, monkeypatch):
     monkeypatch.setattr(provider_module, "REGISTRY_SNAPSHOT_PATH", str(tmp_path / "models.dev.json"))
     monkeypatch.setattr(budget_module, "_CATALOG_LOADED", False)
     monkeypatch.setattr(budget_module, "_CATALOG", None)
+
+
+@pytest.fixture(scope="session", autouse=True)
+def plain_terminal():
+    """The suite never depends on the caller's terminal, so help and error text render plain."""
+    saved = {key: os.environ.get(key) for key in ("NO_COLOR", "TERM", "COLUMNS", "FORCE_COLOR")}
+    os.environ["NO_COLOR"] = "1"
+    os.environ["TERM"] = "dumb"
+    os.environ["COLUMNS"] = "120"
+    os.environ.pop("FORCE_COLOR", None)
+    yield
+    for key, value in saved.items():
+        if value is None:
+            os.environ.pop(key, None)
+        else:
+            os.environ[key] = value
 
 
 @pytest.fixture(scope="session")
