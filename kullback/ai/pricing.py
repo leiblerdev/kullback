@@ -58,8 +58,9 @@ def snapshot_path(path: Optional[str | Path] = None) -> Path:
 #
 # url is the provider's model listing, field is the key each listed model carries its rates under,
 # in this catalog's own cost shape and unit (input, output, cache_read, cache_write, USD per 1M
-# tokens). refresh reads that listing when live calls are on and lays the rates it finds over the
-# model rows the row already names, matched by the same lookup that resolves a call. It adds no
+# tokens). refresh reads that listing when live calls are on and a key for the provider is held,
+# and lays the rates it finds over the model rows the row already names, matched by the same
+# lookup that resolves a call. It adds no
 # models: the written row says which models the Harness offers and what they cost when the listing
 # cannot be read, so a vendor that renames a field, answers an error, or is unreachable leaves the
 # prices below standing rather than leaving a call unpriced.
@@ -275,12 +276,12 @@ def _fetch(client: Any) -> Optional[dict]:
     return catalog if isinstance(catalog, dict) else None
 
 
-def _key_for(entry: dict, env: Optional[dict[str, str]]) -> str:
-    """The provider key the row's own env field names, or "" when nothing holds one."""
+def _key_for(entry: dict, env: Optional[dict[str, str]]) -> tuple[str, str]:
+    """The variable this row says its key lives in, and what holds it. Either can be empty."""
     names = entry.get("env")
     name = names[0] if isinstance(names, list) and names and isinstance(names[0], str) else ""
     values = os.environ if env is None else env
-    return str(values.get(name) or "") if name else ""
+    return name, (str(values.get(name) or "") if name else "")
 
 
 def _cost_numbers(cost: Any) -> Optional[dict[str, float]]:
@@ -336,6 +337,10 @@ def _overlay_live_prices(catalog: Optional[dict], client: Any, env: Optional[dic
     on, and an unreachable listing, an error, a renamed field or a rate that does not read as a
     number all leave the written rates standing. No model is added, so the listing can only change
     the price of a model the row already offers.
+
+    A row whose key variable holds nothing is passed over without a request. Nobody can call a
+    provider they hold no key for, so its rates price nothing, and a machine that only ever calls
+    one vendor should not be reaching out to another's host to ask.
     """
     if not catalog or not live_calls_requested(env):
         return catalog
@@ -345,7 +350,9 @@ def _overlay_live_prices(catalog: Optional[dict], client: Any, env: Optional[dic
         field = source.get("field") if isinstance(source, dict) else None
         if not isinstance(url, str) or not url or not isinstance(field, str) or not field:
             continue
-        key = _key_for(entry, env)
+        key_var, key = _key_for(entry, env)
+        if key_var and not key:
+            continue
         headers = {"Authorization": f"Bearer {key}"} if key else None
         for wire_id, cost in _listed_prices(_get_json(client, url, headers), field).items():
             row = model_row(entry, wire_id)

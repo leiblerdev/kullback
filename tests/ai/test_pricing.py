@@ -459,11 +459,14 @@ def price_list_transport(listing, seen=None, status=200):
     return transport_of(handler)
 
 
+LIVE_ENV = {pricing.LIVE_ENV_VAR: "1", "E_HOST_API_KEY": "e-host-test-key"}
+
+
 def refresh_with(listing, path, seen=None, status=200, env=None):
     write_snapshot(path, CATALOG)
     write_local(path, LIVE_PRICED)
     return pricing.refresh(client=price_list_transport(listing, seen, status), path=path,
-                           env=env if env is not None else {pricing.LIVE_ENV_VAR: "1"})
+                           env=dict(LIVE_ENV) if env is None else env)
 
 
 def test_a_row_that_names_a_price_list_is_billed_at_the_rates_that_list_serves_now(tmp_path):
@@ -510,15 +513,25 @@ def test_the_price_list_is_asked_for_with_the_key_the_row_names_and_only_when_li
     it happens under the one switch every other call is under."""
     listing = {"data": [{"id": "brisk-4", "rates": {"input": 0.5, "output": 1.25}}]}
     seen = []
-    refresh_with(listing, tmp_path / "models.dev.json", seen=seen,
-                 env={pricing.LIVE_ENV_VAR: "1", "E_HOST_API_KEY": "e-host-test-key"})
+    refresh_with(listing, tmp_path / "models.dev.json", seen=seen)
     asked = [request for request in seen if str(request.url) == PRICE_LIST_URL]
     assert len(asked) == 1
-    assert asked[0].headers["authorization"] == "Bearer e-host-test-key"
+    assert asked[0].headers["authorization"] == f"Bearer {LIVE_ENV['E_HOST_API_KEY']}"
 
     off = []
     catalog = refresh_with(listing, tmp_path / "off.json", seen=off, env={})
     assert [request for request in off if str(request.url) == PRICE_LIST_URL] == []
+    assert pricing.price_from_catalog(catalog, "e-host/brisk-4") == WRITTEN_RATES
+
+
+def test_no_key_for_a_provider_means_its_price_list_is_never_asked_for(tmp_path):
+    """Nobody can call a provider they hold no key for, so its rates price nothing, and a machine
+    that only ever calls one vendor must not be reaching out to another's host to ask."""
+    listing = {"data": [{"id": "brisk-4", "rates": {"input": 0.5, "output": 1.25}}]}
+    seen = []
+    catalog = refresh_with(listing, tmp_path / "models.dev.json", seen=seen,
+                           env={pricing.LIVE_ENV_VAR: "1"})
+    assert [request for request in seen if str(request.url) == PRICE_LIST_URL] == []
     assert pricing.price_from_catalog(catalog, "e-host/brisk-4") == WRITTEN_RATES
 
 
