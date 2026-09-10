@@ -379,6 +379,17 @@ def test_backoff_grows_and_stays_under_the_cap():
 # --- OpenAI and OpenAI-compatible adapters ---
 
 
+def ok_openai(body=None):
+    """A handler answering one chat completion, in the shape every OpenAI-shaped endpoint returns."""
+    payload = body or {"choices": [{"message": {"content": "hello"}, "finish_reason": "stop"}],
+                       "model": "a-model", "usage": {"prompt_tokens": 10, "completion_tokens": 3}}
+
+    def handler(request):
+        return httpx.Response(200, json=payload)
+
+    return handler
+
+
 def openai_model(handler, sleeps, cls=None, **kwargs):
     cls = cls or pv.OpenAIModel
     return cls(
@@ -1242,3 +1253,174 @@ def test_a_mark_the_harness_writes_beside_a_message_does_not_go_on_the_wire():
                                                 "after": "2026-04-01"}]})
     assert out == {"role": "tool", "tool_call_id": "c1", "name": "renew_loan",
                    "content": "that is not allowed"}
+
+
+# --- providers reached by name through the registry, with no adapter of their own ---
+
+
+# Rows shaped like the live snapshot's, with invented model ids: a gateway that names its models
+# 'lab/model', so the id carries a second slash, and a vendor whose whole catalog is flat.
+GATEWAY_REGISTRY = {
+    "a-gateway": {"id": "a-gateway", "name": "A Gateway", "npm": "@openrouter/ai-sdk-provider",
+                  "api": "https://gateway.invalid/api/v1", "env": ["A_GATEWAY_API_KEY"],
+                  "models": {"a-lab/small-3": {"limit": {"context": 1000000, "output": 64000},
+                                               "cost": {"input": 0.03, "output": 0.13}}}},
+    "a-vendor": {"id": "a-vendor", "name": "A Vendor", "npm": "@ai-sdk/openai-compatible",
+                 "api": "https://a-vendor.invalid", "env": ["A_VENDOR_API_KEY"],
+                 "models": {"quick-4": {"limit": {"context": 1000000, "output": 384000},
+                                        "cost": {"input": 0.3, "output": 1.2, "cache_read": 0.006}}}},
+}
+
+
+def test_a_gateway_served_by_its_own_sdk_still_resolves_because_the_wire_is_the_openai_one(
+        tmp_path, monkeypatch):
+    """Its docs put chat completions at the OpenAI path with a bearer key, so the request shape
+    table names its npm package and no branch in model_for names the provider."""
+    registry_snapshot(tmp_path, monkeypatch, GATEWAY_REGISTRY)
+    model = pv.model_for("a-gateway/a-lab/small-3", env={"A_GATEWAY_API_KEY": "sk-gate"})
+    assert isinstance(model, pv.RegistryModel)
+    assert model.base_url == "https://gateway.invalid/api/v1"
+    assert model.key_env_var == "A_GATEWAY_API_KEY" and model.api_key == "sk-gate"
+    assert model.headers()["authorization"] == "Bearer sk-gate"
+
+
+def test_a_wire_id_with_a_slash_in_it_reaches_the_provider_whole(tmp_path, monkeypatch, sleeps):
+    """Only the first slash parts the provider from the wire id, and what is left goes on the wire
+    unchanged: a gateway rejects 'small-3' and serves 'a-lab/small-3'."""
+    registry_snapshot(tmp_path, monkeypatch, GATEWAY_REGISTRY)
+    seen = {}
+
+    def handler(request):
+        seen["url"] = str(request.url)
+        seen["body"] = pv.json_body(request)
+        return httpx.Response(200, json={"choices": [{"message": {"content": "ok"}}], "usage": {}})
+
+    model = pv.model_for("a-gateway/a-lab/small-3", env={"A_GATEWAY_API_KEY": "sk-gate"},
+                         client=transport_of(handler), sleep=sleeps.append)
+    assert model.wire_id == "a-lab/small-3"
+    pv.enable_live_calls_from_env({pv.LIVE_ENV_VAR: "1"})
+    model.query(HI)
+    assert seen["url"] == "https://gateway.invalid/api/v1/chat/completions"
+    assert seen["body"]["model"] == "a-lab/small-3"
+
+
+def test_a_vendor_the_registry_names_posts_chat_completions_to_the_host_it_names(
+        tmp_path, monkeypatch, sleeps, live):
+    registry_snapshot(tmp_path, monkeypatch, GATEWAY_REGISTRY)
+    seen = {}
+
+    def handler(request):
+        seen["url"] = str(request.url)
+        seen["auth"] = request.headers.get("authorization")
+        return httpx.Response(200, json={"choices": [{"message": {"content": "ok"}}], "usage": {}})
+
+    model = pv.model_for("a-vendor/quick-4", env={"A_VENDOR_API_KEY": "sk-vendor"},
+                         client=transport_of(handler), sleep=sleeps.append)
+    assert isinstance(model, pv.RegistryModel) and model.key_env_var == "A_VENDOR_API_KEY"
+    model.query(HI)
+    assert seen["url"] == "https://a-vendor.invalid/chat/completions"
+    assert seen["auth"] == "Bearer sk-vendor"
+
+
+def test_an_endpoint_passed_by_hand_does_not_borrow_the_openai_key(monkeypatch):
+    """A host reached by --base-url is not OpenAI, so inheriting OPENAI_API_KEY would send one
+    vendor's key to another's gateway. Its key comes from PROVIDER_API_KEY instead."""
+    env = {"OPENAI_API_KEY": "sk-openai", "A_HOST_API_KEY": "sk-a-host"}
+    model = pv.model_for("a-host/quick-1", base_url="https://a-host.invalid/v1", env=env)
+    assert model.key_env_var == "A_HOST_API_KEY"
+    assert model.api_key == "sk-a-host"
+    assert "sk-openai" not in str(model.headers())
+
+
+def test_a_local_endpoint_with_no_key_anywhere_still_runs(sleeps, live):
+    """The rule above must not make a key required: a server on this machine wants none."""
+    model = pv.model_for("local/llama", base_url="http://127.0.0.1:11434/v1", env={},
+                         client=transport_of(ok_openai()), sleep=sleeps.append)
+    assert model.api_key is None and model.key_required is False
+    assert "authorization" not in model.headers()
+    assert model.query(HI).content == "hello"
+
+
+# --- what a thinking provider puts on a reply, and asks to see again ---
+
+
+# The usage block a vendor's own reference prints for a chat completion: the cache hit and miss
+# counts beside a prompt_tokens_details that repeats the hit count under the name the OpenAI shape
+# uses. Copied field for field from api-docs.deepseek.com/api/create-chat-completion (2026-09-10),
+# and confirmed against a live reply the same day.
+DOCUMENTED_USAGE = {
+    "completion_tokens": 10,
+    "prompt_tokens": 16,
+    "total_tokens": 26,
+    "prompt_tokens_details": {"cached_tokens": 4},
+    "prompt_cache_hit_tokens": 4,
+    "prompt_cache_miss_tokens": 12,
+}
+
+
+def test_a_documented_cache_hit_is_read_off_the_openai_shaped_field_the_reply_carries(sleeps, live):
+    """Usage.input means uncached input everywhere in the Harness, so the hit comes off the prompt
+    count. The vendor reports the hit twice, and the parser reads the one the shape already names."""
+    reply = openai_model(ok_openai({"choices": [{"message": {"content": "ok"},
+                                                 "finish_reason": "stop"}],
+                                    "usage": DOCUMENTED_USAGE}), sleeps).query(HI)
+    assert reply.usage.cache_read == 4
+    assert reply.usage.input == 12, "prompt_tokens less the hit, which is the miss count"
+    assert reply.usage.output == 10
+
+
+def test_a_reply_that_carries_its_thinking_beside_the_answer_still_parses(sleeps, live):
+    """Two vendors put the chain of thought on the message under two names. Neither is the answer,
+    so content and the tool calls read exactly as they would without it."""
+    for field in ("reasoning_content", "reasoning"):
+        message = {"content": "the answer", field: "first I checked the id",
+                   "tool_calls": [{"id": "c1", "type": "function",
+                                   "function": {"name": "look_up", "arguments": '{"id": "7"}'}}]}
+        reply = openai_model(ok_openai({"choices": [{"message": message, "finish_reason": "stop"}],
+                                        "usage": {}}), sleeps).query(HI)
+        assert reply.content == "the answer"
+        assert [(c.name, c.arguments) for c in reply.tool_calls] == [("look_up", {"id": "7"})]
+        assert reply.raw["choices"][0]["message"][field] == "first I checked the id"
+
+
+def test_an_assistant_turn_carries_its_thinking_back_when_the_provider_put_it_there():
+    """A vendor whose thinking mode is on asks for its own reasoning back on every later request of
+    a tool-call round, and refuses the request without it."""
+    message = pv._openai_message({"role": "assistant", "content": "on it",
+                                  "reasoning_content": "the meter id is in the last result",
+                                  "reasoning": "same thing under the other name",
+                                  "tool_calls": [{"id": "c1", "name": "look_up",
+                                                  "arguments": {"id": "7"}}]})
+    assert message["reasoning_content"] == "the meter id is in the last result"
+    assert message["reasoning"] == "same thing under the other name"
+    assert message["tool_calls"][0]["function"]["name"] == "look_up"
+
+
+def test_a_message_the_provider_never_put_thinking_on_carries_none():
+    """Nothing is invented: only a reply that carried the field can put it on a message, which is
+    what makes passing it through free for a provider that has no such field."""
+    message = pv._openai_message({"role": "assistant", "content": "plain"})
+    assert set(message) == {"role", "content"}
+
+
+def test_a_registry_reply_is_named_by_the_id_it_was_asked_under_not_the_one_echoed_back(
+        tmp_path, monkeypatch, sleeps, live):
+    """A gateway answers under the upstream name it routed to, and the ledger looks a price up by
+    this field. A name with no provider on it is carried by many resellers at many rates, so it
+    prices as nothing; the id the caller asked under prices from that provider's own row."""
+    registry_snapshot(tmp_path, monkeypatch, GATEWAY_REGISTRY)
+    echoed = {"choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}],
+              "model": "an-upstream/quick-4", "usage": {}}
+    model = pv.model_for("a-vendor/quick-4", env={"A_VENDOR_API_KEY": "sk-vendor"},
+                         client=transport_of(ok_openai(echoed)), sleep=sleeps.append)
+    reply = model.query(HI)
+    assert reply.model == "a-vendor/quick-4"
+    assert reply.raw["model"] == "an-upstream/quick-4", "what the endpoint said is still on the reply"
+
+
+def test_the_adapters_with_a_provider_of_their_own_still_report_what_the_endpoint_said(sleeps, live):
+    """Only the endpoints reached by the registry or by a base URL are renamed: an adapter written
+    for one vendor already knows the name it gets back is that vendor's."""
+    echoed = {"choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}],
+              "model": "gpt-4o-mini-dated", "usage": {}}
+    assert openai_model(ok_openai(echoed), sleeps).query(HI).model == "gpt-4o-mini-dated"
