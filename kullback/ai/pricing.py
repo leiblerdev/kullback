@@ -59,11 +59,10 @@ def snapshot_path(path: Optional[str | Path] = None) -> Path:
 # url is the provider's model listing, field is the key each listed model carries its rates under,
 # in this catalog's own cost shape and unit (input, output, cache_read, cache_write, USD per 1M
 # tokens). refresh reads that listing when live calls are on and a key for the provider is held,
-# and lays the rates it finds over the model rows the row already names, matched by the same
-# lookup that resolves a call. It adds no
-# models: the written row says which models the Harness offers and what they cost when the listing
-# cannot be read, so a vendor that renames a field, answers an error, or is unreachable leaves the
-# prices below standing rather than leaving a call unpriced.
+# and lays the rates it finds over the model rows the row already names, matched by the same lookup
+# that resolves a call. It adds no models: the written row says which models the Harness offers and
+# what they cost when the listing cannot be read, so a vendor that renames a field, answers an
+# error, or is unreachable leaves the prices below standing rather than leaving a call unpriced.
 LOCAL_PROVIDERS_NAME = "providers.local.json"
 
 # The key of the row naming a provider's live price list, and the model listing's own list of rows.

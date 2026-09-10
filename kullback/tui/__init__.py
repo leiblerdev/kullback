@@ -715,9 +715,15 @@ class Screen:
         """The providers /login offers and the model each starts at.
 
         The named ones first, in the order a person is most likely to want them, then every
-        provider the local registry adds, at its first model, so a provider models.dev does not
-        list is one entry in that file away from being offered here too. Nothing is hand-listed
-        twice: the local rows come from the same lookup that resolves the model.
+        provider the local registry adds that the resolver can actually reach, at its first model,
+        so a provider models.dev does not list is one entry in that file away from being offered
+        here too. Nothing is hand-listed twice: the local rows come from the same lookup that
+        resolves the model.
+
+        A row is only offered when it answers what model_for asks of it: a host to post to, and a
+        request shape this Harness builds. A row naming neither is a row nobody can log into, and
+        offering it is worse than leaving it out, since the menu says a number is there to pick and
+        picking it fails on the line after.
         """
         from kullback.ai import pricing
         from kullback.ai import provider as pv
@@ -731,8 +737,15 @@ class Screen:
             local = {}
         for name, entry in local.items():
             models = list((entry.get("models") or {})) if isinstance(entry, dict) else []
-            if name not in defaults and models:
-                defaults[name] = f"{name}/{models[0]}"
+            if name in defaults or not models:
+                continue
+            model = f"{name}/{models[0]}"
+            row = {name: entry}
+            if pricing.endpoint_from_catalog(row, model) is None:
+                continue  # the row names no host, so the resolver has nowhere to post
+            if pricing.model_adapter_for(row, model) not in pricing.OPENAI_SHAPED:
+                continue  # and a shape this Harness does not build is no more reachable
+            defaults[name] = model
         return defaults
 
     @staticmethod

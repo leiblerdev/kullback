@@ -787,6 +787,29 @@ def test_the_login_menu_offers_the_providers_only_the_local_registry_names(tmp_p
     assert offered["a-host"] == "a-host/quick-1"
 
 
+def test_the_login_menu_does_not_offer_a_provider_the_resolver_cannot_reach(tmp_path, monkeypatch):
+    """A row with model rows but no host, and a row served through a request shape this Harness
+    does not build, are rows nobody can log into. Offering one says a number is there to pick and
+    picking it fails on the line after, so the menu asks of a row what the resolver will."""
+    from kullback.ai import pricing
+
+    _snapshot(monkeypatch, tmp_path)
+    (tmp_path / pricing.LOCAL_PROVIDERS_NAME).write_text(json.dumps(
+        {"f-host": {"id": "f-host", "npm": "@ai-sdk/openai-compatible", "env": ["F_HOST_API_KEY"],
+                    "models": {"quick-2": {"cost": {"input": 1.0, "output": 2.0}}}},
+         "g-host": {"id": "g-host", "npm": "@a-lab/ai-sdk-provider", "api": "https://g-host.invalid",
+                    "env": ["G_HOST_API_KEY"],
+                    "models": {"quick-3": {"cost": {"input": 1.0, "output": 2.0}}}},
+         "a-host": {"id": "a-host", "npm": "@ai-sdk/openai-compatible",
+                    "api": "https://a-host.invalid/v1", "env": ["A_HOST_API_KEY"],
+                    "models": {"quick-1": {"cost": {"input": 1.0, "output": 2.0}}}}}),
+        encoding="utf-8")
+    offered = Screen(tmp_path, console=_console())._login_defaults()
+    assert "f-host" not in offered, "a row naming no host has nowhere to post"
+    assert "g-host" not in offered, "a shape the Harness does not build is no more reachable"
+    assert offered["a-host"] == "a-host/quick-1"
+
+
 def test_the_login_menu_does_not_offer_a_provider_whose_models_field_is_not_an_object(tmp_path, monkeypatch):
     """A row written to the wrong shape must not become a choice: the menu would take the list's
     first element for a model id and offer a name no endpoint serves. The row is left out of the
