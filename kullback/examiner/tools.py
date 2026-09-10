@@ -62,6 +62,7 @@ from kullback.runner.records import (
     ProbePool,
     Refusal,
     Run,
+    Task,
     Verifier,
     VerifierHistory,
     VerifierVersion,
@@ -1310,6 +1311,79 @@ class Proposed:
     rulings: list[Ruling]
 
 
+def _seeded_history(plan: ExaminerPlan, task_id: str, current: Verifier) -> VerifierHistory:
+    """The Task's version history, with the Verifier on disk as version 1 when it holds none yet."""
+    hist = plan.store.setdefault("history", {}).get(task_id) or VerifierHistory(task_id=task_id)
+    if not hist.versions:
+        hist.versions.append(VerifierVersion(
+            task_id=task_id, content_hash=version_hash(current), verifier_version=str(1),
+            round=plan.round, by="derive", reason="the Verifier on disk before any repair",
+            accepted=True, verifier=current))
+    return hist
+
+
+def _candidate_atoms(current: Verifier, drop: Iterable[str], add: Iterable[Any]) -> list[Atom]:
+    """The atoms of the next version: the current ones less `drop`, plus `add` in the tool's shape."""
+    dropped = set(drop)
+    added = [row if isinstance(row, Atom) else _atom_of(row, current.atoms) for row in add]
+    atoms = [a for a in current.atoms if a.id not in dropped] + added
+    if not atoms:
+        raise ValueError("a repair cannot leave the Verifier without atoms")
+    return atoms
+
+
+def _candidate_gates(plan: ExaminerPlan, task: Task, candidate: Verifier) -> list:
+    """The D79 suite over one candidate Verifier, with the Task's Intent applied before it is read."""
+    intents = plan.inputs.get("intents") or {}
+    task_for = (apply_intent(task, Intent.model_validate(intents[task.id])) if task.id in intents else task)
+    return stage_mod.suite_for(task_for, candidate, _reference_paths(plan, task.id),
+                               canon_rules=plan.store.get("canon_rules"),
+                               write_tools=write_tools_of(plan.store.get("sigs") or []),
+                               user_rules=plan.inputs.get("user_rules") or {},
+                               rules_trace=_rules_trace(plan, task.id), probe_model=plan.probe_model,
+                               run_probe=plan.run_probe, may_probe=_may_probe(plan))
+
+
+def _candidate_pool_gate(plan: ExaminerPlan, task_id: str, candidate: Verifier) -> GateResult:
+    """What this Task's own probe pool says about the candidate version, no other Task's pool read."""
+    pools = {key: pool for key, pool in (plan.store.get("probes") or {}).items() if key == task_id}
+    return probe_pool_gate([candidate], pools, plan.store.get("canon_rules"), plan.store.get("sigs") or [])
+
+
+def _trial_loosening(plan: ExaminerPlan, task_id: str, hist: VerifierHistory,
+                     row: VerifierVersion) -> GateResult:
+    """What one-directional loosening says about this Task's history with the candidate row appended."""
+    trial = hist.model_copy(deep=True)
+    trial.versions.append(row)
+    return loosening_gate({task_id: trial}, plan.store.get("task_runs") or {},
+                          plan.store.get("replays") or {}, plan.store.get("rerolls") or {},
+                          plan.store.get("canon_rules"), plan.store.get("sigs") or [])
+
+
+def _record_accepted(plan: ExaminerPlan, task_id: str, candidate: Verifier, gates: list,
+                     results: dict) -> None:
+    """An accepted version becomes the Verifier on disk and the Task's status row says it passed."""
+    plan.set_current(candidate)
+    status = plan.store.setdefault("task_status", {})
+    entry = dict(status.get(task_id) or {})
+    entry.update({"verifier_passed": True, "checks": results,
+                  "not_run": [g.stage for g in gates if g.metrics.get("skipped")]})
+    status[task_id] = entry
+    write_json(plan.workdir / "task_status.json", status)
+
+
+def _record_build_rulings(plan: ExaminerPlan, by: str) -> None:
+    """The build-wide probe pool and loosening rulings a proposal leaves in the ledger, whoever proposed."""
+    canon_rules = plan.store.get("canon_rules")
+    sigs = plan.store.get("sigs") or []
+    plan.ledger.record(by, probe_pool_gate(plan.store["verifiers"], plan.store.get("probes") or {},
+                                           canon_rules, sigs))
+    plan.ledger.record(by, loosening_gate(plan.store.setdefault("history", {}),
+                                          plan.store.get("task_runs") or {},
+                                          plan.store.get("replays") or {},
+                                          plan.store.get("rerolls") or {}, canon_rules, sigs))
+
+
 def propose_version(plan: ExaminerPlan, task_id: str, *, drop: Iterable[str], add: Iterable[Any],
                     reason: str, by: str) -> Proposed:
     """One new Verifier version through the gates that rule on a repair, whoever proposed it.
@@ -1326,67 +1400,29 @@ def propose_version(plan: ExaminerPlan, task_id: str, *, drop: Iterable[str], ad
     """
     task = _task(plan, task_id)
     current = _current(plan, task_id)
-    history = plan.store.setdefault("history", {})
-    hist = history.get(task_id) or VerifierHistory(task_id=task_id)
-    if not hist.versions:
-        hist.versions.append(VerifierVersion(
-            task_id=task_id, content_hash=version_hash(current), verifier_version=str(1),
-            round=plan.round, by="derive", reason="the Verifier on disk before any repair",
-            accepted=True, verifier=current))
-    dropped = set(drop)
-    added = [row if isinstance(row, Atom) else _atom_of(row, current.atoms) for row in add]
-    atoms = [a for a in current.atoms if a.id not in dropped] + added
-    if not atoms:
-        raise ValueError("a repair cannot leave the Verifier without atoms")
+    hist = _seeded_history(plan, task_id, current)
     candidate = current.model_copy(deep=True, update={
-        "atoms": atoms, "verifier_version": str(len(hist.versions) + 1)})
-    canon_rules = plan.store.get("canon_rules")
-    sigs = plan.store.get("sigs") or []
-    write_tools = write_tools_of(sigs)
-    paths = _reference_paths(plan, task_id)
-    intents = plan.inputs.get("intents") or {}
-    task_for = (apply_intent(task, Intent.model_validate(intents[task.id])) if task.id in intents else task)
-    gates = stage_mod.suite_for(task_for, candidate, paths, canon_rules=canon_rules, write_tools=write_tools,
-                                user_rules=plan.inputs.get("user_rules") or {},
-                                rules_trace=_rules_trace(plan, task_id), probe_model=plan.probe_model,
-                                run_probe=plan.run_probe, may_probe=_may_probe(plan))
+        "atoms": _candidate_atoms(current, drop, add),
+        "verifier_version": str(len(hist.versions) + 1)})
+    gates = _candidate_gates(plan, task, candidate)
     results = verifier_suite.d79_results(gates)
     d79 = artifacts.verifier_gate(results)
-    pools = plan.store.get("probes") or {}
-    pool_gate = probe_pool_gate([candidate], {k: v for k, v in pools.items() if k == task_id},
-                                canon_rules, sigs)
-    trial = hist.model_copy(deep=True)
+    pool_gate = _candidate_pool_gate(plan, task_id, candidate)
     digest = version_hash(candidate)
     row = VerifierVersion(task_id=task_id, content_hash=digest, verifier_version=candidate.verifier_version,
                           parent_hash=version_hash(current), round=plan.round, by=by, reason=reason,
                           accepted=False, verifier=candidate)
-    trial.versions.append(row)
-    loosening = loosening_gate({task_id: trial}, plan.store.get("task_runs") or {},
-                               plan.store.get("replays") or {}, plan.store.get("rerolls") or {},
-                               canon_rules, sigs)
-    rejected_by = [g.stage for g in gates if not g.passed]
-    if not pool_gate.passed:
-        rejected_by.append(pool_gate.stage)
-    if not loosening.passed:
-        rejected_by.append(loosening.stage)
+    loosening = _trial_loosening(plan, task_id, hist, row)
+    rejected_by = ([g.stage for g in gates if not g.passed]
+                   + [g.stage for g in (pool_gate, loosening) if not g.passed])
     accepted = d79.passed and pool_gate.passed and loosening.passed
-    row = row.model_copy(update={"accepted": accepted, "rejected_by": rejected_by})
-    hist.versions.append(row)
-    history[task_id] = hist
+    hist.versions.append(row.model_copy(update={"accepted": accepted, "rejected_by": rejected_by}))
+    plan.store.setdefault("history", {})[task_id] = hist
     if accepted:
-        plan.set_current(candidate)
-        status = plan.store.setdefault("task_status", {})
-        entry = dict(status.get(task_id) or {})
-        entry.update({"verifier_passed": True, "checks": results,
-                      "not_run": [g.stage for g in gates if g.metrics.get("skipped")]})
-        status[task_id] = entry
-        write_json(plan.workdir / "task_status.json", status)
+        _record_accepted(plan, task_id, candidate, gates, results)
     plan.write_state()
     # The build-wide rulings land in gates.json; the result carries the candidate's own.
-    plan.ledger.record(by, probe_pool_gate(plan.store["verifiers"], pools, canon_rules, sigs))
-    plan.ledger.record(by, loosening_gate(history, plan.store.get("task_runs") or {},
-                                          plan.store.get("replays") or {},
-                                          plan.store.get("rerolls") or {}, canon_rules, sigs))
+    _record_build_rulings(plan, by)
     rulings = [ruling_of(d79), ruling_of(pool_gate), ruling_of(loosening)]
     plan.last_rulings = rulings
     return Proposed(candidate=candidate, digest=digest, accepted=accepted, rejected_by=rejected_by,
