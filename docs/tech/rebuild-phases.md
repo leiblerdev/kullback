@@ -1,5 +1,7 @@
 # The rebuild, in phases
 
+> Status (2026-09-10): frozen plan appendix; phases 1 to 5 and 7 landed, see the phase notes in this directory.
+
 Decided in the grill of 2026-09-02 (decision log D120 to D130, ADR-0007). The shape follows huggingface/tau: a provider layer, an agent core that knows nothing about the application, and applications as extensions on the core. Each phase is small, gets its own note in this directory when it lands (`phase-N-<name>.md`: what it added, why, what the next phase builds on), leaves the tests green, and leaves the build's artifacts byte-identical until the phase that changes them on purpose.
 
 ## Target layout
