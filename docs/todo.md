@@ -8,9 +8,6 @@ These are the items I pushed past the first build. Each line says what it buys a
 - Apply `docs/frozen-patches/speed-1.patch` and re-freeze: lock-only thread safety for the
   replay comparer's tally increment, needed before the Examiner replays synth variants as pooled
   jobs (speed-1, Greptile P1 on PR #53).
-- Flip the speed-1 variant gate in `kullback/examiner/stage.py` (`_second_path_outcome` passes
-  `state.pool` to `synth_second_path` again) once the tally lock above is in: the variant part of
-  the gain stays deferred until then.
 
 ## After the first Replica clears Gate A
 
@@ -326,6 +323,10 @@ Three phase 5 era items whose gates expired when phase 5 landed. Each needs a de
 ## Done
 
 Items closed by a landed decision. Nothing was deleted; each moved here with the decision that closed it.
+
+- Flip the speed-1 variant gate in `kullback/examiner/stage.py` Done in #59: `_second_path_outcome`
+  passes `state.pool` and `state.sem` to `synth_second_path` so the variants ride the shared pool,
+  done once the tally lock is in the frozen tree.
 
 - **Parallel model calls in the Builder** Done as D118 the same evening (`shared/parallel.py`, `--workers`, default 8).
 
