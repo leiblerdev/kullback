@@ -2,6 +2,10 @@
 
 These are the items I pushed past the first build. Each line says what it buys and what gates it. The date is when I deferred it.
 
+## Next re-freeze
+
+- Next re-freeze: apply docs/frozen-patches/speed-3.patch (ledger batching; the Plan.spend memory read already rides on the branch), re-run tests/runner.
+
 ## After the first Replica clears Gate A
 
 - **Output perturbation** (2026-08-26). The Environment can serve slightly modified tool outputs (formatting, order, harmless value drift) for the same call, so a Candidate is tested against variation, not one frozen recording. Buys robustness signal; costs a second fidelity mode (Gate A must still hold on the unperturbed path). Never on for routing-plan Verdicts until validated.
