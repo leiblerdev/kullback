@@ -392,3 +392,33 @@ def test_the_package_carries_one_flat_row_per_task_for_a_dataset_viewer_and_the_
     body = card_mod.card_markdown(manifest, "leibler/nursery")
     front = body.split("---")[1]
     assert "configs:" in front and package_mod.TASKS_ROWS_NAME in front
+
+
+# --- what the domain reading attests, on the card (D225) ------------------------------
+
+
+def test_the_card_says_how_many_domain_archetypes_were_read_and_how_many_no_tool_realises(
+        nursery, tmp_path):
+    """Someone deciding whether to use a package wants the second number: it says what this
+    Environment cannot be asked to do, and nothing else on the card says it."""
+    from kullback import domain as domain_mod
+    from kullback.runner.records import write_json as write
+
+    store = nursery / domain_mod.DIR
+    write(store / domain_mod.ARCHETYPES, {"format": domain_mod.FORMAT, "counts": {},
+                                          "archetypes": [{"goal": "a", "write_tools": ["water_bed"]},
+                                                         {"goal": "b", "write_tools": []}]})
+    write(store / domain_mod.GAPS, {"format": domain_mod.FORMAT, "gaps": [{"goal": "b"}]})
+    manifest = package_mod.export(nursery, tmp_path / "package", name="nursery", preview=True)
+    assert manifest["domain"] == {"archetypes_extracted": 2, "archetypes_mapped": 1,
+                                  "archetype_gaps": 1}
+    body = card_mod.card_markdown(manifest, "leibler/nursery")
+    assert "| Domain archetypes read | 2 (1 a tool of this Environment realises) |" in body
+    assert "| Domain archetypes with no tool | 1 |" in body
+
+
+def test_a_package_from_a_workdir_that_read_no_domain_carries_no_such_rows(nursery, tmp_path):
+    """None of them rather than zeros: never asked and nothing found are not the same reading."""
+    manifest = package_mod.export(nursery, tmp_path / "package", name="nursery", preview=True)
+    assert manifest["domain"] == {}
+    assert "Domain archetypes" not in card_mod.card_markdown(manifest, "leibler/nursery")
