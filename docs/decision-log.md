@@ -1791,6 +1791,14 @@ Ten tests on invented cancellation and greenhouse domains cover the repair refus
 
 On the next builds read tool_errors on each round record, and the auto_loosen rows for the new reason: a Task there every round is a Reference the derivation keeps withdrawing, a finding about the Reference and not about the Verifier.
 
+### D243. The model client's read timeout fits the call (2026-09-10)
+
+One posting client fixed the HTTP read timeout at 60 s and nothing could change it. A code-generating call at the size the compile_tools stage makes measured 81 s and 145 s wall on 2026-09-10, while a one-word reply took under 5 s and the model list under 1 s, so the provider was healthy and the timeout was simply shorter than an honest answer. Each timed-out attempt retried five times with backoff, so one long answer cost about six minutes of nothing and then ended the round on RetryExhausted.
+
+The read timeout is now a field of the posting client (`kullback/ai/provider.py`): 300 s by default, overridable per process through `KULLBACK_MODEL_TIMEOUT_S`, read once at construction, where a value that does not parse is an error naming the variable. The post carries a split timeout object, so establishing contact still fails fast at 10 s while reads and writes share the budget. The incident row carries the timeout in force (`Exchange.read_timeout_s`, beside the timing, attempts and request id from D159), and a `RetryExhausted` raised on a timeout names that budget, so the next such log line explains itself.
+
+Five tests in `tests/ai/test_timeout.py` on an invented domain cover the default split, the override, the unparseable value, a timed-out first attempt that then answers with attempts 2 and the timeout in the incident fields, and five timeouts raising with the budget in the message. Left out: the default is not surfaced beside the model flags in the README, since no section there lists environment variables yet.
+
 ## Pending (asked, not yet answered)
 
 - ~~The user's own tools and the world they act on (D71, first part).~~ Decided as D176 (2026-09-07): one world, rows revealed by a requestor marked by it, readers as code under the free gate.
