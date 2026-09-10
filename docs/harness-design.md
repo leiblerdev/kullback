@@ -1,4 +1,6 @@
-# Harness design: Builder and Runner
+# Harness design (historical proposal, 2026-08-27): Builder and Runner
+
+> Status (2026-09-10): historical proposal. Superseded by ADR-0007 (docs/adr/0007-two-agents-and-gates-no-agent-can-write.md) and docs/architecture.md; kept for the record. Read those first.
 
 Status: proposal for grilling, 2026-08-27, revised after R25 (principles re-derived from environment-generation pipelines, D61). Terms (Harness, Builder, Runner, Environment, Run, Verifier, Verdict, Simulated user, Provenance, Assisted) are used as the decision log defines them. Decisions are cited as D-numbers from `decision-log.md`. Research is cited as R-numbers from `../research/`. This document answers "get back to me with design recommendations." Every section is open to challenge.
 
@@ -7,6 +9,8 @@ Founder's philosophy, verbatim: "it should be simple enough and gets the job don
 ## 1. What the Harness is, in one paragraph
 
 Two programs work over one set of data records. The **Builder** reads a customer's traces and writes an Environment: state, tools, Hard constraints, and Simulated user rules, plus one Verifier per Task, in tau2's file shape first (D56). The **Runner** takes an Environment, a Run, and a Candidate model. It executes the agent loop and routes every tool call to code, a recording, or an LLM stand-in (D49). It writes one JSONL file per Run, and a separate pass computes the Verdict from that file by code alone (D43, D46). Nothing else gets persisted. Nothing decides without a code gate.
+
+The two-program framing above was replaced: the work is now split across the Builder, the Examiner and the gates (cluster 1; see docs/architecture.md and ADR-0007).
 
 ## 2. Principles, from environment-generation pipelines (D61, R25)
 
@@ -198,3 +202,5 @@ Weng's definition: the harness is "the system surrounding a base model that orch
 5. The loophole probe: decided, check 6 of the D79 Verifier validation suite.
 6. OpenEnv interface: decided, D90 (tau2 shape first; the loop is written as a one-turn function with a step-by-step test now; the thin wrapper after the tau2 slice).
 7. `verifier.py` placement: decided, D91 (Builder module; asks the Runner for re-runs through `cli.py run` and reads the Run records back; no imports in either direction).
+
+Superseded by D123 (cluster 2): Verifier work moved from the Builder to the Examiner; see docs/adr/0007-two-agents-and-gates-no-agent-can-write.md.
