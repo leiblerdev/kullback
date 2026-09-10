@@ -1121,6 +1121,40 @@ def _init_state(ctx: ExamContext, inputs: dict, *, probe_model: Any = None,
     return state, tasks
 
 
+def _prepare_one(task: Task, state: _DeriveState) -> _Job:
+    """One Task's Runs, its cache key, and the D111 answer when the key is not on disk."""
+    recordings = [reference_mod.load(r["path"], reference_mod.RECORDING, run_id=r["run_id"],
+                                     trace_id=r["trace_id"], write_tools=state.write_tools,
+                                     fn=state.fn, atoms=state.atoms)
+                  for r in state.seed_replays[task.id]]
+    recordings += [reference_mod.load(r["path"], reference_mod.REROLL, run_id=r["run_id"],
+                                      write_tools=state.write_tools, fn=state.fn, atoms=state.atoms)
+                   for r in state.rerolls.get(task.id, [])
+                   if (r.get("termination_reason") or "") in verifier_suite.SUCCESS_TERMINATIONS]
+    # D189: the extra batches an earlier derivation bought sit outside the D111 rule's evidence,
+    # so they are in the key (a batch bought is a different derivation) and are merged onto the
+    # Confirmation afterwards rather than being handed to `confirm`.
+    extra = finished_recordings(second_path_rows(state.ctx.workdir, task.id),
+                                write_tools=state.write_tools, fn=state.fn, atoms=state.atoms)
+    key = cache_key(task, recordings + extra, state.common, intents=state.intents,
+                    user_rules=state.user_rules, traces=state.traces,
+                    fidelity_row=task_fidelity(state.tool_fidelity, task.id))
+    entry = read_entry(state.ctx.workdir, task.id, key)
+    if entry is not None:
+        return _Job(task=task, key=key, entry=entry)
+    confirmation = reference_mod.confirm(recordings, intent=request_text(task, state.intents,
+                                                                         state.traces),
+                                         policy_lines=state.policy_lines, judge=state.judge,
+                                         phrases=grounded_phrases(state.intents.get(task.id)))
+    return _Job(task=task, key=key, confirmation=confirmation,
+                recordings=recordings + extra, extra=extra)
+
+
+def _prepare_all(tasks: list, state: _DeriveState, workers: int) -> list[_Job]:
+    """Every Task through its key lookup and, on a miss, the D111 rule, in Task order."""
+    return parallel.each(tasks, lambda task: _prepare_one(task, state), workers)
+
+
 # --- the stage body --------------------------------------------------------------
 
 def derive_all(ctx: ExamContext, inputs: dict, *, probe_model: Any = None, probe_limit: Optional[int] = None,
@@ -1198,43 +1232,16 @@ def derive_all(ctx: ExamContext, inputs: dict, *, probe_model: Any = None, probe
     intents = state.intents
     user_rules = state.user_rules
     traces = state.traces
-    policy_lines = state.policy_lines
     seed_replays = state.seed_replays
     constraints = state.constraints
     demoted = state.demoted
     assisted_tools = state.assisted_tools
     tool_fidelity = state.tool_fidelity
     atoms = state.atoms
-    judge = state.judge
     probe = state.probe
     common = state.common
 
-    def prepare(task: Task) -> _Job:
-        """The Task's Runs, its key, and the D111 answer when the key is not on disk."""
-        recordings = [reference_mod.load(r["path"], reference_mod.RECORDING, run_id=r["run_id"],
-                                         trace_id=r["trace_id"], write_tools=write_tools, fn=fn, atoms=atoms)
-                      for r in seed_replays[task.id]]
-        recordings += [reference_mod.load(r["path"], reference_mod.REROLL, run_id=r["run_id"],
-                                          write_tools=write_tools, fn=fn, atoms=atoms)
-                       for r in rerolls.get(task.id, [])
-                       if (r.get("termination_reason") or "") in verifier_suite.SUCCESS_TERMINATIONS]
-        # D189: the extra batches an earlier derivation bought sit outside the D111 rule's evidence,
-        # so they are in the key (a batch bought is a different derivation) and are merged onto the
-        # Confirmation afterwards rather than being handed to `confirm`.
-        extra = finished_recordings(second_path_rows(ctx.workdir, task.id),
-                                    write_tools=write_tools, fn=fn, atoms=atoms)
-        key = cache_key(task, recordings + extra, common, intents=intents, user_rules=user_rules,
-                        traces=traces, fidelity_row=task_fidelity(tool_fidelity, task.id))
-        entry = read_entry(ctx.workdir, task.id, key)
-        if entry is not None:
-            return _Job(task=task, key=key, entry=entry)
-        confirmation = reference_mod.confirm(recordings, intent=request_text(task, intents, traces),
-                                             policy_lines=policy_lines, judge=judge,
-                                             phrases=grounded_phrases(intents.get(task.id)))
-        return _Job(task=task, key=key, confirmation=confirmation,
-                    recordings=recordings + extra, extra=extra)
-
-    jobs = parallel.each(tasks, prepare, workers)
+    jobs = _prepare_all(tasks, state, workers)
     # D212: the probe budget goes out in the order the Tasks' own keys give, not in Task order and
     # not in the order the threads finished. A Task added to the build used to push every Task after
     # it one place down the list, so a bounded budget landed on a different set of Tasks and check 6
