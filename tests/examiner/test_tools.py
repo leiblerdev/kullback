@@ -686,3 +686,22 @@ def test_the_refusal_tells_a_task_that_never_had_a_reference_from_one_whose_refe
     assert never["reference"] is False and never["references_named_not_on_disk"] == 0
     assert "no Run of it reached an End state" in never["note"]
     assert tools_mod.reference_state(plan, "nobody")["reference"] is False, "an unknown Task is the same answer"
+
+
+def test_reading_a_kind_outside_the_table_reads_the_references_file(derived):
+    """A kind the table does not know is read off the References file, where the chain the table
+    replaced sent it, rather than raised."""
+    import asyncio
+
+    plan, _ = _harness(derived)
+    read = tools_mod._read(plan)
+
+    async def text_of(kind, ident):
+        args = tools_mod.ReadArgs.model_construct(kind=kind, id=ident)
+        return (await read(args)).text
+
+    whole = json.loads(asyncio.run(text_of("frobnicate", None)))
+    assert set(whole) == {"ids", "note"} and "frobnicate" in whole["note"]
+    one = json.loads(asyncio.run(text_of("frobnicate", T)))
+    assert set(one) == {T}
+    assert one[T] == json.loads(asyncio.run(text_of("references", T)))[T]
