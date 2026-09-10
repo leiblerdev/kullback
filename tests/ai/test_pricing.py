@@ -375,6 +375,37 @@ def test_the_local_registry_can_add_one_model_row_to_a_provider_models_dev_alrea
     assert pricing.endpoint_from_catalog(catalog, "a-vendor/new-1").key_env_var == "A_VENDOR_API_KEY"
 
 
+def test_a_row_correcting_one_number_keeps_everything_else_the_catalog_knows(tmp_path):
+    """A file that moves a price says the price and stops. Restating the window to keep it would be
+    a second place for it to go stale, and dropping it would leave the model priced and unsized,
+    which is a Run refused for a limit nobody meant to remove."""
+    path = tmp_path / "models.dev.json"
+    write_snapshot(path, {"a-vendor": {"id": "a-vendor", "npm": "@ai-sdk/openai-compatible",
+                                       "api": "https://a-vendor.invalid", "env": ["A_VENDOR_API_KEY"],
+                                       "models": {"old-1": {"name": "Old One",
+                                                            "limit": {"context": 200_000},
+                                                            "cost": {"input": 9.0, "output": 9.0}}}}})
+    write_local(path, {"a-vendor": {"models": {"old-1": {"cost": {"input": 3.0, "output": 6.0}}}}})
+    catalog = pricing.refresh(path=path, env={})
+    assert pricing.price_from_catalog(catalog, "a-vendor/old-1")["input"] == 3.0
+    assert pricing.window_from_catalog(catalog, "a-vendor/old-1") == 200_000
+    assert catalog["a-vendor"]["models"]["old-1"]["name"] == "Old One"
+
+
+def test_a_model_row_that_names_nothing_changes_nothing(tmp_path):
+    """The narrow end of the same rule: an override row with no fields in it says nothing, so the
+    price and the window underneath stand rather than being wiped by an empty row."""
+    path = tmp_path / "models.dev.json"
+    write_snapshot(path, {"a-vendor": {"id": "a-vendor", "npm": "@ai-sdk/openai-compatible",
+                                       "api": "https://a-vendor.invalid", "env": ["A_VENDOR_API_KEY"],
+                                       "models": {"old-1": {"limit": {"context": 200_000},
+                                                            "cost": {"input": 9.0, "output": 9.0}}}}})
+    write_local(path, {"a-vendor": {"models": {"old-1": {}}}})
+    catalog = pricing.refresh(path=path, env={})
+    assert pricing.price_from_catalog(catalog, "a-vendor/old-1")["input"] == 9.0
+    assert pricing.window_from_catalog(catalog, "a-vendor/old-1") == 200_000
+
+
 def test_a_local_registry_file_that_cannot_be_read_is_ignored_not_raised_on(tmp_path):
     path = tmp_path / "models.dev.json"
     write_snapshot(path, CATALOG)

@@ -417,6 +417,16 @@ LOGIN_CATALOG = {
                     "api": "https://opencode.ai/zen/go/v1", "env": ["OPENCODE_API_KEY"],
                     "models": {"muse-spark": {"limit": {"context": 1048576, "output": 131072},
                                               "cost": {"input": 3, "output": 15}}}},
+    # The two the menu names by hand and reaches through the registry, as a real snapshot carries
+    # them: without their rows here the menu is right to leave them out, which is its own test.
+    "deepseek": {"id": "deepseek", "npm": "@ai-sdk/openai-compatible",
+                 "api": "https://api.deepseek.com", "env": ["DEEPSEEK_API_KEY"],
+                 "models": {"deepseek-v4-flash": {"limit": {"context": 128000},
+                                                  "cost": {"input": 0.14, "output": 0.28}}}},
+    "openrouter": {"id": "openrouter", "npm": "@openrouter/ai-sdk-provider",
+                   "api": "https://openrouter.ai/api/v1", "env": ["OPENROUTER_API_KEY"],
+                   "models": {"qwen/qwen3.7-flash": {"limit": {"context": 262144},
+                                                     "cost": {"input": 0.05, "output": 0.2}}}},
 }
 
 
@@ -808,6 +818,20 @@ def test_the_login_menu_does_not_offer_a_provider_the_resolver_cannot_reach(tmp_
     assert "f-host" not in offered, "a row naming no host has nowhere to post"
     assert "g-host" not in offered, "a shape the Harness does not build is no more reachable"
     assert offered["a-host"] == "a-host/quick-1"
+
+
+def test_a_hand_listed_provider_the_snapshot_does_not_carry_is_not_offered_either(tmp_path, monkeypatch):
+    """On a machine with no snapshot yet, the providers reached through the registry cannot be
+    reached at all, and the hand-listed ones are no exception: the menu would be offering a number
+    that fails the moment it is picked. Typing the id still says so, and says how to get the file."""
+    _snapshot(monkeypatch, tmp_path, catalog={})
+    screen = Screen(tmp_path, console=_console())
+    offered = screen._login_defaults()
+    assert "deepseek" not in offered and "openrouter" not in offered
+    assert "anthropic" in offered and "openai" in offered, "the two with adapters of their own stand"
+    with pytest.raises(ValueError) as refusal:
+        screen._resolve("deepseek/deepseek-flash", None)
+    assert "names no host" in str(refusal.value) and "refresh the snapshot" in str(refusal.value)
 
 
 def test_a_model_row_naming_its_own_shape_is_offered_and_resolves_on_that_shape(tmp_path, monkeypatch):

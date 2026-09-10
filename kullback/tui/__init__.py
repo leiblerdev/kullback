@@ -96,6 +96,32 @@ LOGIN_DEFAULT_MODELS = {
     "openrouter": "openrouter/qwen/qwen3.7-flash",
 }
 
+
+def registry_refusal(catalog: Optional[dict], model: str) -> Optional[str]:
+    """Why an id cannot be reached through the registry, in the words a person is shown, or None
+    when it can be.
+
+    The two questions model_for asks of a provider with no adapter of its own: a host to post to,
+    and a request shape this Harness builds, read off the model row's own npm before the provider's,
+    because the provider field cannot say that one model rides a gateway and speaks another vendor's
+    shape and the row can. One function, so the menu offers exactly what picking it accepts, and
+    refuses exactly what a Run would refuse.
+    """
+    from kullback.ai import pricing
+    from kullback.ai import provider as pv
+
+    provider_name, _ = pv.split_model_id(model)
+    if provider_name in pv.ADAPTERS:
+        return None
+    if pricing.endpoint_from_catalog(catalog, model) is None:
+        return (f"{model} has no adapter of its own and the models.dev snapshot names no host for "
+                f"{provider_name!r}; refresh the snapshot with live calls on, or pass --base-url")
+    shape = pricing.model_adapter_for(catalog, model)
+    if shape not in pricing.OPENAI_SHAPED:
+        return (f"models.dev serves {model} through {shape}, which is not the OpenAI request "
+                f"shape this Harness builds; pass --base-url for one that is")
+    return None
+
 # Every command in one table: name, usage, what it does. The entry screen and the / menu
 # are rendered from this, so a command added here appears in both; HELP stays a literal
 # beside it, and a test fails when a table name is missing from HELP, so the two cannot drift.
@@ -715,38 +741,33 @@ class Screen:
         """The providers /login offers and the model each starts at.
 
         The named ones first, in the order a person is most likely to want them, then every
-        provider the local registry adds that the resolver can actually reach, at its first model,
-        so a provider models.dev does not list is one entry in that file away from being offered
-        here too. Nothing is hand-listed twice: the local rows come from the same lookup that
-        resolves the model.
+        provider the local registry adds, at its first model, so a provider models.dev does not
+        list is one entry in that file away from being offered here too. Nothing is hand-listed
+        twice: the local rows come from the same lookup that resolves the model.
 
-        A row is only offered when it answers what model_for asks of it: a host to post to, and a
-        request shape this Harness builds. A row naming neither is a row nobody can log into, and
-        offering it is worse than leaving it out, since the menu says a number is there to pick and
-        picking it fails on the line after.
+        Every one of them, hand-listed or from the file, is then put through the refusal /login
+        itself would give it. A choice that fails on the line after picking it is worse than one
+        that was never listed, and on a machine with no snapshot yet that is most of the hand
+        listed ones: they are reached through the registry, and the registry is a file that is not
+        there. Typing the id still says so, and says how to get the file.
         """
         from kullback.ai import pricing
         from kullback.ai import provider as pv
 
-        defaults = dict(LOGIN_DEFAULT_MODELS)
         try:
             # The snapshot the resolver reads, so the menu and the model it then resolves are
             # always looking at the same two files.
+            catalog = pricing.refresh(path=pv.REGISTRY_SNAPSHOT_PATH)
             local = pricing.local_providers(pv.REGISTRY_SNAPSHOT_PATH)
         except Exception:
-            local = {}
+            catalog, local = None, {}
+        candidates = dict(LOGIN_DEFAULT_MODELS)
         for name, entry in local.items():
             models = list((entry.get("models") or {})) if isinstance(entry, dict) else []
-            if name in defaults or not models:
-                continue
-            model = f"{name}/{models[0]}"
-            row = {name: entry}
-            if pricing.endpoint_from_catalog(row, model) is None:
-                continue  # the row names no host, so the resolver has nowhere to post
-            if pricing.model_adapter_for(row, model) not in pricing.OPENAI_SHAPED:
-                continue  # and a shape this Harness does not build is no more reachable
-            defaults[name] = model
-        return defaults
+            if name not in candidates and models:
+                candidates[name] = f"{name}/{models[0]}"
+        return {name: model for name, model in candidates.items()
+                if registry_refusal(catalog, model) is None}
 
     @staticmethod
     def _key_var_for(provider_name: str, model: str) -> str:
@@ -846,13 +867,7 @@ class Screen:
         self.console.print(self._login_status())
 
     def _resolve(self, model: str, base_url: Optional[str]) -> None:
-        """The id reaches a model, or the reason it does not. Assigns nothing; reports everything.
-
-        Both questions are asked of one catalog reading, and asked the way model_for asks them, so
-        /login refuses exactly what a Run would refuse. The shape is the model row's own where it
-        names one: the provider field cannot say that a single model rides one gateway and speaks
-        another vendor's request shape, and the row can.
-        """
+        """The id reaches a model, or the reason it does not. Assigns nothing; reports everything."""
         from kullback.ai import pricing
         from kullback.ai import provider as pv
 
@@ -863,16 +878,9 @@ class Screen:
             catalog = pricing.refresh(path=pv.REGISTRY_SNAPSHOT_PATH)
         except Exception:
             catalog = None
-        endpoint = pricing.endpoint_from_catalog(catalog, model)
-        if endpoint is None:
-            raise ValueError(
-                f"{model} has no adapter of its own and the models.dev snapshot names no host "
-                f"for {provider_name!r}; pass --base-url")
-        shape = pricing.model_adapter_for(catalog, model)
-        if shape not in pricing.OPENAI_SHAPED:
-            raise ValueError(
-                f"models.dev serves {model} through {shape}, which is not "
-                f"the OpenAI request shape this Harness builds; pass --base-url for one that is")
+        refusal = registry_refusal(catalog, model)
+        if refusal:
+            raise ValueError(refusal)
 
     def _login_status(self) -> Text:
         """The current model, where its calls go, and whether its key is set. Names only, never values."""

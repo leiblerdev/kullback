@@ -196,7 +196,14 @@ def _usable_entry(entry: dict) -> Optional[dict]:
 
 
 def _merge_provider(under: Optional[dict], over: dict) -> dict:
-    """One provider row laid over another: top-level fields replaced, model rows merged by id.
+    """One provider row laid over another: top-level fields replaced, model rows merged by id, and
+    a model named in both merged field by field.
+
+    The field by field part is what lets a file correct one number. A row that moved a price says
+    the price and stops, and the name, the window and everything else the catalog knows about that
+    model stay; restating them to keep them would be a second place for them to go stale, and
+    dropping them would leave the model priced and unsized, or sized and unpriced, which the budget
+    gate reads as a call it must refuse.
 
     Either side can carry a models field of the wrong shape (the catalog underneath is whatever
     models.dev last served), and a merge that raises would take every model call down, so a
@@ -209,7 +216,10 @@ def _merge_provider(under: Optional[dict], over: dict) -> dict:
     over_models = copy.deepcopy(over.get("models"))
     models = under_models if isinstance(under_models, dict) else {}
     if isinstance(over_models, dict):
-        models.update(over_models)
+        for wire_id, row in over_models.items():
+            beneath = models.get(wire_id)
+            models[wire_id] = ({**beneath, **row}
+                               if isinstance(beneath, dict) and isinstance(row, dict) else row)
     if models:
         merged["models"] = models
     return merged
