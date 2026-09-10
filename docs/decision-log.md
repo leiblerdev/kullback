@@ -1791,6 +1791,18 @@ Ten tests on invented cancellation and greenhouse domains cover the repair refus
 
 On the next builds read tool_errors on each round record, and the auto_loosen rows for the new reason: a Task there every round is a Reference the derivation keeps withdrawing, a finding about the Reference and not about the Verifier.
 
+### D232. A build names the model that drives the Simulated user (2026-09-10)
+
+The third environment's round 1 ended 91 of 135 Runs with the scripted user running out of turns (end kind scenario_exhausted) while the agent user drove 0 Tasks against 48 rule driven, because `kullback build` had no way to name a user model. D214 built the agent user as a package with the driver choice and the fallback already implemented, and `kullback/builder/build.py` already threads a `user_model` read from `models.get("user_agent")`; what was missing was the flag and the plumbing from the CLI and the rounds loop into that dict.
+
+The rule is one flag. `--user-model <provider/model>` on `kullback build` resolves through the same live model path as `--judge-model` and lands in `models["user_agent"]`, so the agent user drives every Task it beats the rules on while the rules stay the floor and the fallback exactly as D214 built them. Without the flag nothing changes: the entry is None and the keys, the cache and the Run ids are the ones they were before. `--user-model` without `--model` is allowed, since the Builder may be code driven while the user still costs model turns. The user model id is recorded in report_config.json beside the judge models, so a round record says which model drove the user. The round counts already carried `tasks_agent_driven`, and no other command runs re-rolls with a user, so only `build` takes the flag.
+
+Four tests on an invented garden centre domain: the flag reaches the driver and defaults to None, the model lands wrapped under `user_agent` with the rules alone without it, the workdir record carries the user model id, and a stub user model through the plan drives the Task past the rules so `tasks_agent_driven` reads 1 where the same round without it reads 0.
+
+Not measured live; the next launch of the third environment passes it. No build was run here, so the 91 of 135 and the 0 against 48 are the brief's counts, unread on this branch.
+
+No disagreements. One smaller reading was taken: the `run` command's Candidate batches keep their rule-driven user, since they are batches and not re-rolls.
+
 ## Pending (asked, not yet answered)
 
 - ~~The user's own tools and the world they act on (D71, first part).~~ Decided as D176 (2026-09-07): one world, rows revealed by a requestor marked by it, readers as code under the free gate.
