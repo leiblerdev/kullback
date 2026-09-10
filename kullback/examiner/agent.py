@@ -87,8 +87,10 @@ def run_examiner(workdir: Any, *, inputs: dict, env_id: Optional[str] = None, ag
 
     `inputs` is the derivation's store (the Builder's, filtered through `inputs_from`; a store that
     names a tool body is refused). `agent_model` is the model that drives the session, None for the
-    code driver. `session_path` is the Examiner's own session file. An error result from the driver,
-    or a model that never called derive, is an ExaminerError.
+    code driver. `session_path` is the Examiner's own session file. An error result from the code
+    driver, or a model that never called derive, is an ExaminerError: both are a session with no
+    output at all. A model-driven derive that came back an error is not, and the summary carries it
+    (`tool_result`, `derive_error`) for the caller to count (D230).
     """
     plan = ExaminerPlan(workdir=Path(workdir), inputs=inputs, env_id=env_id, probe_model=probe_model,
                         judge_model=judge_model, judge_agent=judge_agent,
@@ -98,13 +100,18 @@ def run_examiner(workdir: Any, *, inputs: dict, env_id: Optional[str] = None, ag
     session = SessionStore.load(session_path) if session_path is not None else None
     harness = examiner_harness(plan, agent_model, subscribers, max_turns=max_turns, session=session)
     if agent_model is None:
+        # The code driver's one call is the whole session: an error there leaves nothing at all, and
+        # there is no model to read it and act, so it is the broken contract it always was.
         result = drive_tool(harness, "derive", {"target": target})
+        if result.is_error:
+            raise ExaminerError(result.content)
     else:
+        # D230: a model-driven session that called derive and got an error back is not a broken
+        # contract. The model read the error, and a tool that cannot serve one ask is a fact about
+        # one Task, not about the session; the error rides on the summary and the caller decides.
         result = _model_driven(harness, target)
-    if result is None:
-        raise ExaminerError(f"the model never called derive({target!r})")
-    if result.is_error:
-        raise ExaminerError(result.content)
+        if result is None:
+            raise ExaminerError(f"the model never called derive({target!r})")
     return summary_of(plan, result)
 
 
@@ -123,6 +130,8 @@ def summary_of(plan: ExaminerPlan, result: Optional[ToolResult]) -> dict:
         "refused": sorted(store["refusals"]),
         "rulings": [r.stage for r in plan.last_rulings],
         "tool_result": ({"content": result.content, "is_error": result.is_error} if result is not None else None),
+        # D230: the one line a caller counts a session's derive by, without reading the transcript.
+        "derive_error": (result.content if result is not None and result.is_error else None),
     }
 
 

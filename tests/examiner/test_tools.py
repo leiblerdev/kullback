@@ -637,3 +637,52 @@ def test_reading_a_run_or_a_trace_id_nothing_carries_answers_the_ids_that_exist(
     assert by_task["found"] is False and f"of task {T}" in by_task["note"], "a Task id narrows the answer"
     trace = json.loads(drive(harness, "read", {"kind": "trace", "id": "nowhere"}, call_id="r3").details["text"])
     assert trace["found"] is False and trace["kind"] == "Trace" and trace["ids"] == []
+
+
+def _unreadable_reference(world: World, failed: dict) -> None:
+    """The Task's row left naming a Reference whose Run no replay and no re-roll of this session
+    carries, which is the state one live round ended stalled in: the row was written by an earlier
+    round and the Runs behind it are no longer among the session's own."""
+    references = _read(world.workdir / "references.json")
+    references[T] = {**references[T], "failed": failed,
+                     "references": [{"kind": "reroll", "run_id": "gone-0", "trace_id": None}]}
+    (world.workdir / "references.json").write_text(json.dumps(references), encoding="utf-8")
+
+
+def test_a_repair_of_a_task_whose_reference_cannot_be_read_answers_a_refusal_and_not_an_error(derived):
+    """D230: the tool raised here and the whole round ended stalled with its findings never
+    delivered. A Task whose Reference cannot be read is a state of the Task, so the answer says so:
+    how many of its Runs were turned down, under which reasons and how many times each, and the
+    verbs that buy something instead of another repair."""
+    _unreadable_reference(derived, {"gone-1": "the cancellation the request asked for never happened",
+                                    "gone-2": "the cancellation the request asked for never happened",
+                                    "gone-3": "it reached no End state: it wrote nothing"})
+    plan, harness = _harness(derived)
+    before = version_hash(plan.current(T))
+    result = _reason_repair(harness, plan, "allowed", "any reason will do")
+    assert result.is_error is False, "a Task the tool cannot serve never fails the session"
+    assert result.details["accepted"] is False and result.details["rejected_by"] == ["no_reference"]
+    assert result.details["produced"] == [], "a refusal wrote nothing"
+    assert "has no Reference this session can read" in result.content
+    assert '"the cancellation the request asked for never happened": 2' in result.content
+    assert '"it reached no End state: it wrote nothing": 1' in result.content
+    assert "refuse" in result.content and "file a finding" in result.content
+    assert version_hash(plan.current(T)) == before, "the Verifier on disk did not move"
+    assert len(_history(derived).versions) == 1, "the refused repair wrote no version"
+
+
+def test_the_refusal_tells_a_task_that_never_had_a_reference_from_one_whose_reference_is_not_on_disk(derived):
+    """The two states read differently, because what to do about them differs: one Task is waiting
+    for a Run that finishes, the other for the Runs behind its row to be derived again."""
+    plan, _ = _harness(derived)
+    _unreadable_reference(derived, {})
+    named = tools_mod.reference_state(plan, T)
+    assert named["reference"] is False and named["references_named_not_on_disk"] == 1
+    assert "none of its Runs is on disk in this session" in named["note"]
+    references = _read(derived.workdir / "references.json")
+    references[T] = {**references[T], "references": [], "reason": "no Run of it reached an End state"}
+    (derived.workdir / "references.json").write_text(json.dumps(references), encoding="utf-8")
+    never = tools_mod.reference_state(plan, T)
+    assert never["reference"] is False and never["references_named_not_on_disk"] == 0
+    assert "no Run of it reached an End state" in never["note"]
+    assert tools_mod.reference_state(plan, "nobody")["reference"] is False, "an unknown Task is the same answer"

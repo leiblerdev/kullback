@@ -110,6 +110,9 @@ ALLOWANCE_STEER = "Your allowance for this round is spent: finish with what you 
 # which only the plan's own registry knows (builder.agent.nothing_changed_message).
 STALL_FOLLOW_UP = builder_agent.NOTHING_CHANGED
 EXAMINER_TARGET = "all"
+# How much of a tool error rides on the round's record (D230). The whole exchange is in the session
+# file; what a round needs is the sentence that says which tool could not serve which ask.
+TOOL_ERROR_CHARS = 400
 # The ledger's stages whose work is done once per Task, so their spend is what grows when the Task
 # list grows (D216, `Round.added_cost`). A stage that runs once for the corpus, however expensive,
 # costs the same whether the list holds a hundred Tasks or two hundred and is deliberately absent.
@@ -416,6 +419,10 @@ class Loop:
     build_result: Optional[ToolResult] = None
     examiner_result: Optional[ToolResult] = None
     sent: list[str] = field(default_factory=list)
+    # D230: the tool errors a beat came back with, cleared at each round's start. A tool that cannot
+    # serve one ask is a fact about one Task and the agent reads it and goes on, so it belongs on the
+    # round's counts and not in an exception; a round with one on it may not exit `done`.
+    tool_errors: list[dict] = field(default_factory=list)
     beat_spend: dict[str, float] = field(default_factory=dict)
     spent_allowance: dict[str, bool] = field(default_factory=dict)
     compactions_seen: dict[str, int] = field(default_factory=dict)
@@ -750,7 +757,13 @@ class Loop:
             if self.examiner_result is None:
                 raise ExaminerError(f"the model never called derive({EXAMINER_TARGET!r})")
             if self.examiner_result.is_error:
-                raise ExaminerError(self.examiner_result.content)
+                # D230: the model called derive and a tool answered it with an error. It read that
+                # error and could act on it, so the beat happened and the round is closed on what it
+                # left; the error is counted and the round may not exit `done` on numbers the
+                # derivation did not refresh (`close_round`). Only a session with no output at all
+                # is the broken contract that stalls a round on the spot.
+                self.tool_errors.append({"agent": "examiner", "tool": "derive", "round": n,
+                                         "error": self.examiner_result.content[:TOOL_ERROR_CHARS]})
         self._beat_done("examiner", n, before)
 
     # --- the round ------------------------------------------------------------
@@ -816,6 +829,9 @@ class Loop:
                 agent: self.compactions(agent) - self.compactions_seen.get(agent, 0) for agent in AGENTS},
             "floor_cuts": {agent: self.floor_cuts(agent) - self.cuts_seen.get(agent, 0) for agent in AGENTS},
             "findings": list(self.sent),
+            # D230: the tool errors this round's agents read and went on from, so a round that could
+            # not serve an ask says so on its own record rather than only in a transcript.
+            "tool_errors": list(self.tool_errors),
             # The four counts D192's rules are read on. `suggested_open` is the findings the Examiner
             # filed for its own verbs and has not acted on, which is what its next beat is handed;
             # `shape_retries` the corrected-call asks a shape refusal earned; `refuse_repeats` the
@@ -1352,6 +1368,7 @@ class Loop:
         self.plan.round = n  # the round a repair request records itself under (D126)
         self.emit(RoundStart(round=n))
         self.sent, self.beat_spend, self.spent_allowance = [], {}, {}
+        self.tool_errors = []
         # D218, Greptile P1 (PR 29): a round's snapshot says what this round measured, so the
         # rulings and the difficulty record start empty. A round that ends on an error before its
         # counts were read would otherwise write the round before it into its own table.
@@ -1378,7 +1395,9 @@ class Loop:
         Findings filed but never delivered ride on the record, and a round that would exit `done`
         or `stalled` while any are pending does not exit at all: the findings owe the Builder a beat,
         so the exit is cleared and the loop runs another round. Only the ceiling (no money left)
-        ends a round with findings still open, and then the note says so.
+        ends a round with findings still open, and then the note says so. A round whose Examiner
+        derive came back a tool error may not exit `done` at all (D230): the counts an exit is read
+        off are then the round before's.
 
         Whether the round moved (`round_moved`: a gate count, an artifact, or a ruling under one of
         its own repairs) rides on the counts, and the tail from the last round that moved is what
@@ -1410,6 +1429,14 @@ class Loop:
             record.exit_note = f"fidelity did not rise in {self.fidelity_stall} rounds"
         elif record.exit == "max_rounds":
             record.exit_note = f"round cap of {self.max_rounds} reached"
+        if self.tool_errors and record.exit == "done":
+            # D230: the derivation came back an error, so the counts this exit reads are the round
+            # before's. A run never closes as done on numbers no derivation refreshed; it ends on the
+            # soft stop with the error named, and a finding still owed the Builder clears that exit
+            # below and buys the beat the exception used to throw away.
+            record.exit = "stalled"
+            record.exit_note = (f"the Examiner's derive came back an error, so no count moved: "
+                                f"{self.tool_errors[-1]['error']}")
         if self.pending_findings:
             record.pending_findings = list(self.pending_findings)
             if record.exit in ("ceiling", "max_rounds", "target_built"):
