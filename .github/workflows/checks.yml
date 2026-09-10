@@ -7,6 +7,10 @@ on:
 jobs:
   checks:
     runs-on: ubuntu-latest
+    env:
+      NO_COLOR: "1"
+      TERM: dumb
+      COLUMNS: "120"
     steps:
       - uses: actions/checkout@v4
         with:
