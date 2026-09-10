@@ -350,6 +350,20 @@ def test_a_build_with_no_model_has_no_judge_unless_one_is_named(tmp_path):
     assert judged.models["reference_judge"].model_id == "other/small"
 
 
+def test_the_user_model_lands_in_the_wrapped_models_and_the_rules_drive_without_it(tmp_path):
+    """D232: a build that names a user model wraps it under `user_agent` for the re-rolls; a build
+    that names none keeps None there, so every Run is driven by the rule-driven user as before."""
+    assert BuildPlan(workdir=tmp_path / "none").models["user_agent"] is None
+    code_driven = BuildPlan(workdir=tmp_path / "coded",
+                             user_agent_model=TestModel(["hi"], name="other/small"))
+    assert code_driven.models["user_agent"].model_id == "other/small"
+    assert code_driven.models["user_agent"].stage == "user_agent"
+    both = BuildPlan(workdir=tmp_path / "both", model=TestModel(["hi"], name="vendor/large"),
+                     user_agent_model=TestModel(["hi"], name="other/small"))
+    assert both.models["user_agent"].model_id == "other/small"
+    assert both.models["reference_judge"].model_id == "vendor/large"
+
+
 def test_wrap_refuses_an_unpriced_model_before_building_the_wrapper(tmp_path):
     """D86: an unpriced model under a ceiling must be refused in _wrap itself, not handed
     ceiling=None and left to run completely unmetered."""

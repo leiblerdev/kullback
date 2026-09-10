@@ -205,6 +205,26 @@ def test_build_takes_a_judge_model_and_a_second_one_and_defaults_both_to_the_bui
     assert alone.exit_code != 0 and "needs a first judge" in alone.output
 
 
+def test_build_takes_a_user_model_for_the_simulated_user_and_defaults_to_the_rules(workdir, fake_modules):
+    """D232: `kullback build` can name the model that drives the Simulated user, with or without
+    --model; without the flag the driver gets None and every Run stays rule-driven."""
+    plain = invoke("build", "--workdir", str(workdir), "--model", "some/model")
+    assert plain.exit_code == 0, plain.output
+    assert fake_modules["kullback.rounds.run_rounds"][0]["kwargs"]["user_agent_model"] is None
+
+    named = invoke("build", "--workdir", str(workdir), "--model", "some/model",
+                   "--user-model", "other/small")
+    assert named.exit_code == 0, named.output
+    assert fake_modules["kullback.rounds.run_rounds"][1]["kwargs"]["user_agent_model"] is not None
+    assert fake_modules["kullback.ai.provider.live_model"][-1]["args"][0] == "other/small", \
+        "the user adapter is resolved from --user-model, not borrowed from another flag"
+
+    code_driven = invoke("build", "--workdir", str(workdir), "--user-model", "other/small")
+    assert code_driven.exit_code == 0, code_driven.output
+    kwargs = fake_modules["kullback.rounds.run_rounds"][2]["kwargs"]
+    assert kwargs["user_agent_model"] is not None and kwargs["model"] is None
+
+
 # --- freeze-runner ----------------------------------------------------------
 
 def version_file(workdir: Path) -> Path:
