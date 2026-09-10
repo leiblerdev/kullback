@@ -527,14 +527,73 @@ def _find_run(plan: ExaminerPlan, run_id: str) -> Run:
     raise KeyError(f"no Run is named {run_id} among the replays, the re-rolls and the probes")
 
 
+# What a Task with no readable Reference is answered with. Nothing can be derived from such a Task,
+# so nothing can be proposed for it and nothing can score a candidate against it; that is a state the
+# Task is in and not a fault in the call, so it is an answer with the state on it and never an
+# exception (D230). The verbs that do buy something for such a Task are named, the way an unknown id
+# is answered with the ids that exist.
+NO_REFERENCE = "no_reference"
+NO_REFERENCE_ALTERNATIVES = ("read the Runs it did record and why each was turned down (`read` the "
+                             "`references` row of the Task, then the Runs it names), `refuse` the Task "
+                             "when no frontier Run of it finished, or file a finding saying what its "
+                             "Runs evidence")
+# How many distinct reasons the refusal names. The reasons repeat across the Runs of one Task, so a
+# handful of them with a count each says what a list of every Run would, in a fraction of the context.
+NO_REFERENCE_REASONS = 5
+
+
+def reference_state(plan: ExaminerPlan, task_id: str) -> dict:
+    """Whether this Task's Reference can be read, and what stands in its place when it cannot.
+
+    `reference` True carries the Reference Runs' `paths`. False carries the refusal: how many Runs
+    the Task recorded and were turned down, the distinct reasons they were turned down under with a
+    count each, whether a Reference is named that this session cannot read (which is a different
+    thing from a Task that never had one), and the verbs that buy something instead.
+    """
+    references = read_json(plan.workdir / "references.json", {}) or {}
+    row = references.get(task_id) or {}
+    named = [str(r.get("run_id")) for r in (row.get("references") or []) if r.get("run_id")]
+    paths = [path for path in (_find_run_path(plan, run_id) for run_id in named) if path]
+    if paths:
+        return {"task_id": task_id, "reference": True, "paths": paths}
+    failed = row.get("failed") or {}
+    counts: dict[str, int] = {}
+    for reason in failed.values():
+        text = str(reason)
+        counts[text] = counts.get(text, 0) + 1
+    ranked = sorted(counts.items(), key=lambda pair: (-pair[1], pair[0]))
+    why = ("a Reference is named on the Task and none of its Runs is on disk in this session"
+           if named else str(row.get("reason") or "no Run of it was confirmed"))
+    return {"task_id": task_id, "reference": False, "found": False,
+            "note": f"task {task_id} has no Reference this session can read, so there is nothing to "
+                    f"derive a Verifier from and nothing to score a version against; {why}",
+            "runs_turned_down": len(failed),
+            "reasons": dict(ranked[:NO_REFERENCE_REASONS]),
+            "reasons_not_shown": max(0, len(ranked) - NO_REFERENCE_REASONS),
+            "references_named_not_on_disk": len(named),
+            "do_instead": NO_REFERENCE_ALTERNATIVES}
+
+
+class NoReference(LookupError):
+    """A Task asked about whose Reference cannot be read: the state travels with it (D230).
+
+    Every tool asks `reference_state` before it does any work, and answers the model with the state
+    rather than starting something it cannot finish. This is the guard under that: the one place
+    that joins a Task to its Reference files raises it, so a caller that has not asked stops there
+    with the state on the exception instead of failing three frames down on an empty list.
+    """
+
+    def __init__(self, state: dict) -> None:
+        super().__init__(state["note"])
+        self.state = state
+
+
 def _reference_paths(plan: ExaminerPlan, task_id: str) -> list[str]:
     """The References' paths, references.json run_ids joined back to the replay and re-roll rows."""
-    references = read_json(plan.workdir / "references.json", {}) or {}
-    rows = (references.get(task_id) or {}).get("references") or []
-    paths = [path for path in (_find_run_path(plan, row["run_id"]) for row in rows) if path]
-    if not paths:
-        raise LookupError(f"task {task_id} has no Reference on disk; derive first")
-    return paths
+    state = reference_state(plan, task_id)
+    if not state["reference"]:
+        raise NoReference(state)
+    return state["paths"]
 
 
 def _rules_trace(plan: ExaminerPlan, task_id: str) -> Optional[str]:
@@ -964,11 +1023,14 @@ def auto_loosen(plan: ExaminerPlan) -> dict:
             continue
         verifier = plan.current(task_id)
         run = next((r for r in task_runs.get(task_id, []) if r.run_id in set(seen["rejected_ids"])), None)
-        # D218 rule 3: a step that ends without a proposal writes why it ended. The three ways it can
-        # are a Task with no Verifier to loosen, a Task whose rejected Runs are not on disk to read
-        # and a Verifier no rule here can relax; each left the round with nothing recorded, so a Task
-        # the loosening never touched read the same as a Task it touched and could not move.
-        stopped = loosen_mod.nothing_proposed(verifier, run)
+        # D218 rule 3: a step that ends without a proposal writes why it ended. The ways it can are a
+        # Task with no Verifier to loosen, a Task whose rejected Runs are not on disk to read, a
+        # Verifier no rule here can relax, and, since D230, a Task whose Reference cannot be read,
+        # which has nothing to score a loosened version against and used to raise out of the step and
+        # take the whole derivation with it. Each left the round with nothing recorded, so a Task the
+        # loosening never touched read the same as a Task it touched and could not move.
+        stopped = (loosen_mod.NO_REFERENCE if not reference_state(plan, task_id)["reference"]
+                   else loosen_mod.nothing_proposed(verifier, run))
         if stopped is None and (proposal := loosen_mod.proposal_for(verifier, run, canon_rules,
                                                                    write_tools)) is None:
             stopped = loosen_mod.NO_RELAXATION
@@ -1270,6 +1332,14 @@ def _repair(plan: ExaminerPlan):
         locked = repair_lock(rejections, args.task_id)
         if locked is not None:
             raise PermissionError(f"repair refused: {locked}")
+        # D230: a Task with no readable Reference cannot be repaired, and that is an answer with the
+        # Task's state on it rather than an error: the model is told what the Runs it does have came
+        # to and which verbs buy something, and the session goes on.
+        state = reference_state(plan, args.task_id)
+        if not state["reference"]:
+            return RepairResult(summary=f"repair of task {args.task_id} refused: {_text(state)}",
+                                task_id=args.task_id, content_hash="", verifier_version="",
+                                accepted=False, rejected_by=[NO_REFERENCE], rulings=[], produced=[])
         out = propose_version(plan, args.task_id, drop=args.drop, add=args.add, reason=args.reason, by="repair")
         for check in out.rejected_by:
             rejections.setdefault((args.task_id, check), []).append(

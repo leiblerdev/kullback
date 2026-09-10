@@ -48,12 +48,14 @@ MAX_ROUNDS = 2
 # What the reason on a rejected proposal says, so a reader can tell a Task the gates turned down from
 # a Task nothing was proposed for.
 REJECTED = "auto_loosen_rejected"
-# D218 rule 3: the three ways this step ends with no proposal at all. Each is written on a row of its
-# own with `proposed` False, so the round says which Tasks it looked at and could do nothing for; a
+# D218 rule 3, D230: the four ways this step ends with no proposal at all. Each is written on a row of
+# its own with `proposed` False, so the round says which Tasks it looked at and could do nothing for; a
 # row like that is not an attempt and never spends the Task's `MAX_ROUNDS` budget.
 NO_VERIFIER = "no Verifier is on file for the Task, so there is nothing to loosen"
 NO_REJECTED_RUN = "no Run the Verifier rejects is among the Task's Runs, so there is nothing to read"
 NO_RELAXATION = "no atom of the Verifier can be relaxed by rule; the finding is the Examiner's"
+NO_REFERENCE = ("no Reference of the Task can be read, so there is nothing to score a loosened "
+                "version against")
 # The relaxation each atom gets, by the word the counts report it under. `path` and `read` are drops;
 # `write` and `write_value` are relaxations to an End-state predicate; `answer` keeps the predicate
 # and stops rejecting on it.

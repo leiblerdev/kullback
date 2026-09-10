@@ -17,6 +17,7 @@ from examiner.worlds import World, drive
 from gates.verifier_fixtures import make_run, write_events_jsonl
 from kullback.examiner import agent as examiner_agent
 from kullback.examiner import loosen
+from kullback.examiner import tools as tools_mod
 from kullback.gates.verifier_suite import atom_payload, check_run, make_atom
 from kullback.runner.records import Run, Task, ToolSig, Verifier, as_dict
 
@@ -330,3 +331,24 @@ def test_a_task_the_step_cannot_relax_gets_no_proposal_and_nothing_is_written(de
     plan, harness = _plan(derived, round=2)
     result = drive(harness, "derive", {"target": "all"})
     assert result.is_error is False and _rows(derived) == [], "nothing was over-strict to loosen"
+
+
+def test_the_step_skips_a_task_whose_reference_it_cannot_read_and_writes_why(derived):
+    """D230: the driver, not the model. The step reached a Task whose row named a Reference no Run
+    of the session carries, and the lookup it made raised out of the derive tool and stalled the
+    round. It is the fourth way the step ends with nothing proposed, and it writes that on a row of
+    its own like the other three, so the next round reads which Task it could do nothing for."""
+    plan, _ = _plan(derived, round=2)
+    _held_out(plan, derived)
+    assert TASK in loosen.over_strict_rows(plan.store), "the held-out Run is one the Verifier rejects"
+    references = json.loads((derived.workdir / "references.json").read_text(encoding="utf-8"))
+    references[TASK] = {**references[TASK], "failed": {"gone-1": "the schedule was never written"},
+                        "references": [{"kind": "reroll", "run_id": "gone-0", "trace_id": None}]}
+    (derived.workdir / "references.json").write_text(json.dumps(references), encoding="utf-8")
+    before = plan.current(TASK)
+    counts = tools_mod.auto_loosen(plan)
+    assert counts["auto_loosen_proposed"] == 0 and counts["auto_loosen_unproposed"] == 1
+    row = _rows(derived)[-1]
+    assert row["task_id"] == TASK and row["proposed"] is False and row["reason"] == loosen.NO_REFERENCE
+    assert plan.current(TASK).atoms == before.atoms, "the Task is exactly as it was"
+    assert loosen.may_propose(_rows(derived), TASK, 2), "a Task nothing was proposed for spends no budget"

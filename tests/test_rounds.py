@@ -1146,16 +1146,63 @@ def test_an_examiner_that_never_derives_fails_the_round(tmp_path, request):
     assert loop.rounds == [], "a failed derivation closes no round"
 
 
-def test_an_examiner_whose_derive_errors_fails_the_round(tmp_path, request):
-    """Greptile P1: a derive that errors is the round failing on stale state, never done or stalled."""
-    from kullback.examiner.agent import ExaminerError
-
-    loop = _model_driven_beat(tmp_path, request, [_reply(None, ("derive", {"target": "no-such-task"}))],
+def test_an_examiner_whose_derive_errors_counts_it_and_closes_the_round(tmp_path, request):
+    """D230: one live round ended stalled here after forty-five minutes of spend, with every finding
+    it had queued never reaching a Builder beat. The model called derive and read the error, so the
+    beat happened and the round is closed on what it left; the error is counted on the record.
+    Greptile P1 still holds: the round may not exit done on numbers no derivation refreshed."""
+    loop = _model_driven_beat(tmp_path, request,
+                              [_reply(None, ("derive", {"target": "no-such-task"})), _reply("gave up")],
                               "bad-derive")
-    with pytest.raises(ExaminerError, match="no Task is named"):
-        loop.examiner_beat(1)
+    loop.examiner_beat(1)
     assert loop.examiner_result is not None and loop.examiner_result.is_error
-    assert loop.rounds == [], "a failed derivation closes no round"
+    assert [(e["agent"], e["tool"]) for e in loop.tool_errors] == [("examiner", "derive")]
+    assert "no Task is named" in loop.tool_errors[0]["error"]
+
+
+def test_a_round_whose_derive_came_back_an_error_does_not_close_the_run_as_done(tmp_path):
+    """The counts an exit is read off are the round before's when the derivation errored, so done is
+    not a thing this round can say. It ends on the soft stop with the error named, which is a run
+    that stops with a record rather than one that dies on the exception."""
+    loop = _bare_loop(tmp_path)
+    loop.plan.last = pipeline.PipelineResult(status="ok")
+    loop.tool_errors = [{"agent": "examiner", "tool": "derive", "round": 1,
+                         "error": "derive failed: LookupError: task t7 has no Reference"}]
+    record = loop.close_round(1, _record(1, unfinished=[]).counts)
+    assert record.exit == "stalled" and "came back an error" in (record.exit_note or "")
+    assert "no Reference" in (record.exit_note or "")
+    assert record.counts["tool_errors"][0]["tool"] == "derive"
+    assert rounds.load_rounds(loop.plan.workdir)[0].counts["tool_errors"][0]["agent"] == "examiner"
+
+
+def test_a_beat_that_derived_cleanly_before_the_error_is_not_a_round_of_stale_counts(tmp_path, request):
+    """Greptile P1: the beat's result is the last derive it called, and a beat may call derive twice.
+    One clean call moved the counts, so the exit is read off this round's numbers as usual; the error
+    is still counted, since the model was answered with one and the next round should see it."""
+    loop = _model_driven_beat(tmp_path, request,
+                              [_reply(None, ("derive", {"target": rounds.EXAMINER_TARGET})),
+                               _reply(None, ("derive", {"target": "no-such-task"})),
+                               _reply("gave up")],
+                              "derived-then-errored")
+    loop.examiner_beat(1)
+    assert loop.examiner_result is not None and loop.examiner_result.is_error
+    assert loop.tool_errors[0]["derived"] is True
+    loop.plan.last = pipeline.PipelineResult(status="ok")
+    record = loop.close_round(1, _record(1, unfinished=[]).counts)
+    assert "came back an error" not in (record.exit_note or ""), "the clean derive moved this round's counts"
+    assert record.counts["tool_errors"][0]["derived"] is True, "the error is still counted for the next round"
+
+
+def test_a_round_whose_derive_errored_with_a_finding_queued_runs_on_so_the_builder_gets_it(tmp_path):
+    """What the exception threw away: the findings the beat had already filed owed the Builder a
+    beat, and a round that closes can still give them one."""
+    loop = _bare_loop(tmp_path)
+    loop.plan.last = pipeline.PipelineResult(status="ok")
+    loop.tool_errors = [{"agent": "examiner", "tool": "derive", "round": 1, "error": "derive failed"}]
+    loop.pending_findings = [_finding("t1")]
+    record = loop.close_round(1, _record(1, unfinished=[]).counts)
+    assert record.exit is None and "owe the Builder a beat" in (record.exit_note or "")
+    assert [f.finding_id for f in record.pending_findings] == ["f1"]
 
 
 def test_a_broken_examiner_stalls_the_run_with_the_reason_on_the_record(tmp_path, request):
