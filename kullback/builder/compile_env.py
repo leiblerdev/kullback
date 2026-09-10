@@ -2559,6 +2559,11 @@ def _stable_system(schema: Optional[EntitySchema] = None, tool_names: Iterable[s
     (`builder/readers.py`): how to reach its one row, and the derivations of the columns nothing
     stores. It is the same bytes for every tool of a build, so it belongs in this prefix and not in
     the per-tool turn.
+
+    The helper paragraph (`_BUILDER_TOOLS_PARAGRAPH`) is appended last on purpose, after the
+    tool list: the bytes in front of it are then shared with a call that turns the helpers off,
+    so the common prefix still caches. Every part is built from sorted values, never from set
+    iteration or dict order, so two calls over the same build are byte identical.
     """
     # The body skill (D168) sits in the prefix too: it is the same bytes for every tool of a build,
     # and it is read before the tables, which is where a body's mistakes are made.
@@ -2603,12 +2608,15 @@ def _tool_block(toolsig: ToolSig, examples: Iterable[ToolCall], error_prefix: Op
 def body_messages(toolsig: ToolSig, examples: Iterable[ToolCall], schema: Optional[EntitySchema] = None,
                   failure: str = "", tool_names: Iterable[str] = (),
                   error_prefix: Optional[str] = None, builder_tools: bool = False,
-                  lesson: str = "", world_note: str = "", effects: str = "") -> list[dict]:
+                  lesson: str = "", world_note: str = "", effects: str = "",
+                  system_head: Optional[str] = None) -> list[dict]:
     """The whole message list one body request sends, so its size can be checked before it goes.
 
     The system message carries the fixed instructions plus what is the same for every tool in
     this build (the schema, the tool list): one prefix, unchanged call to call, for a provider's
-    cache to reuse. The user message carries only this one tool, its recorded calls, and (for a
+    cache to reuse. `system_head`, given by compile_tool, is that prefix built once per tool
+    (one string object for every attempt of the tool); given none it is built here, which reads
+    the same bytes. The user message carries only this one tool, its recorded calls, and (for a
     one-shot request outside the repair loop) the failure of a previous attempt. `builder_tools`
     (D117) adds the one paragraph naming lookup_rows and test_body to the stable prefix; it is the
     same value on every call of one compile_tool, so the cached bytes never move mid-build.
@@ -2620,12 +2628,14 @@ def body_messages(toolsig: ToolSig, examples: Iterable[ToolCall], schema: Option
     `effects` (D215) belongs to this tool for the same reason and goes in the same turn: it is what
     this tool's own recorded calls were seen to change beyond their own answers.
     """
+    if system_head is None:
+        system_head = _stable_system(schema, tool_names, builder_tools, world_note)
     user = _tool_block(toolsig, examples, error_prefix, effects)
     if lesson:
         user += "\n\n" + lesson
     if failure:
         user += "\n\nThe previous body failed these gates:\n" + failure
-    return [{"role": "system", "content": _stable_system(schema, tool_names, builder_tools, world_note)},
+    return [{"role": "system", "content": system_head},
             {"role": "user", "content": user}]
 
 
@@ -2845,9 +2855,13 @@ def _assistant_tool_turn(reply: Any) -> dict:
 
 
 def _reply_with_tools(model, messages: list[dict], tools_impl: dict[str, Callable[..., str]],
-                      max_rounds: int = MAX_TOOL_ROUNDS) -> tuple[str, list[dict], str]:
+                      max_rounds: int = MAX_TOOL_ROUNDS,
+                      tool_specs: Optional[list] = None) -> tuple[str, list[dict], str]:
     """Query the model with lookup_rows and test_body on, executing whatever it calls (D117).
 
+    `tool_specs` is the frozen helper spec list: one list object in a fixed order, the same
+    object on every attempt and every tool round, so the request envelope never splits the
+    provider's cache. Given none it is `BUILDER_TOOLS`, which is that same object.
     `messages` (the attempt's own system and user turns, exactly as compile_tool built them) is
     never mutated: the tool exchange runs over a local copy, so the next attempt's retry still
     appends its assistant reply and new evidence onto the plain chain `_append_retry` expects,
@@ -2861,8 +2875,9 @@ def _reply_with_tools(model, messages: list[dict], tools_impl: dict[str, Callabl
     tool_uses: list[dict] = []
     reply = None
     draft = ""
+    specs = BUILDER_TOOLS if tool_specs is None else tool_specs
     for _ in range(max_rounds):
-        reply = model.query(working, tools=BUILDER_TOOLS)
+        reply = model.query(working, tools=specs)
         if not reply.tool_calls:
             return reply.content or "", tool_uses, draft
         working = working + [_assistant_tool_turn(reply)]
@@ -3501,7 +3516,8 @@ def compile_tool(model, toolsig: ToolSig, calls: Iterable[ToolCall], schema: Ent
                  builder_tools: bool = True, lesson: str = "", world_note: str = "",
                  readers: Any = None, call_tasks: Optional[dict] = None,
                  effects: str = "", effect_values: Optional[dict] = None,
-                 holdout: Optional[dict] = None, holdout_values: Optional[dict] = None) -> ToolBuild:
+                 holdout: Optional[dict] = None, holdout_values: Optional[dict] = None,
+                 system_head: Optional[str] = None, tool_specs: Optional[list] = None) -> ToolBuild:
     """Write one tool body, gate it, and repair it at most three times with growing evidence (D75).
 
     Attempt 1 sees the failing call, attempt 2 every failing call, attempt 3 the full call table, and
@@ -3550,10 +3566,19 @@ def compile_tool(model, toolsig: ToolSig, calls: Iterable[ToolCall], schema: Ent
     request (`memory.lesson_for`, written by `repair.record_tool_lesson`). It is carried into the
     first user turn, so it is in the prefix every retry of this attempt chain keeps; without it the
     recompile asks the same question again and the model has no way to know it was asked before.
+
+    `system_head`, given by the caller, is the system prefix built once per build and shared by
+    every tool; given none it is built once here and the same string object reaches every attempt
+    of this tool, so per attempt builders cannot drift a byte. `tool_specs` is the frozen helper
+    spec list in a fixed order: the same list object on every attempt and every tool round, so
+    the request envelope never splits the cache. Given none it is `BUILDER_TOOLS`.
     """
     workdir, calls = Path(workdir), list(calls)
     if error_prefix is None:  # build.py passes the corpus-wide prefix; alone, this tool's own calls
         error_prefix = shared_error_prefix(calls)
+    if system_head is None:
+        system_head = _stable_system(schema, tool_names, builder_tools, world_note)
+    specs = BUILDER_TOOLS if tool_specs is None else tool_specs
     shown, held_out = split_calls(calls)
     build, failure = ToolBuild(name=toolsig.name, body=""), ""
     skeleton = gate_parses(module_source(schema, [toolsig], {toolsig.name: "pass"}))
@@ -3578,7 +3603,8 @@ def compile_tool(model, toolsig: ToolSig, calls: Iterable[ToolCall], schema: Ent
         if attempt == 0:
             messages = body_messages(toolsig, evidence, schema=schema, tool_names=tool_names,
                                      error_prefix=error_prefix, builder_tools=builder_tools,
-                                     lesson=lesson, world_note=world_note, effects=effects)
+                                     lesson=lesson, world_note=world_note, effects=effects,
+                                     system_head=system_head)
         else:
             messages = _append_retry(messages, reply_content, evidence, failure, error_prefix)
         # Fewer whole calls, never a shortened one. `_example_block` refuses to cut a call in
@@ -3592,7 +3618,8 @@ def compile_tool(model, toolsig: ToolSig, calls: Iterable[ToolCall], schema: Ent
             node["evidence_calls"] = len(evidence)
             messages = (body_messages(toolsig, evidence, schema=schema, tool_names=tool_names,
                                       error_prefix=error_prefix, builder_tools=builder_tools,
-                                      lesson=lesson, world_note=world_note, effects=effects)
+                                      lesson=lesson, world_note=world_note, effects=effects,
+                                      system_head=system_head)
                         if attempt == 0
                         else _append_retry(messages[:-2], reply_content, evidence, failure, error_prefix))
         size = prompt_chars(messages)
@@ -3607,7 +3634,8 @@ def compile_tool(model, toolsig: ToolSig, calls: Iterable[ToolCall], schema: Ent
                      if builder_tools else None)
         try:
             if builder_tools:
-                reply_content, tool_uses, draft = _reply_with_tools(model, messages, tools_impl)
+                reply_content, tool_uses, draft = _reply_with_tools(model, messages, tools_impl,
+                                                                    tool_specs=specs)
             else:
                 reply_content, tool_uses, draft = model.query(messages).content or "", [], ""
         except _context_cap_error() as refusal:
