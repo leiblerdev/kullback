@@ -10,9 +10,11 @@ from __future__ import annotations
 
 import copy
 import hashlib
+import io
 import json
 import re
 import textwrap
+import tokenize
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Iterable, Optional
@@ -2164,7 +2166,218 @@ def _confinement_block(denied: Iterable[str] = DENIED_BUILTINS, allowed: Iterabl
             "evaluate_arithmetic(expression) is provided in the body's namespace: it evaluates "
             "+ - * / // % ** with parentheses over a decimal and returns a Decimal, so never write "
             "a parser and never reach for eval; for example `float(evaluate_arithmetic(expression))` "
-            "or round it to the places the recording shows.")
+            "or round it to the places the recording shows. "
+            "Write ASCII only: no smart quotes, no dashes other than the hyphen and no other "
+            "non-ASCII character anywhere in the body, not even in a comment.")
+
+
+# The typographic characters a model reaches for that Python refuses outside a string. A live build
+# stalled a whole round on an em dash written into code, and every attempt after it was spent on the
+# same character. They are replaced deterministically and for free, and only where Python would
+# execute them: inside a string literal the character may be the behaviour the recording shows, and
+# rewriting a literal would move the replay the gates compare by. Any other non-ASCII character is
+# left where it stands and named in the note, because guessing what a model meant by it is not the
+# sanitizer's business.
+# Written as escapes so the table stays greppable and no editor can quietly alter it.
+CONFUSABLES = {
+    "\u2010": "-", "\u2011": "-", "\u2012": "-", "\u2013": "-", "\u2014": "-",
+    "\u2015": "-", "\u2212": "-", "\u2018": "'", "\u2019": "'", "\u201a": "'",
+    "\u201b": "'", "\u2032": "'", "\u201c": '"', "\u201d": '"', "\u201e": '"',
+    "\u201f": '"', "\u2033": '"', "\u2026": "...", "\u00a0": " ", "\u2007": " ",
+    "\u2009": " ", "\u202f": " ", "\u200b": "", "\u200c": "", "\u200d": "",
+    "\ufeff": "",
+}
+
+# Python 3.12 reports the printed halves of an f-string under their own token type; 3.11 has no such
+# type and hands the whole f-string back as one string token.
+_FSTRING_MIDDLE = getattr(tokenize, "FSTRING_MIDDLE", -1)
+
+
+def sanitize_body(body: str) -> tuple[str, Optional[str]]:
+    """Replace typographic confusables where Python would execute them, so a smart quote never costs
+    a model an attempt.
+
+    Returns the body and a note naming what was changed and what was left standing, or None when the
+    body needed nothing. What a string literal prints keeps every character it was written with. An
+    f-string keeps its printed text and its format specs for the same reason, while the expressions
+    inside it are code like any other and are sanitized like any other: that is one rule, not two,
+    and it reads the same on every Python the harness supports even though the two tokenizers hand
+    an f-string back differently.
+
+    A body the tokenizer itself refuses is returned unchanged and unremarked. There is nothing to
+    stand on there, and the compile gate already tells the model where it does not parse.
+    """
+    if not body or body.isascii():
+        return body, None
+    try:
+        tokens = list(tokenize.generate_tokens(io.StringIO(body).readline))
+    except (tokenize.TokenError, IndentationError, SyntaxError):
+        return body, None
+    lines = body.splitlines(keepends=True)
+    printed = _printed_positions(tokens, lines)
+    changed: list[str] = []
+    left: set[str] = set()
+    out: list[str] = []
+    for row, line in enumerate(lines, start=1):
+        chars: list[str] = list(line)
+        for column, char in enumerate(chars):
+            if char.isascii() or (row, column) in printed:
+                continue
+            if char in CONFUSABLES:
+                chars[column] = CONFUSABLES[char]
+                changed.append(f"{char!r} at line {row}")
+            else:
+                left.add(char)
+        out.append("".join(chars))
+    notes = []
+    if changed:
+        notes.append("replaced typographic characters outside strings: " + "; ".join(changed[:5]))
+    if left:
+        notes.append("non-ASCII outside strings the sanitizer does not cover: "
+                     + ", ".join(f"U+{ord(char):04X}" for char in sorted(left)))
+    return ("".join(out) if changed else body), ("; ".join(notes) or None)
+
+
+def _printed_positions(tokens: Iterable[Any], lines: list[str]) -> set[tuple[int, int]]:
+    """Every (line, column) of the body that a string literal prints rather than runs.
+
+    Two tokenizers have to be read into the same answer. From Python 3.12 the tokenizer reports the
+    printed halves of an f-string and its format specs as their own tokens and hands the expressions
+    back as ordinary code, so protecting those halves is the whole job. Up to 3.11 a whole f-string
+    arrives as a single string token, and skipping it whole is how a confusable inside a replacement
+    field used to reach the parser untouched; there the expressions are found in the token's text and
+    left out of the protection.
+    """
+    printed: set[tuple[int, int]] = set()
+    for token in tokens:
+        if token.type == _FSTRING_MIDDLE:
+            printed.update(_span_positions(token.start, token.end, lines))
+        elif token.type == tokenize.STRING:
+            spans = _fstring_expression_spans(token.string)
+            row, column = token.start
+            for offset, char in enumerate(token.string):
+                if not any(begin <= offset < end for begin, end in spans):
+                    printed.add((row, column))
+                row, column = (row + 1, 0) if char == "\n" else (row, column + 1)
+    return printed
+
+
+def _span_positions(start: tuple[int, int], end: tuple[int, int], lines: list[str]):
+    row, column = start
+    while (row, column) < end and row <= len(lines):
+        if column >= len(lines[row - 1]):
+            row, column = row + 1, 0
+            continue
+        yield row, column
+        column += 1
+
+
+def _string_parts(text: str) -> tuple[str, int, int]:
+    """One string token as its prefix letters, where its content starts, and where it ends."""
+    for index, char in enumerate(text):
+        if char in "'\"":
+            for quote in ("'''", '"""', "'", '"'):
+                if text.startswith(quote, index):
+                    return text[:index], index + len(quote), len(text) - len(quote)
+            break
+    return text, len(text), len(text)
+
+
+def _fstring_expression_spans(text: str) -> list[tuple[int, int]]:
+    """The offsets inside one f-string token that Python runs rather than prints.
+
+    Everything else in the token is printed: the text around the replacement fields, the doubled
+    braces that stand for a brace, the conversion after `!` and the format spec after `:`. A nested
+    string inside an expression is a string again, and is asked the same question in turn, so a
+    confusable in an f-string nested in an f-string is treated exactly like one at the top.
+    """
+    prefix, start, stop = _string_parts(text)
+    if "f" not in prefix.lower():
+        return []
+    spans: list[tuple[int, int]] = []
+    # One entry per replacement field being read, innermost last: what is being read (the expression,
+    # or the format spec that follows it), how deep in brackets that expression is, and where the run
+    # of code being read began. A run ends at the field's end and at every string nested inside it,
+    # which prints its own contents and so is skipped and asked the same question in turn.
+    fields: list[list] = [["text", 0, start]]
+    index = start
+    while index < stop:
+        char, reading = text[index], fields[-1][0]
+        if reading != "expression":
+            if text.startswith("{{", index) or text.startswith("}}", index):
+                index += 2
+            elif char == "{":
+                fields.append(["expression", 0, index + 1])
+                index += 1
+            elif char == "}" and reading == "spec":
+                fields.pop()
+                index += 1
+            else:
+                index += 1
+            continue
+        if char in "'\"":
+            begin = _quoted_start(text, index, fields[-1][2])
+            end = _quoted_end(text, index, stop)
+            spans.append((fields[-1][2], begin))
+            spans += [(begin + first, begin + last)
+                      for first, last in _fstring_expression_spans(text[begin:end])]
+            fields[-1][2] = index = end
+        elif char in "([{":
+            fields[-1][1] += 1
+            index += 1
+        elif char in ")]}" and fields[-1][1] > 0:
+            fields[-1][1] -= 1
+            index += 1
+        elif char == "}":
+            spans.append((fields[-1][2], index))
+            fields.pop()
+            index += 1
+        elif char == ":" or _conversion(text, index) or _self_documenting(text, index):
+            spans.append((fields[-1][2], index))
+            fields[-1][0] = "spec"
+            index += 1
+        else:
+            index += 1
+    return sorted(span for span in spans if span[0] < span[1])
+
+
+def _conversion(text: str, index: int) -> bool:
+    """`!r`, `!s` or `!a`, which ends the expression and is printed, not run."""
+    return text[index] == "!" and text[index + 1:index + 2] in ("r", "s", "a") \
+        and text[index + 2:index + 3] in ("}", ":")
+
+
+def _self_documenting(text: str, index: int) -> bool:
+    """The `=` of `f"{total=}"`, which ends the expression, as against `==` or `>=`."""
+    return text[index] == "=" and text[index + 1:index + 2] != "=" \
+        and text[index - 1:index] not in ("!", "<", ">", "=", "+", "-", "*", "/", "%", "@", "&",
+                                          "|", "^", "~", ":")
+
+
+def _quoted_start(text: str, index: int, floor: int) -> int:
+    """Where the nested string at `index` begins, counting the prefix letters before its quote."""
+    begin = index
+    while begin > floor and text[begin - 1] in "rRbBuUfF":
+        begin -= 1
+    return begin
+
+
+def _quoted_end(text: str, index: int, stop: int) -> int:
+    """Where the nested string opening at `index` ends, or the end of the token if it does not."""
+    for quote in ('"""', "'''", '"', "'"):
+        if text.startswith(quote, index):
+            break
+    else:
+        return index + 1
+    scan = index + len(quote)
+    while scan < stop:
+        if text[scan] == "\\":
+            scan += 2
+        elif text.startswith(quote, scan):
+            return scan + len(quote)
+        else:
+            scan += 1
+    return stop
 
 
 # D117: said once, only when compile_tool was asked to offer the two builder tools, so a caller
@@ -2427,15 +2640,20 @@ def _build_tools_impl(schema: EntitySchema, toolsig: ToolSig, shown: list[ToolCa
 
     def test_body(body: Optional[str] = None) -> str:
         probes["n"] += 1
-        source = module_source(schema, [toolsig], {toolsig.name: body or ""})
+        # The same sanitize the submission path runs, so the probe answers for the body that would
+        # be gated: a draft carrying a smart quote used to be told it does not parse and then pass
+        # on submission, which is a repair round spent on a difference the harness invented.
+        body, sanitized = sanitize_body(body or "")
+        source = module_source(schema, [toolsig], {toolsig.name: body})
         sandbox = Sandbox(source, db, workdir / f"attempt_{attempt}_probe_{probes['n']}", timeout=timeout,
                           call_states=call_states)
         gates = run_gates(source, sandbox, shown, [], schema, rules,
                           probe_refusals=toolsig.kind == "write", sig=toolsig, readers=readers,
                           holdout_values=holdout_values, effect_values=effect_values)
+        note = ("\n" + sanitized) if sanitized else ""
         if all(g.passed for g in gates):
-            return "passed every gate: " + ", ".join(g.stage for g in gates)
-        return _failure_text(gates)
+            return "passed every gate: " + ", ".join(g.stage for g in gates) + note
+        return _failure_text(gates) + note
 
     return {"lookup_rows": lookup_rows, "test_body": test_body}
 
@@ -3267,6 +3485,12 @@ def compile_tool(model, toolsig: ToolSig, calls: Iterable[ToolCall], schema: Ent
             node["failures"] = ["no body was submitted"]
             build.nodes.append(node)
             continue
+        body, sanitized = sanitize_body(body)
+        if sanitized:
+            # Deterministic, free and recorded on the node: a smart quote never costs an attempt,
+            # and the next attempt's evidence carries what changed so the model stops writing it.
+            node["sanitized"] = sanitized
+            reply_content = body
         source = module_source(schema, [toolsig], {toolsig.name: body})
         sandbox = Sandbox(source, db, workdir / f"attempt_{attempt}", timeout=timeout,
                           call_states=call_states, call_tasks=call_tasks)
@@ -3288,6 +3512,8 @@ def compile_tool(model, toolsig: ToolSig, calls: Iterable[ToolCall], schema: Ent
         if node["passed"]:
             break
         failure = "\n" + _failure_text(gates, held_out)
+        if node.get("sanitized"):
+            failure += "\n" + node["sanitized"]
         if any(g.stage == "non_trivial" and not g.passed for g in gates):
             failure += _constant_evidence_note(evidence)
         # Only when the sandbox has already run these calls, so the note costs no subprocess: a
