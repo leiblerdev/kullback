@@ -127,18 +127,48 @@ def local_providers(path: Optional[str | Path] = None) -> dict[str, dict]:
     if not isinstance(entries, dict):
         return merged
     for name, entry in entries.items():
-        if isinstance(entry, dict):
-            merged[name] = _merge_provider(merged.get(name), entry)
+        if not isinstance(entry, dict):
+            continue
+        usable = _usable_entry(entry)
+        if usable is not None:
+            merged[name] = _merge_provider(merged.get(name), usable)
     return merged
 
 
+def _usable_entry(entry: dict) -> Optional[dict]:
+    """One row of the file with what cannot be read dropped, or None when the row cannot be read.
+
+    models has to be a mapping of wire id to row. A models field of any other shape is not a row
+    with one bad field, it is a row written to a different shape, so the whole row is left out:
+    landing half of it would point a provider at a new host while its prices still came from the
+    row underneath. Every other provider in the file is unaffected. A single model row of the
+    wrong shape is narrower, and only that wire id is dropped.
+    """
+    models = entry.get("models")
+    if models is None:
+        return entry
+    if not isinstance(models, dict):
+        return None
+    rows = {wire_id: row for wire_id, row in models.items() if isinstance(row, dict)}
+    kept = {key: value for key, value in entry.items() if key != "models"}
+    if rows:
+        kept["models"] = rows
+    return kept
+
+
 def _merge_provider(under: Optional[dict], over: dict) -> dict:
-    """One provider row laid over another: top-level fields replaced, model rows merged by id."""
+    """One provider row laid over another: top-level fields replaced, model rows merged by id.
+
+    Either side can carry a models field of the wrong shape (the catalog underneath is whatever
+    models.dev last served), and a merge that raises would take every model call down, so a
+    models field that is not a mapping is passed over rather than read.
+    """
     if not isinstance(under, dict):
         return copy.deepcopy(over)
     merged = {**copy.deepcopy(under), **copy.deepcopy(over)}
-    models = dict(under.get("models") or {})
-    over_models = over.get("models")
+    under_models = copy.deepcopy(under.get("models"))
+    over_models = copy.deepcopy(over.get("models"))
+    models = under_models if isinstance(under_models, dict) else {}
     if isinstance(over_models, dict):
         models.update(over_models)
     if models:

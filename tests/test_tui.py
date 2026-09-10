@@ -787,6 +787,25 @@ def test_the_login_menu_offers_the_providers_only_the_local_registry_names(tmp_p
     assert offered["a-host"] == "a-host/quick-1"
 
 
+def test_the_login_menu_does_not_offer_a_provider_whose_models_field_is_not_an_object(tmp_path, monkeypatch):
+    """A row written to the wrong shape must not become a choice: the menu would take the list's
+    first element for a model id and offer a name no endpoint serves. The row is left out of the
+    registry, so the menu never sees it, and the row beside it is still offered."""
+    from kullback.ai import pricing
+
+    _snapshot(monkeypatch, tmp_path)
+    (tmp_path / pricing.LOCAL_PROVIDERS_NAME).write_text(json.dumps(
+        {"b-host": {"id": "b-host", "api": "https://b-host.invalid/v1", "env": ["B_HOST_API_KEY"],
+                    "models": ["swift-2", "swift-3"]},
+         "a-host": {"id": "a-host", "npm": "@ai-sdk/openai-compatible",
+                    "api": "https://a-host.invalid/v1", "env": ["A_HOST_API_KEY"],
+                    "models": {"quick-1": {"cost": {"input": 1.0, "output": 2.0}}}}}),
+        encoding="utf-8")
+    offered = Screen(tmp_path, console=_console())._login_defaults()
+    assert "b-host" not in offered
+    assert offered["a-host"] == "a-host/quick-1"
+
+
 def test_the_login_menu_starts_each_provider_at_a_model_the_key_variable_rule_can_answer_for(
         tmp_path, monkeypatch):
     """Every default is a full provider/model id, so the menu can name the variable to set before

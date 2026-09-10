@@ -375,15 +375,56 @@ def test_a_local_registry_file_that_cannot_be_read_is_ignored_not_raised_on(tmp_
     assert set(pricing.local_providers(path)) == set(pricing.BUILTIN_LOCAL_PROVIDERS)
 
 
-def test_a_provider_row_whose_models_field_is_not_an_object_keeps_the_built_in_model_rows(tmp_path):
-    """A misshapen optional file must not take every model call down: the row's other fields land,
-    its models value is ignored, and the built-in model rows still price."""
+def test_a_provider_row_whose_models_is_a_list_is_left_out_and_the_rows_beside_it_still_price(tmp_path):
+    """A misshapen row must not take every model call down. Its shape is wrong, not one of its
+    fields, so the whole row is left out rather than half-applied, and the file's other providers
+    are read as if it were not there."""
+    path = tmp_path / "models.dev.json"
+    write_snapshot(path, CATALOG)
+    write_local(path, {"b-host": {"api": "https://b-host.invalid/v1", "env": ["B_HOST_API_KEY"],
+                                  "npm": "@ai-sdk/openai-compatible",
+                                  "models": ["swift-2", "swift-3"]},
+                       **LOCAL_FILE})
+    catalog = pricing.refresh(path=path, env={})
+    assert "b-host" not in pricing.local_providers(path)
+    assert pricing.price_from_catalog(catalog, "a-host/quick-1")["output"] == 2.0
+    assert pricing.endpoint_from_catalog(catalog, "a-host/quick-1").key_env_var == "A_HOST_API_KEY"
+    assert catalog["openai"] == CATALOG["openai"]
+
+
+def test_a_provider_row_whose_models_is_a_string_is_left_out_of_the_registry(tmp_path):
+    path = tmp_path / "models.dev.json"
+    write_local(path, {"c-host": {"api": "https://c-host.invalid/v1", "models": "swift-2"}})
+    registry = pricing.local_providers(path)
+    assert "c-host" not in registry
+    assert set(registry) == set(pricing.BUILTIN_LOCAL_PROVIDERS), "the built-in rows still answer"
+
+
+def test_a_model_row_that_is_a_string_is_dropped_and_its_well_formed_siblings_still_price(tmp_path):
+    """One bad row inside a models mapping is narrower than a bad models field: only that wire id
+    goes, and the provider it sits in keeps answering for the ids that are written properly."""
+    path = tmp_path / "models.dev.json"
+    write_snapshot(path, CATALOG)
+    write_local(path, {"d-host": {"id": "d-host", "npm": "@ai-sdk/openai-compatible",
+                                  "api": "https://d-host.invalid/v1", "env": ["D_HOST_API_KEY"],
+                                  "models": {"swift-2": "0.5 in, 1.5 out",
+                                             "swift-3": {"limit": {"context": 64_000},
+                                                         "cost": {"input": 0.5, "output": 1.5}}}}})
+    catalog = pricing.refresh(path=path, env={})
+    assert pricing.price_from_catalog(catalog, "d-host/swift-2") is None
+    assert pricing.price_from_catalog(catalog, "d-host/swift-3")["output"] == 1.5
+    assert pricing.window_from_catalog(catalog, "d-host/swift-3") == 64_000
+    assert pricing.endpoint_from_catalog(catalog, "d-host/swift-3").base_url == "https://d-host.invalid/v1"
+
+
+def test_a_built_in_provider_given_a_misshapen_models_field_keeps_the_rows_it_shipped_with(tmp_path):
+    """The overlay row is dropped whole, so the provider underneath is untouched: the built-in
+    host and prices stand rather than a half-merged mixture of the two."""
     path = tmp_path / "models.dev.json"
     name = next(iter(pricing.BUILTIN_LOCAL_PROVIDERS))
     write_local(path, {name: {"api": "https://elsewhere.invalid/v1", "models": ["not", "an", "object"]}})
     row = pricing.local_providers(path)[name]
-    assert row["api"] == "https://elsewhere.invalid/v1"
-    assert row["models"] == pricing.BUILTIN_LOCAL_PROVIDERS[name]["models"]
+    assert row == pricing.BUILTIN_LOCAL_PROVIDERS[name]
 
 
 def test_the_local_file_wins_over_a_built_in_row_of_the_same_name(tmp_path):
