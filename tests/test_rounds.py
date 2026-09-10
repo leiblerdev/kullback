@@ -991,7 +991,7 @@ def test_a_round_that_failed_still_records_its_clock_its_spend_and_its_turns(tmp
         counts["turns"]["examiner"]
     assert counts["context_fill"]["builder"] > 0.0
     assert set(counts["spend"]) == {"builder", "examiner", "total", "cache_saved"}
-    assert counts["tasks"] == 3 and counts["fidelity"] <= counts["tasks"], \
+    assert counts["tasks"] == 3 >= counts["fidelity"], \
         "D231: it computed the gate counts it still could, over the Tasks it ruled on"
     assert json.loads((workdir / "gates_by_round.json").read_text(encoding="utf-8"))[-1]["round"] == 1
 
