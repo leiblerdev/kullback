@@ -502,18 +502,78 @@ SINGLE_PATH_BY_STRUCTURE = "single_path_by_structure"
 SYNTH_KEPT_NONE = "no rewrite of the Reference's call path reaches its End state"
 
 
-def _ordered_gather(pool: Any, items: list, fn: Callable) -> list:
+_tls = threading.local()
+
+
+def _held() -> int:
+    """How many ceiling permits this thread holds right now."""
+    return getattr(_tls, "held", 0)
+
+
+def _guarded(sem: Any, fn: Callable[[], Any]) -> Any:
+    """One pool job under the call's shared ceiling.
+
+    The permit is held only while the job runs. A job that waits in `_ordered_gather` gives its
+    permits back while blocked, so the ceiling counts running jobs and a waiter never starves the
+    jobs it waits for.
+    """
+    if sem is None:
+        return fn()
+    sem.acquire()
+    _tls.held = _held() + 1
+    try:
+        return fn()
+    finally:
+        _tls.held = _held() - 1
+        sem.release()
+
+
+def _derive_resources(workers: int) -> tuple[Any, threading.Semaphore]:
+    """One `derive_all` call's inner pool and the ceiling its pools share.
+
+    The outer per-Task jobs (`_prepare_all`, `_finish_all`) and the inner per-survivor and
+    per-variant jobs (`_ordered_gather`) each take one permit of this semaphore while they run,
+    so at most `workers` jobs run across both pools combined, never twice that.
+    """
+    count = max(1, workers)
+    return ThreadPoolExecutor(max_workers=count), threading.Semaphore(count)
+
+
+def _ordered_gather(pool: Any, items: list, fn: Callable, sem: Any = None) -> list:
     """`fn` over `items` on the shared pool, gathered in the items' order.
 
     One Task's independent calls as separate jobs: the pool runs them together and the gather reads
     them back in dispatch order, so the rows, the kept variants and the file bytes are what the
-    serial loop wrote. The first exception in item order is raised, as `parallel.each` raises it.
-    With no pool this is a plain loop, so a caller that never asked for concurrency gets none.
+    serial loop wrote. The first exception in item order is raised, as `parallel.each` raises it,
+    and the futures not yet started are cancelled, so a failure stops spending the remaining jobs.
+    Each job runs under the call's shared ceiling, and the waiting thread holds no permit while
+    blocked. With no pool this is a plain loop, so a caller that never asked for concurrency
+    gets none.
     """
     if pool is None:
         return [fn(item) for item in items]
-    futures = [pool.submit(fn, item) for item in items]
-    return [future.result() for future in futures]
+    if sem is None:
+        futures = [pool.submit(fn, item) for item in items]
+        try:
+            return [future.result() for future in futures]
+        finally:
+            for future in futures:
+                future.cancel()
+
+    def _one(item: Any) -> Any:
+        return _guarded(sem, lambda: fn(item))
+
+    futures = [pool.submit(_one, item) for item in items]
+    mine = _held()
+    for _ in range(mine):
+        sem.release()
+    try:
+        return [future.result() for future in futures]
+    finally:
+        for future in futures:
+            future.cancel()
+        for _ in range(mine):
+            sem.acquire()
 
 
 def _run_variant_once(run_variant: Any, task_id: str, calls: list, run_id: str,
@@ -528,7 +588,7 @@ def _run_variant_once(run_variant: Any, task_id: str, calls: list, run_id: str,
         return None
 
 
-def _keep_synth(row: Any, plan: dict, reference: Any, *, write_tools: set, fn: Callable,
+def _keep_synth(row: Any, reference: Any, *, write_tools: set, fn: Callable,
                 atoms: Any) -> Optional[Any]:
     """One replayed rewrite as a Recording where it reaches the Reference's End state, else nothing."""
     if not row or not row.get("path"):
@@ -545,7 +605,8 @@ def _keep_synth(row: Any, plan: dict, reference: Any, *, write_tools: set, fn: C
 
 def synth_second_path(task_id: str, confirmation: Any, *, run_variant: Any, round_number: int,
                       write_tools: set, fn: Callable, atoms: Any,
-                      limit: int = variants_mod.MAX_VARIANTS, pool: Any = None) -> tuple[dict, list]:
+                      limit: int = variants_mod.MAX_VARIANTS, pool: Any = None,
+                      sem: Any = None) -> tuple[dict, list]:
     """Rewrites of the Reference's own call path, replayed and kept where they land in the same place.
 
     Answers with what the synthesis found, for the row and the counts, and the Recordings of the
@@ -553,8 +614,10 @@ def synth_second_path(task_id: str, confirmation: Any, *, run_variant: Any, roun
     scores the Verifier on them and on nothing else that is new.
 
     The variant runs are independent of each other once the plans are deduped in plan order, so
-    they run as separate jobs on the call's shared pool and gather in plan order; the keep below
-    reads the gathered rows as the serial loop did.
+    they run as separate jobs on the call's shared pool under its ceiling and gather in plan
+    order; the keep below reads the gathered rows as the serial loop did. Each replayed Run file
+    lands under runs/ during the gather and the index over them is written once after it through
+    the runner's own flush, which gives the bytes the serial per-variant writes gave.
     """
     reference = confirmation.references[0]
     try:
@@ -576,10 +639,13 @@ def synth_second_path(task_id: str, confirmation: Any, *, run_variant: Any, roun
         tries.append((index, plan))
     rows = _ordered_gather(pool, tries, lambda item: _run_variant_once(
         run_variant, task_id, item[1]["calls"],
-        f"{SYNTH_PREFIX}-r{round_number}-{task_id}-{item[0]}", spoken))
+        f"{SYNTH_PREFIX}-r{round_number}-{task_id}-{item[0]}", spoken), sem=sem)
+    flush = getattr(run_variant, "write_runs_index", None)
+    if flush is not None and tries:
+        flush()
     tried, kept, kinds = len(tries), [], []
     for (_, plan), row in zip(tries, rows, strict=True):
-        rec = _keep_synth(row, plan, reference, write_tools=write_tools, fn=fn, atoms=atoms)
+        rec = _keep_synth(row, reference, write_tools=write_tools, fn=fn, atoms=atoms)
         if rec is None:
             continue
         kept.append(rec)
@@ -838,7 +904,7 @@ def _derive_survivor(group: dict, *, survivors: list, confirmation: Any, task: T
 def settle_residue(task: Task, confirmation: Any, *, canon_rules: Any, write_tools: set,
                    constraints: list, intents: dict, user_rules: dict, fn: Callable,
                    pool_runs: Iterable[tuple[str, str]] = (), verifier_version: str = "1",
-                   cap: int = SURVIVOR_CAP, pool: Any = None) -> None:
+                   cap: int = SURVIVOR_CAP, pool: Any = None, sem: Any = None) -> None:
     """Derive one Verifier per surviving End state and let the suite and the held-out pool choose (D198).
 
     The judge is fail-only and a residue is the question it has already declined: three decisions
@@ -858,8 +924,8 @@ def settle_residue(task: Task, confirmation: Any, *, canon_rules: Any, write_too
     whole suite, probe included, on the ordinary path afterwards.
 
     Each survivor's derivation is independent of the others, so they run as separate jobs on the
-    call's shared pool and gather in survivor order; the choice below reads the gathered rows as
-    the serial loop left them.
+    call's shared pool under its ceiling and gather in survivor order; the choice below reads the
+    gathered rows as the serial loop left them.
     """
     survivors = list(confirmation.survivors)
     if len(survivors) < 2:
@@ -873,7 +939,7 @@ def settle_residue(task: Task, confirmation: Any, *, canon_rules: Any, write_too
         group, survivors=survivors, confirmation=confirmation, task=task, task_for=task_for,
         canon_rules=canon_rules, write_tools=write_tools, constraints=constraints,
         intents=intents, user_rules=user_rules, fn=fn, pool_runs=pool_runs,
-        verifier_version=verifier_version))
+        verifier_version=verifier_version), sem=sem)
     rows: list[dict] = []
     by_label: dict[str, dict] = {}
     for item in derived:
@@ -1119,6 +1185,7 @@ class _DeriveState:
     round_number: int
     common: dict
     pool: Any
+    sem: Any
 
 
 def _tool_names(sigs: Iterable[Any]) -> tuple[set, set]:
@@ -1215,7 +1282,7 @@ def _init_state(ctx: ExamContext, inputs: dict, *, probe_model: Any = None,
                 probe_limit: Optional[int] = None, judge_model: Any = None,
                 judge_agent: bool = False, run_probe: Any = None, run_rerolls: Any = None,
                 run_variant: Any = None, round_number: int = 0,
-                code_hash: Optional[str] = None, pool: Any = None) -> _DeriveState:
+                code_hash: Optional[str] = None, pool: Any = None, sem: Any = None) -> _DeriveState:
     """Load the call's shared inputs, demote the broken rules, build the judge and the cache key base.
 
     The demotion writes constraints_check.json and records its gate before anything else reads the
@@ -1249,7 +1316,7 @@ def _init_state(ctx: ExamContext, inputs: dict, *, probe_model: Any = None,
                          tool_fidelity=tool_fidelity, atoms=atoms, judge=judge, probe=probe,
                          probe_model=probe_model, probe_limit=probe_limit,
                          run_rerolls=run_rerolls, run_variant=run_variant,
-                         round_number=round_number, common=common, pool=pool)
+                         round_number=round_number, common=common, pool=pool, sem=sem)
 
 
 def _prepare_one(task: Task, state: _DeriveState) -> _Job:
@@ -1283,7 +1350,8 @@ def _prepare_one(task: Task, state: _DeriveState) -> _Job:
 
 def _prepare_all(tasks: list, state: _DeriveState, workers: int) -> list[_Job]:
     """Every Task through its key lookup and, on a miss, the D111 rule, in Task order."""
-    return parallel.each(tasks, lambda task: _prepare_one(task, state), workers)
+    return parallel.each(
+        tasks, lambda task: _guarded(state.sem, lambda: _prepare_one(task, state)), workers)
 
 
 def _assign_probe_slots(jobs: list[_Job], state: _DeriveState) -> int:
@@ -1323,7 +1391,7 @@ def _settle_job(state: _DeriveState, job: _Job) -> None:
                        write_tools=state.write_tools, constraints=state.constraints,
                        intents=state.intents, user_rules=state.user_rules, fn=state.fn,
                        pool_runs=pool_runs_of(job.task.id, state.replays, state.rerolls),
-                       pool=state.pool)
+                       pool=state.pool, sem=state.sem)
 
 
 def _second_path_outcome(state: _DeriveState, job: _Job, ceiling: threading.Event) -> tuple[dict, list]:
@@ -1340,10 +1408,14 @@ def _second_path_outcome(state: _DeriveState, job: _Job, ceiling: threading.Even
         round_number=state.round_number, write_tools=state.write_tools, fn=state.fn,
         atoms=state.atoms)
     if not second["found"] and state.run_variant is not None:
+        # Gated serial until the re-freeze (docs/todo.md "Next re-freeze: flip the speed-1
+        # variant gate"): the shared replay tally these replays count into stays locked only in
+        # docs/frozen-patches/speed-1.patch, so pooled variants would count nondeterministically.
+        # None runs the variants as a plain loop; survivor derivation above stays pooled.
         synth, made = synth_second_path(
             task.id, confirmation, run_variant=state.run_variant,
             round_number=state.round_number, write_tools=state.write_tools, fn=state.fn,
-            atoms=state.atoms, pool=state.pool)
+            atoms=state.atoms, pool=None)
         merge_second_path(confirmation, made)
         # They are not in the cache key and not in the false-rejection pool: a synthesised
         # Run is written by code from a Run already in the key, so a round that reads the
@@ -1413,7 +1485,8 @@ def _finish_one(state: _DeriveState, job: _Job, ceiling: threading.Event) -> dic
 def _finish_all(state: _DeriveState, jobs: list[_Job], workers: int,
                 ceiling: threading.Event) -> list[dict]:
     """Every Task to its outputs, in Task order."""
-    return parallel.each(jobs, lambda job: _finish_one(state, job, ceiling), workers)
+    return parallel.each(
+        jobs, lambda job: _guarded(state.sem, lambda: _finish_one(state, job, ceiling)), workers)
 
 
 def _collect_outputs(jobs: list[_Job], entries: list[dict]) -> tuple[list, dict, dict, int]:
@@ -1684,12 +1757,12 @@ def derive_all(ctx: ExamContext, inputs: dict, *, probe_model: Any = None, probe
     own keys (D212), so which Tasks get check 6 does not move when a Task is added or dropped.
     `cached` and `ran` in the result count which Tasks came from where.
     """
-    pool = ThreadPoolExecutor(max_workers=max(1, workers))
+    pool, sem = _derive_resources(workers)
     try:
         state = _init_state(ctx, inputs, probe_model=probe_model, probe_limit=probe_limit,
                             judge_model=judge_model, judge_agent=judge_agent, run_probe=run_probe,
                             run_rerolls=run_rerolls, run_variant=run_variant,
-                            round_number=round_number, code_hash=code_hash, pool=pool)
+                            round_number=round_number, code_hash=code_hash, pool=pool, sem=sem)
         tasks = _select_tasks(inputs, only)
         jobs = _prepare_all(tasks, state, workers)
         probed = _assign_probe_slots(jobs, state)
@@ -1709,4 +1782,4 @@ def derive_all(ctx: ExamContext, inputs: dict, *, probe_model: Any = None, probe
                 "second_path_runs": sum(_second_path(r)["runs"] for r in status.values()),
                 "retired": retired, "ceiling_reached": ceiling_reached.is_set()}
     finally:
-        pool.shutdown()
+        pool.shutdown(cancel_futures=True)
