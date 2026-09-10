@@ -4,7 +4,7 @@ These are the items I pushed past the first build. Each line says what it buys a
 
 ## Next re-freeze
 
-- Next re-freeze: apply docs/frozen-patches/speed-3.patch (ledger batching), re-run tests/runner.
+- Next re-freeze: apply docs/frozen-patches/speed-3.patch (ledger batching; the Plan.spend memory read already rides on the branch), re-run tests/runner.
 
 ## After the first Replica clears Gate A
 

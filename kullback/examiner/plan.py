@@ -189,9 +189,9 @@ class ExaminerPlan:
 
     def spend(self) -> float:
         """What this workdir has spent so far, off budget.json; zero before any model call."""
-        totals = read_json(self.workdir / "budget.json", {}) or {}
+        from kullback.runner import budget
         try:
-            return float((totals.get("total") or {}).get("usd") or 0.0)
+            return float(budget.load_totals(self.workdir)["total"]["usd"])
         except (TypeError, ValueError):
             return 0.0
 
