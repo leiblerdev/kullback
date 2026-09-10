@@ -13,7 +13,7 @@ from typing import Any, Optional
 
 import typer
 
-from kullback import difficulty, round_snapshot
+from kullback import difficulty, round_snapshot, rounds
 from kullback.report import coverage_rows, load, load_tool_sigs, write_report
 from kullback.runner import feed, heartbeat
 from kullback.runner.records import (
@@ -391,7 +391,7 @@ def _ended_by(counts: dict) -> str:
     The counts beside it are what the round measured before the raise, which is a real reading and
     not a default; this is what says the round stopped short of the rest of its work.
     """
-    row = counts.get("beat_error") or {}
+    row = counts.get(rounds.BEAT_ERROR) or {}
     beat = str(row.get("beat") or "")
     if not beat:
         return ""

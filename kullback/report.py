@@ -10,7 +10,7 @@ from typing import Any, Literal, Optional
 
 from pydantic import BaseModel, Field, ValidationError
 
-from kullback import claims, difficulty, round_snapshot
+from kullback import claims, difficulty, round_snapshot, rounds
 from kullback.examiner import lifecycle
 from kullback.runner.records import (
     Constraint,
@@ -502,7 +502,7 @@ def _exit_cell(record: RoundRecord) -> str:
     The counts on the row are what the round measured before the raise, so without this a reader
     takes a round that stopped half way for a round that measured that much and stopped.
     """
-    beat = str(((record.counts or {}).get("beat_error") or {}).get("beat") or "")
+    beat = str(((record.counts or {}).get(rounds.BEAT_ERROR) or {}).get("beat") or "")
     ended = record.exit or ""
     return f"{ended} (ended by {beat} error)".strip() if beat else ended
 
