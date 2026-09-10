@@ -289,6 +289,9 @@ def build(
     judge_agent: bool = typer.Option(False, "--judge-agent",
                                      help="The reference judge is an agent with a bounded look over the Task; "
                                           "default is the one-shot judge."),
+    user_model: Optional[str] = typer.Option(None, "--user-model",
+                                             help="Model id for the Simulated user, as provider/model (D232); "
+                                                  "without it the rule-driven user drives every Run."),
     base_url: Optional[str] = typer.Option(None, "--base-url", help="Endpoint for an OpenAI-compatible model."),
     files: Optional[list[Path]] = typer.Option(None, "--file", help="Customer export to ingest first."),  # noqa: B008
     ceiling_usd: Optional[float] = typer.Option(None, "--ceiling-usd", help="Per-build spend ceiling (D86)."),
@@ -328,7 +331,8 @@ def build(
     own when `--judge-model` names one (D160), so the model that writes the Environment need not be
     the one that rules on it. The judge that settles a Task whose Runs disagree is the one-shot judge
     unless `--judge-agent` asks for the one with a bounded look, which reads before it rules and
-    costs References (D185).
+    costs References (D185). The Simulated user is rule-driven unless `--user-model` names the
+    model that drives it, in which case the agent user drives the Tasks it beats the rules on (D232).
     """
     adapter = _live_model(model, base_url) if model else None
     if agent and adapter is None:
@@ -337,6 +341,9 @@ def build(
         raise typer.BadParameter("--second-judge-model needs a first judge: name --judge-model or --model")
     judge_adapter = _live_model(judge_model, base_url) if judge_model else None
     second_judge_adapter = _live_model(second_judge_model, base_url) if second_judge_model else None
+    # The Simulated user needs no Builder model beside it: a code-driven build can still pay for
+    # user turns, so --user-model without --model is allowed (D232).
+    user_adapter = _live_model(user_model, base_url) if user_model else None
     search = _entry("kullback.builder.search", "search_for")(workdir)  # None unless live is on or a memo exists
     # The screen lists running builds from these heartbeats; the pid tells it who is alive. The
     # pulse keeps beating while the build runs so a screen watching from another directory sees
@@ -350,7 +357,8 @@ def build(
         with contextlib.closing(search) if search is not None else contextlib.nullcontext():
             result = _entry("kullback.rounds", "run_rounds")(
                 workdir=workdir, iterate=iterate, model=adapter, judge_model=judge_adapter,
-                second_judge_model=second_judge_adapter, judge_agent=judge_agent, files=list(files or []),
+                second_judge_model=second_judge_adapter, judge_agent=judge_agent,
+                user_agent_model=user_adapter, files=list(files or []),
                 ceiling_usd=ceiling_usd, grow=_grow_targets(grow), grow_seed=grow_seed,
                 probe_limit=probe_limit, rerolls=rerolls, search=search, workers=workers, target=target,
                 agent_model=adapter if agent else None, stall_rounds=stall_rounds,
