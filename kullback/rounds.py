@@ -1526,16 +1526,22 @@ def _record_judge_models(plan: BuildPlan) -> None:
     Only when a model was named for the judging or the user: a build that judges with its own
     model and drives its user with the rules writes nothing here, so its records are what they
     were before this, byte for byte. The user model id lands beside the judge models (D232), so
-    a round record says which model drove the user.
+    a round record says which model drove the user. A rebuild that drops the flag clears a stale
+    user model id, so the record never attributes a rule-driven build to an earlier model.
     """
-    if plan.judge_model is None and plan.second_judge_model is None and plan.user_agent_model is None:
-        return
     path = plan.workdir / "report_config.json"
     config = dict(_read_config(path))
-    if plan.judge_model is not None or plan.second_judge_model is not None:
-        config["judge_models"] = plan.judge_model_ids()
-    if plan.user_agent_model is not None:
-        config["user_model"] = getattr(plan.user_agent_model, "name", None) or "model"
+    if plan.judge_model is None and plan.second_judge_model is None and plan.user_agent_model is None:
+        if "user_model" not in config:
+            return
+        del config["user_model"]
+    else:
+        if plan.judge_model is not None or plan.second_judge_model is not None:
+            config["judge_models"] = plan.judge_model_ids()
+        if plan.user_agent_model is not None:
+            config["user_model"] = getattr(plan.user_agent_model, "name", None) or "model"
+        else:
+            config.pop("user_model", None)
     write_json(path, config)
 
 

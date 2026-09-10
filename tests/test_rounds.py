@@ -395,6 +395,19 @@ def test_a_build_records_the_user_model_beside_the_judge_models(tmp_path):
     assert body["judge_models"]["judge"] == "other/small" and body["user_model"] == "fourth/huge"
 
 
+def test_a_rebuild_without_the_user_model_clears_a_stale_user_model_id(tmp_path):
+    """D232: dropping the flag must not leave the earlier model's id on a rule-driven build."""
+    work = tmp_path / "rebuilt"
+    first = BuildPlan(workdir=work, user_agent_model=TestModel(["hi"], name="other/small"))
+    rounds._record_judge_models(first)
+    assert json.loads((work / "report_config.json").read_text(encoding="utf-8"))["user_model"] == \
+        "other/small"
+    second = BuildPlan(workdir=work)
+    rounds._record_judge_models(second)
+    body = json.loads((work / "report_config.json").read_text(encoding="utf-8"))
+    assert "user_model" not in body
+
+
 def _garden_workdir(path: Path) -> Path:
     """One invented garden centre Task with its recording, Reference and user rules on disk."""
     from kullback.runner.records import RawPtr, ToolCall, Trace, Turn
