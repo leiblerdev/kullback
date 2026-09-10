@@ -346,3 +346,105 @@ def test_a_judge_that_would_pass_a_task_adds_nothing(shop: Path):
     record = _archetype("I want to keep my lantern for more nights", ["my hire runs longer"])
     passing = Scripted({"Your only power": json.dumps({"reject": False, "citation": "anything"})})
     assert domain.judged([passing, passing], record, "keep it longer", ["extend_hire"]) == []
+
+
+# --- where a fetch may go -----------------------------------------------------------------
+
+def resolves_to(*addresses: str):
+    """A name lookup that answers with the addresses a test names, for a name nobody registered."""
+    return lambda host: list(addresses)
+
+
+@pytest.mark.parametrize("address, word", [
+    ("127.0.0.1", "loopback"),
+    ("::1", "loopback"),
+    ("10.4.4.4", "private"),
+    ("192.168.1.9", "private"),
+    ("172.16.9.9", "private"),
+    ("169.254.169.254", "link local"),
+    ("fd00::5", "private"),
+    ("ff02::1", "multicast"),
+    ("240.0.0.1", "reserved"),
+    ("0.0.0.0", "unspecified"),
+    ("::ffff:127.0.0.1", "loopback")])
+def test_a_host_resolving_to_an_address_off_the_public_web_is_refused_by_its_class(address, word):
+    why = domain.destination_refusal("https://help.lantern-rental.invalid/hire",
+                                     resolve=resolves_to(address))
+    assert word in why, f"{address} was refused as {why!r} rather than {word}"
+    assert address not in why, "the refusal wrote down the address the name resolved to"
+
+
+def test_a_host_resolving_to_a_public_address_is_allowed():
+    assert domain.destination_refusal("https://help.lantern-rental.invalid/hire",
+                                      resolve=resolves_to("51.75.20.10", "2a01:4f8:1:2::3")) == ""
+
+
+def test_a_host_holding_one_public_address_and_one_off_the_public_web_is_refused():
+    why = domain.destination_refusal("http://depot.lantern-rental.invalid/",
+                                     resolve=resolves_to("51.75.20.10", "127.0.0.1"))
+    assert "loopback" in why
+
+
+def test_a_scheme_that_is_not_http_and_a_literal_address_are_refused_without_a_lookup():
+    def never(host: str):
+        raise AssertionError("a name was looked up for a URL that is refused on its face")
+
+    assert "http" in domain.destination_refusal("file:///etc/passwd", resolve=never)
+    assert "http" in domain.destination_refusal("ftp://depot.lantern-rental.invalid/x", resolve=never)
+    assert "no host" in domain.destination_refusal("https:///hire", resolve=never)
+    assert "loopback name" in domain.destination_refusal("http://localhost:8080/", resolve=never)
+    assert "private" in domain.destination_refusal("http://192.168.0.5/", resolve=never)
+    assert "link local" in domain.destination_refusal("http://169.254.169.254/self", resolve=never)
+    assert "literal" in domain.destination_refusal("http://51.75.20.10/", resolve=never)
+
+
+def test_a_host_that_does_not_resolve_at_all_is_refused():
+    def missing(host: str):
+        return []
+
+    assert "did not resolve" in domain.destination_refusal("https://nowhere.lantern.invalid/",
+                                                           resolve=missing)
+
+
+def test_a_redirect_to_a_hop_off_the_public_web_is_refused_and_a_public_one_is_followed():
+    from urllib.request import Request
+
+    def resolve(host: str):
+        return ["127.0.0.1"] if host.startswith("depot") else ["51.75.20.10"]
+
+    guard = domain.redirect_guard(resolve)
+    first = Request("https://help.lantern-rental.invalid/hire")
+    followed = guard.redirect_request(first, None, 302, "Found", {},
+                                      "https://help.lantern-rental.invalid/hire/again")
+    assert followed.full_url == "https://help.lantern-rental.invalid/hire/again"
+    with pytest.raises(domain.DestinationRefused):
+        guard.redirect_request(first, None, 302, "Found", {}, "https://depot.lantern-rental.invalid/")
+    assert guard.max_redirections == domain.REDIRECT_HOPS
+
+
+def test_a_crawl_records_a_refused_destination_the_way_it_records_a_refused_path(shop: Path):
+    def guarded(url: str) -> str:
+        if "depot" in url:
+            raise domain.DestinationRefused("the host resolves to a loopback address")
+        return fetch(url)
+
+    read = domain.crawl(shop, [{"url": "http://depot.lantern-rental.invalid/", "depth": 0},
+                               {"url": f"{HOST}/broken-wick", "depth": 0}],
+                        fetch=guarded, depth=0)
+    assert [row["url"] for row in read["pages"]] == [f"{HOST}/broken-wick"]
+    assert [row["reason"] for row in read["refused"]] == [domain.DESTINATION]
+    assert "loopback" in read["refused"][0]["why"]
+
+
+def test_a_named_source_whose_destination_is_refused_is_dropped_and_counted(shop: Path):
+    def guarded(url: str) -> str:
+        if "depot" in url:
+            raise domain.DestinationRefused("the host is a loopback name")
+        return fetch(url)
+
+    namer = Scripted({"public web pages": json.dumps({"pages": [
+        {"url": f"{HOST}/broken-wick", "why": "what people write in about"},
+        {"url": "http://depot.lantern-rental.invalid/", "why": "somewhere on this network"}]})})
+    found = domain.named_sources(namer, "a shop that rents lanterns by the night", fetch=guarded)
+    assert found["used"] == [f"{HOST}/broken-wick"]
+    assert [row["reason"] for row in found["dropped"]] == [domain.DESTINATION]
