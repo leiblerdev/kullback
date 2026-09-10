@@ -333,3 +333,73 @@ def test_clean_change_passes_every_check(tmp_path):
     )
     assert not any(line.startswith("FAIL ") for line in lines)
     assert "  complexity-table kullback/toolbox.py triple base=- head=2" in lines
+
+
+def big_body(count):
+    branches = "".join(f"    if x == {i}:\n        return {i}\n" for i in range(count))
+    return branches
+
+
+def test_moved_function_over_ceiling_passes(tmp_path):
+    repo = make_repo(tmp_path)
+    body = big_body(15)
+    write_file(repo, "kullback/oldmod.py", f"def evaluate(x):\n{body}    return -1\n")
+    base = commit_paths(repo, "add old module", ["kullback/oldmod.py"])
+    subprocess.run(["git", "rm", "-q", "kullback/oldmod.py"], cwd=repo, check=True)
+    write_file(repo, "kullback/newmod.py", f"def evaluate(x):\n{body}    return -1\n")
+    subprocess.run(["git", "add", "--", "kullback/newmod.py"], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "move function"], cwd=repo, check=True)
+    code, lines = run_checks(repo, base)
+    assert code == 0
+    assert "ok complexity-ceiling" in lines
+
+
+def test_moved_function_grown_fails_naming_both_files(tmp_path):
+    repo = make_repo(tmp_path)
+    write_file(repo, "kullback/oldmod.py", f"def evaluate(x):\n{big_body(15)}    return -1\n")
+    base = commit_paths(repo, "add old module", ["kullback/oldmod.py"])
+    subprocess.run(["git", "rm", "-q", "kullback/oldmod.py"], cwd=repo, check=True)
+    write_file(repo, "kullback/newmod.py", f"def evaluate(x):\n{big_body(16)}    return -1\n")
+    subprocess.run(["git", "add", "--", "kullback/newmod.py"], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "move and grow"], cwd=repo, check=True)
+    code, lines = run_checks(repo, base)
+    assert code == 1
+    failures = [line for line in lines if line.startswith("FAIL complexity-ceiling: ")]
+    assert len(failures) == 1
+    assert "kullback/newmod.py" in failures[0]
+    assert "evaluate" in failures[0]
+    assert "kullback/oldmod.py" in failures[0]
+    assert "16" in failures[0]
+    assert "17" in failures[0]
+
+
+def test_genuinely_new_function_over_ceiling_still_fails(tmp_path):
+    repo = make_repo(tmp_path)
+    write_file(repo, "kullback/oldmod.py", "def double(n):\n    if n:\n        return 2 * n\n    return 0\n")
+    base = commit_paths(repo, "add old module", ["kullback/oldmod.py"])
+    write_file(repo, "kullback/newmod.py", f"def evaluate(x):\n{big_body(15)}    return -1\n")
+    commit_paths(repo, "add new function", ["kullback/newmod.py"])
+    code, lines = run_checks(repo, base)
+    assert code == 1
+    assert "FAIL complexity-ceiling: kullback/newmod.py evaluate is new at 16 (ceiling 15)" in lines
+
+
+def test_moved_function_passes_while_created_function_fails(tmp_path):
+    repo = make_repo(tmp_path)
+    moved = big_body(15)
+    write_file(repo, "kullback/oldmod.py", f"def evaluate(x):\n{moved}    return -1\n")
+    base = commit_paths(repo, "add old module", ["kullback/oldmod.py"])
+    subprocess.run(["git", "rm", "-q", "kullback/oldmod.py"], cwd=repo, check=True)
+    write_file(
+        repo,
+        "kullback/newmod.py",
+        f"def evaluate(x):\n{moved}    return -1\n\n\ndef judge(x):\n{big_body(15)}    return -1\n",
+    )
+    subprocess.run(["git", "add", "--", "kullback/newmod.py"], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "move one add one"], cwd=repo, check=True)
+    code, lines = run_checks(repo, base)
+    assert code == 1
+    failures = [line for line in lines if line.startswith("FAIL complexity-ceiling: ")]
+    assert len(failures) == 1
+    assert "judge is new at 16" in failures[0]
+    assert "evaluate" not in failures[0]
