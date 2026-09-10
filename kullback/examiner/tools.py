@@ -702,10 +702,12 @@ ReadHandler = Callable[[ExaminerPlan, Optional[str]], Any]
 
 
 def _read_task(plan: ExaminerPlan, key: Optional[str]) -> Any:
+    """The Task record this id names."""
     return as_dict(_task(plan, key or ""))
 
 
 def _read_trace(plan: ExaminerPlan, key: Optional[str]) -> Any:
+    """The Trace this id names, or the Trace ids that do exist when none carries it."""
     trace = next((t for t in plan.inputs.get("traces") or [] if t.trace_id == key), None)
     if trace is None:
         return _unknown_id("Trace", key, _trace_ids(plan), _task_id_of(plan, key))
@@ -713,6 +715,7 @@ def _read_trace(plan: ExaminerPlan, key: Optional[str]) -> Any:
 
 
 def _read_intent(plan: ExaminerPlan, key: Optional[str]) -> Any:
+    """The whole Intent record of the Task this id names."""
     intents = plan.inputs.get("intents") or {}
     if key not in intents:
         raise KeyError(f"no Intent for task {key}")
@@ -720,6 +723,7 @@ def _read_intent(plan: ExaminerPlan, key: Optional[str]) -> Any:
 
 
 def _read_run(plan: ExaminerPlan, key: Optional[str]) -> Any:
+    """The Run this id names, or the Run ids that do exist when none carries it."""
     try:
         return as_dict(_find_run(plan, key or ""))
     except KeyError:
@@ -727,10 +731,12 @@ def _read_run(plan: ExaminerPlan, key: Optional[str]) -> Any:
 
 
 def _read_verifier(plan: ExaminerPlan, key: Optional[str]) -> Any:
+    """The live Verifier of the Task this id names."""
     return as_dict(_current(plan, key or ""))
 
 
 def _read_probes(plan: ExaminerPlan, key: Optional[str]) -> Any:
+    """The probe pool of the Task this id names, empty where the Task has none yet."""
     pool = (plan.store.get("probes") or {}).get(key)
     return as_dict(pool) if pool is not None else as_dict(ProbePool(task_id=key or ""))
 
@@ -745,10 +751,12 @@ def _rows_or_index(kind: str, rows: Any, key: Optional[str], missing: Any = None
 
 
 def _read_task_status(plan: ExaminerPlan, key: Optional[str]) -> Any:
+    """The status index of every Task, or the whole status row of the Task this id names."""
     return _rows_or_index("task_status", plan.store.get("task_status") or {}, key)
 
 
 def _read_gates(plan: ExaminerPlan, key: Optional[str]) -> Any:
+    """The ruling index by stage, or every ruling of the stage this id names."""
     rows = read_json(plan.workdir / "gates.json", []) or []
     if key is None:
         return _index("gates", rows)
@@ -756,15 +764,23 @@ def _read_gates(plan: ExaminerPlan, key: Optional[str]) -> Any:
 
 
 def _read_rerolls(plan: ExaminerPlan, key: Optional[str]) -> Any:
+    """The re-roll index by Task, or the re-roll rows of the Task this id names."""
     return _rows_or_index("rerolls", plan.store.get("rerolls") or {}, key, missing=[])
 
 
 def _read_replays(plan: ExaminerPlan, key: Optional[str]) -> Any:
+    """The replay index by Task, or the replay rows of the Task this id names."""
     return _rows_or_index("replays", plan.store.get("replays") or {}, key, missing={})
 
 
+def _read_off_file(plan: ExaminerPlan, kind: str, key: Optional[str]) -> Any:
+    """The References index, or the References of the id: what a kind outside the table also reads."""
+    return _rows_or_index(kind, read_json(plan.workdir / "references.json", {}) or {}, key)
+
+
 def _read_references(plan: ExaminerPlan, key: Optional[str]) -> Any:
-    return _rows_or_index("references", read_json(plan.workdir / "references.json", {}) or {}, key)
+    """The References index by id, or the References the id names."""
+    return _read_off_file(plan, "references", key)
 
 
 READ_HANDLERS: dict[str, ReadHandler] = {
@@ -785,13 +801,12 @@ READ_HANDLERS: dict[str, ReadHandler] = {
 def _read(plan: ExaminerPlan):
     async def read(args: ReadArgs) -> ReadResult:
         handler = READ_HANDLERS.get(args.kind)
-        if handler is None:
-            # The schema's own kinds are the table's keys, so this is reached only by a caller that
-            # went round the schema; it says what may be read instead of reading the References.
-            raise KeyError(f"read does not know the kind {args.kind!r}; what it reads: "
-                           f"{', '.join(READ_HANDLERS)}")
+        # The schema's own kinds are the table's keys, so a kind outside it arrives only from a
+        # caller that went round the schema; it is read off the References file, which is where the
+        # if chain this table replaced sent it, with the kind kept so the index names what was asked.
+        body = handler(plan, args.id) if handler is not None else _read_off_file(plan, args.kind, args.id)
         # D175: a whole-file read is an index, and no read is longer than READ_CHARS.
-        return ReadResult(kind=args.kind, id=args.id, text=_clamped_text(handler(plan, args.id)))
+        return ReadResult(kind=args.kind, id=args.id, text=_clamped_text(body))
 
     return read
 
