@@ -141,7 +141,7 @@ def _reply_json(reply: Any) -> dict:
 
 def _ask(model: Model, system: str, payload: dict) -> Any:
     messages = [{"role": "system", "content": system},
-                {"role": "user", "content": json.dumps(payload, default=str)}]
+                {"role": "user", "content": json.dumps(payload, default=str, sort_keys=True)}]
     return model.query(messages)
 
 

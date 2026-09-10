@@ -1872,6 +1872,14 @@ Eight tests on invented Tasks with a fresh scripted driver per Run cover keys an
 
 Three things cut against the premise. The stub timing's per-Run CPU, the toolkit compile and the transcript copies, is serial under the thread pool, which is why 8 workers show about 1.4 times on the stub; live calls spend seconds in network IO where that floor is noise. A Run that consulted a sibling Run's outcome would break under this change, but there is none: each Run opens its own world, its own Simulated user and its own file, and the only things shared are read-only inputs. And an interrupt after the discard loop leaves every re-rolling Task with no Run files at all, since the discards run sequentially up front where they used to sit inside each Task's own pool job, so a resume re-rolls them all; the flat pool forces this shape, so it stands as a known cost of it.
 
+### D245. The single message stages send a stable system head (2026-09-10)
+
+The token readers found the intent stage and the one shot reference judge sending one user message per Task with no system message, so the provider prefix cache reads nothing (cache share 0.00 on every arm) while both stages still pay a cache write premium (on one arm intent wrote 904707 tokens to read back 4550). The invariant instruction lines are the same bytes for every Task; only the evidence differs.
+
+Decided: the intent call sends the invariant lines (the three instruction lines and the closing shape line) as the system message and the run sample, the repair hint and the attempt feedback as the user message; the one shot judge sends the fixed prologue as system and the per Task case (intent, policy lines, end states, and the second pass stop rule where it applies) as user. Every instruction sentence is moved, never reworded: the old single message builders stay in tree byte identical and the head plus the body hold every sentence they held. Retries keep the single user turn the code always rebuilt, with the feedback in it. The mine payload dump gains `sort_keys=True`, so identical logical payloads hash and prefix alike.
+
+Five tests on invented domains cover the head bytes identical across two Tasks and two attempts for each stage, the head plus body sentence cover against the old form, and the byte identical mine dump across insertion orders. `scripts/prompt_snapshot.py` builds both stages over ten invented inputs and checks the cover sentence for sentence. Both heads sit below the provider minimum (intent about 60 tokens, judge about 610 by word count times 1.3, the repo having no prompt tokenizer), so no live cache read is claimed: the live cache share is to be measured on the next launch.
+
 ## Pending (asked, not yet answered)
 
 - ~~The user's own tools and the world they act on (D71, first part).~~ Decided as D176 (2026-09-07): one world, rows revealed by a requestor marked by it, readers as code under the free gate.
