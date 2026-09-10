@@ -705,3 +705,11 @@ def test_reading_a_kind_outside_the_table_reads_the_references_file(derived):
     one = json.loads(asyncio.run(text_of("frobnicate", T)))
     assert set(one) == {T}
     assert one[T] == json.loads(asyncio.run(text_of("references", T)))[T]
+
+
+def test_the_read_table_names_every_read_kind_and_no_other():
+    """A kind added to the schema without a handler (or a handler without a kind) must fail here,
+    not in front of the model: the table keys and the ReadKind literal stay equal."""
+    import typing
+
+    assert set(tools_mod.READ_HANDLERS) == set(typing.get_args(tools_mod.ReadKind))
