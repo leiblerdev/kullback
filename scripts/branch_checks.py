@@ -190,10 +190,10 @@ def check_no_forbidden_paths(root, base, head):
         if not parts:
             continue
         status, names = parts[0], parts[1:]
-        if status.startswith("R"):
+        if status.startswith("R") or status.startswith("C"):
             names = names[-1:]
         for name in names:
-            if status.startswith("A") and is_forbidden_path(name):
+            if status[0] in "ACR" and is_forbidden_path(name):
                 bad.append(f"{name} is on a forbidden path")
     if bad:
         return "; ".join(bad)
@@ -379,9 +379,19 @@ def main(argv=None):
     parser.add_argument("head", nargs="?", default="HEAD")
     args = parser.parse_args(argv)
     root = repo_root()
+    for rev in (args.base, args.head):
+        probe = run_git(root, "rev-parse", "--verify", rev + "^{commit}")
+        if probe.returncode != 0:
+            print(f"FAIL setup: {rev} does not resolve")
+            return 1
+    merged = run_git(root, "merge-base", args.base, args.head)
+    if merged.returncode != 0 or not merged.stdout.strip():
+        print(f"FAIL setup: no merge base between {args.base} and {args.head}")
+        return 1
+    base = merged.stdout.strip()
     failed = False
     for name, func in CHECKS:
-        reason = func(root, args.base, args.head)
+        reason = func(root, base, args.head)
         if reason == "skip":
             print("skip import contract (not configured)")
         elif reason is None:
