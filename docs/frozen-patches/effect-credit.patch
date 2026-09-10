@@ -28,7 +28,7 @@
          "effect_checks": sum(int(c.get("effect_checks") or 0) for c in scored.checks),
          "effect_failures": sum(int(c.get("effect_failures_total") or 0) for c in scored.checks),
 +        # D234: columns the recording shows moving that no write in their span owed. They ride
-+        # on the evidence under the `unattributed` key rather than under any call, so they are
-+        # counted here and never failed against a call.
-+        "effect_unattributed": len((scored.effects or {}).get("unattributed") or []),
++        # on the evidence under the tagged unattributed key rather than under any call, so they
++        # are counted here and never failed against a call.
++        "effect_unattributed": len((scored.effects or {}).get("\x00unattributed") or []),
          "effects_downstream": sum(1 for c in scored.checks if c.get(DOWNSTREAM)),

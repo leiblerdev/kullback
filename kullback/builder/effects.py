@@ -501,9 +501,11 @@ def _agreed_formulas(effects: Iterable[WriteEffect]) -> list[str]:
 
 #: Key of `replay_evidence` carrying the columns no write in their span owed (D234). It is not
 #: a call id: no recorded call is checked against it, so a runner that does not know it ignores
-#: it, and no per-call evidence is emitted for such a column. The re-freeze teaches the check to
-#: count what sits under it instead of failing the last call.
-UNATTRIBUTED = "unattributed"
+#: it, and no per-call evidence is emitted for such a column. The leading tag keeps it out of
+#: reach of any real key, the way D39's rule keeps the recorded-text key out of reach, so no
+#: recorded call id can collide with it. The re-freeze teaches the check to count what sits under
+#: it instead of failing the last call.
+UNATTRIBUTED = "\x00unattributed"
 
 
 def replay_evidence(effects: dict[str, list[WriteEffect]]) -> dict[str, list[dict]]:
