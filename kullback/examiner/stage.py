@@ -1155,6 +1155,28 @@ def _prepare_all(tasks: list, state: _DeriveState, workers: int) -> list[_Job]:
     return parallel.each(tasks, lambda task: _prepare_one(task, state), workers)
 
 
+def _assign_probe_slots(jobs: list[_Job], state: _DeriveState) -> int:
+    """Hand the loophole probe budget out by the Tasks' own keys (D212), and count slots spent.
+
+    A Task served from the cache spent its slot when it ran, so the slots left are the limit minus
+    those; which Tasks hold a slot never moves when a Task is added or dropped.
+    """
+    probed = sum(1 for job in jobs if job.cached and job.entry.get("probed"))
+    eligible = [job for job in jobs if not job.cached and job.confirmation.references]
+    if state.probe is None:
+        chosen: set[str] = set()
+    elif state.probe_limit is None:
+        chosen = {job.task.id for job in eligible}
+    else:
+        order = sampling.keyed_order(PROBE_KIND, [job.task.id for job in eligible],
+                                     state.sample_salt)
+        chosen = set(order[:max(0, state.probe_limit - probed)])
+    for job in eligible:
+        job.may_probe = job.task.id in chosen
+        probed += int(job.may_probe)
+    return probed
+
+
 # --- the stage body --------------------------------------------------------------
 
 def derive_all(ctx: ExamContext, inputs: dict, *, probe_model: Any = None, probe_limit: Optional[int] = None,
@@ -1223,7 +1245,6 @@ def derive_all(ctx: ExamContext, inputs: dict, *, probe_model: Any = None, probe
                                judge_model=judge_model, judge_agent=judge_agent, run_probe=run_probe,
                                run_rerolls=run_rerolls, run_variant=run_variant,
                                round_number=round_number, only=only, code_hash=code_hash)
-    sample_salt = state.sample_salt
     canon_rules = state.canon_rules
     fn = state.fn
     write_tools = state.write_tools
@@ -1242,23 +1263,7 @@ def derive_all(ctx: ExamContext, inputs: dict, *, probe_model: Any = None, probe
     common = state.common
 
     jobs = _prepare_all(tasks, state, workers)
-    # D212: the probe budget goes out in the order the Tasks' own keys give, not in Task order and
-    # not in the order the threads finished. A Task added to the build used to push every Task after
-    # it one place down the list, so a bounded budget landed on a different set of Tasks and check 6
-    # moved for Tasks nothing else about had changed. A Task served from the cache spent its slot
-    # when it ran, so the slots left are the limit minus those.
-    probed = sum(1 for job in jobs if job.cached and job.entry.get("probed"))
-    eligible = [job for job in jobs if not job.cached and job.confirmation.references]
-    if probe is None:
-        chosen: set[str] = set()
-    elif probe_limit is None:
-        chosen = {job.task.id for job in eligible}
-    else:
-        order = sampling.keyed_order(PROBE_KIND, [job.task.id for job in eligible], sample_salt)
-        chosen = set(order[:max(0, probe_limit - probed)])
-    for job in eligible:
-        job.may_probe = job.task.id in chosen
-        probed += int(job.may_probe)
+    probed = _assign_probe_slots(jobs, state)
 
     # Set when a second-path batch hit the run ceiling, so the caller can stop the round rather than
     # read a derivation that quietly bought nothing (the re-roll tool raises for the same reason).
