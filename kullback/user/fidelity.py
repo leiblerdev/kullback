@@ -450,7 +450,11 @@ def ends_by_driver(workdir: Any) -> dict[str, dict[str, int]]:
     rather than a row of zeros: two thirds of Runs running out of scenario under one user is the
     reading this exists for, and it cannot be had from a count that has already summed the two.
 
-    Off the stored Runs and nothing else, so it costs no model call and no Run.
+    Off the stored Runs and nothing else, so it costs no model call and no Run. Those are the Runs
+    the workdir holds now, not a pile that grows with each round: a stage replaces a Task's Runs
+    whole before it writes its own (`_discard_runs`), and a Task this round left alone keeps the
+    Runs it was last given, which is the same reading runs.json and the scorecard's Task coverage
+    are taken off.
     """
     out: dict[str, dict[str, int]] = {}
     folder = Path(workdir) / RUNS_DIR

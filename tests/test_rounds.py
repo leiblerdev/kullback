@@ -1576,6 +1576,42 @@ def test_a_beat_that_raised_ends_on_the_stream_like_any_other_beat(tmp_path, mon
     assert round([e for e in seen if isinstance(e, BeatEnd)][0].spend, 4) == 0.25
 
 
+def test_a_screen_that_breaks_on_the_end_of_a_failed_beat_does_not_replace_the_beats_own_error(tmp_path,
+                                                                                                monkeypatch):
+    """The bookkeeping on the way out of a beat is not allowed to become the error the driver sees.
+    The driver closes the round on a broken agent contract; a subscriber's own error is not that,
+    so a screen that broke on the beat end would have carried the round off unclosed and unrecorded,
+    which is the failure this decision exists to repair."""
+    from kullback.agent.tools import ToolResult
+
+    def breaks(event: Any) -> None:
+        if isinstance(event, BeatEnd):
+            raise RuntimeError("the screen is gone")
+
+    loop = _bare_loop(tmp_path, subscribers=[breaks])
+    spent = iter([3.0, 3.5])
+    monkeypatch.setattr(type(loop), "spend", lambda self: next(spent))
+    monkeypatch.setattr(builder_agent, "drive_tool",
+                        lambda *args, **kwargs: ToolResult(content="the build broke", is_error=True))
+    with pytest.raises(BuildError):
+        loop.run_beat("builder", 1)
+    assert loop.beat_error["beat"] == "builder", "the round still knows which beat it died in"
+    assert round(loop.beat_spend["builder"], 4) == 0.5, "and what that beat cost it"
+
+
+def test_a_screen_that_breaks_on_the_end_of_a_beat_that_went_well_is_still_heard(tmp_path, monkeypatch):
+    """Only a beat already carrying its own error out is protected from its bookkeeping. A beat that
+    ended well has nothing to lose to the raise, so the raise travels as it always did."""
+    def breaks(event: Any) -> None:
+        if isinstance(event, BeatEnd):
+            raise RuntimeError("the screen is gone")
+
+    loop = _bare_loop(tmp_path, subscribers=[breaks])
+    monkeypatch.setattr(type(loop), "_builder_work", lambda self, n: None)
+    with pytest.raises(RuntimeError, match="the screen is gone"):
+        loop.builder_beat(1)
+
+
 # --- the round number continues across a restart (D231) ---------------------------------------
 
 def test_the_next_round_is_numbered_past_every_round_the_workdir_has_closed(tmp_path):

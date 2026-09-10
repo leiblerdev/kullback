@@ -630,21 +630,31 @@ class Loop:
             if stop:
                 self.builder_stop = dict(stop)
 
-    def _beat_done(self, agent: str, n: int, before: float) -> None:
+    def _beat_done(self, agent: str, n: int, before: float, *, failing: bool = False) -> None:
         """What this beat spent, on the round and on the stream, whichever way the beat ended.
 
-        Called from the beat's own `finally` (D231). A beat that raised used to skip this, since the
-        raise jumped over the last line of the beat, so the round's line reported a spend of 0.0000
-        against a real 0.1746 and the beat that cost the round its work read as the beat that cost
-        nothing. The ledger is the workdir's own file and has already been charged either way, so
-        the number is a subtraction that the raise cannot change.
+        Called on the way out of the beat, the raised path included (D231). A beat that raised used
+        to skip this, since the raise jumped over the last line of the beat, so the round's line
+        reported a spend of 0.0000 against a real 0.1746 and the beat that cost the round its work
+        read as the beat that cost nothing. The ledger is the workdir's own file and has already
+        been charged either way, so the number is a subtraction that the raise cannot change.
+
+        `failing` says the beat is already carrying its own error out. Bookkeeping never replaces
+        that error: a subscriber that raises on the BeatEnd would otherwise become the exception the
+        driver sees, and the driver closes the round on a broken agent contract and not on that, so
+        the round would go unclosed and unrecorded, which is the whole thing this decision repairs.
+        On a beat that ended well the raise is left to travel as it always did.
         """
-        spent = self.spend() - before
-        self.beat_spend[agent] = spent
-        allowance = self.allowance.get(agent)
-        if allowance is not None and spent >= allowance:
-            self.spent_allowance[agent] = True
-        self.emit(BeatEnd(agent=agent, round=n, spend=spent))
+        try:
+            spent = self.spend() - before
+            self.beat_spend[agent] = spent
+            allowance = self.allowance.get(agent)
+            if allowance is not None and spent >= allowance:
+                self.spent_allowance[agent] = True
+            self.emit(BeatEnd(agent=agent, round=n, spend=spent))
+        except Exception:
+            if not failing:
+                raise
 
     def run_beat(self, agent: str, n: int) -> None:
         """One beat, with whatever ended it recorded on the round before it is re-raised (D231).
@@ -701,7 +711,10 @@ class Loop:
         before = self.spend()
         try:
             self._builder_work(n)
-        finally:
+        except BaseException:
+            self._beat_done("builder", n, before, failing=True)
+            raise
+        else:
             self._beat_done("builder", n, before)
 
     def _builder_work(self, n: int) -> None:
@@ -842,7 +855,10 @@ class Loop:
         before = self.spend()
         try:
             self._examiner_work(n)
-        finally:
+        except BaseException:
+            self._beat_done("examiner", n, before, failing=True)
+            raise
+        else:
             self._beat_done("examiner", n, before)
 
     def _examiner_work(self, n: int) -> None:
