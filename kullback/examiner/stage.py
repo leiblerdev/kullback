@@ -21,6 +21,7 @@ import hashlib
 import threading
 import time
 from collections import Counter
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from functools import lru_cache
 from pathlib import Path
@@ -501,14 +502,122 @@ SINGLE_PATH_BY_STRUCTURE = "single_path_by_structure"
 SYNTH_KEPT_NONE = "no rewrite of the Reference's call path reaches its End state"
 
 
+_tls = threading.local()
+
+
+def _held() -> int:
+    """How many ceiling permits this thread holds right now."""
+    return getattr(_tls, "held", 0)
+
+
+def _guarded(sem: Any, fn: Callable[[], Any]) -> Any:
+    """One pool job under the call's shared ceiling.
+
+    The permit is held only while the job runs. A job that waits in `_ordered_gather` gives its
+    permits back while blocked, so the ceiling counts running jobs and a waiter never starves the
+    jobs it waits for.
+    """
+    if sem is None:
+        return fn()
+    sem.acquire()
+    _tls.held = _held() + 1
+    try:
+        return fn()
+    finally:
+        _tls.held = _held() - 1
+        sem.release()
+
+
+def _derive_resources(workers: int) -> tuple[Any, threading.Semaphore]:
+    """One `derive_all` call's inner pool and the ceiling its pools share.
+
+    The outer per-Task jobs (`_prepare_all`, `_finish_all`) and the inner per-survivor and
+    per-variant jobs (`_ordered_gather`) each take one permit of this semaphore while they run,
+    so at most `workers` jobs run across both pools combined, never twice that.
+    """
+    count = max(1, workers)
+    return ThreadPoolExecutor(max_workers=count), threading.Semaphore(count)
+
+
+def _ordered_gather(pool: Any, items: list, fn: Callable, sem: Any = None) -> list:
+    """`fn` over `items` on the shared pool, gathered in the items' order.
+
+    One Task's independent calls as separate jobs: the pool runs them together and the gather reads
+    them back in dispatch order, so the rows, the kept variants and the file bytes are what the
+    serial loop wrote. The first exception in item order is raised, as `parallel.each` raises it,
+    and the futures not yet started are cancelled, so a failure stops spending the remaining jobs.
+    Each job runs under the call's shared ceiling, and the waiting thread holds no permit while
+    blocked. With no pool this is a plain loop, so a caller that never asked for concurrency
+    gets none.
+    """
+    if pool is None:
+        return [fn(item) for item in items]
+    if sem is None:
+        futures = [pool.submit(fn, item) for item in items]
+        try:
+            return [future.result() for future in futures]
+        finally:
+            for future in futures:
+                future.cancel()
+
+    def _one(item: Any) -> Any:
+        return _guarded(sem, lambda: fn(item))
+
+    futures = [pool.submit(_one, item) for item in items]
+    mine = _held()
+    for _ in range(mine):
+        sem.release()
+    try:
+        return [future.result() for future in futures]
+    finally:
+        for future in futures:
+            future.cancel()
+        for _ in range(mine):
+            sem.acquire()
+
+
+def _run_variant_once(run_variant: Any, task_id: str, calls: list, run_id: str,
+                      spoken: list) -> Optional[dict]:
+    """One rewrite through the Environment, unkept: a failure here is an empty answer."""
+    try:
+        return run_variant(task_id, calls, run_id, spoken)
+    except Exception:
+        # A rewrite the Environment cannot run is a rewrite that is not kept. It buys nothing
+        # and it is not the round's business to fall over on one, the way a crashed replay is
+        # scored as a replay that did not confirm rather than as a build that failed.
+        return None
+
+
+def _keep_synth(row: Any, reference: Any, *, write_tools: set, fn: Callable,
+                atoms: Any) -> Optional[Any]:
+    """One replayed rewrite as a Recording where it reaches the Reference's End state, else nothing."""
+    if not row or not row.get("path"):
+        return None
+    try:
+        rec = reference_mod.load(row["path"], reference_mod.REROLL, run_id=row["run_id"],
+                                 write_tools=write_tools, fn=fn, atoms=atoms)
+    except (OSError, ValueError, TypeError):
+        return None
+    if rec.violated or not reaches_reference(reference, rec):
+        return None
+    return rec
+
+
 def synth_second_path(task_id: str, confirmation: Any, *, run_variant: Any, round_number: int,
                       write_tools: set, fn: Callable, atoms: Any,
-                      limit: int = variants_mod.MAX_VARIANTS) -> tuple[dict, list]:
+                      limit: int = variants_mod.MAX_VARIANTS, pool: Any = None,
+                      sem: Any = None) -> tuple[dict, list]:
     """Rewrites of the Reference's own call path, replayed and kept where they land in the same place.
 
     Answers with what the synthesis found, for the row and the counts, and the Recordings of the
     rewrites that were kept. They join the Confirmation the way a bought second path does, so check 5
     scores the Verifier on them and on nothing else that is new.
+
+    The variant runs are independent of each other once the plans are deduped in plan order, so
+    they run as separate jobs on the call's shared pool under its ceiling and gather in plan
+    order; the keep below reads the gathered rows as the serial loop did. Each replayed Run file
+    lands under runs/ during the gather and the index over them is written once after it through
+    the runner's own flush, which gives the bytes the serial per-variant writes gave.
     """
     reference = confirmation.references[0]
     try:
@@ -521,29 +630,23 @@ def synth_second_path(task_id: str, confirmation: Any, *, run_variant: Any, roun
                 "reason": SINGLE_PATH_BY_STRUCTURE}, []
     spoken = variants_mod.transcript(run)
     seen = {variants_mod.signature(variants_mod.call_results(run))}
-    tried, kept, kinds = 0, [], []
+    tries: list[tuple[int, dict]] = []
     for index, plan in enumerate(plans, 1):
         signature = variants_mod.signature(plan["calls"])
         if signature in seen:
             continue
         seen.add(signature)
-        tried += 1
-        try:
-            row = run_variant(task_id, plan["calls"],
-                              f"{SYNTH_PREFIX}-r{round_number}-{task_id}-{index}", spoken)
-        except Exception:
-            # A rewrite the Environment cannot run is a rewrite that is not kept. It buys nothing
-            # and it is not the round's business to fall over on one, the way a crashed replay is
-            # scored as a replay that did not confirm rather than as a build that failed.
-            continue
-        if not row or not row.get("path"):
-            continue
-        try:
-            rec = reference_mod.load(row["path"], reference_mod.REROLL, run_id=row["run_id"],
-                                     write_tools=write_tools, fn=fn, atoms=atoms)
-        except (OSError, ValueError, TypeError):
-            continue
-        if rec.violated or not reaches_reference(reference, rec):
+        tries.append((index, plan))
+    rows = _ordered_gather(pool, tries, lambda item: _run_variant_once(
+        run_variant, task_id, item[1]["calls"],
+        f"{SYNTH_PREFIX}-r{round_number}-{task_id}-{item[0]}", spoken), sem=sem)
+    flush = getattr(run_variant, "write_runs_index", None)
+    if flush is not None and tries:
+        flush()
+    tried, kept, kinds = len(tries), [], []
+    for (_, plan), row in zip(tries, rows, strict=True):
+        rec = _keep_synth(row, reference, write_tools=write_tools, fn=fn, atoms=atoms)
+        if rec is None:
             continue
         kept.append(rec)
         kinds.append(plan["kind"])
@@ -764,10 +867,44 @@ def choose_survivor(rows: list[dict], order: Iterable[str]) -> tuple[Optional[di
         f"{_fraction_text(best)}")
 
 
+def _derive_survivor(group: dict, *, survivors: list, confirmation: Any, task: Task,
+                     task_for: Task, canon_rules: Any, write_tools: set, constraints: list,
+                     intents: dict, user_rules: dict, fn: Callable, pool_runs: list,
+                     verifier_version: str) -> Optional[tuple[dict, str, dict]]:
+    """One surviving End state's Verifier, judged the way a kept Reference would be (D198).
+
+    Pure over its group: it reads the Confirmation and the call's shared inputs and answers the row
+    the choice is made on, or nothing when the group holds no Run to derive from. Separate so one
+    Task's survivors run as separate jobs on the shared pool and gather in survivor order.
+    """
+    members = list(group.get("members") or ())
+    if not members:
+        return None
+    others = {rec.run_id for g in survivors if g is not group for rec in (g.get("members") or ())}
+    trial = reference_mod.Confirmation(
+        references=members, recordings=list(confirmation.recordings),
+        failed={run_id: reason for run_id, reason in confirmation.failed.items()
+                if run_id not in others})
+    verifier = derive_for(task_for, trial, canon_rules=canon_rules, write_tools=write_tools,
+                          constraints=constraints, intent=intents.get(task.id),
+                          verifier_version=verifier_version)
+    paths = [r.path for r in members]
+    rules_trace = next((r.trace_id for r in members if r.trace_id), None)
+    gates = suite_for(task_for, verifier, paths, canon_rules=canon_rules, write_tools=write_tools,
+                      user_rules=user_rules, rules_trace=rules_trace, probe_model=None,
+                      run_probe=None, may_probe=False)
+    results = verifier_suite.d79_results(gates)
+    skipped = [verifier_suite.D79_STAGES[g.stage] for g in gates if g.metrics.get("skipped")]
+    runs, legitimate = survivor_pool(trial, pool_runs, write_tools, fn)
+    held = loosening.false_rejection(verifier, runs, legitimate, canon_rules, write_tools)
+    row = survivor_row(group["label"], group, results, skipped, held)
+    return row, row["label"], group
+
+
 def settle_residue(task: Task, confirmation: Any, *, canon_rules: Any, write_tools: set,
                    constraints: list, intents: dict, user_rules: dict, fn: Callable,
                    pool_runs: Iterable[tuple[str, str]] = (), verifier_version: str = "1",
-                   cap: int = SURVIVOR_CAP) -> None:
+                   cap: int = SURVIVOR_CAP, pool: Any = None, sem: Any = None) -> None:
     """Derive one Verifier per surviving End state and let the suite and the held-out pool choose (D198).
 
     The judge is fail-only and a residue is the question it has already declined: three decisions
@@ -785,6 +922,10 @@ def settle_residue(task: Task, confirmation: Any, *, canon_rules: Any, write_too
     two it synthesizes, and the loophole probe is left to the Task's released Verifier. So a survivor
     is compared on the checks that can be run for all of them alike, and the winner still faces the
     whole suite, probe included, on the ordinary path afterwards.
+
+    Each survivor's derivation is independent of the others, so they run as separate jobs on the
+    call's shared pool under its ceiling and gather in survivor order; the choice below reads the
+    gathered rows as the serial loop left them.
     """
     survivors = list(confirmation.survivors)
     if len(survivors) < 2:
@@ -794,32 +935,19 @@ def settle_residue(task: Task, confirmation: Any, *, canon_rules: Any, write_too
         survivors = survivors[:cap]
     task_for = apply_intent(task, intents[task.id]) if task.id in intents else task
     pool_runs = list(pool_runs)
+    derived = _ordered_gather(pool, survivors, lambda group: _derive_survivor(
+        group, survivors=survivors, confirmation=confirmation, task=task, task_for=task_for,
+        canon_rules=canon_rules, write_tools=write_tools, constraints=constraints,
+        intents=intents, user_rules=user_rules, fn=fn, pool_runs=pool_runs,
+        verifier_version=verifier_version), sem=sem)
     rows: list[dict] = []
     by_label: dict[str, dict] = {}
-    for group in survivors:
-        members = list(group.get("members") or ())
-        if not members:
+    for item in derived:
+        if item is None:
             continue
-        others = {rec.run_id for g in survivors if g is not group for rec in (g.get("members") or ())}
-        trial = reference_mod.Confirmation(
-            references=members, recordings=list(confirmation.recordings),
-            failed={run_id: reason for run_id, reason in confirmation.failed.items()
-                    if run_id not in others})
-        verifier = derive_for(task_for, trial, canon_rules=canon_rules, write_tools=write_tools,
-                              constraints=constraints, intent=intents.get(task.id),
-                              verifier_version=verifier_version)
-        paths = [r.path for r in members]
-        rules_trace = next((r.trace_id for r in members if r.trace_id), None)
-        gates = suite_for(task_for, verifier, paths, canon_rules=canon_rules, write_tools=write_tools,
-                          user_rules=user_rules, rules_trace=rules_trace, probe_model=None,
-                          run_probe=None, may_probe=False)
-        results = verifier_suite.d79_results(gates)
-        skipped = [verifier_suite.D79_STAGES[g.stage] for g in gates if g.metrics.get("skipped")]
-        runs, legitimate = survivor_pool(trial, pool_runs, write_tools, fn)
-        held = loosening.false_rejection(verifier, runs, legitimate, canon_rules, write_tools)
-        row = survivor_row(group["label"], group, results, skipped, held)
+        row, label, group = item
         rows.append(row)
-        by_label[row["label"]] = group
+        by_label[label] = group
     if not rows:
         # D218 rule 3: a search that ends without a ruling writes its reason. Every surviving group
         # held no Run to derive from, so there was nothing to choose between; without this the Task
@@ -1056,6 +1184,8 @@ class _DeriveState:
     run_variant: Any
     round_number: int
     common: dict
+    pool: Any
+    sem: Any
 
 
 def _tool_names(sigs: Iterable[Any]) -> tuple[set, set]:
@@ -1152,7 +1282,7 @@ def _init_state(ctx: ExamContext, inputs: dict, *, probe_model: Any = None,
                 probe_limit: Optional[int] = None, judge_model: Any = None,
                 judge_agent: bool = False, run_probe: Any = None, run_rerolls: Any = None,
                 run_variant: Any = None, round_number: int = 0,
-                code_hash: Optional[str] = None) -> _DeriveState:
+                code_hash: Optional[str] = None, pool: Any = None, sem: Any = None) -> _DeriveState:
     """Load the call's shared inputs, demote the broken rules, build the judge and the cache key base.
 
     The demotion writes constraints_check.json and records its gate before anything else reads the
@@ -1186,7 +1316,7 @@ def _init_state(ctx: ExamContext, inputs: dict, *, probe_model: Any = None,
                          tool_fidelity=tool_fidelity, atoms=atoms, judge=judge, probe=probe,
                          probe_model=probe_model, probe_limit=probe_limit,
                          run_rerolls=run_rerolls, run_variant=run_variant,
-                         round_number=round_number, common=common)
+                         round_number=round_number, common=common, pool=pool, sem=sem)
 
 
 def _prepare_one(task: Task, state: _DeriveState) -> _Job:
@@ -1220,7 +1350,8 @@ def _prepare_one(task: Task, state: _DeriveState) -> _Job:
 
 def _prepare_all(tasks: list, state: _DeriveState, workers: int) -> list[_Job]:
     """Every Task through its key lookup and, on a miss, the D111 rule, in Task order."""
-    return parallel.each(tasks, lambda task: _prepare_one(task, state), workers)
+    return parallel.each(
+        tasks, lambda task: _guarded(state.sem, lambda: _prepare_one(task, state)), workers)
 
 
 def _assign_probe_slots(jobs: list[_Job], state: _DeriveState) -> int:
@@ -1259,7 +1390,8 @@ def _settle_job(state: _DeriveState, job: _Job) -> None:
         settle_residue(job.task, confirmation, canon_rules=state.canon_rules,
                        write_tools=state.write_tools, constraints=state.constraints,
                        intents=state.intents, user_rules=state.user_rules, fn=state.fn,
-                       pool_runs=pool_runs_of(job.task.id, state.replays, state.rerolls))
+                       pool_runs=pool_runs_of(job.task.id, state.replays, state.rerolls),
+                       pool=state.pool, sem=state.sem)
 
 
 def _second_path_outcome(state: _DeriveState, job: _Job, ceiling: threading.Event) -> tuple[dict, list]:
@@ -1276,10 +1408,14 @@ def _second_path_outcome(state: _DeriveState, job: _Job, ceiling: threading.Even
         round_number=state.round_number, write_tools=state.write_tools, fn=state.fn,
         atoms=state.atoms)
     if not second["found"] and state.run_variant is not None:
+        # Gated serial until the re-freeze (docs/todo.md "Next re-freeze: flip the speed-1
+        # variant gate"): the shared replay tally these replays count into stays locked only in
+        # docs/frozen-patches/speed-1.patch, so pooled variants would count nondeterministically.
+        # None runs the variants as a plain loop; survivor derivation above stays pooled.
         synth, made = synth_second_path(
             task.id, confirmation, run_variant=state.run_variant,
             round_number=state.round_number, write_tools=state.write_tools, fn=state.fn,
-            atoms=state.atoms)
+            atoms=state.atoms, pool=None)
         merge_second_path(confirmation, made)
         # They are not in the cache key and not in the false-rejection pool: a synthesised
         # Run is written by code from a Run already in the key, so a round that reads the
@@ -1349,7 +1485,8 @@ def _finish_one(state: _DeriveState, job: _Job, ceiling: threading.Event) -> dic
 def _finish_all(state: _DeriveState, jobs: list[_Job], workers: int,
                 ceiling: threading.Event) -> list[dict]:
     """Every Task to its outputs, in Task order."""
-    return parallel.each(jobs, lambda job: _finish_one(state, job, ceiling), workers)
+    return parallel.each(
+        jobs, lambda job: _guarded(state.sem, lambda: _finish_one(state, job, ceiling)), workers)
 
 
 def _collect_outputs(jobs: list[_Job], entries: list[dict]) -> tuple[list, dict, dict, int]:
@@ -1620,25 +1757,29 @@ def derive_all(ctx: ExamContext, inputs: dict, *, probe_model: Any = None, probe
     own keys (D212), so which Tasks get check 6 does not move when a Task is added or dropped.
     `cached` and `ran` in the result count which Tasks came from where.
     """
-    state = _init_state(ctx, inputs, probe_model=probe_model, probe_limit=probe_limit,
-                        judge_model=judge_model, judge_agent=judge_agent, run_probe=run_probe,
-                        run_rerolls=run_rerolls, run_variant=run_variant,
-                        round_number=round_number, code_hash=code_hash)
-    tasks = _select_tasks(inputs, only)
-    jobs = _prepare_all(tasks, state, workers)
-    probed = _assign_probe_slots(jobs, state)
+    pool, sem = _derive_resources(workers)
+    try:
+        state = _init_state(ctx, inputs, probe_model=probe_model, probe_limit=probe_limit,
+                            judge_model=judge_model, judge_agent=judge_agent, run_probe=run_probe,
+                            run_rerolls=run_rerolls, run_variant=run_variant,
+                            round_number=round_number, code_hash=code_hash, pool=pool, sem=sem)
+        tasks = _select_tasks(inputs, only)
+        jobs = _prepare_all(tasks, state, workers)
+        probed = _assign_probe_slots(jobs, state)
 
-    # Set when a second-path batch hit the run ceiling, so the caller can stop the round rather than
-    # read a derivation that quietly bought nothing (the re-roll tool raises for the same reason).
-    ceiling_reached = threading.Event()
+        # Set when a second-path batch hit the run ceiling, so the caller can stop the round rather than
+        # read a derivation that quietly bought nothing (the re-roll tool raises for the same reason).
+        ceiling_reached = threading.Event()
 
-    entries = _finish_all(state, jobs, workers, ceiling_reached)
-    verifiers, status, references, cached = _collect_outputs(jobs, entries)
-    status, references, retired = _persist_results(ctx, status, references, only, round_number)
-    # Section 6: a Task whose Verifier does not clear D79 is "not verdicted, Verifier
-    # immature", which is a Task the report leaves uncounted, not a failed build.
-    _record_round(ctx, status, _round_metrics(status, verifiers, references, probed,
-                                              state.demoted, retired))
-    return {"verifiers": verifiers, "task_status": status, "cached": cached, "ran": len(jobs) - cached,
-            "second_path_runs": sum(_second_path(r)["runs"] for r in status.values()),
-            "retired": retired, "ceiling_reached": ceiling_reached.is_set()}
+        entries = _finish_all(state, jobs, workers, ceiling_reached)
+        verifiers, status, references, cached = _collect_outputs(jobs, entries)
+        status, references, retired = _persist_results(ctx, status, references, only, round_number)
+        # Section 6: a Task whose Verifier does not clear D79 is "not verdicted, Verifier
+        # immature", which is a Task the report leaves uncounted, not a failed build.
+        _record_round(ctx, status, _round_metrics(status, verifiers, references, probed,
+                                                  state.demoted, retired))
+        return {"verifiers": verifiers, "task_status": status, "cached": cached, "ran": len(jobs) - cached,
+                "second_path_runs": sum(_second_path(r)["runs"] for r in status.values()),
+                "retired": retired, "ceiling_reached": ceiling_reached.is_set()}
+    finally:
+        pool.shutdown(cancel_futures=True)
