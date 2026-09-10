@@ -608,6 +608,14 @@ class Loop:
                 self.builder_stop = dict(stop)
 
     def _beat_done(self, agent: str, n: int, before: float) -> None:
+        """What this beat spent, on the round and on the stream, whichever way the beat ended.
+
+        Called from the beat's own `finally` (D231). A beat that raised used to skip this, since the
+        raise jumped over the last line of the beat, so the round's line reported a spend of 0.0000
+        against a real 0.1746 and the beat that cost the round its work read as the beat that cost
+        nothing. The ledger is the workdir's own file and has already been charged either way, so
+        the number is a subtraction that the raise cannot change.
+        """
         spent = self.spend() - before
         self.beat_spend[agent] = spent
         allowance = self.allowance.get(agent)
@@ -660,11 +668,21 @@ class Loop:
 
         The code path calls the suggested verb through the same registry the model has, so
         `repair_intent` runs the narrowed intent stage and `repair_recompile` the narrowed
-        compile_tools stage (builder/tools.py, `repair_verb_tools`) with the Examiner's hint."""
+        compile_tools stage (builder/tools.py, `repair_verb_tools`) with the Examiner's hint.
+
+        What the beat spent is credited on the way out, however the beat ended (D231): a beat that
+        raises spent what it spent, and the round's line has to say so."""
         if self.examiner is not None and self.examiner.is_running:
             raise RuntimeError("the Examiner is still running; one agent at a time (D128)")
         self.emit(BeatStart(agent="builder", round=n))
         before = self.spend()
+        try:
+            self._builder_work(n)
+        finally:
+            self._beat_done("builder", n, before)
+
+    def _builder_work(self, n: int) -> None:
+        """The Builder's beat itself: the findings acted on and delivered, then the target built."""
         # Most costly first (D170): the order the findings are acted on and delivered in is the
         # order of the Tasks they cost, so a tool blocking fifty Tasks is worked before an Intent.
         delivered = sorted(self.pending_findings, key=lambda f: -f.cost)
@@ -725,7 +743,6 @@ class Loop:
         delivered_ids = {finding.finding_id for finding in handled}
         self.pending_findings = [finding for finding in self.pending_findings
                                  if finding.finding_id not in delivered_ids]
-        self._beat_done("builder", n, before)
 
     def _store_is_partial(self) -> bool:
         """Whether the last `execute` was anything but the round's target in full: a narrowed stage
@@ -789,6 +806,9 @@ class Loop:
         nothing to derive from, so the beat does not happen and the round ends on the build. The
         beat used to open on such a store and fail on the first input it reached, which read as a
         broken Examiner rather than as a build that was asked for less than a Verifier needs.
+
+        What the beat spent is credited on the way out, however the beat ended (D231): a derive that
+        raises has already been paid for.
         """
         if self.builder.is_running:
             raise RuntimeError("the Builder is still running; one agent at a time (D128)")
@@ -797,6 +817,14 @@ class Loop:
             return
         self.emit(BeatStart(agent="examiner", round=n))
         before = self.spend()
+        try:
+            self._examiner_work(n)
+        finally:
+            self._beat_done("examiner", n, before)
+
+    def _examiner_work(self, n: int) -> None:
+        """The Examiner's beat itself: the plan opened or refreshed on the artifacts as they stand,
+        then the derivation."""
         if self.eplan is None:
             self._open_examiner(n)
         self.eplan.round = n
@@ -846,7 +874,6 @@ class Loop:
                 self.tool_errors.append({"agent": "examiner", "tool": "derive", "round": n,
                                          "derived": bool(derived),
                                          "error": self.examiner_result.content[:TOOL_ERROR_CHARS]})
-        self._beat_done("examiner", n, before)
 
     # --- the round ------------------------------------------------------------
 

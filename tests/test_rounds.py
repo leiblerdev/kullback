@@ -1538,3 +1538,39 @@ def test_the_counts_of_a_round_whose_state_cannot_be_read_are_empty_and_the_reco
     assert loop.counts_now() == {}
     record = loop.close_round(1, loop.counts_now())
     assert record.round == 1 and record.counts["turns"]["total"] == 0
+
+
+# --- what a beat spent, however it ended (D231) -----------------------------------------------
+
+def test_a_builder_beat_that_raised_still_credits_what_it_spent_to_the_round(tmp_path, monkeypatch):
+    """D231: the beat that raises is the one a reader most wants the cost of. The credit used to sit
+    on the last line of the beat, which a raise jumps over, so a round that spent 0.1746 on the
+    calls that broke it reported 0.0000 and read as a round that cost nothing."""
+    from kullback.agent.tools import ToolResult
+
+    loop = _bare_loop(tmp_path)
+    spent = iter([1.5, 1.9])
+    monkeypatch.setattr(type(loop), "spend", lambda self: next(spent))
+    monkeypatch.setattr(builder_agent, "drive_tool",
+                        lambda *args, **kwargs: ToolResult(content="the build broke", is_error=True))
+    with pytest.raises(BuildError):
+        loop.builder_beat(1)
+    assert round(loop.beat_spend["builder"], 4) == 0.4
+    assert round(loop.driver_counts()["spend"]["total"], 4) == 0.4
+
+
+def test_a_beat_that_raised_ends_on_the_stream_like_any_other_beat(tmp_path, monkeypatch):
+    """A screen that saw a beat start and never end has a beat still running on it for the rest of
+    the run, and the spend on the event is the same subtraction the round's counts carry."""
+    from kullback.agent.tools import ToolResult
+
+    seen: list = []
+    loop = _bare_loop(tmp_path, subscribers=[seen.append])
+    spent = iter([2.0, 2.25])
+    monkeypatch.setattr(type(loop), "spend", lambda self: next(spent))
+    monkeypatch.setattr(builder_agent, "drive_tool",
+                        lambda *args, **kwargs: ToolResult(content="the build broke", is_error=True))
+    with pytest.raises(BuildError):
+        loop.builder_beat(1)
+    assert _beats(seen) == [("beat_start", "builder", 1), ("beat_end", "builder", 1)]
+    assert round([e for e in seen if isinstance(e, BeatEnd)][0].spend, 4) == 0.25
