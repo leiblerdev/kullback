@@ -1,0 +1,87 @@
+--- a/kullback/builder/build.py
++++ b/kullback/builder/build.py
+@@ -27,6 +27,7 @@
+ 
+ import functools
+ import json
++import threading
+ from dataclasses import dataclass, field
+ from pathlib import Path
+ from typing import Any, Iterable, Optional, Sequence
+@@ -1416,6 +1417,10 @@
+         # and how the forced first turn went, so a round can say whether a verdict still depends on
+         # a model's tool-calling habit. All zero where no pair reached a judge.
+         self.judge_counts: dict = {name: 0 for name in judge_mod.JUDGE_COUNTS}
++        # One runner closure shares this judging across the Examiner's pooled variant jobs
++        # (speed-1): the memo check-and-set and the save go under one lock, so identical pairs
++        # are asked once and saves do not interleave.
++        self._lock = threading.Lock()
+ 
+     @property
+     def judge(self) -> Optional[Any]:
+@@ -1424,9 +1429,10 @@
+ 
+     def _ask(self, column: Any, a: Any, b: Any) -> Any:
+         key = canon.pair_key(str(column), str(a), str(b))
+-        if key not in self._asked:
+-            self._asked[key] = self._answer(column, a, b, key)
+-        return self._asked[key]
++        with self._lock:
++            if key not in self._asked:
++                self._asked[key] = self._answer(column, a, b, key)
++            return self._asked[key]
+ 
+     def _answer(self, column: Any, a: Any, b: Any, key: str) -> Any:
+         if self._second is None:
+@@ -1439,8 +1445,9 @@
+ 
+     def save(self) -> None:
+         """Keep what was settled, so the next run of the stage asks about none of it again."""
+-        if self.path is not None:
+-            canon.save_table(self.table, self.path)
++        with self._lock:
++            if self.path is not None:
++                canon.save_table(self.table, self.path)
+ 
+ 
+ def _semantic_judging(plan: "BuildPlan") -> SemanticJudging:
+--- a/kullback/gates/tool_runs.py
++++ b/kullback/gates/tool_runs.py
+@@ -26,6 +26,7 @@
+ import ast
+ import json
+ import re
++import threading
+ import weakref
+ from typing import Any, Iterable, NamedTuple, Optional
+ 
+@@ -583,17 +584,21 @@
+         # (D219). Without these a build cannot tell an environment with no semantic column from one
+         # whose every semantic column went unanswered.
+         self.counts: dict = {name: 0 for name in SEMANTIC_COUNTS}
++        # One runner closure shares this comparer across the Examiner's pooled variant jobs
++        # (speed-1): the D219 tally is read-modify-write and goes under this lock.
++        self._lock = threading.Lock()
+ 
+     def agrees(self, tool: str, expected: Any, got: Any) -> tuple[bool, list[str]]:
+         """Whether the replayed answer agrees with the recording, and what parted, by class."""
+-        reading = read_as_columns(self.schema, tool, expected, got, self.rules, self.readers,
+-                                  self.judge, self.equivalence, self.counts)
+-        if reading is not None:
+-            return reading
+-        ok, notes = compare_results(self.schema, expected, got, self.rules, tool=tool,
+-                                    readers=self.readers, judge=self.judge,
+-                                    equivalence=self.equivalence, tally=self.counts)
+-        return ok, notes
++        with self._lock:
++            reading = read_as_columns(self.schema, tool, expected, got, self.rules, self.readers,
++                                      self.judge, self.equivalence, self.counts)
++            if reading is not None:
++                return reading
++            ok, notes = compare_results(self.schema, expected, got, self.rules, tool=tool,
++                                        readers=self.readers, judge=self.judge,
++                                        equivalence=self.equivalence, tally=self.counts)
++            return ok, notes
+ 
+ 
+ # --- the rulings, in the order that localizes a failure ---
