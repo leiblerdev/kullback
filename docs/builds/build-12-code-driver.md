@@ -1,3 +1,7 @@
+---
+archived: true
+archived_on: 2026-09-10
+---
 # Build table: .work-b12-code
 
 **Tasks covered: 75 of 205 frozen Tasks (36.6%), 173 of 456 Runs (37.9%)**

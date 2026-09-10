@@ -1,3 +1,7 @@
+---
+archived: true
+archived_on: 2026-09-10
+---
 # Build table: .work-retail
 
 **Tasks covered: 20 of 205 frozen Tasks (9.8%), 56 of 456 Runs (12.3%)**
