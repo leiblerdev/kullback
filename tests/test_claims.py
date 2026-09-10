@@ -13,6 +13,7 @@ from kullback import claims, difficulty, report, rounds
 from kullback.builder import agent as builder_agent
 from kullback.builder.build import BuildPlan
 from kullback.examiner import findings
+from kullback.report.render import _claims_table
 from kullback.runner.records import Atom, Event, Run, ToolSig, Verifier, as_dict, write_json
 
 FIRE = "fire_kiln"
@@ -249,7 +250,7 @@ def test_the_round_carries_the_four_counters_off_the_rows_it_wrote(tmp_path):
 def test_the_report_says_what_was_claimed_against_what_the_state_received(tmp_path):
     _, store = _workdir(tmp_path, ["I have fired the kiln."], [READ_S2])
     data = report.ReportData(claims=claims.compute(tmp_path, store=store))
-    lines = report._claims_table(data)
+    lines = _claims_table(data)
     assert "### Claims against state" in lines
     assert any("1 claims" in line for line in lines)
     assert any("Flagged for the Simulated user's end protocol: task_1" in line for line in lines)
@@ -257,7 +258,7 @@ def test_the_report_says_what_was_claimed_against_what_the_state_received(tmp_pa
 
 
 def test_a_build_with_no_claim_record_says_so_rather_than_showing_an_empty_table():
-    lines = report._claims_table(report.ReportData())
+    lines = _claims_table(report.ReportData())
     assert any("No claim record was written" in line for line in lines)
 
 
