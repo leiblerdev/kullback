@@ -102,6 +102,7 @@ def test_record_call_writes_per_stage_and_per_build_totals(workdir):
     budget.record_call(call_event(input=1_000_000), stage="mine", workdir=workdir)
     budget.record_call(call_event(idx=1, input=1_000_000), stage="mine", workdir=workdir)
     budget.record_call(call_event(idx=2, output=1_000_000), stage="compile_tools", workdir=workdir)
+    budget.flush_ledger(workdir)
 
     totals = json.loads((workdir / budget.TOTALS_NAME).read_text(encoding="utf-8"))
     assert totals["stages"]["mine"]["calls"] == 2
@@ -343,6 +344,7 @@ def test_every_call_through_the_wrapper_is_priced_and_written_to_the_ledger(work
     )
     model = budget.BudgetedModel(inner, stage="mine", workdir=workdir, model_id="anthropic/claude-opus-5")
     assert model.query([{"role": "user", "content": "hi"}]).content == "ok"
+    budget.flush_ledger(workdir)
 
     totals = budget.load_totals(workdir)
     assert totals["stages"]["mine"]["calls"] == 1
