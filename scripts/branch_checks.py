@@ -9,7 +9,9 @@ touched functions with their before and after values.
 
 import argparse
 import ast
+import difflib
 import fnmatch
+import hashlib
 import re
 import shutil
 import subprocess
@@ -244,7 +246,8 @@ def complexity_of(node):
     return score
 
 
-def function_complexities(source):
+def function_details(source):
+    """Map qualified function name to (complexity, body hash, body dump)."""
     try:
         tree = ast.parse(source)
     except SyntaxError:
@@ -255,7 +258,9 @@ def function_complexities(source):
         for child in ast.iter_child_nodes(node):
             if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 name = f"{prefix}{child.name}" if prefix else child.name
-                found[name] = complexity_of(child)
+                dump = ast.dump(child, annotate_fields=False, include_attributes=False)
+                digest = hashlib.sha256(dump.encode("utf-8")).hexdigest()
+                found[name] = (complexity_of(child), digest, dump)
                 visit(child, name + ".")
             elif isinstance(child, ast.ClassDef):
                 visit(child, f"{prefix}{child.name}.")
@@ -264,6 +269,39 @@ def function_complexities(source):
 
     visit(tree, "")
     return found
+
+
+def function_complexities(source):
+    return {name: item[0] for name, item in function_details(source).items()}
+
+
+def base_moved_index(root, base):
+    """Map function name to [(file, complexity, body hash, body dump)] on base."""
+    out = run_git(root, "ls-tree", "-r", "--name-only", base, "--", "kullback", "scripts")
+    if out.returncode != 0:
+        return {}
+    index = {}
+    for path in out.stdout.splitlines():
+        if not path.endswith(".py"):
+            continue
+        src = show_file(root, base, path)
+        if src is None:
+            continue
+        for name, (value, digest, dump) in function_details(src).items():
+            index.setdefault(name, []).append((path, value, digest, dump))
+    return index
+
+
+def pick_moved_candidate(candidates, head_digest, head_dump, head_value):
+    same = [item for item in candidates if item[2] == head_digest]
+    if same:
+        return sorted(same, key=lambda item: item[0])[0]
+    scored = []
+    for item in candidates:
+        ratio = difflib.SequenceMatcher(None, head_dump, item[3]).ratio()
+        scored.append((ratio, -abs(item[1] - head_value), item[0], item))
+    scored.sort(key=lambda entry: (entry[0], entry[1], entry[2]), reverse=True)
+    return scored[0][3]
 
 
 def show_file(root, rev, path):
@@ -290,30 +328,76 @@ def touched_python_files(root, base, head):
     return files
 
 
+def moved_or_new_reason(name, current, after, head_info, moved_index):
+    """Pass verbatim moves, flag grown moves, flag new functions."""
+    candidates = moved_index.get(name, [])
+    if not candidates:
+        return f"{current} {name} is new at {after} (ceiling {MAX_NEW_COMPLEXITY})"
+    picked = pick_moved_candidate(candidates, head_info[1], head_info[2], after)
+    old_file, old_value = picked[0], picked[1]
+    if old_value >= after:
+        return None
+    return f"{current} {name} moved from {old_file} and rose from {old_value} to {after}"
+
+
+def rose_reason(name, old, current, before, after):
+    """Name both files when a rename carries a complexity rise."""
+    if old != current:
+        return f"{current} {name} moved from {old} and rose from {before} to {after}"
+    return f"{current} {name} rose from {before} to {after}"
+
+
+def dash_text(value):
+    """Render a complexity value for the table."""
+    if value is None:
+        return "-"
+    return str(value)
+
+
+def file_ceiling_entries(old, current, base_funcs, head_infos, box):
+    """Table lines and failure reasons for one touched file."""
+    head_funcs = {name: item[0] for name, item in head_infos.items()}
+    lines = []
+    reasons = []
+    for name in sorted(set(head_funcs) | set(base_funcs)):
+        before = base_funcs.get(name)
+        after = head_funcs.get(name)
+        lines.append(
+            f"  complexity-table {current} {name} "
+            f"base={dash_text(before)} head={dash_text(after)}"
+        )
+        if after is None:
+            continue
+        if before is None:
+            if after > MAX_NEW_COMPLEXITY:
+                if box["index"] is None:
+                    box["index"] = base_moved_index(box["root"], box["base"])
+                reason = moved_or_new_reason(name, current, after, head_infos[name], box["index"])
+                if reason is not None:
+                    reasons.append(reason)
+        elif after > before:
+            reasons.append(rose_reason(name, old, current, before, after))
+    return lines, reasons
+
+
 def check_complexity_ceiling(root, base, head):
     """Changed functions keep their ceiling and new ones stay at 15 or under."""
     table = []
     bad = []
+    box = {"root": root, "base": base, "index": None}
     for old, current in touched_python_files(root, base, head):
         head_src = show_file(root, head, current)
         if head_src is None:
             continue
         base_src = show_file(root, base, old)
-        head_funcs = function_complexities(head_src)
-        base_funcs = function_complexities(base_src) if base_src is not None else {}
-        for name in sorted(set(head_funcs) | set(base_funcs)):
-            before = base_funcs.get(name)
-            after = head_funcs.get(name)
-            before_text = str(before) if before is not None else "-"
-            after_text = str(after) if after is not None else "-"
-            table.append(f"  complexity-table {current} {name} base={before_text} head={after_text}")
-            if after is None:
-                continue
-            if before is None:
-                if after > MAX_NEW_COMPLEXITY:
-                    bad.append(f"{current} {name} is new at {after} (ceiling {MAX_NEW_COMPLEXITY})")
-            elif after > before:
-                bad.append(f"{current} {name} rose from {before} to {after}")
+        head_infos = function_details(head_src)
+        if base_src is None:
+            base_funcs = {}
+        else:
+            base_funcs = function_complexities(base_src)
+        lines, reasons = file_ceiling_entries(old, current, base_funcs, head_infos, box)
+        table.extend(lines)
+        bad.extend(reasons)
     for line in table:
         print(line)
     if bad:
