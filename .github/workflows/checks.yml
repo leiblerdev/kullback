@@ -26,7 +26,7 @@ jobs:
       - name: lint
         run: uv run ruff check kullback
       - name: top level tests
-        run: uv run pytest tests/*.py -q -x --ignore=tests/test_e2e.py
+        run: uv run pytest $(find tests -maxdepth 1 -name 'test_*.py' ! -name 'test_e2e.py') -q -x
       - name: end to end tests
         run: uv run pytest tests/test_e2e.py -q -x
       - name: unit tests by directory
