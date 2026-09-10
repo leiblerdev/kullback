@@ -433,6 +433,44 @@ def refused_write_ends(workdir: Any, write_tools: Optional[Iterable[str]] = None
     return out
 
 
+ENDS_BY_DRIVER = "user_ends_by_kind"
+
+
+def ends_by_driver(workdir: Any) -> dict[str, dict[str, int]]:
+    """How the stored Runs ended, in the kinds of D210, under the user that ended each of them (D231).
+
+    The turn a Run ends on names its own driver, so the split is read off the same payload the end
+    kind is read off and never off which driver the Task was assigned. A Task the agent user drives
+    still ends on a rules turn wherever that turn was dropped or the model could not answer, and a
+    split taken off the assignment would file those Runs under the user that did not speak them. A
+    turn that names no driver is the rule-driven user's own, which is the only one that writes none.
+
+    Every kind is named for every driver that ended a Run, zero included, so a driver that stopped
+    ending one way says so rather than dropping the line, and a driver that ended nothing is absent
+    rather than a row of zeros: two thirds of Runs running out of scenario under one user is the
+    reading this exists for, and it cannot be had from a count that has already summed the two.
+
+    Off the stored Runs and nothing else, so it costs no model call and no Run.
+    """
+    out: dict[str, dict[str, int]] = {}
+    folder = Path(workdir) / RUNS_DIR
+    for path in sorted(folder.glob("*/*.jsonl")) if folder.is_dir() else ():
+        ended: Optional[tuple[str, str]] = None
+        for event in _events(path):
+            if event.get("type") != "user_turn":
+                continue
+            payload = event.get("payload") or {}
+            kind = rules_mod.end_kind_of(payload)
+            if kind is not None:
+                ended = (str(payload.get("driver") or RULES_DRIVER), kind)
+        if ended is None:
+            continue
+        driver, kind = ended
+        counts = out.setdefault(driver, {name: 0 for name in rules_mod.USER_END_KINDS})
+        counts[kind] = counts.get(kind, 0) + 1
+    return {driver: counts for driver, counts in sorted(out.items())}
+
+
 def _events(path: Path) -> Iterator[dict]:
     """One stored Run's events, skipping a line the file was cut off in the middle of writing."""
     try:

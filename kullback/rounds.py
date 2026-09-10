@@ -479,6 +479,8 @@ class Loop:
     tool_errors: list[dict] = field(default_factory=list)
     beat_spend: dict[str, float] = field(default_factory=dict)
     beat_error: dict = field(default_factory=dict)  # what ended the round's beat, where one raised (D231)
+    # D231: the round's end kinds per driver, read off the stored Runs once and kept for the round.
+    _user_ends: Optional[dict] = None
     spent_allowance: dict[str, bool] = field(default_factory=dict)
     compactions_seen: dict[str, int] = field(default_factory=dict)
     cuts_seen: dict[str, int] = field(default_factory=dict)
@@ -990,6 +992,7 @@ class Loop:
             # rounds that ended that way and absent from the rounds that closed on their own, so a
             # reader never has to tell an ordinary round from a broken one by a field of zeros.
             **({BEAT_ERROR: dict(self.beat_error)} if self.beat_error else {}),
+            **self._user_end_counts(),
             **self._pin_counts(),
             **self._reader_counts(),
             **self._lesson_counts(),
@@ -998,6 +1001,25 @@ class Loop:
             **self._sampling_counts(),
             **self._evidence_counts(),
         }
+
+    def _user_end_counts(self) -> dict:
+        """How the round's Runs ended, in the kinds of D210, under the user that ended each (D231).
+
+        The split was on the build result and on a re-roll's gate metrics and nowhere a round could
+        read, so the one number D214 exists to move, how often a Simulated user runs out of scenario,
+        had to be recovered by aggregating the status rows by hand. It is one number per driver here,
+        beside the Tasks each driver was given, and a workdir whose Runs carry no end kind at all
+        carries no split rather than a row of zeros.
+
+        Read once per round and kept: the stored Runs do not move while a round closes, and a
+        round's counts are assembled more than once.
+        """
+        if self._user_ends is None:
+            try:
+                self._user_ends = user_fidelity_mod.ends_by_driver(self.plan.workdir)
+            except (OSError, ValueError, TypeError):
+                self._user_ends = {}
+        return {user_fidelity_mod.ENDS_BY_DRIVER: self._user_ends} if self._user_ends else {}
 
     def _evidence_counts(self) -> dict:
         """D220: the held-out split as this round applied it, and what it cost or found.
@@ -1028,11 +1050,21 @@ class Loop:
 
         `semantic_compared` is how many semantic columns were compared at all, `semantic_judged` how
         many of those a judge was actually asked about, and the three answers are counted apart:
-        equal, different, and the pairs nobody settled. `judge_spend` is the ledger's own number for
-        the judge that settles them, so the cost of judging is read off the same file the build's
-        other spend is. All zero on an Environment whose schema classes no column semantic; many
-        unresolved with nothing judged is a judge that is not wired, which is what D219 was written
-        for and is the reading nothing on the record could give before.
+        equal, different, and the pairs nobody settled. `judge_spend` is what the ledger charged the
+        judge that settles them over this round, the same subtraction the round's other spend is.
+        All zero on an Environment whose schema classes no column semantic; many unresolved with
+        nothing judged is a judge that is not wired, which is what D219 was written for and is the
+        reading nothing on the record could give before.
+
+        `semantic_judged` and the replay ruling's `differs_by_judge` count different things and a
+        round can hold 0 and 7 without either being wrong (D231). This one counts the pairs a model
+        was actually asked about; the other counts the checks whose difference was reached on the
+        semantic route, past the token set, the presence and the plain column, which the equivalence
+        table settles for nothing wherever an earlier round's judge already answered that pair. So a
+        round that asks no judge and reads seven differences off the table is the two counters
+        agreeing. `judge_spend` used to be read as the workdir's running total for the stage, which
+        put a charge from an earlier build beside this round's `semantic_judged` of 0 and read as
+        the third disagreement; it is this round's own charge now.
 
         The judge counts beside them are D222's: how many reads the harness ran before asking,
         how many calls the models made on top of those, how many questions the harness could
@@ -1043,7 +1075,8 @@ class Loop:
         out = {name: int(counts.get(name) or 0)
                for name in tool_runs.SEMANTIC_COUNTS + judge_mod.JUDGE_COUNTS}
         stages = (budget.load_totals(self.plan.workdir).get("stages") or {})
-        out["judge_spend"] = round(float((stages.get(SEMANTIC_JUDGE_STAGE) or {}).get("usd") or 0.0), 4)
+        charged = float((stages.get(SEMANTIC_JUDGE_STAGE) or {}).get("usd") or 0.0)
+        out["judge_spend"] = round(max(0.0, charged - self.round_stage_start.get(SEMANTIC_JUDGE_STAGE, 0.0)), 4)
         return out
 
     def _sampling_counts(self) -> dict:
@@ -1516,7 +1549,7 @@ class Loop:
         self.emit(RoundStart(round=n))
         self.sent, self.beat_spend, self.spent_allowance = [], {}, {}
         self.tool_errors = []
-        self.beat_error = {}  # D231: what ended this round, and nothing the round before it left
+        self.beat_error, self._user_ends = {}, None  # D231: this round's, not the round before's
         # D218, Greptile P1 (PR 29): a round's snapshot says what this round measured, so the
         # rulings and the difficulty record start empty. A round that ends on an error before its
         # counts were read would otherwise write the round before it into its own table.

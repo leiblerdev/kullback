@@ -1610,3 +1610,58 @@ def test_a_second_run_over_a_workdir_numbers_its_rounds_after_the_first_runs_and
     assert rounds.last_round(workdir) == 2
     history = json.loads((workdir / "gates_by_round.json").read_text(encoding="utf-8"))
     assert [row["round"] for row in history] == [1, 2], "one history row per round, not one overwritten"
+
+
+# --- the end kinds per driver, and what the judging cost this round (D231) ---------------------
+
+def _run_events(path: Path, events: list) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("\n".join(json.dumps(event) for event in events), encoding="utf-8")
+
+
+def _charge(workdir: Path, stage: str, usd: float) -> None:
+    """One stage charged in the workdir's own ledger, the file the round reads its spend off."""
+    totals = budget.load_totals(workdir)
+    bucket = totals["stages"].setdefault(stage, budget.empty_bucket())
+    bucket["usd"] = float(bucket.get("usd") or 0.0) + usd
+    totals["total"]["usd"] = float(totals["total"].get("usd") or 0.0) + usd
+    budget.save_totals(workdir, totals)
+
+
+def test_a_rounds_counts_say_how_its_runs_ended_under_each_user_that_drove_them(tmp_path):
+    """D231: the end-kind split rode on the build result and on a re-roll's gate metrics and nowhere
+    a round could read it, so the number D214 exists to move, how often a user runs out of scenario,
+    had to be recovered by aggregating the status rows by hand."""
+    from kullback.user import rules as user_rules
+
+    loop = _bare_loop(tmp_path)
+    workdir = loop.plan.workdir
+    _run_events(workdir / "runs" / "task_dock" / "reroll-task_dock-0.jsonl",
+                [{"type": "user_turn", "payload": {"driver": "agent",
+                                                   "user_end": user_rules.GOAL_SATISFIED}}])
+    _run_events(workdir / "runs" / "task_dock" / "reroll-task_dock-1.jsonl",
+                [{"type": "user_turn", "payload": {"tags": [user_rules.SCENARIO_EXHAUSTED]}}])
+    split = loop.driver_counts()["user_ends_by_kind"]
+    assert split["agent"][user_rules.GOAL_SATISFIED] == 1
+    assert split["rules"][user_rules.SCENARIO_EXHAUSTED] == 1
+    assert split["rules"][user_rules.GOAL_SATISFIED] == 0, "every kind for a driver that spoke"
+
+
+def test_a_round_whose_runs_carry_no_end_kind_carries_no_split_rather_than_zeros(tmp_path):
+    """Zero Runs ended and no Run classified are not the same reading, so the split is absent where
+    nothing ended rather than a row of zeros a reader has to interpret."""
+    assert "user_ends_by_kind" not in _bare_loop(tmp_path).driver_counts()
+
+
+def test_the_judge_spend_on_a_round_is_what_that_round_was_charged(tmp_path):
+    """D231: read as the workdir's running total, it put an earlier build's charge beside this
+    round's `semantic_judged` of 0 and read as a counter disagreeing with itself. The two counters
+    it was read against measure different passes: `semantic_judged` is the pairs a model was asked
+    about, and the replay ruling's `differs_by_judge` the differences reached on the semantic route,
+    which the equivalence table settles for nothing once an earlier round has answered that pair."""
+    loop = _bare_loop(tmp_path)
+    _charge(loop.plan.workdir, rounds.SEMANTIC_JUDGE_STAGE, 0.9)  # an earlier run of this workdir
+    loop.round_stage_start = loop.stage_spend()
+    assert loop.counts()["judge_spend"] == 0.0, "a round that asked no judge is charged for none"
+    _charge(loop.plan.workdir, rounds.SEMANTIC_JUDGE_STAGE, 0.25)
+    assert loop.counts()["judge_spend"] == 0.25
