@@ -173,8 +173,14 @@ def _usable_entry(entry: dict) -> Optional[dict]:
     models has to be a mapping of wire id to row. A models field of any other shape is not a row
     with one bad field, it is a row written to a different shape, so the whole row is left out:
     landing half of it would point a provider at a new host while its prices still came from the
-    row underneath. Every other provider in the file is unaffected. A single model row of the
-    wrong shape is narrower, and only that wire id is dropped.
+    row underneath. Every other provider in the file is unaffected. A models field that names
+    nothing readable, empty or every row of it misshapen, goes the same way and for the same
+    reason: there is nothing left to lay over, and the top-level fields alone would move the host
+    and leave the prices where they were. A single misshapen row beside good ones is narrower, and
+    only that wire id is dropped.
+
+    A row with no models field at all is not this case. It says nothing about models and is meant
+    to: it overrides a host or a key variable and leaves the rows underneath alone.
     """
     models = entry.get("models")
     if models is None:
@@ -182,9 +188,10 @@ def _usable_entry(entry: dict) -> Optional[dict]:
     if not isinstance(models, dict):
         return None
     rows = {wire_id: row for wire_id, row in models.items() if isinstance(row, dict)}
+    if not rows:
+        return None
     kept = {key: value for key, value in entry.items() if key != "models"}
-    if rows:
-        kept["models"] = rows
+    kept["models"] = rows
     return kept
 
 
@@ -327,6 +334,19 @@ def _listed_prices(listing: Any, field: str) -> dict[str, dict[str, float]]:
     return prices
 
 
+# One reading of each price list per process. refresh runs wherever an id is resolved and not only
+# where a call is billed, so a request per lookup would be a request per Run for a number that
+# moves in days, and the ledger already reads its prices once and keeps them. A reading that came
+# back with nothing is kept too: asking a host that is down again on the next lookup costs the
+# timeout again and answers the same nothing.
+_LIVE_PRICES_SEEN: dict[tuple[str, str], dict[str, dict[str, float]]] = {}
+
+
+def forget_live_prices() -> None:
+    """Drop this process's reading of every price list, so the next refresh asks the vendors again."""
+    _LIVE_PRICES_SEEN.clear()
+
+
 def _overlay_live_prices(catalog: Optional[dict], client: Any, env: Optional[dict[str, str]]) -> Optional[dict]:
     """Every provider row that names its own price list, repriced from that list.
 
@@ -354,7 +374,10 @@ def _overlay_live_prices(catalog: Optional[dict], client: Any, env: Optional[dic
             continue
         headers = {"Authorization": f"Bearer {key}"} if key else None
         models = entry.get("models")
-        listed = _listed_prices(_get_json(client, url, headers), field)
+        listed = _LIVE_PRICES_SEEN.get((url, field))
+        if listed is None:
+            listed = _listed_prices(_get_json(client, url, headers), field)
+            _LIVE_PRICES_SEEN[(url, field)] = listed
         for row_key, cost in _by_row_key(models, listed).items():
             models[row_key]["cost"] = cost
     return catalog

@@ -810,6 +810,24 @@ def test_the_login_menu_does_not_offer_a_provider_the_resolver_cannot_reach(tmp_
     assert offered["a-host"] == "a-host/quick-1"
 
 
+def test_a_model_row_naming_its_own_shape_is_offered_and_resolves_on_that_shape(tmp_path, monkeypatch):
+    """The provider field cannot say that one model rides a gateway and speaks another vendor's
+    request shape; the model row can, and model_for reads it. The menu and the refusal read it too,
+    or the menu offers what picking it refuses, and refuses what a Run would have run."""
+    from kullback.ai import pricing
+
+    _snapshot(monkeypatch, tmp_path)
+    (tmp_path / pricing.LOCAL_PROVIDERS_NAME).write_text(json.dumps(
+        {"h-host": {"id": "h-host", "npm": "@a-lab/ai-sdk-provider", "api": "https://h-host.invalid",
+                    "env": ["H_HOST_API_KEY"],
+                    "models": {"quick-4": {"provider": {"npm": "@ai-sdk/openai-compatible"},
+                                           "cost": {"input": 1.0, "output": 2.0}}}}}),
+        encoding="utf-8")
+    screen = Screen(tmp_path, console=_console())
+    assert screen._login_defaults()["h-host"] == "h-host/quick-4"
+    screen._resolve("h-host/quick-4", None)  # the row's own shape is one the Harness builds: no refusal
+
+
 def test_the_login_menu_does_not_offer_a_provider_whose_models_field_is_not_an_object(tmp_path, monkeypatch):
     """A row written to the wrong shape must not become a choice: the menu would take the list's
     first element for a model id and offer a name no endpoint serves. The row is left out of the

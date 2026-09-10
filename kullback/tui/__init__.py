@@ -846,23 +846,32 @@ class Screen:
         self.console.print(self._login_status())
 
     def _resolve(self, model: str, base_url: Optional[str]) -> None:
-        """The id reaches a model, or the reason it does not. Assigns nothing; reports everything."""
+        """The id reaches a model, or the reason it does not. Assigns nothing; reports everything.
+
+        Both questions are asked of one catalog reading, and asked the way model_for asks them, so
+        /login refuses exactly what a Run would refuse. The shape is the model row's own where it
+        names one: the provider field cannot say that a single model rides one gateway and speaks
+        another vendor's request shape, and the row can.
+        """
+        from kullback.ai import pricing
         from kullback.ai import provider as pv
 
         provider_name, _ = pv.split_model_id(model)  # the 'provider/model' shape, or words saying so
         if provider_name in pv.ADAPTERS or base_url:
             return
         try:
-            endpoint = pv.registry_endpoint(model)
+            catalog = pricing.refresh(path=pv.REGISTRY_SNAPSHOT_PATH)
         except Exception:
-            endpoint = None
+            catalog = None
+        endpoint = pricing.endpoint_from_catalog(catalog, model)
         if endpoint is None:
             raise ValueError(
                 f"{model} has no adapter of its own and the models.dev snapshot names no host "
                 f"for {provider_name!r}; pass --base-url")
-        if not endpoint.openai_shaped:
+        shape = pricing.model_adapter_for(catalog, model)
+        if shape not in pricing.OPENAI_SHAPED:
             raise ValueError(
-                f"models.dev serves {provider_name!r} through {endpoint.adapter}, which is not "
+                f"models.dev serves {model} through {shape}, which is not "
                 f"the OpenAI request shape this Harness builds; pass --base-url for one that is")
 
     def _login_status(self) -> Text:

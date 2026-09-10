@@ -462,7 +462,12 @@ def price_list_transport(listing, seen=None, status=200):
 LIVE_ENV = {pricing.LIVE_ENV_VAR: "1", "E_HOST_API_KEY": "e-host-test-key"}
 
 
-def refresh_with(listing, path, seen=None, status=200, env=None):
+def refresh_with(listing, path, seen=None, status=200, env=None, remember=False):
+    """One refresh against a stubbed price list. The process-wide reading of that list is dropped
+    first, so each test says for itself what the vendor serves; remember=True keeps it, which is
+    what a test of the reading being kept needs."""
+    if not remember:
+        pricing.forget_live_prices()
     write_snapshot(path, CATALOG)
     write_local(path, LIVE_PRICED)
     return pricing.refresh(client=price_list_transport(listing, seen, status), path=path,
@@ -550,6 +555,25 @@ def test_two_listed_spellings_of_one_model_that_disagree_leave_the_written_rate_
     assert pricing.price_from_catalog(catalog, "e-host/brisk-4")["input"] == 0.5
 
 
+def test_a_price_list_is_read_once_a_process_and_not_once_a_lookup(tmp_path):
+    """refresh runs wherever an id is resolved, not only where a call is billed, so asking the
+    vendor on every lookup would be a request per Run for a number that moves in days."""
+    listing = {"data": [{"id": "brisk-4", "rates": {"input": 0.5, "output": 1.25}}]}
+    seen = []
+    path = tmp_path / "models.dev.json"
+    refresh_with(listing, path, seen=seen)
+    catalog = refresh_with(listing, path, seen=seen, remember=True)
+    assert len([r for r in seen if str(r.url) == PRICE_LIST_URL]) == 1
+    assert pricing.price_from_catalog(catalog, "e-host/brisk-4")["input"] == 0.5, \
+        "the reading that was kept is still laid over the row"
+
+    pricing.forget_live_prices()
+    moved = {"data": [{"id": "brisk-4", "rates": {"input": 0.7, "output": 1.4}}]}
+    catalog = refresh_with(moved, path, seen=seen, remember=True)
+    assert pricing.price_from_catalog(catalog, "e-host/brisk-4")["input"] == 0.7, \
+        "and forgetting it asks the vendor again"
+
+
 def test_a_price_list_cannot_add_a_model_the_row_does_not_offer(tmp_path):
     """The written row says what the Harness offers. A list that prices two hundred other models
     changes the price of the one it names and adds nothing, so nothing is offered unsized."""
@@ -568,6 +592,17 @@ def test_the_built_in_gateway_row_names_its_price_list_and_carries_a_fallback_ra
     assert row["prices"]["field"]
     for model in row["models"].values():
         assert model["cost"]["input"] > 0 and model["cost"]["output"] > 0
+
+
+def test_a_row_whose_models_mapping_names_nothing_readable_is_left_out_whole(tmp_path):
+    """An empty mapping, or one whose every row is misshapen, leaves nothing to lay over. Landing
+    the top-level fields alone would move the host and leave the prices where they were, which is
+    the same half-applied row a models field of the wrong shape would have been."""
+    path = tmp_path / "models.dev.json"
+    name = next(iter(pricing.BUILTIN_LOCAL_PROVIDERS))
+    for models in ({}, {"quick-1": "1 in, 2 out"}):
+        write_local(path, {name: {"api": "https://elsewhere.invalid/v1", "models": models}})
+        assert pricing.local_providers(path)[name] == pricing.BUILTIN_LOCAL_PROVIDERS[name]
 
 
 def test_a_built_in_provider_given_a_misshapen_models_field_keeps_the_rows_it_shipped_with(tmp_path):
