@@ -563,11 +563,12 @@ def homing_hash(schema: EntitySchema) -> str:
     return content_hash({"homing": homing, "revealed_classes": revealed})
 
 
-def _accumulate_version(seen: dict, trace_id: str, key: tuple, row: dict) -> dict:
+def _accumulate_version(seen: dict[str, dict[tuple[str, str, str], dict]], trace_id: str,
+                        key: tuple, row: dict) -> dict:
     """One row's version, column by column, with the earliest sighting winning each column.
 
     Shared by the customer path and the requestor path (D233): a trace that read part of a row
-    and then the whole of it states one version and not two, whoever made the call.
+    and then the whole of it states one version and not two.
     """
     version = seen.setdefault(trace_id, {}).setdefault(key, {})
     for name, value in (row or {}).items():
@@ -608,8 +609,8 @@ def trace_worlds(traces: Iterable[Trace], schema: EntitySchema, write_tools: set
     call homed onto a row without stating a column of it is its own recorded sentence
     (`_recorded_text`), which is what the recording says about the row when no reader is allowed.
 
-    Another requestor's own state is homed the same way (D233): `_requestor_worlds` files a
-    sighting that states columns of the mined table under that table, one row per requestor,
+    Another requestor's own state is homed the same way (D233): `_requestor_worlds` files every
+    stated column under whichever mined table of that requestor carries it, one row per requestor,
     accumulated with the same earliest-wins loop, and the split compares it per column under
     the schema's column classes, so a semantic or exempt part of the sighting no longer splits
     Tasks. A prose sighting keeps the opaque sentence key, since no reader may read its columns
@@ -618,7 +619,7 @@ def trace_worlds(traces: Iterable[Trace], schema: EntitySchema, write_tools: set
     exactly those tables.
     """
     traces = list(traces)
-    seen: dict = {}
+    seen: dict[str, dict[tuple[str, str, str], dict]] = {}
     for obs in _observations(traces, schema, write_tools, read_result=_recorded_text):
         if obs.after_write or obs.shadowed:
             continue
@@ -630,37 +631,31 @@ def trace_worlds(traces: Iterable[Trace], schema: EntitySchema, write_tools: set
     return worlds
 
 
-def _requestor_table_of(schema: Optional[EntitySchema], requestor: str) -> Optional[str]:
-    """The table the schema mined for this requestor's own state, or None (D233).
+def _requestor_tables_of(schema: Optional[EntitySchema]) -> dict[str, list[str]]:
+    """Each requestor with a mined table to the sorted tables mined for it (D233).
 
-    A table another requestor's tools revealed carries that requestor on every column's evidence
-    under `revealed_by` (`readers.apply_to_schema`, `templates.apply_revealed`). The first such
-    table in schema order is the row's home; a requestor with no mined table keeps the opaque key.
+    A table another requestor's tools revealed carries that requestor on its columns' evidence
+    under `revealed_by` (`readers.apply_to_schema`, `templates.apply_revealed`). Built once per
+    split rather than re-scanned per call.
     """
-    if schema is None:
-        return None
-    for table in sorted(getattr(schema, "tables", None) or ()):
-        for column in getattr(schema, "columns", None) or ():
-            if column.table == table and (column.evidence or {}).get("revealed_by") == requestor:
-                return table
-    return None
+    out: dict[str, list[str]] = {}
+    for column in getattr(schema, "columns", None) or ():
+        who = (column.evidence or {}).get("revealed_by")
+        if who and column.table not in out.setdefault(str(who), []):
+            out[str(who)].append(column.table)
+    return {who: sorted(tables) for who, tables in out.items()}
 
 
-def _requestor_row_of(schema: EntitySchema, table: str, result: Any) -> Optional[dict]:
-    """A requestor result as that requestor's row, or None where it states no column of it.
+def _requestor_row_of(result: Any) -> Optional[dict]:
+    """A requestor result as stated columns, or None where it states none (D233).
 
-    A dict result states columns the way any result states them; only the table's own columns
-    are kept, because anything else is about another row. Prose states its columns inside the
-    sentence, and with no reader allowed in the split there is nothing to build columns from,
+    A dict result states columns the way any result states them. Prose states its columns inside
+    the sentence, and with no reader allowed in the split there is nothing to build columns from,
     so such a sighting keeps the opaque sentence key (the fallback), exactly as before.
     """
     parsed = parse_result(result)
     if isinstance(parsed, dict) and parsed:
-        names = {column.name for column in (getattr(schema, "columns", None) or ())
-                 if column.table == table}
-        row = {str(name): value for name, value in parsed.items() if str(name) in names}
-        if row:
-            return row
+        return {str(name): value for name, value in parsed.items()}
     return None
 
 
@@ -694,29 +689,35 @@ def _requestor_worlds(traces: Iterable[Trace], write_tools: set[str],
     recordings show one requestor's device in two states before either wrote can no more share one
     overlay than two Runs that disagree about a customer's row (D164, D74).
 
-    Where the schema mined a table for the requestor (D233) and the sighting states columns
-    of it, its state is homed to that table, one row per requestor, accumulated column by column
-    with the same earliest-wins loop `trace_worlds` uses for a customer row. The split then
-    compares it per column: each hard or unclassified column is its own world key carrying its
-    version hash and its class, and a semantic or exempt column is left out, so it no longer
-    splits Tasks. (The brief calls that class cosmetic; the schema record calls it semantic.)
-    A prose sighting states its columns inside the sentence, and no reader may read them in the
-    split, so it keeps the opaque sentence key even where a table is mined, as does a requestor
-    the schema mines no table for: the version is the recorded result itself keyed by the
-    requestor, exactly as before, so nothing that used to split is silently merged. The requestor's own writes close
-    its world either way, because after one of those the device is in the state the Run put it
-    in rather than the state it started in.
+    Where the schema mined tables for the requestor (D233), every column a sighting states is
+    homed to whichever of those tables carries it, or to the first where none does, accumulated
+    column by column with the same earliest-wins loop `trace_worlds` uses for a customer row, one
+    row per requestor. The split then compares it per column: each hard or unclassified column is
+    its own world key carrying its version hash and its class, and a semantic or exempt column is
+    left out, so it no longer splits Tasks. (The brief calls that class cosmetic; the schema record
+    calls it semantic.) A prose sighting states its columns inside the sentence, and no reader may
+    read them in the split, so it keeps the opaque sentence key even where tables are mined, as
+    does a requestor the schema mines no table for: the version is the recorded result itself keyed
+    by the requestor, exactly as before, so nothing that used to split is silently merged. The
+    requestor's own writes close its world either way, because after one of those the device is in
+    the state the Run put it in rather than the state it started in.
     """
-    rows: dict = {}
+    rows: dict[str, dict[tuple[str, str, str], dict]] = {}
     fallback: dict[str, dict] = {}
+    tables_of = _requestor_tables_of(schema)
+    columns_of: dict[str, set[str]] = {}
+    for column in getattr(schema, "columns", None) or ():
+        columns_of.setdefault(column.table, set()).add(column.name)
     for trace_id, call, requestor in _requestor_pre_write_calls(traces, write_tools):
-        table = _requestor_table_of(schema, requestor)
-        row = _requestor_row_of(schema, table, call.result) if table is not None else None
-        if table is None or row is None:
+        tables = tables_of.get(requestor) or []
+        row = _requestor_row_of(call.result)
+        if not tables or row is None:
             fallback.setdefault(trace_id, {}).setdefault(
                 (call.name, "", requestor), content_hash(canon(parse_result(call.result))))
             continue
-        _accumulate_version(rows, trace_id, (call.name, table, requestor), row)
+        for name, value in row.items():
+            home = next((table for table in tables if name in columns_of.get(table, ())), tables[0])
+            _accumulate_version(rows, trace_id, (call.name, home, requestor), {name: value})
     out: dict[str, dict] = {}
     for trace_id, keys in rows.items():
         for (tool, table, requestor), version in keys.items():
