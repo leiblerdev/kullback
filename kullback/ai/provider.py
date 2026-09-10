@@ -1062,12 +1062,28 @@ def opencode_headers(base_url: str, headers: dict) -> dict:
     return headers
 
 
+def key_var_for_provider(provider: str) -> str:
+    """The variable a provider's key is read from when nothing else names one: PROVIDER_API_KEY.
+
+    One rule, spelled once: the TUI's /login menu shows the person typing the same name this
+    reads, so what they are asked to set is what the adapter later looks for.
+    """
+    return f"{provider.upper().replace('-', '_')}_API_KEY" if provider else ""
+
+
 class OpenAICompatibleModel(OpenAIModel):
     """A local or self-hosted endpoint that speaks the OpenAI shape. Base URL required, key optional."""
 
     key_required = False
 
-    def __init__(self, model_id: str, base_url: str, **kwargs):
+    def __init__(self, model_id: str, base_url: str, key_env_var: Optional[str] = None, **kwargs):
+        # A host reached by --base-url is not OpenAI, so it must not inherit OPENAI_API_KEY from
+        # OpenAIModel: one person's key would go to another vendor's gateway, and the call that
+        # should have failed for want of a key would fail as a rejected one instead. The key is
+        # read from PROVIDER_API_KEY, derived from the id, and stays optional, because a local
+        # server needs none.
+        self.key_env_var = key_var_for_provider(split_model_id(model_id)[0]) \
+            if key_env_var is None else key_env_var
         super().__init__(model_id, base_url=base_url, **kwargs)
 
     def headers(self) -> dict:
@@ -1077,6 +1093,20 @@ class OpenAICompatibleModel(OpenAIModel):
         """Reasoning branch three of three: a local endpoint gets none of it. Servers that do
         not know the field reject the whole request, and there is no effort table to guess from."""
         return {}
+
+    def parse_reply(self, data: dict) -> ModelReply:
+        """The reply, named by the id this Harness asked under rather than the one echoed back.
+
+        An id is only a model together with its provider. A gateway answers under the upstream name
+        it routed to: asked for one flash model it answered 'z-ai/<the same model>', and a name with
+        no provider on it is carried by thirty resellers at thirty different rates, so the ledger
+        priced the call at nothing and the budget gate failed the Run. The endpoint's own name is
+        still in `raw`, and what went on the wire is still on the Exchange, so this loses nothing
+        and makes the one field a price is looked up under a name that can be looked up.
+        """
+        reply = super().parse_reply(data)
+        reply.model = self.name
+        return reply
 
 
 class RegistryModel(OpenAICompatibleModel):
@@ -1090,9 +1120,11 @@ class RegistryModel(OpenAICompatibleModel):
     """
 
     def __init__(self, model_id: str, base_url: str, key_env_var: str = "", **kwargs):
-        self.key_env_var = key_env_var
+        # A provider the registry names a key variable for cannot be reached without that key, so
+        # the call is refused by name rather than sent unauthenticated. When it names none, the
+        # PROVIDER_API_KEY rule below still finds a key if the person set one.
         self.key_required = bool(key_env_var)
-        super().__init__(model_id, base_url=base_url, **kwargs)
+        super().__init__(model_id, base_url=base_url, key_env_var=key_env_var or None, **kwargs)
 
 
 # Models OpenCode serves through the Responses API (/v1/responses) rather than chat completions,
@@ -1349,7 +1381,19 @@ def _openai_tool(tool: dict) -> dict:
 # on the message: the Runner marks a refused tool result so the Simulated user can read it (D227).
 # The wire shape is a whitelist so no such mark can reach a provider and be rejected there; a key
 # the API learns is added here once, rather than every writer having to know what the wire holds.
-OPENAI_MESSAGE_KEYS = frozenset(("role", "content", "name", "tool_calls", "tool_call_id", "refusal"))
+#
+# The reasoning keys are a table of the fields a provider's own thinking mode puts on an assistant
+# message and asks to see again on the next request of a tool-call round. DeepSeek: "for requests
+# carrying the tools parameter, the reasoning_content must be fully passed back to the API in all
+# subsequent requests ... If your code does not correctly pass back reasoning_content, the API will
+# return a 400 error" (api-docs.deepseek.com/guides/thinking_mode). OpenRouter says the same of
+# `reasoning` and `reasoning_details` under "Preserving Reasoning"
+# (openrouter.ai/docs/use-cases/reasoning-tokens). Both read 2026-09-10. Passing them through costs
+# an endpoint that does not use them nothing, because only a reply that carried the field can put it
+# on a message, and it is a table rather than a branch so the next provider is one row.
+REASONING_ECHO_KEYS = frozenset(("reasoning_content", "reasoning", "reasoning_details"))
+OPENAI_MESSAGE_KEYS = frozenset(
+    ("role", "content", "name", "tool_calls", "tool_call_id", "refusal")) | REASONING_ECHO_KEYS
 
 
 def _openai_message(message: dict) -> dict:

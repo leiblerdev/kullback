@@ -81,6 +81,47 @@ TAGLINE = "Rebuilds your environment from traces, checks the rebuild by replay, 
 # calls going by, few enough that the board itself is never pushed off the top.
 FEED_LINES = 12
 
+# The providers /login walks to by name, and the model each one starts at: a cheap, tool-capable
+# model the provider actually serves, since the menu is where a person tries a provider for the
+# first time. deepseek-flash is the id the DeepSeek endpoint serves (its docs' quick start, and a
+# GET of its own model list, 2026-09-10); the OpenRouter default is the cheapest tool-capable model
+# in the registry snapshot at a whole megatoken of context, and its nested id is deliberate, since
+# an id with a second slash is the shape OpenRouter mostly speaks. Providers the local registry
+# adds are appended to this in _login_defaults, never repeated here.
+LOGIN_DEFAULT_MODELS = {
+    "anthropic": "anthropic/claude-opus-5",
+    "openai": "openai/gpt-4.1-mini",
+    "opencode-go": "opencode-go/glm-5.3-flash",
+    "deepseek": "deepseek/deepseek-flash",
+    "openrouter": "openrouter/qwen/qwen3.7-flash",
+}
+
+
+def registry_refusal(catalog: Optional[dict], model: str) -> Optional[str]:
+    """Why an id cannot be reached through the registry, in the words a person is shown, or None
+    when it can be.
+
+    The two questions model_for asks of a provider with no adapter of its own: a host to post to,
+    and a request shape this Harness builds, read off the model row's own npm before the provider's,
+    because the provider field cannot say that one model rides a gateway and speaks another vendor's
+    shape and the row can. One function, so the menu offers exactly what picking it accepts, and
+    refuses exactly what a Run would refuse.
+    """
+    from kullback.ai import pricing
+    from kullback.ai import provider as pv
+
+    provider_name, _ = pv.split_model_id(model)
+    if provider_name in pv.ADAPTERS:
+        return None
+    if pricing.endpoint_from_catalog(catalog, model) is None:
+        return (f"{model} has no adapter of its own and the models.dev snapshot names no host for "
+                f"{provider_name!r}; refresh the snapshot with live calls on, or pass --base-url")
+    shape = pricing.model_adapter_for(catalog, model)
+    if shape not in pricing.OPENAI_SHAPED:
+        return (f"models.dev serves {model} through {shape}, which is not the OpenAI request "
+                f"shape this Harness builds; pass --base-url for one that is")
+    return None
+
 # Every command in one table: name, usage, what it does. The entry screen and the / menu
 # are rendered from this, so a command added here appears in both; HELP stays a literal
 # beside it, and a test fails when a table name is missing from HELP, so the two cannot drift.
@@ -644,21 +685,21 @@ class Screen:
         only asks the same questions one at a time."""
         import getpass
 
-        providers = ["anthropic", "openai", "opencode-go"]
+        defaults = self._login_defaults()
+        providers = list(defaults)
         self.console.print(Text("  log in where?", style="bold"))
         for i, name in enumerate(providers, 1):
             self.console.print(Text(f"    {i}  {name}", style="white"))
-        choice = self._ask("    provider [1-3 or name]: ").strip().lower()
+        span = f"1-{len(providers)}"
+        choice = self._ask(f"    provider [{span} or name]: ").strip().lower()
         if choice.isdigit() and 1 <= int(choice) <= len(providers):
             provider_name = providers[int(choice) - 1]
         elif choice in providers:
             provider_name = choice
         else:
-            self.console.print(Text("pick 1-3 or a provider name", style="red"))
+            self.console.print(Text(f"pick {span} or a provider name", style="red"))
             return
-        default_model = {"anthropic": "anthropic/claude-opus-5",
-                         "openai": "openai/gpt-4.1-mini",
-                         "opencode-go": "opencode-go/glm-5.3-flash"}[provider_name]
+        default_model = defaults[provider_name]
         model = self._ask(f"    model [{default_model}]: ").strip() or default_model
         key_var = self._key_var_for(provider_name, model)
         self.console.print(Text(f"    {key_var} holds the key (names only, value stays hidden)",
@@ -696,6 +737,39 @@ class Screen:
         os.environ[name] = value
 
     @staticmethod
+    def _login_defaults() -> dict[str, str]:
+        """The providers /login offers and the model each starts at.
+
+        The named ones first, in the order a person is most likely to want them, then every
+        provider the local registry adds, at its first model, so a provider models.dev does not
+        list is one entry in that file away from being offered here too. Nothing is hand-listed
+        twice: the local rows come from the same lookup that resolves the model.
+
+        Every one of them, hand-listed or from the file, is then put through the refusal /login
+        itself would give it. A choice that fails on the line after picking it is worse than one
+        that was never listed, and on a machine with no snapshot yet that is most of the hand
+        listed ones: they are reached through the registry, and the registry is a file that is not
+        there. Typing the id still says so, and says how to get the file.
+        """
+        from kullback.ai import pricing
+        from kullback.ai import provider as pv
+
+        try:
+            # The snapshot the resolver reads, so the menu and the model it then resolves are
+            # always looking at the same two files.
+            catalog = pricing.refresh(path=pv.REGISTRY_SNAPSHOT_PATH)
+            local = pricing.local_providers(pv.REGISTRY_SNAPSHOT_PATH)
+        except Exception:
+            catalog, local = None, {}
+        candidates = dict(LOGIN_DEFAULT_MODELS)
+        for name, entry in local.items():
+            models = list((entry.get("models") or {})) if isinstance(entry, dict) else []
+            if name not in candidates and models:
+                candidates[name] = f"{name}/{models[0]}"
+        return {name: model for name, model in candidates.items()
+                if registry_refusal(catalog, model) is None}
+
+    @staticmethod
     def _key_var_for(provider_name: str, model: str) -> str:
         """Which variable holds this model's key: the adapter's, else the registry's."""
         from kullback.ai import provider as pv
@@ -709,7 +783,7 @@ class Screen:
             endpoint = None
         if endpoint is not None and endpoint.key_env_var:
             return endpoint.key_env_var
-        return f"{provider_name.upper().replace('-', '_')}_API_KEY"
+        return pv.key_var_for_provider(provider_name)
 
     def _live(self, title: str, work: Any) -> None:
         board = Board(self.workdir, title=title, ceiling=self.ceiling_usd)
@@ -794,23 +868,19 @@ class Screen:
 
     def _resolve(self, model: str, base_url: Optional[str]) -> None:
         """The id reaches a model, or the reason it does not. Assigns nothing; reports everything."""
+        from kullback.ai import pricing
         from kullback.ai import provider as pv
 
         provider_name, _ = pv.split_model_id(model)  # the 'provider/model' shape, or words saying so
         if provider_name in pv.ADAPTERS or base_url:
             return
         try:
-            endpoint = pv.registry_endpoint(model)
+            catalog = pricing.refresh(path=pv.REGISTRY_SNAPSHOT_PATH)
         except Exception:
-            endpoint = None
-        if endpoint is None:
-            raise ValueError(
-                f"{model} has no adapter of its own and the models.dev snapshot names no host "
-                f"for {provider_name!r}; pass --base-url")
-        if not endpoint.openai_shaped:
-            raise ValueError(
-                f"models.dev serves {provider_name!r} through {endpoint.adapter}, which is not "
-                f"the OpenAI request shape this Harness builds; pass --base-url for one that is")
+            catalog = None
+        refusal = registry_refusal(catalog, model)
+        if refusal:
+            raise ValueError(refusal)
 
     def _login_status(self) -> Text:
         """The current model, where its calls go, and whether its key is set. Names only, never values."""
