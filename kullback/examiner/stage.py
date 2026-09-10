@@ -1027,6 +1027,535 @@ class _Job:
         return self.entry is not None
 
 
+@dataclass
+class _DeriveState:
+    """Everything one `derive_all` call shares: what it loaded, what it demoted, what it judges with."""
+    ctx: Any
+    sample_salt: str
+    canon_rules: Any
+    fn: Any
+    write_tools: set
+    read_tools: set
+    replays: dict
+    rerolls: dict
+    intents: dict
+    user_rules: dict
+    traces: dict
+    policy_lines: list
+    seed_replays: dict
+    constraints: list
+    demoted: list
+    assisted_tools: set
+    tool_fidelity: dict
+    atoms: Any
+    judge: Any
+    probe: Any
+    probe_model: Any
+    probe_limit: Any
+    run_rerolls: Any
+    run_variant: Any
+    round_number: int
+    common: dict
+
+
+def _tool_names(sigs: Iterable[Any]) -> tuple[set, set]:
+    """The write tools and the rest, off the mined signatures."""
+    write_tools = {s.name for s in sigs if s.kind == "write"}
+    read_tools = {s.name for s in sigs if s.kind != "write"}
+    return write_tools, read_tools
+
+
+def _store_map(inputs: dict, name: str) -> dict:
+    """One mapping input, empty when the store does not hold it."""
+    return inputs.get(name) or {}
+
+
+def _store_list(inputs: dict, name: str) -> list:
+    """One list input, empty when the store does not hold it."""
+    return inputs.get(name) or []
+
+
+def _validated_intents(inputs: dict) -> dict:
+    """The Intent records, validated, keyed by Task id."""
+    return {t: Intent.model_validate(d) for t, d in _store_map(inputs, "intents").items()}
+
+
+def _trace_index(inputs: dict) -> dict:
+    """The Traces, keyed by trace id."""
+    return {t.trace_id: t for t in _store_list(inputs, "traces")}
+
+
+def _policy_lines(inputs: dict) -> list:
+    """The policy text lines the residue judge reads."""
+    return [c.text for c in inputs["constraints"]]
+
+
+def _seed_replays_of(ctx: ExamContext, replays: dict, tasks: list) -> dict:
+    """The confirmed seed replays per Task, minus the anchor's held-out Runs (D81)."""
+    out = {}
+    for task in tasks:
+        rows = _store_map(replays, task.id)
+        out[task.id] = [r for tid, r in sorted(rows.items())
+                         if tid in seed_ids(ctx, task) and _seed_row_confirmed(r)]
+    return out
+
+
+def _seed_row_confirmed(row: dict) -> bool:
+    """Whether one seed replay row is confirmed and has a path to load."""
+    return bool(row.get("confirmed")) and bool(row.get("path"))
+
+
+def _build_judge(judge_model: Any, judge_agent: bool, constraints: list, write_tools: set,
+                 read_tools: set, fn: Any) -> Any:
+    """The residue judge: nothing, the one-shot judge, or the agent with a bounded look (D185)."""
+    if judge_model is None:
+        return None
+    if judge_agent:
+        return judge_mod.AgentJudge(judge_model, constraints=constraints,
+                                    write_tools=write_tools, read_tools=read_tools, fn=fn)
+    return judge_model
+
+
+def _probe_of(run_probe: Any, probe_model: Any) -> Any:
+    """The loophole probe runner, or nothing when no probe model was given."""
+    if probe_model is None:
+        return None
+    return run_probe
+
+
+def _select_tasks(inputs: dict, only: Optional[str]) -> list:
+    """The Tasks to derive, or the one named Task; an unknown name is refused."""
+    tasks = list(inputs["tasks"])
+    if only is None:
+        return tasks
+    picked = [task for task in tasks if task.id == only]
+    if not picked:
+        raise ValueError(f"no Task is named {only}")
+    return picked
+
+
+def _key_base(code_hash: Optional[str], canon_rules: Any, constraints: list, policy_lines: list,
+              write_tools: set, probe_model: Any, probe_limit: Any, probe: Any,
+              judge_model: Any, judge_agent: bool) -> dict:
+    """What every Task's cache key shares: format, code, rules, constraints, models."""
+    if code_hash is None:
+        code_hash = module_code_hash()
+    return {"format": CACHE_FORMAT, "code": code_hash, "canon_rules": canon_rules,
+            "constraints": [as_dict(c) for c in constraints],
+            "policy_lines": list(policy_lines), "write_tools": sorted(write_tools),
+            "probe": {"model": model_name(probe_model), "limit": probe_limit,
+                      "runner": probe is not None},
+            "judge": model_name(judge_model), "judge_agent": bool(judge_agent)}
+
+
+def _init_state(ctx: ExamContext, inputs: dict, *, probe_model: Any = None,
+                probe_limit: Optional[int] = None, judge_model: Any = None,
+                judge_agent: bool = False, run_probe: Any = None, run_rerolls: Any = None,
+                run_variant: Any = None, round_number: int = 0,
+                code_hash: Optional[str] = None) -> _DeriveState:
+    """Load the call's shared inputs, demote the broken rules, build the judge and the cache key base.
+
+    The demotion writes constraints_check.json and records its gate before anything else reads the
+    constraints, which is the order the reference check runs in; selecting the Tasks comes after
+    it in the orchestrator, so a bad name still leaves the demotion behind, as it did.
+    """
+    sample_salt = sampling.build_salt(ctx.workdir)
+    canon_rules = rules_of(inputs)
+    fn = verifier_suite.canon_fn(canon_rules)
+    write_tools, read_tools = _tool_names(inputs["sigs"])
+    replays = _store_map(inputs, "replays")
+    rerolls = _store_map(inputs, "rerolls")
+    intents = _validated_intents(inputs)
+    user_rules = _store_map(inputs, "user_rules")
+    traces = _trace_index(inputs)
+    policy_lines = _policy_lines(inputs)
+    seed_replays = _seed_replays_of(ctx, replays, list(inputs["tasks"]))
+    constraints, demoted = final_constraints(ctx, inputs, seed_replays, write_tools, read_tools, fn)
+    assisted_tools = set(_store_list(inputs, "assisted_tools"))
+    tool_fidelity = _store_map(inputs, "tool_fidelity")
+    atoms = reference_mod.hard_atoms(constraints, write_tools, read_tools)
+    judge = _build_judge(judge_model, judge_agent, constraints, write_tools, read_tools, fn)
+    probe = _probe_of(run_probe, probe_model)
+    common = _key_base(code_hash, canon_rules, constraints, policy_lines, write_tools,
+                       probe_model, probe_limit, probe, judge_model, judge_agent)
+    return _DeriveState(ctx=ctx, sample_salt=sample_salt, canon_rules=canon_rules, fn=fn,
+                         write_tools=write_tools, read_tools=read_tools, replays=replays,
+                         rerolls=rerolls, intents=intents, user_rules=user_rules, traces=traces,
+                         policy_lines=policy_lines, seed_replays=seed_replays,
+                         constraints=constraints, demoted=demoted, assisted_tools=assisted_tools,
+                         tool_fidelity=tool_fidelity, atoms=atoms, judge=judge, probe=probe,
+                         probe_model=probe_model, probe_limit=probe_limit,
+                         run_rerolls=run_rerolls, run_variant=run_variant,
+                         round_number=round_number, common=common)
+
+
+def _prepare_one(task: Task, state: _DeriveState) -> _Job:
+    """One Task's Runs, its cache key, and the D111 answer when the key is not on disk."""
+    recordings = [reference_mod.load(r["path"], reference_mod.RECORDING, run_id=r["run_id"],
+                                     trace_id=r["trace_id"], write_tools=state.write_tools,
+                                     fn=state.fn, atoms=state.atoms)
+                  for r in state.seed_replays[task.id]]
+    recordings += [reference_mod.load(r["path"], reference_mod.REROLL, run_id=r["run_id"],
+                                      write_tools=state.write_tools, fn=state.fn, atoms=state.atoms)
+                   for r in state.rerolls.get(task.id, [])
+                   if (r.get("termination_reason") or "") in verifier_suite.SUCCESS_TERMINATIONS]
+    # D189: the extra batches an earlier derivation bought sit outside the D111 rule's evidence,
+    # so they are in the key (a batch bought is a different derivation) and are merged onto the
+    # Confirmation afterwards rather than being handed to `confirm`.
+    extra = finished_recordings(second_path_rows(state.ctx.workdir, task.id),
+                                write_tools=state.write_tools, fn=state.fn, atoms=state.atoms)
+    key = cache_key(task, recordings + extra, state.common, intents=state.intents,
+                    user_rules=state.user_rules, traces=state.traces,
+                    fidelity_row=task_fidelity(state.tool_fidelity, task.id))
+    entry = read_entry(state.ctx.workdir, task.id, key)
+    if entry is not None:
+        return _Job(task=task, key=key, entry=entry)
+    confirmation = reference_mod.confirm(recordings, intent=request_text(task, state.intents,
+                                                                         state.traces),
+                                         policy_lines=state.policy_lines, judge=state.judge,
+                                         phrases=grounded_phrases(state.intents.get(task.id)))
+    return _Job(task=task, key=key, confirmation=confirmation,
+                recordings=recordings + extra, extra=extra)
+
+
+def _prepare_all(tasks: list, state: _DeriveState, workers: int) -> list[_Job]:
+    """Every Task through its key lookup and, on a miss, the D111 rule, in Task order."""
+    return parallel.each(tasks, lambda task: _prepare_one(task, state), workers)
+
+
+def _assign_probe_slots(jobs: list[_Job], state: _DeriveState) -> int:
+    """Hand the loophole probe budget out by the Tasks' own keys (D212), and count slots spent.
+
+    A Task served from the cache spent its slot when it ran, so the slots left are the limit minus
+    those; which Tasks hold a slot never moves when a Task is added or dropped.
+    """
+    probed = sum(1 for job in jobs if job.cached and job.entry.get("probed"))
+    eligible = [job for job in jobs if not job.cached and job.confirmation.references]
+    if state.probe is None:
+        chosen: set[str] = set()
+    elif state.probe_limit is None:
+        chosen = {job.task.id for job in eligible}
+    else:
+        order = sampling.keyed_order(PROBE_KIND, [job.task.id for job in eligible],
+                                     state.sample_salt)
+        chosen = set(order[:max(0, state.probe_limit - probed)])
+    for job in eligible:
+        job.may_probe = job.task.id in chosen
+        probed += int(job.may_probe)
+    return probed
+
+
+def _finish_cached(state: _DeriveState, job: _Job) -> dict:
+    """A cache hit's entry, with its Verifier file rewritten beside the live rows."""
+    if job.entry.get("verifier") is not None:
+        write_json(state.ctx.workdir / "verifiers" / f"{job.task.id}.json", job.entry["verifier"])
+    return job.entry
+
+
+def _settle_job(state: _DeriveState, job: _Job) -> None:
+    """Settle a reference-less residue by deriving one Verifier per surviving End state (D198)."""
+    confirmation = job.confirmation
+    if not confirmation.references and confirmation.survivors:
+        settle_residue(job.task, confirmation, canon_rules=state.canon_rules,
+                       write_tools=state.write_tools, constraints=state.constraints,
+                       intents=state.intents, user_rules=state.user_rules, fn=state.fn,
+                       pool_runs=pool_runs_of(job.task.id, state.replays, state.rerolls))
+
+
+def _second_path_outcome(state: _DeriveState, job: _Job, ceiling: threading.Event) -> tuple[dict, list]:
+    """The Task's second path: bought batches first (D189), then a synthesised one (D199).
+
+    Merges the earlier batches, buys fresh ones until check 5 has a second path, writes one from
+    the Reference's own call path when the buying found nothing, rekeys when batches were bought,
+    and raises the ceiling flag when a batch hit the run ceiling.
+    """
+    task, confirmation = job.task, job.confirmation
+    merge_second_path(confirmation, job.extra)
+    second, bought, hit = second_path_search(
+        task.id, confirmation, workdir=state.ctx.workdir, run_rerolls=state.run_rerolls,
+        round_number=state.round_number, write_tools=state.write_tools, fn=state.fn,
+        atoms=state.atoms)
+    if not second["found"] and state.run_variant is not None:
+        synth, made = synth_second_path(
+            task.id, confirmation, run_variant=state.run_variant,
+            round_number=state.round_number, write_tools=state.write_tools, fn=state.fn,
+            atoms=state.atoms)
+        merge_second_path(confirmation, made)
+        # They are not in the cache key and not in the false-rejection pool: a synthesised
+        # Run is written by code from a Run already in the key, so a round that reads the
+        # entry back gets the same answer, and it is nobody's held-out Run to reject.
+        second = second_path_row(
+            second["batches"], second["runs"], found=len(confirmation.references) > 1,
+            reason=synth["reason"] or second["reason"], synthesised=len(made),
+            kinds=synth["kinds"], tried=synth["tried"], kept=len(made),
+            structural=synth["structural"] and not made)
+    if bought:
+        job.recordings = job.recordings + bought
+        fidelity_row = task_fidelity(state.tool_fidelity, task.id)
+        job.key = cache_key(task, job.recordings, state.common, intents=state.intents,
+                            user_rules=state.user_rules, traces=state.traces,
+                            fidelity_row=fidelity_row)
+    if hit:
+        ceiling.set()
+    return second, bought
+
+
+def _write_entry(state: _DeriveState, task_id: str, key: str, row: dict, reference: dict,
+                 verifier: Optional[dict], may_probe: bool) -> dict:
+    """One Task's cache entry, built and written in one place."""
+    entry = {"format": CACHE_FORMAT, "task_id": task_id, "key": key, "status": row,
+             "references": reference, "verifier": verifier, "probed": may_probe}
+    write_json(cache_path(state.ctx.workdir, task_id, key), entry)
+    return entry
+
+
+def _derive_and_store(state: _DeriveState, job: _Job, second: dict, bought: list,
+                      fidelity_row: dict) -> dict:
+    """One Task's Verifier through the D79 suite, and its cache entry on disk."""
+    task, confirmation = job.task, job.confirmation
+    extra_pool = [(r.run_id, r.path) for r in job.extra + bought]
+    record, row = verifier_for(
+        state.ctx, task, confirmation, canon_rules=state.canon_rules,
+        write_tools=state.write_tools, constraints=state.constraints, intents=state.intents,
+        user_rules=state.user_rules, recordings=len(state.seed_replays[task.id]),
+        rerolls=len(state.rerolls.get(task.id, [])), probe=state.probe,
+        probe_model=state.probe_model, may_probe=job.may_probe, fidelity_row=fidelity_row,
+        second_path=second,
+        pool_runs=pool_runs_of(task.id, state.replays, state.rerolls) + extra_pool,
+        fn=state.fn, user_ends=pool_user_ends(task.id, state.rerolls))
+    return _write_entry(state, task.id, job.key, row, confirmation.as_dict(), as_dict(record),
+                        job.may_probe)
+
+
+def _finish_one(state: _DeriveState, job: _Job, ceiling: threading.Event) -> dict:
+    """One Task's outputs: the cache entry as it stands, or the derivation and a new entry."""
+    if job.cached:
+        return _finish_cached(state, job)
+    _settle_job(state, job)
+    confirmation = job.confirmation
+    fidelity_row = task_fidelity(state.tool_fidelity, job.task.id)
+    if not confirmation.references:
+        row = no_reference_status(state.ctx, job.task, confirmation,
+                                  seed_replays=state.seed_replays[job.task.id],
+                                  replays=state.replays, rerolls=state.rerolls,
+                                  traces=state.traces, assisted_tools=state.assisted_tools,
+                                  fidelity_row=fidelity_row)
+        return _write_entry(state, job.task.id, job.key, row, confirmation.as_dict(), None,
+                              job.may_probe)
+    second, bought = _second_path_outcome(state, job, ceiling)
+    return _derive_and_store(state, job, second, bought, fidelity_row)
+
+
+def _finish_all(state: _DeriveState, jobs: list[_Job], workers: int,
+                ceiling: threading.Event) -> list[dict]:
+    """Every Task to its outputs, in Task order."""
+    return parallel.each(jobs, lambda job: _finish_one(state, job, ceiling), workers)
+
+
+def _collect_outputs(jobs: list[_Job], entries: list[dict]) -> tuple[list, dict, dict, int]:
+    """The pools' answers back in Task order: verifiers, status rows, reference rows, cache hits."""
+    verifiers, status, references = [], {}, {}
+    for job, entry in zip(jobs, entries, strict=True):
+        status[job.task.id] = entry["status"]
+        references[job.task.id] = entry["references"]
+        if entry["verifier"] is not None:
+            verifiers.append(Verifier.model_validate(entry["verifier"]))
+    return verifiers, status, references, sum(1 for job in jobs if job.cached)
+
+
+def _read_prior(workdir: Path, only: Optional[str]) -> tuple[dict, dict]:
+    """The live rows already on disk, for the `only` merge and the stamps.
+
+    The references file is read only when one Task is merged into it, as it was.
+    """
+    prior_status = read_json(workdir / "task_status.json", {})
+    if not prior_status:
+        prior_status = {}
+    if only is None:
+        return prior_status, {}
+    prior_references = read_json(workdir / "references.json", {})
+    if not prior_references:
+        prior_references = {}
+    return prior_status, prior_references
+
+
+def _persist_results(ctx: ExamContext, status: dict, references: dict, only: Optional[str],
+                     round_number: int) -> tuple[dict, dict, dict]:
+    """Merge a single-Task derivation, retire withdrawn artefacts, write the live files.
+
+    A Verifier lives only while its Task holds the Reference it was derived from (D208), so the
+    artefacts the withdrawn ones left are retired in the same step, before anything reads them;
+    the stamps say on every row which round last moved it (D218 rule 2).
+    """
+    prior_status, prior_references = _read_prior(ctx.workdir, only)
+    if only is not None:
+        status = {**prior_status, **status}
+        references = {**prior_references, **references}
+    retired = lifecycle.retire(ctx.workdir, status, round_number=round_number)
+    lifecycle.carry_forward(ctx.workdir, status, prior_status)
+    write_json(ctx.workdir / "task_status.json", stamped(status, prior_status, round_number))
+    write_json(ctx.workdir / "references.json", references)
+    return status, references, retired
+
+
+def _confirmed_count(status: dict) -> int:
+    """How many rows hold a Reference."""
+    return sum(1 for r in status.values() if r["reference_confirmed"])
+
+
+def _passed_count(status: dict) -> int:
+    """How many rows hold a Verifier that cleared the suite."""
+    return sum(1 for r in status.values() if r["verifier_passed"])
+
+
+def _blocked_count(status: dict) -> int:
+    """How many Tasks a tool actually blocks with a differing own call (D171)."""
+    return sum(1 for r in status.values() if r.get("blocking_tools"))
+
+
+def _failed_recordings_count(references: dict) -> int:
+    """The failed recordings every reference row carries, counted for the round."""
+    total = 0
+    for r in references.values():
+        failed = r.get("failed")
+        if failed is None:
+            continue
+        total += len(failed)
+    return total
+
+
+def _judged_count(references: dict) -> int:
+    """How many reference rows went through the judge."""
+    return sum(1 for r in references.values() if r.get("judged"))
+
+
+def _base_counts(status: dict, verifiers: list, references: dict, probed: int, demoted: list,
+                 retired: dict) -> dict:
+    """The round's counts over the rows: verdicts, probes, retirements, blocks, failures."""
+    return {"verifiers": len(verifiers), "references": _confirmed_count(status),
+            "passed": _passed_count(status), "tasks": len(status), "probed": probed,
+            "constraints_demoted": len(demoted), **lifecycle.counts(retired),
+            "blocked_by_own_calls": _blocked_count(status),
+            "failed_recordings": _failed_recordings_count(references),
+            "judged": _judged_count(references)}
+
+
+def _judge_counts(references: dict) -> dict:
+    """What the residue judging cost and settled: uncited drops (D186), second passes (D193)."""
+    return {"judge_uncited": sum(1 for r in references.values() if r.get("judge_uncited")),
+            "judge_second_pass": sum(1 for r in references.values()
+                                      if _passes_of(r) > 1),
+            "judge_residue_resolved": sum(1 for r in references.values()
+                                           if r.get("judge_residue_resolved")),
+            "judge_residue_abstained": sum(1 for r in references.values()
+                                            if r.get("judge_residue_abstained")),
+            "no_correct_recording": sum(1 for r in references.values()
+                                         if r.get("no_correct_recording"))}
+
+
+def _passes_of(row: dict) -> int:
+    """How many judging passes one reference row went through."""
+    passes = row.get("judge_passes")
+    if not passes:
+        return 0
+    return passes
+
+
+def _residue_counts(references: dict) -> dict:
+    """What deriving a Verifier per surviving End state settled (D198)."""
+    return {"residue_derived": sum(1 for r in references.values() if r.get("residue_derived")),
+            "survivor_chosen": sum(1 for r in references.values()
+                                    if r.get("survivor_reason") == reference_mod.SURVIVOR_CHOSEN),
+            "survivors_equivalent": sum(1 for r in references.values()
+                                         if r.get("survivor_reason")
+                                         == reference_mod.SURVIVORS_EQUIVALENT),
+            "survivors_all_fail": sum(1 for r in references.values()
+                                       if r.get("survivor_reason")
+                                       == reference_mod.SURVIVORS_ALL_FAIL),
+            "survivors_capped": sum(1 for r in references.values()
+                                     if r.get("survivors_capped"))}
+
+
+def _pool_counts(status: dict) -> dict:
+    """The held-out Runs left out short of the Reference (D133), and how their users ended (D210)."""
+    return {"did_not_reach_reference": sum(len(_left_out_of(r)) for r in status.values()),
+            "user_ends_by_kind": dict(sorted(Counter(
+                kind for r in status.values() for kind in _user_ends_of(r).values()).items()))}
+
+
+def _left_out_of(row: dict) -> list:
+    """The held-out Runs one status row names as short of the Reference."""
+    left_out = row.get("did_not_reach_reference")
+    if not left_out:
+        return []
+    return left_out
+
+
+def _user_ends_of(row: dict) -> dict:
+    """How one row's held-out Runs ended, keyed by Run."""
+    ends = row.get("user_ends")
+    if not ends:
+        return {}
+    return ends
+
+
+def _found_batches_of(row: dict) -> bool:
+    """Whether one row's second-path search both bought batches and found a path."""
+    second = _second_path(row)
+    return bool(second["found"]) and bool(second["batches"])
+
+
+def _path_counts(status: dict) -> dict:
+    """What the search for a second path cost and bought this round (D189)."""
+    return {"second_path_found": sum(1 for r in status.values() if _found_batches_of(r)),
+            "second_path_exhausted": sum(1 for r in status.values()
+                                          if _second_path(r)["exhausted"]),
+            "second_path_batches": sum(_second_path(r)["batches"] for r in status.values()),
+            "second_path_runs": sum(_second_path(r)["runs"] for r in status.values())}
+
+
+def _synth_counts(status: dict) -> dict:
+    """What the synthesis wrote when the buying was spent (D199), and the waived not runs."""
+    return {"second_path_synthesised": sum(1 for r in status.values()
+                                            if _second_path(r)["synthesised"]),
+            "single_path_by_structure": sum(1 for r in status.values()
+                                             if _second_path(r)["structural"]),
+            "synth_variants_tried": sum(_second_path(r)["synth_tried"] for r in status.values()),
+            "synth_variants_kept": sum(_second_path(r)["synth_kept"] for r in status.values()),
+            "second_path_waived": sum(1 for r in status.values()
+                                       if r.get("second_path_waived"))}
+
+
+def _disagreeing_count(references: dict) -> int:
+    """The Tasks with no Reference whose recordings still disagree."""
+    return sum(1 for r in references.values() if _still_disagrees(r))
+
+
+def _still_disagrees(row: dict) -> bool:
+    """Whether one reference row holds no Reference over disagreeing recordings."""
+    if row["references"]:
+        return False
+    reason = row.get("reason")
+    if not reason:
+        reason = ""
+    return reason.startswith("recordings disagree")
+
+
+def _round_metrics(status: dict, verifiers: list, references: dict, probed: int, demoted: list,
+                   retired: dict) -> dict:
+    """Every count the derive_verifier gate records, in one mapping."""
+    return {**_base_counts(status, verifiers, references, probed, demoted, retired),
+            **_judge_counts(references), **_residue_counts(references),
+            **_pool_counts(status), **_path_counts(status), **_synth_counts(status),
+            "disagreeing": _disagreeing_count(references)}
+
+
+def _record_round(ctx: ExamContext, status: dict, metrics: dict) -> None:
+    """Record the round's gate and rewrite the scorecard last, as the pipeline stage did."""
+    ctx.record_gate(stage_gates.task_verifiers_gate(status, **metrics))
+    write_json(ctx.workdir / "scorecard.json", scorecard_mod.scorecard(ctx.workdir))
+
+
 # --- the stage body --------------------------------------------------------------
 
 def derive_all(ctx: ExamContext, inputs: dict, *, probe_model: Any = None, probe_limit: Optional[int] = None,
@@ -1091,255 +1620,25 @@ def derive_all(ctx: ExamContext, inputs: dict, *, probe_model: Any = None, probe
     own keys (D212), so which Tasks get check 6 does not move when a Task is added or dropped.
     `cached` and `ran` in the result count which Tasks came from where.
     """
-    sample_salt = sampling.build_salt(ctx.workdir)
-    canon_rules = rules_of(inputs)
-    fn = verifier_suite.canon_fn(canon_rules)
-    write_tools = {s.name for s in inputs["sigs"] if s.kind == "write"}
-    read_tools = {s.name for s in inputs["sigs"] if s.kind != "write"}
-    replays = inputs.get("replays") or {}
-    rerolls = inputs.get("rerolls") or {}
-    intents = {t: Intent.model_validate(d) for t, d in (inputs.get("intents") or {}).items()}
-    user_rules = inputs.get("user_rules") or {}
-    traces = {t.trace_id: t for t in inputs.get("traces") or []}
-    policy_lines = [c.text for c in inputs["constraints"]]
-    seed_replays = {task.id: [r for tid, r in sorted((replays.get(task.id) or {}).items())
-                              if tid in seed_ids(ctx, task) and r.get("confirmed") and r.get("path")]
-                    for task in inputs["tasks"]}
-    # D76, D111: a compiled rule the confirmed recordings mostly break is demoted before any
-    # Verifier is derived from them.
-    constraints, demoted = final_constraints(ctx, inputs, seed_replays, write_tools, read_tools, fn)
-    assisted_tools = set(inputs.get("assisted_tools") or ())
-    tool_fidelity = inputs.get("tool_fidelity") or {}
-    atoms = reference_mod.hard_atoms(constraints, write_tools, read_tools)
-    # D185: the residue judge is the one-shot judge unless the build asked for the agent with a
-    # bounded look, which wraps the one-shot judge as its own fallback. Either way it is built once
-    # for the build and asked once per disagreeing Task; `judge_groups` dispatches on the object.
-    if judge_model is None:
-        judge = None
-    elif judge_agent:
-        judge = judge_mod.AgentJudge(judge_model, constraints=constraints, write_tools=write_tools,
-                                     read_tools=read_tools, fn=fn)
-    else:
-        judge = judge_model
-    probe = run_probe if probe_model is not None else None
-    tasks = list(inputs["tasks"])
-    if only is not None:
-        tasks = [task for task in tasks if task.id == only]
-        if not tasks:
-            raise ValueError(f"no Task is named {only}")
-    common = {"format": CACHE_FORMAT,
-              "code": code_hash if code_hash is not None else module_code_hash(),
-              "canon_rules": canon_rules,
-              "constraints": [as_dict(c) for c in constraints],
-              "policy_lines": list(policy_lines),
-              "write_tools": sorted(write_tools),
-              "probe": {"model": model_name(probe_model), "limit": probe_limit, "runner": probe is not None},
-              "judge": model_name(judge_model), "judge_agent": bool(judge_agent)}
-
-    def prepare(task: Task) -> _Job:
-        """The Task's Runs, its key, and the D111 answer when the key is not on disk."""
-        recordings = [reference_mod.load(r["path"], reference_mod.RECORDING, run_id=r["run_id"],
-                                         trace_id=r["trace_id"], write_tools=write_tools, fn=fn, atoms=atoms)
-                      for r in seed_replays[task.id]]
-        recordings += [reference_mod.load(r["path"], reference_mod.REROLL, run_id=r["run_id"],
-                                          write_tools=write_tools, fn=fn, atoms=atoms)
-                       for r in rerolls.get(task.id, [])
-                       if (r.get("termination_reason") or "") in verifier_suite.SUCCESS_TERMINATIONS]
-        # D189: the extra batches an earlier derivation bought sit outside the D111 rule's evidence,
-        # so they are in the key (a batch bought is a different derivation) and are merged onto the
-        # Confirmation afterwards rather than being handed to `confirm`.
-        extra = finished_recordings(second_path_rows(ctx.workdir, task.id),
-                                    write_tools=write_tools, fn=fn, atoms=atoms)
-        key = cache_key(task, recordings + extra, common, intents=intents, user_rules=user_rules,
-                        traces=traces, fidelity_row=task_fidelity(tool_fidelity, task.id))
-        entry = read_entry(ctx.workdir, task.id, key)
-        if entry is not None:
-            return _Job(task=task, key=key, entry=entry)
-        confirmation = reference_mod.confirm(recordings, intent=request_text(task, intents, traces),
-                                             policy_lines=policy_lines, judge=judge,
-                                             phrases=grounded_phrases(intents.get(task.id)))
-        return _Job(task=task, key=key, confirmation=confirmation,
-                    recordings=recordings + extra, extra=extra)
-
-    jobs = parallel.each(tasks, prepare, workers)
-    # D212: the probe budget goes out in the order the Tasks' own keys give, not in Task order and
-    # not in the order the threads finished. A Task added to the build used to push every Task after
-    # it one place down the list, so a bounded budget landed on a different set of Tasks and check 6
-    # moved for Tasks nothing else about had changed. A Task served from the cache spent its slot
-    # when it ran, so the slots left are the limit minus those.
-    probed = sum(1 for job in jobs if job.cached and job.entry.get("probed"))
-    eligible = [job for job in jobs if not job.cached and job.confirmation.references]
-    if probe is None:
-        chosen: set[str] = set()
-    elif probe_limit is None:
-        chosen = {job.task.id for job in eligible}
-    else:
-        order = sampling.keyed_order(PROBE_KIND, [job.task.id for job in eligible], sample_salt)
-        chosen = set(order[:max(0, probe_limit - probed)])
-    for job in eligible:
-        job.may_probe = job.task.id in chosen
-        probed += int(job.may_probe)
+    state = _init_state(ctx, inputs, probe_model=probe_model, probe_limit=probe_limit,
+                        judge_model=judge_model, judge_agent=judge_agent, run_probe=run_probe,
+                        run_rerolls=run_rerolls, run_variant=run_variant,
+                        round_number=round_number, code_hash=code_hash)
+    tasks = _select_tasks(inputs, only)
+    jobs = _prepare_all(tasks, state, workers)
+    probed = _assign_probe_slots(jobs, state)
 
     # Set when a second-path batch hit the run ceiling, so the caller can stop the round rather than
     # read a derivation that quietly bought nothing (the re-roll tool raises for the same reason).
     ceiling_reached = threading.Event()
 
-    def finish(job: _Job) -> dict:
-        """The Task's outputs: the cache entry as it stands, or the derivation and a new entry."""
-        task = job.task
-        if job.cached:
-            if job.entry.get("verifier") is not None:
-                write_json(ctx.workdir / "verifiers" / f"{task.id}.json", job.entry["verifier"])
-            return job.entry
-        confirmation = job.confirmation
-        fidelity_row = task_fidelity(tool_fidelity, task.id)
-        # D198: a residue the judgement left, or a judgement that failed everything on grounds that
-        # do not agree, is settled here by deriving a Verifier per surviving End state; the Task then
-        # goes on with the Reference that choice made, or with none and the reason naming the best.
-        if not confirmation.references and confirmation.survivors:
-            settle_residue(task, confirmation, canon_rules=canon_rules, write_tools=write_tools,
-                           constraints=constraints, intents=intents, user_rules=user_rules, fn=fn,
-                           pool_runs=pool_runs_of(task.id, replays, rerolls))
-        if not confirmation.references:
-            row = no_reference_status(ctx, task, confirmation, seed_replays=seed_replays[task.id],
-                                      replays=replays, rerolls=rerolls, traces=traces,
-                                      assisted_tools=assisted_tools, fidelity_row=fidelity_row)
-            verifier = None
-        else:
-            # D189: the batches an earlier derivation bought, then as many fresh ones as the cap
-            # allows, until check 5 has a second path to score.
-            merge_second_path(confirmation, job.extra)
-            second, bought, ceiling = second_path_search(
-                task.id, confirmation, workdir=ctx.workdir, run_rerolls=run_rerolls,
-                round_number=round_number, write_tools=write_tools, fn=fn, atoms=atoms)
-            # D199: the search bought no second path, so one is written from the Reference's own
-            # call path and replayed; nothing is bought here and no model is called.
-            if not second["found"] and run_variant is not None:
-                synth, made = synth_second_path(
-                    task.id, confirmation, run_variant=run_variant, round_number=round_number,
-                    write_tools=write_tools, fn=fn, atoms=atoms)
-                merge_second_path(confirmation, made)
-                # They are not in the cache key and not in the false-rejection pool: a synthesised
-                # Run is written by code from a Run already in the key, so a round that reads the
-                # entry back gets the same answer, and it is nobody's held-out Run to reject.
-                second = second_path_row(
-                    second["batches"], second["runs"], found=len(confirmation.references) > 1,
-                    reason=synth["reason"] or second["reason"], synthesised=len(made),
-                    kinds=synth["kinds"], tried=synth["tried"], kept=len(made),
-                    structural=synth["structural"] and not made)
-            if bought:
-                job.recordings = job.recordings + bought
-                job.key = cache_key(task, job.recordings, common, intents=intents,
-                                    user_rules=user_rules, traces=traces, fidelity_row=fidelity_row)
-            if ceiling:
-                ceiling_reached.set()
-            extra_pool = [(r.run_id, r.path) for r in job.extra + bought]
-            record, row = verifier_for(
-                ctx, task, confirmation, canon_rules=canon_rules, write_tools=write_tools,
-                constraints=constraints, intents=intents, user_rules=user_rules,
-                recordings=len(seed_replays[task.id]), rerolls=len(rerolls.get(task.id, [])),
-                probe=probe, probe_model=probe_model, may_probe=job.may_probe,
-                fidelity_row=fidelity_row, second_path=second,
-                pool_runs=pool_runs_of(task.id, replays, rerolls) + extra_pool, fn=fn,
-                user_ends=pool_user_ends(task.id, rerolls))
-            verifier = as_dict(record)
-        entry = {"format": CACHE_FORMAT, "task_id": task.id, "key": job.key, "status": row,
-                 "references": confirmation.as_dict(), "verifier": verifier, "probed": job.may_probe}
-        write_json(cache_path(ctx.workdir, task.id, job.key), entry)
-        return entry
-
-    entries = parallel.each(jobs, finish, workers)
-    verifiers, status, references = [], {}, {}
-    for job, entry in zip(jobs, entries, strict=True):
-        status[job.task.id] = entry["status"]
-        references[job.task.id] = entry["references"]
-        if entry["verifier"] is not None:
-            verifiers.append(Verifier.model_validate(entry["verifier"]))
-    cached = sum(1 for job in jobs if job.cached)
-    prior_status = read_json(ctx.workdir / "task_status.json", {}) or {}
-    if only is not None:
-        status = {**prior_status, **status}
-        references = {**(read_json(ctx.workdir / "references.json", {}) or {}), **references}
-    # D208: a Verifier is derived from a Reference and lives only while the Task holds that
-    # Reference. The rows above are what says which Reference each Task holds now, so the artefacts
-    # the withdrawn ones left behind are retired here, in the same step, before anything reads them.
-    retired = lifecycle.retire(ctx.workdir, status, round_number=round_number)
-    # A row served from the cache was written before its Task's artefact was retired, so an earlier
-    # round's retirement is carried onto it while the Task still has nothing on disk; a Task derived
-    # afresh has its file back and its row rightly says nothing.
-    lifecycle.carry_forward(ctx.workdir, status, prior_status)
-    # D218 rule 2: the live file says on every row which round last moved it, so a reader comparing it
-    # with a closed round's table can see the movement instead of reading it as a regression. The
-    # stamps go on the file and not on the rows this stage answers with: `updated_at` is a wall clock,
-    # and a clock in the value a stage returns is a clock in everything downstream compares.
-    write_json(ctx.workdir / "task_status.json", stamped(status, prior_status, round_number))
-    write_json(ctx.workdir / "references.json", references)
+    entries = _finish_all(state, jobs, workers, ceiling_reached)
+    verifiers, status, references, cached = _collect_outputs(jobs, entries)
+    status, references, retired = _persist_results(ctx, status, references, only, round_number)
     # Section 6: a Task whose Verifier does not clear D79 is "not verdicted, Verifier
     # immature", which is a Task the report leaves uncounted, not a failed build.
-    ctx.record_gate(stage_gates.task_verifiers_gate(
-        status,
-        verifiers=len(verifiers), references=sum(1 for r in status.values() if r["reference_confirmed"]),
-        passed=sum(1 for r in status.values() if r["verifier_passed"]), tasks=len(status),
-        probed=probed, constraints_demoted=len(demoted),
-        # D208: how many derived artefacts this round retired because the Reference they were
-        # derived from is no longer the one their Task holds, and under which of the two reasons.
-        **lifecycle.counts(retired),
-        # D171: how many Tasks a tool actually blocks, which is how many have a differing own call.
-        blocked_by_own_calls=sum(1 for r in status.values() if r.get("blocking_tools")),
-        failed_recordings=sum(len(r.get("failed") or {}) for r in references.values()),
-        judged=sum(1 for r in references.values() if r.get("judged")),
-        # D186: how many judgements were dropped whole because a failure of theirs cited nothing the
-        # states differ on. Beside `judged`, because it is the share of the judge's work that landed
-        # somewhere it was not shown, and the reason is on each reference row as `abstain_reason`.
-        judge_uncited=sum(1 for r in references.values() if r.get("judge_uncited")),
-        # D193: the residue of a fail-only judgement, which was the largest reason a Task that
-        # replayed kept no Reference. `judge_second_pass` is how many Tasks were asked twice, and the
-        # two below are what those second passes settled and what they left unsettled; the third is
-        # the Tasks whose every End state was failed on one key the failures agree the Intent or a
-        # policy line required, which is a finding about the world and not about a disagreement.
-        judge_second_pass=sum(1 for r in references.values() if (r.get("judge_passes") or 0) > 1),
-        judge_residue_resolved=sum(1 for r in references.values() if r.get("judge_residue_resolved")),
-        judge_residue_abstained=sum(1 for r in references.values() if r.get("judge_residue_abstained")),
-        no_correct_recording=sum(1 for r in references.values() if r.get("no_correct_recording")),
-        # D198: what deriving a Verifier per surviving End state settled. `residue_derived` is how
-        # many Tasks were put through it at all, and the three below are its three answers; a Task
-        # with more survivors than the cap says so, because the choice it made was over a slice.
-        residue_derived=sum(1 for r in references.values() if r.get("residue_derived")),
-        survivor_chosen=sum(1 for r in references.values()
-                            if r.get("survivor_reason") == reference_mod.SURVIVOR_CHOSEN),
-        survivors_equivalent=sum(1 for r in references.values()
-                                 if r.get("survivor_reason") == reference_mod.SURVIVORS_EQUIVALENT),
-        survivors_all_fail=sum(1 for r in references.values()
-                               if r.get("survivor_reason") == reference_mod.SURVIVORS_ALL_FAIL),
-        survivors_capped=sum(1 for r in references.values() if r.get("survivors_capped")),
-        # D133: the held-out Runs the pool leaves out because they did not reach the Reference's
-        # End state, named per Task on the status row and counted here for the Examiner.
-        did_not_reach_reference=sum(len(r.get("did_not_reach_reference") or ()) for r in status.values()),
-        # D210: how the held-out Runs of every Task ended, counted per round in the kinds the
-        # Simulated user reports, so a round that stops finishing what it starts says so in one
-        # number rather than per Task. The kinds are counted as they come rather than read from the
-        # Builder's list, because the Examiner does not import the Builder (D123).
-        user_ends_by_kind=dict(sorted(Counter(
-            kind for r in status.values() for kind in (r.get("user_ends") or {}).values()).items())),
-        # D189: what the search for a second path cost and bought this round. `second_path_runs` is
-        # the whole extra frontier, about ten model calls a Run; `second_path_exhausted` is the
-        # Tasks that spent the cap and still have check 5 not run.
-        second_path_found=sum(1 for r in status.values() if _second_path(r)["found"] and _second_path(r)["batches"]),
-        second_path_exhausted=sum(1 for r in status.values() if _second_path(r)["exhausted"]),
-        second_path_batches=sum(_second_path(r)["batches"] for r in status.values()),
-        second_path_runs=sum(_second_path(r)["runs"] for r in status.values()),
-        # D199: what the synthesis wrote when the buying was spent. `second_path_synthesised` is the
-        # Tasks whose second path came from the Reference's own call path, `single_path_by_structure`
-        # the Tasks that offer no rewrite at all, and the last two what the replays cost and kept.
-        second_path_synthesised=sum(1 for r in status.values() if _second_path(r)["synthesised"]),
-        single_path_by_structure=sum(1 for r in status.values() if _second_path(r)["structural"]),
-        synth_variants_tried=sum(_second_path(r)["synth_tried"] for r in status.values()),
-        synth_variants_kept=sum(_second_path(r)["synth_kept"] for r in status.values()),
-        # The Tasks the not run no longer blocks, because the held-out pool held the second path.
-        second_path_waived=sum(1 for r in status.values() if r.get("second_path_waived")),
-        disagreeing=sum(1 for r in references.values()
-                        if not r["references"] and (r.get("reason") or "").startswith("recordings disagree"))))
-    write_json(ctx.workdir / "scorecard.json", scorecard_mod.scorecard(ctx.workdir))
+    _record_round(ctx, status, _round_metrics(status, verifiers, references, probed,
+                                              state.demoted, retired))
     return {"verifiers": verifiers, "task_status": status, "cached": cached, "ran": len(jobs) - cached,
             "second_path_runs": sum(_second_path(r)["runs"] for r in status.values()),
             "retired": retired, "ceiling_reached": ceiling_reached.is_set()}
