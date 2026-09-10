@@ -341,8 +341,9 @@ def build(
         raise typer.BadParameter("--second-judge-model needs a first judge: name --judge-model or --model")
     judge_adapter = _live_model(judge_model, base_url) if judge_model else None
     second_judge_adapter = _live_model(second_judge_model, base_url) if second_judge_model else None
-    # The Simulated user needs no Builder model beside it: a code-driven build can still pay for
-    # user turns, so --user-model without --model is allowed (D232).
+    # The Simulated user needs no Builder model beside it, so --user-model without --model is
+    # allowed (D232). Without a Builder model there are no re-rolls, so the user model pays only
+    # for the offline driver scoring.
     user_adapter = _live_model(user_model, base_url) if user_model else None
     search = _entry("kullback.builder.search", "search_for")(workdir)  # None unless live is on or a memo exists
     # The screen lists running builds from these heartbeats; the pid tells it who is alive. The

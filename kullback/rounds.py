@@ -1520,14 +1520,16 @@ def _tool_result(result: Optional[ToolResult]) -> Optional[dict]:
     return {"content": result.content, "is_error": result.is_error} if result is not None else None
 
 
-def _record_judge_models(plan: BuildPlan) -> None:
-    """Write which model each side of the judging ran on into report_config.json (D160).
+def _record_model_ids(plan: BuildPlan) -> None:
+    """Write which model each side of the judging ran on, and which drove the user (D160, D232).
 
     Only when a model was named for the judging or the user: a build that judges with its own
     model and drives its user with the rules writes nothing here, so its records are what they
-    were before this, byte for byte. The user model id lands beside the judge models (D232), so
-    a round record says which model drove the user. A rebuild that drops the flag clears a stale
-    user model id, so the record never attributes a rule-driven build to an earlier model.
+    were before this, byte for byte. The user model id lands beside the judge models in the
+    build's report config. A rebuild that drops the flag clears a stale user model id, so the
+    record never attributes a rule-driven build to an earlier model. A stale judge id is kept on
+    purpose: the judge record is D160's, so its rebuild behavior stays as it was until that
+    record's owner changes it; this branch clears only the user id it added.
     """
     path = plan.workdir / "report_config.json"
     config = dict(_read_config(path))
@@ -1579,7 +1581,7 @@ def run_rounds(workdir: Any, model: Any = None, *, agent_model: Optional[Model] 
                      ceiling_usd=ceiling_usd, domain=domain, max_attempts=max_attempts, memory_dir=memory_dir,
                      on_event=on_event, grow=grow, grow_seed=grow_seed, probe_limit=probe_limit, rerolls=rerolls,
                      search=search, workers=workers)
-    _record_judge_models(plan)
+    _record_model_ids(plan)
     # The feed subscribes like anything else. Attaching here rather than inside the two harnesses
     # means both agents' streams reach it through the one seam the harness already offers: the
     # stages in either arm, and the messages and tool calls in the arm where a model drives.
