@@ -127,6 +127,11 @@ BUILDER_VERBS: frozenset = frozenset(BUILD_TOOLS) | {"repair_refuse_task", "repa
 EXAMINER_VERBS: frozenset = frozenset({"repair", "reroll_then_derive"})
 BUILDER_SESSION = Path("builder") / "session.jsonl"
 EXAMINER_SESSION = Path("examiner") / "session.jsonl"
+# What a round whose beat raised carries on its counts (D231), and how much of the message's first
+# clause a class is allowed to hold. A count is grouped over, so it holds what failed and never the
+# values the message goes on to name.
+BEAT_ERROR = "beat_error"
+MESSAGE_CLASS_CHARS = 80
 
 # The artifacts a model writes and a repair verb rewrites, by the name a round's counts call them.
 # Each is a stage output of `builder.build`: `compile_tools` writes bodies.json, `starting_state`
@@ -205,6 +210,34 @@ def _since_last_move(records: list[RoundRecord]) -> list[RoundRecord]:
     """
     moved = [i for i, record in enumerate(records) if (record.counts or {}).get("moved")]
     return records[moved[-1]:] if moved else records
+
+
+def beat_error_row(agent: str, exc: BaseException) -> dict:
+    """What a beat that raised leaves on the round's counts: which beat it was, the exception's own
+    kind, and the class of message it carried (D231).
+
+    A round used to say this in one sentence of prose on `exit_note` and in nothing a table or a
+    line could read, so a round the Builder's provider timed out on and a round an Examiner tool
+    refused one Task on printed the same defaults and read alike. Three fields is what lets a
+    reader group rounds by how they ended without reading the sentence.
+    """
+    return {"beat": str(agent), "kind": type(exc).__name__, "message_class": message_class(str(exc))}
+
+
+def message_class(message: str) -> str:
+    """The class of a beat error's message: what failed, and the exception named inside it where the
+    message carries one.
+
+    The values a message ends in never join it. A message is written `<what failed>: <the exception
+    raised>: <the ids, models and columns it happened to>`, so the class is the first clause and the
+    one bare name after it, and two rounds that failed the same way group together whatever their
+    third clause named. A message with no clause after the first is its own class, capped, since
+    there is nothing else to read it by.
+    """
+    parts = [part.strip() for part in str(message).split(":")]
+    head = parts[0][:MESSAGE_CLASS_CHARS]
+    named = next((part for part in parts[1:] if part and " " not in part and part[:1].isupper()), "")
+    return f"{head}: {named}" if named else head
 
 
 def finding_message(finding: Finding) -> str:
@@ -424,6 +457,7 @@ class Loop:
     # round's counts and not in an exception; a round with one on it may not exit `done`.
     tool_errors: list[dict] = field(default_factory=list)
     beat_spend: dict[str, float] = field(default_factory=dict)
+    beat_error: dict = field(default_factory=dict)  # what ended the round's beat, where one raised (D231)
     spent_allowance: dict[str, bool] = field(default_factory=dict)
     compactions_seen: dict[str, int] = field(default_factory=dict)
     cuts_seen: dict[str, int] = field(default_factory=dict)
@@ -580,6 +614,39 @@ class Loop:
         if allowance is not None and spent >= allowance:
             self.spent_allowance[agent] = True
         self.emit(BeatEnd(agent=agent, round=n, spend=spent))
+
+    def run_beat(self, agent: str, n: int) -> None:
+        """One beat, with whatever ended it recorded on the round before it is re-raised (D231).
+
+        The driver above catches a broken agent contract and closes the round on it (`run_rounds`),
+        and until this seam existed the only thing that survived the raise was the message. The row
+        goes on the round's counts, which is where every other thing only the driver knows already
+        rides, so the round line, the report's table and rounds.json all read one fact.
+
+        Anything else a beat raises is recorded the same way and re-raised untouched: it is not the
+        driver's to handle, and a round that dies on it still says which beat it died in.
+        """
+        beat = self.builder_beat if agent == "builder" else self.examiner_beat
+        try:
+            beat(n)
+        except Exception as exc:
+            self.beat_error = beat_error_row(agent, exc)
+            raise
+
+    def counts_now(self) -> dict:
+        """The counts as they can still be read after a beat raised, and an empty dict when even
+        that cannot be read (D231).
+
+        A round that measured 75 Tasks of 119 and then lost its Examiner beat to a raised tool used
+        to be closed on an empty dict, so the round line printed its defaults and every number the
+        round had earned was thrown away by a later beat. The read is guarded because the state a
+        raised beat leaves is half-written by definition: a reader that raises over it costs the
+        round its numbers, never its record.
+        """
+        try:
+            return self.counts()
+        except Exception:
+            return {}
 
     # --- the Builder's beat ------------------------------------------------------------
 
@@ -809,8 +876,8 @@ class Loop:
         make for it, and the findings it filed.
 
         These ride on the round's counts rather than on a record of their own, so a round that
-        failed carries them too (`close_round` is given empty counts there) and rounds.json is the
-        one file a report reads a round's clock and turns from.
+        failed carries them too (whatever the gate counts beside them came to) and rounds.json is
+        the one file a report reads a round's clock and turns from.
 
         `built` is whether this round left a target built: a pipeline ran and no stage of it failed.
         A round whose build failed has no Task with a Reference, so the gate counts alone read as
@@ -871,6 +938,10 @@ class Loop:
             # round whose References moved, which is worth reading beside what it trusted.
             **lifecycle.counts(self.retirements_now()),
             "artifacts": fingerprint, "artifact_hashes": per, "artifacts_changed": changed,
+            # D231: which beat raised, what it raised and the class of message it carried, on the
+            # rounds that ended that way and absent from the rounds that closed on their own, so a
+            # reader never has to tell an ordinary round from a broken one by a field of zeros.
+            **({BEAT_ERROR: dict(self.beat_error)} if self.beat_error else {}),
             **self._pin_counts(),
             **self._reader_counts(),
             **self._lesson_counts(),
@@ -1049,13 +1120,26 @@ class Loop:
 
     def counts(self) -> dict:
         """D126's counts off the gates, plus what only the driver knows (`driver_counts`), plus the
-        claim and partial-completion counters (D223) and the difficulty buckets (D209)."""
-        store = self.eplan.store if self.eplan is not None else {}
+        claim and partial-completion counters (D223) and the difficulty buckets (D209).
+
+        A round with no Examiner plan is read off the Builder's own handover rather than off nothing
+        (D231): a beat that raised before the Examiner opened, or a target that never released the
+        derivation's inputs, still replayed every Trace the build compiled, and counting that as an
+        empty workdir throws the round's one real reading away.
+        """
+        store = self.eplan.store if self.eplan is not None else _handover(self.plan.store)
         counts = round_end.round_counts(
             store.get("task_status") or {}, store.get("verifiers") or [], store.get("probes") or {},
             store.get("history") or {}, store.get("refusals") or {}, store.get("task_runs") or {},
             store.get("replays") or {}, store.get("rerolls") or {}, store.get("canon_rules"),
             store.get("sigs") or [], record=self._land, intents=store.get("intents") or {})
+        # D231: the denominator is the Tasks the round ruled on. The derivation writes a status row
+        # per Task and that is the count on a round whose Examiner beat finished; a round whose beat
+        # raised before it, or whose target never released the derivation's inputs, has ruled on the
+        # Tasks it replayed and on no others, and leaving the count at zero prints a real reading of
+        # 75 confirmed as `75/0` or, with the fidelity thrown away too, as `0/0`.
+        if not counts.get("tasks"):
+            counts["tasks"] = len(store.get("replays") or {})
         counts.update(self.driver_counts())
         counts.update(self.user_fidelity_counts())
         # The claim rows are written before the buckets are: the difficulty record carries D223's
@@ -1384,6 +1468,7 @@ class Loop:
         self.emit(RoundStart(round=n))
         self.sent, self.beat_spend, self.spent_allowance = [], {}, {}
         self.tool_errors = []
+        self.beat_error = {}  # D231: what ended this round, and nothing the round before it left
         # D218, Greptile P1 (PR 29): a round's snapshot says what this round measured, so the
         # rulings and the difficulty record start empty. A round that ends on an error before its
         # counts were read would otherwise write the round before it into its own table.
@@ -1394,8 +1479,8 @@ class Loop:
         self.retries_seen = self.retry_asks
         self.zooms_seen = self.plan.zooms_skipped
         self.allowance = {agent: self.allowance_for(agent) for agent in AGENTS}
-        self.builder_beat(n)
-        self.examiner_beat(n)
+        self.run_beat("builder", n)
+        self.run_beat("examiner", n)
         counts = self.counts()
         if not self.round_moved(n, counts) and not self.ceiling_reached():
             self.tell_the_builder_nothing_changed(n)
@@ -1419,8 +1504,9 @@ class Loop:
         `exit_for` is given, so `stall_rounds` counts only the rounds that moved nothing
         (`_since_last_move`)."""
         self.exhausted.append(any(self.spent_allowance.values()))
-        # The driver's own numbers last and freshest: a round that failed comes here with no counts
-        # at all, and its clock, spend and turns are as true as a round that finished.
+        # The driver's own numbers last and freshest: a round that failed comes here with whatever
+        # its beats left readable (D231), and its clock, spend, turns and the beat that raised are
+        # as true as a round that finished.
         record = RoundRecord(round=n, counts={**counts, **self.driver_counts()})
         self.draws_seen = sampling.draws_by_kind()  # the next round's draws start counting from here
         record.counts["moved"] = self.round_moved(n, record.counts)
@@ -1583,7 +1669,10 @@ def run_rounds(workdir: Any, model: Any = None, *, agent_model: Optional[Model] 
             # never dies without a record. The round is stalled with the reason on it, so rounds.json
             # tells the whole story, and findings still queued ride on the record (close_round
             # persists them) instead of dying with the process.
-            record = loop.close_round(n, {})
+            # D231: it closes on what it measured. The counts the round can still produce are read
+            # here rather than replaced by an empty dict, so a beat that raised costs the round the
+            # rest of its work and never the work it had already done.
+            record = loop.close_round(n, loop.counts_now())
             # A ceiling that ended the build left the other agent nothing to work on, and D86 says
             # to stop and report as is; that is the ceiling exit, not a broken agent.
             ceiling = loop.ceiling_reached()

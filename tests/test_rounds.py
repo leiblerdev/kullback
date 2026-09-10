@@ -897,7 +897,8 @@ def test_a_round_that_failed_still_records_its_clock_its_spend_and_its_turns(tmp
         counts["turns"]["examiner"]
     assert counts["context_fill"]["builder"] > 0.0
     assert set(counts["spend"]) == {"builder", "examiner", "total", "cache_saved"}
-    assert "fidelity" not in counts, "a round that failed computed no gate count"
+    assert counts["tasks"] == 3 and counts["fidelity"] <= counts["tasks"], \
+        "D231: it computed the gate counts it still could, over the Tasks it ruled on"
     assert json.loads((workdir / "gates_by_round.json").read_text(encoding="utf-8"))[-1]["round"] == 1
 
 
@@ -1466,3 +1467,74 @@ def test_the_driver_counts_the_four_things_the_loop_repairs_are_read_on(tmp_path
     assert counts["shape_retries"] == 2 and counts["zooms_skipped"] == 3
     assert counts["refuse_repeats"] == 2, "the second identical ask and the blocked third"
     assert counts["suggested_open"] == 0, "no Examiner beat has opened, so it has suggested nothing"
+
+
+# --- a round that a beat raised in (D231) ----------------------------------------------------
+
+def test_a_round_whose_examiner_beat_raised_still_closes_with_the_counts_it_measured(tmp_path, request):
+    """D231: the beat that raised costs the round the rest of its work, never the work it had done.
+
+    The Builder's beat replayed every Trace of every Task before the Examiner's beat raised, so the
+    round has a fidelity reading over a real denominator. It used to be closed on an empty dict and
+    print `fidelity 0/0 tasks`, which reads as a round that measured nothing.
+    """
+    workdir = tmp_path / "examiner-raised"
+    agent_model = TestModel([
+        _reply(None, ("build", {"target": TARGET})),
+        _reply("built."),
+        _reply("I have read everything and all is well."),
+    ])
+    result = rounds.run_rounds(workdir, model=Bodies(), agent_model=agent_model, files=[_fixture(request)],
+                               max_attempts=0, allowance_usd=0.0)
+    assert result["failed"] is True
+    counts = rounds.load_rounds(workdir)[-1].counts
+    assert counts["tasks"] == 3, "the Tasks it ruled on, off the replays the derivation never read"
+    assert 0 <= counts["fidelity"] <= counts["tasks"], "a reading over a real denominator"
+    assert "trusted" in counts, "the ruling the round did reach is on the record and not the defaults"
+    assert set(round_end.GATE_COUNTS) <= set(counts)
+
+
+def test_a_round_whose_beat_raised_names_the_beat_the_kind_and_the_class_of_the_message(tmp_path, request):
+    """D231: three fields a line, a table and a report can read, beside the sentence on `exit_note`.
+
+    Without them a round the Builder's provider timed out on and a round an Examiner tool refused
+    one Task on print the same counts and read alike.
+    """
+    workdir = tmp_path / "beat-error-row"
+    agent_model = TestModel([
+        _reply(None, ("build", {"target": TARGET})),
+        _reply("built."),
+        _reply("I have read everything and all is well."),
+    ])
+    rounds.run_rounds(workdir, model=Bodies(), agent_model=agent_model, files=[_fixture(request)],
+                      max_attempts=0, allowance_usd=0.0)
+    row = rounds.load_rounds(workdir)[-1].counts["beat_error"]
+    assert row["beat"] == "examiner" and row["kind"] == "ExaminerError"
+    assert "never called derive" in row["message_class"]
+
+
+def test_a_round_that_closed_on_its_own_carries_no_beat_error_at_all(driven):
+    """A field of zeros on every ordinary round would be a field a reader has to check; the row is
+    absent instead, so its presence is the whole of the reading."""
+    assert "beat_error" not in rounds.load_rounds(driven["workdir"])[-1].counts
+
+
+def test_the_class_of_a_beat_error_message_holds_what_failed_and_never_the_values(tmp_path):
+    """A count is grouped over: two rounds that lost the same beat the same way have to read as one
+    class whatever Task, tool or model the message went on to name."""
+    assert rounds.message_class("derive failed: LookupError: task ferry-91 has no Reference on disk") == \
+        "derive failed: LookupError"
+    assert rounds.message_class("build failed: RetryExhausted: kite-mill/loom-2: 5 attempts failed") == \
+        "build failed: RetryExhausted"
+    assert rounds.message_class("the model never called derive('all')") == "the model never called derive('all')"
+
+
+def test_the_counts_of_a_round_whose_state_cannot_be_read_are_empty_and_the_record_still_closes(tmp_path,
+                                                                                               monkeypatch):
+    """The state a raised beat leaves is half written by definition, so the read is guarded: a
+    reader that raises over it costs the round its numbers and never its record."""
+    loop = _bare_loop(tmp_path)
+    monkeypatch.setattr(type(loop), "counts", lambda self: (_ for _ in ()).throw(ValueError("half written")))
+    assert loop.counts_now() == {}
+    record = loop.close_round(1, loop.counts_now())
+    assert record.round == 1 and record.counts["turns"]["total"] == 0

@@ -944,3 +944,16 @@ def test_a_finding_the_builder_recorded_is_printed_for_the_customer_with_its_cal
     block = block_of(render(data), "### Findings")
     assert "update_booking: rooms[*].rate: the recording writes" in block
     assert "recorded calls: call_12, call_40" in block
+
+
+def test_a_round_a_beat_raised_in_says_so_in_the_exit_cell(workdir: Path):
+    """D231: the counts on the row are what the round measured before the raise, so without this a
+    reader takes a round that stopped half way for a round that measured that much and stopped."""
+    rows = _rounds_rows()
+    rows[-1]["exit"] = "stalled"
+    rows[-1]["counts"]["beat_error"] = {"beat": "examiner", "kind": "ExaminerError",
+                                        "message_class": "derive failed: LookupError"}
+    (workdir / "rounds.json").write_text(json.dumps(rows), encoding="utf-8")
+    section = block_of(render(load(workdir)), "## Rounds")
+    assert "stalled (ended by examiner error)" in section
+    assert "| 1 | 1/2 | 0 | 0 | 1 | 0 | $0.0000 |  |" in section, "a round that closed on its own says nothing"

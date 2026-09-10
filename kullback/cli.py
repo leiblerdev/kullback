@@ -385,11 +385,26 @@ def _regrouped(counts: dict) -> str:
     return f" regrouped ({moved} moved)" if moved else ""
 
 
+def _ended_by(counts: dict) -> str:
+    """How a round ended where a beat raised in it (D231), and nothing at all where none did.
+
+    The counts beside it are what the round measured before the raise, which is a real reading and
+    not a default; this is what says the round stopped short of the rest of its work.
+    """
+    row = counts.get("beat_error") or {}
+    beat = str(row.get("beat") or "")
+    if not beat:
+        return ""
+    kind = str(row.get("kind") or "")
+    return f"ended by {beat} error" + (f" ({kind})" if kind else "") + ", "
+
+
 def _round_line(counts: dict) -> str:
     """One round's counts as one line, every number a gate's (D126)."""
     compactions = counts.get("fallback_compactions") or {}
     spend = counts.get("spend") or {}
-    return (f"fidelity {counts.get('fidelity', 0)}/{counts.get('tasks', 0)} tasks, "
+    return (_ended_by(counts)
+            + f"fidelity {counts.get('fidelity', 0)}/{counts.get('tasks', 0)} tasks, "
             f"trusted {counts.get('trusted', 0)}, refused {counts.get('refused_count', 0)}, "
             f"assisted runs {counts.get('assisted_runs', 0)}, probes passing {counts.get('probes_passing', 0)}, "
             f"tasks frozen {counts.get('tasks_frozen', 0)} added {counts.get('tasks_added', 0)} "

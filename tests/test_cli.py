@@ -692,3 +692,14 @@ def test_tui_defaults_to_work_when_it_holds_a_build(tmp_path, monkeypatch):
     (work / "budget.json").write_text("{}", encoding="utf-8")
     assert _default_workdir(Path(".")) == Path("work")
     assert _default_workdir(Path("/elsewhere")) == Path("/elsewhere")
+
+
+def test_the_round_line_says_which_beat_ended_the_round_before_the_counts_it_measured():
+    """D231: a round that lost a beat used to print its defaults and say nothing about why, so a
+    round that measured 75 Tasks of 119 and then lost its Examiner read as a round that measured
+    none. The counts beside the note are what it did measure."""
+    line = cli._round_line({"fidelity": 75, "tasks": 119,
+                            "beat_error": {"beat": "examiner", "kind": "ExaminerError",
+                                           "message_class": "derive failed: LookupError"}})
+    assert line.startswith("ended by examiner error (ExaminerError), fidelity 75/119 tasks")
+    assert not cli._round_line({"fidelity": 75, "tasks": 119}).startswith("ended by")
