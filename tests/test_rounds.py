@@ -79,7 +79,7 @@ TARGET = "environment"
 # It also moves on any edit to kullback/ai/provider.py, whose module hash is part of the reroll
 # stage's code version, so a re-roll id carries the adapter code it was sampled under: D229 added
 # providers there and every id moved once, the same three Tasks with the same verdicts and reasons.
-TASK_STATUS_SHA256_BEFORE_THE_PHASE = "aaa9c012f10f7fbf82466123fc0be731eeb855670876c3b53bc3595a81db3fc5"
+TASK_STATUS_SHA256_BEFORE_THE_PHASE = "1739a426985faa457e104cbf2eb28345051b23a6cb427d1881fb94fe8a5abfbd"
 
 
 def _fixture(request) -> Path:
