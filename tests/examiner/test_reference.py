@@ -138,7 +138,7 @@ def test_the_judge_fails_the_refusal_and_the_answered_recordings_are_the_referen
     assert [r.run_id for r in out.references] == ["a", "b"]
     assert out.failed == {"c": "judge: the reader was never told when the book is due"}
     assert out.judged and not out.judge_abstained
-    prompt = "\n".join(m["content"] for m in judge.calls[0]["messages"])
+    prompt = judge.calls[0]["messages"][1]["content"]
     assert "A (2 runs): no writes; the answer states facts read from the world" in prompt
     assert "B (1 run): no writes; the answer states nothing read from the world" in prompt
 
@@ -149,7 +149,7 @@ def test_the_judge_is_told_which_facts_each_end_state_stated_back():
     judge = TestModel([ruling(fails("B", "stated:2026-09-20", ref.NO_VALUE, "A"), reason="no due date")])
     ref.confirm([answered("a"), refused("b")], intent="tell the reader when loan LB-4412 is due",
                 policy_lines=["a reader may be told the due date of their own loan"], judge=judge)
-    prompt = "\n".join(m["content"] for m in judge.calls[0]["messages"])
+    prompt = judge.calls[0]["messages"][0]["content"] + "\n" + judge.calls[0]["messages"][1]["content"]
     assert "told the user: 2026-09-20, LB-4412; none handed the conversation on" in prompt
     assert "told the user no fact read from the world" in prompt
     assert "you still do not have the transcript" in prompt
@@ -159,7 +159,7 @@ def test_a_state_whose_runs_handed_the_conversation_on_says_so():
     judge = TestModel(['{"failed": [], "evidence": ["end_states"], "reason": "cannot tell"}'])
     ref.confirm([answered("a"), refused("b", handed_on=True)],
                 intent="tell the reader when loan LB-4412 is due", judge=judge)
-    prompt = "\n".join(m["content"] for m in judge.calls[0]["messages"])
+    prompt = judge.calls[0]["messages"][1]["content"]
     assert "1 of 1 handed the conversation on" in prompt
 
 
@@ -199,7 +199,7 @@ def test_the_judge_can_fail_a_state_and_the_other_one_becomes_the_reference():
     assert [r.run_id for r in out.references] == ["a"]
     assert out.failed == {"b": "judge: the cancellation the user asked for never happened"}
     assert out.judged and not out.judge_abstained
-    prompt = "\n".join(m["content"] for m in judge.calls[0]["messages"])
+    prompt = judge.calls[0]["messages"][1]["content"]
     assert "cancel delivery #D123" in prompt and "A (1 run): cancel_pending_delivery" in prompt
 
 
