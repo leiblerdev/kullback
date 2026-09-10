@@ -28,6 +28,16 @@ def write_snapshot(path, catalog, fetched_at=None):
     return wrapped
 
 
+def from_models_dev(result):
+    """What refresh returned minus the local provider registry it lays over every catalog.
+
+    refresh answers with both, always; these tests are about the models.dev half, so the local
+    half is taken off here rather than restated in every assertion.
+    """
+    local = pricing.local_providers()
+    return {name: entry for name, entry in (result or {}).items() if name not in local}
+
+
 CATALOG = {
     "openai": {
         "models": {
@@ -114,7 +124,7 @@ def test_refresh_live_off_with_no_snapshot_returns_none_and_touches_no_network(t
     result = pricing.refresh(
         client=transport_of(handler), path=tmp_path / "models.dev.json", env={}
     )
-    assert result is None
+    assert from_models_dev(result) == {}
 
 
 def test_refresh_live_off_reads_the_existing_snapshot_regardless_of_age(tmp_path):
@@ -124,7 +134,7 @@ def test_refresh_live_off_reads_the_existing_snapshot_regardless_of_age(tmp_path
     path = tmp_path / "models.dev.json"
     write_snapshot(path, CATALOG, fetched_at=datetime.now(timezone.utc) - timedelta(days=365))
     result = pricing.refresh(client=transport_of(handler), path=path, env={})
-    assert result == CATALOG
+    assert from_models_dev(result) == CATALOG
 
 
 # --- refresh: live on ---
@@ -139,9 +149,9 @@ def test_refresh_live_on_fetches_when_there_is_no_snapshot(tmp_path):
     result = pricing.refresh(
         client=transport_of(handler), path=path, env={pricing.LIVE_ENV_VAR: "1"}
     )
-    assert result == CATALOG
+    assert from_models_dev(result) == CATALOG
     stored = json.loads(path.read_text(encoding="utf-8"))
-    assert stored["catalog"] == CATALOG
+    assert stored["catalog"] == CATALOG, "the snapshot stays what models.dev said, overlay apart"
     assert "fetched_at" in stored
 
 
@@ -154,7 +164,7 @@ def test_refresh_live_on_does_not_refetch_a_fresh_snapshot(tmp_path):
     result = pricing.refresh(
         client=transport_of(handler), path=path, max_age_days=7, env={pricing.LIVE_ENV_VAR: "1"}
     )
-    assert result == CATALOG
+    assert from_models_dev(result) == CATALOG
 
 
 def test_refresh_live_on_refetches_a_stale_snapshot(tmp_path):
@@ -168,7 +178,7 @@ def test_refresh_live_on_refetches_a_stale_snapshot(tmp_path):
     result = pricing.refresh(
         client=transport_of(handler), path=path, max_age_days=7, env={pricing.LIVE_ENV_VAR: "1"}
     )
-    assert result == newer_catalog
+    assert from_models_dev(result) == newer_catalog
     stored = json.loads(path.read_text(encoding="utf-8"))
     assert stored["catalog"] == newer_catalog
 
@@ -182,12 +192,13 @@ def test_refresh_network_failure_falls_back_to_the_existing_snapshot(tmp_path):
     result = pricing.refresh(
         client=transport_of(handler), path=path, max_age_days=7, env={pricing.LIVE_ENV_VAR: "1"}
     )
-    assert result == CATALOG, "a network error must fall back to the old snapshot, not raise"
+    assert from_models_dev(result) == CATALOG, \
+        "a network error must fall back to the old snapshot, not raise"
     stored = json.loads(path.read_text(encoding="utf-8"))
     assert stored["catalog"] == CATALOG, "a failed fetch must not touch the file on disk"
 
 
-def test_refresh_network_failure_with_no_snapshot_returns_none(tmp_path):
+def test_refresh_network_failure_with_no_snapshot_leaves_only_the_local_registry(tmp_path):
     def handler(request):
         raise httpx.ConnectError("boom", request=request)
 
@@ -195,7 +206,8 @@ def test_refresh_network_failure_with_no_snapshot_returns_none(tmp_path):
     result = pricing.refresh(
         client=transport_of(handler), path=path, env={pricing.LIVE_ENV_VAR: "1"}
     )
-    assert result is None
+    assert from_models_dev(result) == {}
+    assert set(result) == set(pricing.local_providers())
 
 
 # --- budget.price_for and budget.price_source: models.dev first, then the table ---
@@ -280,3 +292,161 @@ def test_a_bare_wire_id_every_provider_prices_the_same_still_prices():
         "a-mirror": {"models": {"gpt-5.6-luna": {"cost": {"input": 0.2, "output": 1.2}}}},
     }
     assert pricing.price_from_catalog(catalog, "gpt-5.6-luna")["input"] == 0.2
+
+
+# --- nested wire ids, the shape a reseller mostly speaks ---
+
+
+NESTED_CATALOG = {
+    "a-gateway": {
+        "id": "a-gateway", "npm": "@openrouter/ai-sdk-provider",
+        "api": "https://gateway.invalid/api/v1", "env": ["A_GATEWAY_API_KEY"],
+        "models": {
+            "a-lab/small-3": {"limit": {"context": 1_000_000, "output": 64_000},
+                              "cost": {"input": 0.03, "output": 0.13, "cache_read": 0.006}},
+        },
+    },
+}
+
+
+def test_a_wire_id_with_a_slash_in_it_prices_and_sizes_from_its_own_row():
+    """A gateway names its models 'lab/model', so the id has two slashes and only the first one
+    parts the provider from the wire id."""
+    price = pricing.price_from_catalog(NESTED_CATALOG, "a-gateway/a-lab/small-3")
+    assert price == {"input": 0.03, "output": 0.13, "cache_read": 0.006, "cache_write": 0.0}
+    assert pricing.window_from_catalog(NESTED_CATALOG, "a-gateway/a-lab/small-3") == 1_000_000
+    assert pricing.endpoint_from_catalog(NESTED_CATALOG, "a-gateway/a-lab/small-3").openai_shaped
+
+
+# --- the local provider registry ---
+
+
+LOCAL_FILE = {
+    "a-host": {
+        "id": "a-host", "npm": "@ai-sdk/openai-compatible", "api": "https://a-host.invalid/v1",
+        "env": ["A_HOST_API_KEY"],
+        "models": {"quick-1": {"limit": {"context": 32_000}, "cost": {"input": 1.0, "output": 2.0}}},
+    },
+}
+
+
+def write_local(path, entries):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    (path.parent / pricing.LOCAL_PROVIDERS_NAME).write_text(json.dumps(entries), encoding="utf-8")
+
+
+def test_a_provider_only_the_local_registry_names_is_reachable_priced_and_sized(tmp_path):
+    path = tmp_path / "models.dev.json"
+    write_snapshot(path, CATALOG)
+    write_local(path, LOCAL_FILE)
+    catalog = pricing.refresh(path=path, env={})
+    endpoint = pricing.endpoint_from_catalog(catalog, "a-host/quick-1")
+    assert endpoint.base_url == "https://a-host.invalid/v1"
+    assert endpoint.key_env_var == "A_HOST_API_KEY" and endpoint.openai_shaped
+    assert pricing.price_from_catalog(catalog, "a-host/quick-1")["output"] == 2.0
+    assert pricing.window_from_catalog(catalog, "a-host/quick-1") == 32_000
+    assert catalog["openai"] == CATALOG["openai"], "the overlay adds providers, it does not drop any"
+
+
+def test_the_local_registry_can_add_one_model_row_to_a_provider_models_dev_already_names(tmp_path):
+    """The failure this is for: the registry names the provider and the vendor serves a wire id the
+    snapshot has no row for, so a real Run was billed nothing and failed the budget gate. One row
+    in the local file prices it, and the provider's host, key and other models still come from
+    models.dev."""
+    path = tmp_path / "models.dev.json"
+    write_snapshot(path, {"a-vendor": {"id": "a-vendor", "npm": "@ai-sdk/openai-compatible",
+                                       "api": "https://a-vendor.invalid", "env": ["A_VENDOR_API_KEY"],
+                                       "models": {"old-1": {"cost": {"input": 9.0, "output": 9.0}}}}})
+    write_local(path, {"a-vendor": {"models": {"new-1": {"limit": {"context": 500_000},
+                                                         "cost": {"input": 0.3, "output": 1.2}}}}})
+    catalog = pricing.refresh(path=path, env={})
+    assert pricing.price_from_catalog(catalog, "a-vendor/new-1")["input"] == 0.3
+    assert pricing.price_from_catalog(catalog, "a-vendor/old-1")["input"] == 9.0
+    assert pricing.endpoint_from_catalog(catalog, "a-vendor/new-1").base_url == "https://a-vendor.invalid"
+    assert pricing.endpoint_from_catalog(catalog, "a-vendor/new-1").key_env_var == "A_VENDOR_API_KEY"
+
+
+def test_a_local_registry_file_that_cannot_be_read_is_ignored_not_raised_on(tmp_path):
+    path = tmp_path / "models.dev.json"
+    write_snapshot(path, CATALOG)
+    (tmp_path / pricing.LOCAL_PROVIDERS_NAME).write_text("{ not json", encoding="utf-8")
+    catalog = pricing.refresh(path=path, env={})
+    assert catalog["openai"] == CATALOG["openai"]
+    assert set(pricing.local_providers(path)) == set(pricing.BUILTIN_LOCAL_PROVIDERS)
+
+
+def test_the_local_file_wins_over_a_built_in_row_of_the_same_name(tmp_path):
+    path = tmp_path / "models.dev.json"
+    name = next(iter(pricing.BUILTIN_LOCAL_PROVIDERS))
+    write_local(path, {name: {"api": "https://elsewhere.invalid/v1"}})
+    assert pricing.local_providers(path)[name]["api"] == "https://elsewhere.invalid/v1"
+    assert pricing.local_providers(path)[name]["models"], "its model rows survive the override"
+
+
+def test_a_wire_id_priced_only_by_the_overlay_is_billed_and_an_unpriced_one_still_is_not(tmp_path):
+    """The gate that refused the Run must keep refusing: an overlay row prices its own model and
+    nothing else, so a model neither source names stays unpriced."""
+    path = tmp_path / "models.dev.json"
+    write_snapshot(path, CATALOG)
+    write_local(path, LOCAL_FILE)
+    budget._SNAPSHOT_PATH = path
+    budget._CATALOG_LOADED = False
+    try:
+        assert budget.is_priced("a-host/quick-1") is True
+        assert budget.price_source("a-host/quick-1") == "models.dev"
+        assert budget.is_priced("a-host/absent-9") is False
+        with pytest.raises(budget.UnpricedModel):
+            budget.Ceiling(usd=1.0).require_priced("a-host/absent-9")
+    finally:
+        budget._CATALOG_LOADED = False
+
+
+def test_every_built_in_local_provider_row_carries_what_the_one_lookup_needs():
+    """A row read off a vendor's docs is only useful if it answers all four questions the single
+    lookup asks: where to post, which variable holds the key, what a call costs, what fits."""
+    for name, entry in pricing.BUILTIN_LOCAL_PROVIDERS.items():
+        models = entry.get("models") or {}
+        assert models, f"{name} names no model"
+        for wire, row in models.items():
+            assert row["cost"]["input"] >= 0 and row["cost"]["output"] >= 0
+            if "api" in entry:
+                assert entry["npm"] in pricing.OPENAI_SHAPED, f"{name} is served in another shape"
+                assert entry["env"] and entry["env"][0].endswith("_API_KEY")
+                assert row["limit"]["context"] > 0, f"{name}/{wire} names no context window"
+
+
+# --- a gateway that answers under a name it was not called by ---
+
+
+ECHOING_CATALOG = {
+    "a-gateway": {
+        "id": "a-gateway", "npm": "@ai-sdk/openai-compatible", "api": "https://gateway.invalid/v1",
+        "env": ["A_GATEWAY_API_KEY"],
+        "models": {"quick-1": {"limit": {"context": 400_000},
+                               "cost": {"input": 0.06, "output": 0.2, "cache_read": 0.012}}},
+    },
+}
+
+
+def test_a_model_the_gateway_answers_under_an_upstream_name_prices_from_its_own_row():
+    """The ledger keys a call on the id the endpoint echoed, and a gateway asked for 'quick-1' can
+    answer 'a-lab/quick-1'. Without this the call is billed nothing and fails the budget gate."""
+    price = pricing.price_from_catalog(ECHOING_CATALOG, "a-gateway/a-lab/quick-1")
+    assert price["input"] == 0.06
+    assert pricing.window_from_catalog(ECHOING_CATALOG, "a-gateway/a-lab/quick-1") == 400_000
+
+
+def test_a_bare_name_also_finds_the_row_a_provider_lists_under_a_nested_one():
+    catalog = {"a-gateway": {"models": {"a-lab/quick-1": {"cost": {"input": 0.06, "output": 0.2}}}}}
+    assert pricing.price_from_catalog(catalog, "a-gateway/quick-1")["input"] == 0.06
+
+
+def test_two_rows_of_one_provider_ending_the_same_way_are_no_price_at_all():
+    """The same rule the cross-provider lookup follows: an ambiguous match is worse than a missing
+    one, because a wrong price bills a build for something it did not spend."""
+    catalog = {"a-gateway": {"models": {
+        "a-lab/quick-1": {"cost": {"input": 0.06, "output": 0.2}},
+        "b-lab/quick-1": {"cost": {"input": 6.0, "output": 20.0}},
+    }}}
+    assert pricing.price_from_catalog(catalog, "a-gateway/quick-1") is None
+    assert pricing.price_from_catalog(catalog, "a-gateway/a-lab/quick-1")["input"] == 0.06

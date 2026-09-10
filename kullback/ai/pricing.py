@@ -9,6 +9,7 @@ already on disk, or returns None when there is none.
 
 from __future__ import annotations
 
+import copy
 import json
 from datetime import datetime, timezone
 from pathlib import Path
@@ -31,6 +32,131 @@ def snapshot_path(path: Optional[str | Path] = None) -> Path:
     if path is not None:
         return Path(path)
     return Path.home() / ".cache" / "harness" / "models.dev.json"
+
+
+# The one mechanism for a provider models.dev does not list. A file beside the snapshot, in the
+# same entry shape as a models.dev provider row, is laid over the catalog before anyone reads it,
+# so the host, the key variable, the prices and the context windows all come out of the single
+# lookup that already exists: model_for resolves the id, budget.py prices the call, the D65 cap
+# reads the window, and no stage learns a second place to look.
+#
+# Shape, the catalog's own, so a row can be copied either way:
+#
+#   {"cheaperinference": {"id": "cheaperinference", "name": "...", "npm": "@ai-sdk/openai-compatible",
+#                         "api": "https://...", "env": ["..._API_KEY"],
+#                         "models": {"<wire id>": {"limit": {"context": 1, "output": 1},
+#                                                  "cost": {"input": 0.0, "output": 0.0,
+#                                                           "cache_read": 0.0}}}}}
+#
+# A provider named in both wins on its own top-level fields, and its model rows are merged into the
+# catalog's row by row, so one missing model can be added without restating the provider.
+LOCAL_PROVIDERS_NAME = "providers.local.json"
+
+# Providers the Harness ships knowing about because their docs were read, kept in code so a fresh
+# machine has them without a file to write, and overridable by the file above. CheaperInference is
+# the first: an OpenAI-compatible gateway, "The API is served from https://api.cheaperinference.com/v1.
+# Authenticate with `Authorization: Bearer ci_live_...`", integrations that read the key from
+# CHEAPER_INFERENCE_API_KEY, and "@ai-sdk/openai-compatible" as the SDK its own docs name
+# (platform.cheaperinference.com/llms.txt and /docs, read 2026-09-10). The model row is copied from
+# that day's GET /v1/models, which prices every model it lists: the rates the gateway charges, which
+# is what the wallet is billed, rather than the list rates it discounts from.
+BUILTIN_LOCAL_PROVIDERS: dict[str, dict] = {
+    "cheaperinference": {
+        "id": "cheaperinference",
+        "name": "CheaperInference",
+        "npm": "@ai-sdk/openai-compatible",
+        "api": "https://api.cheaperinference.com/v1",
+        "env": ["CHEAPER_INFERENCE_API_KEY"],
+        "doc": "https://platform.cheaperinference.com/docs",
+        "models": {
+            "glm-5.3-flash": {
+                "id": "glm-5.3-flash",
+                "name": "GLM 5.3 Flash",
+                "reasoning": True,
+                "tool_call": True,
+                "limit": {"context": 1_048_576, "output": 131_072},
+                "cost": {"input": 0.060426, "output": 0.201421, "cache_read": 0.012085,
+                         "cache_write": 0.060426},
+            },
+        },
+    },
+    # A provider models.dev does list, carrying the one model row it does not. models.dev names
+    # deepseek-v4-flash; the live endpoint serves deepseek-flash, and only that id and
+    # deepseek-v4-pro (GET https://api.deepseek.com/models, 2026-09-10), so a Run on the id the
+    # vendor actually serves was billed nothing and failed the budget gate as an unpriced call.
+    # The row is the vendor's own published price per 1M tokens: cache miss 0.30, cache hit 0.006,
+    # output 1.20, context 1M (api-docs.deepseek.com/quick_start/pricing, read 2026-09-10). Those
+    # are the peak rates; the page halves them off peak, and a ledger that must never under-bill
+    # takes the higher of the two. Only the model row is given, so the host, the key variable and
+    # every other model of the provider keep coming from models.dev.
+    "deepseek": {
+        "models": {
+            "deepseek-flash": {
+                "id": "deepseek-flash",
+                "name": "DeepSeek Flash",
+                "reasoning": True,
+                "tool_call": True,
+                "limit": {"context": 1_000_000, "output": 384_000},
+                "cost": {"input": 0.30, "output": 1.20, "cache_read": 0.006, "cache_write": 0.0},
+            },
+        },
+    },
+}
+
+
+def local_providers_path(path: Optional[str | Path] = None) -> Path:
+    """Where the local provider registry lives: beside the snapshot, whichever one is in use."""
+    return snapshot_path(path).with_name(LOCAL_PROVIDERS_NAME)
+
+
+def local_providers(path: Optional[str | Path] = None) -> dict[str, dict]:
+    """The providers models.dev does not list: the built-in rows, then the file's, which win.
+
+    An unreadable or misshapen file is ignored rather than raised on: a broken side file must not
+    take every model call down with it, and the built-in rows still answer.
+    """
+    merged = {name: copy.deepcopy(entry) for name, entry in BUILTIN_LOCAL_PROVIDERS.items()}
+    file_path = local_providers_path(path)
+    if not file_path.is_file():
+        return merged
+    try:
+        stored = json.loads(file_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return merged
+    entries = stored.get("providers") if isinstance(stored, dict) and "providers" in stored else stored
+    if not isinstance(entries, dict):
+        return merged
+    for name, entry in entries.items():
+        if isinstance(entry, dict):
+            merged[name] = _merge_provider(merged.get(name), entry)
+    return merged
+
+
+def _merge_provider(under: Optional[dict], over: dict) -> dict:
+    """One provider row laid over another: top-level fields replaced, model rows merged by id."""
+    if not isinstance(under, dict):
+        return copy.deepcopy(over)
+    merged = {**copy.deepcopy(under), **copy.deepcopy(over)}
+    models = dict(under.get("models") or {})
+    models.update(over.get("models") or {})
+    if models:
+        merged["models"] = models
+    return merged
+
+
+def overlay_local(catalog: Optional[dict], path: Optional[str | Path] = None) -> Optional[dict]:
+    """The catalog with the local provider registry laid over it, or the local rows alone.
+
+    Returns None only when neither side names a provider, which is what a caller already reads as
+    "nothing on disk yet".
+    """
+    local = local_providers(path)
+    if not local:
+        return catalog
+    merged = dict(catalog or {})
+    for name, entry in local.items():
+        merged[name] = _merge_provider(merged.get(name), entry)
+    return merged or None
 
 
 def _read_snapshot(path: Path) -> Optional[dict]:
@@ -88,6 +214,10 @@ def refresh(
     missing or older than max_age_days, otherwise read from the existing snapshot. A network
     error or a missing snapshot never raises; it falls back to whatever is already on disk, or
     to None when there is nothing to fall back to.
+
+    The local provider registry is laid over whatever comes back, always and last, so a provider
+    models.dev does not list is answered here rather than by a second lookup somewhere else. The
+    overlay is never written into the snapshot: the snapshot stays what models.dev said.
     """
     snap_path = snapshot_path(path)
     stored = _read_snapshot(snap_path)
@@ -100,16 +230,21 @@ def refresh(
                 wrapped = {"fetched_at": datetime.now(timezone.utc).isoformat(), "catalog": catalog}
                 snap_path.parent.mkdir(parents=True, exist_ok=True)
                 snap_path.write_text(json.dumps(wrapped), encoding="utf-8")
-                return catalog
-    if stored is not None:
-        return stored.get("catalog")
-    return None
+                return overlay_local(catalog, path)
+    return overlay_local(stored.get("catalog") if stored is not None else None, path)
 
 
 # The npm adapters models.dev names for providers that speak the OpenAI request shape. A provider
 # it lists under any other adapter (Google, Cohere, Vertex) takes a different body, so the registry
 # says so rather than posting chat completions at it and reading the 400.
-OPENAI_SHAPED = ("@ai-sdk/openai-compatible", "@ai-sdk/openai")
+#
+# @openrouter/ai-sdk-provider is here because OpenRouter's own reference says its endpoint is the
+# OpenAI chat one: "POST /api/v1/chat/completions", "Authorization: Bearer <OPENROUTER_API_KEY>",
+# a body of messages, tools and tool_choice, and choices[].message back
+# (openrouter.ai/docs/api-reference/overview, read 2026-09-10). The npm package differs from
+# @ai-sdk/openai-compatible only in the SDK layer above the wire, and it is the wire this table is
+# about. A provider is added here after its docs are read, never because its name is familiar.
+OPENAI_SHAPED = ("@ai-sdk/openai-compatible", "@ai-sdk/openai", "@openrouter/ai-sdk-provider")
 
 
 class Endpoint(NamedTuple):
@@ -163,13 +298,35 @@ def model_adapter_for(catalog: Optional[dict], model_id: Optional[str]) -> str:
     return npm if isinstance(npm, str) else ""
 
 
+def model_row(provider_entry: Any, wire_id: str) -> Optional[dict]:
+    """One provider's row for a wire id: its own key, else the one whose last segment matches.
+
+    A gateway does not always answer under the name it was called by. One prices glm-5.3-flash and
+    answers z-ai/glm-5.3-flash, and the ledger keys a call on the id the endpoint echoed, so the
+    row has to be found from either spelling or the call is billed nothing. The match is inside one
+    provider's own catalog, on the last slash-separated segment, and only when exactly one row
+    matches: two rows ending the same way is a disagreement, and a disagreement is no price, which
+    is the rule the cross-provider lookup below already follows.
+    """
+    models = provider_entry.get("models") if isinstance(provider_entry, dict) else None
+    if not isinstance(models, dict) or not wire_id:
+        return None
+    row = models.get(wire_id)
+    if isinstance(row, dict):
+        return row
+    tail = wire_id.rpartition("/")[2]
+    found = [candidate for key, candidate in models.items()
+             if isinstance(candidate, dict) and key.rpartition("/")[2] == tail]
+    return found[0] if len(found) == 1 else None
+
+
 def window_from_catalog(catalog: Optional[dict], model_id: Optional[str]) -> Optional[int]:
     """The context window models.dev lists for a model, for the D65 cap."""
     provider, _, wire_id = str(model_id or "").partition("/")
     entry = (catalog or {}).get(provider) if wire_id else None
     if not isinstance(entry, dict):
         return None
-    model_entry = (entry.get("models") or {}).get(wire_id)
+    model_entry = model_row(entry, wire_id)
     limit = model_entry.get("limit") if isinstance(model_entry, dict) else None
     context = limit.get("context") if isinstance(limit, dict) else None
     try:
@@ -179,13 +336,8 @@ def window_from_catalog(catalog: Optional[dict], model_id: Optional[str]) -> Opt
 
 
 def _price_from_provider(provider_entry: Any, wire_id: str) -> Optional[dict[str, float]]:
-    if not isinstance(provider_entry, dict):
-        return None
-    models = provider_entry.get("models")
-    if not isinstance(models, dict):
-        return None
-    model_entry = models.get(wire_id)
-    if not isinstance(model_entry, dict):
+    model_entry = model_row(provider_entry, wire_id)
+    if model_entry is None:
         return None
     cost = model_entry.get("cost")
     if not isinstance(cost, dict) or "input" not in cost or "output" not in cost:
