@@ -11,6 +11,9 @@ from kullback.builder.intent import (
     MAX_INTENT_ATTEMPTS,
     MAX_PROMPT_RUNS,
     Intent,
+    _intent_body,
+    _intent_head,
+    _intent_prompt,
     _word_evidence,
     apply_intent,
     ground_phrases,
@@ -729,3 +732,45 @@ def test_a_line_written_before_the_strip_existed_does_not_hold():
     _, traces = hire_task()
     recorded = Intent(task_id="task_hire", text="refund the hire HR-88231", grounded=True)
     assert strip_holds(recorded, traces, schema=hire_schema()) is False
+
+
+# --- D245 stable heads ---
+
+
+def _line_multiset(text: str):
+    from collections import Counter
+
+    return Counter(line.strip() for line in text.splitlines() if line.strip())
+
+
+def test_the_intent_head_is_identical_across_tasks_and_attempts_and_rides_as_system(make_test_model):
+    """D245: the system head is the same bytes for every Task and every attempt of one build."""
+    _, traces_a = two_run_task()
+    traces_b = [cancel_trace("t9", "W9")]
+    assert _intent_head() == _intent_head()
+    assert _intent_body(traces_a, WRITES) != _intent_body(traces_b, WRITES)
+    first = _intent_body(traces_a, WRITES)
+    retry = _intent_body(traces_a, WRITES, hint="say it plainly",
+                         feedback="Your last line was wrong.")
+    assert first != retry, "the hint and the feedback ride in the user turn, never the head"
+    model = make_test_model(["refund the order to a gift card",
+                             "cancel the order because the delivery was late"])
+    task, traces = two_run_task()
+    write_intent(model, task, traces, write_tools=WRITES)
+    assert len(model.calls) == 2
+    for call in model.calls:
+        assert call["messages"][0]["role"] == "system"
+        assert call["messages"][0]["content"] == _intent_head()
+        assert call["messages"][-1]["role"] == "user"
+    assert model.calls[0]["messages"][-1]["content"] != model.calls[1]["messages"][-1]["content"], \
+        "the feedback of the later attempt rides in the user turn"
+
+
+def test_the_intent_head_plus_body_holds_every_sentence_of_the_old_single_message():
+    """D245: only moved text, never reworded; the old builder form is the fixture."""
+    _, traces = two_run_task()
+    for hint, feedback in ((None, None),
+                           ("say it plainly", "Your last line was wrong.")):
+        old = _intent_prompt(traces, WRITES, hint=hint, feedback=feedback)
+        new = _intent_head() + "\n" + _intent_body(traces, WRITES, hint=hint, feedback=feedback)
+        assert _line_multiset(old) == _line_multiset(new)

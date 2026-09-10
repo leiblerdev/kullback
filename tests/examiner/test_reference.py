@@ -138,7 +138,7 @@ def test_the_judge_fails_the_refusal_and_the_answered_recordings_are_the_referen
     assert [r.run_id for r in out.references] == ["a", "b"]
     assert out.failed == {"c": "judge: the reader was never told when the book is due"}
     assert out.judged and not out.judge_abstained
-    prompt = judge.calls[0]["messages"][0]["content"]
+    prompt = "\n".join(m["content"] for m in judge.calls[0]["messages"])
     assert "A (2 runs): no writes; the answer states facts read from the world" in prompt
     assert "B (1 run): no writes; the answer states nothing read from the world" in prompt
 
@@ -149,7 +149,7 @@ def test_the_judge_is_told_which_facts_each_end_state_stated_back():
     judge = TestModel([ruling(fails("B", "stated:2026-09-20", ref.NO_VALUE, "A"), reason="no due date")])
     ref.confirm([answered("a"), refused("b")], intent="tell the reader when loan LB-4412 is due",
                 policy_lines=["a reader may be told the due date of their own loan"], judge=judge)
-    prompt = judge.calls[0]["messages"][0]["content"]
+    prompt = "\n".join(m["content"] for m in judge.calls[0]["messages"])
     assert "told the user: 2026-09-20, LB-4412; none handed the conversation on" in prompt
     assert "told the user no fact read from the world" in prompt
     assert "you still do not have the transcript" in prompt
@@ -159,7 +159,7 @@ def test_a_state_whose_runs_handed_the_conversation_on_says_so():
     judge = TestModel(['{"failed": [], "evidence": ["end_states"], "reason": "cannot tell"}'])
     ref.confirm([answered("a"), refused("b", handed_on=True)],
                 intent="tell the reader when loan LB-4412 is due", judge=judge)
-    prompt = judge.calls[0]["messages"][0]["content"]
+    prompt = "\n".join(m["content"] for m in judge.calls[0]["messages"])
     assert "1 of 1 handed the conversation on" in prompt
 
 
@@ -199,7 +199,7 @@ def test_the_judge_can_fail_a_state_and_the_other_one_becomes_the_reference():
     assert [r.run_id for r in out.references] == ["a"]
     assert out.failed == {"b": "judge: the cancellation the user asked for never happened"}
     assert out.judged and not out.judge_abstained
-    prompt = judge.calls[0]["messages"][0]["content"]
+    prompt = "\n".join(m["content"] for m in judge.calls[0]["messages"])
     assert "cancel delivery #D123" in prompt and "A (1 run): cancel_pending_delivery" in prompt
 
 
@@ -447,7 +447,7 @@ def test_a_residue_of_two_is_resolved_by_a_cited_second_pass():
     assert out.judge_passes == 2 and out.judge_residue_resolved and not out.judge_residue_abstained
     assert out.failed == {"c": "judge: three weeks is more than was asked for",
                           "b": "judge: the rider asked for a week"}
-    second = judge.calls[1]["messages"][0]["content"]
+    second = judge.calls[1]["messages"][1]["content"]
     assert "\nC (1 run)" not in second, "the second pass is asked about the survivors only"
     assert ref.SURVIVORS_NOT_TOLD_APART in second and "exactly one of them may remain" in second
 
@@ -645,3 +645,47 @@ def test_a_task_whose_recordings_differ_only_in_that_order_confirms_a_reference(
     out = ref.confirm([_catering("a", ["soup", "pie", "tart"], BOOKED),
                        _catering("b", ["tart", "soup", "pie"], BOOKED)], judge=None)
     assert [r.run_id for r in out.references] == ["a", "b"] and out.reason is None
+
+
+# --- D245 stable heads ---
+
+
+def _line_multiset(text: str):
+    from collections import Counter
+
+    return Counter(line.strip() for line in text.splitlines() if line.strip())
+
+
+def _two_groups():
+    first = ref.group([cancel_run("a"), empty_run("b")])
+    second = ref.group([cancel_run("a", delivery="#D999"), empty_run("b")])
+    assert first != second
+    return first, second
+
+
+def test_the_judge_head_is_identical_across_tasks_and_passes_and_rides_as_system():
+    """D245: the system prologue is the same bytes for every Task and for both passes."""
+    first, second = _two_groups()
+    assert ref._judge_head() == ref._judge_head()
+    assert ref._judge_body("tell the reader when it is due", [], first) != \
+        ref._judge_body("tell the reader when it is due", [], second)
+    judge = TestModel(['{"failed": [], "evidence": ["intent"], "reason": "cannot tell"}'])
+    ref.judge_groups(judge, "tell the reader when it is due",
+                     ["a reader may be told the due date of their own loan"], first)
+    assert judge.calls[0]["messages"][0]["role"] == "system"
+    assert judge.calls[0]["messages"][0]["content"] == ref._judge_head()
+    assert judge.calls[0]["messages"][1]["role"] == "user"
+
+
+def test_the_judge_head_plus_body_holds_every_sentence_of_the_old_single_message():
+    """D245: only moved text, never reworded; the old builder form is the fixture."""
+    first, second = _two_groups()
+    for groups in (first, second):
+        for final in (False, True):
+            old = ref.judge_prompt("tell the reader when it is due",
+                                   ["a reader may be told the due date of their own loan"],
+                                   groups, final)
+            new = ref._judge_head() + "\n" + ref._judge_body(
+                "tell the reader when it is due",
+                ["a reader may be told the due date of their own loan"], groups, final)
+            assert _line_multiset(old) == _line_multiset(new)
