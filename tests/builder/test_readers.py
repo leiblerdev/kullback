@@ -401,12 +401,14 @@ def test_a_revealed_reading_is_exempt_and_a_revealed_switch_is_hard(tmp_path):
     assert all(column.classified_by == "rule" for column in schema.columns)
 
 
-def test_nothing_this_stage_reveals_can_split_a_task(tmp_path):
-    """D216: a revealed row is this stage's proposal, and a proposal never groups the recordings.
+def test_a_prose_sighting_this_stage_reveals_cannot_split_a_task(tmp_path):
+    """D216: a prose sighting this stage reveals carries no grouping; D233 homes only rows.
 
     This stage used to hand its rows to the split, so a corpus was regrouped every time a reader was
-    written, improved or dropped, with no new recording. The split is a function of the recordings
-    now, so this module offers the world nothing at all.
+    written, improved or dropped, with no new recording. A prose sighting states its columns inside
+    the sentence and no reader may read them in the split, so it keeps the opaque sentence key even
+    where the schema mines a table (D233, fallback case); a dict sighting stating mined columns is
+    homed to the requestor's row instead.
     """
     from kullback.builder.compile_env import trace_worlds
 

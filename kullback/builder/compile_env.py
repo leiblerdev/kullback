@@ -12,6 +12,7 @@ import copy
 import hashlib
 import io
 import json
+import keyword
 import re
 import textwrap
 import tokenize
@@ -548,10 +549,32 @@ def homing_hash(schema: EntitySchema) -> str:
 
     This is the second and last input `cluster.split_by_world` is allowed to depend on (D216), so a
     round whose grouping moved can say whether the homing moved with it. The column classes are
-    deliberately absent: they are the harness's own proposals about the corpus and no longer reach
-    the split, so a schema reclassified between two rounds leaves this hash where it was.
+    deliberately absent, except on the tables another requestor's tools revealed: D233 homes that
+    state to a row and hashes only its hard columns, so a reclassification there moves the split
+    and has to move this hash with it. Every other table keeps key fields alone, so a schema
+    reclassified between two rounds leaves this hash where it was.
     """
-    return content_hash({table: list(key_fields(schema, table)) for table in sorted(schema.tables)})
+    homing = {table: list(key_fields(schema, table)) for table in sorted(schema.tables)}
+    revealed: dict[str, dict[str, str]] = {}
+    for column in getattr(schema, "columns", None) or ():
+        if (column.evidence or {}).get("revealed_by"):
+            revealed.setdefault(column.table, {})[column.name] = str(column.class_)
+    if not revealed:
+        return content_hash(homing)
+    return content_hash({"homing": homing, "revealed_classes": revealed})
+
+
+def _accumulate_version(seen: dict[str, dict[tuple[str, str, str], dict]], trace_id: str,
+                        key: tuple, row: dict) -> dict:
+    """One row's version, column by column, with the earliest sighting winning each column.
+
+    Shared by the customer path and the requestor path (D233): a trace that read part of a row
+    and then the whole of it states one version and not two.
+    """
+    version = seen.setdefault(trace_id, {}).setdefault(key, {})
+    for name, value in (row or {}).items():
+        version.setdefault(str(name), value)
+    return version
 
 
 def trace_worlds(traces: Iterable[Trace], schema: EntitySchema, write_tools: set[str]) -> dict[str, dict]:
@@ -586,38 +609,64 @@ def trace_worlds(traces: Iterable[Trace], schema: EntitySchema, write_tools: set
     that read part of a row and then the whole of it states one version and not two. A result the
     call homed onto a row without stating a column of it is its own recorded sentence
     (`_recorded_text`), which is what the recording says about the row when no reader is allowed.
+
+    Another requestor's own state is homed the same way (D233): `_requestor_worlds` files every
+    stated column under whichever mined table of that requestor carries it, one row per requestor,
+    accumulated with the same earliest-wins loop, and the split compares it per column under
+    the schema's column classes, so a semantic or exempt part of the sighting no longer splits
+    Tasks. A prose sighting keeps the opaque sentence key, since no reader may read its columns
+    in the split. That is a deliberate departure from D216, which kept every class out of the
+    split: the classes of the revealed tables now reach it, and `homing_hash` carries them for
+    exactly those tables.
     """
     traces = list(traces)
     seen: dict[str, dict[tuple[str, str, str], dict]] = {}
     for obs in _observations(traces, schema, write_tools, read_result=_recorded_text):
         if obs.after_write or obs.shadowed:
             continue
-        version = seen.setdefault(obs.trace_id, {}).setdefault((obs.tool, obs.table, obs.row_id), {})
-        for name, value in obs.row.items():
-            version.setdefault(str(name), value)
+        _accumulate_version(seen, obs.trace_id, (obs.tool, obs.table, obs.row_id), obs.row)
     worlds = {trace_id: {key: content_hash(canon(version)) for key, version in rows.items()}
               for trace_id, rows in seen.items()}
-    for trace_id, rows in _requestor_worlds(traces, write_tools).items():
+    for trace_id, rows in _requestor_worlds(traces, write_tools, schema).items():
         worlds.setdefault(trace_id, {}).update(rows)
     return worlds
 
 
-def _requestor_worlds(traces: Iterable[Trace], write_tools: set[str]) -> dict[str, dict]:
-    """Per trace, what another requestor's own tools said about it before that requestor wrote.
+def _requestor_tables_of(schema: Optional[EntitySchema]) -> dict[str, list[str]]:
+    """Each requestor with a mined table to the sorted tables mined for it (D233).
 
-    R33 keeps a requestor's calls out of the customer's world: they describe the requestor's own
-    device and not the customer's system. They are recordings all the same, and two Runs whose
-    recordings show one requestor's device in two states before either wrote can no more share one
-    overlay than two Runs that disagree about a customer's row (D164, D74).
-
-    That split used to come from the readers stage, out of the columns it had proposed for the
-    requestor's prose, so it moved whenever a reader was written, improved or dropped. Here the
-    version is the recorded result itself and the row is the requestor, which the recording names on
-    every call; no proposal of the harness's is anywhere in it (D216). The requestor's own writes
-    close its world, because after one of those the device is in the state the Run put it in rather
-    than the state it started in.
+    A table another requestor's tools revealed carries that requestor on its columns' evidence
+    under `revealed_by` (`readers.apply_to_schema`, `templates.apply_revealed`). Built once per
+    split rather than re-scanned per call.
     """
-    out: dict[str, dict] = {}
+    out: dict[str, list[str]] = {}
+    for column in getattr(schema, "columns", None) or ():
+        who = (column.evidence or {}).get("revealed_by")
+        if who and column.table not in out.setdefault(str(who), []):
+            out[str(who)].append(column.table)
+    return {who: sorted(tables) for who, tables in out.items()}
+
+
+def _requestor_row_of(result: Any) -> Optional[dict]:
+    """A requestor result as stated columns, or None where it states none (D233).
+
+    A dict result states columns the way any result states them. Prose states its columns inside
+    the sentence, and with no reader allowed in the split there is nothing to build columns from,
+    so such a sighting keeps the opaque sentence key (the fallback), exactly as before.
+    """
+    parsed = parse_result(result)
+    if isinstance(parsed, dict) and parsed:
+        return {str(name): value for name, value in parsed.items()}
+    return None
+
+
+def _requestor_pre_write_calls(traces: Iterable[Trace], write_tools: set[str]):
+    """(trace id, call, requestor) for every caller-side sighting before that requestor wrote.
+
+    R33 is unchanged: only another requestor's own calls qualify, error calls never do, and the
+    requestor's own writes close its world, because after one of those the device is in the
+    state the Run put it in rather than the state it started in.
+    """
     for trace in traces:
         written: set[str] = set()
         for call in trace.tool_calls:
@@ -629,8 +678,58 @@ def _requestor_worlds(traces: Iterable[Trace], write_tools: set[str]) -> dict[st
                 continue
             if requestor in written:
                 continue
-            out.setdefault(trace.trace_id, {}).setdefault(
+            yield trace.trace_id, call, requestor
+
+
+def _requestor_worlds(traces: Iterable[Trace], write_tools: set[str],
+                      schema: Optional[EntitySchema] = None) -> dict[str, dict]:
+    """Per trace, what another requestor's own tools said about it before that requestor wrote.
+
+    R33 keeps a requestor's calls out of the customer's world: they describe the requestor's own
+    device and not the customer's system. They are recordings all the same, and two Runs whose
+    recordings show one requestor's device in two states before either wrote can no more share one
+    overlay than two Runs that disagree about a customer's row (D164, D74).
+
+    Where the schema mined tables for the requestor (D233), every column a sighting states is
+    homed to whichever of those tables carries it, or to the first where none does, accumulated
+    column by column with the same earliest-wins loop `trace_worlds` uses for a customer row, one
+    row per requestor. The split then compares it per column: each hard or unclassified column is
+    its own world key carrying its version hash and its class, and a semantic or exempt column is
+    left out, so it no longer splits Tasks. (The brief calls that class cosmetic; the schema record
+    calls it semantic.) A prose sighting states its columns inside the sentence, and no reader may
+    read them in the split, so it keeps the opaque sentence key even where tables are mined, as
+    does a requestor the schema mines no table for: the version is the recorded result itself keyed
+    by the requestor, exactly as before, so nothing that used to split is silently merged. The
+    requestor's own writes close its world either way, because after one of those the device is in
+    the state the Run put it in rather than the state it started in.
+    """
+    rows: dict[str, dict[tuple[str, str, str], dict]] = {}
+    fallback: dict[str, dict] = {}
+    tables_of = _requestor_tables_of(schema)
+    columns_of: dict[str, set[str]] = {}
+    for column in getattr(schema, "columns", None) or ():
+        columns_of.setdefault(column.table, set()).add(column.name)
+    for trace_id, call, requestor in _requestor_pre_write_calls(traces, write_tools):
+        tables = tables_of.get(requestor) or []
+        row = _requestor_row_of(call.result)
+        if not tables or row is None:
+            fallback.setdefault(trace_id, {}).setdefault(
                 (call.name, "", requestor), content_hash(canon(parse_result(call.result))))
+            continue
+        for name, value in row.items():
+            home = next((table for table in tables if name in columns_of.get(table, ())), tables[0])
+            _accumulate_version(rows, trace_id, (call.name, home, requestor), {name: value})
+    out: dict[str, dict] = {}
+    for trace_id, keys in rows.items():
+        for (tool, table, requestor), version in keys.items():
+            for name in sorted(version):
+                column_class = _column_class(schema, table, name)
+                if column_class in ("semantic", "exempt"):
+                    continue
+                out.setdefault(trace_id, {})[(tool, table, requestor, name)] = (
+                    content_hash(canon(version[name])), column_class)
+    for trace_id, keys in fallback.items():
+        out.setdefault(trace_id, {}).update(keys)
     return out
 
 
@@ -1832,6 +1931,59 @@ def _annotation(types: Iterable[str]) -> str:
     return kinds.pop() if len(kinds) == 1 else "Any"
 
 
+def unsafe_names(schema: EntitySchema, sigs: Iterable[ToolSig] = ()) -> list[str]:
+    """Every mined name that cannot be written into Python source as it stands.
+
+    Mining reads table names, column names, tool names and argument names off the customer's
+    traces: JSON keys and tool specs, which are text, not identifiers. They are interpolated into
+    the module `load_toolkit` executes, so a key carrying a newline and a statement is a statement.
+    A review found exactly that: a crafted column name ran module level code and every gate passed,
+    because the confinement gate reads the tool methods and a class body is not one.
+
+    So the names are checked once, here, and a build that cannot render a name says which name and
+    stops, rather than emitting source nobody meant. Aliasing an awkward name to a Python one
+    (`Field(alias=...)`) is the better answer for the benign half of this and is its own change: it
+    has to carry through the schema block the model reads, the Verdict's comparisons and the
+    emitted db.json.
+    """
+    bad: list[str] = []
+    for table in sorted(schema.tables):
+        if not _writable(table):
+            bad.append(f"table {table!r} is not a Python name")
+    for column in sorted(schema.columns, key=lambda c: (c.table, c.name)):
+        if not _writable(column.name):
+            bad.append(f"column {column.name!r} of {column.table} is not a Python name")
+    for sig in sigs:
+        if not _writable(sig.name):
+            bad.append(f"tool {sig.name!r} is not a Python name")
+        # The receiver the skeleton writes is already in the signature, so a mined argument called
+        # `self` renders as `def tool(self, self)`, which is a SyntaxError in the code-owned half
+        # that no body can repair. A name mined twice is the same defect (Greptile on PR 45).
+        written = {"self"}
+        for argument in sig.args_fields:
+            if not _writable(argument.name):
+                bad.append(f"argument {argument.name!r} of {sig.name} is not a Python name")
+            elif argument.name in written:
+                bad.append(f"argument {argument.name!r} of {sig.name} is a name the signature "
+                           f"already carries")
+            written.add(argument.name)
+    return bad
+
+
+def _writable(name: str) -> bool:
+    """A name the Harness will write into the generated module: an identifier, not a keyword, not
+    private (a leading underscore collides with the skeleton's own names and the gate refuses it)."""
+    return bool(name) and name.isidentifier() and not keyword.iskeyword(name) \
+        and not name.startswith("_")
+
+
+def _refuse_unrenderable(schema: EntitySchema, sigs: Iterable[ToolSig] = ()) -> None:
+    bad = unsafe_names(schema, sigs)
+    if bad:
+        raise ValueError("the mined names cannot be written into the generated module: "
+                         + "; ".join(bad[:5]) + (f" (and {len(bad) - 5} more)" if len(bad) > 5 else ""))
+
+
 def render_data_model(schema: EntitySchema) -> str:
     """One class per table plus the DB class, every column Optional[Any] so no real row is rejected.
 
@@ -1842,6 +1994,7 @@ def render_data_model(schema: EntitySchema) -> str:
     model is as wide as the union it stands for, and the column classes in `EntitySchema` (D73), not
     the annotation, are what a Verdict compares by.
     """
+    _refuse_unrenderable(schema)
     parts = [_DATA_MODEL_HEAD]
     for table in sorted(schema.tables):
         fields = []
@@ -1890,6 +2043,8 @@ def _docstring(sig: ToolSig) -> str:
 def render_tools(schema: EntitySchema, sigs: Iterable[ToolSig], bodies: dict,
                  class_name: str = TOOLS_CLASS, with_imports: bool = True) -> str:
     """The toolkit class: code owns everything but the body, which the model wrote."""
+    sigs = list(sigs)
+    _refuse_unrenderable(schema, sigs)
     head = ""
     if with_imports:
         names = ", ".join([DB_CLASS] + [_class_name(t) for t in sorted(schema.tables)])
@@ -2161,8 +2316,12 @@ def _confinement_block(denied: Iterable[str] = DENIED_BUILTINS, allowed: Iterabl
     return ("The body is checked before it runs and is refused if it names anything outside the "
             "customer's world. It may not use: " + ", ".join(sorted(denied)) + ". It may "
             "not touch a dunder attribute (`__dict__`, `__class__`, `__globals__` and the rest). "
-            "It may import only: " + ", ".join(sorted(allowed)) + ". Read fields by name "
-            "(`order.status`) or by key (`self.db.orders[order_id]`), never through getattr. "
+            "Do not touch any attribute whose name starts with an underscore, do not spell a dunder "
+            "inside a string, and do not call `.format` or `.format_map`; build strings with an "
+            "f-string. It may import only: " + ", ".join(sorted(allowed)) + ", and do not read "
+            "another module out of one of those (`uuid.os`, `json.codecs` and the like). Read "
+            "fields by name (`order.status`) or by key (`self.db.orders[order_id]`), never through "
+            "getattr. "
             "evaluate_arithmetic(expression) is provided in the body's namespace: it evaluates "
             "+ - * / // % ** with parentheses over a decimal and returns a Decimal, so never write "
             "a parser and never reach for eval; for example `float(evaluate_arithmetic(expression))` "

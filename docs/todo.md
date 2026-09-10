@@ -2,6 +2,10 @@
 
 These are the items I pushed past the first build. Each line says what it buys and what gates it. The date is when I deferred it.
 
+## Next re-freeze
+
+- Next re-freeze: apply docs/frozen-patches/speed-3.patch (ledger batching; the Plan.spend memory read already rides on the branch), re-run tests/runner.
+
 ## After the first Replica clears Gate A
 
 - **Output perturbation** (2026-08-26). The Environment can serve slightly modified tool outputs (formatting, order, harmless value drift) for the same call, so a Candidate is tested against variation, not one frozen recording. Buys robustness signal; costs a second fidelity mode (Gate A must still hold on the unperturbed path). Never on for routing-plan Verdicts until validated.
@@ -52,6 +56,7 @@ I chose which of the missing components go into the first build (clusters, inten
 - **Production monitoring**. Comparing the routed model's live traffic against the Environment's predictions; the "monitoring" in the product name; nothing designed yet. Opened up on 2026-08-29, see "Execution and production monitoring" at the end of this file.
 
 - **Code rules, after the experiments: complexity, CRAP, dead and duplicate code, mutation testing** (founder, 2026-09-06: "it is the last thing we should do because it is reviewing the code, lets first build and do experimentations and then we can use CRAP, cyclomatic and cognitive complexity scores and mutant testing to drive things"). Proposed and deferred, not decided: radon for cyclomatic and cognitive complexity with a cap of 10 per changed function in pre-commit; vulture at high confidence plus a duplicate-block check on changed files; a CRAP score per function computed from complexity and the mutation kill rate of the last `mutmut` run (survivors rather than line coverage), threshold 30, printed as the twenty worst; enforcement in two steps, changed code first, the whole tree once the existing overage (six modules at two to three times their band) is cleared. Not before build 9 and the context arms have run.
+  - Mechanical branch checks landed in `scripts/branch_checks.py` with tests in `tests/test_branch_checks.py` and CI in `.github/workflows/checks.yml`; workers run them before the PR and reviewers after.
 
 - **The build table's blind spots** (2026-09-06, `scripts/build_table.py`, D139). Three numbers the table prints as n/a because no record holds them: the build's duration (pipeline/state.json has no clock), the peak context fill per agent (`ContextStats.fill_at_turn_end` lives in memory only), and the cause of a replay miss (replays.json keeps a 160 character preview of each answer, so 92 of build 8's 141 misses and 190 of build 10's 258 are "unreadable" and the float-noise finding of build 8 cannot be reproduced from the workdir). Widen the three records, then the table fills itself; nothing in the script guesses. Closed 2026-09-06: the round record carries timestamps and the context fill, replays carry a `difference` record, and the table prints all three.
 
@@ -86,6 +91,7 @@ This comes from the first offline slice (2026-08-28) and the build workflow's re
 - **`tools_declared` is empty on every tau2 trace**; the export carries no tools list, so every ToolSig is `source: observed`. The declared-vs-observed merge is untested on real data.
 - **`build` and `run_batch` are written**, in `builder/build.py` rather than `runner/pipeline.py`: the stage graph has to import the Builder, and the Runner may not (D89). `harness build` and `harness run` reach them. They still need a live Model and provider config to do anything, so they are untested end to end against a real key.
 - **Model-written tool code runs in-process** (`compile_env.load_toolkit`). The subprocess Sandbox exists for compile checks only. A static confinement check now refuses a body that imports outside the allowlist, names a denied builtin or touches a dunder attribute before anything is executed, and the same check guards atom predicates in `verdict.py` and constraint predicates in `validate.py`. That is a name check, not a sandbox: it is what stands in for one until the subprocess Sandbox carries the Runner's tool route too. Still gated as "Sandbox for model-written tool code" above; must land before any customer trace is compiled.
+- **Two confinement holes wait in a frozen patch**. `docs/frozen-patches/confinement-holes.patch` closes the two the same review found in `kullback/gates/confinement.py`, which is frozen while builds run: a module shape rule, so a statement smuggled into a class body or the import fallback is refused where the tool methods are not looked at, and an attribute rule, so a body cannot read one module out of an allowed one (`uuid.os`), touch a private attribute or walk a dunder spelled inside a `.format` string. The builder half (mined names refused before they are written) is already on main. Apply with `git apply docs/frozen-patches/confinement-holes.patch` at the founder's next re-freeze of the three workdirs, run `uv run pytest -p no:randomly tests/gates tests/builder`, then delete the patch.
 - **Size**. `src/` is 8,911 lines against the design's 2,700 to 3,700. Every module says what it carries beyond its band (overlays, repair loop, judge, memory tree, provider adapters). Decide whether the bands or the code change.
 - **Could not run offline**: compile gates on LLM-written tool bodies, per-tool replay fidelity on 30 held-out calls, the five files loading in tau2's own harness, `intent`, and section 11 steps 5 to 8 (Verifier, Candidate runs, Verdict vs tau2 reward, k experiment).
 
@@ -330,3 +336,7 @@ Items closed by a landed decision. Nothing was deleted; each moved here with the
 - Fix `_table_of()`'s tie-break. Done, D103: the noun before the first preposition, then the id distinct across the rows it came back with. Telecom recovers `bills`. Old note: prefer the id whose singular matches the tool's object noun, fall back to the id unique within the result. Telecom files every `Bill` row under `customers` because `customer` is a token of `get_bills_for_customer` and `bill` is not.
 
 - `norm()` in the comparison scripts. Done in `scripts/xdomain_check.py`, along with two conventions the old scratch scripts had wrong: null and absent are the same field, and a table's row key is not one of the row's fields. Companion fix in the same script batch as D101 to D104 (no separate decision number).
+
+## Grouping record format (D233, for the owner of the cluster stage wiring)
+
+- `_grouping` in build.py should treat a grouping record whose format differs from GROUPING_FORMAT as absent, and the comment at build.py:336 (no proposed column class, reader, or cache format can regroup the next round) is false for revealed tables since D233 and contradicts it.

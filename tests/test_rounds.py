@@ -76,7 +76,10 @@ TARGET = "environment"
 # the way D214 moved it, and moved once more when the review of D227 put the end kind reader beside
 # it. The value here is taken on the tree all of them landed on together, where
 # the key moved once for each of them. The same three Tasks, the same verdicts and the same reasons.
-TASK_STATUS_SHA256_BEFORE_THE_PHASE = "a95305ff35407cd03fa4369dd1e0d1d5f6dea32dd1a938956b83b9a96ce05c31"
+# It also moves on any edit to kullback/ai/provider.py, whose module hash is part of the reroll
+# stage's code version, so a re-roll id carries the adapter code it was sampled under: D229 added
+# providers there and every id moved once, the same three Tasks with the same verdicts and reasons.
+TASK_STATUS_SHA256_BEFORE_THE_PHASE = "86eb25d10343cbe0fa789c1d26ae2e76b5041b9ec1e5e74c295f190a6ee924e2"
 
 
 def _fixture(request) -> Path:
