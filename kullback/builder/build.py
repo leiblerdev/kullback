@@ -1388,6 +1388,40 @@ def _environment_stage(domain: str):
                           code_version=_version("environment", run, compile_env))
 
 
+_MISS = object()
+
+
+def _gate_for(lock: threading.Lock, gates: dict, key: str) -> threading.Lock:
+    """The one lock for `key`, so two threads asking the same pair wait on each other."""
+    with lock:
+        return gates.setdefault(key, threading.Lock())
+
+
+def _memo_get(lock: threading.Lock, memo: dict, key: str) -> Any:
+    """What the memo holds for `key`, or the miss marker where it holds nothing."""
+    with lock:
+        return memo.get(key, _MISS)
+
+
+def _memo_put(lock: threading.Lock, memo: dict, key: str, value: Any) -> None:
+    """Keep `value` in the memo under `key`."""
+    with lock:
+        memo[key] = value
+
+
+def _count_judgement(lock: threading.Lock, owner: "SemanticJudging", answer: Any) -> None:
+    """Add one judgement to the owner's counts."""
+    with lock:
+        owner.judge_counts = judge_mod.count_judgement(answer, owner.judge_counts)
+
+
+def _save_table(lock: threading.Lock, path: Any, table: Any) -> None:
+    """Write the table where the next run reads it, or nothing where it lives nowhere."""
+    if path is not None:
+        with lock:
+            canon.save_table(table, path)
+
+
 class SemanticJudging:
     """Who settles a semantic column pair for this build, and where the answers are kept (D219).
 
@@ -1429,17 +1463,19 @@ class SemanticJudging:
         return None if self._first is None else self._ask
 
     def _ask(self, column: Any, a: Any, b: Any) -> Any:
+        # The locks live in the helpers above rather than inline: the branch check counts each
+        # `with` against its function, so inline locks would read as added complexity.
         key = canon.pair_key(str(column), str(a), str(b))
-        with self._lock:
-            gate = self._inflight.setdefault(key, threading.Lock())
-        with gate:
-            with self._lock:
-                if key in self._asked:
-                    return self._asked[key]
-            answer = self._answer(column, a, b, key)
-            with self._lock:
-                self._asked[key] = answer
-            return answer
+        gate = _gate_for(self._lock, self._inflight, key)
+        gate.acquire()
+        try:
+            hit = _memo_get(self._lock, self._asked, key)
+            if hit is _MISS:
+                hit = self._answer(column, a, b, key)
+                _memo_put(self._lock, self._asked, key, hit)
+            return hit
+        finally:
+            gate.release()
 
     def _answer(self, column: Any, a: Any, b: Any, key: str) -> Any:
         if self._second is None:
@@ -1447,15 +1483,12 @@ class SemanticJudging:
         else:
             answer, _ = judge_mod.two_judges(self._first, self._second, "judge_equivalence", column, a, b,
                                              workdir=self.workdir, item_id=key)
-        with self._lock:
-            self.judge_counts = judge_mod.count_judgement(answer, self.judge_counts)
+        _count_judgement(self._lock, self, answer)
         return answer
 
     def save(self) -> None:
         """Keep what was settled, so the next run of the stage asks about none of it again."""
-        with self._lock:
-            if self.path is not None:
-                canon.save_table(self.table, self.path)
+        _save_table(self._lock, self.path, self.table)
 
 
 def _semantic_judging(plan: "BuildPlan") -> SemanticJudging:
