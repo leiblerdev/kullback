@@ -1,0 +1,28 @@
+name: checks
+
+on:
+  pull_request:
+    branches: [main]
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - uses: astral-sh/setup-uv@v5
+      - run: uv sync
+      - name: mechanical branch checks
+        run: uv run python scripts/branch_checks.py origin/${{ github.base_ref }} HEAD
+      - name: lint
+        run: uv run ruff check kullback
+      - name: top level tests
+        run: uv run pytest tests/*.py -q -x
+      - name: unit tests by directory
+        run: for d in tests/*/; do uv run pytest "$d" -q -x; done
+      - name: hub tests
+        run: uv run pytest tests/hub -q -x
