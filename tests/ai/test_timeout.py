@@ -92,6 +92,12 @@ def test_unparseable_env_var_is_an_error_naming_the_variable(live):
         invented_model(FakeClient([]), env={"KULLBACK_MODEL_TIMEOUT_S": "soon"})
 
 
+@pytest.mark.parametrize("raw", ["-5", "0", "nan"])
+def test_non_positive_or_non_finite_env_var_is_an_error_naming_value(live, raw):
+    with pytest.raises(ValueError, match=f"KULLBACK_MODEL_TIMEOUT_S.*{raw}"):
+        invented_model(FakeClient([]), env={"KULLBACK_MODEL_TIMEOUT_S": raw})
+
+
 def test_read_timeout_then_answer_records_attempts_and_timeout(live):
     client = FakeClient([httpx.ReadTimeout("the read operation timed out"), ok_answer()])
     reply = invented_model(client).query([{"role": "user", "content": "hello"}])
@@ -108,3 +114,15 @@ def test_five_read_timeouts_raise_exhausted_naming_the_timeout(live):
     assert len(client.timeouts) == 5
     assert "read timeout" in str(excinfo.value)
     assert "300" in str(excinfo.value)
+
+
+def test_five_connect_timeouts_name_the_connect_budget_not_the_read_budget(live):
+    client = FakeClient([httpx.ConnectTimeout("connection timed out")])
+    with pytest.raises(pv.RetryExhausted) as excinfo:
+        invented_model(client).query([{"role": "user", "content": "hello"}])
+    assert len(client.timeouts) == 5
+    message = str(excinfo.value)
+    assert "connect timeout" in message
+    assert "10" in message
+    assert "read timeout" not in message
+    assert "300" not in message
