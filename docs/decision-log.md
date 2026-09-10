@@ -1851,6 +1851,16 @@ Five tests on invented harbor and berth domains cover it: twenty sentences of on
 
 Not measured live; no live number is claimed here. The next launch reads per arm the per stage cache share (`cache_read` over input plus `cache_read`) for compile_policy and compile_tools, and the memo hit count on a second iterate build, against the shares above.
 
+### D240. A Task's re-roll Runs run side by side in Run number order (2026-09-10)
+
+Re-roll calls are the largest call volume on every arm measured today: 74395 calls and 2280 minutes of summed call time on retail, 66805 on the cheap model arm, 26071 on airline, 13572 on telecom, with zero memo hits everywhere, and the achieved concurrency is 1.00 to 2.54 although 8 workers are asked for. The pool fanned out over Tasks while each Task ran its count of Runs one after another, each Run up to 30 turns, so late in a stage with few Tasks left the pool sat nearly empty.
+
+The rule. One Task's count of Runs go to the one shared pool as (Task id, Run number) jobs, gathered in Run number order and written in Run number order. The fan out over Tasks stays, and the jobs in flight stay bounded by the workers flag: one shared pool, not a pool per Task. A Run's seed, key and recording name depend on Task id and Run number only (D212), and the audit for this change found nothing on the Run path that depends on wall clock or completion order, so execution order moves nothing. One toolkit build per Run stays: the Router lays the overlay into the toolkit's own db and lands every write there, so a toolkit shared across Runs would carry one Run's world into the next. What the Runs of a Task share, the salt, the overlay, the Vocabulary, the tool definitions, the write set and the strip closure, is read and never written on the Run path.
+
+Five tests on invented Tasks with a fresh scripted driver per Run cover keys and seeds agreeing between workers 1 and 8, rows landing in Run number order under scrambled completion, the pool bound holding with 12 jobs over 8 workers, a failing Run keeping its row without losing its siblings, and the serial wrapper settling the same Runs as the pool. A snapshot over invented fixtures with a deterministic stub driver, dumping every recording key, seed, turn count and end kind as sorted JSON, is byte identical between origin/main and this head (2694 bytes each) and between workers 1 and 8. A stub timing run, 50 ms per model call, 3 Tasks of count 4 at workers 8, falls from 1.444 s to 0.790 s, and the same at 12 workers from 1.384 s to 0.382 s, about the count factor; not measured live, the next launch measures elapsed per stage.
+
+Two things cut against the premise. The stub timing's per-Run CPU, the toolkit compile and the transcript copies, is serial under the thread pool, which is why 8 workers show 1.8 times while 12 show 3.6 times; live calls spend seconds in network IO where that floor is noise. And a Run that consulted a sibling Run's outcome would break under this change, but there is none: each Run opens its own world, its own Simulated user and its own file, and the only things shared are read-only inputs.
+
 ## Pending (asked, not yet answered)
 
 - ~~The user's own tools and the world they act on (D71, first part).~~ Decided as D176 (2026-09-07): one world, rows revealed by a requestor marked by it, readers as code under the free gate.
