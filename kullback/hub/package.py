@@ -34,10 +34,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable, Optional
 
-from kullback import difficulty
+from kullback import difficulty, domain
 from kullback.runner.records import content_hash, read_json, write_json
 
-PACKAGE_FORMAT = 1
+# 2: the manifest carries what the domain reading attests and what this Environment cannot execute
+# of it, so a card's numbers say how much of the domain the package covers (D225).
+PACKAGE_FORMAT = 2
 MANIFEST_NAME = "manifest.json"
 TASKS_INDEX_NAME = "tasks_index.json"
 # The same Task list as one flat row per line, which is the shape a dataset host's viewer renders.
@@ -261,6 +263,22 @@ def _difficulty_records(workdir: Path) -> dict[str, dict]:
             body = {"tasks": []}
     return {str(record.get("task_id")): record for record in body.get("tasks") or ()
             if isinstance(record, dict)}
+
+
+def _domain_counts(workdir: Path) -> dict:
+    """What the domain reading attests and what this Environment cannot execute of it (D225).
+
+    Three counts and nothing else: how many archetypes were read off the domain's own public
+    material, how many of them a tool of this Environment realises, and how many fell in the gap.
+    They are read off the reading the build already wrote, never recounted here, and a workdir
+    where nothing has read a domain carries none of them rather than carrying zeros.
+    """
+    try:
+        counts = domain.counts_of(workdir)
+    except (OSError, ValueError, TypeError):
+        return {}
+    named = ("archetypes_extracted", "archetypes_mapped", "archetype_gaps")
+    return {key: int(counts[key]) for key in named if counts.get(key)}
 
 
 def untrusted_reasons(rows: Iterable[dict], top: int = 3) -> dict:
@@ -611,6 +629,9 @@ def export(workdir: Any, out: Any, *, name: Optional[str] = None, corpus: Option
                    for stage in FUNNEL + (REFUSED_STAGE,)},
         "buckets": _buckets(rows),
         "untrusted": untrusted_reasons(rows),
+        # D225: what the domain's own public material was read to attest, and how much of it this
+        # Environment holds no tool for. Both are counts and nothing of any page travels with them.
+        "domain": _domain_counts(workdir),
         "env_id": environment.get("env_id"),
         "policy_version": environment.get("policy_version"),
         "schema_version": environment.get("schema_version"),

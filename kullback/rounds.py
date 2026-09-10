@@ -44,7 +44,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, AsyncIterator, Callable, Iterable, Optional
 
-from kullback import claims, difficulty, round_snapshot, sampling, synthesise
+from kullback import claims, difficulty, domain, round_snapshot, sampling, synthesise
 from kullback.agent.events import (
     BeatEnd,
     BeatStart,
@@ -1033,6 +1033,7 @@ class Loop:
         counts.update(self.claim_counts(store))
         counts.update(self.difficulty_counts(counts))
         counts.update(self.synthetic_counts())
+        counts.update(self.domain_counts())
         return counts
 
     def user_fidelity_counts(self) -> dict:
@@ -1075,6 +1076,12 @@ class Loop:
                 "tasks_agent_driven": sum(1 for row in rows if row.get("drives")),
                 "tasks_rule_driven": sum(1 for row in rows if not row.get("drives")),
                 **user_lesson_mod.counts([*lessons, *learned], self.plan.round),
+                # How often the goal rule this replaces would have ended a Run on a write the world
+                # refused (D227). A number that stays above zero across rounds is the Environment
+                # refusing writes a Candidate is being asked to make, not the user misreading them.
+                user_fidelity_mod.REFUSED_WRITE_ENDS:
+                    user_fidelity_mod.refused_write_ends(self.plan.workdir)[
+                        user_fidelity_mod.REFUSED_WRITE_ENDS],
                 "agent_turns_dropped": _guard_counts(rows)}
 
     def _user_content_key(self, task_id: str) -> str:
@@ -1167,6 +1174,24 @@ class Loop:
         except (OSError, ValueError, TypeError):
             return {}
         return {key: counts[key] for key in ("synthetic_tasks", "synthetic_verified", "synthetic_buckets")
+                if counts.get(key)}
+
+    def domain_counts(self) -> dict:
+        """What the domain reading and the shaping left, read and never computed here (D225).
+
+        Archetypes, gaps and shaped Tasks go on the round line under their own names, beside the
+        synthetic counts and never inside the trusted one: an archetype is read off a public page
+        and is evidence about a domain, not about a recording. A workdir where nothing has read a
+        domain carries none of them rather than carrying zeros.
+        """
+        try:
+            counts = dict(domain.counts_of(self.plan.workdir))
+            counts.update(synthesise.shaped_counts(self.plan.workdir))
+        except (OSError, ValueError, TypeError):
+            return {}
+        return {key: counts[key] for key in ("archetypes_extracted", "archetypes_mapped",
+                                             "archetype_gaps", "tasks_shaped", "shaped_fell",
+                                             "shaped_per_source")
                 if counts.get(key)}
 
     def keep_gate_history(self, n: int, snapshot: Optional[dict] = None) -> None:

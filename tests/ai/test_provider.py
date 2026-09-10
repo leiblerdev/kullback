@@ -1229,3 +1229,16 @@ def test_an_anthropic_body_carries_no_logprobs_field(sleeps):
     body = anthropic_model(ok_anthropic(), sleeps).build_body(
         HI, None, pv.ModelConfig(logprobs=True, top_logprobs=5))
     assert "logprobs" not in json.dumps(body)
+
+
+def test_a_mark_the_harness_writes_beside_a_message_does_not_go_on_the_wire():
+    """The Runner marks a refused tool result so the Simulated user can read it (D227). The wire
+    shape is a whitelist, so no such mark can reach a provider and be rejected there."""
+    out = pv._openai_message({"role": "tool", "tool_call_id": "c1", "name": "renew_loan",
+                              "content": "that is not allowed",
+                              "error": {"class": "business_error"},
+                              "write_effect": [{"table": "loans", "row": "L2201",
+                                                "path": "due_on", "before": "2026-03-01",
+                                                "after": "2026-04-01"}]})
+    assert out == {"role": "tool", "tool_call_id": "c1", "name": "renew_loan",
+                   "content": "that is not allowed"}

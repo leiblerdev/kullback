@@ -63,9 +63,27 @@ def _numbers_table(manifest: dict) -> list[str]:
         ("Round", str(manifest.get("round") if manifest.get("round") is not None else "not recorded")),
         ("Content hash", _short(manifest.get("content_hash"))),
     ]
+    rows += _domain_rows(manifest)
     lines = ["| | |", "| --- | --- |"]
     lines += [f"| {name} | {value} |" for name, value in rows]
     return lines
+
+
+def _domain_rows(manifest: dict) -> list[tuple[str, str]]:
+    """What the domain's own public material attests, and how much of it this package covers (D225).
+
+    Two rows, and only where a domain was read: how many task archetypes came off the material, and
+    how many of them no tool of this Environment realises. Someone deciding whether to use this
+    package wants that second number, because it says what the Environment cannot be asked to do,
+    and nothing else on the card says it. Neither row is a Task count and neither is added to one.
+    """
+    counts = manifest.get("domain") or {}
+    if not isinstance(counts, dict) or not counts:
+        return []
+    read = int(counts.get("archetypes_extracted") or 0)
+    mapped = int(counts.get("archetypes_mapped") or 0)
+    return [("Domain archetypes read", f"{read} ({mapped} a tool of this Environment realises)"),
+            ("Domain archetypes with no tool", str(int(counts.get("archetype_gaps") or 0)))]
 
 
 def _short(value: Any) -> str:

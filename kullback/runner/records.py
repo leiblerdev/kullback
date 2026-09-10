@@ -715,8 +715,11 @@ VersionBy = Literal["derive", "repair", "auto_loosen"]
 # `suite` and `false_rejection` name the two losses the findings never used to reach: a D79 check
 # that failed across many Tasks, and a Verifier whose required atoms reject every held-out Run
 # (D170). A corpus disagreement keeps the name it already had rather than gaining a second one.
+# `runs_disagree` is D213's: a Task whose own Runs saw one row in two versions. It was filed under
+# that name before the name existed here, so every such finding raised on validation and never
+# reached the Builder (D227).
 FindingKind = Literal["assisted_tool", "fidelity", "reference_disagreement", "suite", "false_rejection",
-                      "environment", "intent_leak", "other"]
+                      "environment", "intent_leak", "runs_disagree", "other"]
 # `repair` is the Examiner's own verb, the one answer to a Verifier the Builder cannot touch (D123),
 # and `reroll_then_derive` is its other one, for a check that had no second Run to score (D173);
 # `repair_refuse_task` is the Builder's, for a Task the corpus itself does not settle.

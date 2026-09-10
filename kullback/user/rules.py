@@ -576,6 +576,24 @@ def goal_write_set(trace: Optional[Trace], writes: Iterable[str]) -> set[str]:
             if call.name in names and call.error is None}
 
 
+def end_kind_of(payload: Any) -> Optional[str]:
+    """The end kind one recorded user turn carries, in either shape the two users write it in.
+
+    The rule-driven user tags the turn it ends on and the Runner copies the tags into the Run's own
+    file; the agent user writes the kind under `user_end`. Both are the same fact, and a reader that
+    knows only one of the two shapes silently reads every Run written in the other as a Run that
+    ended in no kind at all. One function, so there is one answer.
+    """
+    if not isinstance(payload, dict):
+        return None
+    if payload.get("user_end") in USER_END_KINDS:
+        return str(payload["user_end"])
+    for tag in payload.get("tags") or ():
+        if tag in USER_END_KINDS:
+            return str(tag)
+    return None
+
+
 def end_of_run(run: Any) -> Optional[str]:
     """How this Run ended, in the four kinds (D210), or nothing where it ended in neither vocabulary.
 
@@ -588,9 +606,9 @@ def end_of_run(run: Any) -> Optional[str]:
     for event in reversed(list(getattr(run, "events", None) or [])):
         if getattr(event, "type", None) != "user_turn":
             continue
-        for tag in (getattr(event, "payload", None) or {}).get("tags") or ():
-            if tag in USER_END_KINDS:
-                return tag
+        kind = end_kind_of(getattr(event, "payload", None))
+        if kind is not None:
+            return kind
     reason = getattr(run, "termination_reason", None) or ""
     if reason in TURN_LIMIT_REASONS:
         return GAVE_UP
@@ -637,6 +655,108 @@ def _calls_of(message: Any) -> list:
     """The tool calls one transcript message carries, whichever shape the caller builds it in."""
     calls = message.get("tool_calls") if isinstance(message, dict) else getattr(message, "tool_calls", None)
     return list(calls or [])
+
+
+def _attr(message: Any, key: str) -> Any:
+    """One field of a transcript message, whichever shape it is in, with None kept as None.
+
+    `_field_of` folds a missing field to the empty string because its callers want a name to
+    compare. A marker's absence and a marker holding nothing are different things here, so this
+    keeps them apart.
+    """
+    if isinstance(message, dict):
+        return message.get(key)
+    return getattr(message, key, None)
+
+
+def write_took_effect(message: Any) -> bool:
+    """Whether one write call's result shows the write took effect (D227).
+
+    The Runner records a tool result as `result` plus, where the world refused or failed the call,
+    `error`: the D67 ToolCallError carrying that refusal's `class` in the recorded taxonomy. That
+    marker is the whole of the refusal reading, because it is the one field the Runner writes on
+    every route it can refuse on, whatever payload the tool answered with. A call carrying it
+    changed nothing, which is the reading the Verifier suite's own write_effects has always taken.
+
+    Where the call also carries D215's write effect record, the record decides: the effect has to
+    show a column of the world moved. A record naming no moved column is a write that returned
+    cleanly and left the world where it was. A call carrying no record at all is answered on the
+    error marker alone, so a Runner on a route that records no effect gets the reading its own
+    records support rather than a goal refused for want of evidence.
+    """
+    if _attr(message, "error") is not None:
+        return False
+    effect = _attr(message, "write_effect")
+    if effect is None:
+        return True
+    return _effect_moved_a_column(effect)
+
+
+def _effect_moved_a_column(effect: Any) -> bool:
+    """Whether one D215 write effect record shows a column of the world moved.
+
+    D215 writes two records per write, and both are read here because either may be the one riding
+    with the call. The evidence the Builder mined off the recording is a list of rows, one per
+    column, each naming the table, the row, the column path and what that column held before and
+    after the write (`builder/effects.replay_evidence`); such a column moved when its after value
+    differs from its before value. The replay's own record of running those checks counts the
+    columns it checked and names the ones that never reached their after value
+    (`runner/replay.ScoredRouter._check_effects`); a write moved a column there when it was checked
+    on at least one and failed none of them, since a failure is a column the write left where it was.
+
+    Neither record is read for its column names, only for whether any column moved, so a record
+    written in either shape answers the same question and a shape neither knows falls back to
+    whether the record holds anything at all.
+    """
+    if isinstance(effect, dict) and _is_replay_check(effect):
+        checked = _count(effect.get("effect_checks"))
+        failed = _count(effect.get("effect_failures_total")) or len(effect.get("effect_failures") or ())
+        return checked > 0 and failed == 0
+    rows = [effect] if isinstance(effect, dict) else list(effect or ())
+    return any(_column_moved(row) for row in rows)
+
+
+def _is_replay_check(effect: dict) -> bool:
+    """Whether this record is the replay's own count of the effect checks it ran, not one column."""
+    return any(key in effect for key in ("effect_checks", "effect_failures", "effect_failures_total"))
+
+
+def _column_moved(row: Any) -> bool:
+    """Whether one mined effect row shows its column holding something else after the write."""
+    if not isinstance(row, dict):
+        return bool(row)
+    if "before" not in row and "after" not in row:
+        return bool(row)
+    return row.get("before") != row.get("after")
+
+
+def _count(value: Any) -> int:
+    try:
+        return int(value or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def writes_made(transcript: Any, write_tools: Iterable[str]) -> set[str]:
+    """The write-kind tools this Run has made, counting only the calls whose result took effect (D227).
+
+    One function, read by both Simulated users, so the rule-driven user's `_goal_done` and the agent
+    user's `end_run` cannot disagree about whether the goal is done. Before D227 this counted the
+    write-kind tools the transcript showed called, so a write the world refused still ended the
+    conversation `goal_satisfied` while the same Run was graded as claiming a write it never made.
+
+    A tool result message names the call it answered, so it is the message an effect is read from.
+    An assistant message's `tool_calls` are requests and not results, and a request whose result
+    never came back is not a write that happened, so a name seen only there no longer counts.
+    """
+    names = frozenset(write_tools or ())
+    made: set[str] = set()
+    if not names:
+        return made
+    for message in transcript or ():
+        if _field_of(message, "name") in names and write_took_effect(message):
+            made.add(_field_of(message, "name"))
+    return made
 
 
 def _flatten(row: Any) -> dict[str, list]:
@@ -929,23 +1049,15 @@ class SimulatedUser:
         return bool(self.write_tools) and bool(made)
 
     def _writes_made(self, transcript: list) -> set[str]:
-        """The write-kind tools this Run has called so far, so the user can tell a Run that has done
+        """The write-kind tools this Run has made so far, so the user can tell a Run that has done
         what it came for from one that has not.
 
-        Read off the transcript `reply` is handed, which holds the assistant turns with their tool
-        calls and the tool results by name; no other state is kept, so a caller that passes no
-        `write_tools` gets a user that restates its goal once whatever the Run has done.
+        Read off the transcript `reply` is handed, through the one shared `writes_made` the agent
+        user reads too (D227), so a write the world refused leaves the goal open for both. No other
+        state is kept, so a caller that passes no `write_tools` gets a user that restates its goal
+        once whatever the Run has done.
         """
-        made: set[str] = set()
-        if not self.write_tools:
-            return made
-        for message in transcript or []:
-            name = _field_of(message, "name")
-            if name in self.write_tools:
-                made.add(name)
-            made.update(call_name for call in _calls_of(message)
-                        if (call_name := _field_of(call, "name")) in self.write_tools)
-        return made
+        return writes_made(transcript, self.write_tools)
 
     def _declined(self) -> bool:
         """The recording holds a no where a yes was asked for; then no yes is representative.

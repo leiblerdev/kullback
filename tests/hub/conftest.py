@@ -8,7 +8,12 @@ from pathlib import Path
 import pytest
 from nursery_domain import FakeHub, build_workdir
 
-from kullback.runner.records import EntitySchema, ToolSig
+from kullback.runner.records import EntitySchema, RawPtr, ToolSig
+
+# Two test folders both name a module `conftest`, and which one answers a bare `from conftest
+# import ...` depends on the order pytest put them on the path. The shared value is repeated here
+# so a test folder collected after this one still resolves it either way.
+PTR = RawPtr(file_hash="testfile", sim_index=0)
 
 
 @pytest.fixture

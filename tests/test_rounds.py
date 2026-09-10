@@ -71,10 +71,12 @@ TARGET = "environment"
 # id moves. Re-pinned for D214: the rule-driven Simulated user moved into kullback/user, so the
 # re-roll stage's code version moved with it. Re-pinned for D222: the judge version is one of the
 # things a re-roll's key is made of, and it moved when the judge stopped refusing a verdict for want
-# of a tool call, so the re-roll ids under each row are new once more. The value here is taken on
-# the tree all three landed on together, where the key moved once for each of them. The same three
-# Tasks, the same verdicts and the same reasons.
-TASK_STATUS_SHA256_BEFORE_THE_PHASE = "4bb639140b470a917e535300bfcaa13641447a3114e2cd17aaef8c50c34ca2b1"
+# of a tool call, so the re-roll ids under each row are new once more. Re-pinned for D227, which
+# moved the goal rule inside the Simulated user, so the re-roll stage's code version moved with it
+# the way D214 moved it, and moved once more when the review of D227 put the end kind reader beside
+# it. The value here is taken on the tree all of them landed on together, where
+# the key moved once for each of them. The same three Tasks, the same verdicts and the same reasons.
+TASK_STATUS_SHA256_BEFORE_THE_PHASE = "a95305ff35407cd03fa4369dd1e0d1d5f6dea32dd1a938956b83b9a96ce05c31"
 
 
 def _fixture(request) -> Path:

@@ -280,7 +280,8 @@ def bands(bucket: str) -> tuple[int, int, int]:
     return (out[0], out[1], out[2])
 
 
-def walk(graph: dict, bucket: str, ident: str, *, max_steps: int = MAX_STEPS) -> Optional[list[dict]]:
+def walk(graph: dict, bucket: str, ident: str, *, max_steps: int = MAX_STEPS,
+         must_visit: Iterable[str] = ()) -> Optional[list[dict]]:
     """One walk over the graph for a bucket, as the steps a run of it would take.
 
     Each step names its tool and the bindings its arguments take from earlier steps; a step with no
@@ -288,11 +289,18 @@ def walk(graph: dict, bucket: str, ident: str, *, max_steps: int = MAX_STEPS) ->
     writes and an edge into a tool it has not touched while it owes tools, and stops as soon as it
     owes neither. A band the graph cannot reach yields the walk it did reach, which is a shorter
     walk and a count, and never a loop around one edge.
+
+    `must_visit` is what a shaped walk asks for (D225): the tools some archetype's expected effects
+    were mapped onto. They are preferred over every other edge while any is still owed, they hold
+    the walk open past the band's counts, and a walk that ends without all of them is refused
+    outright rather than returned short. The edges are still the recordings' own: a tool the graph
+    cannot reach from a start is a tool no shaping can conjure a path to.
     """
     want_writes, want_tools, _paths = bands(bucket)
     if want_writes < 0:
         return None
     writes = write_names(graph)
+    owed_tools = [str(name) for name in must_visit or ()]
     starts = start_names(graph)
     first = _by_weight([(name, count) for name, count in starts], "synth-start", ident)
     if first is None:
@@ -301,18 +309,21 @@ def walk(graph: dict, bucket: str, ident: str, *, max_steps: int = MAX_STEPS) ->
     for depth in range(max_steps):
         touched = {step["tool"] for step in steps}
         made = sum(1 for step in steps if step["tool"] in writes)
-        if made >= want_writes and len(touched) >= want_tools:
+        owed = [name for name in owed_tools if name not in touched]
+        if made >= want_writes and len(touched) >= want_tools and not owed:
             break
         # A band that owes no more writes may not step into one: a walk that overshoots its write
         # count is a walk of another band, and the band is the whole of the request.
         options = [edge for edge in out_edges(graph, touched)
-                   if made < want_writes or str(edge.get("to")) not in writes]
+                   if made < want_writes or str(edge.get("to")) in owed
+                   or str(edge.get("to")) not in writes]
         if not options:
             break
         wanted = [edge for edge in options
                   if (made < want_writes and str(edge.get("to")) in writes)
                   or (len(touched) < want_tools and str(edge.get("to")) not in touched)]
-        pool = wanted or options
+        owing = [edge for edge in options if str(edge.get("to")) in owed]
+        pool = owing or wanted or options
         chosen = _by_weight([(edge, int(edge.get("weight") or 1)) for edge in pool],
                             "synth-edge", f"{ident}:{depth}")
         if chosen is None:
@@ -323,6 +334,8 @@ def walk(graph: dict, bucket: str, ident: str, *, max_steps: int = MAX_STEPS) ->
                     for edge in options
                     if str(edge.get("to")) == tool and edge.get("kind") == VALUE_EDGE and edge.get("arg")]
         steps.append({"tool": tool, "bindings": _one_per_arg(bindings, f"{ident}:{depth}")})
+    if any(name not in {step["tool"] for step in steps} for name in owed_tools):
+        return None
     return steps
 
 
