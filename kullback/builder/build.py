@@ -1935,16 +1935,21 @@ def _reroll_run_one(workdir: Path, model: Any, run_job: tuple) -> tuple:
     return (task.id, number, run, path)
 
 
-def _gather_reroll_rows(workdir: Path, jobs: list, got: list) -> dict:
+def _gather_reroll_rows(workdir: Path, jobs: list, got: list, *, rerolls: Optional[int] = None) -> dict:
     """The pool's (Task id, Run number) answers as per-Task rows in Run number order (D240).
 
     Recorded beside each Task's Runs in the Tasks' order, sequentially, after every Run finished.
     """
+    if rerolls is not None and len(got) != len(jobs) * rerolls:
+        raise BuildError(
+            f"the rerolls stage owes {len(jobs) * rerolls} Runs and settled {len(got)}")
     by_task: dict[str, list] = {}
     for task_id, number, run, path in got:
         by_task.setdefault(task_id, []).append((number, run, path))
     rolled = {}
     for task, _rules, _prompt, key, _reference_id in jobs:
+        if task.id not in by_task:
+            raise BuildError(f"the rerolls stage settled no Runs for Task {task.id}")
         ordered = [(run, path) for _, run, path
                    in sorted(by_task.get(task.id, []), key=lambda item: item[0])]
         rows = [{"run_id": r.run_id, "path": p, "termination_reason": r.termination_reason,
@@ -2035,7 +2040,7 @@ def _rerolls_stage(model: Any, rerolls: int, workers: int = 1, only: Optional[It
             traces=traces, user_model=user_model, rerolls=rerolls)
         got = parallel.each(run_jobs, functools.partial(_reroll_run_one, ctx.workdir, model),
                             workers)
-        rolled = _gather_reroll_rows(ctx.workdir, jobs, got)
+        rolled = _gather_reroll_rows(ctx.workdir, jobs, got, rerolls=rerolls)
         out = {task.id: rolled[task.id] if task.id in rolled else reused[task.id]
                for task in tasks if task.id in rolled or task.id in reused}
         _write_runs_index(ctx.workdir)
@@ -2052,7 +2057,7 @@ def _rerolls_stage(model: Any, rerolls: int, workers: int = 1, only: Optional[It
     # D214: whose turns the Runs get is part of what this stage produces, so a build that names a
     # user driver puts it in the key. A build that names none adds nothing, so its key, its cache
     # and the Run ids it derives from the key are the ones it had before D214.
-    version = (f"{_version('rerolls', run, loop, route, user_sim, intent, provider)}:"
+    version = (f"{_version('rerolls', run, loop, route, user_sim, intent, provider, helpers=(_reroll_run_jobs, _reroll_run_one, _gather_reroll_rows, _candidate_task_ctx, _candidate_run_once))}:"
                f"{getattr(model, 'name', 'none')}:{rerolls}")
     user_name = getattr(user_model, "name", None)
     if user_name:
@@ -2073,9 +2078,11 @@ def _candidate_task_ctx(workdir: Path, task: Task, *, prefix: Optional[str], sou
     """One Task's share of a Candidate Run batch: everything its Runs read but never write (D240).
 
     The salt, the overlay, the Vocabulary, the tool definitions, the write set and the strip
-    closure are the same for every Run of the Task. The Run path only reads them (it copies the
-    tool list per turn, and the Router deep-copies the Starting state and the overlay rows into
-    its own world), so Runs running side by side share this mapping safely. What a Run writes,
+    closure are the same for every Run of the Task. Nothing on the Run path writes a tool
+    definition and the provider rebuilds the list it sends, and the Router deep-copies the
+    Starting state and the overlay rows into its own world, so Runs running side by side share
+    this mapping safely. The toolkit does not copy the overlay rows into its own db, so each Run
+    deep copies them at its own build in `_candidate_run_once`. What a Run writes,
     the toolkit, the Router, the Simulated user, the transcript and the Run file, is built fresh
     per Run in `_candidate_run_once`.
     """
@@ -2113,9 +2120,12 @@ def _candidate_run_once(workdir: Path, task: Task, model: Any, *, ctx: dict, num
     stem = f"{prefix}-{task.id}" if prefix else str(task.id)
     run_id = f"{stem}-{tag}{seed + number}" if tag else f"{stem}-{seed + number}"
     # The Task's own overlay goes inside the toolkit, or it stays dead for every code route (D74).
+    # The toolkit keeps the caller's row objects by reference, so each Run takes its own copy of
+    # the overlay rows the way it already does for the db; one shared store would let an in place
+    # write in one Run show in another Run's world and in the shared ctx (D240).
     toolkit = compile_env.load_toolkit(ctx["source"], json.loads(json.dumps(ctx["db"])),
                                        overlay=ctx["overlay"],
-                                       overlay_values=ctx["overlay_rows"])
+                                       overlay_values=json.loads(json.dumps(ctx["overlay_rows"])))
     router = route.Router(env_tools_module=toolkit, starting_state=json.loads(json.dumps(ctx["db"])),
                           overlay=ctx["overlay"], overlay_rows=ctx["overlay_rows"],
                           tool_sigs=ctx["sigs"], canon_rules=ctx["canon_rules"],
