@@ -13,6 +13,8 @@ So a reference needs, in order of how hard it is to substitute: (a) an executabl
 
 ## 2. Where the retail build actually stands on those two halves
 
+> Status (2026-09-10): the `verifiers: 0` line below was contradicted by builds 8 to 13; see docs/live-build.md.
+
 Fidelity is measured. Verdict agreement is not, and cannot be yet:
 
 - `.work-retail/gates.json` records `derive_verifier` as passed with `verifiers: 0`. `verifiers/` is empty and every one of the 205 tasks is `reference_confirmed: false`.

@@ -1,5 +1,7 @@
 # Evaluation design: from customer traces to routing-plan Verdicts
 
+> Status (2026-09-10): steps 1 to 13 predate the gates, the DAG and the Examiner split; the stage to module mapping is stale; docs/architecture.md is normative.
+
 Status: working design, 2026-08-27. Terms are used as the decision log defines them; decisions with trade-offs are in `/docs/adr/`. Research behind each choice is in `../research/` (report numbers cited as R00 to R29).
 
 ## Principle

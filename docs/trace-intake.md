@@ -1,5 +1,7 @@
 # Customer trace intake
 
+> Status (2026-09-10): open todo; questions 2 to 13 are unanswered.
+
 Questions to answer when a customer's traces arrive (first: the vendor export expected in early September 2026, D56). Fill in the answers here; the ingestion todo is written around them.
 
 | # | Question | Answer | Why it matters |
