@@ -1067,18 +1067,12 @@ def _tool_names(sigs: Iterable[Any]) -> tuple[set, set]:
 
 def _store_map(inputs: dict, name: str) -> dict:
     """One mapping input, empty when the store does not hold it."""
-    found = inputs.get(name)
-    if found is None:
-        return {}
-    return found
+    return inputs.get(name) or {}
 
 
 def _store_list(inputs: dict, name: str) -> list:
     """One list input, empty when the store does not hold it."""
-    found = inputs.get(name)
-    if found is None:
-        return []
-    return found
+    return inputs.get(name) or []
 
 
 def _validated_intents(inputs: dict) -> dict:
@@ -1157,13 +1151,13 @@ def _key_base(code_hash: Optional[str], canon_rules: Any, constraints: list, pol
 def _init_state(ctx: ExamContext, inputs: dict, *, probe_model: Any = None,
                 probe_limit: Optional[int] = None, judge_model: Any = None,
                 judge_agent: bool = False, run_probe: Any = None, run_rerolls: Any = None,
-                run_variant: Any = None, round_number: int = 0, only: Optional[str] = None,
-                code_hash: Optional[str] = None) -> tuple[_DeriveState, list]:
+                run_variant: Any = None, round_number: int = 0,
+                code_hash: Optional[str] = None) -> _DeriveState:
     """Load the call's shared inputs, demote the broken rules, build the judge and the cache key base.
 
     The demotion writes constraints_check.json and records its gate before anything else reads the
-    constraints, which is the order the reference check runs in; the `only` check comes after it,
-    so a bad name still leaves the demotion behind, as it did.
+    constraints, which is the order the reference check runs in; selecting the Tasks comes after
+    it in the orchestrator, so a bad name still leaves the demotion behind, as it did.
     """
     sample_salt = sampling.build_salt(ctx.workdir)
     canon_rules = rules_of(inputs)
@@ -1182,10 +1176,9 @@ def _init_state(ctx: ExamContext, inputs: dict, *, probe_model: Any = None,
     atoms = reference_mod.hard_atoms(constraints, write_tools, read_tools)
     judge = _build_judge(judge_model, judge_agent, constraints, write_tools, read_tools, fn)
     probe = _probe_of(run_probe, probe_model)
-    tasks = _select_tasks(inputs, only)
     common = _key_base(code_hash, canon_rules, constraints, policy_lines, write_tools,
                        probe_model, probe_limit, probe, judge_model, judge_agent)
-    state = _DeriveState(ctx=ctx, sample_salt=sample_salt, canon_rules=canon_rules, fn=fn,
+    return _DeriveState(ctx=ctx, sample_salt=sample_salt, canon_rules=canon_rules, fn=fn,
                          write_tools=write_tools, read_tools=read_tools, replays=replays,
                          rerolls=rerolls, intents=intents, user_rules=user_rules, traces=traces,
                          policy_lines=policy_lines, seed_replays=seed_replays,
@@ -1194,7 +1187,6 @@ def _init_state(ctx: ExamContext, inputs: dict, *, probe_model: Any = None,
                          probe_model=probe_model, probe_limit=probe_limit,
                          run_rerolls=run_rerolls, run_variant=run_variant,
                          round_number=round_number, common=common)
-    return state, tasks
 
 
 def _prepare_one(task: Task, state: _DeriveState) -> _Job:
@@ -1270,7 +1262,7 @@ def _settle_job(state: _DeriveState, job: _Job) -> None:
                        pool_runs=pool_runs_of(job.task.id, state.replays, state.rerolls))
 
 
-def _second_path_for(state: _DeriveState, job: _Job, ceiling: threading.Event) -> tuple[dict, list]:
+def _second_path_outcome(state: _DeriveState, job: _Job, ceiling: threading.Event) -> tuple[dict, list]:
     """The Task's second path: bought batches first (D189), then a synthesised one (D199).
 
     Merges the earlier batches, buys fresh ones until check 5 has a second path, writes one from
@@ -1308,6 +1300,15 @@ def _second_path_for(state: _DeriveState, job: _Job, ceiling: threading.Event) -
     return second, bought
 
 
+def _write_entry(state: _DeriveState, task_id: str, key: str, row: dict, reference: dict,
+                 verifier: Optional[dict], may_probe: bool) -> dict:
+    """One Task's cache entry, built and written in one place."""
+    entry = {"format": CACHE_FORMAT, "task_id": task_id, "key": key, "status": row,
+             "references": reference, "verifier": verifier, "probed": may_probe}
+    write_json(cache_path(state.ctx.workdir, task_id, key), entry)
+    return entry
+
+
 def _derive_and_store(state: _DeriveState, job: _Job, second: dict, bought: list,
                       fidelity_row: dict) -> dict:
     """One Task's Verifier through the D79 suite, and its cache entry on disk."""
@@ -1322,11 +1323,8 @@ def _derive_and_store(state: _DeriveState, job: _Job, second: dict, bought: list
         second_path=second,
         pool_runs=pool_runs_of(task.id, state.replays, state.rerolls) + extra_pool,
         fn=state.fn, user_ends=pool_user_ends(task.id, state.rerolls))
-    entry = {"format": CACHE_FORMAT, "task_id": task.id, "key": job.key, "status": row,
-             "references": confirmation.as_dict(), "verifier": as_dict(record),
-             "probed": job.may_probe}
-    write_json(cache_path(state.ctx.workdir, task.id, job.key), entry)
-    return entry
+    return _write_entry(state, task.id, job.key, row, confirmation.as_dict(), as_dict(record),
+                        job.may_probe)
 
 
 def _finish_one(state: _DeriveState, job: _Job, ceiling: threading.Event) -> dict:
@@ -1342,12 +1340,9 @@ def _finish_one(state: _DeriveState, job: _Job, ceiling: threading.Event) -> dic
                                   replays=state.replays, rerolls=state.rerolls,
                                   traces=state.traces, assisted_tools=state.assisted_tools,
                                   fidelity_row=fidelity_row)
-        entry = {"format": CACHE_FORMAT, "task_id": job.task.id, "key": job.key,
-                 "status": row, "references": confirmation.as_dict(), "verifier": None,
-                 "probed": job.may_probe}
-        write_json(cache_path(state.ctx.workdir, job.task.id, job.key), entry)
-        return entry
-    second, bought = _second_path_for(state, job, ceiling)
+        return _write_entry(state, job.task.id, job.key, row, confirmation.as_dict(), None,
+                              job.may_probe)
+    second, bought = _second_path_outcome(state, job, ceiling)
     return _derive_and_store(state, job, second, bought, fidelity_row)
 
 
@@ -1368,11 +1363,16 @@ def _collect_outputs(jobs: list[_Job], entries: list[dict]) -> tuple[list, dict,
     return verifiers, status, references, sum(1 for job in jobs if job.cached)
 
 
-def _read_prior(workdir: Path) -> tuple[dict, dict]:
-    """The live rows already on disk, for the `only` merge and the stamps."""
+def _read_prior(workdir: Path, only: Optional[str]) -> tuple[dict, dict]:
+    """The live rows already on disk, for the `only` merge and the stamps.
+
+    The references file is read only when one Task is merged into it, as it was.
+    """
     prior_status = read_json(workdir / "task_status.json", {})
     if not prior_status:
         prior_status = {}
+    if only is None:
+        return prior_status, {}
     prior_references = read_json(workdir / "references.json", {})
     if not prior_references:
         prior_references = {}
@@ -1387,7 +1387,7 @@ def _persist_results(ctx: ExamContext, status: dict, references: dict, only: Opt
     artefacts the withdrawn ones left are retired in the same step, before anything reads them;
     the stamps say on every row which round last moved it (D218 rule 2).
     """
-    prior_status, prior_references = _read_prior(ctx.workdir)
+    prior_status, prior_references = _read_prior(ctx.workdir, only)
     if only is not None:
         status = {**prior_status, **status}
         references = {**prior_references, **references}
@@ -1620,10 +1620,11 @@ def derive_all(ctx: ExamContext, inputs: dict, *, probe_model: Any = None, probe
     own keys (D212), so which Tasks get check 6 does not move when a Task is added or dropped.
     `cached` and `ran` in the result count which Tasks came from where.
     """
-    state, tasks = _init_state(ctx, inputs, probe_model=probe_model, probe_limit=probe_limit,
-                               judge_model=judge_model, judge_agent=judge_agent, run_probe=run_probe,
-                               run_rerolls=run_rerolls, run_variant=run_variant,
-                               round_number=round_number, only=only, code_hash=code_hash)
+    state = _init_state(ctx, inputs, probe_model=probe_model, probe_limit=probe_limit,
+                        judge_model=judge_model, judge_agent=judge_agent, run_probe=run_probe,
+                        run_rerolls=run_rerolls, run_variant=run_variant,
+                        round_number=round_number, code_hash=code_hash)
+    tasks = _select_tasks(inputs, only)
     jobs = _prepare_all(tasks, state, workers)
     probed = _assign_probe_slots(jobs, state)
 
