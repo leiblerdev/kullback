@@ -1408,14 +1408,11 @@ def _second_path_outcome(state: _DeriveState, job: _Job, ceiling: threading.Even
         round_number=state.round_number, write_tools=state.write_tools, fn=state.fn,
         atoms=state.atoms)
     if not second["found"] and state.run_variant is not None:
-        # Gated serial until the re-freeze (docs/todo.md "Next re-freeze: flip the speed-1
-        # variant gate"): the shared replay tally these replays count into stays locked only in
-        # docs/frozen-patches/speed-1.patch, so pooled variants would count nondeterministically.
-        # None runs the variants as a plain loop; survivor derivation above stays pooled.
+        # The variants ride the shared pool; the replay comparer tally increment is locked in the frozen gates tree.
         synth, made = synth_second_path(
             task.id, confirmation, run_variant=state.run_variant,
             round_number=state.round_number, write_tools=state.write_tools, fn=state.fn,
-            atoms=state.atoms, pool=None)
+            atoms=state.atoms, pool=state.pool, sem=state.sem)
         merge_second_path(confirmation, made)
         # They are not in the cache key and not in the false-rejection pool: a synthesised
         # Run is written by code from a Run already in the key, so a round that reads the
