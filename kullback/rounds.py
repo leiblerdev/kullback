@@ -680,6 +680,12 @@ class Loop:
             if stop:
                 self.builder_stop = dict(stop)
 
+    def _credit_allowance(self, agent: str, spent: float) -> None:
+        """Mark the agent over its allowance where the beat's spend reached it."""
+        allowance = self.allowance.get(agent)
+        if allowance is not None and spent >= allowance:
+            self.spent_allowance[agent] = True
+
     def _beat_done(self, agent: str, n: int, before: float, *, failing: bool = False) -> None:
         """What this beat spent, on the round and on the stream, whichever way the beat ended.
 
@@ -708,9 +714,7 @@ class Loop:
         try:
             spent = self.spend() - before
             self.beat_spend[agent] = spent
-            allowance = self.allowance.get(agent)
-            if allowance is not None and spent >= allowance:
-                self.spent_allowance[agent] = True
+            self._credit_allowance(agent, spent)
             self.emit(BeatEnd(agent=agent, round=n, spend=spent))
         except (Exception, asyncio.CancelledError) as exc:
             if not failing:
@@ -780,50 +784,73 @@ class Loop:
 
     def _builder_work(self, n: int) -> None:
         """The Builder's beat itself: the findings acted on and delivered, then the target built."""
-        # Most costly first (D170): the order the findings are acted on and delivered in is the
-        # order of the Tasks they cost, so a tool blocking fifty Tasks is worked before an Intent.
-        delivered = sorted(self.pending_findings, key=lambda f: -f.cost)
+        delivered = self._costliest_findings_first()
         failed: set[str] = set()
         if self.agent_model is None:
-            for finding in delivered:
-                if finding.suggested in BUILDER_VERBS:
-                    action = builder_agent.drive_tool(self.builder, finding.suggested,
-                                                      finding_arguments(finding))
-                    if action.is_error:
-                        failed.add(finding.finding_id)
-            self.build_result = builder_agent.drive_tool(self.builder, "build", {"target": self.target})
+            self._drive_code_repairs(delivered, failed)
         else:
-            if n == 1:
-                events = self.builder.prompt(builder_message(self.target))
-            else:
-                # D170: the steer names the finding that costs the most Tasks and how many, so the
-                # Environment is repaired before the Intents rather than after them.
-                lead = leading_finding(delivered)
-                head = (f"round {n}: start with {lead.finding_id}, which costs "
-                        f"{task_count(lead.cost)}: "
-                        f"{suggested_call(lead)}. " if lead is not None else f"round {n}: ")
-                self.builder.steer(head + "the Examiner's findings follow, one per message, the costliest "
-                                   f"first; act on each, then build {self.target!r} again and read the rulings.")
-                events = self.builder.continue_()
-            # Every beat, including round 1: a resumed finding that never reaches the model would be
-            # dequeued as delivered and later closed without ever being acted on. Queued follow-ups
-            # fire when the run would otherwise stop, inside the same watched stream.
-            for finding in delivered:
-                self.builder.follow_up(finding_message(finding), {"finding": as_dict(finding)})
-            self.build_result = self._watched(self.builder, "builder", events, "build", BUILD_TOOLS)
-            if self.build_result is None or self._store_is_partial():
-                # The model repaired and answered without building the target (build 13, round 1),
-                # or built it and then repaired again on a follow-up finding (build 13, round 2): the
-                # store then holds only what the last repair's stage ran, and the Examiner's derive
-                # read an artifact that was not there (KeyError on the Constraints, both times). The
-                # driver builds the target, as the code path does; every stage the repairs left
-                # current comes from the cache (D153, D161).
-                self.build_result = builder_agent.drive_tool(self.builder, "build", {"target": self.target})
-                self.driver_built.append(n)
-        result = self.build_result
+            events = self._open_model_build(n, delivered)
+            self._watch_model_build(n, delivered, events)
+        self._raise_unbuilt(self.build_result)
+        self._dequeue_delivered(delivered, failed)
+
+    def _costliest_findings_first(self) -> list:
+        """The findings in the order they are acted on and delivered: the costliest first."""
+        # Most costly first (D170): the order the findings are acted on and delivered in is the
+        # order of the Tasks they cost, so a tool blocking fifty Tasks is worked before an Intent.
+        return sorted(self.pending_findings, key=lambda f: -f.cost)
+
+    def _drive_code_repairs(self, delivered: list, failed: set[str]) -> None:
+        """Act on each finding through the registry, then build the target, all by code."""
+        for finding in delivered:
+            if finding.suggested in BUILDER_VERBS:
+                action = builder_agent.drive_tool(self.builder, finding.suggested,
+                                                  finding_arguments(finding))
+                if action.is_error:
+                    failed.add(finding.finding_id)
+        self.build_result = builder_agent.drive_tool(self.builder, "build", {"target": self.target})
+
+    def _open_model_build(self, n: int, delivered: list):
+        """Open the model's build: a prompt on round 1, a steer onto the findings after."""
+        if n == 1:
+            return self.builder.prompt(builder_message(self.target))
+        # D170: the steer names the finding that costs the most Tasks and how many, so the
+        # Environment is repaired before the Intents rather than after them.
+        lead = leading_finding(delivered)
+        head = (f"round {n}: start with {lead.finding_id}, which costs "
+                f"{task_count(lead.cost)}: "
+                f"{suggested_call(lead)}. " if lead is not None else f"round {n}: ")
+        self.builder.steer(head + "the Examiner's findings follow, one per message, the costliest "
+                           f"first; act on each, then build {self.target!r} again and read the rulings.")
+        return self.builder.continue_()
+
+    def _watch_model_build(self, n: int, delivered: list, events) -> None:
+        """Deliver the findings as follow-ups and watch the build, rebuilding the target where
+        the model left the store partial."""
+        # Every beat, including round 1: a resumed finding that never reaches the model would be
+        # dequeued as delivered and later closed without ever being acted on. Queued follow-ups
+        # fire when the run would otherwise stop, inside the same watched stream.
+        for finding in delivered:
+            self.builder.follow_up(finding_message(finding), {"finding": as_dict(finding)})
+        self.build_result = self._watched(self.builder, "builder", events, "build", BUILD_TOOLS)
+        if self.build_result is None or self._store_is_partial():
+            # The model repaired and answered without building the target (build 13, round 1),
+            # or built it and then repaired again on a follow-up finding (build 13, round 2): the
+            # store then holds only what the last repair's stage ran, and the Examiner's derive
+            # read an artifact that was not there (KeyError on the Constraints, both times). The
+            # driver builds the target, as the code path does; every stage the repairs left
+            # current comes from the cache (D153, D161).
+            self.build_result = builder_agent.drive_tool(self.builder, "build", {"target": self.target})
+            self.driver_built.append(n)
+
+    def _raise_unbuilt(self, result) -> None:
+        """Raise unless the beat built the target, by code or through the model."""
         if self.plan.last is None or (result is not None and result.is_error):
             raise BuildError(result.content if result is not None
                              else f"the model never called build({self.target!r})")
+
+    def _dequeue_delivered(self, delivered: list, failed: set[str]) -> None:
+        """Close what the Builder may close and dequeue what the beat delivered."""
         handled = [finding for finding in delivered if finding.finding_id not in failed]
         # D205, closing D192's gap: a finding suggesting a verb only the Examiner can call is not the
         # Builder's to close. The Builder was shown it and could not act on it, and closing it there
@@ -1292,6 +1319,22 @@ class Loop:
         """The finding rows as the Examiner's store holds them, or none when no beat has opened."""
         return list(self.eplan.store.get("findings") or []) if self.eplan is not None else []
 
+    def _counts_store(self) -> dict:
+        """The store the round is read off: the Examiner's where it opened, else the Builder's
+        own handover (D231)."""
+        return self.eplan.store if self.eplan is not None else _handover(self.plan.store)
+
+    def _counts_with_tasks(self, counts: dict, store: dict) -> dict:
+        """The denominator is the Tasks the round ruled on (D231)."""
+        # The derivation writes a status row per Task and that is the count on a round whose
+        # Examiner beat finished; a round whose beat raised before it, or whose target never
+        # released the derivation's inputs, has ruled on the Tasks it replayed and on no others,
+        # and leaving the count at zero prints a real reading of 75 confirmed as `75/0` or, with
+        # the fidelity thrown away too, as `0/0`.
+        if not counts.get("tasks"):
+            counts["tasks"] = len(store.get("replays") or {})
+        return counts
+
     def counts(self) -> dict:
         """D126's counts off the gates, plus what only the driver knows (`driver_counts`), plus the
         claim and partial-completion counters (D223) and the difficulty buckets (D209).
@@ -1301,19 +1344,13 @@ class Loop:
         derivation's inputs, still replayed every Trace the build compiled, and counting that as an
         empty workdir throws the round's one real reading away.
         """
-        store = self.eplan.store if self.eplan is not None else _handover(self.plan.store)
+        store = self._counts_store()
         counts = round_end.round_counts(
             store.get("task_status") or {}, store.get("verifiers") or [], store.get("probes") or {},
             store.get("history") or {}, store.get("refusals") or {}, store.get("task_runs") or {},
             store.get("replays") or {}, store.get("rerolls") or {}, store.get("canon_rules"),
             store.get("sigs") or [], record=self._land, intents=store.get("intents") or {})
-        # D231: the denominator is the Tasks the round ruled on. The derivation writes a status row
-        # per Task and that is the count on a round whose Examiner beat finished; a round whose beat
-        # raised before it, or whose target never released the derivation's inputs, has ruled on the
-        # Tasks it replayed and on no others, and leaving the count at zero prints a real reading of
-        # 75 confirmed as `75/0` or, with the fidelity thrown away too, as `0/0`.
-        if not counts.get("tasks"):
-            counts["tasks"] = len(store.get("replays") or {})
+        counts = self._counts_with_tasks(counts, store)
         counts.update(self.driver_counts())
         counts.update(self.user_fidelity_counts())
         # The claim rows are written before the buckets are: the difficulty record carries D223's
