@@ -39,6 +39,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 import json
+import re
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -132,6 +133,11 @@ EXAMINER_SESSION = Path("examiner") / "session.jsonl"
 # values the message goes on to name.
 BEAT_ERROR = "beat_error"
 MESSAGE_CLASS_CHARS = 80
+# What stands in a class where a value stood, and the characters that say a word is one. An id, a
+# number, a path or a dotted name carries the round it happened in into the group, so the word is
+# dropped and the sentence around it is what two rounds are grouped by.
+VALUE_MARK = "<value>"
+VALUE_CHARS = re.compile(r"[0-9_/\\.\-]")
 
 # The artifacts a model writes and a repair verb rewrites, by the name a round's counts call them.
 # Each is a stage output of `builder.build`: `compile_tools` writes bodies.json, `starting_state`
@@ -224,18 +230,40 @@ def beat_error_row(agent: str, exc: BaseException) -> dict:
     return {"beat": str(agent), "kind": type(exc).__name__, "message_class": message_class(str(exc))}
 
 
+def _class_head(clause: str) -> str:
+    """A message's first clause with the values in it replaced by one mark each (D231).
+
+    A well-formed message keeps its values in the third clause, but plenty of raises interpolate one
+    straight into the sentence (`no Task is named ...`, `no Traces under <a workdir path>`), and
+    those messages carry no colon at all, so the whole sentence used to be the class and every round
+    that failed that way was its own group. That is the opposite of what a grouped count is for. A
+    word that holds a digit, an underscore, a slash, a dot or a hyphen is a value and is dropped;
+    the words around it are what says how the beat failed, and a run of dropped words leaves one
+    mark, so the sentence still reads.
+    """
+    kept: list[str] = []
+    for word in clause.split():
+        if VALUE_CHARS.search(word):
+            if kept[-1:] != [VALUE_MARK]:
+                kept.append(VALUE_MARK)
+        else:
+            kept.append(word)
+    return " ".join(kept)
+
+
 def message_class(message: str) -> str:
     """The class of a beat error's message: what failed, and the exception named inside it where the
     message carries one.
 
-    The values a message ends in never join it. A message is written `<what failed>: <the exception
-    raised>: <the ids, models and columns it happened to>`, so the class is the first clause and the
-    one bare name after it, and two rounds that failed the same way group together whatever their
-    third clause named. A message with no clause after the first is its own class, capped, since
-    there is nothing else to read it by.
+    The values a message names never join it, wherever in the message they stand. A message is
+    usually written `<what failed>: <the exception raised>: <the ids, models and columns it happened
+    to>`, so the class is the first clause and the one exception name after it, and two rounds that
+    failed the same way group together whatever their third clause named. Where the first clause
+    interpolates a value of its own it is dropped there too (`_class_head`). A message with no
+    exception name in it is its own class, capped, since there is nothing else to read it by.
     """
     parts = [part.strip() for part in str(message).split(":")]
-    head = parts[0][:MESSAGE_CLASS_CHARS]
+    head = _class_head(parts[0])[:MESSAGE_CLASS_CHARS]
     named = next((part for part in parts[1:] if part and " " not in part and part[:1].isupper()), "")
     return f"{head}: {named}" if named else head
 

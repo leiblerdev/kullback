@@ -1529,6 +1529,18 @@ def test_the_class_of_a_beat_error_message_holds_what_failed_and_never_the_value
     assert rounds.message_class("the model never called derive('all')") == "the model never called derive('all')"
 
 
+def test_a_value_in_the_first_clause_of_a_message_is_grouped_out_of_the_class_too(tmp_path):
+    """Plenty of raises interpolate an id or a path straight into the sentence and carry no colon at
+    all, so the whole sentence was the class and every round that failed that way was its own group,
+    which is the opposite of what a grouped count is for."""
+    assert rounds.message_class("no Task is named task_ferry_91") == "no Task is named <value>"
+    assert rounds.message_class("no Task is named task_dock_02") == "no Task is named <value>"
+    assert rounds.message_class("no Traces under /var/lofted/wharf-4/traces and no file to ingest") == \
+        "no Traces under <value> and no file to ingest"
+    assert rounds.message_class("no mined tool is named lofted_gauge, wharf_gauge") == \
+        "no mined tool is named <value>", "a run of values leaves one mark, not one per value"
+
+
 def test_the_counts_of_a_round_whose_state_cannot_be_read_are_empty_and_the_record_still_closes(tmp_path,
                                                                                                monkeypatch):
     """The state a raised beat leaves is half written by definition, so the read is guarded: a
