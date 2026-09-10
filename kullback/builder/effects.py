@@ -538,7 +538,11 @@ def replay_evidence(effects: dict[str, list[WriteEffect]]) -> dict[str, list[dic
              if column.unattributed]
     out = {call_id: rows for call_id, rows in out.items() if rows}
     if stray:
-        out[UNATTRIBUTED] = stray
+        # A recorded call id never claims the tagged key, by the rule that keeps the
+        # recorded-text key out of reach (D39). Should one ever do so, its rows stay and the
+        # stray rows ride along flagged: the frozen check counts flagged rows instead of failing
+        # them, so no evidence is lost either way.
+        out.setdefault(UNATTRIBUTED, []).extend(stray)
     return out
 
 

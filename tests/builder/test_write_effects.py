@@ -466,6 +466,20 @@ def test_an_unattributed_column_fails_no_call_at_replay(tmp_path):
     assert last["verdict"] in replay.AGREES
 
 
+def test_a_recorded_call_claiming_the_reserved_key_loses_no_evidence():
+    owned = effects.WriteEffect(tool=WRITE, call_id=effects.UNATTRIBUTED, trace_id="tr1", columns=[
+        effects.EffectColumn(table="loans", row_id="LN01", path="title_id",
+                             before="TT01", after="TT09")])
+    stray = effects.EffectColumn(table="members", row_id="MB01", path="credit",
+                                 before=100, after=82, ambiguous=True,
+                                 checked=False, unattributed=True)
+    holder = effects.WriteEffect(tool=WRITE, call_id="c9", trace_id="tr1", columns=[stray])
+    evidence = effects.replay_evidence({WRITE: [owned, holder]})
+    rows = evidence[effects.UNATTRIBUTED]
+    assert [row["path"] for row in rows if not row["unattributed"]] == ["title_id"]
+    assert [row["path"] for row in rows if row["unattributed"]] == ["credit"]
+
+
 def test_a_single_write_span_is_credited_and_checked_as_before():
     credit = column_of(observed(), "members", "credit")
     assert credit.ambiguous is False

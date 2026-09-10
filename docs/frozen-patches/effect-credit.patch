@@ -22,13 +22,16 @@
 +            check["unattributed_effects"] = unattributed
          if misses:
              check["effect_failures"] = misses[:EFFECTS_NAMED]
-@@ -593,5 +598,9 @@ def _score(trace: Trace, state: Any, scored: ScoredRouter, script: _Script, mode
+@@ -593,5 +598,12 @@ def _score(trace: Trace, state: Any, scored: ScoredRouter, script: _Script, mode
          # D215's own counters: columns checked after a write replayed, columns that did not reach
          # the value the recording shows, and the later calls those columns are blamed for.
          "effect_checks": sum(int(c.get("effect_checks") or 0) for c in scored.checks),
          "effect_failures": sum(int(c.get("effect_failures_total") or 0) for c in scored.checks),
 +        # D234: columns the recording shows moving that no write in their span owed. They ride
-+        # on the evidence under the tagged unattributed key rather than under any call, so they
-+        # are counted here and never failed against a call.
-+        "effect_unattributed": len((scored.effects or {}).get("\x00unattributed") or []),
++        # under the tagged unattributed key, or flagged inside a call's own rows where a
++        # recorded id claimed that key, so every flagged row is counted here and none is failed
++        # against a call.
++        "effect_unattributed": sum(1 for rows in (scored.effects or {}).values()
++                                   for row in (rows or [])
++                                   if isinstance(row, dict) and row.get("unattributed")),
          "effects_downstream": sum(1 for c in scored.checks if c.get(DOWNSTREAM)),
