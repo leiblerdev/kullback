@@ -323,6 +323,10 @@ Three phase 5 era items whose gates expired when phase 5 landed. Each needs a de
 
 - **The loop carries TauForge's four stages by name: build, augment, validate, harden** (founder, 2026-09-02: "we need to have it like tauforge as well where build, augment, validate and harden is there i think it is already there"). It is, in pieces: D54 decided the shape (build the Environment, augment the seeds, generate the Tasks, harden them) and the round designed today runs the same arc under other names. What is still missing is the arc as one thing the loop, the report and the TUI name, so a round says which stage it is in and a customer sees the four words. Mapping, so nothing is built twice: build is the Builder's DAG up to `derive_verifier` (phases 1 to 4, landed); augment is growing the world beyond what the traces show (`grow`, the synthetic rows item above, "Scenario generation and seed augmentation" below, after Gate A); validate is the gates plus the D79 suite plus the three trusted-Verifier checks (the Examiner, phase 5, on the pool; today's validation only runs inside single stages); harden is the "Harden Tasks (TauForge stage 4)" item above plus the loophole probe with a stronger attacker ("Hacker pass over the Verifier pool"), and what the loosening gate (D127) lets through. To build once phases 5 and 6 are in: a `stage` field on every round event and on `state.json` that takes one of the four values, the report's per-round table keyed by it, and one rule the loop keeps: a round never hardens a Task whose Verifier has not validated. TauForge's "generate tasks" is not a separate word here because Tasks come from the traces first (D54 stage 2 says the customer's own Tasks are the seeds); generated Tasks join at augment.
 
+## Next re-freeze
+
+- effect-credit.patch waits for the founder's re-freeze: the replay counts unattributed effects instead of failing the last call.
+
 ## Done
 
 Items closed by a landed decision. Nothing was deleted; each moved here with the decision that closed it.
