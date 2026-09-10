@@ -6,6 +6,8 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import threading
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -827,3 +829,153 @@ def _confirmation_of(world) -> reference.Confirmation:
     record = reference.load(world.paths["ref"], reference.RECORDING, run_id="ref",
                             write_tools=VF.WRITE_TOOLS, fn=fn)
     return reference.Confirmation(recordings=[record], references=[record])
+
+
+# --- concurrent batches in the derive window (speed-1) ---------------------
+
+def _reroll_rows(workdir: Path) -> dict:
+    """The Examiner's own re-roll rows with the workdir taken out, so two runs compare."""
+    body = json.loads((workdir / "examiner" / "rerolls.json").read_text(encoding="utf-8"))
+    return {task_id: [{key: row[key] for key in ("run_id", "batch", "reason", "termination_reason")}
+                       for row in rows]
+            for task_id, rows in body.items()}
+
+
+def _rich_reference_events():
+    """The Reference's events with two more reads: four calls, so four rewrites exist."""
+    events = VF.reference_events()
+    first = [VF.call("get_loyalty_balance", {"user_id": "u1"}, kind="read", cid="c8"),
+             VF.result({"user_id": "u1", "points": 40}, cid="c8")]
+    second = [VF.call("get_shipping_status", {"order_id": "#W123"}, kind="read", cid="c9"),
+              VF.result({"order_id": "#W123", "status": "in_transit"}, cid="c9")]
+    return events[:5] + first + second + events[5:]
+
+
+def _rich_lone_world(root: Path):
+    """The one-Task world whose recording makes four calls: the synthesis tries four rewrites."""
+    world = make_world(root, rerolls=())
+    rich = VF.make_run("ref", _rich_reference_events())
+    VF.write_events_jsonl(rich, Path(world.inputs["replays"]["t1"]["ref"]["path"]))
+    return world
+
+
+def _counted_overlap(track: dict, lock: threading.Lock):
+    """A context counting how many wrapped calls are in flight, and the peak."""
+    class _Overlap:
+        def __enter__(self):
+            with lock:
+                track["in_flight"] += 1
+                track["max"] = max(track["max"], track["in_flight"])
+
+        def __exit__(self, *exc):
+            with lock:
+                track["in_flight"] -= 1
+            return False
+
+    return _Overlap()
+
+
+def _overlapped(fn, track: dict, lock: threading.Lock, delay: float = 0.02):
+    """One shared-pool job wrapped so the test sees how many of a Task's jobs overlap."""
+    def counted(*args, **kwargs):
+        with _counted_overlap(track, lock):
+            time.sleep(delay)
+            return fn(*args, **kwargs)
+
+    return counted
+
+
+def _sequenced_rerolls(world, makers: list, task_calls: list):
+    """One batch per maker in order, so the search misses twice and finds on the third batch."""
+    remaining = list(makers)
+
+    def sequenced(task_id: str, count: int, prefix: str) -> list:
+        make = remaining[0]
+        rows = _reroll_runner_over(world, make, task_calls)(task_id, count, prefix)
+        if len(remaining) > 1:
+            del remaining[0]
+        return rows
+
+    return sequenced
+
+
+def test_one_tasks_surviving_end_states_derive_on_the_shared_pool_at_once(tmp_path, monkeypatch):
+    """The residue's survivors are independent derivations: on eight workers both are in flight
+    together, and the rows read exactly as the one-worker run's rows read."""
+    abstain = json.dumps({"failed": [], "evidence": ["end_states"], "reason": "cannot tell"})
+    peaks, bodies = {}, {}
+    for name, workers in (("serial", 1), ("threaded", 8)):
+        world = make_world(tmp_path / name, rerolls=("wrong",))
+        track = {"in_flight": 0, "max": 0}
+        counted = _overlapped(stage._derive_survivor, track, threading.Lock())
+        monkeypatch.setattr(stage, "_derive_survivor", counted)
+        out = _derive(world.workdir, world.inputs, judge_model=TestModel([abstain, abstain]),
+                      workers=workers)
+        assert out["ran"] == 1
+        peaks[name] = track["max"]
+        bodies[name] = _derived_bytes(world.workdir, 1)
+        monkeypatch.undo()
+    assert peaks["serial"] == 1
+    assert peaks["threaded"] == 2, "both survivors derive without waiting for each other"
+    assert bodies["threaded"] == bodies["serial"]
+
+
+def test_one_tasks_rewrite_runs_replay_on_the_shared_pool_at_once(tmp_path):
+    """The synth variant runs are independent replays: on eight workers more than one is in flight,
+    and the rows and the bought batches read exactly as the one-worker run's read."""
+    peaks, bodies, tried = {}, {}, {}
+    for name, workers in (("serial", 1), ("threaded", 8)):
+        world = _rich_lone_world(tmp_path / name)
+        track = {"in_flight": 0, "max": 0}
+        counted_runner = _overlapped(_variant_runner_over(world, VF.alt_path_run, []),
+                                     track, threading.Lock())
+        out = _derive(world.workdir, world.inputs,
+                      run_rerolls=_reroll_runner_over(world, VF.wrong_run, []),
+                      run_variant=counted_runner, round_number=2, workers=workers)
+        assert out["ran"] == 1
+        row = out["task_status"]["t1"]["second_path"]
+        tried[name] = row["synth_tried"]
+        peaks[name] = track["max"]
+        bodies[name] = (_derived_bytes(world.workdir, 1), _reroll_rows(world.workdir))
+    assert tried["serial"] == tried["threaded"] >= 2, "the world offers several rewrites"
+    assert peaks["serial"] == 1
+    assert peaks["threaded"] > 1, "the rewrites replay without waiting for each other"
+    assert bodies["threaded"] == bodies["serial"]
+
+
+def test_the_probe_budget_hands_the_same_slots_out_on_one_worker_and_on_eight(tmp_path):
+    """D212 still holds under the shared pool: the slots are assigned by keyed order before any
+    Task's probe dispatches, so the worker count moves no slot."""
+    bodies, probed = {}, {}
+    for name, workers in (("serial", 1), ("threaded", 8)):
+        world = make_world(tmp_path / name, tasks=5)
+        out = _derive(world.workdir, world.inputs, probe_model=object(),
+                      run_probe=probe_runner_over(), probe_limit=2, workers=workers)
+        assert out["ran"] == 5
+        probed[name] = _probed(world.workdir)
+        bodies[name] = _derived_bytes(world.workdir, 5)
+    order = sampling.keyed_order(stage.PROBE_KIND, [f"t{n}" for n in range(1, 6)],
+                                 sampling.build_salt(make_world(tmp_path / "salt", tasks=5).workdir))
+    assert probed["serial"] == probed["threaded"] == set(order[:2])
+    assert bodies["threaded"] == bodies["serial"]
+
+
+def test_three_bought_batches_leave_the_same_rows_and_files_on_one_worker_and_on_eight(tmp_path):
+    """The batches stay serial per Task under the shared pool: the same three prefixes are bought,
+    and the rows and the re-roll file read the same on either worker count."""
+    bodies, calls = {}, {}
+    makers = [VF.wrong_run, VF.wrong_run, VF.alt_path_run]
+    for name, workers in (("serial", 1), ("threaded", 8)):
+        world = make_world(tmp_path / name, rerolls=())
+        task_calls: list = []
+        sequenced = _sequenced_rerolls(world, makers, task_calls)
+        out = _derive(world.workdir, world.inputs, run_rerolls=sequenced,
+                      probe_model=object(), run_probe=probe_runner_over(),
+                      round_number=2, workers=workers)
+        assert out["ran"] == 1
+        calls[name] = list(task_calls)
+        bodies[name] = (_derived_bytes(world.workdir, 1), _reroll_rows(world.workdir))
+    assert [prefix for _, _, prefix in calls["serial"]] == [
+        "second-path-r2-b1", "second-path-r2-b2", "second-path-r2-b3"]
+    assert calls["threaded"] == calls["serial"]
+    assert bodies["threaded"] == bodies["serial"]
