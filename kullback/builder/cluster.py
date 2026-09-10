@@ -284,7 +284,7 @@ GROUPING_FILE = "grouping.json"
 # 2: the split compares a requestor's homed row per column under the schema's column classes
 # (D233), so the revealed classes join the recordings and the homing as what the grouping may
 # depend on. 1 was the recordings and the homing alone (D216).
-GROUPING_FORMAT = 1
+GROUPING_FORMAT = 2
 
 
 class UnexplainedRegrouping(RuntimeError):
