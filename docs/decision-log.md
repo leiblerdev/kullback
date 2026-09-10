@@ -1850,6 +1850,18 @@ Not measured live; the next launch of the third environment passes it. No build 
 
 No disagreements. One smaller reading was taken: the `run` command's Candidate batches keep their rule-driven user, since they are batches and not re-rolls.
 
+### D246. The compile heads are built once per build and the helper specs ride one object (2026-09-10)
+
+The token readers found two stages whose cache share differs between arms although the code path is shared. compile_policy reads at 0.89 to 0.97 on the frontier and short arms and at 0.50 in one budget file and 0.008 in one events slice on the cheaper model arm, with prompts of the same size (means 1918 against 1916 tokens). compile_tools reads at 0.60 on the frontier slices and at 0.87 to 0.88 on the high reuse round, and it is the second dearest stage on every arm (5.9 usd, 48 percent of one round). The readers pointed at the head rebuilt per sentence with a byte difference the cheaper provider does not forgive, and at attempts with and without the helper specs splitting the prefix.
+
+Decided: both heads are now built once and shared by object, not only by value. compile_policy builds the system head (the contract plus the policy text) once per compile_policy call and the build stage builds it once per build beside the policy text, and the same string object reaches every sentence and every retry. compile_tool builds its system head once per tool and reuses that same string object on every attempt including every evidence trim rebuild, and every tool round sends the same helper spec list object in the same order. The helper paragraph stays as content where it was, and it was already the last part of the head, so the bytes in front of it are shared with a call that turns the helpers off. No request content changed on any attempt: the per attempt evidence, lesson, effects and failure text are what they were.
+
+One reading cuts against the premise. No byte drift existed on either path. The head builders carry no per call value: the policy head is the contract plus the policy text, the tools head is constants plus sorted schema blocks plus the sorted tool list plus the helper paragraph last, and the spec list is one module object. The snapshot proof (`scripts/request_snapshot.py`, ten invented inputs per stage) diffs empty between origin/main and the head, and the stub fixture build writes byte identical bodies (one sha on both sides). So the cheaper arm miss sits at the provider (a minimum prefix length or a model that does not cache), for the measurement pass to confirm.
+
+Five tests on invented harbor and berth domains cover it: twenty sentences of one build hash to one head, two builds over the same policy text share the head bytes, ten tools of one build hash to one head, the helper on bytes carry the helper off bytes as their prefix, and every attempt of one tool sends the same head bytes and the same spec object. No existing assertion was edited.
+
+Not measured live; no live number is claimed here. The next launch reads per arm the per stage cache share (`cache_read` over input plus `cache_read`) for compile_policy and compile_tools, and the memo hit count on a second iterate build, against the shares above.
+
 ## Pending (asked, not yet answered)
 
 - ~~The user's own tools and the world they act on (D71, first part).~~ Decided as D176 (2026-09-07): one world, rows revealed by a requestor marked by it, readers as code under the free gate.

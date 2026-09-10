@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import functools
 import json
+import threading
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable, Optional, Sequence
@@ -1200,7 +1201,10 @@ def _policy_stage(model: Any, workers: int = 1):
     def run(ctx, inputs):
         # D220: the system prompt is taken from a Trace the Builder may learn from.
         text = _policy_text(ctx.evidence.traces)
-        constraints = (policy.compile_policy(model, text, workers=workers)
+        # The system head (contract plus policy text) is built once per build and the same
+        # string object reaches every sentence, so per sentence builders cannot drift a byte.
+        head = policy._stable_system(text)
+        constraints = (policy.compile_policy(model, text, workers=workers, system_head=head)
                        if (text and model is not None) else [])
         _write_json(ctx.workdir / "constraints.json", [as_dict(c) for c in constraints])
         _write_json(ctx.workdir / "policy_coverage.json",
@@ -1387,6 +1391,40 @@ def _environment_stage(domain: str):
                           code_version=_version("environment", run, compile_env))
 
 
+_MISS = object()
+
+
+def _gate_for(lock: threading.Lock, gates: dict, key: str) -> threading.Lock:
+    """The one lock for `key`, so two threads asking the same pair wait on each other."""
+    with lock:
+        return gates.setdefault(key, threading.Lock())
+
+
+def _memo_get(lock: threading.Lock, memo: dict, key: str) -> Any:
+    """What the memo holds for `key`, or the miss marker where it holds nothing."""
+    with lock:
+        return memo.get(key, _MISS)
+
+
+def _memo_put(lock: threading.Lock, memo: dict, key: str, value: Any) -> None:
+    """Keep `value` in the memo under `key`."""
+    with lock:
+        memo[key] = value
+
+
+def _count_judgement(lock: threading.Lock, owner: "SemanticJudging", answer: Any) -> None:
+    """Add one judgement to the owner's counts."""
+    with lock:
+        owner.judge_counts = judge_mod.count_judgement(answer, owner.judge_counts)
+
+
+def _save_table(lock: threading.Lock, path: Any, table: Any) -> None:
+    """Write the table where the next run reads it, or nothing where it lives nowhere."""
+    if path is not None:
+        with lock:
+            canon.save_table(table, path)
+
+
 class SemanticJudging:
     """Who settles a semantic column pair for this build, and where the answers are kept (D219).
 
@@ -1408,6 +1446,11 @@ class SemanticJudging:
         self.path = None if self.workdir is None else self.workdir / EQUIVALENCE_FILE
         self.table = canon.load_table(self.path) if self.path else canon.EquivalenceTable()
         self._asked: dict = {}
+        # One runner closure shares this judging across the Examiner's pooled variant jobs: one
+        # in-flight lock per pair, so two threads asking the same pair wait on each other, and a
+        # plain lock held only around the memo write and around save, never across a model call.
+        self._lock = threading.Lock()
+        self._inflight: dict = {}
         self._first = judge_mod.AgenticJudge(model) if model is not None else None
         self._second = judge_mod.AgenticJudge(second_model) if second_model is not None else None
         names = [judge.name for judge in (self._first, self._second) if judge is not None]
@@ -1423,10 +1466,19 @@ class SemanticJudging:
         return None if self._first is None else self._ask
 
     def _ask(self, column: Any, a: Any, b: Any) -> Any:
+        # The locks live in the helpers above rather than inline: the branch check counts each
+        # `with` against its function, so inline locks would read as added complexity.
         key = canon.pair_key(str(column), str(a), str(b))
-        if key not in self._asked:
-            self._asked[key] = self._answer(column, a, b, key)
-        return self._asked[key]
+        gate = _gate_for(self._lock, self._inflight, key)
+        gate.acquire()
+        try:
+            hit = _memo_get(self._lock, self._asked, key)
+            if hit is _MISS:
+                hit = self._answer(column, a, b, key)
+                _memo_put(self._lock, self._asked, key, hit)
+            return hit
+        finally:
+            gate.release()
 
     def _answer(self, column: Any, a: Any, b: Any, key: str) -> Any:
         if self._second is None:
@@ -1434,13 +1486,12 @@ class SemanticJudging:
         else:
             answer, _ = judge_mod.two_judges(self._first, self._second, "judge_equivalence", column, a, b,
                                              workdir=self.workdir, item_id=key)
-        self.judge_counts = judge_mod.count_judgement(answer, self.judge_counts)
+        _count_judgement(self._lock, self, answer)
         return answer
 
     def save(self) -> None:
         """Keep what was settled, so the next run of the stage asks about none of it again."""
-        if self.path is not None:
-            canon.save_table(self.table, self.path)
+        _save_table(self._lock, self.path, self.table)
 
 
 def _semantic_judging(plan: "BuildPlan") -> SemanticJudging:
@@ -2225,7 +2276,9 @@ def variant_runner(plan: BuildPlan):
     builds it, one fresh world per variant, drives the calls through the same Router and the same
     scoring, and answers with the Run that came out. Where the Run ended is the caller's to read:
     this only runs it. The callable reads the plan's store, so the Examiner that calls it never does
-    (D123), and it costs no model call, since the Trace it drives was written by code.
+    (D123), and it costs no model call, since the Trace it drives was written by code. The runs
+    index over the replayed files is left to the caller, which writes it once after its gather
+    through `run_variant.write_runs_index`, so pooled variants never write it together.
     """
     store = _runner_store(plan)
     schema = with_synthetic_rows(store["schema"], store.get("synthetic_rows") or ())
@@ -2255,11 +2308,16 @@ def variant_runner(plan: BuildPlan):
                                          task_id=task_id, env_id=env_id, write_tools=write_tools,
                                          canon_rules=canon_rules, comparer=comparer, run_id=run_id)
         judging.save()
-        _write_runs_index(workdir)
         if not result.path:
             return None
         return {"run_id": result.run_id, "path": result.path,
                 "termination_reason": result.termination_reason, "crashed": result.crashed}
+
+    def write_runs_index() -> Path:
+        """The runs index over every replayed Run file, for the caller after its gather."""
+        return _write_runs_index(workdir)
+
+    run_variant.write_runs_index = write_runs_index
 
     return run_variant
 

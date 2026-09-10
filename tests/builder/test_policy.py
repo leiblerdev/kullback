@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 
 import pytest
 
 from kullback.ai.provider import TestModel
 from kullback.builder.policy import (
+    _stable_system,
     accept_rewrite,
     compile_policy,
     compile_rule,
@@ -641,3 +643,46 @@ def test_compile_policy_accepts_raw_markdown_and_a_limit(policy_md):
     assert [c.span.msg_index for c in constraints] == [s.index for s in sentences]
     assert all(c.span.file_hash == sentences[0].file_hash for c in constraints)
     assert len(model.calls) == 2, "one model call per sentence, in order"
+
+
+# --- D246: the system head is built once per build ---
+
+_WORDS = ("alder", "birch", "cedar", "dune", "elm", "fern", "grove", "heath",
+          "iris", "juniper", "kelp", "larch", "moss", "nettle", "oak", "pine",
+          "quill", "reed", "sedge", "thyme")
+
+
+def _invented_policy(n=20) -> str:
+    return " ".join(f"The harbor ledger {word} rule holds." for word in _WORDS[:n])
+
+
+def _system_heads(model) -> list:
+    return [call["messages"][0]["content"] for call in model.calls]
+
+
+def test_the_system_head_is_byte_identical_across_twenty_sentences_of_one_build():
+    """D246: one build, one head. Twenty invented sentences hash to a single value, so no
+    timestamp, counter, set order or dict order drifts the bytes per sentence."""
+    policy = _invented_policy(20)
+    model = TestModel(["not json at all", "still not json"], loop=True)
+    compile_policy(model, policy)
+    heads = _system_heads(model)
+    assert len(heads) == 40, "two calls (first ask plus retry) per sentence"
+    assert len(set(heads)) == 1
+    digest = hashlib.sha256(heads[0].encode("utf-8")).hexdigest()
+    assert all(hashlib.sha256(h.encode("utf-8")).hexdigest() == digest for h in heads)
+    assert heads[0] == _stable_system(policy)
+
+
+def test_two_builds_over_the_same_policy_text_share_the_same_head_bytes():
+    """D246: the head carries no per build nonce. Two builds hash alike."""
+    policy = _invented_policy(20)
+    first_model = TestModel(["not json at all", "still not json"], loop=True)
+    second_model = TestModel(["not json at all", "still not json"], loop=True)
+    compile_policy(first_model, policy)
+    compile_policy(second_model, policy)
+    first = _system_heads(first_model)[0]
+    second = _system_heads(second_model)[0]
+    assert first == second
+    assert hashlib.sha256(first.encode("utf-8")).hexdigest() == hashlib.sha256(
+        second.encode("utf-8")).hexdigest()
