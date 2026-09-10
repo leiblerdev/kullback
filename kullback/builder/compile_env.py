@@ -1858,9 +1858,17 @@ def unsafe_names(schema: EntitySchema, sigs: Iterable[ToolSig] = ()) -> list[str
     for sig in sigs:
         if not _writable(sig.name):
             bad.append(f"tool {sig.name!r} is not a Python name")
+        # The receiver the skeleton writes is already in the signature, so a mined argument called
+        # `self` renders as `def tool(self, self)`, which is a SyntaxError in the code-owned half
+        # that no body can repair. A name mined twice is the same defect (Greptile on PR 45).
+        written = {"self"}
         for argument in sig.args_fields:
             if not _writable(argument.name):
                 bad.append(f"argument {argument.name!r} of {sig.name} is not a Python name")
+            elif argument.name in written:
+                bad.append(f"argument {argument.name!r} of {sig.name} is a name the signature "
+                           f"already carries")
+            written.add(argument.name)
     return bad
 
 

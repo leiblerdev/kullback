@@ -2414,3 +2414,23 @@ def test_the_names_an_ordinary_mined_schema_carries_are_written_without_complain
                   args_fields=[FieldStat(name="berth_id", types=["str"])], result_schema=[])
     assert ce.unsafe_names(schema, [sig]) == []
     assert "class Berth(BaseModel):" in ce.render_data_model(schema)
+
+
+def test_an_argument_named_like_the_receiver_or_mined_twice_is_refused():
+    """Greptile on PR 45: `self` is a Python name, and the skeleton has already written it. A tool
+    whose mined argument is called `self` used to render `def find_berth(self, self)`, a SyntaxError
+    in the code-owned half of the module that no body could repair."""
+    schema = EntitySchema(tables=["berths"],
+                          columns=[Column(table="berths", name="status", **{"class": "hard"})])
+    receiver = ToolSig(name="find_berth", kind="read",
+                       args_fields=[FieldStat(name="self", types=["str"])], result_schema=[])
+    assert ce.unsafe_names(schema, [receiver]) == [
+        "argument 'self' of find_berth is a name the signature already carries"]
+    with pytest.raises(ValueError):
+        ce.render_tools(schema, [receiver], {})
+    twice = ToolSig(name="find_berth", kind="read",
+                    args_fields=[FieldStat(name="berth_id", types=["str"]),
+                                 FieldStat(name="berth_id", types=["int"], optional=True)],
+                    result_schema=[])
+    assert ce.unsafe_names(schema, [twice]) == [
+        "argument 'berth_id' of find_berth is a name the signature already carries"]
