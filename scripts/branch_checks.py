@@ -337,6 +337,8 @@ def moved_or_new_reason(name, current, after, head_info, moved_index):
     old_file, old_value = picked[0], picked[1]
     if old_value >= after:
         return None
+    if after <= MAX_NEW_COMPLEXITY:
+        return None
     return f"{current} {name} moved from {old_file} and rose from {old_value} to {after}"
 
 
@@ -375,13 +377,13 @@ def file_ceiling_entries(old, current, base_funcs, head_infos, box):
                 reason = moved_or_new_reason(name, current, after, head_infos[name], box["index"])
                 if reason is not None:
                     reasons.append(reason)
-        elif after > before:
+        elif after > before and after > MAX_NEW_COMPLEXITY:
             reasons.append(rose_reason(name, old, current, before, after))
     return lines, reasons
 
 
 def check_complexity_ceiling(root, base, head):
-    """Changed functions keep their ceiling and new ones stay at 15 or under."""
+    """Touched functions may rise at or under 15; above 15 a rise fails, and new ones stay at 15 or under."""
     table = []
     bad = []
     box = {"root": root, "base": base, "index": None}

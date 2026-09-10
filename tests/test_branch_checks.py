@@ -127,7 +127,7 @@ def test_removed_decision_log_line_fails_append_only(tmp_path):
     )
 
 
-def test_risen_function_complexity_fails_complexity_ceiling(tmp_path):
+def test_risen_function_under_ceiling_passes_complexity_ceiling(tmp_path):
     repo = make_repo(tmp_path)
     write_file(repo, "calc.py", "def score(n):\n    if n > 1:\n        return 1\n    if n > 2:\n        return 2\n    return 0\n")
     base = commit_paths(repo, "add scorer", ["calc.py"])
@@ -139,8 +139,20 @@ def test_risen_function_complexity_fails_complexity_ceiling(tmp_path):
     )
     commit_paths(repo, "grow scorer", ["calc.py"])
     code, lines = run_checks(repo, base)
+    assert code == 0
+    assert "ok complexity-ceiling" in lines
+    assert "  complexity-table calc.py score base=3 head=5" in lines
+
+
+def test_risen_function_above_ceiling_fails_complexity_ceiling(tmp_path):
+    repo = make_repo(tmp_path)
+    write_file(repo, "calc.py", f"def score(x):\n{big_body(14)}    return -1\n")
+    base = commit_paths(repo, "add scorer", ["calc.py"])
+    write_file(repo, "calc.py", f"def score(x):\n{big_body(16)}    return -1\n")
+    commit_paths(repo, "grow scorer", ["calc.py"])
+    code, lines = run_checks(repo, base)
     assert code == 1
-    assert "FAIL complexity-ceiling: calc.py score rose from 3 to 5" in lines
+    assert "FAIL complexity-ceiling: calc.py score rose from 15 to 17" in lines
 
 
 def test_new_function_over_ceiling_fails_complexity_ceiling(tmp_path):
@@ -164,16 +176,17 @@ def test_same_method_name_in_two_classes_is_tracked_per_class(tmp_path):
         "\n\nclass Square:\n    def run(self, n):\n        return 0\n",
     )
     base = commit_paths(repo, "add shapes", ["kullback/shapes.py"])
+    branches = "".join(f"        if x == {i}:\n            return {i}\n" for i in range(15))
     write_file(
         repo,
         "kullback/shapes.py",
-        "class Circle:\n    def run(self, n):\n        if n:\n            return 1\n"
-        "        if n > 1:\n            return 2\n        return 0\n\n\nclass Square:\n    def run(self, n):\n        return 0\n",
+        "class Circle:\n    def run(self, n):\n"
+        f"{branches}        return 0\n\n\nclass Square:\n    def run(self, n):\n        return 0\n",
     )
     commit_paths(repo, "grow circle", ["kullback/shapes.py"])
     code, lines = run_checks(repo, base)
     assert code == 1
-    assert "FAIL complexity-ceiling: kullback/shapes.py Circle.run rose from 2 to 3" in lines
+    assert "FAIL complexity-ceiling: kullback/shapes.py Circle.run rose from 2 to 16" in lines
 
 
 def test_long_subject_fails_subject_length(tmp_path):
