@@ -133,34 +133,6 @@ def test_a_column_no_call_read_before_the_write_takes_its_before_from_the_starti
     assert credit.ambiguous is False
 
 
-def test_two_writes_between_two_sightings_are_both_credited_and_the_column_says_so():
-    calls = [call("c1", "get_member", {"member_id": "MB01"},
-                  {"member_id": "MB01", "credit": 100, "ledger": []}),
-             call("c2", WRITE, {"loan_id": "LN01", "title_id": "TT09"}, loan_row("TT09")),
-             call("c3", WRITE, {"loan_id": "LN01", "title_id": "TT01"}, loan_row()),
-             call("c4", "get_member", {"member_id": "MB01"},
-                  {"member_id": "MB01", "credit": 82, "ledger": [{"amount": 18}]})]
-    seen = effects.observe_effects([trace_of(calls)], schema(), {WRITE})
-    assert sorted(effect.call_id for effect in seen[WRITE]) == ["c2", "c3"]
-    assert all(column.ambiguous for effect in seen[WRITE] for column in effect.columns
-               if column.table == "members")
-    assert effects.counts(seen)["effects_ambiguous"] > 0
-
-
-def test_a_column_two_writes_may_have_moved_is_checked_only_after_the_later_of_them():
-    """The recording only says where the column ended, so only the last write is held to it."""
-    calls = [call("c1", "get_member", {"member_id": "MB01"},
-                  {"member_id": "MB01", "credit": 100, "ledger": []}),
-             call("c2", WRITE, {"loan_id": "LN01", "title_id": "TT09"}, loan_row("TT09")),
-             call("c3", WRITE, {"loan_id": "LN01", "title_id": "TT01"}, loan_row()),
-             call("c4", "get_member", {"member_id": "MB01"},
-                  {"member_id": "MB01", "credit": 82, "ledger": [{"amount": 18}]})]
-    seen = effects.observe_effects([trace_of(calls)], schema(), {WRITE})
-    evidence = effects.replay_evidence(seen)
-    assert [row["path"] for row in evidence.get("c2", []) if row["table"] == "members"] == []
-    assert [row["path"] for row in evidence["c3"] if row["table"] == "members"]
-
-
 def test_a_column_that_did_not_move_leaves_no_evidence():
     calls = borrowing_calls()
     calls[-1] = call("c6", "get_member", {"member_id": "MB01"},
@@ -375,3 +347,187 @@ def test_without_the_evidence_the_forgetful_body_is_only_caught_by_the_later_rea
     assert result.counts["writes_matched"] == 1
     assert result.counts["effect_checks"] == 0
     assert any("get_member read" in line for line in result.reasons)
+
+
+# --- D234: an ambiguous effect is credited to the write that owes it, not to the last call ---
+
+CREATE, LOOKUP, ADJUST, SETTLE = "open_loan", "read_ledger", "adjust_credit", "settle_loan"
+
+
+def two_writer_calls() -> list[ToolCall]:
+    """Read the member; a create names it, a lookup only names the loan; read the member again."""
+    return [
+        call("c1", "get_member", {"member_id": "MB01"},
+             {"member_id": "MB01", "credit": 100, "ledger": []}),
+        call("c2", CREATE, {"member_id": "MB01"}, loan_row()),
+        call("c3", LOOKUP, {"loan_id": "LN01"},
+             {"member_id": "MB01", "credit": 82, "ledger": [{"amount": 18}]}),
+    ]
+
+
+def naming_row_seen():
+    """A create names the member row; a later lookup names only the loan."""
+    return effects.observe_effects([trace_of(two_writer_calls())], schema(), {CREATE, LOOKUP})
+
+
+def test_the_write_naming_the_row_takes_the_credit():
+    seen = naming_row_seen()
+    assert sorted(effect.call_id for effect in seen[CREATE]) == ["c2"]
+    assert LOOKUP not in seen
+    evidence = effects.replay_evidence(seen)
+    assert [row["path"] for row in evidence["c2"] if row["table"] == "members"] != []
+    assert all(row["table"] != "members" for row in evidence.get("c3", []))
+
+
+def test_the_named_row_credit_is_checked_and_owned():
+    seen = naming_row_seen()
+    credit = next(column for effect in seen[CREATE] for column in effect.columns
+                  if column.table == "members" and column.path == "credit")
+    assert (credit.before, credit.after) == (100, 82)
+    assert credit.ambiguous is True
+    assert credit.checked is True
+    assert credit.unattributed is False
+
+
+def test_a_tool_seen_moving_the_column_alone_elsewhere_keeps_the_credit():
+    first = [
+        call("c1", "get_member", {"member_id": "MB01"},
+             {"member_id": "MB01", "credit": 100, "ledger": []}),
+        call("c2", ADJUST, {"loan_id": "LN01"}, loan_row()),
+        call("c3", "get_member", {"member_id": "MB01"},
+             {"member_id": "MB01", "credit": 90, "ledger": []}),
+    ]
+    second = [
+        call("d1", "get_member", {"member_id": "MB01"},
+             {"member_id": "MB01", "credit": 100, "ledger": []}),
+        call("d2", ADJUST, {"loan_id": "LN01"}, loan_row()),
+        call("d3", SETTLE, {"loan_id": "LN01"}, loan_row()),
+        call("d4", "get_member", {"member_id": "MB01"},
+             {"member_id": "MB01", "credit": 90, "ledger": []}),
+    ]
+    seen = effects.observe_effects([trace_of(first, "tr1"), trace_of(second, "tr2")],
+                                   schema(), {ADJUST, SETTLE})
+    owned = [column for effect in seen[ADJUST] for column in effect.columns
+             if column.table == "members" and column.path == "credit"
+             and not column.unattributed]
+    assert sorted((column.after, column.checked) for column in owned) == [(90, True), (90, True)]
+    assert SETTLE not in seen
+    evidence = effects.replay_evidence(seen)
+    assert [row["path"] for row in evidence["d2"] if row["table"] == "members"] != []
+    assert all(row["table"] != "members" for row in evidence.get("d3", []))
+
+
+def nowhere_owned_calls() -> list[ToolCall]:
+    """Two writes neither of which names the member, and no lone move anywhere in the trace."""
+    return [
+        call("c1", "get_member", {"member_id": "MB01"},
+             {"member_id": "MB01", "credit": 100, "ledger": []}),
+        call("c2", ADJUST, {"loan_id": "LN01"}, loan_row()),
+        call("c3", SETTLE, {"loan_id": "LN01"}, loan_row()),
+        call("c4", "get_member", {"member_id": "MB01"},
+             {"member_id": "MB01", "credit": 90, "ledger": []}),
+    ]
+
+
+def nowhere_owned_seen():
+    return effects.observe_effects([trace_of(nowhere_owned_calls())], schema(), {ADJUST, SETTLE})
+
+
+def test_a_column_no_write_owes_is_unattributed_and_not_charged_to_the_last_call():
+    seen = nowhere_owned_seen()
+    evidence = effects.replay_evidence(seen)
+    stray = evidence.get(effects.UNATTRIBUTED, [])
+    assert [(row["table"], row["path"]) for row in stray] == [("members", "credit")]
+    assert all(row["table"] != "members" for row in evidence.get("c3", []))
+    assert effects.counts(seen)["effects_unattributed"] == 1
+
+
+class StillWorld:
+    """Answers every call the way the recording did and moves nothing at all."""
+
+    def __init__(self, db: dict):
+        self.db = db
+
+    def get_member(self, member_id):
+        return dict(self.db["members"][member_id])
+
+    def adjust_credit(self, loan_id):
+        return dict(self.db["loans"][loan_id])
+
+    def settle_loan(self, loan_id):
+        return dict(self.db["loans"][loan_id])
+
+
+def test_an_unattributed_column_fails_no_call_at_replay(tmp_path):
+    evidence = effects.replay_evidence(nowhere_owned_seen())
+    world = json.loads(json.dumps(WORLD))
+    router = Router(env_tools_module=StillWorld(json.loads(json.dumps(WORLD))),
+                    starting_state=world,
+                    tool_sigs=[ToolSig(name="get_member", kind="read"),
+                               ToolSig(name=ADJUST, kind="write"),
+                               ToolSig(name=SETTLE, kind="write")])
+    result = replay.replay_trace(trace_of(nowhere_owned_calls()), router,
+                                 workdir=tmp_path / "runs" / "t1", task_id="t1",
+                                 write_tools={ADJUST, SETTLE}, effects=evidence)
+    assert result.counts["effect_failures"] == 0
+    assert not any(check.get("effect_failures") for check in result.checks)
+    last = next(check for check in result.checks if check.get("call_id") == "c3")
+    assert last["verdict"] in replay.AGREES
+
+
+def test_a_recorded_call_claiming_the_reserved_key_loses_no_evidence():
+    owned = effects.WriteEffect(tool=WRITE, call_id=effects.UNATTRIBUTED, trace_id="tr1", columns=[
+        effects.EffectColumn(table="loans", row_id="LN01", path="title_id",
+                             before="TT01", after="TT09")])
+    stray = effects.EffectColumn(table="members", row_id="MB01", path="credit",
+                                 before=100, after=82, ambiguous=True,
+                                 checked=False, unattributed=True)
+    holder = effects.WriteEffect(tool=WRITE, call_id="c9", trace_id="tr1", columns=[stray])
+    evidence = effects.replay_evidence({WRITE: [owned, holder]})
+    assert [row["path"] for row in evidence[effects.UNATTRIBUTED]] == ["title_id"]
+    bumped = effects.UNATTRIBUTED + "\x00"
+    assert [row["path"] for row in evidence[bumped] if row["unattributed"]] == ["credit"]
+
+
+def two_owner_seen():
+    """Two writes both naming the member row, read again after each."""
+    calls = [
+        call("c1", "get_member", {"member_id": "MB01"},
+             {"member_id": "MB01", "credit": 100, "ledger": []}),
+        call("c2", ADJUST, {"member_id": "MB01"}, loan_row()),
+        call("c3", SETTLE, {"member_id": "MB01"}, loan_row()),
+        call("c4", "get_member", {"member_id": "MB01"},
+             {"member_id": "MB01", "credit": 90, "ledger": []}),
+    ]
+    return effects.observe_effects([trace_of(calls)], schema(), {ADJUST, SETTLE})
+
+
+def test_two_owners_check_only_the_later_write():
+    seen = two_owner_seen()
+    first = next(column for effect in seen[ADJUST] for column in effect.columns
+                 if column.table == "members" and column.path == "credit")
+    second = next(column for effect in seen[SETTLE] for column in effect.columns
+                  if column.table == "members" and column.path == "credit")
+    assert first.checked is False
+    assert second.checked is True
+
+
+def test_two_owner_evidence_and_counts_stay_with_the_last():
+    seen = two_owner_seen()
+    evidence = effects.replay_evidence(seen)
+    assert all(row["table"] != "members" for row in evidence.get("c2", []))
+    assert [row["path"] for row in evidence["c3"] if row["table"] == "members"] == ["credit"]
+    assert effects.counts(seen)["effects_ambiguous"] == 2
+
+
+def test_a_single_write_span_is_credited_and_checked_as_before():
+    credit = column_of(observed(), "members", "credit")
+    assert credit.ambiguous is False
+    assert credit.checked is True
+    assert credit.unattributed is False
+
+
+def test_unattributed_columns_are_shown_to_no_writer():
+    seen = nowhere_owned_seen()
+    assert effects.effects_block(SETTLE, seen.get(SETTLE, [])) == ""
+    assert effects.effects_block(ADJUST, seen.get(ADJUST, [])) == ""

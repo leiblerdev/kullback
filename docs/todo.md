@@ -11,6 +11,7 @@ These are the items I pushed past the first build. Each line says what it buys a
 - Flip the speed-1 variant gate in `kullback/examiner/stage.py` (`_second_path_outcome` passes
   `state.pool` to `synth_second_path` again) once the tally lock above is in: the variant part of
   the gain stays deferred until then.
+- effect-credit.patch waits for the founder's re-freeze: the replay counts unattributed effects instead of failing the last call.
 
 ## After the first Replica clears Gate A
 

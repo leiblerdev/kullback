@@ -1,0 +1,38 @@
+--- a/kullback/runner/replay.py
++++ b/kullback/runner/replay.py
+@@ -279,7 +279,13 @@ class ScoredRouter:
+             return
+         world = self.inner.world() if hasattr(self.inner, "world") else {}
+         misses = []
++        unattributed = 0
+         for row in expected:
++            # D234: a column no write in its span owed rides along flagged rather than
++            # charged. It is counted on the check and never failed against this call.
++            if row.get("unattributed"):
++                unattributed += 1
++                continue
+             held = ((world.get(str(row.get("table"))) or {}) if isinstance(world, dict) else {})
+             record = held.get(str(row.get("row"))) if isinstance(held, dict) else None
+             path = str(row.get("path") or "")
+@@ -295,5 +301,7 @@ class ScoredRouter:
+             misses.append({**_effect_note(row), "ours": _preview(value if found else None),
+                            "reason": "the column is not there" if not found else "the column did not move"})
+-        check["effect_checks"] = len(expected)
++        check["effect_checks"] = len(expected) - unattributed
++        if unattributed:
++            check["unattributed_effects"] = unattributed
+         if misses:
+             check["effect_failures"] = misses[:EFFECTS_NAMED]
+@@ -593,5 +598,12 @@ def _score(trace: Trace, state: Any, scored: ScoredRouter, script: _Script, mode
+         # D215's own counters: columns checked after a write replayed, columns that did not reach
+         # the value the recording shows, and the later calls those columns are blamed for.
+         "effect_checks": sum(int(c.get("effect_checks") or 0) for c in scored.checks),
+         "effect_failures": sum(int(c.get("effect_failures_total") or 0) for c in scored.checks),
++        # D234: columns the recording shows moving that no write in their span owed. They ride
++        # under the tagged unattributed key, or flagged inside a call's own rows where a
++        # recorded id claimed that key, so every flagged row is counted here and none is failed
++        # against a call.
++        "effect_unattributed": sum(1 for rows in (scored.effects or {}).values()
++                                   for row in (rows or [])
++                                   if isinstance(row, dict) and row.get("unattributed")),
+         "effects_downstream": sum(1 for c in scored.checks if c.get(DOWNSTREAM)),
