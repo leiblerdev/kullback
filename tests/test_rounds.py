@@ -377,6 +377,84 @@ def test_a_build_records_the_judge_models_only_when_one_was_named(tmp_path):
     assert body["audit_rate"] == 0.5, "what the file already said is kept"
 
 
+def test_a_build_records_the_user_model_beside_the_judge_models(tmp_path):
+    """D232: the workdir record says which model drove the user, and a build with neither a judge
+    model nor a user model still writes nothing."""
+    user_only = BuildPlan(workdir=tmp_path / "user", user_agent_model=TestModel(["hi"], name="other/small"))
+    (user_only.workdir / "report_config.json").write_text(json.dumps({"audit_rate": 0.5}), encoding="utf-8")
+    rounds._record_judge_models(user_only)
+    body = json.loads((user_only.workdir / "report_config.json").read_text(encoding="utf-8"))
+    assert body["user_model"] == "other/small"
+    assert "judge_models" not in body and body["audit_rate"] == 0.5
+
+    both = BuildPlan(workdir=tmp_path / "both", model=TestModel(["hi"], name="vendor/large"),
+                     judge_model=TestModel(["hi"], name="other/small"),
+                     user_agent_model=TestModel(["hi"], name="fourth/huge"))
+    rounds._record_judge_models(both)
+    body = json.loads((both.workdir / "report_config.json").read_text(encoding="utf-8"))
+    assert body["judge_models"]["judge"] == "other/small" and body["user_model"] == "fourth/huge"
+
+
+def _garden_workdir(path: Path) -> Path:
+    """One invented garden centre Task with its recording, Reference and user rules on disk."""
+    from kullback.runner.records import RawPtr, ToolCall, Trace, Turn
+    from kullback.user import rules as user_rules_mod
+    from kullback.user.vocabulary import GENERIC_FIELDS, FieldSpec, Vocabulary
+
+    ptr = RawPtr(file_hash="testfile", sim_index=0)
+    vocab = Vocabulary(domain="garden", fields=[
+        *[f.model_copy(deep=True) for f in GENERIC_FIELDS],
+        FieldSpec(field="plot_id", kind="reference", pattern=r"\bPLOT-\d{4}\b",
+                  cues=[r"\bplot (?:id|number)\b", r"\byour plot\b"], aliases=["plot id"]),
+        FieldSpec(field="delivery_slot", kind="value", pattern=r"\b(?:0[1-9]|1[0-9]|2[0-3]):00\b",
+                  cues=[r"\bdelivery slot\b", r"\bwhat time\b"], aliases=["delivery slot"]),
+    ])
+
+    def turn(idx: int, role: str, content: str) -> Turn:
+        return Turn(idx=idx, role=role, content=content, tool_call_ids=[], raw_ptr=ptr)
+
+    recorded = Trace(trace_id="t1", raw_hash="h", ingest_version="v", source="test", turns=[
+        turn(0, "user", "Hello, please could you move my plant delivery to a later slot."),
+        turn(1, "assistant", "Of course. Could you provide your plot number?"),
+        turn(2, "user", "Thanks, my plot number is PLOT-4471."),
+        turn(3, "assistant", "Thank you. What delivery slot would you like?"),
+        turn(4, "user", "Please make it 16:00."),
+        turn(5, "assistant", "Done, your delivery is moved. Anything else?"),
+        turn(6, "user", "No, that is all. Thank you."),
+    ], tool_calls=[ToolCall(id="c1", name="move_delivery", args={"plot_id": "PLOT-4471", "slot": "16:00"},
+                             result={"plot_id": "PLOT-4471", "slot": "16:00", "courier_ref": "CR-90881"},
+                             raw_ptr=ptr)], raw_ptr=ptr)
+    rules = user_rules_mod.derive_user_rules(recorded, vocab, writes=["move_delivery"])
+    (path / "traces").mkdir(parents=True)
+    (path / "user_rules").mkdir(parents=True)
+    (path / "traces" / "abc.json").write_text(json.dumps(as_dict(recorded)), encoding="utf-8")
+    (path / "replays.json").write_text(
+        json.dumps({"task_1": {"t1": {"confirmed": True, "trace_id": "t1"}}}), encoding="utf-8")
+    (path / "user_rules" / "t1.json").write_text(json.dumps(as_dict(rules)), encoding="utf-8")
+    (path / "vocabulary.json").write_text(json.dumps(vocab.model_dump()), encoding="utf-8")
+    (path / "tool_sigs.json").write_text(json.dumps([{"name": "move_delivery", "kind": "write"}]),
+                                           encoding="utf-8")
+    return path
+
+
+def test_a_stub_user_model_drives_the_user_through_the_build_path_and_is_counted(tmp_path):
+    """D232: a stub user model on the plan drives the agent user past the rules, so the round
+    counts the Task agent driven; with no user model the same round counts it rule driven."""
+    replies = ["Thanks, my plot number is PLOT-4471.", "Please make it 16:00.",
+               "No, that is all. Thank you."]
+    driven = BuildPlan(workdir=_garden_workdir(tmp_path / "driven"),
+                       user_agent_model=TestModel(replies, name="vendor/small", loop=True))
+    loop = rounds.Loop(plan=driven, builder=builder_agent.build_harness(driven))
+    counts = loop.user_fidelity_counts()
+    assert counts["tasks_agent_driven"] == 1, counts["user_fidelity"]
+    assert counts["tasks_rule_driven"] == 0
+
+    rules_only = BuildPlan(workdir=_garden_workdir(tmp_path / "rules"))
+    plain = rounds.Loop(plan=rules_only, builder=builder_agent.build_harness(rules_only))
+    counts = plain.user_fidelity_counts()
+    assert counts["tasks_agent_driven"] == 0 and counts["tasks_rule_driven"] == 1
+
+
 # --- the allowance and the exits, decided by the driver -----------------------------------
 
 def test_the_allowance_defaults_to_round_ones_spend_per_agent(tmp_path):
