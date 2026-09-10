@@ -1574,3 +1574,39 @@ def test_a_beat_that_raised_ends_on_the_stream_like_any_other_beat(tmp_path, mon
         loop.builder_beat(1)
     assert _beats(seen) == [("beat_start", "builder", 1), ("beat_end", "builder", 1)]
     assert round([e for e in seen if isinstance(e, BeatEnd)][0].spend, 4) == 0.25
+
+
+# --- the round number continues across a restart (D231) ---------------------------------------
+
+def test_the_next_round_is_numbered_past_every_round_the_workdir_has_closed(tmp_path):
+    """Read off both files a closed round leaves, because either can outlive the other: rounds.json
+    is rewritten by each process with its own rounds, and the tables under rounds/ stay whatever
+    wrote them. A number either one has used is a number the next run may not reuse."""
+    from kullback import round_snapshot
+
+    workdir = tmp_path / "work"
+    assert rounds.last_round(workdir) == 0, "a fresh workdir has closed nothing and opens at 1"
+    rounds.write_rounds(workdir, [_record(1), _record(2)])
+    assert rounds.last_round(workdir) == 2
+    round_snapshot.write_snapshot(workdir, 5, [{"task_id": "task_dock"}])
+    assert rounds.last_round(workdir) == 5, "a table the counter would otherwise be handed again"
+    (workdir / rounds.ROUNDS_NAME).write_text("{ not json", encoding="utf-8")
+    assert rounds.last_round(workdir) == 5, "a half-written file says nothing about which rounds closed"
+
+
+def test_a_second_run_over_a_workdir_numbers_its_rounds_after_the_first_runs_and_writes_its_own_table(tmp_path):
+    """D231: an --iterate run used to open at 1 again, so it was handed the previous run's Task
+    table (a closed round's table is never rewritten) and its history row was derived from it, which
+    is how three workdirs came to hold an all-zero round-1 table beside a round that had measured."""
+    from kullback import round_snapshot
+
+    workdir = tmp_path / "work"
+    first = rounds.run_rounds(workdir, files=[])  # nothing to build: the beat raises, the round closes
+    assert first["failed"] is True
+    second = rounds.run_rounds(workdir, files=[], iterate=True)
+    assert [r["round"] for r in second["rounds"]] == [2]
+    assert round_snapshot.closed_rounds(workdir) == [1, 2]
+    assert round_snapshot.read_snapshot(workdir, 2)["round"] == 2
+    assert rounds.last_round(workdir) == 2
+    history = json.loads((workdir / "gates_by_round.json").read_text(encoding="utf-8"))
+    assert [row["round"] for row in history] == [1, 2], "one history row per round, not one overwritten"

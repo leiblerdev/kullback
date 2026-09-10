@@ -386,6 +386,27 @@ def load_rounds(workdir: Any) -> list[RoundRecord]:
     return [RoundRecord.model_validate(row) for row in (body if isinstance(body, list) else [])]
 
 
+def last_round(workdir: Any) -> int:
+    """The highest round this workdir has already closed, and 0 when it has closed none (D231).
+
+    What the next round is numbered. A process used to start counting at 1 whatever the workdir
+    held, so an `--iterate` run wrote its first round over the last run's round 1: the Task table
+    under rounds/1 is written once and never rewritten (`round_snapshot.write_snapshot`), so the new
+    round was handed the old round's table and the history row derived from it, and every count
+    keyed by round number, the repair requests and the retirements among them, read the round before
+    the build as this one's.
+
+    Both files a closed round leaves are read, because either can outlive the other: rounds.json is
+    rewritten by each process with that process's own rounds, and the tables under rounds/ stay
+    whatever wrote them. A number either one has used is a number this run may not reuse.
+    """
+    try:
+        recorded = max((int(record.round) for record in load_rounds(workdir)), default=0)
+    except (OSError, ValueError, TypeError):
+        recorded = 0  # a half-written or hand-edited file says nothing about which rounds closed
+    return max([recorded, *round_snapshot.closed_rounds(workdir)])
+
+
 def _session(workdir: Path, name: Path) -> SessionStore:
     """A fresh session file for this run: one run of the loop is one session per agent."""
     path = Path(workdir) / name
@@ -1686,7 +1707,10 @@ def run_rounds(workdir: Any, model: Any = None, *, agent_model: Optional[Model] 
                 agent_model=agent_model, allowance_usd=allowance_usd, stall_rounds=stall_rounds,
                 fidelity_stall=fidelity_stall, max_rounds=max_rounds,
                 subscribers=shared, on_event=on_event, max_turns=max_turns)
-    n = 0
+    # D231: the count continues from what this workdir has already closed, so a second invocation
+    # over the same workdir (`--iterate`) writes its own tables and its own history rows instead of
+    # the last run's. A fresh workdir has closed nothing and starts, as before, at 1.
+    n = last_round(plan.workdir)
     while True:
         n += 1
         try:
