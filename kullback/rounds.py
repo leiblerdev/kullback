@@ -644,6 +644,11 @@ class Loop:
         driver sees, and the driver closes the round on a broken agent contract and not on that, so
         the round would go unclosed and unrecorded, which is the whole thing this decision repairs.
         On a beat that ended well the raise is left to travel as it always did.
+
+        A cancellation counts as bookkeeping noise the same way an ordinary error does: the subscriber
+        is awaited, so a cancelled screen raises past `Exception` and would take the beat's error with
+        it. A stop asked for from outside the process is not noise and still travels: a round record
+        is not worth swallowing an interrupt for, and the round's own error is on the way out anyway.
         """
         try:
             spent = self.spend() - before
@@ -652,7 +657,7 @@ class Loop:
             if allowance is not None and spent >= allowance:
                 self.spent_allowance[agent] = True
             self.emit(BeatEnd(agent=agent, round=n, spend=spent))
-        except Exception:
+        except (Exception, asyncio.CancelledError):
             if not failing:
                 raise
 

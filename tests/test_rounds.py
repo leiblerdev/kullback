@@ -1599,6 +1599,42 @@ def test_a_screen_that_breaks_on_the_end_of_a_failed_beat_does_not_replace_the_b
     assert round(loop.beat_spend["builder"], 4) == 0.5, "and what that beat cost it"
 
 
+def test_a_cancelled_screen_on_the_end_of_a_failed_beat_does_not_replace_the_beats_own_error(tmp_path,
+                                                                                             monkeypatch):
+    """A subscriber is awaited, so a cancelled one raises past the ordinary errors and would carry
+    the beat's error off with it. A stop asked for from outside the process is a different thing and
+    still travels: a round record is not worth swallowing an interrupt for."""
+    from kullback.agent.tools import ToolResult
+
+    def cancelled(event: Any) -> None:
+        if isinstance(event, BeatEnd):
+            raise asyncio.CancelledError()
+
+    loop = _bare_loop(tmp_path, subscribers=[cancelled])
+    spent = iter([4.0, 4.25])
+    monkeypatch.setattr(type(loop), "spend", lambda self: next(spent))
+    monkeypatch.setattr(builder_agent, "drive_tool",
+                        lambda *args, **kwargs: ToolResult(content="the build broke", is_error=True))
+    with pytest.raises(BuildError):
+        loop.run_beat("builder", 1)
+    assert loop.beat_error["beat"] == "builder" and round(loop.beat_spend["builder"], 4) == 0.25
+
+
+def test_an_interrupt_on_the_end_of_a_failed_beat_is_not_swallowed_by_the_bookkeeping(tmp_path, monkeypatch):
+    """The line the guard draws: a stop the operator asked for is not the beat's bookkeeping noise."""
+    from kullback.agent.tools import ToolResult
+
+    def interrupted(event: Any) -> None:
+        if isinstance(event, BeatEnd):
+            raise KeyboardInterrupt()
+
+    loop = _bare_loop(tmp_path, subscribers=[interrupted])
+    monkeypatch.setattr(builder_agent, "drive_tool",
+                        lambda *args, **kwargs: ToolResult(content="the build broke", is_error=True))
+    with pytest.raises(KeyboardInterrupt):
+        loop.run_beat("builder", 1)
+
+
 def test_a_screen_that_breaks_on_the_end_of_a_beat_that_went_well_is_still_heard(tmp_path, monkeypatch):
     """Only a beat already carrying its own error out is protected from its bookkeeping. A beat that
     ended well has nothing to lose to the raise, so the raise travels as it always did."""
