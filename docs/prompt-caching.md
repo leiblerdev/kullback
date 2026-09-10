@@ -1,5 +1,7 @@
 # Prompt caching (2026-08-28)
 
+> Status (2026-09-10): paths predate the `kullback/` move; re-verify against the current tree before implementing.
+
 Asked for in my words: "you also need to explore how to cache prompts as well please or else the cost would be too much." This note is what the provider layer does today, where the tokens actually go, and the changes in the order they pay off.
 
 ## What is already there

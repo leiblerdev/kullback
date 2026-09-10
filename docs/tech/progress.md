@@ -1,5 +1,7 @@
 # Tech Progress Log
 
+> Status (2026-09-10): stale after 2026-08-24; phases 1 to 5 and 7 landed, see docs/tech/README.md.
+
 ## 2026-08-19: setup
 
 - Created tech structure (website + SDK wrapper plans).

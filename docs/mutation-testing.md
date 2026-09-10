@@ -1,5 +1,7 @@
 # Mutation testing, first full run (2026-08-28)
 
+> Status (2026-09-10): paths in this note no longer exist (the `shared/` tree moved under `kullback/`); numbers are not comparable with the current tree.
+
 I ran mutmut 3.7 over every module before the review fixes landed, so these numbers describe the code as it was on the morning of 2026-08-28, not the code in this commit. 24,564 mutants: 17,372 killed, 7,031 survived, 81 timed out, 77 were never tested (mutmut could not reach them), 3 suspicious. Kill rate 70.7 percent.
 
 Survivors by module, most first. A survivor is a mutation no test noticed; it is a hint about where the tests check that code runs rather than what it produces, not a bug count.

@@ -1,6 +1,8 @@
 # Design philosophy
 
-This is why Kullback looks the way it does, in one place. What I built, why, and what I left out on purpose. The decision log (`decision-log.md`, D01 to D100) has every single choice next to the alternative it beat. The ADRs in `adr/` hold the four I can't easily undo. This document is the shape of the whole thing.
+> Status (2026-09-10): frozen narrative. Counts were corrected on 2026-09-10; the decision log and docs/adr are the current record.
+
+This is why Kullback looks the way it does, in one place. What I built, why, and what I left out on purpose. The decision log (`decision-log.md`, D01 to D227) has every single choice next to the alternative it beat. The ADRs in `adr/` hold the seven I can't easily undo. This document is the shape of the whole thing.
 
 ## Where it starts
 

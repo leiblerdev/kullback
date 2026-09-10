@@ -1,5 +1,7 @@
 # Training plan: prove the environment by training in it (2026-08-28)
 
+> Status (2026-09-10): blocked on the two still-open items in docs/cross-domain-check.md (After the fixes): confirmation-string write results and the per-task initialization-action overlay.
+
 My words: "plan being we will pick a benchmark, evaluate a frontier model on it (or the cheaper ones) and then we will train our model using OPD or RL (for that we will also create the harness for it) on the environment this generates (or for the time being we don't create the harness and just write the code ourselves for multiple methods) and then prove that this works. If it doesn't we go back and improve our harness for synthetic environment generation."
 
 That is the loop. Everything else in this repo is downstream of whether a model trained inside a Kullback-built environment gets better on the real thing.
