@@ -138,6 +138,10 @@ MESSAGE_CLASS_CHARS = 80
 # dropped and the sentence around it is what two rounds are grouped by.
 VALUE_MARK = "<value>"
 VALUE_CHARS = re.compile(r"[0-9_/\\.\-]")
+# What a clause has to look like to be read as the exception the message names. Anything spaceless
+# and capitalised used to pass, which is every model name, order id and CamelCase column a message
+# happens to carry, and each of those is a value the class exists to leave out.
+EXCEPTION_NAME = re.compile(r"[A-Z][A-Za-z]*(?:Error|Exception|Exhausted|Timeout|Interrupt)")
 
 # The artifacts a model writes and a repair verb rewrites, by the name a round's counts call them.
 # Each is a stage output of `builder.build`: `compile_tools` writes bodies.json, `starting_state`
@@ -261,10 +265,14 @@ def message_class(message: str) -> str:
     failed the same way group together whatever their third clause named. Where the first clause
     interpolates a value of its own it is dropped there too (`_class_head`). A message with no
     exception name in it is its own class, capped, since there is nothing else to read it by.
+
+    A clause joins the class only where it is shaped like an exception name (`EXCEPTION_NAME`): a
+    spaceless capitalised word is as often a model, an id or a column as it is a raise, and the
+    class is worth less carrying one of those than it is carrying the head alone.
     """
     parts = [part.strip() for part in str(message).split(":")]
     head = _class_head(parts[0])[:MESSAGE_CLASS_CHARS]
-    named = next((part for part in parts[1:] if part and " " not in part and part[:1].isupper()), "")
+    named = next((part for part in parts[1:] if EXCEPTION_NAME.fullmatch(part)), "")
     return f"{head}: {named}" if named else head
 
 

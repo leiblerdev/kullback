@@ -1529,6 +1529,18 @@ def test_the_class_of_a_beat_error_message_holds_what_failed_and_never_the_value
     assert rounds.message_class("the model never called derive('all')") == "the model never called derive('all')"
 
 
+def test_only_a_clause_shaped_like_an_exception_name_is_promoted_into_the_class(tmp_path):
+    """A spaceless capitalised word is as often a model, an order id or a CamelCase column as it is a
+    raise, and each of those is a value the class exists to leave out. The class is worth more
+    carrying the head alone than it is carrying one of them."""
+    assert rounds.message_class("model call failed: Nimbus-7b: rate limit on account acct_99") == \
+        "model call failed", "a model name is a value, not the exception"
+    assert rounds.message_class("derive failed: XQ-4821: no row for it") == "derive failed"
+    assert rounds.message_class("column missing: LoftedGauge: on the ledger") == "column missing"
+    assert rounds.message_class("derive failed: LookupError: XQ-4821") == "derive failed: LookupError", \
+        "and the exception itself still joins it"
+
+
 def test_a_value_in_the_first_clause_of_a_message_is_grouped_out_of_the_class_too(tmp_path):
     """Plenty of raises interpolate an id or a path straight into the sentence and carry no colon at
     all, so the whole sentence was the class and every round that failed that way was its own group,
