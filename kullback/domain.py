@@ -13,7 +13,7 @@ of tools, and whatever the page states as a rule. An archetype is not a Task. It
 after `synthesise.py` finds a walk of the mined graph that realises its effects, runs it in the
 rebuilt world and puts it through every rung of the realism bar.
 
-Four things keep this honest.
+Five things keep this honest.
 
   Nothing about a customer domain is in this code. A source is a URL a caller hands over, a search
   the caller asked for, or a page a model named for a one line description of the domain the caller
@@ -27,6 +27,12 @@ Four things keep this honest.
   The benchmark cannot read itself. A source under the corpus's own repository or paper is refused
   and counted, and so is every page the crawl or the model would otherwise reach under it. Reading
   a published task list back in would make an archetype that attests nothing.
+
+  Nothing but the public web is read. A URL that reaches the fetch came from a caller, a link, a
+  search or a model, so every destination is checked before a socket is opened and again on each
+  redirect: the scheme has to be http or https and the host has to be a name that resolves to public
+  addresses alone. A machine on the network the reader is running in is not public material, and its
+  answer would be cached and handed to a model like any page.
 
   Nothing of the page is copied. A record that repeats a sentence of the page it came from is
   dropped, and so is one that repeats a string of the corpus's own Task list, which is
@@ -78,6 +84,7 @@ SHINGLE_WORDS = 6
 CORPUS_URL = "under the source corpus's own repository or paper"
 EXCLUDED = "under an excluded URL the caller named"
 UNREACHABLE = "the page did not answer"
+DESTINATION = "the destination is not a public web address"
 
 # How a source came to be read. The record says so, because a page a model named and a page the
 # caller handed over are different evidence.
@@ -189,16 +196,134 @@ def links(html: str, base: str) -> list[str]:
     return out
 
 
-def http_fetch(url: str, timeout: float = 20.0) -> str:
+# --- where a fetch may go ------------------------------------------------------------
+
+# A URL reaching the fetch is never the harness's own: the caller hands it over, a page links to it,
+# a search names it or a model writes it down. A URL that names a machine on the network the reader
+# happens to be running in is a request the reader was never asked to make, and the answer would go
+# into the cache and on to the model like any page. So every destination is checked in words before
+# a socket is opened, and the classes are read off `ipaddress` rather than a list kept by hand.
+ALLOWED_SCHEMES = ("http", "https")
+# What the classification answers for a string that is a name rather than an address at all.
+NOT_AN_ADDRESS = "not an address"
+# How many redirects one fetch follows. Each hop is checked again, because the first destination
+# says nothing about where the answer sends the reader next.
+REDIRECT_HOPS = 5
+
+# One line per class, in the order they are asked, and the word each one is refused with. The private
+# class holds the RFC 1918 ranges and the unique local ones together; the link local class holds
+# 169.254.0.0/16, which is where a cloud host answers questions about itself.
+_ADDRESS_CLASSES = (("is_unspecified", "unspecified"), ("is_loopback", "loopback"),
+                    ("is_link_local", "link local"), ("is_multicast", "multicast"),
+                    ("is_reserved", "reserved"), ("is_private", "private or unique local"))
+
+
+class DestinationRefused(Exception):
+    """A destination a fetch may not open, carrying the class of the refusal in words.
+
+    The words are the scheme or the class of the host, never an address: what a name on someone
+    else's network resolves to is not this harness's to write down or to hand to a model.
+    """
+
+
+def address_class(value: Any) -> str:
+    """The class of one address a fetch would reach, in words, or nothing where it is a public one.
+
+    An address written the IPv6 way for an IPv4 host is classified as the IPv4 host it names, so the
+    same loopback is refused whichever way it is spelled.
+    """
+    import ipaddress
+
+    try:
+        address = ipaddress.ip_address(str(value))
+    except ValueError:
+        return NOT_AN_ADDRESS
+    mapped = getattr(address, "ipv4_mapped", None)
+    address = mapped or address
+    for name, word in _ADDRESS_CLASSES:
+        if getattr(address, name, False):
+            return word
+    return "" if getattr(address, "is_global", True) else "not publicly routable"
+
+
+def resolver(host: str) -> list[str]:
+    """Every address a name holds, IPv4 and IPv6 together. The only name lookup this module does."""
+    import socket
+
+    return [str(info[4][0]) for info in socket.getaddrinfo(str(host), None)]
+
+
+def destination_refusal(url: str, *, resolve: Optional[Callable[[str], Iterable[str]]] = None
+                        ) -> str:
+    """Why a socket may not be opened to this URL, in words, or nothing where it may.
+
+    A pure function of the URL and the resolver it is handed, so a test states a class of address by
+    handing a resolver that answers with one and never touches a network. Every address a name holds
+    has to be public: a name that answers with a public address and a loopback one is refused, since
+    which of the two a connection lands on is not the caller's to choose.
+    """
+    parts = urlsplit(str(url or ""))
+    scheme = (parts.scheme or "").lower()
+    if scheme not in ALLOWED_SCHEMES:
+        return f"the scheme is {scheme or 'missing'} and not http or https"
+    host = (parts.hostname or "").lower()
+    if not host:
+        return "there is no host"
+    if host == "localhost" or host.endswith(".localhost"):
+        return "the host is a loopback name"
+    literal = address_class(host)
+    if literal != NOT_AN_ADDRESS:
+        return f"the host is a literal {literal or 'public'} address"
+    try:
+        found = list(resolve(host) if resolve is not None else resolver(host))
+    except Exception as error:  # noqa: BLE001 - a name that does not answer is not a destination
+        return f"the host did not resolve: {type(error).__name__}"
+    if not found:
+        return "the host did not resolve"
+    for address in found:
+        word = address_class(address)
+        if word:
+            return f"the host resolves to a {word} address"
+    return ""
+
+
+def redirect_guard(resolve: Optional[Callable[[str], Iterable[str]]] = None) -> Any:
+    """A redirect handler that puts every hop through the same check, capped at REDIRECT_HOPS.
+
+    urlopen follows redirects itself, so a destination that passed the check can still hand the
+    reader on to one that would not. Checking the first URL alone would leave the whole rule to
+    whatever the first answer says.
+    """
+    from urllib.request import HTTPRedirectHandler
+
+    class Guarded(HTTPRedirectHandler):
+        max_redirections = REDIRECT_HOPS
+
+        def redirect_request(self, req, fp, code, msg, headers, newurl):
+            why = destination_refusal(newurl, resolve=resolve)
+            if why:
+                raise DestinationRefused(f"a redirect was refused because {why}")
+            return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+    return Guarded()
+
+
+def http_fetch(url: str, timeout: float = 20.0, *,
+               resolve: Optional[Callable[[str], Iterable[str]]] = None) -> str:
     """One page over the network, as text. The only place this module opens a socket.
 
     Callers that must not touch the network hand their own reader in, which is what the tests do:
-    the crawl takes a fetch function and never reaches for this one itself.
+    the crawl takes a fetch function and never reaches for this one itself. The destination is
+    checked before the socket is opened and again on every redirect, and a refused one is raised as
+    DestinationRefused rather than read.
     """
-    from urllib.request import Request, urlopen  # imported here: nothing offline pays for it
+    from urllib.request import Request, build_opener  # imported here: nothing offline pays for it
 
+    why = destination_refusal(url, resolve=resolve)
+    if why:
+        raise DestinationRefused(why)
     request = Request(str(url), headers={"User-Agent": "kullback-domain-reader"})  # noqa: S310
-    with urlopen(request, timeout=timeout) as answer:  # noqa: S310
+    with build_opener(redirect_guard(resolve)).open(request, timeout=timeout) as answer:
         raw = answer.read()
     return raw.decode("utf-8", errors="replace")
 
@@ -230,6 +355,9 @@ def crawl(workdir: Any, sources: Iterable[dict], *, fetch: Callable[[str], str],
             continue
         try:
             html = fetch(url)
+        except DestinationRefused as error:
+            refused.append({"url": url, "reason": DESTINATION, "via": via, "why": str(error)})
+            continue
         except Exception as error:  # noqa: BLE001 - any transport failure is one unread page
             refused.append({"url": url, "reason": UNREACHABLE, "via": via,
                             "error": type(error).__name__})
@@ -334,6 +462,9 @@ def named_sources(model: Any, description: str, *, fetch: Callable[[str], str],
             if not page_text(fetch(url)):
                 dropped.append({"url": url, "reason": UNREACHABLE})
                 continue
+        except DestinationRefused as error:
+            dropped.append({"url": url, "reason": DESTINATION, "why": str(error)})
+            continue
         except Exception as error:  # noqa: BLE001 - a page that does not resolve is not a source
             dropped.append({"url": url, "reason": UNREACHABLE, "error": type(error).__name__})
             continue
