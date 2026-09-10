@@ -1175,6 +1175,24 @@ def test_a_round_whose_derive_came_back_an_error_does_not_close_the_run_as_done(
     assert rounds.load_rounds(loop.plan.workdir)[0].counts["tool_errors"][0]["agent"] == "examiner"
 
 
+def test_a_beat_that_derived_cleanly_before_the_error_is_not_a_round_of_stale_counts(tmp_path, request):
+    """Greptile P1: the beat's result is the last derive it called, and a beat may call derive twice.
+    One clean call moved the counts, so the exit is read off this round's numbers as usual; the error
+    is still counted, since the model was answered with one and the next round should see it."""
+    loop = _model_driven_beat(tmp_path, request,
+                              [_reply(None, ("derive", {"target": rounds.EXAMINER_TARGET})),
+                               _reply(None, ("derive", {"target": "no-such-task"})),
+                               _reply("gave up")],
+                              "derived-then-errored")
+    loop.examiner_beat(1)
+    assert loop.examiner_result is not None and loop.examiner_result.is_error
+    assert loop.tool_errors[0]["derived"] is True
+    loop.plan.last = pipeline.PipelineResult(status="ok")
+    record = loop.close_round(1, _record(1, unfinished=[]).counts)
+    assert "came back an error" not in (record.exit_note or ""), "the clean derive moved this round's counts"
+    assert record.counts["tool_errors"][0]["derived"] is True, "the error is still counted for the next round"
+
+
 def test_a_round_whose_derive_errored_with_a_finding_queued_runs_on_so_the_builder_gets_it(tmp_path):
     """What the exception threw away: the findings the beat had already filed owed the Builder a
     beat, and a round that closes can still give them one."""

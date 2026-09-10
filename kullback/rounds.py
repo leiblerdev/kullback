@@ -753,16 +753,31 @@ class Loop:
                 self.examiner.steer(examiner_round_message(n, EXAMINER_TARGET,
                                                            self.eplan.store.get("findings") or []))
                 events = self.examiner.continue_()
-            self.examiner_result = self._watched(self.examiner, "examiner", events, "derive")
+            # A beat may call derive more than once, and the beat's result is the last call's. Whether
+            # any call of it came back clean is a different question from what the last one said, and
+            # the exit rule below turns on it, so it is watched here rather than inferred.
+            derived: list[bool] = []
+
+            def _derived(event: Any) -> None:
+                if (isinstance(event, ToolExecutionEnd) and event.tool_name == "derive"
+                        and not event.result.is_error):
+                    derived.append(True)
+
+            unsubscribe = self.examiner.subscribe(_derived)
+            try:
+                self.examiner_result = self._watched(self.examiner, "examiner", events, "derive")
+            finally:
+                unsubscribe()
             if self.examiner_result is None:
                 raise ExaminerError(f"the model never called derive({EXAMINER_TARGET!r})")
             if self.examiner_result.is_error:
                 # D230: the model called derive and a tool answered it with an error. It read that
                 # error and could act on it, so the beat happened and the round is closed on what it
-                # left; the error is counted and the round may not exit `done` on numbers the
-                # derivation did not refresh (`close_round`). Only a session with no output at all
-                # is the broken contract that stalls a round on the spot.
+                # left; the error is counted and the round may not exit `done` on numbers no
+                # derivation of this beat refreshed (`close_round`). Only a session with no output at
+                # all is the broken contract that stalls a round on the spot.
                 self.tool_errors.append({"agent": "examiner", "tool": "derive", "round": n,
+                                         "derived": bool(derived),
                                          "error": self.examiner_result.content[:TOOL_ERROR_CHARS]})
         self._beat_done("examiner", n, before)
 
@@ -1429,14 +1444,17 @@ class Loop:
             record.exit_note = f"fidelity did not rise in {self.fidelity_stall} rounds"
         elif record.exit == "max_rounds":
             record.exit_note = f"round cap of {self.max_rounds} reached"
-        if self.tool_errors and record.exit == "done":
-            # D230: the derivation came back an error, so the counts this exit reads are the round
-            # before's. A run never closes as done on numbers no derivation refreshed; it ends on the
-            # soft stop with the error named, and a finding still owed the Builder clears that exit
-            # below and buys the beat the exception used to throw away.
+        stale = [row for row in self.tool_errors if not row.get("derived")]
+        if stale and record.exit == "done":
+            # D230: the derivation came back an error and no other call of it in that beat came back
+            # clean, so the counts this exit reads are the round before's. A run never closes as done
+            # on numbers no derivation refreshed; it ends on the soft stop with the error named, and
+            # a finding still owed the Builder clears that exit below and buys the beat the exception
+            # used to throw away. A beat that did derive cleanly before the error moved its counts,
+            # and its exit is read off numbers of this round like any other.
             record.exit = "stalled"
             record.exit_note = (f"the Examiner's derive came back an error, so no count moved: "
-                                f"{self.tool_errors[-1]['error']}")
+                                f"{stale[-1]['error']}")
         if self.pending_findings:
             record.pending_findings = list(self.pending_findings)
             if record.exit in ("ceiling", "max_rounds", "target_built"):
