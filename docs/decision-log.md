@@ -1861,7 +1861,6 @@ Eight tests on invented Tasks with a fresh scripted driver per Run cover keys an
 
 Three things cut against the premise. The stub timing's per-Run CPU, the toolkit compile and the transcript copies, is serial under the thread pool, which is why 8 workers show about 1.4 times on the stub; live calls spend seconds in network IO where that floor is noise. A Run that consulted a sibling Run's outcome would break under this change, but there is none: each Run opens its own world, its own Simulated user and its own file, and the only things shared are read-only inputs. And an interrupt after the discard loop leaves every re-rolling Task with no Run files at all, since the discards run sequentially up front where they used to sit inside each Task's own pool job, so a resume re-rolls them all; the flat pool forces this shape, so it stands as a known cost of it.
 
-
 ## Pending (asked, not yet answered)
 
 - ~~The user's own tools and the world they act on (D71, first part).~~ Decided as D176 (2026-09-07): one world, rows revealed by a requestor marked by it, readers as code under the free gate.
