@@ -478,6 +478,39 @@ def test_a_field_the_catalog_does_not_carry_is_taken_as_written(tmp_path):
     assert catalog["a-vendor"]["models"]["old-1"]["limit"]["output"] == 8_000
 
 
+def test_a_rate_that_is_not_a_finite_number_leaves_the_model_unpriced(tmp_path):
+    """NaN is a number to float() and to nothing else. Billing it would make every total it touches
+    NaN, a ledger that can no longer say what a Run cost, so the model reads as unpriced instead
+    and the budget gate refuses the call, the way it does for a row missing a rate."""
+    path = tmp_path / "models.dev.json"
+    write_snapshot(path, {"a-vendor": {"id": "a-vendor", "npm": "@ai-sdk/openai-compatible",
+                                       "api": "https://a-vendor.invalid", "env": ["A_VENDOR_API_KEY"],
+                                       "models": {"old-1": {"limit": {"context": 200_000},
+                                                            "cost": {"input": 9.0, "output": 18.0}}}}})
+    (path.parent / pricing.LOCAL_PROVIDERS_NAME).write_text(
+        '{"a-vendor": {"models": {"old-1": {"cost": {"input": NaN}}}}}', encoding="utf-8")
+    catalog = pricing.refresh(path=path, env={})
+    assert pricing.price_from_catalog(catalog, "a-vendor/old-1") is None
+
+
+def test_a_window_that_is_not_a_finite_number_reads_as_no_window(tmp_path):
+    """An infinite window is not a window, and int() raises on it, out of a lookup every Run makes.
+    It reads as no window listed instead, which the context cap already answers with the generic
+    limit, and the model beside it in the same file still gives its own."""
+    path = tmp_path / "models.dev.json"
+    write_snapshot(path, {"a-vendor": {"id": "a-vendor", "npm": "@ai-sdk/openai-compatible",
+                                       "api": "https://a-vendor.invalid", "env": ["A_VENDOR_API_KEY"],
+                                       "models": {"old-1": {"limit": {"context": 200_000},
+                                                            "cost": {"input": 9.0, "output": 18.0}},
+                                                  "old-2": {"limit": {"context": 128_000},
+                                                            "cost": {"input": 1.0, "output": 2.0}}}}})
+    (path.parent / pricing.LOCAL_PROVIDERS_NAME).write_text(
+        '{"a-vendor": {"models": {"old-1": {"limit": {"context": Infinity}}}}}', encoding="utf-8")
+    catalog = pricing.refresh(path=path, env={})
+    assert pricing.window_from_catalog(catalog, "a-vendor/old-1") is None
+    assert pricing.window_from_catalog(catalog, "a-vendor/old-2") == 128_000
+
+
 def test_a_local_registry_file_that_cannot_be_read_is_ignored_not_raised_on(tmp_path):
     path = tmp_path / "models.dev.json"
     write_snapshot(path, CATALOG)

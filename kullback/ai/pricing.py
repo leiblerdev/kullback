@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import copy
 import json
+import math
 import os
 from datetime import datetime, timezone
 from pathlib import Path
@@ -339,8 +340,11 @@ def _cost_numbers(cost: Any) -> Optional[dict[str, float]]:
     """One listed rate read as a cost row, or None when it is not one.
 
     input and output have to be there, since a row missing either prices nothing, and every value
-    has to be a number that is not negative: a rate below zero is a field read wrong, not a
-    discount, and a misread rate is worse than a dated one.
+    has to be a number that is finite and not negative: a rate below zero is a field read wrong,
+    not a discount, and a misread rate is worse than a dated one. NaN and Infinity are numbers to
+    float() and to nothing else. A NaN rate makes every total it touches NaN, which is a ledger
+    that can no longer say what a Run cost, so the row goes unpriced instead, the way a row
+    missing a rate does, and the budget gate refuses the call rather than billing a number.
     """
     if not isinstance(cost, dict) or "input" not in cost or "output" not in cost:
         return None
@@ -352,7 +356,7 @@ def _cost_numbers(cost: Any) -> Optional[dict[str, float]]:
             value = float(cost[key])
         except (TypeError, ValueError):
             return None
-        if value < 0:
+        if not math.isfinite(value) or value < 0:
             return None
         numbers[key] = value
     return numbers
@@ -585,10 +589,16 @@ def window_from_catalog(catalog: Optional[dict], model_id: Optional[str]) -> Opt
     model_entry = model_row(entry, wire_id)
     limit = model_entry.get("limit") if isinstance(model_entry, dict) else None
     context = limit.get("context") if isinstance(limit, dict) else None
+    if not context:
+        return None
     try:
-        return int(context) if context else None
+        number = float(context)
     except (TypeError, ValueError):
         return None
+    # An infinite window is not a window: int() raises on it, and the raise would come out of a
+    # lookup every Run makes. Unreadable is None here, which the cap already reads as "no window
+    # listed" and answers with the generic limit.
+    return int(number) if math.isfinite(number) else None
 
 
 def _price_from_provider(provider_entry: Any, wire_id: str) -> Optional[dict[str, float]]:
@@ -605,7 +615,12 @@ def _price_from_provider(provider_entry: Any, wire_id: str) -> Optional[dict[str
         cache_write = float(cost["cache_write"]) if "cache_write" in cost else 0.0
     except (TypeError, ValueError):
         return None
-    return {"input": input_price, "output": output_price, "cache_read": cache_read, "cache_write": cache_write}
+    prices = {"input": input_price, "output": output_price,
+              "cache_read": cache_read, "cache_write": cache_write}
+    # Same rule as the live listing's: a rate that is not a finite number prices nothing. A NaN
+    # written into a local row would otherwise reach the ledger and make every total it touches
+    # NaN, which is worse than the model reading as unpriced and the gate refusing the call.
+    return prices if all(math.isfinite(rate) for rate in prices.values()) else None
 
 
 def price_from_catalog(catalog: Optional[dict], model_id: Optional[str]) -> Optional[dict[str, float]]:
