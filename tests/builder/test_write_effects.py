@@ -475,9 +475,31 @@ def test_a_recorded_call_claiming_the_reserved_key_loses_no_evidence():
                                  checked=False, unattributed=True)
     holder = effects.WriteEffect(tool=WRITE, call_id="c9", trace_id="tr1", columns=[stray])
     evidence = effects.replay_evidence({WRITE: [owned, holder]})
-    rows = evidence[effects.UNATTRIBUTED]
-    assert [row["path"] for row in rows if not row["unattributed"]] == ["title_id"]
-    assert [row["path"] for row in rows if row["unattributed"]] == ["credit"]
+    assert [row["path"] for row in evidence[effects.UNATTRIBUTED]] == ["title_id"]
+    bumped = effects.UNATTRIBUTED + "\x00"
+    assert [row["path"] for row in evidence[bumped] if row["unattributed"]] == ["credit"]
+
+
+def test_a_span_with_two_owners_checks_only_the_last_one():
+    calls = [
+        call("c1", "get_member", {"member_id": "MB01"},
+             {"member_id": "MB01", "credit": 100, "ledger": []}),
+        call("c2", ADJUST, {"member_id": "MB01"}, loan_row()),
+        call("c3", SETTLE, {"member_id": "MB01"}, loan_row()),
+        call("c4", "get_member", {"member_id": "MB01"},
+             {"member_id": "MB01", "credit": 90, "ledger": []}),
+    ]
+    seen = effects.observe_effects([trace_of(calls)], schema(), {ADJUST, SETTLE})
+    first = next(column for effect in seen[ADJUST] for column in effect.columns
+                 if column.table == "members" and column.path == "credit")
+    second = next(column for effect in seen[SETTLE] for column in effect.columns
+                  if column.table == "members" and column.path == "credit")
+    assert first.checked is False
+    assert second.checked is True
+    evidence = effects.replay_evidence(seen)
+    assert all(row["table"] != "members" for row in evidence.get("c2", []))
+    assert [row["path"] for row in evidence["c3"] if row["table"] == "members"] == ["credit"]
+    assert effects.counts(seen)["effects_ambiguous"] == 2
 
 
 def test_a_single_write_span_is_credited_and_checked_as_before():
