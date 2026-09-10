@@ -2368,3 +2368,49 @@ def test_a_sanitized_body_is_recorded_on_the_node_and_shown_to_the_next_attempt(
     assert build.nodes[0]["passed"] is False  # sanitizing repairs the character, not the body
     assert DASH in model.calls[1]["messages"][-1]["content"]
     assert build.body.strip() == CORRECT_BODY.strip()
+
+
+# --- mined names are text, not identifiers (a review walked past the gate through one) ---
+
+def test_a_column_name_carrying_python_source_is_refused_before_it_is_written():
+    """Mining reads column names off JSON keys in the customer's traces. A key with a newline and a
+    statement in it used to render as a live class-body statement that `load_toolkit` executed with
+    every gate passing, because the confinement gate only reads the tool methods."""
+    schema = EntitySchema(tables=["berths"], columns=[
+        Column(table="berths", name="status", **{"class": "hard"}),
+        Column(table="berths", name="ok = 1\n    import os", **{"class": "hard"})])
+    assert ce.unsafe_names(schema) == [
+        "column 'ok = 1\\n    import os' of berths is not a Python name"]
+    with pytest.raises(ValueError) as raised:
+        ce.render_data_model(schema)
+    assert "cannot be written into the generated module" in str(raised.value)
+
+
+def test_a_name_that_is_a_keyword_or_carries_a_space_is_refused_by_name():
+    """The benign twin of the same defect: these used to fail the parse gate in the code-owned
+    skeleton, where no body could repair it and the message named no cause."""
+    schema = EntitySchema(tables=["berth slots"], columns=[
+        Column(table="berth slots", name="class", **{"class": "hard"})])
+    assert ce.unsafe_names(schema) == ["table 'berth slots' is not a Python name",
+                                       "column 'class' of berth slots is not a Python name"]
+
+
+def test_a_tool_or_argument_name_that_is_not_a_python_name_is_refused_too():
+    schema = EntitySchema(tables=["berths"],
+                          columns=[Column(table="berths", name="status", **{"class": "hard"})])
+    sig = ToolSig(name="find berth", kind="read",
+                  args_fields=[FieldStat(name="berth id", types=["str"])], result_schema=[])
+    assert ce.unsafe_names(schema, [sig]) == ["tool 'find berth' is not a Python name",
+                                              "argument 'berth id' of find berth is not a Python name"]
+    with pytest.raises(ValueError):
+        ce.render_tools(schema, [sig], {})
+
+
+def test_the_names_an_ordinary_mined_schema_carries_are_written_without_complaint():
+    schema = EntitySchema(tables=["berths", "vessels"], columns=[
+        Column(table="berths", name="status", **{"class": "hard"}),
+        Column(table="vessels", name="hull", **{"class": "semantic"})])
+    sig = ToolSig(name="find_berth", kind="read",
+                  args_fields=[FieldStat(name="berth_id", types=["str"])], result_schema=[])
+    assert ce.unsafe_names(schema, [sig]) == []
+    assert "class Berth(BaseModel):" in ce.render_data_model(schema)

@@ -12,6 +12,7 @@ import copy
 import hashlib
 import io
 import json
+import keyword
 import re
 import textwrap
 import tokenize
@@ -1832,6 +1833,51 @@ def _annotation(types: Iterable[str]) -> str:
     return kinds.pop() if len(kinds) == 1 else "Any"
 
 
+def unsafe_names(schema: EntitySchema, sigs: Iterable[ToolSig] = ()) -> list[str]:
+    """Every mined name that cannot be written into Python source as it stands.
+
+    Mining reads table names, column names, tool names and argument names off the customer's
+    traces: JSON keys and tool specs, which are text, not identifiers. They are interpolated into
+    the module `load_toolkit` executes, so a key carrying a newline and a statement is a statement.
+    A review found exactly that: a crafted column name ran module level code and every gate passed,
+    because the confinement gate reads the tool methods and a class body is not one.
+
+    So the names are checked once, here, and a build that cannot render a name says which name and
+    stops, rather than emitting source nobody meant. Aliasing an awkward name to a Python one
+    (`Field(alias=...)`) is the better answer for the benign half of this and is its own change: it
+    has to carry through the schema block the model reads, the Verdict's comparisons and the
+    emitted db.json.
+    """
+    bad: list[str] = []
+    for table in sorted(schema.tables):
+        if not _writable(table):
+            bad.append(f"table {table!r} is not a Python name")
+    for column in sorted(schema.columns, key=lambda c: (c.table, c.name)):
+        if not _writable(column.name):
+            bad.append(f"column {column.name!r} of {column.table} is not a Python name")
+    for sig in sigs:
+        if not _writable(sig.name):
+            bad.append(f"tool {sig.name!r} is not a Python name")
+        for argument in sig.args_fields:
+            if not _writable(argument.name):
+                bad.append(f"argument {argument.name!r} of {sig.name} is not a Python name")
+    return bad
+
+
+def _writable(name: str) -> bool:
+    """A name the Harness will write into the generated module: an identifier, not a keyword, not
+    private (a leading underscore collides with the skeleton's own names and the gate refuses it)."""
+    return bool(name) and name.isidentifier() and not keyword.iskeyword(name) \
+        and not name.startswith("_")
+
+
+def _refuse_unrenderable(schema: EntitySchema, sigs: Iterable[ToolSig] = ()) -> None:
+    bad = unsafe_names(schema, sigs)
+    if bad:
+        raise ValueError("the mined names cannot be written into the generated module: "
+                         + "; ".join(bad[:5]) + (f" (and {len(bad) - 5} more)" if len(bad) > 5 else ""))
+
+
 def render_data_model(schema: EntitySchema) -> str:
     """One class per table plus the DB class, every column Optional[Any] so no real row is rejected.
 
@@ -1842,6 +1888,7 @@ def render_data_model(schema: EntitySchema) -> str:
     model is as wide as the union it stands for, and the column classes in `EntitySchema` (D73), not
     the annotation, are what a Verdict compares by.
     """
+    _refuse_unrenderable(schema)
     parts = [_DATA_MODEL_HEAD]
     for table in sorted(schema.tables):
         fields = []
@@ -1890,6 +1937,8 @@ def _docstring(sig: ToolSig) -> str:
 def render_tools(schema: EntitySchema, sigs: Iterable[ToolSig], bodies: dict,
                  class_name: str = TOOLS_CLASS, with_imports: bool = True) -> str:
     """The toolkit class: code owns everything but the body, which the model wrote."""
+    sigs = list(sigs)
+    _refuse_unrenderable(schema, sigs)
     head = ""
     if with_imports:
         names = ", ".join([DB_CLASS] + [_class_name(t) for t in sorted(schema.tables)])
@@ -2161,8 +2210,12 @@ def _confinement_block(denied: Iterable[str] = DENIED_BUILTINS, allowed: Iterabl
     return ("The body is checked before it runs and is refused if it names anything outside the "
             "customer's world. It may not use: " + ", ".join(sorted(denied)) + ". It may "
             "not touch a dunder attribute (`__dict__`, `__class__`, `__globals__` and the rest). "
-            "It may import only: " + ", ".join(sorted(allowed)) + ". Read fields by name "
-            "(`order.status`) or by key (`self.db.orders[order_id]`), never through getattr. "
+            "Do not touch any attribute whose name starts with an underscore, do not spell a dunder "
+            "inside a string, and do not call `.format` or `.format_map`; build strings with an "
+            "f-string. It may import only: " + ", ".join(sorted(allowed)) + ", and do not read "
+            "another module out of one of those (`uuid.os`, `json.codecs` and the like). Read "
+            "fields by name (`order.status`) or by key (`self.db.orders[order_id]`), never through "
+            "getattr. "
             "evaluate_arithmetic(expression) is provided in the body's namespace: it evaluates "
             "+ - * / // % ** with parentheses over a decimal and returns a Decimal, so never write "
             "a parser and never reach for eval; for example `float(evaluate_arithmetic(expression))` "
