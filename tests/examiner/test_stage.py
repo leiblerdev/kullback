@@ -922,10 +922,8 @@ def test_one_tasks_surviving_end_states_derive_on_the_shared_pool_at_once(tmp_pa
 
 
 def test_one_tasks_rewrite_runs_replay_on_the_shared_pool_at_once(tmp_path):
-    """The synth variant runs stay serial while the variant gate holds (docs/todo.md "Next
-    re-freeze: flip the speed-1 variant gate"): one at a time on any worker count, and the rows
-    and the bought batches read exactly as the one-worker run's read. Restore the overlap half
-    when the gate flips."""
+    """The synth variant runs are independent replays: on eight workers several are in flight
+    together, and the rows and the bought batches read exactly as the one-worker run's read."""
     peaks, bodies, tried = {}, {}, {}
     for name, workers in (("serial", 1), ("threaded", 8)):
         world = _rich_lone_world(tmp_path / name)
@@ -942,8 +940,81 @@ def test_one_tasks_rewrite_runs_replay_on_the_shared_pool_at_once(tmp_path):
         bodies[name] = (_derived_bytes(world.workdir, 1), _reroll_rows(world.workdir))
     assert tried["serial"] == tried["threaded"] >= 2, "the world offers several rewrites"
     assert peaks["serial"] == 1
-    assert peaks["threaded"] == 1, "gated serial until the tally lock re-freezes"
+    assert peaks["threaded"] >= 2, "the variants replay without waiting for each other"
     assert bodies["threaded"] == bodies["serial"]
+
+
+def _outcome_with_recorded_synth(monkeypatch, tmp_path, pool, sem):
+    """Run `_second_path_outcome` with the search missing and the synth call recorded."""
+    seen: dict = {}
+
+    def fake_search(task_id, confirmation, **kwargs):
+        return stage.second_path_row(0, 0, found=False), [], False
+
+    def fake_synth(task_id, confirmation, **kwargs):
+        seen["pool"] = kwargs.get("pool")
+        seen["sem"] = kwargs.get("sem")
+        return {"reason": "", "kinds": [], "tried": 0, "structural": False}, []
+
+    monkeypatch.setattr(stage, "second_path_search", fake_search)
+    monkeypatch.setattr(stage, "synth_second_path", fake_synth)
+    monkeypatch.setattr(stage, "merge_second_path", lambda confirmation, candidates: 0)
+    run_variant = object()
+    state = SimpleNamespace(ctx=SimpleNamespace(workdir=tmp_path), run_rerolls=None,
+                            round_number=2, write_tools=set(), fn=None, atoms=None,
+                            run_variant=run_variant, pool=pool, sem=sem)
+    job = SimpleNamespace(task=SimpleNamespace(id="t1"),
+                          confirmation=SimpleNamespace(references=[object()]),
+                          extra=[], recordings=[])
+    stage._second_path_outcome(state, job, threading.Event())
+    return seen
+
+
+def test_the_synthesised_variants_replay_on_the_shared_pool_when_the_state_has_one(
+        monkeypatch, tmp_path):
+    """With a pool on the derive state, the synth call gets that pool and semaphore."""
+    pool, sem = object(), object()
+    seen = _outcome_with_recorded_synth(monkeypatch, tmp_path, pool, sem)
+    assert seen["pool"] is pool and seen["sem"] is sem
+
+
+def test_the_synthesised_variants_replay_as_a_plain_loop_when_the_state_has_no_pool(
+        monkeypatch, tmp_path):
+    """With no pool on the state, the synth call still passes pool None for the plain loop."""
+    seen = _outcome_with_recorded_synth(monkeypatch, tmp_path, None, None)
+    assert seen["pool"] is None
+    assert stage._ordered_gather(None, [1, 2, 3], lambda item: item * 2) == [2, 4, 6]
+
+
+def test_the_variant_rows_come_back_in_plan_order_when_the_pool_finishes_them_out_of_order(
+        tmp_path):
+    """Two workers finish the later plan first, yet the kept variants read in plan order."""
+    world = _rich_lone_world(tmp_path)
+    fn = verifier_suite.canon_fn({})
+    ref_path = world.inputs["replays"]["t1"]["ref"]["path"]
+    record = reference.load(ref_path, reference.RECORDING, run_id="ref",
+                            write_tools=VF.WRITE_TOOLS, fn=fn)
+    confirmation = reference.Confirmation(recordings=[record], references=[record])
+
+    def slow_first(task_id: str, calls: list, run_id: str, transcript: list = ()) -> dict:
+        if run_id.endswith("-1"):
+            time.sleep(0.3)
+        run = VF.alt_path_run().model_copy(deep=True, update={"run_id": run_id})
+        path = VF.write_events_jsonl(run, world.workdir / "runs" / task_id / f"{run.run_id}.jsonl")
+        return {"run_id": run.run_id, "path": path,
+                "termination_reason": run.termination_reason}
+
+    pool = ThreadPoolExecutor(max_workers=2)
+    try:
+        _sem = threading.Semaphore(2)
+        _synth, made = stage.synth_second_path(
+            "t1", confirmation, run_variant=slow_first, round_number=2,
+            write_tools=set(VF.WRITE_TOOLS), fn=fn, atoms=[], pool=pool, sem=_sem)
+    finally:
+        pool.shutdown(cancel_futures=True)
+    assert len(made) >= 2, "the world offers several rewrites"
+    run_ids = [rec.run_id for rec in made]
+    assert run_ids == sorted(run_ids), "the kept variants read in plan order"
 
 
 def test_the_probe_budget_hands_the_same_slots_out_on_one_worker_and_on_eight(tmp_path):
