@@ -48,24 +48,25 @@ def environment_gate(data: ReportData) -> Optional[GateResult]:
     return None
 
 
-def stage_statuses(state: dict, budget: Any = None, stopped: Any = None) -> list[StageStatus]:
-    """The pipeline's own state.json as the DAG rows: status, attempts, the gate that failed, spend.
+def _stage_buckets(budget: Any) -> dict[str, dict]:
+    """The budget's per stage buckets, skipping anything that is not one."""
+    return {name: bucket for name, bucket in ((budget or {}).get("stages") or {}).items() if isinstance(bucket, dict)}
 
-    pipeline.py writes `statuses`, `attempts`, `gates`, `failed_stage` and a log of plain sentences,
-    so all of them are read here rather than a log of dict rows nothing writes.
-    """
-    statuses = state.get("statuses") or {}
-    attempts = state.get("attempts") or {}
-    failed = state.get("failed_stage")
+
+def _spend_by_stage(stopped: Any, buckets: dict[str, dict]) -> dict[str, float]:
+    """What each stage spent: the stop record first, a nonzero budget bucket over it."""
     per_stage = dict((stopped or {}).get("stages") or {})
-    buckets = {
-        name: bucket for name, bucket in ((budget or {}).get("stages") or {}).items() if isinstance(bucket, dict)
-    }
     for name, bucket in buckets.items():
         if bucket.get("usd"):
             per_stage[name] = bucket["usd"]
+    return per_stage
+
+
+def _base_stages(state: dict, per_stage: dict[str, float], buckets: dict[str, dict]) -> list[StageStatus]:
+    """One row per recorded stage, with spend, cache share and memo hits beside it."""
+    attempts = state.get("attempts") or {}
     stages = []
-    for name, status in statuses.items():
+    for name, status in (state.get("statuses") or {}).items():
         stage = StageStatus(
             name=name,
             status=str(status),
@@ -78,16 +79,44 @@ def stage_statuses(state: dict, budget: Any = None, stopped: Any = None) -> list
         except (TypeError, ValueError):
             stage.attempts = 0
         stages.append(stage)
+    return stages
+
+
+def _gate_owner(by_name: dict[str, StageStatus], failed: Any, gate_stage: str) -> Optional[StageStatus]:
+    """The failed stage one gate belongs to: its own, its dotted parent's, or the failed stage's."""
+    return by_name.get(gate_stage) or by_name.get(gate_stage.split(".")[0]) or by_name.get(str(failed))
+
+
+def _attach_failed_gates(stages: list[StageStatus], state: dict) -> None:
+    """The gate that failed each failed stage, read off the pipeline's gate rows."""
     by_name = {stage.name: stage for stage in stages}
+    failed = state.get("failed_stage")
     for body in state.get("gates") or []:
         if not isinstance(body, dict) or body.get("pass", True):
             continue
         gate_stage = str(body.get("stage") or "")
-        owner = by_name.get(gate_stage) or by_name.get(gate_stage.split(".")[0]) or by_name.get(str(failed))
+        owner = _gate_owner(by_name, failed, gate_stage)
         if owner is not None and owner.status == "failed":
             owner.gate = gate_stage.split(".")[-1]
+
+
+def _apply_log_rows(stages: list[StageStatus], state: dict) -> None:
+    """Each rollback sentence onto its stage, in the order the pipeline wrote them."""
+    by_name = {stage.name: stage for stage in stages}
     for row in state.get("log") or []:
         _read_log_row(row, by_name)
+
+
+def stage_statuses(state: dict, budget: Any = None, stopped: Any = None) -> list[StageStatus]:
+    """The pipeline's own state.json as the DAG rows: status, attempts, the gate that failed, spend.
+
+    pipeline.py writes `statuses`, `attempts`, `gates`, `failed_stage` and a log of plain sentences,
+    so all of them are read here rather than a log of dict rows nothing writes.
+    """
+    buckets = _stage_buckets(budget)
+    stages = _base_stages(state, _spend_by_stage(stopped, buckets), buckets)
+    _attach_failed_gates(stages, state)
+    _apply_log_rows(stages, state)
     return stages
 
 
