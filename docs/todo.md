@@ -330,3 +330,7 @@ Items closed by a landed decision. Nothing was deleted; each moved here with the
 - Fix `_table_of()`'s tie-break. Done, D103: the noun before the first preposition, then the id distinct across the rows it came back with. Telecom recovers `bills`. Old note: prefer the id whose singular matches the tool's object noun, fall back to the id unique within the result. Telecom files every `Bill` row under `customers` because `customer` is a token of `get_bills_for_customer` and `bill` is not.
 
 - `norm()` in the comparison scripts. Done in `scripts/xdomain_check.py`, along with two conventions the old scratch scripts had wrong: null and absent are the same field, and a table's row key is not one of the row's fields. Companion fix in the same script batch as D101 to D104 (no separate decision number).
+
+## Grouping record format (D233, for the owner of the cluster stage wiring)
+
+- `_grouping` in build.py should treat a grouping record whose format differs from GROUPING_FORMAT as absent, and the comment at build.py:336 (no proposed column class, reader, or cache format can regroup the next round) is false for revealed tables since D233 and contradicts it.
