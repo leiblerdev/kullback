@@ -195,15 +195,27 @@ def _usable_entry(entry: dict) -> Optional[dict]:
     return kept
 
 
-def _merge_provider(under: Optional[dict], over: dict) -> dict:
-    """One provider row laid over another: top-level fields replaced, model rows merged by id, and
-    a model named in both merged field by field.
+def _laid_over(under: Any, over: Any) -> Any:
+    """One value laid over another: mappings merged key by key, all the way down, anything else
+    replaced.
 
-    The field by field part is what lets a file correct one number. A row that moved a price says
-    the price and stops, and the name, the window and everything else the catalog knows about that
-    model stay; restating them to keep them would be a second place for them to go stale, and
-    dropping them would leave the model priced and unsized, or sized and unpriced, which the budget
-    gate reads as a call it must refuse.
+    This is what lets a file correct one number. {"cost": {"input": 3.0}} moves the input rate and
+    leaves the output rate, the cache rates, the window and the name where the catalog had them.
+    Restating them to keep them would be a second place for them to go stale, and losing them would
+    leave the model priced and unsized, or half priced, which the budget gate reads as a call it
+    must refuse. A rate that went to nothing is written as 0.0 rather than left out, so no override
+    ever needs to remove a key.
+    """
+    if isinstance(under, dict) and isinstance(over, dict):
+        merged = dict(under)
+        for key, value in over.items():
+            merged[key] = _laid_over(merged.get(key), value)
+        return merged
+    return over
+
+
+def _merge_provider(under: Optional[dict], over: dict) -> dict:
+    """One provider row laid over another, key by key, with the model rows merged by wire id.
 
     Either side can carry a models field of the wrong shape (the catalog underneath is whatever
     models.dev last served), and a merge that raises would take every model call down, so a
@@ -211,15 +223,15 @@ def _merge_provider(under: Optional[dict], over: dict) -> dict:
     """
     if not isinstance(under, dict):
         return copy.deepcopy(over)
-    merged = {**copy.deepcopy(under), **copy.deepcopy(over)}
-    under_models = copy.deepcopy(under.get("models"))
-    over_models = copy.deepcopy(over.get("models"))
+    under_fields = copy.deepcopy(under)
+    over_fields = copy.deepcopy(over)
+    under_models = under_fields.pop("models", None)
+    over_models = over_fields.pop("models", None)
+    merged = _laid_over(under_fields, over_fields)
     models = under_models if isinstance(under_models, dict) else {}
     if isinstance(over_models, dict):
         for wire_id, row in over_models.items():
-            beneath = models.get(wire_id)
-            models[wire_id] = ({**beneath, **row}
-                               if isinstance(beneath, dict) and isinstance(row, dict) else row)
+            models[wire_id] = _laid_over(models.get(wire_id), row)
     if models:
         merged["models"] = models
     return merged

@@ -392,6 +392,25 @@ def test_a_row_correcting_one_number_keeps_everything_else_the_catalog_knows(tmp
     assert catalog["a-vendor"]["models"]["old-1"]["name"] == "Old One"
 
 
+def test_a_row_correcting_one_rate_keeps_the_rates_beside_it(tmp_path):
+    """The same rule inside the cost mapping. A file that says the input rate moved says that and
+    nothing else, and a model left with an input and no output is a model the budget gate refuses,
+    which is a Run lost to a number nobody meant to remove."""
+    path = tmp_path / "models.dev.json"
+    write_snapshot(path, {"a-vendor": {"id": "a-vendor", "npm": "@ai-sdk/openai-compatible",
+                                       "api": "https://a-vendor.invalid", "env": ["A_VENDOR_API_KEY"],
+                                       "models": {"old-1": {"limit": {"context": 200_000, "output": 8_000},
+                                                            "cost": {"input": 9.0, "output": 18.0,
+                                                                     "cache_read": 0.9}}}}})
+    write_local(path, {"a-vendor": {"models": {"old-1": {"cost": {"input": 3.0},
+                                                         "limit": {"context": 400_000}}}}})
+    catalog = pricing.refresh(path=path, env={})
+    assert pricing.price_from_catalog(catalog, "a-vendor/old-1") == {
+        "input": 3.0, "output": 18.0, "cache_read": 0.9, "cache_write": 0.0}
+    assert pricing.window_from_catalog(catalog, "a-vendor/old-1") == 400_000
+    assert catalog["a-vendor"]["models"]["old-1"]["limit"]["output"] == 8_000
+
+
 def test_a_model_row_that_names_nothing_changes_nothing(tmp_path):
     """The narrow end of the same rule: an override row with no fields in it says nothing, so the
     price and the window underneath stand rather than being wiped by an empty row."""
