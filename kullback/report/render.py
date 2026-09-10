@@ -602,7 +602,7 @@ def _pending_review(data: ReportData) -> list[str]:
 
     A rule the Builder rewrote but nobody accepted is in no Verifier and in no residual list, so
     without this block nothing tells the reviewer it exists. The filter is policy.pending_review's,
-    repeated over the records because report.py reads records off disk rather than importing builder/.
+    repeated over the records because the report package reads records off disk rather than importing builder/.
     """
     pending = [
         c

@@ -12,6 +12,7 @@ from pathlib import Path
 
 from kullback import cli, difficulty, report
 from kullback.examiner import lifecycle, variants
+from kullback.report.render import _difficulty_table
 from kullback.runner.records import Atom, Event, Run, Verifier, as_dict, write_json
 
 WATER = "water_pot"
@@ -145,7 +146,7 @@ def test_the_report_table_names_every_bucket_and_says_which_tasks_carry_no_recor
         "buckets": [{"bucket": "w1t2p2+", "tasks": 4, "trusted": 3, "solve_rate": 0.5, "rated": 2}],
         "no_record": {"task_9": difficulty.NO_VERIFIER},
     })
-    lines = report._difficulty_table(data)
+    lines = _difficulty_table(data)
     assert "### Difficulty buckets" in lines
     assert "| w1t2p2+ | 4 | 3 | 50% over 2 Tasks |" in lines
     assert any("1 Tasks carry no difficulty record" in line for line in lines)
@@ -158,7 +159,7 @@ def test_a_bucket_with_no_pool_says_so_in_the_table_rather_than_showing_a_rate()
 
 
 def test_a_build_with_no_difficulty_file_says_so_rather_than_showing_an_empty_table():
-    lines = report._difficulty_table(report.ReportData())
+    lines = _difficulty_table(report.ReportData())
     assert any("No difficulty record was written" in line for line in lines)
 
 

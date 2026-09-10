@@ -50,16 +50,12 @@ from kullback.report.pipeline import (
     pipeline_dag,
     stage_statuses,
 )
-from kullback.report.render import _claims_table as _claims_table
-from kullback.report.render import _difficulty_table as _difficulty_table
 from kullback.report.render import (
     assisted_tool_note,
     render,
     tool_fidelity_counts,
     write_report,
 )
-
-# The two section helpers the tests read off the package root stay reachable here.
 
 __all__ = [
     "DOMAIN_ARCHETYPES",
@@ -106,14 +102,3 @@ __all__ = [
     "version_match",
     "write_report",
 ]
-
-# --- numbers ---------------------------------------------------------------
-
-
-# --- the pipeline DAG ------------------------------------------------------
-
-
-# --- the sections ----------------------------------------------------------
-
-
-# --- reading the records off disk ------------------------------------------

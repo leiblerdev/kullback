@@ -95,7 +95,7 @@ def _records(folder: Path, model: type, unread: Optional[list] = None) -> list:
 def run_from_jsonl(path: Path) -> Optional[Run]:
     """One stored Run as loop.py writes it: header lines, one line per event, a footer (D90).
 
-    report.py may not import the Runner (design section 4 item 18), so the shape is read again here;
+    the report package may not import the Runner (design section 4 item 18), so the shape is read again here;
     tests/test_report.py asserts a Run the loop actually wrote still loads.
     """
     head: dict = {}
