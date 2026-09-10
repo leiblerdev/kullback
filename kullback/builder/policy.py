@@ -386,16 +386,26 @@ def _sandbox(predicate_src: str, cases: list[dict], timeout_s: float) -> dict:
 # --- compiling ---
 
 
+def _head_for(policy_text: str, system_head: Optional[str]) -> str:
+    """The build's head: the one built once per build, or one built here for a lone sentence."""
+    if system_head is not None:
+        return system_head
+    return _stable_system(policy_text)
+
+
 def compile_rule(model: Any, sentence: PolicySentence, timeout_s: float = 5.0,
-                 policy_text: str = "") -> Constraint:
+                 policy_text: str = "", system_head: Optional[str] = None) -> Constraint:
     """One sentence into a Constraint: compiled, or rewritten for review, or a judge atom, or residual.
 
     `policy_text`, given by compile_policy, is the whole policy: the same on every sentence of this
     build, so it lives in the system message beside `_CONTRACT` rather than repeated per rule
-    (docs/prompt-caching.md item 1). The rewrite call is a retry, not a fresh ask (item 2): it keeps
+    (docs/prompt-caching.md item 1). `system_head`, given by compile_policy, is that system text
+    built once per build: the same string object reaches every `_ask`, so two sentences cannot
+    differ by a byte. The rewrite call is a retry, not a fresh ask (item 2): it keeps
     these same first two messages and appends the model's first reply and the rewrite request as
     new turns, so the cached prefix never changes between the two calls.
     """
+    system_head = _head_for(policy_text, system_head)
     constraint = Constraint(
         id="c_" + content_hash({"text": sentence.text, "file": sentence.file_hash})[:12],
         text=sentence.text,
@@ -403,7 +413,7 @@ def compile_rule(model: Any, sentence: PolicySentence, timeout_s: float = 5.0,
         span_text=sentence.text,
     )
     messages = [
-        {"role": "system", "content": _stable_system(policy_text)},
+        {"role": "system", "content": system_head},
         {"role": "user", "content": f"Section: {sentence.section or 'top level'}\nRule: {sentence.text}"},
     ]
     first, reply, error = _ask(model, messages)
@@ -459,12 +469,15 @@ def compile_policy(
     timeout_s: float = 5.0,
     limit: Optional[int] = None,
     workers: int = 1,
+    system_head: Optional[str] = None,
 ) -> list[Constraint]:
     """Every sentence of a policy, or a chosen list of sentences, compiled in order.
 
     `policy_text` is the whole policy handed to every `compile_rule` call, so the stable prefix
     (item 1) is one value shared across the stage: the raw text when `policy` is one, or the given
-    sentences stitched back in order when the caller already split them. `workers` (D118) compiles
+    sentences stitched back in order when the caller already split them. The system head
+    (`_CONTRACT` plus that text) is built once here and the same string object is handed to every
+    sentence, so per sentence builders cannot drift a byte. `workers` (D118) compiles
     that many sentences at once; the list comes back in sentence order either way.
     """
     if isinstance(policy, str):
@@ -474,7 +487,9 @@ def compile_policy(
         policy_text = "\n".join(s.text for s in sorted(sentences, key=lambda s: s.index))
     if limit is not None:
         sentences = sentences[:limit]
-    return parallel.each(sentences, lambda sentence: compile_rule(model, sentence, timeout_s, policy_text=policy_text),
+    head = _head_for(policy_text, system_head)
+    return parallel.each(sentences, lambda sentence: compile_rule(model, sentence, timeout_s, policy_text=policy_text,
+                         system_head=head),
                          workers)
 
 
