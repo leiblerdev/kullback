@@ -28,13 +28,21 @@ from kullback.runner.records import (
     disagreement_stats,
 )
 
-SECTIONS = ("## Environment", "## Rounds", "## Tasks", "## Synthetic Tasks", "## Disagreement queue",
-            "## The Simulated user", "## Lessons set aside")
+SECTIONS = (
+    "## Environment",
+    "## Rounds",
+    "## Tasks",
+    "## Synthetic Tasks",
+    "## Disagreement queue",
+    "## The Simulated user",
+    "## Lessons set aside",
+)
 ENVIRONMENT, ROUNDS, TASKS, SYNTHETIC, QUEUE, USER_FIDELITY, LESSONS = SECTIONS
 
 
 class ScorecardItem(Record):
     """One scorecard number with its raw and explained value side by side (D62, D80)."""
+
     name: str
     raw: str = ""
     explained: str = ""
@@ -43,6 +51,7 @@ class ScorecardItem(Record):
 
 class StageStatus(Record):
     """One pipeline stage as the run recorded it, for the DAG."""
+
     name: str
     status: str = "pending"
     gate: Optional[str] = None
@@ -55,6 +64,7 @@ class StageStatus(Record):
 
 class TaskCoverage(Record):
     """Whether one Task is covered, and the first reason it is not (D96)."""
+
     task_id: str
     covered: bool = False
     reason: Optional[str] = None
@@ -67,6 +77,7 @@ class TaskCoverage(Record):
 
 class ReportData(BaseModel):
     """Everything the report reads, already on disk as records; nothing here is computed by a model."""
+
     title: str = "Harness build report"
     kind: Literal["build", "batch"] = "build"
     built: bool = False
@@ -135,6 +146,7 @@ def false_rejection_by_task(data: ReportData) -> dict[str, Optional[float]]:
     if data.trusted is None:
         return {}
     return {str(task_id): value for task_id, value in (data.trusted.metrics.get("false_rejection") or {}).items()}
+
 
 def _percent(value: Optional[float]) -> str:
     return "n/a" if value is None else f"{value:.0%}"
@@ -311,8 +323,10 @@ def suggestion(numbers: dict, built: bool, aside: Optional[str] = None) -> str:
     """A suggestion, never a decision (D85). The person routing the Task is the one who decides."""
     tail = " The decision is yours."
     if aside:
-        return (f"Suggestion: this Task is not gradeable, Reference disputed ({aside}); it comes back once a "
-                "person resolves it.") + tail
+        return (
+            f"Suggestion: this Task is not gradeable, Reference disputed ({aside}); it comes back once a "
+            "person resolves it."
+        ) + tail
     if not built:
         return "Suggestion: the Environment was not built, so the numbers cannot support a routing decision yet." + tail
     if not numbers.get("runs_graded"):
@@ -325,6 +339,7 @@ def suggestion(numbers: dict, built: bool, aside: Optional[str] = None) -> str:
 
 
 # --- the pipeline DAG ------------------------------------------------------
+
 
 def _cell(text: str) -> str:
     """One Markdown table cell: a bar inside a gate failure or a scorecard note would end the cell
@@ -352,9 +367,7 @@ def pipeline_dag(stages: list[StageStatus]) -> str:
             attempts = max(stage.attempts, 1)
             allowed = max(stage.max_attempts, attempts)
             node = node_id(stage.name)
-            lines.append(
-                f'    {node} -. "gate {stage.gate} failed, attempt {attempts} of {allowed}" .-> {node}'
-            )
+            lines.append(f'    {node} -. "gate {stage.gate} failed, attempt {attempts} of {allowed}" .-> {node}')
     return "\n".join(lines)
 
 
@@ -410,11 +423,14 @@ def _headline(data: ReportData) -> list[str]:
     if gate is not None:
         lines.append(
             f"The build Environment gate {'passed' if gate.passed else 'failed'}, which is what decides that"
-            + (f": {'; '.join(gate.failures)}" if gate.failures else "") + "."
+            + (f": {'; '.join(gate.failures)}" if gate.failures else "")
+            + "."
         )
     else:
-        lines.append("No build Environment gate was recorded, so this reads the Environment file and "
-                     "the pipeline status instead.")
+        lines.append(
+            "No build Environment gate was recorded, so this reads the Environment file and "
+            "the pipeline status instead."
+        )
     env = data.environment
     if env is not None:
         lines.append(
@@ -427,8 +443,12 @@ def _headline(data: ReportData) -> list[str]:
     lines += _snapshot_lines(data)
     lines += _round_lines(data)
     if data.records_not_read:
-        lines += ["", "### Records not read", "",
-                  "These files are on disk and did not load, so every number below is counted without them."]
+        lines += [
+            "",
+            "### Records not read",
+            "",
+            "These files are on disk and did not load, so every number below is counted without them.",
+        ]
         lines += [f"- {name}" for name in data.records_not_read]
     return lines
 
@@ -447,11 +467,13 @@ def _snapshot_lines(data: ReportData) -> list[str]:
     lines = [round_snapshot.drift_line(data.drift)]
     counts = dict((data.snapshot or {}).get("counts") or {})
     if counts:
-        lines.append(f"That round ruled on {counts.get('tasks', 0)} Tasks: "
-                     f"{counts.get('fidelity', 0)} clearing fidelity, "
-                     f"{counts.get('reference', 0)} with a Reference, "
-                     f"{counts.get('verifier_passed', 0)} whose Verifier passed the suite, "
-                     f"{counts.get('trusted', 0)} trusted and {counts.get('refused', 0)} refused.")
+        lines.append(
+            f"That round ruled on {counts.get('tasks', 0)} Tasks: "
+            f"{counts.get('fidelity', 0)} clearing fidelity, "
+            f"{counts.get('reference', 0)} with a Reference, "
+            f"{counts.get('verifier_passed', 0)} whose Verifier passed the suite, "
+            f"{counts.get('trusted', 0)} trusted and {counts.get('refused', 0)} refused."
+        )
     return lines
 
 
@@ -480,19 +502,31 @@ def _round_lines(data: ReportData) -> list[str]:
     last = data.rounds[-1].counts or {}
     fractions = false_rejection_by_task(data)
     per_task = ", ".join(f"{task_id} {_percent(value)}" for task_id, value in sorted(fractions.items()))
-    lines = [f"{last.get('trusted', 0)} Tasks with a trusted Verifier; false rejection: per Task below"
-             + (f" ({per_task})" if per_task else "") + "."]
+    lines = [
+        f"{last.get('trusted', 0)} Tasks with a trusted Verifier; false rejection: per Task below"
+        + (f" ({per_task})" if per_task else "")
+        + "."
+    ]
     refused = dict(last.get("refused") or {})
-    lines.append(f"{len(refused)} Tasks refused" + (": " + "; ".join(
-        f"{task_id} ({reason or 'no reason recorded'})" for task_id, reason in sorted(refused.items()))
-        if refused else "") + ".")
+    lines.append(
+        f"{len(refused)} Tasks refused"
+        + (
+            ": "
+            + "; ".join(f"{task_id} ({reason or 'no reason recorded'})" for task_id, reason in sorted(refused.items()))
+            if refused
+            else ""
+        )
+        + "."
+    )
     lines += _reverted_lines(data)
     if data.rounds[-1].exit == "stalled":
         unfinished = list(last.get("unfinished") or [])
         lines.append("stalled: these Tasks need a person: " + (", ".join(unfinished) or "none named") + ".")
     elif data.rounds[-1].exit == "max_rounds":
-        lines.append("round cap reached (D169): the loop stopped with "
-                     f"{len(list(last.get('unfinished') or []))} Tasks unfinished.")
+        lines.append(
+            "round cap reached (D169): the loop stopped with "
+            f"{len(list(last.get('unfinished') or []))} Tasks unfinished."
+        )
     return lines
 
 
@@ -509,17 +543,21 @@ def _exit_cell(record: RoundRecord) -> str:
 
 def _rounds_table(data: ReportData) -> list[str]:
     """One row per round: the counts the gates reported and the exit on the last (D126)."""
-    lines = ["| round | fidelity | trusted | refused | assisted runs | probes passing | spend | exit |",
-             "| --- | --- | --- | --- | --- | --- | --- | --- |"]
+    lines = [
+        "| round | fidelity | trusted | refused | assisted runs | probes passing | spend | exit |",
+        "| --- | --- | --- | --- | --- | --- | --- | --- |",
+    ]
     for record in data.rounds:
         counts = record.counts or {}
         spend = float((counts.get("spend") or {}).get("total") or 0.0)
         saved = (counts.get("spend") or {}).get("cache_saved")  # rounds before D152 carry none
         cache = f" (cache saved ${float(saved):.4f})" if saved is not None else ""
-        lines.append(f"| {record.round} | {counts.get('fidelity', 0)}/{counts.get('tasks', 0)} | "
-                     f"{counts.get('trusted', 0)} | {counts.get('refused_count', 0)} | "
-                     f"{counts.get('assisted_runs', 0)} | {counts.get('probes_passing', 0)} | "
-                     f"${spend:.4f}{cache} | {_cell(_exit_cell(record))} |")
+        lines.append(
+            f"| {record.round} | {counts.get('fidelity', 0)}/{counts.get('tasks', 0)} | "
+            f"{counts.get('trusted', 0)} | {counts.get('refused_count', 0)} | "
+            f"{counts.get('assisted_runs', 0)} | {counts.get('probes_passing', 0)} | "
+            f"${spend:.4f}{cache} | {_cell(_exit_cell(record))} |"
+        )
     return lines
 
 
@@ -535,17 +573,22 @@ def _rounds(data: ReportData) -> list[str]:
 def _gates_table(data: ReportData) -> list[str]:
     lines = ["", "### Gates", "", "| stage | result | failures |", "| --- | --- | --- |"]
     for gate in data.gates or []:
-        lines.append(f"| {_cell(gate.stage)} | {'pass' if gate.passed else 'fail'} | "
-                     f"{_cell('; '.join(gate.failures))} |")
+        lines.append(
+            f"| {_cell(gate.stage)} | {'pass' if gate.passed else 'fail'} | {_cell('; '.join(gate.failures))} |"
+        )
     return lines if data.gates else lines + ["| none recorded |  |  |"]
 
 
 def _scorecard_table(data: ReportData) -> list[str]:
-    lines = ["", "### Scorecard, raw and explained side by side", "",
-             "| number | raw | explained | note |", "| --- | --- | --- | --- |"]
+    lines = [
+        "",
+        "### Scorecard, raw and explained side by side",
+        "",
+        "| number | raw | explained | note |",
+        "| --- | --- | --- | --- |",
+    ]
     for item in data.scorecard or []:
-        lines.append(f"| {_cell(item.name)} | {_cell(item.raw)} | {_cell(item.explained)} | "
-                     f"{_cell(item.note)} |")
+        lines.append(f"| {_cell(item.name)} | {_cell(item.raw)} | {_cell(item.explained)} | {_cell(item.note)} |")
     return lines if data.scorecard else lines + ["| none recorded |  |  |  |"]
 
 
@@ -559,8 +602,12 @@ def _difficulty_table(data: ReportData) -> list[str]:
     body = data.difficulty or {}
     rows = list(body.get("buckets") or [])
     if not rows and not body:
-        return ["", "### Difficulty buckets", "",
-                "No difficulty record was written for this build, so no bucket table is shown."]
+        return [
+            "",
+            "### Difficulty buckets",
+            "",
+            "No difficulty record was written for this build, so no bucket table is shown.",
+        ]
     return ["", "### Difficulty buckets", ""] + difficulty.markdown_table(rows, len(body.get("no_record") or {}))
 
 
@@ -582,16 +629,20 @@ def _synthetic(data: ReportData) -> list[str]:
     counts = dict(body.get("counts") or {})
     graph_row = dict(counts.get("graph") or {})
     verified = sum(1 for row in rows if row.get("suite_passed"))
-    lines += [f"{len(rows)} synthetic Tasks, {verified} of them verified by the D79 suite. None of them "
-              "counts toward replay fidelity, a confirmed Reference or the trusted count.", "",
-              f"Graph: {graph_row.get('nodes', 0)} tools, {graph_row.get('edges', 0)} edges "
-              f"({graph_row.get('value_edges', 0)} carrying a value, {graph_row.get('row_edges', 0)} "
-              f"joining a read to a write on one row), mined over {graph_row.get('runs', 0)} Runs.", "",
-              f"Walks tried {counts.get('walks_tried', 0)}, refused by a body "
-              f"{counts.get('walks_refused', 0)}, crashed {counts.get('walks_crashed', 0)}, "
-              f"unbound {counts.get('walks_unbound', 0)}.", ""]
-    lines += ["| bucket asked | bucket reached | Tasks | suite passed | mean pool |",
-              "| --- | --- | --- | --- | --- |"]
+    lines += [
+        f"{len(rows)} synthetic Tasks, {verified} of them verified by the D79 suite. None of them "
+        "counts toward replay fidelity, a confirmed Reference or the trusted count.",
+        "",
+        f"Graph: {graph_row.get('nodes', 0)} tools, {graph_row.get('edges', 0)} edges "
+        f"({graph_row.get('value_edges', 0)} carrying a value, {graph_row.get('row_edges', 0)} "
+        f"joining a read to a write on one row), mined over {graph_row.get('runs', 0)} Runs.",
+        "",
+        f"Walks tried {counts.get('walks_tried', 0)}, refused by a body "
+        f"{counts.get('walks_refused', 0)}, crashed {counts.get('walks_crashed', 0)}, "
+        f"unbound {counts.get('walks_unbound', 0)}.",
+        "",
+    ]
+    lines += ["| bucket asked | bucket reached | Tasks | suite passed | mean pool |", "| --- | --- | --- | --- | --- |"]
     grouped: dict = {}
     for row in rows:
         key = (str(row.get("bucket_requested") or ""), str(row.get("bucket") or ""))
@@ -632,24 +683,34 @@ def _domain_lines(data: ReportData) -> list[str]:
     counts = dict(body.get("counts") or {})
     shaped = dict((data.shaped or {}).get("counts") or {})
     fell = dict(shaped.get("fell") or {})
-    lines = ["", "### Task archetypes read off the domain's own material (D225)", "",
-             f"{counts.get('sources_read', 0)} public pages read, "
-             f"{counts.get('sources_refused', 0)} refused; "
-             f"{counts.get('archetypes_extracted', 0)} archetypes extracted, "
-             f"{counts.get('archetypes_contaminated', 0)} dropped as contaminated, "
-             f"{counts.get('archetypes_copied', 0)} dropped for copying the page, "
-             f"{counts.get('archetypes_folded', 0)} folded as one goal said twice.", "",
-             f"{counts.get('archetypes_mapped', 0)} archetypes map onto tools this Environment can "
-             f"reach, and {len(data.domain_gaps)} do not. Nothing here is trusted, part of replay "
-             "fidelity or a confirmed Reference.", ""]
+    lines = [
+        "",
+        "### Task archetypes read off the domain's own material (D225)",
+        "",
+        f"{counts.get('sources_read', 0)} public pages read, "
+        f"{counts.get('sources_refused', 0)} refused; "
+        f"{counts.get('archetypes_extracted', 0)} archetypes extracted, "
+        f"{counts.get('archetypes_contaminated', 0)} dropped as contaminated, "
+        f"{counts.get('archetypes_copied', 0)} dropped for copying the page, "
+        f"{counts.get('archetypes_folded', 0)} folded as one goal said twice.",
+        "",
+        f"{counts.get('archetypes_mapped', 0)} archetypes map onto tools this Environment can "
+        f"reach, and {len(data.domain_gaps)} do not. Nothing here is trusted, part of replay "
+        "fidelity or a confirmed Reference.",
+        "",
+    ]
     if shaped:
-        lines += [f"Tasks shaped: {shaped.get('tasks_shaped', 0)} over "
-                  f"{shaped.get('archetypes_read', 0)} archetypes.", "",
-                  "| realism rung | fell |", "| --- | --- |"]
+        lines += [
+            f"Tasks shaped: {shaped.get('tasks_shaped', 0)} over {shaped.get('archetypes_read', 0)} archetypes.",
+            "",
+            "| realism rung | fell |",
+            "| --- | --- |",
+        ]
         lines += [f"| {rung} | {fell.get(rung, 0)} |" for rung in fell]
         lines += ["", "| source | Tasks shaped |", "| --- | --- |"]
-        lines += [f"| {row.get('source')} | {row.get('tasks')} |"
-                  for row in shaped.get("per_source") or []] or ["| none |  |"]
+        lines += [f"| {row.get('source')} | {row.get('tasks')} |" for row in shaped.get("per_source") or []] or [
+            "| none |  |"
+        ]
         lines.append("")
     lines += ["| source | archetypes | mapped |", "| --- | --- | --- |"]
     lines += _per_source_rows(rows)
@@ -671,25 +732,41 @@ def _claims_table(data: ReportData) -> list[str]:
     body = data.claims or {}
     totals = body.get("totals") or {}
     if not body:
-        return ["", "### Claims against state", "",
-                "No claim record was written for this build, so no claim table is shown."]
-    lines = ["", "### Claims against state", "",
-             f"{totals.get('runs_with_claims', 0)} of {totals.get('runs', 0)} Runs claim a write in "
-             f"words: {totals.get('claims', 0)} claims, {totals.get('claims_written', 0)} answered by "
-             f"a write the state received and {totals.get('claims_unwritten', 0)} answered by none. "
-             f"{totals.get('writes_unclaimed', 0)} writes happened that no transcript mentions.",
-             f"Of {totals.get('failing_runs', 0)} failing Runs, "
-             f"{totals.get('claimed_unwritten_failures', 0)} claimed a write nothing received "
-             f"({_percent(totals.get('claimed_unwritten_share'))}). Mean partial completion "
-             f"{_percent(totals.get('partial_completion_mean'))}.",
-             "", claims.LEGEND, ""]
+        return [
+            "",
+            "### Claims against state",
+            "",
+            "No claim record was written for this build, so no claim table is shown.",
+        ]
+    lines = [
+        "",
+        "### Claims against state",
+        "",
+        f"{totals.get('runs_with_claims', 0)} of {totals.get('runs', 0)} Runs claim a write in "
+        f"words: {totals.get('claims', 0)} claims, {totals.get('claims_written', 0)} answered by "
+        f"a write the state received and {totals.get('claims_unwritten', 0)} answered by none. "
+        f"{totals.get('writes_unclaimed', 0)} writes happened that no transcript mentions.",
+        f"Of {totals.get('failing_runs', 0)} failing Runs, "
+        f"{totals.get('claimed_unwritten_failures', 0)} claimed a write nothing received "
+        f"({_percent(totals.get('claimed_unwritten_share'))}). Mean partial completion "
+        f"{_percent(totals.get('partial_completion_mean'))}.",
+        "",
+        claims.LEGEND,
+        "",
+    ]
     lines += claims.markdown_table(body.get("tasks") or {})
     flagged = list(body.get("flagged") or [])
-    lines += ["", ("Flagged for the Simulated user's end protocol: " + ", ".join(flagged)
-                   + ". Every failing held-out Run of each claimed a write the state never received."
-                   if flagged else
-                   "No Task is flagged for the Simulated user's end protocol: no Task fails only on "
-                   "claims the state never received.")]
+    lines += [
+        "",
+        (
+            "Flagged for the Simulated user's end protocol: "
+            + ", ".join(flagged)
+            + ". Every failing held-out Run of each claimed a write the state never received."
+            if flagged
+            else "No Task is flagged for the Simulated user's end protocol: no Task fails only on "
+            "claims the state never received."
+        ),
+    ]
     return lines
 
 
@@ -705,15 +782,19 @@ def _claim_task_lines(data: ReportData, task_id: str) -> list[str]:
     if not row:
         return []
     flagged = task_id in list((data.claims or {}).get("flagged") or [])
-    lines = [f"- Claims: {row.get('claims', 0)}, of which {row.get('claims_unwritten', 0)} name a "
-             f"write the state never received; {row.get('writes_unclaimed', 0)} writes no transcript "
-             f"mentions",
-             f"- Partial completion: {_percent(row.get('partial_completion_mean'))} of atoms confirmed "
-             f"per Run (band {row.get('partial_completion_band', 'none')}), beside trusted and not "
-             f"instead of it"]
+    lines = [
+        f"- Claims: {row.get('claims', 0)}, of which {row.get('claims_unwritten', 0)} name a "
+        f"write the state never received; {row.get('writes_unclaimed', 0)} writes no transcript "
+        f"mentions",
+        f"- Partial completion: {_percent(row.get('partial_completion_mean'))} of atoms confirmed "
+        f"per Run (band {row.get('partial_completion_band', 'none')}), beside trusted and not "
+        f"instead of it",
+    ]
     if flagged:
-        lines.append("- Flagged: every failing held-out Run of this Task claimed a write the state "
-                     "never received, so the Simulated user's end protocol is what to read next")
+        lines.append(
+            "- Flagged: every failing held-out Run of this Task claimed a write the state "
+            "never received, so the Simulated user's end protocol is what to read next"
+        )
     return lines
 
 
@@ -730,8 +811,12 @@ def tool_fidelity_counts(data: ReportData, name: str) -> dict:
     tasks = (data.tool_fidelity or {}).get("tasks") or {}
     per_tool = tools.get(name) or {}
     calling = [row for row in tasks.values() if name in (row or {})]
-    return {"calls": int(per_tool.get("calls") or 0), "replayed": int(per_tool.get("replayed") or 0),
-            "tasks": len(calling), "blocked": sum(1 for row in calling if row[name].get("differing"))}
+    return {
+        "calls": int(per_tool.get("calls") or 0),
+        "replayed": int(per_tool.get("replayed") or 0),
+        "tasks": len(calling),
+        "blocked": sum(1 for row in calling if row[name].get("differing")),
+    }
 
 
 def assisted_tool_note(data: ReportData, name: str) -> str:
@@ -743,8 +828,7 @@ def assisted_tool_note(data: ReportData, name: str) -> str:
     if counts["calls"]:
         parts.append(f"{counts['replayed']} of {counts['calls']} recorded calls replayed")
     if counts["tasks"]:
-        parts.append(f"{counts['tasks']} Tasks call it, {counts['blocked']} blocked by their own "
-                     f"differing calls")
+        parts.append(f"{counts['tasks']} Tasks call it, {counts['blocked']} blocked by their own differing calls")
     return f": {'; '.join(parts)}" if parts else ""
 
 
@@ -754,21 +838,31 @@ def _tool_notes(data: ReportData) -> list[str]:
     env = data.environment
     assisted = list(env.assisted_tools) if env is not None else []
     lines = ["", "### Assisted tools", ""]
-    lines += _bullets([f"- {name}{assisted_tool_note(data, name)}" for name in assisted],
-                      "No assisted tools: every tool here is real code.")
+    lines += _bullets(
+        [f"- {name}{assisted_tool_note(data, name)}" for name in assisted],
+        "No assisted tools: every tool here is real code.",
+    )
 
     lines += ["", "### Unguarded Tasks", ""]
-    lines += _bullets([f"- {t.id}: {t.name or t.intent or 'no name yet'}" for t in data.tasks if t.unguarded],
-                      "No unguarded Tasks: every Task held Runs back for the anchor.")
+    lines += _bullets(
+        [f"- {t.id}: {t.name or t.intent or 'no name yet'}" for t in data.tasks if t.unguarded],
+        "No unguarded Tasks: every Task held Runs back for the anchor.",
+    )
 
     lines += ["", "### Flagged tools, read or write not confirmed (D70)", ""]
-    lines += _bullets([f"- {name}: {count} Verdicts rest on a Run that called it"
-                       for name, count in flagged_tool_verdicts(data).items()],
-                      "No flagged tools: every tool here is confirmed read or write.")
+    lines += _bullets(
+        [
+            f"- {name}: {count} Verdicts rest on a Run that called it"
+            for name, count in flagged_tool_verdicts(data).items()
+        ],
+        "No flagged tools: every tool here is confirmed read or write.",
+    )
 
     lines += ["", "### Open flags on the Environment", ""]
-    lines += _bullets([f"- {flag}" for flag in (env.flags if env is not None else [])],
-                      "No open flags: nothing on the Environment is waiting on the setup review.")
+    lines += _bullets(
+        [f"- {flag}" for flag in (env.flags if env is not None else [])],
+        "No open flags: nothing on the Environment is waiting on the setup review.",
+    )
     return lines
 
 
@@ -792,9 +886,9 @@ def _finding_lines(data: ReportData) -> list[str]:
 
 def _overlay_lines(data: ReportData) -> list[str]:
     rows = sum(len(o.rows) for o in data.overlays)
-    return ["", "### Overlays", "",
-            f"- Tasks with an overlay: {len(data.overlays)}", f"- Overlay rows: {rows}"] + [
-        f"  - {o.task_id}: {len(o.rows)} overlay rows" for o in data.overlays]
+    return ["", "### Overlays", "", f"- Tasks with an overlay: {len(data.overlays)}", f"- Overlay rows: {rows}"] + [
+        f"  - {o.task_id}: {len(o.rows)} overlay rows" for o in data.overlays
+    ]
 
 
 def _pipeline_lines(data: ReportData) -> list[str]:
@@ -802,8 +896,11 @@ def _pipeline_lines(data: ReportData) -> list[str]:
     cost = sum(stage.usd for stage in data.stages)
     if not cost:
         return lines + ["", "Cost per stage: nothing recorded, so this build's spend is not known."]
-    lines += ["", "Cost per stage: " + ", ".join(_cost_cell(s) for s in data.stages if s.usd),
-              f"Cost so far: ${cost:.2f}."]
+    lines += [
+        "",
+        "Cost per stage: " + ", ".join(_cost_cell(s) for s in data.stages if s.usd),
+        f"Cost so far: ${cost:.2f}.",
+    ]
     memo = sum(s.memo_hits for s in data.stages)
     if memo:
         lines += [f"Calls answered from the memo, at no cost: {memo}."]
@@ -813,10 +910,20 @@ def _pipeline_lines(data: ReportData) -> list[str]:
 def _environment(data: ReportData) -> list[str]:
     """The Environment section, in the order a person reads it: what was built, what the gates and
     the scorecard said, what still needs a look, and what the pipeline did and cost."""
-    return ([ENVIRONMENT, ""] + _headline(data) + _gates_table(data) + _scorecard_table(data)
-            + _difficulty_table(data) + _claims_table(data)
-            + _tool_notes(data) + _finding_lines(data) + _overlay_lines(data)
-            + ["", "### Coverage", ""] + _coverage(data) + _pipeline_lines(data))
+    return (
+        [ENVIRONMENT, ""]
+        + _headline(data)
+        + _gates_table(data)
+        + _scorecard_table(data)
+        + _difficulty_table(data)
+        + _claims_table(data)
+        + _tool_notes(data)
+        + _finding_lines(data)
+        + _overlay_lines(data)
+        + ["", "### Coverage", ""]
+        + _coverage(data)
+        + _pipeline_lines(data)
+    )
 
 
 def _cost_cell(stage: StageStatus) -> str:
@@ -854,13 +961,18 @@ def _pending_review(data: ReportData) -> list[str]:
     without this block nothing tells the reviewer it exists. The filter is policy.pending_review's,
     repeated over the records because report.py reads records off disk rather than importing builder/.
     """
-    pending = [c for c in data.policy_items
-               if c.rewritten_text and not c.compiled and not c.judge_atom and not c.residual_reason]
+    pending = [
+        c
+        for c in data.policy_items
+        if c.rewritten_text and not c.compiled and not c.judge_atom and not c.residual_reason
+    ]
     if not pending:
         return []
-    lines = [f"- Awaiting setup review, not checked: {len(pending)} rewritten policy "
-             f"{'rule' if len(pending) == 1 else 'rules'}. Until a person accepts the rewrite, each "
-             "is in no Verifier and in no residual list, so nothing checks it."]
+    lines = [
+        f"- Awaiting setup review, not checked: {len(pending)} rewritten policy "
+        f"{'rule' if len(pending) == 1 else 'rules'}. Until a person accepts the rewrite, each "
+        "is in no Verifier and in no residual list, so nothing checks it."
+    ]
     for item in pending:
         lines.append(f"  - {item.id}: {item.text}")
         lines.append(f"    rewritten as: {item.rewritten_text}")
@@ -902,8 +1014,10 @@ def _trust_lines(data: ReportData, task_id: str, fractions: dict) -> list[str]:
         standing = f"not trusted, {metrics['untrusted'][task_id]}"
     else:
         standing = "no Verifier ruled on"
-    return [f"- Verifier: {standing}",
-            f"- False rejection: {_percent(fractions.get(task_id))} of held-out frontier Runs rejected"]
+    return [
+        f"- Verifier: {standing}",
+        f"- False rejection: {_percent(fractions.get(task_id))} of held-out frontier Runs rejected",
+    ]
 
 
 def _path_words(record: Verdict) -> str:
@@ -915,11 +1029,13 @@ def _path_words(record: Verdict) -> str:
 
 def _verdict_line(record: Verdict, kinds: dict) -> str:
     """One counted Verdict as the design words it: pass or fail, the failing atom, the path, the cause."""
-    atom = (f"failing atom {record.failing_atom} ({kinds.get(record.failing_atom, 'unknown')})"
-            if record.failing_atom else "no failing atom")
+    atom = (
+        f"failing atom {record.failing_atom} ({kinds.get(record.failing_atom, 'unknown')})"
+        if record.failing_atom
+        else "no failing atom"
+    )
     cause = f"cause {record.cause}" if record.cause else "no cause recorded"
-    return (f"  - {record.run_id}: {'pass' if record.passed else 'fail'}, {atom}, "
-            f"{_path_words(record)}, {cause}")
+    return f"  - {record.run_id}: {'pass' if record.passed else 'fail'}, {atom}, {_path_words(record)}, {cause}"
 
 
 def _uncounted_line(run: Optional[Run], record: Verdict) -> str:
@@ -929,15 +1045,17 @@ def _uncounted_line(run: Optional[Run], record: Verdict) -> str:
         reasons.append("environment suspected" + (f", cause {record.cause}" if record.cause else ""))
     if run is not None and run.assisted:
         stood_in = assisted_tools_of(run)
-        reasons.append("assisted Run" + (f", {', '.join(stood_in)} stood in" if stood_in
-                                         else ", a tool stood in"))
+        reasons.append("assisted Run" + (f", {', '.join(stood_in)} stood in" if stood_in else ", a tool stood in"))
     return f"  - {record.run_id}: {'; '.join(reasons) or 'not counted'}"
 
 
 def _task_numbers_lines(data: ReportData, numbers: dict) -> list[str]:
     judge_note = f"judge disagreement rate {_percent(numbers['judge_disagreement_rate'])}"
-    judge_note += (f", audit rate {_percent(data.audit_rate)}" if data.audit_rate is not None
-                   else ", no human labels yet, so no error bound")
+    judge_note += (
+        f", audit rate {_percent(data.audit_rate)}"
+        if data.audit_rate is not None
+        else ", no human labels yet, so no error bound"
+    )
     lines = [
         f"- Runs graded: {numbers['runs_graded']}",
         f"- Runs not counted (assisted or environment suspected): {numbers['assisted_not_counted']}",
@@ -950,8 +1068,10 @@ def _task_numbers_lines(data: ReportData, numbers: dict) -> list[str]:
         "- Causes: " + (_counts(numbers["causes"]) or "none"),
     ]
     if numbers.get("superseded"):
-        lines.append(f"- Superseded Verdicts not counted (an older Verifier or Environment version): "
-                     f"{numbers['superseded']}; each Run is counted once, under the versions on disk now")
+        lines.append(
+            f"- Superseded Verdicts not counted (an older Verifier or Environment version): "
+            f"{numbers['superseded']}; each Run is counted once, under the versions on disk now"
+        )
     kinds = numbers.get("atom_kinds") or {}
     counted = numbers.get("counted") or []
     lines.append("- Verdicts counted, one line each:" if counted else "- Verdicts counted, one line each: none")
@@ -981,8 +1101,10 @@ def _by_pair(rows: list[dict]) -> dict:
         name = str(row.get("judges") or "")
         if name:
             grouped.setdefault(name, []).append(row)
-    return {name: {key: disagreement_stats(group)[key] for key in ("pairs", "disagreements", "rate")}
-            for name, group in sorted(grouped.items())}
+    return {
+        name: {key: disagreement_stats(group)[key] for key in ("pairs", "disagreements", "rate")}
+        for name, group in sorted(grouped.items())
+    }
 
 
 def _judge_models_lines(data: ReportData) -> list[str]:
@@ -1010,8 +1132,9 @@ def _by_pair_lines(by_pair: dict) -> list[str]:
         return []
     lines = ["", "Disagreement by judge pair:"]
     for name, row in sorted(by_pair.items()):
-        lines.append(f"- {name}: {row.get('disagreements', 0)} of {row.get('pairs', 0)} pairs "
-                     f"({_percent(row.get('rate'))})")
+        lines.append(
+            f"- {name}: {row.get('disagreements', 0)} of {row.get('pairs', 0)} pairs ({_percent(row.get('rate'))})"
+        )
     return lines
 
 
@@ -1019,10 +1142,12 @@ def _queue(data: ReportData) -> list[str]:
     lines = [QUEUE, ""]
     pairs = data.judge_disagreement.get("pairs", 0)
     disagreements = data.judge_disagreement.get("disagreements", len(data.disagreement_queue))
-    bound = (f" Audit rate {_percent(data.audit_rate)} from the queue items a person has resolved, "
-             "which is the labelled set this number is bounded by (D92)."
-             if data.audit_rate is not None
-             else " No human labels yet, so this number has no error bound.")
+    bound = (
+        f" Audit rate {_percent(data.audit_rate)} from the queue items a person has resolved, "
+        "which is the labelled set this number is bounded by (D92)."
+        if data.audit_rate is not None
+        else " No human labels yet, so this number has no error bound."
+    )
     lines += _judge_models_lines(data)
     lines.append(
         f"Judge disagreement: {disagreements} of {pairs} pairs "
@@ -1041,8 +1166,10 @@ def _queue(data: ReportData) -> list[str]:
         lines.append("The judges agreed everywhere they were asked: nothing in the queue, no Tasks set aside.")
         return lines
     split, undecided = _queue_split(data.disagreement_queue)
-    for heading, rows in (("### Items a person may resolve", split),
-                          ("### Items the judges did not decide", undecided)):
+    for heading, rows in (
+        ("### Items a person may resolve", split),
+        ("### Items the judges did not decide", undecided),
+    ):
         if not rows:
             continue
         lines += [heading, ""]
@@ -1051,8 +1178,7 @@ def _queue(data: ReportData) -> list[str]:
             lines.append(
                 f"- {row.get('use', 'judge')} on {row.get('item_id', 'unknown')}: "
                 f"one judge said {row.get('verdict_a', 'unknown')}, "
-                f"the other said {row.get('verdict_b', 'unknown')}" + third
-                + _queue_reason_words(row)
+                f"the other said {row.get('verdict_b', 'unknown')}" + third + _queue_reason_words(row)
             )
             lines += _cited_spans(row)
         lines.append("")
@@ -1099,8 +1225,6 @@ def _cited_spans(row: dict) -> list[str]:
     return lines
 
 
-
-
 def _user_fidelity(data: ReportData) -> list[str]:
     """How close the Simulated user's turns are to the recorded ones (D214 rule 5).
 
@@ -1109,13 +1233,17 @@ def _user_fidelity(data: ReportData) -> list[str]:
     A build written before D214 has no such file and says so in one line.
     """
     from kullback.user.fidelity import markdown_table
+
     lines = [USER_FIDELITY, ""]
     if not data.user_fidelity:
-        lines.append("This build recorded no user fidelity: nothing scored the Simulated user's "
-                     "turns against the recorded ones.")
+        lines.append(
+            "This build recorded no user fidelity: nothing scored the Simulated user's turns against the recorded ones."
+        )
         return lines
-    lines.append("Each driver's turns against the turns the recording holds, per Task, meaned over "
-                 "the corpus. The rule-driven user is the baseline and costs nothing.")
+    lines.append(
+        "Each driver's turns against the turns the recording holds, per Task, meaned over "
+        "the corpus. The rule-driven user is the baseline and costs nothing."
+    )
     lines.append("")
     lines += markdown_table(data.user_fidelity)
     return lines
@@ -1278,8 +1406,7 @@ def _rate_row(name: str, part: dict) -> ScorecardItem:
         note += f", {part['explained_misses']} misses explained"
     if part.get("unexplained"):
         note += f", {part['unexplained']} unexplained"
-    return ScorecardItem(name=name, raw=_percent(part.get("raw")), explained=_percent(part.get("explained")),
-                         note=note)
+    return ScorecardItem(name=name, raw=_percent(part.get("raw")), explained=_percent(part.get("explained")), note=note)
 
 
 def scorecard_rows(body: Any) -> list[ScorecardItem]:
@@ -1304,18 +1431,20 @@ def scorecard_rows(body: Any) -> list[ScorecardItem]:
         part = fidelity.get(kind)
         if isinstance(part, dict):
             rows.append(_rate_row(f"replay fidelity, {kind} calls", part))
-    for key, name in (("verdict_agreement", "verdict agreement"),
-                      ("user_fact_consistency", "user fact consistency")):
+    for key, name in (("verdict_agreement", "verdict agreement"), ("user_fact_consistency", "user fact consistency")):
         part = body.get(key)
         if isinstance(part, dict):
             rows.append(_rate_row(name, part))
     coverage = body.get("task_coverage")
     if isinstance(coverage, dict):
-        rows.append(ScorecardItem(
-            name="task coverage",
-            raw=f"{coverage.get('tasks_covered', 0)} of {coverage.get('tasks_total', 0)} Tasks",
-            explained=_percent(coverage.get("run_weighted")),
-            note="the explained column is the Run-weighted share (D96)"))
+        rows.append(
+            ScorecardItem(
+                name="task coverage",
+                raw=f"{coverage.get('tasks_covered', 0)} of {coverage.get('tasks_total', 0)} Tasks",
+                explained=_percent(coverage.get("run_weighted")),
+                note="the explained column is the Run-weighted share (D96)",
+            )
+        )
     return rows
 
 
@@ -1329,16 +1458,21 @@ def stage_statuses(state: dict, budget: Any = None, stopped: Any = None) -> list
     attempts = state.get("attempts") or {}
     failed = state.get("failed_stage")
     per_stage = dict((stopped or {}).get("stages") or {})
-    buckets = {name: bucket for name, bucket in ((budget or {}).get("stages") or {}).items()
-               if isinstance(bucket, dict)}
+    buckets = {
+        name: bucket for name, bucket in ((budget or {}).get("stages") or {}).items() if isinstance(bucket, dict)
+    }
     for name, bucket in buckets.items():
         if bucket.get("usd"):
             per_stage[name] = bucket["usd"]
     stages = []
     for name, status in statuses.items():
-        stage = StageStatus(name=name, status=str(status), usd=float(per_stage.get(name) or 0.0),
-                            cache_share=_cache_share(buckets.get(name, {})),
-                            memo_hits=int(buckets.get(name, {}).get("memo_hits") or 0))
+        stage = StageStatus(
+            name=name,
+            status=str(status),
+            usd=float(per_stage.get(name) or 0.0),
+            cache_share=_cache_share(buckets.get(name, {})),
+            memo_hits=int(buckets.get(name, {}).get("memo_hits") or 0),
+        )
         try:
             stage.attempts = int(attempts.get(name) or 0)
         except (TypeError, ValueError):
@@ -1439,8 +1573,15 @@ def coverage_rows(tasks: list[Task], uncovered: dict[str, str]) -> list[TaskCove
     The rule itself is gates/scorecard.py's `task_coverage`, so the scorecard and the report cannot drift
     apart; cli.py applies it and hands the reasons here, which keeps the Runner out of this module.
     """
-    return [TaskCoverage(task_id=task.id, covered=task.id not in uncovered,
-                         reason=uncovered.get(task.id), run_count=len(task.run_ids)) for task in tasks]
+    return [
+        TaskCoverage(
+            task_id=task.id,
+            covered=task.id not in uncovered,
+            reason=uncovered.get(task.id),
+            run_count=len(task.run_ids),
+        )
+        for task in tasks
+    ]
 
 
 def load_tool_sigs(workdir: Any) -> list[ToolSig]:
@@ -1494,7 +1635,7 @@ def load(workdir: Any) -> ReportData:
     pairs = _jsonl(root / "judge_pairs.jsonl", unread)
     tasks = _records(root / "tasks", Task, unread)
     runs = load_runs(root / "runs", unread)
-    gates = (_list_of(root / "gates.json", GateResult) + _list_of_bodies(state.get("gates"), GateResult))
+    gates = _list_of(root / "gates.json", GateResult) + _list_of_bodies(state.get("gates"), GateResult)
     trusted = next((g for g in reversed(_list_of(root / "gates.json", GateResult)) if g.stage == "trusted"), None)
     status = str(state.get("status", "complete"))
     snapshot = round_snapshot.read_snapshot(root)
@@ -1513,8 +1654,9 @@ def load(workdir: Any) -> ReportData:
         # D208: the live ones only. A workdir an older build left holds a file per Task that ever
         # had a Reference, and a report that counted one whose Reference has since been withdrawn
         # would say the harness stands behind a check it has retired.
-        verifiers=lifecycle.live(_records(root / "verifiers", Verifier, unread),
-                                 _json(root / "task_status.json") or {}),
+        verifiers=lifecycle.live(
+            _records(root / "verifiers", Verifier, unread), _json(root / "task_status.json") or {}
+        ),
         tool_sigs=load_tool_sigs(root),
         runs=runs,
         verdicts=_records(root / "verdicts", Verdict, unread),
@@ -1531,8 +1673,9 @@ def load(workdir: Any) -> ReportData:
         tasks_aside=_jsonl(root / "tasks_aside.jsonl", unread),
         lessons_set_aside=_list_of(root / "lessons_set_aside.json", SetAsideLesson),
         tool_fidelity=fidelity_body if isinstance(fidelity_body, dict) else {},
-        user_fidelity=_json(root / "user_fidelity.json") if isinstance(
-            _json(root / "user_fidelity.json"), dict) else {},
+        user_fidelity=_json(root / "user_fidelity.json")
+        if isinstance(_json(root / "user_fidelity.json"), dict)
+        else {},
         rounds=_rounds_of(root / "rounds.json", unread),
         trusted=trusted,
         difficulty=_difficulty_body(root),
@@ -1544,8 +1687,9 @@ def load(workdir: Any) -> ReportData:
         findings=_jsonl(root / "repairs" / "repair_record_finding.jsonl", unread),
         # D218 rule 4: the last closed round's table, and the drift of the live files from it.
         snapshot=snapshot or {},
-        drift=round_snapshot.drift(snapshot, task_status=_json(root / "task_status.json") or {},
-                                   replays=_json(root / "replays.json") or {}),
+        drift=round_snapshot.drift(
+            snapshot, task_status=_json(root / "task_status.json") or {}, replays=_json(root / "replays.json") or {}
+        ),
     )
     gate = environment_gate(data)
     if gate is not None and not gate.passed:
