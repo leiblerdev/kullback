@@ -1900,6 +1900,67 @@ def _reroll_reuse(workdir: Path, task_id: str, key: dict) -> Optional[list[dict]
     return out if all(Path(row["path"]).is_file() for row in out) else None
 
 
+def _reroll_run_jobs(workdir: Path, jobs: list, *, source: str, schema: EntitySchema, sigs: list,
+                     db: dict, env_id: Optional[str], canon_rules: Any, traces: dict,
+                     user_model: Any, rerolls: int) -> list:
+    """One (Task, Run number) job per Run the stage owes, in Task and Run number order (D240).
+
+    The pool fans out over these jobs rather than over Tasks, so late in the stage with few Tasks
+    left every Run still fills a worker. Discards happen here, sequentially, before any Run of the
+    Task starts; the rows are gathered and written in Run number order in `_gather_reroll_rows`.
+    """
+    run_jobs = []
+    for task, rules, prompt, key, reference_id in jobs:
+        _discard_runs(workdir / "runs" / task.id, f"reroll-{task.id}-")
+        # D206: the Run id carries the key these Runs are of. A re-roll replaces the Task's
+        # earlier ones, and under a name that did not move, a later round wrote different bytes
+        # under the name an earlier round's Verifier was derived from and had recorded spans
+        # into: three Tasks of one build held a write atom pointing at a call the file no longer
+        # contained. With the key in the name, a name is one set of Runs for good, and a
+        # Verifier whose Runs are gone reads as gone rather than as changed underneath it.
+        task_ctx = _candidate_task_ctx(
+            workdir, task, prefix="reroll", source=source, schema=schema, sigs=sigs, db=db,
+            env_id=env_id, canon_rules=canon_rules, rules=rules, seed=REROLL_SEED,
+            max_turns=REROLL_TURNS, system_prompt=prompt, members=_members_of(task, traces),
+            reference=traces.get(reference_id) if reference_id else None,
+            user_agent_model=user_model, tag=f"{content_hash(key)[:8]}-")
+        run_jobs.extend((task, task_ctx, number) for number in range(rerolls))
+    return run_jobs
+
+
+def _reroll_run_one(workdir: Path, model: Any, run_job: tuple) -> tuple:
+    """One numbered Run of one Task, in its own world, as its (Task id, Run number) answer (D240)."""
+    task, task_ctx, number = run_job
+    run, path = _candidate_run_once(workdir, task, model, ctx=task_ctx, number=number)
+    return (task.id, number, run, path)
+
+
+def _gather_reroll_rows(workdir: Path, jobs: list, got: list, *, rerolls: Optional[int] = None) -> dict:
+    """The pool's (Task id, Run number) answers as per-Task rows in Run number order (D240).
+
+    Recorded beside each Task's Runs in the Tasks' order, sequentially, after every Run finished.
+    """
+    if rerolls is not None and len(got) != len(jobs) * rerolls:
+        raise BuildError(
+            f"the rerolls stage owes {len(jobs) * rerolls} Runs and settled {len(got)}")
+    by_task: dict[str, list] = {}
+    for task_id, number, run, path in got:
+        by_task.setdefault(task_id, []).append((number, run, path))
+    rolled = {}
+    for task, _rules, _prompt, key, _reference_id in jobs:
+        if task.id not in by_task:
+            raise BuildError(f"the rerolls stage settled no Runs for Task {task.id}")
+        ordered = [(run, path) for _, run, path
+                   in sorted(by_task.get(task.id, []), key=lambda item: item[0])]
+        rows = [{"run_id": r.run_id, "path": p, "termination_reason": r.termination_reason,
+                 "user_end": user_sim.end_of_run(r)} for r, p in ordered]
+        _write_json(workdir / "runs" / task.id / REROLL_RECORD,
+                    {"task_id": task.id, "key": key,
+                     "runs": _reroll_rows(workdir, rows, relative=True)})
+        rolled[task.id] = rows
+    return rolled
+
+
 def _rerolls_stage(model: Any, rerolls: int, workers: int = 1, only: Optional[Iterable[str]] = None,
                    user_model: Any = None):
     """D112: `rerolls` Candidate-shaped Runs of the frontier per Task, inside the built Environment.
@@ -1968,33 +2029,18 @@ def _rerolls_stage(model: Any, rerolls: int, workers: int = 1, only: Optional[It
                                 or "the Run files the key names are gone")
             jobs.append((task, rules, prompt, key, reference_id))
 
-        def reroll(job):  # one Task's re-rolls, in its own world and run directory (D118)
-            task, rules, prompt, key, reference_id = job
-            _discard_runs(ctx.workdir / "runs" / task.id, f"reroll-{task.id}-")
-            # D206: the Run id carries the key these Runs are of. A re-roll replaces the Task's
-            # earlier ones, and under a name that did not move, a later round wrote different bytes
-            # under the name an earlier round's Verifier was derived from and had recorded spans
-            # into: three Tasks of one build held a write atom pointing at a call the file no longer
-            # contained. With the key in the name, a name is one set of Runs for good, and a
-            # Verifier whose Runs are gone reads as gone rather than as changed underneath it.
-            runs = _candidate_runs(ctx.workdir, task, model, count=rerolls, prefix="reroll",
-                                   tag=f"{content_hash(key)[:8]}-", source=source,
-                                   schema=with_synthetic_rows(inputs["schema"], inputs.get("synthetic_rows") or ()),
-                                   sigs=inputs["sigs"], db=inputs["db"], env_id=env_id,
-                                   canon_rules=canon_rules, rules=rules, seed=REROLL_SEED,
-                                   max_turns=REROLL_TURNS, system_prompt=prompt,
-                                   members=_members_of(task, traces),
-                                   reference=traces.get(reference_id) if reference_id else None,
-                                   user_agent_model=user_model)
-            rows = [{"run_id": r.run_id, "path": p, "termination_reason": r.termination_reason,
-                     "user_end": user_sim.end_of_run(r)} for r, p in runs]
-            _write_json(ctx.workdir / "runs" / task.id / REROLL_RECORD,
-                        {"task_id": task.id, "key": key,
-                         "runs": _reroll_rows(ctx.workdir, rows, relative=True)})
-            return rows
-
-        rolled = {job[0].id: rows for job, rows
-                  in zip(jobs, parallel.each(jobs, reroll, workers), strict=True)}
+        # D240: one Task's Runs run side by side in the one shared pool: `run_jobs` holds every
+        # Task's Runs as (Task, Run number) jobs, and the single `parallel.each` below keeps the
+        # jobs in flight bounded by the workers flag. Each Task still fans out, and its rows land
+        # in Run number order; the discards and the record writes stay sequential, in the helpers.
+        run_jobs = _reroll_run_jobs(
+            ctx.workdir, jobs, source=source,
+            schema=with_synthetic_rows(inputs["schema"], inputs.get("synthetic_rows") or ()),
+            sigs=inputs["sigs"], db=inputs["db"], env_id=env_id, canon_rules=canon_rules,
+            traces=traces, user_model=user_model, rerolls=rerolls)
+        got = parallel.each(run_jobs, functools.partial(_reroll_run_one, ctx.workdir, model),
+                            workers)
+        rolled = _gather_reroll_rows(ctx.workdir, jobs, got, rerolls=rerolls)
         out = {task.id: rolled[task.id] if task.id in rolled else reused[task.id]
                for task in tasks if task.id in rolled or task.id in reused}
         _write_runs_index(ctx.workdir)
@@ -2011,7 +2057,7 @@ def _rerolls_stage(model: Any, rerolls: int, workers: int = 1, only: Optional[It
     # D214: whose turns the Runs get is part of what this stage produces, so a build that names a
     # user driver puts it in the key. A build that names none adds nothing, so its key, its cache
     # and the Run ids it derives from the key are the ones it had before D214.
-    version = (f"{_version('rerolls', run, loop, route, user_sim, intent, provider)}:"
+    version = (f"{_version('rerolls', run, loop, route, user_sim, intent, provider, helpers=(_reroll_run_jobs, _reroll_run_one, _gather_reroll_rows, _candidate_task_ctx, _candidate_run_once))}:"
                f"{getattr(model, 'name', 'none')}:{rerolls}")
     user_name = getattr(user_model, "name", None)
     if user_name:
@@ -2021,6 +2067,89 @@ def _rerolls_stage(model: Any, rerolls: int, workers: int = 1, only: Optional[It
                                   "environment", "canon_rules", "traces", "policy_text", "synthetic_rows"),
                           outputs=("rerolls",), input_paths=("overlays",),
                           code_version=version if only is None else f"{version}:only={','.join(only)}")
+
+
+def _candidate_task_ctx(workdir: Path, task: Task, *, prefix: Optional[str], source: str,
+                        schema: EntitySchema, sigs: list, db: dict, env_id: Optional[str],
+                        canon_rules: Any, rules: Optional[UserRules], seed: int = 0,
+                        max_turns: int = 30, system_prompt: Optional[str] = None, tag: str = "",
+                        members: Sequence[Any] = (), reference: Optional[Any] = None,
+                        user_agent_model: Any = None) -> dict:
+    """One Task's share of a Candidate Run batch: everything its Runs read but never write (D240).
+
+    The salt, the overlay, the Vocabulary, the tool definitions, the write set and the strip
+    closure are the same for every Run of the Task. Nothing on the Run path writes a tool
+    definition and the provider rebuilds the list it sends, and the Router deep-copies the
+    Starting state and the overlay rows into its own world, so Runs running side by side share
+    this mapping safely. The toolkit does not copy the overlay rows into its own db, so each Run
+    deep copies them at its own build in `_candidate_run_once`. What a Run writes,
+    the toolkit, the Router, the Simulated user, the transcript and the Run file, is built fresh
+    per Run in `_candidate_run_once`.
+    """
+    salt = sampling.build_salt(workdir)
+    overlay, overlay_rows = compile_env.load_overlay(workdir, task.id)
+    vocab = _vocab_from(workdir)
+    tools = _tool_definitions(sigs, vocab)
+    # The Simulated user restates its goal once rather than leaving on the first dead turn, and it
+    # needs these names to tell a Run that has already written from one that has not (user_sim).
+    write_tools = {sig.name for sig in sigs if getattr(sig, "kind", None) == "write"}
+    # D210: which writes the goal implies, and the D196 strip over this Task's own evidence, so no
+    # value only the tools knew reaches the Candidate through an answer. A caller that names no
+    # recordings gets the user it had, ending on any write and speaking its facts unchecked.
+    goal_writes = user_sim.goal_write_set(reference, write_tools) if reference is not None else None
+    answer_strip = intent.value_strip(list(members), schema=schema,
+                                      rules=canon_rules) if members else None
+    return {"salt": salt, "overlay": overlay, "overlay_rows": overlay_rows, "vocab": vocab,
+            "tools": tools, "write_tools": write_tools, "goal_writes": goal_writes,
+            "answer_strip": answer_strip, "prefix": prefix, "source": source, "schema": schema,
+            "sigs": sigs, "db": db, "env_id": env_id, "canon_rules": canon_rules,
+            "rules": rules, "seed": seed, "max_turns": max_turns,
+            "system_prompt": system_prompt, "tag": tag, "reference": reference,
+            "user_agent_model": user_agent_model}
+
+
+def _candidate_run_once(workdir: Path, task: Task, model: Any, *, ctx: dict, number: int) -> tuple[Any, str]:
+    """Run `number` of the Task's batch against its own world, and the Run with its path (D240).
+
+    The Run id is the Task, the tag and the attempt and nothing else, and its seed is drawn from
+    that id and the build salt (D212), so neither depends on the order Runs execute in. The
+    toolkit is built per Run: the Router lays the overlay into the toolkit's own db and lands
+    every write there, so a toolkit shared across Runs would carry one Run's world into the next.
+    """
+    prefix, tag, seed = ctx["prefix"], ctx["tag"], ctx["seed"]
+    stem = f"{prefix}-{task.id}" if prefix else str(task.id)
+    run_id = f"{stem}-{tag}{seed + number}" if tag else f"{stem}-{seed + number}"
+    # The Task's own overlay goes inside the toolkit, or it stays dead for every code route (D74).
+    # The toolkit keeps the caller's row objects by reference, so each Run takes its own copy of
+    # the overlay rows the way it already does for the db; one shared store would let an in place
+    # write in one Run show in another Run's world and in the shared ctx (D240).
+    toolkit = compile_env.load_toolkit(ctx["source"], json.loads(json.dumps(ctx["db"])),
+                                       overlay=ctx["overlay"],
+                                       overlay_values=json.loads(json.dumps(ctx["overlay_rows"])))
+    router = route.Router(env_tools_module=toolkit, starting_state=json.loads(json.dumps(ctx["db"])),
+                          overlay=ctx["overlay"], overlay_rows=ctx["overlay_rows"],
+                          tool_sigs=ctx["sigs"], canon_rules=ctx["canon_rules"],
+                          synthetic_rows=ctx["schema"].synthetic_rows)
+    simulated = user_sim.SimulatedUser(ctx["rules"], starting_state_reader=router.state,
+                                       vocab=ctx["vocab"], write_tools=ctx["write_tools"],
+                                       goal_writes=ctx["goal_writes"],
+                                       answer_strip=ctx["answer_strip"]) if ctx["rules"] else None
+    simulated = _user_driver(workdir, task, simulated, ctx["user_agent_model"], vocab=ctx["vocab"],
+                             write_tools=ctx["write_tools"], goal_writes=ctx["goal_writes"],
+                             answer_strip=ctx["answer_strip"], trace=ctx["reference"])
+    state = loop.new_run_state(run_id, workdir=workdir / "runs" / task.id, env_id=ctx["env_id"],
+                               task_id=task.id,
+                               model=getattr(model, "name", None) or (prefix or "candidate"),
+                               seed=sampling.sample_seed(RUN_SEED_KIND, run_id, ctx["salt"]),
+                               user=simulated, user_rules=ctx["rules"], max_turns=ctx["max_turns"],
+                               system_prompt=ctx["system_prompt"])
+    try:
+        loop.open_with_user(state)
+        loop.run(state, model, tools=ctx["tools"], router=router)
+    except Exception:  # the loop wrote the error and the stop; a crashed re-roll reaches no End state
+        if not prefix:
+            raise
+    return (state.run, str(state.path))
 
 
 def _candidate_runs(workdir: Path, task: Task, model: Any, *, count: int, prefix: Optional[str], source: str,
@@ -2052,48 +2181,13 @@ def _candidate_runs(workdir: Path, task: Task, model: Any, *, count: int, prefix
     read once here rather than per turn: the strip closure and the goal's write set are the same
     for every Run of the Task.
     """
-    salt = sampling.build_salt(workdir)
-    overlay, overlay_rows = compile_env.load_overlay(workdir, task.id)
-    vocab = _vocab_from(workdir)
-    tools = _tool_definitions(sigs, vocab)
-    # The Simulated user restates its goal once rather than leaving on the first dead turn, and it
-    # needs these names to tell a Run that has already written from one that has not (user_sim).
-    write_tools = {sig.name for sig in sigs if getattr(sig, "kind", None) == "write"}
-    # D210: which writes the goal implies, and the D196 strip over this Task's own evidence, so no
-    # value only the tools knew reaches the Candidate through an answer. A caller that names no
-    # recordings gets the user it had, ending on any write and speaking its facts unchecked.
-    goal_writes = user_sim.goal_write_set(reference, write_tools) if reference is not None else None
-    answer_strip = intent.value_strip(list(members), schema=schema,
-                                      rules=canon_rules) if members else None
-    out = []
-    for number in range(count):
-        stem = f"{prefix}-{task.id}" if prefix else str(task.id)
-        run_id = f"{stem}-{tag}{seed + number}" if tag else f"{stem}-{seed + number}"
-        # The Task's own overlay goes inside the toolkit, or it stays dead for every code route (D74).
-        toolkit = compile_env.load_toolkit(source, json.loads(json.dumps(db)), overlay=overlay,
-                                           overlay_values=overlay_rows)
-        router = route.Router(env_tools_module=toolkit, starting_state=json.loads(json.dumps(db)),
-                              overlay=overlay, overlay_rows=overlay_rows, tool_sigs=sigs,
-                              canon_rules=canon_rules, synthetic_rows=schema.synthetic_rows)
-        simulated = user_sim.SimulatedUser(rules, starting_state_reader=router.state, vocab=vocab,
-                                           write_tools=write_tools, goal_writes=goal_writes,
-                                           answer_strip=answer_strip) if rules else None
-        simulated = _user_driver(workdir, task, simulated, user_agent_model, vocab=vocab,
-                                 write_tools=write_tools, goal_writes=goal_writes,
-                                 answer_strip=answer_strip, trace=reference)
-        state = loop.new_run_state(run_id, workdir=workdir / "runs" / task.id, env_id=env_id, task_id=task.id,
-                                   model=getattr(model, "name", None) or (prefix or "candidate"),
-                                   seed=sampling.sample_seed(RUN_SEED_KIND, run_id, salt),
-                                   user=simulated, user_rules=rules, max_turns=max_turns,
-                                   system_prompt=system_prompt)
-        try:
-            loop.open_with_user(state)
-            loop.run(state, model, tools=tools, router=router)
-        except Exception:  # the loop wrote the error and the stop; a crashed re-roll reaches no End state
-            if not prefix:
-                raise
-        out.append((state.run, str(state.path)))
-    return out
+    ctx = _candidate_task_ctx(workdir, task, prefix=prefix, source=source, schema=schema, sigs=sigs,
+                              db=db, env_id=env_id, canon_rules=canon_rules, rules=rules, seed=seed,
+                              max_turns=max_turns, system_prompt=system_prompt, tag=tag,
+                              members=members, reference=reference,
+                              user_agent_model=user_agent_model)
+    return [_candidate_run_once(workdir, task, model, ctx=ctx, number=number)
+            for number in range(count)]
 
 
 def _user_driver(workdir: Path, task: Task, fallback: Any, model: Any, *, vocab: Any,
