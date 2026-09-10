@@ -1,3 +1,7 @@
+Dated audit of 2026-08-28/29. 4 of 7 follow-ups fixed (D101 to D104).
+Two open items: confirmation string End state, init actions overlay.
+Active checks live in scripts/xdomain_check.py.
+
 # Cross-domain check: airline and telecom against retail (2026-08-28)
 
 The question: is the offline slice (ingest, mine, cluster, Starting state, Gate A) tuned to tau2 retail, or does it hold on a domain it never saw? The answer is that parts of it are tuned to retail, in five concrete places listed under Judgement. Nothing in the harness was changed or retuned for this run; the default settings (`DEFAULT_THRESHOLD = 0.4` in `cluster.py`, D100 similarity) were used as they are.

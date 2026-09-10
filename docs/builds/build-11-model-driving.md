@@ -1,3 +1,7 @@
+---
+archived: true
+archived_on: 2026-09-10
+---
 # Build table: .work-b9-agent
 
 **Tasks covered: 61 of 205 frozen Tasks (29.8%), 185 of 456 Runs (40.6%)**
