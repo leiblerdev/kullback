@@ -205,8 +205,16 @@ def _laid_over(under: Any, over: Any) -> Any:
     leave the model priced and unsized, or half priced, which the budget gate reads as a call it
     must refuse. A rate that went to nothing is written as 0.0 rather than left out, so no override
     ever needs to remove a key.
+
+    Where the value underneath is a mapping and the one over it is not, the one over it is left
+    where it is. A cost or a limit written as a number or a string is not a correction anyone can
+    read: taking it would leave the model unpriced, which the budget gate reads as a call it must
+    refuse, and unsized, which sends the context cap to the generic limit. The written value is
+    the better answer of the two, so it stands.
     """
-    if isinstance(under, dict) and isinstance(over, dict):
+    if isinstance(under, dict):
+        if not isinstance(over, dict):
+            return under
         merged = dict(under)
         for key, value in over.items():
             merged[key] = _laid_over(merged.get(key), value)

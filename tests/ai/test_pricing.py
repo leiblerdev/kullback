@@ -425,6 +425,25 @@ def test_a_model_row_that_names_nothing_changes_nothing(tmp_path):
     assert pricing.window_from_catalog(catalog, "a-vendor/old-1") == 200_000
 
 
+def test_a_cost_or_limit_written_as_something_other_than_a_mapping_leaves_the_one_underneath(tmp_path):
+    """A row can carry a field of the wrong shape too. A cost written as a number and a limit
+    written as a string are not corrections anybody can read, so the rates and the window the
+    catalog holds stand, and the fields beside them that are readable still land."""
+    path = tmp_path / "models.dev.json"
+    write_snapshot(path, {"a-vendor": {"id": "a-vendor", "npm": "@ai-sdk/openai-compatible",
+                                       "api": "https://a-vendor.invalid", "env": ["A_VENDOR_API_KEY"],
+                                       "models": {"old-1": {"name": "Old One",
+                                                            "limit": {"context": 200_000},
+                                                            "cost": {"input": 9.0, "output": 18.0}}}}})
+    write_local(path, {"a-vendor": {"models": {"old-1": {"cost": 3.0, "limit": "wide",
+                                                         "name": "Old One, corrected"}}}})
+    catalog = pricing.refresh(path=path, env={})
+    assert pricing.price_from_catalog(catalog, "a-vendor/old-1") == {
+        "input": 9.0, "output": 18.0, "cache_read": 9.0, "cache_write": 0.0}
+    assert pricing.window_from_catalog(catalog, "a-vendor/old-1") == 200_000
+    assert catalog["a-vendor"]["models"]["old-1"]["name"] == "Old One, corrected"
+
+
 def test_a_local_registry_file_that_cannot_be_read_is_ignored_not_raised_on(tmp_path):
     path = tmp_path / "models.dev.json"
     write_snapshot(path, CATALOG)
