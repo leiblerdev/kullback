@@ -5,6 +5,7 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+import math
 import os
 import random
 import re
@@ -508,7 +509,8 @@ CONNECT_TIMEOUT_S = 10.0
 def model_read_timeout_s(env: dict[str, str], explicit: Optional[float] = None) -> float:
     """The read timeout in seconds: an explicit argument wins, then the environment, then 300 s.
 
-    A set variable that is not a number is an error naming the variable, never a silent default.
+    A set variable that is not a positive finite number is an error naming the variable,
+    never a silent default. An empty value counts as set, so it raises too.
     """
     if explicit is not None:
         return float(explicit)
@@ -516,11 +518,27 @@ def model_read_timeout_s(env: dict[str, str], explicit: Optional[float] = None) 
     if raw is None:
         return DEFAULT_READ_TIMEOUT_S
     try:
-        return float(raw)
+        value = float(raw)
     except (TypeError, ValueError):
         raise ValueError(
             f"{MODEL_TIMEOUT_ENV_VAR} must be a number of seconds, got {raw!r}"
         ) from None
+    if not (value > 0 and math.isfinite(value)):
+        raise ValueError(
+            f"{MODEL_TIMEOUT_ENV_VAR} must be a positive number of seconds, got {raw!r}"
+        )
+    return value
+
+
+def timeout_note(exc: Exception, connect_s: float, read_s: float) -> str:
+    """Name the budget an expired timeout spent: read for a slow answer, connect or pool for a dead host."""
+    if isinstance(exc, (httpx.ReadTimeout, httpx.WriteTimeout)):
+        return f" (read timeout {read_s:g}s)"
+    if isinstance(exc, httpx.PoolTimeout):
+        return f" (pool timeout {connect_s:g}s)"
+    if isinstance(exc, httpx.ConnectTimeout):
+        return f" (connect timeout {connect_s:g}s)"
+    return ""
 
 
 def split_model_id(model_id: str) -> tuple[str, str]:
@@ -836,11 +854,7 @@ class HttpModel(Model):
                 if last_attempt:
                     # A timeout names the budget that was in force, so the log line that lands
                     # says whether the answer was slow or the host was down.
-                    suffix = (
-                        f" (read timeout {self.timeout:g}s)"
-                        if isinstance(exc, httpx.TimeoutException)
-                        else ""
-                    )
+                    suffix = timeout_note(exc, CONNECT_TIMEOUT_S, self.timeout)
                     raise RetryExhausted(f"{self.name}: {self.retry.attempts} attempts failed: {exc}{suffix}",
                                          attempts=attempt) from exc
                 self.sleep(backoff_delay(attempt, self.retry, self.rng))
