@@ -1,5 +1,5 @@
 diff --git a/kullback/gates/fidelity.py b/kullback/gates/fidelity.py
-index 6c89b40..e21cd42 100644
+index 6c89b40..27c198b 100644
 --- a/kullback/gates/fidelity.py
 +++ b/kullback/gates/fidelity.py
 @@ -20,6 +20,7 @@ from typing import Any
@@ -32,13 +32,14 @@ index 6c89b40..e21cd42 100644
  def replay_fidelity_gate(calls, canon_rules: Any = None, schema: Any = None,
                           readers: Any = None) -> GateResult:
      """Gate 5: replay of recorded calls, success and error fidelity reported separately (R22 item 8, D80).
-@@ -48,13 +64,18 @@ def replay_fidelity_gate(calls, canon_rules: Any = None, schema: Any = None,
+@@ -48,17 +64,24 @@ def replay_fidelity_gate(calls, canon_rules: Any = None, schema: Any = None,
      `canon_rules` is the customer's canonicalization: a gate given none compares under the module
      defaults and can call two values different that the Verdict calls the same (gate_support.py).
      `schema` and `readers` are threaded the same way and for the same reason: without them this
 -    ruling holds every column to a hard column's bar (D187).
-+    ruling holds every column to a hard column's bar (D187). Unread prose is reported on
-+    `differs_by_unread` and skipped in the pass/fail numerator (D248).
++    ruling holds every column to a hard column's bar (D187). Unread prose that did not
++    match is reported on `differs_by_unread` and skipped in the pass/fail numerator
++    (D248). Bytes-equal and canonical-equal prose still count as matched.
      """
      failures, misses, per_tool = [], [], {}
      totals = {"success": [0, 0], "error": [0, 0]}
@@ -46,13 +47,19 @@ index 6c89b40..e21cd42 100644
      for call in calls or ():
          kind = "error" if _get(call, "expected_error") is not None else "success"
          tool = _get(call, "tool", "?")
-+        if _unread_body_call(call, readers):
++        matched = replay_match(call, canon_rules, schema, readers)
++        if not matched and _unread_body_call(call, readers):
 +            unread += 1
 +            continue
          slot = per_tool.setdefault(tool, {"success": {"total": 0, "matched": 0}, "error": {"total": 0, "matched": 0}})
          totals[kind][0] += 1
          slot[kind]["total"] += 1
-@@ -69,9 +90,11 @@ def replay_fidelity_gate(calls, canon_rules: Any = None, schema: Any = None,
+-        if replay_match(call, canon_rules, schema, readers):
++        if matched:
+             totals[kind][1] += 1
+             slot[kind]["matched"] += 1
+             continue
+@@ -69,9 +92,11 @@ def replay_fidelity_gate(calls, canon_rules: Any = None, schema: Any = None,
              failures.append(f"{tool}: a recorded {kind} call replays differently; D80 wants 100% on recorded calls")
          elif reason not in MISS_REASONS:
              failures.append(f"{tool}: a held-out {kind} call misses with no reason ({reason!r})")
@@ -64,7 +71,7 @@ index 6c89b40..e21cd42 100644
      return gate("compile_tools.replay_fidelity", failures, **metrics)
  
  
-@@ -89,6 +112,9 @@ def summarize(replays: dict[str, dict[str, dict]]) -> dict:
+@@ -89,6 +114,9 @@ def summarize(replays: dict[str, dict[str, dict]]) -> dict:
      body left where they were, and how many later calls parted over a row an earlier write had left
      stale. A round reads the third against the second: a corpus where they move together is one
      where the reads that failed were never the reads' own fault.
@@ -74,7 +81,7 @@ index 6c89b40..e21cd42 100644
      """
      rows = [r for per_task in replays.values() for r in per_task.values()]
      tasks_confirmed = sum(any(r["confirmed"] for r in per_task.values()) for per_task in replays.values())
-@@ -113,7 +139,9 @@ def summarize(replays: dict[str, dict[str, dict]]) -> dict:
+@@ -113,7 +141,9 @@ def summarize(replays: dict[str, dict[str, dict]]) -> dict:
              # second is the number that says whether the judging is wired: a corpus with semantic
              # columns and nothing but unresolved checks has no semantic comparison happening.
              "differs_by_judge": total("differs_by_judge"),
@@ -86,7 +93,7 @@ index 6c89b40..e21cd42 100644
  
  def unconfirmed_reason(per_task: dict[str, dict]) -> str:
 diff --git a/kullback/runner/replay.py b/kullback/runner/replay.py
-index 1b35031..96dc881 100644
+index 1b35031..7ed590f 100644
 --- a/kullback/runner/replay.py
 +++ b/kullback/runner/replay.py
 @@ -66,10 +66,15 @@ BY_COLUMNS, BY_TOKEN_SET, BY_PRESENCE, BY_VALUE, BY_ERROR = "columns", "token_se
@@ -106,7 +113,7 @@ index 1b35031..96dc881 100644
  
  
  class _Script:
-@@ -396,6 +401,36 @@ def _route_of(agreed: bool, notes: Iterable[str]) -> str:
+@@ -396,6 +401,33 @@ def _route_of(agreed: bool, notes: Iterable[str]) -> str:
      return BY_EXEMPT if any(note.startswith(EXEMPT_NOTE) for note in marks) else BY_COLUMNS
  
  
@@ -115,35 +122,32 @@ index 1b35031..96dc881 100644
 +    return isinstance(value, str) and bool(value.strip())
 +
 +
-+def _columns_bound(readers: Any, tool: str, theirs: Any, ours: Any) -> bool:
-+    """Whether a reader of this tool read both sides into a non-empty column dict."""
++def _reader_bound(readers: Any, tool: str) -> bool:
++    """Whether this tool has a reader that can bind a column of its result."""
 +    if readers is None or not tool:
 +        return False
 +    table_of = getattr(readers, "table_of", None)
-+    read = getattr(readers, "read", None)
-+    if not callable(table_of) or not callable(read) or table_of(tool) is None:
-+        return False
-+    left, right = read(tool, theirs), read(tool, ours)
-+    return isinstance(left, dict) and bool(left) and isinstance(right, dict) and bool(right)
++    return callable(table_of) and table_of(tool) is not None
 +
 +
 +def unread_of(theirs: Any, ours: Any, *, readers: Any = None, tool: str = "") -> bool:
-+    """True when both answers are prose and no reader bound a column of them (D248).
++    """True when both answers are prose and this tool has no reader (D248).
 +
 +    A sentence nobody parsed cannot be scored as a hard column miss, and it is not agreement
-+    either. The callers that keep or beat a body skip these, and replay records them on their
-+    own route.
++    either. A reader that is registered still scores the call, even when one side fails to
++    parse: that is a miss, not unread. The callers that keep or beat a body skip unread
++    differs, and replay records them on their own route.
 +    """
 +    left, right = _norm(theirs), _norm(ours)
 +    if not (_is_prose(left) and _is_prose(right)):
 +        return False
-+    return not _columns_bound(readers, tool, left, right)
++    return not _reader_bound(readers, tool)
 +
 +
  def compare_call_route(recorded: ToolCall, result: Any, error: Any, rules: Any = None,
                         comparer: Any = None) -> tuple[str, list[str], str]:
      """The verdict, what parted, and the route the verdict was reached by (D187, D217).
-@@ -408,7 +443,12 @@ def compare_call_route(recorded: ToolCall, result: Any, error: Any, rules: Any =
+@@ -408,7 +440,12 @@ def compare_call_route(recorded: ToolCall, result: Any, error: Any, rules: Any =
      of keyed rows is paired by key rather than by position. Two answers that agree there agree
      cosmetically: the effect is the same and the bytes are not.
  
@@ -157,7 +161,7 @@ index 1b35031..96dc881 100644
  
      The route is kept beside the verdict, because a cosmetic verdict reached on the bytes and one
      reached because a judge called two sentences equivalent are not the same evidence that the
-@@ -427,6 +467,9 @@ def compare_call_route(recorded: ToolCall, result: Any, error: Any, rules: Any =
+@@ -427,6 +464,9 @@ def compare_call_route(recorded: ToolCall, result: Any, error: Any, rules: Any =
          return SAME, [], BY_BYTES
      if canonicalize(ours, rules) == canonicalize(theirs, rules):
          return COSMETIC, [], BY_CANONICAL
@@ -167,7 +171,7 @@ index 1b35031..96dc881 100644
      if comparer is None:
          return DIFFERS, [], BY_VALUE
      agreed, notes = comparer.agrees(recorded.name, theirs, ours)
-@@ -611,6 +654,9 @@ def _score(trace: Trace, state: Any, scored: ScoredRouter, script: _Script, mode
+@@ -611,6 +651,9 @@ def _score(trace: Trace, state: Any, scored: ScoredRouter, script: _Script, mode
          "differs_by_presence": _by_route(scored.checks, DIFFERS, BY_PRESENCE),
          "differs_by_judge": _by_route(scored.checks, DIFFERS, BY_JUDGE),
          "differs_unresolved": _by_route(scored.checks, DIFFERS, BY_UNRESOLVED),
@@ -177,7 +181,7 @@ index 1b35031..96dc881 100644
      }
      # The route is part of the reason: "differs" alone does not say whether the two answers were
      # made of different domain tokens, held different columns, or simply parted at a value (D217).
-@@ -638,4 +684,4 @@ def _score(trace: Trace, state: Any, scored: ScoredRouter, script: _Script, mode
+@@ -638,4 +681,4 @@ def _score(trace: Trace, state: Any, scored: ScoredRouter, script: _Script, mode
  # The per-Task ruling over these records (some Trace confirmed, or why none did) is
  # `kullback.gates.fidelity.reference_replay_gate`; this module scores one replay and stops.
  __all__ = ["Replay", "ScoredRouter", "TraceModel", "TraceUser", "compare_call", "compare_call_notes",
