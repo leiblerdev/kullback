@@ -1896,6 +1896,14 @@ Decided: the intent call sends the invariant lines (the three instruction lines 
 
 Five tests on invented domains cover the head bytes identical across two Tasks and two attempts for each stage, the head plus body sentence cover against the old form, and the byte identical mine dump across insertion orders. `scripts/prompt_snapshot.py` builds both stages over ten invented inputs and checks the cover sentence for sentence. Both heads sit below the provider minimum (intent about 60 tokens, judge about 610 by word count times 1.3, the repo having no prompt tokenizer), so no live cache read is claimed: the live cache share is to be measured on the next launch.
 
+### D250. Compile hold-out is by argument shape, and test_body faces that split (2026-09-11)
+
+D51 asks every stage to be tested on what it did not see. The compile split did not do that. `split_calls` took every third recorded call by list index, so held-out was usually another call of the same argument shape: a reconstruction that matched the shown nested keys passed shown replay and held-out. `test_body` gated on shown only, with an empty held-out list, so the drafter submitted a body it had already marked passed. The class is a write whose option keys differ across calls, or a search whose result set size is an arity the shown calls never carried.
+
+The rule. Membership of the split is the argument-shape hash: sorted key paths of args, nested dict keys, list lengths, values dropped. Shown and held-out then disagree on option keys, arities and nested key sets. Values stay withheld from the writer. `test_body` runs the same split and still reports a withheld count rather than hidden args, so a reconstruction that matches shown keys and misses a held-out key set fails before submit. When every recorded call of a tool shares one shape, the split falls back to every third call by index and the build row records `no_shape_holdout`.
+
+Tests on an invented kiln domain: two ware shapes, one held out, `test_body` names a held-out shape fail without quoting values; one shared shape falls back to every third. Existing one-shape split tests keep their shown and held-out ids. Not measured live.
+
 ## Pending (asked, not yet answered)
 
 - ~~The user's own tools and the world they act on (D71, first part).~~ Decided as D176 (2026-09-07): one world, rows revealed by a requestor marked by it, readers as code under the free gate.

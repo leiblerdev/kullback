@@ -403,6 +403,110 @@ def test_split_calls_puts_every_call_in_exactly_one_of_the_shown_and_held_out_sp
     assert not set(id(c) for c in shown) & set(id(c) for c in held_out)
 
 
+# --- hold-out by argument shape (D250) ---
+
+
+KILN_DB = {"bins": {"b1": {"bin_id": "b1"}}}
+KILN_SCHEMA = EntitySchema(
+    tables=["bins"],
+    columns=[Column(table="bins", name="bin_id", **{"class": "hard"}, classified_by="rule")],
+    id_patterns={"bins": r"^b\d+$"},
+)
+KILN_SIG = ToolSig(
+    name="describe_ware",
+    description="Return one ware as recorded.",
+    args_fields=[FieldStat(name="ware", types=["dict"], optional=False)],
+    kind="read",
+    unclassified=False,
+)
+# Copies only the keys the unadorned wares carry, so a held-out ware with a mark misses that key.
+SHOWN_KEYS_BODY = """
+return {"kind": ware["kind"], "glaze": ware["glaze"]}
+"""
+COPY_WARE_BODY = """
+return ware
+"""
+
+
+def _ware_calls():
+    """Two argument shapes: unadorned wares, and wares that also carry a mark."""
+    plain = [
+        {"kind": "cup", "glaze": "ash"},
+        {"kind": "bowl", "glaze": "salt"},
+        {"kind": "plate", "glaze": "slip"},
+    ]
+    marked = [
+        {"kind": "vase", "glaze": "ash", "mark": "incised"},
+        {"kind": "jar", "glaze": "salt", "mark": "stamped"},
+    ]
+    calls = [_call("describe_ware", {"ware": ware}, result=ware, idx=i) for i, ware in enumerate(plain)]
+    calls += [_call("describe_ware", {"ware": ware}, result=ware, idx=10 + i)
+              for i, ware in enumerate(marked)]
+    return calls
+
+
+def _leaf_strings(value):
+    if isinstance(value, dict):
+        for key, item in value.items():
+            yield str(key)
+            yield from _leaf_strings(item)
+    elif isinstance(value, (list, tuple)):
+        for item in value:
+            yield from _leaf_strings(item)
+    elif value is not None:
+        yield str(value)
+
+
+def test_arg_shape_drops_values_and_keeps_list_length_and_nested_keys():
+    one_filter = ce.arg_shape({"q": "cups", "filters": ["kind"]})
+    same_shape = ce.arg_shape({"q": "bowls", "filters": ["glaze"]})
+    two_filters = ce.arg_shape({"q": "vases", "filters": ["kind", "glaze"]})
+    assert one_filter == same_shape != two_filters
+    plain = ce.arg_shape({"ware": {"glaze": "ash", "kind": "cup"}})
+    other_plain = ce.arg_shape({"ware": {"glaze": "salt", "kind": "bowl"}})
+    marked = ce.arg_shape({"ware": {"glaze": "ash", "kind": "vase", "mark": "incised"}})
+    assert plain == other_plain != marked
+
+
+def test_split_calls_holds_out_a_whole_argument_shape():
+    calls = _ware_calls()
+    shown, held_out = ce.split_calls(calls)
+    shown_shapes = {ce.arg_shape(c.args) for c in shown}
+    held_shapes = {ce.arg_shape(c.args) for c in held_out}
+    assert shown and held_out
+    assert len(shown) + len(held_out) == len(calls)
+    assert shown_shapes and held_shapes and shown_shapes.isdisjoint(held_shapes)
+    assert ce.no_shape_holdout(calls) is False
+
+
+def test_split_calls_falls_back_to_every_third_when_every_call_shares_one_shape(order_calls):
+    shown, held_out = ce.split_calls(order_calls)
+    by_index_shown = [c for i, c in enumerate(order_calls) if i % 3 != 2]
+    by_index_held = [c for i, c in enumerate(order_calls) if i % 3 == 2]
+    assert [c.id for c in shown] == [c.id for c in by_index_shown]
+    assert [c.id for c in held_out] == [c.id for c in by_index_held]
+    assert ce.no_shape_holdout(order_calls) is True
+
+
+def test_a_single_shape_tool_records_no_shape_holdout(
+    make_test_model, schema, sigs, db0, workdir, order_calls
+):
+    build = ce.compile_tool(make_test_model([CORRECT_BODY]), sigs[0], order_calls, schema, db0, workdir)
+    assert build.no_shape_holdout is True
+    written = json.loads((workdir / ce.NODE_DIR / "get_order_details.json").read_text(encoding="utf-8"))
+    assert written["no_shape_holdout"] is True
+
+
+def test_a_two_shape_tool_does_not_record_no_shape_holdout(make_test_model, workdir):
+    calls = _ware_calls()
+    build = ce.compile_tool(make_test_model([COPY_WARE_BODY]), KILN_SIG, calls, KILN_SCHEMA, KILN_DB,
+                            workdir)
+    assert build.no_shape_holdout is False
+    written = json.loads((workdir / ce.NODE_DIR / "describe_ware.json").read_text(encoding="utf-8"))
+    assert written["no_shape_holdout"] is False
+    assert build.assisted is False
+
+
 # --- the repair loop (D75) ---
 
 
@@ -1987,6 +2091,22 @@ def test_a_test_body_call_returns_the_gate_failure_and_never_names_a_held_out_ca
     assert tool_use["name"] == "test_body"
     assert tool_use["arguments"] == {"body_sha256": hashlib.sha256(WRONG_BODY.encode("utf-8")).hexdigest()}
     assert "body" not in tool_use["arguments"]
+
+
+def test_test_body_reports_a_held_out_shape_fail_without_quoting_values(workdir):
+    calls = _ware_calls()
+    shown, held_out = ce.split_calls(calls)
+    impl = ce._build_tools_impl(KILN_SCHEMA, KILN_SIG, shown, held_out, KILN_DB, None, workdir,
+                                0, 30.0, None)
+    text = impl["test_body"](SHOWN_KEYS_BODY)
+    assert ce.PROBE_HELD_OUT in text
+    assert "more on calls you were not shown" not in text
+    shown_words = {word for call in shown for word in _leaf_strings(call.args)}
+    hidden_words = {word for call in held_out for word in _leaf_strings(call.args)} - shown_words
+    hidden_words |= {word for call in held_out for word in _leaf_strings(call.result)} - shown_words
+    leaked = [word for word in hidden_words if word in text]
+    assert leaked == [], f"held-out values reached test_body: {leaked}"
+    assert "passed every gate" not in text
 
 
 def test_the_tool_rounds_cap_ends_the_attempt_with_no_body_submitted(
