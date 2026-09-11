@@ -172,6 +172,9 @@ class ToolBuild:
     # by `grade_body` alone, since it is a reading of the body a tool already has and what it is
     # for is the ask the next writer is given. It is never serialized: the lesson it renders is.
     diagnosis: Any = None
+    # D250: True when every recorded call shares one argument shape, so the split fell back to
+    # every third call by index rather than holding out a key set, an arity or a nested shape.
+    no_shape_holdout: bool = False
 
 # --- reading rows out of recorded tool results ---
 
@@ -2697,9 +2700,10 @@ def _strip_fence(text: str) -> str:
 # A body-writing model has to guess a row's shape from the schema block and the recorded calls
 # alone, and has to guess whether its own draft clears the gates. lookup_rows answers the first
 # guess and test_body answers the second, both without spending a repair attempt to find out.
-# Neither is allowed to touch the held-out split: lookup_rows only reads db and the shown calls'
-# own worlds, and test_body only ever gates the shown calls, with an empty held-out list, so
-# nothing the held-out replay would have caught can leak back through either tool.
+# lookup_rows only reads db and the shown calls' own worlds. test_body runs the same
+# shown/held-out split the attempt will face (D250), and `_failure_text` still withholds held-out
+# values, so a reconstruction that matches shown keys can fail here before submit without
+# leaking the hidden calls.
 
 LOOKUP_ROWS_TOOL = {
     "name": "lookup_rows",
@@ -2718,9 +2722,9 @@ LOOKUP_ROWS_TOOL = {
 
 TEST_BODY_TOOL = {
     "name": "test_body",
-    "description": ("Run a draft body through the same gates this attempt will face, on the "
-                    "calls you were shown (never the held-out ones). Returns which gate failed "
-                    "and why, or that every gate passed."),
+    "description": ("Run a draft body through the same gates this attempt will face, including "
+                    "held-out argument shapes. Returns which gate failed and why, or that every "
+                    "gate passed. Held-out calls are never named: a miss on them is a count."),
     "parameters": {
         "type": "object",
         "properties": {"body": {"type": "string", "description": "the full body to test, as Python source"}},
@@ -2801,16 +2805,17 @@ def _lookup_rows_text(schema: EntitySchema, db: dict, shown: list[ToolCall], cal
     return f"{table} row {key} is stored in {where}{note}: {text}"
 
 
-def _build_tools_impl(schema: EntitySchema, toolsig: ToolSig, shown: list[ToolCall], db: dict,
+def _build_tools_impl(schema: EntitySchema, toolsig: ToolSig, shown: list[ToolCall],
+                      held_out: list[ToolCall], db: dict,
                       call_states: Optional[dict], workdir: Path, attempt: int, timeout: float,
                       rules: Any, readers: Any = None, holdout: Optional[dict] = None,
                       holdout_values: Optional[dict] = None,
                       effect_values: Optional[dict] = None) -> dict[str, Callable[..., str]]:
     """lookup_rows and test_body, closed over one attempt's own evidence and probe directory.
 
-    test_body gates on `shown` alone, with an empty held-out list: the split the repair loop keeps
-    hidden from the model stays hidden from the model's own probing too, not just from the failure
-    text a rejected attempt is shown.
+    test_body runs the same shown/held-out split the repair loop will gate (D250). Held-out
+    *values* stay hidden: the probe reports a fixed "held-out shapes failed" sentence, never a
+    moving withheld count and never the hidden args. The submit path still names how many.
 
     `holdout` is what only a held-out Run witnessed (`holdout_columns`): lookup_rows answers with
     those columns masked (D220 rule 2a), while test_body runs the draft on the complete `db`,
@@ -2831,13 +2836,13 @@ def _build_tools_impl(schema: EntitySchema, toolsig: ToolSig, shown: list[ToolCa
         source = module_source(schema, [toolsig], {toolsig.name: body})
         sandbox = Sandbox(source, db, workdir / f"attempt_{attempt}_probe_{probes['n']}", timeout=timeout,
                           call_states=call_states)
-        gates = run_gates(source, sandbox, shown, [], schema, rules,
+        gates = run_gates(source, sandbox, shown, held_out, schema, rules,
                           probe_refusals=toolsig.kind == "write", sig=toolsig, readers=readers,
                           holdout_values=holdout_values, effect_values=effect_values)
         note = ("\n" + sanitized) if sanitized else ""
         if all(g.passed for g in gates):
             return "passed every gate: " + ", ".join(g.stage for g in gates) + note
-        return _failure_text(gates) + note
+        return _probe_failure_text(gates, held_out) + note
 
     return {"lookup_rows": lookup_rows, "test_body": test_body}
 
@@ -2906,14 +2911,62 @@ def _reply_with_tools(model, messages: list[dict], tools_impl: dict[str, Callabl
 
 # --- the bounded repair loop (D75) ---
 
-def split_calls(calls: Iterable[ToolCall], every: int = 3) -> tuple[list[ToolCall], list[ToolCall]]:
-    """The held-out split the LLM is never shown (D51, D75): every third call, deterministically."""
+def arg_shape(args: Any) -> tuple:
+    """Hashable shape of a call's arguments: sorted key paths, nested dict keys, list lengths.
+
+    Values are dropped, so two calls that differ only in the ids or words they carry share a
+    shape, and two that differ in option keys, list arity or a nested key set do not (D250).
+    """
+    return _arg_shape_of(args if args is not None else {})
+
+
+def _arg_shape_of(value: Any) -> tuple:
+    if isinstance(value, dict):
+        return ("dict", tuple((str(k), _arg_shape_of(value[k])) for k in sorted(value, key=str)))
+    if isinstance(value, (list, tuple)):
+        return ("list", len(value), tuple(_arg_shape_of(item) for item in value))
+    return ("leaf",)
+
+
+def no_shape_holdout(calls: Iterable[ToolCall]) -> bool:
+    """True when every recorded call shares one argument shape, so the split cannot hold one out."""
     calls = list(calls)
-    if len(calls) < 2:
-        return calls, []
+    return len(calls) < 2 or len({arg_shape(c.args) for c in calls}) < 2
+
+
+def _index_split(calls: list[ToolCall], every: int) -> tuple[list[ToolCall], list[ToolCall]]:
+    """Every third call by list index: the fallback when a tool has only one argument shape."""
     held_out = [c for i, c in enumerate(calls) if i % every == every - 1]
     shown = [c for i, c in enumerate(calls) if i % every != every - 1]
     return (shown, held_out) if held_out else (shown[:-1], shown[-1:])
+
+
+def _shape_split(calls: list[ToolCall], unique: list[tuple], every: int
+                 ) -> tuple[list[ToolCall], list[ToolCall]]:
+    """Hold out whole argument shapes, every third shape, so shown and held-out disagree."""
+    held_shapes = {shape for i, shape in enumerate(unique) if i % every == every - 1}
+    if not held_shapes:
+        held_shapes = {unique[-1]}
+    held_out = [c for c in calls if arg_shape(c.args) in held_shapes]
+    shown = [c for c in calls if arg_shape(c.args) not in held_shapes]
+    return shown, held_out
+
+
+def split_calls(calls: Iterable[ToolCall], every: int = 3) -> tuple[list[ToolCall], list[ToolCall]]:
+    """The held-out split the LLM is never shown (D51, D75, D250).
+
+    Membership is by argument-shape hash (sorted key paths, nested dict keys, list lengths;
+    values dropped). Shown and held-out then disagree on option keys, arities and nested key
+    sets. When every recorded call shares one shape, the split falls back to every third call
+    by list index.
+    """
+    calls = list(calls)
+    if len(calls) < 2:
+        return calls, []
+    unique = sorted({arg_shape(c.args) for c in calls})
+    if len(unique) < 2:
+        return _index_split(calls, every)
+    return _shape_split(calls, unique, every)
 
 
 def _failing_calls(gates: list[GateResult], shown: list[ToolCall]) -> list[ToolCall]:
@@ -2970,6 +3023,19 @@ def _failure_text(gates: list[GateResult], held_out: Iterable[ToolCall] = ()) ->
         lines.append(f"- gate {gate.stage} ({split}): {text}")
     lines += _import_hints(gates)
     return "\n".join(lines)
+
+
+_WITHHELD_COUNT = re.compile(r"\d+ more on calls you were not shown")
+PROBE_HELD_OUT = "held-out shapes failed"
+
+
+def _probe_failure_text(gates: list[GateResult], held_out: Iterable[ToolCall] = ()) -> str:
+    """What test_body reports: the same gates, with a moving withheld count collapsed to one sentence.
+
+    The submit path still names how many hidden calls failed, because the body is then locked.
+    A probe can be called every round, and a changing N would be an oracle on the hidden values.
+    """
+    return _WITHHELD_COUNT.sub(PROBE_HELD_OUT, _failure_text(gates, held_out))
 
 
 _RAISED = re.compile(r"\braised ([A-Za-z_][A-Za-z0-9_.]*): (.+)")
@@ -3261,7 +3327,7 @@ def grade_body(toolsig: ToolSig, body: str, calls: Iterable[ToolCall], schema: E
     having moved.
     """
     workdir, calls = Path(workdir), list(calls)
-    build = ToolBuild(name=toolsig.name, body=body or "")
+    build = ToolBuild(name=toolsig.name, body=body or "", no_shape_holdout=no_shape_holdout(calls))
     shown, held_out = split_calls(calls)
     source = module_source(schema, [toolsig], {toolsig.name: build.body})
     sandbox = Sandbox(source, db, workdir, timeout=timeout, call_states=call_states,
@@ -3594,7 +3660,7 @@ def compile_tool(model, toolsig: ToolSig, calls: Iterable[ToolCall], schema: Ent
     system_head = _head_for_tools(schema, tool_names, builder_tools, world_note, system_head)
     specs = _specs_for(tool_specs)
     shown, held_out = split_calls(calls)
-    build, failure = ToolBuild(name=toolsig.name, body=""), ""
+    build, failure = ToolBuild(name=toolsig.name, body="", no_shape_holdout=no_shape_holdout(calls)), ""
     skeleton = gate_parses(module_source(schema, [toolsig], {toolsig.name: "pass"}))
     messages: list[dict] = []
     reply_content = ""
@@ -3642,8 +3708,8 @@ def compile_tool(model, toolsig: ToolSig, calls: Iterable[ToolCall], schema: Ent
                                 f"of {max_evidence_chars}; refused, not truncated"]
             build.nodes.append(dict(node, refused=True))
             break
-        tools_impl = (_build_tools_impl(schema, toolsig, shown, db, call_states, workdir, attempt,
-                                        timeout, rules, readers, holdout=holdout,
+        tools_impl = (_build_tools_impl(schema, toolsig, shown, held_out, db, call_states, workdir,
+                                        attempt, timeout, rules, readers, holdout=holdout,
                                         holdout_values=holdout_values, effect_values=effect_values)
                      if builder_tools else None)
         try:
@@ -3743,6 +3809,7 @@ def compile_tool(model, toolsig: ToolSig, calls: Iterable[ToolCall], schema: Ent
     (directory / f"{toolsig.name}.json").write_text(
         json.dumps({"tool": toolsig.name, "assisted": build.assisted,
                     "hardcoded": build.hardcoded,
+                    "no_shape_holdout": build.no_shape_holdout,
                     "kept_attempt": build.kept_attempt, "nodes": build.nodes,
                     "call_outcomes": build.call_outcomes},
                    indent=2, default=str) + "\n", encoding="utf-8")
