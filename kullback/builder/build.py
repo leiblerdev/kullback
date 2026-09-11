@@ -58,7 +58,14 @@ from kullback.builder import (
 from kullback.builder import (
     lesson as lesson_mod,
 )
-from kullback.builder.repair import KEPT_BODIES_FILE, SHAPES_SHOWN, failure_shapes
+from kullback.builder.repair import (
+    COMPILE_HASH_KEY,
+    KEPT_BODIES_FILE,
+    SHAPES_SHOWN,
+    consecutive_no_effect,
+    failure_shapes,
+    spend_frozen,
+)
 from kullback.gates import artifacts, fidelity, tool_runs, verifier_suite
 from kullback.gates import ledger as ledger_mod
 from kullback.gates import scorecard as scorecard_mod
@@ -677,6 +684,44 @@ def replay_lesson(failures: dict[str, str], shown_ids: Iterable[str]) -> str:
     return f"{REPLAY_LESSON_HEAD}\n- {text}" if text else ""
 
 
+def _tool_compile_hash(workdir: Any, name: str, inputs: dict) -> str:
+    """The evidence this tool's body was written against: the world plus this tool's own lessons.
+
+    A lesson recorded for another tool must not move this value, so a full compile_tools run after
+    a narrowed recompile reuses kept bodies whose own evidence bytes did not change (D249).
+    """
+    replay = _read_json(Path(workdir) / REPLAY_EVIDENCE_FILE, {}) or {}
+    return content_hash({
+        "lessons": memory.load_tool_lessons(workdir).get(name, []),
+        "replay": replay.get(name) if isinstance(replay, dict) else replay,
+        "world": _read_json(Path(workdir) / WORLD_PROVENANCE_FILE, {}) or {},
+        "schema": inputs.get("schema"),
+        "db": inputs.get("db"),
+    })[:16]
+
+
+def _rewrite_unbeaten(workdir: Any, name: str, unbeaten: int) -> int:
+    """Unbeaten count used for the rewrite ask: the second consecutive no-effect already switches."""
+    return max(int(unbeaten or 0), consecutive_no_effect(workdir, name) + 1)
+
+
+def _reuse_compile(workdir: Any, name: str, inputs: dict, stored_builds: dict, previous: dict):
+    """Keep the incumbent without calling the compiler, or None when this tool still needs one.
+
+    A third consecutive no-effect refuses spend. A full run whose own lesson and world bytes match
+    the hash stored on the last compile reuses that body, so a sibling of a narrowed recompile is
+    not sent to the model (D249).
+    """
+    if name not in previous:
+        return None
+    compile_hash = _tool_compile_hash(workdir, name, inputs)
+    stored_hash = (stored_builds.get(name) or {}).get(COMPILE_HASH_KEY)
+    frozen = spend_frozen(workdir, name)
+    if frozen or (stored_hash and stored_hash == compile_hash):
+        return ("reuse", frozen, compile_hash)
+    return None
+
+
 def compile_snapshot_rows(kept: Iterable[dict], fresh: dict[str, list[dict]],
                           only: Optional[Iterable[str]]) -> list[dict]:
     """The per tool rulings a compile leaves on file: this run's, over the ones it replaces.
@@ -695,7 +740,7 @@ def compile_snapshot_rows(kept: Iterable[dict], fresh: dict[str, list[dict]],
 
 
 def _tools_stage(model: Any, max_attempts: int, workers: int = 1, only: Optional[Iterable[str]] = None,
-                 round_no: int = 1):
+                 round_no: int = 1, workdir: Any = None):
     """compile_tools, or with `only` the same stage narrowed to those tools: the rest of the bodies
     are read back from bodies.json, so the artifact it releases is still every body (the tool
     `compile_tool(name)`).
@@ -793,6 +838,8 @@ def _tools_stage(model: Any, max_attempts: int, workers: int = 1, only: Optional
         # tools this run does not touch, which is why that branch reads them into its own artifact.
         stored_bodies = dict(_read_json(ctx.workdir / "bodies.json", {}) or {})
         stored_builds = dict(_read_json(ctx.workdir / "tool_builds.json", {}) or {})
+        all_outcomes = _read_json(ctx.workdir / "tool_call_outcomes.json", {}) or {}
+        prior_snapshot = (_read_json(ctx.workdir / ledger_mod.COMPILE_NAME, {}) or {}).get("rows") or []
         if only is not None:
             unknown = sorted(set(only) - {sig.name for sig in sigs})
             if unknown:
@@ -801,7 +848,6 @@ def _tools_stage(model: Any, max_attempts: int, workers: int = 1, only: Optional
             assisted = [name for name, row in builds.items() if row.get("assisted") and name not in only]
             # D171: the tools this run does not recompile keep the per-call rows the last run left,
             # so the artifact it releases still attributes every tool's fidelity, not only these.
-            all_outcomes = _read_json(ctx.workdir / "tool_call_outcomes.json", {}) or {}
             outcomes = {name: list(rows) for name, rows in all_outcomes.items() if name not in only}
             sigs = [sig for sig in sigs if sig.name in only]
         # D174, widened: what each tool this run writes a body for already had, so an attempt that
@@ -812,12 +858,18 @@ def _tools_stage(model: Any, max_attempts: int, workers: int = 1, only: Optional
                     for sig in sigs if (stored_bodies.get(sig.name) or "").strip()}
 
         def compile_one(sig):  # one tool, its own directory and nodes; independent of every other (D118)
+            reused = _reuse_compile(ctx.workdir, sig.name, inputs, stored_builds, previous)
+            if reused is not None:
+                return reused
+            compile_hash = _tool_compile_hash(ctx.workdir, sig.name, inputs)
             # D211: how many recompiles in a row have bought this tool nothing, and the gate both
             # sides fell at last time, read before the body is graded because both change the ask
             # rather than the sentence: past the stall limit the writer is asked to rewrite, and a
             # tie at a gate before the fidelity ruling is a gate to repair, not a hint to write.
+            # D249: the second consecutive no-effect already switches the ask, so the count the
+            # writer is shown is at least the trailing `changed` false rows plus this call.
             stall = prior_rulings.get(sig.name) or {}
-            unbeaten = int(stall.get("unbeaten") or 0)
+            unbeaten = _rewrite_unbeaten(ctx.workdir, sig.name, int(stall.get("unbeaten") or 0))
             blocked = str(stall.get("blocked_by_gate") or "")
             # The body this tool already has, replayed first, so what it fails at can be said to the
             # writer before it writes. The replay is per tool and runs on this tool's own thread.
@@ -862,7 +914,7 @@ def _tools_stage(model: Any, max_attempts: int, workers: int = 1, only: Optional
                                             readers=result_readers, holdout=holdout_cols,
                                             holdout_values=holdout_vals,
                                             effects=effects_mod.effects_block(sig.name, seen_effects),
-                                            effect_values=effect_values), graded
+                                            effect_values=effect_values), graded, compile_hash
 
         declined: list[str] = []
         # Per tool, whether the body it already had was kept, beaten, or could not run at all under
@@ -879,7 +931,24 @@ def _tools_stage(model: Any, max_attempts: int, workers: int = 1, only: Optional
         # for the same reason the rulings above are kept.
         prior_counts = dict(_read_json(ctx.workdir / LESSON_COUNTS_FILE, {}) or {})
         lesson_counts = dict(prior_counts) if only is not None else {}
-        for sig, (build, graded) in zip(sigs, parallel.each(sigs, compile_one, workers), strict=True):
+        for sig, result in zip(sigs, parallel.each(sigs, compile_one, workers), strict=True):
+            if isinstance(result, tuple) and result and result[0] == "reuse":
+                _, frozen, compile_hash = result
+                body, row = previous[sig.name]
+                builds[sig.name] = dict(row, **{COMPILE_HASH_KEY: compile_hash})
+                bodies[sig.name] = body
+                outcomes[sig.name] = list(all_outcomes.get(sig.name) or [])
+                snapshot_rows[sig.name] = [item for item in prior_snapshot
+                                           if isinstance(item, dict) and item.get("tool") == sig.name]
+                kept = dict(prior_rulings.get(sig.name) or {})
+                kept[COMPILE_HASH_KEY] = compile_hash
+                if frozen:
+                    kept["stalled"] = True
+                kept_rulings[sig.name] = kept
+                if row.get("assisted"):
+                    assisted.append(sig.name)
+                continue
+            build, graded, compile_hash = result
             score = list(compile_env.attempt_score(build.gates))
             kept_score = list(compile_env.attempt_score(graded.gates)) if graded is not None else None
             # A body that answers no call at all under this world is no candidate, whatever it
@@ -959,7 +1028,8 @@ def _tools_stage(model: Any, max_attempts: int, workers: int = 1, only: Optional
                 bodies[sig.name] = compile_env.mark_hardcoded(body) if graded.hardcoded else body
                 builds[sig.name] = dict(previous[sig.name][1], assisted=graded.assisted,
                                         hardcoded=graded.hardcoded, score=kept_score,
-                                        from_replay=from_replay.get(sig.name, 0))
+                                        from_replay=from_replay.get(sig.name, 0),
+                                        **{COMPILE_HASH_KEY: compile_hash})
                 if graded.hardcoded:  # D181's rule 7, for the body the stage releases, not the attempt
                     _record_hardcoded_lesson(ctx.workdir, sig.name)
                 if score < kept_score:  # D174's line for the Builder: change the hint, not the request
@@ -974,7 +1044,8 @@ def _tools_stage(model: Any, max_attempts: int, workers: int = 1, only: Optional
             builds[sig.name] = {"assisted": build.assisted, "hardcoded": build.hardcoded,
                                 "nodes": build.nodes,
                                 "after_write_skipped": skipped.get(sig.name, 0), "score": score,
-                                "from_replay": from_replay.get(sig.name, 0)}
+                                "from_replay": from_replay.get(sig.name, 0),
+                                COMPILE_HASH_KEY: compile_hash}
             if build.hardcoded:
                 _record_hardcoded_lesson(ctx.workdir, sig.name)
             outcomes[sig.name] = build.call_outcomes
@@ -1028,24 +1099,32 @@ def _tools_stage(model: Any, max_attempts: int, workers: int = 1, only: Optional
                # bytes are in no module hash above either: a change to which recorded calls a body
                # is written against is a different question and must not be answered from the cache.
                f"{_evidence_version()}")
-    # The tool lessons are an input of this stage: they reach the compiler prompt (compile_one
-    # above), so a new lesson is a new question and the old answer is not an answer to it. Left
-    # undeclared, a recompile asked for after a lesson was recorded was served the cached bodies
-    # and the stage reported "from cache" however often it was asked; the file's bytes are in the
-    # key, which is what makes the narrowed rerun actually recompile that tool.
+    # The tool lessons reach the compiler prompt, so a new lesson is a new question. The whole
+    # file is an input of the un-narrowed stage so a narrowed repair misses that stage and the
+    # driver rebuild (D161) reads the new body off disk; compile_one then reuses kept bodies
+    # whose own lesson and world bytes did not change, so a sibling is not sent to the model
+    # (D249). A narrowed rerun keys only the named tools' lessons, so a lesson for one tool
+    # does not miss another tool's `only=` request.
     # D191: the Reference replay's own failures are an input of this stage, since a call it failed
     # on is evidence for the body whatever the filters say. Left undeclared, a stage whose other
     # inputs had not moved was served bodies written before that evidence existed.
     # D220: the provenance of the world is read by this stage, so it is in its key: a build
     # whose held-out split moved masks different columns and must compile again.
-    paths = (memory.TOOL_LESSONS_FILE, REPLAY_EVIDENCE_FILE, WORLD_PROVENANCE_FILE)
+    paths = (REPLAY_EVIDENCE_FILE, WORLD_PROVENANCE_FILE)
+    extra = ""
     if only is not None:
         paths += ("bodies.json", "tool_builds.json", "tool_call_outcomes.json")
+        extra = f":only={','.join(only)}"
+        if workdir is not None:
+            lessons = memory.load_tool_lessons(workdir)
+            extra += f":lessons={content_hash({name: lessons.get(name, []) for name in only})[:16]}"
+    else:
+        paths += (memory.TOOL_LESSONS_FILE,)
     return pipeline.Stage(name="compile_tools", fn=run, builder=True,
                           inputs=("traces", "tasks", "sigs", "schema", "db", "overlays", "canon_rules",
                                   "readers"),
                           outputs=("bodies", "assisted_tools", "tool_fidelity"), gate=gate, input_paths=paths,
-                          code_version=version if only is None else f"{version}:only={','.join(only)}")
+                          code_version=version + extra)
 
 
 def trace_worlds(db: dict, overlays: Iterable[Any], values: dict, tasks: Iterable[Any]) -> dict[str, dict]:
@@ -2636,7 +2715,7 @@ def stages(plan: BuildPlan, *, tools: Optional[Iterable[str]] = None, replay_tas
         _canon_stage(),
         _state_stage(plan.grow if grow is None else grow, plan.grow_seed),
         _tools_stage(models["compile_tools"], plan.max_attempts, plan.workers, only=tools,
-                     round_no=plan.round),
+                     round_no=plan.round, workdir=plan.workdir),
         _policy_stage(models["compile_policy"], plan.workers),
         _lessons_stage(models["judge_lessons"], plan.memory_dir),
         (_intent_stage(models["intent"], plan.workers, only=intent_tasks, hints=intent_hints)
