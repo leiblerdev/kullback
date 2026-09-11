@@ -153,3 +153,70 @@ def test_summarize_counts_traces_tasks_and_calls_and_names_the_common_miss(tmp_p
     assert summary["writes"] == 3 and summary["writes_matched"] == 1
     assert unconfirmed_reason({"tr1": bad, "tr2": bad}) == "cancel_order write: differs (value)"
     assert unconfirmed_reason({}) == "no Trace of the Task was replayed"
+
+
+# --- D248: unread prose is counted apart, and a body score skips it ---
+
+def _run_unread(tmp_path, source: str) -> None:
+    """Run `source` against runner and gates as unread-prose.patch writes them."""
+    import os
+    import shutil
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[2]
+    patch = root / "docs" / "frozen-patches" / "unread-prose.patch"
+    tree = tmp_path / "tree"
+    shutil.copytree(root / "kullback", tree / "kullback",
+                    ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
+    check = subprocess.run(["git", "apply", "--check", str(patch)], cwd=tree, capture_output=True)
+    if check.returncode == 0:
+        subprocess.run(["git", "apply", str(patch)], cwd=tree, check=True)
+    env = os.environ.copy()
+    env["PYTHONPATH"] = str(tree) + os.pathsep + env.get("PYTHONPATH", "")
+    proc = subprocess.run([sys.executable, "-c", source], env=env, cwd=str(tree),
+                          capture_output=True, text=True)
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+
+
+def test_summarize_totals_unread_apart_from_token_set_and_presence(tmp_path):
+    _run_unread(tmp_path, """
+from kullback.gates.fidelity import summarize
+unread = {"confirmed": False, "reasons": ["look_up_note read: differs (unread)"],
+          "counts": {"writes": 0, "writes_matched": 0, "reads": 1, "reads_semantic": 1,
+                     "reads_cosmetic": 0, "unmade": 0, "differs_by_unread": 2,
+                     "differs_by_token_set": 0, "differs_by_presence": 0}}
+other = {"confirmed": False, "reasons": ["look_up_note read: differs (token_set)"],
+         "counts": {"writes": 0, "writes_matched": 0, "reads": 3, "reads_semantic": 3,
+                    "reads_cosmetic": 0, "unmade": 0, "differs_by_unread": 0,
+                    "differs_by_token_set": 3, "differs_by_presence": 1}}
+summary = summarize({"t1": {"tr1": unread}, "t2": {"tr1": other}})
+assert summary["differs_by_unread"] == 2
+assert summary["differs_by_token_set"] == 3
+assert summary["differs_by_presence"] == 1
+""")
+
+
+def test_a_body_replay_score_ignores_unread_calls_in_the_pass_fail_numerator(tmp_path):
+    _run_unread(tmp_path, """
+from kullback.gates.fidelity import replay_fidelity_gate
+unread = {"tool": "look_up_note", "expected": "the shelf is labelled oak",
+          "actual": "the shelf is labelled pine", "held_out": False}
+matched = {"tool": "get_bin", "expected": {"bin_id": "B1", "weight": 4},
+           "actual": {"bin_id": "B1", "weight": 4}, "held_out": False}
+missed = {"tool": "get_bin", "expected": {"bin_id": "B1"}, "actual": {"bin_id": "B2"},
+          "held_out": False}
+kept = replay_fidelity_gate([unread, matched])
+assert kept.passed is True
+assert kept.metrics["success"]["total"] == 1 and kept.metrics["success"]["matched"] == 1
+assert kept.metrics["differs_by_unread"] == 1
+beaten = replay_fidelity_gate([unread, missed])
+assert beaten.passed is False
+assert beaten.metrics["success"]["total"] == 1 and beaten.metrics["success"]["matched"] == 0
+assert beaten.metrics["differs_by_unread"] == 1
+empty = replay_fidelity_gate([unread, unread])
+assert empty.passed is False
+assert empty.metrics["success"]["total"] == 0
+assert empty.metrics["differs_by_unread"] == 2
+""")

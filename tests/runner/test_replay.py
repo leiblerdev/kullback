@@ -385,3 +385,77 @@ def test_the_round_counts_how_much_of_its_agreement_rested_on_each_route(tmp_pat
     assert out.counts["cosmetic_by_exempt"] == 0 and out.counts["cosmetic_by_judge"] == 0
     assert out.counts["differs_by_token_set"] == 0 and out.counts["differs_by_presence"] == 0
     assert all(check["verdict_route"] for check in out.checks)
+
+
+# --- D248: unread prose is its own route, not agreement and not a column miss ---
+
+_LAMP_READER_SRC = (
+    "def read(result):\\n"
+    "    parts = result.split(' | ')\\n"
+    "    if len(parts) != 3:\\n"
+    "        return None\\n"
+    "    return {'lamp_state': parts[0], 'lamp_note': parts[1], 'lamp_reading': parts[2]}\\n"
+)
+
+
+def _run_unread(tmp_path, source: str) -> None:
+    """Run `source` against runner and gates as unread-prose.patch writes them."""
+    import os
+    import shutil
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[2]
+    patch = root / "docs" / "frozen-patches" / "unread-prose.patch"
+    tree = tmp_path / "tree"
+    shutil.copytree(root / "kullback", tree / "kullback",
+                    ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
+    check = subprocess.run(["git", "apply", "--check", str(patch)], cwd=tree, capture_output=True)
+    if check.returncode == 0:
+        subprocess.run(["git", "apply", str(patch)], cwd=tree, check=True)
+    env = os.environ.copy()
+    env["PYTHONPATH"] = str(tree) + os.pathsep + env.get("PYTHONPATH", "")
+    proc = subprocess.run([sys.executable, "-c", source], env=env, cwd=str(tree),
+                          capture_output=True, text=True)
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+
+
+def test_a_prose_result_with_no_reader_is_routed_unread(tmp_path):
+    _run_unread(tmp_path, """
+from kullback.runner import replay
+from kullback.runner.records import RawPtr, ToolCall
+ptr = RawPtr(file_hash="a" * 64, sim_index=0, msg_index=0)
+recorded = ToolCall(id="c1", name="look_up_note", args={}, result="the shelf is labelled oak", raw_ptr=ptr)
+verdict, notes, route = replay.compare_call_route(recorded, "the shelf is labelled pine", None)
+assert verdict == replay.DIFFERS and route == replay.BY_UNREAD
+assert notes and notes[0].startswith("unread:")
+from kullback.gates.tool_runs import ReplayComparer
+from kullback.runner.records import Column, EntitySchema
+schema = EntitySchema(tables=["firings"], columns=[
+    Column(table="firings", name="firing_id", **{"class": "hard"})])
+verdict, _notes, route = replay.compare_call_route(
+    recorded, "the shelf is labelled pine", None, comparer=ReplayComparer(schema))
+assert verdict == replay.DIFFERS and route == replay.BY_UNREAD
+""")
+
+
+def test_a_prose_result_with_a_reader_that_binds_a_column_is_not_unread(tmp_path):
+    _run_unread(tmp_path, f"""
+from kullback.runner import replay
+from kullback.runner.records import Column, EntitySchema, RawPtr, ToolCall
+from kullback.gates.tool_runs import ReplayComparer, ResultReaders
+ptr = RawPtr(file_hash="a" * 64, sim_index=0, msg_index=0)
+recorded = ToolCall(id="c1", name="check_lamp", args={{}}, result="on | steady glow | 41", raw_ptr=ptr)
+schema = EntitySchema(tables=["lamps"], columns=[
+    Column(table="lamps", name="lamp_state", **{{"class": "hard"}}),
+    Column(table="lamps", name="lamp_note", **{{"class": "semantic"}}),
+    Column(table="lamps", name="lamp_reading", **{{"class": "exempt"}})])
+readers = ResultReaders({{"check_lamp": "{_LAMP_READER_SRC}"}}, {{"check_lamp": "lamps"}})
+comparer = ReplayComparer(schema, readers=readers)
+verdict, notes, route = replay.compare_call_route(
+    recorded, "off | steady glow | 41", None, comparer=comparer)
+assert verdict == replay.DIFFERS
+assert route != replay.BY_UNREAD
+assert any("lamp_state" in note for note in notes)
+""")
