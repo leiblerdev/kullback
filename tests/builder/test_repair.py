@@ -446,3 +446,45 @@ def test_a_kept_body_that_could_not_run_says_the_attempt_took_the_tool(tmp_path)
     ruling = repair.recompile_ruling(tmp_path, "renew_loan")
 
     assert "answered no call at all under this world, so the attempt was released" in ruling
+
+
+def _recompile_log(workdir, rows):
+    folder = workdir / "repairs"
+    folder.mkdir(exist_ok=True)
+    (folder / "repair_recompile.jsonl").write_text(
+        "\n".join(json.dumps(row) for row in rows) + "\n", encoding="utf-8")
+
+
+def test_consecutive_no_effect_counts_trailing_changed_false_rows_and_a_move_breaks_the_streak(tmp_path):
+    _recompile_log(tmp_path, [
+        {"verb": "repair_recompile", "target": "quote_haulage", "changed": True},
+        {"verb": "repair_recompile", "target": "quote_haulage", "changed": False},
+        {"verb": "repair_recompile", "target": "quote_haulage", "changed": False},
+        {"verb": "repair_recompile", "target": "dock_bike", "changed": False},
+    ])
+    assert repair.consecutive_no_effect(tmp_path, "quote_haulage") == 2
+    assert repair.spend_frozen(tmp_path, "quote_haulage")
+    assert repair.consecutive_no_effect(tmp_path, "dock_bike") == 1
+    assert not repair.spend_frozen(tmp_path, "dock_bike")
+    assert repair.consecutive_no_effect(tmp_path, "water_tray") == 0
+
+
+def test_two_consecutive_no_effect_rows_show_the_whole_failing_set(tmp_path):
+    ways = ["answered nothing", "answered another crate", "raised", "answered a list", "timed out"]
+    failures = [f"quote_haulage({{'crate': 'c-{i}'}}) {way}" for i, way in enumerate(ways)]
+    nodes = [{"attempt": 0, "gates": [
+        {"stage": "replay_fidelity", "pass": False, "failures": failures}]}]
+    _builds_rows(tmp_path, quote_haulage={"assisted": True, "nodes": nodes})
+    _kept_bodies(tmp_path, quote_haulage={"outcome": "kept", "unbeaten": 2})
+
+    ruling = repair.recompile_ruling(tmp_path, "quote_haulage")
+
+    assert ruling.count(" call)") == 5 and "more shapes" not in ruling
+    assert "Write a new body from the recorded calls" not in ruling
+    assert "stalled: 2 recompiles in a row scored no higher" in ruling
+
+
+def test_a_spend_frozen_row_says_further_compile_calls_are_refused():
+    note = repair.stalled_note({"unbeaten": 2, "stalled": True})
+    assert "further compile_tools calls on this tool are refused this build" in note
+    assert "stalled: 2 recompiles in a row scored no higher" in note

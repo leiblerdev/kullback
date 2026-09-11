@@ -964,13 +964,24 @@ def _rerun_the_whole_stage(workdir: Path, model) -> None:
     """Run compile_tools over every tool again, the way a change to one of its inputs makes it run.
 
     A change to the schema, the Starting state, the readers or the tables block moves the stage's
-    key and the run that follows writes every body from scratch. The lesson file is a declared input
-    path of the stage, so recording one sentence moves the key the same way and asks for the same
-    full run, without a fixture having to fake a new world for the whole corpus.
+    key and the run that follows writes every body from scratch. The replay-evidence file is a
+    declared input of the stage and each tool's own slice sits in that tool's compile hash, so
+    bumping every slice asks for the same full run without a fixture having to fake a new world.
+    world_provenance.json cannot carry the bust: starting_state lists bodies.json as an input
+    path, so a test that plants a body reruns it and rewrites that file.
     """
-    from kullback.builder import memory
-
-    memory.record_lesson(workdir, "any_tool_at_all", ["the stage's inputs moved"])
+    bodies = json.loads((workdir / "bodies.json").read_text(encoding="utf-8"))
+    path = workdir / "replay_evidence.json"
+    evidence = json.loads(path.read_text(encoding="utf-8")) if path.is_file() else {}
+    if not isinstance(evidence, dict):
+        evidence = {}
+    n = int(evidence.get("_compile_bust") or 0) + 1
+    evidence["_compile_bust"] = n
+    for name in bodies:
+        slice_ = evidence.get(name)
+        evidence[name] = dict(slice_, compile_bust=n) if isinstance(slice_, dict) else {
+            "ids": slice_, "compile_bust": n}
+    path.write_text(json.dumps(evidence, indent=2, sort_keys=True), encoding="utf-8")
     plan = BuildPlan(workdir=workdir, iterate=True, model=model, max_attempts=0)
     result = build_module.execute(plan, "compile_tools")
     assert result.reports["compile_tools"].cached is False, "an input moved, so the stage has to run"
@@ -1337,3 +1348,22 @@ def test_a_call_whose_turn_is_gone_joins_the_last_turn_its_speaker_had():
     trace = build_module.call_trace("t1", [{"name": "read_shelf", "args": {}, "turn": 9}], spoken, "synth-1")
     assert [call.id for call in trace.tool_calls] == ["synth-1-0"]
     assert [(turn.role, turn.tool_call_ids) for turn in trace.turns] == [("assistant", ["synth-1-0"])]
+
+
+def test_a_narrowed_recompile_plus_full_rebuild_does_not_recompile_a_sibling(built, tmp_path):
+    """A lesson recorded for one tool used to miss the un-narrowed compile_tools stage for every
+    other tool, so D161's rebuild spent a model call on bodies whose evidence had not moved."""
+    workdir = tmp_path / "sibling"
+    shutil.copytree(built, workdir)
+    names = sorted(json.loads((workdir / "bodies.json").read_text(encoding="utf-8")))
+    assert len(names) >= 2
+    target, sibling = names[0], names[1]
+    _recompile_one(workdir, target, Bodies(), "a hint for one tool only")
+
+    model = Bodies()
+    result = build_module.execute(BuildPlan(workdir=workdir, iterate=True, model=model, max_attempts=0),
+                                  "compile_tools")
+    assert result.reports["compile_tools"].cached is False
+    sent = [" ".join(str(m.get("content") or "") for m in call["messages"]) for call in model.calls]
+    assert not [text for text in sent if f"Tool: {sibling}" in text], \
+        "a sibling whose evidence bytes did not change is not sent to the compiler"

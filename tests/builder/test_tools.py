@@ -11,6 +11,7 @@ import pytest
 from session_fixtures import fixture_path
 from test_build import Bodies
 
+from kullback.ai.provider import TestModel
 from kullback.builder import agent as builder_agent
 from kullback.builder import repair as repair_module
 from kullback.builder import tools as builder_tools
@@ -589,3 +590,63 @@ def test_a_task_refused_twice_for_one_reason_is_named_in_the_status_headline(tmp
     for _ in range(2):
         _run(tools["repair_refuse_task"], {"task_id": "task_dock", "reason": "no frontier Run docks it"})
     assert "refused twice: task_dock" in builder_tools.status_of(workdir).summary
+
+
+def test_status_names_a_spend_frozen_tool_that_passed_compile_gates(tmp_path):
+    (tmp_path / "gates.json").write_text(
+        json.dumps([{"stage": "ingest", "pass": True, "failures": []}]), encoding="utf-8")
+    (tmp_path / "tool_builds.json").write_text(
+        json.dumps({"quote_haulage": {"assisted": False, "score": [6, 10]}}), encoding="utf-8")
+    (tmp_path / "kept_bodies.json").write_text(json.dumps({
+        "quote_haulage": {"outcome": "kept", "unbeaten": 2, "stalled": True,
+                          "attempt_score": [6, 10], "kept_score": [6, 10]}}), encoding="utf-8")
+
+    light = next(item for item in builder_tools.red_lights(tmp_path) if item.target == "quote_haulage")
+    assert "refused this build" in light.failure
+    assert builder_tools.ASSISTED not in light.failure
+    assert "stalled: quote_haulage" in builder_tools.status_of(tmp_path).summary
+
+
+def test_a_third_no_effect_recompile_does_not_call_the_compiler_and_leaves_assisted_alone(built, tmp_path):
+    workdir = tmp_path / "frozen"
+    shutil.copytree(built, workdir)
+    builds = json.loads((workdir / "tool_builds.json").read_text(encoding="utf-8"))
+    name = next(tool for tool, row in sorted(builds.items()) if isinstance(row, dict))
+    assisted_before = bool(builds[name].get("assisted"))
+    (workdir / "repairs").mkdir(exist_ok=True)
+    (workdir / "repairs" / "repair_recompile.jsonl").write_text(
+        "\n".join(json.dumps({"verb": "repair_recompile", "target": name, "changed": False, "round": n})
+                  for n in (1, 2)) + "\n", encoding="utf-8")
+    model = TestModel(["return None"], loop=True)
+    plan = BuildPlan(workdir=workdir, iterate=True, model=model, max_attempts=0)
+
+    out = _run(_tool(plan, "repair_recompile"), {"name": name, "hint": "rewrite from the recorded calls"})
+
+    assert not out.is_error, out.content
+    assert model.calls == []
+    row = json.loads((workdir / "repairs" / "repair_recompile.jsonl").read_text(encoding="utf-8").splitlines()[-1])
+    assert row.get("stalled") is True and row.get("changed") is False
+    after = json.loads((workdir / "tool_builds.json").read_text(encoding="utf-8"))[name]
+    assert bool(after.get("assisted")) == assisted_before
+    assert "stalled:" in builder_tools.status_of(workdir).summary
+
+
+def test_the_second_consecutive_no_effect_recompile_asks_for_a_rewrite(built, tmp_path):
+    workdir = tmp_path / "rewrite_ask"
+    shutil.copytree(built, workdir)
+    builds = json.loads((workdir / "tool_builds.json").read_text(encoding="utf-8"))
+    name = next(tool for tool, row in sorted(builds.items())
+                if isinstance(row, dict) and row.get("assisted"))
+    (workdir / "repairs").mkdir(exist_ok=True)
+    (workdir / "repairs" / "repair_recompile.jsonl").write_text(
+        json.dumps({"verb": "repair_recompile", "target": name, "changed": False, "round": 1}) + "\n",
+        encoding="utf-8")
+    model = Bodies()
+    plan = BuildPlan(workdir=workdir, iterate=True, model=model, max_attempts=0)
+
+    out = _run(_tool(plan, "repair_recompile"), {"name": name, "hint": "the body still fails the same calls"})
+
+    assert not out.is_error, out.content
+    sent = " ".join(str(m.get("content") or "") for call in model.calls for m in call["messages"])
+    assert model.calls, "the second no-effect still asks the compiler"
+    assert "Write a new body from the recorded calls" in sent

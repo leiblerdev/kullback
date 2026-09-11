@@ -236,6 +236,7 @@ def test_the_stall_limit_switches_the_ask_from_patching_to_rewriting():
     assert rewritten.rewrite and "Write a new body from the recorded calls" in rewritten.lesson()
     assert rewritten.counts()["rewrites_forced"] == 1
     assert patched.counts()["rewrites_forced"] == 0
+    assert lesson.STALL_LIMIT == 2
 
 
 def test_a_tie_where_both_bodies_fall_at_one_gate_before_fidelity_is_reported_as_blocked():
