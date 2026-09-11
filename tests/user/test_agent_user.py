@@ -594,13 +594,17 @@ def test_a_communicate_only_task_with_an_empty_write_set_may_still_exhaust():
 
 
 def test_both_drivers_read_the_implied_writes_through_one_function():
-    assert rules_mod.implied_writes([], ["book_kiln"]) == frozenset({"book_kiln"})
+    assert rules_mod.implied_writes([], ["book_kiln"]) == frozenset()
     assert rules_mod.implied_writes(["book_kiln"], ["book_kiln", "pay_glaze"]) == frozenset({"book_kiln"})
     assert rules_mod.implied_writes([], []) == frozenset()
     protocol = guards_mod.EndProtocol(goal_writes=[], write_tools=["book_kiln"])
     assert protocol.goal_done(set()) is False
     assert rules_mod.goal_writes_done(set(), [], ["book_kiln"]) is False
     assert rules_mod.goal_writes_done({"book_kiln"}, [], ["book_kiln"]) is True
+    # write_tools is the environment's capability set, not each required write.
+    assert rules_mod.goal_writes_done({"book_kiln"}, [], ["book_kiln", "pay_glaze"]) is True
+    assert rules_mod.goal_writes_done({"book_kiln"}, ["book_kiln", "pay_glaze"],
+                                      ["book_kiln", "pay_glaze"]) is False
     user = kiln_user(write_tools=["book_kiln"], goal_writes=[])
     user.reply(ask("Hi! How can I help you today?"))
     user.reply(ask("I have noted that down."))

@@ -255,7 +255,8 @@ class EndProtocol:
     def goal_done(self, made: Iterable[str]) -> bool:
         """Every write the Task implied has been made, on D227's effect set (D251).
 
-        Empty `goal_writes` no longer vacuously satisfies when `write_tools` is non-empty. A
+        Empty `goal_writes` no longer vacuously satisfies when `write_tools` is non-empty: a
+        write Task waits for some write in `made`, not for every write-capable tool. A
         communicate-only Task (neither set) keeps D210's empty-set satisfy.
         """
         return rules_mod.goal_writes_done(made, self.goal_writes, self.write_tools)

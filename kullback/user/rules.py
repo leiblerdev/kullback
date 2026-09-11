@@ -760,35 +760,43 @@ def writes_made(transcript: Any, write_tools: Iterable[str]) -> set[str]:
 
 
 def implied_writes(goal_writes: Optional[Iterable[str]], write_tools: Iterable[str]) -> frozenset[str]:
-    """The writes a Task still has to make before `goal_satisfied` can hold (D251).
+    """The writes a Task named as required before `goal_satisfied` can hold (D251).
 
-    A non-empty `goal_writes` is the goal's own list. An empty or absent `goal_writes` falls
-    through to `write_tools`, so a write Task whose Reference set collapsed to empty does not
-    vacuously satisfy. A Task with neither is communicate-only.
+    A non-empty `goal_writes` is the goal's own list. An empty or absent `goal_writes` is not
+    replaced by `write_tools`: that set is the environment's write-capable tools, not this Task's
+    required writes. `write_tools` still marks a write Task for `goal_writes_done`. A Task with
+    neither named writes nor write-capable tools is communicate-only.
     """
-    named = frozenset(goal_writes or ())
-    return named if named else frozenset(write_tools or ())
+    return frozenset(goal_writes or ())
 
 
 def goal_writes_done(made: Iterable[str], goal_writes: Optional[Iterable[str]],
                      write_tools: Iterable[str]) -> bool:
     """Whether this Run has made every write the Task implied (D251).
 
-    `made` is D227's effect set: a refused write is not in it. When the implied set is empty the
-    Task is communicate-only: an explicitly empty `goal_writes` still satisfies the way D210 did,
-    and a caller that named none does not.
+    `made` is D227's effect set: a refused write is not in it. A non-empty named set must all be
+    in `made`; there is no fallback to any write. An empty or absent named set on a write Task
+    waits for some write in `made`, not for every write-capable tool. A communicate-only Task
+    (neither set) keeps D210: an explicitly empty `goal_writes` still satisfies, and a caller
+    that named none does not.
     """
-    implied = implied_writes(goal_writes, write_tools)
-    if implied:
-        return implied <= set(made or ())
+    named = implied_writes(goal_writes, write_tools)
+    made_set = set(made or ())
+    if named:
+        return named <= made_set
+    if write_tools:
+        return bool(made_set)
     return goal_writes is not None
 
 
 def writes_owed(made: Iterable[str], goal_writes: Optional[Iterable[str]],
                 write_tools: Iterable[str]) -> bool:
-    """Implied writes remain unmade, so this Run must not pass or exhaust (D251)."""
-    implied = implied_writes(goal_writes, write_tools)
-    return bool(implied) and not (implied <= set(made or ()))
+    """Named or write-Task writes remain unmade, so this Run must not pass or exhaust (D251)."""
+    named = implied_writes(goal_writes, write_tools)
+    made_set = set(made or ())
+    if named:
+        return not (named <= made_set)
+    return bool(frozenset(write_tools or ())) and not made_set
 
 
 def _flatten(row: Any) -> dict[str, list]:
@@ -854,9 +862,9 @@ class SimulatedUser:
         # carries the calls and their results, so nothing new has to be plumbed to the user; the
         # vocabulary knows fields and not tool kinds, which is why the names are passed in here.
         self.write_tools = frozenset(write_tools or ())
-        # The writes the Task's goal implies (D210, `goal_write_set`). An empty or absent set falls
-        # through to `write_tools` (D251), so a write Task does not vacuously satisfy. A Task with
-        # neither is communicate-only and still satisfies without a write.
+        # The writes the Task's goal implies (D210, `goal_write_set`). An empty or absent set on a
+        # write Task does not vacuously satisfy (D251); it waits for some write in `made`, not for
+        # every name in `write_tools`. A Task with neither is communicate-only.
         self.goal_writes = None if goal_writes is None else frozenset(goal_writes)
         # D196's strip, prepared over this Task's own evidence and applied to what this user is
         # about to say. Without one the user speaks its facts unchecked, as it did before D210.
@@ -1076,10 +1084,10 @@ class SimulatedUser:
     def _goal_done(self, made: set) -> bool:
         """Every write the Task's goal implies has been made in this Run (D210, D251).
 
-        `made` is D227's effect set. The implied set is `goal_writes` when that is non-empty,
-        otherwise `write_tools`, so a write Task whose named set collapsed to empty stays open
-        until a write took effect. A communicate-only Task (neither set) keeps D210's empty-set
-        satisfy. Both Simulated users read this through `goal_writes_done`.
+        `made` is D227's effect set. A non-empty named set must all be in `made`. A write Task
+        whose named set collapsed to empty stays open until some write took effect, not until
+        every write-capable tool has. A communicate-only Task (neither set) keeps D210's
+        empty-set satisfy. Both Simulated users read this through `goal_writes_done`.
         """
         return goal_writes_done(made, self.goal_writes, self.write_tools)
 
