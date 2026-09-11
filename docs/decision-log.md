@@ -1904,6 +1904,16 @@ The rule. Membership of the split is the argument-shape hash: sorted key paths o
 
 Tests on an invented kiln domain: two ware shapes, one held out, `test_body` names a held-out shape fail without quoting values; one shared shape falls back to every third. Existing one-shape split tests keep their shown and held-out ids. Not measured live.
 
+### D249. Two no-effect recompiles escalate evidence, a third stops spend (2026-09-11)
+
+Ranked cause 4 of the 2026-09-10 failure synthesis, and proposals 1 and 2 of the harness-improve loop report: compile_tools model calls with flat gates were 690, 1416 and 4139 on the three arms, with five consecutive no-effect recompiles on one tool. D211's rewrite switch sat behind `STALL_LIMIT = 6` and never fired. `repair.STALLED_AFTER` was already 2, `change_of` already stored `changed` on every repair row, and the missing piece was a gate.
+
+The rule. `lesson.STALL_LIMIT` equals `STALLED_AFTER` (2), so the second consecutive no-effect already switches the ask to D211's rewrite: every differing leaf, the relation across failing calls, the whole failing set rather than three shapes. Consecutive `changed` false is counted off the `repair_recompile` jsonl. On the third, compile_one keeps the incumbent and does not call the compiler for that tool this build. The repair row and `status` say `stalled`; D49 assisted is not flipped unless the compile gates themselves never passed. A new tool lesson from a narrowed `only=` recompile keys only that tool's lessons, and a full rebuild after D161 reuses kept bodies whose own lesson and world bytes did not change, so a sibling is not sent to the model.
+
+Tests on an invented depot domain and the offline fixture: two consecutive no-effect rows show the whole failing set; a third `repair_recompile` makes zero extra model calls and leaves assisted as it was; status names a spend-frozen tool that passed compile gates; a narrowed recompile plus full rebuild does not recompile a sibling. No existing assertion was edited.
+
+Not measured live. The next launch reports compile_tools call counts per round and consecutive no-effect per tool.
+
 ## Pending (asked, not yet answered)
 
 - ~~The user's own tools and the world they act on (D71, first part).~~ Decided as D176 (2026-09-07): one world, rows revealed by a requestor marked by it, readers as code under the free gate.
