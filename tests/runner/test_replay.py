@@ -430,6 +430,8 @@ recorded = ToolCall(id="c1", name="look_up_note", args={}, result="the shelf is 
 verdict, notes, route = replay.compare_call_route(recorded, "the shelf is labelled pine", None)
 assert verdict == replay.DIFFERS and route == replay.BY_UNREAD
 assert notes and notes[0].startswith("unread:")
+same, _notes, same_route = replay.compare_call_route(recorded, "the shelf is labelled oak", None)
+assert same == replay.SAME and same_route == replay.BY_BYTES
 from kullback.gates.tool_runs import ReplayComparer
 from kullback.runner.records import Column, EntitySchema
 schema = EntitySchema(tables=["firings"], columns=[
@@ -458,4 +460,9 @@ verdict, notes, route = replay.compare_call_route(
 assert verdict == replay.DIFFERS
 assert route != replay.BY_UNREAD
 assert any("lamp_state" in note for note in notes)
+broken, broken_notes, broken_route = replay.compare_call_route(
+    recorded, "broken", None, comparer=comparer)
+assert broken == replay.DIFFERS
+assert broken_route != replay.BY_UNREAD
+assert not any(note.startswith("unread:") for note in broken_notes)
 """)

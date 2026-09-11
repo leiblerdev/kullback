@@ -219,4 +219,10 @@ empty = replay_fidelity_gate([unread, unread])
 assert empty.passed is False
 assert empty.metrics["success"]["total"] == 0
 assert empty.metrics["differs_by_unread"] == 2
+held = {"tool": "look_up_note", "expected": "the shelf is labelled oak",
+        "actual": "the shelf is labelled oak", "held_out": False}
+same = replay_fidelity_gate([held])
+assert same.passed is True
+assert same.metrics["success"]["total"] == 1 and same.metrics["success"]["matched"] == 1
+assert same.metrics["differs_by_unread"] == 0
 """)
