@@ -6,6 +6,7 @@ import ast
 import hashlib
 import inspect
 import json
+import re
 import tokenize
 
 import pytest
@@ -1335,7 +1336,8 @@ def test_no_held_out_call_reaches_the_model_through_the_repair_prompts(
     assert len(prompts) == 4
     leaked = [i for i, p in enumerate(prompts) for h in held_ids if h in p]
     assert leaked == [], f"held-out arguments reached the model in prompts {leaked}"
-    assert "not shown" in prompts[1], "the model was not told that a hidden call failed"
+    assert ce.HELD_OUT_SHAPES_FAILED in prompts[1], "the model was not told that a hidden call failed"
+    assert "more on calls you were not shown" not in prompts[1]
 
 
 def test_the_node_says_so_when_only_the_held_out_split_failed(
@@ -2099,8 +2101,9 @@ def test_test_body_reports_a_held_out_shape_fail_without_quoting_values(workdir)
     impl = ce._build_tools_impl(KILN_SCHEMA, KILN_SIG, shown, held_out, KILN_DB, None, workdir,
                                 0, 30.0, None)
     text = impl["test_body"](SHOWN_KEYS_BODY)
-    assert ce.PROBE_HELD_OUT in text
+    assert ce.HELD_OUT_SHAPES_FAILED in text
     assert "more on calls you were not shown" not in text
+    assert not re.search(r"\d+\s+more", text), "a withheld count reached test_body"
     shown_words = {word for call in shown for word in _leaf_strings(call.args)}
     hidden_words = {word for call in held_out for word in _leaf_strings(call.args)} - shown_words
     hidden_words |= {word for call in held_out for word in _leaf_strings(call.result)} - shown_words

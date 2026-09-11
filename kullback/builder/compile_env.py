@@ -2701,9 +2701,9 @@ def _strip_fence(text: str) -> str:
 # alone, and has to guess whether its own draft clears the gates. lookup_rows answers the first
 # guess and test_body answers the second, both without spending a repair attempt to find out.
 # lookup_rows only reads db and the shown calls' own worlds. test_body runs the same
-# shown/held-out split the attempt will face (D250), and `_failure_text` still withholds held-out
-# values, so a reconstruction that matches shown keys can fail here before submit without
-# leaking the hidden calls.
+# shown/held-out split the attempt will face (D250), and `_failure_text` withholds held-out
+# values as one fixed sentence, so a reconstruction that matches shown keys can fail here
+# before submit without leaking the hidden calls or how many of them failed.
 
 LOOKUP_ROWS_TOOL = {
     "name": "lookup_rows",
@@ -2814,8 +2814,8 @@ def _build_tools_impl(schema: EntitySchema, toolsig: ToolSig, shown: list[ToolCa
     """lookup_rows and test_body, closed over one attempt's own evidence and probe directory.
 
     test_body runs the same shown/held-out split the repair loop will gate (D250). Held-out
-    *values* stay hidden: the probe reports a fixed "held-out shapes failed" sentence, never a
-    moving withheld count and never the hidden args. The submit path still names how many.
+    *values* stay hidden: `_failure_text` reports a fixed sentence when any hidden call failed,
+    never a moving count and never the hidden args.
 
     `holdout` is what only a held-out Run witnessed (`holdout_columns`): lookup_rows answers with
     those columns masked (D220 rule 2a), while test_body runs the draft on the complete `db`,
@@ -2842,7 +2842,7 @@ def _build_tools_impl(schema: EntitySchema, toolsig: ToolSig, shown: list[ToolCa
         note = ("\n" + sanitized) if sanitized else ""
         if all(g.passed for g in gates):
             return "passed every gate: " + ", ".join(g.stage for g in gates) + note
-        return _probe_failure_text(gates, held_out) + note
+        return _failure_text(gates, held_out) + note
 
     return {"lookup_rows": lookup_rows, "test_body": test_body}
 
@@ -3001,13 +3001,17 @@ def _constant_evidence_note(evidence: Iterable[ToolCall]) -> str:
             "showed just to make the answers differ.")
 
 
+HELD_OUT_SHAPES_FAILED = "held-out shapes failed"
+
+
 def _failure_text(gates: list[GateResult], held_out: Iterable[ToolCall] = ()) -> str:
-    """What the next attempt is told, with the held-out split kept out of it (D51, D75).
+    """What the next attempt is told, with the held-out split kept out of it (D51, D75, D250).
 
     The held-out calls are the ones the model is never shown, so neither their arguments nor the
-    outcome expected of them may travel back in a repair prompt. A failure on them is reported as a
-    count, which tells the model its body is wrong somewhere without handing it the answers. Gates 2
-    to 4 run over every call, so their failure lines are filtered by the same rule.
+    outcome expected of them may travel back in a repair prompt. A failure on them is one fixed
+    sentence, which tells the model its body is wrong somewhere without handing it the answers or
+    how many hidden calls failed. Gates 2 to 4 run over every call, so their failure lines are
+    filtered by the same rule.
     """
     hidden = [args_text(call) for call in held_out]
     lines = []
@@ -3019,23 +3023,10 @@ def _failure_text(gates: list[GateResult], held_out: Iterable[ToolCall] = ()) ->
         withheld = len(gate.failures) - len(kept)
         text = "; ".join(kept)
         if withheld:
-            text += ("; " if text else "") + f"{withheld} more on calls you were not shown"
+            text += ("; " if text else "") + HELD_OUT_SHAPES_FAILED
         lines.append(f"- gate {gate.stage} ({split}): {text}")
     lines += _import_hints(gates)
     return "\n".join(lines)
-
-
-_WITHHELD_COUNT = re.compile(r"\d+ more on calls you were not shown")
-PROBE_HELD_OUT = "held-out shapes failed"
-
-
-def _probe_failure_text(gates: list[GateResult], held_out: Iterable[ToolCall] = ()) -> str:
-    """What test_body reports: the same gates, with a moving withheld count collapsed to one sentence.
-
-    The submit path still names how many hidden calls failed, because the body is then locked.
-    A probe can be called every round, and a changing N would be an oracle on the hidden values.
-    """
-    return _WITHHELD_COUNT.sub(PROBE_HELD_OUT, _failure_text(gates, held_out))
 
 
 _RAISED = re.compile(r"\braised ([A-Za-z_][A-Za-z0-9_.]*): (.+)")
