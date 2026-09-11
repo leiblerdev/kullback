@@ -220,18 +220,19 @@ def test_a_reading_body_outscores_a_memorising_one_on_the_key_the_kept_body_is_c
     reading, memorising = gates(READS_THE_COLUMN, "reads"), gates(WRITES_A_CONSTANT, "writes")
     assert ce.attempt_score(reading) > ce.attempt_score(memorising)
     assert all(gate.passed for gate in reading), [g.failures for g in reading if not g.passed]
-    assert [gate.stage for gate in memorising if not gate.passed] == ["sensitivity", "replay_fidelity"]
+    assert [gate.stage for gate in memorising if not gate.passed] == ["world_invariance"]
 
 
 def test_the_chain_goes_on_past_a_failed_sensitivity_ruling_so_the_replay_count_still_ties_it(
         tmp_path, seen_twice):
-    """Every body that fails this gate is level on gates passed; how much it replays breaks the tie."""
+    """D247 now stops this world-blind body first; D195 still does not stop when it is reached."""
     calls, states, tasks = seen_twice
     schema, sig = _schema(), _sig()
     source = ce.module_source(schema, [sig], {sig.name: WRITES_A_CONSTANT})
     box = sb.Sandbox(source, NURSERY, tmp_path, call_states=states, call_tasks=tasks)
     stages = [gate.stage for gate in sb.run_gates(source, box, calls, [], schema, sig=sig)]
-    assert stages[-2:] == ["sensitivity", "replay_fidelity"]
+    assert stages[-1] == "world_invariance"
+    assert "replay_fidelity" not in stages
 
 
 def test_the_lesson_the_next_attempt_is_written_with_names_the_column(tmp_path):

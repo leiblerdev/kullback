@@ -45,6 +45,7 @@ from kullback.gates.tool_runs import (
     column_differences,
 )
 from kullback.runner import arith
+from kullback.runner.canon import canonicalize as canon
 from kullback.runner.records import EntitySchema, GateResult, ToolCall, content_hash
 
 DB_CLASS = "DomainDB"
@@ -374,6 +375,111 @@ def gate_non_trivial(sandbox: Sandbox, calls: Iterable[ToolCall], rules: Any = N
     except SandboxError as exc:
         return body_non_trivial_gate(calls, None, rules, error=str(exc))
     return body_non_trivial_gate(calls, results, rules)
+
+
+def _answer_hash(result: Any, rules: Any = None) -> str:
+    """A comparable key for one sandbox answer: the canonicalized value, or the class it raised."""
+    if isinstance(result, dict) and not result.get("ok"):
+        return f"error:{result.get('error') or 'unknown'}"
+    value = result.get("value") if isinstance(result, dict) else result
+    return content_hash(canon(value, rules))
+
+
+def _recorded_hash(call: ToolCall, rules: Any = None) -> str:
+    """The same key for what the recording answered, so the two hashes can be compared."""
+    if call.error is not None:
+        return f"error:{getattr(call.error, 'class_', '') or 'unknown'}"
+    return content_hash(canon(tool_runs.parse_result(call.result), rules))
+
+
+def _invariant_across_worlds(idxs: list[int], worlds: list[str],
+                             recorded: list[str]) -> Optional[tuple[int, int]]:
+    """World count and call count when one body answer spans distinct worlds whose recordings vary."""
+    world_set = {worlds[i] for i in idxs}
+    if len(world_set) < 2:
+        return None
+    if len({recorded[i] for i in idxs}) < 2:
+        return None
+    return len(world_set), len(idxs)
+
+
+def _world_blind_failures(calls: list[ToolCall], answers: list[str], worlds: list[str],
+                          recorded: list[str]) -> tuple[list[str], int, int]:
+    """Failure lines and the largest world-blind bucket: worlds, then calls."""
+    buckets: dict[str, list[int]] = {}
+    for i, (call, ans) in enumerate(zip(calls, answers, strict=False)):
+        if call.error is None:
+            buckets.setdefault(ans, []).append(i)
+    failures, worst_worlds, worst_calls = [], 0, 0
+    for idxs in buckets.values():
+        found = _invariant_across_worlds(idxs, worlds, recorded)
+        if found is None:
+            continue
+        n_worlds, n_calls = found
+        if n_worlds > worst_worlds or (n_worlds == worst_worlds and n_calls > worst_calls):
+            worst_worlds, worst_calls = n_worlds, n_calls
+        failures.append(
+            f"{calls[idxs[0]].name} answered {n_calls} calls the same way across {n_worlds} worlds, "
+            f"while the recordings of those calls did not")
+    return failures, worst_worlds, worst_calls
+
+
+def _world_invariance_ruling(calls: list[ToolCall], results: Optional[list[dict]],
+                             world_hashes: Optional[list[str]], rules: Any = None,
+                             error: Optional[str] = None) -> GateResult:
+    """The D247 ruling, kept here so the chain can stop before the frozen package is re-frozen."""
+    stage = getattr(tool_runs, "WORLD_INVARIANCE_STAGE", "world_invariance")
+    worlds = list(world_hashes or [])
+    metrics = {"calls": len(calls), "worlds": len(set(worlds)), "invariant_calls": 0}
+    if error is not None:
+        return GateResult(stage=stage, **{"pass": False}, metrics=metrics, failures=[error])
+    recorded = [_recorded_hash(call, rules) for call in calls]
+    unique_recorded = {h for call, h in zip(calls, recorded, strict=False) if call.error is None}
+    metrics["recorded_answers"] = len(unique_recorded)
+    if len(unique_recorded) < 2:
+        return GateResult(stage=stage, **{"pass": True},
+                          metrics=dict(metrics, recorded_constant=True), failures=[])
+    answers = [_answer_hash(result, rules) for result in results or []]
+    if len(answers) != len(calls) or len(worlds) != len(calls):
+        return GateResult(stage=stage, **{"pass": True},
+                          metrics=dict(metrics, insufficient_evidence=True), failures=[])
+    failures, worst_worlds, worst_calls = _world_blind_failures(calls, answers, worlds, recorded)
+    if failures:
+        metrics["worlds"] = worst_worlds
+        metrics["invariant_calls"] = worst_calls
+    return GateResult(stage=stage, **{"pass": not failures}, metrics=metrics,
+                      failures=list(failures)[:5])
+
+
+def body_world_invariance_gate(calls: Iterable[ToolCall], results: Optional[list[dict]],
+                               world_hashes: Optional[list[str]], rules: Any = None,
+                               error: Optional[str] = None) -> GateResult:
+    """A body whose answer hash is the same across distinct worlds fails when the recordings were not (D247).
+
+    Prefers the frozen ruling once `docs/frozen-patches/world-invariance.patch` is applied. Until
+    then the same function lives here so `run_gates` can stop the chain without waiting.
+    """
+    frozen = getattr(tool_runs, "body_world_invariance_gate", None)
+    if frozen is not None:
+        return frozen(calls, results, world_hashes, rules=rules, error=error)
+    return _world_invariance_ruling(list(calls), results, world_hashes, rules, error)
+
+
+def gate_world_invariance(sandbox: Sandbox, calls: Iterable[ToolCall],
+                          rules: Any = None) -> GateResult:
+    """A body that answers distinct worlds alike fails when the recordings of those calls did not (D247).
+
+    The calls have already run under their own Starting states for the gates before this one, so
+    the sandbox answers from its memo and this wrapper starts no subprocess of its own on a body
+    that got this far.
+    """
+    calls = list(calls)
+    worlds = [sandbox.state_key(c) for c in calls]
+    try:
+        results = sandbox.run(calls)
+    except SandboxError as exc:
+        return body_world_invariance_gate(calls, None, worlds, rules=rules, error=str(exc))
+    return body_world_invariance_gate(calls, results, worlds, rules=rules)
 
 
 def gate_replay_fidelity(sandbox: Sandbox, calls: Iterable[ToolCall], schema: EntitySchema,
@@ -732,6 +838,7 @@ def run_gates(source: str, sandbox: Sandbox, shown: Iterable[ToolCall], held_out
     writes down one of those values rather than computing it is refused there too.
 
     Gate 8 (D195) is the exception to the stopping rule, for the reason given where it is appended.
+    Gate 9 (D247) is not: a world-blind body stops here so replay cannot keep it.
 
     `holdout_values` are the values the world holds only because a held-out Run witnessed them
     (`compile_env.holdout_values`). Gate 7 refuses a literal equal to one of them under its own
@@ -752,6 +859,9 @@ def run_gates(source: str, sandbox: Sandbox, shown: Iterable[ToolCall], held_out
         if not gates[-1].passed:
             return gates
         gates.append(gate(sandbox, calls, **extra))
+    if not gates[-1].passed:
+        return gates
+    gates.append(gate_world_invariance(sandbox, every, rules=rules))
     if not gates[-1].passed:
         return gates
     # Gate 8 (D195) is the one gate that does not stop the chain. It has to run before the replay
