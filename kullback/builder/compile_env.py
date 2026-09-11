@@ -2814,7 +2814,8 @@ def _build_tools_impl(schema: EntitySchema, toolsig: ToolSig, shown: list[ToolCa
     """lookup_rows and test_body, closed over one attempt's own evidence and probe directory.
 
     test_body runs the same shown/held-out split the repair loop will gate (D250). Held-out
-    *values* stay hidden: `_failure_text` reports a withheld count, never the hidden args.
+    *values* stay hidden: the probe reports a fixed "held-out shapes failed" sentence, never a
+    moving withheld count and never the hidden args. The submit path still names how many.
 
     `holdout` is what only a held-out Run witnessed (`holdout_columns`): lookup_rows answers with
     those columns masked (D220 rule 2a), while test_body runs the draft on the complete `db`,
@@ -2841,7 +2842,7 @@ def _build_tools_impl(schema: EntitySchema, toolsig: ToolSig, shown: list[ToolCa
         note = ("\n" + sanitized) if sanitized else ""
         if all(g.passed for g in gates):
             return "passed every gate: " + ", ".join(g.stage for g in gates) + note
-        return _failure_text(gates, held_out) + note
+        return _probe_failure_text(gates, held_out) + note
 
     return {"lookup_rows": lookup_rows, "test_body": test_body}
 
@@ -3022,6 +3023,19 @@ def _failure_text(gates: list[GateResult], held_out: Iterable[ToolCall] = ()) ->
         lines.append(f"- gate {gate.stage} ({split}): {text}")
     lines += _import_hints(gates)
     return "\n".join(lines)
+
+
+_WITHHELD_COUNT = re.compile(r"\d+ more on calls you were not shown")
+PROBE_HELD_OUT = "held-out shapes failed"
+
+
+def _probe_failure_text(gates: list[GateResult], held_out: Iterable[ToolCall] = ()) -> str:
+    """What test_body reports: the same gates, with a moving withheld count collapsed to one sentence.
+
+    The submit path still names how many hidden calls failed, because the body is then locked.
+    A probe can be called every round, and a changing N would be an oracle on the hidden values.
+    """
+    return _WITHHELD_COUNT.sub(PROBE_HELD_OUT, _failure_text(gates, held_out))
 
 
 _RAISED = re.compile(r"\braised ([A-Za-z_][A-Za-z0-9_.]*): (.+)")

@@ -2099,7 +2099,8 @@ def test_test_body_reports_a_held_out_shape_fail_without_quoting_values(workdir)
     impl = ce._build_tools_impl(KILN_SCHEMA, KILN_SIG, shown, held_out, KILN_DB, None, workdir,
                                 0, 30.0, None)
     text = impl["test_body"](SHOWN_KEYS_BODY)
-    assert "not shown" in text
+    assert ce.PROBE_HELD_OUT in text
+    assert "more on calls you were not shown" not in text
     shown_words = {word for call in shown for word in _leaf_strings(call.args)}
     hidden_words = {word for call in held_out for word in _leaf_strings(call.args)} - shown_words
     hidden_words |= {word for call in held_out for word in _leaf_strings(call.result)} - shown_words
