@@ -12,6 +12,7 @@ These are the items I pushed past the first build. Each line says what it buys a
   `state.pool` to `synth_second_path` again) once the tally lock above is in: the variant part of
   the gain stays deferred until then.
 - effect-credit.patch waits for the founder's re-freeze: the replay counts unattributed effects instead of failing the last call.
+- world-invariance.patch waits for the founder's re-freeze: body_world_invariance_gate in tool_runs.py, and register world_invariance in GATES.
 
 ## After the first Replica clears Gate A
 

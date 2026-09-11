@@ -1,0 +1,115 @@
+diff --git a/kullback/gates/tool_runs.py b/kullback/gates/tool_runs.py
+index 68eab99..58f86a4 100644
+--- a/kullback/gates/tool_runs.py
++++ b/kullback/gates/tool_runs.py
+@@ -1,4 +1,4 @@
+-"""The eight rulings over what a generated tool body did when the sandbox ran it (design section 6).
++"""The nine rulings over what a generated tool body did when the sandbox ran it (design section 6).
+ 
+ `builder/sandbox.py` runs a body in a subprocess and hands back one result dict per recorded call;
+ nothing here starts a process. Each ruling takes the calls and those results (or the sandbox's
+@@ -16,6 +16,11 @@ The eighth, `body_sensitivity_gate` (D195), rules over calls the sandbox has alr
+ recorded calls of one tool made under two Tasks, answered differently by the recording, have to be
+ answered differently by the body too, in the columns the recordings part in.
+ 
++The ninth, `body_world_invariance_gate` (D247), rules on hashes the sandbox already has: one answer
++hash across two or more world hashes fails when the recordings of those calls are not themselves
++one hash. Unlike D195 it does not need matching arguments or a column both worlds hold, and a
++failure stops the compile chain so replay cannot keep a world-blind body.
++
+ The row helpers (`parse_result`, `match_table`, `row_key`, `columns_of`, `id_field`, `key_fields`,
+ `id_pattern_for`) live here because the replay ruling compares rows column by column under the
+ schema's classes (D73, D84); `sandbox.py` and `compile_env.py` read them back from here.
+@@ -54,8 +59,9 @@ MEMORISED_STAGE = "compile_tools.memorised_values"
+ # D220 rule 2b: how the memorised-values gate names a value only a held-out Run witnessed.
+ HOLDOUT_REASON = "holdout_value"
+ SENSITIVITY_STAGE = "sensitivity"
++WORLD_INVARIANCE_STAGE = "world_invariance"
+ TOOL_RUN_STAGES = ("parses", "executes_on_s0", "deterministic", "non_trivial", "replay_fidelity",
+-                   "refuses_unknown", MEMORISED_STAGE, SENSITIVITY_STAGE)
++                   "refuses_unknown", MEMORISED_STAGE, SENSITIVITY_STAGE, WORLD_INVARIANCE_STAGE)
+ # A note that names a column class is a reading, not a failure: an exempt column is equal whatever
+ # it holds and a semantic one is reported and left to the judge (D73, D84). Every other note the
+ # comparison leaves is a hard column that parted, and those are what fail a ruling: a hard column's
+@@ -1490,3 +1496,81 @@ def body_sensitivity_gate(pairs: Iterable[SensitivityPair], first: Optional[list
+                    {"pairs": len(pairs), "failed": len(failures), "no_pairs": False,
+                     "columns": sorted(columns), "unread_pairs": len(unread),
+                     "same_args_pairs": sum(1 for pair in pairs if pair.same_args)}, failures)
++
++
++def _answer_hash(result: Any, rules: Any = None) -> str:
++    """A comparable key for one sandbox answer: the canonicalized value, or the class it raised."""
++    if isinstance(result, dict) and not result.get("ok"):
++        return f"error:{result.get('error') or 'unknown'}"
++    value = result.get("value") if isinstance(result, dict) else result
++    return content_hash(canon(value, rules))
++
++
++def _recorded_hash(call: ToolCall, rules: Any = None) -> str:
++    """The same key for what the recording answered, so the two hashes can be compared."""
++    if call.error is not None:
++        return f"error:{getattr(call.error, 'class_', '') or 'unknown'}"
++    return content_hash(canon(parse_result(call.result), rules))
++
++
++def _invariant_across_worlds(idxs: list[int], worlds: list[str], recorded: list[str]) -> Optional[tuple[int, int]]:
++    """World count and call count when one body answer spans distinct worlds whose recordings vary."""
++    world_set = {worlds[i] for i in idxs}
++    if len(world_set) < 2:
++        return None
++    if len({recorded[i] for i in idxs}) < 2:
++        return None
++    return len(world_set), len(idxs)
++
++
++def _world_blind_failures(calls: list[ToolCall], answers: list[str], worlds: list[str],
++                          recorded: list[str]) -> tuple[list[str], int, int]:
++    """Failure lines and the largest world-blind bucket: worlds, then calls."""
++    buckets: dict[str, list[int]] = {}
++    for i, (call, ans) in enumerate(zip(calls, answers, strict=False)):
++        if call.error is None:
++            buckets.setdefault(ans, []).append(i)
++    failures, worst_worlds, worst_calls = [], 0, 0
++    for idxs in buckets.values():
++        found = _invariant_across_worlds(idxs, worlds, recorded)
++        if found is None:
++            continue
++        n_worlds, n_calls = found
++        if n_worlds > worst_worlds or (n_worlds == worst_worlds and n_calls > worst_calls):
++            worst_worlds, worst_calls = n_worlds, n_calls
++        failures.append(
++            f"{calls[idxs[0]].name} answered {n_calls} calls the same way across {n_worlds} worlds, "
++            f"while the recordings of those calls did not")
++    return failures, worst_worlds, worst_calls
++
++
++def body_world_invariance_gate(calls: Iterable[ToolCall], results: Optional[list[dict]],
++                               world_hashes: Optional[list[str]], rules: Any = None,
++                               error: Optional[str] = None) -> GateResult:
++    """A body whose answer hash is the same across distinct worlds fails when the recordings were not (D247).
++
++    `results` are what the sandbox answered, one per call; `world_hashes` are `Sandbox.state_key`
++    for those calls. One answer hash over two or more world hashes is a world-blind body; it fails
++    when the recordings of that bucket are not themselves one hash. A tool the recordings already
++    answered with fewer than two hashes is recorded-constant and passes, as `body_non_trivial_gate`
++    already exempts. The failure names the tool, the number of worlds and the number of invariant
++    calls, never a value.
++    """
++    calls = list(calls)
++    worlds = list(world_hashes or [])
++    metrics = {"calls": len(calls), "worlds": len(set(worlds)), "invariant_calls": 0}
++    if error is not None:
++        return _ruling(WORLD_INVARIANCE_STAGE, False, metrics, [error])
++    recorded = [_recorded_hash(call, rules) for call in calls]
++    unique_recorded = {h for call, h in zip(calls, recorded, strict=False) if call.error is None}
++    metrics["recorded_answers"] = len(unique_recorded)
++    if len(unique_recorded) < 2:
++        return _ruling(WORLD_INVARIANCE_STAGE, True, dict(metrics, recorded_constant=True))
++    answers = [_answer_hash(result, rules) for result in results or []]
++    if len(answers) != len(calls) or len(worlds) != len(calls):
++        return _ruling(WORLD_INVARIANCE_STAGE, True, dict(metrics, insufficient_evidence=True))
++    failures, worst_worlds, worst_calls = _world_blind_failures(calls, answers, worlds, recorded)
++    if failures:
++        metrics["worlds"] = worst_worlds
++        metrics["invariant_calls"] = worst_calls
++    return _ruling(WORLD_INVARIANCE_STAGE, not failures, metrics, failures)
