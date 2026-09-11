@@ -376,6 +376,18 @@ def red_lights(workdir: Any) -> list[RedLight]:
                                         f"{_declined_note(row)}"
                                         f"{repair_module.stalled_note(kept.get(name) or {} if isinstance(kept, dict) else {})}",
                                 verb="repair_recompile"))
+    # D249: a tool that passed compile gates and then had two no-effect recompiles is spend-frozen,
+    # not assisted. The assisted loop above would not name it, and status would keep offering
+    # repair_recompile as if the compiler had not already been asked twice.
+    seen_tools = {light.target for light in out if light.kind == "tool"}
+    for name in repair_module.spend_frozen_names(workdir):
+        if name in seen_tools:
+            continue
+        row = kept.get(name) if isinstance(kept, dict) else {}
+        note = repair_module.stalled_note(row if isinstance(row, dict) else {"stalled": True})
+        out.append(RedLight(stage="compile_tools", kind="tool", target=name,
+                            failure=f"{name}{note or '; stalled: further compile_tools calls on this tool are refused this build'}",
+                            verb="repair_recompile"))
     return out
 
 
@@ -454,7 +466,7 @@ def _count(n: int, noun: str, plural: str = "s") -> str:
 
 
 def _headline(lights: list[RedLight], passing: list[str], failing: list[str], delta: str = "",
-              refused: Iterable[str] = ()) -> str:
+              refused: Iterable[str] = (), stalled: Iterable[str] = ()) -> str:
     """The one line the model reads first: how much is red, how many Tasks it costs, what is assisted.
 
     `delta` is what the round before moved (`round_delta.delta_line`). Without it the picture is of
@@ -465,6 +477,10 @@ def _headline(lights: list[RedLight], passing: list[str], failing: list[str], de
     refusal of them is refused in code, so the status says which they are rather than leaving the
     session to find out by calling the verb: one live build made 17 refusals, had 0 admitted, and
     repeated four Tasks word for word two rounds later.
+
+    `stalled` are the tools whose last two recompiles changed nothing, so a further compile_tools
+    model call on them is refused this build (D249). They are listed apart from assisted: a body
+    that passed compile gates is kept, and the mark is spend frozen, not D49 stand-in.
     """
     tasks, top = _no_verdict(lights)
     hardcoded = _hardcoded(lights)
@@ -483,6 +499,9 @@ def _headline(lights: list[RedLight], passing: list[str], failing: list[str], de
     twice = list(refused)
     if twice:
         parts.append("refused twice: " + ", ".join(twice))
+    frozen = list(stalled)
+    if frozen:
+        parts.append("stalled: " + ", ".join(frozen))
     if delta:
         parts.append(delta)
     return "status: " + "; ".join(parts)
@@ -583,7 +602,8 @@ def status_of(workdir: Any, gate: str = "", target: str = "") -> StatusResult:
     shown = [light for light in lights
              if (not gate or light.stage == gate) and (not target or light.target == target)]
     summary = _headline(lights, passing, failing, round_delta.delta_line(workdir),
-                        repair_module.refused_twice(workdir))
+                        repair_module.refused_twice(workdir),
+                        repair_module.spend_frozen_names(workdir))
     if unbuilt:
         summary = UNBUILT_SUMMARY
     elif asked:
@@ -756,10 +776,20 @@ def _repair_executor(plan: BuildPlan, sink: Optional[Sink], verb: str, target_of
             # The revert happens here, so a stage that raised leaves the artifacts as it found them
             # and the row the round's report reads says which of the three outcomes this repair had.
             ruling = transaction.close(txn)
+            extra_row: dict[str, Any] = {}
+            change = repair_module.change_of(plan.workdir, verb, target, hash_before)
+            if verb == "repair_recompile" and not change.get("changed"):
+                # D249: two trailing no-effect rows freeze spend. The kept-body row says so after
+                # the second; the request row says `stalled` only on the call that was refused.
+                prior = repair_module.consecutive_no_effect(plan.workdir, target)
+                if prior + 1 >= repair_module.STALLED_AFTER:
+                    repair_module.mark_spend_frozen(plan.workdir, target)
+                if prior >= repair_module.STALLED_AFTER:
+                    extra_row["stalled"] = True
             repair_module.record_request(
                 plan.workdir, verb, target,
                 {"arguments": args.model_dump(mode="json"), **extra, **ruling.as_row(),
-                 **repair_module.change_of(plan.workdir, verb, target, hash_before)},
+                 **change, **extra_row},
                 round_no=plan.round)
         result.target_ruling = "\n".join(
             [f"{verb} {target}: {ruling.line}", repair_module.target_ruling(plan.workdir, verb, args)])
