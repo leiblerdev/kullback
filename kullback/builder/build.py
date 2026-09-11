@@ -684,11 +684,13 @@ def replay_lesson(failures: dict[str, str], shown_ids: Iterable[str]) -> str:
     return f"{REPLAY_LESSON_HEAD}\n- {text}" if text else ""
 
 
-def _tool_compile_hash(workdir: Any, name: str, inputs: dict) -> str:
+def _tool_compile_hash(workdir: Any, name: str, inputs: dict, code_version: str = "") -> str:
     """The evidence this tool's body was written against: the world plus this tool's own lessons.
 
     A lesson recorded for another tool must not move this value, so a full compile_tools run after
-    a narrowed recompile reuses kept bodies whose own evidence bytes did not change (D249).
+    a narrowed recompile reuses kept bodies whose own evidence bytes did not change (D249). The
+    compiler and gate version rides here too: a sandbox or replay-gate fix misses the stage cache
+    and must not then reuse a body scored under the old gates.
     """
     replay = _read_json(Path(workdir) / REPLAY_EVIDENCE_FILE, {}) or {}
     return content_hash({
@@ -697,6 +699,7 @@ def _tool_compile_hash(workdir: Any, name: str, inputs: dict) -> str:
         "world": _read_json(Path(workdir) / WORLD_PROVENANCE_FILE, {}) or {},
         "schema": inputs.get("schema"),
         "db": inputs.get("db"),
+        "code": code_version,
     })[:16]
 
 
@@ -705,16 +708,17 @@ def _rewrite_unbeaten(workdir: Any, name: str, unbeaten: int) -> int:
     return max(int(unbeaten or 0), consecutive_no_effect(workdir, name) + 1)
 
 
-def _reuse_compile(workdir: Any, name: str, inputs: dict, stored_builds: dict, previous: dict):
+def _reuse_compile(workdir: Any, name: str, inputs: dict, stored_builds: dict, previous: dict,
+                   code_version: str = ""):
     """Keep the incumbent without calling the compiler, or None when this tool still needs one.
 
-    A third consecutive no-effect refuses spend. A full run whose own lesson and world bytes match
-    the hash stored on the last compile reuses that body, so a sibling of a narrowed recompile is
-    not sent to the model (D249).
+    A third consecutive no-effect refuses spend. A full run whose own lesson, world and compiler
+    bytes match the hash stored on the last compile reuses that body, so a sibling of a narrowed
+    recompile is not sent to the model (D249).
     """
     if name not in previous:
         return None
-    compile_hash = _tool_compile_hash(workdir, name, inputs)
+    compile_hash = _tool_compile_hash(workdir, name, inputs, code_version)
     stored_hash = (stored_builds.get(name) or {}).get(COMPILE_HASH_KEY)
     frozen = spend_frozen(workdir, name)
     if frozen or (stored_hash and stored_hash == compile_hash):
@@ -723,13 +727,13 @@ def _reuse_compile(workdir: Any, name: str, inputs: dict, stored_builds: dict, p
 
 
 def _apply_reused_compiles(sigs, workdir, inputs, stored_builds, previous, all_outcomes,
-                           prior_rulings, bodies, builds, outcomes,
-                           snapshot_rows, kept_rulings, assisted):
+                           prior_rulings, prior_counts, bodies, builds, outcomes,
+                           snapshot_rows, kept_rulings, lesson_counts, assisted, code_version):
     """Stamp incumbents that compile_one would skip, and return the signatures that still compile."""
     prior_snapshot = (_read_json(Path(workdir) / ledger_mod.COMPILE_NAME, {}) or {}).get("rows") or []
     pending = []
     for sig in sigs:
-        reused = _reuse_compile(workdir, sig.name, inputs, stored_builds, previous)
+        reused = _reuse_compile(workdir, sig.name, inputs, stored_builds, previous, code_version)
         if reused is None:
             pending.append(sig)
             continue
@@ -745,6 +749,8 @@ def _apply_reused_compiles(sigs, workdir, inputs, stored_builds, previous, all_o
         if frozen:
             kept["stalled"] = True
         kept_rulings[sig.name] = kept
+        if sig.name in prior_counts:
+            lesson_counts[sig.name] = prior_counts[sig.name]
         if row.get("assisted"):
             assisted.append(sig.name)
     return pending
@@ -904,7 +910,7 @@ def _tools_stage(model: Any, max_attempts: int, workers: int = 1, only: Optional
                     for sig in sigs if (stored_bodies.get(sig.name) or "").strip()}
 
         def compile_one(sig):  # one tool, its own directory and nodes; independent of every other (D118)
-            compile_hash = _tool_compile_hash(ctx.workdir, sig.name, inputs)
+            compile_hash = _tool_compile_hash(ctx.workdir, sig.name, inputs, code_version)
             # D211: how many recompiles in a row have bought this tool nothing, and the gate both
             # sides fell at last time, read before the body is graded because both change the ask
             # rather than the sentence: past the stall limit the writer is asked to rewrite, and a
@@ -976,7 +982,8 @@ def _tools_stage(model: Any, max_attempts: int, workers: int = 1, only: Optional
         lesson_counts = dict(prior_counts) if only is not None else {}
         sigs = _apply_reused_compiles(
             sigs, ctx.workdir, inputs, stored_builds, previous, all_outcomes,
-            prior_rulings, bodies, builds, outcomes, snapshot_rows, kept_rulings, assisted)
+            prior_rulings, prior_counts, bodies, builds, outcomes, snapshot_rows, kept_rulings,
+            lesson_counts, assisted, code_version)
         for sig, (build, graded, compile_hash) in zip(
                 sigs, parallel.each(sigs, compile_one, workers), strict=True):
             score = list(compile_env.attempt_score(build.gates))
@@ -1129,6 +1136,7 @@ def _tools_stage(model: Any, max_attempts: int, workers: int = 1, only: Optional
                # bytes are in no module hash above either: a change to which recorded calls a body
                # is written against is a different question and must not be answered from the cache.
                f"{_evidence_version()}")
+    code_version = version
     # The tool lessons reach the compiler prompt, so a new lesson is a new question. The whole
     # file is an input of the un-narrowed stage so a narrowed repair misses that stage and the
     # driver rebuild (D161) reads the new body off disk; compile_one then reuses kept bodies

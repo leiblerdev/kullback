@@ -1367,3 +1367,13 @@ def test_a_narrowed_recompile_plus_full_rebuild_does_not_recompile_a_sibling(bui
     sent = [" ".join(str(m.get("content") or "") for m in call["messages"]) for call in model.calls]
     assert not [text for text in sent if f"Tool: {sibling}" in text], \
         "a sibling whose evidence bytes did not change is not sent to the compiler"
+
+
+def test_a_tools_compile_hash_moves_when_the_compiler_version_moves(tmp_path):
+    """A sandbox or gate fix misses the stage cache; reuse must not then keep a body scored under
+    the old gates just because this tool's lessons and world bytes did not move."""
+    (tmp_path / "world_provenance.json").write_text("{}", encoding="utf-8")
+    inputs = {"schema": {}, "db": {}}
+    before = build_module._tool_compile_hash(tmp_path, "quote_haulage", inputs, "compile_tools:a")
+    after = build_module._tool_compile_hash(tmp_path, "quote_haulage", inputs, "compile_tools:b")
+    assert before != after
