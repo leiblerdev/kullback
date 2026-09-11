@@ -253,10 +253,12 @@ class EndProtocol:
         self.silent = 0
 
     def goal_done(self, made: Iterable[str]) -> bool:
-        made = set(made or ())
-        if self.goal_writes is not None:
-            return self.goal_writes <= made
-        return bool(self.write_tools) and bool(made)
+        """Every write the Task implied has been made, on D227's effect set (D251).
+
+        Empty `goal_writes` no longer vacuously satisfies when `write_tools` is non-empty. A
+        communicate-only Task (neither set) keeps D210's empty-set satisfy.
+        """
+        return rules_mod.goal_writes_done(made, self.goal_writes, self.write_tools)
 
     def kind(self, question: Optional[str], *, said_anything: bool, had_nothing: bool,
              made: Iterable[str] = (), requested: Optional[str] = None) -> Optional[str]:
@@ -264,17 +266,20 @@ class EndProtocol:
 
         `requested` is what the model asked for through `end_run`; it is read as evidence that the
         user had nothing left, never as the answer, because a model that would rather stop than keep
-        asking is exactly the failure this protocol exists to catch.
+        asking is exactly the failure this protocol exists to catch. Implied writes still unmade
+        block `scenario_exhausted` (D251): the kind stays open or becomes `gave_up` at the turn
+        limit, never a pass.
         """
         self.unanswerable += int(bool(had_nothing))
         self.silent = 0 if said_anything else self.silent + 1
         if self.goal_done(made):
             return rules_mod.GOAL_SATISFIED
-        if self.unanswerable >= rules_mod.UNANSWERABLE_LIMIT:
+        owed = rules_mod.writes_owed(made, self.goal_writes, self.write_tools)
+        if not owed and self.unanswerable >= rules_mod.UNANSWERABLE_LIMIT:
             return rules_mod.SCENARIO_EXHAUSTED
         if rules_mod.closes(question):
             return rules_mod.HANDED_OFF
-        if self.silent >= rules_mod.SILENCE_LIMIT:
+        if not owed and self.silent >= rules_mod.SILENCE_LIMIT:
             return rules_mod.SCENARIO_EXHAUSTED
         if requested == rules_mod.HANDED_OFF and rules_mod.closes(question):
             return rules_mod.HANDED_OFF

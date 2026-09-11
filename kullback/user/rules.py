@@ -759,6 +759,38 @@ def writes_made(transcript: Any, write_tools: Iterable[str]) -> set[str]:
     return made
 
 
+def implied_writes(goal_writes: Optional[Iterable[str]], write_tools: Iterable[str]) -> frozenset[str]:
+    """The writes a Task still has to make before `goal_satisfied` can hold (D251).
+
+    A non-empty `goal_writes` is the goal's own list. An empty or absent `goal_writes` falls
+    through to `write_tools`, so a write Task whose Reference set collapsed to empty does not
+    vacuously satisfy. A Task with neither is communicate-only.
+    """
+    named = frozenset(goal_writes or ())
+    return named if named else frozenset(write_tools or ())
+
+
+def goal_writes_done(made: Iterable[str], goal_writes: Optional[Iterable[str]],
+                     write_tools: Iterable[str]) -> bool:
+    """Whether this Run has made every write the Task implied (D251).
+
+    `made` is D227's effect set: a refused write is not in it. When the implied set is empty the
+    Task is communicate-only: an explicitly empty `goal_writes` still satisfies the way D210 did,
+    and a caller that named none does not.
+    """
+    implied = implied_writes(goal_writes, write_tools)
+    if implied:
+        return implied <= set(made or ())
+    return goal_writes is not None
+
+
+def writes_owed(made: Iterable[str], goal_writes: Optional[Iterable[str]],
+                write_tools: Iterable[str]) -> bool:
+    """Implied writes remain unmade, so this Run must not pass or exhaust (D251)."""
+    implied = implied_writes(goal_writes, write_tools)
+    return bool(implied) and not (implied <= set(made or ()))
+
+
 def _flatten(row: Any) -> dict[str, list]:
     """Every leaf value seen under each key, nested dicts included, so 'zip' inside 'address' is
     found. A key seen more than once (two payment methods that both carry 'source') keeps every
@@ -822,9 +854,9 @@ class SimulatedUser:
         # carries the calls and their results, so nothing new has to be plumbed to the user; the
         # vocabulary knows fields and not tool kinds, which is why the names are passed in here.
         self.write_tools = frozenset(write_tools or ())
-        # The writes the Task's goal implies (D210, `goal_write_set`). None means the caller named
-        # none, and the end then falls back to D158's reading, that any write is the Run acting; an
-        # empty set is a goal that implies no write and is satisfied without one.
+        # The writes the Task's goal implies (D210, `goal_write_set`). An empty or absent set falls
+        # through to `write_tools` (D251), so a write Task does not vacuously satisfy. A Task with
+        # neither is communicate-only and still satisfies without a write.
         self.goal_writes = None if goal_writes is None else frozenset(goal_writes)
         # D196's strip, prepared over this Task's own evidence and applied to what this user is
         # about to say. Without one the user speaks its facts unchecked, as it did before D210.
@@ -1007,7 +1039,7 @@ class SimulatedUser:
         The one place a Run ends, so the protocol reads the same whether the turn asked for fields
         this user has no record of or asked nothing by name at all.
         """
-        kind = self._end_kind(question, self._goal_done(made))
+        kind = self._end_kind(question, made)
         if kind is None:
             return
         closing = self._fact(CLOSING)
@@ -1016,37 +1048,40 @@ class SimulatedUser:
         self.end_reason = kind
         self.done = True
 
-    def _end_kind(self, question: str, satisfied: bool) -> Optional[str]:
+    def _end_kind(self, question: str, made: set) -> Optional[str]:
         """Which of the four kinds this end is, or nothing where the user has not ended (D210).
 
         More than one can hold at once, so they are read in one order. A Run whose goal writes are
         all confirmed is done whatever the Candidate said next. A Candidate that twice asks for
-        what nobody ever told this user has run the scenario out, whatever it says while doing it.
-        A Candidate that then closes or passes the conversation on ended it, and that is a handoff
-        rather than the user running dry. Last comes the user with nothing left to say and no close
-        to answer, which is the scenario out in the other way. The closing cue and the silence
-        counter are still read, but each is an input to a kind and neither is the end on its own.
-        `gave_up` is never reached here: it is the turn limit, which the loop holds and the user
-        never sees.
+        what nobody ever told this user has run the scenario out, whatever it says while doing it,
+        except while implied writes remain unmade (D251): then the kind stays open, or becomes
+        `gave_up` at the turn limit, never a pass. A Candidate that then closes or passes the
+        conversation on ended it, and that is a handoff rather than the user running dry. Last
+        comes the user with nothing left to say and no close to answer, which is the scenario out
+        in the other way. The closing cue and the silence counter are still read, but each is an
+        input to a kind and neither is the end on its own. `gave_up` is never reached here: it is
+        the turn limit, which the loop holds and the user never sees.
         """
-        if satisfied:
+        if self._goal_done(made):
             return GOAL_SATISFIED
-        if self._unanswerable >= UNANSWERABLE_LIMIT:
+        owed = writes_owed(made, self.goal_writes, self.write_tools)
+        if not owed and self._unanswerable >= UNANSWERABLE_LIMIT:
             return SCENARIO_EXHAUSTED
         if _closes(question):
             return HANDED_OFF
-        return SCENARIO_EXHAUSTED if (self._restated or self._silent >= SILENCE_LIMIT) else None
+        if not owed and (self._restated or self._silent >= SILENCE_LIMIT):
+            return SCENARIO_EXHAUSTED
+        return None
 
     def _goal_done(self, made: set) -> bool:
-        """Every write the Task's goal implies has been made in this Run (D210).
+        """Every write the Task's goal implies has been made in this Run (D210, D251).
 
-        `made` is the write-kind tools this transcript shows called. A caller that named the goal's
-        own writes is answered against them; one that named none falls back to D158's reading, that
-        a Run which wrote at all has acted, so a caller passing nothing gets the user it had.
+        `made` is D227's effect set. The implied set is `goal_writes` when that is non-empty,
+        otherwise `write_tools`, so a write Task whose named set collapsed to empty stays open
+        until a write took effect. A communicate-only Task (neither set) keeps D210's empty-set
+        satisfy. Both Simulated users read this through `goal_writes_done`.
         """
-        if self.goal_writes is not None:
-            return self.goal_writes <= made
-        return bool(self.write_tools) and bool(made)
+        return goal_writes_done(made, self.goal_writes, self.write_tools)
 
     def _writes_made(self, transcript: list) -> set[str]:
         """The write-kind tools this Run has made so far, so the user can tell a Run that has done
