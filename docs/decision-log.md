@@ -1914,7 +1914,7 @@ Five tests on an invented pottery studio, plus the garden centre already in the 
 
 Not measured live. The next launch reports ends by kind for write Tasks.
 
-Left out: routing `scenario_exhausted` to Intent repair (needs the rounds loop, another worker); a candidate pre-send block for known slots; an Intent leak scrub; agent-user prompt lines. Also left: teaching `write_took_effect` to read a state hash when no effect record rides with the call, which would need the frozen runner.
+Left out: routing `scenario_exhausted` to Intent repair (needs the rounds loop, another worker); a candidate pre-send block for known slots; an Intent leak scrub; agent-user prompt lines. Also left: teaching `write_took_effect` to read a state hash when no effect record rides with the call, which would need the frozen runner. The small fixture's trusted-Task pins in Examiner, rounds and the build table were not edited: those files are not owned, and they move when a write Task stays open.
 
 ## Pending (asked, not yet answered)
 
