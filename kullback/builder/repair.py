@@ -138,8 +138,14 @@ NO_INTENT = "no Intent is recorded for this Task"
 KEPT_BODIES_FILE = "kept_bodies.json"
 # How many recompiles in a row may score no higher before the tool is called stalled. The third
 # strike shape of D181 rule 2, for the Builder's own verb: two rounds that bought nothing on one
-# tool are the evidence that a third will buy nothing either.
+# tool are the evidence that a third will buy nothing either. D249 keeps `lesson.STALL_LIMIT`
+# equal to this, so the second consecutive no-effect already switches the ask to a rewrite; a
+# third consecutive `changed` false refuses another compile_tools model call on that tool.
 STALLED_AFTER = 2
+# Stored on a tool_builds / kept_bodies row: the hash of the evidence that body was compiled
+# against (the world plus this tool's own lessons). A full compile_tools run whose lessons file
+# moved for another tool reuses the body when this value still matches (D249).
+COMPILE_HASH_KEY = "compile_hash"
 
 
 def _json_at(workdir: Any, relative: Any, default: Any) -> Any:
@@ -282,6 +288,54 @@ def kept_body_ruling(workdir: Any, name: str) -> dict:
     return row if isinstance(row, dict) else {}
 
 
+def consecutive_no_effect(workdir: Any, tool: str, verb: str = "repair_recompile") -> int:
+    """How many trailing `repair_recompile` rows for this tool have `changed` false.
+
+    `change_of` already stores `changed` on every acting request. A row that moved the body
+    breaks the streak; a blocked row is skipped rather than counted, because a block is not an
+    answer. The count is what the next call reads: two means this tool has already had the
+    rewrite attempt, and a further compile_tools model call on it is refused this build (D249).
+    """
+    n = 0
+    for row in reversed(refusals_recorded(workdir, verb)):
+        if str(row.get("target") or "") != tool:
+            continue
+        if row.get("blocked"):
+            continue
+        if row.get("changed"):
+            break
+        n += 1
+    return n
+
+
+def spend_frozen(workdir: Any, tool: str) -> bool:
+    """True once two consecutive no-effect recompiles of this tool are already on the request log."""
+    return consecutive_no_effect(workdir, tool) >= STALLED_AFTER
+
+
+def mark_spend_frozen(workdir: Any, tool: str) -> None:
+    """Record on the kept-body row that further compile_tools model calls on this tool are refused."""
+    path = Path(workdir) / KEPT_BODIES_FILE
+    rows = _json_at(workdir, KEPT_BODIES_FILE, {})
+    if not isinstance(rows, dict):
+        rows = {}
+    row = dict(rows.get(tool) or {}) if isinstance(rows.get(tool), dict) else {}
+    row["stalled"] = True
+    rows[tool] = row
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(rows, indent=2, sort_keys=True), encoding="utf-8")
+
+
+def spend_frozen_names(workdir: Any) -> list[str]:
+    """Tools whose kept-body row or request log says compile_tools spend is refused this build."""
+    kept = _json_at(workdir, KEPT_BODIES_FILE, {})
+    names = {name for name, row in (kept.items() if isinstance(kept, dict) else ())
+             if isinstance(row, dict) and row.get("stalled") and name}
+    seen = {str(row.get("target") or "") for row in refusals_recorded(workdir, "repair_recompile")}
+    names.update(tool for tool in seen if tool and spend_frozen(workdir, tool))
+    return sorted(names)
+
+
 def stalled_note(row: dict) -> str:
     """How many recompiles in a row have bought this tool nothing, once that is worth saying (D191).
 
@@ -293,14 +347,21 @@ def stalled_note(row: dict) -> str:
     next recompile asks for a rewrite from the recorded calls instead of a patch of the incumbent,
     and where the two bodies tie at a gate before the fidelity ruling the gate is named, because
     the fidelity number they tie at is one neither of them earned.
+
+    Once spend is refused (D249) the note says so, so a Builder reading status does not ask the
+    compiler again for a tool whose last two recompiles changed nothing.
     """
     unbeaten = int(row.get("unbeaten") or 0) if isinstance(row, dict) else 0
     blocked = str(row.get("blocked_by_gate") or "") if isinstance(row, dict) else ""
     held = (f"; blocked_by_gate: both bodies fail the {blocked} gate, which runs before the replay "
             f"ruling, so no recorded call was compared and the tie is at a number neither earned; "
             f"repair what that gate refuses before spending another recompile here") if blocked else ""
-    if unbeaten < STALLED_AFTER:
+    if unbeaten < STALLED_AFTER and not (isinstance(row, dict) and row.get("stalled")):
         return held
+    n = unbeaten if unbeaten else STALLED_AFTER
+    if isinstance(row, dict) and row.get("stalled"):
+        return (f"; stalled: {n} recompiles in a row scored no higher than the body it has, so "
+                f"further compile_tools calls on this tool are refused this build{held}")
     if lesson.stalled(unbeaten):
         return (f"; stalled: {unbeaten} recompiles in a row scored no higher than the body it has, "
                 f"so the next one is asked to rewrite this tool from its recorded calls and the "

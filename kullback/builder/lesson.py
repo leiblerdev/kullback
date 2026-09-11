@@ -25,10 +25,11 @@ none of them is written into this module.
    construct no call reaches is unsupported by the evidence; a behaviour the recording shows and
    the body has no line for is missing.
 4. The stall limit (`stalled`, `blocked_gate`): past a fixed number of recompiles that scored no
-   higher, the strategy changes rather than the sentence. The ask becomes a rewrite from the
-   recorded calls, the whole failing set is shown instead of three shapes, and a tie where both
-   bodies fall at one gate before the fidelity ruling is named as blocked by that gate, so the
-   round is spent on the gate rather than on the fidelity number behind it.
+   higher (aligned with D191's `STALLED_AFTER`, D249), the strategy changes rather than the
+   sentence. The ask becomes a rewrite from the recorded calls, the whole failing set is shown
+   instead of three shapes, and a tie where both bodies fall at one gate before the fidelity
+   ruling is named as blocked by that gate, so the round is spent on the gate rather than on the
+   fidelity number behind it.
 
 Nothing here calls a model, edits `kullback/gates` or `kullback/runner`, or rules on anything: the
 witnessed-branch read is an input to a lesson, not a gate.
@@ -49,10 +50,11 @@ from kullback.runner.canon import canonicalize as canon
 # How many differing leaves one failing call's line carries. Past it the line says how many were
 # left out, so a wide answer says it is wide instead of silently showing the first of forty.
 LEAF_CAP = 8
-# How many recompiles in a row may score no higher before the ask itself changes. Two (D191's
-# `STALLED_AFTER`) is when the stall is worth saying; this is when saying it has demonstrably
-# bought nothing and the round has to ask a different question.
-STALL_LIMIT = 6
+# How many recompiles in a row may score no higher before the ask itself changes. Kept equal to
+# D191's `STALLED_AFTER` (2) so the rewrite path fires on the same window the stall is worth
+# saying: a limit of six never fired on the consecutive no-effect counts a live round actually
+# reached (D249).
+STALL_LIMIT = 2
 # How many failing calls, and how many failure shapes, a stalled round is shown. The point of the
 # larger set is that a writer answering three shapes leaves the rest as they were.
 FAILING_SET_SHOWN = 12
