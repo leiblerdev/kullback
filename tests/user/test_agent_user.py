@@ -216,7 +216,8 @@ def test_the_agent_may_only_request_an_end_and_code_decides_it(ctx):
 
 
 def test_a_candidate_that_twice_asks_what_nobody_told_this_user_runs_the_scenario_out():
-    protocol = guards_mod.EndProtocol(goal_writes=["move_delivery"], write_tools=["move_delivery"])
+    # Communicate-only: a write Task with implied writes still unmade is the sibling below (D251).
+    protocol = guards_mod.EndProtocol()
     assert protocol.kind("What is your tier?", said_anything=True, had_nothing=True) is None
     assert protocol.kind("And your tier?", said_anything=True,
                          had_nothing=True) == rules_mod.SCENARIO_EXHAUSTED
@@ -530,3 +531,78 @@ def test_a_run_the_rule_driven_user_ended_alone_needs_no_driver_written_on_its_t
     assert list(split) == ["rules"] and split["rules"][rules_mod.HANDED_OFF] == 1
     assert sum(split["rules"].values()) == 1
     assert fidelity_mod.ends_by_driver(tmp_path / "nowhere") == {}
+
+
+# --- D251: goal_satisfied waits for the required write -----------------------------------------
+
+
+def ask(text: str) -> list[dict]:
+    return [{"role": "user", "content": "Hi."}, {"role": "assistant", "content": text}]
+
+
+def kiln_user(**kwargs) -> rules_mod.SimulatedUser:
+    """An invented pottery studio: the customer wants a kiln firing booked."""
+    facts = [UserFact(field=rules_mod.GOAL, value="Please book a kiln firing.", span=PTR)]
+    return rules_mod.SimulatedUser(UserRules(facts=facts), vocab=VOCAB, **kwargs)
+
+
+def test_a_write_task_with_no_write_in_the_transcript_is_not_goal_satisfied():
+    protocol = guards_mod.EndProtocol(goal_writes=["move_delivery"], write_tools=["move_delivery"])
+    assert protocol.goal_done(set()) is False
+    assert protocol.kind("What is your plot number?", said_anything=True, had_nothing=False,
+                         made=set()) is None
+    user = kiln_user(write_tools=["book_kiln"], goal_writes=["book_kiln"])
+    user.reply(ask("Hi! How can I help you today?"))
+    user.reply(ask("I have noted that down."))
+    assert user.done is False and user.end_reason is None
+
+
+def test_an_empty_goal_writes_on_a_write_task_does_not_satisfy_until_the_write_took_effect():
+    """The vacuous fallback D210 pinned: empty goal_writes is a subset of empty made."""
+    protocol = guards_mod.EndProtocol(goal_writes=[], write_tools=["move_delivery"])
+    assert protocol.goal_done(set()) is False
+    assert protocol.goal_done({"move_delivery"}) is True
+    assert rules_mod.goal_writes_done(set(), None, ["move_delivery"]) is False
+    assert rules_mod.goal_writes_done({"move_delivery"}, None, ["move_delivery"]) is True
+
+
+def test_a_write_task_out_of_answers_is_not_scenario_exhausted_while_the_write_is_unmade():
+    """Sibling of test_a_candidate_that_twice_asks_what_nobody_told_this_user_runs_the_scenario_out.
+    That test encoded exhaustion on a write Task; D251 keeps it for communicate-only Tasks."""
+    protocol = guards_mod.EndProtocol(goal_writes=["move_delivery"], write_tools=["move_delivery"])
+    assert protocol.kind("What is your tier?", said_anything=True, had_nothing=True) is None
+    assert protocol.kind("And your tier?", said_anything=True, had_nothing=True) is None
+    user = kiln_user(write_tools=["book_kiln"], goal_writes=["book_kiln"])
+    user.reply(ask("Hi! How can I help you today?"))
+    user.reply(ask("What is your membership tier?"))
+    user.reply(ask("Could you give me your account code?"))
+    assert user.done is False
+    assert user.end_reason is None
+
+
+def test_a_communicate_only_task_with_an_empty_write_set_may_still_exhaust():
+    protocol = guards_mod.EndProtocol()
+    assert protocol.kind("What is your tier?", said_anything=True, had_nothing=True) is None
+    assert protocol.kind("And your tier?", said_anything=True,
+                         had_nothing=True) == rules_mod.SCENARIO_EXHAUSTED
+    user = kiln_user()
+    user.reply(ask("Hi! How can I help you today?"))
+    user.reply(ask("What is your membership tier?"))
+    user.reply(ask("Could you give me your account code?"))
+    assert user.done is True
+    assert user.end_reason == rules_mod.SCENARIO_EXHAUSTED
+
+
+def test_both_drivers_read_the_implied_writes_through_one_function():
+    assert rules_mod.implied_writes([], ["book_kiln"]) == frozenset({"book_kiln"})
+    assert rules_mod.implied_writes(["book_kiln"], ["book_kiln", "pay_glaze"]) == frozenset({"book_kiln"})
+    assert rules_mod.implied_writes([], []) == frozenset()
+    protocol = guards_mod.EndProtocol(goal_writes=[], write_tools=["book_kiln"])
+    assert protocol.goal_done(set()) is False
+    assert rules_mod.goal_writes_done(set(), [], ["book_kiln"]) is False
+    assert rules_mod.goal_writes_done({"book_kiln"}, [], ["book_kiln"]) is True
+    user = kiln_user(write_tools=["book_kiln"], goal_writes=[])
+    user.reply(ask("Hi! How can I help you today?"))
+    user.reply(ask("I have noted that down."))
+    assert user.end_reason != rules_mod.GOAL_SATISFIED
+    assert user.done is False
