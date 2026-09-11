@@ -376,10 +376,14 @@ def red_lights(workdir: Any) -> list[RedLight]:
                                         f"{_declined_note(row)}"
                                         f"{repair_module.stalled_note(kept.get(name) or {} if isinstance(kept, dict) else {})}",
                                 verb="repair_recompile"))
-    # D249: a tool that passed compile gates and then had two no-effect recompiles is spend-frozen,
-    # not assisted. The assisted loop above would not name it, and status would keep offering
-    # repair_recompile as if the compiler had not already been asked twice.
-    seen_tools = {light.target for light in out if light.kind == "tool"}
+    out.extend(_spend_frozen_lights(workdir, kept, out))
+    return out
+
+
+def _spend_frozen_lights(workdir: Any, kept: Any, lights: list[RedLight]) -> list[RedLight]:
+    """Red lights for tools that passed compile gates and then had spend refused (D249)."""
+    seen_tools = {light.target for light in lights if light.kind == "tool"}
+    out: list[RedLight] = []
     for name in repair_module.spend_frozen_names(workdir):
         if name in seen_tools:
             continue

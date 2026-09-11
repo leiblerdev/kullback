@@ -722,6 +722,53 @@ def _reuse_compile(workdir: Any, name: str, inputs: dict, stored_builds: dict, p
     return None
 
 
+def _apply_reused_compiles(sigs, workdir, inputs, stored_builds, previous, all_outcomes,
+                           prior_rulings, bodies, builds, outcomes,
+                           snapshot_rows, kept_rulings, assisted):
+    """Stamp incumbents that compile_one would skip, and return the signatures that still compile."""
+    prior_snapshot = (_read_json(Path(workdir) / ledger_mod.COMPILE_NAME, {}) or {}).get("rows") or []
+    pending = []
+    for sig in sigs:
+        reused = _reuse_compile(workdir, sig.name, inputs, stored_builds, previous)
+        if reused is None:
+            pending.append(sig)
+            continue
+        _, frozen, compile_hash = reused
+        body, row = previous[sig.name]
+        builds[sig.name] = dict(row, **{COMPILE_HASH_KEY: compile_hash})
+        bodies[sig.name] = body
+        outcomes[sig.name] = list(all_outcomes.get(sig.name) or [])
+        snapshot_rows[sig.name] = [item for item in prior_snapshot
+                                   if isinstance(item, dict) and item.get("tool") == sig.name]
+        kept = dict(prior_rulings.get(sig.name) or {})
+        kept[COMPILE_HASH_KEY] = compile_hash
+        if frozen:
+            kept["stalled"] = True
+        kept_rulings[sig.name] = kept
+        if row.get("assisted"):
+            assisted.append(sig.name)
+    return pending
+
+
+def _compile_tools_cache(only: Optional[list], workdir: Any, version: str):
+    """Input paths and the extra cache token: the whole lessons file, or one tool's slice.
+
+    A narrowed `only=` run keys only those tools' lessons so a lesson for one tool does not miss
+    another tool's request. The un-narrowed stage still declares the whole file so a repair misses
+    it and D161 reads the new body off disk; siblings then reuse (D249).
+    """
+    paths = (REPLAY_EVIDENCE_FILE, WORLD_PROVENANCE_FILE)
+    extra = ""
+    if only is not None:
+        paths += ("bodies.json", "tool_builds.json", "tool_call_outcomes.json")
+        extra = f":only={','.join(only)}"
+        if workdir is not None:
+            lessons = memory.load_tool_lessons(workdir)
+            extra += f":lessons={content_hash({name: lessons.get(name, []) for name in only})[:16]}"
+        return paths, version + extra
+    return paths + (memory.TOOL_LESSONS_FILE,), version
+
+
 def compile_snapshot_rows(kept: Iterable[dict], fresh: dict[str, list[dict]],
                           only: Optional[Iterable[str]]) -> list[dict]:
     """The per tool rulings a compile leaves on file: this run's, over the ones it replaces.
@@ -839,7 +886,6 @@ def _tools_stage(model: Any, max_attempts: int, workers: int = 1, only: Optional
         stored_bodies = dict(_read_json(ctx.workdir / "bodies.json", {}) or {})
         stored_builds = dict(_read_json(ctx.workdir / "tool_builds.json", {}) or {})
         all_outcomes = _read_json(ctx.workdir / "tool_call_outcomes.json", {}) or {}
-        prior_snapshot = (_read_json(ctx.workdir / ledger_mod.COMPILE_NAME, {}) or {}).get("rows") or []
         if only is not None:
             unknown = sorted(set(only) - {sig.name for sig in sigs})
             if unknown:
@@ -858,9 +904,6 @@ def _tools_stage(model: Any, max_attempts: int, workers: int = 1, only: Optional
                     for sig in sigs if (stored_bodies.get(sig.name) or "").strip()}
 
         def compile_one(sig):  # one tool, its own directory and nodes; independent of every other (D118)
-            reused = _reuse_compile(ctx.workdir, sig.name, inputs, stored_builds, previous)
-            if reused is not None:
-                return reused
             compile_hash = _tool_compile_hash(ctx.workdir, sig.name, inputs)
             # D211: how many recompiles in a row have bought this tool nothing, and the gate both
             # sides fell at last time, read before the body is graded because both change the ask
@@ -931,24 +974,11 @@ def _tools_stage(model: Any, max_attempts: int, workers: int = 1, only: Optional
         # for the same reason the rulings above are kept.
         prior_counts = dict(_read_json(ctx.workdir / LESSON_COUNTS_FILE, {}) or {})
         lesson_counts = dict(prior_counts) if only is not None else {}
-        for sig, result in zip(sigs, parallel.each(sigs, compile_one, workers), strict=True):
-            if isinstance(result, tuple) and result and result[0] == "reuse":
-                _, frozen, compile_hash = result
-                body, row = previous[sig.name]
-                builds[sig.name] = dict(row, **{COMPILE_HASH_KEY: compile_hash})
-                bodies[sig.name] = body
-                outcomes[sig.name] = list(all_outcomes.get(sig.name) or [])
-                snapshot_rows[sig.name] = [item for item in prior_snapshot
-                                           if isinstance(item, dict) and item.get("tool") == sig.name]
-                kept = dict(prior_rulings.get(sig.name) or {})
-                kept[COMPILE_HASH_KEY] = compile_hash
-                if frozen:
-                    kept["stalled"] = True
-                kept_rulings[sig.name] = kept
-                if row.get("assisted"):
-                    assisted.append(sig.name)
-                continue
-            build, graded, compile_hash = result
+        sigs = _apply_reused_compiles(
+            sigs, ctx.workdir, inputs, stored_builds, previous, all_outcomes,
+            prior_rulings, bodies, builds, outcomes, snapshot_rows, kept_rulings, assisted)
+        for sig, (build, graded, compile_hash) in zip(
+                sigs, parallel.each(sigs, compile_one, workers), strict=True):
             score = list(compile_env.attempt_score(build.gates))
             kept_score = list(compile_env.attempt_score(graded.gates)) if graded is not None else None
             # A body that answers no call at all under this world is no candidate, whatever it
@@ -1110,21 +1140,12 @@ def _tools_stage(model: Any, max_attempts: int, workers: int = 1, only: Optional
     # inputs had not moved was served bodies written before that evidence existed.
     # D220: the provenance of the world is read by this stage, so it is in its key: a build
     # whose held-out split moved masks different columns and must compile again.
-    paths = (REPLAY_EVIDENCE_FILE, WORLD_PROVENANCE_FILE)
-    extra = ""
-    if only is not None:
-        paths += ("bodies.json", "tool_builds.json", "tool_call_outcomes.json")
-        extra = f":only={','.join(only)}"
-        if workdir is not None:
-            lessons = memory.load_tool_lessons(workdir)
-            extra += f":lessons={content_hash({name: lessons.get(name, []) for name in only})[:16]}"
-    else:
-        paths += (memory.TOOL_LESSONS_FILE,)
+    paths, version = _compile_tools_cache(only, workdir, version)
     return pipeline.Stage(name="compile_tools", fn=run, builder=True,
                           inputs=("traces", "tasks", "sigs", "schema", "db", "overlays", "canon_rules",
                                   "readers"),
                           outputs=("bodies", "assisted_tools", "tool_fidelity"), gate=gate, input_paths=paths,
-                          code_version=version + extra)
+                          code_version=version)
 
 
 def trace_worlds(db: dict, overlays: Iterable[Any], values: dict, tasks: Iterable[Any]) -> dict[str, dict]:
