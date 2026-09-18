@@ -108,6 +108,10 @@ def fault_module() -> types.ModuleType:
         state.put("meta", "m1", {"seen_at": datetime.datetime(2026, 9, 18, 12, 0, 0)})
         raise ValueError("no")
 
+    def tag_then_refuse(state, gadget_id):  # noqa: ARG001
+        state.shared["gadgets"][gadget_id]["tags"].add("planted")
+        raise ValueError("no")
+
     def meddle_then_crash(state, gadget_id):  # noqa: ARG001
         state.add({"gadgets": {"g9": {"id": "g9", "status": "planted"}}}, None)
         state.overlay_misses.append({"table": "gadgets", "id": "g9"})
@@ -127,6 +131,7 @@ def fault_module() -> types.ModuleType:
     module.decode_crash = decode_crash
     module.meddle_then_crash = meddle_then_crash
     module.stamp_then_refuse = stamp_then_refuse
+    module.tag_then_refuse = tag_then_refuse
     return module
 
 
@@ -151,6 +156,7 @@ def sigs() -> list[ToolSig]:
         ToolSig(name="refuse_subclass"),
         ToolSig(name="decode_crash"),
         ToolSig(name="stamp_then_refuse"),
+        ToolSig(name="tag_then_refuse"),
     ]
 
 
@@ -301,6 +307,15 @@ def test_plain_fallback_restores_values_json_cannot_carry():
     out = router.route("stamp_then_refuse", {"gadget_id": "g1"})
     assert out.error is not None and out.error.class_ == "business_error"
     assert router.state.shared["meta"]["m1"] == {"seen_at": first}
+
+
+def test_fallback_snapshot_shares_nothing_with_the_live_world():
+    router = make_router(state=StateView(shared={**shared_world(),
+                                                 "gadgets": {"g1": {"id": "g1", "status": "new",
+                                                                         "tags": {"shelf"}}}}))
+    out = router.route("tag_then_refuse", {"gadget_id": "g1"})
+    assert out.error is not None and out.error.class_ == "business_error"
+    assert router.state.shared["gadgets"]["g1"]["tags"] == {"shelf"}
 
 
 def test_body_fault_marks_the_environment_not_the_candidate():

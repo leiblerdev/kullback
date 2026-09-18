@@ -12,10 +12,18 @@ index a767a92..27eb072 100644
  ClassifiedBy = Literal["code", "rule", "llm", "observed", "human"]
  ToolKind = Literal["read", "write", "generic"]
 diff --git a/kullback/runner/route.py b/kullback/runner/route.py
-index 0d8d070..5cbea50 100644
+index 0d8d070..c93321c 100644
 --- a/kullback/runner/route.py
 +++ b/kullback/runner/route.py
-@@ -9,7 +9,7 @@ from typing import Any, Iterable, NamedTuple, Optional
+@@ -2,6 +2,7 @@
+ 
+ from __future__ import annotations
+ 
++import copy
+ import inspect
+ import json
+ from typing import Any, Iterable, NamedTuple, Optional
+@@ -9,7 +10,7 @@ from typing import Any, Iterable, NamedTuple, Optional
  from kullback.runner.canon import canonical_args
  from kullback.runner.records import ToolCallError, ToolSig, content_hash
  from kullback.runner.records import plain as _plain
@@ -24,7 +32,7 @@ index 0d8d070..5cbea50 100644
  
  STATE_PARAMS = ("state", "db", "world", "env")
  EXCEPTION_CLASSES = {
-@@ -197,13 +197,36 @@ class Router:
+@@ -197,13 +198,36 @@ class Router:
          return list(self.state.overlay_misses) or None
  
      def _code(self, name: str, function: Any, args: dict) -> RouteResult:
@@ -65,7 +73,7 @@ index 0d8d070..5cbea50 100644
  
      def _reads_synthetic(self, result: Any, args: dict) -> bool:
          """The call named or returned a synthetic row (D40): the Run is assisted (D49)."""
-@@ -239,6 +262,134 @@ class Router:
+@@ -239,6 +263,134 @@ class Router:
          return RouteResult(payload, "code", False, error, self._misses())
  
  
@@ -74,15 +82,15 @@ index 0d8d070..5cbea50 100644
 +
 +    The success path pays only the serialise; the bytes are parsed back solely on rollback, which
 +    almost never happens. A pydantic db serialises through its own Rust encoder. Where serialising
-+    fails (a value JSON cannot carry), the snapshot falls back to `_plain`, which restores by
-+    replacement exactly as before.
++    fails (a value JSON cannot carry, like a set), the snapshot falls back to a deep copy, which
++    restores by replacement with no aliases back into the live world.
 +    """
 +    try:
 +        if hasattr(value, "model_dump_json"):
 +            return ("json", value.model_dump_json().encode("utf-8"))
 +        return ("json", json.dumps(value).encode("utf-8"))
 +    except (TypeError, ValueError):
-+        return ("plain", _plain(value))
++        return ("deepcopy", copy.deepcopy(value))
 +
 +
 +def _thaw(snapshot: Any) -> Any:
