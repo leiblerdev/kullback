@@ -5,6 +5,7 @@ These are the items I pushed past the first build. Each line says what it buys a
 ## Next re-freeze
 
 - Next re-freeze: apply docs/frozen-patches/speed-3.patch (ledger batching; the Plan.spend memory read already rides on the branch), re-run tests/runner.
+- Apply `docs/frozen-patches/intake-seam.patch` and re-freeze: the build gate admits each recording on its own and fails only under the task-eligible share floor (intake-seam).
 - Apply `docs/frozen-patches/speed-1.patch` and re-freeze: lock-only thread safety for the
   replay comparer's tally increment, needed before the Examiner replays synth variants as pooled
   jobs (speed-1, Greptile P1 on PR #53).
