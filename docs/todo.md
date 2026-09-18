@@ -15,6 +15,7 @@ These are the items I pushed past the first build. Each line says what it buys a
 - safe-write.patch waits for the founder's re-freeze: write_json writes to a temporary file in the same directory and swaps it in with os.replace, so a killed build leaves no torn artifact.
 - stop-rule.patch waits for the founder's re-freeze: the round stop reads the fidelity rate and the trusted share, refusal-only finishes exit refused, and every stop carries a reason. The round end event already accepts refused and the driver lands the reason behind a guard that goes at the re-freeze.
 - step-split.patch waits for the founder's re-freeze: the Runner's step is ask plus advance, proven by a byte-identical step snapshot; re-run tests/runner with the patch applied.
+- confinement-imports.patch waits for the founder's re-freeze: the confinement gate stops allowing two skeleton only names in tool bodies, re-run tests/gates and tests/builder.
 
 ## After the first Replica clears Gate A
 
