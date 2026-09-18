@@ -69,6 +69,7 @@ def test_replace_failure_keeps_the_old_file_and_no_temp(tmp_path: Path, monkeypa
 
 def test_two_threads_writing_one_path_both_leave_valid_json(tmp_path: Path):
     target = tmp_path / "shared.json"
+    write_json(target, {"harbor": [], "note": "seeded destination"})
     first = {"harbor": list(range(50)), "note": "first writer"}
     second = {"harbor": list(range(50, 100)), "note": "second writer"}
     errors: list[BaseException] = []
@@ -91,13 +92,68 @@ def test_two_threads_writing_one_path_both_leave_valid_json(tmp_path: Path):
     assert _leftover_temps(tmp_path) == []
 
 
-def test_temp_name_matches_no_workdir_reader_glob():
+def test_reader_sees_only_whole_files_while_a_swap_waits(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    # Deterministic form of the atomicity guarantee: the swap is held back, the destination
+    # must still read as the old complete JSON, and only after release as the new one.
+    target = tmp_path / "ledger.json"
+    old = {"kept": "old value", "n": 1}
+    new = {"kept": "new value with more bytes in it " * 8, "n": 2}
+    write_json(target, old)
+    entered = threading.Event()
+    release = threading.Event()
+    real_replace = os.replace
+    seen: dict = {}
+
+    def _gated(src: str, dst: str) -> None:
+        seen["src"] = str(src)
+        seen["dst"] = str(dst)
+        entered.set()
+        assert release.wait(timeout=30)
+        real_replace(src, dst)
+
+    monkeypatch.setattr(os, "replace", _gated)
+    errors: list[BaseException] = []
+
+    def _write() -> None:
+        try:
+            write_json(target, new)
+        except BaseException as exc:  # noqa: BLE001
+            errors.append(exc)
+
+    thread = threading.Thread(target=_write)
+    thread.start()
+    assert entered.wait(timeout=30)
+    assert read_json(target) == json.loads(json.dumps(old, sort_keys=True, default=str))
+    staged = Path(seen["src"])
+    assert staged.parent == target.parent
+    assert staged.name.startswith(".") and staged.suffix == ".tmp"
+    assert staged.is_file()
+    release.set()
+    thread.join(timeout=30)
+    assert errors == []
+    assert read_json(target) == json.loads(json.dumps(new, sort_keys=True, default=str))
+    assert _leftover_temps(tmp_path) == []
+
+
+def test_temp_name_matches_no_workdir_reader_glob(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     # Workdir readers glob "*.json", "*.jsonl", "*/*.jsonl" and fixed names such as
-    # "*/pool.json" (grep "glob(" kullback). The temp file is ".<final name>.<unique>.tmp"
-    # in the same directory, so it ends in .tmp and starts with a dot, and none of those
-    # patterns match it.
-    sample = ".ledger.json.8f3k.tmp"
-    assert not fnmatch.fnmatch(sample, "*.json")
-    assert not fnmatch.fnmatch(sample, "*.jsonl")
-    assert not fnmatch.fnmatch(sample, "*/pool.json")
-    assert sample.endswith(".tmp") and sample.startswith(".")
+    # "*/pool.json" (grep "glob(" kullback). The writer stages the bytes in a file the swap
+    # boundary hands over, so this test asserts on that actual path: same directory as the
+    # destination, dot-prefixed, ending in .tmp, matching none of the reader patterns.
+    seen: dict = {}
+    real_replace = os.replace
+
+    def _capture(src: str, dst: str) -> None:
+        seen["src"] = str(src)
+        real_replace(src, dst)
+
+    monkeypatch.setattr(os, "replace", _capture)
+    target = tmp_path / "ledger.json"
+    write_json(target, {"kept": 1})
+    staged = Path(seen["src"])
+    assert staged.parent == target.parent
+    actual = staged.name
+    assert actual.startswith(".") and actual.endswith(".tmp")
+    assert not fnmatch.fnmatch(actual, "*.json")
+    assert not fnmatch.fnmatch(actual, "*.jsonl")
+    assert not fnmatch.fnmatch(actual, "*/pool.json")
