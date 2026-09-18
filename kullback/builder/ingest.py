@@ -8,22 +8,20 @@ import hashlib
 import json
 import re
 import shutil
-from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional
 
 from pydantic import ValidationError
 
 from kullback.ai.provider import Model
+from kullback.builder import sources
 from kullback.builder.mine import _reply_json
 from kullback.runner.records import (
     GateResult,
     RawFile,
     RawPtr,
-    ToolCall,
     ToolCallError,
     Trace,
-    Turn,
     as_dict,
     content_hash,
 )
@@ -39,20 +37,11 @@ def _ingest_version() -> str:
 
 INGEST_VERSION = _ingest_version()
 
-# Benchmark answer keys. Stripped before anything else reads the trace (D66, D89).
-GRADER_FIELDS = (
-    "reward_info", "evaluation_criteria", "action_checks", "nl_assertions",
-    "env_assertions", "reward", "trial", "task_id",
-)
-
 # Longest first, so "... (truncated)" is not read as a bare "...".
 CUT_MARKERS = ("... (truncated)", "[output truncated]", "[truncated]", "<truncated>", "…", "...")
 
 # A JSON result that does not parse was cut off by the customer's log limit even when no marker survived.
 UNPARSED_JSON_MARKER = "unterminated_json"
-
-# Formats section 4 names that format_detect recognizes and no mapper reads yet (the slice is tau2 first, D55).
-UNMAPPED_FORMATS = {"otel_genai": "OpenTelemetry GenAI", "claude_code_jsonl": "Claude Code JSONL"}
 
 # D67 classes as regexes over the lowercased payload. Every rule is scored and the longest matched
 # phrase wins, with the order below as the tie-break, so a loose fragment cannot beat a specific one.
@@ -90,36 +79,17 @@ _COMPILED_RULES = tuple(
 
 
 def format_detect(obj: Any, jsonl: bool = False) -> str:
-    """Name the export format of an already parsed file: tau2 native, OpenTelemetry GenAI,
-    Claude Code JSONL, unknown."""
-    if isinstance(obj, list):
-        heads = [item for item in obj[:20] if isinstance(item, dict)]
-        if any(_looks_otel(item) for item in heads):
-            return "otel_genai"
-        if jsonl and any(_looks_claude_code(item) for item in heads):
-            return "claude_code_jsonl"
-        return "unknown"
-    if isinstance(obj, dict):
-        if isinstance(obj.get("simulations"), list):
-            return "tau2_native"
-        if isinstance(obj.get("messages"), list) and "id" in obj:
-            return "tau2_native"
-        if "resourceSpans" in obj or "resource_spans" in obj or _looks_otel(obj):
-            return "otel_genai"
-    return "unknown"
+    """Name the export format of an already parsed file.
+
+    The vote lives behind the intake seam (sources): every registered adapter votes with
+    positive evidence, and the strongest vote names the format, or "unknown" when no adapter
+    finds positive evidence."""
+    return sources.detect_format(obj, jsonl).winner
 
 
-def _looks_otel(item: dict) -> bool:
-    if str(item.get("name", "")).startswith("gen_ai."):
-        return True
-    attributes = item.get("attributes")
-    return isinstance(attributes, dict) and any(str(k).startswith("gen_ai.") for k in attributes)
-
-
-def _looks_claude_code(item: dict) -> bool:
-    if item.get("type") not in ("user", "assistant", "system", "summary", "result"):
-        return False
-    return any(key in item for key in ("message", "content", "uuid", "sessionId"))
+def detect_reasons(obj: Any, jsonl: bool = False) -> list[str]:
+    """Why the adapters voted as they did, in words; an unknown payload is refused with these."""
+    return sources.detect_format(obj, jsonl).reasons
 
 
 def _decode(payload: bytes) -> tuple[Any, bool]:
@@ -255,52 +225,64 @@ def unparsed_json(value: Any) -> bool:
     return False
 
 
-# --- tau2 native derivation ------------------------------------------------
+# --- trace derivation behind the seam ------------------------------------------
 
 
 def derive_traces(raw_hash: str, workdir: str | Path, model: Optional[Model] = None) -> list[Trace]:
     """Derive Trace records from a stored raw file, writing one grader sidecar per trace.
 
-    A simulation the records refuse is left out with its reason in workdir/rejects, which the gate reads,
-    so one broken message never costs the whole file (design section 6, on failure: reject trace with reason).
-    """
+    The winning adapter behind the intake seam (sources) reads the payload; this function only
+    orchestrates (derive, sidecar, rejects). A simulation the records refuse is left out with its
+    reason in workdir/rejects, which the gate reads, so one broken message never costs the whole
+    file (design section 6, on failure: reject trace with reason)."""
     document, jsonl = _decode(raw_path(raw_hash, workdir).read_bytes())
-    format_detected = format_detect(document, jsonl)
-    if format_detected in UNMAPPED_FORMATS:
-        raise NotImplementedError(
-            f"{UNMAPPED_FORMATS[format_detected]} ingest ({format_detected}) is not written yet; only the tau2 "
-            "native export is mapped so far (D55). format_detect names the format so the mapper has a home here."
-        )
-    if format_detected != "tau2_native":
+    decision = sources.detect_format(document, jsonl)
+    adapter = sources.by_name(decision.winner)
+    if adapter is None:
+        expected = ", ".join(sources.display_names())
         raise ValueError(
-            f"unknown export format for raw file {raw_hash}; expected tau2 native, "
-            "OpenTelemetry GenAI or Claude Code JSONL"
+            f"unknown export format for raw file {raw_hash}; expected {expected}. "
+            + "; ".join(decision.reasons)
         )
-    simulations = document["simulations"] if "simulations" in document else [document]
-    tasks = {str(task.get("id")): task for task in document.get("tasks") or [] if isinstance(task, dict)}
-    environment = (document.get("info") or {}).get("environment_info") or {}
+    if not adapter.maps:
+        raise NotImplementedError(adapter.unmapped_message())  # type: ignore[attr-defined]
+    environment = adapter.environment(document)
     traces, rejects = [], []
-    if not simulations:
+    recordings = list(adapter.recordings(document))
+    if not recordings:
         rejects.append({"trace_id": None, "sim_index": None,
                         "reason": "the file declares an empty simulations list, so it holds no run"})
-    for sim_index, simulation in enumerate(simulations):
+    for sim_index, simulation in enumerate(recordings):
         if not isinstance(simulation, dict):
             rejects.append({"trace_id": None, "sim_index": sim_index,
                             "reason": f"simulation is a {type(simulation).__name__}, not an object"})
             continue
+        ctx = sources.MapContext(raw_hash=raw_hash, index=sim_index, environment=environment,
+                                 ingest_version=INGEST_VERSION)
         try:
-            trace = _tau2_trace(simulation, sim_index, raw_hash, environment)
-        except ValidationError as exc:
+            trace = adapter.to_trace(simulation, ctx)
+        except (ValidationError, AttributeError, TypeError) as exc:
+            # A message or call entry that is not an object raises AttributeError or TypeError
+            # where the records would raise ValidationError; both mean this recording is not
+            # parseable, so it is rejected with its reason instead of aborting the whole file.
             rejects.append({"trace_id": str(simulation.get("id") or f"{raw_hash[:12]}-{sim_index}"),
-                            "sim_index": sim_index, "reason": _validation_reason(exc)})
+                            "sim_index": sim_index, "reason": _refusal_reason(exc)})
             continue
         if model is not None:
             _llm_error_pass(model, trace)
         trace.hash = trace_hash(trace)
-        _write_grader(simulation, tasks, trace, workdir)
+        _write_grader(trace, adapter.sidecar(simulation, document), workdir)
         traces.append(trace)
+    ruling = rule_recordings(raw_hash, decision.winner, recordings, traces, rejects)
+    _write_ruling(raw_hash, ruling, workdir)
     _write_rejects(raw_hash, rejects, workdir)
     return traces
+
+
+def _refusal_reason(exc: Exception) -> str:
+    if isinstance(exc, ValidationError):
+        return _validation_reason(exc)
+    return f"the recording is not parseable: {type(exc).__name__}: {exc}"
 
 
 def _validation_reason(exc: ValidationError) -> str:
@@ -314,114 +296,6 @@ def _llm_error_pass(model: Model, trace: Trace) -> None:
     for call in trace.tool_calls:
         if call.error is not None and call.error.class_ == "unknown" and call.error.classified_by == "rule":
             call.error = classify_error_llm(model, call.error)
-
-
-def _tau2_trace(simulation: dict, sim_index: int, raw_hash: str, environment: dict) -> Trace:
-    messages = simulation.get("messages") or []
-    ptr = RawPtr(file_hash=raw_hash, sim_index=sim_index)
-    # The info block is not a message, so its pointer names the section instead of a message index;
-    # it is where `tools_declared` and `system_prompt` below were read from (D66).
-    info = RawPtr(file_hash=raw_hash, sim_index=sim_index, section="info.environment_info")
-    trace_id = str(simulation.get("id") or f"{raw_hash[:12]}-{sim_index}")
-    turns, calls, pending = [], [], {}
-    for msg_index, message in enumerate(messages):
-        here = RawPtr(file_hash=raw_hash, sim_index=sim_index, msg_index=msg_index)
-        role = message.get("role") or "assistant"
-        requested = message.get("tool_calls") or []
-        if role == "tool":
-            waiting = pending.pop(message.get("id"), None)
-            if waiting is not None:
-                _attach_result(waiting[0], message, waiting[1], here)
-            turns.append(Turn(idx=msg_index, role="tool", content=_text(message.get("content")),
-                              tool_call_ids=[message["id"]] if message.get("id") else [], raw_ptr=here))
-            continue
-        for request in requested:
-            call = ToolCall(
-                id=request.get("id"),
-                name=request.get("name") or "",
-                args=request.get("arguments") or {},
-                requestor=request.get("requestor") or role,
-                raw_ptr=here,
-                trace_id=trace_id,
-            )
-            calls.append(call)
-            if call.id:
-                pending[call.id] = (call, message.get("timestamp"))
-        turns.append(Turn(idx=msg_index, role=role, content=_text(message.get("content")),
-                          tool_call_ids=[r.get("id") for r in requested if r.get("id")], raw_ptr=here))
-    return Trace(
-        trace_id=trace_id,
-        raw_hash=raw_hash,
-        ingest_version=INGEST_VERSION,
-        source="tau2_native",
-        turns=turns,
-        tool_calls=calls,
-        tools_declared=environment.get("tool_defs") if isinstance(environment.get("tool_defs"), list) else None,
-        system_prompt=environment.get("policy"),
-        tools_declared_ptr=info if environment.get("tool_defs") else None,
-        system_prompt_ptr=info if environment.get("policy") else None,
-        info_ptr=info,
-        raw_ptr=ptr,
-    )
-
-
-def _attach_result(call: ToolCall, message: dict, asked_at: Any, ptr: Optional[RawPtr] = None) -> None:
-    """Put the tool message that answered this call on the call, and say where it came from.
-
-    `has_result` is set for every answered call, a recorded JSON null included, because `result is
-    None` alone cannot tell a null answer apart from a call whose tool message was never captured
-    (validate.ingest_gate reads the flag). `resolved` says the answer landed on this call.
-    """
-    content = message.get("content")
-    call.truncated, call.visible_len, call.cut_marker = detect_truncation(content)
-    flag = message.get("error")
-    if flag:
-        structured = flag if isinstance(flag, dict) else _structured(content)
-        call.error = classify_error(content, structured, ptr=ptr)
-    else:
-        call.result = _parsed(content)
-    call.has_result = True
-    call.resolved = True
-    call.result_ptr = ptr
-    call.latency_ms = _latency_ms(asked_at, message.get("timestamp"))
-
-
-def _structured(content: Any) -> Optional[dict]:
-    """A typed error body when the source sends one, so classify_error can use the code instead of the rules."""
-    if isinstance(content, dict):
-        return content
-    if isinstance(content, str) and content.strip()[:1] == "{":
-        try:
-            parsed = json.loads(content)
-        except json.JSONDecodeError:
-            return None
-        return parsed if isinstance(parsed, dict) else None
-    return None
-
-
-def _text(value: Any) -> Optional[str]:
-    if value is None or isinstance(value, str):
-        return value
-    return json.dumps(value, ensure_ascii=False, default=str)
-
-
-def _parsed(content: Any) -> Any:
-    """Tool results arrive as JSON strings in tau2; parse them so mine.py sees fields, keep text as text."""
-    if isinstance(content, str) and content.strip()[:1] in ("{", "["):
-        try:
-            return json.loads(content)
-        except json.JSONDecodeError:
-            return content  # kept verbatim; the gate reports it as not parseable
-    return content
-
-
-def _latency_ms(asked: Any, answered: Any) -> Optional[float]:
-    try:
-        start = datetime.fromisoformat(str(asked))
-        end = datetime.fromisoformat(str(answered))
-    except (TypeError, ValueError):
-        return None
-    return (end - start).total_seconds() * 1000.0
 
 
 def trace_hash(trace: Trace) -> str:
@@ -471,12 +345,8 @@ def _write_rejects(raw_hash: str, rejects: list[dict], workdir: str | Path) -> N
 # --- grader sidecar (D66) --------------------------------------------------
 
 
-def _write_grader(simulation: dict, tasks: dict, trace: Trace, workdir: str | Path) -> Path:
-    """Move the benchmark answer key out of the trace into its own file beside the trace."""
-    fields = {key: simulation[key] for key in GRADER_FIELDS if key in simulation}
-    task = tasks.get(str(simulation.get("task_id")))
-    if task and "evaluation_criteria" in task:
-        fields["evaluation_criteria"] = task["evaluation_criteria"]
+def _write_grader(trace: Trace, fields: dict, workdir: str | Path) -> Path:
+    """Move the export's answer key out of the trace into its own file beside the trace."""
     target = grader_file(trace, workdir)
     target.parent.mkdir(parents=True, exist_ok=True)
     return _write_json(target, {
@@ -485,52 +355,377 @@ def _write_grader(simulation: dict, tasks: dict, trace: Trace, workdir: str | Pa
     })
 
 
+# --- admission per recording -----------------------------------------------
+
+
+# The Task-eligible share a file must keep for the stage to pass. An invented constant awaiting
+# measurement on real corpora: it only says a mostly unusable file stops the build, while one bad
+# recording among good ones is set aside and the rest build.
+MIN_TASK_ELIGIBLE_SHARE = 0.75
+
+TASK_ELIGIBLE = "task_eligible"
+EVIDENCE_ONLY = "evidence_only"
+REJECTED = "rejected"
+
+# An explicit end marker that reads as not finished. A recording with no marker at all reads as
+# complete when every call resolved: the export simply did not stamp it.
+UNFINISHED_ENDS = frozenset({
+    "max_steps", "max_errors", "timeout", "error", "cancelled", "truncated", "incomplete",
+})
+
+
+def _trace_problems(trace: Trace) -> dict:
+    """The per-recording facts admission rules on: which calls never resolved, which results never
+    parsed, which ids were reused while pending, which results answer no call, and the sizes."""
+    by_id: dict = {}
+    problems: dict = {"calls": 0, "errors": 0, "truncated": 0, "turns": len(trace.turns),
+                       "unresolved": [], "unparseable": [], "reused": [], "orphans": []}
+    for call in trace.tool_calls:
+        problems["calls"] += 1
+        problems["errors"] += 1 if call.error else 0
+        problems["truncated"] += 1 if call.truncated else 0
+        if call.id:
+            by_id.setdefault(call.id, []).append(call)
+        named = call.id or call.name
+        # `resolved` is per call object, unlike `answered` which is only the set of id strings
+        # that appear on some "tool" turn; a reused id can leave this exact call unresolved while
+        # its id string does get answered, on a different call (D67, gate_ingest row 8).
+        if not call.resolved:
+            problems["unresolved"].append(named)
+        elif unparsed_json(call.result):
+            problems["unparseable"].append(named)
+    problems["reused"] = _reused_ids(by_id)
+    problems["orphans"] = _orphan_results(trace)
+    return problems
+
+
+def _reused_ids(by_id: dict) -> list:
+    """Call ids issued again while the earlier call with that id was still pending."""
+    return [call_id for call_id, group in by_id.items()
+            if len(group) > 1 and any(not earlier.resolved for earlier in group[:-1])]
+
+
+def _orphan_results(trace: Trace) -> list:
+    """Tool results that answer no recorded call."""
+    answered = {i for turn in trace.turns if turn.role == "tool" for i in turn.tool_call_ids}
+    requested = {call.id for call in trace.tool_calls if call.id}
+    return sorted(answered - requested)
+
+
+def _standing_for(problems: dict, simulation: Any, duplicate: bool) -> tuple[str, str, list[str]]:
+    """One recording's standing with its primary reason and every reason that fired.
+
+    Rejected first (not a usable recording at all), then the evidence-only reasons in a fixed
+    order, so the per-reason counts stay comparable across files. A recording with no problem
+    is task-eligible: complete, every call resolved."""
+    if problems["unparseable"]:
+        return (REJECTED, "unparseable_result", ["unparseable_result"])
+    if problems["turns"] == 0 and problems["calls"] == 0:
+        return (EVIDENCE_ONLY, "missing_start", ["missing_start"])
+    if duplicate:
+        return (EVIDENCE_ONLY, "duplicate", ["duplicate"])
+    reasons = []
+    termination = simulation.get("termination_reason") if isinstance(simulation, dict) else None
+    if termination in UNFINISHED_ENDS:
+        reasons.append("unfinished")
+    if problems["unresolved"]:
+        reasons.append("unresolved_call")
+    if problems["reused"]:
+        reasons.append("reused_call_id")
+    if problems["orphans"]:
+        reasons.append("orphan_result")
+    if reasons:
+        return (EVIDENCE_ONLY, reasons[0], reasons)
+    return (TASK_ELIGIBLE, "complete_record", ["complete_record"])
+
+
+def rule_recordings(raw_hash: str, format_name: str, recordings: list, traces: list[Trace],
+                    rejects: list[dict]) -> dict:
+    """Rule every recording of one file to a standing, with counts per standing and per reason and
+    the outcome and length mix of what was set aside, so a drift toward easy Tasks stays visible."""
+    sim_of = {}
+    for trace in traces:
+        index = trace.raw_ptr.sim_index if trace.raw_ptr else None
+        if isinstance(index, int) and 0 <= index < len(recordings):
+            sim_of[id(trace)] = recordings[index]
+    seen_content: set[str] = set()
+    seen_ids: set[str] = set()
+    rows = [_rule_trace_row(trace, sim_of.get(id(trace)), seen_content, seen_ids)
+            for trace in traces]
+    for entry in rejects:
+        rows.append(_reject_row(entry))
+    counts = {TASK_ELIGIBLE: 0, EVIDENCE_ONLY: 0, REJECTED: 0}
+    per_reason: dict = {}
+    for row in rows:
+        counts[row["standing"]] += 1
+        per_reason[row["reason"]] = per_reason.get(row["reason"], 0) + 1
+    set_aside = [row for row in rows if row["standing"] != TASK_ELIGIBLE]
+    eligible = counts[TASK_ELIGIBLE]
+    total = len(rows)
+    share = eligible / total if total else 1.0
+    return {
+        "raw_hash": raw_hash, "format": format_name, "floor": MIN_TASK_ELIGIBLE_SHARE,
+        "recordings": rows, "counts": counts, "reasons": per_reason,
+        "set_aside": {
+            "outcomes": _mix([row["termination"] or "unstated" for row in set_aside]),
+            "turns": _mix([_turn_bucket(row["turns"]) for row in set_aside]),
+            "tool_calls": _mix([_call_bucket(row["tool_calls"]) for row in set_aside]),
+        },
+        "eligible_share": share, "passed": share >= MIN_TASK_ELIGIBLE_SHARE,
+    }
+
+
+def _rule_trace_row(trace: Trace, simulation: Any, seen_content: set[str],
+                    seen_ids: set[str]) -> dict:
+    """One derived trace's ruling row: its standing with reasons, sizes, and outcome marker."""
+    problems = _trace_problems(trace)
+    digest = trace.hash or trace_hash(trace)
+    # A duplicate is the same recording twice: the same trace id claimed twice, or a recording
+    # with no id of its own whose content already appeared. Two recordings with different
+    # explicit ids stay distinct even when their transcripts match: the id is the source's
+    # identity claim, and only an id-less copy has nothing but its content to go by.
+    key = _content_key(trace)
+    had_id = bool(simulation.get("id")) if isinstance(simulation, dict) else False
+    duplicate = trace.trace_id in seen_ids or (key in seen_content and not had_id)
+    seen_content.add(key)
+    seen_ids.add(trace.trace_id)
+    standing, reason, reasons = _standing_for(problems, simulation, duplicate)
+    return {
+        "trace_id": trace.trace_id,
+        "sim_index": trace.raw_ptr.sim_index if trace.raw_ptr else None,
+        "standing": standing, "reason": reason, "reasons": reasons, "trace_hash": digest,
+        "turns": problems["turns"], "tool_calls": problems["calls"],
+        "termination": simulation.get("termination_reason")
+        if isinstance(simulation, dict) else None,
+    }
+
+
+def _reject_row(entry: dict) -> dict:
+    """One refused simulation's ruling row: rejected, with why the records refused it."""
+    reason_text = str(entry.get("reason") or "")
+    reason = "empty_file" if "empty simulations list" in reason_text else "not_a_recording"
+    return {
+        "trace_id": entry.get("trace_id"), "sim_index": entry.get("sim_index"),
+        "standing": REJECTED, "reason": reason, "reasons": [reason], "trace_hash": None,
+        "turns": 0, "tool_calls": 0, "termination": None,
+    }
+
+
+def _content_key(trace: Trace) -> str:
+    """What the recording said, without where it sat: the trace with every raw pointer, the trace
+    id, the version and the hash blanked, so the same recording twice has one key."""
+    body = as_dict(trace)
+    body["hash"] = ""
+    body["ingest_version"] = ""
+    body["trace_id"] = ""
+    _blank_ptrs(body)
+    return content_hash(body)
+
+
+# The provenance pointers the records carry (D66); only these are blanked for the duplicate
+# content key, never customer keys that happen to end the same way.
+_POINTER_FIELDS = frozenset({
+    "raw_ptr", "result_ptr", "tools_declared_ptr", "system_prompt_ptr", "info_ptr",
+})
+
+
+def _blank_ptrs(node: Any) -> None:
+    if isinstance(node, dict):
+        for key in [key for key in node if key in _POINTER_FIELDS]:
+            node[key] = None
+        for value in node.values():
+            _blank_ptrs(value)
+    elif isinstance(node, list):
+        for value in node:
+            _blank_ptrs(value)
+
+
+def _mix(values: list) -> dict:
+    counts: dict = {}
+    for value in values:
+        counts[value] = counts.get(value, 0) + 1
+    return counts
+
+
+def _turn_bucket(turns: int) -> str:
+    if turns <= 0:
+        return "0"
+    if turns <= 5:
+        return "1-5"
+    if turns <= 20:
+        return "6-20"
+    return "21+"
+
+
+def _call_bucket(calls: int) -> str:
+    if calls <= 0:
+        return "0"
+    if calls <= 3:
+        return "1-3"
+    return "4+"
+
+
+def intake_file(raw_hash: str, workdir: str | Path) -> Path:
+    return Path(workdir) / "intake" / (raw_hash + ".json")
+
+
+def aggregate_ruling_file(workdir: str | Path) -> Path:
+    return Path(workdir) / "intake_ruling.json"
+
+
+def _write_ruling(raw_hash: str, ruling: dict, workdir: str | Path) -> Path:
+    target = intake_file(raw_hash, workdir)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    return _write_json(target, ruling)
+
+
+def read_intake_ruling(workdir: str | Path, raw_hash: str) -> dict:
+    target = intake_file(raw_hash, workdir)
+    return json.loads(target.read_text(encoding="utf-8")) if target.is_file() else {}
+
+
+def _update_aggregate_ruling(workdir: str | Path, raw_hash: str, ruling: dict) -> dict:
+    """Fold one file's ruling into the one intake ruling, keyed by raw hash so a repeated ingest
+    of the same file overwrites its own entry instead of doubling it."""
+    target = aggregate_ruling_file(workdir)
+    aggregate = json.loads(target.read_text(encoding="utf-8")) if target.is_file() else {}
+    files = aggregate.get("files", {})
+    files[raw_hash] = ruling
+    counts = {TASK_ELIGIBLE: 0, EVIDENCE_ONLY: 0, REJECTED: 0}
+    per_reason: dict = {}
+    for entry in files.values():
+        for standing, count in (entry.get("counts") or {}).items():
+            counts[standing] = counts.get(standing, 0) + count
+        for reason, count in (entry.get("reasons") or {}).items():
+            per_reason[reason] = per_reason.get(reason, 0) + count
+    total = sum(counts.values())
+    share = counts[TASK_ELIGIBLE] / total if total else 1.0
+    aggregate = {"files": files, "counts": counts, "reasons": per_reason,
+                 "floor": MIN_TASK_ELIGIBLE_SHARE,
+                 "eligible_share": share, "passed": share >= MIN_TASK_ELIGIBLE_SHARE}
+    target.parent.mkdir(parents=True, exist_ok=True)
+    _write_json(target, aggregate)
+    return aggregate
+
+
+def evidence_file(trace: Trace, workdir: str | Path) -> Path:
+    """Where a set-aside Trace is written: the content-hash name a trace would have, in a folder
+    downstream never reads, so evidence-only recordings are kept and counted but feed nothing yet."""
+    return Path(workdir) / "evidence_traces" / ((trace.hash or trace_hash(trace)) + ".json")
+
+
+def write_evidence(traces: list[Trace], workdir: str | Path) -> list[Path]:
+    """Write set-aside Traces under workdir/evidence_traces; nothing downstream reads that folder."""
+    (Path(workdir) / "evidence_traces").mkdir(parents=True, exist_ok=True)
+    return [_write_json(evidence_file(trace, workdir), as_dict(trace)) for trace in traces]
+
+
 # --- gate and entry point --------------------------------------------------
 
 
 def gate_ingest(traces: list[Trace], workdir: str | Path, raw_hash: Optional[str] = None) -> GateResult:
-    """Section 6 ingest gate: every tool call has a parseable result or an error, and the grader fields are out."""
-    failures: list[str] = []
+    """Section 6 ingest gate: per-recording standings rule, and the stage fails only under the floor.
+
+    Each recording is task-eligible, evidence-only, or rejected (see _standing_for); the gate keeps
+    the per-problem lines below for the report, and passes when no trace is corrupt on disk and the
+    task-eligible share reaches MIN_TASK_ELIGIBLE_SHARE. Downstream stages read workdir/traces,
+    which ingest_file fills with task-eligible recordings only."""
+    traces = list(traces)
+    notes: list[str] = []
+    hard: list[str] = []
     calls = errors = truncated = unresolved = unparseable = orphans = reused = 0
     for trace in traces:
-        answered = {i for turn in trace.turns if turn.role == "tool" for i in turn.tool_call_ids}
-        requested = {call.id for call in trace.tool_calls if call.id}
-        by_id: dict[str, list[ToolCall]] = {}
-        for call in trace.tool_calls:
-            calls += 1
-            errors += 1 if call.error else 0
-            truncated += 1 if call.truncated else 0
-            if call.id:
-                by_id.setdefault(call.id, []).append(call)
-            named = call.id or call.name
-            # `resolved` is per call object, unlike `answered` which is only the set of id strings
-            # that appear on some "tool" turn; a reused id can leave this exact call unresolved while
-            # its id string does get answered, on a different call (D67, gate_ingest row 8).
-            if not call.resolved:
-                unresolved += 1
-                failures.append(f"{trace.trace_id}: tool call {named} has no result and no error")
-            elif unparsed_json(call.result):
-                unparseable += 1
-                failures.append(f"{trace.trace_id}: tool call {named} has a result that does not parse")
-        for call_id, group in by_id.items():
-            if len(group) > 1 and any(not earlier.resolved for earlier in group[:-1]):
-                reused += 1
-                failures.append(
-                    f"{trace.trace_id}: tool call id {call_id} was issued again while the earlier "
-                    "call with that id was still pending"
-                )
-        for orphan in sorted(answered - requested):
-            orphans += 1
-            failures.append(f"{trace.trace_id}: tool result {orphan} answers no recorded call")
-        failures += _grader_failures(trace, workdir)
+        problems = _trace_problems(trace)
+        calls += problems["calls"]
+        errors += problems["errors"]
+        truncated += problems["truncated"]
+        unresolved += len(problems["unresolved"])
+        unparseable += len(problems["unparseable"])
+        reused += len(problems["reused"])
+        orphans += len(problems["orphans"])
+        for named in problems["unresolved"]:
+            notes.append(f"{trace.trace_id}: tool call {named} has no result and no error")
+        for named in problems["unparseable"]:
+            notes.append(f"{trace.trace_id}: tool call {named} has a result that does not parse")
+        for call_id in problems["reused"]:
+            notes.append(
+                f"{trace.trace_id}: tool call id {call_id} was issued again while the earlier "
+                "call with that id was still pending"
+            )
+        for orphan in problems["orphans"]:
+            notes.append(f"{trace.trace_id}: tool result {orphan} answers no recorded call")
+        hard += _grader_failures(trace, workdir)
         if trace.hash != trace_hash(trace):
-            failures.append(f"{trace.trace_id}: trace hash does not match its content")
+            hard.append(f"{trace.trace_id}: trace hash does not match its content")
     rejects = read_rejects(workdir, raw_hash)
-    failures += [f"{r.get('trace_id') or 'file'}: rejected at ingest, {r.get('reason')}" for r in rejects]
+    notes += [f"{r.get('trace_id') or 'file'}: rejected at ingest, {r.get('reason')}" for r in rejects]
+    standings = _standings_in_scope(traces, workdir, raw_hash)
+    eligible = sum(1 for standing, _ in standings if standing == TASK_ELIGIBLE)
+    evidence = sum(1 for standing, _ in standings if standing == EVIDENCE_ONLY)
+    rejected = sum(1 for standing, _ in standings if standing == REJECTED)
+    total = len(standings)
+    share = eligible / total if total else 1.0
+    floor_ok = share >= MIN_TASK_ELIGIBLE_SHARE
+    failures: list[str] = []
+    if not floor_ok:
+        failures.append(
+            f"task-eligible share {share:.2f} is under the floor {MIN_TASK_ELIGIBLE_SHARE:.2f}: "
+            f"{eligible} of {total} recordings task-eligible "
+            f"({eligible} task-eligible, {evidence} evidence-only, {rejected} rejected)"
+        )
+    failures += hard
+    if failures:
+        failures += notes
     metrics = {"traces": len(traces), "tool_calls": calls, "errors": errors, "truncated": truncated,
                "unresolved": unresolved, "unparseable": unparseable, "orphan_results": orphans,
-               "reused_pending_ids": reused, "rejected": len(rejects)}
+               "reused_pending_ids": reused, "rejected": rejected,
+               "task_eligible": eligible, "evidence_only": evidence,
+               "eligible_share": share, "floor": MIN_TASK_ELIGIBLE_SHARE}
     return GateResult(stage="ingest", passed=not failures, metrics=metrics, failures=failures)
+
+
+def _standings_in_scope(traces: list[Trace], workdir: str | Path,
+                        raw_hash: Optional[str] = None) -> list[tuple[str, str]]:
+    """Standings for the given traces from the intake rulings in scope, with a content-only
+    fallback for traces no ruling covers (hand-built traces carry no simulation to read)."""
+    folder = Path(workdir) / "intake"
+    if raw_hash is not None:
+        target = intake_file(raw_hash, workdir)
+        files = [target] if target.is_file() else []
+    elif folder.is_dir():
+        files = sorted(folder.glob("*.json"))
+    else:
+        files = []
+    by_digest: dict = {}
+    reject_rows: list = []
+    for path in files:
+        try:
+            body = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        file_hash = body.get("raw_hash", "")
+        for row in body.get("recordings", []):
+            if row.get("trace_hash"):
+                by_digest[(file_hash, row["trace_hash"])] = row
+                by_digest[("", row["trace_hash"])] = row
+            else:
+                reject_rows.append(row)
+    standings = []
+    seen_ids: set[str] = set()
+    for trace in traces:
+        digest = trace.hash or trace_hash(trace)
+        row = by_digest.get((trace.raw_hash, digest)) or by_digest.get(("", digest))
+        if row is not None:
+            standings.append((row["standing"], row["reason"]))
+            continue
+        # Without the recording the content rule cannot tell a copy from a distinct recording
+        # sharing a transcript, so only an id repeat counts here.
+        problems = _trace_problems(trace)
+        duplicate = trace.trace_id in seen_ids
+        seen_ids.add(trace.trace_id)
+        standings.append(_standing_for(problems, None, duplicate)[:2])
+    standings.extend([(row["standing"], row["reason"]) for row in reject_rows])
+    return standings
 
 
 def _grader_failures(trace: Trace, workdir: str | Path) -> list[str]:
@@ -558,21 +753,67 @@ def _write_json(target: Path, body: Any) -> Path:
     return target
 
 
+def _split_writes(traces: list[Trace], ruling: dict) -> tuple[list[Trace], list[Trace]]:
+    """Task-eligible traces build downstream; the rest are written aside as evidence. Without a
+    ruling every trace builds, which is the old behavior for a derive that wrote none."""
+    if not ruling:
+        return (list(traces), [])
+    eligible_hashes = {row["trace_hash"] for row in ruling.get("recordings", [])
+                       if row["standing"] == TASK_ELIGIBLE and row.get("trace_hash")}
+    eligible = [trace for trace in traces if (trace.hash or trace_hash(trace)) in eligible_hashes]
+    wanted = {id(trace) for trace in eligible}
+    return (eligible, [trace for trace in traces if id(trace) not in wanted])
+
+
+class IntakeGateError(Exception):
+    """The intake gate failed for a file, so the build stops here instead of building on it.
+
+    Carries the gate ruling with the counts, so the report can say why without re-reading files.
+    """
+
+    def __init__(self, message: str, gate: Optional[GateResult] = None) -> None:
+        super().__init__(message)
+        self.gate = gate
+
+
+def _gate_message(path: str | Path, gate: GateResult) -> str:
+    shown = "; ".join(gate.failures[:5])
+    extra = f"; and {len(gate.failures) - 5} more" if len(gate.failures) > 5 else ""
+    return f"intake for {path} failed: {shown}{extra}"
+
+
 def ingest_file(path: str | Path, workdir: str | Path, model: Optional[Model] = None) -> dict:
-    """Store one customer file, derive its Traces, write them, run the gate, print the counts."""
+    """Store one customer file, derive its Traces, write them, run the gate, print the counts.
+
+    Only task-eligible recordings reach workdir/traces, which is what downstream stages read;
+    evidence-only recordings are written beside them under evidence_traces and counted, and nothing
+    consumes them yet. When the gate fails the file raises IntakeGateError instead of returning,
+    so a build stops under the floor rather than building on what was set aside."""
     raw = store_raw(path, workdir)
     traces = derive_traces(raw.raw_hash, workdir, model=model)
-    write_traces(traces, workdir)
+    ruling = read_intake_ruling(workdir, raw.raw_hash)
+    if ruling:
+        _update_aggregate_ruling(workdir, raw.raw_hash, ruling)
     gate = gate_ingest(traces, workdir, raw_hash=raw.raw_hash)
+    if not gate.passed:
+        raise IntakeGateError(_gate_message(path, gate), gate)
+    # Eligible traces publish only on a passing gate: a failed intake raises above, so a later
+    # build reusing this workdir never loads recordings from a file that failed admission.
+    eligible, set_aside = _split_writes(traces, ruling)
+    write_traces(eligible, workdir)
+    if set_aside:
+        write_evidence(set_aside, workdir)
     summary = {
         "raw_hash": raw.raw_hash,
         "format": raw.format_detected,
-        "runs": len(traces),
+        "runs": len(eligible),
         "tool_calls": gate.metrics["tool_calls"],
         "errors": gate.metrics["errors"],
         "truncated": gate.metrics["truncated"],
         "rejected": gate.metrics["rejected"],
-        "trace_hashes": [trace.hash for trace in traces],
+        "task_eligible": gate.metrics["task_eligible"],
+        "evidence_only": gate.metrics["evidence_only"],
+        "trace_hashes": [trace.hash for trace in eligible],
         "gate": as_dict(gate),
     }
     print(

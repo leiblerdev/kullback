@@ -1743,10 +1743,10 @@ class Loop:
         elif record.exit == "max_rounds":
             record.exit_note = f"round cap of {self.max_rounds} reached"
         stale = [row for row in self.tool_errors if not row.get("derived")]
-        if stale and record.exit == "done":
+        if stale and record.exit in ("done", "refused"):
             # D230: the derivation came back an error and no other call of it in that beat came back
             # clean, so the counts this exit reads are the round before's. A run never closes as done
-            # on numbers no derivation refreshed; it ends on the soft stop with the error named, and
+            # or refused on numbers no derivation refreshed; it ends on the soft stop with the error named, and
             # a finding still owed the Builder clears that exit below and buys the beat the exception
             # used to throw away. A beat that did derive cleanly before the error moved its counts,
             # and its exit is read off numbers of this round like any other.
@@ -1764,6 +1764,8 @@ class Loop:
                 record.exit = None
                 record.exit_note = (f"{len(self.pending_findings)} finding(s) owe the Builder a beat; "
                                     "the round continues")
+        # G31: a stop carries its reason; see `note_stop_reason`.
+        self.note_stop_reason(record, history)
         self.rounds.append(record)
         write_rounds(self.plan.workdir, self.rounds)
         # D218: the table first, then the history row derived from it. A round that failed before an
@@ -1771,6 +1773,19 @@ class Loop:
         # round's answer and still never rewritten.
         self.keep_gate_history(n, self.snapshot_round(n))
         return record
+
+    def note_stop_reason(self, record: RoundRecord, history: list) -> None:
+        """Land the stop rule's reason on the round record when it has none (G31).
+
+        Only fills a missing note, so the target-built, fidelity-stall, cap, derive-error and
+        findings notes all stand. The guard goes at the re-freeze: until kullback/gates lands
+        the stop-rule patch there is no reason to read and no refused exit to name."""
+        reason_of = getattr(round_end, "exit_reason", None)
+        if reason_of is not None and record.exit is not None and record.exit_note is None:
+            record.exit_note = reason_of(_since_last_move(history), self.stall_rounds,
+                                         ceiling_reached=self.ceiling_reached(), exhausted=self.exhausted,
+                                         all_rounds=history, fidelity_stall=self.fidelity_stall or None,
+                                         max_rounds=self.max_rounds or None)
 
     def result(self) -> dict:
         """run_builder's dict plus the rounds, the exit, the trusted Tasks, the refusals and the Examiner's say."""
