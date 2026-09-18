@@ -37,7 +37,11 @@ class Tau2NativeAdapter:
             count = len(document["simulations"])
             return (1.0, [f"has a simulations list with {count} entries"])
         if isinstance(document.get("messages"), list) and "id" in document:
-            return (0.9, ["has a messages list and an id"])
+            extra = _positive_extras(document)
+            if extra:
+                return (0.9, ["has a messages list and an id"] + extra)
+            return (0.0, ["a messages list and an id alone are not positive evidence; no task "
+                           "marker, export block, or tool structure around them"])
         return (0.0, ["neither a simulations list nor a messages list with an id"])
 
     def recordings(self, document: Any) -> Iterator[Any]:
@@ -177,6 +181,18 @@ def _latency_ms(asked: Any, answered: Any) -> Optional[float]:
     except (TypeError, ValueError):
         return None
     return (end - start).total_seconds() * 1000.0
+
+
+def _positive_extras(document: dict) -> list[str]:
+    """The evidence beyond a messages list and an id that this is one recording of this export."""
+    found = [key for key in ("task_id", "trial", "seed", "termination_reason", "timestamp",
+                             "start_time", "end_time", "info", "tasks") if key in document]
+    reasons = [f"carries {', '.join(found)}"] if found else []
+    messages = document.get("messages") or []
+    if any(isinstance(message, dict) and (message.get("tool_calls") or message.get("role") == "tool"
+                                          or "requestor" in message) for message in messages):
+        reasons.append("its messages carry tool structure")
+    return reasons
 
 
 def trace_hash(trace: Trace) -> str:
