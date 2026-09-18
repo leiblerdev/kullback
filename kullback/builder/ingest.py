@@ -8,22 +8,20 @@ import hashlib
 import json
 import re
 import shutil
-from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional
 
 from pydantic import ValidationError
 
 from kullback.ai.provider import Model
+from kullback.builder import sources
 from kullback.builder.mine import _reply_json
 from kullback.runner.records import (
     GateResult,
     RawFile,
     RawPtr,
-    ToolCall,
     ToolCallError,
     Trace,
-    Turn,
     as_dict,
     content_hash,
 )
@@ -39,20 +37,11 @@ def _ingest_version() -> str:
 
 INGEST_VERSION = _ingest_version()
 
-# Benchmark answer keys. Stripped before anything else reads the trace (D66, D89).
-GRADER_FIELDS = (
-    "reward_info", "evaluation_criteria", "action_checks", "nl_assertions",
-    "env_assertions", "reward", "trial", "task_id",
-)
-
 # Longest first, so "... (truncated)" is not read as a bare "...".
 CUT_MARKERS = ("... (truncated)", "[output truncated]", "[truncated]", "<truncated>", "…", "...")
 
 # A JSON result that does not parse was cut off by the customer's log limit even when no marker survived.
 UNPARSED_JSON_MARKER = "unterminated_json"
-
-# Formats section 4 names that format_detect recognizes and no mapper reads yet (the slice is tau2 first, D55).
-UNMAPPED_FORMATS = {"otel_genai": "OpenTelemetry GenAI", "claude_code_jsonl": "Claude Code JSONL"}
 
 # D67 classes as regexes over the lowercased payload. Every rule is scored and the longest matched
 # phrase wins, with the order below as the tie-break, so a loose fragment cannot beat a specific one.
@@ -90,36 +79,17 @@ _COMPILED_RULES = tuple(
 
 
 def format_detect(obj: Any, jsonl: bool = False) -> str:
-    """Name the export format of an already parsed file: tau2 native, OpenTelemetry GenAI,
-    Claude Code JSONL, unknown."""
-    if isinstance(obj, list):
-        heads = [item for item in obj[:20] if isinstance(item, dict)]
-        if any(_looks_otel(item) for item in heads):
-            return "otel_genai"
-        if jsonl and any(_looks_claude_code(item) for item in heads):
-            return "claude_code_jsonl"
-        return "unknown"
-    if isinstance(obj, dict):
-        if isinstance(obj.get("simulations"), list):
-            return "tau2_native"
-        if isinstance(obj.get("messages"), list) and "id" in obj:
-            return "tau2_native"
-        if "resourceSpans" in obj or "resource_spans" in obj or _looks_otel(obj):
-            return "otel_genai"
-    return "unknown"
+    """Name the export format of an already parsed file.
+
+    The vote lives behind the intake seam (sources): every registered adapter votes with
+    positive evidence, and the strongest vote names the format, or "unknown" when no adapter
+    finds positive evidence."""
+    return sources.detect_format(obj, jsonl).winner
 
 
-def _looks_otel(item: dict) -> bool:
-    if str(item.get("name", "")).startswith("gen_ai."):
-        return True
-    attributes = item.get("attributes")
-    return isinstance(attributes, dict) and any(str(k).startswith("gen_ai.") for k in attributes)
-
-
-def _looks_claude_code(item: dict) -> bool:
-    if item.get("type") not in ("user", "assistant", "system", "summary", "result"):
-        return False
-    return any(key in item for key in ("message", "content", "uuid", "sessionId"))
+def detect_reasons(obj: Any, jsonl: bool = False) -> list[str]:
+    """Why the adapters voted as they did, in words; an unknown payload is refused with these."""
+    return sources.detect_format(obj, jsonl).reasons
 
 
 def _decode(payload: bytes) -> tuple[Any, bool]:
@@ -255,41 +225,42 @@ def unparsed_json(value: Any) -> bool:
     return False
 
 
-# --- tau2 native derivation ------------------------------------------------
+# --- trace derivation behind the seam ------------------------------------------
 
 
 def derive_traces(raw_hash: str, workdir: str | Path, model: Optional[Model] = None) -> list[Trace]:
     """Derive Trace records from a stored raw file, writing one grader sidecar per trace.
 
-    A simulation the records refuse is left out with its reason in workdir/rejects, which the gate reads,
-    so one broken message never costs the whole file (design section 6, on failure: reject trace with reason).
-    """
+    The winning adapter behind the intake seam (sources) reads the payload; this function only
+    orchestrates (derive, sidecar, rejects). A simulation the records refuse is left out with its
+    reason in workdir/rejects, which the gate reads, so one broken message never costs the whole
+    file (design section 6, on failure: reject trace with reason)."""
     document, jsonl = _decode(raw_path(raw_hash, workdir).read_bytes())
-    format_detected = format_detect(document, jsonl)
-    if format_detected in UNMAPPED_FORMATS:
-        raise NotImplementedError(
-            f"{UNMAPPED_FORMATS[format_detected]} ingest ({format_detected}) is not written yet; only the tau2 "
-            "native export is mapped so far (D55). format_detect names the format so the mapper has a home here."
-        )
-    if format_detected != "tau2_native":
+    decision = sources.detect_format(document, jsonl)
+    adapter = sources.by_name(decision.winner)
+    if adapter is None:
+        expected = ", ".join(sources.display_names())
         raise ValueError(
-            f"unknown export format for raw file {raw_hash}; expected tau2 native, "
-            "OpenTelemetry GenAI or Claude Code JSONL"
+            f"unknown export format for raw file {raw_hash}; expected {expected}. "
+            + "; ".join(decision.reasons)
         )
-    simulations = document["simulations"] if "simulations" in document else [document]
-    tasks = {str(task.get("id")): task for task in document.get("tasks") or [] if isinstance(task, dict)}
-    environment = (document.get("info") or {}).get("environment_info") or {}
+    if not adapter.maps:
+        raise NotImplementedError(adapter.unmapped_message())  # type: ignore[attr-defined]
+    environment = adapter.environment(document)
     traces, rejects = [], []
-    if not simulations:
+    recordings = list(adapter.recordings(document))
+    if not recordings:
         rejects.append({"trace_id": None, "sim_index": None,
                         "reason": "the file declares an empty simulations list, so it holds no run"})
-    for sim_index, simulation in enumerate(simulations):
+    for sim_index, simulation in enumerate(recordings):
         if not isinstance(simulation, dict):
             rejects.append({"trace_id": None, "sim_index": sim_index,
                             "reason": f"simulation is a {type(simulation).__name__}, not an object"})
             continue
+        ctx = sources.MapContext(raw_hash=raw_hash, index=sim_index, environment=environment,
+                                 ingest_version=INGEST_VERSION)
         try:
-            trace = _tau2_trace(simulation, sim_index, raw_hash, environment)
+            trace = adapter.to_trace(simulation, ctx)
         except ValidationError as exc:
             rejects.append({"trace_id": str(simulation.get("id") or f"{raw_hash[:12]}-{sim_index}"),
                             "sim_index": sim_index, "reason": _validation_reason(exc)})
@@ -297,7 +268,7 @@ def derive_traces(raw_hash: str, workdir: str | Path, model: Optional[Model] = N
         if model is not None:
             _llm_error_pass(model, trace)
         trace.hash = trace_hash(trace)
-        _write_grader(simulation, tasks, trace, workdir)
+        _write_grader(trace, adapter.sidecar(simulation, document), workdir)
         traces.append(trace)
     _write_rejects(raw_hash, rejects, workdir)
     return traces
@@ -314,114 +285,6 @@ def _llm_error_pass(model: Model, trace: Trace) -> None:
     for call in trace.tool_calls:
         if call.error is not None and call.error.class_ == "unknown" and call.error.classified_by == "rule":
             call.error = classify_error_llm(model, call.error)
-
-
-def _tau2_trace(simulation: dict, sim_index: int, raw_hash: str, environment: dict) -> Trace:
-    messages = simulation.get("messages") or []
-    ptr = RawPtr(file_hash=raw_hash, sim_index=sim_index)
-    # The info block is not a message, so its pointer names the section instead of a message index;
-    # it is where `tools_declared` and `system_prompt` below were read from (D66).
-    info = RawPtr(file_hash=raw_hash, sim_index=sim_index, section="info.environment_info")
-    trace_id = str(simulation.get("id") or f"{raw_hash[:12]}-{sim_index}")
-    turns, calls, pending = [], [], {}
-    for msg_index, message in enumerate(messages):
-        here = RawPtr(file_hash=raw_hash, sim_index=sim_index, msg_index=msg_index)
-        role = message.get("role") or "assistant"
-        requested = message.get("tool_calls") or []
-        if role == "tool":
-            waiting = pending.pop(message.get("id"), None)
-            if waiting is not None:
-                _attach_result(waiting[0], message, waiting[1], here)
-            turns.append(Turn(idx=msg_index, role="tool", content=_text(message.get("content")),
-                              tool_call_ids=[message["id"]] if message.get("id") else [], raw_ptr=here))
-            continue
-        for request in requested:
-            call = ToolCall(
-                id=request.get("id"),
-                name=request.get("name") or "",
-                args=request.get("arguments") or {},
-                requestor=request.get("requestor") or role,
-                raw_ptr=here,
-                trace_id=trace_id,
-            )
-            calls.append(call)
-            if call.id:
-                pending[call.id] = (call, message.get("timestamp"))
-        turns.append(Turn(idx=msg_index, role=role, content=_text(message.get("content")),
-                          tool_call_ids=[r.get("id") for r in requested if r.get("id")], raw_ptr=here))
-    return Trace(
-        trace_id=trace_id,
-        raw_hash=raw_hash,
-        ingest_version=INGEST_VERSION,
-        source="tau2_native",
-        turns=turns,
-        tool_calls=calls,
-        tools_declared=environment.get("tool_defs") if isinstance(environment.get("tool_defs"), list) else None,
-        system_prompt=environment.get("policy"),
-        tools_declared_ptr=info if environment.get("tool_defs") else None,
-        system_prompt_ptr=info if environment.get("policy") else None,
-        info_ptr=info,
-        raw_ptr=ptr,
-    )
-
-
-def _attach_result(call: ToolCall, message: dict, asked_at: Any, ptr: Optional[RawPtr] = None) -> None:
-    """Put the tool message that answered this call on the call, and say where it came from.
-
-    `has_result` is set for every answered call, a recorded JSON null included, because `result is
-    None` alone cannot tell a null answer apart from a call whose tool message was never captured
-    (validate.ingest_gate reads the flag). `resolved` says the answer landed on this call.
-    """
-    content = message.get("content")
-    call.truncated, call.visible_len, call.cut_marker = detect_truncation(content)
-    flag = message.get("error")
-    if flag:
-        structured = flag if isinstance(flag, dict) else _structured(content)
-        call.error = classify_error(content, structured, ptr=ptr)
-    else:
-        call.result = _parsed(content)
-    call.has_result = True
-    call.resolved = True
-    call.result_ptr = ptr
-    call.latency_ms = _latency_ms(asked_at, message.get("timestamp"))
-
-
-def _structured(content: Any) -> Optional[dict]:
-    """A typed error body when the source sends one, so classify_error can use the code instead of the rules."""
-    if isinstance(content, dict):
-        return content
-    if isinstance(content, str) and content.strip()[:1] == "{":
-        try:
-            parsed = json.loads(content)
-        except json.JSONDecodeError:
-            return None
-        return parsed if isinstance(parsed, dict) else None
-    return None
-
-
-def _text(value: Any) -> Optional[str]:
-    if value is None or isinstance(value, str):
-        return value
-    return json.dumps(value, ensure_ascii=False, default=str)
-
-
-def _parsed(content: Any) -> Any:
-    """Tool results arrive as JSON strings in tau2; parse them so mine.py sees fields, keep text as text."""
-    if isinstance(content, str) and content.strip()[:1] in ("{", "["):
-        try:
-            return json.loads(content)
-        except json.JSONDecodeError:
-            return content  # kept verbatim; the gate reports it as not parseable
-    return content
-
-
-def _latency_ms(asked: Any, answered: Any) -> Optional[float]:
-    try:
-        start = datetime.fromisoformat(str(asked))
-        end = datetime.fromisoformat(str(answered))
-    except (TypeError, ValueError):
-        return None
-    return (end - start).total_seconds() * 1000.0
 
 
 def trace_hash(trace: Trace) -> str:
@@ -471,12 +334,8 @@ def _write_rejects(raw_hash: str, rejects: list[dict], workdir: str | Path) -> N
 # --- grader sidecar (D66) --------------------------------------------------
 
 
-def _write_grader(simulation: dict, tasks: dict, trace: Trace, workdir: str | Path) -> Path:
-    """Move the benchmark answer key out of the trace into its own file beside the trace."""
-    fields = {key: simulation[key] for key in GRADER_FIELDS if key in simulation}
-    task = tasks.get(str(simulation.get("task_id")))
-    if task and "evaluation_criteria" in task:
-        fields["evaluation_criteria"] = task["evaluation_criteria"]
+def _write_grader(trace: Trace, fields: dict, workdir: str | Path) -> Path:
+    """Move the export's answer key out of the trace into its own file beside the trace."""
     target = grader_file(trace, workdir)
     target.parent.mkdir(parents=True, exist_ok=True)
     return _write_json(target, {
@@ -495,7 +354,7 @@ def gate_ingest(traces: list[Trace], workdir: str | Path, raw_hash: Optional[str
     for trace in traces:
         answered = {i for turn in trace.turns if turn.role == "tool" for i in turn.tool_call_ids}
         requested = {call.id for call in trace.tool_calls if call.id}
-        by_id: dict[str, list[ToolCall]] = {}
+        by_id: dict = {}
         for call in trace.tool_calls:
             calls += 1
             errors += 1 if call.error else 0
