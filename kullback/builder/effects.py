@@ -596,6 +596,21 @@ def _row_after(after_rows: Any, table: str, row: str) -> tuple[bool, Any]:
     return True, rows[row]
 
 
+def _absent_rows(seen: dict, after_rows: Any) -> set:
+    """Witnessed (table, row) pairs the world has lost after the call."""
+    if after_rows is None:
+        return set()
+    return {(table, row) for table, row, _path in seen
+            if not _row_after(after_rows, table, row)[0]}
+
+
+def _wrong_keys(made: dict, seen: dict, absent: set, rules: Any = None) -> list:
+    """Shared keys holding another value than the recording shows, lost rows aside."""
+    return sorted(key for key in sorted(set(made) & set(seen))
+                  if (key[0], key[1]) not in absent
+                  and not _canon_same(made[key], seen[key], rules))
+
+
 def _missing_keys(seen: dict, made: dict, after_rows: Any, rules: Any = None) -> list:
     """Witnessed keys the call did not move to the witnessed value.
 
@@ -646,13 +661,11 @@ def compare_transition(made: dict[tuple[str, str, str], Any], witnessed: list[di
     seen = {(str(row.get("table")), str(row.get("row")), str(row.get("path"))): row.get("after")
             for row in witnessed or []}
     seen_rows = {(table, row) for table, row, _path in seen}
-    missing = _missing_keys(seen, made, after_rows, rules)
-    absent = {(table, row) for table, row, _path in seen
-              if after_rows is not None and not _row_after(after_rows, table, row)[0]}
-    missing = sorted(set(missing) | {(t, r, p) for t, r, p in seen if (t, r) in absent})
+    absent = _absent_rows(seen, after_rows)
+    missing = sorted(set(_missing_keys(seen, made, after_rows, rules))
+                     | {(t, r, p) for t, r, p in seen if (t, r) in absent})
     extra = sorted(set(made) - set(seen))
-    wrong = sorted(key for key in sorted(set(made) & set(seen)) if (key[0], key[1]) not in absent
-                     and not _canon_same(made[key], seen[key], rules))
+    wrong = _wrong_keys(made, seen, absent, rules)
     extra_rows = sorted({(table, row) for table, row, _path in extra} - seen_rows)
     return {"verdict": "agrees" if not (missing or wrong or extra_rows) else "disagrees",
             "missing": [{"table": table, "row": row, "path": path,
