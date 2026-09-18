@@ -13,6 +13,7 @@ These are the items I pushed past the first build. Each line says what it buys a
   the gain stays deferred until then.
 - effect-credit.patch waits for the founder's re-freeze: the replay counts unattributed effects instead of failing the last call.
 - body-transactions.patch waits for the founder's re-freeze: every tool call is a transaction and a body fault is its own outcome.
+- cannot-answer.patch waits for the founder's re-freeze after body-transactions.patch (apply in that order): a listed tool with no code and no recording ends the Run as Environment cannot answer with no reward either way; re-run tests/runner with both patches applied.
 
 ## After the first Replica clears Gate A
 
