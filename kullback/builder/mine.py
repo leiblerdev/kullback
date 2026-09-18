@@ -73,8 +73,10 @@ BASIS_NAME = "name"
 BASIS_LLM = "llm"
 # Whether the installed records can hold a declared basis. The value rides the frozen patch until
 # the founder's re-freeze; where the runtime tree predates it, a declaration is recorded as a rule
-# with the wait said out loud, never emitted as a value nothing can read back.
+# with the wait said out loud, never emitted as a value nothing can read back. The wait marker
+# below is what the counters read, so the fact stays machine-readable in both schema states.
 _DECLARED_BASIS_ALLOWED = BASIS_DECLARED in get_args(ClassifiedBy)
+DECLARED_WAIT_MARKER = "waits on the re-freeze"
 # How many supporting (trace id, call index) pairs a fact keeps; the full count rides beside them.
 MAX_SUPPORT_CALLS = 5
 # Keys the column facts ride on inside Column.evidence, which is free form: the class fact, the
@@ -1500,9 +1502,12 @@ def kind_basis_of(sig: Any) -> str:
     """One tool kind fact's basis off the mined record: declared, observed, llm, or the name.
 
     The code rule is the name read out loud, so anything still classified by rule rests on the
-    name alone. Anything the records predate (a workdir written before facts carried a basis)
-    falls back the same way.
+    name alone, except a declaration the old schema could not hold: the wait marker says so.
+    Anything the records predate (a workdir written before facts carried a basis) falls back
+    the same way.
     """
+    if DECLARED_WAIT_MARKER in (getattr(sig, "kind_reason", None) or ""):
+        return BASIS_DECLARED
     return {BASIS_OBSERVED: BASIS_OBSERVED, BASIS_DECLARED: BASIS_DECLARED,
             BASIS_LLM: BASIS_LLM}.get(getattr(sig, "classified_by", "rule"), BASIS_NAME)
 

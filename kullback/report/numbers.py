@@ -61,8 +61,15 @@ def _mined_blank() -> dict:
 def _count_report_kinds(tool_sigs: list, counts: dict) -> None:
     """Tool kind facts off the sigs' basis; the code rule is the name read out loud."""
     for sig in tool_sigs:
-        basis = getattr(sig, "classified_by", "rule")
-        basis = basis if basis in _MINED_BASES else "name"
+        reason = getattr(sig, "kind_reason", None) or ""
+        if "waits on the re-freeze" in reason:
+            # A declaration the old schema could not hold: still a declared fact, not a name one.
+            # The string mirrors mine.DECLARED_WAIT_MARKER, repeated here because the report reads
+            # records and never reaches into the Builder (design section 4 item 18).
+            basis = "declared"
+        else:
+            basis = getattr(sig, "classified_by", "rule")
+            basis = basis if basis in _MINED_BASES else "name"
         counts["tool_kind"][basis] += 1
         counts["tool_kind"]["total"] += 1
 

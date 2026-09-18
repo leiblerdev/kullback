@@ -328,3 +328,4 @@ def test_a_closed_schema_records_the_declaration_as_a_rule_with_a_marker(monkeyp
     assert sig.kind == "read"
     assert sig.classified_by == "rule"
     assert "waits on the re-freeze" in (sig.kind_reason or "")
+    assert mined_name_counts([sig], [], {})["tool_kind"]["declared"] == 1
