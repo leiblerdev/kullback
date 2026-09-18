@@ -46,6 +46,7 @@ from kullback.builder import (
     pipeline,
     policy,
     readers,
+    repair,
     sandbox,
     synth,
     templates,
@@ -65,6 +66,8 @@ from kullback.gates import scorecard as scorecard_mod
 from kullback.gates import stages as stage_gates
 from kullback.runner import budget, canon, loop, route
 from kullback.runner import judge as judge_mod
+from kullback.runner import parallel as runner_parallel
+from kullback.runner import records as records_mod
 from kullback.runner import replay as replay_mod
 from kullback.runner.canon import rules_of as _rules_of
 from kullback.runner.records import (
@@ -86,6 +89,10 @@ from kullback.runner.records import write_json as _write_json
 
 # The rule-driven Simulated user under its old name (D214): it lives in kullback/user now, and the
 # stages read it from there so a stage's code version follows the module that actually changed.
+from kullback.user import agent as user_agent_mod
+from kullback.user import context as user_context_mod
+from kullback.user import fidelity as user_fidelity_mod
+from kullback.user import lesson as user_lesson_mod
 from kullback.user import rules as user_sim
 
 # This module is the graph, not the runner: assembling the stages means naming ingest, mine, cluster,
@@ -213,7 +220,8 @@ def _ingest_stage(workdir: Path, files: list[Path]):
         return artifacts.ingest_gate(outputs["traces"])
 
     return pipeline.Stage(name="ingest", fn=run, outputs=("traces",), gate=gate,
-                          code_version=f"ingest:{content_hash([str(p) for p in files])[:16]}")
+                          code_version=f"{_version('ingest', run, ingest, artifacts, records_mod, helpers=(load_traces, _records))}:"
+                                       f"{content_hash([str(p) for p in files])[:16]}")
 
 
 def _mine_stage():
@@ -252,7 +260,7 @@ def _mine_stage():
     # the kind of the tools that answer with prose, and every stage downstream reads them settled.
     # With no prose results the readers stage passes both through untouched.
     return pipeline.Stage(name="mine", fn=run, inputs=("traces",), outputs=("mined_sigs", "mined_schema"),
-                          code_version=_version("mine", run, mine))
+                          code_version=_version("mine", run, mine, artifacts, records_mod))
 
 
 def _readers_stage(model: Any, max_attempts: int = readers.MAX_ATTEMPTS,
@@ -325,7 +333,8 @@ def _readers_stage(model: Any, max_attempts: int = readers.MAX_ATTEMPTS,
         return {"schema": schema, "sigs": sigs, "readers": artifact}
 
     version = (f"readers:{getattr(model, 'name', 'none')}:{max_attempts}:{max_forced}:"
-               f"{_module_hash(readers)}:{_module_hash(templates)}:{_module_hash(sandbox)}")
+               f"{_module_hash(readers)}:{_module_hash(templates)}:{_module_hash(sandbox)}:"
+               f"{_module_hash(stage_gates)}:{_module_hash(records_mod)}")
     return pipeline.Stage(name="readers", fn=run, inputs=("traces", "mined_schema", "mined_sigs"),
                           outputs=("schema", "sigs", "readers"), code_version=version)
 
@@ -365,7 +374,7 @@ def _cluster_stage():
     # so this still runs after it.
     return pipeline.Stage(name="cluster", fn=run, inputs=("traces", "sigs", "schema"),
                           outputs=("categories", "tasks"),
-                          code_version=_version("cluster", run, cluster, intent, compile_env, mine))
+                          code_version=_version("cluster", run, cluster, intent, compile_env, mine, scorecard_mod, stage_gates, records_mod, helpers=(_grouping,)))
 
 
 def _grouping(workdir: Path, live_tasks: Iterable[Any], inputs: dict) -> dict:
@@ -403,7 +412,7 @@ def _canon_stage():
         return {"canon_rules": rules.model_dump()}
 
     return pipeline.Stage(name="canon_rules", fn=run, inputs=("traces", "schema"), outputs=("canon_rules",),
-                          code_version=_version("canon_rules", run, canon))
+                          code_version=_version("canon_rules", run, canon, helpers=(_rows_of,)))
 
 
 def _rows_of(result: Any) -> list[dict]:
@@ -475,7 +484,7 @@ def _state_stage(grow: Optional[dict] = None, grow_seed: int = 0):
                           outputs=("db", "overlays", "assumptions", "synthetic_rows"),
                           input_paths=("bodies.json",),
                           code_version=_version("starting_state", fn, compile_env, synth, readers,
-                                                mine, sandbox, tool_runs))
+                                                mine, sandbox, tool_runs, canon, records_mod))
 
 
 def holdout_world(workdir: Any) -> tuple[dict, dict]:
@@ -1021,9 +1030,21 @@ def _tools_stage(model: Any, max_attempts: int, workers: int = 1, only: Optional
                # D215: the effects section reaches the writer's prompt and the effect values reach
                # the memorised gate, so a change to what either says is a new question too.
                f"{_module_hash(effects_mod)}:"
+               # The rest of what the stage runs is named here: the grouping behind the callers
+               # map, the lesson store, the pool (the Builder's name for the Runner's worker
+               # pool, hashed beside the name for the bytes behind it), the repair shapes behind
+               # the hint, the ruling snapshot and the gate, the canonicalizer behind the rules,
+               # and the record layer behind every artifact on disk.
+               f"{_module_hash(cluster)}:{_module_hash(memory)}:{_module_hash(parallel)}:"
+               f"{_module_hash(runner_parallel)}:{_module_hash(repair)}:"
+               f"{_module_hash(transaction)}:{_module_hash(ledger_mod)}:{_module_hash(stage_gates)}:"
+               f"{_module_hash(canon)}:{_module_hash(records_mod)}:"
                # The attribution is this file's own function, so its bytes are not in any module
                # hash above; an edit to it is a different artifact and must not hit the cache.
                f"{content_hash(pipeline._fn_identity(attribute_fidelity, 'compile_tools'))[:16]}:"
+               # The filters and the snapshot shape are this file's own functions too, named the
+               # same way the attribution is: an edit to any of them re-asks the writer.
+               f"{content_hash([pipeline._fn_identity(helper, 'compile_tools') for helper in (callers_by_tool, compile_snapshot_rows, holdout_world, trace_worlds, _effect_sentence, _record_hardcoded_lesson, _task_of)])[:16]}:"
                # The evidence set and the lesson are this file's own functions too (D191), so their
                # bytes are in no module hash above either: a change to which recorded calls a body
                # is written against is a different question and must not be answered from the cache.
@@ -1218,7 +1239,8 @@ def _policy_stage(model: Any, workers: int = 1):
 
     return pipeline.Stage(name="compile_policy", fn=run, builder=True, inputs=("traces",),
                           outputs=("constraints", "policy_text"),
-                          code_version=f"compile_policy:{getattr(model, 'name', 'none')}:{_module_hash(policy)}")
+                          code_version=f"{_version('compile_policy', run, policy, artifacts, records_mod, helpers=(_policy_text,))}:"
+                                       f"{getattr(model, 'name', 'none')}")
 
 
 def _version(name: str, fn: Any, *modules: Any, helpers: Iterable[Any] = ()) -> str:
@@ -1277,7 +1299,7 @@ def _lessons_stage(model: Any, memory_dir: Path):
     return pipeline.Stage(name="judge_lessons", fn=run, builder=True,
                           inputs=("sigs", "schema", "constraints"),
                           outputs=("lessons_applied", "lessons_set_aside"),
-                          code_version=f"judge_lessons:{getattr(model, 'name', 'none')}:{_module_hash(memory)}")
+                          code_version=f"judge_lessons:{getattr(model, 'name', 'none')}:{_module_hash(memory)}:{_module_hash(records_mod)}")
 
 
 def _vocabulary_stage(model: Any, search: Any):
@@ -1293,7 +1315,7 @@ def _vocabulary_stage(model: Any, search: Any):
 
     return pipeline.Stage(name="vocabulary", fn=run, builder=True, inputs=("traces", "schema", "sigs", "policy_text"),
                           outputs=("vocabulary",),
-                          code_version=f"{_version('vocabulary', run, vocabulary)}:{getattr(model, 'name', 'none')}:"
+                          code_version=f"{_version('vocabulary', run, vocabulary, stage_gates, records_mod)}:{getattr(model, 'name', 'none')}:"
                                        f"{getattr(search, 'name', 'none')}")
 
 
@@ -1338,7 +1360,7 @@ def _user_rules_stage():
 
     return pipeline.Stage(name="user_rules", fn=run, builder=True, sees_all_runs=True,
                           inputs=("traces", "vocabulary", "sigs"), outputs=("user_rules",),
-                          code_version=_version("user_rules", run, user_sim, vocabulary))
+                          code_version=_version("user_rules", run, user_sim, vocabulary, artifacts, records_mod, helpers=(_vocab_of,)))
 
 
 def _environment_stage(domain: str):
@@ -1388,7 +1410,7 @@ def _environment_stage(domain: str):
                           inputs=("schema", "sigs", "bodies", "db", "overlays", "policy_text",
                                   "tasks", "assumptions", "synthetic_rows", "traces", "assisted_tools"),
                           outputs=("environment",), gate=gate,
-                          code_version=_version("environment", run, compile_env))
+                          code_version=_version("environment", run, compile_env, readers, artifacts, stage_gates, records_mod, helpers=(with_synthetic_rows,)))
 
 
 _MISS = object()
@@ -1605,7 +1627,7 @@ def _replay_stage(judging: Optional[SemanticJudging] = None, only: Optional[Iter
     # The judge's identity and the equivalence table's version ride in the key beside the verdict
     # format: a replay scored with no judge and one scored with a judge are different readings of
     # the same bytes, and a cache that cannot tell them apart hands back the unjudged one (D219).
-    version = (f"{_version('replay_reference', run, replay_mod, fidelity, compile_env, route, loop, tool_runs, effects_mod)}"
+    version = (f"{_version('replay_reference', run, replay_mod, fidelity, compile_env, route, loop, tool_runs, effects_mod, repair, verifier_suite, canon, judge_mod, records_mod, helpers=(holdout_answers, holdout_world, replay_failures_of, replay_difference, _effect_sentence, _write_runs_index, with_synthetic_rows, SemanticJudging.save, SemanticJudging._ask, SemanticJudging._answer, SemanticJudging.__init__, SemanticJudging.judge.fget, _gate_for, _memo_get, _memo_put, _count_judgement, _save_table))}"
                f":verdicts={replay_mod.VERDICT_FORMAT}"
                f":judge={judging.identity}:equivalence={judging.table.version}")
     return pipeline.Stage(name="replay_reference", fn=run,
@@ -1781,7 +1803,7 @@ def _intent_stage(model: Any, workers: int = 1, only: Optional[Iterable[str]] = 
         # Intent lives in intent.py, not records.py, so it crosses the cache as a dict.
         return {"intents": {t: as_dict(r) for t, r in sorted(intents.items())}}
 
-    version = f"{_version('intent', run, intent)}:{getattr(model, 'name', 'none')}"
+    version = f"{_version('intent', run, intent, parallel, runner_parallel, stage_gates, records_mod, helpers=(_read_intents,))}:{getattr(model, 'name', 'none')}"
     if only is not None:
         version += f":only={','.join(only)}:hints={content_hash(hints)[:16]}"
     return pipeline.Stage(name="intent", fn=run, builder=True,
@@ -2057,7 +2079,7 @@ def _rerolls_stage(model: Any, rerolls: int, workers: int = 1, only: Optional[It
     # D214: whose turns the Runs get is part of what this stage produces, so a build that names a
     # user driver puts it in the key. A build that names none adds nothing, so its key, its cache
     # and the Run ids it derives from the key are the ones it had before D214.
-    version = (f"{_version('rerolls', run, loop, route, user_sim, intent, provider, helpers=(_reroll_run_jobs, _reroll_run_one, _gather_reroll_rows, _candidate_task_ctx, _candidate_run_once))}:"
+    version = (f"{_version('rerolls', run, loop, route, user_sim, intent, provider, compile_env, parallel, runner_parallel, vocabulary, verifier_suite, canon, records_mod, user_agent_mod, user_context_mod, user_fidelity_mod, user_lesson_mod, helpers=(_reroll_run_jobs, _reroll_run_one, _gather_reroll_rows, _candidate_task_ctx, _candidate_run_once, _discard_runs, _json_schema, _members_of, _reroll_key, _reroll_reason, _reroll_record, _reroll_reuse, _reroll_rows, _system_prompt_for, _tool_definitions, _tools_called, _user_driver, _vocab_from, _write_runs_index, with_synthetic_rows))}:"
                f"{getattr(model, 'name', 'none')}:{rerolls}")
     user_name = getattr(user_model, "name", None)
     if user_name:
