@@ -1573,7 +1573,7 @@ def _replay_stage(judging: Optional[SemanticJudging] = None, only: Optional[Iter
                 # seeded feed answers, counted on the context.
                 if trace is not None:
                     toolkit.ctx.attach_recorded(
-                        compile_env.recorded_run_context(trace.tool_calls, schema))
+                        compile_env.recorded_run_context(trace.tool_calls, schema, write_tools))
                 router = route.Router(env_tools_module=toolkit, starting_state=json.loads(json.dumps(db)),
                                       overlay=overlay, overlay_rows=overlay_rows, tool_sigs=sigs,
                                       canon_rules=canon_rules, synthetic_rows=schema.synthetic_rows)
@@ -2277,7 +2277,7 @@ def probe_runner(plan: BuildPlan):
         if recorded is not None:
             # The probe replays the recorded reference, so the context serves what it witnessed.
             toolkit.ctx.attach_recorded(
-                compile_env.recorded_run_context(recorded.tool_calls, schema))
+                compile_env.recorded_run_context(recorded.tool_calls, schema, writes))
         members = _members_of(task, traces)
         simulated = user_sim.SimulatedUser(
             rules, starting_state_reader=router.state, vocab=_vocab_from(workdir),

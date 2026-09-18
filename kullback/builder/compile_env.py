@@ -3765,22 +3765,44 @@ def recorded_call_contexts(calls: Iterable[ToolCall], schema: EntitySchema) -> d
     return {call.id: recorded_call_context(call, schema) for call in calls if call.id}
 
 
-def recorded_run_context(calls: Iterable[ToolCall], schema: EntitySchema) -> dict:
+def recorded_run_context(calls: Iterable[ToolCall], schema: EntitySchema,
+                           write_tools: Optional[Iterable[str]] = None) -> dict:
     """One Run's witnessed values in call order: new ids per table, times in turn.
 
     The Runner's Router carries no call ids, so a Run served call by call cannot look a feed up
     the way the gates do. It advances through these lists instead: the nth new id asked for a
     table is the nth the recording showed for it, the nth time asked for is the nth the recording
     showed. Past the end of either list the seeded feed answers, counted.
+
+    Only write calls contribute, and an id only when neither the call's own arguments nor any
+    earlier call showed it. A read echoes rows the world already holds, and an update echoes the
+    id its arguments named: neither is a new row, and listing either would hand a later creation
+    an existing row's id and shift every creation after it. A write's time rides when the write
+    minted something: it carries a trace-new id, or the time itself was never shown before. An
+    update echoing the row's old stamp minted nothing, and listing it would hand a later creation
+    the wrong time the same way a listed echo id hands it the wrong row. Times otherwise ride in
+    call order with no dedup, so two creations the recording stamped alike are served alike.
     """
     ids: dict[str, list] = {}
     times: list = []
+    seen: set = set()
     for call in calls:
+        args = call.args if isinstance(call, ToolCall) else (call or {}).get("args") or {}
+        arg_strings = {value for _, value in _result_leaves(args)}
+        result = call.result if isinstance(call, ToolCall) else (call or {}).get("result")
+        values = {value for _, value in _result_leaves(result)} if result is not None else set()
+        if write_tools is not None and call.name not in set(write_tools):
+            seen |= arg_strings | values
+            continue
         feed = recorded_call_context(call, schema)
-        for table, value in feed["new_ids"].items():
+        fresh_ids = [(table, value) for table, value in feed["new_ids"].items()
+                     if value not in seen and value not in arg_strings]
+        for table, value in fresh_ids:
             ids.setdefault(table, []).append(value)
-        if feed["now"] is not None:
+        if feed["now"] is not None and (fresh_ids or feed["now"] not in seen
+                                          and feed["now"] not in arg_strings):
             times.append(feed["now"])
+        seen |= arg_strings | values
     return {"ids": ids, "times": times}
 
 
