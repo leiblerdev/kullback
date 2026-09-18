@@ -143,6 +143,17 @@ def test_a_refused_exit_with_findings_owed_runs_on_like_done_and_stalled(tmp_pat
     assert [finding.finding_id for finding in record.pending_findings] == ["f1"]
 
 
+def test_a_refused_finish_on_stale_counts_takes_the_soft_stop(tmp_path):
+    """D230 covers the new exit too: a refusal read off numbers no derivation refreshed ends
+    stalled with the error named, never refused."""
+    loop = _bare_loop(tmp_path)
+    loop.plan.last = pipeline.PipelineResult(status="ok")
+    loop.tool_errors = [{"agent": "examiner", "tool": "derive", "round": 1,
+                         "error": "derive failed: LookupError: task t7 has no Reference"}]
+    record = loop.close_round(1, _refused_counts())
+    assert record.exit == "stalled" and "came back an error" in (record.exit_note or "")
+
+
 def test_every_stop_and_every_non_stop_carries_a_reason_with_numbers():
     rng = random.Random(7)
     for _ in range(300):
