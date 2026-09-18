@@ -2141,6 +2141,14 @@ def _id_table_evidence(name: str, observed: bool, refuted: set, id_refs: dict,
             TABLE_BASIS_KEY: BASIS_NAME}
 
 
+def _with_id_table_evidence(evidence: dict, name: str, observed: bool, refuted: set,
+                            id_refs: dict, refuting: dict) -> dict:
+    """One column's evidence with its id fact and table fact where the miner reads an identity."""
+    if not (observed or _is_id(name)):
+        return evidence
+    return {**evidence, **_id_table_evidence(name, observed, refuted, id_refs, refuting)}
+
+
 def mine_schema(traces: list[Trace], db_json_path: Optional[Path] = None,
                 model: Optional[Model] = None,
                 write_tools: Optional[Sequence[str]] = None) -> EntitySchema:
@@ -2191,9 +2199,8 @@ def mine_schema(traces: list[Trace], db_json_path: Optional[Path] = None,
                                             observed_id=observed,
                                             id_refuted=name in refuted,
                                             support=sight)
-            evidence = dict(proposal.evidence)
-            if observed or _is_id(name):
-                evidence.update(_id_table_evidence(name, observed, refuted, id_refs, refuting))
+            evidence = _with_id_table_evidence(dict(proposal.evidence), name, observed, refuted,
+                                               id_refs, refuting)
             column = Column(table=table, name=name, class_=proposal.column_class,
                             class_rule=proposal.column_class, class_confidence=proposal.confidence,
                             class_reason=proposal.reason, classified_by="rule",
