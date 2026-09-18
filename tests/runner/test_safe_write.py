@@ -6,6 +6,7 @@ import fnmatch
 import inspect
 import json
 import os
+import stat
 import threading
 from pathlib import Path
 
@@ -89,6 +90,45 @@ def test_two_threads_writing_one_path_both_leave_valid_json(tmp_path: Path):
     on_disk = json.loads(target.read_text(encoding="utf-8"))
     assert on_disk in (json.loads(json.dumps(first, sort_keys=True, default=str)),
                        json.loads(json.dumps(second, sort_keys=True, default=str)))
+    assert _leftover_temps(tmp_path) == []
+
+
+def test_fresh_and_replaced_files_keep_plain_write_modes(tmp_path: Path):
+    # A fresh file gets the mode a plain write_text would give (the kernel applies the umask
+    # at creation, so no umask is read), and a replaced file keeps its destination mode.
+    fresh = tmp_path / "fresh.json"
+    write_json(fresh, {"kept": 1})
+    sibling = tmp_path / "sibling.json"
+    sibling.write_text("{}", encoding="utf-8")
+    assert stat.S_IMODE(fresh.stat().st_mode) == stat.S_IMODE(sibling.stat().st_mode)
+
+    plain = tmp_path / "plain.json"
+    plain.write_text(json.dumps({"kept": 1}), encoding="utf-8")
+    plain_mode = stat.S_IMODE(plain.stat().st_mode)
+    write_json(plain, {"kept": 2})
+    assert read_json(plain) == {"kept": 2}
+    assert stat.S_IMODE(plain.stat().st_mode) == plain_mode
+
+    target = tmp_path / "ledger.json"
+    target.write_text(json.dumps({"kept": 1}), encoding="utf-8")
+    os.chmod(target, 0o600)
+    write_json(target, {"kept": 2})
+    assert read_json(target) == {"kept": 2}
+    assert stat.S_IMODE(target.stat().st_mode) == 0o600
+
+
+def test_keyboard_interrupt_between_stage_and_swap_cleans_up(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    target = tmp_path / "ledger.json"
+    write_json(target, {"kept": 1})
+    before = target.read_text(encoding="utf-8")
+
+    def _interrupted(_fd: int) -> None:
+        raise KeyboardInterrupt("killed mid-write")
+
+    monkeypatch.setattr(os, "fsync", _interrupted)
+    with pytest.raises(KeyboardInterrupt):
+        write_json(target, {"kept": 2})
+    assert target.read_text(encoding="utf-8") == before
     assert _leftover_temps(tmp_path) == []
 
 
