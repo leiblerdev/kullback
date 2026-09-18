@@ -261,9 +261,12 @@ def derive_traces(raw_hash: str, workdir: str | Path, model: Optional[Model] = N
                                  ingest_version=INGEST_VERSION)
         try:
             trace = adapter.to_trace(simulation, ctx)
-        except ValidationError as exc:
+        except (ValidationError, AttributeError, TypeError) as exc:
+            # A message or call entry that is not an object raises AttributeError or TypeError
+            # where the records would raise ValidationError; both mean this recording is not
+            # parseable, so it is rejected with its reason instead of aborting the whole file.
             rejects.append({"trace_id": str(simulation.get("id") or f"{raw_hash[:12]}-{sim_index}"),
-                            "sim_index": sim_index, "reason": _validation_reason(exc)})
+                            "sim_index": sim_index, "reason": _refusal_reason(exc)})
             continue
         if model is not None:
             _llm_error_pass(model, trace)
@@ -274,6 +277,12 @@ def derive_traces(raw_hash: str, workdir: str | Path, model: Optional[Model] = N
     _write_ruling(raw_hash, ruling, workdir)
     _write_rejects(raw_hash, rejects, workdir)
     return traces
+
+
+def _refusal_reason(exc: Exception) -> str:
+    if isinstance(exc, ValidationError):
+        return _validation_reason(exc)
+    return f"the recording is not parseable: {type(exc).__name__}: {exc}"
 
 
 def _validation_reason(exc: ValidationError) -> str:
@@ -439,9 +448,10 @@ def rule_recordings(raw_hash: str, format_name: str, recordings: list, traces: l
         index = trace.raw_ptr.sim_index if trace.raw_ptr else None
         if isinstance(index, int) and 0 <= index < len(recordings):
             sim_of[id(trace)] = recordings[index]
-    seen: set[str] = set()
+    seen_content: set[str] = set()
     seen_ids: set[str] = set()
-    rows = [_rule_trace_row(trace, sim_of.get(id(trace)), seen, seen_ids) for trace in traces]
+    rows = [_rule_trace_row(trace, sim_of.get(id(trace)), seen_content, seen_ids)
+            for trace in traces]
     for entry in rejects:
         rows.append(_reject_row(entry))
     counts = {TASK_ELIGIBLE: 0, EVIDENCE_ONLY: 0, REJECTED: 0}
@@ -465,15 +475,19 @@ def rule_recordings(raw_hash: str, format_name: str, recordings: list, traces: l
     }
 
 
-def _rule_trace_row(trace: Trace, simulation: Any, seen: set[str], seen_ids: set[str]) -> dict:
+def _rule_trace_row(trace: Trace, simulation: Any, seen_content: set[str],
+                    seen_ids: set[str]) -> dict:
     """One derived trace's ruling row: its standing with reasons, sizes, and outcome marker."""
     problems = _trace_problems(trace)
     digest = trace.hash or trace_hash(trace)
-    # A duplicate is the same recording twice: the same content hash, or the same trace id
-    # claimed by two simulations of one file. Pointers name the simulation, so two copies never
-    # share a content hash on pointers alone; the id repeat is what catches them.
-    duplicate = digest in seen or trace.trace_id in seen_ids
-    seen.add(digest)
+    # A duplicate is the same recording twice: the same trace id claimed twice, or a recording
+    # with no id of its own whose content already appeared. Two recordings with different
+    # explicit ids stay distinct even when their transcripts match: the id is the source's
+    # identity claim, and only an id-less copy has nothing but its content to go by.
+    key = _content_key(trace)
+    had_id = bool(simulation.get("id")) if isinstance(simulation, dict) else False
+    duplicate = trace.trace_id in seen_ids or (key in seen_content and not had_id)
+    seen_content.add(key)
     seen_ids.add(trace.trace_id)
     standing, reason, reasons = _standing_for(problems, simulation, duplicate)
     return {
@@ -495,6 +509,28 @@ def _reject_row(entry: dict) -> dict:
         "standing": REJECTED, "reason": reason, "reasons": [reason], "trace_hash": None,
         "turns": 0, "tool_calls": 0, "termination": None,
     }
+
+
+def _content_key(trace: Trace) -> str:
+    """What the recording said, without where it sat: the trace with every raw pointer, the trace
+    id, the version and the hash blanked, so the same recording twice has one key."""
+    body = as_dict(trace)
+    body["hash"] = ""
+    body["ingest_version"] = ""
+    body["trace_id"] = ""
+    _blank_ptrs(body)
+    return content_hash(body)
+
+
+def _blank_ptrs(node: Any) -> None:
+    if isinstance(node, dict):
+        for key in [key for key in node if key.endswith("_ptr")]:
+            node[key] = None
+        for value in node.values():
+            _blank_ptrs(value)
+    elif isinstance(node, list):
+        for value in node:
+            _blank_ptrs(value)
 
 
 def _mix(values: list) -> dict:
@@ -623,13 +659,14 @@ def gate_ingest(traces: list[Trace], workdir: str | Path, raw_hash: Optional[str
     total = len(standings)
     share = eligible / total if total else 1.0
     floor_ok = share >= MIN_TASK_ELIGIBLE_SHARE
-    failures = list(hard)
+    failures: list[str] = []
     if not floor_ok:
         failures.append(
             f"task-eligible share {share:.2f} is under the floor {MIN_TASK_ELIGIBLE_SHARE:.2f}: "
             f"{eligible} of {total} recordings task-eligible "
             f"({eligible} task-eligible, {evidence} evidence-only, {rejected} rejected)"
         )
+    failures += hard
     if failures:
         failures += notes
     metrics = {"traces": len(traces), "tool_calls": calls, "errors": errors, "truncated": truncated,
@@ -667,7 +704,6 @@ def _standings_in_scope(traces: list[Trace], workdir: str | Path,
             else:
                 reject_rows.append(row)
     standings = []
-    seen: set[str] = set()
     seen_ids: set[str] = set()
     for trace in traces:
         digest = trace.hash or trace_hash(trace)
@@ -675,9 +711,10 @@ def _standings_in_scope(traces: list[Trace], workdir: str | Path,
         if row is not None:
             standings.append((row["standing"], row["reason"]))
             continue
+        # Without the recording the content rule cannot tell a copy from a distinct recording
+        # sharing a transcript, so only an id repeat counts here.
         problems = _trace_problems(trace)
-        duplicate = digest in seen or trace.trace_id in seen_ids
-        seen.add(digest)
+        duplicate = trace.trace_id in seen_ids
         seen_ids.add(trace.trace_id)
         standings.append(_standing_for(problems, None, duplicate)[:2])
     standings.extend([(row["standing"], row["reason"]) for row in reject_rows])
@@ -721,12 +758,30 @@ def _split_writes(traces: list[Trace], ruling: dict) -> tuple[list[Trace], list[
     return (eligible, [trace for trace in traces if id(trace) not in wanted])
 
 
+class IntakeGateError(Exception):
+    """The intake gate failed for a file, so the build stops here instead of building on it.
+
+    Carries the gate ruling with the counts, so the report can say why without re-reading files.
+    """
+
+    def __init__(self, message: str, gate: Optional[GateResult] = None) -> None:
+        super().__init__(message)
+        self.gate = gate
+
+
+def _gate_message(path: str | Path, gate: GateResult) -> str:
+    shown = "; ".join(gate.failures[:5])
+    extra = f"; and {len(gate.failures) - 5} more" if len(gate.failures) > 5 else ""
+    return f"intake for {path} failed: {shown}{extra}"
+
+
 def ingest_file(path: str | Path, workdir: str | Path, model: Optional[Model] = None) -> dict:
     """Store one customer file, derive its Traces, write them, run the gate, print the counts.
 
     Only task-eligible recordings reach workdir/traces, which is what downstream stages read;
     evidence-only recordings are written beside them under evidence_traces and counted, and nothing
-    consumes them yet."""
+    consumes them yet. When the gate fails the file raises IntakeGateError instead of returning,
+    so a build stops under the floor rather than building on what was set aside."""
     raw = store_raw(path, workdir)
     traces = derive_traces(raw.raw_hash, workdir, model=model)
     ruling = read_intake_ruling(workdir, raw.raw_hash)
@@ -737,6 +792,8 @@ def ingest_file(path: str | Path, workdir: str | Path, model: Optional[Model] = 
     if ruling:
         _update_aggregate_ruling(workdir, raw.raw_hash, ruling)
     gate = gate_ingest(traces, workdir, raw_hash=raw.raw_hash)
+    if not gate.passed:
+        raise IntakeGateError(_gate_message(path, gate), gate)
     summary = {
         "raw_hash": raw.raw_hash,
         "format": raw.format_detected,
