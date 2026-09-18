@@ -112,7 +112,7 @@ def test_an_id_no_suffix_names_is_observed_with_support():
     assert column.evidence["id_fact"] is True
     assert column.evidence["id_basis"] == "observed"
     assert ["t1", 0] in column.evidence["id_support"]
-    assert column.evidence["id_support_count"] == 2
+    assert column.evidence["id_support_count"] == 3
     assert column.evidence["id_contradicts_name"] is False
     assert column.evidence["table_basis"] == "name"
 
@@ -293,6 +293,18 @@ def test_an_effect_credited_late_still_cites_its_own_calls():
 
 def test_id_support_shows_the_distinct_result_beside_the_addressing_calls():
     column = col(mine_schema(harbour_corpus()), "berth_tags", "berth_tag")
-    assert column.evidence["id_support"][:2] == [["t1", 0], ["t1", 1]]
-    assert ["t1", 2] in column.evidence["id_support"]
-    assert column.evidence["id_support_count"] == 2
+    assert column.evidence["id_support"] == [["t1", 0], ["t1", 1], ["t1", 2]]
+    assert column.evidence["id_support_count"] == 3
+
+
+def test_a_signature_newer_than_the_records_is_named_not_dropped(tmp_path):
+    from kullback.report.load import load_tool_sigs
+    from kullback.runner.records import as_dict
+
+    good = as_dict(sig_by_name(mine_tools(harbour_corpus()), "get_berth"))
+    bad = {"name": "harbour_next", "kind": "sideways"}
+    (tmp_path / "tool_sigs.json").write_text(json.dumps([good, bad]), encoding="utf-8")
+    unread: list[str] = []
+    sigs = load_tool_sigs(tmp_path, unread)
+    assert [s.name for s in sigs] == ["get_berth"]
+    assert any("harbour_next" in note for note in unread)

@@ -1322,8 +1322,7 @@ def _id_distinct_refs(traces: list[Trace], observed: set) -> dict[str, list]:
     """Per observed id column, the multi-row results where it held a distinct value per row.
 
     The second half of the observed id fact (`id_columns`): addressing says the column is used as
-    a key, distinctness says it identifies. Capped per column. The addressing calls stay the count;
-    these join the sample so both halves show.
+    a key, distinctness says it identifies. Whole lists here too; the caller caps and unions.
     """
     out: dict[str, list] = {}
     if not observed:
@@ -1338,9 +1337,8 @@ def _id_distinct_refs(traces: list[Trace], observed: set) -> dict[str, list]:
             for name in sorted(observed):
                 if not any(name in row for row in rows):
                     continue
-                if _distinct_across(name, rows) and \
-                        len(out.setdefault(name, [])) < MAX_SUPPORT_CALLS:
-                    out[name].append([trace.trace_id, call_index])
+                if _distinct_across(name, rows):
+                    out.setdefault(name, []).append([trace.trace_id, call_index])
     return out
 
 
@@ -1377,10 +1375,12 @@ def refuted_ids(traces: list[Trace]) -> set[str]:
 
 
 def id_supporting_calls(traces: list[Trace]) -> dict[str, dict]:
-    """Per column, the calls that pass it as an argument, capped, with the full count.
+    """Per column, the calls that pass it as an argument, with the full count.
 
     Passing a column as an argument is what makes it an id rather than a value (`id_columns`),
     so these are the supporting calls of an observed id fact. Only the assistant's calls count.
+    The fact is name-global (one entry per column name across tables), and so is the support.
+    Lists ride whole here; the caller caps the sample it records.
     """
     refs: dict[str, list] = {}
     counts: dict[str, int] = {}
@@ -1391,8 +1391,7 @@ def id_supporting_calls(traces: list[Trace]) -> dict[str, dict]:
             for name in (call.args or {}):
                 key = str(name)
                 counts[key] = counts.get(key, 0) + 1
-                if len(refs.setdefault(key, [])) < MAX_SUPPORT_CALLS:
-                    refs[key].append([trace.trace_id, call_index])
+                refs.setdefault(key, []).append([trace.trace_id, call_index])
     return {key: {"supporting_calls": refs[key], "support_count": counts[key]} for key in refs}
 
 
@@ -2174,10 +2173,9 @@ def _id_table_evidence(name: str, observed: bool, refuted: set, id_refs: dict,
     elif observed:
         basis = BASIS_OBSERVED
         addr = id_refs.get(name, {"supporting_calls": [], "support_count": 0})
-        sample = list(addr["supporting_calls"])
-        sample += [ref for ref in distinct_refs.get(name, []) if ref not in sample]
-        ref = {"supporting_calls": sample[:MAX_SUPPORT_CALLS],
-               "support_count": addr["support_count"]}
+        union = list(addr["supporting_calls"])
+        union += [ref for ref in distinct_refs.get(name, []) if ref not in union]
+        ref = {"supporting_calls": union[:MAX_SUPPORT_CALLS], "support_count": len(union)}
         contra = False
     else:
         basis = BASIS_NAME
