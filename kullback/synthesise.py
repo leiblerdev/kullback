@@ -359,12 +359,16 @@ def record_run(world: World, task_id: str, calls: list[dict], run_id: str,
     The same replay every recorded Trace goes through, over the same Router and the same scoring;
     what is different is only where the Trace came from, which is code and not a recording.
     """
-    from kullback.builder.build import call_trace  # imported late: build.py imports this module's peers
+    from kullback.builder.build import (
+        _refuse_stand_in,
+        call_trace,  # imported late: build.py imports this module's peers
+    )
 
     db = world.fresh_db()
     toolkit = world.toolkit(db)
     router = route.Router(env_tools_module=toolkit, starting_state=world.fresh_db(), tool_sigs=world.sigs,
                           canon_rules=world.canon_rules, synthetic_rows=world.schema.synthetic_rows)
+    _refuse_stand_in(router)  # G28: a scored synthetic walk is never answered by a model
     trace = call_trace(task_id, calls, transcript, run_id)
     result = replay_mod.replay_trace(trace, router, workdir=world.workdir / DIR / "runs" / task_id,
                                      task_id=task_id, env_id=world.environment.get("env_id"),
