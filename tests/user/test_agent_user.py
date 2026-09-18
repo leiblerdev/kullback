@@ -610,15 +610,44 @@ def test_tool_traffic_is_not_speech_and_never_enters_the_messages(ctx, rules, re
     assert all(m.get("tool_calls", []) == [] for m in messages if m["role"] == "assistant")
 
 
-def test_every_turn_builds_a_new_harness_that_extends_the_last(ctx, rules, recorded):
+def test_every_turn_builds_a_new_harness_from_the_transcript_alone(ctx, rules, recorded):
+    """No hidden state: the same transcript builds the same messages, twice over."""
     user = agent_for(ctx, rules, ["Thanks, noted."], recorded)
-    transcript = [{"role": "assistant", "content": "Could you provide your plot number?"}]
+    assert not hasattr(user, "_prior") and not hasattr(user, "_prior_history")
+    transcript = [{"role": "assistant", "content": "Could you provide your plot number?"},
+                  {"role": "user", "content": "Thanks, noted."}]
     first, second = user.harness(transcript), user.harness(transcript)
     assert first is not second
-    first_texts = [m.content for m in first.messages]
-    second_texts = [m.content for m in second.messages]
-    assert second_texts[:len(first_texts)] == first_texts
-    assert len(second_texts) == len(first_texts) + 1
+    assert [m.content for m in first.messages] == [m.content for m in second.messages]
+
+
+def test_one_user_over_two_conversations_sends_what_a_fresh_user_sends(ctx, rules, recorded):
+    """Driving conversation A first leaves no trace on conversation B's requests."""
+    conversation_a = [{"role": "assistant", "content": "Could you provide your plot number?"}]
+    conversation_b = [{"role": "assistant", "content": "Thank you. What delivery slot?"},
+                      {"role": "user", "content": "Please make it 16:00."},
+                      {"role": "assistant", "content": "Done. Anything else?"}]
+    reused = agent_for(ctx, rules, ["Thanks, noted.", "No, thanks."], recorded)
+    reused.reply(list(conversation_a))
+    reused.reply(list(conversation_b))
+    fresh = agent_for(ctx, rules, ["No, thanks."], recorded)
+    fresh.reply(list(conversation_b))
+    assert (reused.model.calls[-1]["messages"]
+            == fresh.model.calls[-1]["messages"])
+
+
+def test_the_run_path_and_the_scorer_path_send_identical_requests(ctx, rules, recorded):
+    """Growing recorded prefixes turn by turn sends what one live transcript sends."""
+    full = [{"role": "assistant", "content": "Could you provide your plot number?"},
+            {"role": "user", "content": "Thanks, noted."},
+            {"role": "assistant", "content": "Thank you. What delivery slot would you like?"}]
+    scorer_like = agent_for(ctx, rules, ["Thanks, noted.", "At 16:00, thanks."], recorded)
+    for end in (1, 2, 3):
+        scorer_like.reply(list(full[:end]))
+    run_like = agent_for(ctx, rules, ["At 16:00, thanks."], recorded)
+    run_like.reply(list(full))
+    assert (scorer_like.model.calls[-1]["messages"]
+            == run_like.model.calls[-1]["messages"])
 
 
 def test_the_guards_read_the_writes_the_transcript_carries(ctx, rules, recorded):

@@ -94,11 +94,6 @@ class AgentUser:
         self._facts_said = 0
         self._turn = 0
         self._end_tagged = False
-        # The previous turn's request messages after the head, lines included, and how many of
-        # the transcript's spoken turns they already hold. The next turn extends these, never
-        # reprints them, which is what keeps every request a prefix extension of the last.
-        self._prior: list = []
-        self._prior_history = 0
 
     # --- the Runner's interface ---------------------------------------------------------------
 
@@ -127,7 +122,7 @@ class AgentUser:
             return None
         harness = self.harness(transcript)
         try:
-            return _last_text(harness, TURN_MESSAGE)
+            return _last_text(harness)
         except Exception:  # a turn the provider could not answer is a beat the rules take
             self.counts[MODEL_FAILED] += 1
             return None
@@ -135,23 +130,16 @@ class AgentUser:
     def harness(self, transcript: Sequence = ()) -> AgentHarness:
         """The harness of one turn: the stable head, with the conversation appended as messages.
 
-        Spoken turns only: what the Candidate said as the other side, what this user said as
-        itself, with the fixed turn line last. Each turn extends the previous turn's request,
-        lines included, so every request is a byte-prefix extension of the one before (G24).
+        A pure function of the transcript: spoken turns mapped, the fixed line before every
+        turn this user spoke and once at the end, nothing kept on self. What a request will be
+        reads off the transcript alone, so one user object serves any conversation in any order.
         The agent's own tool calls and thinking never persist past the turn, and every turn
         still builds a new harness, because a user that keeps a transcript of its own thinking
         between turns is a user with a second memory the recorded person did not have."""
-        history = _history_messages(transcript)
-        if len(history) < self._prior_history:
-            self._prior = []
-            self._prior_history = 0
-        messages = self._prior + history[self._prior_history:]
         harness = AgentHarness(model=self.model, max_turns=self.max_tool_turns,
-                               messages=messages,
+                               messages=_request_messages(transcript),
                                context=context_config(self.model))
         load_extensions(harness, [user_extension(self.ctx, self.box)])
-        self._prior = messages + [UserMessage(content=TURN_MESSAGE)]
-        self._prior_history = len(history)
         return harness
 
     # --- what is actually said -------------------------------------------------------------------
@@ -208,8 +196,9 @@ class AgentUser:
                                  assisted=assisted))
 
 
-def _history_messages(transcript: Sequence) -> list:
-    """The conversation so far as real messages for one turn's harness."""
+def _request_messages(transcript: Sequence) -> list:
+    """One turn's messages from the transcript alone: spoken turns mapped, the fixed line
+    before every turn this user spoke and once at the end. Tool traffic is not speech."""
     out = []
     for message in transcript or ():
         role = rules_mod._field_of(message, "role")
@@ -219,7 +208,9 @@ def _history_messages(transcript: Sequence) -> list:
         if role == "assistant":
             out.append(UserMessage(content=content))
         elif role == "user":
+            out.append(UserMessage(content=TURN_MESSAGE))
             out.append(AssistantMessage(content=content))
+    out.append(UserMessage(content=TURN_MESSAGE))
     return out
 
 
@@ -235,12 +226,15 @@ def _last_assistant(transcript: Sequence) -> str:
     return question or ""
 
 
-def _last_text(harness: AgentHarness, message: str) -> str:
-    """Run one prompt to the end and answer with the last assistant text the model wrote."""
+def _last_text(harness: AgentHarness) -> str:
+    """Run one turn to the end and answer with the last assistant text the model wrote.
+
+    The harness already carries the turn line last, so this continues on the transcript as it
+    stands rather than appending another line."""
     said: list[str] = []
 
     async def go() -> None:
-        async for event in harness.prompt(message):
+        async for event in harness.continue_():
             if isinstance(event, MessageEnd) and getattr(event.message, "role", "") == "assistant":
                 text = (getattr(event.message, "content", "") or "").strip()
                 if text:
