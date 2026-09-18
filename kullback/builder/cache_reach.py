@@ -15,6 +15,9 @@ What the walk counts, and what it honestly misses:
   instantiates (the semantic judging the replay stage closes over). Calls into other
   modules are covered by hashing those modules whole; the walk stops at the package
   boundary and never follows into another module's own imports.
+- Uppercase names assigned at build.py module level (file names, formats, settings) are
+  tracked as constants and committed to the key by value. Identity sentinels are
+  skipped: hashing one would put a per process address in every key.
 - The gate closure is walked with the run closure. A gate re-runs on every attempt,
   including a cache hit, so a gate only callee cannot serve stale outputs; hashing it
   all the same is the over counting G29 accepts as visible cost.
@@ -58,10 +61,11 @@ FIRST_PARTY = "kullback."
 
 @dataclass
 class Reachability:
-    """What one stage can execute: first-party modules, and own file helpers by name."""
+    """What one stage can execute: first-party modules, own file helpers, own file constants."""
 
     modules: set[str] = field(default_factory=set)
     helpers: set[str] = field(default_factory=set)
+    constants: set[str] = field(default_factory=set)
 
 
 def _repo_root() -> Path:
@@ -89,6 +93,29 @@ def _resolve_import(package: str, name: str) -> str:
     if package and _is_submodule(candidate):
         return candidate
     return package
+
+
+def _own_consts(tree: ast.Module) -> set[str]:
+    """Uppercase names assigned at build.py module level: file names, formats, settings.
+
+    Identity sentinels (`_MISS = object()`) are skipped: each evaluation makes a fresh
+    identity, so hashing one would put a per process address in every key and the cache
+    would never hit.
+    """
+    out = set()
+    for node in tree.body:
+        if isinstance(node, ast.Assign) and len(node.targets) == 1:
+            target = node.targets[0]
+            if (isinstance(target, ast.Name) and target.id.isupper()
+                    and not _is_sentinel(node.value)):
+                out.add(target.id)
+    return out
+
+
+def _is_sentinel(value: ast.AST) -> bool:
+    """A bare `object()` call: a fresh identity per evaluation, with no value to hash."""
+    return (isinstance(value, ast.Call) and isinstance(value.func, ast.Name)
+            and value.func.id == "object" and not value.args and not value.keywords)
 
 
 def _module_aliases(tree: ast.Module) -> dict[str, str]:
@@ -122,13 +149,15 @@ class _FreeNames(ast.NodeVisitor):
     `memory.lesson_for` reaches the memory module through the `memory` root.
     """
 
-    def __init__(self, aliases: dict[str, str], own: dict[str, str]) -> None:
+    def __init__(self, aliases: dict[str, str], own: dict[str, str], consts: set[str]) -> None:
         self.aliases = dict(aliases)
         self.own = own
+        self.consts = consts
         self.bound: list[set[str]] = [set()]
         self.modules: set[str] = set()
         self.helpers: set[str] = set()
         self.classes: set[str] = set()
+        self.constants: set[str] = set()
 
     def _is_bound(self, name: str) -> bool:
         return any(name in scope for scope in self.bound)
@@ -150,6 +179,8 @@ class _FreeNames(ast.NodeVisitor):
                 self.helpers.add(name)
             else:
                 self.classes.add(name)
+        elif name in self.consts:
+            self.constants.add(name)
 
     def visit_Import(self, node: ast.Import) -> None:
         for item in node.names:
@@ -243,8 +274,8 @@ class _FreeNames(ast.NodeVisitor):
         self._bind(node.target)
 
 
-def _free_under(node: ast.AST, aliases: dict[str, str], own: dict[str, str]) -> _FreeNames:
-    found = _FreeNames(aliases, own)
+def _free_under(node: ast.AST, aliases: dict[str, str], own: dict[str, str], consts: set[str]) -> _FreeNames:
+    found = _FreeNames(aliases, own, consts)
     found.visit(node)
     return found
 
@@ -285,11 +316,13 @@ class _Walk:
     tree: ast.Module
     aliases: dict[str, str]
     own: dict[str, str]
+    consts: set[str]
     out: Reachability = field(default_factory=Reachability)
     pending: set[str] = field(default_factory=set)
 
     def absorb(self, found: _FreeNames) -> None:
         self.out.modules |= found.modules
+        self.out.constants |= found.constants
         for key, value in found.aliases.items():
             self.aliases.setdefault(key, value)
         self.pending |= found.helpers
@@ -304,29 +337,29 @@ class _Walk:
             done.add(name)
             body = _helper_body(self.tree, name)
             if body is not None:
-                self.absorb(_free_under(body, self.aliases, self.own))
+                self.absorb(_free_under(body, self.aliases, self.own, self.consts))
         self.out.helpers |= set(done)
 
 
 def reachable(factory: str, tree: ast.Module | None = None) -> Reachability:
-    """The first-party modules and own file helpers one stage can execute.
+    """The first-party modules, own file helpers and own file constants one stage can execute.
 
     Starts at the stage run and gate closures, then follows transitively through
     module level helpers of build.py and through methods of classes the factory
     instantiates.
     """
     tree = _build_tree() if tree is None else tree
-    walk = _Walk(tree, _module_aliases(tree), _own_map(tree))
+    walk = _Walk(tree, _module_aliases(tree), _own_map(tree), _own_consts(tree))
     factory_node = _factory(tree, factory)
     closures = _closures(factory_node)
     if not any(n.name == "run" for n in closures):
         raise KeyError(f"factory {factory} defines no run closure")
     for closure in closures:
-        walk.absorb(_free_under(closure, walk.aliases, walk.own))
+        walk.absorb(_free_under(closure, walk.aliases, walk.own, walk.consts))
         for stmt in factory_node.body:
             if isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
                 continue
-            for cls in _free_under(stmt, walk.aliases, walk.own).classes:
+            for cls in _free_under(stmt, walk.aliases, walk.own, walk.consts).classes:
                 for method in _method_bodies(tree, cls):
                     walk.pending.add(f"{cls}.{method.name}")
         walk.drain()
@@ -398,15 +431,17 @@ def _hash_identity_call(node: ast.Call, own: dict[str, str], out: Reachability) 
 
 
 def hashed(factory: str, tree: ast.Module | None = None) -> Reachability:
-    """The modules and helpers the factory code_version expression commits to.
+    """The modules, helpers and constants the factory code_version expression commits to.
 
     Reads the `_version` and `_module_hash` arguments, the `helpers` list, helpers
-    named in `_fn_identity` calls, and the helpers a factory time key builder such
-    as `_evidence_version` hashes into its own output.
+    named in `_fn_identity` calls, constants named anywhere in the key, and the
+    helpers a factory time key builder such as `_evidence_version` hashes into
+    its own output.
     """
     tree = _build_tree() if tree is None else tree
     aliases = _module_aliases(tree)
     own = _own_map(tree)
+    consts = _own_consts(tree)
     out = Reachability()
     expression = _version_expression(_factory(tree, factory))
     if expression is None:
@@ -414,6 +449,8 @@ def hashed(factory: str, tree: ast.Module | None = None) -> Reachability:
     for node in ast.walk(expression):
         if isinstance(node, ast.Call):
             _hash_call(tree, node, aliases, own, out)
+        elif isinstance(node, ast.Name) and node.id in consts:
+            out.constants.add(node.id)
     out.modules.discard("")
     return out
 
@@ -456,20 +493,30 @@ def _committed_helpers(tree: ast.Module, helper: str, aliases: dict[str, str], o
     node = _own_functions(tree).get(helper)
     if node is None:
         return set()
-    return set(_free_under(node, aliases, own).helpers)
+    return set(_free_under(node, aliases, own, _own_consts(tree)).helpers)
 
 
 def evidence_commit(tree: ast.Module | None = None) -> set[str]:
     """The helpers `_evidence_version` hashes into the compile tools key."""
     tree = _build_tree() if tree is None else tree
-    return _committed_helpers(tree, "_evidence_version", _module_aliases(tree),
-                              {**{n: "def" for n in _own_functions(tree)},
-                               **{n: "class" for n in _own_classes(tree)}})
+    return _committed_helpers(tree, "_evidence_version", _module_aliases(tree), _own_map(tree))
+
+
+def factories_in_stages(tree: ast.Module | None = None) -> set[str]:
+    """The stage factories the `stages` graph calls: the registry must name exactly these."""
+    tree = _build_tree() if tree is None else tree
+    graph = _own_functions(tree).get("stages")
+    if graph is None:
+        return set()
+    return {node.func.id for node in ast.walk(graph)
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+            and node.func.id.endswith("_stage")}
 
 
 def missing(factory: str, tree: ast.Module | None = None) -> Reachability:
-    """Reachable modules and helpers the factory key does not hash."""
+    """Reachable modules, helpers and constants the factory key does not hash."""
     tree = _build_tree() if tree is None else tree
     reached, hashed_sets = reachable(factory, tree), hashed(factory, tree)
     return Reachability(modules=reached.modules - hashed_sets.modules,
-                        helpers=reached.helpers - hashed_sets.helpers)
+                        helpers=reached.helpers - hashed_sets.helpers,
+                        constants=reached.constants - hashed_sets.constants)

@@ -62,20 +62,31 @@ MUST_REACH_HELPERS: dict[str, set[str]] = {
                 "_tool_definitions", "_vocab_from", "_write_runs_index"},
 }
 
-# What _evidence_version hashes into the compile tools key. The walk credits these as
+MUST_REACH_CONSTS: dict[str, set[str]] = {
+    "cluster": {"TASK_SPLIT"},
+    "canon_rules": {"CANON_RULES"},
+    "starting_state": {"WORLD_PROVENANCE_FILE"},
+    "compile_tools": {"KEPT_BODY_DIR", "REPLAYS_FILE", "FIDELITY_REASONS", "REPLAY_AGREED",
+                        "REPLAY_LESSON_HEAD"},
+    "replay_reference": {"REPLAY_EVIDENCE_FILE", "EQUIVALENCE_FILE", "EFFECTS_FILE"},
+    "rerolls": {"REROLL_SEED", "REROLL_TURNS", "REROLL_KEY_FORMAT", "RUN_SEED_KIND",
+                "_JSON_TYPES", "REROLL_RECORD", "REROLL_KEY_NOTE"},
+}
+
+
 # hashed by construction; pin the set so an edit to that function fails loudly here.
 EVIDENCE_COMMITTED = {"replay_failures", "replay_failures_of", "replay_difference",
                       "replay_lesson", "evidence_calls", "is_evidence_call", "after_write_calls"}
 
 
 def test_no_stage_reaches_past_its_key():
-    """Reachable modules minus hashed modules is empty, for every stage."""
+    """Reachable modules, helpers and constants minus hashed ones are empty, for every stage."""
     failures = []
     for stage, factory in reach.STAGE_FACTORIES.items():
         missed = reach.missing(factory)
-        if missed.modules or missed.helpers:
+        if missed.modules or missed.helpers or missed.constants:
             failures.append(f"{stage}: modules={sorted(missed.modules)} "
-                            f"helpers={sorted(missed.helpers)}")
+                            f"helpers={sorted(missed.helpers)} constants={sorted(missed.constants)}")
     assert not failures, "stages delegate to code their key does not hash:\n" + "\n".join(failures)
 
 
@@ -86,10 +97,16 @@ def test_walk_sees_known_delegations():
         found = reach.reachable(factory)
         missing_modules = MUST_REACH.get(stage, set()) - found.modules
         missing_helpers = MUST_REACH_HELPERS.get(stage, set()) - found.helpers
-        if missing_modules or missing_helpers:
+        missing_consts = MUST_REACH_CONSTS.get(stage, set()) - found.constants
+        if missing_modules or missing_helpers or missing_consts:
             failures.append(f"{stage}: walk missed modules={sorted(missing_modules)} "
-                            f"helpers={sorted(missing_helpers)}")
+                            f"helpers={sorted(missing_helpers)} constants={sorted(missing_consts)}")
     assert not failures, "the walk went blind:\n" + "\n".join(failures)
+
+
+def test_stage_registry_matches_the_graph():
+    """The walk covers exactly the factories the stages graph calls, no more and no fewer."""
+    assert reach.factories_in_stages() == set(reach.STAGE_FACTORIES.values())
 
 
 def test_evidence_version_commits_its_helpers():
