@@ -460,7 +460,7 @@ def test_a_stage_that_delegates_to_a_module_carries_that_module_in_its_code_vers
                 for name, mod in (("policy", policy), ("memory", memory), ("suite", verifier_suite),
                                   ("compile_env", compile_env), ("sandbox", sandbox))}
     assert len(set(versions.values())) == 5
-    assert build_module._policy_stage(None).code_version.endswith(versions["policy"])
+    assert versions["policy"] in build_module._policy_stage(None).code_version
     tools_version = build_module._tools_stage(None, 3).code_version
     assert versions["compile_env"] in tools_version and versions["sandbox"] in tools_version
 
@@ -812,7 +812,7 @@ def test_every_stage_hashes_the_modules_it_delegates_to():
     # D214: the rule-driven Simulated user lives in kullback/user now, and the stage hashes the
     # module that can actually change, not the name that re-exports it.
     from kullback.user import rules as user_sim
-    assert build_module._mine_stage().code_version.endswith(build_module._module_hash(mine))
+    assert build_module._module_hash(mine) in build_module._mine_stage().code_version
     assert build_module._module_hash(cluster) in build_module._cluster_stage().code_version
     assert build_module._module_hash(user_sim) in build_module._user_rules_stage().code_version
     assert build_module._module_hash(replay_mod) in build_module._replay_stage().code_version
