@@ -12,7 +12,7 @@ index a767a92..27eb072 100644
  ClassifiedBy = Literal["code", "rule", "llm", "observed", "human"]
  ToolKind = Literal["read", "write", "generic"]
 diff --git a/kullback/runner/route.py b/kullback/runner/route.py
-index 0d8d070..c3012f2 100644
+index 0d8d070..5cbea50 100644
 --- a/kullback/runner/route.py
 +++ b/kullback/runner/route.py
 @@ -9,7 +9,7 @@ from typing import Any, Iterable, NamedTuple, Optional
@@ -24,7 +24,7 @@ index 0d8d070..c3012f2 100644
  
  STATE_PARAMS = ("state", "db", "world", "env")
  EXCEPTION_CLASSES = {
-@@ -197,13 +197,33 @@ class Router:
+@@ -197,13 +197,36 @@ class Router:
          return list(self.state.overlay_misses) or None
  
      def _code(self, name: str, function: Any, args: dict) -> RouteResult:
@@ -38,7 +38,10 @@ index 0d8d070..c3012f2 100644
 -            return self._error(name, error_class, _message_of(exc), sample=sample)
 +        except Exception as exc:  # every call is a transaction: a body that raises leaves the world as it found it
 +            _restore_world(self.tools, self.state, snapshot)
-+            if isinstance(exc, ValueError) or _is_pythons(exc):
++            if type(exc) is ValueError or _is_pythons(exc):
++                # A deliberate refusal is exactly ValueError, which is what the body-writing prompt
++                # tells bodies to raise. A subclass (a validation failure, a decode error, a unicode
++                # error) is the body failing at its own work, so it is a fault, not the customer's answer.
 +                error_class = _class_of(exc)
 +                sample = _corpus_error(self.sigs.get(name), error_class) if _is_pythons(exc) else None
 +                return self._error(name, error_class, _message_of(exc), sample=sample)
@@ -62,38 +65,62 @@ index 0d8d070..c3012f2 100644
  
      def _reads_synthetic(self, result: Any, args: dict) -> bool:
          """The call named or returned a synthetic row (D40): the Run is assisted (D49)."""
-@@ -239,6 +259,110 @@ class Router:
+@@ -239,6 +262,134 @@ class Router:
          return RouteResult(payload, "code", False, error, self._misses())
  
  
-+def _snapshot_world(tools: Any, state: StateView) -> tuple[Any, dict]:
-+    """The world before one body runs: the toolkit db and the StateView shared world, as plain data.
++def _freeze(value: Any) -> tuple[str, Any]:
++    """Snapshot one store as bytes when it round trips through JSON, else as plain objects.
 +
-+    Plain, not aliased: a snapshot that shared objects with the live world would move with it and
-+    restore nothing. `_plain` rebuilds every JSON value, which is what generated bodies read and
-+    write (pydantic rows, plain columns). Measured at 0.35 ms per call on a 200 row world and
-+    1.74 ms on a 1000 row world, so every code route call takes one unconditionally and no mined
-+    tool kind is trusted to skip it.
++    The success path pays only the serialise; the bytes are parsed back solely on rollback, which
++    almost never happens. A pydantic db serialises through its own Rust encoder. Where serialising
++    fails (a value JSON cannot carry), the snapshot falls back to `_plain`, which restores by
++    replacement exactly as before.
++    """
++    try:
++        if hasattr(value, "model_dump_json"):
++            return ("json", value.model_dump_json().encode("utf-8"))
++        return ("json", json.dumps(value).encode("utf-8"))
++    except (TypeError, ValueError):
++        return ("plain", _plain(value))
++
++
++def _thaw(snapshot: Any) -> Any:
++    """Parse a frozen snapshot back to plain data. Runs only on rollback, never per call."""
++    if snapshot is None:
++        return None
++    kind, payload = snapshot
++    return json.loads(payload) if kind == "json" else payload
++
++
++def _snapshot_world(tools: Any, state: StateView) -> tuple[Any, Any, Any, Any]:
++    """The world before one body runs, frozen: the toolkit db and the whole StateView.
++
++    Two snapshots, not one: the toolkit db and the StateView shared world are different objects
++    (model rows beside plain rows) and a body can move either one, so one snapshot cannot cover
++    both. Frozen, not aliased: a snapshot that shared objects with the live world would move with
++    it and restore nothing. No mined tool kind is trusted to skip the snapshot.
 +    """
 +    db = getattr(tools, "db", None)
-+    return (_plain(db) if db is not None else None, _plain(state.shared),
-+            _plain(state.overlay), _plain(state.overlay_misses))
++    return (_freeze(db) if db is not None else None, _freeze(state.shared),
++            _freeze(state.overlay), _freeze(state.overlay_misses))
 +
 +
-+def _restore_world(tools: Any, state: StateView, snapshot: tuple[Any, dict]) -> None:
++def _restore_world(tools: Any, state: StateView, snapshot: tuple[Any, Any, Any, Any]) -> None:
 +    """Roll one body's writes back: the toolkit db and the StateView as the call found them.
 +
 +    The whole StateView: the shared world, the overlay pins and the miss list. A body reaches
 +    all three through the state it is handed, so restoring only the shared world would let a
-+    failed body's pins and marks leak into later calls.
++    failed body's pins and marks leak into later calls. Thawing parses the bytes, so it runs
++    only here, on the rare rollback, and never on the per call path.
 +    """
 +    db_snapshot, shared_snapshot, overlay_snapshot, misses_snapshot = snapshot
 +    state.shared.clear()
-+    state.shared.update(shared_snapshot)
++    state.shared.update(_thaw(shared_snapshot))
 +    state.overlay.clear()
-+    state.overlay.update(overlay_snapshot)
-+    state.overlay_misses[:] = misses_snapshot
-+    _restore_db(getattr(tools, "db", None), db_snapshot)
++    state.overlay.update(_thaw(overlay_snapshot))
++    state.overlay_misses[:] = _thaw(misses_snapshot)
++    _restore_db(getattr(tools, "db", None), _thaw(db_snapshot))
 +
 +
 +def _prune_added(current: dict, snapshot: dict) -> None:

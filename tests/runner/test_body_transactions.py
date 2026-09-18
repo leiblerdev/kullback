@@ -25,6 +25,10 @@ HAS_PATCH = hasattr(route_mod, "_snapshot_world") and "body_fault" in get_args(E
 pytestmark = pytest.mark.skipif(not HAS_PATCH, reason="needs the body-transactions frozen patch applied")
 
 
+class PickyRefusal(ValueError):
+    """A deliberate looking refusal that is not exactly ValueError: a fault, not an answer."""
+
+
 class Gadget(BaseModel):
     id: str
     status: str
@@ -53,6 +57,11 @@ class GadgetToolkit:
     def shelve_gadget(self, gadget_id):
         self.db.gadgets[gadget_id].status = "shelved"
         return self.db.gadgets[gadget_id].model_dump()
+
+    def validate_then_crash(self, gadget_id):
+        self.db.gadgets[gadget_id].status = "shelved"
+        Gadget.model_validate({"id": gadget_id, "status": {"nested": "dict"}})
+        return None
 
     def replace_table_then_crash(self, gadget_id):  # noqa: ARG001
         self.db.gadgets = {gadget_id: {"id": gadget_id, "status": "wrecked"}}
@@ -87,6 +96,18 @@ def fault_module() -> types.ModuleType:
     def crash_attr(state, gadget_id):  # noqa: ARG001 - the args shape is the tool surface
         raise AttributeError(f"no attribute on {gadget_id}")
 
+    def refuse_subclass(state, gadget_id):
+        state.put("gadgets", gadget_id, {"status": "moved"})
+        raise PickyRefusal("not this one")
+
+    def decode_crash(state, gadget_id):  # noqa: ARG001
+        raise json.JSONDecodeError("bad json", "doc", 0)
+
+    def stamp_then_refuse(state, gadget_id):  # noqa: ARG001
+        import datetime
+        state.put("meta", "m1", {"seen_at": datetime.datetime(2026, 9, 18, 12, 0, 0)})
+        raise ValueError("no")
+
     def meddle_then_crash(state, gadget_id):  # noqa: ARG001
         state.add({"gadgets": {"g9": {"id": "g9", "status": "planted"}}}, None)
         state.overlay_misses.append({"table": "gadgets", "id": "g9"})
@@ -102,7 +123,10 @@ def fault_module() -> types.ModuleType:
     module.relocate = relocate
     module.refuse = refuse
     module.crash_attr = crash_attr
+    module.refuse_subclass = refuse_subclass
+    module.decode_crash = decode_crash
     module.meddle_then_crash = meddle_then_crash
+    module.stamp_then_refuse = stamp_then_refuse
     return module
 
 
@@ -124,6 +148,9 @@ def sigs() -> list[ToolSig]:
         ToolSig(name="refuse"),
         ToolSig(name="crash_attr"),
         ToolSig(name="meddle_then_crash"),
+        ToolSig(name="refuse_subclass"),
+        ToolSig(name="decode_crash"),
+        ToolSig(name="stamp_then_refuse"),
     ]
 
 
@@ -243,6 +270,37 @@ def test_overlay_and_miss_meddling_rolls_back():
     assert router.state.shared == before_shared
     assert "planted" not in router.tools.db
     assert "g9" not in router.state.shared.get("gadgets", {})
+
+
+def test_value_error_subclass_is_a_fault():
+    for name, fault in (("refuse_subclass", "PickyRefusal"), ("decode_crash", "JSONDecodeError")):
+        router = make_router()
+        out = router.route(name, {"gadget_id": "g1"})
+        assert out.error is not None and out.error.class_ == "body_fault"
+        assert out.result == "unavailable"
+        assert out.error.payload == {"tool": name, "fault": fault}
+        assert router.state.shared["gadgets"]["g1"] == {"id": "g1", "status": "new"}
+
+
+def test_validation_failure_is_a_fault_with_rollback():
+    toolkit = GadgetToolkit({"gadgets": {"g1": {"id": "g1", "status": "new"}}, "spares": {}})
+    router = make_router(module=toolkit, tool_sigs=[ToolSig(name="validate_then_crash"),
+                                                    ToolSig(name="read_gadget")])
+    out = router.route("validate_then_crash", {"gadget_id": "g1"})
+    assert out.error is not None and out.error.class_ == "body_fault"
+    assert out.error.payload == {"tool": "validate_then_crash", "fault": "ValidationError"}
+    assert toolkit.db.gadgets["g1"].status == "new"
+    assert router.route("read_gadget", {"gadget_id": "g1"}).result["status"] == "new"
+
+
+def test_plain_fallback_restores_values_json_cannot_carry():
+    import datetime
+    first = datetime.datetime(2026, 1, 1, 0, 0, 0)
+    router = make_router(state=StateView(shared={**shared_world(),
+                                                 "meta": {"m1": {"seen_at": first}}}))
+    out = router.route("stamp_then_refuse", {"gadget_id": "g1"})
+    assert out.error is not None and out.error.class_ == "business_error"
+    assert router.state.shared["meta"]["m1"] == {"seen_at": first}
 
 
 def test_body_fault_marks_the_environment_not_the_candidate():
