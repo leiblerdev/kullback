@@ -204,6 +204,16 @@ def test_a_read_before_a_creation_does_not_shift_the_creation_feed():
                                                     "opened": "2024-03-04T05:06:07"}
 
 
+def test_an_unrelated_earlier_value_spelling_the_new_id_does_not_discard_it():
+    """Newness is read off entity ids alone: a note echoing the string must not cost the
+    creation its recorded id."""
+    note = ToolCall(id="r1", name="get_loan", args={"loan_id": "L100"},
+                    result={"loan_id": "L100", "note": "L101"}, raw_ptr=PTR)
+    create = _call("c1", {"loan_id": "L101", "opened": "2024-03-04T05:06:07"})
+    run = ce.recorded_run_context([note, create], LOANS_SCHEMA, ["open_loan"])
+    assert run["ids"] == {"loans": ["L101"]}
+
+
 def test_the_prompt_names_the_context_and_the_hint_points_at_it():
     system = ce.body_messages(OPEN_SIG, [], schema=LOANS_SCHEMA)[0]["content"]
     assert "self.ctx.now()" in system and "self.ctx.random()" in system

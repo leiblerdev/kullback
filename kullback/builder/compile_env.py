@@ -3775,34 +3775,44 @@ def recorded_run_context(calls: Iterable[ToolCall], schema: EntitySchema,
     showed. Past the end of either list the seeded feed answers, counted.
 
     Only write calls contribute, and an id only when neither the call's own arguments nor any
-    earlier call showed it. A read echoes rows the world already holds, and an update echoes the
-    id its arguments named: neither is a new row, and listing either would hand a later creation
-    an existing row's id and shift every creation after it. A write's time rides when the write
-    minted something: it carries a trace-new id, or the time itself was never shown before. An
-    update echoing the row's old stamp minted nothing, and listing it would hand a later creation
-    the wrong time the same way a listed echo id hands it the wrong row. Times otherwise ride in
+    earlier call showed that entity before. A read echoes rows the world already holds, and an
+    update echoes the id its arguments named: neither is a new row, and listing either would hand
+    a later creation an existing row's id and shift every creation after it. Newness is read off
+    entity ids alone (id-keyed leaves), never off every scalar: an unrelated earlier value that
+    happens to spell the new id must not discard it. A write's time rides when the write minted
+    something: it carries a trace-new id, or the time itself was never shown before. An update
+    echoing the row's old stamp minted nothing, and listing it would hand a later creation the
+    wrong time the same way a listed echo id hands it the wrong row. Times otherwise ride in
     call order with no dedup, so two creations the recording stamped alike are served alike.
     """
     ids: dict[str, list] = {}
     times: list = []
     seen: set = set()
+    seen_ids: set = set()
+
+    def id_leaves(node: Any) -> set:
+        return {value for key, value in _result_leaves(node)
+                if isinstance(value, str) and _is_id_key(key)}
+
     for call in calls:
         args = call.args if isinstance(call, ToolCall) else (call or {}).get("args") or {}
-        arg_strings = {value for _, value in _result_leaves(args)}
         result = call.result if isinstance(call, ToolCall) else (call or {}).get("result")
+        arg_strings = {value for _, value in _result_leaves(args)}
         values = {value for _, value in _result_leaves(result)} if result is not None else set()
         if write_tools is not None and call.name not in set(write_tools):
             seen |= arg_strings | values
+            seen_ids |= id_leaves(args) | id_leaves(result)
             continue
         feed = recorded_call_context(call, schema)
         fresh_ids = [(table, value) for table, value in feed["new_ids"].items()
-                     if value not in seen and value not in arg_strings]
+                     if value not in seen_ids and value not in arg_strings]
         for table, value in fresh_ids:
             ids.setdefault(table, []).append(value)
         if feed["now"] is not None and (fresh_ids or feed["now"] not in seen
                                           and feed["now"] not in arg_strings):
             times.append(feed["now"])
         seen |= arg_strings | values
+        seen_ids |= id_leaves(args) | id_leaves(result)
     return {"ids": ids, "times": times}
 
 
