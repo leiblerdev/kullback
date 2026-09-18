@@ -9,6 +9,7 @@ grouping columns leave the trace for the sidecar, the same way the first adapter
 from __future__ import annotations
 
 import json
+import math
 from typing import Any, Iterator, Optional
 
 from kullback.runner.records import RawPtr, ToolCall, Trace
@@ -203,7 +204,6 @@ def _command_entries(text: Any) -> Optional[list[dict]]:
 
 def _shell_call(entry: dict, trace_id: str, here: RawPtr) -> ToolCall:
     """One command entry as one call on the shell; the entry's measured time rides as latency."""
-    duration = entry.get(FIELD_DURATION)
     return ToolCall(
         id=None,
         name=TOOL_SHELL,
@@ -213,8 +213,22 @@ def _shell_call(entry: dict, trace_id: str, here: RawPtr) -> ToolCall:
         trace_id=trace_id,
         has_result=False,
         resolved=False,
-        latency_ms=float(duration) * 1000.0 if isinstance(duration, (int, float)) else None,
+        latency_ms=_latency_ms(entry.get(FIELD_DURATION)),
     )
+
+
+def _latency_ms(duration: Any) -> Optional[float]:
+    """The entry's measured seconds as milliseconds, or None when it says nothing usable.
+
+    Booleans, strings, negatives and non-finite values are not times, so they stay
+    unrecorded instead of becoming a plausible-looking latency."""
+    if isinstance(duration, bool):
+        return None
+    if not isinstance(duration, (int, float)) or not math.isfinite(duration):
+        return None
+    if duration < 0:
+        return None
+    return float(duration) * 1000.0
 
 
 def _attach_results(turns_raw: list, calls: list, ctx: Any,

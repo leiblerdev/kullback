@@ -113,13 +113,22 @@ def test_to_trace_maps_batch_to_shell_calls():
     assert {call.name for call in trace.tool_calls} == {"shell"}
     assert [call.args for call in trace.tool_calls] == [
         {"keystrokes": "invented-list-alpha"}, {"keystrokes": "invented-list-beta"}]
+    assert [call.latency_ms for call in trace.tool_calls] == [200.0, 300.0]
+
+
+def test_batch_output_lands_on_last_call():
+    trace = Terminus2Adapter().to_trace(invented_recording(), ctx())
     first, last = trace.tool_calls
     assert (first.has_result, first.resolved, first.result) == (False, False, None)
     assert (last.has_result, last.resolved) == (True, True)
     assert "invented output of both listings" in str(last.result)
-    assert last.result_ptr is not None and last.result_ptr.msg_index == 2
+
+
+def test_calls_cite_request_and_answer():
+    trace = Terminus2Adapter().to_trace(invented_recording(), ctx())
+    first, last = trace.tool_calls
     assert first.raw_ptr.msg_index == 1
-    assert [call.latency_ms for call in trace.tool_calls] == [200.0, 300.0]
+    assert last.result_ptr is not None and last.result_ptr.msg_index == 2
 
 
 def test_assistant_prose_and_opening_turn_are_kept():
@@ -169,6 +178,21 @@ def test_prose_broken_and_empty_turns_yield_no_calls():
     trace = Terminus2Adapter().to_trace(invented_recording(conversations=turns), ctx())
     assert trace.tool_calls == []
     assert len(trace.turns) == 6
+
+
+def test_unusable_durations_stay_unrecorded():
+    from kullback.builder.sources import terminus_2 as adapter_mod
+
+    for duration in (True, -1.0, "0.2", float("nan"), float("inf")):
+        turns = [
+            {"role": "user", "content": "Invented instruction."},
+            {"role": "assistant", "content": json.dumps(
+                {"commands": [{"keystrokes": "invented", "duration": duration}]})},
+            {"role": "user", "content": "New Terminal Output:\n\ninvented"},
+        ]
+        trace = Terminus2Adapter().to_trace(invented_recording(conversations=turns), ctx())
+        assert trace.tool_calls[0].latency_ms is None
+    assert adapter_mod._latency_ms(0.2) == 200.0
 
 
 def test_trace_id_falls_back_without_trial_marker():
