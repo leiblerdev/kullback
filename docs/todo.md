@@ -13,6 +13,7 @@ These are the items I pushed past the first build. Each line says what it buys a
   the gain stays deferred until then.
 - effect-credit.patch waits for the founder's re-freeze: the replay counts unattributed effects instead of failing the last call.
 - confinement-imports.patch waits for the founder's re-freeze: the confinement gate stops allowing two skeleton only names in tool bodies, re-run tests/gates and tests/builder.
+- tool-context.patch waits for the founder's re-freeze behind it: apply confinement-imports.patch first, then tool-context.patch (both edit the allowed imports literal in kullback/gates/confinement.py), re-run tests/gates and tests/builder with both applied.
 
 ## After the first Replica clears Gate A
 
