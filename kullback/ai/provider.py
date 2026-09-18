@@ -393,10 +393,32 @@ def _reply_from_dict(data: dict) -> ModelReply:
             output=int(usage.get("output", usage.get("completion_tokens", 0)) or 0),
             cache_read=int(usage.get("cache_read", 0) or 0),
             cache_write=int(usage.get("cache_write", 0) or 0),
+            reasoning=_reasoning_of(usage),
         ),
         model=data.get("model"),
         stop_reason=data.get("stop_reason") or data.get("finish_reason"),
     )
+
+
+def _reasoning_of(usage: Any) -> int:
+    """The reasoning count inside a provider usage payload, or zero when it carries none.
+
+    One reader for every shape the adapters parse: a flat reasoning key on a stored reply,
+    the chat shape's completion_tokens_details.reasoning_tokens, and the Responses shape's
+    output_tokens_details.reasoning_tokens. Every one counts inside the completion total, so
+    this is the share of output spent thinking, never an extra count. Zero means the provider
+    did not report it, not that no reasoning happened.
+    """
+    if not isinstance(usage, dict):
+        return 0
+    direct = usage.get("reasoning", 0) or 0
+    chat = usage.get("completion_tokens_details") or {}
+    answered = usage.get("output_tokens_details") or {}
+    if not isinstance(chat, dict):
+        chat = {}
+    if not isinstance(answered, dict):
+        answered = {}
+    return int(direct or chat.get("reasoning_tokens", 0) or answered.get("reasoning_tokens", 0) or 0)
 
 
 def _arguments_of(call: dict) -> dict:
@@ -992,6 +1014,9 @@ class AnthropicModel(HttpModel):
                 output=int(usage.get("output_tokens", 0) or 0),
                 cache_read=int(usage.get("cache_read_input_tokens", 0) or 0),
                 cache_write=int(usage.get("cache_creation_input_tokens", 0) or 0),
+                # The Messages API reports no separate reasoning count today (thinking tokens
+                # sit inside output_tokens), so this reads zero until the payload carries one.
+                reasoning=_reasoning_of(usage),
             ),
             model=data.get("model") or self.wire_id,
             stop_reason=data.get("stop_reason"),
@@ -1092,6 +1117,7 @@ class OpenAIModel(HttpModel):
                 output=int(usage.get("completion_tokens", 0) or 0),
                 cache_read=cached,
                 cache_write=written,
+                reasoning=_reasoning_of(usage),
             ),
             model=data.get("model") or self.wire_id,
             stop_reason=(choices[0] or {}).get("finish_reason"),
@@ -1277,6 +1303,7 @@ class OpenAIResponsesModel(HttpModel):
                 output=int(usage.get("output_tokens", 0) or 0),
                 cache_read=cached,
                 cache_write=written,
+                reasoning=_reasoning_of(usage),
             ),
             model=data.get("model") or self.wire_id,
             stop_reason=data.get("status"),
