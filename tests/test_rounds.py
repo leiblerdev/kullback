@@ -86,8 +86,13 @@ TARGET = "environment"
 # re-roll stage's code version and every re-rolled Run id. Same three Tasks, same verdicts,
 # same reasons; only the key hash inside the re-rolled Run ids is new. Re-pinned for the turn-two
 # boundary fix on the same branch: an odd reported count now maps to zero at the adapters, so the
-# module hash moved again and so did the ids, verdicts and reasons unchanged.
-TASK_STATUS_SHA256_BEFORE_THE_PHASE = "4afd3496612d7012b6caf8cca8ecee3158415abac9b13c53ca20ebbcf7094327"
+# module hash moved again and so did the ids, verdicts and reasons unchanged. Re-pinned once on the
+# branch where the reviewed wave of 2026-09-18 lands together: four of its branches each re-pinned
+# this line on their own, so the value is recomputed once here, on the merged tree. The rows this
+# tree writes and the rows main writes are 9088 bytes each and differ on 36 lines, all of them a
+# re-rolled Run id carrying one of two eight-hex stage key tags; with those tags normalized the two
+# files are byte identical. Same three Tasks, same verdicts, same reasons.
+TASK_STATUS_SHA256_BEFORE_THE_PHASE = "e440bcfe94ad578d531ffdd0a7a457758cedf87ee7e6a745286edc75a81c9b82"
 
 
 def _fixture(request) -> Path:
