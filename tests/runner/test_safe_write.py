@@ -132,6 +132,26 @@ def test_keyboard_interrupt_between_stage_and_swap_cleans_up(tmp_path: Path, mon
     assert _leftover_temps(tmp_path) == []
 
 
+def test_fchmod_failure_closes_the_staging_descriptor(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    target = tmp_path / "ledger.json"
+    write_json(target, {"kept": 1})
+    before = target.read_text(encoding="utf-8")
+    seen_fds: list[int] = []
+
+    def _failing(fd: int, _mode: int) -> None:
+        seen_fds.append(fd)
+        raise OSError("cannot set mode")
+
+    monkeypatch.setattr(os, "fchmod", _failing)
+    with pytest.raises(OSError):
+        write_json(target, {"kept": 2})
+    assert target.read_text(encoding="utf-8") == before
+    assert _leftover_temps(tmp_path) == []
+    for fd in seen_fds:
+        with pytest.raises(OSError):
+            os.fstat(fd)
+
+
 def test_reader_sees_only_whole_files_while_a_swap_waits(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     # Deterministic form of the atomicity guarantee: the swap is held back, the destination
     # must still read as the old complete JSON, and only after release as the new one.
