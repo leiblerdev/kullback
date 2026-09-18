@@ -415,29 +415,6 @@ def hashed(factory: str, tree: ast.Module | None = None) -> Reachability:
         if isinstance(node, ast.Call):
             _hash_call(tree, node, aliases, own, out)
     out.modules.discard("")
-    out.helpers |= _comprehension_credited(expression, own)
-    return out
-
-
-def _comprehension_credited(expression: ast.AST, own: dict[str, str]) -> set[str]:
-    """Helpers a key hashes through a comprehension over `_fn_identity` calls.
-
-    The compile tools key commits its own file helpers this way, mirroring how
-    `_evidence_version` hashes its own list: each helper named in the comprehension
-    iterable is hashed by identity, so each is covered.
-    """
-    out = set()
-    for node in ast.walk(expression):
-        if not isinstance(node, (ast.ListComp, ast.SetComp, ast.GeneratorExp)):
-            continue
-        if not (isinstance(node.elt, ast.Call) and isinstance(node.elt.func, ast.Attribute)
-                and node.elt.func.attr == "_fn_identity"):
-            continue
-        for gen in node.generators:
-            for child in ast.walk(gen.iter):
-                ref = _helper_ref(child, own)
-                if ref:
-                    out.add(ref)
     return out
 
 

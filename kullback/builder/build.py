@@ -1042,9 +1042,9 @@ def _tools_stage(model: Any, max_attempts: int, workers: int = 1, only: Optional
                # The attribution is this file's own function, so its bytes are not in any module
                # hash above; an edit to it is a different artifact and must not hit the cache.
                f"{content_hash(pipeline._fn_identity(attribute_fidelity, 'compile_tools'))[:16]}:"
-               # The filters and the snapshot shape are this file's own functions too, named the
-               # same way the attribution is: an edit to any of them re-asks the writer.
-               f"{content_hash([pipeline._fn_identity(helper, 'compile_tools') for helper in (callers_by_tool, compile_snapshot_rows, holdout_world, trace_worlds, _effect_sentence, _record_hardcoded_lesson, _task_of)])[:16]}:"
+               # The filters and the snapshot shape are this file's own functions too, named one
+               # by one the way the attribution is: an edit to any of them re-asks the writer.
+               f"{content_hash([pipeline._fn_identity(callers_by_tool, 'compile_tools'), pipeline._fn_identity(compile_snapshot_rows, 'compile_tools'), pipeline._fn_identity(holdout_world, 'compile_tools'), pipeline._fn_identity(trace_worlds, 'compile_tools'), pipeline._fn_identity(_effect_sentence, 'compile_tools'), pipeline._fn_identity(_record_hardcoded_lesson, 'compile_tools'), pipeline._fn_identity(_task_of, 'compile_tools')])[:16]}:"
                # The evidence set and the lesson are this file's own functions too (D191), so their
                # bytes are in no module hash above either: a change to which recorded calls a body
                # is written against is a different question and must not be answered from the cache.
