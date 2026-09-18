@@ -164,7 +164,9 @@ def _declared_name(document: Any) -> Optional[str]:
 from kullback.builder.sources.claude_code_jsonl import ClaudeCodeJsonlDetector  # noqa: E402
 from kullback.builder.sources.otel_genai import OtelGenaiDetector  # noqa: E402
 from kullback.builder.sources.tau2_native import Tau2NativeAdapter  # noqa: E402
+from kullback.builder.sources.terminus_2 import Terminus2Adapter  # noqa: E402
 
 register(Tau2NativeAdapter())
+register(Terminus2Adapter())
 register(OtelGenaiDetector())
 register(ClaudeCodeJsonlDetector())
