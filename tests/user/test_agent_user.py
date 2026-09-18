@@ -581,15 +581,18 @@ def test_the_conversation_arrives_as_messages_with_the_turn_line_last(ctx, rules
     from kullback.user.agent import TURN_MESSAGE
     user = agent_for(ctx, rules, ["Thanks, noted.", "At 16:00, thanks."], recorded)
     user.reply([{"role": "assistant", "content": "Could you provide your plot number?"}])
+    first = user.model.calls[-1]["messages"]
+    assert [m["content"] for m in first[1:]] == ["Could you provide your plot number?",
+                                                  TURN_MESSAGE]
     user.reply([{"role": "assistant", "content": "Could you provide your plot number?"},
                 {"role": "user", "content": "Thanks, noted."},
                 {"role": "assistant", "content": "Thank you. What delivery slot would you like?"}])
     messages = user.model.calls[-1]["messages"]
-    assert [m["role"] for m in messages] == ["system", "user", "assistant", "user", "user"]
-    assert messages[1]["content"] == "Could you provide your plot number?"
-    assert messages[2]["content"] == "Thanks, noted."
-    assert messages[3]["content"] == "Thank you. What delivery slot would you like?"
-    assert messages[4]["content"] == TURN_MESSAGE
+    assert [m["role"] for m in messages] == ["system", "user", "user", "assistant",
+                                               "user", "user"]
+    assert [m["content"] for m in messages[1:]] == [
+        "Could you provide your plot number?", TURN_MESSAGE, "Thanks, noted.",
+        "Thank you. What delivery slot would you like?", TURN_MESSAGE]
 
 
 def test_tool_traffic_is_not_speech_and_never_enters_the_messages(ctx, rules, recorded):
@@ -604,12 +607,15 @@ def test_tool_traffic_is_not_speech_and_never_enters_the_messages(ctx, rules, re
     assert all(m.get("tool_calls", []) == [] for m in messages if m["role"] == "assistant")
 
 
-def test_every_turn_builds_a_new_harness(ctx, rules, recorded):
+def test_every_turn_builds_a_new_harness_that_extends_the_last(ctx, rules, recorded):
     user = agent_for(ctx, rules, ["Thanks, noted."], recorded)
     transcript = [{"role": "assistant", "content": "Could you provide your plot number?"}]
     first, second = user.harness(transcript), user.harness(transcript)
     assert first is not second
-    assert [m.content for m in first.messages] == [m.content for m in second.messages]
+    first_texts = [m.content for m in first.messages]
+    second_texts = [m.content for m in second.messages]
+    assert second_texts[:len(first_texts)] == first_texts
+    assert len(second_texts) == len(first_texts) + 1
 
 
 def test_the_guards_read_the_writes_the_transcript_carries(ctx, rules, recorded):
@@ -623,3 +629,37 @@ def test_the_guards_read_the_writes_the_transcript_carries(ctx, rules, recorded)
     user_refused = agent_for(ctx, rules, ["Yes, 16:00."], recorded)
     user_refused.reply(question + [refused])
     assert not user_refused.done
+
+
+# --- the prefix check over a real conversation (G24) ------------------------------------------------
+
+def five_turn_requests(ctx, rules, recorded):
+    from kullback.agent import prefix_check as prefix_check_mod
+    user = agent_for(ctx, rules, ["Thanks, noted.", "At 16:00, thanks.", "Right, got it.",
+                                  "Fine by me.", "Thank you, goodbye."], recorded)
+    transcript = []
+    for question in ("Could you provide your plot number?",
+                     "Thank you. What delivery slot would you like?",
+                     "Could you tell me your membership tier?",
+                     "Done, your delivery is moved. Anything else?",
+                     "Great, have a good day."):
+        transcript.append({"role": "assistant", "content": question})
+        transcript.append({"role": "user", "content": user.reply(transcript)})
+    requests = [call["messages"] for call in user.model.calls]
+    assert len(requests) == 5
+    return prefix_check_mod, requests
+
+
+def test_five_turns_through_the_user_pass_the_prefix_check(ctx, rules, recorded):
+    prefix_check, requests = five_turn_requests(ctx, rules, recorded)
+    assert prefix_check.first_prefix_break(requests) is None
+
+
+def test_a_reordered_section_fails_and_names_the_turn(ctx, rules, recorded):
+    import copy
+    prefix_check, requests = five_turn_requests(ctx, rules, recorded)
+    broken = copy.deepcopy(requests)
+    blocks = broken[2][0]["content"].split("\n\n")
+    assert len(blocks) > 2
+    broken[2][0]["content"] = "\n\n".join([blocks[1], blocks[0], *blocks[2:]])
+    assert prefix_check.first_prefix_break(broken) == 2

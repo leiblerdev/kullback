@@ -36,12 +36,13 @@ from kullback.user.extension import user_extension
 from kullback.user.tools import Toolbox
 from kullback.user.vocabulary import GENERIC, Vocabulary
 
-# The one message a turn's harness is sent. It says what beat this is and nothing about the domain.
-TURN_MESSAGE = ("Write your next turn in this conversation. Read what they just said, use your tools "
-                "for anything about yourself you are not sure of, and answer with the turn itself and "
-                "no tool call.")
-OPENING_MESSAGE = ("Open the conversation: say why you got in touch, in your own words, and whatever "
-                   "you would say without being asked. Answer with the turn itself and no tool call.")
+# The one message every turn's harness is sent. It says what beat this is and nothing about the
+# domain. One line on every turn, opening included, so each request extends the one before it
+# (G24): a separate opening line would move the first message after the head on turn two.
+TURN_MESSAGE = ("Write your next turn in this conversation. On the first turn, say why you got in "
+                "touch, in your own words, and whatever you would say without being asked. After "
+                "that, read what they just said. Use your tools for anything about yourself you "
+                "are not sure of, and answer with the turn itself and no tool call.")
 # A turn is one model answer, however many tool calls it took to get there. The cap is on the tool
 # calls, so a model that loops on its own tools cannot spend a build's ceiling on one turn.
 MAX_TURNS_PER_REPLY = 6
@@ -93,6 +94,11 @@ class AgentUser:
         self._facts_said = 0
         self._turn = 0
         self._end_tagged = False
+        # The previous turn's request messages after the head, lines included, and how many of
+        # the transcript's spoken turns they already hold. The next turn extends these, never
+        # reprints them, which is what keeps every request a prefix extension of the last.
+        self._prior: list = []
+        self._prior_history = 0
 
     # --- the Runner's interface ---------------------------------------------------------------
 
@@ -120,9 +126,8 @@ class AgentUser:
             self.counts[NO_MODEL] += 1
             return None
         harness = self.harness(transcript)
-        opening = OPENING_MESSAGE if not self.events else TURN_MESSAGE
         try:
-            return _last_text(harness, opening)
+            return _last_text(harness, TURN_MESSAGE)
         except Exception:  # a turn the provider could not answer is a beat the rules take
             self.counts[MODEL_FAILED] += 1
             return None
@@ -131,14 +136,22 @@ class AgentUser:
         """The harness of one turn: the stable head, with the conversation appended as messages.
 
         Spoken turns only: what the Candidate said as the other side, what this user said as
-        itself, with the fixed turn line last. The agent's own tool calls and thinking never
-        persist past the turn, and every turn still builds a new harness, because a user that
-        keeps a transcript of its own thinking between turns is a user with a second memory the
-        recorded person did not have."""
+        itself, with the fixed turn line last. Each turn extends the previous turn's request,
+        lines included, so every request is a byte-prefix extension of the one before (G24).
+        The agent's own tool calls and thinking never persist past the turn, and every turn
+        still builds a new harness, because a user that keeps a transcript of its own thinking
+        between turns is a user with a second memory the recorded person did not have."""
+        history = _history_messages(transcript)
+        if len(history) < self._prior_history:
+            self._prior = []
+            self._prior_history = 0
+        messages = self._prior + history[self._prior_history:]
         harness = AgentHarness(model=self.model, max_turns=self.max_tool_turns,
-                               messages=_history_messages(transcript),
+                               messages=messages,
                                context=context_config(self.model))
         load_extensions(harness, [user_extension(self.ctx, self.box)])
+        self._prior = messages + [UserMessage(content=TURN_MESSAGE)]
+        self._prior_history = len(history)
         return harness
 
     # --- what is actually said -------------------------------------------------------------------
