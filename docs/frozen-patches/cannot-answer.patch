@@ -1,8 +1,19 @@
 diff --git a/kullback/runner/loop.py b/kullback/runner/loop.py
-index 1d5a9fb..5c53863 100644
+index 1d5a9fb..0674514 100644
 --- a/kullback/runner/loop.py
 +++ b/kullback/runner/loop.py
-@@ -213,6 +213,19 @@ def _tool_call(state: RunState, call: Any, router: Any) -> None:
+@@ -88,6 +88,10 @@ def step(state: RunState, model: Any, tools: Optional[list[dict]] = None, router
+         state.messages.append(_assistant_message(reply))
+         for call in reply.tool_calls:
+             _tool_call(state, call, router)
++            if state.stopped:
++                # G28: a cannot-answer call ends the Run at once, so later calls of the
++                # same response are never routed, shown, or run.
++                break
+         if not reply.tool_calls:
+             _user_turn(state, reply.content or "")
+     except Exception as exc:  # the model or the Simulated user fell over, which is not the Run's verdict
+@@ -213,6 +217,19 @@ def _tool_call(state: RunState, call: Any, router: Any) -> None:
      if router is None:
          raise ValueError(f"the model called {call.name} but the loop was given no router")
      outcome = router.route(call.name, args)
@@ -22,7 +33,7 @@ index 1d5a9fb..5c53863 100644
      payload: dict = {"id": call.id, "name": call.name, "result": outcome.result}
      if outcome.error is not None:
          payload["error"] = as_dict(outcome.error)
-@@ -233,6 +246,24 @@ def _tool_call(state: RunState, call: Any, router: Any) -> None:
+@@ -233,6 +250,24 @@ def _tool_call(state: RunState, call: Any, router: Any) -> None:
      state.messages.append(message)
  
  

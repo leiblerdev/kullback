@@ -86,6 +86,21 @@ def test_a_listed_tool_with_no_code_and_no_recording_ends_the_run(workdir):
     assert result_event.payload["error"]["class"] == "cannot_answer"
 
 
+def test_calls_after_a_cannot_answer_in_one_response_are_never_routed(workdir):
+    """Greptile P1: the stop takes effect at once, not after the rest of the response."""
+    model = TestModel([
+        {"tool_calls": [{"id": "c1", "name": "quote_ledger", "arguments": {"ledger_id": "l1"}},
+                          {"id": "c2", "name": "fetch_ledger", "arguments": {"ledger_id": "l1"}}]},
+    ])
+    state = loop_mod.new_run_state("r1", workdir=workdir)
+    loop_mod.run(state, model, router=make_router())
+    assert state.run.termination_reason == CANNOT_ANSWER_REASON
+    assert [event.type for event in state.run.events].count("tool_call") == 1
+    assert [event.type for event in state.run.events].count("tool_result") == 1
+    assert state.run.route_counts == {"cannot_answer": 1}
+    assert [message["role"] for message in state.messages] == ["assistant"]
+
+
 def test_a_cannot_answer_verdict_carries_no_pass_and_no_fail(workdir):
     """The Run leaves the counts: env_error with the environment, not the Candidate, blamed."""
     model = TestModel([
