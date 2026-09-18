@@ -1,0 +1,151 @@
+diff --git a/kullback/runner/records.py b/kullback/runner/records.py
+index a767a92..27eb072 100644
+--- a/kullback/runner/records.py
++++ b/kullback/runner/records.py
+@@ -14,7 +14,7 @@ from kullback.ai.usage import Usage
+ 
+ ErrorClass = Literal[
+     "tool_not_found", "invalid_arguments", "permission_denied", "business_error",
+-    "not_found_entity", "transient", "cancelled", "unknown",
++    "not_found_entity", "transient", "cancelled", "unknown", "body_fault",
+ ]
+ ClassifiedBy = Literal["code", "rule", "llm", "observed", "human"]
+ ToolKind = Literal["read", "write", "generic"]
+diff --git a/kullback/runner/route.py b/kullback/runner/route.py
+index 0d8d070..d331b25 100644
+--- a/kullback/runner/route.py
++++ b/kullback/runner/route.py
+@@ -9,7 +9,7 @@ from typing import Any, Iterable, NamedTuple, Optional
+ from kullback.runner.canon import canonical_args
+ from kullback.runner.records import ToolCallError, ToolSig, content_hash
+ from kullback.runner.records import plain as _plain
+-from kullback.runner.state import StateView, _db_put
++from kullback.runner.state import StateView, _db_put, _row_model
+ 
+ STATE_PARAMS = ("state", "db", "world", "env")
+ EXCEPTION_CLASSES = {
+@@ -197,13 +197,33 @@ class Router:
+         return list(self.state.overlay_misses) or None
+ 
+     def _code(self, name: str, function: Any, args: dict) -> RouteResult:
++        snapshot = _snapshot_world(self.tools, self.state)
+         try:
+             result = _call(function, self.state, args)
+             return RouteResult(result, "code", self._reads_synthetic(result, args), None, self._misses())
+-        except Exception as exc:  # the customer's tools answer with an error, they do not crash the Run
+-            error_class = _class_of(exc)
+-            sample = _corpus_error(self.sigs.get(name), error_class) if _is_pythons(exc) else None
+-            return self._error(name, error_class, _message_of(exc), sample=sample)
++        except Exception as exc:  # every call is a transaction: a body that raises leaves the world as it found it
++            _restore_world(self.tools, self.state, snapshot)
++            if isinstance(exc, ValueError) or _is_pythons(exc):
++                error_class = _class_of(exc)
++                sample = _corpus_error(self.sigs.get(name), error_class) if _is_pythons(exc) else None
++                return self._error(name, error_class, _message_of(exc), sample=sample)
++            return self._body_fault(name, exc)
++
++    def _body_fault(self, name: str, exc: Exception) -> RouteResult:
++        """A body fault (G27): the body's own bug, never the customer's answer and never a business error.
++
++        The Candidate gets a neutral unavailable answer in the tool's own error encoding. The Run
++        records the tool name and the exception type, never the message, and carries the D88
++        environment mark so the fault counts against the Environment and not the Candidate.
++        """
++        fault = type(exc).__name__
++        encoding = _encoding_for(self.sigs.get(name), "body_fault")
++        result: Any = "unavailable" if encoding == "text" else {"error": "unavailable", "class": "body_fault"}
++        error = ToolCallError(class_="body_fault", payload={"tool": name, "fault": fault},
++                              encoding="json", classified_by="code")
++        misses = self._misses() or []
++        misses.append({"body_fault": name, "fault": fault})
++        return RouteResult(result, "code", False, error, misses)
+ 
+     def _reads_synthetic(self, result: Any, args: dict) -> bool:
+         """The call named or returned a synthetic row (D40): the Run is assisted (D49)."""
+@@ -239,6 +259,86 @@ class Router:
+         return RouteResult(payload, "code", False, error, self._misses())
+ 
+ 
++def _snapshot_world(tools: Any, state: StateView) -> tuple[Any, dict]:
++    """The world before one body runs: the toolkit db and the StateView shared world, as plain data.
++
++    Plain, not aliased: a snapshot that shared objects with the live world would move with it and
++    restore nothing. `_plain` rebuilds every JSON value, which is what generated bodies read and
++    write (pydantic rows, plain columns). Measured at 0.35 ms per call on a 200 row world and
++    1.74 ms on a 1000 row world, so every code route call takes one unconditionally and no mined
++    tool kind is trusted to skip it.
++    """
++    db = getattr(tools, "db", None)
++    return (_plain(db) if db is not None else None, _plain(state.shared))
++
++
++def _restore_world(tools: Any, state: StateView, snapshot: tuple[Any, dict]) -> None:
++    """Roll one body's writes back: the toolkit db and the StateView as the call found them."""
++    db_snapshot, shared_snapshot = snapshot
++    state.shared.clear()
++    state.shared.update(shared_snapshot)
++    _restore_db(getattr(tools, "db", None), db_snapshot)
++
++
++def _prune_added(current: dict, snapshot: dict) -> None:
++    """Drop the rows a body added: everything the snapshot never held."""
++    for key in [key for key in current if key not in snapshot]:
++        del current[key]
++
++
++def _restore_plain_db(db: dict, snapshot: dict) -> None:
++    """Put a plain dict db back: added tables emptied, added rows dropped, kept rows reset."""
++    for table in [key for key in db if key not in snapshot]:
++        if isinstance(db[table], dict):
++            db[table].clear()
++        else:
++            del db[table]
++    for table, rows in snapshot.items():
++        current = db.get(table)
++        if isinstance(current, dict) and isinstance(rows, dict):
++            _prune_added(current, rows)
++            current.update(rows)
++        else:
++            db[table] = rows
++
++
++def _restore_model_table(db: Any, table: str, rows: Any) -> None:
++    """Put one table of a pydantic db back, its row classes rebuilt as `_db_put` builds them."""
++    current = getattr(db, table, None)
++    if not isinstance(current, dict) or not isinstance(rows, dict):
++        return
++    _prune_added(current, rows)
++    model = _row_model(db, table)
++    for row_id, row in rows.items():
++        current[row_id] = model.model_validate(_plain(row)) if model is not None else row
++
++
++def _restore_db(db: Any, snapshot: Any) -> None:
++    """Put a toolkit db back to its snapshot: added rows go, removed rows return, changed rows reset.
++
++    A pydantic db gets its row classes back through the same model lookup `_db_put` uses, so a
++    later body still reads rows by attribute. A plain dict db already holds plain rows, so its
++    snapshot values land as they are. Tables the snapshot never held are emptied, not dropped, so
++    the toolkit keeps its shape.
++    """
++    if db is None or snapshot is None or not isinstance(snapshot, dict):
++        return
++    if isinstance(db, dict):
++        _restore_plain_db(db, snapshot)
++        return
++    for table, rows in snapshot.items():
++        _restore_model_table(db, table, rows)
++    _clear_added_tables(db, snapshot)
++
++
++def _clear_added_tables(db: Any, snapshot: dict) -> None:
++    """Empty the tables a body added: the toolkit keeps its shape, the rows go."""
++    for table in (getattr(type(db), "model_fields", {}) or {}):
++        current = getattr(db, table, None)
++        if table not in snapshot and isinstance(current, dict):
++            current.clear()
++
++
+ def _has_tool_markers(tools: Any) -> bool:
+     """A tau2-shaped toolkit marks its tools; where it does, an unmarked method is not a tool (D45)."""
+     if tools is None:
