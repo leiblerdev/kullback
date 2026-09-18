@@ -142,6 +142,21 @@ def test_module_hash_covers_the_closure():
         "importing a submodule executes its package init"
 
 
+def test_two_modules_that_import_each_other_keep_their_own_hashes():
+    """A cycle gives both modules one closure, so only the module's own name tells them apart.
+
+    The tool compiler imports the sandbox, and the sandbox reaches the compiler again through
+    the effects module, so their closures are the same 42 files. A key that delegates to one of
+    them has to say which, or an edit that should rebuild one stage rebuilds the other as well
+    and the key stops naming the module it carries.
+    """
+    from kullback.builder import compile_env, sandbox
+
+    assert reach.closure_files("kullback.builder.compile_env") == \
+        reach.closure_files("kullback.builder.sandbox"), "pin needs the cycle to still be there"
+    assert reach.closure_hash(compile_env) != reach.closure_hash(sandbox)
+
+
 def test_stage_registry_matches_the_graph():
     """The walk covers exactly the factories the stages graph calls, no more and no fewer."""
     assert reach.factories_in_stages() == set(reach.STAGE_FACTORIES.values())

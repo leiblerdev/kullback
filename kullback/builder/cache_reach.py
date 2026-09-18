@@ -691,6 +691,10 @@ def closure_hash(module: object, exempt: frozenset[str] = EXEMPT) -> str:
     A change to anything the module can call through its imports moves the hash, so a
     stage key built from it cannot be served entries from before the change. Modules
     with no resolvable file fall back to their repr, the old behaviour.
+
+    The module's own name is hashed beside the closure. Two modules that import each
+    other have the same closure, so without the name they would carry the same hash and
+    a stage key could no longer say which of them it delegates to.
     """
     from kullback.runner.records import content_hash
 
@@ -702,4 +706,4 @@ def closure_hash(module: object, exempt: frozenset[str] = EXEMPT) -> str:
 
     files = {key: value for key, value in closure_files(name).items() if key not in exempt}
     digest = {key: hashlib.sha256(value.encode("utf-8")).hexdigest() for key, value in sorted(files.items())}
-    return content_hash(digest)
+    return content_hash({"module": name, "closure": digest})
