@@ -559,5 +559,79 @@ def replay_evidence(effects: dict[str, list[WriteEffect]]) -> dict[str, list[dic
     return out
 
 
-__all__ = ["EffectColumn", "UNATTRIBUTED", "WriteEffect", "counts", "effect_values",
-           "effects_block", "observe_effects", "per_tool_counts", "replay_evidence"]
+def body_made_change(changed_rows: dict, schema: EntitySchema, rules: Any = None
+                   ) -> dict[tuple[str, str, str], Any]:
+    """What a body run left different, as (table, row, path) to the value it left.
+
+    `changed_rows` is table to row id to the row on either side (`{"before": ..., "after": ...}`,
+    None where the run added or deleted the row), both dumped out of the validated world, so what
+    the schema never declared is absent from both and can be neither agreement nor disagreement.
+    Paths an exempt column holds are left out under the same rule `_changed` reads the recording
+    by, so a column that moves on its own can neither agree nor disagree. Nothing here names a
+    domain.
+    """
+    made: dict[tuple[str, str, str], Any] = {}
+    for table, rows in (changed_rows or {}).items():
+        if not isinstance(rows, dict):
+            continue
+        for row_id, pair in rows.items():
+            pair = pair if isinstance(pair, dict) else {}
+            before, after = pair.get("before"), pair.get("after")
+            old = leaves(before) if isinstance(before, dict) else {}
+            new = leaves(after) if isinstance(after, dict) else {}
+            for path in sorted(set(old) | set(new)):
+                if _exempt(schema, str(table), path):
+                    continue
+                if not _canon_same(old.get(path), new.get(path), rules):
+                    made[(str(table), str(row_id), path)] = new.get(path)
+    return made
+
+
+def compare_transition(made: dict[tuple[str, str, str], Any], witnessed: list[dict],
+                       rules: Any = None) -> dict:
+    """Whether what a body changed is what the recording shows that call changing (G6).
+
+    `made` is `body_made_change` over the run and `witnessed` the call's checked evidence rows
+    (`replay_evidence`), each naming a table, a row, a path and the after value the traces
+    showed. The verdict is `agrees` where every witnessed column holds the value the recording
+    shows and no row outside the witnessed ones moved. A witnessed column the body never moved
+    and a column left holding another value are `disagrees`, and so is a row no sighting
+    associates with the call: the recording is the only statement of what the write does, and a
+    side effect no later read owns is what the replay blames a read for (the downstream mark).
+    An extra column on a row the recording does show the call moving is not: sightings are
+    partial, readers home only some columns of each result, so a column no later read displays
+    is usually a column nothing displayed rather than a column that did not move. Failing those
+    refused whole tools' worth of agreeing bodies on the stored workdirs, which is measured in
+    the worker report. Nothing here names a domain.
+    """
+    seen = {(str(row.get("table")), str(row.get("row")), str(row.get("path"))): row.get("after")
+            for row in witnessed or []}
+    seen_rows = {(table, row) for table, row, _path in seen}
+    missing = sorted(set(seen) - set(made))
+    extra = sorted(set(made) - set(seen))
+    wrong = sorted(key for key in sorted(set(made) & set(seen)) if not _canon_same(made[key],
+                                                                                  seen[key],
+                                                                                  rules))
+    extra_rows = sorted({(table, row) for table, row, _path in extra} - seen_rows)
+    return {"verdict": "agrees" if not (missing or wrong or extra_rows) else "disagrees",
+            "missing": [{"table": table, "row": row, "path": path,
+                           "witnessed": seen[(table, row, path)]} for table, row, path in missing],
+            "extra": [{"table": table, "row": row, "path": path,
+                         "made": made[(table, row, path)]} for table, row, path in extra],
+            "extra_rows": [{"table": table, "row": row} for table, row in extra_rows],
+            "wrong": [{"table": table, "row": row, "path": path,
+                         "witnessed": seen[(table, row, path)],
+                         "made": made[(table, row, path)]} for table, row, path in wrong]}
+
+
+def _canon_same(left: Any, right: Any, rules: Any = None) -> bool:
+    """Two values as one under the canon rules, falling back to plain equality."""
+    try:
+        return canon(left, rules) == canon(right, rules)
+    except Exception:
+        return left == right
+
+
+__all__ = ["EffectColumn", "UNATTRIBUTED", "WriteEffect", "body_made_change", "compare_transition",
+           "counts", "effect_values", "effects_block", "observe_effects", "per_tool_counts",
+           "replay_evidence"]
