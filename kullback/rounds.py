@@ -1743,10 +1743,10 @@ class Loop:
         elif record.exit == "max_rounds":
             record.exit_note = f"round cap of {self.max_rounds} reached"
         stale = [row for row in self.tool_errors if not row.get("derived")]
-        if stale and record.exit == "done":
+        if stale and record.exit in ("done", "refused"):
             # D230: the derivation came back an error and no other call of it in that beat came back
             # clean, so the counts this exit reads are the round before's. A run never closes as done
-            # on numbers no derivation refreshed; it ends on the soft stop with the error named, and
+            # or refused on numbers no derivation refreshed; it ends on the soft stop with the error named, and
             # a finding still owed the Builder clears that exit below and buys the beat the exception
             # used to throw away. A beat that did derive cleanly before the error moved its counts,
             # and its exit is read off numbers of this round like any other.
