@@ -573,3 +573,53 @@ def test_the_head_keeps_the_founders_order(ctx, rules, recorded):
              skills_mod.FEEDBACK, skills_mod.STOP]
     positions = [head.index(part) for part in order]
     assert positions == sorted(positions)
+
+
+# --- the conversation appended as messages (G24) --------------------------------------------------
+
+def test_the_conversation_arrives_as_messages_with_the_turn_line_last(ctx, rules, recorded):
+    from kullback.user.agent import TURN_MESSAGE
+    user = agent_for(ctx, rules, ["Thanks, noted.", "At 16:00, thanks."], recorded)
+    user.reply([{"role": "assistant", "content": "Could you provide your plot number?"}])
+    user.reply([{"role": "assistant", "content": "Could you provide your plot number?"},
+                {"role": "user", "content": "Thanks, noted."},
+                {"role": "assistant", "content": "Thank you. What delivery slot would you like?"}])
+    messages = user.model.calls[-1]["messages"]
+    assert [m["role"] for m in messages] == ["system", "user", "assistant", "user", "user"]
+    assert messages[1]["content"] == "Could you provide your plot number?"
+    assert messages[2]["content"] == "Thanks, noted."
+    assert messages[3]["content"] == "Thank you. What delivery slot would you like?"
+    assert messages[4]["content"] == TURN_MESSAGE
+
+
+def test_tool_traffic_is_not_speech_and_never_enters_the_messages(ctx, rules, recorded):
+    user = agent_for(ctx, rules, ["Yes, 16:00."], recorded)
+    user.reply([{"role": "assistant", "content": "What delivery slot would you like?"},
+                {"role": "tool", "tool_call_id": "c1", "name": "move_delivery",
+                 "content": "{\"slot\": \"16:00\"}"}])
+    messages = user.model.calls[-1]["messages"]
+    assert [m["role"] for m in messages] == ["system", "user", "user"]
+    assert all("16:00" not in m["content"] or "slot" in m["content"].lower()
+               for m in messages[1:-1])
+    assert all(m.get("tool_calls", []) == [] for m in messages if m["role"] == "assistant")
+
+
+def test_every_turn_builds_a_new_harness(ctx, rules, recorded):
+    user = agent_for(ctx, rules, ["Thanks, noted."], recorded)
+    transcript = [{"role": "assistant", "content": "Could you provide your plot number?"}]
+    first, second = user.harness(transcript), user.harness(transcript)
+    assert first is not second
+    assert [m.content for m in first.messages] == [m.content for m in second.messages]
+
+
+def test_the_guards_read_the_writes_the_transcript_carries(ctx, rules, recorded):
+    """A write the world refused cannot satisfy the goal; one that took effect does."""
+    moved = {"role": "tool", "tool_call_id": "c1", "name": "move_delivery", "content": "{}"}
+    refused = dict(moved, content="that slot is full", error={"class": "business_error"})
+    question = [{"role": "assistant", "content": "What delivery slot would you like?"}]
+    user_moved = agent_for(ctx, rules, ["Yes, 16:00."], recorded)
+    user_moved.reply(question + [moved])
+    assert user_moved.done and user_moved.end_reason == rules_mod.GOAL_SATISFIED
+    user_refused = agent_for(ctx, rules, ["Yes, 16:00."], recorded)
+    user_refused.reply(question + [refused])
+    assert not user_refused.done

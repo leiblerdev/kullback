@@ -25,6 +25,7 @@ from kullback.agent.context import ContextConfig
 from kullback.agent.events import MessageEnd
 from kullback.agent.extensions import load_extensions
 from kullback.agent.harness import AgentHarness
+from kullback.agent.messages import AssistantMessage, UserMessage
 from kullback.ai.provider import Model
 from kullback.runner import budget
 from kullback.runner.records import Event
@@ -101,7 +102,7 @@ class AgentUser:
         question = _last_assistant(transcript)
         self.box.requested = None
         asked = rules_mod.asked_fields(question, vocab=self.vocab)
-        text = self._model_turn()
+        text = self._model_turn(transcript)
         if text is None:
             return self._from_fallback(transcript)
         outcome = self.guards.check(
@@ -113,12 +114,12 @@ class AgentUser:
 
     # --- the model's turn ----------------------------------------------------------------------
 
-    def _model_turn(self) -> Optional[str]:
+    def _model_turn(self, transcript: Sequence = ()) -> Optional[str]:
         """One model answer over a harness built for this beat, or None when there is no model."""
         if self.model is None:
             self.counts[NO_MODEL] += 1
             return None
-        harness = self.harness()
+        harness = self.harness(transcript)
         opening = OPENING_MESSAGE if not self.events else TURN_MESSAGE
         try:
             return _last_text(harness, opening)
@@ -126,12 +127,16 @@ class AgentUser:
             self.counts[MODEL_FAILED] += 1
             return None
 
-    def harness(self) -> AgentHarness:
-        """The harness of one turn: the stable head over this Task's curated context.
+    def harness(self, transcript: Sequence = ()) -> AgentHarness:
+        """The harness of one turn: the stable head, with the conversation appended as messages.
 
-        No conversation lives in the system prompt, so it is byte identical on every turn of
-        the Task (G24). The conversation arrives as messages."""
+        Spoken turns only: what the Candidate said as the other side, what this user said as
+        itself, with the fixed turn line last. The agent's own tool calls and thinking never
+        persist past the turn, and every turn still builds a new harness, because a user that
+        keeps a transcript of its own thinking between turns is a user with a second memory the
+        recorded person did not have."""
         harness = AgentHarness(model=self.model, max_turns=self.max_tool_turns,
+                               messages=_history_messages(transcript),
                                context=context_config(self.model))
         load_extensions(harness, [user_extension(self.ctx, self.box)])
         return harness
@@ -188,6 +193,21 @@ class AgentUser:
         payload.setdefault("user_end", self.end_reason)
         self.events.append(Event(idx=len(self.events), type="user_turn", payload=payload,
                                  assisted=assisted))
+
+
+def _history_messages(transcript: Sequence) -> list:
+    """The conversation so far as real messages for one turn's harness."""
+    out = []
+    for message in transcript or ():
+        role = rules_mod._field_of(message, "role")
+        content = (rules_mod._field_of(message, "content") or "").strip()
+        if not content:
+            continue
+        if role == "assistant":
+            out.append(UserMessage(content=content))
+        elif role == "user":
+            out.append(AssistantMessage(content=content))
+    return out
 
 
 def _rules_of(fallback: Any):
