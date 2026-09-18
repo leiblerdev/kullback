@@ -231,6 +231,31 @@ def _declared_specs(traces: list[Trace]) -> dict[str, dict]:
     return specs
 
 
+def _note_call_ref(acc: dict, trace_id: str, call_index: int, call: Any) -> None:
+    """One call's place for the support sample, capped; only assistant calls witness the world."""
+    acc["ref_count"] += 1
+    if len(acc["refs"]) < MAX_SUPPORT_CALLS:
+        acc["refs"].append([trace_id, call_index])
+    if not is_assistant_call(call):
+        return
+    acc["assistant_ref_count"] += 1
+    by_trace = acc["assistant_by_trace"]
+    by_trace[trace_id] = by_trace.get(trace_id, 0) + 1
+    if len(acc["assistant_refs"]) < MAX_SUPPORT_CALLS:
+        acc["assistant_refs"].append([trace_id, call_index])
+
+
+def _note_result_ref(acc: dict, trace_id: str, call_index: int, parsed: Any) -> None:
+    """One answered call's place for the echo and message signals, capped."""
+    acc["result_ref_count"] += 1
+    if len(acc["result_refs"]) < MAX_SUPPORT_CALLS:
+        acc["result_refs"].append([trace_id, call_index])
+    if isinstance(parsed, str):
+        acc["message_ref_count"] += 1
+        if len(acc["message_refs"]) < MAX_SUPPORT_CALLS:
+            acc["message_refs"].append([trace_id, call_index])
+
+
 def _accumulate(traces: list[Trace]) -> dict[str, dict]:
     """Every requestor's calls, per tool name (D164).
 
@@ -247,15 +272,7 @@ def _accumulate(traces: list[Trace]) -> dict[str, dict]:
             if not _is_refusal(call):
                 acc["answered"].add(_requestor_of(call))
             acc["calls"] += 1
-            acc["ref_count"] += 1
-            if len(acc["refs"]) < MAX_SUPPORT_CALLS:
-                acc["refs"].append([trace.trace_id, call_index])
-            if is_assistant_call(call):
-                acc["assistant_ref_count"] += 1
-                by_trace = acc["assistant_by_trace"]
-                by_trace[trace.trace_id] = by_trace.get(trace.trace_id, 0) + 1
-                if len(acc["assistant_refs"]) < MAX_SUPPORT_CALLS:
-                    acc["assistant_refs"].append([trace.trace_id, call_index])
+            _note_call_ref(acc, trace.trace_id, call_index, call)
             if trace.trace_id not in acc["traces"]:
                 acc["traces"].append(trace.trace_id)
             acc["arg_calls"] += 1
@@ -277,15 +294,9 @@ def _accumulate(traces: list[Trace]) -> dict[str, dict]:
                 continue
             parsed = _parse(call.result)
             acc["result_calls"] += 1
-            acc["result_ref_count"] += 1
-            if len(acc["result_refs"]) < MAX_SUPPORT_CALLS:
-                acc["result_refs"].append([trace.trace_id, call_index])
+            _note_result_ref(acc, trace.trace_id, call_index, parsed)
             acc["echoed"] += _echoed_share(call.args or {}, parsed)
-            if isinstance(parsed, str):
-                acc["messages"] += 1
-                acc["message_ref_count"] += 1
-                if len(acc["message_refs"]) < MAX_SUPPORT_CALLS:
-                    acc["message_refs"].append([trace.trace_id, call_index])
+            acc["messages"] += isinstance(parsed, str)
             for name, types in _fields(parsed).items():
                 _note_field(acc["results"], name, types, trace.trace_id)
             if len(acc["samples"]) < MAX_SAMPLES:
@@ -499,6 +510,21 @@ def _stronger(a: Optional[str], b: str) -> str:
     return max([a or "low", b], key=lambda c: CONFIDENCE_ORDER.index(c) if c in CONFIDENCE_ORDER else 0)
 
 
+def _effect_support(sig: ToolSig, acc: Optional[dict]) -> dict:
+    """The calls behind an effect observation: the tool's assistant calls in the effect traces."""
+    effect_traces = {e.trace_id for e in sig.effects_observed}
+    by_trace = (acc or {}).get("assistant_by_trace") or {}
+    sample = [ref for ref in (acc or {}).get("assistant_refs", [])
+              if ref[0] in effect_traces][:MAX_SUPPORT_CALLS]
+    return {"supporting_calls": sample,
+            "support_count": sum(by_trace.get(trace_id, 0) for trace_id in effect_traces)}
+
+
+def _call_support(acc: Optional[dict], refs_key: str, count: int) -> dict:
+    """The calls behind an echo or message observation, capped, with the full count."""
+    return {"supporting_calls": list((acc or {}).get(refs_key, [])), "support_count": count}
+
+
 def _observed_kind(sig: ToolSig, rule: KindProposal, acc: Optional[dict],
                    quiet: Optional[set] = None) -> Optional[tuple[KindProposal, dict]]:
     """What the recorded calls themselves say about a tool's kind, in order of how much they say.
@@ -523,28 +549,61 @@ def _observed_kind(sig: ToolSig, rule: KindProposal, acc: Optional[dict],
     """
     if sig.effects_observed:
         fields = ", ".join(sorted({e.field for e in sig.effects_observed})[:3])
-        effect_traces = {e.trace_id for e in sig.effects_observed}
-        by_trace = (acc or {}).get("assistant_by_trace") or {}
-        sample = [ref for ref in (acc or {}).get("assistant_refs", [])
-                  if ref[0] in effect_traces][:MAX_SUPPORT_CALLS]
-        count = sum(by_trace.get(trace_id, 0) for trace_id in effect_traces)
         return (KindProposal("write", "high", f"observed effect on {fields}", "observed"),
-                {"supporting_calls": sample, "support_count": count})
+                _effect_support(sig, acc))
     results = (acc or {}).get("result_calls") or 0
     if results and (acc["echoed"] / results) > 0.5:
         return (KindProposal("write", "high",
                              f"{acc['echoed'] / results:.0%} of what came back was what the call sent, "
                              "so the call made the thing rather than found it", "observed"),
-                {"supporting_calls": list((acc or {}).get("result_refs", [])),
-                 "support_count": results})
+                _call_support(acc, "result_refs", results))
     if results >= MIN_OBSERVED_CALLS and acc["messages"] == results and rule.confidence == "low" \
             and _has_id_argument(sig) and sig.name not in (quiet or set()):
         return (KindProposal("write", "medium",
                              "every call answered with a message about a row it was handed rather "
                              "than with data, and no read of that row ever showed it unmoved", "observed"),
-                {"supporting_calls": list((acc or {}).get("message_refs", [])),
-                 "support_count": acc.get("message_ref_count", results)})
+                _call_support(acc, "message_refs", acc.get("message_ref_count", results)))
     return None
+
+
+def _apply_observed_kind(sig: ToolSig, rule: KindProposal, standing_basis: str,
+                       observed: KindProposal, support: dict) -> None:
+    """Fold one observed kind into the standing one: confirm, yield, or record the clash.
+
+    Agreement confirms without ever lowering an earned confidence. A declaration the calls
+    contradict keeps standing with the disagreement recorded. Anything else yields to the calls,
+    and a contradiction of the name is said out loud.
+    """
+    words = _support_words(support["supporting_calls"], support["support_count"])
+    if observed.kind == sig.kind:
+        sig.kind_confidence = _stronger(sig.kind_confidence, observed.confidence)
+        sig.kind_reason = f"{sig.kind_reason}; {observed.reason}{words}"
+        if standing_basis != BASIS_DECLARED:
+            sig.classified_by = BASIS_OBSERVED
+    elif standing_basis == BASIS_DECLARED:
+        # The declaration stands over the calls; the disagreement is recorded, not resolved.
+        sig.kind_reason = (f"{sig.kind_reason}; the recorded calls suggest {observed.kind} "
+                           f"({observed.reason}{words}), but the declared kind stands")
+    else:
+        if standing_basis == BASIS_NAME and rule.confidence != "low":
+            sig.kind_reason = (f"{sig.kind_reason}; contradicts the name: "
+                               f"{observed.reason}{words}")
+        else:
+            sig.kind_reason = f"{observed.reason}{words}"
+        sig.kind = observed.kind
+        sig.kind_confidence = observed.confidence
+        sig.classified_by = BASIS_OBSERVED
+    sig.unclassified = False
+
+
+def _stamp_kind_basis(sig: ToolSig) -> None:
+    """Say the kind's basis out loud: a name basis carries no supporting calls."""
+    if sig.classified_by == BASIS_DECLARED:
+        sig.kind_reason = f"{sig.kind_reason}; basis: declared by the source, no supporting calls"
+    elif sig.classified_by == BASIS_OBSERVED:
+        sig.kind_reason = f"{sig.kind_reason}; basis: observed"
+    elif sig.classified_by == "rule":
+        sig.kind_reason = f"{sig.kind_reason}; basis: name, no supporting calls"
 
 
 def _decide_kind(sig: ToolSig, model: Optional[Model], samples: list, spec: Optional[dict] = None,
@@ -584,34 +643,8 @@ def _decide_kind(sig: ToolSig, model: Optional[Model], samples: list, spec: Opti
     if found is not None:  # D68: what the calls show beats the name rule and the LLM
         # Evidence that agrees with what already stands is a confirmation, not a downgrade: it must
         # never lower a confidence the annotations or the LLM had already earned.
-        observed, support = found
-        words = _support_words(support["supporting_calls"], support["support_count"])
-        agrees = observed.kind == sig.kind
-        if agrees:
-            sig.kind_confidence = _stronger(sig.kind_confidence, observed.confidence)
-            sig.kind_reason = f"{sig.kind_reason}; {observed.reason}{words}"
-            if standing_basis != BASIS_DECLARED:
-                sig.classified_by = BASIS_OBSERVED
-        elif standing_basis == BASIS_DECLARED:
-            # The declaration stands over the calls; the disagreement is recorded, not resolved.
-            sig.kind_reason = (f"{sig.kind_reason}; the recorded calls suggest {observed.kind} "
-                               f"({observed.reason}{words}), but the declared kind stands")
-        else:
-            if standing_basis == BASIS_NAME and rule.confidence != "low":
-                sig.kind_reason = (f"{sig.kind_reason}; contradicts the name: "
-                                   f"{observed.reason}{words}")
-            else:
-                sig.kind_reason = f"{observed.reason}{words}"
-            sig.kind = observed.kind
-            sig.kind_confidence = observed.confidence
-            sig.classified_by = BASIS_OBSERVED
-        sig.unclassified = False
-    if sig.classified_by == BASIS_DECLARED:
-        sig.kind_reason = f"{sig.kind_reason}; basis: declared by the source, no supporting calls"
-    elif sig.classified_by == BASIS_OBSERVED:
-        sig.kind_reason = f"{sig.kind_reason}; basis: observed"
-    elif sig.classified_by == "rule":
-        sig.kind_reason = f"{sig.kind_reason}; basis: name, no supporting calls"
+        _apply_observed_kind(sig, rule, standing_basis, found[0], found[1])
+    _stamp_kind_basis(sig)
 
 
 def _callers_of(acc: dict, declared: bool) -> tuple[list[str], list[str]]:
@@ -1155,6 +1188,38 @@ def table_for_id(column: str) -> str:
     return _plural(_entity_of(column))
 
 
+def _name_fact() -> dict:
+    """The fact for a homing the name rules decide: the name stands with no supporting calls."""
+    return {"basis": BASIS_NAME, "supporting_calls": [],
+            "support_count": 0, "contradicts_name": False}
+
+
+def _home_without_asked(ids: list, noun: Optional[str], siblings: Sequence[dict],
+                        support: list, row: dict) -> tuple:
+    """The noun, distinct, only-id and bare-id fallbacks of `_home_of`, unchanged in outcome."""
+    for key in ids:
+        if _entity_of(key) == noun:
+            return (_plural(_entity_of(key)), f"the tool name is about {noun}, which {key} names",
+                    _name_fact())
+    if len(ids) > 1:
+        distinct = [key for key in ids if _distinct_across(key, siblings)]
+        if len(distinct) == 1:
+            table = _plural(_entity_of(distinct[0]))
+            return (table,
+                    f"{distinct[0]} is the one id distinct across the rows the call answered",
+                    {"basis": BASIS_OBSERVED, "supporting_calls": support,
+                     "support_count": 1 if support else 0,
+                     "contradicts_name": noun is not None and table != _plural(noun)})
+    if len(ids) == 1:
+        return (_plural(_entity_of(ids[0])), f"{ids[0]} is the row's only id", _name_fact())
+    if not ids and any(key == "id" for key in row):
+        if noun:
+            return (_plural(noun), f"the row's only id is `id`, so the table is the tool's noun {noun}",
+                    _name_fact())
+        return None, "the row's only id is `id` and the tool name names no entity", None
+    return None, "no id of the row names an entity, and the call passed none of its values", None
+
+
 def _home_of(tool_name: str, row: dict, id_names: Sequence[str] = (), siblings: Sequence[dict] = (),
              args: Optional[dict] = None, call_ref: Optional[list] = None) -> tuple:
     """The entity a result row is about, the rule that says so, and the fact behind the rule.
@@ -1194,31 +1259,7 @@ def _home_of(tool_name: str, row: dict, id_names: Sequence[str] = (), siblings: 
                 {"basis": BASIS_OBSERVED, "supporting_calls": support,
                  "support_count": 1 if support else 0,
                  "contradicts_name": noun is not None and table != _plural(noun)})
-    for key in ids:
-        if _entity_of(key) == noun:
-            return (_plural(_entity_of(key)), f"the tool name is about {noun}, which {key} names",
-                    {"basis": BASIS_NAME, "supporting_calls": [],
-                     "support_count": 0, "contradicts_name": False})
-    if len(ids) > 1:
-        distinct = [key for key in ids if _distinct_across(key, siblings)]
-        if len(distinct) == 1:
-            table = _plural(_entity_of(distinct[0]))
-            return (table,
-                    f"{distinct[0]} is the one id distinct across the rows the call answered",
-                    {"basis": BASIS_OBSERVED, "supporting_calls": support,
-                     "support_count": 1 if support else 0,
-                     "contradicts_name": noun is not None and table != _plural(noun)})
-    if len(ids) == 1:
-        return (_plural(_entity_of(ids[0])), f"{ids[0]} is the row's only id",
-                {"basis": BASIS_NAME, "supporting_calls": [],
-                 "support_count": 0, "contradicts_name": False})
-    if not ids and any(key == "id" for key in row):
-        if noun:
-            return (_plural(noun), f"the row's only id is `id`, so the table is the tool's noun {noun}",
-                    {"basis": BASIS_NAME, "supporting_calls": [],
-                     "support_count": 0, "contradicts_name": False})
-        return None, "the row's only id is `id` and the tool name names no entity", None
-    return None, "no id of the row names an entity, and the call passed none of its values", None
+    return _home_without_asked(ids, noun, siblings, support, row)
 
 
 def _table_of(tool_name: str, row: dict, id_names: Sequence[str] = (), siblings: Sequence[dict] = (),
@@ -1263,6 +1304,18 @@ def id_columns(traces: list[Trace]) -> set[str]:
     return {name for name, ok in distinct.items() if ok} | {n for n in addressed if _is_id(n)}
 
 
+def _repeating_ids(rows: list[dict]) -> set[str]:
+    """Name-rule id columns carrying one value on two rows one call answered together."""
+    names = {key for row in rows for key in row
+             if isinstance(key, str) and _is_id(key)}
+    out = set()
+    for name in names:
+        values = [canonical_json(row[name]) for row in rows if name in row]
+        if len(values) > 1 and len(set(values)) < len(values):
+            out.add(name)
+    return out
+
+
 def _refuted_with_calls(traces: list[Trace]) -> dict[str, dict]:
     """Name-rule id columns seen repeating, with the results that show it, capped, and the count."""
     refs: dict[str, list] = {}
@@ -1276,14 +1329,10 @@ def _refuted_with_calls(traces: list[Trace]) -> dict[str, dict]:
             rows = _result_rows(_parse(call.result))
             if len(rows) < 2:
                 continue
-            names = {key for row in rows for key in row
-                     if isinstance(key, str) and _is_id(key)}
-            for name in names:
-                values = [canonical_json(row[name]) for row in rows if name in row]
-                if len(values) > 1 and len(set(values)) < len(values):
-                    counts[name] = counts.get(name, 0) + 1
-                    if len(refs.setdefault(name, [])) < MAX_SUPPORT_CALLS:
-                        refs[name].append([trace.trace_id, call_index])
+            for name in _repeating_ids(rows):
+                counts[name] = counts.get(name, 0) + 1
+                if len(refs.setdefault(name, [])) < MAX_SUPPORT_CALLS:
+                    refs[name].append([trace.trace_id, call_index])
     return {name: {"supporting_calls": refs[name], "support_count": counts[name]} for name in refs}
 
 
@@ -1425,6 +1474,73 @@ def _column_basis(evidence: dict, classified_by: str, key: str) -> str:
     return {BASIS_OBSERVED: BASIS_OBSERVED, BASIS_LLM: BASIS_LLM}.get(classified_by, BASIS_NAME)
 
 
+def _count_kinds(sigs: Sequence[Any], counts: dict) -> None:
+    """Tool kind facts off the sigs' basis."""
+    for sig in sigs or ():
+        basis = kind_basis_of(sig)
+        counts["tool_kind"][basis] += 1
+        counts["tool_kind"]["total"] += 1
+
+
+def _count_id_table(evidence: dict, name: str, counts: dict) -> None:
+    """One column's id fact and table fact, with the fallback for older records."""
+    id_fact = evidence.get(ID_FACT_KEY, False)
+    if ID_BASIS_KEY not in evidence and ID_FACT_KEY not in evidence and _is_id(str(name)):
+        id_fact, fallback = True, BASIS_NAME
+    else:
+        fallback = None
+    if not id_fact:
+        return
+    id_basis = evidence.get(ID_BASIS_KEY, fallback or BASIS_NAME)
+    if id_basis not in counts["id_column"]:
+        id_basis = BASIS_NAME
+    counts["id_column"][id_basis] += 1
+    counts["id_column"]["total"] += 1
+    table_basis = evidence.get(TABLE_BASIS_KEY, BASIS_NAME)
+    if table_basis not in counts["table_name"]:
+        table_basis = BASIS_NAME
+    counts["table_name"][table_basis] += 1
+    counts["table_name"]["total"] += 1
+
+
+def _count_columns(columns: Sequence[Any], counts: dict) -> None:
+    """Column class facts off each column, then its id and table facts."""
+    for column in columns or ():
+        evidence = getattr(column, "evidence", None) or {}
+        classified_by = getattr(column, "classified_by", "rule") or "rule"
+        basis = _column_basis(evidence, classified_by, CLASS_BASIS_KEY)
+        counts["column_class"][basis] += 1
+        counts["column_class"]["total"] += 1
+        _count_id_table(evidence, getattr(column, "name", "") or "", counts)
+
+
+def _home_basis(place: dict) -> str:
+    """One homed entry's basis, with the fallback for entries written before the basis rode along."""
+    basis = place.get("basis")
+    if basis in (BASIS_OBSERVED, BASIS_NAME):
+        return basis
+    rule = str(place.get("rule", ""))
+    return (BASIS_OBSERVED if "the call passed the value of" in rule
+            or "distinct across" in rule else BASIS_NAME)
+
+
+def _count_homes(homes: dict, counts: dict) -> None:
+    """Row homing facts off the homed rows; rows no rule could home count apart."""
+    unhomed = 0
+    for entry in (homes or {}).values():
+        if not isinstance(entry, dict):
+            continue
+        unhomed += int(entry.get("unhomed", 0) or 0)
+        for place in (entry.get("homed", {}) or {}).values():
+            if not isinstance(place, dict):
+                continue
+            rows = int(place.get("rows", 0) or 0)
+            basis = _home_basis(place)
+            counts["row_home"][basis] += rows
+            counts["row_home"]["total"] += rows
+    counts["row_home"]["unhomed"] = unhomed
+
+
 def mined_name_counts(sigs: Sequence[Any], columns: Sequence[Any], homes: dict) -> dict:
     """Per fact kind, how many mined facts rest on a name alone: the measure of this task.
 
@@ -1439,50 +1555,9 @@ def mined_name_counts(sigs: Sequence[Any], columns: Sequence[Any], homes: dict) 
     """
     counts = {kind: {BASIS_NAME: 0, BASIS_OBSERVED: 0, BASIS_DECLARED: 0, BASIS_LLM: 0, "total": 0}
               for kind in ("tool_kind", "column_class", "id_column", "table_name", "row_home")}
-    for sig in sigs or ():
-        basis = kind_basis_of(sig)
-        counts["tool_kind"][basis] += 1
-        counts["tool_kind"]["total"] += 1
-    for column in columns or ():
-        evidence = getattr(column, "evidence", None) or {}
-        classified_by = getattr(column, "classified_by", "rule") or "rule"
-        name = getattr(column, "name", "") or ""
-        basis = _column_basis(evidence, classified_by, CLASS_BASIS_KEY)
-        counts["column_class"][basis] += 1
-        counts["column_class"]["total"] += 1
-        id_fact = evidence.get(ID_FACT_KEY, False)
-        if ID_BASIS_KEY not in evidence and ID_FACT_KEY not in evidence and _is_id(str(name)):
-            id_fact, id_fallback = True, BASIS_NAME
-        else:
-            id_fallback = None
-        if id_fact:
-            id_basis = evidence.get(ID_BASIS_KEY, id_fallback or BASIS_NAME)
-            if id_basis not in counts["id_column"]:
-                id_basis = BASIS_NAME
-            counts["id_column"][id_basis] += 1
-            counts["id_column"]["total"] += 1
-            table_basis = evidence.get(TABLE_BASIS_KEY, BASIS_NAME)
-            if table_basis not in counts["table_name"]:
-                table_basis = BASIS_NAME
-            counts["table_name"][table_basis] += 1
-            counts["table_name"]["total"] += 1
-    unhomed = 0
-    for entry in (homes or {}).values():
-        if not isinstance(entry, dict):
-            continue
-        unhomed += int(entry.get("unhomed", 0) or 0)
-        for place in (entry.get("homed", {}) or {}).values():
-            if not isinstance(place, dict):
-                continue
-            rows = int(place.get("rows", 0) or 0)
-            basis = place.get("basis")
-            if basis not in (BASIS_OBSERVED, BASIS_NAME):
-                rule = str(place.get("rule", ""))
-                basis = (BASIS_OBSERVED if "the call passed the value of" in rule
-                         or "distinct across" in rule else BASIS_NAME)
-            counts["row_home"][basis] += rows
-            counts["row_home"]["total"] += rows
-    counts["row_home"]["unhomed"] = unhomed
+    _count_kinds(sigs, counts)
+    _count_columns(columns, counts)
+    _count_homes(homes, counts)
     return counts
 
 
@@ -1600,29 +1675,48 @@ def propose_column_class(table: str, name: str, values: list, count: Optional[in
         return _classed("hard", "high", "column name looks like an id",
                         evidence, BASIS_NAME, None, False)
     contradicts = _is_id(name) and id_refuted
-    if EXEMPT_TIME_NAME.search(lower) or EXEMPT_COUNTER_NAME.search(lower):
-        if not sighted:
-            return _classed("exempt", "high",
-                            "column name reads as a system timestamp or a counter",
-                            evidence, BASIS_NAME, None, False)
-        if EXEMPT_TIME_NAME.search(lower):
-            corroborated = _timestamps_shaped(present)
-            contradicted = bool(present) and not _timestamps_shaped(present)
-        else:
-            corroborated = _counter_like(present)
-            contradicted = bool(present) and not _counter_shaped(present)
-        if corroborated:
-            return _classed("exempt", "high",
-                            "column name reads as a system timestamp or a counter and every "
-                            "sighting looks like one", evidence, BASIS_OBSERVED, support, False)
-        if contradicted:
-            # The values are neither timestamps nor counters: the name is contradicted, not thin,
-            # so the value rules below decide with the contradiction recorded.
-            contradicts = True
-        else:
-            return _classed("exempt", "high",
-                            "column name reads as a system timestamp or a counter",
-                            evidence, BASIS_NAME, None, False)
+    ruling, exempt_contra = _exempt_name_ruling(lower, present, sighted, evidence, support)
+    if ruling is not None:
+        return ruling
+    return _class_by_value(lower, present, texts, evidence, support, contradicts or exempt_contra)
+
+
+def _exempt_name_ruling(lower: str, present: list, sighted: bool, evidence: dict,
+                      support: Optional[dict]) -> tuple:
+    """The timestamp-or-counter name block: a ruling, or (None, contradicted) to fall through.
+
+    Corroborated names are observed exempt. Names the values contradict fall through to the value
+    rules with the contradiction said. Names the values leave thin keep the name rule: the calls
+    are silent, not contrary.
+    """
+    if not (EXEMPT_TIME_NAME.search(lower) or EXEMPT_COUNTER_NAME.search(lower)):
+        return None, False
+    if not sighted:
+        return _classed("exempt", "high",
+                        "column name reads as a system timestamp or a counter",
+                        evidence, BASIS_NAME, None, False), False
+    if EXEMPT_TIME_NAME.search(lower):
+        corroborated = _timestamps_shaped(present)
+        contradicted = bool(present) and not _timestamps_shaped(present)
+    else:
+        corroborated = _counter_like(present)
+        contradicted = bool(present) and not _counter_shaped(present)
+    if corroborated:
+        return _classed("exempt", "high",
+                        "column name reads as a system timestamp or a counter and every "
+                        "sighting looks like one", evidence, BASIS_OBSERVED, support, False), False
+    if contradicted:
+        # The values are neither timestamps nor counters: the name is contradicted, not thin,
+        # so the value rules below decide with the contradiction recorded.
+        return None, True
+    return _classed("exempt", "high",
+                    "column name reads as a system timestamp or a counter",
+                    evidence, BASIS_NAME, None, False), False
+
+
+def _class_by_value(lower: str, present: list, texts: list, evidence: dict,
+                    support: Optional[dict], contradicts: bool) -> ClassProposal:
+    """Soft time names and the value-shape rules: counters, readings, prose, enums, the default."""
     if SOFT_TIME_NAME.search(lower):
         # A birth date, a delivery date or a version is business data a Candidate must not corrupt,
         # so only the value shape may excuse it from comparison, and then only for review to confirm.
@@ -2014,6 +2108,39 @@ def write_tool_names(traces: list[Trace]) -> set[str]:
     return {sig.name for sig in mine_tools(traces) if sig.kind == "write"}
 
 
+def _note_sighting(sightings: dict, table: str, name: str, trace_id: str, call_index: int) -> None:
+    """One sighting of one column for the class support sample, capped with the full count."""
+    sight = sightings.setdefault((table, name), {"supporting_calls": [], "support_count": 0})
+    sight["support_count"] += 1
+    if len(sight["supporting_calls"]) < MAX_SUPPORT_CALLS:
+        sight["supporting_calls"].append([trace_id, call_index])
+
+
+def _id_table_evidence(name: str, observed: bool, refuted: set, id_refs: dict,
+                       refuting: dict) -> dict:
+    """The id fact and the table fact for one column the miner reads an identity off.
+
+    A refuted name-rule id is an observed negative; an addressed column is an observed id; a
+    name-rule id the calls never speak of rests on the name. The table a column names has no
+    observation test a call could run, so its basis is always the name: the punt, said out loud.
+    """
+    if name in refuted:
+        basis = BASIS_OBSERVED
+        ref = refuting.get(name, {"supporting_calls": [], "support_count": 0})
+        contra = True
+    elif observed:
+        basis = BASIS_OBSERVED
+        ref = id_refs.get(name, {"supporting_calls": [], "support_count": 0})
+        contra = False
+    else:
+        basis = BASIS_NAME
+        ref = {"supporting_calls": [], "support_count": 0}
+        contra = False
+    return {ID_FACT_KEY: True, ID_BASIS_KEY: basis, ID_SUPPORT_KEY: ref["supporting_calls"],
+            ID_SUPPORT_COUNT_KEY: ref["support_count"], ID_CONTRADICTS_KEY: contra,
+            TABLE_BASIS_KEY: BASIS_NAME}
+
+
 def mine_schema(traces: list[Trace], db_json_path: Optional[Path] = None,
                 model: Optional[Model] = None,
                 write_tools: Optional[Sequence[str]] = None) -> EntitySchema:
@@ -2043,12 +2170,7 @@ def mine_schema(traces: list[Trace], db_json_path: Optional[Path] = None,
                     continue
                 for name, value in row.items():
                     _add_value(store, table, str(name), value)
-                    sight = sightings.setdefault(
-                        (table, str(name)),
-                        {"supporting_calls": [], "support_count": 0})
-                    sight["support_count"] += 1
-                    if len(sight["supporting_calls"]) < MAX_SUPPORT_CALLS:
-                        sight["supporting_calls"].append([trace.trace_id, call_index])
+                    _note_sighting(sightings, table, str(name), trace.trace_id, call_index)
     # A table the corpus also stores inside another table's rows: its nested sightings are
     # sightings of its columns too, and the place seen most often is recorded as its home.
     homes: dict[str, str] = {}
@@ -2071,27 +2193,7 @@ def mine_schema(traces: list[Trace], db_json_path: Optional[Path] = None,
                                             support=sight)
             evidence = dict(proposal.evidence)
             if observed or _is_id(name):
-                # The id fact and the table fact, on the record. The table a column names has
-                # no observation test a call could run (a call cannot say what a table is
-                # called), so its basis is always the name; that is the punt, said out loud.
-                if name in refuted:
-                    id_basis = BASIS_OBSERVED
-                    id_ref = refuting.get(name, {"supporting_calls": [], "support_count": 0})
-                    id_contra = True
-                elif observed:
-                    id_basis = BASIS_OBSERVED
-                    id_ref = id_refs.get(name, {"supporting_calls": [], "support_count": 0})
-                    id_contra = False
-                else:
-                    id_basis = BASIS_NAME
-                    id_ref = {"supporting_calls": [], "support_count": 0}
-                    id_contra = False
-                evidence[ID_FACT_KEY] = True
-                evidence[ID_BASIS_KEY] = id_basis
-                evidence[ID_SUPPORT_KEY] = id_ref["supporting_calls"]
-                evidence[ID_SUPPORT_COUNT_KEY] = id_ref["support_count"]
-                evidence[ID_CONTRADICTS_KEY] = id_contra
-                evidence[TABLE_BASIS_KEY] = BASIS_NAME
+                evidence.update(_id_table_evidence(name, observed, refuted, id_refs, refuting))
             column = Column(table=table, name=name, class_=proposal.column_class,
                             class_rule=proposal.column_class, class_confidence=proposal.confidence,
                             class_reason=proposal.reason, classified_by="rule",

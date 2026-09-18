@@ -58,6 +58,72 @@ def _mined_blank() -> dict:
     return {"name": 0, "observed": 0, "declared": 0, "llm": 0, "total": 0}
 
 
+def _count_report_kinds(tool_sigs: list, counts: dict) -> None:
+    """Tool kind facts off the sigs' basis; the code rule is the name read out loud."""
+    for sig in tool_sigs:
+        basis = getattr(sig, "classified_by", "rule")
+        basis = basis if basis in _MINED_BASES else "name"
+        counts["tool_kind"][basis] += 1
+        counts["tool_kind"]["total"] += 1
+
+
+def _count_report_id_table(evidence: dict, name: str, counts: dict) -> None:
+    """One column's id fact and table fact, with the fallback for older records."""
+    id_fact = bool(evidence.get("id_fact", False))
+    if "id_basis" not in evidence and "id_fact" not in evidence:
+        id_fact = name == "id" or name.endswith("_id")
+    if not id_fact:
+        return
+    id_basis = evidence.get("id_basis", "name")
+    id_basis = id_basis if id_basis in _MINED_BASES else "name"
+    counts["id_column"][id_basis] += 1
+    counts["id_column"]["total"] += 1
+    table_basis = evidence.get("table_basis", "name")
+    table_basis = table_basis if table_basis in _MINED_BASES else "name"
+    counts["table_name"][table_basis] += 1
+    counts["table_name"]["total"] += 1
+
+
+def _count_report_columns(mined_columns: list, counts: dict) -> None:
+    """Column class facts off each column, then its id and table facts."""
+    for column in mined_columns:
+        evidence = getattr(column, "evidence", None) or {}
+        classified_by = getattr(column, "classified_by", "rule") or "rule"
+        basis = evidence.get("class_basis")
+        if basis not in _MINED_BASES:
+            basis = classified_by if classified_by in ("observed", "llm") else "name"
+        counts["column_class"][basis] += 1
+        counts["column_class"]["total"] += 1
+        _count_report_id_table(evidence, getattr(column, "name", "") or "", counts)
+
+
+def _report_home_basis(place: dict) -> str:
+    """One homed entry's basis, with the fallback for entries written before the basis rode along."""
+    basis = place.get("basis")
+    if basis in ("observed", "name"):
+        return basis
+    rule = str(place.get("rule", ""))
+    return ("observed" if "the call passed the value of" in rule
+            or "distinct across" in rule else "name")
+
+
+def _count_report_homes(row_homes: dict, counts: dict) -> None:
+    """Row homing facts off the homed rows; rows no rule could home count apart."""
+    unhomed = 0
+    for entry in (row_homes or {}).values():
+        if not isinstance(entry, dict):
+            continue
+        unhomed += int(entry.get("unhomed", 0) or 0)
+        for place in (entry.get("homed", {}) or {}).values():
+            if not isinstance(place, dict):
+                continue
+            rows = int(place.get("rows", 0) or 0)
+            basis = _report_home_basis(place)
+            counts["row_home"][basis] += rows
+            counts["row_home"]["total"] += rows
+    counts["row_home"]["unhomed"] = unhomed
+
+
 def mined_evidence_counts(data: ReportData) -> dict:
     """Per fact kind, how many mined facts rest on a name alone (G32), off the stored records.
 
@@ -70,49 +136,9 @@ def mined_evidence_counts(data: ReportData) -> dict:
     """
     counts = {kind: _mined_blank()
               for kind in ("tool_kind", "column_class", "id_column", "table_name", "row_home")}
-    for sig in data.tool_sigs:
-        basis = getattr(sig, "classified_by", "rule")
-        basis = basis if basis in _MINED_BASES else "name"
-        counts["tool_kind"][basis] += 1
-        counts["tool_kind"]["total"] += 1
-    for column in data.mined_columns:
-        evidence = getattr(column, "evidence", None) or {}
-        classified_by = getattr(column, "classified_by", "rule") or "rule"
-        basis = evidence.get("class_basis")
-        if basis not in _MINED_BASES:
-            basis = classified_by if classified_by in ("observed", "llm") else "name"
-        counts["column_class"][basis] += 1
-        counts["column_class"]["total"] += 1
-        name = getattr(column, "name", "") or ""
-        id_fact = bool(evidence.get("id_fact", False))
-        if "id_basis" not in evidence and "id_fact" not in evidence:
-            id_fact = name == "id" or name.endswith("_id")
-        if id_fact:
-            id_basis = evidence.get("id_basis", "name")
-            id_basis = id_basis if id_basis in _MINED_BASES else "name"
-            counts["id_column"][id_basis] += 1
-            counts["id_column"]["total"] += 1
-            table_basis = evidence.get("table_basis", "name")
-            table_basis = table_basis if table_basis in _MINED_BASES else "name"
-            counts["table_name"][table_basis] += 1
-            counts["table_name"]["total"] += 1
-    unhomed = 0
-    for entry in (data.row_homes or {}).values():
-        if not isinstance(entry, dict):
-            continue
-        unhomed += int(entry.get("unhomed", 0) or 0)
-        for place in (entry.get("homed", {}) or {}).values():
-            if not isinstance(place, dict):
-                continue
-            rows = int(place.get("rows", 0) or 0)
-            basis = place.get("basis")
-            if basis not in ("observed", "name"):
-                rule = str(place.get("rule", ""))
-                basis = ("observed" if "the call passed the value of" in rule
-                         or "distinct across" in rule else "name")
-            counts["row_home"][basis] += rows
-            counts["row_home"]["total"] += rows
-    counts["row_home"]["unhomed"] = unhomed
+    _count_report_kinds(data.tool_sigs, counts)
+    _count_report_columns(data.mined_columns, counts)
+    _count_report_homes(data.row_homes, counts)
     return counts
 
 
