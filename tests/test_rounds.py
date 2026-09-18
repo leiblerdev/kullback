@@ -82,7 +82,10 @@ TARGET = "environment"
 # Re-pinned for D250: compile hold-out is by argument shape, so a tool whose recorded calls disagree
 # on nested keys holds a different split, and the Task rows name the replay that split produced.
 # Same three Tasks, same verdicts.
-TASK_STATUS_SHA256_BEFORE_THE_PHASE = "6b792954cc2f52ca4a7b62c7e0f7b72d00311f04341f93b05a3e18487e4cadad"
+# Re-pinned for G28: the reroll guard in `_candidate_run_once` moved the rerolls stage code
+# version with it, so the re-roll ids under each row are new once more. The same three Tasks,
+# the same verdicts and the same reasons; only the id segments moved.
+TASK_STATUS_SHA256_BEFORE_THE_PHASE = "697801f9525b57ace2a1ca57831e8272679ce189668449ba6701a49b0bdd7229"
 
 
 def _fixture(request) -> Path:
