@@ -82,7 +82,7 @@ TARGET = "environment"
 # Re-pinned for D250: compile hold-out is by argument shape, so a tool whose recorded calls disagree
 # on nested keys holds a different split, and the Task rows name the replay that split produced.
 # Same three Tasks, same verdicts.
-TASK_STATUS_SHA256_BEFORE_THE_PHASE = "3512420f51f2131c1b86429dff96e67e9942cc3341b12ed8a193d8aa89c9ca9d"
+TASK_STATUS_SHA256_BEFORE_THE_PHASE = "d536216924936f063cec682809d7cb71d19b6c7f7dea3cc65234bc0dcb0c94f4"
 
 
 def _fixture(request) -> Path:
