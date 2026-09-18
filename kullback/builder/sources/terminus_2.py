@@ -76,7 +76,8 @@ class Terminus2Adapter:
                        or f"{ctx.raw_hash[:12]}-{ctx.index}")
         turns, calls = [], []
         for msg_index, message in enumerate(turns_raw):
-            turn, fresh = _map_turn(message, msg_index, trace_id, ctx)
+            answer = turns_raw[msg_index + 1] if msg_index + 1 < len(turns_raw) else None
+            turn, fresh = _map_turn(message, msg_index, trace_id, ctx, answer)
             turns.append(Turn(**turn))
             calls.extend(fresh)
         _attach_results(turns_raw, calls, ctx, detect_truncation)
@@ -116,13 +117,17 @@ def _vote_on_records(records: list, found: str, missing: str,
     return (0.0, [missing])
 
 
-def _map_turn(message: dict, msg_index: int, trace_id: str, ctx: Any) -> tuple[dict, list]:
+def _map_turn(message: dict, msg_index: int, trace_id: str, ctx: Any,
+              answer: Any = None) -> tuple[dict, list]:
     """One message to its turn plus the shell call it requests, if it requests one.
 
     One call per command turn: the scaffold takes the turn's whole command list and returns
     one screen, so the call carries the list as the turn carries it and the batch is never
-    split. An empty command list is still a submission (the scaffold answers it with a
-    screen), so it yields a call with an empty list."""
+    split. A non-empty command list is always a call, unresolved when no output answers it.
+    An empty command list is a call only when the recording shows it was run, which is when
+    the next turn is the user's and carries terminal output; an empty list the recording
+    ends on, or one answered by a scaffold note, is the assistant saying it is done and no
+    call at all. The Trace claims nothing the recording does not show, in either direction."""
     here = RawPtr(file_hash=ctx.raw_hash, sim_index=ctx.index, msg_index=msg_index)
     role = message.get("role") or "assistant"
     if role not in ("user", "assistant"):
@@ -132,9 +137,16 @@ def _map_turn(message: dict, msg_index: int, trace_id: str, ctx: Any) -> tuple[d
         text, ensure_ascii=False, default=str)
     turn = {"idx": msg_index, "role": role, "content": content, "raw_ptr": here}
     kind, entries = _parsed_commands(text) if role == "assistant" else ("no_json", None)
+    submits = kind in COMMAND_KINDS or (kind == "empty_commands" and _answered_by_output(answer))
     calls = [_batch_call(entries if entries is not None else [], trace_id, here)] \
-        if kind in COMMAND_KINDS or kind == "empty_commands" else []
+        if submits else []
     return (turn, calls)
+
+
+def _answered_by_output(answer: Any) -> bool:
+    """True when the turn after an assistant turn is the user's and shows terminal output."""
+    return (isinstance(answer, dict) and answer.get("role") == "user"
+            and _is_terminal_output(answer.get("content")))
 
 
 def _unwrap(item: Any) -> Any:
@@ -322,10 +334,11 @@ def _attach_results(turns_raw: list, calls: list, ctx: Any,
 
     The whole output lands on the turn's one call, verbatim and unsplit: a warnings block
     riding with the output stays in the result as shown, and only the opening turn counts
-    as the customer's request. A batch whose next turn is missing, not the user's, or
-    carries no terminal header (a scaffold complaint) leaves its call unobserved, which is
-    what the admission rules read. Output after a turn where no commands were found means
-    the adapter is stricter than the scaffold was; the output stays unclaimed and an
+    as the customer's request. A non-empty batch whose next turn is missing, not the user's,
+    or carries no terminal header (a scaffold complaint) leaves its call unobserved, which
+    is what the admission rules read; an empty command list in the same position never
+    became a call, as _map_turn says. Output after a turn where no command object was found
+    means the adapter is stricter than the scaffold was; the output stays unclaimed and an
     explicitly unobserved marker call records the contradiction, so the recording cannot
     come out clean."""
     by_turn = {}
@@ -336,8 +349,7 @@ def _attach_results(turns_raw: list, calls: list, ctx: Any,
         if (message.get("role") or "assistant") != "assistant":
             continue
         answer = turns_raw[msg_index + 1] if msg_index + 1 < len(turns_raw) else None
-        if (answer is None or answer.get("role") != "user"
-                or not _is_terminal_output(answer.get("content"))):
+        if not _answered_by_output(answer):
             continue
         call = by_turn.get(msg_index)
         if call is None:

@@ -257,7 +257,7 @@ def test_unusable_durations_stay_out_of_arguments():
         assert trace.tool_calls[0].latency_ms is None
 
 
-def test_empty_batch_is_one_call():
+def test_empty_commands_answered_by_output_is_one_call_with_that_result():
     turns = [
         {"role": "user", "content": "Invented instruction."},
         {"role": "assistant", "content": json.dumps({"analysis": "done", "task_complete": True,
@@ -269,6 +269,61 @@ def test_empty_batch_is_one_call():
     (call,) = trace.tool_calls
     assert call.args == {"commands": []}
     assert (call.has_result, call.resolved) == (True, True)
+    assert "invented screen" in str(call.result)
+
+
+def test_empty_commands_answered_by_a_scaffold_note_is_no_call():
+    turns = [
+        {"role": "user", "content": "Invented instruction."},
+        {"role": "assistant", "content": json.dumps({"analysis": "done", "task_complete": True,
+                                                     "commands": []})},
+        {"role": "user", "content": "Invented scaffold note with no terminal header."},
+    ]
+    trace = Terminus2Adapter().to_trace(invented_recording(conversations=turns), ctx())
+    assert trace.tool_calls == []
+    assert [turn.role for turn in trace.turns] == ["user", "assistant", "user"]
+
+
+def ending_on_empty_commands() -> list[dict]:
+    """An invented recording whose last turn submits an empty command list and nothing answers."""
+    return [
+        {"role": "user", "content": "Invented instruction."},
+        {"role": "assistant", "content": json.dumps({"commands": [
+            {"keystrokes": "invented-solo", "duration": 0.1}]})},
+        {"role": "user", "content": "New Terminal Output:\n\ninvented solo output"},
+        {"role": "assistant", "content": json.dumps({"analysis": "invented", "task_complete": True,
+                                                     "commands": []})},
+    ]
+
+
+def test_recording_ending_on_empty_commands_has_no_unresolved_call():
+    turns = ending_on_empty_commands()
+    trace = Terminus2Adapter().to_trace(invented_recording(conversations=turns), ctx())
+    assert len(trace.tool_calls) == 1
+    (call,) = trace.tool_calls
+    assert call.raw_ptr.msg_index == 1
+    assert call.resolved
+
+
+def test_recording_ending_on_empty_commands_is_a_complete_record(tmp_path):
+    turns = ending_on_empty_commands()
+    envelope = {"rows": [
+        {"row_idx": index,
+         "row": invented_recording(conversations=turns, trial_name=f"invented-end-{index}"),
+         "truncated_cells": []} for index in range(4)]}
+    target = tmp_path / "invented.json"
+    target.write_text(json.dumps(envelope), encoding="utf-8")
+    workdir = tmp_path / "work"
+    summary = ingest.ingest_file(target, workdir)
+    ruling = ingest.read_intake_ruling(workdir, summary["raw_hash"])
+    assert ruling["reasons"] == {"complete_record": 4}
+
+
+def test_recording_ending_on_commands_still_ends_on_an_unresolved_call():
+    turns = ending_on_empty_commands()[:2]
+    trace = Terminus2Adapter().to_trace(invented_recording(conversations=turns), ctx())
+    assert len(trace.tool_calls) == 1
+    assert not trace.tool_calls[0].resolved
 
 
 def test_warning_plus_output_gives_output_as_result():
