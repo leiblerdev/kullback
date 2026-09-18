@@ -130,7 +130,8 @@ def _trace_outline(record: dict) -> dict:
         "calls": [_call_skeleton(pos, call) for pos, call in enumerate(calls[:OUTLINE_PARTS])],
         "calls_total": len(calls),
         "by_tool": _cap(_named(calls, "name")),
-        "errored": [f"call:{pos}" for pos, call in enumerate(calls) if call.get("error")],
+        "errored": [f"call:{pos}" for pos, call in enumerate(calls) if call.get("error")][:OUTLINE_PARTS],
+        "errored_total": sum(1 for call in calls if call.get("error")),
         "end": None,
         "total_chars": len(_dump(record)),
         "note": ("a Trace in outline; read one part with its locator (`turn:<n>` to "
@@ -154,9 +155,9 @@ def _run_outline(record: dict) -> dict:
         "events": shown,
         "events_total": len(events),
         "by_tool": _cap(_calls_by_tool(events)),
-        "errored": [row["locator"] for row in shown if row["error"]]
-        + [f"event:{pos}" for pos in range(OUTLINE_PARTS, len(events))
-           if _event_errored(events[pos])],
+        "errored": [f"event:{pos}" for pos, event in enumerate(events)
+                    if _event_errored(event)][:OUTLINE_PARTS],
+        "errored_total": sum(1 for event in events if _event_errored(event)),
         "end": record.get("termination_reason"),
         "total_chars": len(_dump(record)),
         "header": {"locator": "header", "size": len(_dump(header))},
@@ -168,11 +169,11 @@ def _run_outline(record: dict) -> dict:
 def outline(record: dict) -> dict:
     """The map of a Run or a Trace, bounded whatever the record's length.
 
-    Turn count, call count, tool calls by name with counts, which calls errored, the end kind,
-    the size in characters of the record and of each part, and a stable locator for every part.
-    Only the first `OUTLINE_PARTS` skeletons are listed; the totals and the locator scheme
-    (`turn:<n>`, `call:<n>`, `event:<n>`, `header`) address the rest, so the outline stays small
-    while no part is unreachable.
+    Turn count, call count, tool calls by name with counts, which calls errored (capped, with
+    a total), the end kind, the size in characters of the record and of each part, and a stable
+    locator for every part. Only the first `OUTLINE_PARTS` skeletons are listed; the totals and
+    the locator scheme (`turn:<n>`, `call:<n>`, `event:<n>`, `header`) address the rest, so the
+    outline stays small while no part is unreachable.
     """
     if kind_of(record) == "run":
         return _run_outline(record)
@@ -214,15 +215,30 @@ def _part_bodies(record: dict) -> list[tuple[str, dict]]:
     return _located("turn", _dicts(record.get("turns"))) + _located("call", _dicts(record.get("tool_calls")))
 
 
-def _occurrences(text: str, needle: str, length: int) -> list[dict]:
-    """Every occurrence of one phrase in one part's text, with ranges into that text."""
-    lowered = text.casefold()
+def _folded(text: str) -> tuple[str, list[int]]:
+    """The text case-folded for matching, with each folded character's original offset."""
+    folded: list[str] = []
+    origins: list[int] = []
+    for pos, char in enumerate(text):
+        for piece in char.casefold():
+            folded.append(piece)
+            origins.append(pos)
+    return "".join(folded), origins
+
+
+def _occurrences(text: str, phrase: str) -> list[dict]:
+    """Every occurrence of one phrase in one part's text, with ranges into that text.
+
+    Matching folds case, and the fold can change lengths (ß folds to ss), so the ranges are
+    mapped back to the original offsets: they always slice the text `read` renders."""
+    folded, origins = _folded(text)
+    needle = phrase.casefold()
     out: list[dict] = []
-    start = lowered.find(needle)
+    start = folded.find(needle)
     while start >= 0:
-        out.append({"start": start, "end": start + length,
-                    "snippet": _snippet(text, start, start + length)})
-        start = lowered.find(needle, start + 1)
+        first, last = origins[start], origins[start + len(needle) - 1] + 1
+        out.append({"start": first, "end": last, "snippet": _snippet(text, first, last)})
+        start = folded.find(needle, start + 1)
     return out
 
 
@@ -235,13 +251,14 @@ def locate(record: dict, phrase: str) -> dict:
     """
     if not phrase.strip():
         raise ValueError("locate needs a phrase to look for")
-    needle = phrase.casefold()
     found: list[dict] = []
+    total = 0
     for locator, body in _part_bodies(record):
-        for hit in _occurrences(_dump(body), needle, len(phrase)):
+        hits = _occurrences(_dump(body), phrase)
+        total += len(hits)
+        for hit in hits:
             if len(found) < LOCATE_MAX:
                 found.append({"locator": locator, **hit})
-    total = sum(len(_occurrences(_dump(body), needle, len(phrase))) for _, body in _part_bodies(record))
     return {"total": total, "matches": found, "truncated": total > len(found)}
 
 

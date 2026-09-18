@@ -197,6 +197,30 @@ def test_around_shows_the_neighbours_as_skeletons_without_payloads():
         reading.around(_run(), "event:1", -1)
 
 
+def test_errored_lists_are_capped_with_a_total_on_long_failing_records():
+    calls = [_call("fetch_slot", {"slot": SLOT}, None, {"code": "jammed"}) for _ in range(60)]
+    record = {"trace_id": "trace-shelf-9", "turns": [_turn(0, "user", "go")], "tool_calls": calls}
+    found = reading.outline(record)
+    assert len(found["errored"]) == reading.OUTLINE_PARTS and found["errored_total"] == 60
+    assert len(_dump(found)) < 8000, "even an all-error record outlines small"
+    run = _run()
+    run["events"] = [_event(n, "error", {"note": f"bad {n}"}) for n in range(60)]
+    outlined = reading.outline(run)
+    assert len(outlined["errored"]) == reading.OUTLINE_PARTS and outlined["errored_total"] == 60
+    assert outlined["errored"][0] == "event:0" and outlined["errored"][-1] == "event:49"
+
+
+def test_locate_ranges_slice_the_rendered_text_even_when_folding_changes_lengths():
+    record = {"trace_id": "trace-shelf-8",
+              "turns": [_turn(0, "user", "die StraSSE ist breit")], "tool_calls": []}
+    found = reading.locate(record, "straße")
+    assert found["total"] == 1 and found["truncated"] is False
+    hit = found["matches"][0]
+    body = reading._dump(reading.part(record, hit["locator"]))
+    assert body[hit["start"]:hit["end"]] == "StraSSE"
+    assert "StraSSE" in hit["snippet"]
+
+
 def test_a_long_record_reads_end_to_end_through_outlines_parts_and_pages():
     big = _run()
     big["events"] = [
