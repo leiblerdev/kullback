@@ -1,0 +1,161 @@
+"""Tests for admission per recording: standings, the floor, the ruling, the evidence folder."""
+
+from __future__ import annotations
+
+import json
+from pathlib import Path
+
+from kullback.builder import ingest
+
+
+def write_json(path: Path, obj) -> Path:
+    path.write_text(json.dumps(obj), encoding="utf-8")
+    return path
+
+
+def wrap(simulations, info=None) -> dict:
+    return {
+        "timestamp": "2025-06-05T14:00:00",
+        "info": info if info is not None else {"environment_info": {}},
+        "tasks": [],
+        "simulations": simulations,
+    }
+
+
+def plain_msg(content="hello") -> dict:
+    return {"role": "assistant", "content": content, "tool_calls": None, "turn_idx": 0}
+
+
+def good_sim(sim_id, content="hello") -> dict:
+    return {"id": sim_id, "termination_reason": "user_stop", "messages": [plain_msg(content)]}
+
+
+def dangling_sim(sim_id) -> dict:
+    calls = [{"id": "c9", "name": "look_up", "arguments": {}, "requestor": "assistant"}]
+    return {"id": sim_id, "termination_reason": "user_stop",
+            "messages": [{"role": "assistant", "content": None, "tool_calls": calls, "turn_idx": 0}]}
+
+
+def ingest_payload(payload, workdir, tmp_path, name="file.json") -> dict:
+    return ingest.ingest_file(write_json(tmp_path / name, payload), workdir)
+
+
+# --- one bad call sets that recording aside and the rest build ----------------
+
+
+def test_one_bad_call_sets_that_recording_aside_and_the_rest_build(workdir, tmp_path):
+    sims = [good_sim("g1"), good_sim("g2"), good_sim("g3"), dangling_sim("b1")]
+    summary = ingest_payload(wrap(sims), workdir, tmp_path)
+    assert summary["gate"]["pass"] is True
+    assert summary["task_eligible"] == 3
+    assert summary["evidence_only"] == 1
+    assert summary["runs"] == 3
+    written = {p.stem for p in (workdir / "traces").glob("*.json")}
+    assert set(summary["trace_hashes"]) == written
+    assert len(written) == 3
+    evidence = list((workdir / "evidence_traces").glob("*.json"))
+    assert len(evidence) == 1
+    kept = json.loads(evidence[0].read_text(encoding="utf-8"))
+    assert kept["trace_id"] == "b1"
+    ruling = json.loads((workdir / "intake_ruling.json").read_text(encoding="utf-8"))
+    assert ruling["counts"] == {"task_eligible": 3, "evidence_only": 1, "rejected": 0}
+    assert ruling["passed"] is True
+
+
+def test_nothing_downstream_reads_the_evidence_folder(workdir, tmp_path):
+    from kullback.builder.build import load_traces
+
+    ingest_payload(wrap([good_sim("g1"), dangling_sim("b1")]), workdir, tmp_path)
+    assert {t.trace_id for t in load_traces(workdir)} == {"g1"}
+
+
+# --- under the floor the stage fails with the counts in the message -----------
+
+
+def test_under_the_floor_the_stage_fails_with_the_counts_in_the_message(workdir, tmp_path):
+    summary = ingest_payload(wrap([good_sim("g1"), dangling_sim("b1")]), workdir, tmp_path)
+    gate = summary["gate"]
+    assert gate["pass"] is False
+    floor_lines = [line for line in gate["failures"] if "under the floor" in line]
+    assert len(floor_lines) == 1
+    assert "1 of 2 recordings task-eligible" in floor_lines[0]
+    assert "1 task-eligible, 1 evidence-only, 0 rejected" in floor_lines[0]
+    assert any("c9" in line for line in gate["failures"])
+
+
+def test_at_the_floor_the_stage_passes(workdir, tmp_path):
+    sims = [good_sim("g1"), good_sim("g2"), good_sim("g3"), dangling_sim("b1")]
+    summary = ingest_payload(wrap(sims), workdir, tmp_path)
+    assert summary["gate"]["metrics"]["eligible_share"] == 0.75
+    assert summary["gate"]["pass"] is True
+
+
+# --- the ruling counts per standing and per reason, with the set-aside mix ----
+
+
+def test_the_ruling_carries_reasons_and_the_set_aside_mix(workdir, tmp_path):
+    sims = [good_sim("g1"), dangling_sim("b1"),
+            {"id": "u1", "termination_reason": "max_steps", "messages": [plain_msg()]}]
+    ingest_payload(wrap(sims), workdir, tmp_path)
+    ruling = json.loads(list((workdir / "intake").glob("*.json"))[0].read_text(encoding="utf-8"))
+    assert ruling["reasons"] == {"complete_record": 1, "unresolved_call": 1, "unfinished": 1}
+    assert ruling["set_aside"]["outcomes"] == {"user_stop": 1, "max_steps": 1}
+    assert ruling["set_aside"]["turns"] == {"1-5": 2}
+    assert ruling["set_aside"]["tool_calls"] == {"0": 1, "1-3": 1}
+    assert ruling["floor"] == ingest.MIN_TASK_ELIGIBLE_SHARE
+
+
+# --- each standing ------------------------------------------------------------
+
+
+def test_a_duplicate_recording_is_evidence_only(workdir, tmp_path):
+    ingest_payload(wrap([good_sim("same"), good_sim("same")]), workdir, tmp_path)
+    ruling = json.loads((workdir / "intake_ruling.json").read_text(encoding="utf-8"))
+    assert ruling["reasons"] == {"complete_record": 1, "duplicate": 1}
+
+
+def test_an_unfinished_recording_is_evidence_only(workdir, tmp_path):
+    sims = [good_sim("g1"), {"id": "u1", "termination_reason": "max_steps",
+                             "messages": [plain_msg()]}]
+    summary = ingest_payload(wrap(sims), workdir, tmp_path)
+    assert summary["evidence_only"] == 1
+    assert summary["gate"]["pass"] is False  # 1 of 2 is under the floor
+
+
+def test_an_unparseable_recording_is_rejected(workdir, tmp_path):
+    calls = [{"id": "c1", "name": "look_up", "arguments": {}, "requestor": "assistant"}]
+    cut = '{"rows": [{"id": "r1"}, {"id": "r2'
+    sims = [good_sim("g1"), {"id": "cut", "messages": [
+        {"role": "assistant", "content": None, "tool_calls": calls, "turn_idx": 0},
+        {"role": "tool", "id": "c1", "content": cut, "turn_idx": 1}]}]
+    summary = ingest_payload(wrap(sims), workdir, tmp_path)
+    assert summary["gate"]["metrics"]["rejected"] == 1
+    assert summary["gate"]["pass"] is False
+    ruling = json.loads((workdir / "intake_ruling.json").read_text(encoding="utf-8"))
+    assert ruling["reasons"]["unparseable_result"] == 1
+
+
+def test_a_recording_with_no_turns_is_evidence_only(workdir, tmp_path):
+    summary = ingest_payload(wrap([good_sim("g1"), {"id": "empty", "messages": []}]), workdir,
+                             tmp_path)
+    ruling = json.loads((workdir / "intake_ruling.json").read_text(encoding="utf-8"))
+    assert ruling["reasons"]["missing_start"] == 1
+    assert summary["gate"]["pass"] is False
+
+
+def test_a_recording_with_no_end_marker_reads_as_complete_when_every_call_resolved(workdir, tmp_path):
+    summary = ingest_payload(wrap([{"id": "plain", "messages": [plain_msg()]}]), workdir, tmp_path)
+    assert summary["gate"]["pass"] is True
+    assert summary["task_eligible"] == 1
+
+
+# --- the seam hashes after the move -------------------------------------------
+
+
+def test_fixture_hashes_are_stable_within_this_seam(tau2_small_path, workdir):
+    summary = ingest.ingest_file(tau2_small_path, workdir)
+    assert summary["trace_hashes"] == [
+        "67664814defbc81de5e2392cf10d80878945f5dcf214b96105598b4dfd0ec177",
+        "81561c90770de2acb6b4e07b46790787126cfc8fe649508b6ee29ef415c08f20",
+        "def85993ef9065b249107948799fd3beb7472e7fdce2d0fc4e875beac6fead65",
+    ]

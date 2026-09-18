@@ -270,6 +270,8 @@ def derive_traces(raw_hash: str, workdir: str | Path, model: Optional[Model] = N
         trace.hash = trace_hash(trace)
         _write_grader(trace, adapter.sidecar(simulation, document), workdir)
         traces.append(trace)
+    ruling = rule_recordings(raw_hash, decision.winner, recordings, traces, rejects)
+    _write_ruling(raw_hash, ruling, workdir)
     _write_rejects(raw_hash, rejects, workdir)
     return traces
 
@@ -344,52 +346,326 @@ def _write_grader(trace: Trace, fields: dict, workdir: str | Path) -> Path:
     })
 
 
+# --- admission per recording -----------------------------------------------
+
+
+# The Task-eligible share a file must keep for the stage to pass. An invented constant awaiting
+# measurement on real corpora: it only says a mostly unusable file stops the build, while one bad
+# recording among good ones is set aside and the rest build.
+MIN_TASK_ELIGIBLE_SHARE = 0.75
+
+TASK_ELIGIBLE = "task_eligible"
+EVIDENCE_ONLY = "evidence_only"
+REJECTED = "rejected"
+
+# An explicit end marker that reads as not finished. A recording with no marker at all reads as
+# complete when every call resolved: the export simply did not stamp it.
+UNFINISHED_ENDS = frozenset({
+    "max_steps", "max_errors", "timeout", "error", "cancelled", "truncated", "incomplete",
+})
+
+
+def _trace_problems(trace: Trace) -> dict:
+    """The per-recording facts admission rules on: which calls never resolved, which results never
+    parsed, which ids were reused while pending, which results answer no call, and the sizes."""
+    answered = {i for turn in trace.turns if turn.role == "tool" for i in turn.tool_call_ids}
+    requested = {call.id for call in trace.tool_calls if call.id}
+    by_id: dict = {}
+    problems: dict = {"calls": 0, "errors": 0, "truncated": 0, "turns": len(trace.turns),
+                       "unresolved": [], "unparseable": [], "reused": [], "orphans": []}
+    for call in trace.tool_calls:
+        problems["calls"] += 1
+        problems["errors"] += 1 if call.error else 0
+        problems["truncated"] += 1 if call.truncated else 0
+        if call.id:
+            by_id.setdefault(call.id, []).append(call)
+        named = call.id or call.name
+        # `resolved` is per call object, unlike `answered` which is only the set of id strings
+        # that appear on some "tool" turn; a reused id can leave this exact call unresolved while
+        # its id string does get answered, on a different call (D67, gate_ingest row 8).
+        if not call.resolved:
+            problems["unresolved"].append(named)
+        elif unparsed_json(call.result):
+            problems["unparseable"].append(named)
+    for call_id, group in by_id.items():
+        if len(group) > 1 and any(not earlier.resolved for earlier in group[:-1]):
+            problems["reused"].append(call_id)
+    problems["orphans"] = sorted(answered - requested)
+    return problems
+
+
+def _standing_for(problems: dict, simulation: Any, duplicate: bool) -> tuple[str, str, list[str]]:
+    """One recording's standing with its primary reason and every reason that fired.
+
+    Rejected first (not a usable recording at all), then the evidence-only reasons in a fixed
+    order, so the per-reason counts stay comparable across files. A recording with no problem
+    is task-eligible: complete, every call resolved."""
+    if problems["unparseable"]:
+        return (REJECTED, "unparseable_result", ["unparseable_result"])
+    if problems["turns"] == 0 and problems["calls"] == 0:
+        return (EVIDENCE_ONLY, "missing_start", ["missing_start"])
+    if duplicate:
+        return (EVIDENCE_ONLY, "duplicate", ["duplicate"])
+    reasons = []
+    termination = simulation.get("termination_reason") if isinstance(simulation, dict) else None
+    if termination in UNFINISHED_ENDS:
+        reasons.append("unfinished")
+    if problems["unresolved"]:
+        reasons.append("unresolved_call")
+    if problems["reused"]:
+        reasons.append("reused_call_id")
+    if problems["orphans"]:
+        reasons.append("orphan_result")
+    if reasons:
+        return (EVIDENCE_ONLY, reasons[0], reasons)
+    return (TASK_ELIGIBLE, "complete_record", ["complete_record"])
+
+
+def rule_recordings(raw_hash: str, format_name: str, recordings: list, traces: list[Trace],
+                    rejects: list[dict]) -> dict:
+    """Rule every recording of one file to a standing, with counts per standing and per reason and
+    the outcome and length mix of what was set aside, so a drift toward easy Tasks stays visible."""
+    sim_of = {}
+    for trace in traces:
+        index = trace.raw_ptr.sim_index if trace.raw_ptr else None
+        if isinstance(index, int) and 0 <= index < len(recordings):
+            sim_of[id(trace)] = recordings[index]
+    seen: set[str] = set()
+    seen_ids: set[str] = set()
+    rows = []
+    for trace in traces:
+        problems = _trace_problems(trace)
+        digest = trace.hash or trace_hash(trace)
+        # A duplicate is the same recording twice: the same content hash, or the same trace id
+        # claimed by two simulations of one file. Pointers name the simulation, so two copies never
+        # share a content hash on pointers alone; the id repeat is what catches them.
+        duplicate = digest in seen or trace.trace_id in seen_ids
+        seen.add(digest)
+        seen_ids.add(trace.trace_id)
+        simulation = sim_of.get(id(trace))
+        standing, reason, reasons = _standing_for(problems, simulation, duplicate)
+        rows.append({
+            "trace_id": trace.trace_id,
+            "sim_index": trace.raw_ptr.sim_index if trace.raw_ptr else None,
+            "standing": standing, "reason": reason, "reasons": reasons, "trace_hash": digest,
+            "turns": problems["turns"], "tool_calls": problems["calls"],
+            "termination": simulation.get("termination_reason")
+            if isinstance(simulation, dict) else None,
+        })
+    for entry in rejects:
+        reason_text = str(entry.get("reason") or "")
+        reason = "empty_file" if "empty simulations list" in reason_text else "not_a_recording"
+        rows.append({
+            "trace_id": entry.get("trace_id"), "sim_index": entry.get("sim_index"),
+            "standing": REJECTED, "reason": reason, "reasons": [reason], "trace_hash": None,
+            "turns": 0, "tool_calls": 0, "termination": None,
+        })
+    counts = {TASK_ELIGIBLE: 0, EVIDENCE_ONLY: 0, REJECTED: 0}
+    per_reason: dict = {}
+    for row in rows:
+        counts[row["standing"]] += 1
+        per_reason[row["reason"]] = per_reason.get(row["reason"], 0) + 1
+    set_aside = [row for row in rows if row["standing"] != TASK_ELIGIBLE]
+    eligible = counts[TASK_ELIGIBLE]
+    total = len(rows)
+    share = eligible / total if total else 1.0
+    return {
+        "raw_hash": raw_hash, "format": format_name, "floor": MIN_TASK_ELIGIBLE_SHARE,
+        "recordings": rows, "counts": counts, "reasons": per_reason,
+        "set_aside": {
+            "outcomes": _mix([row["termination"] or "unstated" for row in set_aside]),
+            "turns": _mix([_turn_bucket(row["turns"]) for row in set_aside]),
+            "tool_calls": _mix([_call_bucket(row["tool_calls"]) for row in set_aside]),
+        },
+        "eligible_share": share, "passed": share >= MIN_TASK_ELIGIBLE_SHARE,
+    }
+
+
+def _mix(values: list) -> dict:
+    counts: dict = {}
+    for value in values:
+        counts[value] = counts.get(value, 0) + 1
+    return counts
+
+
+def _turn_bucket(turns: int) -> str:
+    if turns <= 0:
+        return "0"
+    if turns <= 5:
+        return "1-5"
+    if turns <= 20:
+        return "6-20"
+    return "21+"
+
+
+def _call_bucket(calls: int) -> str:
+    if calls <= 0:
+        return "0"
+    if calls <= 3:
+        return "1-3"
+    return "4+"
+
+
+def intake_file(raw_hash: str, workdir: str | Path) -> Path:
+    return Path(workdir) / "intake" / (raw_hash + ".json")
+
+
+def aggregate_ruling_file(workdir: str | Path) -> Path:
+    return Path(workdir) / "intake_ruling.json"
+
+
+def _write_ruling(raw_hash: str, ruling: dict, workdir: str | Path) -> Path:
+    target = intake_file(raw_hash, workdir)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    return _write_json(target, ruling)
+
+
+def read_intake_ruling(workdir: str | Path, raw_hash: str) -> dict:
+    target = intake_file(raw_hash, workdir)
+    return json.loads(target.read_text(encoding="utf-8")) if target.is_file() else {}
+
+
+def _update_aggregate_ruling(workdir: str | Path, raw_hash: str, ruling: dict) -> dict:
+    """Fold one file's ruling into the one intake ruling, keyed by raw hash so a repeated ingest
+    of the same file overwrites its own entry instead of doubling it."""
+    target = aggregate_ruling_file(workdir)
+    aggregate = json.loads(target.read_text(encoding="utf-8")) if target.is_file() else {}
+    files = aggregate.get("files", {})
+    files[raw_hash] = ruling
+    counts = {TASK_ELIGIBLE: 0, EVIDENCE_ONLY: 0, REJECTED: 0}
+    per_reason: dict = {}
+    for entry in files.values():
+        for standing, count in (entry.get("counts") or {}).items():
+            counts[standing] = counts.get(standing, 0) + count
+        for reason, count in (entry.get("reasons") or {}).items():
+            per_reason[reason] = per_reason.get(reason, 0) + count
+    total = sum(counts.values())
+    share = counts[TASK_ELIGIBLE] / total if total else 1.0
+    aggregate = {"files": files, "counts": counts, "reasons": per_reason,
+                 "floor": MIN_TASK_ELIGIBLE_SHARE,
+                 "eligible_share": share, "passed": share >= MIN_TASK_ELIGIBLE_SHARE}
+    target.parent.mkdir(parents=True, exist_ok=True)
+    _write_json(target, aggregate)
+    return aggregate
+
+
+def evidence_file(trace: Trace, workdir: str | Path) -> Path:
+    """Where a set-aside Trace is written: the content-hash name a trace would have, in a folder
+    downstream never reads, so evidence-only recordings are kept and counted but feed nothing yet."""
+    return Path(workdir) / "evidence_traces" / ((trace.hash or trace_hash(trace)) + ".json")
+
+
+def write_evidence(traces: list[Trace], workdir: str | Path) -> list[Path]:
+    """Write set-aside Traces under workdir/evidence_traces; nothing downstream reads that folder."""
+    (Path(workdir) / "evidence_traces").mkdir(parents=True, exist_ok=True)
+    return [_write_json(evidence_file(trace, workdir), as_dict(trace)) for trace in traces]
+
+
 # --- gate and entry point --------------------------------------------------
 
 
 def gate_ingest(traces: list[Trace], workdir: str | Path, raw_hash: Optional[str] = None) -> GateResult:
-    """Section 6 ingest gate: every tool call has a parseable result or an error, and the grader fields are out."""
-    failures: list[str] = []
+    """Section 6 ingest gate: per-recording standings rule, and the stage fails only under the floor.
+
+    Each recording is task-eligible, evidence-only, or rejected (see _standing_for); the gate keeps
+    the per-problem lines below for the report, and passes when no trace is corrupt on disk and the
+    task-eligible share reaches MIN_TASK_ELIGIBLE_SHARE. Downstream stages read workdir/traces,
+    which ingest_file fills with task-eligible recordings only."""
+    traces = list(traces)
+    notes: list[str] = []
+    hard: list[str] = []
     calls = errors = truncated = unresolved = unparseable = orphans = reused = 0
     for trace in traces:
-        answered = {i for turn in trace.turns if turn.role == "tool" for i in turn.tool_call_ids}
-        requested = {call.id for call in trace.tool_calls if call.id}
-        by_id: dict = {}
-        for call in trace.tool_calls:
-            calls += 1
-            errors += 1 if call.error else 0
-            truncated += 1 if call.truncated else 0
-            if call.id:
-                by_id.setdefault(call.id, []).append(call)
-            named = call.id or call.name
-            # `resolved` is per call object, unlike `answered` which is only the set of id strings
-            # that appear on some "tool" turn; a reused id can leave this exact call unresolved while
-            # its id string does get answered, on a different call (D67, gate_ingest row 8).
-            if not call.resolved:
-                unresolved += 1
-                failures.append(f"{trace.trace_id}: tool call {named} has no result and no error")
-            elif unparsed_json(call.result):
-                unparseable += 1
-                failures.append(f"{trace.trace_id}: tool call {named} has a result that does not parse")
-        for call_id, group in by_id.items():
-            if len(group) > 1 and any(not earlier.resolved for earlier in group[:-1]):
-                reused += 1
-                failures.append(
-                    f"{trace.trace_id}: tool call id {call_id} was issued again while the earlier "
-                    "call with that id was still pending"
-                )
-        for orphan in sorted(answered - requested):
-            orphans += 1
-            failures.append(f"{trace.trace_id}: tool result {orphan} answers no recorded call")
-        failures += _grader_failures(trace, workdir)
+        problems = _trace_problems(trace)
+        calls += problems["calls"]
+        errors += problems["errors"]
+        truncated += problems["truncated"]
+        unresolved += len(problems["unresolved"])
+        unparseable += len(problems["unparseable"])
+        reused += len(problems["reused"])
+        orphans += len(problems["orphans"])
+        for named in problems["unresolved"]:
+            notes.append(f"{trace.trace_id}: tool call {named} has no result and no error")
+        for named in problems["unparseable"]:
+            notes.append(f"{trace.trace_id}: tool call {named} has a result that does not parse")
+        for call_id in problems["reused"]:
+            notes.append(
+                f"{trace.trace_id}: tool call id {call_id} was issued again while the earlier "
+                "call with that id was still pending"
+            )
+        for orphan in problems["orphans"]:
+            notes.append(f"{trace.trace_id}: tool result {orphan} answers no recorded call")
+        hard += _grader_failures(trace, workdir)
         if trace.hash != trace_hash(trace):
-            failures.append(f"{trace.trace_id}: trace hash does not match its content")
+            hard.append(f"{trace.trace_id}: trace hash does not match its content")
     rejects = read_rejects(workdir, raw_hash)
-    failures += [f"{r.get('trace_id') or 'file'}: rejected at ingest, {r.get('reason')}" for r in rejects]
+    notes += [f"{r.get('trace_id') or 'file'}: rejected at ingest, {r.get('reason')}" for r in rejects]
+    standings = _standings_in_scope(traces, workdir, raw_hash)
+    eligible = sum(1 for standing, _ in standings if standing == TASK_ELIGIBLE)
+    evidence = sum(1 for standing, _ in standings if standing == EVIDENCE_ONLY)
+    rejected = sum(1 for standing, _ in standings if standing == REJECTED)
+    total = len(standings)
+    share = eligible / total if total else 1.0
+    floor_ok = share >= MIN_TASK_ELIGIBLE_SHARE
+    failures = list(hard)
+    if not floor_ok:
+        failures.append(
+            f"task-eligible share {share:.2f} is under the floor {MIN_TASK_ELIGIBLE_SHARE:.2f}: "
+            f"{eligible} of {total} recordings task-eligible "
+            f"({eligible} task-eligible, {evidence} evidence-only, {rejected} rejected)"
+        )
+    if failures:
+        failures += notes
     metrics = {"traces": len(traces), "tool_calls": calls, "errors": errors, "truncated": truncated,
                "unresolved": unresolved, "unparseable": unparseable, "orphan_results": orphans,
-               "reused_pending_ids": reused, "rejected": len(rejects)}
+               "reused_pending_ids": reused, "rejected": rejected,
+               "task_eligible": eligible, "evidence_only": evidence,
+               "eligible_share": share, "floor": MIN_TASK_ELIGIBLE_SHARE}
     return GateResult(stage="ingest", passed=not failures, metrics=metrics, failures=failures)
+
+
+def _standings_in_scope(traces: list[Trace], workdir: str | Path,
+                        raw_hash: Optional[str] = None) -> list[tuple[str, str]]:
+    """Standings for the given traces from the intake rulings in scope, with a content-only
+    fallback for traces no ruling covers (hand-built traces carry no simulation to read)."""
+    folder = Path(workdir) / "intake"
+    if raw_hash is not None:
+        target = intake_file(raw_hash, workdir)
+        files = [target] if target.is_file() else []
+    elif folder.is_dir():
+        files = sorted(folder.glob("*.json"))
+    else:
+        files = []
+    by_digest: dict = {}
+    reject_rows: list = []
+    for path in files:
+        try:
+            body = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        file_hash = body.get("raw_hash", "")
+        for row in body.get("recordings", []):
+            if row.get("trace_hash"):
+                by_digest[(file_hash, row["trace_hash"])] = row
+                by_digest[("", row["trace_hash"])] = row
+            else:
+                reject_rows.append(row)
+    standings = []
+    seen: set[str] = set()
+    seen_ids: set[str] = set()
+    for trace in traces:
+        digest = trace.hash or trace_hash(trace)
+        row = by_digest.get((trace.raw_hash, digest)) or by_digest.get(("", digest))
+        if row is not None:
+            standings.append((row["standing"], row["reason"]))
+            continue
+        problems = _trace_problems(trace)
+        duplicate = digest in seen or trace.trace_id in seen_ids
+        seen.add(digest)
+        seen_ids.add(trace.trace_id)
+        standings.append(_standing_for(problems, None, duplicate)[:2])
+    standings.extend([(row["standing"], row["reason"]) for row in reject_rows])
+    return standings
 
 
 def _grader_failures(trace: Trace, workdir: str | Path) -> list[str]:
@@ -418,20 +694,40 @@ def _write_json(target: Path, body: Any) -> Path:
 
 
 def ingest_file(path: str | Path, workdir: str | Path, model: Optional[Model] = None) -> dict:
-    """Store one customer file, derive its Traces, write them, run the gate, print the counts."""
+    """Store one customer file, derive its Traces, write them, run the gate, print the counts.
+
+    Only task-eligible recordings reach workdir/traces, which is what downstream stages read;
+    evidence-only recordings are written beside them under evidence_traces and counted, and nothing
+    consumes them yet."""
     raw = store_raw(path, workdir)
     traces = derive_traces(raw.raw_hash, workdir, model=model)
-    write_traces(traces, workdir)
+    ruling = read_intake_ruling(workdir, raw.raw_hash)
+    if ruling:
+        eligible_hashes = {row["trace_hash"] for row in ruling.get("recordings", [])
+                           if row["standing"] == TASK_ELIGIBLE and row.get("trace_hash")}
+        wanted = {id(trace) for trace in traces
+                  if (trace.hash or trace_hash(trace)) in eligible_hashes}
+    else:
+        wanted = {id(trace) for trace in traces}
+    eligible = [trace for trace in traces if id(trace) in wanted]
+    set_aside = [trace for trace in traces if id(trace) not in wanted]
+    write_traces(eligible, workdir)
+    if set_aside:
+        write_evidence(set_aside, workdir)
+    if ruling:
+        _update_aggregate_ruling(workdir, raw.raw_hash, ruling)
     gate = gate_ingest(traces, workdir, raw_hash=raw.raw_hash)
     summary = {
         "raw_hash": raw.raw_hash,
         "format": raw.format_detected,
-        "runs": len(traces),
+        "runs": len(eligible),
         "tool_calls": gate.metrics["tool_calls"],
         "errors": gate.metrics["errors"],
         "truncated": gate.metrics["truncated"],
         "rejected": gate.metrics["rejected"],
-        "trace_hashes": [trace.hash for trace in traces],
+        "task_eligible": gate.metrics["task_eligible"],
+        "evidence_only": gate.metrics["evidence_only"],
+        "trace_hashes": [trace.hash for trace in eligible],
         "gate": as_dict(gate),
     }
     print(
