@@ -18,6 +18,7 @@ These are the items I pushed past the first build. Each line says what it buys a
 - confinement-imports.patch waits for the founder's re-freeze: the confinement gate stops allowing two skeleton only names in tool bodies, re-run tests/gates and tests/builder.
 - body-transactions.patch waits for the founder's re-freeze: every tool call is a transaction and a body fault is its own outcome.
 - one-scorer.patch waits for the founder's re-freeze: the Verdict and the gates score an atom with one interpreter over its structured target.
+- mined-evidence.patch waits for the founder's re-freeze: ClassifiedBy gains declared so a kind the source declares rides as its own basis.
 
 ## After the first Replica clears Gate A
 
