@@ -70,7 +70,7 @@ def test_kind_of_tells_a_run_from_a_trace_and_refuses_the_rest():
         reading.kind_of([])
 
 
-def test_outline_of_a_trace_counts_turns_and_calls_by_name_and_names_what_errored():
+def test_outline_of_a_trace_counts_turns_and_calls_by_name():
     found = reading.outline(_trace())
     assert found["kind"] == "trace" and found["outline"] is True
     assert found["trace_id"] == "trace-shelf-1"
@@ -78,9 +78,13 @@ def test_outline_of_a_trace_counts_turns_and_calls_by_name_and_names_what_errore
     assert [row["locator"] for row in found["turns"]] == ["turn:0", "turn:1", "turn:2"]
     assert found["call_count"] == 2 and found["calls_total"] == 2
     assert found["by_tool"] == {"fetch_slot": 1, "mark_slot": 1}
+    assert found["total_chars"] == len(_dump(_trace()))
+
+
+def test_outline_of_a_trace_names_what_errored_and_how_to_continue():
+    found = reading.outline(_trace())
     assert found["errored"] == ["call:1"]
     assert found["end"] is None
-    assert found["total_chars"] == len(_dump(_trace()))
     assert all(set(row) == {"locator", "role", "size"} for row in found["turns"])
     assert all(set(row) == {"locator", "name", "size", "error"} for row in found["calls"])
     assert "turn:<n>" in found["note"] and "call:<n>" in found["note"]
@@ -92,8 +96,12 @@ def test_outline_of_a_run_echoes_what_it_outlines_and_counts_turns_and_calls():
     assert found["run_id"] == "run-shelf-1" and found["model"] == "probe:shelf"
     assert found["turn_count"] == 1 and found["call_count"] == 2
     assert found["by_tool"] == {"fetch_slot": 1, "mark_slot": 1}
-    assert found["errored"] == ["event:4"], "the result carrying the error is what errored"
     assert found["end"] == "success"
+
+
+def test_outline_of_a_run_names_errored_events_and_how_to_continue():
+    found = reading.outline(_run())
+    assert found["errored"] == ["event:4"], "the result carrying the error is what errored"
     assert [row["locator"] for row in found["events"]] == [f"event:{n}" for n in range(5)]
     assert found["events_total"] == 5 and found["header"]["locator"] == "header"
     assert "event:<n>" in found["note"] and "header" in found["note"]

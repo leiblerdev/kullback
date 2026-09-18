@@ -160,7 +160,7 @@ def test_the_outline_of_a_record_never_exceeds_a_fixed_size_whatever_the_record_
     assert reading_mod.part(big, "turn:59")["content"].startswith("crate 59")
 
 
-def test_a_locator_from_search_round_trips_into_read(tmp_path):
+def test_a_locator_from_search_round_trips_into_a_run_read(tmp_path):
     plan = _world(tmp_path)
     harness = examiner_agent.examiner_harness(plan)
     details = drive(harness, "search", {"text": SLOT}).details
@@ -169,6 +169,12 @@ def test_a_locator_from_search_round_trips_into_read(tmp_path):
     assert run_hit["locator"] is not None
     read_back = _read(harness, kind="run", id=run_hit["record"], locator=run_hit["locator"])
     assert read_back.is_error is False and SLOT in read_back.details["text"]
+
+
+def test_a_locator_from_search_round_trips_into_a_trace_read(tmp_path):
+    plan = _world(tmp_path)
+    harness = examiner_agent.examiner_harness(plan)
+    details = drive(harness, "search", {"text": SLOT}).details
     trace_hit = next(hit for hit in details["locations"] if hit["kind"] == "trace")
     read_back = _read(harness, kind="trace", id=trace_hit["record"], locator=trace_hit["locator"])
     assert read_back.is_error is False and SLOT in read_back.details["text"]
