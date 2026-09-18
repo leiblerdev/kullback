@@ -548,8 +548,11 @@ def test_the_head_is_byte_identical_across_turns_and_runs(ctx, rules, recorded):
 
 def test_every_fact_is_in_the_prompt_on_the_turn_that_asks_for_nothing_held(ctx, rules, recorded):
     """The turn the old filter emptied: asked names no held field, every fact still stands."""
+    question = "Could you tell me your email?"
+    assert rules_mod.asked_fields(question, vocab=VOCAB) == ["email"]
+    assert "email" not in [f.field for f in ctx.askable()]
     user = agent_for(ctx, rules, ["Right, got it."], recorded)
-    user.reply([{"role": "assistant", "content": "Could you tell me your membership tier?"}])
+    user.reply([{"role": "assistant", "content": question}])
     system = user.model.calls[-1]["messages"][0]["content"]
     for fact in ctx.askable():
         assert str(fact.value) in system
