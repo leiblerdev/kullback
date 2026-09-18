@@ -798,19 +798,16 @@ def _agent_user_factory(workdir: Path, model_id: str, base_url: Optional[str], c
     The model is wrapped the way a build wraps its own (D86), so every turn this scoring pays for is
     priced, charged against the ceiling and stopped at it, rather than counted after the fact.
     """
-    agent_mod = importlib.import_module("kullback.user.agent")
-    fidelity = importlib.import_module("kullback.user.fidelity")
     budget = importlib.import_module("kullback.runner.budget")
     model = _live_model(model_id, base_url)
     if ceiling is not None:
         model = budget.BudgetedModel(model, stage="user_fidelity", workdir=workdir,
                                      model_id=model_id, ceiling=ceiling, cap_context=True)
-    writes = fidelity.write_tools_of(workdir)
-    vocab = fidelity.vocabulary_of(workdir)
+    factory = importlib.import_module("kullback.user.factory")
 
     def make(ctx, fallback, record_values):
-        return agent_mod.AgentUser(ctx, fallback, model, vocab=vocab, write_tools=writes,
-                                   record_values=record_values)
+        return factory.build_user(workdir, ctx.task_id, model, factory.PURPOSE_SCORE, ctx=ctx,
+                                  fallback=fallback, record_values=record_values)
 
     return make
 
