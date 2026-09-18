@@ -122,3 +122,20 @@ def test_a_record_stored_before_the_count_still_loads():
 def test_unknown_keys_are_still_refused():
     with pytest.raises(ValueError):
         Usage.model_validate({"input": 1, "output": 1, "reasoning_typo": 1})
+
+
+def test_an_unreported_count_is_omitted_from_the_stored_form():
+    """A record with no count is byte-identical to one written before the field existed."""
+    assert Usage(input=10, output=9).model_dump() == {
+        "input": 10, "output": 9, "cache_read": 0, "cache_write": 0,
+    }
+    assert "reasoning" not in Usage(input=10, output=9).model_dump_json()
+    assert Usage(input=10, output=9).reasoning == 0
+
+
+def test_a_reported_count_is_stored_and_round_trips():
+    dumped = Usage(input=10, output=9, reasoning=4).model_dump()
+    assert dumped["reasoning"] == 4
+    assert Usage.model_validate(dumped) == Usage(input=10, output=9, reasoning=4)
+    assert Usage.model_validate_json(Usage(input=10, output=9, reasoning=4).model_dump_json()) == \
+        Usage(input=10, output=9, reasoning=4)

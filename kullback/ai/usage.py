@@ -7,7 +7,7 @@ one pydantic class and no client keeps that true while ai still imports nothing 
 
 from __future__ import annotations
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_serializer, model_validator
 
 
 class Usage(BaseModel):
@@ -20,6 +20,11 @@ class Usage(BaseModel):
     not clamped: it means the response was malformed, and quietly rewriting a provider's
     numbers would hide that. Zero means not reported, not none: a provider that reports no
     count leaves zero, and no reader may treat zero as proof no reasoning happened.
+
+    A zero count is omitted from the stored form: model_dump and model_dump_json drop the
+    key, so a record that carries no count is byte-identical to one written before the field
+    existed. Readers must use attribute access, which always yields zero, never key access on
+    a dumped dict. A nonzero count is stored as usual and round-trips.
 
     A record in the sense of runner/records.py (same config: aliases both ways, unknown keys
     refused); records.py re-exports it and lists it in ALL_RECORDS.
@@ -40,3 +45,10 @@ class Usage(BaseModel):
                 f"({self.output}), so they cannot exceed it"
             )
         return self
+
+    @model_serializer(mode="wrap")
+    def _omit_unreported_reasoning(self, handler):
+        data = handler(self)
+        if self.reasoning == 0:
+            data.pop("reasoning", None)
+        return data
