@@ -131,6 +131,29 @@ def test_a_duplicate_recording_is_evidence_only(workdir, tmp_path):
     assert ruling["reasons"] == {"complete_record": 1, "duplicate": 1}
 
 
+def test_a_failed_intake_publishes_no_traces(workdir, tmp_path):
+    with pytest.raises(ingest.IntakeGateError):
+        ingest_payload(wrap([good_sim("g1"), dangling_sim("b1")]), workdir, tmp_path)
+    assert list((workdir / "traces").glob("*.json")) == []
+    assert not (workdir / "evidence_traces").exists()
+    # The ruling is still written, so the failure stays readable.
+    assert len(list((workdir / "intake").glob("*.json"))) == 1
+
+
+def test_customer_keys_ending_in_ptr_are_not_blanked_for_duplicates(workdir, tmp_path):
+    def answered(ptr_value) -> dict:
+        calls = [{"id": "c1", "name": "look_up", "arguments": {"cursor_ptr": ptr_value},
+                  "requestor": "assistant"}]
+        return {"termination_reason": "user_stop", "messages": [
+            {"role": "assistant", "content": None, "tool_calls": calls, "turn_idx": 0},
+            {"role": "tool", "id": "c1", "content": '{"ok": true}', "turn_idx": 1}]}
+
+    summary = ingest_payload(wrap([answered("A"), answered("B")]), workdir, tmp_path)
+    assert summary["runs"] == 2
+    ruling = json.loads((workdir / "intake_ruling.json").read_text(encoding="utf-8"))
+    assert ruling["reasons"] == {"complete_record": 2}
+
+
 def test_recordings_with_no_id_match_by_content_not_by_fallback_id(workdir, tmp_path):
     sims = [{"termination_reason": "user_stop", "messages": [plain_msg("same")]},
             {"termination_reason": "user_stop", "messages": [plain_msg("same")]}]
@@ -189,7 +212,7 @@ def test_a_recording_with_no_end_marker_reads_as_complete_when_every_call_resolv
 def test_fixture_hashes_are_stable_within_this_seam(tau2_small_path, workdir):
     summary = ingest.ingest_file(tau2_small_path, workdir)
     assert summary["trace_hashes"] == [
-        "4558621abd910188f117a92480e010ff02188854d2c6e6ad7cc06e5b075e0015",
-        "66de44655ced62946541d9719b533fad61601f36a5906234c7b0c15fdb2e0bd3",
-        "adc6956dc29215648caaaa07aa6df8302f95e4d696dfe70180020c2e98045190",
+        "452ccae335ba1c9999ac120978ac32927f8265b45a2cc0e225cd541b4172fb81",
+        "82818ebaba242db1498492ecb33943741acb23daf983e62e89b3a82949ebccc3",
+        "b201add5d7eb96a93d8f079b63ea3067519757f7f122fe569dfde84f1193cdb2",
     ]

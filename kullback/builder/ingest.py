@@ -522,9 +522,16 @@ def _content_key(trace: Trace) -> str:
     return content_hash(body)
 
 
+# The provenance pointers the records carry (D66); only these are blanked for the duplicate
+# content key, never customer keys that happen to end the same way.
+_POINTER_FIELDS = frozenset({
+    "raw_ptr", "result_ptr", "tools_declared_ptr", "system_prompt_ptr", "info_ptr",
+})
+
+
 def _blank_ptrs(node: Any) -> None:
     if isinstance(node, dict):
-        for key in [key for key in node if key.endswith("_ptr")]:
+        for key in [key for key in node if key in _POINTER_FIELDS]:
             node[key] = None
         for value in node.values():
             _blank_ptrs(value)
@@ -785,15 +792,17 @@ def ingest_file(path: str | Path, workdir: str | Path, model: Optional[Model] = 
     raw = store_raw(path, workdir)
     traces = derive_traces(raw.raw_hash, workdir, model=model)
     ruling = read_intake_ruling(workdir, raw.raw_hash)
-    eligible, set_aside = _split_writes(traces, ruling)
-    write_traces(eligible, workdir)
-    if set_aside:
-        write_evidence(set_aside, workdir)
     if ruling:
         _update_aggregate_ruling(workdir, raw.raw_hash, ruling)
     gate = gate_ingest(traces, workdir, raw_hash=raw.raw_hash)
     if not gate.passed:
         raise IntakeGateError(_gate_message(path, gate), gate)
+    # Eligible traces publish only on a passing gate: a failed intake raises above, so a later
+    # build reusing this workdir never loads recordings from a file that failed admission.
+    eligible, set_aside = _split_writes(traces, ruling)
+    write_traces(eligible, workdir)
+    if set_aside:
+        write_evidence(set_aside, workdir)
     summary = {
         "raw_hash": raw.raw_hash,
         "format": raw.format_detected,
