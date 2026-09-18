@@ -154,3 +154,20 @@ def test_a_rules_floor_is_not_an_agent_user(workdir):
                                   factory_mod.PURPOSE_SCORE, fallback=floor)
     assert isinstance(user, AgentUser)
     assert user.fallback is floor
+
+
+def test_full_live_inputs_never_touch_the_disk(workdir):
+    """A caller that passes everything gets no disk read and no missing-file error (P2)."""
+    model = TestModel([], loop=True)
+    index = fidelity_mod.trace_index(workdir)
+    trace = index["t1"]
+    user_rules = fidelity_mod.rules_for(workdir, "t1")
+    record = context_mod.mine_record_values(trace)
+    ctx = context_mod.curate("task_1", user_rules, trace, vocab=VOCAB,
+                             write_tools=["move_delivery"], record_fields=sorted(record))
+    user = factory_mod.build_user(
+        workdir / "nowhere", "task_1", model, factory_mod.PURPOSE_RUN, ctx=ctx,
+        fallback=rules_mod.SimulatedUser(user_rules, vocab=VOCAB), vocab=VOCAB,
+        write_tools=["move_delivery"], goal_writes={"move_delivery"}, answer_strip=None,
+        record_values=record, trace=trace)
+    assert isinstance(user, AgentUser)

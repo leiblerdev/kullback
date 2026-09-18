@@ -56,13 +56,16 @@ def build_user(workdir: Any, task_id: str, model: Any, purpose: str, *,
     """
     if purpose not in PURPOSES:
         raise ValueError(f"purpose is one of {list(PURPOSES)}, not {purpose!r}")
-    disk = _disk_state(workdir, task_id, purpose)
-    if disk is None:
-        return None
-    for key, value in (("ctx", ctx), ("fallback", fallback),
-                       ("record_values", record_values), ("vocab", vocab),
-                       ("write_tools", write_tools), ("goal_writes", goal_writes),
-                       ("answer_strip", answer_strip), ("trace", trace)):
+    given = (("ctx", ctx), ("fallback", fallback), ("record_values", record_values),
+             ("vocab", vocab), ("write_tools", write_tools), ("goal_writes", goal_writes),
+             ("answer_strip", answer_strip), ("trace", trace))
+    if all(value is not _MISSING for _, value in given):
+        disk = {}
+    else:
+        disk = _disk_state(workdir, task_id, purpose)
+        if disk is None:
+            return None
+    for key, value in given:
         if value is not _MISSING:
             disk[key] = value
     return AgentUser(
