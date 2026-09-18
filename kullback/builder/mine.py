@@ -5,11 +5,12 @@ from __future__ import annotations
 import json
 import re
 from pathlib import Path
-from typing import Any, NamedTuple, Optional, Sequence
+from typing import Any, NamedTuple, Optional, Sequence, get_args
 
 from kullback.ai.provider import Model
 from kullback.gates.tool_runs import SHAPELESS_PROBES, id_field, match_table
 from kullback.runner.records import (
+    ClassifiedBy,
     Column,
     EffectObservation,
     EntitySchema,
@@ -70,6 +71,10 @@ BASIS_DECLARED = "declared"
 BASIS_OBSERVED = "observed"
 BASIS_NAME = "name"
 BASIS_LLM = "llm"
+# Whether the installed records can hold a declared basis. The value rides the frozen patch until
+# the founder's re-freeze; where the runtime tree predates it, a declaration is recorded as a rule
+# with the wait said out loud, never emitted as a value nothing can read back.
+_DECLARED_BASIS_ALLOWED = BASIS_DECLARED in get_args(ClassifiedBy)
 # How many supporting (trace id, call index) pairs a fact keeps; the full count rides beside them.
 MAX_SUPPORT_CALLS = 5
 # Keys the column facts ride on inside Column.evidence, which is free form: the class fact, the
@@ -629,7 +634,9 @@ def _decide_kind(sig: ToolSig, model: Optional[Model], samples: list, spec: Opti
     sig.kind, sig.kind_confidence, sig.kind_reason = rule.kind, rule.confidence, rule.reason
     # A declaration is its own basis, not a name guess; it needs the frozen patch that adds the
     # value to ClassifiedBy, and rides there (docs/frozen-patches/mined-evidence.patch).
-    sig.classified_by = BASIS_DECLARED if declared else "rule"
+    # Where the runtime tree predates the patch, the declaration still decides the kind but is
+    # recorded as a rule with the wait said out loud, so no artifact carries a value nothing reads.
+    sig.classified_by = BASIS_DECLARED if declared and _DECLARED_BASIS_ALLOWED else "rule"
     standing_basis = BASIS_DECLARED if declared else BASIS_NAME
     sig.unclassified = rule.confidence == "low"
     if model is not None:
@@ -647,6 +654,9 @@ def _decide_kind(sig: ToolSig, model: Optional[Model], samples: list, spec: Opti
         # never lower a confidence the annotations or the LLM had already earned.
         _apply_observed_kind(sig, rule, standing_basis, found[0], found[1])
     _stamp_kind_basis(sig)
+    if declared and not _DECLARED_BASIS_ALLOWED:
+        sig.kind_reason = (f"{sig.kind_reason}; the source declares this kind and the basis "
+                           f"waits on the re-freeze, recorded as a rule meanwhile")
 
 
 def _callers_of(acc: dict, declared: bool) -> tuple[list[str], list[str]]:

@@ -308,3 +308,23 @@ def test_a_signature_newer_than_the_records_is_named_not_dropped(tmp_path):
     sigs = load_tool_sigs(tmp_path, unread)
     assert [s.name for s in sigs] == ["get_berth"]
     assert any("harbour_next" in note for note in unread)
+
+
+def test_a_closed_schema_records_the_declaration_as_a_rule_with_a_marker(monkeypatch):
+    import kullback.builder.mine as mine
+
+    monkeypatch.setattr(mine, "_DECLARED_BASIS_ALLOWED", False)
+    declared = [{"name": "harbormaster", "parameters": {"properties": {}},
+                 "annotations": {"readOnlyHint": True}}]
+    traces = [one_trace("t1", [
+        {"name": "get_berth", "args": {"berth_tag": "T1"},
+         "result": '{"berth_tag": "T1", "colour": "red"}'},
+        {"name": "harbormaster", "args": {"berth_tag": "T1", "colour": "blue"},
+         "result": "done"},
+        {"name": "get_berth", "args": {"berth_tag": "T1"},
+         "result": '{"berth_tag": "T1", "colour": "blue"}'},
+    ], tools_declared=declared)]
+    sig = sig_by_name(mine_tools(traces), "harbormaster")
+    assert sig.kind == "read"
+    assert sig.classified_by == "rule"
+    assert "waits on the re-freeze" in (sig.kind_reason or "")
