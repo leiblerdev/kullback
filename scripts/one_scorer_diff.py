@@ -91,113 +91,136 @@ def _old_verdict_state(atoms: list, decisions: dict, context: AtomContext) -> st
     return "pass"
 
 
-def measure(workdir: Path) -> dict:
-    env_path = workdir / "environment.json"
-    environment = _load(env_path, Environment) if env_path.is_file() else None
-    schema_path = workdir / "schema.json"
-    schema = _load(schema_path, EntitySchema) if schema_path.is_file() else None
+def _load_inputs(workdir: Path) -> dict:
+    """The workdir pieces one differential needs: verifiers, tools, rules and versions."""
     sigs = load_tool_sigs(workdir)
-    write_tools = {s.name for s in sigs if s.kind == "write"} or None
     rules_path = workdir / "canon-rules.json"
-    rules = load_rules(rules_path) if rules_path.is_file() else None
-
+    env_path = workdir / "environment.json"
+    schema_path = workdir / "schema.json"
     tasks = [_load(p, Task) for p in sorted((workdir / "tasks").glob("*.json"))]
-    status = _json(workdir / "task_status.json") or {}
     all_verifiers = []
     for path in sorted((workdir / "verifiers").glob("*.json")):
         try:
             all_verifiers.append(_load(path, Verifier))
         except Exception:
             pass
-    live_ids = {v.task_id for v in lifecycle.live(all_verifiers, status)}
-    by_task = {v.task_id: v for v in all_verifiers}
+    status = _json(workdir / "task_status.json") or {}
+    return {
+        "tasks": tasks,
+        "by_task": {v.task_id: v for v in all_verifiers},
+        "live_ids": {v.task_id for v in lifecycle.live(all_verifiers, status)},
+        "write_tools": {s.name for s in sigs if s.kind == "write"} or None,
+        "rules": load_rules(rules_path) if rules_path.is_file() else None,
+        "environment": _load(env_path, Environment) if env_path.is_file() else None,
+        "schema": _load(schema_path, EntitySchema) if schema_path.is_file() else None,
+    }
 
-    atom_cells: Counter = Counter()
-    new_hard_defects: list = []
-    flips: list = []
-    runs_scored = 0
-    pairs = 0
-    nonhard_pairs = 0
-    nonhard_disagreements = 0
-    judge_skipped = 0
 
-    for task in tasks:
-        verifier = by_task.get(task.id)
+def _run_paths(workdir: Path, task_id: str) -> list:
+    """A Task's stored Runs plus its loophole probe, which the gates score too."""
+    paths = sorted((workdir / "runs" / task_id).glob("*.jsonl"))
+    probe = workdir / "probes" / f"probe-{task_id}.jsonl"
+    if probe.is_file():
+        paths.append(probe)
+    return paths
+
+
+def _score_hard_atom(state: dict, task_id: str, atom: Any, run: Any, tools: Any,
+                      fn: Any, old: dict) -> None:
+    """One Hard atom: defect agrees with defect, a no-judged None agrees with a pass."""
+    cells, defects = state["atom_cells"], state["new_hard_defects"]
+    new_side = T.hard_holds(atom, run, tools, fn)
+    old_state, _ = old.get(atom.id, ("unevaluable", "missing"))
+    old_side = "defect" if old_state in ("error", "unevaluable") else old_state
+    if new_side is None and old_side == "pass":
+        cells[("hard:pass", "hard:pass")] += 1
+        return
+    new_state = "defect" if new_side is None else ("pass" if new_side else "fail")
+    cells[(f"hard:{new_state}", f"hard:{old_side}")] += 1
+    if new_side is None:
+        defects.append({"task_id": task_id, "atom_id": atom.id, "old": old_side})
+
+
+def _score_plain_atom(state: dict, verifier: Any, atom: Any, run: Any, fn: Any, tools: Any,
+                       rules: Any, write_tools: Any, effects: dict, asked: set, said: set) -> None:
+    """One non-Hard atom: the Verdict's target answer against check_run's, which must match."""
+    state["nonhard_pairs"] += 1
+    new_holds = T.atom_holds(atom, run, fn, tools, effects=effects, asked=asked, said=said)
+    if new_holds is None:
+        return
+    new_state = "pass" if new_holds else "fail"
+    one = verifier.model_copy(update={"atoms": [atom]})
+    try:
+        passed, failing = T.check_run(one, run, rules, write_tools=write_tools)
+        target_state = "pass" if (passed or failing != atom.id) else "fail"
+    except Exception as error:
+        target_state = f"error:{type(error).__name__}"
+    if new_state != target_state:
+        state["nonhard_disagreements"] += 1
+    state["atom_cells"][(f"nonhard:{new_state}", f"target:{target_state}")] += 1
+
+
+def _score_run(state: dict, inputs: dict, workdir: Path, task: Any, verifier: Any,
+               atoms: list, path: Path) -> None:
+    """One stored Run: every atom twice, then the new Verdict against the old reading."""
+    run = run_from_jsonl(path)
+    if run is None:
+        return
+    write_tools, rules = inputs["write_tools"], inputs["rules"]
+    schema, environment = inputs["schema"], inputs["environment"]
+    state["runs_scored"] += 1
+    fn = T.canon_fn(rules)
+    tools = T.scored_write_tools(verifier, run, write_tools)
+    effects = T.write_effects(run, tools, fn)
+    asked = set(T.question_keys(run, effects, fn))
+    said = set(T.communicate_values(run, fn))
+    context = AtomContext(run, fn, write_tools, schema, rules=rules)
+    old = _old_predicate_decisions(verifier, atoms, context)
+    nonjudge = verifier.model_copy(update={"atoms": atoms})
+    for atom in atoms:
+        state["pairs"] += 1
+        if atom.kind == "hard":
+            _score_hard_atom(state, task.id, atom, run, tools, fn, old)
+        else:
+            _score_plain_atom(state, verifier, atom, run, fn, tools, rules,
+                               write_tools, effects, asked, said)
+    new_record = verdict(run, nonjudge, rules, write_tools=write_tools, schema=schema,
+                         rules=rules, environment=environment)
+    new_state = ("pass" if new_record.passed else
+                 ("not_verdicted" if new_record.class_ == "not_verdicted" else "fail"))
+    old_state = _old_verdict_state(atoms, old, context)
+    if new_state != old_state:
+        state["flips"].append({"task_id": task.id, "file": path.name,
+                                 "direction": f"{old_state}_to_{new_state}",
+                                 "new_failing_atom": new_record.failing_atom})
+
+
+def measure(workdir: Path) -> dict:
+    inputs = _load_inputs(workdir)
+    state: dict = {"atom_cells": Counter(), "new_hard_defects": [], "flips": [],
+                    "runs_scored": 0, "pairs": 0, "nonhard_pairs": 0,
+                    "nonhard_disagreements": 0, "judge_skipped": 0}
+    for task in inputs["tasks"]:
+        verifier = inputs["by_task"].get(task.id)
         if verifier is None:
             continue
         atoms = [a for a in verifier.atoms if not a.judge]
-        judge_skipped += len(verifier.atoms) - len(atoms)
+        state["judge_skipped"] += len(verifier.atoms) - len(atoms)
         if not atoms:
             continue
-        paths = sorted((workdir / "runs" / task.id).glob("*.jsonl"))
-        probe = workdir / "probes" / f"probe-{task.id}.jsonl"
-        if probe.is_file():
-            paths.append(probe)
-        for path in paths:
-            run = run_from_jsonl(path)
-            if run is None:
-                continue
-            runs_scored += 1
-            fn = T.canon_fn(rules)
-            tools = T.scored_write_tools(verifier, run, write_tools)
-            effects = T.write_effects(run, tools, fn)
-            asked = set(T.question_keys(run, effects, fn))
-            said = set(T.communicate_values(run, fn))
-            context = AtomContext(run, fn, write_tools, schema, rules=rules)
-            old = _old_predicate_decisions(verifier, atoms, context)
-            nonjudge = verifier.model_copy(update={"atoms": atoms})
-            for atom in atoms:
-                pairs += 1
-                if atom.kind == "hard":
-                    new_side = T.hard_holds(atom, run, tools, fn)
-                    old_state, _ = old.get(atom.id, ("unevaluable", "missing"))
-                    old_side = ("defect" if old_state in ("error", "unevaluable") else old_state)
-                    if new_side is None and old_side == "pass":
-                        atom_cells[("hard:pass", "hard:pass")] += 1
-                        continue
-                    new_state = ("defect" if new_side is None
-                                 else ("pass" if new_side else "fail"))
-                    atom_cells[(f"hard:{new_state}", f"hard:{old_side}")] += 1
-                    if new_side is None:
-                        new_hard_defects.append({"task_id": task.id, "atom_id": atom.id,
-                                                 "old": old_side})
-                    continue
-                nonhard_pairs += 1
-                new_holds = T.atom_holds(atom, run, fn, tools,
-                                         effects=effects, asked=asked, said=said)
-                if new_holds is None:
-                    continue
-                new_state = "pass" if new_holds else "fail"
-                one = verifier.model_copy(update={"atoms": [atom]})
-                try:
-                    passed, failing = T.check_run(one, run, rules, write_tools=write_tools)
-                    target_state = "pass" if (passed or failing != atom.id) else "fail"
-                except Exception as error:
-                    target_state = f"error:{type(error).__name__}"
-                if new_state != target_state:
-                    nonhard_disagreements += 1
-                atom_cells[(f"nonhard:{new_state}", f"target:{target_state}")] += 1
-            new_record = verdict(run, nonjudge, rules, write_tools=write_tools, schema=schema,
-                                 rules=rules, environment=environment)
-            new_state = ("pass" if new_record.passed else
-                         ("not_verdicted" if new_record.class_ == "not_verdicted" else "fail"))
-            old_state = _old_verdict_state(atoms, old, context)
-            if new_state != old_state:
-                flips.append({"task_id": task.id, "file": path.name,
-                              "direction": f"{old_state}_to_{new_state}",
-                              "new_failing_atom": new_record.failing_atom})
-
+        for path in _run_paths(workdir, task.id):
+            _score_run(state, inputs, workdir, task, verifier, atoms, path)
     return {
         "workdir": workdir.name,
-        "verifiers_live": len(live_ids),
-        "runs_scored": runs_scored,
-        "judge_atoms_skipped": judge_skipped,
-        "atom_run_pairs": pairs,
-        "nonhard_pairs": nonhard_pairs,
-        "nonhard_disagreements": nonhard_disagreements,
-        "atom_cells": {f"{a}/{b}": n for (a, b), n in sorted(atom_cells.items())},
-        "hard_defects": len(new_hard_defects),
-        "verdict_flips": flips,
+        "verifiers_live": len(inputs["live_ids"]),
+        "runs_scored": state["runs_scored"],
+        "judge_atoms_skipped": state["judge_skipped"],
+        "atom_run_pairs": state["pairs"],
+        "nonhard_pairs": state["nonhard_pairs"],
+        "nonhard_disagreements": state["nonhard_disagreements"],
+        "atom_cells": {f"{a}/{b}": n for (a, b), n in sorted(state["atom_cells"].items())},
+        "hard_defects": len(state["new_hard_defects"]),
+        "verdict_flips": state["flips"],
     }
 
 

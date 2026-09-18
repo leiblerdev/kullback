@@ -12,6 +12,7 @@ These are the items I pushed past the first build. Each line says what it buys a
   `state.pool` to `synth_second_path` again) once the tally lock above is in: the variant part of
   the gain stays deferred until then.
 - effect-credit.patch waits for the founder's re-freeze: the replay counts unattributed effects instead of failing the last call.
+- one-scorer.patch waits for the founder's re-freeze: the Verdict and the gates score an atom with one interpreter over its structured target.
 
 ## After the first Replica clears Gate A
 
