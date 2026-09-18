@@ -1,5 +1,5 @@
 diff --git a/kullback/runner/records.py b/kullback/runner/records.py
-index a767a92..da33f21 100644
+index a767a92..d90195a 100644
 --- a/kullback/runner/records.py
 +++ b/kullback/runner/records.py
 @@ -5,6 +5,9 @@ from __future__ import annotations
@@ -41,9 +41,9 @@ index a767a92..da33f21 100644
 +    else:
 +        raise FileExistsError(f"cannot stage a temporary file beside {path}")
 +    try:
-+        if kept_mode is not None:
-+            os.fchmod(fd, kept_mode)
 +        with os.fdopen(fd, "w", encoding="utf-8") as handle:
++            if kept_mode is not None:
++                os.fchmod(handle.fileno(), kept_mode)
 +            handle.write(text)
 +            handle.flush()
 +            os.fsync(handle.fileno())
