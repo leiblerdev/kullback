@@ -260,6 +260,15 @@ def test_turns_view_is_every_spoken_turn_in_order_without_tool_payloads():
     assert [row["locator"] for row in spoken] == ["event:0", "event:2"]
 
 
+def test_turns_view_reads_text_where_the_runner_writes_user_speech():
+    run = {"run_id": "run-shelf-3", "events": [
+        _event(0, "user_turn", {"text": "the Runner writes speech here"}),
+        _event(1, "user_turn", {"content": "older rows say it here"})]}
+    spoken = reading.select(run, "turns")["turns"]
+    assert [(row["speaker"], row["text"]) for row in spoken] == [
+        ("user", "the Runner writes speech here"), ("user", "older rows say it here")]
+
+
 def test_a_long_record_reads_end_to_end_through_outlines_parts_and_pages():
     big = _run()
     big["events"] = [

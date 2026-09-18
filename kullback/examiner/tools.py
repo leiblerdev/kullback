@@ -836,6 +836,17 @@ def _wide(locator: str) -> bool:
     return locator in ("turns", "all") or "-" in locator
 
 
+def _effective_locator(kind: str, body: Any, locator: Optional[str], offset: int) -> Optional[str]:
+    """The locator this read answers. An offset past the start with no locator continues the whole
+    record, never the outline again; an id nothing carries answers its index instead, paged like
+    before, since no whole view can be selected from it."""
+    if locator is not None or kind not in ("run", "trace") or offset <= 0:
+        return locator
+    if isinstance(body, dict) and body.get("found") is False:
+        return None
+    return "all"
+
+
 def _read(plan: ExaminerPlan):
     async def read(args: ReadArgs) -> ReadResult:
         handler = READ_HANDLERS.get(args.kind)
@@ -843,9 +854,7 @@ def _read(plan: ExaminerPlan):
         # caller that went round the schema; it is read off the References file, which is where the
         # if chain this table replaced sent it, with the kind kept so the index names what was asked.
         body = handler(plan, args.id) if handler is not None else _read_off_file(plan, args.kind, args.id)
-        # An offset past the start with no locator is the whole record at that offset, never the
-        # outline again: the outline is answered once, at offset zero.
-        locator = args.locator or ("all" if args.offset > 0 else None)
+        locator = _effective_locator(args.kind, body, args.locator, args.offset)
         if args.kind in ("run", "trace"):
             if locator is not None:
                 # An id nothing carries answers its ids here, not a record: kind_of refuses it below.

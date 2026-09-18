@@ -327,8 +327,11 @@ def _spoken(event: dict) -> Optional[tuple[str, str]]:
     A user turn speaks its content; a model call speaks its reply's content; tool calls and
     their results are evidence, not conversation, and never enter the `turns` view."""
     payload = _payload(event)
-    if event.get("type") == "user_turn" and isinstance(payload.get("content"), str):
-        return "user", payload["content"]
+    if event.get("type") == "user_turn":
+        # The Runner writes the speech under `text`, older rows under `content`: read both,
+        # the way the gates' own `_user_text` does, so no real user turn ever drops out of view.
+        said = payload.get("content") or payload.get("text")
+        return ("user", said) if isinstance(said, str) else None
     reply = payload.get("reply")
     if event.get("type") == "model_call" and isinstance(reply, dict) \
             and isinstance(reply.get("content"), str):

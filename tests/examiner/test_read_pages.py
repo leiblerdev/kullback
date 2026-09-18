@@ -284,6 +284,15 @@ def test_turns_views_carry_speakers_and_no_tool_payloads(tmp_path):
     assert "args" not in json.dumps(run) and "result" not in json.dumps(run)
 
 
+def test_an_unknown_id_with_an_offset_answers_its_index_not_a_refusal(tmp_path):
+    harness = examiner_agent.examiner_harness(_world(tmp_path))
+    first = _read(harness, kind="run", id="nowhere")
+    assert first.is_error is False and first.details["next_offset"] is None
+    later = _read(harness, kind="run", id="nowhere", offset=10)
+    assert later.is_error is False, "paging an index never selects a whole view from it"
+    assert later.details["text"] == first.details["text"][10:]
+
+
 def test_a_locator_on_anything_but_a_run_or_a_trace_is_refused(tmp_path):
     harness = examiner_agent.examiner_harness(_world(tmp_path))
     result = _read(harness, kind="task_status", id=FIRST, locator="event:1")
