@@ -138,6 +138,8 @@ def test_module_hash_covers_the_closure():
     assert "kullback.runner.canon" in reach.import_closure("kullback.builder.mine")
     assert reach.closure_hash(mine, exempt=frozenset({"kullback.runner.canon"})) != \
         reach.closure_hash(mine)
+    assert "kullback.agent.__init__" in reach.closure_files("kullback.builder.repair"), \
+        "importing a submodule executes its package init"
 
 
 def test_stage_registry_matches_the_graph():

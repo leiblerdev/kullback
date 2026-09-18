@@ -545,6 +545,9 @@ EXEMPT: frozenset[str] = frozenset()
 def _dotted_file(dotted: str) -> Path | None:
     """The file behind a dotted first-party module: the module file or the package init."""
     parts = dotted.split(".")
+    if len(parts) == 1:
+        init = _repo_root() / parts[0] / "__init__.py"
+        return init if init.is_file() else None
     root = _repo_root() / parts[0]
     path = root.joinpath(*parts[1:])
     if (path.with_suffix(".py")).is_file():
@@ -670,15 +673,15 @@ def import_closure(dotted: str) -> frozenset[str]:
 
 
 def closure_files(dotted: str) -> dict[str, str]:
-    """The module, its closure and the package inits above them, dotted name to bytes."""
+    """The module, its closure and every package init above each of them, name to bytes."""
     names = sorted({dotted} | set(import_closure(dotted)))
     out: dict[str, str] = {}
     for name in names:
         path = _dotted_file(name)
         if path is not None:
             out[name] = path.read_bytes().decode("utf-8", errors="replace")
-    for name, init in _package_inits(dotted).items():
-        out.setdefault(name, init.read_bytes().decode("utf-8", errors="replace"))
+        for init_name, init_path in _package_inits(name).items():
+            out.setdefault(init_name, init_path.read_bytes().decode("utf-8", errors="replace"))
     return out
 
 
