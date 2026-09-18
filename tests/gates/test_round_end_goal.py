@@ -3,13 +3,18 @@
 Skipped until the founder re-freezes kullback/gates with docs/frozen-patches/stop-rule.patch.
 """
 
+import json
 import random
 
 import pytest
 
 from gates.examiner_fixtures import SIGS, TASK, base, history, pool, probe, replay_row, reroll_row, status, version
 from gates.verifier_fixtures import alt_path_run, other_reason_run, reference_run, wrong_run
+from kullback import rounds
+from kullback.agent.events import RoundEnd
+from kullback.builder import pipeline
 from kullback.gates import round_end as R
+from test_rounds import _bare_loop, _finding, _record
 
 pytestmark = pytest.mark.skipif(not hasattr(R, "exit_reason"),
                                 reason="stop-rule patch waits for the founder's re-freeze")
@@ -95,6 +100,47 @@ def test_round_counts_reports_rates_over_this_rounds_task_list(tmp_path):
     counts = R.round_counts(**world)
     assert counts["fidelity_rate"] == pytest.approx(0.5) and counts["trusted_share"] == pytest.approx(0.5)
     assert counts["fidelity_tasks"] == 1 and counts["trusted_tasks"] == 1 and counts["tasks"] == 2
+
+
+def test_goals_ride_as_arguments_for_a_later_plan():
+    short = _goal_round(1, 1, 4, unfinished=[])
+    assert R.exit_for([short], 1, ceiling_reached=False, exhausted=[False]) is None
+    assert R.exit_for([short], 1, ceiling_reached=False, exhausted=[False],
+                      fidelity_rate_goal=0.25, trusted_share_goal=0.25) == "done"
+    reason = R.exit_reason([short], 1, ceiling_reached=False, exhausted=[False],
+                           fidelity_rate_goal=0.25, trusted_share_goal=0.25)
+    assert "done" in reason and "1" in reason
+
+
+def _refused_counts():
+    return dict(_record(1, fidelity=0, trusted=0, refused_count=3, unfinished=[], tasks=3,
+                        fidelity_tasks=0, fidelity_rate=0.0, trusted_tasks=0,
+                        trusted_share=0.0).counts)
+
+
+def test_a_refused_round_emits_its_end_with_the_reason(tmp_path):
+    loop = _bare_loop(tmp_path)
+    loop.plan.last = pipeline.PipelineResult(status="ok")
+    record = loop.close_round(1, _refused_counts())
+    assert record.exit == "refused"
+    event = RoundEnd(round=1, counts=record.counts, exit=record.exit)
+    assert event.exit == "refused"
+    assert record.exit_note and "refused" in record.exit_note
+    assert any(char.isdigit() for char in record.exit_note)
+    body = json.loads((tmp_path / "work" / rounds.ROUNDS_NAME).read_text(encoding="utf-8"))
+    assert body[-1]["exit"] == "refused" and "refused" in (body[-1]["exit_note"] or "")
+
+
+def test_a_refused_exit_with_findings_owed_runs_on_like_done_and_stalled(tmp_path):
+    """A refusal recorded before the owed beat would strand Examiner feedback, so the exit
+    clears and the next round re-reads the same refusals once nothing is owed."""
+    loop = _bare_loop(tmp_path)
+    loop.plan.last = pipeline.PipelineResult(status="ok")
+    loop.pending_findings = [_finding("t1")]
+    record = loop.close_round(1, _refused_counts())
+    assert record.exit is None
+    assert "owe the Builder a beat" in (record.exit_note or "")
+    assert [finding.finding_id for finding in record.pending_findings] == ["f1"]
 
 
 def test_every_stop_and_every_non_stop_carries_a_reason_with_numbers():
