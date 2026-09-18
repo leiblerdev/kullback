@@ -178,7 +178,14 @@ def main():
     for call in job["calls"]:
         # Every call starts on the Starting state its own trace ran on: a fresh toolkit over a
         # freshly validated world, so a write cannot leave the next call standing on its output.
-        function = getattr(toolkit(db_class.model_validate(job["dbs"][call["db"]])), call["name"])
+        # A fresh toolkit carries a fresh context, so the recorded feed of this call id is laid
+        # on it before the call runs: at replay and in the gates a body reads the values the
+        # recording witnessed for this call, off them the seeded feed answers, counted.
+        instance = toolkit(db_class.model_validate(job["dbs"][call["db"]]))
+        feed = (job.get("ctx") or {}).get(call.get("id"))
+        if feed:
+            instance.ctx.feed_call(feed)
+        function = getattr(instance, call["name"])
         try:
             inspect.signature(function).bind(**call["args"])
         except TypeError as exc:
@@ -220,11 +227,16 @@ class Sandbox:
 
     def __init__(self, source: str, db: dict, workdir: Path | str, class_name: str = TOOLS_CLASS,
                  db_class: str = DB_CLASS, timeout: float = 30.0,
-                 call_states: Optional[dict] = None, call_tasks: Optional[dict] = None):
+                 call_states: Optional[dict] = None, call_tasks: Optional[dict] = None,
+                 call_context: Optional[dict] = None):
         self.source, self.db, self.timeout = source, db, timeout
         self.class_name, self.db_class = class_name, db_class
         self.call_states = dict(call_states or {})  # call id -> the Starting state that call ran on
         self.call_tasks = dict(call_tasks or {})  # call id -> the Task whose trace made the call (D195)
+        # call id -> the values that call witnessed for the tool context (its new ids, its time).
+        # The child lays the feed on the fresh toolkit before the call runs, so a body reads what
+        # the recording showed for this call; a call with no witnessed value takes the seeded feed.
+        self.call_context = dict(call_context or {})
         # Absolute, because the subprocess is started with cwd inside this directory: a relative
         # workdir would be resolved against it a second time and every path would double. Found on
         # the first live build, where `--workdir .work-retail` made all sixteen tools fail the
@@ -315,10 +327,17 @@ class Sandbox:
                 states.append(self.state_for(call))
             indexes.append(at[key])
         nonce = secrets.token_hex(16)
+        # Only a feed that witnessed something travels: an empty one would only tell the child
+        # what the seeded feed already says, and the job stays the bytes it always was for it.
+        feeds = {}
+        for call in calls:
+            feed = self.call_context.get(call.id) if call.id else None
+            if isinstance(feed, dict) and (feed.get("now") is not None or feed.get("new_ids")):
+                feeds[call.id] = feed
         job.write_text(json.dumps({"source": self.source, "dbs": states, "db_class": self.db_class,
                                    "class_name": self.class_name, "helpers": sorted(HELPERS),
-                                   "trace": bool(trace),
-                                   "calls": [{"name": c.name, "args": c.args, "db": i}
+                                   "trace": bool(trace), "ctx": feeds,
+                                   "calls": [{"id": c.id, "name": c.name, "args": c.args, "db": i}
                                              for c, i in zip(calls, indexes, strict=False)]},
                                   default=str), encoding="utf-8")
         try:
