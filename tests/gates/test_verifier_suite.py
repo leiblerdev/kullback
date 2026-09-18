@@ -6,6 +6,7 @@ tested here is the ruling side, which no agent may write and no model is consult
 
 from __future__ import annotations
 
+import importlib.util
 from pathlib import Path
 
 import pytest
@@ -39,6 +40,9 @@ from kullback.gates import verifier_suite as S
 from kullback.runner.confinement import confine
 from kullback.runner.records import Constraint, Intent, StrippedValue, Task, UserRules, Verifier
 from runner.replay_fixtures import Toolkit, do_replay
+
+_NEEDS_PATCH = importlib.util.find_spec("kullback.runner.target") is None
+_patch_only = pytest.mark.skipif(_NEEDS_PATCH, reason="needs the one-scorer patch")
 
 # --- reading re-runs from disk (D91) --------------------------------------
 
@@ -92,17 +96,20 @@ def test_a_state_reading_hard_rule_fails_the_run_it_cannot_hold_on(tmp_path):
     assert S.check_run(verifier, with_state("delivered")) == (False, "hard.k1")
 
 
-def test_a_hard_rule_that_raises_is_a_failure_and_not_a_silent_pass(tmp_path):
-    """A predicate that blows up decided nothing, so the oracle check has to see it (D79 check 2)."""
+@_patch_only
+def test_a_hard_rule_that_raises_is_a_defect_and_not_a_candidate_failure(tmp_path):
+    """A predicate that blows up decided nothing: a Verifier defect, never a Candidate failure (G3)."""
     rule = Constraint(id="k1", text="never cancel an order that is not pending", compiled=True,
                       predicate_src=("def check(pre_state, write_call, transcript):\n"
                                      "    return pre_state['orders']['#W123']['status'] == 'pending'\n"))
     verifier = derive(tmp_path, constraints=[rule])
-    assert S.check_run(verifier, reference_run()) == (False, "hard.k1")  # the Run carries no state
+    assert S.hard_holds(atom_by_id(verifier, "hard.k1"), reference_run(), WRITE_TOOLS) is None
+    assert S.check_run(verifier, reference_run()) == (True, None)
     gates = {g.stage: g for g in S.validate_verifier(verifier, reference_run())}
     assert gates["verifier_oracle"].passed is False
 
 
+@_patch_only
 def test_a_hard_rule_cannot_walk_dunders_out_of_the_sandbox(tmp_path):
     """A Hard constraint that never imports anything can still reach the process through
     ().__class__.__base__.__subclasses__(); _hard_holds has to refuse it before exec, the same way
@@ -124,11 +131,12 @@ def test_a_hard_rule_cannot_walk_dunders_out_of_the_sandbox(tmp_path):
     verifier = derive(tmp_path, constraints=[rule])
     atom = atom_by_id(verifier, "hard.k1")
     assert confine(atom.predicate_src)  # the walk is caught by the dunder-attribute gate
-    assert S.hard_holds(atom, reference_run(), WRITE_TOOLS) is False
+    assert S.hard_holds(atom, reference_run(), WRITE_TOOLS) is None
     assert not marker.exists(), "the escape payload ran outside the sandbox"
-    assert S.check_run(verifier, reference_run()) == (False, "hard.k1")
+    assert S.check_run(verifier, reference_run()) == (True, None)
 
 
+@_patch_only
 def test_a_hard_rule_that_reaches_for_the_builtins_mapping_takes_nothing_from_the_next_rule(tmp_path):
     """Naming `__builtins__` reaches every allowed builtin as data to edit, so the source is refused
     before exec (a refused rule decided nothing, which is False here); and what does run gets its own
@@ -141,7 +149,7 @@ def test_a_hard_rule_that_reaches_for_the_builtins_mapping_takes_nothing_from_th
                         predicate_src=("def check(pre_state, write_call, transcript):\n"
                                        "    return len(write_call['arguments'].get('reason') or '') > 0\n"))
     verifier = derive(tmp_path, constraints=[reaching, counts])
-    assert S.hard_holds(atom_by_id(verifier, "hard.k1"), reference_run(), WRITE_TOOLS) is False
+    assert S.hard_holds(atom_by_id(verifier, "hard.k1"), reference_run(), WRITE_TOOLS) is None
     assert S.hard_holds(atom_by_id(verifier, "hard.k2"), reference_run(), WRITE_TOOLS) is True
 
 

@@ -378,6 +378,7 @@ def _reply_from_dict(data: dict) -> ModelReply:
     if not isinstance(usage, dict):
         usage = {}
     content, calls = _content_and_calls(data)
+    output = int(usage.get("output", usage.get("completion_tokens", 0)) or 0)
     return ModelReply(
         content=content,
         tool_calls=[
@@ -390,13 +391,53 @@ def _reply_from_dict(data: dict) -> ModelReply:
         ],
         usage=Usage(
             input=int(usage.get("input", usage.get("prompt_tokens", 0)) or 0),
-            output=int(usage.get("output", usage.get("completion_tokens", 0)) or 0),
+            output=output,
             cache_read=int(usage.get("cache_read", 0) or 0),
             cache_write=int(usage.get("cache_write", 0) or 0),
+            reasoning=_reasoning_share(usage, output),
         ),
         model=data.get("model"),
         stop_reason=data.get("stop_reason") or data.get("finish_reason"),
     )
+
+
+def _reasoning_of(usage: Any) -> int:
+    """The reasoning count a provider usage payload reports, or zero when it carries none.
+
+    One reader for every shape the adapters parse: a flat reasoning key on a stored reply,
+    the chat shape's completion_tokens_details.reasoning_tokens, and the Responses shape's
+    output_tokens_details.reasoning_tokens. This reads the reported number only; whether it is
+    a share of output is the boundary's call in `_reasoning_share` below. Zero here means the
+    provider did not report it, not that no reasoning happened.
+    """
+    if not isinstance(usage, dict):
+        return 0
+    direct = usage.get("reasoning", 0) or 0
+    chat = usage.get("completion_tokens_details") or {}
+    answered = usage.get("output_tokens_details") or {}
+    if not isinstance(chat, dict):
+        chat = {}
+    if not isinstance(answered, dict):
+        answered = {}
+    return int(direct or chat.get("reasoning_tokens", 0) or answered.get("reasoning_tokens", 0) or 0)
+
+
+def _reasoning_share(usage: Any, output: int) -> int:
+    """The reported count as a share of output, or zero when it is not one.
+
+    The boundary is tolerant where the record is strict: some routed providers report reasoning
+    outside the completion total, and a reply the build already paid for must not die over a
+    telemetry field. A count that is negative or above the reported output is recorded as zero,
+    which means "not reported as a part of output", and is never rewritten into a different
+    nonzero number. The oddity stays visible on the reply's `raw` payload beside it, which is
+    the one way this module surfaces something non-fatal (there is no log line and no warning
+    here). `Usage` itself still refuses such a record, so a stored file carrying one fails at
+    load instead of loading wrong.
+    """
+    reported = _reasoning_of(usage)
+    if reported < 0 or reported > output:
+        return 0
+    return reported
 
 
 def _arguments_of(call: dict) -> dict:
@@ -984,14 +1025,18 @@ class AnthropicModel(HttpModel):
                     )
                 )
         usage = data.get("usage") or {}
+        output = int(usage.get("output_tokens", 0) or 0)
         return ModelReply(
             content="".join(text) or None,
             tool_calls=calls,
             usage=Usage(
                 input=int(usage.get("input_tokens", 0) or 0),
-                output=int(usage.get("output_tokens", 0) or 0),
+                output=output,
                 cache_read=int(usage.get("cache_read_input_tokens", 0) or 0),
                 cache_write=int(usage.get("cache_creation_input_tokens", 0) or 0),
+                # The Messages API reports no separate reasoning count today (thinking tokens
+                # sit inside output_tokens), so this reads zero until the payload carries one.
+                reasoning=_reasoning_share(usage, output),
             ),
             model=data.get("model") or self.wire_id,
             stop_reason=data.get("stop_reason"),
@@ -1077,6 +1122,7 @@ class OpenAIModel(HttpModel):
         # a reply carrying cached_tokens 0 still carried cache_write_tokens 1339, billed at the
         # model's own cache_write rate. Dropping it billed a build for less than it cost.
         written = int(details.get("cache_write_tokens", 0) or 0)
+        output = int(usage.get("completion_tokens", 0) or 0)
         return ModelReply(
             content=message.get("content"),
             tool_calls=[
@@ -1089,9 +1135,10 @@ class OpenAIModel(HttpModel):
             ],
             usage=Usage(
                 input=max(0, int(usage.get("prompt_tokens", 0) or 0) - cached),
-                output=int(usage.get("completion_tokens", 0) or 0),
+                output=output,
                 cache_read=cached,
                 cache_write=written,
+                reasoning=_reasoning_share(usage, output),
             ),
             model=data.get("model") or self.wire_id,
             stop_reason=(choices[0] or {}).get("finish_reason"),
@@ -1269,14 +1316,16 @@ class OpenAIResponsesModel(HttpModel):
         # so the cached tokens come off here, at the adapter, and budget.py bills plain counts.
         cached = int(details.get("cached_tokens", 0) or 0)
         written = int(details.get("cache_write_tokens", 0) or 0)
+        output = int(usage.get("output_tokens", 0) or 0)
         return ModelReply(
             content="".join(texts) or None,
             tool_calls=calls,
             usage=Usage(
                 input=max(0, int(usage.get("input_tokens", 0) or 0) - cached),
-                output=int(usage.get("output_tokens", 0) or 0),
+                output=output,
                 cache_read=cached,
                 cache_write=written,
+                reasoning=_reasoning_share(usage, output),
             ),
             model=data.get("model") or self.wire_id,
             stop_reason=data.get("status"),
