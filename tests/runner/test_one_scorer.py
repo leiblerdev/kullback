@@ -153,6 +153,29 @@ def test_customer_canon_rules_change_the_answer_where_the_default_would_not():
     assert out.passed is True
 
 
+def test_a_defective_hard_rule_fails_admission_but_not_the_run():
+    """D79 admits no Verifier whose policy rule cannot run; the Candidate Run still passes."""
+    fn = T.canon_fn(None)
+    entity = T.text_of(fn("E-100"))
+    write = S.make_atom("w0", "required", {"kind": "write", "tool": "archive_entry",
+                                              "entity": entity, "entity_raw": "E-100",
+                                              "id_field": "entry_id"})
+    hard = S.make_atom("hard.k1", "hard", {"kind": "hard", "constraint_id": "k1",
+                                               "predicate_src": "def check(pre_state, write_call, transcript):\n    return None.foo\n",
+                                               "write_tools": ["archive_entry"], "read_tools": []})
+    verifier = Verifier(task_id="t9", verifier_version="v1", atoms=[write, hard])
+    run = make_run("r1", [
+        user("Please archive entry E-100."),
+        call("archive_entry", {"entry_id": "E-100"}, cid="c1"),
+        result({"entry_id": "E-100", "archived": True}, cid="c1"),
+        assistant("Done."),
+    ])
+    assert T.hard_defect(hard, run, WRITE_TOOLS) is True
+    assert S.check_run(verifier, run, write_tools=WRITE_TOOLS) == (True, None)
+    gates = {g.stage: g for g in S.validate_verifier(verifier, run, write_tools=WRITE_TOOLS)}
+    assert gates["verifier_oracle"].passed is False
+
+
 def test_the_gates_answers_on_plain_write_atoms_are_unchanged():
     """No Hard defect and no grounding gap: the moved scorer answers as the suite always did."""
     fn = T.canon_fn(None)

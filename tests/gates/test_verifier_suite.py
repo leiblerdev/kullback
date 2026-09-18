@@ -105,6 +105,8 @@ def test_a_hard_rule_that_raises_is_a_defect_and_not_a_candidate_failure(tmp_pat
     verifier = derive(tmp_path, constraints=[rule])
     assert S.hard_holds(atom_by_id(verifier, "hard.k1"), reference_run(), WRITE_TOOLS) is None
     assert S.check_run(verifier, reference_run()) == (True, None)
+    gates = {g.stage: g for g in S.validate_verifier(verifier, reference_run())}
+    assert gates["verifier_oracle"].passed is False
 
 
 @_patch_only
