@@ -81,8 +81,13 @@ TARGET = "environment"
 # providers there and every id moved once, the same three Tasks with the same verdicts and reasons.
 # Re-pinned for D250: compile hold-out is by argument shape, so a tool whose recorded calls disagree
 # on nested keys holds a different split, and the Task rows name the replay that split produced.
-# Same three Tasks, same verdicts.
-TASK_STATUS_SHA256_BEFORE_THE_PHASE = "d536216924936f063cec682809d7cb71d19b6c7f7dea3cc65234bc0dcb0c94f4"
+# Same three Tasks, same verdicts. Re-pinned for usage-reasoning: the adapters now parse the
+# reasoning share of output, so the module hash of kullback/ai/provider.py moved and with it the
+# re-roll stage's code version and every re-rolled Run id. Same three Tasks, same verdicts,
+# same reasons; only the key hash inside the re-rolled Run ids is new. Re-pinned for the turn-two
+# boundary fix on the same branch: an odd reported count now maps to zero at the adapters, so the
+# module hash moved again and so did the ids, verdicts and reasons unchanged.
+TASK_STATUS_SHA256_BEFORE_THE_PHASE = "4afd3496612d7012b6caf8cca8ecee3158415abac9b13c53ca20ebbcf7094327"
 
 
 def _fixture(request) -> Path:
