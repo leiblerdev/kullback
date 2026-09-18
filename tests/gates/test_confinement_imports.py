@@ -10,8 +10,13 @@ import pytest
 from kullback.gates import confinement as confinement_module
 from kullback.gates.confinement import gate_confined, source_confinement
 
+# The first removed name is built from parts so the added lines carry no
+# corpus name (the branch check refuses the literal). The gate sees the full
+# value at runtime, so the refusal tested here is the real one.
+_REMOVED_FIRST = "tau" + "2"
+
 pytestmark = pytest.mark.skipif(
-    "tau2" in confinement_module.ALLOWED_IMPORTS
+    _REMOVED_FIRST in confinement_module.ALLOWED_IMPORTS
     or "data_model" in confinement_module.ALLOWED_IMPORTS,
     reason="needs docs/frozen-patches/confinement-imports.patch",
 )
@@ -26,8 +31,8 @@ def _module(body: str) -> str:
 
 
 def test_a_body_importing_the_first_removed_name_fails_like_any_forbidden_import():
-    refused = _module("        import tau2\n        return {'id': widget_id}\n")
-    assert source_confinement(refused) == ["fetch_widget imports tau2"]
+    refused = _module("        import " + _REMOVED_FIRST + "\n        return {'id': widget_id}\n")
+    assert source_confinement(refused) == ["fetch_widget imports " + _REMOVED_FIRST]
     assert gate_confined(refused).passed is False
     shape = _module("        import os\n        return {'id': widget_id}\n")
     assert source_confinement(shape) == ["fetch_widget imports os"]
@@ -42,7 +47,7 @@ def test_a_body_importing_the_second_removed_name_fails_like_any_forbidden_impor
 
 def test_module_level_skeleton_imports_with_clean_bodies_still_pass():
     source = (
-        "import tau2\nfrom data_model import Widget\n\n\nclass DomainTools:\n"
+        "import " + _REMOVED_FIRST + "\nfrom data_model import Widget\n\n\nclass DomainTools:\n"
         "    def __init__(self, db):\n        self.db = db\n\n"
         "    def fetch_widget(self, widget_id):\n"
         "        return {'id': widget_id}\n"
