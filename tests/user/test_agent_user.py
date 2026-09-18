@@ -663,3 +663,28 @@ def test_a_reordered_section_fails_and_names_the_turn(ctx, rules, recorded):
     assert len(blocks) > 2
     broken[2][0]["content"] = "\n\n".join([blocks[1], blocks[0], *blocks[2:]])
     assert prefix_check.first_prefix_break(broken) == 2
+
+
+# --- the untouched floor (G24) --------------------------------------------------------------------
+
+def test_model_off_replies_are_the_rules_floor_byte_for_byte(ctx, rules, recorded):
+    """With the model off, no prompt is ever built, so the floor answers exactly as before."""
+    user = AgentUser(ctx, rules_mod.SimulatedUser(rules, vocab=VOCAB), None, vocab=VOCAB,
+                     write_tools=["move_delivery"], goal_writes=["move_delivery"],
+                     record_values=context_mod.mine_record_values(recorded), trace=recorded)
+    transcript = []
+    for question in ("Could you provide your plot number?",
+                     "Thank you. What delivery slot would you like?",
+                     "Could you tell me your membership tier?",
+                     "Done, your delivery is moved. Anything else?",
+                     "Great, have a good day."):
+        transcript.append({"role": "assistant", "content": question})
+        transcript.append({"role": "user", "content": user.reply(transcript)})
+    assert [m["content"] for m in transcript if m["role"] == "user"] == [
+        "Hello, please could you move my plant delivery to a later slot. "
+        "My plot id is PLOT-4471. My slot is 16:00.",
+        "My delivery slot is 16:00. My slot is 16:00.",
+        "Hello, please could you move my plant delivery to a later slot.",
+        "No, that is all. Thank you.",
+        "No, that is all. Thank you.",
+    ]
