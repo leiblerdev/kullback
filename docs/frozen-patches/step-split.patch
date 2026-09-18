@@ -1,8 +1,16 @@
 diff --git a/kullback/runner/loop.py b/kullback/runner/loop.py
-index 1d5a9fb..fef04d8 100644
+index 1d5a9fb..74bd10e 100644
 --- a/kullback/runner/loop.py
 +++ b/kullback/runner/loop.py
-@@ -74,27 +74,65 @@ def _write_event(state: RunState, event: Event) -> None:
+@@ -5,6 +5,7 @@ from __future__ import annotations
+ import json
+ from dataclasses import dataclass, field
+ from pathlib import Path
++from types import SimpleNamespace
+ from typing import Any, Optional
+ 
+ from kullback.ai.provider import ProviderError
+@@ -74,27 +75,64 @@ def _write_event(state: RunState, event: Event) -> None:
          handle.write(json.dumps(as_dict(event), ensure_ascii=False, default=str) + "\n")
  
  
@@ -54,9 +62,8 @@ index 1d5a9fb..fef04d8 100644
 +
 +def _as_call(call: dict) -> Any:
 +    """The tool_call event already stores calls as plain dicts; route one from a message."""
-+    return type("MessageCall", (), {
-+        "id": call.get("id"), "name": call.get("name"), "arguments": call.get("arguments"),
-+    })()
++    return SimpleNamespace(id=call.get("id"), name=call.get("name"),
++                            arguments=call.get("arguments"))
 +
 +
 +def step(state: RunState, model: Any, tools: Optional[list[dict]] = None, router: Any = None) -> RunState:
