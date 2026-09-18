@@ -213,9 +213,9 @@ def _new_acc() -> dict:
             # G32: where this tool's calls sit, as (trace id, call index) pairs, capped with the
             # full count beside each sample. Assistant calls apart, because only they can witness
             # a change to the world; message calls apart, because only they feed the weakest signal.
+            # Assistant calls ride per trace, so an effect credited late still cites its own calls.
             "refs": [], "ref_count": 0,
-            "assistant_refs": [], "assistant_ref_count": 0,
-            "assistant_by_trace": {},
+            "assistant_trace_refs": {}, "assistant_trace_counts": {},
             "result_refs": [], "result_ref_count": 0,
             "message_refs": [], "message_ref_count": 0}
 
@@ -238,11 +238,11 @@ def _note_call_ref(acc: dict, trace_id: str, call_index: int, call: Any) -> None
         acc["refs"].append([trace_id, call_index])
     if not is_assistant_call(call):
         return
-    acc["assistant_ref_count"] += 1
-    by_trace = acc["assistant_by_trace"]
-    by_trace[trace_id] = by_trace.get(trace_id, 0) + 1
-    if len(acc["assistant_refs"]) < MAX_SUPPORT_CALLS:
-        acc["assistant_refs"].append([trace_id, call_index])
+    refs = acc["assistant_trace_refs"].setdefault(trace_id, [])
+    if len(refs) < MAX_SUPPORT_CALLS:
+        refs.append([trace_id, call_index])
+    counts = acc["assistant_trace_counts"]
+    counts[trace_id] = counts.get(trace_id, 0) + 1
 
 
 def _note_result_ref(acc: dict, trace_id: str, call_index: int, parsed: Any) -> None:
@@ -511,13 +511,15 @@ def _stronger(a: Optional[str], b: str) -> str:
 
 
 def _effect_support(sig: ToolSig, acc: Optional[dict]) -> dict:
-    """The calls behind an effect observation: the tool's assistant calls in the effect traces."""
-    effect_traces = {e.trace_id for e in sig.effects_observed}
-    by_trace = (acc or {}).get("assistant_by_trace") or {}
-    sample = [ref for ref in (acc or {}).get("assistant_refs", [])
-              if ref[0] in effect_traces][:MAX_SUPPORT_CALLS]
-    return {"supporting_calls": sample,
-            "support_count": sum(by_trace.get(trace_id, 0) for trace_id in effect_traces)}
+    """The calls behind an effect observation: the tool's own assistant calls in the effect traces."""
+    acc = acc or {}
+    sample, count = [], 0
+    for trace_id in sorted({e.trace_id for e in sig.effects_observed}):
+        count += (acc.get("assistant_trace_counts") or {}).get(trace_id, 0)
+        for ref in (acc.get("assistant_trace_refs") or {}).get(trace_id, []):
+            if len(sample) < MAX_SUPPORT_CALLS:
+                sample.append(ref)
+    return {"supporting_calls": sample, "support_count": count}
 
 
 def _call_support(acc: Optional[dict], refs_key: str, count: int) -> dict:
@@ -1316,6 +1318,32 @@ def _repeating_ids(rows: list[dict]) -> set[str]:
     return out
 
 
+def _id_distinct_refs(traces: list[Trace], observed: set) -> dict[str, list]:
+    """Per observed id column, the multi-row results where it held a distinct value per row.
+
+    The second half of the observed id fact (`id_columns`): addressing says the column is used as
+    a key, distinctness says it identifies. Capped per column. The addressing calls stay the count;
+    these join the sample so both halves show.
+    """
+    out: dict[str, list] = {}
+    if not observed:
+        return out
+    for trace in traces:
+        for call_index, call in enumerate(trace.tool_calls):
+            if not is_assistant_call(call) or call.error is not None or call.result is None:
+                continue
+            rows = _result_rows(_parse(call.result))
+            if len(rows) < 2:
+                continue
+            for name in sorted(observed):
+                if not any(name in row for row in rows):
+                    continue
+                if _distinct_across(name, rows) and \
+                        len(out.setdefault(name, [])) < MAX_SUPPORT_CALLS:
+                    out[name].append([trace.trace_id, call_index])
+    return out
+
+
 def _refuted_with_calls(traces: list[Trace]) -> dict[str, dict]:
     """Name-rule id columns seen repeating, with the results that show it, capped, and the count."""
     refs: dict[str, list] = {}
@@ -1424,7 +1452,9 @@ def row_homes(traces: list[Trace], id_names: Optional[Sequence[str]] = None) -> 
 
     The decision `_home_of` makes per row, counted per tool, so a corpus where a lookup's rows reach
     no table says so on the record instead of only in the size of a table that was never written. A
-    tool that answers rows of two kinds gets both, and the reason is the rule's own sentence.
+    tool that answers rows of two kinds gets both, and the reason is the rule's own sentence. One
+    entry keeps the first deciding rule with its basis, and `rows_by_basis` counts every row under
+    the basis of the rule that homed it, so the report counts rows, not entries.
     """
     names = id_columns(traces) if id_names is None else list(id_names)
     out: dict[str, dict] = {}
@@ -1443,9 +1473,11 @@ def row_homes(traces: list[Trace], id_names: Optional[Sequence[str]] = None) -> 
                     continue
                 place = entry["homed"].setdefault(
                     table, {"rule": reason, "rows": 0, "basis": fact["basis"],
-                            "supporting_calls": [], "support_count": 0,
+                            "rows_by_basis": {}, "supporting_calls": [], "support_count": 0,
                             "contradicts_name": False})
                 place["rows"] += 1
+                by_basis = place.setdefault("rows_by_basis", {})
+                by_basis[fact["basis"]] = by_basis.get(fact["basis"], 0) + 1
                 place["contradicts_name"] = place["contradicts_name"] or fact["contradicts_name"]
                 place["support_count"] += fact["support_count"]
                 for ref in fact["supporting_calls"]:
@@ -1524,6 +1556,20 @@ def _home_basis(place: dict) -> str:
             or "distinct across" in rule else BASIS_NAME)
 
 
+def _count_place(place: dict, counts: dict) -> None:
+    """One homed entry's rows under the basis of the rule that homed each of them."""
+    by_basis = place.get("rows_by_basis")
+    if isinstance(by_basis, dict) and by_basis:
+        for raw, count in by_basis.items():
+            basis = raw if raw in (BASIS_OBSERVED, BASIS_NAME) else BASIS_NAME
+            counts["row_home"][basis] += int(count or 0)
+            counts["row_home"]["total"] += int(count or 0)
+        return
+    rows = int(place.get("rows", 0) or 0)
+    counts["row_home"][_home_basis(place)] += rows
+    counts["row_home"]["total"] += rows
+
+
 def _count_homes(homes: dict, counts: dict) -> None:
     """Row homing facts off the homed rows; rows no rule could home count apart."""
     unhomed = 0
@@ -1534,10 +1580,7 @@ def _count_homes(homes: dict, counts: dict) -> None:
         for place in (entry.get("homed", {}) or {}).values():
             if not isinstance(place, dict):
                 continue
-            rows = int(place.get("rows", 0) or 0)
-            basis = _home_basis(place)
-            counts["row_home"][basis] += rows
-            counts["row_home"]["total"] += rows
+            _count_place(place, counts)
     counts["row_home"]["unhomed"] = unhomed
 
 
@@ -2117,7 +2160,7 @@ def _note_sighting(sightings: dict, table: str, name: str, trace_id: str, call_i
 
 
 def _id_table_evidence(name: str, observed: bool, refuted: set, id_refs: dict,
-                       refuting: dict) -> dict:
+                       refuting: dict, distinct_refs: dict) -> dict:
     """The id fact and the table fact for one column the miner reads an identity off.
 
     A refuted name-rule id is an observed negative; an addressed column is an observed id; a
@@ -2130,7 +2173,11 @@ def _id_table_evidence(name: str, observed: bool, refuted: set, id_refs: dict,
         contra = True
     elif observed:
         basis = BASIS_OBSERVED
-        ref = id_refs.get(name, {"supporting_calls": [], "support_count": 0})
+        addr = id_refs.get(name, {"supporting_calls": [], "support_count": 0})
+        sample = list(addr["supporting_calls"])
+        sample += [ref for ref in distinct_refs.get(name, []) if ref not in sample]
+        ref = {"supporting_calls": sample[:MAX_SUPPORT_CALLS],
+               "support_count": addr["support_count"]}
         contra = False
     else:
         basis = BASIS_NAME
@@ -2142,11 +2189,12 @@ def _id_table_evidence(name: str, observed: bool, refuted: set, id_refs: dict,
 
 
 def _with_id_table_evidence(evidence: dict, name: str, observed: bool, refuted: set,
-                            id_refs: dict, refuting: dict) -> dict:
+                            id_refs: dict, refuting: dict, distinct_refs: dict) -> dict:
     """One column's evidence with its id fact and table fact where the miner reads an identity."""
     if not (observed or _is_id(name)):
         return evidence
-    return {**evidence, **_id_table_evidence(name, observed, refuted, id_refs, refuting)}
+    return {**evidence, **_id_table_evidence(name, observed, refuted, id_refs, refuting,
+                                            distinct_refs)}
 
 
 def mine_schema(traces: list[Trace], db_json_path: Optional[Path] = None,
@@ -2164,6 +2212,7 @@ def mine_schema(traces: list[Trace], db_json_path: Optional[Path] = None,
     refuted = refuted_ids(traces)
     id_refs = id_supporting_calls(traces)
     refuting = _refuted_with_calls(traces)
+    distinct_refs = _id_distinct_refs(traces, id_names)
     sightings: dict[tuple[str, str], dict] = {}
     for trace in traces:
         for call_index, call in enumerate(trace.tool_calls):
@@ -2200,7 +2249,7 @@ def mine_schema(traces: list[Trace], db_json_path: Optional[Path] = None,
                                             id_refuted=name in refuted,
                                             support=sight)
             evidence = _with_id_table_evidence(dict(proposal.evidence), name, observed, refuted,
-                                               id_refs, refuting)
+                                               id_refs, refuting, distinct_refs)
             column = Column(table=table, name=name, class_=proposal.column_class,
                             class_rule=proposal.column_class, class_confidence=proposal.confidence,
                             class_reason=proposal.reason, classified_by="rule",

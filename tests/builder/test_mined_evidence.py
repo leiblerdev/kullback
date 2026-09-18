@@ -256,3 +256,43 @@ def test_row_homes_json_round_trips_with_the_new_keys():
     back = json.loads(json.dumps(homes))
     assert back["list_berths"]["homed"]["berth_tags"]["basis"] == "name"
     assert back["list_berths"]["homed"]["berth_tags"]["support_count"] == 0
+
+
+def test_one_entry_counts_each_row_under_the_basis_that_homed_it():
+    traces = [one_trace("t1", [
+        {"name": "get_customer_parcel", "args": {"customer_id": "C1"},
+         "result": '{"customer_id": "C1", "parcel_id": "P1"}'},
+        {"name": "get_customer_parcel", "args": {},
+         "result": '{"customer_id": "C2"}'},
+    ])]
+    homes = row_homes(traces)
+    place = homes["get_customer_parcel"]["homed"]["customers"]
+    assert place["rows"] == 2
+    assert place["rows_by_basis"] == {"observed": 1, "name": 1}
+    counts = mined_name_counts(mine_tools(traces), mine_schema(traces).columns, homes)
+    assert counts["row_home"]["observed"] == 1
+    assert counts["row_home"]["name"] == 1
+    assert counts["row_home"]["total"] == 2
+
+
+def test_an_effect_credited_late_still_cites_its_own_calls():
+    first = [{"name": "harbour_ping", "args": {}, "result": "ok"} for _ in range(6)]
+    traces = [one_trace("t1", first), one_trace("t2", [
+        {"name": "get_berth", "args": {"berth_tag": "T1"},
+         "result": '{"berth_tag": "T1", "colour": "red"}'},
+        {"name": "harbour_ping", "args": {"berth_tag": "T1", "colour": "blue"},
+         "result": "done"},
+        {"name": "get_berth", "args": {"berth_tag": "T1"},
+         "result": '{"berth_tag": "T1", "colour": "blue"}'},
+    ])]
+    sig = sig_by_name(mine_tools(traces), "harbour_ping")
+    assert sig.kind == "write"
+    assert sig.classified_by == "observed"
+    assert "t2:1" in (sig.kind_reason or "")
+
+
+def test_id_support_shows_the_distinct_result_beside_the_addressing_calls():
+    column = col(mine_schema(harbour_corpus()), "berth_tags", "berth_tag")
+    assert column.evidence["id_support"][:2] == [["t1", 0], ["t1", 1]]
+    assert ["t1", 2] in column.evidence["id_support"]
+    assert column.evidence["id_support_count"] == 2
