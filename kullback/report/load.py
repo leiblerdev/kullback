@@ -15,6 +15,7 @@ from kullback.report.numbers import _by_pair, _percent, assisted_share_from_runs
 from kullback.report.pipeline import environment_gate, stage_statuses
 from kullback.runner.records import (
     Constraint,
+    EntitySchema,
     Environment,
     GateResult,
     RoundRecord,
@@ -250,6 +251,27 @@ def coverage_rows(tasks: list[Task], uncovered: dict[str, str]) -> list[TaskCove
     ]
 
 
+def _schema_columns(root: Path, unread: Optional[list] = None) -> list:
+    """The mined schema's columns, for the mined evidence counts; a missing file means no columns."""
+    body = _json(root / "schema.json")
+    if body is None:
+        return []
+    if not isinstance(body, dict):
+        _note(unread, "schema.json: not a JSON object")
+        return []
+    try:
+        return list(EntitySchema.model_validate(body).columns)
+    except ValidationError:
+        _note(unread, "schema.json: not an EntitySchema this report can read")
+        return []
+
+
+def _row_homes(root: Path) -> dict:
+    """row_homes.json as the miner wrote it, or nothing where the mine stage never ran."""
+    body = _json(root / "row_homes.json")
+    return body if isinstance(body, dict) else {}
+
+
 def load_tool_sigs(workdir: Any) -> list[ToolSig]:
     """The mined ToolSigs of a build, from the tool_sigs.json one stage writes.
 
@@ -328,6 +350,8 @@ def load(workdir: Any) -> ReportData:
             _records(root / "verifiers", Verifier, unread), _json(root / "task_status.json") or {}
         ),
         tool_sigs=load_tool_sigs(root),
+        mined_columns=_schema_columns(root, unread),
+        row_homes=_row_homes(root),
         runs=runs,
         verdicts=_records(root / "verdicts", Verdict, unread),
         overlays=_records(root / "overlays", TaskOverlay),
