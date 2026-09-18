@@ -1,5 +1,5 @@
 diff --git a/kullback/gates/verifier_suite.py b/kullback/gates/verifier_suite.py
-index e11525e..ddee952 100644
+index e11525e..e20908d 100644
 --- a/kullback/gates/verifier_suite.py
 +++ b/kullback/gates/verifier_suite.py
 @@ -29,23 +29,17 @@ it builds its atoms with `make_atom` from here, wrapping a Hard predicate with `
@@ -171,10 +171,11 @@ index e11525e..ddee952 100644
  
 -def canon_fn(canon: Any) -> Callable[[Any], Any]:
 -    """canon.py's rules by default (D39); a caller may pass the module or its own callable.
--
++canon_fn = _target.canon_fn  # moved to kullback/runner/target.py (G3), imported here
+ 
 -    The default used to be the identity, so a Verifier derived without an explicit canon compared
 -    raw values while the Runner compared canonical ones. There is one canonicalizer; this is it.
--
+ 
 -    The customer's own CanonRules are accepted here as well, and bound to that one canonicalizer.
 -    They used to fall through to the module defaults, because a CanonRules is neither callable nor a
 -    module, so a Verifier ignored the rules learned from the customer's own corpus (D39).
@@ -187,17 +188,17 @@ index e11525e..ddee952 100644
 -        if callable(getattr(canon, attr, None)):
 -            return getattr(canon, attr)
 -    return canon if callable(canon) else canon_value
-+canon_fn = _target.canon_fn  # moved to kullback/runner/target.py (G3), imported here
++_key = _target._key  # moved to kullback/runner/target.py (G3), imported here
  
  
 -def _key(fn: Callable, value: Any) -> str:
 -    return canonical_json(fn(value))
-+_key = _target._key  # moved to kullback/runner/target.py (G3), imported here
++text_of = _target.text_of  # moved to kullback/runner/target.py (G3), imported here
  
  
 -def text_of(value: Any) -> str:
 -    return value if isinstance(value, str) else canonical_json(value).strip('"')
-+text_of = _target.text_of  # moved to kullback/runner/target.py (G3), imported here
++_texts = _target._texts  # moved to kullback/runner/target.py (G3), imported here
  
  
 -def _texts(value: Any) -> list[str]:
@@ -206,8 +207,9 @@ index e11525e..ddee952 100644
 -    if isinstance(value, dict):
 -        return [t for item in value.values() for t in _texts(item)]
 -    return [text_of(value)]
--
--
++_token_in = _target._token_in  # moved to kullback/runner/target.py (G3), imported here
+ 
+ 
 -def _token_in(haystack: str, needle: str) -> bool:
 -    """Substring match that will not fire inside a longer word or id."""
 -    if not needle or not haystack:
@@ -223,13 +225,11 @@ index e11525e..ddee952 100644
 -        if not before.isalnum() and not after.isalnum():
 -            return True
 -        start = at + 1
-+_texts = _target._texts  # moved to kullback/runner/target.py (G3), imported here
- 
- 
+-
+-
 -def _words_of(text: str) -> list[str]:
 -    """The words a value could hide in, split the way the generated predicates split them.
-+_token_in = _target._token_in  # moved to kullback/runner/target.py (G3), imported here
- 
+-
 -    "$150" is one word and also the number 150, and the canonicalizer keeps the currency (D39), so
 -    both spellings go to it and it decides whether either is the written value.
 -    """
@@ -240,11 +240,12 @@ index e11525e..ddee952 100644
 -        if word[:1] in CURRENCY:
 -            out.append(word[1:])
 -    return [w for w in out if w]
- 
 +_words_of = _target._words_of  # moved to kullback/runner/target.py (G3), imported here
+ 
  
 -def _matches(haystack: str, value: Any, fn: Optional[Callable] = None) -> bool:
 -    """Does this text hold the value, verbatim or after canonicalization?
++_matches = _target._matches  # moved to kullback/runner/target.py (G3), imported here
  
 -    "$150" and 150.0 are the same value to canon.py (D39), so a user who said one and an agent that
 -    wrote the other is user_stated, not agent_chosen.
@@ -258,9 +259,8 @@ index e11525e..ddee952 100644
 -        return False
 -    words = {str(fn(word)) for word in _words_of(haystack) if word}
 -    return all(str(fn(part)) in words for part in parts)
-+_matches = _target._matches  # moved to kullback/runner/target.py (G3), imported here
  
- 
+-
 -def _tokens(text: str) -> list[str]:
 -    """The id-shaped and numeric tokens of a message: the facts an answer can state."""
 -    out = []
@@ -276,8 +276,7 @@ index e11525e..ddee952 100644
  
 -def classify_provenance(run: Run, write_pos: int, value: Any, fn: Optional[Callable] = None):
 -    """Where a written value came from, with the span that evidences it (D42).
-+classify_provenance = _target.classify_provenance  # moved to kullback/runner/target.py (G3), imported here
- 
+-
 -    D42 makes this an audited LLM call; this is the code half of it, and the model half is on the
 -    todo list, so a value only a person would recognise as quoted is still agent_chosen here.
 -    """
@@ -302,16 +301,17 @@ index e11525e..ddee952 100644
 -        if event.type == "model_call" and _assistant_text(event):
 -            return "?" in _assistant_text(event)
 -    return False
++classify_provenance = _target.classify_provenance  # moved to kullback/runner/target.py (G3), imported here
  
-+_preceded_by_question = _target._preceded_by_question  # moved to kullback/runner/target.py (G3), imported here
  
 -def _next_user(run: Run, pos: int) -> Optional[int]:
 -    return next((later for later in range(pos + 1, len(run.events)) if run.events[later].type == "user_turn"), None)
++_preceded_by_question = _target._preceded_by_question  # moved to kullback/runner/target.py (G3), imported here
  
-+_next_user = _target._next_user  # moved to kullback/runner/target.py (G3), imported here
  
 -# --- questions and communicate facts (D43) --------------------------------
--
++_next_user = _target._next_user  # moved to kullback/runner/target.py (G3), imported here
+ 
 -def question_keys(run: Run, effects: dict, fn: Callable) -> dict[str, dict]:
 -    """The questions this Run asked, keyed so the same question is recognisable in another Run.
  
@@ -601,6 +601,35 @@ index e11525e..ddee952 100644
  
  
  # --- D79 validation --------------------------------------------------------
+@@ -910,9 +532,27 @@ def validate_verifier(verifier: Verifier, reference_run: Any, empty_run: Any = N
+     def scored(run):
+         return score(verifier, run)
+ 
++    def oracle_scored(run):
++        """The oracle plus admission: a Hard defect fails the Verifier, never the Run.
++
++        check_run passes a Run over a defective Hard rule (it is not a Candidate failure),
++        so the oracle asks the extra question the reward must not: did every Hard rule run.
++        A defective rule fails admission here while probes, trust and loosening keep scoring
++        the Run a pass through check_run.
++        """
++        passed, failing = score(verifier, run)
++        if not passed:
++            return passed, failing
++        fn = canon_fn(canon)
++        tools = scored_write_tools(verifier, as_run(run), write_tools)
++        for atom in verifier.atoms:
++            if atom.kind == "hard" and _target.hard_defect(atom, as_run(run), tools, fn):
++                return False, atom.id
++        return True, None
++
+     return [
+         _spans_gate(verifier, runs, canon_fn(canon)),
+-        _run_gate("verifier_oracle", scored, reference, expect_pass=True),
++        _run_gate("verifier_oracle", oracle_scored, reference, expect_pass=True),
+         _run_gate("verifier_empty_run", scored,
+                   empty_run if empty_run is not None else _empty_run(reference), expect_pass=False),
+         _run_gate("verifier_wrong_run", scored, wrong_run, expect_pass=False),
 diff --git a/kullback/runner/atom_context.py b/kullback/runner/atom_context.py
 index e64297d..8577b9b 100644
 --- a/kullback/runner/atom_context.py
@@ -628,10 +657,10 @@ index e64297d..8577b9b 100644
      for attr in ("canon_value", "canonicalize"):
 diff --git a/kullback/runner/target.py b/kullback/runner/target.py
 new file mode 100644
-index 0000000..f739664
+index 0000000..b55cac3
 --- /dev/null
 +++ b/kullback/runner/target.py
-@@ -0,0 +1,475 @@
+@@ -0,0 +1,505 @@
 +"""One scorer for a Verifier atom: the structured target as the only meaning (G3).
 +
 +Both the Verdict and the gates call this module. The gates keep their behaviour through it;
@@ -998,6 +1027,36 @@ index 0000000..f739664
 +        return None if held and callable(judged) and not judged() else held
 +    except Exception:
 +        return None
++
++
++def hard_defect(atom: Atom, run: Run, write_tools: Optional[set[str]] = None,
++                fn: Optional[Callable] = None) -> bool:
++    """Is this Hard atom defective on this Run: refused by the gate or raising?
++
++    A defective rule is a Verifier defect, never a Candidate failure. check_run passes the
++    Run over it; the D79 oracle fails the Verifier on it, so a policy rule that cannot run
++    cannot clear admission. A rule that judged no call at all is not defective, it simply
++    saw nothing to judge.
++    """
++    source = atom.predicate_src
++    if not source or atom.judge:
++        return False
++    if confine(source):
++        return True
++    calls = [dict(call) for call in run_calls(run)]
++    tools = set(write_tools or ())
++    namespace: dict = {"__builtins__": dict(SAFE_BUILTINS), "start_state": start_state(run),
++                       "transcript": _transcript(run), "calls": calls, "canon": fn or canon_value,
++                       "write_calls": lambda: [c for c in calls if c["name"] in tools and not c["error"]]}
++    try:
++        exec(compile(source, "<hard>", "exec"), namespace)  # noqa: S102
++        check = namespace.get("check")
++        if check is None:
++            return False
++        check()
++    except Exception:
++        return True
++    return False
 +
 +
 +def _extra_write(verifier: Any, effects: dict, write_tools: Optional[Iterable[str]]) -> Optional[str]:
