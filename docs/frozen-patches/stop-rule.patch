@@ -1,5 +1,5 @@
 diff --git a/kullback/gates/round_end.py b/kullback/gates/round_end.py
-index ff174ff..6a74ab9 100644
+index ff174ff..55fa372 100644
 --- a/kullback/gates/round_end.py
 +++ b/kullback/gates/round_end.py
 @@ -22,6 +22,24 @@ from kullback.runner.records import GateResult, ProbePool, Run, Verifier, Verifi
@@ -52,7 +52,7 @@ index ff174ff..6a74ab9 100644
  
  
  def _counts(entry: Any) -> dict:
-@@ -128,6 +150,75 @@ def fidelity_flat(rounds: list[dict], flat_rounds: int) -> bool:
+@@ -128,26 +150,153 @@ def fidelity_flat(rounds: list[dict], flat_rounds: int) -> bool:
      return recent <= before
  
  
@@ -90,20 +90,21 @@ index ff174ff..6a74ab9 100644
 +    return None
 +
 +
-+def goal_met(counts: Any) -> bool:
-+    """True when the round met the G31 goal: fidelity rate and trusted share at their goals.
++def goal_met(counts: Any, *, fidelity_rate_goal: float = FIDELITY_RATE_GOAL,
++             trusted_share_goal: float = TRUSTED_SHARE_GOAL) -> bool:
++    """True when the round met the goal: fidelity rate and trusted share at their goals.
 +
-+    Counts with no Task list read as before (True), so every caller that never saw a list is
-+    unaffected; a round with no Tasks is vacuously met."""
++    The goals ride as arguments (defaulting to the named constants) so a plan can pass the
++    founder's measured targets later without another frozen change. Counts with no recorded
++    rates read as before (True), so every caller that never saw a list is unaffected; a round
++    with no Tasks is vacuously met."""
 +    counts = _counts(counts)
-+    if not isinstance(counts.get("fidelity_rate"), (int, float)):
-+        return True
-+    if not isinstance(counts.get("trusted_share"), (int, float)):
++    rate, share = fidelity_rate(counts), trusted_share(counts)
++    if rate is None or share is None:
 +        return True
 +    if not counts.get("tasks"):
 +        return True
-+    return (fidelity_rate(counts) or 0.0) >= FIDELITY_RATE_GOAL and \
-+        (trusted_share(counts) or 0.0) >= TRUSTED_SHARE_GOAL
++    return rate >= fidelity_rate_goal and share >= trusted_share_goal
 +
 +
 +def fidelity_rate_flat(rounds: list[dict], flat_rounds: int) -> bool:
@@ -127,8 +128,13 @@ index ff174ff..6a74ab9 100644
 +
  def exit_for(rounds: list[dict], stall_rounds: int, *, ceiling_reached: bool,
               exhausted: list[bool], all_rounds: Optional[list[dict]] = None,
-              fidelity_stall: Optional[int] = None, max_rounds: Optional[int] = None) -> Optional[str]:
-@@ -137,17 +228,69 @@ def exit_for(rounds: list[dict], stall_rounds: int, *, ceiling_reached: bool,
+-             fidelity_stall: Optional[int] = None, max_rounds: Optional[int] = None) -> Optional[str]:
++             fidelity_stall: Optional[int] = None, max_rounds: Optional[int] = None,
++             fidelity_rate_goal: float = FIDELITY_RATE_GOAL,
++             trusted_share_goal: float = TRUSTED_SHARE_GOAL) -> Optional[str]:
+     """ceiling when the build ceiling was reached or the allowance was exhausted two rounds in a row,
+     else done, else stalled (no gate count moved, or fidelity flat for `fidelity_stall` rounds), else
+     max_rounds when `all_rounds` holds that many, else None.
  
      `rounds` is the tail since the last round that moved, which is what the gate-count stall reads;
      `all_rounds` is every round so far, which is what the fidelity window and the round cap read,
@@ -149,7 +155,7 @@ index ff174ff..6a74ab9 100644
      if rounds and done(rounds[-1]):
 -        return "done"
 +        last = _counts(rounds[-1])
-+        if goal_met(last):
++        if goal_met(last, fidelity_rate_goal=fidelity_rate_goal, trusted_share_goal=trusted_share_goal):
 +            return "done"
 +        if int(last.get("refused_count") or 0) > 0:
 +            return "refused"
@@ -165,13 +171,16 @@ index ff174ff..6a74ab9 100644
 +
 +def exit_reason(rounds: list[dict], stall_rounds: int, *, ceiling_reached: bool,
 +                exhausted: list[bool], all_rounds: Optional[list[dict]] = None,
-+                fidelity_stall: Optional[int] = None, max_rounds: Optional[int] = None) -> str:
++                fidelity_stall: Optional[int] = None, max_rounds: Optional[int] = None,
++                fidelity_rate_goal: float = FIDELITY_RATE_GOAL,
++                trusted_share_goal: float = TRUSTED_SHARE_GOAL) -> str:
 +    """Words for the stop decision, naming the numbers it read (G31).
 +
 +    Every exit, and the decision to keep going, returns a sentence with the counts behind it,
 +    so a stop with no reason is impossible: the reason always carries digits."""
 +    exit = exit_for(rounds, stall_rounds, ceiling_reached=ceiling_reached, exhausted=list(exhausted or []),
-+                    all_rounds=all_rounds, fidelity_stall=fidelity_stall, max_rounds=max_rounds)
++                    all_rounds=all_rounds, fidelity_stall=fidelity_stall, max_rounds=max_rounds,
++                    fidelity_rate_goal=fidelity_rate_goal, trusted_share_goal=trusted_share_goal)
 +    last = _counts(rounds[-1]) if rounds else {}
 +    history = list(all_rounds) if all_rounds is not None else list(rounds)
 +    total = last.get("tasks")
