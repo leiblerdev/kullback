@@ -14,11 +14,20 @@ from kullback.gates.confinement import gate_confined, source_confinement
 # corpus name (the branch check refuses the literal). The gate sees the full
 # value at runtime, so the refusal tested here is the real one.
 _REMOVED_FIRST = "tau" + "2"
+_SECOND_REMOVED = "data_model"
 
-pytestmark = pytest.mark.skipif(
+_needs_first = pytest.mark.skipif(
+    _REMOVED_FIRST in confinement_module.ALLOWED_IMPORTS,
+    reason="needs docs/frozen-patches/confinement-imports.patch (first name)",
+)
+_needs_second = pytest.mark.skipif(
+    _SECOND_REMOVED in confinement_module.ALLOWED_IMPORTS,
+    reason="needs docs/frozen-patches/confinement-imports.patch (second name)",
+)
+_needs_both = pytest.mark.skipif(
     _REMOVED_FIRST in confinement_module.ALLOWED_IMPORTS
-    or "data_model" in confinement_module.ALLOWED_IMPORTS,
-    reason="needs docs/frozen-patches/confinement-imports.patch",
+    or _SECOND_REMOVED in confinement_module.ALLOWED_IMPORTS,
+    reason="needs docs/frozen-patches/confinement-imports.patch (both names)",
 )
 
 
@@ -30,6 +39,7 @@ def _module(body: str) -> str:
     )
 
 
+@_needs_first
 def test_a_body_importing_the_first_removed_name_fails_like_any_forbidden_import():
     refused = _module("        import " + _REMOVED_FIRST + "\n        return {'id': widget_id}\n")
     assert source_confinement(refused) == ["fetch_widget imports " + _REMOVED_FIRST]
@@ -39,12 +49,14 @@ def test_a_body_importing_the_first_removed_name_fails_like_any_forbidden_import
     assert gate_confined(shape).passed is False
 
 
+@_needs_second
 def test_a_body_importing_the_second_removed_name_fails_like_any_forbidden_import():
     refused = _module("        from data_model import Widget\n        return {'id': widget_id}\n")
     assert source_confinement(refused) == ["fetch_widget imports data_model"]
     assert gate_confined(refused).passed is False
 
 
+@_needs_both
 def test_module_level_skeleton_imports_with_clean_bodies_still_pass():
     source = (
         "import " + _REMOVED_FIRST + "\nfrom data_model import Widget\n\n\nclass DomainTools:\n"
