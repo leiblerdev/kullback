@@ -47,25 +47,10 @@ def shape_survey(recordings: list) -> None:
         for position, turn in enumerate(turns):
             text = turn.get("content") or ""
             if turn.get("role") == "assistant":
-                kind = adapter_mod.turn_kind(text)
-                assistant_kinds[kind] += 1
-                if kind in adapter_mod.COMMAND_KINDS:
-                    entries = adapter_mod.command_entries(text) or []
-                    command_entries += len(entries)
-                    batch_sizes[len(entries)] += 1
-                    for entry in entries:
-                        entry_shapes[tuple(sorted(entry))] += 1
+                command_entries += _count_assistant_turn(text, assistant_kinds, entry_shapes,
+                                                         batch_sizes)
             else:
-                headers = [h for h in adapter_mod.OUTPUT_HEADERS if h in text]
-                if position == 0:
-                    user_kinds["opening_instruction_with_state"] += 1
-                elif headers:
-                    if "WARNING" in text or "parsing errors" in text:
-                        user_kinds["terminal_output_with_warning"] += 1
-                    else:
-                        user_kinds["terminal_output"] += 1
-                else:
-                    user_kinds["scaffold_note_" + adapter_mod.note_kind(text)] += 1
+                user_kinds[_user_turn_kind(text, position)] += 1
     print(f"recordings: {len(recordings)}")
     print(f"turns per recording: min {min(turn_counts)} max {max(turn_counts)} "
           f"mean {sum(turn_counts) / len(turn_counts):.2f}")
@@ -75,6 +60,30 @@ def shape_survey(recordings: list) -> None:
     print(f"command entries: {command_entries} shapes: {dict(entry_shapes)}")
     print(f"entries per command turn: {sorted(batch_sizes.items())}")
     print(f"contradictions: {dict(contradictions)}")
+
+
+def _count_assistant_turn(text: str, assistant_kinds, entry_shapes, batch_sizes) -> int:
+    """Count one assistant turn by how it parsed, and its command entries by their shape."""
+    kind = adapter_mod.turn_kind(text)
+    assistant_kinds[kind] += 1
+    if kind not in adapter_mod.COMMAND_KINDS:
+        return 0
+    entries = adapter_mod.command_entries(text) or []
+    batch_sizes[len(entries)] += 1
+    for entry in entries:
+        entry_shapes[tuple(sorted(entry))] += 1
+    return len(entries)
+
+
+def _user_turn_kind(text: str, position: int) -> str:
+    """What one user turn is: the opening request, terminal output, or a scaffold note."""
+    if position == 0:
+        return "opening_instruction_with_state"
+    if not any(header in text for header in adapter_mod.OUTPUT_HEADERS):
+        return "scaffold_note_" + adapter_mod.note_kind(text)
+    if "WARNING" in text or "parsing errors" in text:
+        return "terminal_output_with_warning"
+    return "terminal_output"
 
 
 def outcome_columns(recordings: list) -> None:
