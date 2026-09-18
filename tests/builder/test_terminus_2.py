@@ -109,26 +109,48 @@ def test_to_trace_maps_batch_to_shell_calls():
     assert trace.trace_id == "invented-trial-1"
     assert trace.source == "terminus_2"
     assert [turn.role for turn in trace.turns] == ["user", "assistant", "user", "assistant"]
-    assert len(trace.tool_calls) == 2
-    assert {call.name for call in trace.tool_calls} == {"shell"}
-    assert [call.args for call in trace.tool_calls] == [
-        {"keystrokes": "invented-list-alpha"}, {"keystrokes": "invented-list-beta"}]
-    assert [call.latency_ms for call in trace.tool_calls] == [200.0, 300.0]
+    assert len(trace.tool_calls) == 1
+    (call,) = trace.tool_calls
+    assert call.name == "shell"
+    assert call.args == {"commands": [
+        {"keystrokes": "invented-list-alpha", "duration": 0.2},
+        {"keystrokes": "invented-list-beta", "duration": 0.3}]}
+    assert call.latency_ms is None
 
 
-def test_batch_output_lands_on_last_call():
+def test_batch_output_lands_on_the_one_call():
     trace = Terminus2Adapter().to_trace(invented_recording(), ctx())
-    first, last = trace.tool_calls
-    assert (first.has_result, first.resolved, first.result) == (False, False, None)
-    assert (last.has_result, last.resolved) == (True, True)
-    assert "invented output of both listings" in str(last.result)
+    (call,) = trace.tool_calls
+    assert (call.has_result, call.resolved) == (True, True)
+    assert "invented output of both listings" in str(call.result)
 
 
 def test_calls_cite_request_and_answer():
     trace = Terminus2Adapter().to_trace(invented_recording(), ctx())
-    first, last = trace.tool_calls
-    assert first.raw_ptr.msg_index == 1
-    assert last.result_ptr is not None and last.result_ptr.msg_index == 2
+    (call,) = trace.tool_calls
+    assert call.raw_ptr.msg_index == 1
+    assert call.result_ptr is not None and call.result_ptr.msg_index == 2
+
+
+def test_commands_after_prose_become_one_call():
+    batch = json.dumps({"analysis": "invented", "task_complete": False,
+                        "commands": [{"keystrokes": "invented-a"},
+                                     {"keystrokes": "invented-b", "duration": 0.5}]})
+    turns = [
+        {"role": "user", "content": "Invented instruction."},
+        {"role": "assistant",
+         "content": "Invented plan in prose. ```json\n" + batch + "\n```\nInvented tail."},
+        {"role": "user", "content": "New Terminal Output:\n\ninvented batch output"},
+    ]
+    trace = Terminus2Adapter().to_trace(invented_recording(conversations=turns), ctx())
+    assert len(trace.tool_calls) == 1
+    (call,) = trace.tool_calls
+    assert call.args == {"commands": [
+        {"keystrokes": "invented-a"}, {"keystrokes": "invented-b", "duration": 0.5}]}
+    assert (call.has_result, call.resolved) == (True, True)
+    assert "invented batch output" in str(call.result)
+    assert "Invented plan in prose." in str(trace.turns[1].content)
+    assert "Invented tail." in str(trace.turns[1].content)
 
 
 def test_assistant_prose_and_opening_turn_are_kept():
@@ -145,7 +167,7 @@ def test_sidecar_carries_outcome_and_grouping_columns():
     assert "conversations" not in sidecar
 
 
-def test_batch_before_complaint_leaves_calls_unobserved():
+def test_batch_before_complaint_leaves_call_unobserved():
     turns = [
         {"role": "user", "content": "Invented instruction."},
         {"role": "assistant", "content": json.dumps({"commands": [
@@ -153,36 +175,76 @@ def test_batch_before_complaint_leaves_calls_unobserved():
         {"role": "user", "content": "Invented scaffold complaint: no valid JSON found."},
     ]
     trace = Terminus2Adapter().to_trace(invented_recording(conversations=turns), ctx())
-    assert len(trace.tool_calls) == 2
-    assert all(not call.resolved and not call.has_result for call in trace.tool_calls)
+    assert len(trace.tool_calls) == 1
+    (call,) = trace.tool_calls
+    assert (call.has_result, call.resolved, call.result) == (False, False, None)
     assert trace.turns[2].role == "user"
+
+
+def test_complaint_after_parsed_turn_is_counted():
+    from kullback.builder.sources import terminus_2 as adapter_mod
+
+    turns = [
+        {"role": "user", "content": "Invented instruction."},
+        {"role": "assistant", "content": json.dumps({"commands": [
+            {"keystrokes": "invented-one"}]})},
+        {"role": "user", "content": "Previous response had parsing errors: invented."},
+    ]
+    counts = adapter_mod.contradictions(turns)
+    assert counts["complaint_after_parsed"] == 1
+    assert counts["output_without_commands"] == 0
+    trace = Terminus2Adapter().to_trace(invented_recording(conversations=turns), ctx())
+    assert not trace.tool_calls[0].resolved
 
 
 def test_last_turn_commands_stay_unobserved():
     turns = invented_turns()[:2]
     trace = Terminus2Adapter().to_trace(invented_recording(conversations=turns), ctx())
-    assert len(trace.tool_calls) == 2
-    assert all(not call.resolved for call in trace.tool_calls)
+    assert len(trace.tool_calls) == 1
+    assert not trace.tool_calls[0].resolved
 
 
-def test_prose_broken_and_empty_turns_yield_no_calls():
-    turns = [
-        {"role": "user", "content": "Invented instruction."},
-        {"role": "assistant", "content": "Invented prose, no JSON at all."},
-        {"role": "user", "content": "New Terminal Output:\n\ninvented"},
-        {"role": "assistant", "content": '{"analysis": "invented", "commands": ['},
-        {"role": "user", "content": "New Terminal Output:\n\ninvented"},
-        {"role": "assistant", "content": json.dumps({"analysis": "done", "task_complete": True,
-                                                     "commands": []})},
-    ]
-    trace = Terminus2Adapter().to_trace(invented_recording(conversations=turns), ctx())
-    assert trace.tool_calls == []
-    assert len(trace.turns) == 6
-
-
-def test_unusable_durations_stay_unrecorded():
+def test_output_after_no_command_marks_recording_damaged(tmp_path):
     from kullback.builder.sources import terminus_2 as adapter_mod
 
+    clean = [
+        {"role": "user", "content": "Invented instruction."},
+        {"role": "assistant", "content": json.dumps({"commands": [
+            {"keystrokes": "invented-solo"}]})},
+        {"role": "user", "content": "New Terminal Output:\n\ninvented solo output"},
+    ]
+    damaged = [
+        {"role": "user", "content": "Invented instruction."},
+        {"role": "assistant", "content": "Invented prose with no commands in it."},
+        {"role": "user", "content": "New Terminal Output:\n\ninvented stray output"},
+    ]
+    assert adapter_mod.contradictions(damaged)["output_without_commands"] == 1
+    envelope = {"rows": [
+        {"row_idx": 0, "row": invented_recording(conversations=clean,
+                                                   trial_name="invented-clean"),
+         "truncated_cells": []},
+        {"row_idx": 1, "row": invented_recording(conversations=clean,
+                                                   trial_name="invented-clean-2"),
+         "truncated_cells": []},
+        {"row_idx": 2, "row": invented_recording(conversations=clean,
+                                                   trial_name="invented-clean-3"),
+         "truncated_cells": []},
+        {"row_idx": 3, "row": invented_recording(conversations=damaged,
+                                                   trial_name="invented-damaged"),
+         "truncated_cells": []}]}
+    target = tmp_path / "invented.json"
+    target.write_text(json.dumps(envelope), encoding="utf-8")
+    workdir = tmp_path / "work"
+    summary = ingest.ingest_file(target, workdir)
+    assert summary["runs"] == 3
+    ruling = ingest.read_intake_ruling(workdir, summary["raw_hash"])
+    assert ruling["reasons"] == {"complete_record": 3, "unresolved_call": 1}
+    damaged_row = [row for row in ruling["recordings"]
+                   if row["trace_id"] == "invented-damaged"][0]
+    assert damaged_row["standing"] == "evidence_only"
+
+
+def test_unusable_durations_stay_out_of_arguments():
     for duration in (True, -1.0, "0.2", float("nan"), float("inf")):
         turns = [
             {"role": "user", "content": "Invented instruction."},
@@ -191,8 +253,37 @@ def test_unusable_durations_stay_unrecorded():
             {"role": "user", "content": "New Terminal Output:\n\ninvented"},
         ]
         trace = Terminus2Adapter().to_trace(invented_recording(conversations=turns), ctx())
+        assert trace.tool_calls[0].args == {"commands": [{"keystrokes": "invented"}]}
         assert trace.tool_calls[0].latency_ms is None
-    assert adapter_mod._latency_ms(0.2) == 200.0
+
+
+def test_empty_batch_is_one_call():
+    turns = [
+        {"role": "user", "content": "Invented instruction."},
+        {"role": "assistant", "content": json.dumps({"analysis": "done", "task_complete": True,
+                                                     "commands": []})},
+        {"role": "user", "content": "New Terminal Output:\n\ninvented screen"},
+    ]
+    trace = Terminus2Adapter().to_trace(invented_recording(conversations=turns), ctx())
+    assert len(trace.tool_calls) == 1
+    (call,) = trace.tool_calls
+    assert call.args == {"commands": []}
+    assert (call.has_result, call.resolved) == (True, True)
+
+
+def test_warning_plus_output_gives_output_as_result():
+    turns = [
+        {"role": "user", "content": "Invented instruction."},
+        {"role": "assistant", "content": json.dumps({"commands": [
+            {"keystrokes": "invented-one"}]})},
+        {"role": "user", "content": "Invented warnings block.\n\nNew Terminal Output:\n\n"
+                                    "invented output"},
+    ]
+    trace = Terminus2Adapter().to_trace(invented_recording(conversations=turns), ctx())
+    (call,) = trace.tool_calls
+    assert (call.has_result, call.resolved) == (True, True)
+    assert "New Terminal Output:" in str(call.result)
+    assert "Invented warnings block." in str(call.result)
 
 
 def test_trace_id_falls_back_without_trial_marker():

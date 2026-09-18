@@ -36,20 +36,23 @@ def shape_survey(recordings: list) -> None:
     assistant_kinds: collections.Counter = collections.Counter()
     user_kinds: collections.Counter = collections.Counter()
     entry_shapes: collections.Counter = collections.Counter()
-    commands_per_turn: collections.Counter = collections.Counter()
+    batch_sizes: collections.Counter = collections.Counter()
+    contradictions: collections.Counter = collections.Counter()
     command_entries = 0
     for _, recording in recordings:
         turns = recording.get(adapter_mod.COLUMN_TURNS) or []
         turn_counts.append(len(turns))
+        for key, value in adapter_mod.contradictions(turns).items():
+            contradictions[key] += value
         for position, turn in enumerate(turns):
             text = turn.get("content") or ""
             if turn.get("role") == "assistant":
                 kind = adapter_mod.turn_kind(text)
                 assistant_kinds[kind] += 1
-                if kind == "commands":
-                    entries = json.loads(text.strip())["commands"]
+                if kind in adapter_mod.COMMAND_KINDS:
+                    entries = adapter_mod.command_entries(text) or []
                     command_entries += len(entries)
-                    commands_per_turn[len(entries)] += 1
+                    batch_sizes[len(entries)] += 1
                     for entry in entries:
                         entry_shapes[tuple(sorted(entry))] += 1
             else:
@@ -57,9 +60,12 @@ def shape_survey(recordings: list) -> None:
                 if position == 0:
                     user_kinds["opening_instruction_with_state"] += 1
                 elif headers:
-                    user_kinds["terminal_output"] += 1
+                    if "WARNING" in text or "parsing errors" in text:
+                        user_kinds["terminal_output_with_warning"] += 1
+                    else:
+                        user_kinds["terminal_output"] += 1
                 else:
-                    user_kinds["scaffold_note"] += 1
+                    user_kinds["scaffold_note_" + adapter_mod.note_kind(text)] += 1
     print(f"recordings: {len(recordings)}")
     print(f"turns per recording: min {min(turn_counts)} max {max(turn_counts)} "
           f"mean {sum(turn_counts) / len(turn_counts):.2f}")
@@ -67,7 +73,8 @@ def shape_survey(recordings: list) -> None:
     print(f"assistant turns by kind: {dict(assistant_kinds)}")
     print(f"user turns by kind: {dict(user_kinds)}")
     print(f"command entries: {command_entries} shapes: {dict(entry_shapes)}")
-    print(f"commands per command turn: {sorted(commands_per_turn.items())}")
+    print(f"entries per command turn: {sorted(batch_sizes.items())}")
+    print(f"contradictions: {dict(contradictions)}")
 
 
 def outcome_columns(recordings: list) -> None:

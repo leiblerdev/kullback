@@ -2,9 +2,10 @@
 
 It votes with positive evidence (a rows envelope whose rows carry a turn list, or one recording
 with a turn list and a trial marker), yields one recording per row, and maps each recording to a
-Trace with one tool, the shell, whose calls are read out of the assistant text. Grader and
-grouping columns leave the trace for the sidecar, the same way the first adapter treats its own.
-"""
+Trace with one tool, the shell. One shell call per assistant command turn carries the batch as
+the turn carries it; the first command object in the text is the call and the prose around it
+stays the assistant message. Grader and grouping columns leave the trace for the sidecar, the
+same way the first adapter treats its own."""
 
 from __future__ import annotations
 
@@ -116,7 +117,12 @@ def _vote_on_records(records: list, found: str, missing: str,
 
 
 def _map_turn(message: dict, msg_index: int, trace_id: str, ctx: Any) -> tuple[dict, list]:
-    """One message to its turn plus the shell calls it requests, if it requests any."""
+    """One message to its turn plus the shell call it requests, if it requests one.
+
+    One call per command turn: the scaffold takes the turn's whole command list and returns
+    one screen, so the call carries the list as the turn carries it and the batch is never
+    split. An empty command list is still a submission (the scaffold answers it with a
+    screen), so it yields a call with an empty list."""
     here = RawPtr(file_hash=ctx.raw_hash, sim_index=ctx.index, msg_index=msg_index)
     role = message.get("role") or "assistant"
     if role not in ("user", "assistant"):
@@ -125,8 +131,9 @@ def _map_turn(message: dict, msg_index: int, trace_id: str, ctx: Any) -> tuple[d
     content = text if text is None or isinstance(text, str) else json.dumps(
         text, ensure_ascii=False, default=str)
     turn = {"idx": msg_index, "role": role, "content": content, "raw_ptr": here}
-    entries = _command_entries(text) if role == "assistant" else None
-    calls = [_shell_call(entry, trace_id, here) for entry in entries] if entries else []
+    kind, entries = _parsed_commands(text) if role == "assistant" else ("no_json", None)
+    calls = [_batch_call(entries if entries is not None else [], trace_id, here)] \
+        if kind in COMMAND_KINDS or kind == "empty_commands" else []
     return (turn, calls)
 
 
@@ -157,32 +164,91 @@ def _positive_extras(document: dict) -> list[str]:
     return [f"carries {', '.join(found)}"] if found else []
 
 
+# An assistant turn parsed far enough to submit a batch: the whole text is the object, or the
+# object sits inside prose. Empty turns submit an empty batch; the rest submit nothing.
+COMMAND_KINDS = ("commands_whole", "commands_embedded")
+
+
 def turn_kind(text: Any) -> str:
-    """Why one assistant turn yields calls or none: commands, empty_commands,
+    """How one assistant turn parsed: commands_whole, commands_embedded, empty_commands,
     json_without_commands, broken_json, or no_json. The survey script reads this so the
-    pipeline and the report count unparsed turns the same way; nothing here repairs text."""
+    pipeline and the report count turns the same way; nothing here repairs text."""
     kind, _ = _parsed_commands(text)
     return kind
 
 
 def _parsed_commands(text: Any) -> tuple[str, Optional[list[dict]]]:
-    """One strict parse shared by the survey counter and the mapper below."""
-    if not isinstance(text, str) or not text.strip().startswith("{"):
+    """One strict parse shared by the survey counter and the mapper below.
+
+    The first JSON object in the text that carries a command list is the call; the prose
+    around it stays the assistant message. Strict inside each object: every entry must
+    carry the keystrokes string, and a broken object stays broken (the scan moves on, the
+    text is never repaired)."""
+    if not isinstance(text, str):
         return ("no_json", None)
-    try:
-        parsed = json.loads(text.strip())
-    except json.JSONDecodeError:
-        return ("broken_json", None)
-    if not isinstance(parsed, dict):
-        return ("broken_json", None)
-    commands = parsed.get(FIELD_COMMANDS)
-    if not isinstance(commands, list):
-        return ("json_without_commands", None)
-    if not commands:
-        return ("empty_commands", None)
-    if _bad_entry(commands):
-        return ("broken_json", None)
-    return ("commands", commands)
+    stripped = text.strip()
+    spans = _object_spans(stripped)
+    if not spans:
+        return ("no_json", None)
+    fallback = None
+    for start, end in spans:
+        try:
+            parsed = json.loads(stripped[start:end])
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(parsed, dict):
+            continue
+        commands = parsed.get(FIELD_COMMANDS)
+        if not isinstance(commands, list):
+            fallback = fallback or "json_without_commands"
+            continue
+        if not commands:
+            fallback = fallback or "empty_commands"
+            continue
+        if _bad_entry(commands):
+            continue
+        whole = "_whole" if (start, end) == (0, len(stripped)) else "_embedded"
+        return ("commands" + whole, commands)
+    if fallback is not None:
+        return (fallback, [] if fallback == "empty_commands" else None)
+    return ("broken_json", None)
+
+
+def _object_spans(text: str) -> list[tuple[int, int]]:
+    """Every balanced brace span in order, strings honoured so braces in prose do not count."""
+    spans = []
+    pos, end = 0, len(text)
+    while pos < end:
+        if text[pos] != "{":
+            pos += 1
+            continue
+        depth, instr, esc, cur = 0, False, False, pos
+        closed = None
+        while cur < end:
+            char = text[cur]
+            if instr:
+                if esc:
+                    esc = False
+                elif char == "\\":
+                    esc = True
+                elif char == '"':
+                    instr = False
+            elif char == '"':
+                instr = True
+            elif char == "{":
+                depth += 1
+            elif char == "}":
+                depth -= 1
+                if depth == 0:
+                    closed = cur + 1
+                    break
+            cur += 1
+        if closed is None:
+            pos += 1
+        else:
+            spans.append((pos, closed))
+            pos = closed
+    return spans
 
 
 def _bad_entry(commands: list) -> bool:
@@ -191,81 +257,168 @@ def _bad_entry(commands: list) -> bool:
                or not isinstance(entry.get(FIELD_KEYSTROKES), str) for entry in commands)
 
 
-def _command_entries(text: Any) -> Optional[list[dict]]:
-    """The shell commands one assistant turn requests, or None when the turn carries none.
+def command_entries(text: Any) -> Optional[list[dict]]:
+    """The shell batch one assistant turn requests, or None when the turn carries none.
 
-    Strict on purpose: the turn must be a JSON object with a commands list whose every entry is
-    an object carrying the keystrokes string. Anything else (prose, broken JSON, a completion
-    marker, an unexpected shape) yields no calls; the turn text itself is never repaired.
-    """
+    Empty batches yield an empty list (they still submit, and the scaffold still answers);
+    anything without a command list yields None. The survey counts through this so both
+    read the same batches."""
     kind, entries = _parsed_commands(text)
-    return entries if kind == "commands" else None
+    if kind in COMMAND_KINDS:
+        return entries
+    if kind == "empty_commands":
+        return []
+    return None
 
 
-def _shell_call(entry: dict, trace_id: str, here: RawPtr) -> ToolCall:
-    """One command entry as one call on the shell; the entry's measured time rides as latency."""
+def _batch_call(entries: list, trace_id: str, here: RawPtr) -> ToolCall:
+    """One command turn as one call on the shell, carrying the batch as the turn carries it."""
     return ToolCall(
         id=None,
         name=TOOL_SHELL,
-        args={FIELD_KEYSTROKES: entry[FIELD_KEYSTROKES]},
+        args=_batch_args(entries),
         requestor="assistant",
         raw_ptr=here,
         trace_id=trace_id,
         has_result=False,
         resolved=False,
-        latency_ms=_latency_ms(entry.get(FIELD_DURATION)),
+        latency_ms=None,
     )
 
 
-def _latency_ms(duration: Any) -> Optional[float]:
-    """The entry's measured seconds as milliseconds, or None when it says nothing usable.
+def _batch_args(entries: list) -> dict:
+    """The call's arguments: each entry's keystrokes and duration, in order.
 
-    Booleans, strings, negatives and non-finite values are not times, so they stay
-    unrecorded instead of becoming a plausible-looking latency."""
+    Duration stays an argument of the entry, not a latency of the call: it measures a wait
+    the agent asked for, not a time anything took. A missing or unusable duration is left
+    out rather than recorded as a plausible-looking number."""
+    batch = []
+    for entry in entries:
+        item = {FIELD_KEYSTROKES: entry[FIELD_KEYSTROKES]}
+        duration = _usable_duration(entry.get(FIELD_DURATION))
+        if duration is not None:
+            item[FIELD_DURATION] = duration
+        batch.append(item)
+    return {FIELD_COMMANDS: batch}
+
+
+def _usable_duration(duration: Any) -> Optional[float]:
+    """A duration worth carrying, or None when the entry says nothing usable.
+
+    Booleans, strings, negatives and non-finite values are not waits, so they stay out
+    instead of becoming a plausible-looking argument."""
     if isinstance(duration, bool):
         return None
     if not isinstance(duration, (int, float)) or not math.isfinite(duration):
         return None
     if duration < 0:
         return None
-    return float(duration) * 1000.0
+    return float(duration)
 
 
 def _attach_results(turns_raw: list, calls: list, ctx: Any,
                     detect_truncation: Any) -> None:
-    """Answer each command batch with the terminal output the next user turn shows for it.
+    """Answer each batch with the terminal output the next user turn shows for it.
 
-    The batch shares one output turn, and the recording never marks where one command's output
-    ends and the next begins, so splitting it would claim boundaries the recording does not
-    show. The whole output lands on the batch's last call and the earlier calls stay unobserved
-    (no result, unresolved), which is what the admission rules read. A batch whose next turn is
-    missing, not the user's, or carries no terminal header (a scaffold complaint, the opening
-    instruction) leaves every call unobserved the same way.
-    """
-    by_turn: dict[int, list] = {}
+    The whole output lands on the turn's one call, verbatim and unsplit: a warnings block
+    riding with the output stays in the result as shown, and only the opening turn counts
+    as the customer's request. A batch whose next turn is missing, not the user's, or
+    carries no terminal header (a scaffold complaint) leaves its call unobserved, which is
+    what the admission rules read. Output after a turn where no commands were found means
+    the adapter is stricter than the scaffold was; the output stays unclaimed and an
+    explicitly unobserved marker call records the contradiction, so the recording cannot
+    come out clean."""
+    by_turn = {}
     for call in calls:
         index = call.raw_ptr.msg_index if call.raw_ptr else None
-        by_turn.setdefault(index, []).append(call)
-    for msg_index, group in by_turn.items():
-        if not isinstance(msg_index, int):
+        by_turn[index] = call
+    for msg_index, message in enumerate(turns_raw):
+        if (message.get("role") or "assistant") != "assistant":
             continue
         answer = turns_raw[msg_index + 1] if msg_index + 1 < len(turns_raw) else None
         if (answer is None or answer.get("role") != "user"
                 or not _is_terminal_output(answer.get("content"))):
             continue
-        last = group[-1]
+        call = by_turn.get(msg_index)
+        if call is None:
+            calls.append(_batch_call([], _trace_of(calls, ctx), _ptr_at(ctx, msg_index)))
+            continue
         content = answer.get("content")
-        last.truncated, last.visible_len, last.cut_marker = detect_truncation(content)
-        last.result = content
-        last.has_result = True
-        last.resolved = True
-        last.result_ptr = RawPtr(file_hash=ctx.raw_hash, sim_index=ctx.index,
+        call.truncated, call.visible_len, call.cut_marker = detect_truncation(content)
+        call.result = content
+        call.has_result = True
+        call.resolved = True
+        call.result_ptr = RawPtr(file_hash=ctx.raw_hash, sim_index=ctx.index,
                                  msg_index=msg_index + 1)
+
+
+def _trace_of(calls: list, ctx: Any) -> str:
+    """The trace id for a marker call: the id the turn's own calls carry, if any."""
+    for call in calls:
+        if call.trace_id:
+            return call.trace_id
+    return f"{ctx.raw_hash[:12]}-{ctx.index}"
+
+
+def _ptr_at(ctx: Any, msg_index: int) -> RawPtr:
+    """The pointer a marker call cites: the assistant turn the output followed."""
+    return RawPtr(file_hash=ctx.raw_hash, sim_index=ctx.index, msg_index=msg_index)
 
 
 def _is_terminal_output(content: Any) -> bool:
     """A scaffold-stamped terminal transcript, not an instruction and not a complaint."""
     return isinstance(content, str) and any(header in content for header in OUTPUT_HEADERS)
+
+
+# A scaffold note refusing a turn names the refusal; a warning about extra text means the
+# scaffold found the object too. Only the first disagrees with an adapter that parsed.
+_ERROR_MARKS = ("parsing errors", "Invalid JSON", "Missing required fields")
+_WARNING_MARKS = ("WARNINGS", "warnings:")
+_COMPLETION_MARKS = ("mark the task as complete",)
+
+
+def note_kind(text: Any) -> str:
+    """What a non-output user turn is: error, warning, completion, or other scaffold note."""
+    if not isinstance(text, str):
+        return "other"
+    if any(mark in text for mark in _COMPLETION_MARKS):
+        return "completion"
+    if any(mark in text for mark in _ERROR_MARKS):
+        return "error"
+    if any(mark in text for mark in _WARNING_MARKS):
+        return "warning"
+    return "other"
+
+
+def contradictions(turns: list) -> dict:
+    """Both consistency directions over one recording's turns, as counts.
+
+    output_without_commands: terminal output after a turn where no command object was
+    found (the adapter is stricter than the scaffold was). complaint_after_parsed: a
+    scaffold error note after a turn the adapter parsed (the adapter is more lenient).
+    warning_after_parsed: a scaffold warning after a parsed turn (both found the object,
+    so no disagreement, counted apart). The mapper enforces the same two rules: the
+    first leaves an unobserved marker call, the second an unobserved batch call, so a
+    recording with either contradiction cannot come out as a clean complete record."""
+    counts = {"output_without_commands": 0, "complaint_after_parsed": 0,
+              "warning_after_parsed": 0}
+    for first, second in zip(turns, turns[1:], strict=False):
+        if (first.get("role") or "assistant") != "assistant":
+            continue
+        if (second.get("role") or "user") != "user":
+            continue
+        kind = turn_kind(first.get("content"))
+        parsed = kind in COMMAND_KINDS
+        if _is_terminal_output(second.get("content")):
+            if not parsed and kind != "empty_commands":
+                counts["output_without_commands"] += 1
+        elif parsed:
+            note = note_kind(second.get("content"))
+            if note == "error":
+                counts["complaint_after_parsed"] += 1
+            elif note == "warning":
+                counts["warning_after_parsed"] += 1
+    return counts
 
 
 def trace_hash(trace: Trace) -> str:
