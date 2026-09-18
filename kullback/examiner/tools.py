@@ -31,6 +31,7 @@ from typing import Any, Awaitable, Callable, Iterable, Iterator, Literal, Option
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from kullback.agent import reading as reading_mod
 from kullback.agent.events import StageEnd, StageStart
 from kullback.agent.tools import AgentTool, RetryableToolError, counted_ruling_line
 from kullback.examiner import findings as findings_mod
@@ -54,6 +55,7 @@ from kullback.runner import budget
 from kullback.runner.records import (
     Atom,
     Event,
+    EventType,
     FindingKind,
     FindingVerb,
     GateResult,
@@ -80,6 +82,7 @@ SearchKind = Literal["trace", "run", "intent", "task_status", "verifier"]
 SEARCH_KINDS: tuple[str, ...] = ("trace", "run", "intent", "task_status", "verifier")
 SEARCH_LINE = 200  # about one line of the record around a match, the match inside it
 SEARCH_LIMIT = 50
+_EVENT_TYPES = frozenset(get_args(EventType))  # the lines of a Run file that are events
 # --- what a finding is about, and the names a model reaches for instead ---
 #
 # One live build's Examiner made 28 `finding` calls and 17 of them were refused for passing a ruling
@@ -194,7 +197,14 @@ class ReadArgs(BaseModel):
                                        "evidence it): read it before suggesting repair_intent.")
     id: Optional[str] = Field(default=None, description="The Task, Trace, Run or ruling name. Omitted, the "
                                                         "whole-file kinds answer an index (one line per id), "
-                                                        "not the file; no read is longer than READ_CHARS.")
+                                                        "not the file.")
+    locator: Optional[str] = Field(default=None, description="One part of a Run or a Trace, as an outline "
+                                                              "or a search answers it (`turn:2`, `call:1`, "
+                                                              "`event:3`, `header`). A Run or Trace longer "
+                                                              "than one page answers its outline first; read "
+                                                              "one part with its locator for the evidence.")
+    offset: int = Field(default=0, ge=0, description="Where in the answer to start reading; follow "
+                                                     "`next_offset` until it is null and nothing cut is lost.")
 
 
 class ReadResult(BaseModel):
@@ -203,6 +213,8 @@ class ReadResult(BaseModel):
     kind: str
     id: Optional[str] = None
     text: str
+    next_offset: Optional[int] = Field(default=None, description="The offset to read next, or null when "
+                                                                  "this page is the last of the answer.")
 
 
 class SearchArgs(BaseModel):
@@ -232,6 +244,11 @@ class SearchResult(BaseModel):
     shown: int
     counts: dict[str, int] = Field(default_factory=dict)
     text: str
+    locations: list[dict] = Field(default_factory=list, description="One entry per shown match: the kind, "
+                                                                     "the record, the Task, where it matched, "
+                                                                     "a locator a following `read` accepts "
+                                                                     "(None outside Runs and Traces), and the "
+                                                                     "matching line.")
 
 
 class DeriveArgs(BaseModel):
@@ -799,6 +816,18 @@ READ_HANDLERS: dict[str, ReadHandler] = {
 }
 
 
+def _outline_first(kind: str, body: Any, ident: Optional[str]) -> bool:
+    """Whether this read answers the outline: a Run or Trace read with no locator, past one page.
+
+    A record that fits one page is its own outline and is answered whole, so small reads keep
+    answering what they always did. Anything longer answers the map first, and the evidence comes
+    back one addressed part at a time, so whatever the old 60,000 character cut dropped is reachable."""
+    if kind not in ("run", "trace") or ident is None:
+        return False
+    return isinstance(body, dict) and body.get("found") is not False and \
+        len(_text(body)) > reading_mod.PAGE_CHARS
+
+
 def _read(plan: ExaminerPlan):
     async def read(args: ReadArgs) -> ReadResult:
         handler = READ_HANDLERS.get(args.kind)
@@ -806,8 +835,26 @@ def _read(plan: ExaminerPlan):
         # caller that went round the schema; it is read off the References file, which is where the
         # if chain this table replaced sent it, with the kind kept so the index names what was asked.
         body = handler(plan, args.id) if handler is not None else _read_off_file(plan, args.kind, args.id)
-        # D175: a whole-file read is an index, and no read is longer than READ_CHARS.
-        return ReadResult(kind=args.kind, id=args.id, text=_clamped_text(body))
+        if args.kind in ("run", "trace"):
+            if args.locator is not None:
+                # An id nothing carries answers its ids here, not a record: kind_of refuses it below.
+                full = _text(reading_mod.part(body, args.locator))
+                faced = reading_mod.page(full, args.offset)
+            elif _outline_first(args.kind, body, args.id):
+                # The map is answered whole: it is bounded by construction, and it names
+                # how to pull each part after it.
+                return ReadResult(kind=args.kind, id=args.id,
+                                  text=_text(reading_mod.outline(body)), next_offset=None)
+            else:
+                faced = reading_mod.page(_text(body), args.offset)
+            return ReadResult(kind=args.kind, id=args.id, text=faced["text"],
+                              next_offset=faced["next"])
+        if args.locator is not None:
+            raise ValueError(f"a locator is read on a Run or a Trace, not on {args.kind}")
+        # D175: a whole-file read is an index, and a long answer is paged at the old cut,
+        # so the next offset reaches what this page did not hold.
+        faced = reading_mod.page(_text(body), args.offset, READ_CHARS)
+        return ReadResult(kind=args.kind, id=args.id, text=faced["text"], next_offset=faced["next"])
 
     return read
 
@@ -815,8 +862,9 @@ def _read(plan: ExaminerPlan):
 # --- search over the records ------------------------------------------------------
 
 # One candidate line of a record: the record's id, the Task it belongs to, the tool it belongs to
-# when it belongs to one, where in the record it is, and the text a match is looked for in.
-Row = tuple[str, Optional[str], Optional[str], str, str]
+# when it belongs to one, where in the record it is, the text a match is looked for in, and the
+# locator a following `read` accepts for the part the line came from (None outside Runs and Traces).
+Row = tuple[str, Optional[str], Optional[str], str, str, Optional[str]]
 
 
 def _pattern(text: str, regex: bool) -> "re.Pattern[str]":
@@ -847,9 +895,15 @@ def _excerpt(text: str, match: "re.Match[str]", width: int = SEARCH_LINE) -> str
 
 def _match_line(kind: str, row: Row, match: "re.Match[str]") -> str:
     """One match as the model reads it: the kind and the id, the Task, where it matched, the line."""
-    record, task_id, _, where, text = row
+    record, task_id, _, where, text = row[0], row[1], row[2], row[3], row[4]
     task = f" (task {task_id})" if task_id and task_id != record else ""
     return f"{kind} {record}{task}: {where}: {_excerpt(text, match)}"
+
+
+def _location(kind: str, row: Row, match: "re.Match[str]") -> dict:
+    """One shown match as data: what the line says, plus the locator a `read` takes back."""
+    return {"kind": kind, "record": row[0], "task": row[1], "where": row[3],
+            "locator": row[5], "snippet": _excerpt(row[4], match)}
 
 
 def _task_of_trace(plan: ExaminerPlan) -> dict[str, str]:
@@ -864,16 +918,20 @@ def _trace_rows(plan: ExaminerPlan, task_id: Optional[str]) -> Iterator[Row]:
         task = task_of.get(trace.trace_id)
         if task_id is not None and task != task_id:
             continue
-        for turn in trace.turns:
+        for pos, turn in enumerate(trace.turns):
             if turn.content:
-                yield trace.trace_id, task, None, f"turn {turn.idx} {turn.role}", turn.content
-        for tool_call in trace.tool_calls:
+                yield trace.trace_id, task, None, f"turn {turn.idx} {turn.role}", turn.content, \
+                    f"turn:{pos}"
+        for pos, tool_call in enumerate(trace.tool_calls):
             where = f"tool call {tool_call.name}"
-            yield trace.trace_id, task, tool_call.name, f"{where} args", _text(tool_call.args)
+            yield trace.trace_id, task, tool_call.name, f"{where} args", _text(tool_call.args), \
+                f"call:{pos}"
             if tool_call.result is not None:
-                yield trace.trace_id, task, tool_call.name, f"{where} result", _text(tool_call.result)
+                yield trace.trace_id, task, tool_call.name, f"{where} result", _text(tool_call.result), \
+                    f"call:{pos}"
             if tool_call.error is not None:
-                yield trace.trace_id, task, tool_call.name, f"{where} error", _text(as_dict(tool_call.error))
+                yield trace.trace_id, task, tool_call.name, f"{where} error", _text(as_dict(tool_call.error)), \
+                    f"call:{pos}"
 
 
 def _run_paths(plan: ExaminerPlan, task_id: Optional[str]) -> Iterator[tuple[str, str, str]]:
@@ -901,6 +959,17 @@ def _run_file(plan: ExaminerPlan, task_id: str, path: str) -> Optional[Path]:
     return inside if inside.is_file() else None
 
 
+def _run_locator(body: dict) -> Optional[str]:
+    """The locator a `read` takes back for one Run file line: the header for the Run's own fields,
+    the carried idx for an event, which is its position in the Run, else None."""
+    if "type" not in body:
+        return "header"
+    idx = body.get("idx")
+    if body.get("type") in _EVENT_TYPES and isinstance(idx, int):
+        return f"event:{idx}"
+    return None
+
+
 def _run_rows(plan: ExaminerPlan, task_id: Optional[str], pattern: "re.Pattern[str]") -> Iterator[Row]:
     """Every Run's events. A Run file is one JSON line per event, with the Run's own fields on a line
     of their own, and the files run to megabytes; so a line is scanned as text and only a line the
@@ -918,7 +987,7 @@ def _run_rows(plan: ExaminerPlan, task_id: Optional[str], pattern: "re.Pattern[s
                 name = payload.get("name") if isinstance(payload.get("name"), str) else None
                 where = ("run fields" if "type" not in body else
                          f"event {body.get('idx')} {body['type']}" + (f" {name}" if name else ""))
-                yield run_id, task, name, where, line.rstrip("\n")
+                yield run_id, task, name, where, line.rstrip("\n"), _run_locator(body)
 
 
 def _intent_rows(plan: ExaminerPlan, task_id: Optional[str]) -> Iterator[Row]:
@@ -927,13 +996,13 @@ def _intent_rows(plan: ExaminerPlan, task_id: Optional[str]) -> Iterator[Row]:
         if task_id is not None and task != task_id:
             continue
         record = Intent.model_validate(body)
-        yield task, task, None, "text", record.text
+        yield task, task, None, "text", record.text, None
         for phrase in record.ungrounded_phrases:
-            yield task, task, None, "ungrounded_phrase", phrase
+            yield task, task, None, "ungrounded_phrase", phrase, None
         for phrase, run_ids in sorted(record.run_coverage.items()):
-            yield task, task, None, f"run_coverage {phrase}", ", ".join(run_ids)
+            yield task, task, None, f"run_coverage {phrase}", ", ".join(run_ids), None
         for span in record.spans:
-            yield task, task, None, f"span {span.source} in {span.trace_id}", span.text
+            yield task, task, None, f"span {span.source} in {span.trace_id}", span.text, None
 
 
 def _status_rows(plan: ExaminerPlan, task_id: Optional[str]) -> Iterator[Row]:
@@ -942,7 +1011,7 @@ def _status_rows(plan: ExaminerPlan, task_id: Optional[str]) -> Iterator[Row]:
         if task_id is not None and task != task_id:
             continue
         for field, value in sorted((row or {}).items()):
-            yield task, task, None, field, value if isinstance(value, str) else _text(value)
+            yield task, task, None, field, value if isinstance(value, str) else _text(value), None
 
 
 def _verifier_rows(plan: ExaminerPlan, task_id: Optional[str]) -> Iterator[Row]:
@@ -951,7 +1020,8 @@ def _verifier_rows(plan: ExaminerPlan, task_id: Optional[str]) -> Iterator[Row]:
         if task_id is not None and verifier.task_id != task_id:
             continue
         for atom in verifier.atoms:
-            yield verifier.task_id, verifier.task_id, None, f"atom {atom.id} {atom.kind}", _text(as_dict(atom))
+            yield verifier.task_id, verifier.task_id, None, f"atom {atom.id} {atom.kind}", \
+                _text(as_dict(atom)), None
 
 
 def _rows(plan: ExaminerPlan, kind: str, args: SearchArgs, pattern: "re.Pattern[str]") -> Iterator[Row]:
@@ -972,6 +1042,7 @@ def _search(plan: ExaminerPlan):
         kinds = [kind for kind in SEARCH_KINDS if not args.kinds or kind in args.kinds]
         counts = {kind: 0 for kind in kinds}
         lines: list[str] = []
+        locations: list[dict] = []
         for kind in kinds:
             for row in _rows(plan, kind, args, pattern):
                 if args.tool is not None and row[2] != args.tool:
@@ -982,12 +1053,14 @@ def _search(plan: ExaminerPlan):
                 counts[kind] += 1
                 if len(lines) < args.limit:
                     lines.append(_match_line(kind, row, match))
+                    locations.append(_location(kind, row, match))
         total = sum(counts.values())
         head = (f"search {args.text!r} over {', '.join(kinds)}: {total} matches ("
                 + ", ".join(f"{kind} {count}" for kind, count in counts.items())
                 + f"), showing {len(lines)}")
         text = _clamp("\n".join([head, *lines]), "search a narrower phrase, one kind, or one Task")
-        return SearchResult(matches=total, shown=len(lines), counts=counts, text=text)
+        return SearchResult(matches=total, shown=len(lines), counts=counts, text=text,
+                            locations=locations)
 
     return search
 
@@ -1562,11 +1635,14 @@ def examiner_tools(plan: ExaminerPlan, sink: Optional[Sink] = None) -> list[Agen
     """The eight tools over one plan; `sink` is where the derive stage's events go (the harness's `emit`)."""
     return [
         AgentTool("read", "Read a Task, a Trace, an Intent, a Run, a Verifier, a probe pool, the task status, "
-                  "the rulings, the re-roll or replay rows, or the References, as JSON.",
+                  "the rulings, the re-roll or replay rows, or the References, as JSON. A Run or Trace longer "
+                  "than one page answers its outline first; read one part with its locator, and follow "
+                  "`next_offset` with `offset` until it is null.",
                   ReadArgs, ReadResult, _read(plan), render=render),
         AgentTool("search", "Find one phrase across the records without reading them: the Traces, the Runs, "
                   "the Intents, the task status and the Verifiers. Answers a count per kind and one line "
-                  "per match, saying which record, which Task and where in it the phrase is.",
+                  "per match, saying which record, which Task and where in it the phrase is. Every shown "
+                  "match carries a locator a following `read` accepts.",
                   SearchArgs, SearchResult, _search(plan), render=render),
         AgentTool("derive", "Derive one Verifier per Task from its References through the D79 suite "
                   "(`all`, or one Task id).", DeriveArgs, DeriveResult, _derive(plan, sink), render=render),
