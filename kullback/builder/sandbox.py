@@ -27,6 +27,7 @@ from typing import Any, Iterable, Optional
 # Gate 0 (confinement) is a static check over the body and runs no subprocess, so it lives with the
 # other pure gates in kullback.gates (D122); the two names the five gates below need stay imported
 # here. Everything else the callers read straight out of kullback.gates.
+from kullback.builder import effects as effects_mod
 from kullback.builder import mine
 from kullback.gates import tool_runs
 from kullback.gates.confinement import PROVIDED_HELPERS, TOOLS_CLASS, gate_confined
@@ -83,7 +84,7 @@ args_text = tool_runs.args_text
 # --- the minimal sandbox (see the module docstring) ---
 
 _RUNNER_BODY = '''
-import collections, datetime, importlib.abc, inspect, json, math, re, socket, sys, typing
+import collections, copy, datetime, importlib.abc, inspect, json, math, re, socket, sys, typing
 import pydantic
 
 BLOCKED = {"urllib", "urllib3", "requests", "httpx", "ftplib", "smtplib",
@@ -149,6 +150,57 @@ def _plain(value):
     return value
 
 
+# How many changed rows one call's diff carries before it stops listing them. Worlds are small
+# and a recorded write touches one or two rows; hundreds of changed rows is a body rewriting the
+# world, which the parent rules on as stated rather than by comparing each row.
+DIFF_ROW_CAP = 500
+
+
+def _wanted_rows(world, want):
+    """The asked-about rows as the world holds them after the call, missing rows as None.
+
+    `want` is the parent's list of [table, row] pairs, known before the run from the witnessed
+    keys. Uncapped: the set is bounded by the evidence, a handful of rows per call, while the
+    diff cap and its truncated rule stay exactly as they are.
+    """
+    world = world if isinstance(world, dict) else {}
+    out = {}
+    for pair in want or []:
+        table, row = str(pair[0]), str(pair[1])
+        rows = world.get(table)
+        out.setdefault(table, {})[row] = rows.get(row) if isinstance(rows, dict) else None
+    return out
+
+
+def _diff_pair(before, after):
+    """Rows the run left different, as table to row id to the row on either side.
+
+    Both sides are the validated world dumped plain, so what the schema never declared is absent
+    from both and can be neither agreement nor disagreement: the comparison is over the world
+    the body actually saw against the one it left. A row the run added carries None before, one
+    it deleted carries None after; untouched rows are absent. Past the cap the listing stops and
+    the caller is told, so a body rewriting the world is ruled on as stated rather than row by
+    row.
+    """
+    before = before if isinstance(before, dict) else {}
+    after = after if isinstance(after, dict) else {}
+    changed, truncated = {}, False
+    for table in sorted(set(before) | set(after)):
+        old_rows = before.get(table) if isinstance(before.get(table), dict) else {}
+        new_rows = after.get(table) if isinstance(after.get(table), dict) else {}
+        for row_id in sorted(set(old_rows) | set(new_rows), key=str):
+            old, new = old_rows.get(row_id), new_rows.get(row_id)
+            if old == new:
+                continue
+            if sum(len(rows) for rows in changed.values()) >= DIFF_ROW_CAP:
+                truncated = True
+                break
+            changed.setdefault(str(table), {})[str(row_id)] = {"before": old, "after": new}
+        if truncated:
+            break
+    return changed, truncated
+
+
 def main():
     # The nonce arrives on stdin, which is read out and closed before any generated code runs, so a
     # body cannot read it back and forge the result file. See the module docstring for what this
@@ -175,10 +227,23 @@ def main():
     toolkit, db_class = namespace[job["class_name"]], namespace[job["db_class"]]
     results = []
     trace = bool(job.get("trace"))
+    want_diff = bool(job.get("diff"))
     for call in job["calls"]:
         # Every call starts on the Starting state its own trace ran on: a fresh toolkit over a
         # freshly validated world, so a write cannot leave the next call standing on its output.
-        function = getattr(toolkit(db_class.model_validate(job["dbs"][call["db"]])), call["name"])
+        # The instance is kept where a diff is asked for, so the world the call leaves can be
+        # read back out of it; anywhere else nothing behind the answer is held. The copy is the
+        # point: validation reuses the job world's nested structures by reference, so a body that
+        # appends to a list in place would otherwise leave its output standing in the world the
+        # next call sharing this entry validates against, and one call's diff would carry another
+        # call's writes.
+        world = copy.deepcopy(job["dbs"][call["db"]]) if want_diff else job["dbs"][call["db"]]
+        instance = toolkit(db_class.model_validate(world))
+        function = getattr(instance, call["name"])
+        # The world the body actually sees, dumped before it runs: validation itself narrows the
+        # world to what the schema declares, so the diff below compares what the body saw with
+        # what it left rather than the raw Starting state with the narrowed one.
+        before_plain = _plain(instance.db) if want_diff else None
         try:
             inspect.signature(function).bind(**call["args"])
         except TypeError as exc:
@@ -198,6 +263,21 @@ def main():
                       "line": _source_line(exc, job["source"])}
         if trace:
             result["lines"] = sorted(seen)
+        if want_diff and result.get("ok"):
+            # What the call leaves behind, as the rows that part from the world it ran on, beside
+            # the after state of the rows the parent asked about: a witnessed column on a row the
+            # call never touched never reaches the diff, and the ruling still has to read what the
+            # world holds there. A call that raised leaves nothing to compare: the executes gate
+            # has already failed it and the ruling there is the one the repair loop reads.
+            try:
+                after_plain = _plain(instance.db)
+                changed, truncated = _diff_pair(before_plain, after_plain)
+                result["wanted"] = _wanted_rows(after_plain, job.get("want") or [])
+            except Exception:
+                changed, truncated = None, False
+            result["changed"] = changed
+            if truncated:
+                result["changed_truncated"] = True
         results.append(result)
     with open(sys.argv[2], "w", encoding="utf-8") as handle:
         json.dump({"nonce": nonce, "results": results}, handle, default=str)
@@ -283,6 +363,32 @@ class Sandbox:
             self.cache[key] = result
         return [dict(self.cache[k]) for k in keys]
 
+    def run_diff(self, calls: Iterable[ToolCall],
+                 want: Iterable[tuple[str, str]] = ()) -> list[dict]:
+        """Per call, the rows the body left different and whether the listing stopped early.
+
+        One subprocess over the calls given, never memoised: the memo holds answers and this
+        asks what the world looks like after each call. Each entry carries `changed` (table to
+        row id to the row on either side, None where the call raised and there is no world to
+        compare), `truncated` (the call changed more rows than the child lists) and `wanted`
+        (the asked-about rows as the world holds them after the call, missing rows as None).
+        `want` is (table, row) pairs known before the run from the witnessed keys. A call the
+        body raised on reads back as no change to compare, which the transition gate counts and
+        fails: a write that crashes mid-write is not one the recording shows leaving this state.
+        """
+        calls = list(calls)
+        if not calls:
+            return []
+        out = []
+        for result in self._execute(calls, want_diff=True, want=list(want)):
+            if not result.get("ok"):
+                out.append({"changed": None, "truncated": False, "wanted": {}})
+                continue
+            out.append({"changed": result.get("changed"),
+                        "truncated": bool(result.get("changed_truncated")),
+                        "wanted": result.get("wanted") or {}})
+        return out
+
     def executed_lines(self, calls: Iterable[ToolCall]) -> set[int]:
         """Every line of the generated module the recorded calls between them actually ran (D211).
 
@@ -302,7 +408,8 @@ class Sandbox:
             return set()
         return {int(line) for result in results for line in (result.get("lines") or [])}
 
-    def _execute(self, calls: list[ToolCall], trace: bool = False) -> list[dict]:
+    def _execute(self, calls: list[ToolCall], trace: bool = False,
+                 want_diff: bool = False, want: Iterable[Any] = ()) -> list[dict]:
         """One subprocess for one batch of calls; a crash or a timeout is a SandboxError."""
         job, out = self.dir / "job.json", self.dir / "out.json"
         out.unlink(missing_ok=True)
@@ -317,7 +424,8 @@ class Sandbox:
         nonce = secrets.token_hex(16)
         job.write_text(json.dumps({"source": self.source, "dbs": states, "db_class": self.db_class,
                                    "class_name": self.class_name, "helpers": sorted(HELPERS),
-                                   "trace": bool(trace),
+                                   "trace": bool(trace), "diff": bool(want_diff),
+                                   "want": [[str(pair[0]), str(pair[1])] for pair in want],
                                    "calls": [{"name": c.name, "args": c.args, "db": i}
                                              for c, i in zip(calls, indexes, strict=False)]},
                                   default=str), encoding="utf-8")
@@ -387,6 +495,108 @@ def gate_replay_fidelity(sandbox: Sandbox, calls: Iterable[ToolCall], schema: En
         return body_replay_fidelity_gate(calls, None, schema, label, threshold, rules, error=str(exc),
                                          readers=readers)
     return body_replay_fidelity_gate(calls, results, schema, label, threshold, rules, readers=readers)
+
+
+#: The transition gate's own stage, in the `compile_tools.*` grain the per-tool rows carry.
+TRANSITION_STAGE = "compile_tools.transition"
+
+
+def _transition_reason(call: ToolCall, compared: dict) -> str:
+    """One repair line for a call whose state change is not what the recording shows.
+
+    The line carries the call's own arguments the way the replay gate's lines do, so the
+    held-out filter reads it the same way: a failure over a call the writer was never shown is
+    withheld from the prompt rather than quoted into it.
+    """
+    parts = []
+    for miss in compared.get("missing", []):
+        parts.append(f"did not move {miss['table']}.{miss['path']} on row {miss['row']}")
+    for miss in compared.get("wrong", []):
+        parts.append(f"left {miss['table']}.{miss['path']} on row {miss['row']} holding another "
+                     "value than the recording shows")
+    for miss in compared.get("extra_rows", []):
+        parts.append(f"moved a row no later read shows this call moving: {miss['table']} row "
+                     f"{miss['row']}")
+    return f"{call.name}({args_text(call)}): the state change differs from the recording: " + "; ".join(parts)
+
+
+def _wanted_keys(evidence: dict, calls: Iterable[ToolCall]) -> list[tuple[str, str]]:
+    """Every witnessed (table, row) these calls may be ruled on, for the run to read back."""
+    out = set()
+    for call in calls:
+        for row in evidence.get(call.id) or []:
+            out.add((str(row.get("table")), str(row.get("row"))))
+    return sorted(out)
+
+
+def _rule_transition_call(call: ToolCall, entry: dict, rows: list,
+                          schema: EntitySchema, rules: Any) -> tuple[str, Optional[str], int]:
+    """One evidenced call's metric key, failure line or None, and accepted extra count."""
+    changed = entry.get("changed")
+    if changed is None:
+        return ("transition_raised",
+                f"{call.name}({args_text(call)}): the body raised, so no state "
+                "change of it can be compared with the recording", 0)
+    if entry.get("truncated"):
+        return ("transition_disagrees",
+                f"{call.name}({args_text(call)}): the call changed more rows than "
+                "the gate reads, so the comparison is partial and the body is refused", 0)
+    made = effects_mod.body_made_change(changed, schema, rules)
+    compared = effects_mod.compare_transition(made, rows, rules, entry.get("wanted"))
+    if compared["verdict"] == "agrees":
+        return ("transition_agrees", None, len(compared["extra"]))
+    return ("transition_disagrees", _transition_reason(call, compared), len(compared["extra"]))
+
+
+def gate_transition(sandbox: Sandbox, calls: Iterable[ToolCall], schema: EntitySchema,
+                    evidence: Optional[dict], rules: Any = None) -> GateResult:
+    """6. For every recorded write, what the body changed is what the traces show it changing.
+
+    Each recorded write call runs on its own Starting state and the rows it left different are
+    compared with the change the traces witness through later reads of the same recording (the
+    call's checked evidence rows, `builder/effects.replay_evidence`), under the workdir's canon
+    rules the way scoring compares. A witnessed column counts as missing only where the world
+    after the call does not hold the witnessed value, so a body that leaves a column alone
+    because the world already held it agrees; a column left holding another value, a witnessed
+    row the world has lost, and a row no later read shows the call touching each fail the body.
+    Where no trace shows the after-state the gate rules unwitnessed, which never fails a body
+    and is published per tool in the metrics. Error calls are not ruled here: the replay gate
+    owns what a refusal answers.
+
+    The ruling lives here rather than in kullback.gates (against D122's placement): the sandbox
+    diff it reads can only be gathered beside the subprocess, and the frozen trees stay
+    byte-identical this way. The result shape is the siblings': stage, pass, metrics, failures.
+    """
+    calls = [call for call in calls if call.id and call.error is None]
+    evidence = dict(evidence or {})
+    metrics = {"transition_calls": len(calls), "transition_agrees": 0, "transition_disagrees": 0,
+               "transition_unwitnessed": 0, "transition_raised": 0, "transition_extras": 0}
+    failures: list[str] = []
+    evidenced = [call for call in calls if evidence.get(call.id)]
+    metrics["transition_unwitnessed"] = len(calls) - len(evidenced)
+    if not evidenced:
+        return GateResult(stage=TRANSITION_STAGE, **{"pass": True}, metrics=metrics, failures=[])
+    try:
+        diffs = sandbox.run_diff(evidenced, _wanted_keys(evidence, evidenced))
+    except SandboxError as exc:
+        return GateResult(stage=TRANSITION_STAGE, **{"pass": False}, metrics=metrics,
+                          failures=[f"the state runs did not come back: {exc}"])
+    if len(diffs) != len(evidenced):
+        # The run answered for fewer calls than it was given: ruling on the partial set would
+        # pass calls nothing compared, so the gate fails closed the way it does on a truncated
+        # diff.
+        return GateResult(stage=TRANSITION_STAGE, **{"pass": False}, metrics=metrics,
+                          failures=[f"the state runs came back for {len(diffs)} of {len(evidenced)} "
+                                    "calls, so no call is ruled"])
+    for call, entry in zip(evidenced, diffs, strict=False):
+        key, failure, extras = _rule_transition_call(call, entry, evidence.get(call.id) or [],
+                                                     schema, rules)
+        metrics[key] += 1
+        metrics["transition_extras"] += extras
+        if failure is not None:
+            failures.append(failure)
+    return GateResult(stage=TRANSITION_STAGE, **{"pass": not failures}, metrics=metrics,
+                      failures=failures[:5])
 
 
 # --- 8. the sensitivity pairs the D195 ruling is made over ---
@@ -716,7 +926,8 @@ def run_gates(source: str, sandbox: Sandbox, shown: Iterable[ToolCall], held_out
               schema: EntitySchema, rules: Any = None, probe_refusals: bool = False,
               sig: Any = None, readers: Any = None,
               effect_values: Optional[dict] = None,
-              holdout_values: Optional[dict] = None) -> list[GateResult]:
+              holdout_values: Optional[dict] = None,
+              transition_evidence: Optional[dict] = None) -> list[GateResult]:
     """The gates in order, stopping at the first failure so the failure localizes (EvoEnv).
 
     Gate 3 runs over every recorded call, not a first pair: a body that is steady on the first two
@@ -737,6 +948,12 @@ def run_gates(source: str, sandbox: Sandbox, shown: Iterable[ToolCall], held_out
     (`compile_env.holdout_values`). Gate 7 refuses a literal equal to one of them under its own
     rule (D220 rule 2b): the writer was shown that column masked, so a body spelling the value out
     took it from somewhere it was not entitled to.
+
+    `transition_evidence` (G6) is the tool's per-call witnessed change (`effects.replay_evidence`),
+    call id to the checked rows the traces show that call moving. The transition gate runs after
+    the replay rulings passed, so a body that answers wrong is still repaired for its answer
+    first; on an empty reading every call rules unwitnessed, which never fails. Where no trace
+    shows the after-state the gate rules unwitnessed, and the share rides the metrics.
     """
     shown, held_out = list(shown), list(held_out)
     every = shown + held_out
@@ -764,6 +981,8 @@ def run_gates(source: str, sandbox: Sandbox, shown: Iterable[ToolCall], held_out
     if held_out and gates[-1].passed:
         gates.append(gate_replay_fidelity(sandbox, held_out, schema, label="held_out", rules=rules,
                                           readers=readers))
+    if gates[-1].passed:
+        gates.append(gate_transition(sandbox, every, schema, transition_evidence, rules=rules))
     if probe_refusals and gates[-1].passed:
         gates.append(gate_refuses_unknown(sandbox, every, rules))
     return gates

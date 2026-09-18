@@ -826,12 +826,17 @@ def _tools_stage(model: Any, max_attempts: int, workers: int = 1, only: Optional
             # named, which the memorised gate refuses a body for writing down rather than working out.
             seen_effects = observed.get(sig.name, [])
             effect_values = effects_mod.effect_values(seen_effects)
+            # G6: the per-call witnessed change this tool's writes were seen to make, which the
+            # transition gate rules the body against. Empty for tools nothing was observed of;
+            # the gate then rules every call unwitnessed, which never fails.
+            transition_evidence = effects_mod.replay_evidence({sig.name: seen_effects})
             graded = compile_env.grade_body(
                 sig, kept[0], calls_by_tool.get(sig.name, []), inputs["schema"], inputs["db"],
                 ctx.workdir / "tools" / sig.name / KEPT_BODY_DIR,
                 call_states=states, rules=rules, call_tasks=call_tasks,
                 readers=result_readers, unbeaten=unbeaten, blocked=blocked,
                 effect_values=effect_values,
+                transition_evidence=transition_evidence,
                 holdout_values=holdout_vals) if kept is not None else None
             # What this tool already failed on, so a recompile asks a different question than the
             # one that failed, and what the body it has to beat fails at now. The kept body itself
@@ -862,7 +867,8 @@ def _tools_stage(model: Any, max_attempts: int, workers: int = 1, only: Optional
                                             readers=result_readers, holdout=holdout_cols,
                                             holdout_values=holdout_vals,
                                             effects=effects_mod.effects_block(sig.name, seen_effects),
-                                            effect_values=effect_values), graded
+                                            effect_values=effect_values,
+                                            transition_evidence=transition_evidence), graded
 
         declined: list[str] = []
         # Per tool, whether the body it already had was kept, beaten, or could not run at all under
