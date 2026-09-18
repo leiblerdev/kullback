@@ -1,5 +1,5 @@
 diff --git a/kullback/gates/round_end.py b/kullback/gates/round_end.py
-index ff174ff..80174ff 100644
+index ff174ff..6a74ab9 100644
 --- a/kullback/gates/round_end.py
 +++ b/kullback/gates/round_end.py
 @@ -22,6 +22,24 @@ from kullback.runner.records import GateResult, ProbePool, Run, Verifier, Verifi
@@ -52,7 +52,7 @@ index ff174ff..80174ff 100644
  
  
  def _counts(entry: Any) -> dict:
-@@ -128,6 +150,61 @@ def fidelity_flat(rounds: list[dict], flat_rounds: int) -> bool:
+@@ -128,6 +150,75 @@ def fidelity_flat(rounds: list[dict], flat_rounds: int) -> bool:
      return recent <= before
  
  
@@ -60,17 +60,31 @@ index ff174ff..80174ff 100644
 +    """This round's fidelity as a rate over its Task list, or None where no rate was recorded.
 +
 +    Only counts recorded by the new `round_counts` carry a rate; anything older has no rate to
-+    read and the caller falls back to the absolute count. A round with no Tasks at all reads
-+    1.0, since no Task is then left unmet."""
++    read and the caller falls back to the absolute count. Where the numerators are present the
++    rate is recomputed against the live Task count, because the driver can widen the count
++    afterwards (D231 reads a round with no Examiner plan off the Builder's handover, so stored
++    rates must never outlive their denominator). A round with no Tasks at all reads 1.0, since
++    no Task is then left unmet."""
 +    counts = _counts(counts)
++    tasks = counts.get("tasks")
++    numerator = counts.get("fidelity_tasks")
++    if isinstance(numerator, int) and tasks:
++        return float(numerator) / int(tasks)
 +    if isinstance(counts.get("fidelity_rate"), (int, float)):
 +        return float(counts["fidelity_rate"])
 +    return None
 +
 +
 +def trusted_share(counts: Any) -> Optional[float]:
-+    """This round's trusted share over its Task list, or None where no share was recorded."""
++    """This round's trusted share over its Task list, or None where no share was recorded.
++
++    Like `fidelity_rate`, recomputed against the live Task count where the numerators are
++    present, so a widened D231 denominator cannot leave a perfect stored share behind."""
 +    counts = _counts(counts)
++    tasks = counts.get("tasks")
++    numerator = counts.get("trusted_tasks")
++    if isinstance(numerator, int) and tasks:
++        return float(numerator) / int(tasks)
 +    if isinstance(counts.get("trusted_share"), (int, float)):
 +        return float(counts["trusted_share"])
 +    return None
@@ -114,7 +128,7 @@ index ff174ff..80174ff 100644
  def exit_for(rounds: list[dict], stall_rounds: int, *, ceiling_reached: bool,
               exhausted: list[bool], all_rounds: Optional[list[dict]] = None,
               fidelity_stall: Optional[int] = None, max_rounds: Optional[int] = None) -> Optional[str]:
-@@ -137,17 +214,65 @@ def exit_for(rounds: list[dict], stall_rounds: int, *, ceiling_reached: bool,
+@@ -137,17 +228,69 @@ def exit_for(rounds: list[dict], stall_rounds: int, *, ceiling_reached: bool,
  
      `rounds` is the tail since the last round that moved, which is what the gate-count stall reads;
      `all_rounds` is every round so far, which is what the fidelity window and the round cap read,
@@ -123,7 +137,11 @@ index ff174ff..80174ff 100644
 +
 +    G31: the "done" exit needs the goal (fidelity rate and trusted share at their goals), never
 +    merely nothing left to try. A finish reached because Tasks were refused is its own exit,
-+    "refused". `done` itself keeps its literal meaning, so its callers read as before."""
++    "refused". `done` itself keeps its literal meaning, so its callers read as before.
++
++    Re-freeze contract: the driver and the RoundEnd event must accept the new "refused" exit,
++    and the driver should land `exit_reason` on the round record's exit note, so a real stop
++    carries the numbers behind it and not just the short exit string."""
      exhausted = list(exhausted or [])
      history = list(all_rounds) if all_rounds is not None else list(rounds)
      if ceiling_reached or (len(exhausted) >= 2 and exhausted[-1] and exhausted[-2]):
