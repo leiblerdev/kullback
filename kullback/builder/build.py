@@ -36,6 +36,7 @@ from kullback import sampling
 from kullback.ai import provider
 from kullback.builder import (
     body_skill,
+    cache_reach,
     cluster,
     compile_env,
     ingest,
@@ -1269,11 +1270,14 @@ def _version(name: str, fn: Any, *modules: Any, helpers: Iterable[Any] = ()) -> 
 
 
 def _module_hash(module: Any) -> str:
-    """The bytes of the module a stage delegates to, so an edit to policy.py, memory.py or
-    verifier.py invalidates that stage's cache entry (R42). pipeline.code_hash only sees the stage
-    closure here, which does not change when the module it calls does."""
-    path = Path(getattr(module, "__file__", "") or "")
-    return content_hash(path.read_bytes() if path.is_file() else repr(module))[:16]
+    """The module and its first-party import closure as one hash (G29, second hop).
+
+    A stage key hashes the modules build.py names, whole, but not what those modules call.
+    The closure covers the rest: an edit anywhere in what a hashed module imports moves the
+    hash, so no key is served entries from before the change. Modules with no resolvable
+    file fall back to their repr, the old behaviour.
+    """
+    return cache_reach.closure_hash(module)[:16]
 
 
 def _policy_text(traces: list[Trace]) -> str:
