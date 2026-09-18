@@ -131,6 +131,9 @@ def mine_and_group(sample_dir: Path, workdir: Path) -> None:
           f"failed files publish nothing)")
     with_calls = sum(1 for trace in eligible if trace.tool_calls)
     print(f"eligible traces carrying shell calls: {with_calls}")
+    print("eligible trace ids (first 20, for hand reading against their recordings):")
+    for trace in eligible[:20]:
+        print(f"  {trace.trace_id} turns {len(trace.turns)} calls {len(trace.tool_calls)}")
     sigs = mine_tools(eligible)
     for sig in sigs:
         fields = sorted((field.name, sorted(field.types)) for field in sig.args_fields)
