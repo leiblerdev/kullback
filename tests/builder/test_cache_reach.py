@@ -9,6 +9,8 @@ against silent misses.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from kullback.builder import cache_reach as reach
 
 # Delegations the walk must report. A subset per stage, chosen where a miss would be
@@ -102,6 +104,40 @@ def test_walk_sees_known_delegations():
             failures.append(f"{stage}: walk missed modules={sorted(missing_modules)} "
                             f"helpers={sorted(missing_helpers)} constants={sorted(missing_consts)}")
     assert not failures, "the walk went blind:\n" + "\n".join(failures)
+
+
+def test_stage_keys_cover_the_second_hop():
+    """The import closure of what each stage reaches, minus exemptions, is inside its key."""
+    failures = []
+    for stage, factory in reach.STAGE_FACTORIES.items():
+        found = reach.reachable(factory)
+        keyed = reach.hashed(factory)
+        covered, needed = set(), set()
+        for module in keyed.modules:
+            covered.add(module)
+            covered |= reach.import_closure(module)
+        for module in found.modules:
+            needed.add(module)
+            needed |= reach.import_closure(module)
+        missing = needed - covered - reach.EXEMPT
+        if missing:
+            failures.append(f"{stage}: second hop missing={sorted(missing)}")
+    assert not failures, "a key misses what a hashed module imports:\n" + "\n".join(failures)
+
+
+def test_module_hash_covers_the_closure():
+    """The key hash moves with closure bytes, deterministically, honoring exemptions."""
+    from kullback.builder import build as build_module
+    from kullback.builder import mine
+    from kullback.runner.records import content_hash
+
+    assert reach.import_closure("kullback.builder.mine"), "pin needs a nonempty closure"
+    plain = content_hash(Path(mine.__file__).read_bytes())[:16]
+    assert build_module._module_hash(mine) != plain
+    assert build_module._module_hash(mine) == build_module._module_hash(mine)
+    assert "kullback.runner.canon" in reach.import_closure("kullback.builder.mine")
+    assert reach.closure_hash(mine, exempt=frozenset({"kullback.runner.canon"})) != \
+        reach.closure_hash(mine)
 
 
 def test_stage_registry_matches_the_graph():
