@@ -12,7 +12,7 @@ index a767a92..27eb072 100644
  ClassifiedBy = Literal["code", "rule", "llm", "observed", "human"]
  ToolKind = Literal["read", "write", "generic"]
 diff --git a/kullback/runner/route.py b/kullback/runner/route.py
-index 0d8d070..d331b25 100644
+index 0d8d070..c3012f2 100644
 --- a/kullback/runner/route.py
 +++ b/kullback/runner/route.py
 @@ -9,7 +9,7 @@ from typing import Any, Iterable, NamedTuple, Optional
@@ -62,7 +62,7 @@ index 0d8d070..d331b25 100644
  
      def _reads_synthetic(self, result: Any, args: dict) -> bool:
          """The call named or returned a synthetic row (D40): the Run is assisted (D49)."""
-@@ -239,6 +259,86 @@ class Router:
+@@ -239,6 +259,110 @@ class Router:
          return RouteResult(payload, "code", False, error, self._misses())
  
  
@@ -76,14 +76,23 @@ index 0d8d070..d331b25 100644
 +    tool kind is trusted to skip it.
 +    """
 +    db = getattr(tools, "db", None)
-+    return (_plain(db) if db is not None else None, _plain(state.shared))
++    return (_plain(db) if db is not None else None, _plain(state.shared),
++            _plain(state.overlay), _plain(state.overlay_misses))
 +
 +
 +def _restore_world(tools: Any, state: StateView, snapshot: tuple[Any, dict]) -> None:
-+    """Roll one body's writes back: the toolkit db and the StateView as the call found them."""
-+    db_snapshot, shared_snapshot = snapshot
++    """Roll one body's writes back: the toolkit db and the StateView as the call found them.
++
++    The whole StateView: the shared world, the overlay pins and the miss list. A body reaches
++    all three through the state it is handed, so restoring only the shared world would let a
++    failed body's pins and marks leak into later calls.
++    """
++    db_snapshot, shared_snapshot, overlay_snapshot, misses_snapshot = snapshot
 +    state.shared.clear()
 +    state.shared.update(shared_snapshot)
++    state.overlay.clear()
++    state.overlay.update(overlay_snapshot)
++    state.overlay_misses[:] = misses_snapshot
 +    _restore_db(getattr(tools, "db", None), db_snapshot)
 +
 +
@@ -94,12 +103,9 @@ index 0d8d070..d331b25 100644
 +
 +
 +def _restore_plain_db(db: dict, snapshot: dict) -> None:
-+    """Put a plain dict db back: added tables emptied, added rows dropped, kept rows reset."""
++    """Put a plain dict db back: added tables removed, added rows dropped, kept rows reset."""
 +    for table in [key for key in db if key not in snapshot]:
-+        if isinstance(db[table], dict):
-+            db[table].clear()
-+        else:
-+            del db[table]
++        del db[table]
 +    for table, rows in snapshot.items():
 +        current = db.get(table)
 +        if isinstance(current, dict) and isinstance(rows, dict):
@@ -110,10 +116,17 @@ index 0d8d070..d331b25 100644
 +
 +
 +def _restore_model_table(db: Any, table: str, rows: Any) -> None:
-+    """Put one table of a pydantic db back, its row classes rebuilt as `_db_put` builds them."""
-+    current = getattr(db, table, None)
-+    if not isinstance(current, dict) or not isinstance(rows, dict):
++    """Put one table of a pydantic db back, its row classes rebuilt as `_db_put` builds them.
++
++    A body that replaced the table with a plain value or deleted it gets a fresh dict, so the
++    corruption does not survive the rollback and later bodies read rows by attribute again.
++    """
++    if not isinstance(rows, dict):
 +        return
++    current = getattr(db, table, None)
++    if not isinstance(current, dict):
++        current = {}
++        setattr(db, table, current)
 +    _prune_added(current, rows)
 +    model = _row_model(db, table)
 +    for row_id, row in rows.items():
@@ -125,8 +138,7 @@ index 0d8d070..d331b25 100644
 +
 +    A pydantic db gets its row classes back through the same model lookup `_db_put` uses, so a
 +    later body still reads rows by attribute. A plain dict db already holds plain rows, so its
-+    snapshot values land as they are. Tables the snapshot never held are emptied, not dropped, so
-+    the toolkit keeps its shape.
++    snapshot values land as they are and tables the snapshot never held are removed outright.
 +    """
 +    if db is None or snapshot is None or not isinstance(snapshot, dict):
 +        return
@@ -139,11 +151,23 @@ index 0d8d070..d331b25 100644
 +
 +
 +def _clear_added_tables(db: Any, snapshot: dict) -> None:
-+    """Empty the tables a body added: the toolkit keeps its shape, the rows go."""
++    """Drop what a body added past the snapshot: unknown tables emptied, unknown attrs removed."""
 +    for table in (getattr(type(db), "model_fields", {}) or {}):
 +        current = getattr(db, table, None)
 +        if table not in snapshot and isinstance(current, dict):
 +            current.clear()
++    _drop_unknown_attrs(db, snapshot)
++
++
++def _drop_unknown_attrs(db: Any, snapshot: dict) -> None:
++    """Remove the non field attributes a body set past the snapshot."""
++    fields = set(getattr(type(db), "model_fields", {}) or {})
++    for name in [key for key in vars(db) if key not in snapshot and key not in fields
++                 and not key.startswith("_")]:
++        try:
++            delattr(db, name)
++        except AttributeError:
++            pass
 +
 +
  def _has_tool_markers(tools: Any) -> bool:

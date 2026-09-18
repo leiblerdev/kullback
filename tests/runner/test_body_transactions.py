@@ -54,6 +54,14 @@ class GadgetToolkit:
         self.db.gadgets[gadget_id].status = "shelved"
         return self.db.gadgets[gadget_id].model_dump()
 
+    def replace_table_then_crash(self, gadget_id):  # noqa: ARG001
+        self.db.gadgets = {gadget_id: {"id": gadget_id, "status": "wrecked"}}
+        raise RuntimeError("wrecked")
+
+    def drop_table_then_crash(self):
+        del self.db.gadgets
+        raise RuntimeError("dropped")
+
 
 def fault_module() -> types.ModuleType:
     """Module tools with a dict db, writing both the toolkit world and the StateView."""
@@ -79,6 +87,12 @@ def fault_module() -> types.ModuleType:
     def crash_attr(state, gadget_id):  # noqa: ARG001 - the args shape is the tool surface
         raise AttributeError(f"no attribute on {gadget_id}")
 
+    def meddle_then_crash(state, gadget_id):  # noqa: ARG001
+        state.add({"gadgets": {"g9": {"id": "g9", "status": "planted"}}}, None)
+        state.overlay_misses.append({"table": "gadgets", "id": "g9"})
+        module.db["planted"] = {"g9": {"id": "g9"}}
+        raise RuntimeError("meddled")
+
     module = types.ModuleType("fault_tools")
     module.db = {
         "gadgets": {"g1": {"id": "g1", "status": "new"}},
@@ -88,6 +102,7 @@ def fault_module() -> types.ModuleType:
     module.relocate = relocate
     module.refuse = refuse
     module.crash_attr = crash_attr
+    module.meddle_then_crash = meddle_then_crash
     return module
 
 
@@ -108,6 +123,7 @@ def sigs() -> list[ToolSig]:
         ToolSig(name="relocate"),
         ToolSig(name="refuse"),
         ToolSig(name="crash_attr"),
+        ToolSig(name="meddle_then_crash"),
     ]
 
 
@@ -215,6 +231,20 @@ def test_body_fault_uses_the_customer_json_encoding():
     assert "boom" not in json.dumps(shaped.result)
 
 
+def test_overlay_and_miss_meddling_rolls_back():
+    router = make_router()
+    before_overlay = json.loads(json.dumps(router.state.overlay))
+    before_misses = list(router.state.overlay_misses)
+    before_shared = json.loads(json.dumps(router.state.shared))
+    out = router.route("meddle_then_crash", {"gadget_id": "g1"})
+    assert out.error is not None and out.error.class_ == "body_fault"
+    assert router.state.overlay == before_overlay
+    assert router.state.overlay_misses == before_misses
+    assert router.state.shared == before_shared
+    assert "planted" not in router.tools.db
+    assert "g9" not in router.state.shared.get("gadgets", {})
+
+
 def test_body_fault_marks_the_environment_not_the_candidate():
     router = make_router()
     state = loop_mod.new_run_state("r1")
@@ -238,3 +268,24 @@ def test_successful_write_is_byte_identical_to_a_direct_call():
     assert out.error is None and out.route == "code"
     assert out.result == direct
     assert toolkit.db.gadgets["g1"].model_dump() == expected.db.gadgets["g1"].model_dump()
+
+
+def test_replaced_table_is_rebuilt():
+    toolkit = GadgetToolkit({"gadgets": {"g1": {"id": "g1", "status": "new"}}, "spares": {}})
+    router = make_router(module=toolkit, tool_sigs=[ToolSig(name="replace_table_then_crash"),
+                                                    ToolSig(name="read_gadget")])
+    out = router.route("replace_table_then_crash", {"gadget_id": "g1"})
+    assert out.error is not None and out.error.class_ == "body_fault"
+    assert toolkit.db.gadgets["g1"].status == "new"
+    assert isinstance(toolkit.db.gadgets["g1"], Gadget)
+    assert router.route("read_gadget", {"gadget_id": "g1"}).result["status"] == "new"
+
+
+def test_dropped_table_is_rebuilt():
+    toolkit = GadgetToolkit({"gadgets": {"g1": {"id": "g1", "status": "new"}}, "spares": {}})
+    router = make_router(module=toolkit, tool_sigs=[ToolSig(name="drop_table_then_crash"),
+                                                    ToolSig(name="read_gadget")])
+    out = router.route("drop_table_then_crash", {})
+    assert out.error is not None and out.error.class_ == "body_fault"
+    assert toolkit.db.gadgets["g1"].status == "new"
+    assert router.route("read_gadget", {"gadget_id": "g1"}).result["status"] == "new"
