@@ -8,6 +8,8 @@ corpus and no name here is a customer name.
 
 from __future__ import annotations
 
+import copy
+
 from conftest import PTR
 from kullback.builder import compile_env as ce
 from kullback.builder import sandbox as sb
@@ -160,13 +162,66 @@ def test_a_body_that_moves_what_was_witnessed_passes_with_the_share_published(tm
     assert transition.metrics["transition_unwitnessed"] == 0
 
 
+def test_a_body_that_leaves_a_witnessed_column_alone_because_the_world_held_it_agrees(tmp_path):
+    """No body can move a column to the value it already holds: where the world after the
+    call holds the witnessed value, an untouched column is agreement, not a miss."""
+    world = copy.deepcopy(KILN)
+    world["pots"]["POT-01"]["stage"] = "sprout"
+    schema, sig = _schema(), _sig()
+    source = ce.module_source(schema, [sig], {sig.name: ANSWERS_RIGHT_WRITES_NOTHING})
+    box = sb.Sandbox(source, world, tmp_path)
+    ruling = sb.gate_transition(box, [_call("c1", "POT-01", "sprout")], schema,
+                                _evidence(("c1", "POT-01", "sprout")))
+    assert ruling.passed is True, ruling.failures
+    assert ruling.metrics["transition_agrees"] == 1
+
+
+def test_a_body_that_leaves_a_column_alone_while_the_world_holds_another_is_refused(tmp_path):
+    schema, sig = _schema(), _sig()
+    source = ce.module_source(schema, [sig], {sig.name: ANSWERS_RIGHT_WRITES_NOTHING})
+    box = sb.Sandbox(source, KILN, tmp_path)
+    ruling = sb.gate_transition(box, [_call("c1", "POT-01", "sprout")], schema,
+                                _evidence(("c1", "POT-01", "sprout")))
+    assert ruling.passed is False
+    assert "stage" in ruling.failures[0]
+
+
+DELETES_THE_ROW = ("pot = self.db.pots[pot_id]\n"
+                   "del self.db.pots[pot_id]\n"
+                   "return {\"pot_id\": pot_id, \"stage\": new_stage}\n")
+
+
+def test_a_witnessed_row_the_world_does_not_have_after_the_call_is_still_missing(tmp_path):
+    schema, sig = _schema(), _sig()
+    source = ce.module_source(schema, [sig], {sig.name: DELETES_THE_ROW})
+    box = sb.Sandbox(source, KILN, tmp_path)
+    ruling = sb.gate_transition(box, [_call("c1", "POT-01", "sprout")], schema,
+                                _evidence(("c1", "POT-01", "sprout")))
+    assert ruling.passed is False
+    assert "did not move" in ruling.failures[0]
+
+
+def test_a_short_diff_run_that_answers_for_fewer_calls_than_given_fails_closed(tmp_path):
+    """Ruling on the partial set would pass calls nothing compared, so the gate refuses to
+    rule at all, the way it does on a truncated diff."""
+
+    class ShortBox:
+        def run_diff(self, calls, want=()):
+            return []
+
+    ruling = sb.gate_transition(ShortBox(), CALLS[:1], _schema(),
+                                _evidence(("c1", "POT-01", "sprout")))
+    assert ruling.passed is False
+    assert "came back for 0 of 1" in ruling.failures[0]
+
+
 def test_a_call_that_changes_more_rows_than_the_gate_reads_is_refused(tmp_path):
     """A truncated diff fails closed: the unlisted rows were never compared, so agreement on
     the listed ones proves nothing about them."""
 
     class TruncatingBox:
-        def run_diff(self, calls):
-            return [{"changed": {}, "truncated": True} for _ in calls]
+        def run_diff(self, calls, want=()):
+            return [{"changed": {}, "truncated": True, "wanted": {}} for _ in calls]
 
     ruling = sb.gate_transition(TruncatingBox(), CALLS[:1], _schema(),
                                 _evidence(("c1", "POT-01", "sprout")))

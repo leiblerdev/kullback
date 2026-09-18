@@ -587,15 +587,54 @@ def body_made_change(changed_rows: dict, schema: EntitySchema, rules: Any = None
     return made
 
 
+def _row_after(after_rows: Any, table: str, row: str) -> tuple[bool, Any]:
+    """Whether the world still has this witnessed row after the call, and the row."""
+    tables = after_rows if isinstance(after_rows, dict) else {}
+    rows = tables.get(table)
+    if not isinstance(rows, dict) or row not in rows or rows[row] is None:
+        return False, None
+    return True, rows[row]
+
+
+def _missing_keys(seen: dict, made: dict, after_rows: Any, rules: Any = None) -> list:
+    """Witnessed keys the call did not move to the witnessed value.
+
+    A column the body never touched counts as missing only where the world after the call
+    does not hold the witnessed value: a diff cannot tell "did not change" from "holds
+    another value", and a body that leaves a column alone because the world already held it
+    made exactly the state the recording shows. A witnessed row the world does not have at
+    all after the call is always missing. Without after rows every row counts as present,
+    which is the reading from before they travelled with the run.
+    """
+    missing = []
+    for key in sorted(set(seen) - set(made)):
+        table, row, path = key
+        if after_rows is None:
+            missing.append(key)
+            continue
+        present, record = _row_after(after_rows, table, row)
+        if not present:
+            missing.append(key)
+            continue
+        held = leaves(record).get(path) if isinstance(record, dict) else None
+        if not _canon_same(held, seen[key], rules):
+            missing.append(key)
+    return missing
+
+
 def compare_transition(made: dict[tuple[str, str, str], Any], witnessed: list[dict],
-                       rules: Any = None) -> dict:
+                       rules: Any = None, after_rows: Any = None) -> dict:
     """Whether what a body changed is what the recording shows that call changing (G6).
 
     `made` is `body_made_change` over the run and `witnessed` the call's checked evidence rows
     (`replay_evidence`), each naming a table, a row, a path and the after value the traces
     showed. The verdict is `agrees` where every witnessed column holds the value the recording
-    shows and no row outside the witnessed ones moved. A witnessed column the body never moved
-    and a column left holding another value are `disagrees`, and so is a row no sighting
+    shows and no row outside the witnessed ones moved. `after_rows` is the witnessed rows as the
+    world holds them after the call (table to row id to row, carried beside the diff because
+    unchanged rows never reach it); a witnessed column the body never moved counts as missing
+    only where those rows do not already hold the witnessed value, while a witnessed row the
+    world has lost counts as missing however little the body did. A column left holding another
+    value is `disagrees`, and so is a row no sighting
     associates with the call: the recording is the only statement of what the write does, and a
     side effect no later read owns is what the replay blames a read for (the downstream mark).
     An extra column on a row the recording does show the call moving is not: sightings are
@@ -607,11 +646,13 @@ def compare_transition(made: dict[tuple[str, str, str], Any], witnessed: list[di
     seen = {(str(row.get("table")), str(row.get("row")), str(row.get("path"))): row.get("after")
             for row in witnessed or []}
     seen_rows = {(table, row) for table, row, _path in seen}
-    missing = sorted(set(seen) - set(made))
+    missing = _missing_keys(seen, made, after_rows, rules)
+    absent = {(table, row) for table, row, _path in seen
+              if after_rows is not None and not _row_after(after_rows, table, row)[0]}
+    missing = sorted(set(missing) | {(t, r, p) for t, r, p in seen if (t, r) in absent})
     extra = sorted(set(made) - set(seen))
-    wrong = sorted(key for key in sorted(set(made) & set(seen)) if not _canon_same(made[key],
-                                                                                  seen[key],
-                                                                                  rules))
+    wrong = sorted(key for key in sorted(set(made) & set(seen)) if (key[0], key[1]) not in absent
+                     and not _canon_same(made[key], seen[key], rules))
     extra_rows = sorted({(table, row) for table, row, _path in extra} - seen_rows)
     return {"verdict": "agrees" if not (missing or wrong or extra_rows) else "disagrees",
             "missing": [{"table": table, "row": row, "path": path,

@@ -74,6 +74,20 @@ def iter_calls(basics: dict, evidenced_ids: set[str]):
             yield trace, call
 
 
+def after_rows_for(post: dict, rows: list) -> dict:
+    """Witnessed rows as the validated world holds them after the call, missing as absent."""
+    out: dict = {}
+    for row in rows:
+        table, key = str(row.get("table")), str(row.get("row"))
+        tables = post if isinstance(post, dict) else {}
+        held = tables.get(table)
+        value = held.get(key) if isinstance(held, dict) else None
+        if value is None and (not isinstance(held, dict) or key not in held):
+            continue
+        out.setdefault(table, {})[key] = value
+    return out
+
+
 def grade_call(basics: dict, states: dict, evidence: dict, call) -> str:
     """One call's ruling: agrees, disagrees, unwitnessed or raised."""
     rows = evidence.get(call.id, [])
@@ -91,7 +105,9 @@ def grade_call(basics: dict, states: dict, evidence: dict, call) -> str:
         return "raised"
     made = effects_mod.body_made_change(changed_pairs(seen_before, post), basics["schema"],
                                         basics["rules"])
-    if effects_mod.compare_transition(made, rows, basics["rules"])["verdict"] == "agrees":
+    compared = effects_mod.compare_transition(made, rows, basics["rules"],
+                                               after_rows_for(post, rows))
+    if compared["verdict"] == "agrees":
         return "agrees"
     return "disagrees"
 
