@@ -161,13 +161,17 @@ def test_a_body_that_moves_what_was_witnessed_passes_with_the_share_published(tm
 
 
 def test_the_chain_without_evidence_answers_exactly_as_before(tmp_path):
-    """Behaviour-preserving proof for every existing caller: no evidence, no new ruling."""
+    """Behaviour-preserving proof for every existing caller: no evidence, no new failure.
+
+    The chain carries one more passing row than before, and every ruling before it is what it
+    was: with no witnessed change each call rules unwitnessed, which never fails a body."""
     schema, sig = _schema(), _sig()
     source = ce.module_source(schema, [sig], {sig.name: MOVES_RIGHT})
     box = sb.Sandbox(source, KILN, tmp_path)
-    stages = [(gate.stage, gate.passed) for gate in sb.run_gates(source, box, CALLS, [], schema,
-                                                                 sig=sig)]
+    gates = sb.run_gates(source, box, CALLS, [], schema, sig=sig)
+    stages = [(gate.stage, gate.passed) for gate in gates]
     assert stages == [("parses", True), ("confined", True),
                       ("compile_tools.memorised_values", True), ("executes_on_s0", True),
                       ("deterministic", True), ("non_trivial", True), ("sensitivity", True),
-                      ("replay_fidelity", True)]
+                      ("replay_fidelity", True), (sb.TRANSITION_STAGE, True)]
+    assert gates[-1].metrics["transition_unwitnessed"] == 2

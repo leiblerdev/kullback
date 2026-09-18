@@ -890,10 +890,10 @@ def run_gates(source: str, sandbox: Sandbox, shown: Iterable[ToolCall], held_out
     took it from somewhere it was not entitled to.
 
     `transition_evidence` (G6) is the tool's per-call witnessed change (`effects.replay_evidence`),
-    call id to the checked rows the traces show that call moving. The transition gate runs only
-    where it is given, which is on write tools alone, and only after the replay rulings passed, so
-    a body that answers wrong is still repaired for its answer first. Where no trace shows the
-    after-state the gate rules unwitnessed, which never fails, and the share rides the metrics.
+    call id to the checked rows the traces show that call moving. The transition gate runs after
+    the replay rulings passed, so a body that answers wrong is still repaired for its answer
+    first; on an empty reading every call rules unwitnessed, which never fails. Where no trace
+    shows the after-state the gate rules unwitnessed, and the share rides the metrics.
     """
     shown, held_out = list(shown), list(held_out)
     every = shown + held_out
@@ -921,7 +921,7 @@ def run_gates(source: str, sandbox: Sandbox, shown: Iterable[ToolCall], held_out
     if held_out and gates[-1].passed:
         gates.append(gate_replay_fidelity(sandbox, held_out, schema, label="held_out", rules=rules,
                                           readers=readers))
-    if gates[-1].passed and transition_evidence is not None:
+    if gates[-1].passed:
         gates.append(gate_transition(sandbox, every, schema, transition_evidence, rules=rules))
     if probe_refusals and gates[-1].passed:
         gates.append(gate_refuses_unknown(sandbox, every, rules))

@@ -827,10 +827,9 @@ def _tools_stage(model: Any, max_attempts: int, workers: int = 1, only: Optional
             seen_effects = observed.get(sig.name, [])
             effect_values = effects_mod.effect_values(seen_effects)
             # G6: the per-call witnessed change this tool's writes were seen to make, which the
-            # transition gate rules the body against. Read tools carry none, so the gate stays
-            # off for them the way the refusal probe does.
-            transition_evidence = (effects_mod.replay_evidence({sig.name: seen_effects})
-                                   if sig.kind == "write" else None)
+            # transition gate rules the body against. Empty for tools nothing was observed of;
+            # the gate then rules every call unwitnessed, which never fails.
+            transition_evidence = effects_mod.replay_evidence({sig.name: seen_effects})
             graded = compile_env.grade_body(
                 sig, kept[0], calls_by_tool.get(sig.name, []), inputs["schema"], inputs["db"],
                 ctx.workdir / "tools" / sig.name / KEPT_BODY_DIR,
