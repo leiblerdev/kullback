@@ -1568,6 +1568,12 @@ def _replay_stage(judging: Optional[SemanticJudging] = None, only: Optional[Iter
                 # One fresh world per Trace: a replay must not see what the previous one wrote.
                 toolkit = compile_env.load_toolkit(source, json.loads(json.dumps(db)), overlay=overlay,
                                                    overlay_values=overlay_rows)
+                # The context serves what this Trace witnessed, in call order: the new row's id
+                # the recording shows, the time the recording shows. Past either list the Run's
+                # seeded feed answers, counted on the context.
+                if trace is not None:
+                    toolkit.ctx.attach_recorded(
+                        compile_env.recorded_run_context(trace.tool_calls, schema))
                 router = route.Router(env_tools_module=toolkit, starting_state=json.loads(json.dumps(db)),
                                       overlay=overlay, overlay_rows=overlay_rows, tool_sigs=sigs,
                                       canon_rules=canon_rules, synthetic_rows=schema.synthetic_rows)
@@ -2126,6 +2132,10 @@ def _candidate_run_once(workdir: Path, task: Task, model: Any, *, ctx: dict, num
     toolkit = compile_env.load_toolkit(ctx["source"], json.loads(json.dumps(ctx["db"])),
                                        overlay=ctx["overlay"],
                                        overlay_values=json.loads(json.dumps(ctx["overlay_rows"])))
+    # Off the recorded path the context draws from the Run's own seed, so the same seed draws
+    # the same Run: a fresh toolkit per Run means the step restarts with it.
+    run_seed = sampling.sample_seed(RUN_SEED_KIND, run_id, ctx["salt"])
+    toolkit.ctx.reseed(run_seed)
     router = route.Router(env_tools_module=toolkit, starting_state=json.loads(json.dumps(ctx["db"])),
                           overlay=ctx["overlay"], overlay_rows=ctx["overlay_rows"],
                           tool_sigs=ctx["sigs"], canon_rules=ctx["canon_rules"],
@@ -2140,7 +2150,7 @@ def _candidate_run_once(workdir: Path, task: Task, model: Any, *, ctx: dict, num
     state = loop.new_run_state(run_id, workdir=workdir / "runs" / task.id, env_id=ctx["env_id"],
                                task_id=task.id,
                                model=getattr(model, "name", None) or (prefix or "candidate"),
-                               seed=sampling.sample_seed(RUN_SEED_KIND, run_id, ctx["salt"]),
+                               seed=run_seed,
                                user=simulated, user_rules=ctx["rules"], max_turns=ctx["max_turns"],
                                system_prompt=ctx["system_prompt"])
     try:
@@ -2264,6 +2274,10 @@ def probe_runner(plan: BuildPlan):
         rules = user_rules.get(reference["trace_id"]) if reference else None
         writes = {sig.name for sig in sigs if getattr(sig, "kind", None) == "write"}
         recorded = traces.get(reference["trace_id"]) if reference else None
+        if recorded is not None:
+            # The probe replays the recorded reference, so the context serves what it witnessed.
+            toolkit.ctx.attach_recorded(
+                compile_env.recorded_run_context(recorded.tool_calls, schema))
         members = _members_of(task, traces)
         simulated = user_sim.SimulatedUser(
             rules, starting_state_reader=router.state, vocab=_vocab_from(workdir),
@@ -2394,6 +2408,10 @@ def variant_runner(plan: BuildPlan):
         overlay, overlay_rows = compile_env.load_overlay(workdir, task_id)
         toolkit = compile_env.load_toolkit(source, json.loads(json.dumps(db)), overlay=overlay,
                                            overlay_values=overlay_rows)
+        # A synthesised variant runs off the recorded path, so the context draws from the Run's
+        # own seed: the same variant id under the same salt draws the same values.
+        toolkit.ctx.reseed(sampling.sample_seed(
+            RUN_SEED_KIND, run_id, sampling.read_salt(workdir) or sampling.DEFAULT_SALT))
         router = route.Router(env_tools_module=toolkit, starting_state=json.loads(json.dumps(db)),
                               overlay=overlay, overlay_rows=overlay_rows, tool_sigs=sigs,
                               canon_rules=canon_rules, synthetic_rows=schema.synthetic_rows)
