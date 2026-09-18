@@ -96,9 +96,49 @@ def test_reasoning_is_never_negative_and_never_above_output():
     assert Usage(output=5).reasoning == 0
 
 
-def test_a_provider_count_above_output_is_refused_not_clamped():
+def test_a_provider_count_above_output_is_recorded_as_unreported_not_refused():
+    """Some routed providers report reasoning outside the completion total. A paid reply must
+    not die over a telemetry field, so the boundary records zero (not reported as a part of
+    output) while the provider's own number stays visible on the raw payload."""
+    reply = chat_model().parse_reply({
+        "choices": [{"message": {"content": "ok", "tool_calls": [
+            {"id": "c1", "function": {"name": "lookup", "arguments": '{"q": "x"}'}}]},
+            "finish_reason": "tool_calls"}],
+        "usage": {"prompt_tokens": 100, "completion_tokens": 5,
+                  "completion_tokens_details": {"reasoning_tokens": 40}},
+    })
+    assert reply.content == "ok"
+    assert [(c.id, c.name, c.arguments) for c in reply.tool_calls] == [("c1", "lookup", {"q": "x"})]
+    assert (reply.usage.output, reply.usage.reasoning) == (5, 0)
+    assert reply.raw["usage"]["completion_tokens_details"]["reasoning_tokens"] == 40
+
+
+def test_a_responses_count_above_output_is_recorded_as_unreported():
+    model = pv.OpenAIResponsesModel(
+        model_id="opencode-go/muse-spark-1.3-contributor", base_url="http://127.0.0.1:8080/v1", env={})
+    payload = responses_payload(reasoning=40)
+    payload["usage"] = {**payload["usage"], "output_tokens": 5,
+                          "output_tokens_details": {"reasoning_tokens": 40}}
+    reply = model.parse_reply(payload)
+    assert reply.content == "done"
+    assert (reply.usage.output, reply.usage.reasoning) == (5, 0)
+    assert reply.raw["usage"]["output_tokens_details"]["reasoning_tokens"] == 40
+
+
+def test_a_stored_record_with_reasoning_above_output_is_still_refused():
+    """The record stays strict: a stored Cost carrying an odd count fails at load instead of
+    loading wrong. (Reply parsing is tolerant, so `_reply_from_dict` of the same payload
+    records zero; the refusal below is the record constructor, the path every stored file
+    loads through.)"""
     with pytest.raises(ValueError):
-        chat_model().parse_reply(chat_payload(reasoning=300, output=286))
+        Usage(output=5, reasoning=40)
+    with pytest.raises(ValueError):
+        Cost.model_validate({
+            "provider": "openai", "model": "openai/gpt-4.1-mini",
+            "usage": {"input": 1, "output": 5, "reasoning": 40}, "usd": 0.0, "wall_ms": 1.0,
+        })
+    assert pv._reply_from_dict(
+        {"content": "hi", "usage": {"input": 1, "output": 5, "reasoning": 40}}).usage.reasoning == 0
 
 
 def test_a_record_with_the_count_costs_what_it_cost_without_it():

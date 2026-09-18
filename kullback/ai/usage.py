@@ -18,7 +18,9 @@ class Usage(BaseModel):
     tokens count them inside the completion total, so call_cost prices output as before and a
     record with the count costs the same as one without it. A count above output is refused,
     not clamped: it means the response was malformed, and quietly rewriting a provider's
-    numbers would hide that. Zero means not reported, not none: a provider that reports no
+    numbers would hide that. (The provider boundary maps an odd reported count to zero before
+    a record is ever built; see provider._reasoning_share. Reaching this refusal therefore
+    means a stored record is malformed.) Zero means not reported, not none: a provider that reports no
     count leaves zero, and no reader may treat zero as proof no reasoning happened.
 
     A zero count is omitted from the stored form: model_dump and model_dump_json drop the
