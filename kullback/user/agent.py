@@ -101,7 +101,7 @@ class AgentUser:
         question = _last_assistant(transcript)
         self.box.requested = None
         asked = rules_mod.asked_fields(question, vocab=self.vocab)
-        text = self._model_turn(transcript, question, asked)
+        text = self._model_turn()
         if text is None:
             return self._from_fallback(transcript)
         outcome = self.guards.check(
@@ -113,12 +113,12 @@ class AgentUser:
 
     # --- the model's turn ----------------------------------------------------------------------
 
-    def _model_turn(self, transcript: list, question: str, asked: Sequence[str] = ()) -> Optional[str]:
+    def _model_turn(self) -> Optional[str]:
         """One model answer over a harness built for this beat, or None when there is no model."""
         if self.model is None:
             self.counts[NO_MODEL] += 1
             return None
-        harness = self.harness(transcript, asked)
+        harness = self.harness()
         opening = OPENING_MESSAGE if not self.events else TURN_MESSAGE
         try:
             return _last_text(harness, opening)
@@ -126,11 +126,14 @@ class AgentUser:
             self.counts[MODEL_FAILED] += 1
             return None
 
-    def harness(self, transcript: Sequence = (), asked: Iterable[str] = ()) -> AgentHarness:
-        """The harness of one turn: the user extension over this Task's curated context."""
+    def harness(self) -> AgentHarness:
+        """The harness of one turn: the stable head over this Task's curated context.
+
+        No conversation lives in the system prompt, so it is byte identical on every turn of
+        the Task (G24). The conversation arrives as messages."""
         harness = AgentHarness(model=self.model, max_turns=self.max_tool_turns,
                                context=context_config(self.model))
-        load_extensions(harness, [user_extension(self.ctx, self.box, transcript, asked)])
+        load_extensions(harness, [user_extension(self.ctx, self.box)])
         return harness
 
     # --- what is actually said -------------------------------------------------------------------

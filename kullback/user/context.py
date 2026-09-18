@@ -5,8 +5,10 @@ asked to be someone's customer invents a booking it never had and agrees to what
 proposes, and what keeps it honest is that everything it may say was mined from the recording. So
 the sections here are the typed facts with their classes (D210), the goal in the recorded user's own
 words, a persona read off the recorded user's turns as counted classes and never as quotes, the
-values this user chooses when asked to choose (D151), the end protocol, the conversation so far, and
-whatever the last round's fidelity taught about this Task (lesson.py).
+values this user chooses when asked to choose (D151), the end protocol, and
+whatever the last round's fidelity taught about this Task (lesson.py). The conversation itself
+travels as messages, never in the prompt, so the system prompt of one Task is byte identical on
+every turn (G24).
 
 Every item is a PromptSection with a stable tag, so the ContextManager can cut one and recall it by
 name the way it does for the other two agents, and so a section that is empty on a Task is absent
@@ -34,9 +36,8 @@ GOAL_TAG = "user_goal"
 PERSONA_TAG = "user_persona"
 CHOICES_TAG = "user_choices"
 PROTOCOL_TAG = "user_protocol"
-PREFIX_TAG = "user_prefix"
 LESSONS_TAG = "user_lessons"
-SECTION_TAGS = (GOAL_TAG, FACTS_TAG, PERSONA_TAG, CHOICES_TAG, PROTOCOL_TAG, PREFIX_TAG, LESSONS_TAG)
+SECTION_TAGS = (GOAL_TAG, FACTS_TAG, PERSONA_TAG, CHOICES_TAG, PROTOCOL_TAG, LESSONS_TAG)
 
 # How a persona's two free numbers are banded. Bands and not the numbers themselves, because a
 # turn length of nine words and one of eleven are the same person and a prompt that says "eleven"
@@ -276,9 +277,8 @@ def curate(task_id: str, user_rules: Optional[UserRules], trace: Optional[Trace]
 
 # --- the sections ---------------------------------------------------------------------------
 
-def _facts_text(ctx: TaskContext, asked: Iterable[str] = ()) -> str:
-    wanted = set(asked)
-    rows = [f for f in ctx.askable() if not wanted or f.field in wanted]
+def _facts_text(ctx: TaskContext) -> str:
+    rows = list(ctx.askable())
     if not rows:
         return ""
     lines = [f"- {f.field}: {f.value}" for f in rows]
@@ -301,27 +301,19 @@ def _protocol_text(kinds: Sequence[str] = rules_mod.USER_END_KINDS) -> str:
             "holds and code decides whether it does. The kinds are " + ", ".join(kinds) + ".")
 
 
-def _prefix_text(prefix: Sequence[Any]) -> str:
-    lines = []
-    for message in prefix or ():
-        role = rules_mod._field_of(message, "role")
-        content = (rules_mod._field_of(message, "content") or "").strip()
-        if role in ("user", "assistant") and content:
-            lines.append(f"{'you' if role == 'user' else 'them'}: {content}")
-    return "The conversation so far.\n" + "\n".join(lines) if lines else ""
+def sections(ctx: TaskContext) -> list[PromptSection]:
+    """The curated context as prompt sections, each under its stable tag, empty ones dropped.
 
-
-def sections(ctx: TaskContext, prefix: Sequence[Any] = (), asked: Iterable[str] = ()) -> list[PromptSection]:
-    """The curated context as prompt sections, each under its stable tag, empty ones dropped."""
+    Every fact in its stored order, on every turn: no filter by what was just asked, so the head
+    of the prompt never moves and the section never vanishes (G24)."""
     built = [
         (GOAL_TAG, f"What you came for, in the words you used: {ctx.goal}" if ctx.goal else ""),
-        (FACTS_TAG, _facts_text(ctx, asked)),
+        (FACTS_TAG, _facts_text(ctx)),
         (PERSONA_TAG, _persona_text(ctx.persona)),
         (CHOICES_TAG, ("When you are asked to choose, you choose these: "
                        + ", ".join(f"{k}={v}" for k, v in sorted(ctx.choices.items())) + ".")
          if ctx.choices else ""),
         (PROTOCOL_TAG, _protocol_text()),
-        (PREFIX_TAG, _prefix_text(prefix)),
         (LESSONS_TAG, ("What the last rounds got wrong on this conversation:\n"
                        + "\n".join(f"- {line}" for line in ctx.lessons)) if ctx.lessons else ""),
     ]

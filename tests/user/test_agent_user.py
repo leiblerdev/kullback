@@ -530,3 +530,46 @@ def test_a_run_the_rule_driven_user_ended_alone_needs_no_driver_written_on_its_t
     assert list(split) == ["rules"] and split["rules"][rules_mod.HANDED_OFF] == 1
     assert sum(split["rules"].values()) == 1
     assert fidelity_mod.ends_by_driver(tmp_path / "nowhere") == {}
+
+
+# --- the stable head (G24) ----------------------------------------------------------------------
+
+def test_the_head_is_byte_identical_across_turns_and_runs(ctx, rules, recorded):
+    user = agent_for(ctx, rules, ["Thanks, noted.", "Understood, thanks."], recorded)
+    before = user.harness().system
+    user.reply([{"role": "assistant", "content": "Could you provide your plot number?"}])
+    user.reply([{"role": "assistant", "content": "Could you provide your plot number?"},
+                {"role": "user", "content": "Thanks, noted."},
+                {"role": "assistant", "content": "Thank you. What delivery slot would you like?"}])
+    assert user.harness().system == before
+    other = agent_for(ctx, rules, ["Thanks, noted."], recorded)
+    assert other.harness().system == before
+
+
+def test_every_fact_is_in_the_prompt_on_the_turn_that_asks_for_nothing_held(ctx, rules, recorded):
+    """The turn the old filter emptied: asked names no held field, every fact still stands."""
+    user = agent_for(ctx, rules, ["Right, got it."], recorded)
+    user.reply([{"role": "assistant", "content": "Could you tell me your membership tier?"}])
+    system = user.model.calls[-1]["messages"][0]["content"]
+    for fact in ctx.askable():
+        assert str(fact.value) in system
+
+
+def test_the_conversation_is_not_in_the_system_prompt(ctx, rules, recorded):
+    user = agent_for(ctx, rules, ["Right, got it."], recorded)
+    user.reply([{"role": "assistant", "content": "Could you tell me your tier, blue envelope?"}])
+    system = user.model.calls[-1]["messages"][0]["content"]
+    assert "blue envelope" not in system
+
+
+def test_the_head_keeps_the_founders_order(ctx, rules, recorded):
+    """What you receive, tools, examples, choice rule, feedback shape, stop rule last."""
+    from kullback.user import skills as skills_mod
+    tags = [section.name for section in context_mod.sections(ctx)]
+    assert tags == [context_mod.GOAL_TAG, context_mod.FACTS_TAG, context_mod.PERSONA_TAG,
+                    context_mod.CHOICES_TAG, context_mod.PROTOCOL_TAG]
+    head = agent_for(ctx, rules, ["Thanks, noted."], recorded).harness().system
+    order = [skills_mod.WHAT, skills_mod.TOOLS, skills_mod.EXAMPLES, skills_mod.RULES,
+             skills_mod.FEEDBACK, skills_mod.STOP]
+    positions = [head.index(part) for part in order]
+    assert positions == sorted(positions)
