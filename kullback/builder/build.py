@@ -374,7 +374,8 @@ def _cluster_stage():
     # so this still runs after it.
     return pipeline.Stage(name="cluster", fn=run, inputs=("traces", "sigs", "schema"),
                           outputs=("categories", "tasks"),
-                          code_version=_version("cluster", run, cluster, intent, compile_env, mine, scorecard_mod, stage_gates, records_mod, helpers=(_grouping,)))
+                          code_version=(f"{_version('cluster', run, cluster, intent, compile_env, mine, scorecard_mod, stage_gates, records_mod, helpers=(_grouping,))}"
+                                        f":TASK_SPLIT={TASK_SPLIT}"))
 
 
 def _grouping(workdir: Path, live_tasks: Iterable[Any], inputs: dict) -> dict:
@@ -412,7 +413,8 @@ def _canon_stage():
         return {"canon_rules": rules.model_dump()}
 
     return pipeline.Stage(name="canon_rules", fn=run, inputs=("traces", "schema"), outputs=("canon_rules",),
-                          code_version=_version("canon_rules", run, canon, helpers=(_rows_of,)))
+                          code_version=(f"{_version('canon_rules', run, canon, helpers=(_rows_of,))}"
+                                        f":CANON_RULES={CANON_RULES}"))
 
 
 def _rows_of(result: Any) -> list[dict]:
@@ -483,8 +485,8 @@ def _state_stage(grow: Optional[dict] = None, grow_seed: int = 0):
                           inputs=("traces", "schema", "tasks", "sigs", "readers", "canon_rules"),
                           outputs=("db", "overlays", "assumptions", "synthetic_rows"),
                           input_paths=("bodies.json",),
-                          code_version=_version("starting_state", fn, compile_env, synth, readers,
-                                                mine, sandbox, tool_runs, canon, records_mod))
+                          code_version=(f"{_version('starting_state', fn, compile_env, synth, readers, mine, sandbox, tool_runs, canon, records_mod)}"
+                                        f":WORLD_PROVENANCE_FILE={WORLD_PROVENANCE_FILE}"))
 
 
 def holdout_world(workdir: Any) -> tuple[dict, dict]:
@@ -1039,6 +1041,12 @@ def _tools_stage(model: Any, max_attempts: int, workers: int = 1, only: Optional
                f"{_module_hash(runner_parallel)}:{_module_hash(repair)}:"
                f"{_module_hash(transaction)}:{_module_hash(ledger_mod)}:{_module_hash(stage_gates)}:"
                f"{_module_hash(canon)}:{_module_hash(records_mod)}:"
+               # File names, formats and settings read along the way ride in the key beside the
+               # modules: a renamed file, a moved limit or retuned lesson head is a new question.
+               f"KEPT_BODY_DIR={KEPT_BODY_DIR}:LESSON_COUNTS_FILE={LESSON_COUNTS_FILE}:"
+               f"READMISSION_FILE={READMISSION_FILE}:REPLAYS_FILE={REPLAYS_FILE}:"
+               f"REPLAY_AGREED={sorted(REPLAY_AGREED)}:REPLAY_LESSON_HEAD={REPLAY_LESSON_HEAD}:"
+               f"WORLD_PROVENANCE_FILE={WORLD_PROVENANCE_FILE}:FIDELITY_REASONS={FIDELITY_REASONS}:"
                # The attribution is this file's own function, so its bytes are not in any module
                # hash above; an edit to it is a different artifact and must not hit the cache.
                f"{content_hash(pipeline._fn_identity(attribute_fidelity, 'compile_tools'))[:16]}:"
@@ -1629,7 +1637,11 @@ def _replay_stage(judging: Optional[SemanticJudging] = None, only: Optional[Iter
     # the same bytes, and a cache that cannot tell them apart hands back the unjudged one (D219).
     version = (f"{_version('replay_reference', run, replay_mod, fidelity, compile_env, route, loop, tool_runs, effects_mod, repair, verifier_suite, canon, judge_mod, records_mod, helpers=(holdout_answers, holdout_world, replay_failures_of, replay_difference, _effect_sentence, _write_runs_index, with_synthetic_rows, SemanticJudging.save, SemanticJudging._ask, SemanticJudging._answer, SemanticJudging.__init__, SemanticJudging.judge.fget, _gate_for, _memo_get, _memo_put, _count_judgement, _save_table))}"
                f":verdicts={replay_mod.VERDICT_FORMAT}"
-               f":judge={judging.identity}:equivalence={judging.table.version}")
+               f":judge={judging.identity}:equivalence={judging.table.version}"
+               f":EFFECTS_FILE={EFFECTS_FILE}:EQUIVALENCE_FILE={EQUIVALENCE_FILE}"
+               f":HOLDOUT_ANSWERS_FILE={HOLDOUT_ANSWERS_FILE}:REPLAY_AGREED={sorted(REPLAY_AGREED)}"
+               f":REPLAY_EVIDENCE_FILE={REPLAY_EVIDENCE_FILE}:SEMANTIC_COUNTS_FILE={SEMANTIC_COUNTS_FILE}"
+               f":WORLD_PROVENANCE_FILE={WORLD_PROVENANCE_FILE}")
     return pipeline.Stage(name="replay_reference", fn=run,
                           inputs=("traces", "tasks", "sigs", "schema", "bodies", "db", "canon_rules",
                                   "environment", "readers", "synthetic_rows"),
@@ -2080,7 +2092,10 @@ def _rerolls_stage(model: Any, rerolls: int, workers: int = 1, only: Optional[It
     # user driver puts it in the key. A build that names none adds nothing, so its key, its cache
     # and the Run ids it derives from the key are the ones it had before D214.
     version = (f"{_version('rerolls', run, loop, route, user_sim, intent, provider, compile_env, parallel, runner_parallel, vocabulary, verifier_suite, canon, records_mod, user_agent_mod, user_context_mod, user_fidelity_mod, user_lesson_mod, helpers=(_reroll_run_jobs, _reroll_run_one, _gather_reroll_rows, _candidate_task_ctx, _candidate_run_once, _discard_runs, _json_schema, _members_of, _reroll_key, _reroll_reason, _reroll_record, _reroll_reuse, _reroll_rows, _system_prompt_for, _tool_definitions, _tools_called, _user_driver, _vocab_from, _write_runs_index, with_synthetic_rows))}:"
-               f"{getattr(model, 'name', 'none')}:{rerolls}")
+               f"{getattr(model, 'name', 'none')}:{rerolls}"
+               f":REROLL_KEY_FORMAT={REROLL_KEY_FORMAT}:REROLL_KEY_NOTE={REROLL_KEY_NOTE}"
+               f":REROLL_RECORD={REROLL_RECORD}:REROLL_SEED={REROLL_SEED}:REROLL_TURNS={REROLL_TURNS}"
+               f":RUN_SEED_KIND={RUN_SEED_KIND}:JSON_TYPES={_JSON_TYPES}")
     user_name = getattr(user_model, "name", None)
     if user_name:
         version = f"{version}:user={user_name}"
