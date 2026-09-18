@@ -160,6 +160,20 @@ def test_a_body_that_moves_what_was_witnessed_passes_with_the_share_published(tm
     assert transition.metrics["transition_unwitnessed"] == 0
 
 
+def test_a_call_that_changes_more_rows_than_the_gate_reads_is_refused(tmp_path):
+    """A truncated diff fails closed: the unlisted rows were never compared, so agreement on
+    the listed ones proves nothing about them."""
+
+    class TruncatingBox:
+        def run_diff(self, calls):
+            return [{"changed": {}, "truncated": True} for _ in calls]
+
+    ruling = sb.gate_transition(TruncatingBox(), CALLS[:1], _schema(),
+                                _evidence(("c1", "POT-01", "sprout")))
+    assert ruling.passed is False
+    assert "more rows than the gate reads" in ruling.failures[0]
+
+
 def test_the_chain_without_evidence_answers_exactly_as_before(tmp_path):
     """Behaviour-preserving proof for every existing caller: no evidence, no new failure.
 

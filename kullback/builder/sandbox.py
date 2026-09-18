@@ -343,22 +343,27 @@ class Sandbox:
             self.cache[key] = result
         return [dict(self.cache[k]) for k in keys]
 
-    def run_diff(self, calls: Iterable[ToolCall]) -> list[Optional[dict]]:
-        """Per call, the rows the body left different, or None where the call raised.
+    def run_diff(self, calls: Iterable[ToolCall]) -> list[dict]:
+        """Per call, the rows the body left different and whether the listing stopped early.
 
         One subprocess over the calls given, never memoised: the memo holds answers and this
-        asks what the world looks like after each call. Each entry is table to row id to the row
-        on either side (`{"before": ..., "after": ...}`, None where the call added or deleted
-        the row), both dumped out of the validated world the call ran on. A call the body raised
-        on carries no world to compare and reads back as None, which the transition gate counts
-        and fails: a write that crashes mid-write is not one the recording shows leaving this
-        state.
+        asks what the world looks like after each call. Each entry carries `changed` (table to
+        row id to the row on either side, None where the call raised and there is no world to
+        compare) and `truncated` (the call changed more rows than the child lists). A call the
+        body raised on reads back as no change to compare, which the transition gate counts and
+        fails: a write that crashes mid-write is not one the recording shows leaving this state.
         """
         calls = list(calls)
         if not calls:
             return []
-        results = self._execute(calls, want_diff=True)
-        return [result.get("changed") if result.get("ok") else None for result in results]
+        out = []
+        for result in self._execute(calls, want_diff=True):
+            if not result.get("ok"):
+                out.append({"changed": None, "truncated": False})
+                continue
+            out.append({"changed": result.get("changed"),
+                        "truncated": bool(result.get("changed_truncated"))})
+        return out
 
     def executed_lines(self, calls: Iterable[ToolCall]) -> set[int]:
         """Every line of the generated module the recorded calls between them actually ran (D211).
@@ -521,11 +526,17 @@ def gate_transition(sandbox: Sandbox, calls: Iterable[ToolCall], schema: EntityS
     except SandboxError as exc:
         return GateResult(stage=TRANSITION_STAGE, **{"pass": False}, metrics=metrics,
                           failures=[f"the state runs did not come back: {exc}"])
-    for call, changed in zip(evidenced, diffs, strict=False):
+    for call, entry in zip(evidenced, diffs, strict=False):
+        changed = entry.get("changed")
         if changed is None:
             metrics["transition_raised"] += 1
             failures.append(f"{call.name}({args_text(call)}): the body raised, so no state "
                             "change of it can be compared with the recording")
+            continue
+        if entry.get("truncated"):
+            metrics["transition_disagrees"] += 1
+            failures.append(f"{call.name}({args_text(call)}): the call changed more rows than "
+                            "the gate reads, so the comparison is partial and the body is refused")
             continue
         made = effects_mod.body_made_change(changed, schema, rules)
         compared = effects_mod.compare_transition(made, evidence.get(call.id) or [], rules)
