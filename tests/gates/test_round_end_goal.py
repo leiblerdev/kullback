@@ -18,8 +18,8 @@ pytestmark = pytest.mark.skipif(not hasattr(R, "exit_reason"),
 def _goal_round(fidelity_tasks, trusted_tasks, tasks, refused=0, unfinished=(), probes=0):
     return {"fidelity": fidelity_tasks, "trusted": trusted_tasks, "refused_count": refused,
             "assisted_runs": 0, "probes_passing": probes, "unfinished": list(unfinished), "tasks": tasks,
-            "fidelity_rate": fidelity_tasks / tasks if tasks else 1.0,
-            "trusted_share": trusted_tasks / tasks if tasks else 1.0}
+            "fidelity_tasks": fidelity_tasks, "fidelity_rate": fidelity_tasks / tasks if tasks else 1.0,
+            "trusted_tasks": trusted_tasks, "trusted_share": trusted_tasks / tasks if tasks else 1.0}
 
 
 def test_a_round_where_every_task_was_refused_exits_refused_not_done():
@@ -67,6 +67,18 @@ def test_legacy_counts_without_a_task_list_decide_as_before():
     assert R.goal_met(bare)
     assert R.exit_for([bare], 1, ceiling_reached=False, exhausted=[False]) == "done"
     assert R.fidelity_rate(bare) is None and R.trusted_share(bare) is None
+
+
+def test_a_widened_task_count_cannot_leave_a_perfect_rate_behind():
+    """D231: a round with no Examiner plan is read off the Builder's handover, so the driver
+    widens a zero Task count to the replay count after the rates were recorded. The goal then
+    reads the numerators against the live denominator, not the stored perfect rates."""
+    widened = {"fidelity": 0, "trusted": 0, "refused_count": 0, "assisted_runs": 0,
+               "probes_passing": 0, "unfinished": [], "tasks": 75, "fidelity_tasks": 0,
+               "fidelity_rate": 1.0, "trusted_tasks": 0, "trusted_share": 1.0}
+    assert R.fidelity_rate(widened) == 0.0 and R.trusted_share(widened) == 0.0
+    assert not R.goal_met(widened)
+    assert R.exit_for([widened], 1, ceiling_reached=False, exhausted=[False]) is None
 
 
 def test_round_counts_reports_rates_over_this_rounds_task_list(tmp_path):
