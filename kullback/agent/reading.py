@@ -14,8 +14,10 @@ names one part of that record, and the Examiner's `read` takes it back.
 from __future__ import annotations
 
 import json
-from typing import Any
+from typing import Any, Optional
 
+CONTINUE = ("Keep reading with a range (`turn:0-9`, `call:0-4`, `event:0-29`), the conversation "
+            "(`turns`), or everything (`all`); each answers in pages, follow `next_offset` to null.")
 PAGE_CHARS = 4000  # one page of evidence, far below the old 60,000 character cut
 OUTLINE_PARTS = 50  # how many part skeletons one outline lists; the locator scheme covers the rest
 OUTLINE_TOOLS = 50  # how many distinct tool names one outline lists; the rest fold into "other"
@@ -135,7 +137,8 @@ def _trace_outline(record: dict) -> dict:
         "end": None,
         "total_chars": len(_dump(record)),
         "note": ("a Trace in outline; read one part with its locator (`turn:<n>` to "
-                 f"{len(turns) - 1}, `call:<n>` to {len(calls) - 1}); locators stay stable"),
+                 f"{len(turns) - 1}, `call:<n>` to {len(calls) - 1}); locators stay stable. "
+                 + CONTINUE),
     }
 
 
@@ -162,7 +165,8 @@ def _run_outline(record: dict) -> dict:
         "total_chars": len(_dump(record)),
         "header": {"locator": "header", "size": len(_dump(header))},
         "note": ("a Run in outline; read one part with its locator (`event:<n>` to "
-                 f"{len(events) - 1}, `header` for the Run fields); locators stay stable"),
+                 f"{len(events) - 1}, `header` for the Run fields); locators stay stable. "
+                 + CONTINUE),
     }
 
 
@@ -278,6 +282,14 @@ def _valid_locators(kind: str) -> str:
     return "header, event:<n>" if kind == "run" else "turn:<n>, call:<n>"
 
 
+def _single(rows: Any, index: str) -> Any:
+    """The indexed row, or None when the index is no row of the list."""
+    if rows is None or not index.isdigit():
+        return None
+    at = int(index)
+    return rows[at] if at < len(rows) else None
+
+
 def part(record: dict, locator: str) -> dict:
     """The one part a locator names, as JSON-ready data: a turn, a call, an event, or a header."""
     kind = kind_of(record)
@@ -285,10 +297,80 @@ def part(record: dict, locator: str) -> dict:
     if kind == "run" and text == "header":
         return {key: value for key, value in record.items() if key != "events"}
     name, sep, index = text.partition(":")
-    rows = _rows_for(kind, record, name) if sep else None
-    if rows is None or not index.isdigit() or int(index) >= len(rows):
+    rows = _rows_for(kind, record, name) if sep and "-" not in index else None
+    row = _single(rows, index)
+    if row is None:
         raise ValueError(f"{locator!r} names no part of this {kind}: read one of {_valid_locators(kind)}")
-    return rows[int(index)]
+    return row
+
+
+def _range(record: dict, name: str, index: str) -> dict:
+    """The parts one range names, in order: `turn:3-9`, `call:0-4`, `event:10-30`."""
+    kind = kind_of(record)
+    rows = _rows_for(kind, record, name)
+    bounds = index.split("-")
+    if rows is None or len(bounds) != 2 or not all(bit.isdigit() for bit in bounds):
+        raise ValueError(f"{(name + ':' + index)!r} is no range of this {kind}: "
+                         f"read one of {_valid_locators(kind)}")
+    low, high = int(bounds[0]), int(bounds[1])
+    span = f"{name}:0-{len(rows) - 1}" if rows else f"no {name}s"
+    if low > high:
+        raise ValueError(f"{(name + ':' + index)!r} runs backward: this {kind} holds {span}")
+    if high >= len(rows):
+        raise ValueError(f"{(name + ':' + index)!r} runs past the end: this {kind} holds {span}")
+    return {"locator": f"{name}:{low}-{high}", "parts": rows[low:high + 1]}
+
+
+def _spoken(event: dict) -> Optional[tuple[str, str]]:
+    """One Run event as conversation, or None when the event says nothing out loud.
+
+    A user turn speaks its content; a model call speaks its reply's content; tool calls and
+    their results are evidence, not conversation, and never enter the `turns` view."""
+    payload = _payload(event)
+    if event.get("type") == "user_turn" and isinstance(payload.get("content"), str):
+        return "user", payload["content"]
+    reply = payload.get("reply")
+    if event.get("type") == "model_call" and isinstance(reply, dict) \
+            and isinstance(reply.get("content"), str):
+        return "assistant", reply["content"]
+    return None
+
+
+def _conversation(record: dict) -> dict:
+    """Every spoken turn in order, no tool payloads: the `turns` whole view."""
+    if kind_of(record) == "run":
+        events = _dicts(record.get("events"))
+        turns = [{"locator": f"event:{pos}", "speaker": speaker, "text": text}
+                 for pos, event in enumerate(events) if _spoken(event) is not None
+                 for speaker, text in [_spoken(event)]]
+        return {"locator": "turns", "turns": turns}
+    turns = [{"locator": f"turn:{pos}", "speaker": turn.get("role"),
+              "text": turn.get("content") if isinstance(turn.get("content"), str) else ""}
+             for pos, turn in enumerate(_dicts(record.get("turns")))]
+    return {"locator": "turns", "turns": turns}
+
+
+def select(record: dict, locator: str) -> Any:
+    """One locator's data, whatever it names: a single part, a range in order, or a whole view.
+
+    `turn:2`, `call:1`, `event:3` and `header` answer one part; `turn:3-9`, `call:0-4` and
+    `event:10-30` answer the parts in order under `parts`; `turns` answers every spoken turn
+    without tool payloads; `all` answers the whole record."""
+    kind = kind_of(record)
+    text = (locator or "").strip()
+    if text == "turns":
+        return _conversation(record)
+    if text == "all":
+        return record
+    name, sep, index = text.partition(":")
+    if sep and "-" in index:
+        return _range(record, name, index)
+    if kind == "run" and text == "header":
+        return part(record, locator)
+    if _rows_for(kind, record, name) is not None and index.isdigit():
+        return part(record, locator)
+    raise ValueError(f"{locator!r} names nothing of this {kind}: read one of "
+                     f"{_valid_locators(kind)}, a range of one kind, `turns`, or `all`")
 
 
 def _skeleton_of(locator: str, body: dict) -> dict:

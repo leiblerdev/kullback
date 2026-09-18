@@ -221,6 +221,45 @@ def test_locate_ranges_slice_the_rendered_text_even_when_folding_changes_lengths
     assert "StraSSE" in hit["snippet"]
 
 
+def test_select_answers_one_part_a_range_or_a_whole_view():
+    assert reading.select(_trace(), "turn:1") == reading.part(_trace(), "turn:1")
+    assert reading.select(_run(), "header") == reading.part(_run(), "header")
+    ranged = reading.select(_trace(), "turn:0-2")
+    assert ranged["locator"] == "turn:0-2"
+    assert [turn["content"] for turn in ranged["parts"]] == [
+        turn["content"] for turn in _trace()["turns"]]
+    assert reading.select(_run(), "all") == _run()
+    assert [call["name"] for call in reading.select(_trace(), "call:0-1")["parts"]] == [
+        "fetch_slot", "mark_slot"]
+    for bad in ("turn:2-0", "turn:0-9", "event:0-1", "everywhere"):
+        with pytest.raises(ValueError):
+            reading.select(_trace(), bad)
+
+
+def test_a_reversed_or_out_of_range_range_is_refused_with_the_valid_range_named():
+    with pytest.raises(ValueError, match="turn:0-2"):
+        reading.select(_trace(), "turn:2-0")
+    with pytest.raises(ValueError, match="call:0-1"):
+        reading.select(_trace(), "call:0-9")
+
+
+def test_turns_view_is_every_spoken_turn_in_order_without_tool_payloads():
+    found = reading.select(_trace(), "turns")
+    assert found["locator"] == "turns"
+    assert [(row["speaker"], row["locator"]) for row in found["turns"]] == [
+        ("user", "turn:0"), ("assistant", "turn:1"), ("user", "turn:2")]
+    assert all(set(row) == {"locator", "speaker", "text"} for row in found["turns"])
+    run = {"run_id": "run-shelf-2", "events": [
+        _event(0, "user_turn", {"content": "hello"}),
+        _event(1, "tool_call", {"id": "c0", "name": "fetch_slot", "args": {}}),
+        _event(2, "model_call", {"reply": {"content": "on my way"}}),
+        _event(3, "tool_result", {"id": "c0", "name": "fetch_slot", "result": {}})]}
+    spoken = reading.select(run, "turns")["turns"]
+    assert [(row["speaker"], row["text"]) for row in spoken] == [
+        ("user", "hello"), ("assistant", "on my way")]
+    assert [row["locator"] for row in spoken] == ["event:0", "event:2"]
+
+
 def test_a_long_record_reads_end_to_end_through_outlines_parts_and_pages():
     big = _run()
     big["events"] = [

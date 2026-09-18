@@ -90,14 +90,29 @@ def _read(harness, **arguments):
 
 def _read_pages(harness, **arguments):
     """Every page of one addressed read, concatenated: the whole answer, nothing cut."""
-    seen = ""
+    seen, calls = "", 0
     offset: int | None = 0
     while offset is not None:
         result = _read(harness, offset=offset, **arguments)
         assert result.is_error is False, result.content
         seen += result.details["text"]
         offset = result.details["next_offset"]
-    return seen
+        calls += 1
+    return seen, calls
+
+
+def _wide_world(tmp_path: Path) -> ExaminerPlan:
+    """One Task with a forty-turn Trace of about eighty thousand characters."""
+    workdir = tmp_path / "aisles"
+    workdir.mkdir()
+    turns = [Turn(idx=n, role="user" if n % 2 == 0 else "assistant", raw_ptr=PTR,
+                  content=f"crate {n} in {SLOT} " + "y" * 1900) for n in range(40)]
+    trace = Trace(trace_id="trace_wide", raw_hash="h", ingest_version="1", source="test",
+                  raw_ptr=PTR, turns=turns)
+    inputs = {"tasks": [Task(id=FIRST, run_ids=["trace_wide"])], "traces": [trace],
+              "intents": {}, "replays": {}, "rerolls": {}}
+    write_json(workdir / "task_status.json", {FIRST: {"reference_confirmed": False}})
+    return ExaminerPlan(workdir=workdir, inputs=inputs)
 
 
 def test_a_record_past_one_page_answers_its_outline_first(tmp_path):
@@ -116,12 +131,12 @@ def test_a_record_past_one_page_answers_its_outline_first(tmp_path):
 def test_a_long_record_reads_end_to_end_through_pages_with_no_character_lost_or_repeated(tmp_path):
     plan = _world(tmp_path, calls=50, pad=4000)
     harness = examiner_agent.examiner_harness(plan)
-    whole = json.loads(_read_pages(harness, kind="run", id="long", locator="header"))
+    whole = json.loads(_read_pages(harness, kind="run", id="long", locator="header")[0])
     assert whole["run_id"] == "long" and "events" not in whole
     events = []
     for number in range(51):
         target = f"event:{number}"
-        text = _read_pages(harness, kind="run", id="long", locator=target)
+        text = _read_pages(harness, kind="run", id="long", locator=target)[0]
         assert len(text) > 0
         events.append(json.loads(text))
     assert [event["idx"] for event in events] == list(range(51))
@@ -193,6 +208,82 @@ def test_a_search_hit_on_a_run_header_reads_back_as_the_header(tmp_path):
     assert header["run_id"] == "replay_a" and "events" not in header
 
 
+def test_a_forty_turn_record_reads_whole_through_turns_in_wide_pages(tmp_path):
+    import math
+
+    plan = _wide_world(tmp_path)
+    harness = examiner_agent.examiner_harness(plan)
+    trace = as_dict(next(t for t in plan.inputs["traces"] if t.trace_id == "trace_wide"))
+    full = json.dumps(trace, indent=2, sort_keys=True, ensure_ascii=False, default=str)
+    assert len(full) > tools_mod.READ_CHARS
+    text, calls = _read_pages(harness, kind="trace", id="trace_wide", locator="turns")
+    assert calls <= math.ceil(len(text) / tools_mod.READ_CHARS)
+    found = json.loads(text)
+    assert found["locator"] == "turns" and len(found["turns"]) == 40
+    assert found["turns"][0]["text"].startswith("crate 0")
+    assert found["turns"][-1]["locator"] == "turn:39"
+    assert all(set(row) == {"locator", "speaker", "text"} for row in found["turns"])
+
+
+def test_a_forty_turn_record_reads_whole_through_all_and_reconstructs_exactly(tmp_path):
+    import math
+
+    plan = _wide_world(tmp_path)
+    harness = examiner_agent.examiner_harness(plan)
+    trace = as_dict(next(t for t in plan.inputs["traces"] if t.trace_id == "trace_wide"))
+    full = json.dumps(trace, indent=2, sort_keys=True, ensure_ascii=False, default=str)
+    text, calls = _read_pages(harness, kind="trace", id="trace_wide", locator="all")
+    assert calls <= math.ceil(len(full) / tools_mod.READ_CHARS)
+    assert json.loads(text) == trace
+
+
+def test_a_range_crossing_a_page_boundary_reconstructs_exactly(tmp_path):
+    plan = _world(tmp_path, calls=50, pad=4000)
+    harness = examiner_agent.examiner_harness(plan)
+    body = tools_mod._read_run(plan, "long")
+    text, calls = _read_pages(harness, kind="run", id="long", locator="event:1-30")
+    assert calls > 1, "thirty padded parts cross the wide page more than once"
+    found = json.loads(text)
+    assert found["locator"] == "event:1-30"
+    assert found["parts"] == body["events"][1:31]
+
+
+def test_a_reversed_or_out_of_range_range_is_refused_with_the_valid_range_named(tmp_path):
+    plan = _world(tmp_path)
+    harness = examiner_agent.examiner_harness(plan)
+    backward = _read(harness, kind="trace", id="trace_a", locator="turn:1-0")
+    assert backward.is_error and "turn:0-1" in backward.content
+    past = _read(harness, kind="trace", id="trace_a", locator="call:0-9")
+    assert past.is_error and "call:0-0" in past.content
+    wrong = _read(harness, kind="run", id="replay_a", locator="turn:0-1")
+    assert wrong.is_error and "event:" in wrong.content
+
+
+def test_a_read_with_offset_and_no_locator_continues_the_whole_record(tmp_path):
+    plan = _world(tmp_path, calls=50, pad=4000)
+    harness = examiner_agent.examiner_harness(plan)
+    first = _read(harness, kind="run", id="long")
+    assert json.loads(first.details["text"])["outline"] is True
+    at = _read(harness, kind="run", id="long", offset=30000)
+    whole = _read(harness, kind="run", id="long", locator="all", offset=30000)
+    assert at.details["text"] == whole.details["text"]
+    assert at.details["next_offset"] == whole.details["next_offset"]
+    assert at.details["text"] != first.details["text"], "offset pages the record, never the outline again"
+    assert json.loads(first.details["text"])["events_total"] == 51
+
+
+def test_turns_views_carry_speakers_and_no_tool_payloads(tmp_path):
+    plan = _world(tmp_path)
+    harness = examiner_agent.examiner_harness(plan)
+    trace = json.loads(_read(harness, kind="trace", id="trace_a", locator="turns").details["text"])
+    assert [(row["speaker"], row["locator"]) for row in trace["turns"]] == [
+        ("user", "turn:0"), ("assistant", "turn:1")]
+    assert SLOT in trace["turns"][0]["text"]
+    run = json.loads(_read(harness, kind="run", id="replay_a", locator="turns").details["text"])
+    assert [(row["speaker"], row["locator"]) for row in run["turns"]] == [("user", "event:0")]
+    assert "args" not in json.dumps(run) and "result" not in json.dumps(run)
+
+
 def test_a_locator_on_anything_but_a_run_or_a_trace_is_refused(tmp_path):
     harness = examiner_agent.examiner_harness(_world(tmp_path))
     result = _read(harness, kind="task_status", id=FIRST, locator="event:1")
@@ -213,6 +304,6 @@ def test_paged_reads_replace_the_sixty_thousand_character_cut_with_no_loss(tmp_p
     assert "characters cut" in old.splitlines()[-1], "the old path still cuts: this pins what changed"
     assert len(tools_mod._text(body)) - tools_mod.READ_CHARS > 100000, "most of the record was cut"
     found = json.loads(_read(harness, kind="run", id="long").details["text"])
-    rebuilt = [json.loads(_read_pages(harness, kind="run", id="long", locator=f"event:{n}"))
+    rebuilt = [json.loads(_read_pages(harness, kind="run", id="long", locator=f"event:{n}")[0])
                for n in range(found["events_total"])]
     assert rebuilt == body["events"]

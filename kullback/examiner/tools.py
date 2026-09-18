@@ -200,9 +200,12 @@ class ReadArgs(BaseModel):
                                                         "not the file.")
     locator: Optional[str] = Field(default=None, description="One part of a Run or a Trace, as an outline "
                                                               "or a search answers it (`turn:2`, `call:1`, "
-                                                              "`event:3`, `header`). A Run or Trace longer "
-                                                              "than one page answers its outline first; read "
-                                                              "one part with its locator for the evidence.")
+                                                              "`event:3`, `header`), a range of one kind "
+                                                              "(`event:0-29`), or a whole view (`turns` for the "
+                                                              "conversation, `all` for everything). A Run or "
+                                                              "Trace longer than one page answers its outline "
+                                                              "first; read one part with its locator for the "
+                                                              "evidence.")
     offset: int = Field(default=0, ge=0, description="Where in the answer to start reading; follow "
                                                      "`next_offset` until it is null and nothing cut is lost.")
 
@@ -828,6 +831,11 @@ def _outline_first(kind: str, body: Any, ident: Optional[str]) -> bool:
         len(_text(body)) > reading_mod.PAGE_CHARS
 
 
+def _wide(locator: str) -> bool:
+    """Whether one locator answers a wide view: a range or a whole view pages at the old cut."""
+    return locator in ("turns", "all") or "-" in locator
+
+
 def _read(plan: ExaminerPlan):
     async def read(args: ReadArgs) -> ReadResult:
         handler = READ_HANDLERS.get(args.kind)
@@ -835,20 +843,27 @@ def _read(plan: ExaminerPlan):
         # caller that went round the schema; it is read off the References file, which is where the
         # if chain this table replaced sent it, with the kind kept so the index names what was asked.
         body = handler(plan, args.id) if handler is not None else _read_off_file(plan, args.kind, args.id)
+        # An offset past the start with no locator is the whole record at that offset, never the
+        # outline again: the outline is answered once, at offset zero.
+        locator = args.locator or ("all" if args.offset > 0 else None)
         if args.kind in ("run", "trace"):
-            if args.locator is not None:
+            if locator is not None:
                 # An id nothing carries answers its ids here, not a record: kind_of refuses it below.
-                full = _text(reading_mod.part(body, args.locator))
-                faced = reading_mod.page(full, args.offset)
-            elif _outline_first(args.kind, body, args.id):
+                full = _text(reading_mod.select(body, locator))
+                limit = READ_CHARS if _wide(locator) else reading_mod.PAGE_CHARS
+                faced = reading_mod.page(full, args.offset, limit)
+                return ReadResult(kind=args.kind, id=args.id, text=faced["text"],
+                                  next_offset=faced["next"])
+            if _outline_first(args.kind, body, args.id):
                 # The map is answered whole: it is bounded by construction, and it names
                 # how to pull each part after it.
                 return ReadResult(kind=args.kind, id=args.id,
                                   text=_text(reading_mod.outline(body)), next_offset=None)
-            else:
-                faced = reading_mod.page(_text(body), args.offset)
+            faced = reading_mod.page(_text(body), args.offset)
             return ReadResult(kind=args.kind, id=args.id, text=faced["text"],
                               next_offset=faced["next"])
+        if locator is not None:
+            raise ValueError(f"a locator is read on a Run or a Trace, not on {args.kind}")
         if args.locator is not None:
             raise ValueError(f"a locator is read on a Run or a Trace, not on {args.kind}")
         # D175: a whole-file read is an index, and a long answer is paged at the old cut,
@@ -1637,7 +1652,7 @@ def examiner_tools(plan: ExaminerPlan, sink: Optional[Sink] = None) -> list[Agen
         AgentTool("read", "Read a Task, a Trace, an Intent, a Run, a Verifier, a probe pool, the task status, "
                   "the rulings, the re-roll or replay rows, or the References, as JSON. A Run or Trace longer "
                   "than one page answers its outline first; read one part with its locator, and follow "
-                  "`next_offset` with `offset` until it is null.",
+                  "`next_offset` with `offset` until it is null. " + reading_mod.CONTINUE,
                   ReadArgs, ReadResult, _read(plan), render=render),
         AgentTool("search", "Find one phrase across the records without reading them: the Traces, the Runs, "
                   "the Intents, the task status and the Verifiers. Answers a count per kind and one line "
