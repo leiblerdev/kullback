@@ -74,7 +74,7 @@ _REGISTRY: dict[str, SourceAdapter] = {}
 
 
 def register(adapter: SourceAdapter) -> SourceAdapter:
-    """Add one adapter; registration order breaks a strongest-vote tie."""
+    """Add one adapter; every registered adapter votes on each payload."""
     _REGISTRY[adapter.name] = adapter
     return adapter
 
