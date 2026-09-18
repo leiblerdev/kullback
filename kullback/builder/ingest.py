@@ -368,8 +368,6 @@ UNFINISHED_ENDS = frozenset({
 def _trace_problems(trace: Trace) -> dict:
     """The per-recording facts admission rules on: which calls never resolved, which results never
     parsed, which ids were reused while pending, which results answer no call, and the sizes."""
-    answered = {i for turn in trace.turns if turn.role == "tool" for i in turn.tool_call_ids}
-    requested = {call.id for call in trace.tool_calls if call.id}
     by_id: dict = {}
     problems: dict = {"calls": 0, "errors": 0, "truncated": 0, "turns": len(trace.turns),
                        "unresolved": [], "unparseable": [], "reused": [], "orphans": []}
@@ -387,11 +385,22 @@ def _trace_problems(trace: Trace) -> dict:
             problems["unresolved"].append(named)
         elif unparsed_json(call.result):
             problems["unparseable"].append(named)
-    for call_id, group in by_id.items():
-        if len(group) > 1 and any(not earlier.resolved for earlier in group[:-1]):
-            problems["reused"].append(call_id)
-    problems["orphans"] = sorted(answered - requested)
+    problems["reused"] = _reused_ids(by_id)
+    problems["orphans"] = _orphan_results(trace)
     return problems
+
+
+def _reused_ids(by_id: dict) -> list:
+    """Call ids issued again while the earlier call with that id was still pending."""
+    return [call_id for call_id, group in by_id.items()
+            if len(group) > 1 and any(not earlier.resolved for earlier in group[:-1])]
+
+
+def _orphan_results(trace: Trace) -> list:
+    """Tool results that answer no recorded call."""
+    answered = {i for turn in trace.turns if turn.role == "tool" for i in turn.tool_call_ids}
+    requested = {call.id for call in trace.tool_calls if call.id}
+    return sorted(answered - requested)
 
 
 def _standing_for(problems: dict, simulation: Any, duplicate: bool) -> tuple[str, str, list[str]]:
@@ -432,34 +441,9 @@ def rule_recordings(raw_hash: str, format_name: str, recordings: list, traces: l
             sim_of[id(trace)] = recordings[index]
     seen: set[str] = set()
     seen_ids: set[str] = set()
-    rows = []
-    for trace in traces:
-        problems = _trace_problems(trace)
-        digest = trace.hash or trace_hash(trace)
-        # A duplicate is the same recording twice: the same content hash, or the same trace id
-        # claimed by two simulations of one file. Pointers name the simulation, so two copies never
-        # share a content hash on pointers alone; the id repeat is what catches them.
-        duplicate = digest in seen or trace.trace_id in seen_ids
-        seen.add(digest)
-        seen_ids.add(trace.trace_id)
-        simulation = sim_of.get(id(trace))
-        standing, reason, reasons = _standing_for(problems, simulation, duplicate)
-        rows.append({
-            "trace_id": trace.trace_id,
-            "sim_index": trace.raw_ptr.sim_index if trace.raw_ptr else None,
-            "standing": standing, "reason": reason, "reasons": reasons, "trace_hash": digest,
-            "turns": problems["turns"], "tool_calls": problems["calls"],
-            "termination": simulation.get("termination_reason")
-            if isinstance(simulation, dict) else None,
-        })
+    rows = [_rule_trace_row(trace, sim_of.get(id(trace)), seen, seen_ids) for trace in traces]
     for entry in rejects:
-        reason_text = str(entry.get("reason") or "")
-        reason = "empty_file" if "empty simulations list" in reason_text else "not_a_recording"
-        rows.append({
-            "trace_id": entry.get("trace_id"), "sim_index": entry.get("sim_index"),
-            "standing": REJECTED, "reason": reason, "reasons": [reason], "trace_hash": None,
-            "turns": 0, "tool_calls": 0, "termination": None,
-        })
+        rows.append(_reject_row(entry))
     counts = {TASK_ELIGIBLE: 0, EVIDENCE_ONLY: 0, REJECTED: 0}
     per_reason: dict = {}
     for row in rows:
@@ -478,6 +462,38 @@ def rule_recordings(raw_hash: str, format_name: str, recordings: list, traces: l
             "tool_calls": _mix([_call_bucket(row["tool_calls"]) for row in set_aside]),
         },
         "eligible_share": share, "passed": share >= MIN_TASK_ELIGIBLE_SHARE,
+    }
+
+
+def _rule_trace_row(trace: Trace, simulation: Any, seen: set[str], seen_ids: set[str]) -> dict:
+    """One derived trace's ruling row: its standing with reasons, sizes, and outcome marker."""
+    problems = _trace_problems(trace)
+    digest = trace.hash or trace_hash(trace)
+    # A duplicate is the same recording twice: the same content hash, or the same trace id
+    # claimed by two simulations of one file. Pointers name the simulation, so two copies never
+    # share a content hash on pointers alone; the id repeat is what catches them.
+    duplicate = digest in seen or trace.trace_id in seen_ids
+    seen.add(digest)
+    seen_ids.add(trace.trace_id)
+    standing, reason, reasons = _standing_for(problems, simulation, duplicate)
+    return {
+        "trace_id": trace.trace_id,
+        "sim_index": trace.raw_ptr.sim_index if trace.raw_ptr else None,
+        "standing": standing, "reason": reason, "reasons": reasons, "trace_hash": digest,
+        "turns": problems["turns"], "tool_calls": problems["calls"],
+        "termination": simulation.get("termination_reason")
+        if isinstance(simulation, dict) else None,
+    }
+
+
+def _reject_row(entry: dict) -> dict:
+    """One refused simulation's ruling row: rejected, with why the records refused it."""
+    reason_text = str(entry.get("reason") or "")
+    reason = "empty_file" if "empty simulations list" in reason_text else "not_a_recording"
+    return {
+        "trace_id": entry.get("trace_id"), "sim_index": entry.get("sim_index"),
+        "standing": REJECTED, "reason": reason, "reasons": [reason], "trace_hash": None,
+        "turns": 0, "tool_calls": 0, "termination": None,
     }
 
 
@@ -693,6 +709,18 @@ def _write_json(target: Path, body: Any) -> Path:
     return target
 
 
+def _split_writes(traces: list[Trace], ruling: dict) -> tuple[list[Trace], list[Trace]]:
+    """Task-eligible traces build downstream; the rest are written aside as evidence. Without a
+    ruling every trace builds, which is the old behavior for a derive that wrote none."""
+    if not ruling:
+        return (list(traces), [])
+    eligible_hashes = {row["trace_hash"] for row in ruling.get("recordings", [])
+                       if row["standing"] == TASK_ELIGIBLE and row.get("trace_hash")}
+    eligible = [trace for trace in traces if (trace.hash or trace_hash(trace)) in eligible_hashes]
+    wanted = {id(trace) for trace in eligible}
+    return (eligible, [trace for trace in traces if id(trace) not in wanted])
+
+
 def ingest_file(path: str | Path, workdir: str | Path, model: Optional[Model] = None) -> dict:
     """Store one customer file, derive its Traces, write them, run the gate, print the counts.
 
@@ -702,15 +730,7 @@ def ingest_file(path: str | Path, workdir: str | Path, model: Optional[Model] = 
     raw = store_raw(path, workdir)
     traces = derive_traces(raw.raw_hash, workdir, model=model)
     ruling = read_intake_ruling(workdir, raw.raw_hash)
-    if ruling:
-        eligible_hashes = {row["trace_hash"] for row in ruling.get("recordings", [])
-                           if row["standing"] == TASK_ELIGIBLE and row.get("trace_hash")}
-        wanted = {id(trace) for trace in traces
-                  if (trace.hash or trace_hash(trace)) in eligible_hashes}
-    else:
-        wanted = {id(trace) for trace in traces}
-    eligible = [trace for trace in traces if id(trace) in wanted]
-    set_aside = [trace for trace in traces if id(trace) not in wanted]
+    eligible, set_aside = _split_writes(traces, ruling)
     write_traces(eligible, workdir)
     if set_aside:
         write_evidence(set_aside, workdir)

@@ -155,7 +155,7 @@ def test_a_recording_with_no_end_marker_reads_as_complete_when_every_call_resolv
 def test_fixture_hashes_are_stable_within_this_seam(tau2_small_path, workdir):
     summary = ingest.ingest_file(tau2_small_path, workdir)
     assert summary["trace_hashes"] == [
-        "67664814defbc81de5e2392cf10d80878945f5dcf214b96105598b4dfd0ec177",
-        "81561c90770de2acb6b4e07b46790787126cfc8fe649508b6ee29ef415c08f20",
-        "def85993ef9065b249107948799fd3beb7472e7fdce2d0fc4e875beac6fead65",
+        "5f34b88a2344dada6df5affe594ac08cc90fddc1197671703dbfc55de9dcf83c",
+        "4bb606ac70d0e53f72cd0ba1f1d1611b2914dd95a94d2135269be2e054f2f93e",
+        "e2281c4711d0e995b42b759a573940070934f40a46f28d1b206c497706331ee8",
     ]

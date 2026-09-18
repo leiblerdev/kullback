@@ -76,36 +76,14 @@ class Tau2NativeAdapter:
         # index; it is where `tools_declared` and `system_prompt` below were read from (D66).
         info = RawPtr(file_hash=ctx.raw_hash, sim_index=ctx.index, section="info.environment_info")
         trace_id = str(recording.get("id") or f"{ctx.raw_hash[:12]}-{ctx.index}")
-        turns, calls, pending = [], [], {}
         environment = ctx.environment
+        turns, calls, pending = [], [], {}
         for msg_index, message in enumerate(messages):
             here = RawPtr(file_hash=ctx.raw_hash, sim_index=ctx.index, msg_index=msg_index)
-            role = message.get("role") or "assistant"
-            requested = message.get("tool_calls") or []
-            if role == "tool":
-                waiting = pending.pop(message.get("id"), None)
-                if waiting is not None:
-                    _attach_result(waiting[0], message, waiting[1], here,
-                                   classify_error, detect_truncation)
-                turns.append(Turn(idx=msg_index, role="tool", content=_text(message.get("content")),
-                                  tool_call_ids=[message["id"]] if message.get("id") else [],
-                                  raw_ptr=here))
-                continue
-            for request in requested:
-                call = ToolCall(
-                    id=request.get("id"),
-                    name=request.get("name") or "",
-                    args=request.get("arguments") or {},
-                    requestor=request.get("requestor") or role,
-                    raw_ptr=here,
-                    trace_id=trace_id,
-                )
-                calls.append(call)
-                if call.id:
-                    pending[call.id] = (call, message.get("timestamp"))
-            turns.append(Turn(idx=msg_index, role=role, content=_text(message.get("content")),
-                              tool_call_ids=[r.get("id") for r in requested if r.get("id")],
-                              raw_ptr=here))
+            turn, fresh = _map_message(message, msg_index, here, trace_id, pending,
+                                       classify_error, detect_truncation)
+            turns.append(turn)
+            calls.extend(fresh)
         return Trace(
             trace_id=trace_id,
             raw_hash=ctx.raw_hash,
@@ -121,6 +99,39 @@ class Tau2NativeAdapter:
             info_ptr=info,
             raw_ptr=ptr,
         )
+
+
+def _map_message(message: dict, msg_index: int, here: RawPtr, trace_id: str, pending: dict,
+                 classify_error: Any, detect_truncation: Any) -> tuple[Turn, list[ToolCall]]:
+    """Map one message to its turn and any tool calls it requests, answering calls a tool message
+    resolves. `pending` carries the calls still waiting for their tool message."""
+    role = message.get("role") or "assistant"
+    requested = message.get("tool_calls") or []
+    if role == "tool":
+        waiting = pending.pop(message.get("id"), None)
+        if waiting is not None:
+            _attach_result(waiting[0], message, waiting[1], here, classify_error, detect_truncation)
+        turn = Turn(idx=msg_index, role="tool", content=_text(message.get("content")),
+                    tool_call_ids=[message["id"]] if message.get("id") else [], raw_ptr=here)
+        return (turn, [])
+    calls = [_requested_call(request, role, trace_id, here) for request in requested]
+    for call in calls:
+        if call.id:
+            pending[call.id] = (call, message.get("timestamp"))
+    turn = Turn(idx=msg_index, role=role, content=_text(message.get("content")),
+                tool_call_ids=[r.get("id") for r in requested if r.get("id")], raw_ptr=here)
+    return (turn, calls)
+
+
+def _requested_call(request: dict, role: str, trace_id: str, here: RawPtr) -> ToolCall:
+    return ToolCall(
+        id=request.get("id"),
+        name=request.get("name") or "",
+        args=request.get("arguments") or {},
+        requestor=request.get("requestor") or role,
+        raw_ptr=here,
+        trace_id=trace_id,
+    )
 
 
 def _attach_result(call: ToolCall, message: dict, asked_at: Any, ptr: Optional[RawPtr],
