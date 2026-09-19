@@ -660,7 +660,7 @@ new file mode 100644
 index 0000000..b55cac3
 --- /dev/null
 +++ b/kullback/runner/target.py
-@@ -0,0 +1,505 @@
+@@ -0,0 +1,506 @@
 +"""One scorer for a Verifier atom: the structured target as the only meaning (G3).
 +
 +Both the Verdict and the gates call this module. The gates keep their behaviour through it;
@@ -1089,7 +1089,8 @@ index 0000000..b55cac3
 +    kind = payload.get("kind")
 +    if atom.kind == "hard" or atom.judge:
 +        return None
-+    if atom.kind != "required" and kind not in ("question", "communicate"):
++    if (atom.kind != "required" and kind not in ("question", "communicate")
++            and not (atom.kind == "forbidden" and kind == "write")):
 +        return None
 +    if effects is None or asked is None or said is None:
 +        tools = scored_write_tools(_verifier_of(atom), run, write_tools)
