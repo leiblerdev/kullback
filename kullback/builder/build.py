@@ -1540,6 +1540,20 @@ def _semantic_judging(plan: "BuildPlan") -> SemanticJudging:
                            plan.models.get("second_judge"))
 
 
+def _refuse_stand_in(router: Any) -> None:
+    """A Run that will be scored can never be given a model stand-in (G28).
+
+    The scoring callers call this on the Router they built. Once the cannot-answer
+    re-freeze lands, route.refuse_stand_in refuses a Router carrying one loudly; until
+    then no scored caller passes one, so the fallback only double-checks the attribute.
+    """
+    guard = getattr(route, "refuse_stand_in", None)
+    if guard is not None:
+        guard(router)
+    elif getattr(router, "stand_in", None) is not None:
+        raise ValueError("a scored Run cannot use a Router carrying a model stand-in (G28)")
+
+
 def _replay_stage(judging: Optional[SemanticJudging] = None, only: Optional[Iterable[str]] = None):
     """Every Trace of every Task replayed through the built tools: the Reference Runs and Gate A (D108).
 
@@ -1611,6 +1625,7 @@ def _replay_stage(judging: Optional[SemanticJudging] = None, only: Optional[Iter
                 router = route.Router(env_tools_module=toolkit, starting_state=json.loads(json.dumps(db)),
                                       overlay=overlay, overlay_rows=overlay_rows, tool_sigs=sigs,
                                       canon_rules=canon_rules, synthetic_rows=schema.synthetic_rows)
+                _refuse_stand_in(router)  # G28: a scored replay is never answered by a model
                 result = replay_mod.replay_trace(trace, router, workdir=ctx.workdir / "runs" / task.id,
                                                  task_id=task.id, env_id=env_id, write_tools=write_tools,
                                                  canon_rules=canon_rules, comparer=comparer,
@@ -2177,6 +2192,7 @@ def _candidate_run_once(workdir: Path, task: Task, model: Any, *, ctx: dict, num
                           overlay=ctx["overlay"], overlay_rows=ctx["overlay_rows"],
                           tool_sigs=ctx["sigs"], canon_rules=ctx["canon_rules"],
                           synthetic_rows=ctx["schema"].synthetic_rows)
+    _refuse_stand_in(router)  # G28: a scored re-roll is never answered by a model
     simulated = user_sim.SimulatedUser(ctx["rules"], starting_state_reader=router.state,
                                        vocab=ctx["vocab"], write_tools=ctx["write_tools"],
                                        goal_writes=ctx["goal_writes"],
@@ -2307,6 +2323,7 @@ def probe_runner(plan: BuildPlan):
         router = route.Router(env_tools_module=toolkit, starting_state=json.loads(json.dumps(db)),
                               overlay=overlay, overlay_rows=overlay_rows, tool_sigs=sigs,
                               canon_rules=canon_rules, synthetic_rows=schema.synthetic_rows)
+        _refuse_stand_in(router)  # G28: a scored probe is never answered by a model
         reference = next((r for r in (replays.get(task.id) or {}).values() if r.get("confirmed")), None)
         rules = user_rules.get(reference["trace_id"]) if reference else None
         writes = {sig.name for sig in sigs if getattr(sig, "kind", None) == "write"}
@@ -2444,6 +2461,7 @@ def variant_runner(plan: BuildPlan):
         router = route.Router(env_tools_module=toolkit, starting_state=json.loads(json.dumps(db)),
                               overlay=overlay, overlay_rows=overlay_rows, tool_sigs=sigs,
                               canon_rules=canon_rules, synthetic_rows=schema.synthetic_rows)
+        _refuse_stand_in(router)  # G28: a scored variant is never answered by a model
         trace = call_trace(task_id, calls, transcript, run_id)
         result = replay_mod.replay_trace(trace, router, workdir=workdir / "runs" / task_id,
                                          task_id=task_id, env_id=env_id, write_tools=write_tools,
