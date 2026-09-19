@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass, field
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, Optional
 
 from kullback.ai.provider import ProviderError
@@ -74,27 +75,68 @@ def _write_event(state: RunState, event: Event) -> None:
         handle.write(json.dumps(as_dict(event), ensure_ascii=False, default=str) + "\n")
 
 
-def step(state: RunState, model: Any, tools: Optional[list[dict]] = None, router: Any = None) -> RunState:
-    """Advance one turn: one model call, each tool call it made, then the user or a stop."""
+def ask(state: RunState, model: Any, tools: Optional[list[dict]] = None) -> Optional[dict]:
+    """Ask the policy for the next assistant message: the first half of `step`.
+
+    Everything up to and including the model call and its accounting: the tool specs the
+    Candidate was given, the turn counter (before the call, so a model that raises still
+    leaves the turn counted), the query, the priced model_call event and the appended
+    assistant message, which is also returned. On a stopped Run asks nothing and returns
+    None. A model failure propagates to the caller, which is `step` on the Builder path.
+    """
     if state.stopped:
-        return state
+        return None
     if tools is not None:
         state.tools = list(tools)
     state.turn += 1
+    reply = model.query(state.messages, tools)
+    emit(state, "model_call", {"reply": reply.model_dump(mode="json")},
+         cost=_call_cost(reply, model))
+    message = _assistant_message(reply)
+    state.messages.append(message)
+    return message
+
+
+def advance(state: RunState, message: Optional[dict], router: Any = None) -> RunState:
+    """Advance the world given an assistant message: the second half of `step`.
+
+    Tool calls through the router in order, then the Simulated user when the message made
+    none, then the max_turns stop rule. Reads the calls and the content off the passed
+    message, which has the shape `ask` returns. Never touches a model. On a stopped Run
+    or a None message advances nothing. A router or user failure propagates to the
+    caller, which is `step` on the Builder path.
+    """
+    if state.stopped or message is None:
+        return state
+    calls = message.get("tool_calls") or []
+    for call in calls:
+        _tool_call(state, _as_call(call), router)
+        if state.stopped:
+            # G28: a cannot-answer call ends the Run at once, so later calls of the
+            # same response are never routed, shown, or run.
+            break
+    if not calls:
+        _user_turn(state, message.get("content") or "")
+    if not state.stopped and state.turn >= state.max_turns:
+        _stop(state, "max_turns")
+    return state
+
+
+def _as_call(call: dict) -> Any:
+    """The tool_call event already stores calls as plain dicts; route one from a message."""
+    return SimpleNamespace(id=call.get("id"), name=call.get("name"),
+                            arguments=call.get("arguments"))
+
+
+def step(state: RunState, model: Any, tools: Optional[list[dict]] = None, router: Any = None) -> RunState:
+    """Advance one turn: ask the policy, then advance the world with its answer."""
+    if state.stopped:
+        return state
     try:
-        reply = model.query(state.messages, tools)
-        emit(state, "model_call", {"reply": reply.model_dump(mode="json")},
-             cost=_call_cost(reply, model))
-        state.messages.append(_assistant_message(reply))
-        for call in reply.tool_calls:
-            _tool_call(state, call, router)
-        if not reply.tool_calls:
-            _user_turn(state, reply.content or "")
+        advance(state, ask(state, model, tools), router)
     except Exception as exc:  # the model or the Simulated user fell over, which is not the Run's verdict
         _crashed(state, exc, router)
         raise
-    if not state.stopped and state.turn >= state.max_turns:
-        _stop(state, "max_turns")
     return state
 
 
@@ -213,6 +255,19 @@ def _tool_call(state: RunState, call: Any, router: Any) -> None:
     if router is None:
         raise ValueError(f"the model called {call.name} but the loop was given no router")
     outcome = router.route(call.name, args)
+    if _cannot_answer(outcome):
+        # G28: the Environment lists this tool and cannot answer it, so the Run ends here.
+        # The event records the tool name and the reason, and nothing is appended to the
+        # transcript: the Candidate is never shown an answer the Environment made up.
+        payload: dict = {"id": call.id, "name": call.name, "reason": _cannot_answer_reason(outcome)}
+        if outcome.error is not None:
+            payload["error"] = as_dict(outcome.error)
+        if getattr(outcome, "overlay_miss", None):
+            payload["overlay_miss"] = outcome.overlay_miss
+        emit(state, "tool_result", payload, route=outcome.route, assisted=outcome.assisted)
+        state.run.route_counts[outcome.route] = state.run.route_counts.get(outcome.route, 0) + 1
+        _stop(state, _cannot_answer_reason(outcome))
+        return
     payload: dict = {"id": call.id, "name": call.name, "result": outcome.result}
     if outcome.error is not None:
         payload["error"] = as_dict(outcome.error)
@@ -231,6 +286,24 @@ def _tool_call(state: RunState, call: Any, router: Any) -> None:
     if getattr(outcome, "write_effect", None) is not None:
         message["write_effect"] = outcome.write_effect
     state.messages.append(message)
+
+
+def _cannot_answer(outcome: Any) -> bool:
+    """Whether the Router ended the Run: a listed tool it cannot answer (G28)."""
+    if getattr(outcome, "route", None) == "cannot_answer":
+        return True
+    error = getattr(outcome, "error", None)
+    return bool(error is not None and getattr(error, "class_", getattr(error, "class", None)) == "cannot_answer")
+
+
+def _cannot_answer_reason(outcome: Any) -> str:
+    """The Run's end reason for a cannot-answer outcome, the Router's own words."""
+    error = getattr(outcome, "error", None)
+    payload = getattr(error, "payload", None) if error is not None else None
+    if isinstance(payload, dict) and payload.get("reason"):
+        return str(payload["reason"])
+    from kullback.runner.route import CANNOT_ANSWER_REASON
+    return CANNOT_ANSWER_REASON
 
 
 def open_with_user(state: RunState) -> Optional[str]:

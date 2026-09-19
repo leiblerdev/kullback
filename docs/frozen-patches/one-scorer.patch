@@ -660,7 +660,7 @@ new file mode 100644
 index 0000000..b55cac3
 --- /dev/null
 +++ b/kullback/runner/target.py
-@@ -0,0 +1,505 @@
+@@ -0,0 +1,507 @@
 +"""One scorer for a Verifier atom: the structured target as the only meaning (G3).
 +
 +Both the Verdict and the gates call this module. The gates keep their behaviour through it;
@@ -1089,7 +1089,8 @@ index 0000000..b55cac3
 +    kind = payload.get("kind")
 +    if atom.kind == "hard" or atom.judge:
 +        return None
-+    if atom.kind != "required" and kind not in ("question", "communicate"):
++    if (atom.kind != "required" and kind not in ("question", "communicate")
++            and not (atom.kind == "forbidden" and kind == "write")):
 +        return None
 +    if effects is None or asked is None or said is None:
 +        tools = scored_write_tools(_verifier_of(atom), run, write_tools)
@@ -1114,7 +1115,7 @@ index 0000000..b55cac3
 +    values = {(e["tool"], e["entity"], f, v) for e in effects.values() for f, v in e["values"].items()}
 +    target = (payload.get("tool"), payload.get("entity"))
 +    if atom.kind == "forbidden" and kind == "write":
-+        return target in present
++        return payload.get("tool") in wrote_with if names_no_row(payload) else target in present
 +    if kind == "write" and (payload.get("tool") not in wrote_with if names_no_row(payload)
 +                            else target not in present):
 +        return False
@@ -1144,7 +1145,8 @@ index 0000000..b55cac3
 +        payload = atom_payload(atom)
 +        kind = payload.get("kind")
 +        target = (payload.get("tool"), payload.get("entity"))
-+        if atom.kind == "forbidden" and kind == "write" and target in present:
++        if atom.kind == "forbidden" and kind == "write" and atom_holds(
++                atom, run, fn, tools, effects=effects, asked=asked, said=said):
 +            return False, atom.id
 +        if atom.kind == "hard":
 +            held = hard_holds(atom, run, tools, fn)
