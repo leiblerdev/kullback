@@ -530,3 +530,193 @@ def test_a_run_the_rule_driven_user_ended_alone_needs_no_driver_written_on_its_t
     assert list(split) == ["rules"] and split["rules"][rules_mod.HANDED_OFF] == 1
     assert sum(split["rules"].values()) == 1
     assert fidelity_mod.ends_by_driver(tmp_path / "nowhere") == {}
+
+
+# --- the stable head (G24) ----------------------------------------------------------------------
+
+def test_the_head_is_byte_identical_across_turns_and_runs(ctx, rules, recorded):
+    user = agent_for(ctx, rules, ["Thanks, noted.", "Understood, thanks."], recorded)
+    before = user.harness().system
+    user.reply([{"role": "assistant", "content": "Could you provide your plot number?"}])
+    user.reply([{"role": "assistant", "content": "Could you provide your plot number?"},
+                {"role": "user", "content": "Thanks, noted."},
+                {"role": "assistant", "content": "Thank you. What delivery slot would you like?"}])
+    assert user.harness().system == before
+    other = agent_for(ctx, rules, ["Thanks, noted."], recorded)
+    assert other.harness().system == before
+
+
+def test_every_fact_is_in_the_prompt_on_the_turn_that_asks_for_nothing_held(ctx, rules, recorded):
+    """The turn the old filter emptied: asked names no held field, every fact still stands."""
+    question = "Could you tell me your email?"
+    assert rules_mod.asked_fields(question, vocab=VOCAB) == ["email"]
+    assert "email" not in [f.field for f in ctx.askable()]
+    user = agent_for(ctx, rules, ["Right, got it."], recorded)
+    user.reply([{"role": "assistant", "content": question}])
+    system = user.model.calls[-1]["messages"][0]["content"]
+    for fact in ctx.askable():
+        assert str(fact.value) in system
+
+
+def test_the_conversation_is_not_in_the_system_prompt(ctx, rules, recorded):
+    user = agent_for(ctx, rules, ["Right, got it."], recorded)
+    user.reply([{"role": "assistant", "content": "Could you tell me your tier, blue envelope?"}])
+    system = user.model.calls[-1]["messages"][0]["content"]
+    assert "blue envelope" not in system
+
+
+def test_the_head_keeps_the_founders_order(ctx, rules, recorded):
+    """What you receive, tools, examples, choice rule, feedback shape, stop rule last."""
+    from kullback.user import skills as skills_mod
+    tags = [section.name for section in context_mod.sections(ctx)]
+    assert tags == [context_mod.GOAL_TAG, context_mod.FACTS_TAG, context_mod.PERSONA_TAG,
+                    context_mod.CHOICES_TAG, context_mod.PROTOCOL_TAG]
+    head = agent_for(ctx, rules, ["Thanks, noted."], recorded).harness().system
+    order = [skills_mod.WHAT, skills_mod.TOOLS, skills_mod.EXAMPLES, skills_mod.RULES,
+             skills_mod.FEEDBACK, skills_mod.STOP]
+    positions = [head.index(part) for part in order]
+    assert positions == sorted(positions)
+
+
+# --- the conversation appended as messages (G24) --------------------------------------------------
+
+def test_the_conversation_arrives_as_messages_with_the_turn_line_last(ctx, rules, recorded):
+    from kullback.user.agent import TURN_MESSAGE
+    user = agent_for(ctx, rules, ["Thanks, noted.", "At 16:00, thanks."], recorded)
+    user.reply([{"role": "assistant", "content": "Could you provide your plot number?"}])
+    first = user.model.calls[-1]["messages"]
+    assert [m["content"] for m in first[1:]] == ["Could you provide your plot number?",
+                                                  TURN_MESSAGE]
+    user.reply([{"role": "assistant", "content": "Could you provide your plot number?"},
+                {"role": "user", "content": "Thanks, noted."},
+                {"role": "assistant", "content": "Thank you. What delivery slot would you like?"}])
+    messages = user.model.calls[-1]["messages"]
+    assert [m["role"] for m in messages] == ["system", "user", "user", "assistant",
+                                               "user", "user"]
+    assert [m["content"] for m in messages[1:]] == [
+        "Could you provide your plot number?", TURN_MESSAGE, "Thanks, noted.",
+        "Thank you. What delivery slot would you like?", TURN_MESSAGE]
+
+
+def test_tool_traffic_is_not_speech_and_never_enters_the_messages(ctx, rules, recorded):
+    user = agent_for(ctx, rules, ["Yes, 16:00."], recorded)
+    user.reply([{"role": "assistant", "content": "What delivery slot would you like?"},
+                {"role": "tool", "tool_call_id": "c1", "name": "move_delivery",
+                 "content": "{\"slot\": \"16:00\"}"}])
+    messages = user.model.calls[-1]["messages"]
+    assert [m["role"] for m in messages] == ["system", "user", "user"]
+    assert all("16:00" not in m["content"] or "slot" in m["content"].lower()
+               for m in messages[1:-1])
+    assert all(m.get("tool_calls", []) == [] for m in messages if m["role"] == "assistant")
+
+
+def test_every_turn_builds_a_new_harness_from_the_transcript_alone(ctx, rules, recorded):
+    """No hidden state: the same transcript builds the same messages, twice over."""
+    user = agent_for(ctx, rules, ["Thanks, noted."], recorded)
+    assert not hasattr(user, "_prior") and not hasattr(user, "_prior_history")
+    transcript = [{"role": "assistant", "content": "Could you provide your plot number?"},
+                  {"role": "user", "content": "Thanks, noted."}]
+    first, second = user.harness(transcript), user.harness(transcript)
+    assert first is not second
+    assert [m.content for m in first.messages] == [m.content for m in second.messages]
+
+
+def test_one_user_over_two_conversations_sends_what_a_fresh_user_sends(ctx, rules, recorded):
+    """Driving conversation A first leaves no trace on conversation B's requests."""
+    conversation_a = [{"role": "assistant", "content": "Could you provide your plot number?"}]
+    conversation_b = [{"role": "assistant", "content": "Thank you. What delivery slot?"},
+                      {"role": "user", "content": "Please make it 16:00."},
+                      {"role": "assistant", "content": "Done. Anything else?"}]
+    reused = agent_for(ctx, rules, ["Thanks, noted.", "No, thanks."], recorded)
+    reused.reply(list(conversation_a))
+    reused.reply(list(conversation_b))
+    fresh = agent_for(ctx, rules, ["No, thanks."], recorded)
+    fresh.reply(list(conversation_b))
+    assert (reused.model.calls[-1]["messages"]
+            == fresh.model.calls[-1]["messages"])
+
+
+def test_the_run_path_and_the_scorer_path_send_identical_requests(ctx, rules, recorded):
+    """Growing recorded prefixes turn by turn sends what one live transcript sends."""
+    full = [{"role": "assistant", "content": "Could you provide your plot number?"},
+            {"role": "user", "content": "Thanks, noted."},
+            {"role": "assistant", "content": "Thank you. What delivery slot would you like?"}]
+    scorer_like = agent_for(ctx, rules, ["Thanks, noted.", "At 16:00, thanks."], recorded)
+    for end in (1, 2, 3):
+        scorer_like.reply(list(full[:end]))
+    run_like = agent_for(ctx, rules, ["At 16:00, thanks."], recorded)
+    run_like.reply(list(full))
+    assert (scorer_like.model.calls[-1]["messages"]
+            == run_like.model.calls[-1]["messages"])
+
+
+def test_the_guards_read_the_writes_the_transcript_carries(ctx, rules, recorded):
+    """A write the world refused cannot satisfy the goal; one that took effect does."""
+    moved = {"role": "tool", "tool_call_id": "c1", "name": "move_delivery", "content": "{}"}
+    refused = dict(moved, content="that slot is full", error={"class": "business_error"})
+    question = [{"role": "assistant", "content": "What delivery slot would you like?"}]
+    user_moved = agent_for(ctx, rules, ["Yes, 16:00."], recorded)
+    user_moved.reply(question + [moved])
+    assert user_moved.done and user_moved.end_reason == rules_mod.GOAL_SATISFIED
+    user_refused = agent_for(ctx, rules, ["Yes, 16:00."], recorded)
+    user_refused.reply(question + [refused])
+    assert not user_refused.done
+
+
+# --- the prefix check over a real conversation (G24) ------------------------------------------------
+
+def five_turn_requests(ctx, rules, recorded):
+    from kullback.agent import prefix_check as prefix_check_mod
+    user = agent_for(ctx, rules, ["Thanks, noted.", "At 16:00, thanks.", "Right, got it.",
+                                  "Fine by me.", "Thank you, goodbye."], recorded)
+    transcript = []
+    for question in ("Could you provide your plot number?",
+                     "Thank you. What delivery slot would you like?",
+                     "Could you tell me your membership tier?",
+                     "Done, your delivery is moved. Anything else?",
+                     "Great, have a good day."):
+        transcript.append({"role": "assistant", "content": question})
+        transcript.append({"role": "user", "content": user.reply(transcript)})
+    requests = [call["messages"] for call in user.model.calls]
+    assert len(requests) == 5
+    return prefix_check_mod, requests
+
+
+def test_five_turns_through_the_user_pass_the_prefix_check(ctx, rules, recorded):
+    prefix_check, requests = five_turn_requests(ctx, rules, recorded)
+    assert prefix_check.first_prefix_break(requests) is None
+
+
+def test_a_reordered_section_fails_and_names_the_turn(ctx, rules, recorded):
+    import copy
+    prefix_check, requests = five_turn_requests(ctx, rules, recorded)
+    broken = copy.deepcopy(requests)
+    blocks = broken[2][0]["content"].split("\n\n")
+    assert len(blocks) > 2
+    broken[2][0]["content"] = "\n\n".join([blocks[1], blocks[0], *blocks[2:]])
+    assert prefix_check.first_prefix_break(broken) == 2
+
+
+# --- the untouched floor (G24) --------------------------------------------------------------------
+
+def test_model_off_replies_are_the_rules_floor_byte_for_byte(ctx, rules, recorded):
+    """With the model off, no prompt is ever built, so the floor answers exactly as before."""
+    user = AgentUser(ctx, rules_mod.SimulatedUser(rules, vocab=VOCAB), None, vocab=VOCAB,
+                     write_tools=["move_delivery"], goal_writes=["move_delivery"],
+                     record_values=context_mod.mine_record_values(recorded), trace=recorded)
+    transcript = []
+    for question in ("Could you provide your plot number?",
+                     "Thank you. What delivery slot would you like?",
+                     "Could you tell me your membership tier?",
+                     "Done, your delivery is moved. Anything else?",
+                     "Great, have a good day."):
+        transcript.append({"role": "assistant", "content": question})
+        transcript.append({"role": "user", "content": user.reply(transcript)})
+    assert [m["content"] for m in transcript if m["role"] == "user"] == [
+        "Hello, please could you move my plant delivery to a later slot. "
+        "My plot id is PLOT-4471. My slot is 16:00.",
+        "My delivery slot is 16:00. My slot is 16:00.",
+        "Hello, please could you move my plant delivery to a later slot.",
+        "No, that is all. Thank you.",
+        "No, that is all. Thank you.",
+    ]

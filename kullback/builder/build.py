@@ -2260,10 +2260,11 @@ def _user_driver(workdir: Path, task: Task, fallback: Any, model: Any, *, vocab:
     lessons = user_lesson.lines_for(user_lesson.load_lessons(workdir), task.id)
     ctx = user_context.curate(task.id, getattr(fallback, "rules", None), trace, vocab=vocab,
                               write_tools=write_tools, record_fields=sorted(record), lessons=lessons)
-    from kullback.user.agent import AgentUser
-    return AgentUser(ctx, fallback, model, vocab=vocab, write_tools=write_tools,
-                     goal_writes=goal_writes, answer_strip=answer_strip, record_values=record,
-                     trace=trace)
+    from kullback.user import factory as user_factory
+    return user_factory.build_user(workdir, task.id, model, user_factory.PURPOSE_RUN, ctx=ctx,
+                                   fallback=fallback, vocab=vocab, write_tools=write_tools,
+                                   goal_writes=goal_writes, answer_strip=answer_strip,
+                                   record_values=record, trace=trace)
 
 
 def _system_prompt_for(task: Task, traces: dict, policy_text: Optional[str] = None) -> Optional[str]:

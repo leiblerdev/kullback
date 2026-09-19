@@ -25,6 +25,7 @@ from kullback.agent.context import ContextConfig
 from kullback.agent.events import MessageEnd
 from kullback.agent.extensions import load_extensions
 from kullback.agent.harness import AgentHarness
+from kullback.agent.messages import AssistantMessage, UserMessage
 from kullback.ai.provider import Model
 from kullback.runner import budget
 from kullback.runner.records import Event
@@ -35,12 +36,13 @@ from kullback.user.extension import user_extension
 from kullback.user.tools import Toolbox
 from kullback.user.vocabulary import GENERIC, Vocabulary
 
-# The one message a turn's harness is sent. It says what beat this is and nothing about the domain.
-TURN_MESSAGE = ("Write your next turn in this conversation. Read what they just said, use your tools "
-                "for anything about yourself you are not sure of, and answer with the turn itself and "
-                "no tool call.")
-OPENING_MESSAGE = ("Open the conversation: say why you got in touch, in your own words, and whatever "
-                   "you would say without being asked. Answer with the turn itself and no tool call.")
+# The one message every turn's harness is sent. It says what beat this is and nothing about the
+# domain. One line on every turn, opening included, so each request extends the one before it
+# (G24): a separate opening line would move the first message after the head on turn two.
+TURN_MESSAGE = ("Write your next turn in this conversation. On the first turn, say why you got in "
+                "touch, in your own words, and whatever you would say without being asked. After "
+                "that, read what they just said. Use your tools for anything about yourself you "
+                "are not sure of, and answer with the turn itself and no tool call.")
 # A turn is one model answer, however many tool calls it took to get there. The cap is on the tool
 # calls, so a model that loops on its own tools cannot spend a build's ceiling on one turn.
 MAX_TURNS_PER_REPLY = 6
@@ -101,7 +103,7 @@ class AgentUser:
         question = _last_assistant(transcript)
         self.box.requested = None
         asked = rules_mod.asked_fields(question, vocab=self.vocab)
-        text = self._model_turn(transcript, question, asked)
+        text = self._model_turn(transcript)
         if text is None:
             return self._from_fallback(transcript)
         outcome = self.guards.check(
@@ -113,24 +115,31 @@ class AgentUser:
 
     # --- the model's turn ----------------------------------------------------------------------
 
-    def _model_turn(self, transcript: list, question: str, asked: Sequence[str] = ()) -> Optional[str]:
+    def _model_turn(self, transcript: Sequence = ()) -> Optional[str]:
         """One model answer over a harness built for this beat, or None when there is no model."""
         if self.model is None:
             self.counts[NO_MODEL] += 1
             return None
-        harness = self.harness(transcript, asked)
-        opening = OPENING_MESSAGE if not self.events else TURN_MESSAGE
+        harness = self.harness(transcript)
         try:
-            return _last_text(harness, opening)
+            return _last_text(harness)
         except Exception:  # a turn the provider could not answer is a beat the rules take
             self.counts[MODEL_FAILED] += 1
             return None
 
-    def harness(self, transcript: Sequence = (), asked: Iterable[str] = ()) -> AgentHarness:
-        """The harness of one turn: the user extension over this Task's curated context."""
+    def harness(self, transcript: Sequence = ()) -> AgentHarness:
+        """The harness of one turn: the stable head, with the conversation appended as messages.
+
+        A pure function of the transcript: spoken turns mapped, the fixed line before every
+        turn this user spoke and once at the end, nothing kept on self. What a request will be
+        reads off the transcript alone, so one user object serves any conversation in any order.
+        The agent's own tool calls and thinking never persist past the turn, and every turn
+        still builds a new harness, because a user that keeps a transcript of its own thinking
+        between turns is a user with a second memory the recorded person did not have."""
         harness = AgentHarness(model=self.model, max_turns=self.max_tool_turns,
+                               messages=_request_messages(transcript),
                                context=context_config(self.model))
-        load_extensions(harness, [user_extension(self.ctx, self.box, transcript, asked)])
+        load_extensions(harness, [user_extension(self.ctx, self.box)])
         return harness
 
     # --- what is actually said -------------------------------------------------------------------
@@ -187,6 +196,24 @@ class AgentUser:
                                  assisted=assisted))
 
 
+def _request_messages(transcript: Sequence) -> list:
+    """One turn's messages from the transcript alone: spoken turns mapped, the fixed line
+    before every turn this user spoke and once at the end. Tool traffic is not speech."""
+    out = []
+    for message in transcript or ():
+        role = rules_mod._field_of(message, "role")
+        content = (rules_mod._field_of(message, "content") or "").strip()
+        if not content:
+            continue
+        if role == "assistant":
+            out.append(UserMessage(content=content))
+        elif role == "user":
+            out.append(UserMessage(content=TURN_MESSAGE))
+            out.append(AssistantMessage(content=content))
+    out.append(UserMessage(content=TURN_MESSAGE))
+    return out
+
+
 def _rules_of(fallback: Any):
     return getattr(fallback, "rules", None)
 
@@ -199,12 +226,15 @@ def _last_assistant(transcript: Sequence) -> str:
     return question or ""
 
 
-def _last_text(harness: AgentHarness, message: str) -> str:
-    """Run one prompt to the end and answer with the last assistant text the model wrote."""
+def _last_text(harness: AgentHarness) -> str:
+    """Run one turn to the end and answer with the last assistant text the model wrote.
+
+    The harness already carries the turn line last, so this continues on the transcript as it
+    stands rather than appending another line."""
     said: list[str] = []
 
     async def go() -> None:
-        async for event in harness.prompt(message):
+        async for event in harness.continue_():
             if isinstance(event, MessageEnd) and getattr(event.message, "role", "") == "assistant":
                 text = (getattr(event.message, "content", "") or "").strip()
                 if text:
