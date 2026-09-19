@@ -613,3 +613,167 @@ def test_numeric_overflow_torn_and_finite_ok(tmp_path):
     ok = store.read("tally_ov")
     assert ok.status == "ok"
     assert ok.value == 100.0
+
+
+def test_constructor_casefold_duplicate_without_files(tmp_path):
+    root = tmp_path / "w_case_decl"
+    with pytest.raises(ValueError):
+        WorkdirStore(root, [ArtifactSpec(name="a1", path="data.json", format=1, owner="o", validate=_check_int), ArtifactSpec(name="a2", path="DATA.json", format=1, owner="o", validate=_check_int)])
+
+
+def test_constructor_physical_alias_symlink(tmp_path):
+    root = tmp_path / "w_phys_link"
+    root.mkdir(parents=True, exist_ok=True)
+    real = root / "real.json"
+    real.write_text("{}", encoding="utf-8")
+    alias = root / "alias.json"
+    try:
+        if alias.is_symlink() or alias.exists():
+            alias.unlink()
+        alias.symlink_to(real)
+    except OSError:
+        pytest.skip("symlink unavailable")
+    with pytest.raises(ValueError):
+        WorkdirStore(root, [ArtifactSpec(name="pa", path="real.json", format=1, owner="o", validate=_check_int), ArtifactSpec(name="pb", path="alias.json", format=1, owner="o", validate=_check_int)])
+
+
+def test_constructor_physical_alias_hardlink(tmp_path):
+    root = tmp_path / "w_phys_hard"
+    root.mkdir(parents=True, exist_ok=True)
+    real = root / "real2.json"
+    real.write_text("{}", encoding="utf-8")
+    alias = root / "alias2.json"
+    try:
+        if alias.is_symlink() or alias.exists():
+            alias.unlink()
+        os.link(real, alias)
+    except OSError:
+        pytest.skip("hardlink unavailable")
+    with pytest.raises(ValueError):
+        WorkdirStore(root, [ArtifactSpec(name="ha", path="real2.json", format=1, owner="o", validate=_check_int), ArtifactSpec(name="hb", path="alias2.json", format=1, owner="o", validate=_check_int)])
+
+
+def test_post_construction_symlink_alias_owner_conflict(tmp_path):
+    root = tmp_path / "w_late_alias"
+    first = WorkdirStore(root, [ArtifactSpec(name="alpha", path="alpha.json", format=1, owner="owner_a", validate=_check_int)])
+    second = WorkdirStore(root, [ArtifactSpec(name="beta", path="beta.json", format=1, owner="owner_b", validate=_check_int)])
+    first.write("alpha", 1)
+    second.write("beta", 2)
+    alpha_path = root / "alpha.json"
+    beta_path = root / "beta.json"
+    before = alpha_path.read_bytes()
+    try:
+        beta_path.unlink()
+        beta_path.symlink_to(alpha_path)
+    except OSError:
+        pytest.skip("symlink unavailable")
+    with pytest.raises(StoreError):
+        second.write("beta", 3)
+    assert alpha_path.read_bytes() == before
+    first.write("alpha", 4)
+    assert first.read("alpha").value == 4
+
+
+def test_write_durability_directory_open_failure(tmp_path, monkeypatch):
+    from kullback.store import WriteDurabilityError
+    root = tmp_path / "w_duropen"
+    store = WorkdirStore(root, [ArtifactSpec(name="tally_do", path="tally_do.json", format=1, owner="owner_do", validate=_check_int)])
+    store.write("tally_do", 1)
+    target = root / "tally_do.json"
+    parent = target.parent
+    real_open = os.open
+
+    def _open_fail(path, flags, *args, **kwargs):
+        if isinstance(path, str) and path == str(parent) and (flags & os.O_CREAT) == 0:
+            raise OSError("injected dir open")
+        return real_open(path, flags, *args, **kwargs)
+
+    monkeypatch.setattr(os, "open", _open_fail)
+    with pytest.raises(WriteDurabilityError) as excinfo:
+        store.write("tally_do", 2)
+    assert excinfo.value.replaced is True
+    assert excinfo.value.durability == "unknown"
+    assert Path(excinfo.value.path).name == target.name
+    raw = Path(excinfo.value.path).read_bytes()
+    assert json.loads(raw)["value"] == 2
+    leftovers = [p for p in parent.iterdir() if p.name != target.name and p.name != ".store.lock"]
+    assert leftovers == []
+
+
+def test_write_durability_directory_fsync_failure(tmp_path, monkeypatch):
+    from kullback.store import WriteDurabilityError
+    root = tmp_path / "w_durfsync"
+    store = WorkdirStore(root, [ArtifactSpec(name="tally_df", path="tally_df.json", format=1, owner="owner_df", validate=_check_int)])
+    store.write("tally_df", 1)
+    target = root / "tally_df.json"
+    parent = target.parent
+    real_fsync = os.fsync
+
+    def _fsync_fail(fd):
+        try:
+            mode = os.fstat(fd).st_mode
+        except OSError:
+            return real_fsync(fd)
+        if stat.S_ISDIR(mode):
+            raise OSError("injected dir fsync")
+        return real_fsync(fd)
+
+    monkeypatch.setattr(os, "fsync", _fsync_fail)
+    with pytest.raises(WriteDurabilityError) as excinfo:
+        store.write("tally_df", 2)
+    assert excinfo.value.replaced is True
+    assert excinfo.value.durability == "unknown"
+    assert Path(excinfo.value.path).name == target.name
+    raw = Path(excinfo.value.path).read_bytes()
+    assert json.loads(raw)["value"] == 2
+    leftovers = [p for p in parent.iterdir() if p.name != target.name and p.name != ".store.lock"]
+    assert leftovers == []
+
+
+def test_lock_registry_reclaimed(tmp_path):
+    import gc
+
+    from kullback import store as _mod
+    before = len(_mod._LOCKS)
+    for idx in range(50):
+        fresh = tmp_path / str("reclaim_" + str(idx))
+        inst = WorkdirStore(fresh, [ArtifactSpec(name="tally_lr", path="tally_lr.json", format=1, owner="owner_lr", validate=_check_int)])
+        with inst.transaction():
+            pass
+    gc.collect()
+    assert len(_mod._LOCKS) == before
+
+
+def test_lock_state_shared_with_waiter(tmp_path):
+    from kullback import store as _mod
+    root = tmp_path / "w_waiter"
+    store = WorkdirStore(root, [ArtifactSpec(name="tally_wt", path="tally_wt.json", format=1, owner="owner_wt", validate=_check_int)])
+    store.write("tally_wt", 1)
+    identity = Path(store._root_str).stat()
+    key = (os.getpid(), identity.st_dev, identity.st_ino)
+    seen = {}
+    ready = threading.Event()
+    done = threading.Event()
+
+    def _waiter(held_state):
+        current = _mod._state_for(key)
+        seen["same"] = current is held_state
+        ready.set()
+        got = current.rlock.acquire(timeout=20)
+        try:
+            if got:
+                seen["acquired"] = True
+        finally:
+            if got:
+                current.rlock.release()
+        done.set()
+
+    with store.transaction():
+        held = _mod._state_for(key)
+        worker = threading.Thread(target=_waiter, args=(held,), daemon=True)
+        worker.start()
+        assert ready.wait(timeout=20)
+        assert seen["same"] is True
+    assert done.wait(timeout=20)
+    worker.join(timeout=20)
+    assert seen.get("acquired") is True

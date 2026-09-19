@@ -8,9 +8,11 @@ import posixpath
 import stat
 import tempfile
 import threading
-from dataclasses import dataclass
+import unicodedata
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Literal
+from weakref import WeakValueDictionary
 
 
 @dataclass(frozen=True)
@@ -35,13 +37,41 @@ class StoreError(RuntimeError):
     pass
 
 
-_LOCKS: dict = {}
+class WriteDurabilityError(StoreError):
+    replaced = True
+    durability = "unknown"
+
+    def __init__(self, path: Path):
+        self.path = path
+        super().__init__(f"artifact replaced but directory durability is unknown: {path}")
+
+
+@dataclass
+class _LockState:
+    rlock: Any = field(default_factory=threading.RLock)
+    depth: int = 0
+    fd: int | None = None
+
+
+_LOCKS: WeakValueDictionary[tuple, _LockState] = WeakValueDictionary()
 _GUARD = threading.Lock()
 _ENVELOPE_KEYS = frozenset({"store_format", "artifact", "format", "owner", "value"})
 
 
 def _canonical_root(root: str | Path) -> str:
     return str(Path(root).resolve())
+
+
+def _path_key(path: Path) -> str:
+    return unicodedata.normalize("NFC", str(path.resolve())).casefold()
+
+
+def _file_key(path: Path) -> tuple | None:
+    try:
+        info = path.stat()
+    except (FileNotFoundError, NotADirectoryError):
+        return None
+    return info.st_dev, info.st_ino
 
 
 def _check_path(path: str) -> None:
@@ -68,16 +98,16 @@ def _check_spec(spec: ArtifactSpec) -> None:
     _check_path(spec.path)
 
 
-def _state_for(key: tuple) -> dict:
+def _state_for(key: tuple) -> _LockState:
     with _GUARD:
         found = _LOCKS.get(key)
         if found is None:
-            found = {"rlock": threading.RLock(), "depth": 0, "fd": None}
+            found = _LockState()
             _LOCKS[key] = found
         return found
 
 
-def _acquire_exclusive(root_str: str, state: dict) -> None:
+def _acquire_exclusive(root_str: str, state: _LockState) -> None:
     try:
         import fcntl as _fcntl
     except ImportError as exc:
@@ -94,16 +124,16 @@ def _acquire_exclusive(root_str: str, state: dict) -> None:
     except BaseException:
         os.close(fd)
         raise
-    state["fd"] = fd
+    state.fd = fd
 
 
-def _release_exclusive(state: dict) -> None:
+def _release_exclusive(state: _LockState) -> None:
     try:
         import fcntl as _fcntl
     except ImportError as exc:
         raise StoreError("fcntl unavailable") from exc
-    fd = state["fd"]
-    state["fd"] = None
+    fd = state.fd
+    state.fd = None
     try:
         _fcntl.flock(fd, _fcntl.LOCK_UN)
     finally:
@@ -128,6 +158,23 @@ def _finite_float(value: str) -> float:
     if not math.isfinite(result):
         raise ValueError("non-finite JSON number")
     return result
+
+
+def _decode(data: bytes) -> Any:
+    return json.loads(data.decode("utf-8"), parse_constant=_reject_constant,
+                      object_pairs_hook=_unique_pairs, parse_float=_finite_float)
+
+
+def _check_owner(target: Path, spec: ArtifactSpec) -> None:
+    try:
+        body = _decode(target.read_bytes())
+    except FileNotFoundError:
+        return
+    except (UnicodeError, ValueError, RecursionError):
+        return
+    if isinstance(body, dict) and body.get("store_format") == 1:
+        if body.get("artifact") != spec.name or body.get("owner") != spec.owner:
+            raise StoreError("artifact declaration conflicts with existing file")
 
 
 def _check_envelope(obj: Any, spec: ArtifactSpec) -> None:
@@ -156,6 +203,14 @@ def _interpret(obj: Any, spec: ArtifactSpec) -> ReadResult:
     return ReadResult(status="ok", value=out)
 
 
+def _sync_directory(parent: Path) -> None:
+    fd = os.open(str(parent), os.O_RDONLY)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
 def _stage_and_replace(target: Path, text: str) -> None:
     parent = target.parent
     parent.mkdir(parents=True, exist_ok=True)
@@ -172,11 +227,10 @@ def _stage_and_replace(target: Path, text: str) -> None:
             stream.flush()
             os.fsync(stream.fileno())
         os.replace(tmp, target)
-        dfd = os.open(str(parent), os.O_RDONLY)
         try:
-            os.fsync(dfd)
-        finally:
-            os.close(dfd)
+            _sync_directory(parent)
+        except OSError as exc:
+            raise WriteDurabilityError(target) from exc
     finally:
         if fd is not None:
             os.close(fd)
@@ -188,14 +242,21 @@ class WorkdirStore:
         canon = _canonical_root(root)
         seen_names: set = set()
         seen_paths: set = set()
+        seen_files: set = set()
         mapping: dict = {}
         for spec in specs:
             _check_spec(spec)
-            norm = posixpath.normpath(spec.path)
+            candidate = Path(canon) / spec.path
+            norm = _path_key(candidate)
             if spec.name in seen_names:
                 raise ValueError("duplicate name")
             if norm in seen_paths:
                 raise ValueError("duplicate path")
+            physical = _file_key(candidate)
+            if physical is not None and physical in seen_files:
+                raise ValueError("duplicate physical path")
+            if physical is not None:
+                seen_files.add(physical)
             seen_names.add(spec.name)
             seen_paths.add(norm)
             mapping[spec.name] = spec
@@ -220,12 +281,12 @@ class WorkdirStore:
         identity = root.stat()
         key = (os.getpid(), identity.st_dev, identity.st_ino)
         state = _state_for(key)
-        rlock = state["rlock"]
+        rlock = state.rlock
         rlock.acquire()
         try:
-            if state["depth"] == 0:
+            if state.depth == 0:
                 _acquire_exclusive(self._root_str, state)
-            state["depth"] += 1
+            state.depth += 1
         except BaseException:
             rlock.release()
             raise
@@ -233,8 +294,8 @@ class WorkdirStore:
             yield self
         finally:
             try:
-                state["depth"] -= 1
-                if state["depth"] == 0:
+                state.depth -= 1
+                if state.depth == 0:
                     _release_exclusive(state)
             finally:
                 rlock.release()
@@ -254,8 +315,7 @@ class WorkdirStore:
             except FileNotFoundError:
                 return ReadResult(status="missing")
             try:
-                obj = json.loads(data.decode("utf-8"), parse_constant=_reject_constant,
-                                 object_pairs_hook=_unique_pairs, parse_float=_finite_float)
+                obj = _decode(data)
             except (UnicodeError, ValueError, RecursionError) as exc:
                 return ReadResult(status="torn", reason=type(exc).__name__)
             try:
@@ -284,5 +344,6 @@ class WorkdirStore:
         )
         with self.transaction():
             target = self._resolve(spec)
+            _check_owner(target, spec)
             _stage_and_replace(target, text)
             return target
