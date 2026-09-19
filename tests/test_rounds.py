@@ -81,6 +81,11 @@ TARGET = "environment"
 # providers there and every id moved once, the same three Tasks with the same verdicts and reasons.
 # Re-pinned for D250: compile hold-out is by argument shape, so a tool whose recorded calls disagree
 # on nested keys holds a different split, and the Task rows name the replay that split produced.
+# Same three Tasks, same verdicts.
+# Re-pinned for the tool context: the candidate run helper reseeds the toolkit context from the
+# Run's own seed, so the reroll stage's code version moved with it the way D214 moved it. Only
+# the key hash inside the re-rolled Run ids moved; the same three Tasks with the same verdicts
+# and the same reasons.
 # Same three Tasks, same verdicts. Re-pinned for usage-reasoning: the adapters now parse the
 # reasoning share of output, so the module hash of kullback/ai/provider.py moved and with it the
 # re-roll stage's code version and every re-rolled Run id. Same three Tasks, same verdicts,
@@ -92,7 +97,7 @@ TARGET = "environment"
 # tree writes and the rows main writes are 9088 bytes each and differ on 36 lines, all of them a
 # re-rolled Run id carrying one of two eight-hex stage key tags; with those tags normalized the two
 # files are byte identical. Same three Tasks, same verdicts, same reasons.
-TASK_STATUS_SHA256_BEFORE_THE_PHASE = "e440bcfe94ad578d531ffdd0a7a457758cedf87ee7e6a745286edc75a81c9b82"
+TASK_STATUS_SHA256_BEFORE_THE_PHASE = "33ddf4df845e00d8e5ebee675937f23e351e8c6bb2cf31f3020fd0698bd84923"
 
 
 def _fixture(request) -> Path:
