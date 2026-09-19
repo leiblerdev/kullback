@@ -97,7 +97,7 @@ TARGET = "environment"
 # tree writes and the rows main writes are 9088 bytes each and differ on 36 lines, all of them a
 # re-rolled Run id carrying one of two eight-hex stage key tags; with those tags normalized the two
 # files are byte identical. Same three Tasks, same verdicts, same reasons.
-TASK_STATUS_SHA256_BEFORE_THE_PHASE = "d0fb3aae85003aa7664821046a2c5f062530d6dedd962cd6439d30d40d471b9c"
+TASK_STATUS_SHA256_BEFORE_THE_PHASE = "33ddf4df845e00d8e5ebee675937f23e351e8c6bb2cf31f3020fd0698bd84923"
 
 
 def _fixture(request) -> Path:

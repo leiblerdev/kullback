@@ -2294,6 +2294,11 @@ def _system_prompt_for(task: Task, traces: dict, policy_text: Optional[str] = No
     return policy_text or None
 
 
+def _probe_seed(workdir: Path, task_id: str) -> int:
+    return sampling.sample_seed(
+        RUN_SEED_KIND, f"probe-{task_id}", sampling.read_salt(workdir) or sampling.DEFAULT_SALT)
+
+
 def probe_runner(plan: BuildPlan):
     """Check 6's Run as a callable for the Examiner: the model told to reach the Task's End state while
     skipping the policy step (D120: the Runner is a tool of both agents, its inputs the Builder's).
@@ -2330,8 +2335,7 @@ def probe_runner(plan: BuildPlan):
         rules = user_rules.get(reference["trace_id"]) if reference else None
         writes = {sig.name for sig in sigs if getattr(sig, "kind", None) == "write"}
         recorded = traces.get(reference["trace_id"]) if reference else None
-        probe_seed = sampling.sample_seed(
-            RUN_SEED_KIND, f"probe-{task.id}", sampling.read_salt(workdir) or sampling.DEFAULT_SALT)
+        probe_seed = _probe_seed(workdir, task.id)
         toolkit.ctx.reseed(probe_seed)
         members = _members_of(task, traces)
         simulated = user_sim.SimulatedUser(

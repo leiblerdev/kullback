@@ -3776,9 +3776,26 @@ def recorded_call_contexts(calls: Iterable[ToolCall], schema: EntitySchema) -> d
     return {call.id: recorded_call_context(call, schema) for call in calls if call.id}
 
 
+def _context_entity_ids(node: Any) -> set:
+    return {value for key, value in _result_leaves(node)
+            if isinstance(value, str) and _is_id_key(key)}
+
+
+def _append_recorded_context(call: ToolCall, schema: EntitySchema, seen: set,
+                             seen_ids: set, arg_strings: set, ids: dict, times: list) -> None:
+    feed = recorded_call_context(call, schema)
+    fresh_ids = [(table, value) for table, value in feed["new_ids"].items()
+                 if value not in seen_ids and value not in arg_strings]
+    for table, value in fresh_ids:
+        ids.setdefault(table, []).append(value)
+    if feed["now"] is not None and (fresh_ids or feed["now"] not in seen
+                                      and feed["now"] not in arg_strings):
+        times.append(feed["now"])
+
+
 def recorded_run_context(calls: Iterable[ToolCall], schema: EntitySchema,
                            write_tools: Optional[Iterable[str]] = None) -> dict:
-    """One Run's witnessed values in call order: new ids per table, times in turn.
+    """Legacy consumption-ordered feed; production replay uses per-call context. One Run's witnessed values in call order: new ids per table, times in turn.
 
     The Runner's Router carries no call ids, so a Run served call by call cannot look a feed up
     the way the gates do. It advances through these lists instead: the nth new id asked for a
@@ -3800,30 +3817,15 @@ def recorded_run_context(calls: Iterable[ToolCall], schema: EntitySchema,
     times: list = []
     seen: set = set()
     seen_ids: set = set()
-
-    def id_leaves(node: Any) -> set:
-        return {value for key, value in _result_leaves(node)
-                if isinstance(value, str) and _is_id_key(key)}
-
     for call in calls:
         args = call.args if isinstance(call, ToolCall) else (call or {}).get("args") or {}
         result = call.result if isinstance(call, ToolCall) else (call or {}).get("result")
         arg_strings = {value for _, value in _result_leaves(args)}
         values = {value for _, value in _result_leaves(result)} if result is not None else set()
-        if write_tools is not None and call.name not in set(write_tools):
-            seen |= arg_strings | values
-            seen_ids |= id_leaves(args) | id_leaves(result)
-            continue
-        feed = recorded_call_context(call, schema)
-        fresh_ids = [(table, value) for table, value in feed["new_ids"].items()
-                     if value not in seen_ids and value not in arg_strings]
-        for table, value in fresh_ids:
-            ids.setdefault(table, []).append(value)
-        if feed["now"] is not None and (fresh_ids or feed["now"] not in seen
-                                          and feed["now"] not in arg_strings):
-            times.append(feed["now"])
+        if write_tools is None or call.name in set(write_tools):
+            _append_recorded_context(call, schema, seen, seen_ids, arg_strings, ids, times)
         seen |= arg_strings | values
-        seen_ids |= id_leaves(args) | id_leaves(result)
+        seen_ids |= _context_entity_ids(args) | _context_entity_ids(result)
     return {"ids": ids, "times": times}
 
 

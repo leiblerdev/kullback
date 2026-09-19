@@ -45,6 +45,44 @@ def collect_strings(obj):
     return {value for _, value in walk_strings(obj)}
 
 
+def _record_new_ids(row, fresh, arg_strings, patterns, seed_strings):
+    for _, value in fresh:
+        row["distinct_new"].add(value)
+        if value in seed_strings:
+            row["in_seed"] += 1
+        if value in arg_strings:
+            row["eq_arg"] += 1
+        elif any(re.match("^(?:" + pattern + ")$", value) for pattern in patterns):
+            row["shape"] += 1
+        else:
+            row["neither"] += 1
+
+
+def _later_strings(calls):
+    return set().union(*(collect_strings(call.get("args") or {}) | collect_strings(call.get("result"))
+                         for call in calls))
+
+
+def _record_write_inventory(row, result, arg_strings, seen, later_calls, patterns, seed_strings):
+    row["writes"] += 1
+    if not isinstance(result, dict):
+        return
+    fresh = [(key, value) for key, value in walk_strings(result)
+             if is_id_key(key) and value not in seen]
+    if fresh:
+        row["trace_new"] += 1
+        _record_new_ids(row, fresh, arg_strings, patterns, seed_strings)
+        later = _later_strings(later_calls)
+        if any(value in later for _, value in fresh):
+            row["persist"] += 1
+    for key, value in walk_strings(result):
+        value = value.strip()
+        if (len(value) >= 4 and TIME_RE.match(value) and value not in arg_strings
+                and value not in seen and value not in seed_strings):
+            row["time_unexpl"] += 1
+            row["time_cols"][key] += 1
+
+
 def inventory(workdir):
     sigs = {sig["name"]: sig for sig in json.load(open(os.path.join(workdir, "tool_sigs.json")))}
     write_tools = {name for name, sig in sigs.items() if sig.get("kind") == "write"}
@@ -64,36 +102,8 @@ def inventory(workdir):
             result = call.get("result")
             arg_strings = collect_strings(args)
             if call.get("name") in write_tools:
-                row = per_tool[call["name"]]
-                row["writes"] += 1
-                if isinstance(result, dict):
-                    fresh = [(key, value) for key, value in walk_strings(result)
-                             if is_id_key(key) and value not in seen]
-                    if fresh:
-                        row["trace_new"] += 1
-                        for _, value in fresh:
-                            row["distinct_new"].add(value)
-                            if value in seed_strings:
-                                row["in_seed"] += 1
-                            if value in arg_strings:
-                                row["eq_arg"] += 1
-                            elif any(re.match("^(?:" + pattern + ")$", value)
-                                     for pattern in patterns):
-                                row["shape"] += 1
-                            else:
-                                row["neither"] += 1
-                        later = set()
-                        for other in calls[index + 1:]:
-                            later |= collect_strings(other.get("args") or {})
-                            later |= collect_strings(other.get("result") or {})
-                        if any(value in later for _, value in fresh):
-                            row["persist"] += 1
-                    for key, value in walk_strings(result):
-                        value = value.strip()
-                        if (len(value) >= 4 and TIME_RE.match(value) and value not in arg_strings
-                                and value not in seen and value not in seed_strings):
-                            row["time_unexpl"] += 1
-                            row["time_cols"][key] += 1
+                _record_write_inventory(per_tool[call["name"]], result, arg_strings, seen,
+                                        calls[index + 1:], patterns, seed_strings)
             seen |= arg_strings
             if result is not None:
                 seen |= collect_strings(result)
