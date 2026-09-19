@@ -91,8 +91,14 @@ TARGET = "environment"
 # this line on their own, so the value is recomputed once here, on the merged tree. The rows this
 # tree writes and the rows main writes are 9088 bytes each and differ on 36 lines, all of them a
 # re-rolled Run id carrying one of two eight-hex stage key tags; with those tags normalized the two
-# files are byte identical. Same three Tasks, same verdicts, same reasons.
-TASK_STATUS_SHA256_BEFORE_THE_PHASE = "e440bcfe94ad578d531ffdd0a7a457758cedf87ee7e6a745286edc75a81c9b82"
+# files are byte identical. Same three Tasks, same verdicts, same reasons. Re-pinned once
+# more where cannot-answer lands on that tree: the reroll guard in `_candidate_run_once`
+# moved the rerolls stage code version with it, so the re-roll ids under each row are new
+# once more. The rows this tree writes and the rows main writes are 9088 bytes each and
+# differ on 36 lines, all of them a re-rolled Run id carrying one of two eight-hex stage
+# key tags; with those tags normalized the two files are byte identical. Same three
+# Tasks, same verdicts, same reasons.
+TASK_STATUS_SHA256_BEFORE_THE_PHASE = "1fdc4cd897a59946b3a7abcf86105640cce046ecef80e6547caa667ba0253014"
 
 
 def _fixture(request) -> Path:
