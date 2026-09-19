@@ -161,11 +161,11 @@ def _name_causes(verdicts: list, paths: list, judges, workdir: Path, out_dir: Pa
     return named
 
 
-def _rescorer(score_one, verifier: Verifier, canon_value, out_dir: Path, judge_version, common: dict):
+def _rescorer(score_one, verifier: Verifier, canon, out_dir: Path, judge_version, common: dict):
     """The callback `_name_causes` scores one Run with, once a judge has named its cause (D88)."""
 
     def rescore(path: Path, **extra):
-        return score_one(path, verifier, canon_value, out_dir=out_dir,
+        return score_one(path, verifier, canon, out_dir=out_dir,
                          judge_version=judge_version, **common, **extra)
 
     return rescore
@@ -187,7 +187,9 @@ def _score(workdir: Path, task_id: Optional[str], what: str, use_queue: bool = F
     regrade_gate = _entry("kullback.gates.artifacts", "regrade_gate")
     judge_version = _entry("kullback.runner.judge", "JUDGE_VERSION") if judge_model else None
     judges = _judges(judge_model, base_url, second_judge_model)
-    canon_value = _entry("kullback.runner.canon", "canon_value")
+    load_rules = _entry("kullback.runner.canon", "load_rules")
+    canon_rules = load_rules(Path(workdir) / "canon-rules.json")
+    canon = canon_rules
     env_path, version_path = Path(workdir) / "environment.json", Path(workdir) / "runner_version.json"
     environment = _load(env_path, Environment) if env_path.is_file() else None
     version = _load(version_path, RunnerVersion).runner_version if version_path.is_file() else None
@@ -215,8 +217,9 @@ def _score(workdir: Path, task_id: Optional[str], what: str, use_queue: bool = F
             continue
         out_dir = Path(workdir) / "verdicts" / task.id
         common = dict(environment=environment, runner_version=version, schema=schema,
-                      write_tools=write_tools or None, flagged_tools=flagged_tools)
-        verdicts = score(paths, verifier, canon_value, out_dir=out_dir,
+                      write_tools=write_tools or None, flagged_tools=flagged_tools,
+                      rules=canon_rules)
+        verdicts = score(paths, verifier, canon, out_dir=out_dir,
                          judge_results=_judged_atoms(verifier, paths, judges, Path(workdir)),
                          judge_version=judge_version,
                          queue_dir=Path(workdir) if use_queue else None, **common)
@@ -228,7 +231,7 @@ def _score(workdir: Path, task_id: Optional[str], what: str, use_queue: bool = F
                 typer.echo(f"task {task.id}: refused, {failure}")
             continue
         named = _name_causes(verdicts, paths, judges, Path(workdir), out_dir,
-                             _rescorer(score_one, verifier, canon_value, out_dir, judge_version, common))
+                             _rescorer(score_one, verifier, canon, out_dir, judge_version, common))
         scored += 1
         forced = len([p for p in paths if p.stem in queued])
         cached = len(paths) - forced

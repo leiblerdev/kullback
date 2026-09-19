@@ -1957,12 +1957,14 @@ _CONTEXT_SHIM = '''class ToolContext:
         self._recorded_times = []
         self._time_cursor = 0
         self._current = None
+        self._issued = {}
         self._served_recorded = 0
         self._served_seeded = 0
 
     def feed_call(self, feed):
         """Serve one recorded call's witnessed values until the next feed arrives."""
-        self._current = dict(feed or {})
+        feed = feed or {}
+        self._current = {"now": feed.get("now"), "new_ids": dict(feed.get("new_ids") or {})}
 
     def attach_recorded(self, recorded):
         """Serve a whole Run's witnessed values in call order: ids per table, times in turn."""
@@ -2004,18 +2006,23 @@ _CONTEXT_SHIM = '''class ToolContext:
     def new_id(self, table):
         """The new row's id: the recorded id at replay, a shaped draw off it."""
         self._step += 1
-        witnessed = ((self._current or {}).get("new_ids") or {}).get(table)
-        if witnessed is not None:
-            self._served_recorded += 1
-            return witnessed
+        current_ids = (self._current or {}).get("new_ids") or {}
+        witnessed = current_ids.pop(table, None)
         recorded = self._recorded_ids.get(table) or []
         at = self._id_cursors.get(table, 0)
-        if at < len(recorded):
+        if witnessed is None and at < len(recorded):
+            witnessed = recorded[at]
             self._id_cursors[table] = at + 1
+        issued = self._issued.setdefault(table, set())
+        if witnessed is not None:
+            if witnessed in issued:
+                raise ValueError("recorded tool context repeated an allocated id")
+            value = witnessed
             self._served_recorded += 1
-            return recorded[at]
-        value = self._mint(table)
-        self._served_seeded += 1
+        else:
+            value = self._mint(table)
+            self._served_seeded += 1
+        issued.add(str(value))
         return value
 
     def _draw(self, salt):
@@ -2043,7 +2050,7 @@ _CONTEXT_SHIM = '''class ToolContext:
         except Exception:
             keys = []
         keys = [k for k in keys if k]
-        keyset = set(keys)
+        keyset = set(keys) | self._issued.get(table, set())
         shape = self._shape_of(keys)
         for attempt in range(1000):
             candidate = self._draw_id(shape, attempt)
@@ -3023,7 +3030,8 @@ def _build_tools_impl(schema: EntitySchema, toolsig: ToolSig, shown: list[ToolCa
                       call_states: Optional[dict], workdir: Path, attempt: int, timeout: float,
                       rules: Any, readers: Any = None, holdout: Optional[dict] = None,
                       holdout_values: Optional[dict] = None,
-                      effect_values: Optional[dict] = None) -> dict[str, Callable[..., str]]:
+                      effect_values: Optional[dict] = None,
+                      transition_evidence: Optional[dict] = None) -> dict[str, Callable[..., str]]:
     """lookup_rows and test_body, closed over one attempt's own evidence and probe directory.
 
     test_body runs the same shown/held-out split the repair loop will gate (D250). Held-out
@@ -3053,7 +3061,8 @@ def _build_tools_impl(schema: EntitySchema, toolsig: ToolSig, shown: list[ToolCa
                           call_states=call_states, call_context=ctx_feeds)
         gates = run_gates(source, sandbox, shown, held_out, schema, rules,
                           probe_refusals=toolsig.kind == "write", sig=toolsig, readers=readers,
-                          holdout_values=holdout_values, effect_values=effect_values)
+                          holdout_values=holdout_values, effect_values=effect_values,
+                          transition_evidence=transition_evidence)
         note = ("\n" + sanitized) if sanitized else ""
         if all(g.passed for g in gates):
             return "passed every gate: " + ", ".join(g.stage for g in gates) + note
@@ -3542,7 +3551,8 @@ def grade_body(toolsig: ToolSig, body: str, calls: Iterable[ToolCall], schema: E
                timeout: float = 30.0, readers: Any = None,
                call_tasks: Optional[dict] = None, unbeaten: int = 0, blocked: str = "",
                holdout_values: Optional[dict] = None,
-               effect_values: Optional[dict] = None) -> ToolBuild:
+               effect_values: Optional[dict] = None,
+               transition_evidence: Optional[dict] = None) -> ToolBuild:
     """Run one body that already exists through the gates and the per-call replay, with no model call.
 
     This is `compile_tool` with the writing taken out: the same gates in the same order, the same
@@ -3565,7 +3575,8 @@ def grade_body(toolsig: ToolSig, body: str, calls: Iterable[ToolCall], schema: E
                       call_context=recorded_call_contexts(shown + held_out, schema))
     build.gates = run_gates(source, sandbox, shown, held_out, schema, rules,
                             probe_refusals=toolsig.kind == "write", sig=toolsig, readers=readers,
-                            holdout_values=holdout_values, effect_values=effect_values)
+                            holdout_values=holdout_values, effect_values=effect_values,
+                            transition_evidence=transition_evidence)
     build.assisted = not (build.gates and all(gate.passed for gate in build.gates))
     build.call_outcomes = (
         replay_outcomes(toolsig, build.body, calls, schema, db, workdir, call_states=call_states,
@@ -3954,6 +3965,7 @@ def compile_tool(model, toolsig: ToolSig, calls: Iterable[ToolCall], schema: Ent
                  builder_tools: bool = True, lesson: str = "", world_note: str = "",
                  readers: Any = None, call_tasks: Optional[dict] = None,
                  effects: str = "", effect_values: Optional[dict] = None,
+                 transition_evidence: Optional[dict] = None,
                  holdout: Optional[dict] = None, holdout_values: Optional[dict] = None,
                  system_head: Optional[str] = None, tool_specs: Optional[list] = None) -> ToolBuild:
     """Write one tool body, gate it, and repair it at most three times with growing evidence (D75).
@@ -4069,7 +4081,8 @@ def compile_tool(model, toolsig: ToolSig, calls: Iterable[ToolCall], schema: Ent
             break
         tools_impl = (_build_tools_impl(schema, toolsig, shown, held_out, db, call_states, workdir,
                                         attempt, timeout, rules, readers, holdout=holdout,
-                                        holdout_values=holdout_values, effect_values=effect_values)
+                                        holdout_values=holdout_values, effect_values=effect_values,
+                                        transition_evidence=transition_evidence)
                      if builder_tools else None)
         try:
             if builder_tools:
@@ -4122,7 +4135,8 @@ def compile_tool(model, toolsig: ToolSig, calls: Iterable[ToolCall], schema: Ent
                           call_states=call_states, call_tasks=call_tasks, call_context=ctx_feeds)
         gates = run_gates(source, sandbox, shown, held_out, schema, rules,
                           probe_refusals=toolsig.kind == "write", sig=toolsig, readers=readers,
-                          holdout_values=holdout_values, effect_values=effect_values)
+                          holdout_values=holdout_values, effect_values=effect_values,
+                          transition_evidence=transition_evidence)
         node.update(body_hash=content_hash(body), gates=[as_dict(g) for g in gates],
                     passed=all(g.passed for g in gates))
         build.nodes.append(node)

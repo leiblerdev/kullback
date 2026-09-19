@@ -1,0 +1,59 @@
+diff --git a/kullback/runner/records.py b/kullback/runner/records.py
+index a767a92..d90195a 100644
+--- a/kullback/runner/records.py
++++ b/kullback/runner/records.py
+@@ -5,6 +5,9 @@ from __future__ import annotations
+ import base64
+ import hashlib
+ import json
++import os
++import secrets
++import stat
+ from pathlib import Path
+ from typing import Any, Iterable, Literal, Optional, get_args
+ 
+@@ -69,10 +72,42 @@ def as_dict(obj: BaseModel) -> dict:
+ def write_json(path: Any, body: Any) -> Path:
+     """One JSON artifact on disk the way every workdir file is written: parents made, keys sorted,
+     two-space indent, anything JSON cannot carry rendered with str. The Builder and the Examiner
+-    write their artifacts through this one function so the bytes agree (D130)."""
++    write their artifacts through this one function so the bytes agree (D130). The bytes reach the
++    final path through a temporary file in the same directory and an os.replace swap, so a kill
++    during the write leaves the old file intact and no torn artifact behind. The temporary file is
++    created with 0o666, so the kernel applies the umask exactly as the old direct write did, and a
++    destination that already exists keeps its mode. Any failure, including a KeyboardInterrupt
++    between staging and swap, removes the temporary file and re-raises."""
+     path = Path(path)
+     path.parent.mkdir(parents=True, exist_ok=True)
+-    path.write_text(json.dumps(body, indent=2, sort_keys=True, default=str), encoding="utf-8")
++    text = json.dumps(body, indent=2, sort_keys=True, default=str)
++    try:
++        kept_mode = stat.S_IMODE(path.stat().st_mode)
++    except OSError:
++        kept_mode = None
++    for _ in range(100):
++        tmp_path = path.parent / f".{path.name}.{os.getpid()}.{secrets.token_hex(8)}.tmp"
++        try:
++            fd = os.open(tmp_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o666)
++            break
++        except FileExistsError:
++            continue
++    else:
++        raise FileExistsError(f"cannot stage a temporary file beside {path}")
++    try:
++        with os.fdopen(fd, "w", encoding="utf-8") as handle:
++            if kept_mode is not None:
++                os.fchmod(handle.fileno(), kept_mode)
++            handle.write(text)
++            handle.flush()
++            os.fsync(handle.fileno())
++        os.replace(tmp_path, path)
++    except BaseException:
++        try:
++            tmp_path.unlink(missing_ok=True)
++        except OSError:
++            pass
++        raise
+     return path
+ 
+ 

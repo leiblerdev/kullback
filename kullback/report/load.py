@@ -15,6 +15,7 @@ from kullback.report.numbers import _by_pair, _percent, assisted_share_from_runs
 from kullback.report.pipeline import environment_gate, stage_statuses
 from kullback.runner.records import (
     Constraint,
+    EntitySchema,
     Environment,
     GateResult,
     RoundRecord,
@@ -250,14 +251,48 @@ def coverage_rows(tasks: list[Task], uncovered: dict[str, str]) -> list[TaskCove
     ]
 
 
-def load_tool_sigs(workdir: Any) -> list[ToolSig]:
+def _schema_columns(root: Path, unread: Optional[list] = None) -> list:
+    """The mined schema's columns, for the mined evidence counts; a missing file means no columns."""
+    body = _json(root / "schema.json")
+    if body is None:
+        return []
+    if not isinstance(body, dict):
+        _note(unread, "schema.json: not a JSON object")
+        return []
+    try:
+        return list(EntitySchema.model_validate(body).columns)
+    except ValidationError:
+        _note(unread, "schema.json: not an EntitySchema this report can read")
+        return []
+
+
+def _row_homes(root: Path) -> dict:
+    """row_homes.json as the miner wrote it, or nothing where the mine stage never ran."""
+    body = _json(root / "row_homes.json")
+    return body if isinstance(body, dict) else {}
+
+
+def load_tool_sigs(workdir: Any, unread: Optional[list] = None) -> list[ToolSig]:
     """The mined ToolSigs of a build, from the tool_sigs.json one stage writes.
 
     cli.py reads them too, so a Verdict knows which tools write (extra-write and entity-count checks)
     and which are still flagged (D70), and the report and the Verdict cannot disagree about it.
+    A signature the installed records cannot read (a basis from a newer Runner tree, waiting on
+    its re-freeze) is named in unread, never dropped silently.
     """
     root = Path(workdir)
-    return _list_of(root / "tool_sigs.json", ToolSig)
+    body = _json(root / "tool_sigs.json")
+    if not isinstance(body, list):
+        return []
+    out = []
+    for item in body:
+        try:
+            out.append(ToolSig.model_validate(item))
+        except ValidationError:
+            name = item.get("name") if isinstance(item, dict) else None
+            _note(unread, f"tool_sigs.json: a signature this report cannot read"
+                  f"{f' ({name})' if name else ''}")
+    return out
 
 
 SYNTHETIC_INDEX = ("synthetic", "index.json")
@@ -327,7 +362,9 @@ def load(workdir: Any) -> ReportData:
         verifiers=lifecycle.live(
             _records(root / "verifiers", Verifier, unread), _json(root / "task_status.json") or {}
         ),
-        tool_sigs=load_tool_sigs(root),
+        tool_sigs=load_tool_sigs(root, unread),
+        mined_columns=_schema_columns(root, unread),
+        row_homes=_row_homes(root),
         runs=runs,
         verdicts=_records(root / "verdicts", Verdict, unread),
         overlays=_records(root / "overlays", TaskOverlay),
