@@ -452,7 +452,7 @@ def _one_atom(atom: Atom, payload: dict, kind: Any, effects: dict, asked: set, s
     values = {(e["tool"], e["entity"], f, v) for e in effects.values() for f, v in e["values"].items()}
     target = (payload.get("tool"), payload.get("entity"))
     if atom.kind == "forbidden" and kind == "write":
-        return target in present
+        return payload.get("tool") in wrote_with if names_no_row(payload) else target in present
     if kind == "write" and (payload.get("tool") not in wrote_with if names_no_row(payload)
                             else target not in present):
         return False
@@ -482,7 +482,8 @@ def check_run(verifier: Any, run: Any, canon: Any = None, *,
         payload = atom_payload(atom)
         kind = payload.get("kind")
         target = (payload.get("tool"), payload.get("entity"))
-        if atom.kind == "forbidden" and kind == "write" and target in present:
+        if atom.kind == "forbidden" and kind == "write" and atom_holds(
+                atom, run, fn, tools, effects=effects, asked=asked, said=said):
             return False, atom.id
         if atom.kind == "hard":
             held = hard_holds(atom, run, tools, fn)

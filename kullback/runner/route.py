@@ -7,6 +7,8 @@ import inspect
 import json
 from typing import Any, Iterable, NamedTuple, Optional
 
+from pydantic import BaseModel
+
 from kullback.runner.canon import canonical_args
 from kullback.runner.records import ToolCallError, ToolSig, content_hash
 from kullback.runner.records import plain as _plain
@@ -393,6 +395,9 @@ def _restore_db(db: Any, snapshot: Any) -> None:
     later body still reads rows by attribute. A plain dict db already holds plain rows, so its
     snapshot values land as they are and tables the snapshot never held are removed outright.
     """
+    if isinstance(db, BaseModel) and isinstance(snapshot, type(db)):
+        db.__setstate__(copy.deepcopy(snapshot.__getstate__()))
+        return
     if db is None or snapshot is None or not isinstance(snapshot, dict):
         return
     if isinstance(db, dict):

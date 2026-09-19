@@ -26,3 +26,21 @@ def test_structured_forbidden_write_agrees_between_gate_and_verdict(matches):
     assert result.passed is not matches
     assert result.class_ == ("fail" if matches else "pass")
     assert result.failing_atom == ("ban" if matches else None)
+
+@pytest.mark.parametrize("entity", [None, ""])
+@pytest.mark.parametrize("matches", [True, False])
+def test_whole_tool_prohibition_covers_calls_with_entity_ids(entity, matches):
+    run = Run(run_id="whole-tool-proof", task_id="t1", events=oracle_lines()[1:])
+    payload = {"kind": "write", "tool": CANCEL if matches else "other_tool"}
+    if entity is not None:
+        payload["entity"] = entity
+    atom = Atom(id="ban", kind="forbidden", target=payload)
+    verifier = Verifier(task_id="t1", atoms=[
+        Atom(id="allow", kind="allowed", target={"kind": "write", "tool": CANCEL}), atom,
+    ])
+    assert target.atom_holds(atom, run, target.canon_fn(None), {CANCEL}) is matches
+    assert target.check_run(verifier, run, write_tools={CANCEL}) == (not matches, "ban" if matches else None)
+    result = verdict(run, verifier, write_tools={CANCEL})
+    assert result.passed is not matches
+    assert result.class_ == ("fail" if matches else "pass")
+    assert result.failing_atom == ("ban" if matches else None)
