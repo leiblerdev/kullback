@@ -24,6 +24,7 @@ from kullback.report.numbers import (
     claims_for_task,
     false_rejection_by_task,
     flagged_tool_verdicts,
+    mined_evidence_counts,
     suggestion,
     task_numbers,
 )
@@ -501,11 +502,51 @@ def _tool_notes(data: ReportData) -> list[str]:
         "No flagged tools: every tool here is confirmed read or write.",
     )
 
+    lines += ["", "### Mined facts resting on a name alone", ""]
+    lines += _mined_evidence_lines(data)
+
     lines += ["", "### Open flags on the Environment", ""]
     lines += _bullets(
         [f"- {flag}" for flag in (env.flags if env is not None else [])],
         "No open flags: nothing on the Environment is waiting on the setup review.",
     )
+    return lines
+
+
+def _mined_evidence_lines(data: ReportData) -> list[str]:
+    """How many mined facts of each kind rest on a name alone (G32).
+
+    One line per kind with its own grain: tool kinds per tool, column classes per column, id
+    columns and table names per recorded id fact, row homings per homed row. Table names are
+    always the name: no call can say what a table is called, so the count is the measure and the
+    punt is said out loud. Rows no rule could home are counted apart.
+    """
+    counts = mined_evidence_counts(data)
+    if not any(counts[kind]["total"] for kind in counts):
+        return ["No mined records were read, so name-alone counts are not shown."]
+    grains = {
+        "tool_kind": "Tool kinds, per tool",
+        "column_class": "Column classes, per column",
+        "id_column": "Id columns, per recorded id fact",
+        "table_name": "Table names, per recorded id fact",
+        "row_home": "Row homings, per homed row",
+    }
+    lines = []
+    for kind, grain in grains.items():
+        total = counts[kind]["total"]
+        if not total:
+            lines.append(f"- {grain}: nothing recorded.")
+            continue
+        lines.append(f"- {grain}: {counts[kind]['name']} of {total} rest on a name alone.")
+    if counts["table_name"]["total"]:
+        lines.append(
+            "- Table names have no observation test a call could run, so every one of them "
+            "rests on the name; that count is the measure."
+        )
+    if counts["row_home"].get("unhomed"):
+        lines.append(
+            f"- {counts['row_home']['unhomed']} rows no rule could home, counted apart."
+        )
     return lines
 
 

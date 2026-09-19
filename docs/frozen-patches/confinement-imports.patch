@@ -1,0 +1,19 @@
+diff --git a/kullback/gates/confinement.py b/kullback/gates/confinement.py
+index 07bba9b..94381cb 100644
+--- a/kullback/gates/confinement.py
++++ b/kullback/gates/confinement.py
+@@ -25,10 +25,11 @@ from kullback.runner.confinement import DENIED_NAMES, confine
+ from kullback.runner.records import GateResult
+ 
+ TOOLS_CLASS = "DomainTools"
+-# What a generated module may name. The skeleton is code-owned and imports the first four; the rest
+-# are what a tool body plausibly needs to compute a value. `os`, `sys`, `subprocess`, `socket`,
++# What a tool body may name. The skeleton's own module level imports sit outside the scanned
++# region, so they are not listed here. The rest are what a tool body plausibly needs to compute
++# a value. `os`, `sys`, `subprocess`, `socket`,
+ # `pathlib`, `importlib` and everything else are not on it.
+-ALLOWED_IMPORTS = frozenset({"typing", "pydantic", "tau2", "data_model", "datetime", "decimal",
++ALLOWED_IMPORTS = frozenset({"typing", "pydantic", "datetime", "decimal",
+                              "math", "json", "re", "copy", "collections", "itertools", "functools",
+                              "string", "statistics", "random", "time", "uuid"})
+ # Everything a predicate may not name, and three more a tool body may not: `exit` and `quit` stop the

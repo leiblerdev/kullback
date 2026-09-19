@@ -7,6 +7,7 @@ from typing import Literal, Optional
 from pydantic import BaseModel, Field
 
 from kullback.runner.records import (
+    Column,
     Constraint,
     Environment,
     GateResult,
@@ -85,6 +86,9 @@ class ReportData(BaseModel):
     tasks: list[Task] = Field(default_factory=list)
     verifiers: list[Verifier] = Field(default_factory=list)
     tool_sigs: list[ToolSig] = Field(default_factory=list)
+    # G32: schema.json columns and row_homes.json, the records the mined evidence counts read.
+    mined_columns: list[Column] = Field(default_factory=list)
+    row_homes: dict = Field(default_factory=dict)
     runs: list[Run] = Field(default_factory=list)
     verdicts: list[Verdict] = Field(default_factory=list)
     overlays: list[TaskOverlay] = Field(default_factory=list)
