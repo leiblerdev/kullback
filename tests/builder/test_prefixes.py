@@ -3,8 +3,11 @@ from __future__ import annotations
 import copy
 import importlib
 import json
+import os
 import sys
 from pathlib import Path
+
+import pytest
 
 from kullback.builder import ingest, prefixes
 from kullback.runner.records import RawPtr, ToolCall, Trace, Turn, as_dict, content_hash
@@ -526,3 +529,123 @@ def test_finish_writes_when_stable(tmp_path):
     assert code == 0
     manifest = json.loads(output.read_text(encoding="utf-8"))
     assert manifest["inputs_unchanged"] is True
+
+
+def test_inputs_error_added():
+    before = [("a.json", 3, "invented-digest")]
+    assert cohort_module().inputs_error(before, {"a.json": "invented-digest", "b.json": "invented-extra"}) is not None
+
+
+def test_inputs_error_renamed():
+    before = [("a.json", 3, "invented-digest")]
+    assert cohort_module().inputs_error(before, {"b.json": "invented-digest"}) is not None
+
+
+def test_entry_error_directory(tmp_path):
+    target = tmp_path / "x.json"
+    target.mkdir()
+    assert cohort_module().entry_error(target) is not None
+
+
+def test_entry_error_missing(tmp_path):
+    assert cohort_module().entry_error(tmp_path / "gone.json") is not None
+
+
+def test_entry_error_regular_file(tmp_path):
+    target = tmp_path / "x.json"
+    target.write_text("{}", encoding="utf-8")
+    assert cohort_module().entry_error(target) is None
+
+
+def test_cli_json_directory(tmp_path):
+    src = tmp_path / "src"
+    src.mkdir()
+    invented_cli_input(src, [invented_cli_recording(True)])
+    (src / "extra.json").mkdir()
+    output = tmp_path / "m.json"
+    assert run_cli(["--input-dir", str(src), "--output", str(output)]) == 2
+    assert not output.exists()
+
+
+def test_cli_broken_symlink(tmp_path):
+    src = tmp_path / "src"
+    src.mkdir()
+    invented_cli_input(src, [invented_cli_recording(True)])
+    (src / "broken.json").symlink_to(src / "gone.json")
+    output = tmp_path / "m.json"
+    assert run_cli(["--input-dir", str(src), "--output", str(output)]) == 2
+    assert not output.exists()
+
+
+def test_evaluate_file_missing(tmp_path):
+    entry, err = cohort_module().evaluate_file(tmp_path / "gone.json", frozenset())
+    assert entry is None
+    assert err is not None
+
+
+def test_snapshot_missing(tmp_path):
+    rows, err = cohort_module().take_snapshot([tmp_path / "gone.json"])
+    assert rows is None
+    assert err is not None
+
+
+def test_evaluate_file_unreadable(tmp_path):
+    if hasattr(os, "geteuid") and os.geteuid() == 0:
+        pytest.skip("root bypasses file permissions, so chmod-based unreadability cannot be observed")
+    target = tmp_path / "x.json"
+    target.write_text("{}", encoding="utf-8")
+    target.chmod(0o000)
+    try:
+        entry, err = cohort_module().evaluate_file(target, frozenset())
+    finally:
+        target.chmod(0o644)
+    assert entry is None
+    assert err is not None
+
+
+def test_closing_snapshot_rejects_fifo(tmp_path):
+    if not hasattr(os, "mkfifo"):
+        pytest.skip("platform has no FIFO support for the blocking-read regression")
+    target = tmp_path / "late.json"
+    os.mkfifo(target)
+    rows, err = cohort_module().take_digest_map([target])
+    assert rows is None
+    assert err is not None
+
+
+def test_opening_snapshot_rejects_fifo(tmp_path):
+    if not hasattr(os, "mkfifo"):
+        pytest.skip("platform has no FIFO support for the blocking-read regression")
+    target = tmp_path / "late.json"
+    os.mkfifo(target)
+    rows, err = cohort_module().take_snapshot([target])
+    assert rows is None
+    assert err is not None
+
+
+def test_closing_snapshot_rejects_directory(tmp_path):
+    target = tmp_path / "late.json"
+    target.mkdir()
+    rows, err = cohort_module().take_digest_map([target])
+    assert rows is None
+    assert err is not None
+
+
+def test_closing_snapshot_rejects_broken_link(tmp_path):
+    target = tmp_path / "late.json"
+    target.symlink_to(tmp_path / "gone.json")
+    rows, err = cohort_module().take_digest_map([target])
+    assert rows is None
+    assert err is not None
+
+
+def test_snapshot_roundtrip_regular(tmp_path):
+    invented_cli_input(tmp_path, [invented_cli_recording(True)])
+    target = tmp_path / "invented.json"
+    rows, err = cohort_module().take_snapshot([target])
+    assert err is None
+    assert rows[0][0] == "invented.json"
+    assert rows[0][1] == target.stat().st_size
+    digests, err = cohort_module().take_digest_map([target])
+    assert err is None
+    assert digests["invented.json"] == rows[0][2]
