@@ -86,7 +86,7 @@ def test_the_user_package_imports_neither_of_the_two_agents_that_drive_it():
     import pathlib
 
     import kullback.user as package
-    allowed = {"kullback.agent", "kullback.ai", "kullback.gates", "kullback.runner", "kullback.user"}
+    allowed = {"kullback.agent", "kullback.ai", "kullback.gates", "kullback.runner", "kullback.sampling", "kullback.user"}
     for path in pathlib.Path(package.__path__[0]).glob("*.py"):
         for node in ast.walk(ast.parse(path.read_text())):
             names = [alias.name for alias in getattr(node, "names", ())] if isinstance(node, ast.Import) else []
