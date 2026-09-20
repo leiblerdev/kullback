@@ -4,6 +4,7 @@ import argparse
 import hashlib
 import json
 import os
+import stat
 import sys
 from pathlib import Path
 
@@ -74,17 +75,66 @@ def check_placement(input_dir, output):
     return None
 
 
-def snapshot(files):
-    return [(path.name, path.stat().st_size, hashlib.sha256(path.read_bytes()).hexdigest()) for path in files]
+def entry_error(path):
+    target = Path(path)
+    try:
+        usable = target.is_file()
+    except OSError:
+        return "input entry cannot be inspected: " + target.name
+    if not usable:
+        return "input entry is not a readable regular file: " + target.name
+    return None
 
 
-def snapshot_map(files):
-    return {path.name: hashlib.sha256(path.read_bytes()).hexdigest() for path in files}
+def read_regular(path):
+    name = Path(path).name
+    try:
+        handle = os.open(path, os.O_RDONLY | getattr(os, "O_NONBLOCK", 0))
+    except OSError:
+        return (None, "input file cannot be opened: " + name)
+    try:
+        if not stat.S_ISREG(os.fstat(handle).st_mode):
+            return (None, "input entry is not a readable regular file: " + name)
+        parts = []
+        while True:
+            chunk = os.read(handle, 65536)
+            if not chunk:
+                break
+            parts.append(chunk)
+        return (b"".join(parts), None)
+    except OSError:
+        return (None, "input file cannot be read: " + name)
+    finally:
+        os.close(handle)
+
+
+def take_snapshot(files):
+    rows = []
+    for path in files:
+        payload, err = read_regular(path)
+        if err is not None:
+            return (None, "input files cannot be read for the opening snapshot")
+        rows.append((path.name, len(payload), hashlib.sha256(payload).hexdigest()))
+    return (rows, None)
+
+
+def take_digest_map(files):
+    digests = {}
+    for path in files:
+        payload, err = read_regular(path)
+        if err is not None:
+            return (None, "input files cannot be read for the closing snapshot")
+        digests[path.name] = hashlib.sha256(payload).hexdigest()
+    return (digests, None)
 
 
 def inputs_error(before, after):
+    names = {name for name, _size, _digest in before}
     for name, _size, digest in before:
         if after.get(name) != digest:
+            return "input bytes changed during evaluation"
+    for name in after:
+        if name not in names:
             return "input bytes changed during evaluation"
     return None
 
@@ -100,7 +150,9 @@ def write_exclusive(output, text):
 
 
 def derive_memory(path):
-    payload = Path(path).read_bytes()
+    payload, err = read_regular(path)
+    if err is not None:
+        raise OSError(err)
     raw_hash = hashlib.sha256(payload).hexdigest()
     document = json.loads(payload.decode("utf-8-sig"))
     confidence, _reasons = ADAPTER.detect(document)
@@ -215,8 +267,8 @@ def range_row(trace, outcome):
 def evaluate_file(path, heldout):
     try:
         raw_hash, traces, ruling = derive_memory(path)
-    except (ValueError, json.JSONDecodeError) as exc:
-        return (None, "cannot derive " + path.name + ": " + str(exc))
+    except (ValueError, json.JSONDecodeError, OSError) as exc:
+        return (None, "cannot derive " + path.name + ": " + type(exc).__name__)
     tally, reasons, rows = original_tally(ruling)
     found = evaluate_traces(traces, rows, heldout)
     candidates, selected, withheld, kept_calls, lost_calls, kept_turns, lost_turns = found
@@ -250,8 +302,13 @@ def prepare(args):
     heldout, heldout_err = heldout_result(args.heldout_ids)
     if heldout_err is not None:
         return (None, None, None, None, heldout_err)
+    files = sorted(Path(args.input_dir).glob("*.json"))
+    for path in files:
+        flawed = entry_error(path)
+        if flawed is not None:
+            return (None, None, None, None, flawed)
     source = "none" if args.heldout_ids is None else "caller-supplied"
-    return (Path(args.input_dir), sorted(Path(args.input_dir).glob("*.json")), heldout, source, None)
+    return (Path(args.input_dir), files, heldout, source, None)
 
 
 def finish(output, before, after, entries, totals, heldout_source, heldout_count):
@@ -296,11 +353,14 @@ def finish(output, before, after, entries, totals, heldout_source, heldout_count
 
 def run(argv):
     args = load_args(argv)
-    _ready, files, heldout, source, early = prepare(args)
+    input_dir, files, heldout, source, early = prepare(args)
     if early is not None:
         print(early, file=sys.stderr)
         return 2
-    before = snapshot(files)
+    before, snap_err = take_snapshot(files)
+    if snap_err is not None:
+        print(snap_err, file=sys.stderr)
+        return 2
     entries = []
     totals = {"recordings": 0, "original_eligible": 0, "selected_prefixes": 0}
     for path in files:
@@ -312,7 +372,10 @@ def run(argv):
         totals["recordings"] += entry["recordings"]
         totals["original_eligible"] += entry["original"]["task_eligible"]
         totals["selected_prefixes"] += entry["selected"]
-    after = snapshot_map(files)
+    after, final_err = take_digest_map(sorted(input_dir.glob("*.json")))
+    if final_err is not None:
+        print(final_err, file=sys.stderr)
+        return 2
     return finish(args.output, before, after, entries, totals, source, len(heldout))
 
 
