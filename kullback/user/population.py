@@ -6,7 +6,7 @@ from typing import Any, Optional
 
 from pydantic import ConfigDict, StrictBool
 
-from kullback.runner.records import Record, Task, Trace, UserRules, canonical_json, content_hash
+from kullback.runner.records import Record, Task, Trace, UserRules, as_dict, canonical_json, content_hash
 from kullback.sampling import sample_key
 
 
@@ -151,6 +151,11 @@ def _fingerprint(
             standing_part: Any = None
         else:
             standing_part = [standing.task_eligible, standing.complete, standing.replay_confirmed]
+        rule = rules.get(rid)
+        if rule is None:
+            rules_part: Any = None
+        else:
+            rules_part = as_dict(rule)
         trace = traces.get(rid)
         if trace is None:
             writes_part: Any = None
@@ -168,10 +173,10 @@ def _fingerprint(
         runs.append(
             {
                 "calls": calls_part,
-                "has_rules": rules.get(rid) is not None,
                 "has_trace": trace is not None,
                 "held_out": rid in held_set,
                 "id": rid,
+                "rules": rules_part,
                 "standing": standing_part,
                 "writes": writes_part,
             }
