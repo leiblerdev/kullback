@@ -1,0 +1,178 @@
+diff --git a/kullback/runner/target.py b/kullback/runner/target.py
+index a6a6cb0..3e17d41 100644
+--- a/kullback/runner/target.py
++++ b/kullback/runner/target.py
+@@ -15,12 +15,36 @@ from typing import Any, Callable, Iterable, Optional
+ 
+ from kullback.runner.canon import CanonRules, canon_value
+ from kullback.runner.confinement import SAFE_BUILTINS, confine
+-from kullback.runner.records import Atom, Event, RawPtr, Run, canonical_json, load_run_jsonl
++from kullback.runner.records import Atom, Event, RawPtr, Run, Verifier, canonical_json, load_run_jsonl
+ 
+ _TOKEN = re.compile(r"[#$]?[A-Za-z0-9][A-Za-z0-9_./#-]*")
+ _WORD = re.compile(r"[A-Za-z0-9#$€£¥._/-]+")
+ CURRENCY = "".join(CanonRules().currency_symbols)
+ AFFIRMATIONS = ("yes", "yeah", "yep", "sure", "please do", "go ahead", "confirm", "correct", "ok", "okay")
++JUDGE_MUST_HOLD = frozenset({"required", "question", "communicate", "hard"})
++
++
++def is_judge_must_hold(atom: Atom) -> bool:
++    return atom.judge and atom.kind in JUDGE_MUST_HOLD
++
++
++def judge_must_hold_atoms(verifier: Verifier) -> list[Atom]:
++    return [atom for atom in verifier.atoms if is_judge_must_hold(atom)]
++
++
++def code_atoms(verifier: Verifier) -> list[Atom]:
++    return [atom for atom in verifier.atoms if not atom.judge]
++
++
++def first_refusal(verifier: Verifier, effects: dict,
++                  write_tools: Optional[Iterable[str]]) -> Optional[str]:
++    extra = _extra_write(verifier, effects, write_tools)
++    if extra is not None:
++        return extra
++    refused = judge_must_hold_atoms(verifier)
++    if refused:
++        return refused[0].id
++    return None
+ 
+ 
+ def load_run(path: Any) -> Run:
+@@ -295,7 +319,7 @@ def names_no_row(payload: dict) -> bool:
+ 
+ 
+ def verifier_write_tools(verifier: Any) -> set[str]:
+-    return {p["tool"] for p in map(atom_payload, verifier.atoms) if p.get("tool")}
++    return {p["tool"] for p in map(atom_payload, code_atoms(verifier)) if p.get("tool")}
+ 
+ 
+ def scored_write_tools(verifier: Any, run: Run, write_tools: Optional[Iterable[str]] = None) -> set[str]:
+@@ -402,7 +426,7 @@ def _extra_write(verifier: Any, effects: dict, write_tools: Optional[Iterable[st
+         return None
+     covered = set()
+     whole_tool = set()
+-    for atom in verifier.atoms:
++    for atom in code_atoms(verifier):
+         payload = atom_payload(atom)
+         if atom.kind != "forbidden" and payload.get("kind") in ("write", "write_value"):
+             covered.add((payload.get("tool"), payload.get("entity")))
+@@ -478,7 +502,7 @@ def check_run(verifier: Any, run: Any, canon: Any = None, *,
+     wrote_with = {e["tool"] for e in effects.values()}
+     values = {(e["tool"], e["entity"], f, v) for e in effects.values() for f, v in e["values"].items()}
+     asked, said = set(question_keys(run, effects, fn)), set(communicate_values(run, fn))
+-    for atom in verifier.atoms:
++    for atom in code_atoms(verifier):
+         payload = atom_payload(atom)
+         kind = payload.get("kind")
+         target = (payload.get("tool"), payload.get("entity"))
+@@ -503,5 +527,5 @@ def check_run(verifier: Any, run: Any, canon: Any = None, *,
+             return False, atom.id
+         if kind == "communicate" and payload.get("value") not in said:
+             return False, atom.id
+-    extra = _extra_write(verifier, effects, write_tools)
++    extra = first_refusal(verifier, effects, write_tools)
+     return (True, None) if extra is None else (False, extra)
+diff --git a/kullback/runner/verdict.py b/kullback/runner/verdict.py
+index f7fc4f6..a2ed6c1 100644
+--- a/kullback/runner/verdict.py
++++ b/kullback/runner/verdict.py
+@@ -14,7 +14,7 @@ from kullback.runner.records import Atom, Run, Verdict, Verifier, load_run_jsonl
+ # constraint gate (runner/confinement.py) is easier to find next to that world model than buried in
+ # this module's own top.
+ 
+-VERDICT_VERSION = "2"
++VERDICT_VERSION = "3"
+ MUST_HOLD = {"required", "question", "communicate", "hard"}
+ TRANSFER_HINTS = ("transfer", "escalate", "handoff", "hand_off")
+ GAVE_UP = {"transfer", "transferred", "agent_transfer", "gave_up", "no_action"}
+@@ -22,6 +22,7 @@ ENV_ERROR_REASONS = {"env_error", "environment_error", "environment_cannot_answe
+ # How each judge use says "this holds", "this does not" and "I did not decide" (judge.py's _USES).
+ JUDGE_HOLDS = {"pass", "equivalent", "acceptable", "good_reference"}
+ JUDGE_FAILS = {"fail", "not_equivalent", "unacceptable", "bad_reference"}
++_JUDGE_WORDS = {True: "pass", False: "fail", None: "abstain"}
+ CAUSES = {"candidate", "environment", "simulated_user", "undetermined"}
+ 
+ 
+@@ -161,8 +162,9 @@ def _evaluate_atoms(verifier: Verifier, context: AtomContext, judge_results: Opt
+                 notes.append(f"judge_atom_unevaluated:{atom.id}")
+             else:
+                 judge_used = True
+-                holds = _judge_says(judge_results[atom.id])
+-                if holds is None:
++                opinion = _judge_says(judge_results[atom.id])
++                notes.append(f"judge_reported:{atom.id}:{_JUDGE_WORDS[opinion]}")
++                if opinion is None:
+                     notes.append(f"judge_abstained:{atom.id}")
+         elif atom.kind == "hard":
+             refused = gate(atom.predicate_src) if atom.predicate_src else []
+@@ -249,6 +251,26 @@ def _classify(run: Run, context: AtomContext, cause_result: Any, marks: list[str
+     return klass, cause, suspected
+ 
+ 
++def _extra_failing_atom(verifier: Verifier, context: AtomContext) -> Optional[str]:
++    # One scorer (G3): covered writes are read off the Verifier atoms, as check_run does,
++    # because non-Hard atoms no longer evaluate wrote() and mark nothing covered. Verifiers
++    # with no structured write target (unit fixtures only) keep the covered-set check.
++    if context.write_tools is None:
++        return None
++    _has_targets = any(
++        _target.atom_payload(a).get("kind") in ("write", "write_value")
++        and a.kind != "forbidden" and not a.judge for a in verifier.atoms)
++    if _has_targets:
++        _fn = _target.canon_fn(context.rules if context.rules is not None else context._canon)
++        _tools = _target.scored_write_tools(verifier, context.run, context.write_tools)
++        _effects = _target.write_effects(context.run, _tools, _fn)
++        return _target._extra_write(verifier, _effects, context.write_tools)
++    extras = context.extra_writes()
++    if extras:
++        return f"extra_write:{extras[0]['name']}"
++    return None
++
++
+ def verdict(run_jsonl: Any, verifier: Verifier, canon: Any = None, judge_results: Optional[dict] = None,
+             *, environment: Any = None, runner_version: Optional[str] = None,
+             reference_path: Optional[Iterable[str]] = None, write_tools: Optional[Iterable[str]] = None,
+@@ -280,35 +302,20 @@ def verdict(run_jsonl: Any, verifier: Verifier, canon: Any = None, judge_results
+ 
+     failing_atom = None
+     not_verdicted = False
++    uneven = [atom for atom in unevaluable if not atom.judge]
++    extra_id = None if (failures or uneven) else _extra_failing_atom(verifier, context)
+     if failures:
+         first = failures[0]
+         failing_atom = first.id
+         notes.append(f"failing_atom:{first.id}: {first.description or first.predicate_src or first.kind}")
++    elif extra_id is not None and not uneven:
++        failing_atom = extra_id
++        notes.append(f"failing_atom:{failing_atom}: write not required and not allowed by any atom")
+     elif unevaluable:
+         first = unevaluable[0]
+         failing_atom, not_verdicted = first.id, True
+         notes.append(f"not_verdicted:{first.id}: a {first.kind} atom could not be evaluated")
+-    elif context.write_tools is not None:
+-        # One scorer (G3): covered writes are read off the Verifier atoms, as check_run does,
+-        # because non-Hard atoms no longer evaluate wrote() and mark nothing covered. Verifiers
+-        # with no structured write target (unit fixtures only) keep the covered-set check.
+-        _has_targets = any(
+-            _target.atom_payload(a).get("kind") in ("write", "write_value")
+-            and a.kind != "forbidden" for a in verifier.atoms)
+-        if _has_targets:
+-            _fn = _target.canon_fn(context.rules if context.rules is not None else context._canon)
+-            _tools = _target.scored_write_tools(verifier, context.run, context.write_tools)
+-            _effects = _target.write_effects(context.run, _tools, _fn)
+-            _extra = _target._extra_write(verifier, _effects, context.write_tools)
+-            if _extra is not None:
+-                failing_atom = _extra
+-                notes.append(f"failing_atom:{failing_atom}: write not required and not allowed by any atom")
+-        else:
+-            extras = context.extra_writes()
+-            if extras:
+-                failing_atom = f"extra_write:{extras[0]['name']}"
+-                notes.append(f"failing_atom:{failing_atom}: write not required and not allowed by any atom")
+-    else:
++    elif context.write_tools is None:
+         notes.append("side_effect_check_skipped")
+ 
+     marks = _env_marks(run, flagged_tools)
