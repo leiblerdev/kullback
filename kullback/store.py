@@ -211,6 +211,23 @@ def _sync_directory(parent: Path) -> None:
         os.close(fd)
 
 
+def _sync_ancestors(target: Path) -> None:
+    node = target.parent
+    while True:
+        parent = node.parent
+        if parent == node:
+            return
+        try:
+            same = parent.stat().st_dev == node.stat().st_dev
+            if same:
+                _sync_directory(parent)
+        except OSError as exc:
+            raise WriteDurabilityError(target) from exc
+        if not same:
+            return
+        node = parent
+
+
 def _stage_and_replace(target: Path, text: str) -> None:
     parent = target.parent
     parent.mkdir(parents=True, exist_ok=True)
@@ -346,4 +363,5 @@ class WorkdirStore:
             target = self._resolve(spec)
             _check_owner(target, spec)
             _stage_and_replace(target, text)
+            _sync_ancestors(target)
             return target

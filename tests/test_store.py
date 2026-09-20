@@ -777,3 +777,317 @@ def test_lock_state_shared_with_waiter(tmp_path):
     assert done.wait(timeout=20)
     worker.join(timeout=20)
     assert seen.get("acquired") is True
+
+
+def _trace_calls(monkeypatch, calls):
+    real_open = os.open
+    real_close = os.close
+    real_fsync = os.fsync
+    real_replace = os.replace
+    paths = {}
+
+    def _recording_open(path, flags, *args, **kwargs):
+        fd = real_open(path, flags, *args, **kwargs)
+        try:
+            paths[fd] = os.path.realpath(path)
+        except (OSError, TypeError, ValueError):
+            paths[fd] = "?"
+        return fd
+
+    def _recording_close(fd):
+        try:
+            return real_close(fd)
+        finally:
+            paths.pop(fd, None)
+
+    def _recording_fsync(fd):
+        try:
+            mode = os.fstat(fd).st_mode
+        except OSError:
+            return real_fsync(fd)
+        if stat.S_ISDIR(mode):
+            ftype = "dir"
+        elif stat.S_ISREG(mode):
+            ftype = "file"
+        else:
+            ftype = "other"
+        calls.append((ftype, paths.get(fd, "?")))
+        return real_fsync(fd)
+
+    def _recording_replace(src, dst):
+        calls.append(("replace", str(dst)))
+        return real_replace(src, dst)
+
+    monkeypatch.setattr(os, "open", _recording_open)
+    monkeypatch.setattr(os, "close", _recording_close)
+    monkeypatch.setattr(os, "fsync", _recording_fsync)
+    monkeypatch.setattr(os, "replace", _recording_replace)
+
+
+def _dir_fsyncs(calls):
+    return [path for ftype, path in calls if ftype == "dir"]
+
+
+def _fail_dir_at(monkeypatch, victim):
+    real_open = os.open
+    real_close = os.close
+    real_fsync = os.fsync
+    paths = {}
+
+    def _recording_open(path, flags, *args, **kwargs):
+        fd = real_open(path, flags, *args, **kwargs)
+        try:
+            paths[fd] = os.path.realpath(path)
+        except (OSError, TypeError, ValueError):
+            paths[fd] = "?"
+        return fd
+
+    def _recording_close(fd):
+        try:
+            return real_close(fd)
+        finally:
+            paths.pop(fd, None)
+
+    def _failing(fd):
+        try:
+            mode = os.fstat(fd).st_mode
+        except OSError:
+            return real_fsync(fd)
+        if stat.S_ISDIR(mode) and paths.get(fd, "?") == victim:
+            raise PermissionError("injected")
+        return real_fsync(fd)
+
+    monkeypatch.setattr(os, "open", _recording_open)
+    monkeypatch.setattr(os, "close", _recording_close)
+    monkeypatch.setattr(os, "fsync", _failing)
+
+
+def _ancestor_creator_worker(root_str, name, rel, ready_evt, go_evt):
+    from kullback.store import ArtifactSpec as _S
+    from kullback.store import WorkdirStore as _W
+
+    def _v(value):
+        if isinstance(value, bool) or not isinstance(value, int):
+            raise ValueError("bad int")
+        return value
+
+    ready_evt.set()
+    if not go_evt.wait(timeout=60):
+        raise RuntimeError("release timeout")
+    store = _W(root_str, [_S(name=name, path=rel, format=1, owner="o", validate=_v)])
+    store.write(name, 1)
+
+
+def test_ancestor_chain_existing_root_new_subdir(tmp_path, monkeypatch):
+    root = tmp_path / "w"
+    root.mkdir()
+    store = WorkdirStore(root, [ArtifactSpec(name="sub_a", path="sub/f.json", format=1, owner="o", validate=_check_int)])
+    calls = []
+    _trace_calls(monkeypatch, calls)
+    store.write("sub_a", 1)
+    assert store.read("sub_a").value == 1
+    dirs = _dir_fsyncs(calls)
+    sub = str((root / "sub").resolve())
+    work = str(root.resolve())
+    assert sub in dirs
+    assert work in dirs
+    assert dirs.index(sub) < dirs.index(work)
+    first_replace = next(i for i, entry in enumerate(calls) if entry[0] == "replace")
+    first_dir = next(i for i, entry in enumerate(calls) if entry[0] == "dir")
+    assert first_replace < first_dir
+
+
+def test_ancestor_chain_absent_workdir(tmp_path, monkeypatch):
+    parent = tmp_path / "parent"
+    parent.mkdir()
+    root = parent / "work"
+    store = WorkdirStore(root, [ArtifactSpec(name="first_b", path="round-journal/00000000000000000001.json", format=1, owner="o", validate=_check_int)])
+    calls = []
+    _trace_calls(monkeypatch, calls)
+    store.write("first_b", 1)
+    assert store.read("first_b").value == 1
+    dirs = _dir_fsyncs(calls)
+    assert str(root.resolve()) in dirs
+    assert str(parent.resolve()) in dirs
+
+
+def test_ancestor_chain_two_missing_levels(tmp_path, monkeypatch):
+    base = tmp_path / "base"
+    base.mkdir()
+    root = base / "mid" / "work"
+    store = WorkdirStore(root, [ArtifactSpec(name="two_c", path="f.json", format=1, owner="o", validate=_check_int)])
+    calls = []
+    _trace_calls(monkeypatch, calls)
+    store.write("two_c", 1)
+    assert store.read("two_c").value == 1
+    dirs = _dir_fsyncs(calls)
+    assert str((base / "mid").resolve()) in dirs
+    assert str(root.resolve()) in dirs
+    assert str(base.resolve()) in dirs
+
+
+def test_ancestor_chain_deep_bottom_up_no_duplicate(tmp_path, monkeypatch):
+    root = tmp_path / "w"
+    root.mkdir()
+    store = WorkdirStore(root, [ArtifactSpec(name="deep_d", path="a/b/c.json", format=1, owner="o", validate=_check_int)])
+    calls = []
+    _trace_calls(monkeypatch, calls)
+    store.write("deep_d", 1)
+    assert store.read("deep_d").value == 1
+    dirs = _dir_fsyncs(calls)
+    inner = str((root / "a" / "b").resolve())
+    mid = str((root / "a").resolve())
+    work = str(root.resolve())
+    assert inner in dirs and mid in dirs and work in dirs
+    assert dirs.index(inner) < dirs.index(mid) < dirs.index(work)
+    assert dirs.count(inner) == 1
+    first_replace = next(i for i, entry in enumerate(calls) if entry[0] == "replace")
+    first_dir = next(i for i, entry in enumerate(calls) if entry[0] == "dir")
+    assert first_replace < first_dir
+
+
+def test_ancestor_chain_top_level_syncs_parent(tmp_path, monkeypatch):
+    root = tmp_path / "w"
+    root.mkdir()
+    store = WorkdirStore(root, [ArtifactSpec(name="top_e", path="top.json", format=1, owner="o", validate=_check_int)])
+    calls = []
+    _trace_calls(monkeypatch, calls)
+    store.write("top_e", 1)
+    assert store.read("top_e").value == 1
+    dirs = _dir_fsyncs(calls)
+    assert str(root.resolve()) in dirs
+    assert str(tmp_path.resolve()) in dirs
+
+
+def test_ancestor_boundary_device_change(tmp_path, monkeypatch):
+    root = tmp_path / "w"
+    store = WorkdirStore(root, [ArtifactSpec(name="bound_f", path="sub/f.json", format=1, owner="o", validate=_check_int)])
+    store.write("bound_f", 1)
+    base = tmp_path.resolve()
+    real_stat = Path.stat
+
+    def _patched(self, *args, **kwargs):
+        result = real_stat(self, *args, **kwargs)
+        each = Path(self)
+        if each != base and base not in each.parents:
+            vals = list(result)
+            vals[2] = result.st_dev + 1
+            return os.stat_result(tuple(vals))
+        return result
+
+    monkeypatch.setattr(Path, "stat", _patched)
+    calls = []
+    _trace_calls(monkeypatch, calls)
+    store.write("bound_f", 2)
+    assert store.read("bound_f").value == 2
+    dirs = _dir_fsyncs(calls)
+    assert str(base) in dirs
+    for raw in dirs:
+        assert base == Path(raw) or base in Path(raw).parents
+
+
+def test_ancestor_boundary_filesystem_root(tmp_path, monkeypatch):
+    import kullback.store as store_module
+
+    recorded = []
+    real_sync = store_module._sync_directory
+
+    def _recording(path):
+        recorded.append(str(Path(path)))
+        return real_sync(path)
+
+    monkeypatch.setattr(store_module, "_sync_directory", _recording)
+    root = tmp_path / "w"
+    store = WorkdirStore(root, [ArtifactSpec(name="top_g", path="top.json", format=1, owner="o", validate=_check_int)])
+    store.write("top_g", 1)
+    assert store.read("top_g").value == 1
+    assert recorded[0] == str((root / "top.json").resolve().parent)
+    assert len(set(recorded)) == len(recorded)
+    for first, second in zip(recorded, recorded[1:], strict=False):
+        assert Path(second) == Path(first).parent
+    final = Path(recorded[-1])
+    if final.parent != final:
+        assert final.parent.stat().st_dev != final.stat().st_dev
+
+
+def test_ancestor_sync_failure_permission(tmp_path, monkeypatch):
+    from kullback.store import WriteDurabilityError
+
+    root = tmp_path / "w"
+    store = WorkdirStore(root, [ArtifactSpec(name="keep_h", path="keep.json", format=1, owner="o", validate=_check_int), ArtifactSpec(name="deep_h", path="a/b/c.json", format=1, owner="o", validate=_check_int)])
+    store.write("keep_h", 1)
+    store.write("deep_h", 1)
+    before = (root / "keep.json").read_bytes()
+    _fail_dir_at(monkeypatch, str(root.resolve()))
+    with pytest.raises(WriteDurabilityError) as excinfo:
+        store.write("deep_h", 2)
+    assert excinfo.value.replaced is True
+    assert excinfo.value.durability == "unknown"
+    assert isinstance(excinfo.value.__cause__, PermissionError)
+    raw = json.loads((root / "a" / "b" / "c.json").read_text(encoding="utf-8"))
+    assert raw["value"] == 2
+    assert (root / "keep.json").read_bytes() == before
+
+
+def test_ancestor_retry_resyncs_existing_dirs(tmp_path, monkeypatch):
+    from kullback.store import WriteDurabilityError
+
+    root = tmp_path / "w"
+    store = WorkdirStore(root, [ArtifactSpec(name="deep_i", path="a/b/c.json", format=1, owner="o", validate=_check_int)])
+    store.write("deep_i", 1)
+    _fail_dir_at(monkeypatch, str(root.resolve()))
+    with pytest.raises(WriteDurabilityError):
+        store.write("deep_i", 2)
+    monkeypatch.undo()
+    calls = []
+    _trace_calls(monkeypatch, calls)
+    store.write("deep_i", 3)
+    assert store.read("deep_i").value == 3
+    dirs = _dir_fsyncs(calls)
+    assert str((root / "a" / "b").resolve()) in dirs
+    assert str((root / "a").resolve()) in dirs
+    assert str(root.resolve()) in dirs
+
+
+def test_ancestor_cooperative_creators_same_workdir(tmp_path):
+    root = tmp_path / "race"
+    ctx = multiprocessing.get_context("spawn")
+    ready_first = ctx.Event()
+    ready_second = ctx.Event()
+    go = ctx.Event()
+    first = ctx.Process(target=_ancestor_creator_worker, args=(str(root), "r1", "r1.json", ready_first, go))
+    second = ctx.Process(target=_ancestor_creator_worker, args=(str(root), "r2", "r2.json", ready_second, go))
+    try:
+        first.start()
+        second.start()
+        assert ready_first.wait(timeout=20)
+        assert ready_second.wait(timeout=20)
+        go.set()
+        first.join(timeout=60)
+        second.join(timeout=60)
+    finally:
+        for proc in (first, second):
+            if proc.is_alive():
+                proc.terminate()
+                proc.join(timeout=10)
+    assert first.exitcode == 0
+    assert second.exitcode == 0
+    check = WorkdirStore(root, [ArtifactSpec(name="r1", path="r1.json", format=1, owner="o", validate=_check_int), ArtifactSpec(name="r2", path="r2.json", format=1, owner="o", validate=_check_int)])
+    assert check.read("r1").status == "ok"
+    assert check.read("r1").value == 1
+    assert check.read("r2").status == "ok"
+    assert check.read("r2").value == 1
+
+
+def test_ancestor_root_equality_no_stat_no_sync(monkeypatch):
+    import kullback.store as store_module
+
+    def _no_stat(self, *args, **kwargs):
+        raise AssertionError("stat must not be called")
+
+    def _no_sync(path):
+        raise AssertionError("sync must not be called")
+
+    monkeypatch.setattr(Path, "stat", _no_stat)
+    monkeypatch.setattr(store_module, "_sync_directory", _no_sync)
+    store_module._sync_ancestors(Path("/probe.json"))
