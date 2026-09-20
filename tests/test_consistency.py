@@ -281,3 +281,109 @@ def test_mutating_result_items_does_not_leak_into_next_call():
     second = shrink_sequence(seq, lambda s: True, max_evaluations=1)
     assert second.subsequence == ({"v": 1}, {"v": 2})
     assert second.subsequence[0] == {"v": 1}
+
+
+def test_shared_identity_across_entries_is_preserved():
+    shared = {"value": 1}
+    seq = [shared, shared]
+    assert seq[0] is seq[1]
+
+    def fails(candidate):
+        items = list(candidate)
+        return len(items) == 2 and items[0] is items[1]
+
+    result = shrink_sequence(seq, fails, max_evaluations=100)
+    assert result.status == SHORTEST_SUBSEQUENCE
+    assert result.indices == (0, 1)
+    assert len(result.subsequence) == 2
+    assert result.subsequence[0] is result.subsequence[1]
+    assert list(result.subsequence) == [{"value": 1}, {"value": 1}]
+    assert fails(list(result.subsequence)) is True
+
+
+def test_shortest_proper_subsequence_needs_alias_identity():
+    shared = {"value": 1}
+    other = {"value": 1}
+    assert shared == other
+    assert shared is not other
+    seq = [shared, shared, other]
+
+    def fails(candidate):
+        items = list(candidate)
+        for i in range(len(items)):
+            for j in range(i + 1, len(items)):
+                if items[i] is items[j]:
+                    return True
+        return False
+
+    result = shrink_sequence(seq, fails, max_evaluations=100)
+    assert result.status == SHORTEST_SUBSEQUENCE
+    assert result.indices == (0, 1)
+    assert result.evaluations == 6
+    assert result.subsequence[0] is result.subsequence[1]
+    assert fails(list(result.subsequence)) is True
+
+
+def test_nested_shared_reference_is_preserved():
+    inner = {"v": 1}
+    seq = [{"a": inner}, {"b": inner}]
+
+    def fails(candidate):
+        items = list(candidate)
+        return len(items) == 2 and items[0]["a"] is items[1]["b"]
+
+    result = shrink_sequence(seq, fails, max_evaluations=100)
+    assert result.status == SHORTEST_SUBSEQUENCE
+    assert result.indices == (0, 1)
+    assert result.subsequence[0]["a"] is result.subsequence[1]["b"]
+    assert list(result.subsequence) == [{"a": {"v": 1}}, {"b": {"v": 1}}]
+    assert fails(list(result.subsequence)) is True
+
+
+def test_cyclic_alias_is_preserved():
+    node: dict = {}
+    node["me"] = node
+    seq = [node, node]
+    assert seq[0] is seq[1]
+
+    def fails(candidate):
+        items = list(candidate)
+        return len(items) == 2 and items[0] is items[1] and items[0]["me"] is items[0]
+
+    result = shrink_sequence(seq, fails, max_evaluations=100)
+    assert result.status == SHORTEST_SUBSEQUENCE
+    assert result.indices == (0, 1)
+    assert result.subsequence[0] is result.subsequence[1]
+    assert result.subsequence[0]["me"] is result.subsequence[0]
+    assert fails(list(result.subsequence)) is True
+
+
+def test_mutating_shared_probe_stays_isolated():
+    shared = {"v": 1}
+    seq = [shared, shared]
+    seen: list = []
+
+    def fails(candidate):
+        items = list(candidate)
+        if len(items) == 2:
+            alias = items[0] is items[1]
+            seen.append((alias, items[0]["v"]))
+            items[0]["v"] = 999
+            items.append("junk")
+            return alias and seen[-1][1] == 1
+        if len(items) > 0:
+            seen.append((None, items[0]["v"]))
+            items[0]["v"] = 999
+            items.append("junk")
+        return False
+
+    result = shrink_sequence(seq, fails, max_evaluations=100)
+    assert seq[0] == {"v": 1}
+    assert seq[1] == {"v": 1}
+    assert seq[0] is seq[1]
+    assert len(seen) > 0
+    assert all(value == 1 for _, value in seen)
+    assert result.status == SHORTEST_SUBSEQUENCE
+    assert result.indices == (0, 1)
+    assert result.subsequence[0] is result.subsequence[1]
+    assert result.subsequence[0] == {"v": 1}

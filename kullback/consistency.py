@@ -29,6 +29,10 @@ def _detached(items: list) -> tuple:
     return tuple(copy.deepcopy(items))
 
 
+def _candidate(snapshot: list, indices: tuple) -> list:
+    return copy.deepcopy([snapshot[i] for i in indices])
+
+
 def shrink_sequence(
     sequence: Sequence[Any],
     fails: Callable[[list[Any]], Any],
@@ -42,7 +46,7 @@ def shrink_sequence(
     total = len(snapshot)
     full = tuple(range(total))
     evaluations = 1
-    if not fails([copy.deepcopy(snapshot[i]) for i in full]):
+    if not fails(_candidate(snapshot, full)):
         return ShrinkResult(
             subsequence=_detached(snapshot),
             indices=full,
@@ -60,7 +64,7 @@ def shrink_sequence(
                     status=BUDGET_LIMITED,
                 )
             evaluations += 1
-            if fails([copy.deepcopy(snapshot[i]) for i in combo]):
+            if fails(_candidate(snapshot, combo)):
                 return ShrinkResult(
                     subsequence=_detached([snapshot[i] for i in combo]),
                     indices=combo,
