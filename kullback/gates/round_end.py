@@ -220,6 +220,28 @@ def fidelity_rate_flat(rounds: list[dict], flat_rounds: int) -> bool:
     return recent_rate <= before_rate
 
 
+def _goal_exit(last: Any, *, fidelity_rate_goal: float, trusted_share_goal: float) -> Optional[str]:
+    if goal_met(last, fidelity_rate_goal=fidelity_rate_goal, trusted_share_goal=trusted_share_goal):
+        return "done"
+    if int(last.get("refused_count") or 0) > 0:
+        return "refused"
+    return None
+
+
+def _stop_reading(last: Any) -> str:
+    total = last.get("tasks")
+    rate = fidelity_rate(last)
+    share = trusted_share(last)
+    return ("fidelity %s of %s (rate %s), trusted %s of %s (share %s), refused %s, "
+            "probes passing %s, unfinished %s" % (
+                last.get("fidelity", 0), total if total else "?",
+                ("%.2f" % rate) if rate is not None else "?",
+                last.get("trusted", 0), total if total else "?",
+                ("%.2f" % share) if share is not None else "?",
+                last.get("refused_count", 0), last.get("probes_passing", 0),
+                len(last.get("unfinished") or [])))
+
+
 def exit_for(rounds: list[dict], stall_rounds: int, *, ceiling_reached: bool,
              exhausted: list[bool], all_rounds: Optional[list[dict]] = None,
              fidelity_stall: Optional[int] = None, max_rounds: Optional[int] = None,
@@ -245,11 +267,10 @@ def exit_for(rounds: list[dict], stall_rounds: int, *, ceiling_reached: bool,
     if ceiling_reached or (len(exhausted) >= 2 and exhausted[-1] and exhausted[-2]):
         return "ceiling"
     if rounds and done(rounds[-1]):
-        last = _counts(rounds[-1])
-        if goal_met(last, fidelity_rate_goal=fidelity_rate_goal, trusted_share_goal=trusted_share_goal):
-            return "done"
-        if int(last.get("refused_count") or 0) > 0:
-            return "refused"
+        decided = _goal_exit(_counts(rounds[-1]), fidelity_rate_goal=fidelity_rate_goal,
+                             trusted_share_goal=trusted_share_goal)
+        if decided is not None:
+            return decided
     if stalled(rounds, stall_rounds):
         return "stalled"
     if fidelity_stall and fidelity_rate_flat(history, fidelity_stall):
@@ -273,17 +294,7 @@ def exit_reason(rounds: list[dict], stall_rounds: int, *, ceiling_reached: bool,
                     fidelity_rate_goal=fidelity_rate_goal, trusted_share_goal=trusted_share_goal)
     last = _counts(rounds[-1]) if rounds else {}
     history = list(all_rounds) if all_rounds is not None else list(rounds)
-    total = last.get("tasks")
-    rate = fidelity_rate(last)
-    share = trusted_share(last)
-    reading = ("fidelity %s of %s (rate %s), trusted %s of %s (share %s), refused %s, "
-               "probes passing %s, unfinished %s" % (
-                   last.get("fidelity", 0), total if total else "?",
-                   ("%.2f" % rate) if rate is not None else "?",
-                   last.get("trusted", 0), total if total else "?",
-                   ("%.2f" % share) if share is not None else "?",
-                   last.get("refused_count", 0), last.get("probes_passing", 0),
-                   len(last.get("unfinished") or [])))
+    reading = _stop_reading(last)
     if exit == "ceiling":
         return "ceiling: the build ceiling was reached or the allowance ran out twice; " + reading
     if exit == "done":
