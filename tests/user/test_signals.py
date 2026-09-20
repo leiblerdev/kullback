@@ -474,3 +474,69 @@ def test_signal_module_boundary():
     assert "verdict" not in text
     assert "kullback.gates" not in text
     assert "end_of_run" not in text
+
+
+def test_labels_tuple_first_valid_wins_with_invalid_first():
+    content = "I am leaving now"
+    trace = _trace("t", [_turn(0, "user", content)])
+    bad = {
+        "kind": "why_left",
+        "span": {"turn_idx": 0, "start": 0, "end": 99, "quote": content},
+    }
+    good = _label("why_left", 0, content, "leaving now")
+    sig = mine_signal(trace, labels=(bad, good))
+    assert sig.why_left.quote == "leaving now"
+    assert [(d.kind, d.reason) for d in sig.dropped] == [("why_left", "bad_bounds")]
+
+
+def test_labels_list_duplicate_record_order():
+    content = "I am leaving now"
+    trace = _trace("t", [_turn(0, "user", content)])
+    first = _label("why_left", 0, content, "leaving now")
+    second = _label("why_left", 0, content, "leaving")
+    sig = mine_signal(trace, labels=[first, second])
+    assert sig.why_left.quote == "leaving now"
+    assert [(d.kind, d.reason) for d in sig.dropped] == [("why_left", "duplicate")]
+
+
+def test_labels_reversed_order_changes_winner():
+    content = "I am leaving now"
+    trace = _trace("t", [_turn(0, "user", content)])
+    first = _label("why_left", 0, content, "leaving now")
+    second = _label("why_left", 0, content, "leaving")
+    fwd = mine_signal(trace, labels=[first, second])
+    rev = mine_signal(trace, labels=[second, first])
+    assert fwd.why_left.quote == "leaving now"
+    assert rev.why_left.quote == "leaving"
+
+
+def test_labels_unordered_containers_rejected_before_adjudication():
+    content = "I am leaving now"
+    trace = _trace("t", [_turn(0, "user", content)])
+    good = ModelLabel.model_validate(_label("why_left", 0, content, "leaving now"))
+    with pytest.raises(TypeError):
+        mine_signal(trace, labels=set())
+    with pytest.raises(TypeError):
+        mine_signal(trace, labels={good})
+    with pytest.raises(TypeError):
+        mine_signal(trace, labels=frozenset([good]))
+    with pytest.raises(TypeError):
+        mine_signal(trace, labels={"why_left": _label("why_left", 0, content, "leaving now")})
+    with pytest.raises(TypeError):
+        mine_signal(trace, labels=dict(_label("why_left", 0, content, "leaving now")))
+    poison = _trace(
+        "t",
+        [_turn(0, "user", "a"), _turn(1, "user", "first"), _turn(1, "assistant", "second")],
+    )
+    with pytest.raises(TypeError):
+        mine_signal(poison, labels={good})
+
+
+def test_labels_string_bytes_rejected():
+    trace = _trace("t", [_turn(0, "user", "hi")])
+    with pytest.raises(TypeError):
+        mine_signal(trace, labels="why_left")
+    with pytest.raises(TypeError):
+        mine_signal(trace, labels=b"why_left")
+    with pytest.raises(TypeError):
+        mine_signal(trace, labels=bytearray(b"why_left"))
