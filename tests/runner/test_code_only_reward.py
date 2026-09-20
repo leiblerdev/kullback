@@ -542,3 +542,271 @@ def test_extra_write_dominates_a_must_hold_judge():
     assert out.passed is False
     assert out.class_ == "fail"
     assert out.failing_atom == "extra_write:purge_entry"
+
+
+def _unmarked_write_run() -> Run:
+    return _make_run(
+        "r1",
+        [
+            _user("Please archive entry E-100."),
+            _ev("tool_call", id="c1", name="archive_entry",
+                args={"entry_id": "E-100"}),
+            _result({"entry_id": "E-100", "archived": True}, cid="c1"),
+            _assistant("Done, entry E-100 is archived."),
+        ],
+    )
+
+
+def _unmarked_purge_run() -> Run:
+    return _make_run(
+        "r2",
+        [
+            _user("Please purge entry E-100."),
+            _ev("tool_call", id="c1", name="purge_entry",
+                args={"entry_id": "E-100"}),
+            _result({"entry_id": "E-100", "purged": True}, cid="c1"),
+            _assistant("Done."),
+        ],
+    )
+
+
+def test_required_judge_write_detected_without_metadata_or_kind():
+    verifier = Verifier(
+        task_id="t9",
+        verifier_version="v1",
+        atoms=[S.make_atom("j0", "required",
+                           {"kind": "write", "tool": "archive_entry",
+                            "entity": _entity("E-100")}, judge=True)],
+    )
+    assert S.check_run(verifier, _unmarked_write_run()) == (
+        False, "extra_write:archive_entry")
+    out = verdict(_unmarked_write_run(), verifier, judge_results={"j0": True})
+    assert out.passed is False
+    assert out.class_ == "fail"
+    assert out.failing_atom == "extra_write:archive_entry"
+
+
+def test_allowed_judge_write_detected_without_metadata_or_kind():
+    verifier = Verifier(
+        task_id="t9",
+        verifier_version="v1",
+        atoms=[S.make_atom("j0", "allowed",
+                           {"kind": "write", "tool": "purge_entry",
+                            "entity": _entity("E-100")}, judge=True)],
+    )
+    assert S.check_run(verifier, _unmarked_purge_run()) == (
+        False, "extra_write:purge_entry")
+    out = verdict(_unmarked_purge_run(), verifier, judge_results={"j0": True})
+    assert out.passed is False
+    assert out.class_ == "fail"
+    assert out.failing_atom == "extra_write:purge_entry"
+    control = Verifier(
+        task_id="t9",
+        verifier_version="v1",
+        atoms=[
+            S.make_atom("a0", "allowed",
+                        {"kind": "write", "tool": "purge_entry",
+                         "entity": _entity("E-100")}),
+            S.make_atom("j0", "allowed",
+                        {"kind": "write", "tool": "purge_entry",
+                         "entity": _entity("E-100")}, judge=True),
+        ],
+    )
+    assert S.check_run(control, _unmarked_purge_run()) == (True, None)
+    cout = verdict(_unmarked_purge_run(), control, judge_results={"j0": True})
+    assert cout.passed is True
+    assert cout.class_ == "pass"
+    assert cout.failing_atom is None
+
+
+def test_no_write_judge_only_without_metadata_stays_unscoreable():
+    verifier = Verifier(
+        task_id="t9",
+        verifier_version="v1",
+        atoms=[S.make_atom("j0", "required",
+                           {"kind": "write", "tool": "archive_entry",
+                            "entity": _entity("E-100")}, judge=True)],
+    )
+    assert S.check_run(verifier, _quiet_run()) == (False, "j0")
+    out = verdict(_quiet_run(), verifier, judge_results={"j0": True})
+    assert out.passed is False
+    assert out.class_ == "not_verdicted"
+    assert out.failing_atom == "j0"
+
+
+_MISSING = object()
+
+
+def _malformed_judge_verifier(tool):
+    payload = {"kind": "write", "entity": _entity("E-100")}
+    if tool is not _MISSING:
+        payload["tool"] = tool
+    return Verifier(
+        task_id="t9",
+        verifier_version="v1",
+        atoms=[Atom(id="j0", kind="required", judge=True, target=payload)],
+    )
+
+
+@pytest.mark.parametrize("bad_tool", [["archive_entry"], {"tool": "archive_entry"}, 42, "", None,
+                                         _MISSING],
+                         ids=["list", "dict", "numeric", "empty", "none", "missing"])
+def test_malformed_judge_tool_grants_no_detection_and_never_crashes(bad_tool):
+    verifier = _malformed_judge_verifier(bad_tool)
+    assert S.check_run(verifier, _quiet_run()) == (False, "j0")
+    quiet = verdict(_quiet_run(), verifier, judge_results={"j0": True})
+    assert quiet.passed is False
+    assert quiet.class_ == "not_verdicted"
+    assert quiet.failing_atom == "j0"
+    assert S.check_run(verifier, _unmarked_write_run()) == (False, "j0")
+    out = verdict(_unmarked_write_run(), verifier, judge_results={"j0": True})
+    assert out.passed is False
+    assert out.class_ == "not_verdicted"
+    assert out.failing_atom == "j0"
+    assert S.check_run(verifier, _quiet_run(), write_tools=WRITE_TOOLS) == (False, "j0")
+    explicit = verdict(_unmarked_write_run(), verifier, write_tools=WRITE_TOOLS,
+                       judge_results={"j0": True})
+    assert explicit.passed is False
+    assert explicit.class_ == "fail"
+    assert explicit.failing_atom == "extra_write:archive_entry"
+
+
+def test_code_failure_dominates_a_malformed_judge_tool():
+    verifier = Verifier(
+        task_id="t9",
+        verifier_version="v1",
+        atoms=[
+            S.make_atom("w0", "required",
+                        {"kind": "write", "tool": "archive_entry", "entity": "E-888"}),
+            S.make_atom("j0", "required",
+                        {"kind": "write", "tool": ["archive_entry"],
+                         "entity": _entity("E-100")}, judge=True),
+        ],
+    )
+    assert S.check_run(verifier, _unmarked_write_run()) == (False, "w0")
+    out = verdict(_unmarked_write_run(), verifier, judge_results={"j0": True})
+    assert out.passed is False
+    assert out.class_ == "fail"
+    assert out.failing_atom == "w0"
+
+
+def test_malformed_judge_stays_unscoreable_when_code_holds():
+    verifier = Verifier(
+        task_id="t9",
+        verifier_version="v1",
+        atoms=[
+            S.make_atom("w0", "required",
+                        {"kind": "write", "tool": "archive_entry",
+                         "entity": _entity("E-100")}),
+            S.make_atom("j0", "required",
+                        {"kind": "write", "tool": ["archive_entry"],
+                         "entity": _entity("E-100")}, judge=True),
+        ],
+    )
+    assert S.check_run(verifier, _unmarked_write_run()) == (False, "j0")
+    out = verdict(_unmarked_write_run(), verifier, judge_results={"j0": True})
+    assert out.passed is False
+    assert out.class_ == "not_verdicted"
+    assert out.failing_atom == "j0"
+
+
+def _side_effects(out) -> str:
+    return next(note for note in out.notes if note.startswith("side_effects="))
+
+
+def _unmarked_double_write_run() -> Run:
+    return _make_run(
+        "r3",
+        [
+            _user("Please archive entry E-100."),
+            _ev("tool_call", id="c1", name="archive_entry",
+                args={"entry_id": "E-100"}),
+            _result({"entry_id": "E-100", "archived": True}, cid="c1"),
+            _ev("tool_call", id="c2", name="archive_entry",
+                args={"entry_id": "E-100"}),
+            _result({"entry_id": "E-100", "archived": True}, cid="c2"),
+            _assistant("Done."),
+        ],
+    )
+
+
+def _unmarked_mixed_write_run() -> Run:
+    return _make_run(
+        "r4",
+        [
+            _user("Please archive entry E-100."),
+            _ev("tool_call", id="c1", name="archive_entry",
+                args={"entry_id": "E-100"}),
+            _ev("tool_result", id="c1", result=None, error={"class": "body_fault"}),
+            _ev("tool_call", id="c2", name="archive_entry",
+                args={"entry_id": "E-100"}),
+            _result({"entry_id": "E-100", "archived": True}, cid="c2"),
+            _assistant("Done."),
+        ],
+    )
+
+
+def test_detected_extra_write_counts_one_side_effect():
+    verifier = Verifier(
+        task_id="t9",
+        verifier_version="v1",
+        atoms=[S.make_atom("j0", "required",
+                           {"kind": "write", "tool": "archive_entry",
+                            "entity": _entity("E-100")}, judge=True)],
+    )
+    out = verdict(_unmarked_write_run(), verifier, judge_results={"j0": True})
+    assert out.passed is False
+    assert out.class_ == "fail"
+    assert out.failing_atom == "extra_write:archive_entry"
+    assert _side_effects(out) == "side_effects=1"
+
+
+def test_detected_extra_write_counts_repeated_calls():
+    verifier = Verifier(
+        task_id="t9",
+        verifier_version="v1",
+        atoms=[S.make_atom("j0", "required",
+                           {"kind": "write", "tool": "archive_entry",
+                            "entity": _entity("E-100")}, judge=True)],
+    )
+    out = verdict(_unmarked_double_write_run(), verifier, judge_results={"j0": True})
+    assert out.passed is False
+    assert out.class_ == "fail"
+    assert out.failing_atom == "extra_write:archive_entry"
+    assert _side_effects(out) == "side_effects=2"
+
+
+def test_detected_extra_write_skips_failed_calls():
+    verifier = Verifier(
+        task_id="t9",
+        verifier_version="v1",
+        atoms=[S.make_atom("j0", "required",
+                           {"kind": "write", "tool": "archive_entry",
+                            "entity": _entity("E-100")}, judge=True)],
+    )
+    out = verdict(_unmarked_mixed_write_run(), verifier, judge_results={"j0": True})
+    assert out.passed is False
+    assert out.class_ == "fail"
+    assert out.failing_atom == "extra_write:archive_entry"
+    assert _side_effects(out) == "side_effects=1"
+
+
+def test_covered_write_counts_side_effect_without_extra():
+    verifier = Verifier(
+        task_id="t9",
+        verifier_version="v1",
+        atoms=[
+            S.make_atom("a0", "allowed",
+                        {"kind": "write", "tool": "archive_entry",
+                         "entity": _entity("E-100")}),
+            S.make_atom("j0", "allowed",
+                        {"kind": "write", "tool": "archive_entry",
+                         "entity": _entity("E-100")}, judge=True),
+        ],
+    )
+    assert S.check_run(verifier, _unmarked_write_run()) == (True, None)
+    out = verdict(_unmarked_write_run(), verifier, judge_results={"j0": True})
+    assert out.passed is True
+    assert out.class_ == "pass"
+    assert out.failing_atom is None
+    assert _side_effects(out) == "side_effects=1"
