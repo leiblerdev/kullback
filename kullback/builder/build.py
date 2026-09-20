@@ -1554,6 +1554,17 @@ def _refuse_stand_in(router: Any) -> None:
         raise ValueError("a scored Run cannot use a Router carrying a model stand-in (G28)")
 
 
+def _replay_context(toolkit: Any, trace: Any, schema: Any) -> dict:
+    if trace is None or not hasattr(replay_mod.ScoredRouter, "_feed_context"):
+        return {}
+    feeds = compile_env.recorded_call_contexts(trace.tool_calls, schema)
+
+    def before_call(call: Any) -> None:
+        toolkit.ctx.feed_call(feeds.get(getattr(call, "id", None), {}))
+
+    return {"before_call": before_call}
+
+
 def _replay_stage(judging: Optional[SemanticJudging] = None, only: Optional[Iterable[str]] = None):
     """Every Trace of every Task replayed through the built tools: the Reference Runs and Gate A (D108).
 
@@ -1622,6 +1633,9 @@ def _replay_stage(judging: Optional[SemanticJudging] = None, only: Optional[Iter
                 # One fresh world per Trace: a replay must not see what the previous one wrote.
                 toolkit = compile_env.load_toolkit(source, json.loads(json.dumps(db)), overlay=overlay,
                                                    overlay_values=overlay_rows)
+                # Each recorded call receives its own feed before the body runs.
+                # Calls with no witnessed value use the seeded context.
+                context_kwargs = _replay_context(toolkit, trace, schema)
                 router = route.Router(env_tools_module=toolkit, starting_state=json.loads(json.dumps(db)),
                                       overlay=overlay, overlay_rows=overlay_rows, tool_sigs=sigs,
                                       canon_rules=canon_rules, synthetic_rows=schema.synthetic_rows)
@@ -1630,7 +1644,8 @@ def _replay_stage(judging: Optional[SemanticJudging] = None, only: Optional[Iter
                                                  task_id=task.id, env_id=env_id, write_tools=write_tools,
                                                  canon_rules=canon_rules, comparer=comparer,
                                                  effects=effect_rows,
-                                                 holdout_values=holdout_vals)
+                                                 holdout_values=holdout_vals,
+                                                 **context_kwargs)
                 replays.setdefault(task.id, {})[trace_id] = result.as_dict()
         _write_json(ctx.workdir / "replays.json", replays)
         _write_json(ctx.workdir / HOLDOUT_ANSWERS_FILE, holdout_answers(replays, ctx.anchor))
@@ -1660,7 +1675,7 @@ def _replay_stage(judging: Optional[SemanticJudging] = None, only: Optional[Iter
     # The judge's identity and the equivalence table's version ride in the key beside the verdict
     # format: a replay scored with no judge and one scored with a judge are different readings of
     # the same bytes, and a cache that cannot tell them apart hands back the unjudged one (D219).
-    version = (f"{_version('replay_reference', run, replay_mod, fidelity, compile_env, route, loop, tool_runs, effects_mod, repair, verifier_suite, canon, judge_mod, records_mod, helpers=(holdout_answers, holdout_world, replay_failures_of, replay_difference, _effect_sentence, _refuse_stand_in, _write_runs_index, with_synthetic_rows, SemanticJudging.save, SemanticJudging._ask, SemanticJudging._answer, SemanticJudging.__init__, SemanticJudging.judge.fget, _gate_for, _memo_get, _memo_put, _count_judgement, _save_table))}"
+    version = (f"{_version('replay_reference', run, replay_mod, fidelity, compile_env, route, loop, tool_runs, effects_mod, repair, verifier_suite, canon, judge_mod, records_mod, helpers=(holdout_answers, holdout_world, replay_failures_of, replay_difference, _effect_sentence, _refuse_stand_in, _replay_context, _write_runs_index, with_synthetic_rows, SemanticJudging.save, SemanticJudging._ask, SemanticJudging._answer, SemanticJudging.__init__, SemanticJudging.judge.fget, _gate_for, _memo_get, _memo_put, _count_judgement, _save_table))}"
                f":verdicts={replay_mod.VERDICT_FORMAT}"
                f":judge={judging.identity}:equivalence={judging.table.version}"
                f":EFFECTS_FILE={EFFECTS_FILE}:EQUIVALENCE_FILE={EQUIVALENCE_FILE}"
@@ -2188,6 +2203,10 @@ def _candidate_run_once(workdir: Path, task: Task, model: Any, *, ctx: dict, num
     toolkit = compile_env.load_toolkit(ctx["source"], json.loads(json.dumps(ctx["db"])),
                                        overlay=ctx["overlay"],
                                        overlay_values=json.loads(json.dumps(ctx["overlay_rows"])))
+    # Off the recorded path the context draws from the Run's own seed, so the same seed draws
+    # the same Run: a fresh toolkit per Run means the step restarts with it.
+    run_seed = sampling.sample_seed(RUN_SEED_KIND, run_id, ctx["salt"])
+    toolkit.ctx.reseed(run_seed)
     router = route.Router(env_tools_module=toolkit, starting_state=json.loads(json.dumps(ctx["db"])),
                           overlay=ctx["overlay"], overlay_rows=ctx["overlay_rows"],
                           tool_sigs=ctx["sigs"], canon_rules=ctx["canon_rules"],
@@ -2203,7 +2222,7 @@ def _candidate_run_once(workdir: Path, task: Task, model: Any, *, ctx: dict, num
     state = loop.new_run_state(run_id, workdir=workdir / "runs" / task.id, env_id=ctx["env_id"],
                                task_id=task.id,
                                model=getattr(model, "name", None) or (prefix or "candidate"),
-                               seed=sampling.sample_seed(RUN_SEED_KIND, run_id, ctx["salt"]),
+                               seed=run_seed,
                                user=simulated, user_rules=ctx["rules"], max_turns=ctx["max_turns"],
                                system_prompt=ctx["system_prompt"])
     try:
@@ -2291,6 +2310,11 @@ def _system_prompt_for(task: Task, traces: dict, policy_text: Optional[str] = No
     return policy_text or None
 
 
+def _probe_seed(workdir: Path, task_id: str) -> int:
+    return sampling.sample_seed(
+        RUN_SEED_KIND, f"probe-{task_id}", sampling.read_salt(workdir) or sampling.DEFAULT_SALT)
+
+
 def probe_runner(plan: BuildPlan):
     """Check 6's Run as a callable for the Examiner: the model told to reach the Task's End state while
     skipping the policy step (D120: the Runner is a tool of both agents, its inputs the Builder's).
@@ -2328,6 +2352,8 @@ def probe_runner(plan: BuildPlan):
         rules = user_rules.get(reference["trace_id"]) if reference else None
         writes = {sig.name for sig in sigs if getattr(sig, "kind", None) == "write"}
         recorded = traces.get(reference["trace_id"]) if reference else None
+        probe_seed = _probe_seed(workdir, task.id)
+        toolkit.ctx.reseed(probe_seed)
         members = _members_of(task, traces)
         simulated = user_sim.SimulatedUser(
             rules, starting_state_reader=router.state, vocab=_vocab_from(workdir),
@@ -2338,6 +2364,7 @@ def probe_runner(plan: BuildPlan):
         ) if rules else None
         state = loop.new_run_state(f"probe-{task.id}", workdir=workdir / "probes", env_id=env_id,
                                    task_id=task.id, model=f"probe:{getattr(model, 'name', 'model')}",
+                                   seed=probe_seed,
                                    user=simulated, max_turns=PROBE_TURNS,
                                    system_prompt=_probe_prompt(task, verifier, sigs))
         try:
@@ -2458,6 +2485,10 @@ def variant_runner(plan: BuildPlan):
         overlay, overlay_rows = compile_env.load_overlay(workdir, task_id)
         toolkit = compile_env.load_toolkit(source, json.loads(json.dumps(db)), overlay=overlay,
                                            overlay_values=overlay_rows)
+        # A synthesised variant runs off the recorded path, so the context draws from the Run's
+        # own seed: the same variant id under the same salt draws the same values.
+        toolkit.ctx.reseed(sampling.sample_seed(
+            RUN_SEED_KIND, run_id, sampling.read_salt(workdir) or sampling.DEFAULT_SALT))
         router = route.Router(env_tools_module=toolkit, starting_state=json.loads(json.dumps(db)),
                               overlay=overlay, overlay_rows=overlay_rows, tool_sigs=sigs,
                               canon_rules=canon_rules, synthetic_rows=schema.synthetic_rows)

@@ -1922,6 +1922,218 @@ except ImportError:
 '''
 
 
+_CONTEXT_SHIM = '''class ToolContext:
+    """The call's time, randomness and new ids, behind one interface.
+
+    Every tool body reaches this as self.ctx, so no body signature changes. Three feeds
+    sit behind the one interface, and a body cannot tell which feed answered. At replay
+    and in the build gates the values the recording witnessed for the call are fed in
+    (the new row's id the recording shows, the time the recording shows). Off the
+    recorded path the values are drawn from the Run's seed, so the same seed draws the
+    same Run. Where a recorded call witnessed no value, the seeded feed answers and the
+    serving is counted as seeded.
+
+    The draws are pure functions of the seed and the step: each serving call advances
+    the step once, whatever feed answered, so the step sequence of a Run never depends
+    on which feed any call landed on. now() off the path is a calendar date in 2024
+    fixed by the seed and the step, never the wall clock. random() is always seeded.
+    new_id(table) off the path mints an id shaped like the ids the table already
+    holds (a numeric sequence continues, a fixed shape draws per position from the
+    observed alphabet, a table with no rows mints under the prefix new_), and an id
+    that collides with a row the table holds is drawn again.
+    """
+
+    _MASK64 = (1 << 64) - 1
+    _MIX1 = 0x9E3779B97F4A7C15
+    _A = 0xBF58476D1CE4E5B9
+    _B = 0x94D049BB133111EB
+
+    def __init__(self, db, seed=0):
+        self._db = db
+        self._seed = int(seed) & self._MASK64
+        self._step = 0
+        self._recorded_ids = {}
+        self._id_cursors = {}
+        self._recorded_times = []
+        self._time_cursor = 0
+        self._current = None
+        self._issued = {}
+        self._served_recorded = 0
+        self._served_seeded = 0
+
+    def feed_call(self, feed):
+        """Serve one recorded call's witnessed values until the next feed arrives."""
+        feed = feed or {}
+        self._current = {"now": feed.get("now"), "new_ids": dict(feed.get("new_ids") or {})}
+
+    def attach_recorded(self, recorded):
+        """Serve a whole Run's witnessed values in call order: ids per table, times in turn."""
+        recorded = recorded or {}
+        self._recorded_ids = {t: list(v) for t, v in (recorded.get("ids") or {}).items()}
+        self._recorded_times = list(recorded.get("times") or [])
+        self._id_cursors = {}
+        self._time_cursor = 0
+
+    def reseed(self, seed):
+        """Draw from this seed from here on; the step restarts with the Run."""
+        self._seed = int(seed) & self._MASK64
+
+    def usage(self):
+        """How many servings each feed answered, so the caller can count the fallback."""
+        return {"recorded": self._served_recorded, "seeded": self._served_seeded}
+
+    def now(self):
+        """The call's time: the recorded time at replay, a fixed function of seed and step off it."""
+        self._step += 1
+        witnessed = (self._current or {}).get("now")
+        if witnessed is not None:
+            self._served_recorded += 1
+            return witnessed
+        if self._time_cursor < len(self._recorded_times):
+            value = self._recorded_times[self._time_cursor]
+            self._time_cursor += 1
+            self._served_recorded += 1
+            return value
+        self._served_seeded += 1
+        return self._seeded_now()
+
+    def random(self):
+        """The call's random number in [0, 1): always seeded, never witnessed."""
+        self._step += 1
+        self._served_seeded += 1
+        return self._draw(1) / 18446744073709551616.0
+
+    def new_id(self, table):
+        """The new row's id: the recorded id at replay, a shaped draw off it."""
+        self._step += 1
+        current_ids = (self._current or {}).get("new_ids") or {}
+        witnessed = current_ids.pop(table, None)
+        recorded = self._recorded_ids.get(table) or []
+        at = self._id_cursors.get(table, 0)
+        if witnessed is None and at < len(recorded):
+            witnessed = recorded[at]
+            self._id_cursors[table] = at + 1
+        issued = self._issued.setdefault(table, set())
+        if witnessed is not None:
+            if witnessed in issued:
+                raise ValueError("recorded tool context repeated an allocated id")
+            value = witnessed
+            self._served_recorded += 1
+        else:
+            value = self._mint(table)
+            self._served_seeded += 1
+        issued.add(str(value))
+        return value
+
+    def _draw(self, salt):
+        z = (self._seed + int(salt)) & self._MASK64
+        z = (z + self._step * self._MIX1) & self._MASK64
+        z = ((z ^ (z >> 30)) * self._A) & self._MASK64
+        z = ((z ^ (z >> 27)) * self._B) & self._MASK64
+        return (z ^ (z >> 31)) & self._MASK64
+
+    def _seeded_now(self):
+        days = self._draw(2) % 366
+        secs = self._draw(3) % 86400
+        months = [31, 29, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
+        month = 0
+        while days >= months[month]:
+            days -= months[month]
+            month += 1
+        return "{:04d}-{:02d}-{:02d}T{:02d}:{:02d}:{:02d}".format(
+            2024, month + 1, days + 1, secs // 3600, (secs // 60) % 60, secs % 60)
+
+    def _mint(self, table):
+        try:
+            rows = getattr(self._db, table, None)
+            keys = [str(k) for k in (rows.keys() if hasattr(rows, "keys") else list(rows or []))]
+        except Exception:
+            keys = []
+        keys = [k for k in keys if k]
+        keyset = set(keys) | self._issued.get(table, set())
+        shape = self._shape_of(keys)
+        for attempt in range(1000):
+            candidate = self._draw_id(shape, attempt)
+            if candidate not in keyset:
+                return candidate
+        raise ValueError("tool context could not mint an id for table " + str(table))
+
+    def _shape_of(self, keys):
+        if not keys:
+            return ("free", None)
+        if all(k.isdigit() for k in keys):
+            width = max(len(k) for k in keys)
+            return ("seq", ("", max(int(k) for k in keys) + 1, width))
+        prefix = keys[0]
+        for other in keys[1:]:
+            i = 0
+            while i < len(prefix) and i < len(other) and prefix[i] == other[i]:
+                i += 1
+            prefix = prefix[:i]
+        suffixes = [k[len(prefix):] for k in keys]
+        if prefix and all(s and s.isdigit() for s in suffixes):
+            width = max(len(s) for s in suffixes)
+            return ("seq", (prefix, max(int(s) for s in suffixes) + 1, width))
+        if len({len(k) for k in keys}) == 1:
+            if not any(suffixes):
+                first, digits = keys[0], ""
+                while first and first[-1].isdigit():
+                    digits, first = first[-1] + digits, first[:-1]
+                if digits:
+                    return ("seq", (first, int(digits) + 1, len(digits)))
+                return ("pattern", ("", [self._broaden({k[i] for k in keys})
+                                             for i in range(len(keys[0]))]))
+            return ("pattern", (prefix, [self._broaden({s[i] for s in suffixes})
+                                           for i in range(len(suffixes[0]))]))
+        lengths = sorted({len(k) for k in keys})
+        by_pos = []
+        for i in range(max(len(k) for k in keys)):
+            chars = {k[i] for k in keys if len(k) > i}
+            by_pos.append(self._broaden(chars or {c for k in keys for c in k}))
+        return ("ragged", (lengths, by_pos))
+
+    def _broaden(self, chars):
+        """The observed characters widened to their class, so a draw can miss the taken rows.
+
+        A table holding two of twenty six suffix letters would otherwise mint from those two
+        alone and collide forever. The class keeps the shape (a letter stays a letter) while the
+        space grows to the alphabet the table evidently draws from.
+        """
+        chars = set(chars)
+        if chars and all(c.isdigit() for c in chars):
+            return sorted(set("0123456789"))
+        if chars and all(c.islower() for c in chars):
+            return sorted(set("abcdefghijklmnopqrstuvwxyz"))
+        if chars and all(c.isupper() for c in chars):
+            return sorted(set("ABCDEFGHIJKLMNOPQRSTUVWXYZ"))
+        if chars and all(c.isalnum() for c in chars):
+            return sorted(set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"))
+        return sorted(chars)
+
+    def _draw_id(self, shape, attempt):
+        kind, spec = shape
+        if kind == "seq":
+            prefix, start, width = spec
+            return prefix + str(start + attempt).zfill(width)
+        if kind == "pattern":
+            prefix, alphabets = spec
+            return prefix + "".join(
+                alphabets[i][self._draw(2000 + attempt * 128 + i) % len(alphabets[i])]
+                for i in range(len(alphabets)))
+        if kind == "ragged":
+            lengths, by_pos = spec
+            length = lengths[self._draw(2100 + attempt) % len(lengths)]
+            out = []
+            for i in range(length):
+                alphabet = by_pos[i] if i < len(by_pos) else by_pos[-1]
+                out.append(alphabet[self._draw(2200 + attempt * 128 + i) % len(alphabet)])
+            return "".join(out)
+        alphabet = "abcdefghijklmnopqrstuvwxyz0123456789"
+        return "new_" + "".join(
+            alphabet[self._draw(2300 + attempt * 16 + i) % len(alphabet)] for i in range(8))
+'''
+
+
 def _class_name(table: str) -> str:
     """orders -> Order, payment_methods -> PaymentMethod."""
     singular = table[:-1] if table.endswith("s") and not table.endswith("ss") else table
@@ -2053,10 +2265,10 @@ def render_tools(schema: EntitySchema, sigs: Iterable[ToolSig], bodies: dict,
         names = ", ".join([DB_CLASS] + [_class_name(t) for t in sorted(schema.tables)])
         head = ('"""Generated by the Harness from the customer\'s traces. Do not edit by hand."""\n'
                 f"from typing import Any, Optional\n\nfrom data_model import {names}\n\n")
-    parts = [head, _TOOLKIT_SHIM,
+    parts = [head, _TOOLKIT_SHIM, _CONTEXT_SHIM,
              f'\n\nclass {class_name}(_ToolKitBase):\n    """Every tool mined from the customer\'s '
              f'traces."""\n\n    def __init__(self, db) -> None:\n        super().__init__(db)\n'
-             "        self.db = db\n"]
+             "        self.db = db\n        self.ctx = ToolContext(db)\n"]
     for sig in sigs:
         body = textwrap.dedent(bodies.get(sig.name, "raise NotImplementedError")).strip("\n") or "pass"
         parts.append(f"\n    @is_tool(ToolType.{sig.kind.upper()})\n{_signature(sig)}\n{_docstring(sig)}\n"
@@ -2164,6 +2376,14 @@ _SYSTEM = ("You write the body of one Python method of a tool class rebuilt from
            "with the customer's own message where the traces show an error. Where every recorded error "
            "in this corpus begins with the same transport prefix, it is shown with that prefix removed, "
            "so write the message exactly as shown and do not put a prefix of your own in front of it.")
+
+
+_TOOL_CONTEXT_PARAGRAPH = (
+    "Time, randomness and new ids come from the tool context on self.ctx, never from an import. "
+    "Read the call's time as self.ctx.now() and draw randomness as self.ctx.random(), so Runs "
+    "under the same seed answer alike and Runs under different seeds may differ. "
+    "Mint the id of a row the call creates with self.ctx.new_id naming its table before "
+    "inserting the row under it, as in loan_id = self.ctx.new_id(\"loans\") for a new row of loans.")
 
 
 def _example_block(calls: Iterable[ToolCall], error_prefix: Optional[str] = None) -> str:
@@ -2570,7 +2790,7 @@ def _stable_system(schema: Optional[EntitySchema] = None, tool_names: Iterable[s
     """
     # The body skill (D168) sits in the prefix too: it is the same bytes for every tool of a build,
     # and it is read before the tables, which is where a body's mistakes are made.
-    parts = [_SYSTEM, BODY_SKILL, _confinement_block()]
+    parts = [_SYSTEM, BODY_SKILL, _confinement_block(), _TOOL_CONTEXT_PARAGRAPH]
     if schema is not None:
         parts.append(_schema_block(schema))
     if world_note:
@@ -2824,6 +3044,8 @@ def _build_tools_impl(schema: EntitySchema, toolsig: ToolSig, shown: list[ToolCa
     the wrong reason.
     """
     probes = {"n": 0}
+    # The recorded feed each gate call is served from, built once: a pure function of the calls.
+    ctx_feeds = recorded_call_contexts(list(shown) + list(held_out), schema)
 
     def lookup_rows(table: Optional[str] = None, key: Optional[str] = None) -> str:
         return _lookup_rows_text(schema, db, shown, call_states, table, key, holdout=holdout)
@@ -2836,7 +3058,7 @@ def _build_tools_impl(schema: EntitySchema, toolsig: ToolSig, shown: list[ToolCa
         body, sanitized = sanitize_body(body or "")
         source = module_source(schema, [toolsig], {toolsig.name: body})
         sandbox = Sandbox(source, db, workdir / f"attempt_{attempt}_probe_{probes['n']}", timeout=timeout,
-                          call_states=call_states)
+                          call_states=call_states, call_context=ctx_feeds)
         gates = run_gates(source, sandbox, shown, held_out, schema, rules,
                           probe_refusals=toolsig.kind == "write", sig=toolsig, readers=readers,
                           holdout_values=holdout_values, effect_values=effect_values,
@@ -3076,17 +3298,32 @@ _SAME_ERROR = ("\nThe same error as the attempt before, at the same call. The bo
 _UNDEFINED_NAME = re.compile(r"NameError: name '(\w+)' is not defined")
 
 
+# Time, randomness and new ids come from the tool context, never from an import, so a body
+# that reaches for one of these modules is pointed at the context instead of at an import line.
+_CONTEXT_HINTS = {"datetime": "self.ctx.now()", "time": "self.ctx.now()",
+                  "random": "self.ctx.random()", "uuid": "self.ctx.new_id(table)"}
+
+
 def _import_hints(gates: list[GateResult]) -> list[str]:
     """A NameError on a module the sandbox allows names the fix; say it instead of the traceback.
 
     transfer_to_human_agents called re.findall on the first live build and never imported re, and
     every one of its 25 replays died on the same NameError. The gate already knew which name was
     missing and that the module is on the allowed list; the retry was handing back the raw error.
+    The four time, randomness and id modules are not importable: a body naming one is pointed at
+    the tool context instead.
     """
     names = sorted({m.group(1) for gate in gates if not gate.passed
                     for failure in gate.failures for m in _UNDEFINED_NAME.finditer(failure)})
-    return [f"- `{name}` is on the allowed import list but the body never imported it; put "
-            f"`import {name}` at the top of the body" for name in names if name in ALLOWED_IMPORTS]
+    out = []
+    for name in names:
+        if name in _CONTEXT_HINTS:
+            out.append(f"- `{name}` is not importable; take it from the tool context instead, "
+                       f"as in `{_CONTEXT_HINTS[name]}`")
+        elif name in ALLOWED_IMPORTS:
+            out.append(f"- `{name}` is on the allowed import list but the body never imported it; put "
+                       f"`import {name}` at the top of the body")
+    return out
 
 
 RAISED_KINDS = ("KeyError", "AttributeError")
@@ -3334,7 +3571,8 @@ def grade_body(toolsig: ToolSig, body: str, calls: Iterable[ToolCall], schema: E
     shown, held_out = split_calls(calls)
     source = module_source(schema, [toolsig], {toolsig.name: build.body})
     sandbox = Sandbox(source, db, workdir, timeout=timeout, call_states=call_states,
-                      call_tasks=call_tasks)
+                      call_tasks=call_tasks,
+                      call_context=recorded_call_contexts(shown + held_out, schema))
     build.gates = run_gates(source, sandbox, shown, held_out, schema, rules,
                             probe_refusals=toolsig.kind == "write", sig=toolsig, readers=readers,
                             holdout_values=holdout_values, effect_values=effect_values,
@@ -3464,6 +3702,133 @@ def call_starting_states(db: dict, overlays: Iterable[TaskOverlay], values: dict
     return out
 
 
+# A result value that reads as a calendar date or a clock time, the way created_at does.
+_TIME_RE = re.compile(r"^\d{4}-\d{2}-\d{2}([T ]\d{2}:\d{2}(:\d{2}(\.\d{1,6})?)?"
+                      r"(Z|[+-]\d{2}:?\d{2})?)?$|^\d{2}:\d{2}(:\d{2})?$")
+
+
+def _is_id_key(key: Any) -> bool:
+    """A result key that names a row's id, the way reservation_id does."""
+    name = str(key).lower()
+    return name == "id" or name.endswith("_id")
+
+
+def _result_leaves(result: Any) -> list[tuple[str, Any]]:
+    """Every (key, leaf) of a recorded result, in a deterministic order.
+
+    Dicts walk in sorted key order so the first time-like leaf of a result is the same one on
+    every invocation; lists walk in order, since reordering a list would hand a different call's
+    time to this one.
+    """
+    out: list[tuple[str, Any]] = []
+
+    def walk(node: Any, key: str) -> None:
+        if isinstance(node, dict):
+            for name in sorted(node, key=str):
+                walk(node[name], str(name))
+        elif isinstance(node, (list, tuple)):
+            for inner in node:
+                walk(inner, key)
+        else:
+            out.append((key, node))
+
+    walk(result, "")
+    return out
+
+
+def _tables_for_id_key(schema: EntitySchema, key: str) -> list[str]:
+    """The tables whose id column this result key names, by the miner's own rule.
+
+    The rule is `tool_runs.id_field`, the same one that reads a table's id column everywhere
+    else: a key it attributes to no table carries no recorded feed, and the seeded feed answers
+    for that table instead. A key two tables share (a user id echoed on the row it made) is
+    recorded under both, so whichever table the body asks for gets what the recording showed.
+    """
+    return sorted({table for table in (schema.tables or [])
+                   if id_field(schema, table) == key})
+
+
+def recorded_call_context(call: ToolCall, schema: EntitySchema) -> dict:
+    """The values one recorded call witnessed for the tool context: its new ids and its time.
+
+    The new ids are the id-valued leaves of the recorded result, filed under each table the
+    miner's id rule attributes the key to. The time is the result's first time-like leaf. A call
+    whose result carries neither leaves both empty, and the seeded feed answers for it, counted.
+    Only the result is read: arguments are what the body is given, so they need no feed.
+    """
+    feed: dict = {"now": None, "new_ids": {}}
+    result = call.result if isinstance(call, ToolCall) else (call or {}).get("result")
+    if not isinstance(result, dict):
+        return feed
+    for key, value in _result_leaves(result):
+        if not isinstance(value, str):
+            continue
+        if _is_id_key(key):
+            for table in _tables_for_id_key(schema, key):
+                feed["new_ids"].setdefault(table, value)
+        if feed["now"] is None and _TIME_RE.match(value.strip()):
+            feed["now"] = value
+    return feed
+
+
+def recorded_call_contexts(calls: Iterable[ToolCall], schema: EntitySchema) -> dict[str, dict]:
+    """One recorded feed per call id, the keying D215 already uses for per-call evidence."""
+    return {call.id: recorded_call_context(call, schema) for call in calls if call.id}
+
+
+def _context_entity_ids(node: Any) -> set:
+    return {value for key, value in _result_leaves(node)
+            if isinstance(value, str) and _is_id_key(key)}
+
+
+def _append_recorded_context(call: ToolCall, schema: EntitySchema, seen: set,
+                             seen_ids: set, arg_strings: set, ids: dict, times: list) -> None:
+    feed = recorded_call_context(call, schema)
+    fresh_ids = [(table, value) for table, value in feed["new_ids"].items()
+                 if value not in seen_ids and value not in arg_strings]
+    for table, value in fresh_ids:
+        ids.setdefault(table, []).append(value)
+    if feed["now"] is not None and (fresh_ids or feed["now"] not in seen
+                                      and feed["now"] not in arg_strings):
+        times.append(feed["now"])
+
+
+def recorded_run_context(calls: Iterable[ToolCall], schema: EntitySchema,
+                           write_tools: Optional[Iterable[str]] = None) -> dict:
+    """Legacy consumption-ordered feed; production replay uses per-call context. One Run's witnessed values in call order: new ids per table, times in turn.
+
+    The Runner's Router carries no call ids, so a Run served call by call cannot look a feed up
+    the way the gates do. It advances through these lists instead: the nth new id asked for a
+    table is the nth the recording showed for it, the nth time asked for is the nth the recording
+    showed. Past the end of either list the seeded feed answers, counted.
+
+    Only write calls contribute, and an id only when neither the call's own arguments nor any
+    earlier call showed that entity before. A read echoes rows the world already holds, and an
+    update echoes the id its arguments named: neither is a new row, and listing either would hand
+    a later creation an existing row's id and shift every creation after it. Newness is read off
+    entity ids alone (id-keyed leaves), never off every scalar: an unrelated earlier value that
+    happens to spell the new id must not discard it. A write's time rides when the write minted
+    something: it carries a trace-new id, or the time itself was never shown before. An update
+    echoing the row's old stamp minted nothing, and listing it would hand a later creation the
+    wrong time the same way a listed echo id hands it the wrong row. Times otherwise ride in
+    call order with no dedup, so two creations the recording stamped alike are served alike.
+    """
+    ids: dict[str, list] = {}
+    times: list = []
+    seen: set = set()
+    seen_ids: set = set()
+    for call in calls:
+        args = call.args if isinstance(call, ToolCall) else (call or {}).get("args") or {}
+        result = call.result if isinstance(call, ToolCall) else (call or {}).get("result")
+        arg_strings = {value for _, value in _result_leaves(args)}
+        values = {value for _, value in _result_leaves(result)} if result is not None else set()
+        if write_tools is None or call.name in set(write_tools):
+            _append_recorded_context(call, schema, seen, seen_ids, arg_strings, ids, times)
+        seen |= arg_strings | values
+        seen_ids |= _context_entity_ids(args) | _context_entity_ids(result)
+    return {"ids": ids, "times": times}
+
+
 def replay_outcomes(toolsig: ToolSig, body: str, calls: Iterable[ToolCall], schema: EntitySchema, db: dict,
                     workdir: Path | str, call_states: Optional[dict] = None, rules: Any = None,
                     timeout: float = 30.0, readers: Any = None) -> list[dict]:
@@ -3494,7 +3859,8 @@ def replay_outcomes(toolsig: ToolSig, body: str, calls: Iterable[ToolCall], sche
     if not (body or "").strip():
         return missed("no body was compiled for this tool")
     source = module_source(schema, [toolsig], {toolsig.name: body})
-    sandbox = Sandbox(source, db, Path(workdir) / "attribution", timeout=timeout, call_states=call_states)
+    sandbox = Sandbox(source, db, Path(workdir) / "attribution", timeout=timeout, call_states=call_states,
+                      call_context=recorded_call_contexts(calls, schema))
     try:
         results = sandbox.run(calls)
     except SandboxError as exc:
@@ -3665,6 +4031,8 @@ def compile_tool(model, toolsig: ToolSig, calls: Iterable[ToolCall], schema: Ent
     system_head = _head_for_tools(schema, tool_names, builder_tools, world_note, system_head)
     specs = _specs_for(tool_specs)
     shown, held_out = split_calls(calls)
+    # The recorded feed each gate call is served from, built once: a pure function of the calls.
+    ctx_feeds = recorded_call_contexts(shown + held_out, schema)
     build, failure = ToolBuild(name=toolsig.name, body="", no_shape_holdout=no_shape_holdout(calls)), ""
     skeleton = gate_parses(module_source(schema, [toolsig], {toolsig.name: "pass"}))
     messages: list[dict] = []
@@ -3766,7 +4134,7 @@ def compile_tool(model, toolsig: ToolSig, calls: Iterable[ToolCall], schema: Ent
             reply_content = body
         source = module_source(schema, [toolsig], {toolsig.name: body})
         sandbox = Sandbox(source, db, workdir / f"attempt_{attempt}", timeout=timeout,
-                          call_states=call_states, call_tasks=call_tasks)
+                          call_states=call_states, call_tasks=call_tasks, call_context=ctx_feeds)
         gates = run_gates(source, sandbox, shown, held_out, schema, rules,
                           probe_refusals=toolsig.kind == "write", sig=toolsig, readers=readers,
                           holdout_values=holdout_values, effect_values=effect_values,

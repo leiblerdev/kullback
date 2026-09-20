@@ -214,9 +214,10 @@ class ScoredRouter:
 
     def __init__(self, router: Any, expected: deque, write_tools: Iterable[str] = (), canon_rules: Any = None,
                  comparer: Any = None, effects: Optional[dict] = None,
-                 holdout_values: Optional[dict] = None):
+                 holdout_values: Optional[dict] = None, before_call: Any = None):
         self.inner = router
         self.expected = expected
+        self.before_call = before_call
         self.write_tools = set(write_tools)
         self.canon_rules = canon_rules
         # D220 rule 2c: the values the world holds only because a held-out Run witnessed them, as
@@ -241,11 +242,16 @@ class ScoredRouter:
     def __getattr__(self, name: str) -> Any:  # state_hash, world, start_world, state: the loop's reads
         return getattr(self.inner, name)
 
+    def _feed_context(self, recorded: Optional[ToolCall]) -> None:
+        if self.before_call is not None:
+            self.before_call(recorded)
+
     def route(self, name: str, args: Optional[dict] = None, recorded: Optional[ToolCall] = None,
               requestor: str = "assistant") -> Any:
         # D164: the caller goes through, so the inner Router can refuse a tool this caller never had.
-        outcome = self.inner.route(name, args, requestor=requestor)
         recorded = recorded if recorded is not None else self._take(name)
+        self._feed_context(recorded)
+        outcome = self.inner.route(name, args, requestor=requestor)
         verdict, notes, verdict_route = (UNRECORDED, [], BY_VALUE) if recorded is None else compare_call_route(
             recorded, outcome.result, outcome.error, self.canon_rules, self.comparer)
         check = {
@@ -548,7 +554,7 @@ class Replay:
 def replay_trace(trace: Trace, router: Any, *, workdir: Any, task_id: str, env_id: Optional[str] = None,
                  write_tools: Iterable[str] = (), canon_rules: Any = None, run_id: Optional[str] = None,
                  comparer: Any = None, effects: Optional[dict] = None,
-                 holdout_values: Optional[dict] = None) -> Replay:
+                 holdout_values: Optional[dict] = None, before_call: Any = None) -> Replay:
     """Drive the loop with the Trace's own turns over `router`; the Run lands under `workdir`.
 
     `effects` is D215's write evidence, per recorded call id: the rows and columns the recording
@@ -562,7 +568,7 @@ def replay_trace(trace: Trace, router: Any, *, workdir: Any, task_id: str, env_i
     script = _Script(trace)
     model, user = TraceModel(script), TraceUser(script)
     scored = ScoredRouter(router, model.expected, write_tools, canon_rules, comparer, effects,
-                          holdout_values=holdout_values)
+                          holdout_values=holdout_values, before_call=before_call)
     run_id = run_id or f"replay-{trace.trace_id}"
     state = loop.new_run_state(run_id, workdir=workdir, env_id=env_id, task_id=task_id,
                                trace_id=trace.trace_id, model=RECORDED, user=user,
