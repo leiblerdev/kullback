@@ -7,7 +7,7 @@ import pytest
 from pydantic import ValidationError
 
 from kullback import sampling
-from kullback.runner.records import RawPtr, Task, ToolCall, Trace, UserRules
+from kullback.runner.records import DisclosureRule, RawPtr, Task, ToolCall, Trace, UserFact, UserRules
 from kullback.user.population import Population, RecordingStanding, build_population, pick_user
 
 WRITE_TOOL = "set_address"
@@ -595,3 +595,140 @@ def test_repeated_draws_identical_and_counted():
     second = pick_user(pop_a, seed=9, salt=SALT)
     assert first == second
     assert sampling.draws_since(before) == {"user_population": 2}
+
+
+def _two_run_inputs(rules_map):
+    task = _task(["ref", "ok"])
+    ref_args = {"city": "Springfield", "primary": True}
+    traces = {
+        "ref": _trace("ref", [_ok_call(args=ref_args)]),
+        "ok": _trace("ok", [_ok_call(args=dict(ref_args))]),
+    }
+    standings = {"ref": _st(), "ok": _st()}
+    return task, traces, standings
+
+
+def _pop_for_rules(rules_map):
+    task, traces, standings = _two_run_inputs(rules_map)
+    return build_population(
+        task,
+        traces,
+        reference_id="ref",
+        standings=standings,
+        rules=dict(rules_map),
+        held_out_ids=set(),
+        write_tools=list(WRITE_TOOLS),
+    )
+
+
+def _ident(pop, seed):
+    return json.dumps(
+        [pop.task_id, seed, pop.fingerprint],
+        separators=(",", ":"),
+        ensure_ascii=False,
+    )
+
+
+def test_rules_fact_value_mutation_changes_fingerprint():
+    base = {
+        "ref": UserRules(facts=[UserFact(field="city", value="Springfield")]),
+        "ok": UserRules(facts=[UserFact(field="city", value="Springfield")]),
+    }
+    mutated = {
+        "ref": UserRules(facts=[UserFact(field="city", value="Springfield")]),
+        "ok": UserRules(facts=[UserFact(field="city", value="Shelbyville")]),
+    }
+    pop_a = _pop_for_rules(base)
+    pop_b = _pop_for_rules(mutated)
+    assert list(pop_a.eligible_ids) == list(pop_b.eligible_ids) == ["ok", "ref"]
+    assert pop_b.fingerprint != pop_a.fingerprint
+    assert _ident(pop_b, 7) != _ident(pop_a, 7)
+    key_a = sampling.sample_key("user_population", _ident(pop_a, 7), SALT)
+    key_b = sampling.sample_key("user_population", _ident(pop_b, 7), SALT)
+    assert key_b != key_a
+
+
+def test_rules_disclosure_refusal_walkaway_mutation_changes_fingerprint():
+    base = {
+        "ref": UserRules(
+            disclosure=[DisclosureRule(field="zip", on_request=True)],
+            refusals=["email"],
+            walk_away=["closing"],
+        ),
+        "ok": UserRules(
+            disclosure=[DisclosureRule(field="zip", on_request=True)],
+            refusals=["email"],
+            walk_away=["closing"],
+        ),
+    }
+    pop_a = _pop_for_rules(base)
+    for mutated_ok in [
+        UserRules(
+            disclosure=[DisclosureRule(field="zip", on_request=False)],
+            refusals=["email"],
+            walk_away=["closing"],
+        ),
+        UserRules(
+            disclosure=[DisclosureRule(field="zip", on_request=True)],
+            refusals=["phone"],
+            walk_away=["closing"],
+        ),
+        UserRules(
+            disclosure=[DisclosureRule(field="zip", on_request=True)],
+            refusals=["email"],
+            walk_away=["other"],
+        ),
+    ]:
+        mutated = {"ref": base["ref"], "ok": mutated_ok}
+        pop_b = _pop_for_rules(mutated)
+        assert list(pop_b.eligible_ids) == ["ok", "ref"]
+        assert pop_b.fingerprint != pop_a.fingerprint
+
+
+def test_equal_rules_content_stable_across_build_and_key_order():
+    rules_a = {
+        "ref": UserRules(
+            facts=[UserFact(field="zip", value="19122", context="stated")],
+            disclosure=[DisclosureRule(field="zip", on_request=True)],
+            refusals=["email"],
+            walk_away=["closing"],
+        ),
+        "ok": UserRules(
+            facts=[UserFact(field="zip", value="19122", context="stated")],
+            disclosure=[DisclosureRule(field="zip", on_request=True)],
+            refusals=["email"],
+            walk_away=["closing"],
+        ),
+    }
+    rules_b = {
+        "ok": UserRules(
+            **{
+                "walk_away": ["closing"],
+                "refusals": ["email"],
+                "disclosure": [DisclosureRule(**{"on_request": True, "field": "zip"})],
+                "facts": [UserFact(**{"context": "stated", "value": "19122", "field": "zip"})],
+            }
+        ),
+        "ref": UserRules(
+            **{
+                "walk_away": ["closing"],
+                "refusals": ["email"],
+                "disclosure": [DisclosureRule(**{"on_request": True, "field": "zip"})],
+                "facts": [UserFact(**{"context": "stated", "value": "19122", "field": "zip"})],
+            }
+        ),
+    }
+    assert _pop_for_rules(rules_a).fingerprint == _pop_for_rules(rules_b).fingerprint
+
+
+def test_post_build_rule_mutation_does_not_alter_fingerprint():
+    ok_rules = UserRules(facts=[UserFact(field="city", value="Springfield")])
+    rules_map = {
+        "ref": UserRules(facts=[UserFact(field="city", value="Springfield")]),
+        "ok": ok_rules,
+    }
+    pop = _pop_for_rules(rules_map)
+    before = pop.fingerprint
+    ok_rules.facts.append(UserFact(field="city", value="Shelbyville"))
+    assert pop.fingerprint == before
+    assert _pop_for_rules(rules_map).fingerprint != before
