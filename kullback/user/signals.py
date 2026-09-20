@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Collection
+from collections.abc import Collection, Mapping, Sequence
 from typing import Any, Literal, Optional
 
 from pydantic import ConfigDict, StrictInt, ValidationError
@@ -186,13 +186,22 @@ def _adjudicate(
     )
 
 
+def _ordered_labels(labels: Any) -> Sequence[Any]:
+    if isinstance(labels, (set, frozenset, Mapping, str, bytes, bytearray, memoryview)):
+        raise TypeError(f"labels must be an ordered Sequence (list or tuple), got {type(labels).__name__}")
+    if not isinstance(labels, Sequence):
+        raise TypeError(f"labels must be an ordered Sequence (list or tuple), got {type(labels).__name__}")
+    return labels
+
+
 def mine_signal(
     trace: Trace,
     *,
     end: Any = None,
-    labels: Collection[Any] = (),
+    labels: Sequence[Any] = (),
     transfer_tools: Collection[str] = (),
 ) -> Signal:
+    labels = _ordered_labels(labels)
     evidence = EndEvidence.model_validate(end) if end is not None else EndEvidence()
     counts = _role_counts(trace.turns)
     unanswered, truncated = _call_counts(trace.tool_calls)
