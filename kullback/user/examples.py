@@ -3,9 +3,9 @@ from __future__ import annotations
 from collections.abc import Collection, Mapping
 from typing import Any, Literal, Optional
 
-from pydantic import ConfigDict, StrictInt, StrictStr, ValidationError
+from pydantic import ConfigDict, Field, StrictInt, StrictStr, ValidationError
 
-from kullback.runner.records import RawPtr, Record, Trace, Turn
+from kullback.runner.records import RawPtr, Record, Trace, Turn, as_dict, content_hash
 
 Situation = Literal["unknown_fact", "company_only", "agent_refuses", "confirmation", "giving_up"]
 
@@ -19,6 +19,7 @@ class ExampleSpan(Record):
     turn_idx: StrictInt
     start: StrictInt
     end: StrictInt
+    trace_hash: StrictStr = Field(pattern=r"^[0-9a-f]{64}$")
 
 
 class ExampleCandidate(Record):
@@ -29,6 +30,7 @@ class ExampleCandidate(Record):
     turn_idx: int
     start: int
     end: int
+    trace_hash: StrictStr
     source: RawPtr
 
 
@@ -36,6 +38,12 @@ class ExampleWithheld(Record):
     model_config = ConfigDict(populate_by_name=True, extra="forbid", frozen=True)
     recording_id: str
     reason: str
+
+
+def trace_content_hash(trace: Trace) -> str:
+    body = as_dict(trace)
+    body["hash"] = ""
+    return content_hash(body)
 
 
 def _raw_id(raw: Any) -> str:
@@ -209,6 +217,7 @@ def _mask_span(
             turn_idx=span.turn_idx,
             start=span.start,
             end=span.end,
+            trace_hash=span.trace_hash,
             source=turn.raw_ptr.model_copy(deep=True),
         ),
         None,
@@ -222,6 +231,8 @@ def _decide_one(
     trace, reason = _lookup_trace(traces_by_id, rid)
     if reason is not None:
         return (None, ExampleWithheld(recording_id=rid, reason=reason))
+    if trace_content_hash(trace) != span.trace_hash:
+        return (None, ExampleWithheld(recording_id=rid, reason="stale_trace"))
     values, reason = _lookup_values(known_values_by_id, rid)
     if reason is not None:
         return (None, ExampleWithheld(recording_id=rid, reason=reason))
