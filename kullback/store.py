@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import contextlib
+import errno
 import json
 import math
 import os
@@ -46,11 +47,19 @@ class WriteDurabilityError(StoreError):
         super().__init__(f"artifact replaced but directory durability is unknown: {path}")
 
 
+class SessionBusy(StoreError):
+    pass
+
+
 @dataclass
 class _LockState:
     rlock: Any = field(default_factory=threading.RLock)
     depth: int = 0
     fd: int | None = None
+    owner_pid: int = 0
+    session_active: bool = False
+    session_closing: bool = False
+    session_fd: int | None = None
 
 
 _LOCKS: WeakValueDictionary[tuple, _LockState] = WeakValueDictionary()
@@ -103,8 +112,73 @@ def _state_for(key: tuple) -> _LockState:
         found = _LOCKS.get(key)
         if found is None:
             found = _LockState()
+            found.owner_pid = key[0]
             _LOCKS[key] = found
         return found
+
+
+_OPEN_FDS: set = set()
+_FDS_GUARD = threading.Lock()
+
+
+def _fork_before() -> None:
+    _GUARD.acquire()
+    _FDS_GUARD.acquire()
+
+
+def _fork_after_parent() -> None:
+    try:
+        _FDS_GUARD.release()
+    finally:
+        _GUARD.release()
+
+
+def _fork_after_child() -> None:
+    fds = list(_OPEN_FDS)
+    _OPEN_FDS.clear()
+    for fd in fds:
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+    global _GUARD
+    global _FDS_GUARD
+    _GUARD = threading.Lock()
+    _FDS_GUARD = threading.Lock()
+    for st in list(_LOCKS.values()):
+        st.rlock = threading.RLock()
+        st.depth = 0
+        st.fd = None
+        st.session_active = False
+        st.session_closing = False
+        st.session_fd = None
+
+
+if hasattr(os, "register_at_fork"):
+    os.register_at_fork(before=_fork_before, after_in_parent=_fork_after_parent, after_in_child=_fork_after_child)
+
+
+def _open_lock_file(root_str: str) -> int:
+    lock_path = os.path.join(root_str, ".store.lock")
+    flags = os.O_CREAT | os.O_RDWR
+    nofollow = getattr(os, "O_NOFOLLOW", None)
+    if nofollow is not None:
+        flags |= nofollow
+    cloexec = getattr(os, "O_CLOEXEC", None)
+    if cloexec is not None:
+        flags |= cloexec
+    with _FDS_GUARD:
+        fd = os.open(lock_path, flags, 0o600)
+        _OPEN_FDS.add(fd)
+        return fd
+
+
+def _close_lock_file(fd: int) -> None:
+    with _FDS_GUARD:
+        try:
+            os.close(fd)
+        finally:
+            _OPEN_FDS.discard(fd)
 
 
 def _acquire_exclusive(root_str: str, state: _LockState) -> None:
@@ -113,16 +187,11 @@ def _acquire_exclusive(root_str: str, state: _LockState) -> None:
     except ImportError as exc:
         raise StoreError("fcntl unavailable") from exc
     Path(root_str).mkdir(parents=True, exist_ok=True)
-    lock_path = os.path.join(root_str, ".store.lock")
-    flags = os.O_CREAT | os.O_RDWR
-    nofollow = getattr(os, "O_NOFOLLOW", None)
-    if nofollow is not None:
-        flags |= nofollow
-    fd = os.open(lock_path, flags, 0o600)
+    fd = _open_lock_file(root_str)
     try:
         _fcntl.flock(fd, _fcntl.LOCK_EX)
     except BaseException:
-        os.close(fd)
+        _close_lock_file(fd)
         raise
     state.fd = fd
 
@@ -137,7 +206,94 @@ def _release_exclusive(state: _LockState) -> None:
     try:
         _fcntl.flock(fd, _fcntl.LOCK_UN)
     finally:
-        os.close(fd)
+        _close_lock_file(fd)
+
+
+def _enter_transaction(root_str: str, state: _LockState) -> tuple:
+    state.rlock.acquire()
+    mine = False
+    covered = False
+    try:
+        if state.depth == 0:
+            if state.session_active and not state.session_closing:
+                covered = True
+            else:
+                _acquire_exclusive(root_str, state)
+                mine = True
+        state.depth += 1
+    except BaseException:
+        state.rlock.release()
+        raise
+    return mine, covered
+
+
+def _exit_transaction(state: _LockState, mine: bool, covered: bool) -> None:
+    if state.owner_pid != os.getpid():
+        raise StoreError("store state changed process")
+    try:
+        state.depth -= 1
+        if mine:
+            _release_exclusive(state)
+    finally:
+        state.rlock.release()
+
+
+def _session_acquire(root_str: str, state: _LockState) -> None:
+    try:
+        import fcntl as _fcntl
+    except ImportError as exc:
+        raise StoreError("fcntl unavailable") from exc
+    if not state.rlock.acquire(blocking=False):
+        raise SessionBusy("workdir driver session busy")
+    try:
+        if state.session_active or state.session_closing:
+            raise SessionBusy("workdir driver session busy")
+        if state.depth != 0:
+            raise SessionBusy("workdir driver session busy")
+        fd = _open_lock_file(root_str)
+        try:
+            _fcntl.flock(fd, _fcntl.LOCK_EX | _fcntl.LOCK_NB)
+        except OSError as exc:
+            _close_lock_file(fd)
+            if exc.errno in (errno.EAGAIN, errno.EWOULDBLOCK, errno.EACCES):
+                raise SessionBusy("workdir driver session busy") from exc
+            raise
+        except BaseException:
+            _close_lock_file(fd)
+            raise
+        state.session_active = True
+        state.session_closing = False
+        state.session_fd = fd
+    finally:
+        state.rlock.release()
+
+
+def _session_release(state: _LockState) -> None:
+    if state.owner_pid != os.getpid():
+        raise StoreError("store state changed process")
+    try:
+        import fcntl as _fcntl
+    except ImportError as exc:
+        raise StoreError("fcntl unavailable") from exc
+    state.rlock.acquire()
+    try:
+        if not state.session_active:
+            return
+        state.session_closing = True
+        fd = state.session_fd
+        state.session_fd = None
+        try:
+            _fcntl.flock(fd, _fcntl.LOCK_UN)
+        finally:
+            _close_lock_file(fd)
+        state.session_active = False
+        state.session_closing = False
+    finally:
+        state.rlock.release()
+
+
+def _session_close(state: _LockState) -> None:
+    _session_release(state)
 
 
 def _reject_constant(value: str) -> Any:
@@ -298,24 +454,29 @@ class WorkdirStore:
         identity = root.stat()
         key = (os.getpid(), identity.st_dev, identity.st_ino)
         state = _state_for(key)
-        rlock = state.rlock
-        rlock.acquire()
-        try:
-            if state.depth == 0:
-                _acquire_exclusive(self._root_str, state)
-            state.depth += 1
-        except BaseException:
-            rlock.release()
-            raise
+        if state.owner_pid != os.getpid():
+            raise StoreError("store state changed process")
+        mine, covered = _enter_transaction(self._root_str, state)
         try:
             yield self
         finally:
-            try:
-                state.depth -= 1
-                if state.depth == 0:
-                    _release_exclusive(state)
-            finally:
-                rlock.release()
+            _exit_transaction(state, mine, covered)
+
+    @contextlib.contextmanager
+    def exclusive_session(self):
+        root = Path(self._root_str)
+        root.mkdir(parents=True, exist_ok=True)
+        identity = root.stat()
+        key = (os.getpid(), identity.st_dev, identity.st_ino)
+        state = _state_for(key)
+        if state.owner_pid != os.getpid():
+            raise StoreError("store state changed process")
+        _session_acquire(self._root_str, state)
+        try:
+            yield self
+        finally:
+            if state.owner_pid == os.getpid():
+                _session_close(state)
 
     def read(self, name: str) -> ReadResult:
         spec = self._specs[name]

@@ -1091,3 +1091,648 @@ def test_ancestor_root_equality_no_stat_no_sync(monkeypatch):
     monkeypatch.setattr(Path, "stat", _no_stat)
     monkeypatch.setattr(store_module, "_sync_directory", _no_sync)
     store_module._sync_ancestors(Path("/probe.json"))
+
+
+def _session_spec():
+    return ArtifactSpec(name="n", path="n.json", format=1, owner="o", validate=_check_int)
+
+
+def test_session_acquire_use_release(tmp_path):
+    from kullback.store import SessionBusy as _Busy
+    del _Busy
+    root = tmp_path / "w"
+    store = WorkdirStore(root, [_session_spec()])
+    with store.exclusive_session():
+        with store.transaction():
+            store.write("n", 1)
+            assert store.read("n").value == 1
+        with store.transaction():
+            with store.transaction():
+                store.write("n", 2)
+    assert store.read("n").value == 2
+    with store.exclusive_session():
+        assert store.read("n").value == 2
+
+
+def test_session_second_acquire_same_thread_refuses(tmp_path):
+    from kullback.store import SessionBusy as _Busy
+    store = WorkdirStore(tmp_path / "w", [_session_spec()])
+    with store.exclusive_session():
+        with pytest.raises(_Busy):
+            with store.exclusive_session():
+                pass
+    with store.exclusive_session():
+        pass
+
+
+def test_session_other_thread_acquire_and_transact(tmp_path):
+    from kullback.store import SessionBusy as _Busy
+    root = tmp_path / "w"
+    store = WorkdirStore(root, [_session_spec()])
+    outcomes = []
+    entered = threading.Event()
+
+    def _other():
+        other = WorkdirStore(root, [_session_spec()])
+        entered.set()
+        try:
+            with other.exclusive_session():
+                outcomes.append("acquired")
+        except _Busy:
+            outcomes.append("busy")
+        with other.transaction():
+            other.write("n", 7)
+        outcomes.append("wrote")
+
+    with store.exclusive_session():
+        worker = threading.Thread(target=_other)
+        worker.start()
+        assert entered.wait(timeout=60)
+        worker.join(timeout=60)
+        assert outcomes == ["busy", "wrote"]
+        assert store.read("n").value == 7
+
+
+def test_session_inside_transaction_refuses(tmp_path):
+    from kullback.store import SessionBusy as _Busy
+    store = WorkdirStore(tmp_path / "w", [_session_spec()])
+    with store.transaction():
+        with pytest.raises(_Busy):
+            with store.exclusive_session():
+                pass
+    with store.exclusive_session():
+        pass
+
+
+def test_session_while_other_thread_transacts_refuses(tmp_path):
+    from kullback.store import SessionBusy as _Busy
+    root = tmp_path / "w"
+    store = WorkdirStore(root, [_session_spec()])
+    entered = threading.Event()
+    release = threading.Event()
+
+    def _holder():
+        other = WorkdirStore(root, [_session_spec()])
+        with other.transaction():
+            entered.set()
+            assert release.wait(timeout=60)
+
+    worker = threading.Thread(target=_holder)
+    worker.start()
+    try:
+        assert entered.wait(timeout=60)
+        with pytest.raises(_Busy):
+            with store.exclusive_session():
+                pass
+    finally:
+        release.set()
+        worker.join(timeout=60)
+    with store.exclusive_session():
+        pass
+
+
+def _pipe_read_line(fd, timeout=20):
+    import select
+    out = b""
+    while not out.endswith(b"\n"):
+        ready, _, _ = select.select([fd], [], [], timeout)
+        assert ready, "pipe read timeout"
+        chunk = os.read(fd, 1)
+        assert chunk, "pipe eof"
+        out += chunk
+    return out
+
+
+def _fork_session_child(go_r, go_w, out_r, out_w, root_str, mode):
+    pid = os.fork()
+    if pid != 0:
+        return pid
+    try:
+        os.close(go_w)
+        os.close(out_r)
+        from kullback.store import SessionBusy as _Busy
+        from kullback.store import WorkdirStore as _W
+        assert os.read(go_r, 1) == b"g"
+        if mode == "attempt":
+            os.close(go_r)
+            other = _W(root_str, [_session_spec()])
+            try:
+                with other.exclusive_session():
+                    os.write(out_w, b"acquired\n")
+            except _Busy:
+                os.write(out_w, b"busy\n")
+        elif mode == "hold":
+            other = _W(root_str, [_session_spec()])
+            with other.exclusive_session():
+                os.write(out_w, b"ready\n")
+                second = os.read(go_r, 1)
+                assert second == b"r"
+                os.write(out_w, b"done\n")
+            os.close(go_r)
+        os.close(out_w)
+    except BaseException:
+        try:
+            os.close(go_r)
+        except OSError:
+            pass
+        try:
+            os.close(out_w)
+        except OSError:
+            pass
+        os._exit(1)
+    os._exit(0)
+
+
+def _read_message(fd):
+    return _pipe_read_line(fd)
+
+
+def test_session_second_process_refuses(tmp_path):
+    root = tmp_path / "w"
+    store = WorkdirStore(root, [_session_spec()])
+    go_r, go_w = os.pipe()
+    out_r, out_w = os.pipe()
+    pid = _fork_session_child(go_r, go_w, out_r, out_w, str(root), "attempt")
+    os.close(go_r)
+    os.close(out_w)
+    try:
+        with store.exclusive_session():
+            os.write(go_w, b"g")
+            assert _read_message(out_r) == b"busy\n"
+    finally:
+        os.close(go_w)
+        os.close(out_r)
+    _, status = os.waitpid(pid, 0)
+    assert os.waitstatus_to_exitcode(status) == 0
+
+
+def test_session_killed_holder_releases(tmp_path):
+    import signal
+    root = tmp_path / "w"
+    store = WorkdirStore(root, [_session_spec()])
+    go_r, go_w = os.pipe()
+    out_r, out_w = os.pipe()
+    pid = _fork_session_child(go_r, go_w, out_r, out_w, str(root), "hold")
+    os.close(go_r)
+    os.close(out_w)
+    try:
+        os.write(go_w, b"g")
+        assert _pipe_read_line(out_r) == b"ready\n"
+        os.kill(pid, signal.SIGKILL)
+        _, status = os.waitpid(pid, 0)
+        assert os.WIFSIGNALED(status)
+        assert os.WTERMSIG(status) == signal.SIGKILL
+        with store.exclusive_session():
+            pass
+    finally:
+        os.close(go_w)
+        os.close(out_r)
+
+
+def test_session_alias_root_refuses(tmp_path):
+    from kullback.store import SessionBusy as _Busy
+    root = tmp_path / "w"
+    store = WorkdirStore(root, [_session_spec()])
+    alias = WorkdirStore(root / "sub" / "..", [_session_spec()])
+    with store.exclusive_session():
+        with pytest.raises(_Busy):
+            with alias.exclusive_session():
+                pass
+        with alias.transaction():
+            alias.write("n", 3)
+    assert store.read("n").value == 3
+
+
+def test_session_exit_waits_for_open_transaction(tmp_path):
+    root = tmp_path / "w"
+    store = WorkdirStore(root, [_session_spec()])
+    from kullback.store import SessionBusy as _Busy
+    def _once():
+        log = []
+        entered = threading.Event()
+        release = threading.Event()
+        in_txn = threading.Event()
+        done = threading.Event()
+        driver_done = threading.Event()
+        worker_closed = threading.Event()
+        def _driver():
+            with store.exclusive_session():
+                entered.set()
+                assert release.wait(timeout=60)
+            log.append("session-released")
+            driver_done.set()
+        def _worker():
+            other = WorkdirStore(root, [_session_spec()])
+            with other.transaction():
+                in_txn.set()
+                assert done.wait(timeout=60)
+            log.append("txn-closed")
+            worker_closed.set()
+        driver = threading.Thread(target=_driver)
+        driver.start()
+        assert entered.wait(timeout=60)
+        worker = threading.Thread(target=_worker)
+        worker.start()
+        try:
+            assert in_txn.wait(timeout=60)
+            release.set()
+            with pytest.raises(_Busy):
+                with store.exclusive_session():
+                    pass
+            assert not driver_done.is_set()
+        finally:
+            done.set()
+            worker.join(timeout=60)
+            driver.join(timeout=60)
+        assert not driver.is_alive()
+        assert not worker.is_alive()
+        assert worker_closed.is_set()
+        assert driver_done.is_set()
+        assert sorted(log) == ["session-released", "txn-closed"]
+        with store.exclusive_session():
+            pass
+    for _rep in range(3):
+        _once()
+
+
+def test_session_exception_paths(tmp_path):
+    from kullback.store import SessionBusy as _Busy
+    store = WorkdirStore(tmp_path / "w", [_session_spec()])
+    with pytest.raises(RuntimeError, match="boom"):
+        with store.exclusive_session():
+            raise RuntimeError("boom")
+    with store.exclusive_session():
+        with pytest.raises(RuntimeError):
+            with store.transaction():
+                store.write("n", 1)
+                raise RuntimeError("inner")
+        with pytest.raises(_Busy):
+            with store.exclusive_session():
+                pass
+    assert store.read("n").value == 1
+    with store.exclusive_session():
+        pass
+
+
+def test_session_acquire_interrupt_cleans_fd(tmp_path, monkeypatch):
+    import fcntl as _fcntl
+
+    from kullback import store as _mod
+    root = tmp_path / "w"
+    store = WorkdirStore(root, [_session_spec()])
+    real_flock = _fcntl.flock
+    once = {"armed": True}
+    def _once(fd, op):
+        if once["armed"] and op == (_fcntl.LOCK_EX | _fcntl.LOCK_NB):
+            once["armed"] = False
+            raise KeyboardInterrupt()
+        return real_flock(fd, op)
+    monkeypatch.setattr(_fcntl, "flock", _once)
+    with pytest.raises(KeyboardInterrupt):
+        with store.exclusive_session():
+            pass
+    monkeypatch.setattr(_fcntl, "flock", real_flock)
+    assert _mod._OPEN_FDS == set()
+    with store.exclusive_session():
+        with store.transaction():
+            store.write("n", 1)
+    assert store.read("n").value == 1
+    assert _mod._OPEN_FDS == set()
+
+
+def test_session_survives_store_drop(tmp_path):
+    import gc
+
+    from kullback.store import SessionBusy as _Busy
+    root = tmp_path / "w"
+    store = WorkdirStore(root, [_session_spec()])
+    holder = store.exclusive_session()
+    holder.__enter__()
+    try:
+        del store
+        gc.collect()
+        probe = WorkdirStore(root, [_session_spec()])
+        with pytest.raises(_Busy):
+            with probe.exclusive_session():
+                pass
+        with probe.transaction():
+            probe.write("n", 5)
+        assert probe.read("n").value == 5
+    finally:
+        holder.__exit__(None, None, None)
+    probe = WorkdirStore(root, [_session_spec()])
+    with probe.exclusive_session():
+        assert probe.read("n").value == 5
+
+
+def _read_line(fd):
+    return _pipe_read_line(fd)
+
+
+def test_session_close_entrant_completes(tmp_path):
+    root = tmp_path / "w"
+    store = WorkdirStore(root, [_session_spec()])
+    entered = threading.Event()
+    release = threading.Event()
+    in_txn = threading.Event()
+    worker_done = threading.Event()
+    entrant_done = threading.Event()
+    log = []
+    driver_closed = threading.Event()
+    worker_closed = threading.Event()
+    def _driver():
+        with store.exclusive_session():
+            entered.set()
+            assert release.wait(timeout=20)
+        log.append("session-released")
+        driver_closed.set()
+    def _worker():
+        other = WorkdirStore(root, [_session_spec()])
+        with other.transaction():
+            in_txn.set()
+            assert worker_done.wait(timeout=20)
+        log.append("txn-closed")
+        worker_closed.set()
+    def _entrant():
+        other = WorkdirStore(root, [_session_spec()])
+        with other.transaction():
+            other.write("n", 11)
+        entrant_done.set()
+    driver = threading.Thread(target=_driver)
+    driver.start()
+    assert entered.wait(timeout=20)
+    worker = threading.Thread(target=_worker)
+    worker.start()
+    assert in_txn.wait(timeout=20)
+    entrant = threading.Thread(target=_entrant)
+    entrant.start()
+    release.set()
+    go_r, go_w = os.pipe()
+    out_r, out_w = os.pipe()
+    check = os.fork()
+    if check == 0:
+        try:
+            os.close(go_w)
+            os.close(out_r)
+            from kullback.store import SessionBusy as _Busy
+            from kullback.store import WorkdirStore as _W
+            assert os.read(go_r, 1) == b"g"
+            os.close(go_r)
+            probe = _W(str(root), [_session_spec()])
+            try:
+                with probe.exclusive_session():
+                    os.write(out_w, b"acquired\n")
+            except _Busy:
+                os.write(out_w, b"busy\n")
+            os.close(out_w)
+        except BaseException:
+            try:
+                os.close(go_r)
+            except OSError:
+                pass
+            try:
+                os.close(out_w)
+            except OSError:
+                pass
+            os._exit(1)
+        os._exit(0)
+    os.close(go_r)
+    os.close(out_w)
+    try:
+        os.write(go_w, b"g")
+        assert _pipe_read_line(out_r) == b"busy\n"
+    except BaseException:
+        try:
+            import signal as _sig
+            os.kill(check, _sig.SIGKILL)
+        except OSError:
+            pass
+        try:
+            os.waitpid(check, 0)
+        except ChildProcessError:
+            pass
+        raise
+    finally:
+        os.close(go_w)
+        os.close(out_r)
+    _, check_status = os.waitpid(check, 0)
+    assert os.waitstatus_to_exitcode(check_status) == 0
+    assert not driver_closed.is_set()
+    worker_done.set()
+    worker.join(timeout=20)
+    entrant.join(timeout=20)
+    driver.join(timeout=20)
+    assert not worker.is_alive()
+    assert not entrant.is_alive()
+    assert not driver.is_alive()
+    assert entrant_done.is_set()
+    assert worker_closed.is_set()
+    assert driver_closed.is_set()
+    assert sorted(log) == ["session-released", "txn-closed"]
+    assert store.read("n").value == 11
+    with store.exclusive_session():
+        pass
+
+
+def test_session_fork_while_thread_holds(tmp_path):
+    root = tmp_path / "w"
+    store = WorkdirStore(root, [_session_spec()])
+    entered = threading.Event()
+    release = threading.Event()
+    def _holder():
+        with store.exclusive_session():
+            entered.set()
+            assert release.wait(timeout=20)
+    holder = threading.Thread(target=_holder)
+    holder.start()
+    assert entered.wait(timeout=20)
+    go_r, go_w = os.pipe()
+    out_r, out_w = os.pipe()
+    child = os.fork()
+    if child == 0:
+        try:
+            os.close(go_w)
+            os.close(out_r)
+            from kullback.store import SessionBusy as _Busy
+            from kullback.store import WorkdirStore as _W
+            assert os.read(go_r, 1) == b"g"
+            probe = _W(str(root), [_session_spec()])
+            try:
+                with probe.exclusive_session():
+                    os.write(out_w, b"acquired\n")
+            except _Busy:
+                os.write(out_w, b"busy\n")
+            assert os.read(go_r, 1) == b"r"
+            os.close(go_r)
+            os.close(out_w)
+        except BaseException:
+            try:
+                os.close(go_r)
+            except OSError:
+                pass
+            try:
+                os.close(out_w)
+            except OSError:
+                pass
+            os._exit(1)
+        os._exit(0)
+    os.close(go_r)
+    os.close(out_w)
+    try:
+        os.write(go_w, b"g")
+        assert _pipe_read_line(out_r) == b"busy\n"
+        from kullback.store import SessionBusy as _Busy
+        with store.transaction():
+            store.write("n", 21)
+        try:
+            with store.exclusive_session():
+                raise AssertionError("held")
+        except _Busy:
+            pass
+        release.set()
+        holder.join(timeout=20)
+        assert not holder.is_alive()
+        with store.exclusive_session():
+            assert store.read("n").value == 21
+        os.write(go_w, b"r")
+    except BaseException:
+        try:
+            import signal as _sig
+            os.kill(child, _sig.SIGKILL)
+        except OSError:
+            pass
+        try:
+            os.write(go_w, b"r")
+        except OSError:
+            pass
+        release.set()
+        holder.join(timeout=20)
+        try:
+            os.waitpid(child, 0)
+        except ChildProcessError:
+            pass
+        raise
+    _, child_status = os.waitpid(child, 0)
+    assert os.waitstatus_to_exitcode(child_status) == 0
+    os.close(go_w)
+    os.close(out_r)
+    with store.exclusive_session():
+        pass
+
+
+def test_session_fork_child_does_not_pin(tmp_path):
+    root = tmp_path / "w"
+    store = WorkdirStore(root, [_session_spec()])
+    b_r, b_w = os.pipe()
+    c_r, c_w = os.pipe()
+    d_r, d_w = os.pipe()
+    outer = os.fork()
+    if outer == 0:
+        try:
+            os.close(b_r)
+            os.close(c_r)
+            os.close(d_w)
+            from kullback.store import WorkdirStore as _W
+            other = _W(str(root), [_session_spec()])
+            with other.exclusive_session():
+                os.write(b_w, b"1\n")
+                inner = os.fork()
+                if inner == 0:
+                    try:
+                        os.close(b_w)
+                        os.write(c_w, b"%d\n" % os.getpid())
+                        assert os.read(d_r, 1) == b"r"
+                        os.write(c_w, b"bye\n")
+                        os.close(d_r)
+                        os.close(c_w)
+                    except BaseException:
+                        try:
+                            os.close(d_r)
+                        except OSError:
+                            pass
+                        try:
+                            os.close(c_w)
+                        except OSError:
+                            pass
+                        os._exit(1)
+                    os._exit(0)
+                os.write(b_w, b"%d\n" % inner)
+                os.close(b_w)
+                os.close(c_w)
+                os.close(d_r)
+        except BaseException:
+            try:
+                os.close(b_w)
+            except OSError:
+                pass
+            try:
+                os.close(c_w)
+            except OSError:
+                pass
+            try:
+                os.close(d_r)
+            except OSError:
+                pass
+            os._exit(1)
+        os._exit(0)
+    os.close(b_w)
+    os.close(c_w)
+    os.close(d_r)
+    outer_reaped = False
+    try:
+        assert _pipe_read_line(b_r) == b"1\n"
+        inner_pid = int(_pipe_read_line(b_r))
+        assert int(_pipe_read_line(c_r)) == inner_pid
+        _, status = os.waitpid(outer, 0)
+        outer_reaped = True
+        assert os.waitstatus_to_exitcode(status) == 0
+        with store.exclusive_session():
+            pass
+        os.write(d_w, b"r")
+        assert _pipe_read_line(c_r) == b"bye\n"
+        with store.exclusive_session():
+            pass
+    except BaseException:
+        if not outer_reaped:
+            try:
+                import signal as _sig
+                os.kill(outer, _sig.SIGKILL)
+            except OSError:
+                pass
+            try:
+                os.waitpid(outer, 0)
+                outer_reaped = True
+            except ChildProcessError:
+                pass
+        try:
+            os.write(d_w, b"r")
+        except OSError:
+            pass
+        raise
+    finally:
+        os.close(b_r)
+        os.close(c_r)
+        os.close(d_w)
+
+
+def test_session_exec_child_does_not_pin(tmp_path):
+    import sys
+
+    from kullback.store import SessionBusy as _Busy
+    root = tmp_path / "w"
+    store = WorkdirStore(root, [_session_spec()])
+    with store.exclusive_session():
+        pid = os.fork()
+        if pid == 0:
+            try:
+                os.execv(sys.executable, [sys.executable, "-c", "pass"])
+            finally:
+                os._exit(127)
+        _, status = os.waitpid(pid, 0)
+        assert os.waitstatus_to_exitcode(status) == 0
+        probe = WorkdirStore(root, [_session_spec()])
+        with pytest.raises(_Busy):
+            with probe.exclusive_session():
+                pass
+    with store.exclusive_session():
+        pass
