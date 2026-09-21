@@ -257,6 +257,18 @@ def _bad_case_kwargs(case):
         return {"state_tar": b"12345", "grader_tar": b"", "command": "true", "max_input_bytes": 4}
     if case == "oversize-grader":
         return {"state_tar": b"", "grader_tar": b"12345", "command": "true", "max_input_bytes": 4}
+    if case == "max-none":
+        return {"state_tar": b"", "grader_tar": b"", "command": "true", "max_input_bytes": None}
+    if case == "max-str":
+        return {"state_tar": b"", "grader_tar": b"", "command": "true", "max_input_bytes": "16777216"}
+    if case == "max-bool":
+        return {"state_tar": b"", "grader_tar": b"", "command": "true", "max_input_bytes": True}
+    if case == "max-zero":
+        return {"state_tar": b"", "grader_tar": b"", "command": "true", "max_input_bytes": 0}
+    if case == "max-negative":
+        return {"state_tar": b"", "grader_tar": b"", "command": "true", "max_input_bytes": -1}
+    if case == "max-above-ceiling":
+        return {"state_tar": b"", "grader_tar": b"", "command": "true", "max_input_bytes": 16_777_217}
     if case == "non-bytes-state":
         return {"state_tar": "123", "grader_tar": b"", "command": "true"}
     if case == "non-bytes-grader":
@@ -272,6 +284,12 @@ def _bad_case_kwargs(case):
         "chunk-not-int",
         "oversize-state",
         "oversize-grader",
+        "max-none",
+        "max-str",
+        "max-bool",
+        "max-zero",
+        "max-negative",
+        "max-above-ceiling",
         "non-bytes-state",
         "non-bytes-grader",
         "empty-command",
@@ -282,6 +300,12 @@ def _bad_case_kwargs(case):
         "chunk-not-int",
         "oversize-state",
         "oversize-grader",
+        "max-none",
+        "max-str",
+        "max-bool",
+        "max-zero",
+        "max-negative",
+        "max-above-ceiling",
         "non-bytes-state",
         "non-bytes-grader",
         "empty-command",
@@ -294,3 +318,11 @@ def test_grade_refuses_bad_inputs_before_any_world_call(case):
     assert fake.reset_calls == 0
     assert fake.commands == []
     assert fake.close_calls == 0
+
+
+def test_grade_accepts_ceiling_max_input_bytes():
+    fake = _FakeWorld()
+    receipt = grade(_maker(fake), state_tar=b"", grader_tar=b"", command="true", max_input_bytes=16_777_216)
+    assert receipt.passed is True
+    assert fake.reset_calls == 1
+    assert fake.close_calls == 1

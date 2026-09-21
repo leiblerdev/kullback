@@ -65,12 +65,20 @@ def _check_token(token: object) -> str:
     return token
 
 
+def _check_max_input_bytes(max_input_bytes: object) -> int:
+    if isinstance(max_input_bytes, bool) or not isinstance(max_input_bytes, int):
+        raise GradeError("max_input_bytes must be an integer")
+    if max_input_bytes < 1 or max_input_bytes > 16_777_216:
+        raise GradeError("max_input_bytes out of range")
+    return max_input_bytes
+
+
 def _validate_inputs(
     state_tar: object,
     grader_tar: object,
     command: object,
     chunk_bytes: object,
-    max_input_bytes: int,
+    max_input_bytes: object,
     token: object,
 ) -> tuple[int, str]:
     if not isinstance(state_tar, bytes):
@@ -81,9 +89,10 @@ def _validate_inputs(
         raise GradeError("command must be a non-empty string")
     size = _check_chunk_bytes(chunk_bytes)
     resolved = _check_token(token)
-    if len(state_tar) > max_input_bytes:
+    ceiling = _check_max_input_bytes(max_input_bytes)
+    if len(state_tar) > ceiling:
         raise GradeError("state_tar exceeds max_input_bytes")
-    if len(grader_tar) > max_input_bytes:
+    if len(grader_tar) > ceiling:
         raise GradeError("grader_tar exceeds max_input_bytes")
     return (size, resolved)
 
