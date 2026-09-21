@@ -14,16 +14,16 @@ from kullback.ai.usage import Usage
 
 ErrorClass = Literal[
     "tool_not_found", "invalid_arguments", "permission_denied", "business_error",
-    "not_found_entity", "transient", "cancelled", "unknown",
+    "not_found_entity", "transient", "cancelled", "unknown", "body_fault", "cannot_answer",
 ]
-ClassifiedBy = Literal["code", "rule", "llm", "observed", "human"]
+ClassifiedBy = Literal["code", "rule", "llm", "observed", "human", "declared"]
 ToolKind = Literal["read", "write", "generic"]
 Confidence = Literal["low", "medium", "high"]
 ColumnClass = Literal["exempt", "hard", "semantic"]
 AtomKind = Literal["required", "allowed", "forbidden", "question", "communicate", "hard"]
 ProvenanceClass = Literal["user_stated", "system_derived", "user_elicited", "agent_chosen"]
 EventType = Literal["model_call", "tool_call", "tool_result", "user_turn", "error", "stop"]
-Route = Literal["code", "recording", "llm"]
+Route = Literal["code", "recording", "llm", "cannot_answer"]
 VerdictClass = Literal["pass", "fail", "transferred_without_acting", "env_error", "not_verdicted"]
 Cause = Literal["candidate", "environment", "simulated_user", "undetermined"]
 SigSource = Literal["observed", "llm", "declared"]

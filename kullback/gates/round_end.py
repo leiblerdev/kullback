@@ -22,6 +22,24 @@ from kullback.runner.records import GateResult, ProbePool, Run, Verifier, Verifi
 
 GATE_COUNTS: tuple[str, ...] = ("fidelity", "trusted", "refused_count", "assisted_runs", "probes_passing")
 
+# G31: the round goal as rates over the Task list of that round. Both are invented and
+# await measurement; 1.0 says every Task of the round is trusted and clears fidelity.
+FIDELITY_RATE_GOAL = 1.0
+TRUSTED_SHARE_GOAL = 1.0
+
+
+def _goal_rates(task_status: Any, clearing: set, trusted_ids: list) -> dict:
+    """G31 rates over this round's Task list, not absolute counts.
+
+    The numerators only count Tasks of this round, so a growing list cannot read as progress
+    on its own. A round with no Tasks reads 1.0, since no Task is then left unmet."""
+    task_ids = list((task_status or {}).keys())
+    fidelity_tasks = len([task_id for task_id in task_ids if task_id in clearing])
+    trusted_tasks = len([task_id for task_id in trusted_ids if task_id in (task_status or {})])
+    total = len(task_ids)
+    return {"fidelity_tasks": fidelity_tasks, "fidelity_rate": (fidelity_tasks / total) if total else 1.0,
+            "trusted_tasks": trusted_tasks, "trusted_share": (trusted_tasks / total) if total else 1.0}
+
 
 def round_counts(task_status: dict, verifiers: list[Verifier], probes: dict[str, ProbePool],
                  history: dict[str, VerifierHistory], refusals: dict[str, dict], task_runs: dict[str, list[Run]],
@@ -56,7 +74,7 @@ def round_counts(task_status: dict, verifiers: list[Verifier], probes: dict[str,
     unfinished = [task_id for task_id in (task_status or {})
                   if not ((task_id in trusted_ids and task_id in clearing) or task_id in refused)]
     stripped = [list(_get(record_of, "stripped", []) or []) for record_of in (intents or {}).values()]
-    return {
+    counts = {
         "fidelity": len(replays or {}) - len(fidelity_ruling.failures),
         "tasks": len(task_status or {}),
         "tasks_with_reference": len(with_reference),
@@ -68,11 +86,15 @@ def round_counts(task_status: dict, verifiers: list[Verifier], probes: dict[str,
         "probes_passing": int(trusted_ruling.metrics["probes_passing"]),
         "false_rejection": dict(trusted_ruling.metrics["false_rejection"]),
         "unfinished": unfinished,
+        # G31: rates over the Task list of this round (1.0 when there are no Tasks, since no
+        # Task is then left unmet). New fields only; every count above reads as before.
+        **_goal_rates(task_status, clearing, trusted_ids),
         # D196: the strip, and what it missed.
         "intents_stripped": sum(1 for values in stripped if values),
         "values_stripped": sum(len(values) for values in stripped),
         "leak_misses": sum(len(_get(row, "leak_columns", []) or []) for row in (task_status or {}).values()),
     }
+    return counts
 
 
 def _counts(entry: Any) -> dict:
@@ -128,26 +150,164 @@ def fidelity_flat(rounds: list[dict], flat_rounds: int) -> bool:
     return recent <= before
 
 
+def fidelity_rate(counts: Any) -> Optional[float]:
+    """This round's fidelity as a rate over its Task list, or None where no rate was recorded.
+
+    Only counts recorded by the new `round_counts` carry a rate; anything older has no rate to
+    read and the caller falls back to the absolute count. Where the numerators are present the
+    rate is recomputed against the live Task count, because the driver can widen the count
+    afterwards (D231 reads a round with no Examiner plan off the Builder's handover, so stored
+    rates must never outlive their denominator). A round with no Tasks at all reads 1.0, since
+    no Task is then left unmet."""
+    counts = _counts(counts)
+    tasks = counts.get("tasks")
+    numerator = counts.get("fidelity_tasks")
+    if isinstance(numerator, int) and tasks:
+        return float(numerator) / int(tasks)
+    if isinstance(counts.get("fidelity_rate"), (int, float)):
+        return float(counts["fidelity_rate"])
+    return None
+
+
+def trusted_share(counts: Any) -> Optional[float]:
+    """This round's trusted share over its Task list, or None where no share was recorded.
+
+    Like `fidelity_rate`, recomputed against the live Task count where the numerators are
+    present, so a widened D231 denominator cannot leave a perfect stored share behind."""
+    counts = _counts(counts)
+    tasks = counts.get("tasks")
+    numerator = counts.get("trusted_tasks")
+    if isinstance(numerator, int) and tasks:
+        return float(numerator) / int(tasks)
+    if isinstance(counts.get("trusted_share"), (int, float)):
+        return float(counts["trusted_share"])
+    return None
+
+
+def goal_met(counts: Any, *, fidelity_rate_goal: float = FIDELITY_RATE_GOAL,
+             trusted_share_goal: float = TRUSTED_SHARE_GOAL) -> bool:
+    """True when the round met the goal: fidelity rate and trusted share at their goals.
+
+    The goals ride as arguments (defaulting to the named constants) so a plan can pass the
+    founder's measured targets later without another frozen change. Counts with no recorded
+    rates read as before (True), so every caller that never saw a list is unaffected; a round
+    with no Tasks is vacuously met."""
+    counts = _counts(counts)
+    rate, share = fidelity_rate(counts), trusted_share(counts)
+    if rate is None or share is None:
+        return True
+    if not counts.get("tasks"):
+        return True
+    return rate >= fidelity_rate_goal and share >= trusted_share_goal
+
+
+def fidelity_rate_flat(rounds: list[dict], flat_rounds: int) -> bool:
+    """True when the fidelity rate never rose above its earlier best over the window (G31).
+
+    Rounds without a Task list fall back to the absolute count, which is exactly what
+    `fidelity_flat` reads, so legacy counts decide as before."""
+    flat_rounds = max(1, int(flat_rounds))
+    if len(rounds) <= flat_rounds:
+        return False
+    counts = [_counts(r) for r in rounds]
+    rates: list[Optional[float]] = [fidelity_rate(c) for c in counts]
+    if any(rate is None for rate in rates):
+        before = max(int(c.get("fidelity") or 0) for c in counts[:-flat_rounds])
+        recent = max(int(c.get("fidelity") or 0) for c in counts[-flat_rounds:])
+        return recent <= before
+    before_rate = max(rate for rate in rates[:-flat_rounds] if rate is not None)
+    recent_rate = max(rate for rate in rates[-flat_rounds:] if rate is not None)
+    return recent_rate <= before_rate
+
+
+def _goal_exit(last: Any, *, fidelity_rate_goal: float, trusted_share_goal: float) -> Optional[str]:
+    if goal_met(last, fidelity_rate_goal=fidelity_rate_goal, trusted_share_goal=trusted_share_goal):
+        return "done"
+    if int(last.get("refused_count") or 0) > 0:
+        return "refused"
+    return None
+
+
+def _stop_reading(last: Any) -> str:
+    total = last.get("tasks")
+    rate = fidelity_rate(last)
+    share = trusted_share(last)
+    return ("fidelity %s of %s (rate %s), trusted %s of %s (share %s), refused %s, "
+            "probes passing %s, unfinished %s" % (
+                last.get("fidelity", 0), total if total else "?",
+                ("%.2f" % rate) if rate is not None else "?",
+                last.get("trusted", 0), total if total else "?",
+                ("%.2f" % share) if share is not None else "?",
+                last.get("refused_count", 0), last.get("probes_passing", 0),
+                len(last.get("unfinished") or [])))
+
+
 def exit_for(rounds: list[dict], stall_rounds: int, *, ceiling_reached: bool,
              exhausted: list[bool], all_rounds: Optional[list[dict]] = None,
-             fidelity_stall: Optional[int] = None, max_rounds: Optional[int] = None) -> Optional[str]:
+             fidelity_stall: Optional[int] = None, max_rounds: Optional[int] = None,
+             fidelity_rate_goal: float = FIDELITY_RATE_GOAL,
+             trusted_share_goal: float = TRUSTED_SHARE_GOAL) -> Optional[str]:
     """ceiling when the build ceiling was reached or the allowance was exhausted two rounds in a row,
     else done, else stalled (no gate count moved, or fidelity flat for `fidelity_stall` rounds), else
     max_rounds when `all_rounds` holds that many, else None.
 
     `rounds` is the tail since the last round that moved, which is what the gate-count stall reads;
     `all_rounds` is every round so far, which is what the fidelity window and the round cap read,
-    since a round that moved a count sideways still counts against both (D169)."""
+    since a round that moved a count sideways still counts against both (D169).
+
+    G31: the "done" exit needs the goal (fidelity rate and trusted share at their goals), never
+    merely nothing left to try. A finish reached because Tasks were refused is its own exit,
+    "refused". `done` itself keeps its literal meaning, so its callers read as before.
+
+    Re-freeze contract: the driver and the RoundEnd event must accept the new "refused" exit,
+    and the driver should land `exit_reason` on the round record's exit note, so a real stop
+    carries the numbers behind it and not just the short exit string."""
     exhausted = list(exhausted or [])
     history = list(all_rounds) if all_rounds is not None else list(rounds)
     if ceiling_reached or (len(exhausted) >= 2 and exhausted[-1] and exhausted[-2]):
         return "ceiling"
     if rounds and done(rounds[-1]):
-        return "done"
+        decided = _goal_exit(_counts(rounds[-1]), fidelity_rate_goal=fidelity_rate_goal,
+                             trusted_share_goal=trusted_share_goal)
+        if decided is not None:
+            return decided
     if stalled(rounds, stall_rounds):
         return "stalled"
-    if fidelity_stall and fidelity_flat(history, fidelity_stall):
+    if fidelity_stall and fidelity_rate_flat(history, fidelity_stall):
         return "stalled"
     if max_rounds and len(history) >= max_rounds:
         return "max_rounds"
     return None
+
+
+def exit_reason(rounds: list[dict], stall_rounds: int, *, ceiling_reached: bool,
+                exhausted: list[bool], all_rounds: Optional[list[dict]] = None,
+                fidelity_stall: Optional[int] = None, max_rounds: Optional[int] = None,
+                fidelity_rate_goal: float = FIDELITY_RATE_GOAL,
+                trusted_share_goal: float = TRUSTED_SHARE_GOAL) -> str:
+    """Words for the stop decision, naming the numbers it read (G31).
+
+    Every exit, and the decision to keep going, returns a sentence with the counts behind it,
+    so a stop with no reason is impossible: the reason always carries digits."""
+    exit = exit_for(rounds, stall_rounds, ceiling_reached=ceiling_reached, exhausted=list(exhausted or []),
+                    all_rounds=all_rounds, fidelity_stall=fidelity_stall, max_rounds=max_rounds,
+                    fidelity_rate_goal=fidelity_rate_goal, trusted_share_goal=trusted_share_goal)
+    last = _counts(rounds[-1]) if rounds else {}
+    history = list(all_rounds) if all_rounds is not None else list(rounds)
+    reading = _stop_reading(last)
+    if exit == "ceiling":
+        return "ceiling: the build ceiling was reached or the allowance ran out twice; " + reading
+    if exit == "done":
+        return "done: the goal is met, nothing is unfinished and no probe passes; " + reading
+    if exit == "refused":
+        return ("refused: the goal is unmet and the finish came from refused Tasks, "
+                "so there is nothing left to try but the goal is not met; " + reading)
+    if exit == "stalled":
+        if not stalled(list(rounds), stall_rounds):
+            return ("stalled: the fidelity rate never rose above its earlier best over the last %s "
+                    "rounds; " % (fidelity_stall or 0)) + reading
+        return ("stalled: no gate count moved over the last %s rounds; " % (stall_rounds + 1)) + reading
+    if exit == "max_rounds":
+        return ("max_rounds: the round cap of %s was reached after %s rounds; "
+                % (max_rounds or 0, len(history))) + reading
+    return "no exit: keep going, " + reading
