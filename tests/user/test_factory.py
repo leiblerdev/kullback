@@ -184,7 +184,7 @@ def test_full_live_inputs_never_touch_the_disk(workdir):
 
 
 def test_the_disk_fallback_carries_write_tools_goal_writes_and_strip(workdir):
-    """The disk fallback ends and strips like the dict's own values, not unchecked (P1)."""
+    """The disk fallback ends and strips like the dict's own values, not unchecked."""
     user = factory_mod.build_user(workdir, "task_1", TestModel([], loop=True),
                                   factory_mod.PURPOSE_SCORE)
     assert isinstance(user, AgentUser)

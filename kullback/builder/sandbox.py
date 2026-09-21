@@ -222,10 +222,11 @@ def main():
         # call's writes.
         world = copy.deepcopy(job["dbs"][call["db"]]) if want_diff else job["dbs"][call["db"]]
         instance = toolkit(db_class.model_validate(world))
-        # A fresh toolkit carries a fresh context, so the recorded feed of this call id is laid
+        # A fresh toolkit carries a fresh context, so the recorded feed of this call is laid
         # on it before the call runs: at replay and in the gates a body reads the values the
-        # recording witnessed for this call, off them the seeded feed answers, counted.
-        feed = (job.get("ctx") or {}).get(call.get("id"))
+        # recording witnessed for this call, off them the seeded feed answers, counted. The
+        # feed rides on the call's own entry; a call with none takes the seeded feed.
+        feed = call.get("feed")
         if feed:
             instance.ctx.feed_call(feed)
         function = getattr(instance, call["name"])
@@ -279,6 +280,33 @@ main()
 _RUNNER = _ARITH_SOURCE + _RUNNER_BODY
 
 
+# Calls without a recorded position order after positioned calls, by call id, so the result never depends on input order.
+_MISSING_MSG_INDEX = 1 << 62
+
+
+def recorded_call_parts(call: Any) -> tuple:
+    """The five parts of a recorded call, for a ToolCall or a dict."""
+    if isinstance(call, ToolCall):
+        return (call.id, call.trace_id, call.raw_ptr, call.args or {}, call.result)
+    node = call or {}
+    return (node.get("id"), node.get("trace_id"), node.get("raw_ptr"), node.get("args") or {}, node.get("result"))
+
+
+def context_feed_key(call: Any) -> tuple:
+    """The identity of one recorded call for its tool context feed: trace, position, id.
+
+    A call id alone does not name a call: ingestion permits an id issued again after the
+    earlier call resolved, and several traces travel in one list. The triple tells those
+    apart; a missing trace or id reads as "" and a missing position orders last. Two calls
+    sharing the whole triple cannot be told apart and are never fed.
+    """
+    call_id, trace_id, raw, _, _ = recorded_call_parts(call)
+    position = raw.get("msg_index") if isinstance(raw, dict) else getattr(raw, "msg_index", None)
+    if not isinstance(position, int):
+        position = _MISSING_MSG_INDEX
+    return (trace_id or "", position, call_id or "")
+
+
 class Sandbox:
     """Runs generated tool code in a subprocess only, with a timeout and no network.
 
@@ -295,9 +323,10 @@ class Sandbox:
         self.class_name, self.db_class = class_name, db_class
         self.call_states = dict(call_states or {})  # call id -> the Starting state that call ran on
         self.call_tasks = dict(call_tasks or {})  # call id -> the Task whose trace made the call (D195)
-        # call id -> the values that call witnessed for the tool context (its new ids, its time).
-        # The child lays the feed on the fresh toolkit before the call runs, so a body reads what
-        # the recording showed for this call; a call with no witnessed value takes the seeded feed.
+        # Feed key -> the values that call witnessed for the tool context (its new ids, its
+        # time). The child lays the feed on the fresh toolkit before the call runs, so a body
+        # reads what the recording showed for this call; a call with no witnessed value takes
+        # the seeded feed.
         self.call_context = dict(call_context or {})
         # Absolute, because the subprocess is started with cwd inside this directory: a relative
         # workdir would be resolved against it a second time and every path would double. Found on
@@ -418,17 +447,20 @@ class Sandbox:
         nonce = secrets.token_hex(16)
         # Only a feed that witnessed something travels: an empty one would only tell the child
         # what the seeded feed already says, and the job stays the bytes it always was for it.
-        feeds = {}
-        for call in calls:
-            feed = self.call_context.get(call.id) if call.id else None
+        # The feed rides on its call's own entry, looked up here by feed key, so the child
+        # needs no identity beyond the entry; a call absent from the mapping gets no feed.
+        entries = []
+        for call, i in zip(calls, indexes, strict=False):
+            entry = {"id": call.id, "name": call.name, "args": call.args, "db": i}
+            feed = self.call_context.get(context_feed_key(call))
             if isinstance(feed, dict) and (feed.get("now") is not None or feed.get("new_ids")):
-                feeds[call.id] = feed
+                entry["feed"] = feed
+            entries.append(entry)
         job.write_text(json.dumps({"source": self.source, "dbs": states, "db_class": self.db_class,
                                    "class_name": self.class_name, "helpers": sorted(HELPERS),
-                                   "trace": bool(trace), "diff": bool(want_diff), "ctx": feeds,
+                                   "trace": bool(trace), "diff": bool(want_diff),
                                    "want": [[str(pair[0]), str(pair[1])] for pair in want],
-                                   "calls": [{"id": c.id, "name": c.name, "args": c.args, "db": i}
-                                             for c, i in zip(calls, indexes, strict=False)]},
+                                   "calls": entries},
                                   default=str), encoding="utf-8")
         try:
             done = subprocess.run([sys.executable, "-I", str(self.runner), str(job), str(out)],
