@@ -321,6 +321,16 @@ def test_predicate_tripping_on_the_passing_walk_too_fails_without_driving_forbid
     assert episode.resets == 1
 
 
+def test_generator_predicate_quiet_on_control_holds():
+    def violations_of(path):
+        if "label=flat" in path:
+            yield "forbidden rename"
+
+    out = check_forbidden_step_trips(FakeEpisode(), "widget_task", FLAT_WALK, violations_of,
+                                     control_walk=GOOD_WALK)
+    assert out.outcome == "held"
+
+
 def test_predicate_reading_the_run_holds_forbidden_and_clears_control():
     episode = FakeEpisode()
     out = check_forbidden_step_trips(episode, "widget_task", FLAT_WALK, flags_flat_run,
@@ -410,6 +420,15 @@ def test_user_facts_as_a_plain_dict_count():
 def test_user_facts_as_plain_values_count():
     traced = check_arguments_trace(GOOD_WALK, [], intent="do the chore",
                                    user_facts=["w1", "striped"])
+    assert traced.outcome == "held"
+
+
+def test_model_user_facts_trace_through_their_values():
+    from kullback.runner.records import UserFact
+
+    facts = [UserFact(field="widget_id", value="w1"),
+             UserFact(field="label", value="striped")]
+    traced = check_arguments_trace(GOOD_WALK, [], intent="do the chore", user_facts=facts)
     assert traced.outcome == "held"
 
 

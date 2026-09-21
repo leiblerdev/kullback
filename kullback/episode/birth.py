@@ -107,7 +107,7 @@ def _fact_texts(user_facts: Any) -> list:
         if isinstance(item, dict) and "value" in item:
             texts.extend(_leaf_set(item["value"]))
         else:
-            texts.extend(_leaf_set(item))
+            texts.extend(_leaf_set(getattr(item, "value", item)))
     return texts
 
 
@@ -240,7 +240,7 @@ def check_forbidden_step_trips(episode: Any, task_id: str, forbidden_walk: Any,
         if control_walk is not None:
             _drive(episode, task_id, list(control_walk), seed=seed, closing=closing,
                    max_steps=max_steps)
-            control_hits = violations_of(episode.run_path())
+            control_hits = list(violations_of(episode.run_path()) or [])
             if control_hits:
                 return CheckResult(name="forbidden_step", outcome=FAILED,
                                    reason="predicate trips on the passing walk too: "
