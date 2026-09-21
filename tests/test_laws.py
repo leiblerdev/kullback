@@ -512,6 +512,64 @@ def test_honest_write_not_blamed_for_other_tools_crash():
     assert [(v.law, v.tool) for v in report.violations] == [(NOTHING_CRASHES_OR_HANGS, "boom")]
 
 
+class TwoSpacesWorld:
+    def __init__(self):
+        self._users = 0
+        self._orders = 0
+
+    def reset(self):
+        self._users = 0
+        self._orders = 0
+
+    def tools(self):
+        return [
+            ToolInfo("create_user", "write", [], mints=("user.id",)),
+            ToolInfo("create_order", "write", [], mints=("order.id",)),
+        ]
+
+    def snapshot(self):
+        return {"users": self._users, "orders": self._orders}
+
+    def call(self, name, args):
+        if name == "create_user":
+            self._users += 1
+            return Outcome(True, {"user": {"id": self._users}})
+        if name == "create_order":
+            self._orders += 1
+            return Outcome(True, {"order": {"id": self._orders}})
+        return Outcome(False, None, "unknown tool")
+
+
+class TwoPathsWorld:
+    def __init__(self):
+        self._made = 0
+
+    def reset(self):
+        self._made = 0
+
+    def tools(self):
+        return [ToolInfo("make", "write", [], mints=("a.id", "b.id"))]
+
+    def snapshot(self):
+        return {"made": self._made}
+
+    def call(self, name, args):
+        self._made += 1
+        return Outcome(True, {"a": {"id": self._made}, "b": {"id": self._made}})
+
+
+def test_ids_in_separate_spaces_hold_minted_law():
+    report = _run(TwoSpacesWorld())
+    assert report.violations == ()
+    assert report.consistency == 1.0
+
+
+def test_coinciding_values_on_two_paths_hold_minted_law():
+    report = _run(TwoPathsWorld())
+    assert report.violations == ()
+    assert report.consistency == 1.0
+
+
 def test_crash_counts_match_planned_calls_only():
     inner = CrashProbeWorld()
     recording = CallCountingWorld(inner)

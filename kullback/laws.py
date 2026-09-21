@@ -4,6 +4,8 @@ A property harness generates call sequences by code, with no model, runs them
 through a small world protocol and checks one function per law. A broken law is
 shrunk to the shortest failing sequence with the shrinker in
 kullback.consistency. The number in LawReport is named Environment consistency.
+Two tools that mint into one shared id space are not compared with each other:
+a missed repeat is preferred to a false one.
 """
 
 from __future__ import annotations
@@ -339,20 +341,22 @@ def _mint_paths(entry: Entry, mints: dict) -> tuple:
     return tuple(mints.get(entry.step.tool, ()))
 
 
-def _check_one_mint(entry: Entry, path: str, tally: dict, steps: list, seen: list) -> None:
+def _check_one_mint(entry: Entry, path: str, tally: dict, steps: list, seen: dict) -> None:
     found, value = _resolve_path(entry.outcome.value, path)
     if not found or value is None:
         _note(tally, MINTED_IDS_UNIQUE, entry.step.tool, False, steps)
         return
-    repeated = any(type(old) is type(value) and old == value for old in seen)
+    key = (entry.step.tool, path)
+    known = seen.setdefault(key, [])
+    repeated = any(type(old) is type(value) and old == value for old in known)
     _note(tally, MINTED_IDS_UNIQUE, entry.step.tool, not repeated, steps)
-    seen.append(value)
+    known.append(value)
 
 
 def _check_minted(
     entries: list, mints: dict, tally: dict, steps: list, exempt: Mapping
 ) -> None:
-    seen: list = []
+    seen: dict = {}
     for entry in entries:
         paths = _mint_paths(entry, mints)
         if not paths:
