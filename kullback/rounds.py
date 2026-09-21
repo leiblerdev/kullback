@@ -98,7 +98,6 @@ from kullback.runner.records import (
     read_json,
     write_json,
 )
-from kullback.user import agent as user_agent_mod
 from kullback.user import fidelity as user_fidelity_mod
 from kullback.user import lesson as user_lesson_mod
 
@@ -1423,14 +1422,18 @@ class Loop:
         return user_context_key(row[0]) if row else ""
 
     def _agent_user_factory(self, model: Any):
-        """How one Task's agent user is built for the scoring, on the plan's own user model."""
+        """How one Task's agent user is built for the scoring, on the plan's own user model.
+
+        Through the one factory, with the same inputs a real Run passes, so the scorer examines
+        the user the Runs meet (G5)."""
+        from kullback.user import factory as user_factory_mod
+
         workdir = self.plan.workdir
-        writes = user_fidelity_mod.write_tools_of(workdir)
-        vocab = user_fidelity_mod.vocabulary_of(workdir)
 
         def make(ctx, fallback, record_values):
-            return user_agent_mod.AgentUser(ctx, fallback, model, vocab=vocab, write_tools=writes,
-                                            record_values=record_values)
+            return user_factory_mod.build_user(workdir, ctx.task_id, model,
+                                               user_factory_mod.PURPOSE_SCORE, ctx=ctx,
+                                               fallback=fallback, record_values=record_values)
 
         return make
 
