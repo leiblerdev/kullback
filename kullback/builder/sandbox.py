@@ -222,6 +222,12 @@ def main():
         # call's writes.
         world = copy.deepcopy(job["dbs"][call["db"]]) if want_diff else job["dbs"][call["db"]]
         instance = toolkit(db_class.model_validate(world))
+        # A fresh toolkit carries a fresh context, so the recorded feed of this call id is laid
+        # on it before the call runs: at replay and in the gates a body reads the values the
+        # recording witnessed for this call, off them the seeded feed answers, counted.
+        feed = (job.get("ctx") or {}).get(call.get("id"))
+        if feed:
+            instance.ctx.feed_call(feed)
         function = getattr(instance, call["name"])
         # The world the body actually sees, dumped before it runs: validation itself narrows the
         # world to what the schema declares, so the diff below compares what the body saw with
@@ -283,11 +289,16 @@ class Sandbox:
 
     def __init__(self, source: str, db: dict, workdir: Path | str, class_name: str = TOOLS_CLASS,
                  db_class: str = DB_CLASS, timeout: float = 30.0,
-                 call_states: Optional[dict] = None, call_tasks: Optional[dict] = None):
+                 call_states: Optional[dict] = None, call_tasks: Optional[dict] = None,
+                 call_context: Optional[dict] = None):
         self.source, self.db, self.timeout = source, db, timeout
         self.class_name, self.db_class = class_name, db_class
         self.call_states = dict(call_states or {})  # call id -> the Starting state that call ran on
         self.call_tasks = dict(call_tasks or {})  # call id -> the Task whose trace made the call (D195)
+        # call id -> the values that call witnessed for the tool context (its new ids, its time).
+        # The child lays the feed on the fresh toolkit before the call runs, so a body reads what
+        # the recording showed for this call; a call with no witnessed value takes the seeded feed.
+        self.call_context = dict(call_context or {})
         # Absolute, because the subprocess is started with cwd inside this directory: a relative
         # workdir would be resolved against it a second time and every path would double. Found on
         # the first live build, where `--workdir .work-retail` made all sixteen tools fail the
@@ -405,11 +416,18 @@ class Sandbox:
                 states.append(self.state_for(call))
             indexes.append(at[key])
         nonce = secrets.token_hex(16)
+        # Only a feed that witnessed something travels: an empty one would only tell the child
+        # what the seeded feed already says, and the job stays the bytes it always was for it.
+        feeds = {}
+        for call in calls:
+            feed = self.call_context.get(call.id) if call.id else None
+            if isinstance(feed, dict) and (feed.get("now") is not None or feed.get("new_ids")):
+                feeds[call.id] = feed
         job.write_text(json.dumps({"source": self.source, "dbs": states, "db_class": self.db_class,
                                    "class_name": self.class_name, "helpers": sorted(HELPERS),
-                                   "trace": bool(trace), "diff": bool(want_diff),
+                                   "trace": bool(trace), "diff": bool(want_diff), "ctx": feeds,
                                    "want": [[str(pair[0]), str(pair[1])] for pair in want],
-                                   "calls": [{"name": c.name, "args": c.args, "db": i}
+                                   "calls": [{"id": c.id, "name": c.name, "args": c.args, "db": i}
                                              for c, i in zip(calls, indexes, strict=False)]},
                                   default=str), encoding="utf-8")
         try:

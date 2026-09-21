@@ -1189,8 +1189,10 @@ def test_a_body_that_is_nondeterministic_on_a_later_call_fails_the_deterministic
     db = {"orders": {o["order_id"]: o for o in orders}, "users": {}, "products": {}}
     schema = _schema_for(db)
     third = orders[2]["status"]
-    body = (f"import random\nif self.db.orders[order_id].status == {third!r}:\n"
-            "    return {'order_id': order_id, 'status': str(random.random())}\n"
+    # G26 took `random` out of the imports a body may use, so the staged dice is the object's
+    # own identity: it answers alike inside one call and differs across the gate's two runs.
+    body = (f"if self.db.orders[order_id].status == {third!r}:\n"
+            "    return {'order_id': order_id, 'status': str(id(order_id))}\n"
             "return self.db.orders[order_id]\n")
     calls = [_call("get_order_details", {"order_id": o["order_id"]}, result=o, idx=i)
              for i, o in enumerate(orders)]
