@@ -100,8 +100,8 @@ from kullback.runner.records import write_json as _write_json
 
 # The rule-driven Simulated user under its old name (D214): it lives in kullback/user now, and the
 # stages read it from there so a stage's code version follows the module that actually changed.
-from kullback.user import agent as user_agent_mod
 from kullback.user import context as user_context_mod
+from kullback.user import factory as user_factory_mod
 from kullback.user import fidelity as user_fidelity_mod
 from kullback.user import lesson as user_lesson_mod
 from kullback.user import rules as user_sim
@@ -2104,7 +2104,7 @@ def _rerolls_stage(model: Any, rerolls: int, workers: int = 1, only: Optional[It
     # D214: whose turns the Runs get is part of what this stage produces, so a build that names a
     # user driver puts it in the key. A build that names none adds nothing, so its key, its cache
     # and the Run ids it derives from the key are the ones it had before D214.
-    version = (f"{_version('rerolls', run, loop, route, user_sim, intent, provider, compile_env, episode_loading, parallel, runner_parallel, vocabulary, verifier_suite, canon, records_mod, user_agent_mod, user_context_mod, user_fidelity_mod, user_lesson_mod, helpers=(_reroll_run_jobs, _reroll_run_one, _gather_reroll_rows, _candidate_task_ctx, _candidate_run_once, _discard_runs, _json_schema, _members_of, _reroll_key, _reroll_reason, _reroll_record, _reroll_reuse, _reroll_rows, _system_prompt_for, _tool_definitions, _tools_called, _user_driver, _vocab_from, _write_runs_index, with_synthetic_rows))}:"
+    version = (f"{_version('rerolls', run, loop, route, user_sim, intent, provider, compile_env, episode_loading, parallel, runner_parallel, vocabulary, verifier_suite, canon, records_mod, user_factory_mod, user_context_mod, user_fidelity_mod, user_lesson_mod, helpers=(_reroll_run_jobs, _reroll_run_one, _gather_reroll_rows, _candidate_task_ctx, _candidate_run_once, _discard_runs, _json_schema, _members_of, _reroll_key, _reroll_reason, _reroll_record, _reroll_reuse, _reroll_rows, _system_prompt_for, _tool_definitions, _tools_called, _user_driver, _vocab_from, _write_runs_index, with_synthetic_rows))}:"
                f"{getattr(model, 'name', 'none')}:{rerolls}"
                f":REROLL_KEY_FORMAT={REROLL_KEY_FORMAT}:REROLL_KEY_NOTE={REROLL_KEY_NOTE}"
                f":REROLL_RECORD={REROLL_RECORD}:REROLL_SEED={REROLL_SEED}:REROLL_TURNS={REROLL_TURNS}"
