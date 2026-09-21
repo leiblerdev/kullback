@@ -12,7 +12,7 @@ import pytest
 from kullback.gates import verifier_suite as S
 from kullback.runner.atom_context import _evaluate
 from kullback.runner.canon import CanonRules
-from kullback.runner.records import Event, Run, Verifier
+from kullback.runner.records import Atom, Event, Run, Verifier
 from kullback.runner.verdict import verdict
 
 try:
@@ -201,3 +201,34 @@ def test_the_gates_answers_on_plain_write_atoms_are_unchanged():
     assert verdict(good, verifier, write_tools=WRITE_TOOLS).passed is True
     assert verdict(bad, verifier, write_tools=WRITE_TOOLS).passed is False
     assert _evaluate(atom.predicate_src, {"__builtins__": {}, "wrote": lambda *a, **k: True}) is True
+
+
+def test_a_judged_run_still_names_and_records_its_unsettled_semantic_pair(tmp_path):
+    """No short-circuit: with judge_used already True, the comparisons pass must still name
+    unsettled pairs and record their use, in the original note order."""
+    from kullback.runner.records import Column, EntitySchema
+
+    run = make_run("r-combined", [
+        user("Please cancel order W123."),
+        assistant("Done."),
+        _ev("stop", termination_reason="done",
+            start_state={"orders": {"W123": {"status": "pending", "note": "cancelled by the user"}}},
+            end_state={"orders": {"W123": {"status": "cancelled", "note": "cancelled by user"}}}),
+    ])
+    schema = EntitySchema(tables=["orders"], columns=[
+        Column(table="orders", name="status", **{"class": "hard"}),
+        Column(table="orders", name="note", **{"class": "semantic"})])
+    verifier = Verifier(task_id="t9", verifier_version="v1", atoms=[
+        Atom(id="j_tone", kind="required", judge=True, description="tone fit"),
+        Atom(id="a_note", kind="required",
+             predicate_src='"note" not in diff()["orders.W123"]["fields"]'),
+    ])
+    out = verdict(run, verifier, judge_results={"j_tone": {"verdict": "abstain"}},
+                  schema=schema, workdir=tmp_path)
+    assert out.judge_used is True
+    assert "judge_abstained:j_tone" in out.notes
+    unresolved = [note for note in out.notes if note.startswith("semantic_unresolved:")]
+    assert len(unresolved) == 1
+    assert out.notes.index("judge_abstained:j_tone") < out.notes.index(unresolved[0])
+    uses = (tmp_path / "equivalence_uses.jsonl").read_text(encoding="utf-8").splitlines()
+    assert len(uses) == 1

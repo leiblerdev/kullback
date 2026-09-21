@@ -1660,7 +1660,7 @@ def _replay_stage(judging: Optional[SemanticJudging] = None, only: Optional[Iter
     # The judge's identity and the equivalence table's version ride in the key beside the verdict
     # format: a replay scored with no judge and one scored with a judge are different readings of
     # the same bytes, and a cache that cannot tell them apart hands back the unjudged one (D219).
-    version = (f"{_version('replay_reference', run, replay_mod, fidelity, compile_env, route, loop, tool_runs, effects_mod, repair, verifier_suite, canon, judge_mod, records_mod, helpers=(holdout_answers, holdout_world, replay_failures_of, replay_difference, _effect_sentence, _write_runs_index, with_synthetic_rows, SemanticJudging.save, SemanticJudging._ask, SemanticJudging._answer, SemanticJudging.__init__, SemanticJudging.judge.fget, _gate_for, _memo_get, _memo_put, _count_judgement, _save_table))}"
+    version = (f"{_version('replay_reference', run, replay_mod, fidelity, compile_env, route, loop, tool_runs, effects_mod, repair, verifier_suite, canon, judge_mod, records_mod, helpers=(holdout_answers, holdout_world, replay_failures_of, replay_difference, _effect_sentence, _refuse_stand_in, _write_runs_index, with_synthetic_rows, SemanticJudging.save, SemanticJudging._ask, SemanticJudging._answer, SemanticJudging.__init__, SemanticJudging.judge.fget, _gate_for, _memo_get, _memo_put, _count_judgement, _save_table))}"
                f":verdicts={replay_mod.VERDICT_FORMAT}"
                f":judge={judging.identity}:equivalence={judging.table.version}"
                f":EFFECTS_FILE={EFFECTS_FILE}:EQUIVALENCE_FILE={EQUIVALENCE_FILE}"
@@ -2116,7 +2116,7 @@ def _rerolls_stage(model: Any, rerolls: int, workers: int = 1, only: Optional[It
     # D214: whose turns the Runs get is part of what this stage produces, so a build that names a
     # user driver puts it in the key. A build that names none adds nothing, so its key, its cache
     # and the Run ids it derives from the key are the ones it had before D214.
-    version = (f"{_version('rerolls', run, loop, route, user_sim, intent, provider, compile_env, parallel, runner_parallel, vocabulary, verifier_suite, canon, records_mod, user_agent_mod, user_context_mod, user_fidelity_mod, user_lesson_mod, helpers=(_reroll_run_jobs, _reroll_run_one, _gather_reroll_rows, _candidate_task_ctx, _candidate_run_once, _discard_runs, _json_schema, _members_of, _reroll_key, _reroll_reason, _reroll_record, _reroll_reuse, _reroll_rows, _system_prompt_for, _tool_definitions, _tools_called, _user_driver, _vocab_from, _write_runs_index, with_synthetic_rows))}:"
+    version = (f"{_version('rerolls', run, loop, route, user_sim, intent, provider, compile_env, parallel, runner_parallel, vocabulary, verifier_suite, canon, records_mod, user_agent_mod, user_context_mod, user_fidelity_mod, user_lesson_mod, helpers=(_reroll_run_jobs, _reroll_run_one, _gather_reroll_rows, _candidate_task_ctx, _candidate_run_once, _discard_runs, _json_schema, _members_of, _reroll_key, _reroll_reason, _reroll_record, _reroll_reuse, _reroll_rows, _refuse_stand_in, _system_prompt_for, _tool_definitions, _tools_called, _user_driver, _vocab_from, _write_runs_index, with_synthetic_rows))}:"
                f"{getattr(model, 'name', 'none')}:{rerolls}"
                f":REROLL_KEY_FORMAT={REROLL_KEY_FORMAT}:REROLL_KEY_NOTE={REROLL_KEY_NOTE}"
                f":REROLL_RECORD={REROLL_RECORD}:REROLL_SEED={REROLL_SEED}:REROLL_TURNS={REROLL_TURNS}"

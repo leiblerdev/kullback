@@ -478,10 +478,15 @@ def _verifier_of(atom: Atom) -> Any:
     return _One()
 
 
-def _one_atom(atom: Atom, payload: dict, kind: Any, effects: dict, asked: set, said: set) -> Optional[bool]:
+def _effect_sets(effects: dict) -> tuple[set, set, set]:
     present = {(e["tool"], e["entity"]) for e in effects.values()}
     wrote_with = {e["tool"] for e in effects.values()}
     values = {(e["tool"], e["entity"], f, v) for e in effects.values() for f, v in e["values"].items()}
+    return present, wrote_with, values
+
+
+def _one_atom(atom: Atom, payload: dict, kind: Any, effects: dict, asked: set, said: set) -> Optional[bool]:
+    present, wrote_with, values = _effect_sets(effects)
     target = (payload.get("tool"), payload.get("entity"))
     if atom.kind == "forbidden" and kind == "write":
         return payload.get("tool") in wrote_with if names_no_row(payload) else target in present
