@@ -92,6 +92,21 @@ def test_no_stage_reaches_past_its_key():
     assert not failures, "stages delegate to code their key does not hash:\n" + "\n".join(failures)
 
 
+def test_scored_stage_keys_move_when_the_stand_in_refusal_moves(monkeypatch):
+    """Both scored stages refuse a model stand-in, so an edit to that refusal must move both keys."""
+    from kullback.builder import build as build_module
+
+    before_replay = build_module._replay_stage().code_version
+    before_rerolls = build_module._rerolls_stage(None, 1).code_version
+
+    def _invented_refusal(router):
+        raise ValueError("invented refusal")
+
+    monkeypatch.setattr(build_module, "_refuse_stand_in", _invented_refusal)
+    assert build_module._replay_stage().code_version != before_replay
+    assert build_module._rerolls_stage(None, 1).code_version != before_rerolls
+
+
 def test_walk_sees_known_delegations():
     """The walk reports the delegations a silent miss would hide."""
     failures = []

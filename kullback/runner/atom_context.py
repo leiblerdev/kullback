@@ -10,6 +10,7 @@ from kullback.runner.canon import (
     EQUAL,
     RESOLUTIONS,
     UNRESOLVED,
+    CanonRules,
     Unresolved,
     canon_value,
     compare,
@@ -44,7 +45,12 @@ def _scalar_canon(canon: Any) -> Any:
 
     There is one canonicalizer and route.py keys its recordings with it, so the default here is
     canon.py itself rather than the identity, which used to leave a Verdict comparing raw values.
+    A CanonRules is bound to that canonicalizer, the way canon_fn binds it: passing the rules
+    object used to fall through to the module default and leave a Verdict comparing the wrong
+    values wherever a Hard predicate reads canon.
     """
+    if isinstance(canon, CanonRules):
+        return lambda value: canon_value(value, rules=canon)
     if canon is None:
         return canon_value
     for attr in ("canon_value", "canonicalize"):

@@ -1555,6 +1555,20 @@ def _replay_context(toolkit: Any, trace: Any, schema: Any) -> dict:
     return {"before_call": before_call}
 
 
+def _refuse_stand_in(router: Any) -> None:
+    """A Run that will be scored can never be given a model stand-in (G28).
+
+    The scoring callers call this on the Router they built. Once the cannot-answer
+    re-freeze lands, route.refuse_stand_in refuses a Router carrying one loudly; until
+    then no scored caller passes one, so the fallback only double-checks the attribute.
+    """
+    guard = getattr(route, "refuse_stand_in", None)
+    if guard is not None:
+        guard(router)
+    elif getattr(router, "stand_in", None) is not None:
+        raise ValueError("a scored Run cannot use a Router carrying a model stand-in (G28)")
+
+
 def _replay_stage(judging: Optional[SemanticJudging] = None, only: Optional[Iterable[str]] = None):
     """Every Trace of every Task replayed through the built tools: the Reference Runs and Gate A (D108).
 
@@ -1629,6 +1643,7 @@ def _replay_stage(judging: Optional[SemanticJudging] = None, only: Optional[Iter
                 router = route.Router(env_tools_module=toolkit, starting_state=json.loads(json.dumps(db)),
                                       overlay=overlay, overlay_rows=overlay_rows, tool_sigs=sigs,
                                       canon_rules=canon_rules, synthetic_rows=schema.synthetic_rows)
+                _refuse_stand_in(router)  # G28: a scored replay is never answered by a model
                 result = replay_mod.replay_trace(trace, router, workdir=ctx.workdir / "runs" / task.id,
                                                  task_id=task.id, env_id=env_id, write_tools=write_tools,
                                                  canon_rules=canon_rules, comparer=comparer,
@@ -1664,7 +1679,7 @@ def _replay_stage(judging: Optional[SemanticJudging] = None, only: Optional[Iter
     # The judge's identity and the equivalence table's version ride in the key beside the verdict
     # format: a replay scored with no judge and one scored with a judge are different readings of
     # the same bytes, and a cache that cannot tell them apart hands back the unjudged one (D219).
-    version = (f"{_version('replay_reference', run, replay_mod, fidelity, compile_env, route, loop, tool_runs, effects_mod, repair, verifier_suite, canon, judge_mod, records_mod, helpers=(holdout_answers, holdout_world, replay_failures_of, replay_difference, _effect_sentence, _replay_context, _write_runs_index, with_synthetic_rows, SemanticJudging.save, SemanticJudging._ask, SemanticJudging._answer, SemanticJudging.__init__, SemanticJudging.judge.fget, _gate_for, _memo_get, _memo_put, _count_judgement, _save_table))}"
+    version = (f"{_version('replay_reference', run, replay_mod, fidelity, compile_env, route, loop, tool_runs, effects_mod, repair, verifier_suite, canon, judge_mod, records_mod, helpers=(holdout_answers, holdout_world, replay_failures_of, replay_difference, _effect_sentence, _replay_context, _refuse_stand_in, _write_runs_index, with_synthetic_rows, SemanticJudging.save, SemanticJudging._ask, SemanticJudging._answer, SemanticJudging.__init__, SemanticJudging.judge.fget, _gate_for, _memo_get, _memo_put, _count_judgement, _save_table))}"
                f":verdicts={replay_mod.VERDICT_FORMAT}"
                f":judge={judging.identity}:equivalence={judging.table.version}"
                f":EFFECTS_FILE={EFFECTS_FILE}:EQUIVALENCE_FILE={EQUIVALENCE_FILE}"
@@ -2119,7 +2134,7 @@ def _rerolls_stage(model: Any, rerolls: int, workers: int = 1, only: Optional[It
     # D214: whose turns the Runs get is part of what this stage produces, so a build that names a
     # user driver puts it in the key. A build that names none adds nothing, so its key, its cache
     # and the Run ids it derives from the key are the ones it had before D214.
-    version = (f"{_version('rerolls', run, loop, route, user_sim, intent, provider, compile_env, episode_loading, parallel, runner_parallel, vocabulary, verifier_suite, canon, records_mod, user_factory_mod, user_context_mod, user_fidelity_mod, user_lesson_mod, helpers=(_reroll_run_jobs, _reroll_run_one, _gather_reroll_rows, _candidate_task_ctx, _candidate_run_once, _discard_runs, _json_schema, _members_of, _reroll_key, _reroll_reason, _reroll_record, _reroll_reuse, _reroll_rows, _system_prompt_for, _tool_definitions, _tools_called, _user_driver, _vocab_from, _write_runs_index, with_synthetic_rows))}:"
+    version = (f"{_version('rerolls', run, loop, route, user_sim, intent, provider, compile_env, episode_loading, parallel, runner_parallel, vocabulary, verifier_suite, canon, records_mod, user_factory_mod, user_context_mod, user_fidelity_mod, user_lesson_mod, helpers=(_reroll_run_jobs, _reroll_run_one, _gather_reroll_rows, _candidate_task_ctx, _candidate_run_once, _discard_runs, _json_schema, _members_of, _reroll_key, _reroll_reason, _reroll_record, _reroll_reuse, _reroll_rows, _refuse_stand_in, _system_prompt_for, _tool_definitions, _tools_called, _user_driver, _vocab_from, _write_runs_index, with_synthetic_rows))}:"
                f"{getattr(model, 'name', 'none')}:{rerolls}"
                f":REROLL_KEY_FORMAT={REROLL_KEY_FORMAT}:REROLL_KEY_NOTE={REROLL_KEY_NOTE}"
                f":REROLL_RECORD={REROLL_RECORD}:REROLL_SEED={REROLL_SEED}:REROLL_TURNS={REROLL_TURNS}"
@@ -2199,6 +2214,7 @@ def _candidate_run_once(workdir: Path, task: Task, model: Any, *, ctx: dict, num
                           overlay=ctx["overlay"], overlay_rows=ctx["overlay_rows"],
                           tool_sigs=ctx["sigs"], canon_rules=ctx["canon_rules"],
                           synthetic_rows=ctx["schema"].synthetic_rows)
+    _refuse_stand_in(router)  # G28: a scored re-roll is never answered by a model
     simulated = user_sim.SimulatedUser(ctx["rules"], starting_state_reader=router.state,
                                        vocab=ctx["vocab"], write_tools=ctx["write_tools"],
                                        goal_writes=ctx["goal_writes"],
@@ -2326,6 +2342,7 @@ def probe_runner(plan: BuildPlan):
         router = route.Router(env_tools_module=toolkit, starting_state=json.loads(json.dumps(db)),
                               overlay=overlay, overlay_rows=overlay_rows, tool_sigs=sigs,
                               canon_rules=canon_rules, synthetic_rows=schema.synthetic_rows)
+        _refuse_stand_in(router)  # G28: a scored probe is never answered by a model
         reference = next((r for r in (replays.get(task.id) or {}).values() if r.get("confirmed")), None)
         rules = user_rules.get(reference["trace_id"]) if reference else None
         writes = {sig.name for sig in sigs if getattr(sig, "kind", None) == "write"}
@@ -2470,6 +2487,7 @@ def variant_runner(plan: BuildPlan):
         router = route.Router(env_tools_module=toolkit, starting_state=json.loads(json.dumps(db)),
                               overlay=overlay, overlay_rows=overlay_rows, tool_sigs=sigs,
                               canon_rules=canon_rules, synthetic_rows=schema.synthetic_rows)
+        _refuse_stand_in(router)  # G28: a scored variant is never answered by a model
         trace = call_trace(task_id, calls, transcript, run_id)
         result = replay_mod.replay_trace(trace, router, workdir=workdir / "runs" / task_id,
                                          task_id=task_id, env_id=env_id, write_tools=write_tools,

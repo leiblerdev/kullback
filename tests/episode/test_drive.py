@@ -115,7 +115,7 @@ def test_reward_withholds_a_number_where_a_judge_must_hold():
         root = Path(tmp) / "env"
         write_env(root, verifier_atoms=[
             {"id": "j1", "kind": "hard", "judge": True,
-             "predicate_src": "wrote('rename_widget')", "target": {"kind": "write"}},
+             "predicate_src": "wrote('rename_widget')", "target": {"kind": "write", "tool": "rename_widget"}},
         ])
         episode = drive(root, Path(tmp) / "out", SCRIPTED_RENAME)
         reward = episode.reward()

@@ -33,7 +33,7 @@ def test_solve_rate_counts_passes_and_leaves_no_signal_out():
             "task_id": "quiet",
             "atoms": [{"id": "j1", "kind": "hard", "judge": True,
                          "predicate_src": "wrote('rename_widget')",
-                         "target": {"kind": "write"}}],
+                         "target": {"kind": "write", "tool": "rename_widget"}}],
             "verifier_version": "1",
         }), encoding="utf-8")
         env = BuiltEnvironment(root)

@@ -362,3 +362,27 @@ def test_dropped_table_is_rebuilt():
     assert out.error is not None and out.error.class_ == "body_fault"
     assert toolkit.db.gadgets["g1"].status == "new"
     assert router.route("read_gadget", {"gadget_id": "g1"}).result["status"] == "new"
+
+@pytest.mark.parametrize("failure", [ValueError, RuntimeError])
+def test_model_snapshot_fallback_restores_database_without_serializing(monkeypatch, failure):
+    toolkit = GadgetToolkit(shared_world())
+    original_db = toolkit.db
+    def refuse_serialization(self, *args, **kwargs):
+        raise ValueError("serializer unavailable")
+    monkeypatch.setattr(GadgetDB, "model_dump_json", refuse_serialization)
+    def mutate_then_fail(gadget_id):
+        toolkit.db.gadgets[gadget_id].status = "changed"
+        toolkit.db.gadgets["added"] = Gadget(id="added", status="changed")
+        del toolkit.db.spares["s1"]
+        raise failure("failed")
+    toolkit.mutate_then_fail = mutate_then_fail
+    router = make_router(module=toolkit, tool_sigs=[ToolSig(name="mutate_then_fail"), ToolSig(name="read_gadget")])
+    out = router.route("mutate_then_fail", {"gadget_id": "g1"})
+    assert out.error is not None
+    assert out.error.class_ == ("business_error" if failure is ValueError else "body_fault")
+    assert toolkit.db is original_db
+    assert toolkit.db.gadgets["g1"].status == "new"
+    assert "added" not in toolkit.db.gadgets
+    assert toolkit.db.spares["s1"].status == "new"
+    assert isinstance(toolkit.db.gadgets["g1"], Gadget)
+    assert router.route("read_gadget", {"gadget_id": "g1"}).result == {"id": "g1", "status": "new", "total": 0}

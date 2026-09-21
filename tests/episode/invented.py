@@ -151,7 +151,7 @@ def write_env(root: Path, *, task_id: str = "widget_task", run_id: str = "rec1",
     if with_verifier:
         atoms = verifier_atoms if verifier_atoms is not None else [
             {"id": "a1", "kind": "required", "predicate_src": "wrote('rename_widget')",
-             "target": {"kind": "write"}},
+             "target": {"kind": "write", "tool": "rename_widget"}},
         ]
         (root / "verifiers" / f"{task_id}.json").write_text(json.dumps({
             "task_id": task_id, "atoms": atoms, "verifier_version": "1",
