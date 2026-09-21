@@ -662,9 +662,77 @@ def test_new_id_is_per_table_against_the_start_state():
         {"users": {"42": {"user_id": "42"}},
          "loans": {"L100": {"loan_id": "L100", "opened": STORED_TIME}}})
     toolkit.ctx.feed_call({"now": STORED_TIME, "new_ids": {"loans": ["42"]},
-                           "now_evidence": "created_row"})
+                           "now_evidence": "created_row", "now_ids": {"loans": ["42"]}})
     assert toolkit.ctx.now() == STORED_TIME
     assert toolkit.ctx.usage() == {"recorded": 1, "seeded": 0}
+
+
+def test_created_loan_beside_existing_user_serves_witnessed_date():
+    call = ToolCall(id="c1", name="open_loan", args={"patron": "ann"},
+                    result={"loan_id": "L101", "user_id": "42", "opened": STORED_TIME},
+                    raw_ptr=PTR)
+    feed = ce.recorded_call_contexts([call], TWO_TABLE_SCHEMA)["c1"]
+    assert feed["now"] == STORED_TIME
+    assert feed.get("now_evidence") == "created_row"
+    assert feed["now_ids"] == {"users": ["42"], "loans": ["L101"]}
+    toolkit = ce.load_toolkit(
+        ce.module_source(TWO_TABLE_SCHEMA, [OPEN_SIG], {"open_loan": OPEN_BODY}),
+        {"users": {"42": {"user_id": "42"}},
+         "loans": {"L100": {"loan_id": "L100", "opened": STORED_TIME}}})
+    toolkit.ctx.feed_call(feed)
+    assert toolkit.ctx.now() == STORED_TIME
+    assert toolkit.ctx.usage() == {"recorded": 1, "seeded": 0}
+
+
+def test_found_row_supplying_time_is_not_exempt():
+    call = ToolCall(id="c1", name="open_loan", args={"patron": "ann"},
+                    result={"known": {"user_id": "42", "seen_at": STORED_TIME},
+                            "fresh": {"loan_id": "L102"}}, raw_ptr=PTR)
+    feed = ce.recorded_call_contexts([call], TWO_TABLE_SCHEMA)["c1"]
+    assert feed["new_ids"] == {"loans": ["L102"], "users": ["42"]}
+    assert feed["now"] == STORED_TIME
+    assert feed["now_ids"] == {"users": ["42"]}
+    toolkit = ce.load_toolkit(
+        ce.module_source(TWO_TABLE_SCHEMA, [OPEN_SIG], {"open_loan": OPEN_BODY}),
+        {"users": {"42": {"user_id": "42"}},
+         "loans": {"L100": {"loan_id": "L100", "opened": STORED_TIME}}})
+    toolkit.ctx.feed_call(feed)
+    assert toolkit.ctx.now() != STORED_TIME
+    assert toolkit.ctx.usage() == {"recorded": 0, "seeded": 1}
+
+
+def test_created_row_feed_without_now_ids_is_not_exempt():
+    toolkit = ce.load_toolkit(
+        ce.module_source(LOANS_SCHEMA, [OPEN_SIG], {"open_loan": OPEN_BODY}),
+        {table: dict(rows) for table, rows in LOANS_DB.items()})
+    toolkit.ctx.feed_call({"now": STORED_TIME, "new_ids": {"loans": ["L101"]},
+                           "now_evidence": "created_row"})
+    assert toolkit.ctx.now() != STORED_TIME
+    assert toolkit.ctx.usage() == {"recorded": 0, "seeded": 1}
+
+
+def test_union_of_two_rows_time_needs_one_absent_id():
+    db = {"loans": {"L101": {"loan_id": "L101", "opened": FRESH_TIME}}}
+    call = _call("c1", [{"loan_id": "L101", "opened": FRESH_TIME},
+                        {"loan_id": "L102", "opened": FRESH_TIME}])
+    feed = ce.recorded_call_contexts([call], LOANS_SCHEMA)["c1"]
+    assert feed["now"] == FRESH_TIME
+    assert feed["now_ids"] == {"loans": ["L101", "L102"]}
+    toolkit = ce.load_toolkit(
+        ce.module_source(LOANS_SCHEMA, [OPEN_SIG], {"open_loan": OPEN_BODY}),
+        {table: dict(rows) for table, rows in db.items()})
+    toolkit.ctx.feed_call(feed)
+    assert toolkit.ctx.now() == FRESH_TIME
+    assert toolkit.ctx.usage() == {"recorded": 1, "seeded": 0}
+
+
+def test_now_ids_emitted_only_with_creation_evidence():
+    call = ToolCall(id="c1", name="get_loan", args={"loan_id": "L100"},
+                    result={"loan_id": "L100", "opened": FRESH_TIME}, raw_ptr=PTR)
+    feed = ce.recorded_call_contexts([call], LOANS_SCHEMA)["c1"]
+    assert feed["now"] == FRESH_TIME
+    assert "now_evidence" not in feed
+    assert "now_ids" not in feed
 
 
 def test_a_reseeded_context_matches_a_fresh_one_after_a_row_is_deleted():
