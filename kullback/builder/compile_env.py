@@ -2031,26 +2031,28 @@ _CONTEXT_SHIM = '''class ToolContext:
     def _created_exempt(self, feed):
         """Whether a created-row feed vouches for a row the start state never held.
 
-        The evidence is judged per id value, not per (table, id) pair: the tables listing
-        a value are the tables that could own it, and a value is new only when it is absent
-        from the start state of every table listing it. Where the key names one table, a
-        loan 42 is still new although a user 42 exists; where the key is shared and any
-        candidate table holds the value, the feed is not exempt and the stored-time check
-        applies as for any found value. A created-row feed without now_ids is not exempt.
-        Decided here, before new_id starts popping the lists.
+        The unit of evidence is one id leaf, and the leaf's key decides which tables could
+        own it: a key that names one table is judged against that table only, so a loan 42
+        is new although a user 42 exists, equal values or not; a key several tables share
+        is judged against all of them together, so any of them holding the value means not
+        new. The exemption holds when at least one group is new. A created-row feed without
+        now_ids, or with a malformed one, is not exempt. Decided here, before new_id starts
+        popping the lists.
         """
         if feed.get("now_evidence") != "created_row":
             return False
-        now_ids = feed.get("now_ids") or {}
-        if not now_ids:
+        now_ids = feed.get("now_ids")
+        if not isinstance(now_ids, list) or not now_ids:
             return False
-        by_value: dict = {}
-        for table, values in now_ids.items():
-            items = list(values) if isinstance(values, (list, tuple)) else [values]
-            for value in items:
-                by_value.setdefault(str(value), []).append(str(table))
-        for value, tables in by_value.items():
-            if all(value not in self._starting_ids.get(table, set()) for table in tables):
+        for group in now_ids:
+            if not isinstance(group, dict):
+                continue
+            value = group.get("value")
+            tables = group.get("tables")
+            if value is None or not isinstance(tables, list) or not tables:
+                continue
+            if all(str(value) not in self._starting_ids.get(str(table), set())
+                   for table in tables):
                 return True
         return False
 
@@ -4007,24 +4009,26 @@ def _context_creation_stamp(rows: list, arg_strings: set) -> Optional[str]:
 
 
 def _context_stamp_ids(rows: list, stamp: str, schema: EntitySchema, own_pairs: set,
-                       own_blocked: set, prior_pairs: set, prior_blocked: set) -> dict:
-    """Per-table new ids of the rows whose strings supplied the surviving time.
+                       own_blocked: set, prior_pairs: set, prior_blocked: set) -> list:
+    """Ownership groups of the rows that supplied the surviving time.
 
-    Ordered, no duplicates, the same shape as new_ids: the union of every supplying row.
+    One group per distinct (key, value) leaf, in walk order, no duplicates: the key decides
+    which tables could own the value, so equal values under different keys are never merged.
     """
-    pairs: list = []
+    groups: list = []
+    seen: set = set()
     for row in rows:
         if stamp not in {value for value in row.values() if isinstance(value, str)}:
             continue
         for key, value in row.items():
-            for table in _context_id_tables(key, value, schema, own_pairs, own_blocked,
-                                            prior_pairs, prior_blocked):
-                if (table, value) not in pairs:
-                    pairs.append((table, value))
-    now_ids: dict = {}
-    for table, value in pairs:
-        now_ids.setdefault(table, []).append(value)
-    return now_ids
+            if (key, value) in seen:
+                continue
+            tables = _context_id_tables(key, value, schema, own_pairs, own_blocked,
+                                        prior_pairs, prior_blocked)
+            if tables:
+                seen.add((key, value))
+                groups.append({"key": key, "value": value, "tables": list(tables)})
+    return groups
 
 
 def _context_feed_now(result: Any, schema: EntitySchema, state: dict, own_pairs: set,
@@ -4062,10 +4066,10 @@ def recorded_call_context(call: ToolCall, schema: EntitySchema,
     value the call's own arguments state is what the body was given, so it feeds nothing.
     The time follows creation evidence where there is any, else the found-value rule (not
     in the arguments, not seen earlier in the trace, not stored at reset, one survivor); a
-    feed the creation rule produced carries "now_evidence" and "now_ids" (the new ids of
-    the rows that supplied the time, a subset of the same shape), so the context can judge
-    the evidence on the row that supplied it. A call whose result carries neither leaves
-    both empty, and the seeded feed answers, counted.
+    feed the creation rule produced carries "now_evidence" and "now_ids" (one ownership
+    group per id leaf of the rows that supplied the time: key, value, and the tables that
+    key could own), so the context can judge the evidence leaf by leaf. A call whose result
+    carries neither leaves both empty, and the seeded feed answers, counted.
     """
     feed: dict = {"now": None, "new_ids": {}}
     args = call.args if isinstance(call, ToolCall) else (call or {}).get("args") or {}
