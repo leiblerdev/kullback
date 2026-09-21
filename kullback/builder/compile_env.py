@@ -2027,21 +2027,26 @@ _CONTEXT_SHIM = '''class ToolContext:
             self._current["now_evidence"] = feed.get("now_evidence")
 
     def _created_exempt(self, feed):
-        """Whether a created-row feed vouches for ids the start state never held.
+        """Whether a created-row feed vouches for a row the start state never held.
 
-        First appearance in the trace is not proof of creation; absence from the start
-        state is the missing half. Compared per table, the way new_id compares: a loan 42
-        is new although a user 42 exists. Decided here, before new_id starts popping the
-        lists, so the whole feed is judged, not what is left of it.
+        The evidence is judged on the row that supplied the time, not on the whole feed:
+        the exemption holds when at least one (table, id) of now_ids is absent from the
+        start state of its table, compared per table the way new_id compares, so a loan 42
+        is new although a user 42 exists. All of them held is a found row, no exemption,
+        and a created-row feed without now_ids is not exempt. Decided here, before new_id
+        starts popping the lists.
         """
         if feed.get("now_evidence") != "created_row":
             return False
-        for table, values in (feed.get("new_ids") or {}).items():
+        now_ids = feed.get("now_ids") or {}
+        if not now_ids:
+            return False
+        for table, values in now_ids.items():
             held = self._starting_ids.get(str(table), set())
             items = list(values) if isinstance(values, (list, tuple)) else [values]
-            if any(str(value) in held for value in items):
-                return False
-        return True
+            if any(str(value) not in held for value in items):
+                return True
+        return False
 
     def attach_recorded(self, recorded):
         """Serve a whole Run's witnessed values in call order: ids per table, times in turn."""
@@ -3952,21 +3957,21 @@ def _context_witnessed_time(result: Any, arg_strings: set, prior_seen: set) -> O
     return None
 
 
-def _context_creation_times(result: Any, schema: EntitySchema, own_pairs: set,
-                            own_blocked: set, prior_pairs: set, prior_blocked: set) -> list:
-    """The string values sitting directly in a dict that directly holds a filed new id.
+def _context_creation_rows(result: Any, schema: EntitySchema, own_pairs: set,
+                           own_blocked: set, prior_pairs: set, prior_blocked: set) -> list:
+    """The row objects directly holding a filed new id, in walk order.
 
-    Only the row object the call created speaks for the call's time: a time leaf in another
-    row object of the same result is not creation evidence.
+    Only a row the call created speaks for the call's time: a time leaf in another row
+    object of the same result is not creation evidence.
     """
-    times: list = []
+    rows: list = []
 
     def walk(node: Any) -> None:
         if isinstance(node, dict):
             if any(_context_id_tables(key, value, schema, own_pairs, own_blocked,
                                       prior_pairs, prior_blocked)
                    for key, value in node.items()):
-                times.extend(value for value in node.values() if isinstance(value, str))
+                rows.append(node)
             for value in node.values():
                 walk(value)
         elif isinstance(node, (list, tuple)):
@@ -3974,33 +3979,69 @@ def _context_creation_times(result: Any, schema: EntitySchema, own_pairs: set,
                 walk(value)
 
     walk(result)
-    return times
+    return rows
+
+
+def _context_creation_stamp(rows: list, arg_strings: set) -> Optional[str]:
+    """The one distinct time-like leaf across the created rows, or None.
+
+    Equal times from two row objects are one survivor; zero or several feed nothing.
+    """
+    survivors: list = []
+    for row in rows:
+        for value in row.values():
+            if not isinstance(value, str) or not _TIME_RE.match(value.strip()) \
+                    or value in arg_strings:
+                continue
+            if value not in survivors:
+                survivors.append(value)
+    if len(survivors) == 1:
+        return survivors[0]
+    return None
+
+
+def _context_stamp_ids(rows: list, stamp: str, schema: EntitySchema, own_pairs: set,
+                       own_blocked: set, prior_pairs: set, prior_blocked: set) -> dict:
+    """Per-table new ids of the rows whose strings supplied the surviving time.
+
+    Ordered, no duplicates, the same shape as new_ids: the union of every supplying row.
+    """
+    pairs: list = []
+    for row in rows:
+        if stamp not in {value for value in row.values() if isinstance(value, str)}:
+            continue
+        for key, value in row.items():
+            for table in _context_id_tables(key, value, schema, own_pairs, own_blocked,
+                                            prior_pairs, prior_blocked):
+                if (table, value) not in pairs:
+                    pairs.append((table, value))
+    now_ids: dict = {}
+    for table, value in pairs:
+        now_ids.setdefault(table, []).append(value)
+    return now_ids
 
 
 def _context_feed_now(result: Any, schema: EntitySchema, state: dict, own_pairs: set,
                       own_blocked: set, arg_strings: set, new_ids: dict) -> tuple:
-    """The call's witnessed time and how it was evidenced, or (None, None).
+    """The call's witnessed time, how it was evidenced, and the ids behind the evidence.
 
     Creation evidence wins: when the result shows a new id, the time candidates are the
     time-like leaves in the same row object, and equality with an earlier sighting or a
     stored stamp proves nothing, so only the call's own argument strings exclude a value.
-    One distinct survivor feeds with "created_row" evidence; otherwise the found-value
-    rule decides over every time-like leaf, without evidence: not in the arguments, not seen
-    earlier in the trace, not stored at reset, one survivor.
+    One distinct survivor feeds with "created_row" evidence and the ids of the rows that
+    supplied it; otherwise the found-value rule decides over every time-like leaf, with
+    neither evidence nor ids.
     """
     if new_ids:
         prior_pairs = state.get("pairs") or set()
         prior_blocked = state.get("blocked") or set()
-        survivors: list = []
-        for value in _context_creation_times(result, schema, own_pairs, own_blocked,
-                                             prior_pairs, prior_blocked):
-            if not _TIME_RE.match(value.strip()) or value in arg_strings:
-                continue
-            if value not in survivors:
-                survivors.append(value)
-        if len(survivors) == 1:
-            return survivors[0], "created_row"
-    return _context_witnessed_time(result, arg_strings, state.get("seen") or set()), None
+        rows = _context_creation_rows(result, schema, own_pairs, own_blocked,
+                                      prior_pairs, prior_blocked)
+        stamp = _context_creation_stamp(rows, arg_strings)
+        if stamp is not None:
+            return stamp, "created_row", _context_stamp_ids(
+                rows, stamp, schema, own_pairs, own_blocked, prior_pairs, prior_blocked)
+    return _context_witnessed_time(result, arg_strings, state.get("seen") or set()), None, None
 
 
 def recorded_call_context(call: ToolCall, schema: EntitySchema,
@@ -4015,9 +4056,10 @@ def recorded_call_context(call: ToolCall, schema: EntitySchema,
     value the call's own arguments state is what the body was given, so it feeds nothing.
     The time follows creation evidence where there is any, else the found-value rule (not
     in the arguments, not seen earlier in the trace, not stored at reset, one survivor); a
-    feed the creation rule produced carries "now_evidence" so the context knows the reset
-    check does not apply to it. A call whose result carries neither leaves both empty, and
-    the seeded feed answers, counted.
+    feed the creation rule produced carries "now_evidence" and "now_ids" (the new ids of
+    the rows that supplied the time, a subset of the same shape), so the context can judge
+    the evidence on the row that supplied it. A call whose result carries neither leaves
+    both empty, and the seeded feed answers, counted.
     """
     feed: dict = {"now": None, "new_ids": {}}
     args = call.args if isinstance(call, ToolCall) else (call or {}).get("args") or {}
@@ -4030,10 +4072,11 @@ def recorded_call_context(call: ToolCall, schema: EntitySchema,
                                        state.get("pairs") or set(),
                                        state.get("blocked") or set())
     arg_strings = {value for _, value in _result_leaves(args) if isinstance(value, str)}
-    feed["now"], evidence = _context_feed_now(result, schema, state, own_pairs, own_blocked,
-                                              arg_strings, feed["new_ids"])
+    feed["now"], evidence, now_ids = _context_feed_now(
+        result, schema, state, own_pairs, own_blocked, arg_strings, feed["new_ids"])
     if evidence is not None:
         feed["now_evidence"] = evidence
+        feed["now_ids"] = now_ids
     return feed
 
 
