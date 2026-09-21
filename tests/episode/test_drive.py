@@ -114,14 +114,31 @@ def test_reward_withholds_a_number_where_a_judge_must_hold():
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp) / "env"
         write_env(root, verifier_atoms=[
-            {"id": "j1", "kind": "hard", "judge": True,
-             "predicate_src": "wrote('rename_widget')", "target": {"kind": "write", "tool": "rename_widget"}},
+            {"id": "a1", "kind": "required", "predicate_src": "wrote('rename_widget')",
+             "target": {"kind": "write", "tool": "rename_widget"}},
+            {"id": "j1", "kind": "hard", "judge": True, "description": "policy tone"},
         ])
         episode = drive(root, Path(tmp) / "out", SCRIPTED_RENAME)
         reward = episode.reward()
         assert reward.score is None
         assert reward.class_ == "not_verdicted"
         assert reward.reason != ""
+
+
+def test_reward_fails_where_only_a_judge_names_the_write():
+    import tempfile
+    from pathlib import Path
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp) / "env"
+        write_env(root, verifier_atoms=[
+            {"id": "j1", "kind": "hard", "judge": True,
+             "predicate_src": "wrote('rename_widget')", "target": {"kind": "write", "tool": "rename_widget"}},
+        ])
+        episode = drive(root, Path(tmp) / "out", SCRIPTED_RENAME)
+        reward = episode.reward()
+        assert reward.score == 0
+        assert reward.class_ == "fail"
+        assert reward.reason == "extra_write:rename_widget"
 
 
 def test_reset_preserves_the_supplied_seed(tmp_path):

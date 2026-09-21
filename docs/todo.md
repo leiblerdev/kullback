@@ -21,6 +21,7 @@ These are the items I pushed past the first build. Each line says what it buys a
 - one-scorer.patch waits for the founder's re-freeze: the Verdict and the gates score an atom with one interpreter over its structured target.
 - mined-evidence.patch waits for the founder's re-freeze: ClassifiedBy gains declared so a kind the source declares rides as its own basis.
 - cannot-answer.patch waits for the founder's re-freeze: apply step-split.patch, one-scorer.patch, stop-rule.patch, confinement-imports.patch, body-transactions.patch, mined-evidence.patch, then cannot-answer.patch, in that order. A listed tool with no code and no recording ends the Run as Environment cannot answer with no reward either way; re-run tests/runner with all patches applied. Regenerated 2026-09-18: the step-split re-freeze moved the per-call loop into `advance`, so the stop-at-once hunk moved there with it, same content.
+- code-only-reward.patch is applied on the re-freeze lineage (the patch file stays for main's frozen source); on this lineage the version constant lives in records.py, the retained patch still shows it in verdict.py.
 
 ## After the first Replica clears Gate A
 
