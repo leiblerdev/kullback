@@ -70,6 +70,68 @@ def _gated_worker(root_str, run_id, count, ready_evt, go_evt):
         journal.append(run_id=run_id, kind="beat_end", payload={"agent": "builder"}, round=1)
 
 
+def _assert_first_run_open(first):
+    assert first["seq"] == 1
+    assert first["run_id"] == "r1"
+    assert first["kind"] == "run_open"
+    assert first["round"] is None
+    assert isinstance(first["recorded_at"], float) or isinstance(first["recorded_at"], int)
+    assert first["payload"] == {"config": {"target": "t"}}
+
+
+def _append_seq(journal, run_id, kind, payload, round, seq):
+    event = journal.append(run_id=run_id, kind=kind, payload=payload, round=round)
+    assert event["seq"] == seq
+    return event
+
+
+def _assert_all_kinds(seen):
+    assert seen.status == "ok"
+    assert isinstance(seen, ReadResult)
+    assert [e["seq"] for e in seen.value] == [1, 2, 3, 4, 5, 6, 7, 8]
+    assert [e["kind"] for e in seen.value] == ["run_open", "round_open", "beat_end", "beat_end", "round_close", "round_open", "beat_end", "abort"]
+
+
+def _start_gated_pair(root):
+    ctx = multiprocessing.get_context("spawn")
+    ready_first = ctx.Event()
+    ready_second = ctx.Event()
+    go = ctx.Event()
+    first = ctx.Process(target=_gated_worker, args=(str(root), "pa", 5, ready_first, go))
+    second = ctx.Process(target=_gated_worker, args=(str(root), "pb", 5, ready_second, go))
+    first.start()
+    second.start()
+    return first, second, ready_first, ready_second, go
+
+
+def _join_gated_pair(first, second):
+    try:
+        first.join(timeout=60)
+        second.join(timeout=60)
+    finally:
+        for proc in (first, second):
+            if proc.is_alive():
+                proc.terminate()
+                proc.join(timeout=10)
+    assert first.exitcode == 0
+    assert second.exitcode == 0
+
+
+def _assert_separate_runs(seen):
+    assert seen.status == "ok"
+    assert len(seen.value) == 15
+    seqs = [e["seq"] for e in seen.value]
+    assert seqs == list(range(1, 16))
+    assert len(set(seqs)) == 15
+    by_run = {}
+    for event in seen.value:
+        by_run.setdefault(event["run_id"], []).append(event["kind"])
+    assert sorted(by_run.keys()) == ["pa", "pb", "seed"]
+    assert len(by_run["pa"]) == 7
+    assert len(by_run["pb"]) == 7
+    assert by_run["seed"] == ["run_open"]
+
+
 def test_missing_on_absent_root(tmp_path):
     root = tmp_path / "absent"
     journal = RoundJournal(root)
@@ -98,32 +160,15 @@ def test_read_does_not_create_root(tmp_path):
 def test_happy_path_all_kinds(tmp_path):
     root = tmp_path / "w"
     journal = RoundJournal(root)
-    first = journal.append(run_id="r1", kind="run_open", payload=_run_open_payload(), round=None)
-    assert first["seq"] == 1
-    assert first["run_id"] == "r1"
-    assert first["kind"] == "run_open"
-    assert first["round"] is None
-    assert isinstance(first["recorded_at"], float) or isinstance(first["recorded_at"], int)
-    assert first["payload"] == {"config": {"target": "t"}}
-    second = journal.append(run_id="r1", kind="round_open", payload={}, round=2)
-    assert second["seq"] == 2
-    third = journal.append(run_id="r1", kind="beat_end", payload={"agent": "builder"}, round=2)
-    assert third["seq"] == 3
-    fourth = journal.append(run_id="r1", kind="beat_end", payload={"agent": "examiner"}, round=2)
-    assert fourth["seq"] == 4
-    fifth = journal.append(run_id="r1", kind="round_close", payload={"exit": "done"}, round=2)
-    assert fifth["seq"] == 5
-    sixth = journal.append(run_id="r1", kind="round_open", payload={}, round=3)
-    assert sixth["seq"] == 6
-    seventh = journal.append(run_id="r1", kind="beat_end", payload={"agent": "builder"}, round=3)
-    assert seventh["seq"] == 7
-    eighth = journal.append(run_id="r1", kind="abort", payload={"why": "x"}, round=3)
-    assert eighth["seq"] == 8
-    seen = journal.read()
-    assert seen.status == "ok"
-    assert isinstance(seen, ReadResult)
-    assert [e["seq"] for e in seen.value] == [1, 2, 3, 4, 5, 6, 7, 8]
-    assert [e["kind"] for e in seen.value] == ["run_open", "round_open", "beat_end", "beat_end", "round_close", "round_open", "beat_end", "abort"]
+    _assert_first_run_open(journal.append(run_id="r1", kind="run_open", payload=_run_open_payload(), round=None))
+    _append_seq(journal, "r1", "round_open", {}, 2, 2)
+    _append_seq(journal, "r1", "beat_end", {"agent": "builder"}, 2, 3)
+    _append_seq(journal, "r1", "beat_end", {"agent": "examiner"}, 2, 4)
+    _append_seq(journal, "r1", "round_close", {"exit": "done"}, 2, 5)
+    _append_seq(journal, "r1", "round_open", {}, 3, 6)
+    _append_seq(journal, "r1", "beat_end", {"agent": "builder"}, 3, 7)
+    _append_seq(journal, "r1", "abort", {"why": "x"}, 3, 8)
+    _assert_all_kinds(journal.read())
 
 
 def test_interleaved_two_runs(tmp_path):
@@ -545,40 +590,12 @@ def test_concurrent_processes_separate_runs(tmp_path):
     root = tmp_path / "w"
     journal = RoundJournal(root)
     journal.append(run_id="seed", kind="run_open", payload=_run_open_payload(), round=None)
-    ctx = multiprocessing.get_context("spawn")
-    ready_first = ctx.Event()
-    ready_second = ctx.Event()
-    go = ctx.Event()
-    first = ctx.Process(target=_gated_worker, args=(str(root), "pa", 5, ready_first, go))
-    second = ctx.Process(target=_gated_worker, args=(str(root), "pb", 5, ready_second, go))
-    try:
-        first.start()
-        second.start()
-        assert ready_first.wait(timeout=20)
-        assert ready_second.wait(timeout=20)
-        go.set()
-        first.join(timeout=60)
-        second.join(timeout=60)
-    finally:
-        for proc in (first, second):
-            if proc.is_alive():
-                proc.terminate()
-                proc.join(timeout=10)
-    assert first.exitcode == 0
-    assert second.exitcode == 0
-    seen = journal.read()
-    assert seen.status == "ok"
-    assert len(seen.value) == 15
-    seqs = [e["seq"] for e in seen.value]
-    assert seqs == list(range(1, 16))
-    assert len(set(seqs)) == 15
-    by_run = {}
-    for event in seen.value:
-        by_run.setdefault(event["run_id"], []).append(event["kind"])
-    assert sorted(by_run.keys()) == ["pa", "pb", "seed"]
-    assert len(by_run["pa"]) == 7
-    assert len(by_run["pb"]) == 7
-    assert by_run["seed"] == ["run_open"]
+    first, second, ready_first, ready_second, go = _start_gated_pair(root)
+    assert ready_first.wait(timeout=20)
+    assert ready_second.wait(timeout=20)
+    go.set()
+    _join_gated_pair(first, second)
+    _assert_separate_runs(journal.read())
 
 
 def test_journal_error_is_store_error():
