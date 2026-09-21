@@ -76,34 +76,46 @@ def test_single_failing_call_shrinks_to_itself():
     assert result.evaluations == 2
 
 
-def test_pairwise_dependency_through_stateful_processor():
+def test_duplicate_equal_calls_keep_distinct_positions():
+    seq = [{"op": "tick"}, {"op": "tick"}]
+    assert seq[0] == seq[1]
+    result = shrink_sequence(seq, lambda s: len(list(s)) == 2, max_evaluations=100)
+    assert result.status == SHORTEST_SUBSEQUENCE
+    assert result.indices == (0, 1)
+    assert result.subsequence == ({"op": "tick"}, {"op": "tick"})
+
+
+def test_pairwise_dependency_shrinks_to_shortest():
     seq = [("put", "k", 1), ("get", "k"), ("put", "j", 2), ("put", "k", 3)]
     result = shrink_sequence(seq, bench_fails, max_evaluations=100)
     assert result.status == SHORTEST_SUBSEQUENCE
     assert result.indices == (0, 3)
     assert result.subsequence == (("put", "k", 1), ("put", "k", 3))
+    assert result.evaluations == 9
     assert Bench().run(result.subsequence) is True
 
 
-def test_pairwise_result_is_proven_shortest():
-    seq = [("put", "k", 1), ("get", "k"), ("put", "j", 2), ("put", "k", 3)]
-    result = shrink_sequence(seq, bench_fails, max_evaluations=100)
-    assert result.evaluations == 9
-    assert result.status == SHORTEST_SUBSEQUENCE
-
-
-def test_non_monotonic_case_beats_deletion_minimal_greedy():
+@pytest.mark.parametrize(
+    "budget,status,expected,indices,evaluations",
+    [
+        (100, SHORTEST_SUBSEQUENCE, ("c",), (2,), 5),
+        (5, SHORTEST_SUBSEQUENCE, ("c",), (2,), 5),
+        (4, BUDGET_LIMITED, ("a", "b", "c", "d"), (0, 1, 2, 3), 4),
+    ],
+    ids=["ample", "exact", "short"],
+)
+def test_non_monotonic_budget_boundary(budget, status, expected, indices, evaluations):
     seq = ["a", "b", "c", "d"]
 
     def fails(candidate):
         items = list(candidate)
         return items == ["a", "b", "c", "d"] or items == ["c"]
 
-    result = shrink_sequence(seq, fails, max_evaluations=100)
-    assert result.status == SHORTEST_SUBSEQUENCE
-    assert result.subsequence == ("c",)
-    assert result.indices == (2,)
-    assert result.evaluations == 5
+    result = shrink_sequence(seq, fails, max_evaluations=budget)
+    assert result.status == status
+    assert result.subsequence == expected
+    assert result.indices == indices
+    assert result.evaluations == evaluations
 
 
 def test_deterministic_tie_break_picks_lowest_index_order():
@@ -121,27 +133,14 @@ def test_deterministic_tie_break_picks_lowest_index_order():
     assert second.subsequence == ("q",)
 
 
-def test_duplicate_equal_calls_keep_distinct_positions():
-    seq = [{"op": "tick"}, {"op": "tick"}]
-    assert seq[0] == seq[1]
-    result = shrink_sequence(seq, lambda s: len(list(s)) == 2, max_evaluations=100)
-    assert result.status == SHORTEST_SUBSEQUENCE
-    assert result.indices == (0, 1)
-    assert result.subsequence == ({"op": "tick"}, {"op": "tick"})
-
-
-def test_empty_failing_sequence_is_shortest_with_one_evaluation():
-    result = shrink_sequence([], lambda s: True, max_evaluations=10)
-    assert result.status == SHORTEST_SUBSEQUENCE
+@pytest.mark.parametrize(
+    "fails,status", [(True, SHORTEST_SUBSEQUENCE), (False, NOT_FAILING)], ids=["failing", "passing"]
+)
+def test_empty_sequence_reports_trivial_status(fails, status):
+    result = shrink_sequence([], lambda s: fails, max_evaluations=10)
+    assert result.status == status
     assert result.subsequence == ()
     assert result.indices == ()
-    assert result.evaluations == 1
-
-
-def test_empty_passing_sequence_is_not_failing():
-    result = shrink_sequence([], lambda s: False, max_evaluations=10)
-    assert result.status == NOT_FAILING
-    assert result.subsequence == ()
     assert result.evaluations == 1
 
 
@@ -151,23 +150,6 @@ def test_budget_of_one_returns_original_as_budget_limited():
     assert result.subsequence == (1, 2, 3)
     assert result.indices == (0, 1, 2)
     assert result.evaluations == 1
-
-
-def test_exact_budget_boundary_flips_status():
-    seq = ["a", "b", "c", "d"]
-
-    def fails(candidate):
-        items = list(candidate)
-        return items == ["a", "b", "c", "d"] or items == ["c"]
-
-    exact = shrink_sequence(seq, fails, max_evaluations=5)
-    assert exact.status == SHORTEST_SUBSEQUENCE
-    assert exact.evaluations == 5
-    assert exact.subsequence == ("c",)
-    short = shrink_sequence(seq, fails, max_evaluations=4)
-    assert short.status == BUDGET_LIMITED
-    assert short.evaluations == 4
-    assert short.subsequence == ("a", "b", "c", "d")
 
 
 def test_no_evaluation_happens_after_the_cap():
@@ -184,24 +166,22 @@ def test_no_evaluation_happens_after_the_cap():
     assert result.status == BUDGET_LIMITED
 
 
-def test_predicate_exception_on_short_candidate_propagates():
-    seq = ["x"]
+def invented_short_fails(candidate):
+    if len(candidate) == 0:
+        raise RuntimeError("probe blew up")
+    return True
 
-    def fails(candidate):
-        if len(candidate) == 0:
-            raise RuntimeError("probe blew up")
-        return True
 
+def invented_always_fails(candidate):
+    raise RuntimeError("always blows up")
+
+
+@pytest.mark.parametrize(
+    "seq,fails", [(["x"], invented_short_fails), ([1, 2], invented_always_fails)], ids=["short_candidate", "original"]
+)
+def test_predicate_exception_propagates(seq, fails):
     with pytest.raises(RuntimeError):
         shrink_sequence(seq, fails, max_evaluations=10)
-
-
-def test_predicate_exception_on_original_propagates():
-    def fails(candidate):
-        raise RuntimeError("always blows up")
-
-    with pytest.raises(RuntimeError):
-        shrink_sequence([1, 2], fails, max_evaluations=10)
 
 
 @pytest.mark.parametrize("budget", [0, -1, -100])
