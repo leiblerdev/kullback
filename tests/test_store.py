@@ -1400,6 +1400,33 @@ def test_session_acquire_interrupt_cleans_fd(tmp_path, monkeypatch):
     assert _mod._OPEN_FDS == set()
 
 
+def _fail_once_flock(monkeypatch, exc):
+    import fcntl as _fcntl
+
+    real_flock = _fcntl.flock
+    once = {"armed": True}
+
+    def _once(fd, op):
+        if once["armed"] and op == _fcntl.LOCK_UN:
+            once["armed"] = False
+            raise exc
+        return real_flock(fd, op)
+
+    monkeypatch.setattr(_fcntl, "flock", _once)
+    return real_flock
+
+
+def _assert_store_reusable(store, root, value):
+    with store.exclusive_session():
+        with store.transaction():
+            store.write("n", value)
+    other = WorkdirStore(root, [_session_spec()])
+    with other.exclusive_session():
+        pass
+    with store.transaction():
+        assert store.read("n").value == value
+
+
 def test_session_release_unlock_failure_clears_state(tmp_path, monkeypatch):
     import fcntl as _fcntl
 
@@ -1410,14 +1437,7 @@ def test_session_release_unlock_failure_clears_state(tmp_path, monkeypatch):
     identity = Path(store._root_str).stat()
     key = (os.getpid(), identity.st_dev, identity.st_ino)
     before = _mod._state_for(key)
-    real_flock = _fcntl.flock
-    once = {"armed": True}
-    def _once(fd, op):
-        if once["armed"] and op == _fcntl.LOCK_UN:
-            once["armed"] = False
-            raise OSError(errno.EIO, "injected unlock")
-        return real_flock(fd, op)
-    monkeypatch.setattr(_fcntl, "flock", _once)
+    real_flock = _fail_once_flock(monkeypatch, OSError(errno.EIO, "injected unlock"))
     kept = []
     try:
         with store.exclusive_session():
@@ -1432,14 +1452,7 @@ def test_session_release_unlock_failure_clears_state(tmp_path, monkeypatch):
     assert before.session_closing is False
     assert before.session_fd is None
     assert _mod._OPEN_FDS == set()
-    with store.exclusive_session():
-        with store.transaction():
-            store.write("n", 1)
-    other = WorkdirStore(root, [_session_spec()])
-    with other.exclusive_session():
-        pass
-    with store.transaction():
-        assert store.read("n").value == 1
+    _assert_store_reusable(store, root, 1)
     assert kept[0].errno == errno.EIO
 
 
@@ -1449,18 +1462,9 @@ def test_session_release_interrupt_clears_state(tmp_path, monkeypatch):
     from kullback import store as _mod
     root = tmp_path / "w"
     store = WorkdirStore(root, [_session_spec()])
-    real_flock = _fcntl.flock
-    def _raiser(kind):
-        once = {"armed": True}
-        def _once(fd, op):
-            if once["armed"] and op == _fcntl.LOCK_UN:
-                once["armed"] = False
-                raise kind()
-            return real_flock(fd, op)
-        return _once
     kept = []
     for kind in (KeyboardInterrupt, SystemExit):
-        monkeypatch.setattr(_fcntl, "flock", _raiser(kind))
+        real_flock = _fail_once_flock(monkeypatch, kind())
         try:
             with store.exclusive_session():
                 pass
@@ -1508,10 +1512,7 @@ def test_session_release_close_failure_consistent_state(tmp_path, monkeypatch):
     assert state.session_fd is None
     assert fd not in _mod._OPEN_FDS
     real_close(fd)
-    with store.exclusive_session():
-        with store.transaction():
-            store.write("n", 2)
-    assert store.read("n").value == 2
+    _assert_store_reusable(store, root, 2)
     assert kept[0].errno == errno.EIO
 
 
