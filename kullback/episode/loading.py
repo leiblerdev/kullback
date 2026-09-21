@@ -281,21 +281,40 @@ def _safe_recording_id(run_id: Any) -> bool:
             and "/" not in run_id and "\\" not in run_id)
 
 
+def _check_replay_row(path: Path, task_id: str, rid: str, row: Any) -> None:
+    """One replay row holds a string trace id and, when present, a bool confirmation."""
+    if not isinstance(row, dict):
+        raise EnvironmentError(f"{path} holds replay row {rid} for Task {task_id} that is not an object")
+    if not isinstance(row.get("trace_id"), str):
+        raise EnvironmentError(
+            f"{path} holds replay row {rid} for Task {task_id} with no string trace_id")
+    if "confirmed" in row and not isinstance(row["confirmed"], bool):
+        raise EnvironmentError(
+            f"{path} holds replay row {rid} for Task {task_id} with a non-bool confirmed")
+
+
+def _check_replays(path: Path, replays: dict) -> None:
+    """Every Task's replay rows hold the nested shape a reset reads, else a refusal naming the file."""
+    for task_id, rows in sorted(replays.items()):
+        if not isinstance(rows, dict):
+            raise EnvironmentError(f"{path} holds replay rows for Task {task_id} that are not an object")
+        for rid, row in sorted(rows.items()):
+            _check_replay_row(path, task_id, rid, row)
+
+
 def _reference_run_id(task: Task, rows: Optional[dict], held_out: set, rules_dir: Path) -> Optional[str]:
     """The recording whose user rules drive the Task: first seed, confirmed one with rules on disk.
 
     One function for the Episode (`environment.BuiltEnvironment._reference_id`) and the Builder's
     `run_batch` (through `_user_rules`), so a stored Run was driven by exactly the rules a replay
     of it drives. `rows` is the Task's replays.json rows, or None where the file names no Task;
-    a row the Builder never validated is skipped where the Episode would have refused it sooner.
+    callers validate rows first, so a misshapen row fails loudly here.
     """
     seeds = [run_id for run_id in task.run_ids if run_id not in held_out]
     candidates = list(seeds)
     if rows is not None:
         candidates = []
         for rid, row in sorted(rows.items()):
-            if not isinstance(row, dict):
-                continue
             trace_id = row.get("trace_id")
             if rid in seeds and row.get("confirmed") and trace_id in seeds:
                 candidates.append(trace_id)
@@ -316,9 +335,11 @@ def _user_rules(workdir: Path, task: Task) -> Optional[UserRules]:
     workdir = Path(workdir)
     anchor = _shaped_json(workdir / "anchor.json", "object", {}, what="an anchor record")
     held_out = anchor.get("held_out", {})
-    held = {run_id for runs in held_out.values() for run_id in runs} \
-        if isinstance(held_out, dict) else set()
+    if not isinstance(held_out, dict):
+        raise EnvironmentError(f"{workdir / 'anchor.json'} holds held_out that is not an object")
+    held = {run_id for runs in held_out.values() for run_id in runs}
     replays = _shaped_json(workdir / "replays.json", "object", {}, what="replay records")
+    _check_replays(workdir / "replays.json", replays)
     run_id = _reference_run_id(task, replays.get(task.id), held, workdir / "user_rules")
     if run_id is None:
         return None

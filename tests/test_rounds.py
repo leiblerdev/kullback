@@ -94,9 +94,10 @@ TARGET = "environment"
 # files are byte identical. Same three Tasks, same verdicts, same reasons. Re-pinned for the merge
 # with main: the closure hash moved every stage key and the rerolls key now names episode.loading
 # outright, so every re-rolled Run id moved with both, and moved again when the batch and replay
-# choice of user rules came to share one function in episode/loading.py. The pin is for the tree
+# choice of user rules came to share one function in episode/loading.py and moved once more
+# when the replay row checks moved into that file. The pin is for the tree
 # without the step-split patch, and the refreeze that applies that patch re-pins.
-TASK_STATUS_SHA256_BEFORE_THE_PHASE = "a1fd3d61ff47b7cd7151c8bd9fb44cefbbd155e01cd445301652abba348e9b89"
+TASK_STATUS_SHA256_BEFORE_THE_PHASE = "aa4666cb92f11ba3eadaf8c2daf0d1d4ef9350d5f9c23655127c2a367e12c631"
 
 
 def _fixture(request) -> Path:

@@ -219,6 +219,43 @@ def test_batch_choice_with_no_confirmed_rows_is_none(tmp_path):
     assert loading._user_rules(root, task) is None
 
 
+@pytest.mark.parametrize("replays", [
+    {"widget_task": []},
+    {"widget_task": {"rec1": ["rec1"]}},
+    {"widget_task": {"rec1": {"confirmed": True}}},
+    {"widget_task": {"rec1": {"trace_id": 7, "confirmed": True}}},
+    {"widget_task": {"rec1": {"trace_id": "rec1", "confirmed": "yes"}}},
+])
+def test_user_rules_refuses_misshapen_replay_rows(tmp_path, replays):
+    from kullback.episode import loading
+    from kullback.runner.records import Task
+
+    root = write_env(tmp_path / "env")
+    _write_reference_fixture(root)
+    task = Task(id="widget_task", run_ids=["rec1", "held", "rec2"],
+                intent="give widget w1 the label striped")
+    (root / "replays.json").write_text(json.dumps(replays), encoding="utf-8")
+    with pytest.raises(loading.EnvironmentError) as excinfo:
+        loading._user_rules(root, task)
+    assert "replays.json" in str(excinfo.value)
+    assert "widget_task" in str(excinfo.value)
+
+
+def test_user_rules_refuses_misshapen_held_out(tmp_path):
+    from kullback.episode import loading
+    from kullback.runner.records import Task
+
+    root = write_env(tmp_path / "env")
+    _write_reference_fixture(root)
+    task = Task(id="widget_task", run_ids=["rec1", "held", "rec2"],
+                intent="give widget w1 the label striped")
+    (root / "anchor.json").write_text(json.dumps({"held_out": ["rec1"]}), encoding="utf-8")
+    with pytest.raises(loading.EnvironmentError) as excinfo:
+        loading._user_rules(root, task)
+    assert "anchor.json" in str(excinfo.value)
+    assert "held_out" in str(excinfo.value)
+
+
 def test_rules_path_rejects_unsafe_recording_ids(tmp_path):
     root = write_env(tmp_path / "env")
     env = BuiltEnvironment(root)

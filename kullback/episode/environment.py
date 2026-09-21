@@ -58,7 +58,7 @@ class BuiltEnvironment:
         self._held_out = {run_id for runs in held_out.values() for run_id in runs}
         self._replays = _shaped_json(self.root / "replays.json", "object", {},
                                      what="replay records")
-        _check_replays(self.root / "replays.json", self._replays)
+        loading._check_replays(self.root / "replays.json", self._replays)
 
     def _seed_task(self, task: Task) -> Task:
         return task.model_copy(update={"run_ids": [rid for rid in task.run_ids if rid not in self._held_out]})
@@ -256,24 +256,3 @@ def _field(call: Any, name: str) -> Any:
     if isinstance(call, dict):
         return call.get(name)
     return getattr(call, name, None)
-
-
-def _check_replay_row(path: Path, task_id: str, rid: str, row: Any) -> None:
-    """One replay row holds a string trace id and, when present, a bool confirmation."""
-    if not isinstance(row, dict):
-        raise EnvironmentError(f"{path} holds replay row {rid} for Task {task_id} that is not an object")
-    if not isinstance(row.get("trace_id"), str):
-        raise EnvironmentError(
-            f"{path} holds replay row {rid} for Task {task_id} with no string trace_id")
-    if "confirmed" in row and not isinstance(row["confirmed"], bool):
-        raise EnvironmentError(
-            f"{path} holds replay row {rid} for Task {task_id} with a non-bool confirmed")
-
-
-def _check_replays(path: Path, replays: dict) -> None:
-    """Every Task's replay rows hold the nested shape a reset reads, else a refusal naming the file."""
-    for task_id, rows in sorted(replays.items()):
-        if not isinstance(rows, dict):
-            raise EnvironmentError(f"{path} holds replay rows for Task {task_id} that are not an object")
-        for rid, row in sorted(rows.items()):
-            _check_replay_row(path, task_id, rid, row)
