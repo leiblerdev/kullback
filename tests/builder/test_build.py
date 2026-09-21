@@ -16,6 +16,7 @@ from kullback.builder import pipeline
 from kullback.builder import repair as repair_module
 from kullback.builder import tools as builder_tools
 from kullback.builder.build import BuildPlan
+from kullback.episode import loading as episode_loading
 from kullback.gates import tool_runs
 from kullback.runner.records import Task, ToolCall, ToolSig, Trace, Turn, Verifier
 from test_e2e import TOOL_BODIES
@@ -527,8 +528,7 @@ def test_a_reroll_carries_the_seed_its_own_run_id_draws_and_draws_it_again_when_
     salt = sampling.build_salt(built)
     rows = run_rerolls(task.id, 2, "reroll-r1")
     seeds = {row["run_id"]: _seed_of(row["path"]) for row in rows}
-    assert seeds == {row["run_id"]: sampling.sample_seed(build_module.RUN_SEED_KIND, row["run_id"], salt)
-                     for row in rows}
+    assert seeds == {row["run_id"]: episode_loading.run_seed(row["run_id"], salt) for row in rows}
     assert len(set(seeds.values())) == 2, "two Runs of one batch are two draws, not one"
     for row in rows:
         Path(row["path"]).unlink()
