@@ -95,7 +95,7 @@ HELPERS = {name: _HELPER_FUNCTIONS[name] for name in sorted(PROVIDED_HELPERS)}
 OVERLAY_DIR = "overlays"
 
 class OverlayConflict(ValueError):
-    """Two Tasks pin the same row in different versions: a Gate failure for the tau2 export (D74)."""
+    """Two Tasks pin the same row in different versions: a Gate failure for the benchmark export (D74)."""
 
 
 def _with_run_scope(overlay: TaskOverlay, scope: Optional[dict]) -> TaskOverlay:
@@ -142,11 +142,11 @@ def load_overlay(workdir: Path | str, task_id: str,
 
 def merge_overlays(db: dict, overlays: Iterable[TaskOverlay], values: dict,
                    conflicts: Optional[list[str]] = None) -> dict:
-    """Merge every Task overlay into the one db tau2's harness loads (D74).
+    """Merge every Task overlay into the one db the benchmark export's harness loads (D74).
 
     Two Tasks pinning one row in different versions is a disagreement about the world, which the
     per-Task overlays in the Runner never have to settle: each Task reads its own. The single db of
-    the tau2 export has to pick one, so with `conflicts` given it keeps the version a Task saw before
+    the benchmark export has to pick one, so with `conflicts` given it keeps the version a Task saw before
     any write (over one seen after a write) and, between two of the same standing, the first Task's,
     and appends one line per conflict for the export gate. Without `conflicts` a disagreement raises,
     which is the contract the single-overlay callers rely on.
@@ -161,7 +161,7 @@ def merge_overlays(db: dict, overlays: Iterable[TaskOverlay], values: dict,
                     raise OverlayConflict(f"tasks {seen[1]} and {overlay.task_id} pin {row.table} row "
                                           f"{row.id} in different versions")
                 conflicts.append(f"tasks {seen[1]} and {overlay.task_id} pin {row.table} row {row.id} in "
-                                 f"different versions; the tau2 export keeps "
+                                 f"different versions; the benchmark export keeps "
                                  f"{overlay.task_id if seen[2] and not row.after_write else seen[1]}'s")
                 if not (seen[2] and not row.after_write):
                     continue  # the pinned version stands: it was seen before a write, or both were

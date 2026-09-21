@@ -874,7 +874,7 @@ def test_the_export_prefers_the_version_seen_before_a_write(tmp_path):
     conflicts: list[str] = []
     merged = ce.merge_overlays({"orders": {}}, [late, early], values, conflicts)
     assert merged["orders"]["o1"]["status"] == "pending"
-    assert conflicts == ["tasks t1 and t2 pin orders row o1 in different versions; the tau2 export keeps t2's"]
+    assert conflicts == ["tasks t1 and t2 pin orders row o1 in different versions; the benchmark export keeps t2's"]
 
 
 # --- the Environment record, its sub-versions and its open flags (D67, D70, D97) ---
