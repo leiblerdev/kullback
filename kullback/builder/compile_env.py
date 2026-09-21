@@ -1905,11 +1905,88 @@ _CONTEXT_SHIM = '''class ToolContext:
         self._issued = {}
         self._served_recorded = 0
         self._served_seeded = 0
+        self._starting_ids = self._snapshot_starting_ids()
+        self._starting_times = self._snapshot_starting_times()
+
+    def _snapshot_starting_ids(self):
+        try:
+            names = list(vars(self._db)) if hasattr(self._db, "__dict__") else []
+        except Exception:
+            names = []
+        return {str(name): self._table_keys(name) for name in names if not str(name).startswith("_")}
+
+    def _table_keys(self, table):
+        try:
+            rows = getattr(self._db, table, None)
+            keys = rows.keys() if hasattr(rows, "keys") else list(rows or [])
+        except Exception:
+            keys = []
+        return {str(k) for k in keys if k}
+
+    def _snapshot_starting_times(self):
+        """Every time-like string the world holds at reset, so a stored stamp is never fed as now.
+
+        Built once per reset, not once per call: the feed carries only what the call generated,
+        and a date the world already held is what the call found, not what it made.
+        """
+        import re
+        pattern = re.compile(r"__TIME_PATTERN__")
+        try:
+            world = self._db.model_dump()
+        except Exception:
+            return set()
+        if not isinstance(world, dict):
+            return set()
+        found: set = set()
+        seen: set = set()
+        stack = [world]
+        while stack:
+            node = stack.pop()
+            if id(node) in seen:
+                continue
+            seen.add(id(node))
+            if isinstance(node, dict):
+                stack.extend(node.values())
+            elif isinstance(node, (list, tuple, set)):
+                stack.extend(node)
+            elif isinstance(node, str):
+                if pattern.match(node.strip()):
+                    found.add(node)
+        return found
 
     def feed_call(self, feed):
-        """Serve one recorded call's witnessed values until the next feed arrives."""
+        """Serve one recorded call's witnessed values until the next feed arrives.
+
+        New ids arrive as an ordered list per table and are handed out in order; the lists are
+        copied so serving never mutates the saved evidence. A bare string still reads as one id.
+        """
         feed = feed or {}
-        self._current = {"now": feed.get("now"), "new_ids": dict(feed.get("new_ids") or {})}
+        ids: dict = {}
+        for table, values in (feed.get("new_ids") or {}).items():
+            items = list(values) if isinstance(values, (list, tuple)) else [values]
+            if items:
+                ids[str(table)] = items
+        self._current = {"now": feed.get("now"), "new_ids": ids,
+                         "created_exempt": self._created_exempt(feed)}
+        if feed.get("now_evidence") is not None:
+            self._current["now_evidence"] = feed.get("now_evidence")
+
+    def _created_exempt(self, feed):
+        """Whether a created-row feed vouches for ids the start state never held.
+
+        First appearance in the trace is not proof of creation; absence from the start
+        state is the missing half. Compared per table, the way new_id compares: a loan 42
+        is new although a user 42 exists. Decided here, before new_id starts popping the
+        lists, so the whole feed is judged, not what is left of it.
+        """
+        if feed.get("now_evidence") != "created_row":
+            return False
+        for table, values in (feed.get("new_ids") or {}).items():
+            held = self._starting_ids.get(str(table), set())
+            items = list(values) if isinstance(values, (list, tuple)) else [values]
+            if any(str(value) in held for value in items):
+                return False
+        return True
 
     def attach_recorded(self, recorded):
         """Serve a whole Run's witnessed values in call order: ids per table, times in turn."""
@@ -1922,18 +1999,42 @@ _CONTEXT_SHIM = '''class ToolContext:
     def reseed(self, seed):
         """Draw from this seed from here on; the step restarts with the Run."""
         self._seed = int(seed) & self._MASK64
+        self._step = 0
+        self._issued = {}
+        self._current = None
+        self._recorded_ids = {}
+        self._id_cursors = {}
+        self._recorded_times = []
+        self._time_cursor = 0
+        self._served_recorded = 0
+        self._served_seeded = 0
+        self._starting_ids = self._snapshot_starting_ids()
+        self._starting_times = self._snapshot_starting_times()
 
     def usage(self):
         """How many servings each feed answered, so the caller can count the fallback."""
         return {"recorded": self._served_recorded, "seeded": self._served_seeded}
 
     def now(self):
-        """The call's time: the recorded time at replay, a fixed function of seed and step off it."""
+        """The call's time: the recorded time at replay, a fixed function of seed and step off it.
+
+        A witnessed time the world already held at reset is what the call found, not what it
+        made, so the seeded feed answers for it, counted as seeded. A feed the creation rule
+        evidenced, and whose new ids the start state never held, says the call made the row
+        the stamp sits in, so the reset check is skipped for it only; any other feed behaves
+        as before.
+        """
         self._step += 1
         witnessed = (self._current or {}).get("now")
+        created = bool((self._current or {}).get("created_exempt"))
+        if witnessed is not None and witnessed in self._starting_times and not created:
+            witnessed = None
         if witnessed is not None:
             self._served_recorded += 1
             return witnessed
+        while (self._time_cursor < len(self._recorded_times)
+               and self._recorded_times[self._time_cursor] in self._starting_times):
+            self._time_cursor += 1
         if self._time_cursor < len(self._recorded_times):
             value = self._recorded_times[self._time_cursor]
             self._time_cursor += 1
@@ -1949,10 +2050,18 @@ _CONTEXT_SHIM = '''class ToolContext:
         return self._draw(1) / 18446744073709551616.0
 
     def new_id(self, table):
-        """The new row's id: the recorded id at replay, a shaped draw off it."""
+        """The new row's id: the recorded ids at replay in recording order, a shaped draw off it.
+
+        One recorded id is served per call; when the call's list is used up the seeded feed
+        answers, counted as seeded.
+        """
         self._step += 1
         current_ids = (self._current or {}).get("new_ids") or {}
-        witnessed = current_ids.pop(table, None)
+        queue = current_ids.get(table)
+        if isinstance(queue, list):
+            witnessed = queue.pop(0) if queue else None
+        else:
+            witnessed = current_ids.pop(table, None)
         recorded = self._recorded_ids.get(table) or []
         at = self._id_cursors.get(table, 0)
         if witnessed is None and at < len(recorded):
@@ -1962,6 +2071,8 @@ _CONTEXT_SHIM = '''class ToolContext:
         if witnessed is not None:
             if witnessed in issued:
                 raise ValueError("recorded tool context repeated an allocated id")
+            if str(witnessed) in self._starting_ids.get(table, set()) or str(witnessed) in self._table_keys(table):
+                raise ValueError("recorded tool context fed an id the table already holds")
             value = witnessed
             self._served_recorded += 1
         else:
@@ -3617,8 +3728,14 @@ def call_starting_states(db: dict, overlays: Iterable[TaskOverlay], values: dict
 
 
 # A result value that reads as a calendar date or a clock time, the way created_at does.
-_TIME_RE = re.compile(r"^\d{4}-\d{2}-\d{2}([T ]\d{2}:\d{2}(:\d{2}(\.\d{1,6})?)?"
-                      r"(Z|[+-]\d{2}:?\d{2})?)?$|^\d{2}:\d{2}(:\d{2})?$")
+# The text lives here alone: _TIME_RE compiles it, and the tool context shim receives the
+# same text by placeholder below, so the two can never disagree about what a time is.
+_TIME_PATTERN = (r"^\d{4}-\d{2}-\d{2}([T ]\d{2}:\d{2}(:\d{2}(\.\d{1,6})?)?"
+                 r"(Z|[+-]\d{2}:?\d{2})?)?$|^\d{2}:\d{2}(:\d{2})?$")
+_TIME_RE = re.compile(_TIME_PATTERN)
+# The generated module stays self-contained (it cannot import the builder), so the shim
+# carries the pattern as text: one placeholder, replaced once, at module level.
+_CONTEXT_SHIM = _CONTEXT_SHIM.replace("__TIME_PATTERN__", _TIME_PATTERN, 1)
 
 
 def _is_id_key(key: Any) -> bool:
@@ -3662,32 +3779,229 @@ def _tables_for_id_key(schema: EntitySchema, key: str) -> list[str]:
                    if id_field(schema, table) == key})
 
 
-def recorded_call_context(call: ToolCall, schema: EntitySchema) -> dict:
+def _context_id_observations(node: Any, schema: EntitySchema) -> tuple[set, set]:
+    """The id sightings of one arguments or result node: (pairs, blocked).
+
+    Pairs are (table, value) for an id key the miner's rule attributes to a table. Blocked
+    values were seen under an id key no table claims, so they suppress that value for every
+    table. A non id key of a result states no id and is ignored here: a note echoing the new
+    id must not cost the creation its recorded id.
+    """
+    pairs: set = set()
+    blocked: set = set()
+    for key, value in _result_leaves(node):
+        if not isinstance(value, str) or not _is_id_key(key):
+            continue
+        tables = _tables_for_id_key(schema, key)
+        if tables:
+            pairs.update((table, value) for table in tables)
+        else:
+            blocked.add(value)
+    return pairs, blocked
+
+
+def _context_arg_observations(args: Any, schema: EntitySchema) -> tuple[set, set]:
+    """The id sightings of one call's arguments: (pairs, blocked).
+
+    Like the result rule, except a value under a key that is not an id key also suppresses
+    that value for every table: the body was given it, so it generated nothing.
+    """
+    pairs, blocked = _context_id_observations(args, schema)
+    blocked.update(value for key, value in _result_leaves(args)
+                   if isinstance(value, str) and not _is_id_key(key))
+    return pairs, blocked
+
+
+def _context_seen_strings(args: Any, result: Any) -> set:
+    """Every string two nodes state, for the time rule's earlier observation check."""
+    return ({value for _, value in _result_leaves(args) if isinstance(value, str)}
+            | {value for _, value in _result_leaves(result) if isinstance(value, str)})
+
+
+def _context_id_tables(key: Any, value: Any, schema: EntitySchema, own_pairs: set,
+                       own_blocked: set, prior_pairs: set, prior_blocked: set) -> list:
+    """The tables one id leaf is new for, possibly none.
+
+    Seen under another table's key the value still feeds; seen under the same table's key, under
+    a key no table claims, or among the call's own argument strings, it feeds nothing.
+    """
+    if not isinstance(value, str) or not _is_id_key(key):
+        return []
+    if value in own_blocked or value in prior_blocked:
+        return []
+    return [table for table in _tables_for_id_key(schema, key)
+            if (table, value) not in own_pairs and (table, value) not in prior_pairs]
+
+
+def _context_new_ids(result: Any, schema: EntitySchema, own_pairs: set, own_blocked: set,
+                     prior_pairs: set, prior_blocked: set) -> dict:
+    """The result's new ids as an ordered list per table, in recording order, no duplicates."""
+    found: dict = {}
+    for key, value in _result_leaves(result):
+        for table in _context_id_tables(key, value, schema, own_pairs, own_blocked,
+                                        prior_pairs, prior_blocked):
+            ids = found.setdefault(table, [])
+            if value not in ids:
+                ids.append(value)
+    return found
+
+
+def _context_witnessed_time(result: Any, arg_strings: set, prior_seen: set) -> Optional[str]:
+    """The result's one surviving time-like leaf, or None when zero or several survive.
+
+    A leaf among the call's argument strings or observed earlier in the same trace is what the
+    call found, not what it made. Two differing survivors are ambiguous, so they feed nothing;
+    equal values are one value.
+    """
+    survivors: list = []
+    for _, value in _result_leaves(result):
+        if not isinstance(value, str) or not _TIME_RE.match(value.strip()):
+            continue
+        if value in arg_strings or value in prior_seen:
+            continue
+        if value not in survivors:
+            survivors.append(value)
+    if len(survivors) == 1:
+        return survivors[0]
+    return None
+
+
+def _context_creation_times(result: Any, schema: EntitySchema, own_pairs: set,
+                            own_blocked: set, prior_pairs: set, prior_blocked: set) -> list:
+    """The string values sitting directly in a dict that directly holds a filed new id.
+
+    Only the row object the call created speaks for the call's time: a time leaf in another
+    row object of the same result is not creation evidence.
+    """
+    times: list = []
+
+    def walk(node: Any) -> None:
+        if isinstance(node, dict):
+            if any(_context_id_tables(key, value, schema, own_pairs, own_blocked,
+                                      prior_pairs, prior_blocked)
+                   for key, value in node.items()):
+                times.extend(value for value in node.values() if isinstance(value, str))
+            for value in node.values():
+                walk(value)
+        elif isinstance(node, (list, tuple)):
+            for value in node:
+                walk(value)
+
+    walk(result)
+    return times
+
+
+def _context_feed_now(result: Any, schema: EntitySchema, state: dict, own_pairs: set,
+                      own_blocked: set, arg_strings: set, new_ids: dict) -> tuple:
+    """The call's witnessed time and how it was evidenced, or (None, None).
+
+    Creation evidence wins: when the result shows a new id, the time candidates are the
+    time-like leaves in the same row object, and equality with an earlier sighting or a
+    stored stamp proves nothing, so only the call's own argument strings exclude a value.
+    One distinct survivor feeds with "created_row" evidence; otherwise the found-value
+    rule decides over every time-like leaf, without evidence: not in the arguments, not seen
+    earlier in the trace, not stored at reset, one survivor.
+    """
+    if new_ids:
+        prior_pairs = state.get("pairs") or set()
+        prior_blocked = state.get("blocked") or set()
+        survivors: list = []
+        for value in _context_creation_times(result, schema, own_pairs, own_blocked,
+                                             prior_pairs, prior_blocked):
+            if not _TIME_RE.match(value.strip()) or value in arg_strings:
+                continue
+            if value not in survivors:
+                survivors.append(value)
+        if len(survivors) == 1:
+            return survivors[0], "created_row"
+    return _context_witnessed_time(result, arg_strings, state.get("seen") or set()), None
+
+
+def recorded_call_context(call: ToolCall, schema: EntitySchema,
+                          prior: Optional[dict] = None) -> dict:
     """The values one recorded call witnessed for the tool context: its new ids and its time.
 
-    The new ids are the id-valued leaves of the recorded result, filed under each table the
-    miner's id rule attributes the key to. The time is the result's first time-like leaf. A call
-    whose result carries neither leaves both empty, and the seeded feed answers for it, counted.
-    Only the result is read: arguments are what the body is given, so they need no feed.
+    The new ids are the id-valued leaves of the recorded result, in recording order with no
+    duplicates, filed as an ordered list under each table the miner's id rule attributes the
+    key to. A top level list result reads like a dict result, so one call creating several rows
+    feeds every id. An id is new only for its own table: seen under another table's key it still
+    feeds, seen under the same table's key or under a key no table claims it feeds nothing. A
+    value the call's own arguments state is what the body was given, so it feeds nothing.
+    The time follows creation evidence where there is any, else the found-value rule (not
+    in the arguments, not seen earlier in the trace, not stored at reset, one survivor); a
+    feed the creation rule produced carries "now_evidence" so the context knows the reset
+    check does not apply to it. A call whose result carries neither leaves both empty, and
+    the seeded feed answers, counted.
     """
     feed: dict = {"now": None, "new_ids": {}}
+    args = call.args if isinstance(call, ToolCall) else (call or {}).get("args") or {}
     result = call.result if isinstance(call, ToolCall) else (call or {}).get("result")
-    if not isinstance(result, dict):
+    if not isinstance(result, (dict, list, tuple)):
         return feed
-    for key, value in _result_leaves(result):
-        if not isinstance(value, str):
-            continue
-        if _is_id_key(key):
-            for table in _tables_for_id_key(schema, key):
-                feed["new_ids"].setdefault(table, value)
-        if feed["now"] is None and _TIME_RE.match(value.strip()):
-            feed["now"] = value
+    state = prior or {}
+    own_pairs, own_blocked = _context_arg_observations(args, schema)
+    feed["new_ids"] = _context_new_ids(result, schema, own_pairs, own_blocked,
+                                       state.get("pairs") or set(),
+                                       state.get("blocked") or set())
+    arg_strings = {value for _, value in _result_leaves(args) if isinstance(value, str)}
+    feed["now"], evidence = _context_feed_now(result, schema, state, own_pairs, own_blocked,
+                                              arg_strings, feed["new_ids"])
+    if evidence is not None:
+        feed["now_evidence"] = evidence
     return feed
+
+
+# Calls without a recorded position order after positioned calls, by call id, so the result never depends on input order.
+_MISSING_MSG_INDEX = 1 << 62
+
+
+def _recorded_call_parts(call: Any) -> tuple:
+    if isinstance(call, ToolCall):
+        return (call.id, call.trace_id, call.raw_ptr, call.args or {}, call.result)
+    node = call or {}
+    return (node.get("id"), node.get("trace_id"), node.get("raw_ptr"), node.get("args") or {}, node.get("result"))
+
+
+def _recorded_call_key(call: Any) -> tuple:
+    call_id, trace_id, raw, _, _ = _recorded_call_parts(call)
+    position = raw.get("msg_index") if isinstance(raw, dict) else getattr(raw, "msg_index", None)
+    if not isinstance(position, int):
+        position = _MISSING_MSG_INDEX
+    return (trace_id or "", position, call_id or "")
+
+
+def _observe_context_call(state: dict, schema: EntitySchema, args: Any, result: Any) -> None:
+    """Fold one call's arguments and result into a trace's prior observations.
+
+    Across calls only id sightings persist: (table, value) pairs, and values under an id key
+    no table claims. A plain argument string (a search query that found nothing) observed no
+    entity, so it stays local to the call that stated it and never blocks a later new id.
+    Every string still joins the seen strings for the time rule.
+    """
+    own_pairs, own_blocked = _context_id_observations(args, schema)
+    res_pairs, res_blocked = _context_id_observations(result, schema)
+    state["pairs"] |= own_pairs | res_pairs
+    state["blocked"] |= own_blocked | res_blocked
+    state["seen"] |= _context_seen_strings(args, result)
 
 
 def recorded_call_contexts(calls: Iterable[ToolCall], schema: EntitySchema) -> dict[str, dict]:
     """One recorded feed per call id, the keying D215 already uses for per-call evidence."""
-    return {call.id: recorded_call_context(call, schema) for call in calls if call.id}
+    calls = sorted(list(calls), key=_recorded_call_key)
+    feeds: dict[str, dict] = {}
+    observed: dict[Any, dict] = {}
+    for call in calls:
+        call_id, trace_id, _, args, result = _recorded_call_parts(call)
+        if not call_id:
+            continue
+        if trace_id is None:
+            feeds[call_id] = recorded_call_context(call, schema)
+            continue
+        state = observed.setdefault(trace_id, {"pairs": set(), "blocked": set(), "seen": set()})
+        feeds[call_id] = recorded_call_context(call, schema, state)
+        _observe_context_call(state, schema, args, result)
+    return feeds
+
 
 
 def _context_entity_ids(node: Any) -> set:
@@ -3698,7 +4012,7 @@ def _context_entity_ids(node: Any) -> set:
 def _append_recorded_context(call: ToolCall, schema: EntitySchema, seen: set,
                              seen_ids: set, arg_strings: set, ids: dict, times: list) -> None:
     feed = recorded_call_context(call, schema)
-    fresh_ids = [(table, value) for table, value in feed["new_ids"].items()
+    fresh_ids = [(table, value) for table, values in feed["new_ids"].items() for value in values
                  if value not in seen_ids and value not in arg_strings]
     for table, value in fresh_ids:
         ids.setdefault(table, []).append(value)

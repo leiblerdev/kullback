@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import json
+from collections import deque
+from types import SimpleNamespace
 
+from kullback.builder import effects as effects_mod
 from kullback.examiner import derive as verifier_mod
 from kullback.gates import verifier_suite as suite
 from kullback.runner import replay
@@ -385,3 +388,153 @@ def test_the_round_counts_how_much_of_its_agreement_rested_on_each_route(tmp_pat
     assert out.counts["cosmetic_by_exempt"] == 0 and out.counts["cosmetic_by_judge"] == 0
     assert out.counts["differs_by_token_set"] == 0 and out.counts["differs_by_presence"] == 0
     assert all(check["verdict_route"] for check in out.checks)
+
+
+STRAY = "\x00unattributed"
+
+
+class _WorldRouter:
+    def __init__(self, state):
+        self._world = state
+
+    def world(self):
+        return self._world
+
+
+def _effect_row(unattributed, after="cancelled"):
+    return {"tool": "cancel_order", "table": "orders", "row": "123", "path": "status",
+            "before": "delivered", "after": after, "named": True, "ambiguous": False,
+            "unattributed": unattributed, "formulas": []}
+
+
+def _effect_world():
+    return {"orders": {"123": {"id": "123", "status": "cancelled", "total": 25}}}
+
+
+def _check_effects(effects):
+    scored = replay.ScoredRouter(_WorldRouter(_effect_world()), deque(), write_tools={"cancel_order"},
+                                 effects=effects)
+    recorded = call("c2", "cancel_order", {"order_id": "123"},
+                    {"id": "123", "status": "cancelled", "total": 25})
+    check = {"tool": "cancel_order", "kind": "write", "call_id": "c2"}
+    scored._check_effects(check, recorded, SimpleNamespace(error=None))
+    return scored, check
+
+
+def test_an_unattributed_row_is_counted_apart_and_never_fails_its_call():
+    scored, check = _check_effects({"c2": [_effect_row(True, after="shipped")]})
+    assert check.get("effect_failures") is None
+    assert check.get("effect_failures_total") is None
+    assert check["effect_checks"] == 0
+    assert check["unattributed_effects"] == 1
+
+
+def test_attributed_rows_still_fail_the_call_that_moved_them_wrong():
+    scored, check = _check_effects({"c2": [_effect_row(False, after="shipped")]})
+    assert check["effect_checks"] == 1
+    assert len(check["effect_failures"]) == 1
+    assert check["effect_failures_total"] == 1
+    assert check.get("unattributed_effects") is None
+
+
+def test_mixed_attributed_and_unattributed_rows_check_attributed_only():
+    scored, check = _check_effects({"c2": [_effect_row(False, after="shipped"),
+                                           _effect_row(True, after="shipped")]})
+    assert check["effect_checks"] == 1
+    assert len(check["effect_failures"]) == 1
+    assert check["unattributed_effects"] == 1
+
+
+def test_a_truthy_nonboolean_unattributed_flag_grants_no_exemption():
+    scored, check = _check_effects({"c2": [_effect_row("yes", after="shipped")]})
+    assert len(check.get("effect_failures") or []) == 1
+    assert check.get("unattributed_effects") is None
+
+
+def test_a_stray_bucket_colliding_with_a_call_id_still_fails_nothing():
+    cid = effects_mod.UNATTRIBUTED
+    effect = effects_mod.WriteEffect(tool="cancel_order", call_id=cid, trace_id="tr1", columns=[
+        effects_mod.EffectColumn(table="orders", row_id="123", path="status", before="delivered",
+                                 after="shipped", named=True, checked=True, unattributed=False),
+        effects_mod.EffectColumn(table="orders", row_id="123", path="total", before=25,
+                                 after=26, named=True, checked=False, unattributed=True)])
+    assert effects_mod._stray_key({cid: [effect]}) == cid + "\x00"
+    evidence = effects_mod.replay_evidence({cid: [effect]})
+    assert evidence[cid] and all(row.get("unattributed") is not True for row in evidence[cid])
+    assert evidence[cid + "\x00"] and all(row.get("unattributed") is True
+                                             for row in evidence[cid + "\x00"])
+    evidence[cid].append(_effect_row(True, after="shipped"))
+    evidence[cid].append(_effect_row("yes", after="shipped"))
+    recorded = call(cid, "cancel_order", {"order_id": "123"},
+                    {"id": "123", "status": "cancelled", "total": 25})
+    scored = replay.ScoredRouter(_WorldRouter(_effect_world()), deque(), write_tools={"cancel_order"},
+                                 effects=evidence)
+    check = {"tool": "cancel_order", "kind": "write", "call_id": cid}
+    scored._check_effects(check, recorded, SimpleNamespace(error=None))
+    assert check["effect_checks"] == 2
+    assert check["effect_failures_total"] == 2
+    assert check["unattributed_effects"] == 1
+    assert len(scored.stale) == 2
+    assert replay._count_unattributed_effects(evidence) == 2
+
+
+def test_unattributed_misses_leave_no_stale_rows_for_downstream_blame():
+    scored, check = _check_effects({"c2": [_effect_row(True, after="shipped")]})
+    assert scored.stale == []
+
+
+def test_empty_expected_effects_leave_no_effect_fields():
+    scored, check = _check_effects({"c2": []})
+    assert "effect_checks" not in check
+    assert "effect_failures" not in check
+
+
+def test_a_replay_with_stray_evidence_counts_it_apart_and_stays_confirmed(tmp_path):
+    out = replay.replay_trace(trace(), router(), workdir=tmp_path / "runs" / "t8", task_id="t8",
+                              env_id="env1", write_tools={"cancel_order"},
+                              effects={"c2": [_effect_row(False)],
+                                       STRAY: [_effect_row(True, after="shipped")]})
+    assert out.confirmed, out.reasons
+    assert out.counts["effect_checks"] == 1
+    assert out.counts["effect_failures"] == 0
+    assert out.counts["effect_unattributed"] == 1
+
+
+def test_a_colliding_call_id_replays_its_stray_apart_and_blames_the_read_downstream(tmp_path):
+    cid = effects_mod.UNATTRIBUTED
+    colliding = Trace(trace_id="tr9", raw_hash="r" * 64, ingest_version="1", source="test", turns=[
+        Turn(idx=0, role="assistant", content="Hi! How can I help you today?", raw_ptr=PTR),
+        Turn(idx=1, role="user", content="Please cancel order 123.", raw_ptr=PTR),
+        Turn(idx=2, role="assistant", content=None, tool_call_ids=["c1"], raw_ptr=PTR),
+        Turn(idx=3, role="tool", content='{"id": "123"}', tool_call_ids=["c1"], raw_ptr=PTR),
+        Turn(idx=4, role="assistant", content=None, tool_call_ids=[cid], raw_ptr=PTR),
+        Turn(idx=5, role="tool", content='{"id": "123"}', tool_call_ids=[cid], raw_ptr=PTR),
+        Turn(idx=6, role="assistant", content=None, tool_call_ids=["c3"], raw_ptr=PTR),
+        Turn(idx=7, role="tool", content='{"id": "123"}', tool_call_ids=["c3"], raw_ptr=PTR),
+        Turn(idx=8, role="assistant", content="Order 123 is cancelled. Anything else?", raw_ptr=PTR),
+        Turn(idx=9, role="user", content="No, thanks. ###STOP###", raw_ptr=PTR)],
+        tool_calls=[
+            call("c1", "get_order_details", {"order_id": "123"},
+                 {"id": "123", "status": "delivered", "total": 25}),
+            call(cid, "cancel_order", {"order_id": "123", "reason": "requested"},
+                 {"id": "123", "status": "cancelled", "total": 25}),
+            call("c3", "get_order_details", {"order_id": "123"},
+                 {"id": "123", "status": "shipped", "total": 25})],
+        raw_ptr=PTR, system_prompt="You are the agent.")
+    effect = effects_mod.WriteEffect(tool="cancel_order", call_id=cid, trace_id="tr9", columns=[
+        effects_mod.EffectColumn(table="orders", row_id="123", path="status", before="delivered",
+                                 after="shipped", named=True, checked=True, unattributed=False),
+        effects_mod.EffectColumn(table="orders", row_id="123", path="total", before=25,
+                                 after=26, named=True, checked=False, unattributed=True)])
+    evidence = effects_mod.replay_evidence({cid: [effect]})
+    out = replay.replay_trace(colliding, router(), workdir=tmp_path / "runs" / "t9", task_id="t9",
+                              env_id="env1", write_tools={"cancel_order"}, effects=evidence)
+    assert not out.confirmed
+    assert out.counts["gaps"] == 0
+    assert out.counts["effect_checks"] == 1
+    assert out.counts["effect_failures"] == 1
+    assert out.counts["effect_unattributed"] == 1
+    assert out.counts["effects_downstream"] == 1
+    assert "cancel_order write: effect orders.status the column did not move" in out.reasons
+    reread = [check for check in out.checks if check.get("call_id") == "c3"]
+    assert len(reread) == 1 and reread[0].get("downstream_of") == cid

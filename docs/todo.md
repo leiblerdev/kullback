@@ -11,12 +11,12 @@ These are the items I pushed past the first build. Each line says what it buys a
 - Flip the speed-1 variant gate in `kullback/examiner/stage.py` (`_second_path_outcome` passes
   `state.pool` to `synth_second_path` again) once the tally lock above is in: the variant part of
   the gain stays deferred until then.
-- effect-credit.patch waits for the founder's re-freeze: the replay counts unattributed effects instead of failing the last call.
+- effect-credit.patch is integrated on this re-freeze lineage at 35924ee: the replay counts unattributed effects instead of failing the last call. The retained source patch applies to the pre-effect baseline efa3ec4 and must not be reapplied to an integrated tree.
 - safe-write.patch waits for the founder's re-freeze: write_json writes to a temporary file in the same directory and swaps it in with os.replace, so a killed build leaves no torn artifact.
 - stop-rule.patch waits for the founder's re-freeze: the round stop reads the fidelity rate and the trusted share, refusal-only finishes exit refused, and every stop carries a reason. The round end event already accepts refused and the driver lands the reason behind a guard that goes at the re-freeze.
 - step-split.patch waits for the founder's re-freeze: the Runner's step is ask plus advance, proven by a byte-identical step snapshot; re-run tests/runner with the patch applied.
 - confinement-imports.patch waits for the founder's re-freeze: the confinement gate stops allowing two skeleton only names in tool bodies, re-run tests/gates and tests/builder.
-- tool-context.patch waits for the founder's re-freeze behind it: apply confinement-imports.patch first, then tool-context.patch (both edit the allowed imports literal in kullback/gates/confinement.py), re-run tests/gates and tests/builder with both applied.
+- tool-context.patch is integrated on this lineage at 657d757: the per-call context binds recorded ids and times to the call that witnessed them. The retained source patch applies to the pre-integration baseline 35924ee and must not be reapplied to an integrated tree.
 - body-transactions.patch waits for the founder's re-freeze: every tool call is a transaction and a body fault is its own outcome.
 - one-scorer.patch waits for the founder's re-freeze: the Verdict and the gates score an atom with one interpreter over its structured target.
 - mined-evidence.patch waits for the founder's re-freeze: ClassifiedBy gains declared so a kind the source declares rides as its own basis.

@@ -1,7 +1,8 @@
 diff --git a/kullback/gates/confinement.py b/kullback/gates/confinement.py
+index 94381cb..8f69d26 100644
 --- a/kullback/gates/confinement.py
 +++ b/kullback/gates/confinement.py
-@@ -5,7 +5,7 @@
+@@ -5,7 +5,7 @@ Two surfaces, one idea. A constraint predicate (or a Verifier atom) is a functio
  case and may import nothing, so `runner/confinement.py`'s `confine` is its whole check, and the
  gate here (`predicate_confinement`) is that primitive stated as a ruling; verdict.py's atom gate
  runs the same primitive, which is why it stays in `runner/` and is not repeated. A tool body is a
@@ -10,7 +11,7 @@ diff --git a/kullback/gates/confinement.py b/kullback/gates/confinement.py
  surface is an import allowlist, a denied-builtin list and a dunder rule of its own
  (`source_confinement`, `gate_confined`), checked only on the tool methods because the data model,
  the toolkit shim and `DomainDB.load` are code-owned bytes no model wrote.
-@@ -27,11 +27,12 @@
+@@ -27,11 +27,12 @@ from kullback.runner.records import GateResult
  TOOLS_CLASS = "DomainTools"
  # What a tool body may name. The skeleton's own module level imports sit outside the scanned
  # region, so they are not listed here. The rest are what a tool body plausibly needs to compute
@@ -27,11 +28,10 @@ diff --git a/kullback/gates/confinement.py b/kullback/gates/confinement.py
  # Everything a predicate may not name, and three more a tool body may not: `exit` and `quit` stop the
  # Runner's process, and `memoryview` hands out the bytes behind an object the body was given.
  DENIED_BUILTINS = DENIED_NAMES | frozenset({"exit", "quit", "memoryview"})
-@@ -49,6 +50,18 @@
- PROVIDED_HELPERS = frozenset({"evaluate_arithmetic"})
+@@ -50,6 +51,18 @@ PROVIDED_HELPERS = frozenset({"evaluate_arithmetic"})
  # A ruling names the first few offences; the body's author reads them, not a ledger.
  MAX_NAMED_FAILURES = 5
-+
+ 
 +# Time, randomness and new ids come from the tool context, never from an import: a body that
 +# reaches for one of these modules is told where to reach instead.
 +_CONTEXT_IMPORTS = {"datetime": "self.ctx.now()", "time": "self.ctx.now()",
@@ -43,10 +43,11 @@ diff --git a/kullback/gates/confinement.py b/kullback/gates/confinement.py
 +    if top not in _CONTEXT_IMPORTS:
 +        return ""
 +    return f"; take it from the tool context instead ({_CONTEXT_IMPORTS[top]})"
-
-
++
+ 
  # --- a constraint predicate ---
-@@ -126,8 +139,9 @@
+ 
+@@ -126,8 +139,9 @@ def _body_confinement(function: ast.AST) -> list[str]:
      out: list[str] = []
      for node in ast.walk(function):
          for name in _imported(node):
@@ -58,7 +59,7 @@ diff --git a/kullback/gates/confinement.py b/kullback/gates/confinement.py
          if isinstance(node, ast.Attribute) and node.attr.startswith("__") \
                  and node.attr not in ALLOWED_DUNDERS:
              out.append(f"touches {node.attr}")
-@@ -183,7 +197,11 @@
+@@ -183,7 +197,11 @@ def unbound_names(source: str, class_name: str = TOOLS_CLASS) -> list[str]:
              if not isinstance(member, (ast.FunctionDef, ast.AsyncFunctionDef)):
                  continue
              for name in sorted(_unbound_in_scope(member, known)):
@@ -70,13 +71,13 @@ diff --git a/kullback/gates/confinement.py b/kullback/gates/confinement.py
 +                            if name in ALLOWED_IMPORTS else "")
                  out.append(f"{member.name} names {name}, which nothing binds{hint}")
      return out
-
+ 
 diff --git a/kullback/runner/replay.py b/kullback/runner/replay.py
-index 1b35031..000d076 100644
+index 9614f51..4236409 100644
 --- a/kullback/runner/replay.py
 +++ b/kullback/runner/replay.py
-@@ -198,9 +198,10 @@ class ScoredRouter:
-
+@@ -214,9 +214,10 @@ class ScoredRouter:
+ 
      def __init__(self, router: Any, expected: deque, write_tools: Iterable[str] = (), canon_rules: Any = None,
                   comparer: Any = None, effects: Optional[dict] = None,
 -                 holdout_values: Optional[dict] = None):
@@ -87,10 +88,10 @@ index 1b35031..000d076 100644
          self.write_tools = set(write_tools)
          self.canon_rules = canon_rules
          # D220 rule 2c: the values the world holds only because a held-out Run witnessed them, as
-@@ -225,11 +226,16 @@ class ScoredRouter:
+@@ -241,11 +242,16 @@ class ScoredRouter:
      def __getattr__(self, name: str) -> Any:  # state_hash, world, start_world, state: the loop's reads
          return getattr(self.inner, name)
-
+ 
 +    def _feed_context(self, recorded: Optional[ToolCall]) -> None:
 +        if self.before_call is not None:
 +            self.before_call(recorded)
@@ -105,16 +106,16 @@ index 1b35031..000d076 100644
          verdict, notes, verdict_route = (UNRECORDED, [], BY_VALUE) if recorded is None else compare_call_route(
              recorded, outcome.result, outcome.error, self.canon_rules, self.comparer)
          check = {
-@@ -532,7 +538,7 @@ class Replay:
+@@ -548,7 +554,7 @@ class Replay:
  def replay_trace(trace: Trace, router: Any, *, workdir: Any, task_id: str, env_id: Optional[str] = None,
                   write_tools: Iterable[str] = (), canon_rules: Any = None, run_id: Optional[str] = None,
                   comparer: Any = None, effects: Optional[dict] = None,
 -                 holdout_values: Optional[dict] = None) -> Replay:
 +                 holdout_values: Optional[dict] = None, before_call: Any = None) -> Replay:
      """Drive the loop with the Trace's own turns over `router`; the Run lands under `workdir`.
-
+ 
      `effects` is D215's write evidence, per recorded call id: the rows and columns the recording
-@@ -546,7 +552,7 @@ def replay_trace(trace: Trace, router: Any, *, workdir: Any, task_id: str, env_i
+@@ -562,7 +568,7 @@ def replay_trace(trace: Trace, router: Any, *, workdir: Any, task_id: str, env_i
      script = _Script(trace)
      model, user = TraceModel(script), TraceUser(script)
      scored = ScoredRouter(router, model.expected, write_tools, canon_rules, comparer, effects,
