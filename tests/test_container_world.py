@@ -42,6 +42,8 @@ def make_handler(calls, behavior):
         assert isinstance(argv, list)
         assert all(isinstance(a, str) for a in argv)
         calls.append((list(argv), timeout))
+        if len(argv) > 2 and argv[1] == "exec" and argv[-1] == ":":
+            return ExecutorResult(0, b"", b"")
         return behavior(list(argv), timeout)
 
     return handler
@@ -279,6 +281,35 @@ def _r4_recovery_behavior(calls, ref, n, rms, owned):
     return behavior
 
 
+def _probe_world_behavior(ref, calls, rms, probe_answers):
+    n = [0]
+
+    def fake(argv, timeout):
+        assert isinstance(argv, list)
+        calls.append((list(argv), timeout))
+        if len(argv) > 2 and argv[1] == "image" and argv[2] == "inspect":
+            return ExecutorResult(0, image_ok_payload(), b"")
+        w = ref[0]
+        if argv[1] == "create":
+            return ExecutorResult(0, (IDA + "\n").encode(), b"")
+        if argv[1] == "inspect":
+            return ExecutorResult(0, (argv[-1] + "|" + w._nonce + "|container_world").encode(), b"")
+        if argv[1] == "start":
+            return ExecutorResult(0, (IDA + "\n").encode(), b"")
+        if argv[1] == "exec":
+            n[0] += 1
+            item = probe_answers[min(n[0] - 1, len(probe_answers) - 1)]
+            if isinstance(item, BaseException):
+                raise item
+            return item
+        if argv[1] == "rm":
+            rms.append(list(argv))
+            return ExecutorResult(0, (argv[-1] + "\n").encode(), b"")
+        raise AssertionError("unexpected " + argv[1])
+
+    return fake
+
+
 def _r5_start_interrupt_behavior(calls, ref, n, rms):
     def behavior(argv, timeout):
         if len(argv) > 2 and argv[1] == "image" and argv[2] == "inspect":
@@ -317,6 +348,7 @@ def _r5_start_interrupt_behavior(calls, ref, n, rms):
         "repo:latest@sha256:" + "ab" * 32,
         "repo/img@sha256:" + "zz" * 32,
         "repo/img @sha256:" + "ab" * 32,
+        "host:5000/repo:latest@sha256:" + "ab" * 32,
     ],
     ids=[
         "latest-tag",
@@ -331,12 +363,30 @@ def _r5_start_interrupt_behavior(calls, ref, n, rms):
         "latest-with-pin",
         "nonhex-bytes",
         "whitespace-name",
+        "port-latest-tag",
     ],
 )
 def test_rejects_unpinned_or_unsafe_image(bad):
     with pytest.raises(ImagePinError):
         ContainerWorld(bad, docker=DOCK, image_metadata=dict(GOOD))
     ContainerWorld(IMG, docker=DOCK, image_metadata=dict(GOOD), executor=lambda a, t: (_ for _ in ()).throw(AssertionError("no call")))
+
+
+@pytest.mark.parametrize(
+    "image",
+    [
+        "repo:latest-build@sha256:" + "ab" * 32,
+        "host:5000/repo@sha256:" + "ab" * 32,
+        "host:5000/repo:v1@sha256:" + "ab" * 32,
+    ],
+    ids=[
+        "tag-with-latest-prefix",
+        "registry-port-no-tag",
+        "registry-port-with-tag",
+    ],
+)
+def test_accepts_pinned_non_latest_tags(image):
+    ContainerWorld(image, docker=DOCK, image_metadata=dict(GOOD), executor=lambda a, t: (_ for _ in ()).throw(AssertionError("no call")))
 
 
 @pytest.mark.parametrize(
@@ -437,7 +487,7 @@ def test_reset_returns_fresh_id_and_starts():
     cid = world.reset()
     assert cid == IDA
     verbs = [argv[1] for argv, _ in calls]
-    assert verbs == ["image", "create", "inspect", "start"]
+    assert verbs == ["image", "create", "inspect", "start", "exec"]
     assert world._active is True
 
 
@@ -465,7 +515,7 @@ def test_reset_removes_prior_container():
     fresh[0] = IDB
     world.reset()
     verbs = [argv[1] for argv, _ in calls]
-    assert verbs == ["image", "create", "inspect", "start", "inspect", "rm", "image", "create", "inspect", "start"]
+    assert verbs == ["image", "create", "inspect", "start", "exec", "inspect", "rm", "image", "create", "inspect", "start", "exec"]
     assert world._container_id == IDB
 
 
@@ -1725,3 +1775,68 @@ def test_r8_reap_owned_keyboard_interrupt_propagates_and_reaps():
         assert proc.returncode is not None
         assert proc.poll() is not None
         assert seen == [proc]
+
+
+def test_r9_shell_probe_refuses_image_without_sh():
+    calls = []
+    ref = [None]
+    rms = []
+    world = ContainerWorld(
+        IMG,
+        docker=DOCK,
+        image_metadata=dict(GOOD),
+        executor=_probe_world_behavior(
+            ref, calls, rms, [ExecutorResult(127, b"", b"sh: not found\n"), ExecutorResult(0, b"", b"")]
+        ),
+    )
+    ref[0] = world
+    with pytest.raises(ImagePinError, match="must provide sh"):
+        world.reset()
+    assert rms == [[DOCK, "rm", "-f", IDA]]
+    assert world._container_id is None
+    assert world._active is False
+    assert world.reset() == IDA
+
+
+def test_r9_shell_probe_timeout_cleans_like_step_timeout():
+    calls = []
+    ref = [None]
+    rms = []
+    world = ContainerWorld(
+        IMG,
+        docker=DOCK,
+        image_metadata=dict(GOOD),
+        executor=_probe_world_behavior(
+            ref, calls, rms, [ExecutorTimeout(b"part", b""), ExecutorResult(0, b"", b"")]
+        ),
+    )
+    ref[0] = world
+    with pytest.raises(ImagePinError, match="must provide sh"):
+        world.reset()
+    assert rms == [[DOCK, "rm", "-f", IDA]]
+    assert world._container_id is None
+    assert world._active is False
+    assert world.reset() == IDA
+
+
+def test_r9_shell_probe_leaves_world_usable():
+    calls = []
+    ref = [None]
+    rms = []
+    world = ContainerWorld(
+        IMG,
+        docker=DOCK,
+        image_metadata=dict(GOOD),
+        executor=_probe_world_behavior(
+            ref, calls, rms, [ExecutorResult(0, b"", b""), ExecutorResult(0, b"hi\n", b"")]
+        ),
+    )
+    ref[0] = world
+    assert world.reset() == IDA
+    assert world._active is True
+    receipt = world.step("echo hi")
+    assert receipt.stdout == b"hi\n"
+    assert receipt.exit_code == 0
+    assert rms == []
+    execs = [argv for argv, _ in calls if len(argv) > 1 and argv[1] == "exec"]
+    assert [argv[-1] for argv in execs] == [":", "echo hi"]

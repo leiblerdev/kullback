@@ -1,3 +1,8 @@
+"""Disposable container backend: run commands in a fresh container per world.
+
+An image must provide sleep and sh.
+"""
+
 from __future__ import annotations
 
 import json
@@ -104,7 +109,9 @@ _IMGID_RE = re.compile(r"^sha256:[0-9a-fA-F]{64}$")
 def _check_image_name(name: str) -> None:
     if not name or "@" in name or name.startswith("-"):
         raise ImagePinError("image name is invalid")
-    if ":latest" in name:
+    tail = name.rsplit("/", 1)[-1]
+    _, sep, tag = tail.partition(":")
+    if sep and tag == "latest":
         raise ImagePinError("image must not use the latest tag")
 
 
@@ -835,6 +842,14 @@ class ContainerWorld:
         self._unresolved = False
         return cid
 
+    def _probe_shell(self) -> None:
+        receipt = self.step(":")
+        if receipt.exit_code == 0 and not receipt.timed_out and not receipt.truncated:
+            return
+        if self._active:
+            self._remove_owned()
+        raise ImagePinError("image must provide sh: the exec probe did not exit 0")
+
     def reset(self) -> str:
         if self._unresolved and self._container_id is None:
             raise UnresolvedError("creation is unresolved")
@@ -842,7 +857,9 @@ class ContainerWorld:
             self._remove_owned()
         self._verify_image()
         cid = self._create_once()
-        return self._verify_and_start(cid)
+        cid = self._verify_and_start(cid)
+        self._probe_shell()
+        return cid
 
     def step(self, command: str) -> StepReceipt:
         if self._unresolved:
