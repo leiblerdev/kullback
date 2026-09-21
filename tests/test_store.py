@@ -621,7 +621,8 @@ def test_constructor_casefold_duplicate_without_files(tmp_path):
         WorkdirStore(root, [ArtifactSpec(name="a1", path="data.json", format=1, owner="o", validate=_check_int), ArtifactSpec(name="a2", path="DATA.json", format=1, owner="o", validate=_check_int)])
 
 
-def test_constructor_physical_alias_symlink(tmp_path):
+@pytest.mark.parametrize("link_kind", ["symlink", "hardlink"])
+def test_constructor_physical_alias_refused(tmp_path, link_kind):
     root = tmp_path / "w_phys_link"
     root.mkdir(parents=True, exist_ok=True)
     real = root / "real.json"
@@ -630,27 +631,14 @@ def test_constructor_physical_alias_symlink(tmp_path):
     try:
         if alias.is_symlink() or alias.exists():
             alias.unlink()
-        alias.symlink_to(real)
+        if link_kind == "symlink":
+            alias.symlink_to(real)
+        else:
+            os.link(real, alias)
     except OSError:
-        pytest.skip("symlink unavailable")
+        pytest.skip(link_kind + " unavailable")
     with pytest.raises(ValueError):
-        WorkdirStore(root, [ArtifactSpec(name="pa", path="real.json", format=1, owner="o", validate=_check_int), ArtifactSpec(name="pb", path="alias.json", format=1, owner="o", validate=_check_int)])
-
-
-def test_constructor_physical_alias_hardlink(tmp_path):
-    root = tmp_path / "w_phys_hard"
-    root.mkdir(parents=True, exist_ok=True)
-    real = root / "real2.json"
-    real.write_text("{}", encoding="utf-8")
-    alias = root / "alias2.json"
-    try:
-        if alias.is_symlink() or alias.exists():
-            alias.unlink()
-        os.link(real, alias)
-    except OSError:
-        pytest.skip("hardlink unavailable")
-    with pytest.raises(ValueError):
-        WorkdirStore(root, [ArtifactSpec(name="ha", path="real2.json", format=1, owner="o", validate=_check_int), ArtifactSpec(name="hb", path="alias2.json", format=1, owner="o", validate=_check_int)])
+        WorkdirStore(root, [ArtifactSpec(name="first", path="real.json", format=1, owner="o", validate=_check_int), ArtifactSpec(name="second", path="alias.json", format=1, owner="o", validate=_check_int)])
 
 
 def test_post_construction_symlink_alias_owner_conflict(tmp_path):
@@ -1114,10 +1102,12 @@ def test_session_acquire_use_release(tmp_path):
         assert store.read("n").value == 2
 
 
-def test_session_second_acquire_same_thread_refuses(tmp_path):
+@pytest.mark.parametrize("outer", ["session", "transaction"])
+def test_session_acquire_while_held_refuses(tmp_path, outer):
     from kullback.store import SessionBusy as _Busy
     store = WorkdirStore(tmp_path / "w", [_session_spec()])
-    with store.exclusive_session():
+    held = store.exclusive_session() if outer == "session" else store.transaction()
+    with held:
         with pytest.raises(_Busy):
             with store.exclusive_session():
                 pass
@@ -1151,17 +1141,6 @@ def test_session_other_thread_acquire_and_transact(tmp_path):
         worker.join(timeout=60)
         assert outcomes == ["busy", "wrote"]
         assert store.read("n").value == 7
-
-
-def test_session_inside_transaction_refuses(tmp_path):
-    from kullback.store import SessionBusy as _Busy
-    store = WorkdirStore(tmp_path / "w", [_session_spec()])
-    with store.transaction():
-        with pytest.raises(_Busy):
-            with store.exclusive_session():
-                pass
-    with store.exclusive_session():
-        pass
 
 
 def test_session_while_other_thread_transacts_refuses(tmp_path):

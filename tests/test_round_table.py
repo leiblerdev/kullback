@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 from kullback.journal import RoundJournal
 from kullback.round_table import (
     AbortedAttempt,
@@ -264,66 +266,27 @@ def test_unfinished_round_carries_beats_in_order(tmp_path):
     assert pending.beats == [{"agent": "builder", "note": 1}, {"agent": "examiner", "note": 2}]
 
 
-def test_close_without_record_mapping_is_torn(tmp_path):
+@pytest.mark.parametrize(
+    ("prefix_good_round", "bad_payload"),
+    [
+        pytest.param(True, {"record": [1, 2]}, id="record-not-mapping"),
+        pytest.param(False, {"exit": "done"}, id="missing-record"),
+        pytest.param(True, _close_payload(3), id="round-mismatch"),
+        pytest.param(False, {"record": {"round": True, "counts": {}}}, id="bool-round"),
+        pytest.param(False, {"record": {"round": 1, "nope": 1}}, id="invalid-record"),
+    ],
+)
+def test_close_bad_payload_is_torn(tmp_path, prefix_good_round, bad_payload):
     root = tmp_path / "w"
     journal = _open(root)
-    journal.append(run_id="r1", kind="round_open", payload={}, round=1)
-    journal.append(run_id="r1", kind="round_close", payload=_close_payload(1), round=1)
-    journal.append(run_id="r1", kind="round_open", payload={}, round=2)
-    journal.append(run_id="r1", kind="round_close", payload={"record": [1, 2]}, round=2)
-    seen = read_round_table(root)
-    assert seen.status == "torn"
-    assert isinstance(seen.reason, str) and len(seen.reason) > 0
-    assert seen.completed == []
-    assert seen.aborted == []
-    assert seen.unfinished == []
-
-
-def test_close_missing_record_is_torn(tmp_path):
-    root = tmp_path / "w"
-    journal = _open(root)
-    journal.append(run_id="r1", kind="round_open", payload={}, round=1)
-    journal.append(run_id="r1", kind="round_close", payload={"exit": "done"}, round=1)
-    seen = read_round_table(root)
-    assert seen.status == "torn"
-    assert isinstance(seen.reason, str) and len(seen.reason) > 0
-    assert seen.completed == []
-    assert seen.aborted == []
-    assert seen.unfinished == []
-
-
-def test_close_round_mismatch_is_torn(tmp_path):
-    root = tmp_path / "w"
-    journal = _open(root)
-    journal.append(run_id="r1", kind="round_open", payload={}, round=1)
-    journal.append(run_id="r1", kind="round_close", payload=_close_payload(1), round=1)
-    journal.append(run_id="r1", kind="round_open", payload={}, round=2)
-    journal.append(run_id="r1", kind="round_close", payload=_close_payload(3), round=2)
-    seen = read_round_table(root)
-    assert seen.status == "torn"
-    assert isinstance(seen.reason, str) and len(seen.reason) > 0
-    assert seen.completed == []
-    assert seen.aborted == []
-    assert seen.unfinished == []
-
-
-def test_close_bool_round_rejected_without_coercion(tmp_path):
-    root = tmp_path / "w"
-    journal = _open(root)
-    journal.append(run_id="r1", kind="round_open", payload={}, round=1)
-    journal.append(run_id="r1", kind="round_close", payload={"record": {"round": True, "counts": {}}}, round=1)
-    seen = read_round_table(root)
-    assert seen.status == "torn"
-    assert seen.completed == []
-    assert seen.aborted == []
-    assert seen.unfinished == []
-
-
-def test_close_invalid_record_is_torn(tmp_path):
-    root = tmp_path / "w"
-    journal = _open(root)
-    journal.append(run_id="r1", kind="round_open", payload={}, round=1)
-    journal.append(run_id="r1", kind="round_close", payload={"record": {"round": 1, "nope": 1}}, round=1)
+    if prefix_good_round:
+        journal.append(run_id="r1", kind="round_open", payload={}, round=1)
+        journal.append(run_id="r1", kind="round_close", payload=_close_payload(1), round=1)
+        bad_round = 2
+    else:
+        bad_round = 1
+    journal.append(run_id="r1", kind="round_open", payload={}, round=bad_round)
+    journal.append(run_id="r1", kind="round_close", payload=bad_payload, round=bad_round)
     seen = read_round_table(root)
     assert seen.status == "torn"
     assert isinstance(seen.reason, str) and len(seen.reason) > 0
