@@ -8,6 +8,7 @@ kullback.consistency. The number in LawReport is named Environment consistency.
 
 from __future__ import annotations
 
+import copy
 import random
 import time
 from dataclasses import dataclass
@@ -66,9 +67,16 @@ class ToolInfo:
     name: str
     kind: str
     args: Sequence[ArgSpec] = ()
+    mints: Sequence[str] = ()
 
 
 class LawWorld(Protocol):
+    """A world the laws are checked against.
+
+    snapshot() may return live mutable state: the harness detaches a copy on
+    every read, so a world never has to copy before returning.
+    """
+
     def reset(self) -> None: ...
     def tools(self) -> Sequence[ToolInfo]: ...
     def call(self, name: str, args: Mapping[str, Any]) -> Outcome: ...
@@ -208,16 +216,20 @@ def _grow_pool(pool: dict, outcome: Outcome) -> None:
             pool["str"].append(scalar)
 
 
+def _snapshot(world: LawWorld) -> Any:
+    return copy.deepcopy(world.snapshot())
+
+
 def _run_step(world: LawWorld, step: Step) -> Entry:
-    before = world.snapshot()
+    before = _snapshot(world)
     start = time.perf_counter()
     try:
         outcome = world.call(step.tool, dict(step.args))
     except Exception:
         duration = time.perf_counter() - start
-        return Entry(step, before, world.snapshot(), None, duration, True)
+        return Entry(step, before, _snapshot(world), None, duration, True)
     duration = time.perf_counter() - start
-    return Entry(step, before, world.snapshot(), outcome, duration, False)
+    return Entry(step, before, _snapshot(world), outcome, duration, False)
 
 
 def _run_steps(world: LawWorld, steps: Sequence[Step]) -> list:
@@ -254,23 +266,13 @@ def _newly_absent(entry: Entry) -> list:
     return [s for s in _scalars(entry.outcome.value, False) if not _contains(entry.before, s)]
 
 
-def _minted_now(entry: Entry) -> list:
-    given = _scalars(entry.step.args, False)
-    minted: list = []
-    for scalar in _scalars(entry.outcome.value, False):
-        if not _contains(entry.after, scalar):
-            continue
-        if any(type(known) is type(scalar) and known == scalar for known in given):
-            continue
-        minted.append(scalar)
-    return minted
-
-
-def _seen_before(seen: list, scalar: Any) -> bool:
-    for old in seen:
-        if type(old) is type(scalar) and old == scalar:
-            return True
-    return False
+def _resolve_path(value: Any, path: str) -> tuple:
+    current = value
+    for part in path.split("."):
+        if not isinstance(current, Mapping) or part not in current:
+            return False, None
+        current = current[part]
+    return True, current
 
 
 def _is_write_call(entry: Entry, kinds: dict) -> bool:
@@ -331,63 +333,74 @@ def _check_read_back(
         _note(tally, WRITE_CAN_BE_READ_BACK, entry.step.tool, held, steps)
 
 
+def _mint_paths(entry: Entry, mints: dict) -> tuple:
+    if entry.crashed or entry.outcome is None or not entry.outcome.ok:
+        return ()
+    return tuple(mints.get(entry.step.tool, ()))
+
+
+def _check_one_mint(entry: Entry, path: str, tally: dict, steps: list, seen: list) -> None:
+    found, value = _resolve_path(entry.outcome.value, path)
+    if not found or value is None:
+        _note(tally, MINTED_IDS_UNIQUE, entry.step.tool, False, steps)
+        return
+    repeated = any(type(old) is type(value) and old == value for old in seen)
+    _note(tally, MINTED_IDS_UNIQUE, entry.step.tool, not repeated, steps)
+    seen.append(value)
+
+
 def _check_minted(
-    entries: list, kinds: dict, tally: dict, steps: list, exempt: Mapping
+    entries: list, mints: dict, tally: dict, steps: list, exempt: Mapping
 ) -> None:
     seen: list = []
     for entry in entries:
-        if not _is_write_call(entry, kinds) or not entry.outcome.ok:
-            continue
-        current = _minted_now(entry)
-        if not current:
+        paths = _mint_paths(entry, mints)
+        if not paths:
             continue
         if _exempted(exempt, MINTED_IDS_UNIQUE, entry.step.tool):
             continue
-        repeated = any(_seen_before(seen, scalar) for scalar in current)
-        _note(tally, MINTED_IDS_UNIQUE, entry.step.tool, not repeated, steps)
-        seen.extend(current)
+        for path in paths:
+            _check_one_mint(entry, path, tally, steps, seen)
 
 
-def _check_crash(
-    entries: list, tally: dict, steps: list, exempt: Mapping, call_budget_s: float
+def _is_new_problem(replayed_entry: Entry, original_entry: Entry, call_budget_s: float) -> bool:
+    bad_again = replayed_entry.crashed or replayed_entry.duration_s > call_budget_s
+    bad_before = original_entry.crashed or original_entry.duration_s > call_budget_s
+    return bad_again and not bad_before
+
+
+def _note_crash_entries(
+    entries: list,
+    originals: list,
+    tally: dict,
+    steps: list,
+    exempt: Mapping,
+    call_budget_s: float,
 ) -> None:
-    for entry in entries:
+    for position, entry in enumerate(entries):
         if _exempted(exempt, NOTHING_CRASHES_OR_HANGS, entry.step.tool):
             continue
-        held = not entry.crashed and entry.duration_s <= call_budget_s
+        if originals:
+            if not _is_new_problem(entry, originals[position], call_budget_s):
+                continue
+            held = False
+        else:
+            held = not entry.crashed and entry.duration_s <= call_budget_s
         _note(tally, NOTHING_CRASHES_OR_HANGS, entry.step.tool, held, steps)
 
 
-def _replay_mismatch(world: LawWorld, steps: list, index: int, entry: Entry) -> bool:
-    world.reset()
-    try:
-        for step in steps[:index]:
-            world.call(step.tool, dict(step.args))
-        before = world.snapshot()
-        outcome = world.call(entry.step.tool, dict(entry.step.args))
-        after = world.snapshot()
-    except Exception:
+def _entries_mismatch(entry: Entry, replayed: list, index: int) -> bool:
+    again = replayed[index]
+    if again.crashed:
         return True
     return (
-        not _outcome_equal(entry.outcome, outcome)
-        or before != entry.before
-        or after != entry.after
+        not _outcome_equal(entry.outcome, again.outcome)
+        or again.before != entry.before
+        or again.after != entry.after
     )
 
 
 def _check_same_write(
-    world: LawWorld, steps: list, entries: list, kinds: dict, tally: dict, exempt: Mapping
-) -> None:
-    for index, entry in enumerate(entries):
-        if not _is_write_call(entry, kinds):
-            continue
-        if _exempted(exempt, SAME_WRITE_SAME_RESULT, entry.step.tool):
-            continue
-        held = not _replay_mismatch(world, steps, index, entry)
-        _note(tally, SAME_WRITE_SAME_RESULT, entry.step.tool, held, steps)
-
-
-def _check_all(
     world: LawWorld,
     steps: list,
     entries: list,
@@ -396,13 +409,34 @@ def _check_all(
     exempt: Mapping,
     call_budget_s: float,
 ) -> None:
+    for index, entry in enumerate(entries):
+        if not _is_write_call(entry, kinds):
+            continue
+        if _exempted(exempt, SAME_WRITE_SAME_RESULT, entry.step.tool):
+            continue
+        replayed = _candidate_entries(world, steps[: index + 1])
+        _note_crash_entries(replayed, entries[: index + 1], tally, steps, exempt, call_budget_s)
+        held = not _entries_mismatch(entry, replayed, index)
+        _note(tally, SAME_WRITE_SAME_RESULT, entry.step.tool, held, steps)
+
+
+def _check_all(
+    world: LawWorld,
+    steps: list,
+    entries: list,
+    kinds: dict,
+    mints: dict,
+    tally: dict,
+    exempt: Mapping,
+    call_budget_s: float,
+) -> None:
     _check_read(entries, kinds, tally, steps, exempt)
-    _check_same_write(world, steps, entries, kinds, tally, exempt)
+    _check_same_write(world, steps, entries, kinds, tally, exempt, call_budget_s)
     _check_success(entries, kinds, tally, steps, exempt)
     _check_error(entries, tally, steps, exempt)
     _check_read_back(entries, kinds, tally, steps, exempt)
-    _check_minted(entries, kinds, tally, steps, exempt)
-    _check_crash(entries, tally, steps, exempt, call_budget_s)
+    _check_minted(entries, mints, tally, steps, exempt)
+    _note_crash_entries(entries, [], tally, steps, exempt, call_budget_s)
 
 
 def _candidate_entries(world: LawWorld, candidate: Sequence[Step]) -> list:
@@ -411,13 +445,13 @@ def _candidate_entries(world: LawWorld, candidate: Sequence[Step]) -> list:
 
 
 def _make_fails(
-    law: str, world: LawWorld, kinds: dict, tool: str, call_budget_s: float
+    law: str, world: LawWorld, kinds: dict, mints: dict, tool: str, call_budget_s: float
 ):
     def fails(candidate: list) -> bool:
         steps = list(candidate)
         entries = _candidate_entries(world, steps)
         tally: dict = {}
-        _check_all(world, steps, entries, kinds, tally, {}, call_budget_s)
+        _check_all(world, steps, entries, kinds, mints, tally, {}, call_budget_s)
         record = tally.get((law, tool))
         return record is not None and record[1] > 0
 
@@ -429,7 +463,7 @@ def _run_planned(
 ) -> tuple:
     length = rng.randint(1, max_length)
     world.reset()
-    pool = _pool_from_snapshot(world.snapshot())
+    pool = _pool_from_snapshot(_snapshot(world))
     steps: list = []
     entries: list = []
     for _ in range(length):
@@ -444,7 +478,12 @@ def _run_planned(
 
 
 def _assemble(
-    tally: dict, world: LawWorld, kinds: dict, call_budget_s: float, shrink_evaluations: int
+    tally: dict,
+    world: LawWorld,
+    kinds: dict,
+    mints: dict,
+    call_budget_s: float,
+    shrink_evaluations: int,
 ) -> LawReport:
     checked: dict = {}
     broken: dict = {}
@@ -459,7 +498,7 @@ def _assemble(
                 continue
             result = shrink_sequence(
                 list(first),
-                _make_fails(law, world, kinds, tool, call_budget_s),
+                _make_fails(law, world, kinds, mints, tool, call_budget_s),
                 max_evaluations=shrink_evaluations,
             )
             violations.append(LawViolation(law, tool, tuple(result.subsequence), result.status))
@@ -500,8 +539,9 @@ def check_laws(
     gaps: Mapping[str, Collection[str]] = exempt or {}
     rng = random.Random(seed)
     kinds = {info.name: info.kind for info in tools}
+    mints = {info.name: tuple(info.mints) for info in tools}
     tally: dict = {}
     for _ in range(sequences):
         steps, entries = _run_planned(world, tools, rng, max_length)
-        _check_all(world, steps, entries, kinds, tally, gaps, call_budget_s)
-    return _assemble(tally, world, kinds, call_budget_s, shrink_evaluations)
+        _check_all(world, steps, entries, kinds, mints, tally, gaps, call_budget_s)
+    return _assemble(tally, world, kinds, mints, call_budget_s, shrink_evaluations)
