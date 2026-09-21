@@ -1904,6 +1904,383 @@ The rule. Membership of the split is the argument-shape hash: sorted key paths o
 
 Tests on an invented kiln domain: two ware shapes, one held out, `test_body` names a held-out shape fail without quoting values; one shared shape falls back to every third. Existing one-shape split tests keep their shown and held-out ids. Not measured live.
 
+## The architecture grill of 2026-09-18 (D252 to D278)
+
+D251 is taken on the open branch origin/write-end, so this block starts at D252; a later merge renumbers it if that branch lands first. Source: .claude/reports/arch-review-2026-09-18/grill-decisions.md, entries G1 to G37, recorded live with the founder on 2026-09-18. Implementation statements in this block record the 2026-09-18 decision session, not the current branch. See the dated implementation checkpoint at the end of this file.
+
+| G | D |
+| --- | --- |
+| G1 | D252 |
+| G2 | D253 |
+| G3 | D254 |
+| G4 | D255 |
+| G5 | D256 |
+| G6 | D257 |
+| G7 | D258 |
+| G8, G9, G10 | D259 |
+| G11 | D260 |
+| G12, G13 | D261 |
+| G14, G15, G16, G33 | D262 |
+| G17 and its amendment, G18 | D263 |
+| G19 | D264 |
+| G20 | D265 |
+| G21 | D266 |
+| G22 | D267 |
+| G23 | D268 |
+| G24 | D269 |
+| G25 | D270 |
+| G26 | D271 |
+| G27 | D272 |
+| G28 | D273 |
+| G29 | D274 |
+| G30 | D275 |
+| G31 | D276 |
+| G32 | D277 |
+| G34 | D278 |
+| G35 | docs/todo.md, "Build order from the 2026-09-18 architecture grill" |
+| G36 | recorded, no decision: it is the instruction that produced this block |
+| G37 | recorded, no decision: the stopped review workflow is dropped for now |
+
+### D252. The architecture answers to replay fidelity and to a Run anyone can drive (2026-09-18)
+
+A customer has no benchmark reward to compare against, so replay fidelity on its own leaves every consumer of an Environment with nothing to drive. Off-path behaviour, a code adversary against Verifiers, the solvability of synthetic Tasks and the Simulated user's cost per Run all need a Run that can be driven from outside the Builder before any of them can be measured at all.
+
+The rule. Replay fidelity stays the public headline and the priority order stands (fidelity, quality checks, synthetic Tasks, speed). Beside it there is now a thin interface through which anyone can drive a Run in a built Environment: reset, step, a reward computed by code, a seed, and no import of the Builder. A solve-rate stage runs a cheap model through the Tasks. It is a measuring instrument, not a trainer and not the training experiment.
+
+Checked in code. No reset or step interface exists in kullback/ (only runner/loop.py:77 step, which calls the model itself); kullback/hub/__init__.py exports nothing; the only driver of a Run is the Builder's run_batch.
+
+Against it. A second instrument competes for builder slots; a solve-rate stage on retail inherits the two open cross-domain gaps (confirmation-string write results, initialization overlay) that block docs/training-plan.md.
+
+Open follow-up, to be confirmed: whether the interface records each Run (seed, cost, route per call) from day one.
+
+Status: decided 2026-09-18, not built.
+
+### D253. The loop's step is split into asking a policy and advancing the world (2026-09-18)
+
+One function asks the model for the next assistant message and also advances the world, so the two jobs cannot be given to two owners and nobody outside the Builder can take one of them. The founder's principle for the choice: decisions are taken for the longer term, and each part has one job. Three jobs, three owners: the policy decides, the Environment advances the world, the Verifier scores.
+
+The rule. runner/loop.py step is divided into its two jobs, asking a policy for the next assistant message and advancing the world given one (tool calls through the router, then the Simulated user, then the stop rules). The old step stays as a thin wrapper over the new core, so the Builder and the Examiner are unchanged and there is one code path with two faces. The split lands on its own re-freeze and is not bundled: it is a pure refactor, so its acceptance test is exact (regrade every stored Run and require identical Verdicts, replay every Trace and require identical fidelity), and bundled with any other Runner change that test is lost. Claude first suggested riding along with the next planned re-freeze and withdrew it for that reason.
+
+Checked in code. step calls model.query itself (loop.py:77-99); the world half already exists as _tool_call and _user_turn (loop.py:210, 251).
+
+Against it. A re-freeze is a new baseline on all three corpora; for episode-level GRPO as docs/training-plan.md states it, leaving the loop with the Environment would have been enough; the researcher fetched only 5 of 14 framework sources.
+
+Status: decided 2026-09-18, not built.
+
+### D254. A Verifier has one scorer, and the structured atom target is the only meaning of an atom (2026-09-18)
+
+An atom is stored twice, as a structured target and as generated predicate source, and two different readers score it: the Verdict reads the predicate source, the D79 checks read the target. Two meanings for one atom is two rewards, and the founder's reason for closing it is that there should be only one source of truth.
+
+The rule. The structured atom target becomes the only meaning of an atom. One interpreter in the Runner layer is called by both the Verdict and the gates (the D79 suite, probes, the trusted ruling, loosening, false rejection). The generated predicate source stops carrying meaning of its own, except for Hard rules, which are compiled policy source by nature. This lands on its own re-freeze. First step, to run after 14:30 on 2026-09-18 when the session window resets: the differential count, which scores every stored Run in the three workdirs with both scorers (check_run over the target, verdict over the predicate source), makes no model calls, and lists every disagreement by Task id and atom kind. Zero means hygiene that can wait behind fidelity work; nonzero is the list of live holes in the reward and of the Verdicts that will change. Differential count of the two scorers: result pending, see .claude/reports/arch-review-2026-09-18/scorer-disagreement.md.
+
+Checked in code. make_atom stores target and predicate_src from one payload (gates/verifier_suite.py:760-762); check_run says "Used by the D79 checks below, never by the Runner" (:797-799); the _predicate docstring names the hole (:722-730). Not checked: whether the two disagree on any real Run.
+
+Against it. Nothing was recorded against this decision in the grill beyond the unchecked premise above: until the differential count exists, the size of the hole is unknown, and a count of zero would make this hygiene rather than a fidelity or reward fix.
+
+Differential count (2026-09-18, report in .claude/reports/arch-review-2026-09-18/scorer-disagreement.md, no model calls). 288 Verifiers, 2550 stored Runs, 150163 atom and Run pairs; judge atoms skipped on both sides. 249 pairs disagree (retail 153, airline 17, telecom 79) and all run one way: the target fails a Run the predicate source passes (174) or leaves not verdicted (75). Largest cause, 105 pairs: the Run stated a fact that never appeared in a tool result of its own; the target requires that grounding, the predicate's substring test does not. Second, 75 pairs: a Hard rule that raises is a fail to check_run and a Verifier defect to the Verdict, and Hard rules are the atoms this decision exempts, so that gap needs its own rule. With one scorer 20 of 2550 Verdicts flip, 14 of them pass to fail, over 13 Tasks of which 6 are trusted; no trusted standing moves, since the trusted ruling already reads the target. The customer's canon rules must reach the one interpreter in the same change (the CLI passes the module default today, and under the default airline's 17 become 748 spurious disagreements). So the hole is small, one-directional, and the looser scorer is the one that pays reward: this is a reward fix rather than hygiene.
+
+Status: decided 2026-09-18, not built.
+
+### D255. Anything in the reward that reads text is grounded in facts (2026-09-18)
+
+Three places in the reward read free text: a communicate atom passes on substring containment anywhere in any assistant message, a confirm atom is settled by matching ten English affirmation words, and a judge's opinion enters the pass evaluation. Each is a reward a Candidate can reach by saying the right shape of sentence rather than by doing the work.
+
+The rule. A communicate atom passes only when the value the Candidate states matches a value a tool returned to it in this Run, never a substring found anywhere in any assistant message. A confirm atom is settled by the Simulated user's own typed record that it agreed before the write, not by matching a fixed list of English words. A model judge leaves the pass condition: its opinion is reported beside the Verdict and never decides it, so the reward is computed by code alone. Text-related reward checks must be grounded in Run evidence.
+
+Checked in code. communicated() is substring containment over every assistant message (runner/atom_context.py:154-155); AFFIRMATIONS is ten English words (gates/verifier_suite.py:56) and user_confirmed_before matches them as substrings (atom_context.py:160-166); judge atoms enter the pass evaluation in runner/verdict.py:121-140.
+
+Against it. No-write Tasks (D156) keep their only signal but get stricter; Hard rules that only a judge can check leave trusted until they are compiled to code, so trusted may fall before it rises; the confirm half needs the Simulated user to record agreement as a typed event, which is D256.
+
+Status: decided 2026-09-18, not built.
+
+### D256. One factory builds the Simulated user, and every user turn leaves one typed record (2026-09-18)
+
+The Simulated user is constructed at three sites with different inputs, so the user the CLI drives is not the user a build drives, and the Runner keeps only a handful of fields from each user turn. A reward that has to know whether the user agreed before a write (D255) has nothing typed to read.
+
+The rule. One function builds the Simulated user and the round scorer, and the CLI and real Runs all call it with the same inputs. Every user turn leaves one typed record (driver that spoke, facts given, whether it agreed to something, guard that fired, end kind and reason) and the Runner stores it whole. This is where D255's typed agreement lives. On timing the founder answered "1" and did not rule; Claude's default, to be confirmed: the extra stored fields ride with the split's re-freeze (D253), because they are additive and leave every old field byte-identical, so the refactor's exact test still holds.
+
+Checked in code. Three construction sites, rounds.py:1432 and cli.py:812 omit goal_writes, answer_strip and trace, builder/build.py:2217 passes them; the Runner keeps only unavailable_fields, sources, refused, refused_so_far and tags from a user turn (runner/loop.py:278-292). Not checked: the architect's count of 18,271 user turns with no driver recorded.
+
+Against it. An honest exam may lower the model user's scores and the share of Tasks it drives at first.
+
+Status: decided 2026-09-18, not built.
+
+### D257. A tool body is accepted on its answers and on its effects (2026-09-18)
+
+The loop repairs only what something detects, and today a failure means a returned answer that differs. A write that returns the right message and leaves the wrong state is not a failure to any build gate, so the loop never hears of it until a later call rereads the row, and then the read is blamed (docs/learnings.md section 2). The founder's model of the loop was confirmed with that one correction: a failed tool call is indeed repaired by the loop through lessons, Examiner findings, transactional repairs (D201) and keep-by-beating (D184), but only once a gate can see it fail.
+
+The rule. A transition gate at build time compares, for every recorded write, the state change the body made (rows, fields, values) with the change the Traces witness through later reads in the same recording. Where no Trace shows the after-state the gate rules "unwitnessed" and that share is published per tool. D215's effect check stays at replay as the safety net.
+
+Checked in code. run_gates rules on returned values and each gate call runs on a freshly validated world (builder/sandbox.py:179-181, 715-769); effect_values are already passed to the gates and D215 checks effects at replay, so the architect's "no gate looks at state" was half right.
+
+Against it. Sparse corpora will return many "unwitnessed"; stricter comes before higher, so expect a dip first.
+
+Status: decided 2026-09-18, not built.
+
+### D258. Environment consistency: laws that hold for any tool, checked off the recorded path (2026-09-18)
+
+Replay fidelity says the built world answers the recorded calls the way the real one did. It says nothing about the calls nobody recorded, which is most of what a Candidate under training will do. The founder took the two off-path options together, "because we need this".
+
+The rule. A property harness generates call sequences by code, with no model, runs them through the D252 interface against the built Environment, and checks laws that hold for any tool in any domain: a read changes nothing; the same write on the same state gives the same result; success changed something and an error changed nothing; a write can be read back; minted ids are unique; nothing crashes or hangs. A broken law is shrunk to the shortest failing sequence and handed to the repair loop as a new kind of failure. Held-out recorded paths stay as they are. The number is named Environment consistency by the founder and is published beside replay fidelity, and it is not called fidelity, because it proves the world is sane off the recorded path, not that it is right. Where the Traces show the real system breaking a law on purpose (a read that logs, a duplicate rejected), the Traces win and the law is off for that tool.
+
+Checked in code. Route order is code, then recording, then LLM stand-in (runner/route.py:1, 69); the existing off-path guards are the D195 sensitivity gate, the world-invariance and shape-holdout branches, and stand-in Runs reported but never counted.
+
+Against it. Laws catch broken, not wrong (a consistent body can still compute the wrong amount), so the number is a floor; the toolsim research behind it was never judged.
+
+Status: decided 2026-09-18, not built.
+
+### D259. A second, controllable synthetic Task system beside the current generator, checked by code at birth and judged at run time (2026-09-18)
+
+The model under training needs Tasks at a difficulty it can partly solve, and the current generator does not offer that knob. The founder's words set the shape: "the current method is good but we also need to explore possible tasks, need a researcher for that"; "different levels of synthetic tasks, one solvable, other unsolvable, other partially"; "we need to control the difficulty based on what the model under training is able to solve". Claude's own first proposal, that a Task is admitted once a model solves it, was corrected against the founder's answer "agreed, but there are also difficult synthetic tasks which the models cannot solve": admission by a solved Run would throw away exactly the hard Tasks that are wanted.
+
+The rule. The current generator stays; nothing is removed. Beside it there is a separate system that generates synthetic Tasks with adjustable difficulty, with one job per part: an explorer (the researcher) proposes kinds of Task a customer of this domain would really bring, extending the D225 archetypes; code constructs each Task from a walk over the tool graph; gates admit it; a controller picks which Tasks the model under training sees. A model's solve rate is a label on a Task, never the gate. Trust is layered, because the most important property of a synthetic Task is that it gives enough training signal and that is only measurable while a model runs on it: the founder's ruling is "some checks, and we can fully only test this at run time". The checks at birth are all code: the scripted walk played through the D252 interface passes the Verifier and a do-nothing Run fails; every argument in the walk traces to the Intent, to a fact the Simulated user holds, or to an earlier result (fairness); a Decline Task's forbidden step trips a compiled policy predicate. What no check at birth can prove is that the Intent reads only one way, and that is left to run time. Three names replace "unsolvable", which is dropped as a term because it had been used for two different things: a Frontier Task is possible and no current model solves it, a Decline Task is one whose right outcome is to say no and change nothing, a Mixed Task has goals to do and goals to decline. Telling a broken Task from a hard one at run time is deferred by the founder: "There is no good way to verify this... it gets tricky once you have the difficulty knob as you want the model to fail on the task to post train it. Add this in todo, just do the consistency checks for now and we will see this in action in the training run." The per-Task failure record, quarantine on concentrated failures and the reporting judge are kept in docs/todo.md as the idea on the table, with their limits.
+
+Checked in code. Nothing was checked in code for this decision.
+
+Against it. The three names were agreed in passing and the founder did not object rather than ruling on them, so they are Claude's reading, to be confirmed; the run-time half is deferred with no mechanism, so a broken synthetic Task and a hard one are indistinguishable until the first training run; and the birth checks depend on the D252 interface and on D257's write gate, since a synthetic Task inherits every flaw in the tool bodies.
+
+Status: decided 2026-09-18, not built.
+
+### D260. A Task is what the customer wanted and the world it started in, never what the agent did (2026-09-18)
+
+The grouping key today is the sorted set of write tools a Run wrote through, so two recordings of the same request land in different Tasks when one agent took a different route, and the Run that wrote through the odd set can become the Task's Reference. The founder's summary: "funnily the mistake becomes a reference."
+
+The rule. Recordings are grouped by what the customer asked for and the starting world only. The write set the recorded agent got through becomes a label on each Run. A Run whose writes disagree with most of its group is a path outlier: it stays in the Task and in the held-out pool, and it can never become the Reference or feed the Intent. An experiment with its reading rule fixed in advance (brief-grouping-experiment.md, result in grouping-experiment.md) decides whether the grouping tightness may stay one fixed constant or must be picked per corpus by a code-only rule.
+
+Checked in code. The Category key is the sorted set of write tools the Run wrote through (builder/cluster.py:68-70), then opening-turn clustering at DEFAULT_THRESHOLD 0.4 (:24). Not checked: the architect's split counts (50 of 114 retail, 20 of 50 airline, 34 of 114 telecom) and the reward-0 share of the split-off Runs; the experiment recounts them.
+
+What the experiment reported (2026-09-18, grouping-experiment.md, no model calls). Under the pre-fixed rule the fixed constant stands alone: a threshold of 0.25 is within 0.05 pair F1 of every file's own best on all six raw files (worst gap 0.038, airline 4-5). The pass is narrow, since only 0.25 qualifies and 0.20 and 0.30 miss at 0.091 and 0.076. The grader-free per-corpus selection rule did worse than the constant (worst gap 0.085), so picking the tightness per corpus as specified would be a regression. Checked by Claude against the raw files: 456, 200, 456 simulations over 114, 50, 114 scenarios with exactly four trials each, and reward 0 totals of 126, 56 and 69 on the three 4-5 files, all matching the report.
+
+Against it. The write set is the smaller fragmenter by the architect's own recount (airline still 103 groups for 50 scenarios without it); merged Tasks raise headline fidelity partly for the wrong reason, so the per-Trace rate is published beside it; Task ids change, so every workdir starts from a new baseline. From the experiment: grouping quality is poor whatever the threshold, with best pair F1 about 0.89 on airline, 0.67 to 0.69 on retail and 0.17 to 0.35 on telecom; on two of six files the new key at 0.25 scores below the current method (retail 3-7 0.716 to 0.672, telecom 4-5 0.179 to 0.174) and the mean gain over six files is 0.074; the new key buys recall with precision (retail precision about 0.51 at recall about 0.94), and a Task that mixes two goals costs the harness more than a Task split in two; the starting-world key changed nothing on four of six files, so the write set was never the main fragmenter and the opening-turn word clustering is the weak part, which is the open question. Caveat on the label: on telecom many scenarios open with the same words and differ only in a hidden device fault, so the scenario id may be finer than a Task should be and pair F1 may understate. Corrections to the architect, kept visible: "56 of 68 retail minority-write-set Runs are reward 0" is not recoverable because 11 retail scenarios split two and two (43 of 68 or 62 of 68 by tie-break, 40 of 46 on strict majorities, so the direction holds and the figure does not); telecom 4-5 under the current method recounts to 214 Tasks, 111 singletons and 164 unguarded against the architect's 228, 124 and 176, because the experiment could not run the readers stage without model calls; and "no single constant is right for two corpora" does not follow, since 0.25 costs those two files 0.038 and 0.013. Path outliers at 0.25 carry reward 0 at 1.3 to 3.3 times each file's base rate.
+
+Status: decided 2026-09-18, not built.
+
+### D261. One intake seam with many telemetry formats behind it, and an adapter earns "supported" on a real corpus (2026-09-18)
+
+Intake reads one shape and guesses at it: any dict with a messages list and an id is labelled tau2_native, one mapper exists, and every other detected format is refused. A harness that only ever sees one export shape cannot be pointed at a customer's own telemetry, and the founder's expectation is that the architecture itself moves the number: "as the architecture improves the fidelity will definitely improve."
+
+The rule. One adapter seam (detect with positive evidence or return "unknown", iterate, emit), tau2 as the first adapter, a version number on the internal record, a source pointer that is not a tau2 coordinate, and ten different telemetry formats behind the seam. An adapter earns its label on real trace collections rather than on fixtures, starting with the AgentTrove collection the founder named: "we need to use this to build the environments"; "I have given you the collection of traces in different formats". Claude's default until the founder rules: an adapter is "proven on a build" where a real public corpus exists (the terminus-2 shape now has one), "conformant" by checklist plus the same-recording test where none does, and the label says which. The other nine formats each need their own corpus found.
+
+Checked in code. format_detect labels any dict with a messages list and an id as tau2_native (builder/ingest.py:96-110); _tau2_trace is the only mapper (:319); derive_traces refuses the other detected formats (:261-276).
+
+Correction from the data, to be confirmed by the founder. AgentTrove is one trace format, not ten. Checked on 35 rows sampled across the 1.7M through the datasets-server API: every row with a trajectory has agent terminus-2, roles user and assistant only, and 24 of 27 carry JSON keystroke commands inside the assistant text; 3 of 30 rows carry no trajectory at all, only a task_binary and a path, so they are task definitions rather than recordings; the trajectory column is `conversations` where the card says `messages`; `result` was filled on 1 of 30 rows and no reward column exists in the served schema. The 219 sources differ in task domain and metadata columns, not in telemetry format.
+
+Against it. The seam moves no fidelity number by itself, and the fidelity gains in this grill come from D254, D255, D257 and D260, of which D257 lowers the number before it raises it. No corpus in any of the ten formats is on disk, so how an adapter is accepted is the open question this entry answers only by default. Several of the ten share one wire format (the OpenTelemetry family), so ten formats is probably four or five mappers plus vocabulary layers. Which ten: to be listed from research-traces.md and confirmed by the founder.
+
+Status: decided 2026-09-18, not built.
+
+### D262. A tool that can be run for real is run for real, and the grader lives where the Candidate cannot reach it (2026-09-18)
+
+A tool body compiled from recordings is a guess about a system that exists. Where the real tool can be obtained and run safely there is no reason to guess, and running it is also how problems are found at build time rather than at replay. The founder: "Run it for real, have the bash tool with it. We should always run it for real." This is the coding-domain decision left open since 2026-09-10, and it answers what an Environment is when the only tool is a real shell.
+
+The rule. The Runner gains a route that executes a tool for real inside a container, beside the routes that imitate a tool from recordings. For a terminal corpus the World is a container and its files, the tool is a real shell, and Kullback still supplies Task grouping (D260), the Intent, a code Verifier over the end state, the gates, difficulty labels from the episodes per Task, and the reset and step interface (D252). Which tools are run is decided by the harness, not by the customer: "The customer is not going to say which tools to run or imitate. Mostly we should run all the tools to check the problems then and there, and then the harness infers from the traces where to imitate and where to run. Whatever can be run should be run and whatever should be imitated should be imitated. Add a skill or something here to help the harness." Following the rule already used for synthetic Tasks, the model proposes and code rules: a route skill in the existing skill system (builder/skills.py, D130 and D132, versioned by content hash and promoted or reverted by code over gate counts) guides the Builder to propose for each tool how it could be run for real (which image, which command); code then plays the recorded calls through the real candidate in a sandbox and compares with the recorded results. A tool is a Real tool when the real candidate reaches the fidelity bar, otherwise it is imitated, and a kept route is replaced only by one that beats it (D184). The ruling and its measured reason are published per tool, so "can be run" means "reproduced the recordings when run", never a guess from a name or a shape. Two terms are proposed: Real tool (executed in a sandbox) and Imitated tool (a body compiled from recordings). With a real shell the grader moves out of reach: when a Run ends, the end state is exported and checked in a fresh grader container, and tests and answers are mounted only there. At birth every Task must defeat a code-written cheat suite (delete the tests, fake the exit code, hard-code the expected output) and the do-nothing Run must fail, and the starting container is scanned for ground-truth strings, a fix commit in the history and hidden tests. Fidelity for a real shell is judged on the end state, "end state, be as close as possible to the truth": files, exit codes and test results rule, and terminal text is reported beside them and never cleaned into agreement. Claude's scoping of "always", to be confirmed: always where the real tool is available and safe to run in a sandbox, since a customer's refund or booking tool is neither (no access to their database, and a real write moves real money), which is why imitation from recordings exists at all; the order of preference becomes real, then compiled code, then the recording, then the model stand-in, which never counts toward trusted. Claude's addition, to be confirmed: a Real tool runs only in a sandbox nothing can leave, with no outside network by default, and a tool the harness has no way to obtain (a customer's own API) has no real candidate and falls to imitation by itself.
+
+Checked in code. Skills exist as workdir skills/<name>/SKILL.md with a code-only gate (kullback/builder/skills.py:1-26, 148, 190); the Builder, the Examiner and the user each have a skills module. Nothing was checked in code for the real route itself, for the grader container or for the end-state fidelity rule.
+
+Against it. A new kind of World and a large build while airline is under 0.90; most sampled AgentTrove rows lack the starting container (3 of 30 carry a task definition) and the outcome (1 of 30); terminal output needs normalising before comparison, which is where leniency crept in before (docs/learnings.md section 3); a real shell lets a Candidate reach the files its own Verifier reads, a reward hole the imitated worlds never had. On deciding the route per tool: trying every tool for real costs container time on every build; a real candidate can match the recordings on the recorded calls and still differ off the path, so D258's consistency laws apply to it too; and the no-network rule is a constraint Claude chose, not one observed. On the grader: the birth scan catches literal leaks only, so it is a floor; a second container per Run costs time ahead of the speed pass; Tasks whose recording showed the tests to the agent change when the tests are hidden, which lowers fidelity to the Trace for an honest reason and must be reported as such.
+
+Status: decided 2026-09-18, not built.
+
+### D263. Intake rules on each recording on its own, rescues what it can, and keeps the rest as evidence (2026-09-18)
+
+One call with neither a result nor an error fails the whole intake stage today, so a corpus is all or nothing and a build either proceeds on everything or stops. The founder's amendment set what happens to what is not admitted: "keep the good recordings and try to learn about the structure of the environment from the broken recordings. Ideally we should only keep the recordings which are good (data filtering 101), but the recordings which are not should be used for learnings, and the unfinished recordings do have a lot of information about the user behaviour, like why did the user leave." The founder also asked for the cheat check: "check for reward hacking as well".
+
+The rule. Each recording is admitted, set aside with a reason (a call with no result, no starting state, not a recording, a duplicate, a suspected cheat), or rejected. The build continues on what was admitted and stops only under a declared floor. One intake ruling is published with counts per reason and with who was set aside (outcome and length mix), so a drift toward easy Tasks is visible. A rescue step then tries to repair what was set aside (for the AgentTrove shape, fetching the task definition the row names), and a rescued recording passes the same checks as any other. A recording then has one of two standings. Task-eligible: it can become a Reference, feed an Intent and sit in a held-out pool. Evidence-only: it can never do those three things, and it still feeds what is learned about the world (tool signatures, row shapes, error behaviour) and about users (when and why they leave, which feeds end kinds and patience limits, D210). "Set aside" no longer means unused. The guard that carries over from docs/learnings.md section 3 holds here too: evidence shown to a writer is filtered by held-out membership, never by value, and that applies to evidence-only recordings as well. Five terminal cheats are checked, in recordings and in Runs: editing or deleting the tests, reading an answer file left in the container, finding the fix in the git history, hard-coding the expected output, and making the test command exit with success. Claude's reading, to be confirmed. In recordings, at intake: a recorded Run that did one of these is set aside as a suspected cheat and can never be the Reference, because a cheat with a passing outcome would otherwise become the Task's Reference, which is the D260 problem in a worse form. In Runs: each cheat has a structural defence that does not read text, and the birth cheat suite of D262 proves each defence per Task. Tests edited or deleted, the grader uses its own copy and a hash of the protected paths from start to end state marks the Run as tampered, which fails the Verdict (exact, code only). Answer file and git history, both removed and scanned for at birth. Hard-coded output, the grader holds cases the Candidate never saw. Faked exit code, the grader runs its own command in its own container.
+
+Checked in code. ingest_gate fails the whole stage when one call has neither a result nor an error (gates/artifacts.py:50-71). Not checked: the architect's count of one unresolved call in 8,742 on one telecom file.
+
+Against it. The floor is an invented constant; the virtue of the all-or-nothing option was that it never built on data it did not fully understand. Spotting a cheat in a recording means reading shell commands, which is pattern matching and can be evaded, so in recordings it only sets aside and reports and it never enters a pass condition; only the hash comparison is exact enough to fail a Verdict. A broken recording can teach a wrong structure (a truncated result looks like a short schema), so a fact resting only on evidence-only recordings should say so in its support, which is the mined-evidence ledger question and still open.
+
+Status: decided 2026-09-18, not built.
+
+### D264. A user population per Task, then new users by controlled variation (2026-09-18)
+
+One Task's Simulated user is built from one recording, so every Run of that Task meets the same person, and the variety the corpus holds is thrown away. The unfinished recordings hold the other half of the signal: "unfinished recordings will give us the user signals, but for running we shall use the runs which are complete".
+
+The rule. Each Run's Simulated user is drawn by a repeatable key from the Task's good recordings, meaning the Task-eligible and complete ones (D263). Patience and leaving behaviour are learned from the whole corpus, unfinished recordings included. Then, inside the controllable synthetic system (D259), users the recordings never contained: same facts and goal, with code-controlled variation in wording, order and patience. The founder points to the raindrop-ai/workshop repository for what "user signals" means; reading in .claude/reports/raindrop-workshop-2026-09-18.md.
+
+Checked in code. Nothing was checked in code for this decision. Not checked: the architect's claim that the user is built from the first confirmed recording only.
+
+Against it. 61 retail Tasks by the architect's count hold one field with two values across recordings, so sampling is limited to recordings whose write arguments match the Reference and the rest are reported as withheld; more variety per Task means more Runs before a solve rate means anything, which is the run-time question deferred in D259.
+
+Status: decided 2026-09-18, not built.
+
+### D265. User signals live in one typed record with one owner per field (2026-09-18)
+
+Both code and a model can read a recording for what the user did and why they left, and if both write the same field they will disagree and nothing can settle it. The founder chose both readers with one record: "both, but with one source of truth. Harness and the code reads the signals."
+
+The rule. One typed signal record per recording. Claude's shape for "one source of truth", to be confirmed: every field has exactly one owner, so the two readers can never disagree about the same field. Code owns the structural fields (end kind, turn counts, repeated asks, a transfer call, who spoke last). The model owns only the fields code cannot produce (why the user left, stated frustration), and each such label must quote a span that code finds word for word in the recording, or the label is dropped. Where a model label contradicts a structural fact, for example it says the user left angry while the structure says the agent ended the conversation, the structure stands and the contradiction is counted. Signals feed the Simulated user's behaviour and the intake report, never a Verdict. The reference read for this is raindrop-ai/workshop, whose trace tools from src/mcp/tools.ts are get_run_outline (structure, counts, previews, error shortlist), get_span_payload (one span's input or output, 8,000 characters by default with a next offset), get_span_context (neighbouring spans as skeletons), search_run (substring or regex inside one run, returning span id, character range and a snippet), query_traces (one read-only SQL SELECT over the trace tables), annotate (issue, good or note on a run or span), ask_agent, replay_run, import_cloud_trace, get_current_run and show_in_ui.
+
+Checked in code. Nothing was checked in code for this decision.
+
+Against it. No ground truth exists for "frustration", so no gate can rule on the labels; labelling runs on a sample for cost; the AgentTrove corpus has no human user, so signals pay off only on conversational corpora.
+
+Status: decided 2026-09-18, not built.
+
+### D266. The harness's own agents read recordings and Runs through one set of tools (2026-09-18)
+
+A read is cut at 60,000 characters and the remainder is unreachable except by a narrower read, so an agent that needs the middle of a long Run either guesses or floods its context. The founder's frame for the whole area: "We need to be very very honest and strict with ourselves to design this much much better."
+
+The rule. The Builder, the Examiner and the user agent share one set of reading tools: an outline of a Run or Trace first, payloads in small pages with a next offset so nothing cut is lost, a search that returns locations, and a neighbours view. Beside them sits one read-only query tool over a structured store of the workdir, so an agent can ask a question of the whole build without reading files. The query tool commits the project to the typed workdir store of D267. Strictness rule Claude attaches, in the founder's spirit: the change is accepted on measured tokens per stage and per finding, before and after on the same build, cache share included, and not on the pattern's reputation. If smaller reads raise total tokens because each turn re-sends the prompt, that is reported and the page size is revisited.
+
+Checked in code. Reads are cut at 60,000 characters with the remainder unreachable except by a narrower read (examiner/tools.py:405-417, D175). The reference tool list is raindrop-ai/workshop's, recorded under D265.
+
+Against it. Search inside the Examiner is substring matching that steers a decision, although it is off the reward path; Workshop's tools serve one developer on one run, so the benefit for an Examiner over hundreds of Tasks is unmeasured.
+
+Status: decided 2026-09-18, not built.
+
+### D267. One workdir store and an append-only round journal (2026-09-18)
+
+JSON is written straight into its final file from 115 places, so a killed build can leave a half-written artifact that the next read takes for a value, and the round table is rewritten rather than accumulated. Kills are common here, which makes a torn file a live risk rather than a theoretical one.
+
+The rule. One store declares every workdir artifact once (name, shape, format number, owning stage), writes safely (temporary file, then swap), returns the value, "missing" or "torn" from a read and never a silent default, takes one lock per workdir, and every scattered write moves onto it. An append-only round journal records run open (with the full run configuration), round open, beat end, and round close or abort, each with a run id, and the round table is derived from it. The store is what the D266 query tool stands on. The safe write alone removes the torn-file risk at a fraction of the cost and lands first as step one.
+
+Checked in code. write_json writes straight into the final file with write_text (runner/records.py:69-76); no os.replace anywhere in the package; JSON is written at 115 places in 43 files, 84 of them through write_json. Not checked: the architect's claim that rounds.json is rewritten with only the current process's rounds (rounds.py:514, 1768).
+
+Against it. No fidelity number moves; 43 files are touched, so it collides with every open branch and needs one dedicated merge; a lock held by a killed build must be detected as dead, and kills are common here; old workdirs carry no format number, so the first read needs a migration rule or a rebuild.
+
+Status: decided 2026-09-18, not built.
+
+### D268. A merge of two recordings is a proposal, and code proves it before it is a Task (2026-09-18)
+
+Grouping decides what a Task is, and a wrong merge is a Task the harness can never grade correctly. The founder chose precision first and added a second proposer: "the harness could also group using embeddings and then cosine similarity and use option 2 as well."
+
+The rule. A merge is a proposal; code accepts it only when the recordings prove compatible (same starting facts, and each Run passes the Verifier derived from the other), and everything unproven stays split. The proposer may be opening-turn words as today, or embeddings with cosine similarity. Because the proof step decides correctness, the proposer can only affect how many true merges are found and what the proof costs, never whether a Task is false, and that is why a fuzzy tool is acceptable here and not in the reward. To be measured, not assumed: an embeddings arm in experiments/grouping_experiment.py over the same six files with the same audit label and the same pre-fixed reading, reporting the precision and recall of the proposals and the number of proof checks each proposer would cost. What to embed is itself an arm: the opening two user turns, the whole user side, or a one-line goal statement. Embeddings proposer experiment: result pending, see grouping-experiment-2.md in the same folder.
+
+Checked in code. The harness uses no embeddings today and depends on five packages (pydantic, typer, httpx, rich, huggingface-hub; pyproject.toml:6-11); the project environment has no numpy, torch, onnxruntime or sentence-transformers.
+
+Against it. On telecom many scenarios open with the same words and differ in a hidden device fault, so no embedding of the opening can separate them, because the signal is not in the text; embeddings add a model dependency (version pinning, determinism across machines, a heavy install, or customer text leaving the machine through an API); the proof step needs Run-against-Run replays the workdirs do not hold today; and a loose Verifier approves bad merges, so the proof is only as strict as the Verifier.
+
+Experiment result (2026-09-18, part 2, report in .claude/reports/arch-review-2026-09-18/grouping-experiment-2.md). Under the reading fixed before the numbers existed (higher recall at precision 0.95, or equal recall with fewer proof checks, on five of six files) no proposer beats the shipped words proposer: character n-gram TF-IDF on the goal statement and the small OpenAI embedding on the whole user side each reach four of six. Proof checks are always added, never saved. Embedding the same text twice minutes apart does not return the same vectors, so group ids would not be stable across two builds. Against this result: read by pair F1 instead, whole-user-side TF-IDF beats the words proposer on six of six, but it reads repair turns, which D260 stopped grouping on. No text arm fixes telecom. Outcome: the words proposer stays, the code proof is the part to build, embeddings are not adopted. One headline number was re-computed with independent code and matched.
+
+Status: decided 2026-09-18, not built.
+
+### D269. Prompts grow by appending, and the Simulated user's head is stable (2026-09-18)
+
+The founder expected the conversation to be appended: "I thought this is appended, right? On appending we will hit higher cache rates for sure. But option 3 doesn't generalize, right? And the system prompt should have examples on how the user should handle this and that, which should be added there after inspecting the traces." It is not appended. Each turn builds a new harness whose system prompt holds the goal, the facts filtered by what was just asked, the persona, the choices, the protocol, the whole conversation so far and the lessons, followed by the static feedback and stop sections, and the only message is a fixed turn message. Because the facts section changes with what was asked, the cached prefix ends there.
+
+The rule. The system prompt is stable: the static skill text in the founder's order, then the per-Task block (goal, every fact in a fixed order, persona, choices, protocol, lessons), byte-identical across all turns and Runs of a Task. The conversation is appended as real messages, spoken turns only, so the user agent's own tool calls never persist and the reason for the per-turn session is kept. Dropping the filter on what was asked also removes the turn where the facts section vanishes. The founder's objection to a cache-share floor is accepted, since a floor does not generalize (providers differ in cache pricing and in the minimum cacheable length, and some have no cache), and it is replaced by a property with no constant and no provider in it: for every agent, each request in a conversation must be a byte-prefix extension of the one before it, checked by code over the request log. Cache share is reported per stage and never gated.
+
+Checked in code. Each turn builds a new AgentHarness (user/agent.py:116-134) whose system prompt holds goal, facts filtered by what was just asked, persona, choices, protocol, the whole conversation so far (PREFIX_TAG) and lessons (user/context.py:314-328), followed by the static feedback and stop sections (user/extension.py:72-81); the only message is a fixed TURN_MESSAGE. The per-turn session is deliberate: "a user that keeps a transcript of its own thinking between turns is a user with a second memory the recorded person did not have" (agent.py:3-8).
+
+Against it. Nothing was recorded against this in the grill. The cost it keeps visible is that the per-turn session's purpose has to survive the change, which is why only spoken turns are appended, and how the examples in the head are chosen is left to D270.
+
+Status: decided 2026-09-18, not built.
+
+### D270. Examples in the Simulated user's prompt are mined per corpus by situation (2026-09-18)
+
+Four hand-written examples serve every corpus, and the founder asked for examples drawn from the recordings instead. Mining them per Task would leak the Task into its own user; mining them per corpus by the situation they illustrate does not.
+
+The rule. Examples are mined per corpus by situation, never by Task: asked for something unknown, information only the company holds, the agent refuses, the agent asks for confirmation, the user gives up, which is where the user signals from unfinished recordings (D265) flow in. Values are masked, only recordings that are not held out are used, and the examples enter the user skill through the existing skill gate (D130, D132), promoted only when the user agent's fidelity improves on turns it never saw. They sit in the stable head of D269, so they are cached across every Task of the corpus.
+
+Checked in code. Four hand-written examples today (user/skills.py:35-46).
+
+Against it. The examples are still per corpus, so domain flavour can bend the founder's rule against overfitted examples; masking can remove what made the behaviour realistic; and the skill gate needs three rounds before it promotes anything.
+
+Status: decided 2026-09-18, not built.
+
+### D271. Time, randomness and new ids reach a tool body through one context (2026-09-18)
+
+A compiled body may import datetime, time, random and uuid, so a body can read the wall clock or mint an id nobody can reproduce, and a replay of the same call gives a different answer for a reason that has nothing to do with the world.
+
+The rule. Those four modules leave the imports a compiled tool body may use, and every body receives one context carrying now, a random source and new-id-for-table, fed from the recording during replay and from the Run's seed off the recorded path. Per-class fidelity ceilings are not adopted.
+
+Checked in code. The four modules are in the allowed imports (gates/confinement.py:31-33, checked).
+
+Against it. The replay-side feed this extends (D197) measured inert; every body importing those modules recompiles; and real tools (D262) need their own answer, a pinned clock and seeds inside the sandbox.
+
+Checked after the grill (2026-09-18). D197 feeds recorded row values, not time, randomness or ids, so "the replay-side feed this extends" was wrong: no such feed exists, and a body receives only the call's arguments. In the three built Environments (20, 17 and 40 tools) no generated body uses a clock, a random source or uuid, so on today's corpora this changes no fidelity number and recompiles nothing. It is preventive, for corpora whose tools stamp times or mint ids.
+
+Status: decided 2026-09-18, not built.
+
+### D272. Every tool call is a transaction, and a crash is its own outcome (2026-09-18)
+
+A body that crashes in the middle of a write leaves the world half moved, and whatever the Candidate is shown afterwards is neither the real system's answer nor a state any recording witnessed.
+
+The rule. Every tool call is a transaction. A crash rolls the state back and is recorded as its own outcome, a body fault, and it is never shown to the Candidate as the real system's answer.
+
+Checked in code. Nothing was checked in code for this decision; the architect's description of today's behaviour was not checked.
+
+Against it. Nothing was recorded against this in the grill.
+
+Status: decided 2026-09-18, not built.
+
+### D273. A training Run never uses the model stand-in (2026-09-18)
+
+The stand-in answers a call no code can answer, which keeps a Run moving but makes the reward depend on a model's invention rather than on the world.
+
+The rule. A training Run never uses the model stand-in. Where no code can answer, the Run ends as "Environment cannot answer" and carries no reward signal either way.
+
+Checked in code. Nothing was checked in code for this decision.
+
+Against it. Nothing was recorded against this in the grill; the cost is that a corpus with thin coverage ends more Runs without a signal instead of inventing one.
+
+Checked after the grill (2026-09-18). The stand-in path exists (runner/route.py:215-223) but no production Router construction passes a stand-in model (four sites in builder/build.py, one in synthesise.py), so it is dormant today. This decision is a guard and a named outcome, not the removal of live behaviour.
+
+Status: decided 2026-09-18, not built.
+
+### D274. A stage's cache key is computed from the code it imports (2026-09-18)
+
+Stage versions are set by hand, so a stage whose code changed without its version being bumped serves a stale artifact, and nothing detects it.
+
+The rule. A cache key is computed from the code each stage imports, with a test that nothing reachable is missing from the key. Hand-set stage versions are deleted.
+
+Checked in code. Nothing was checked in code for this decision. Not checked: the architect's count of fifteen hand-set versions, three of them wrong.
+
+Against it. More rebuilds than strictly needed.
+
+Checked after the grill (2026-09-18). The premise is mostly false. Stage keys are already computed from source: pipeline._fn_identity hashes a stage function's source, build._version adds whole-file hashes of the modules a stage lists, regrade._fingerprint hashes bytecode, gates_version covers the gates package. What is hand-set is twelve record-format constants, which are a different thing and stay. The remaining risk is a stage that calls into a module its hand-written list leaves out, so the part worth building is the test that nothing reachable is missing; the deletion is small.
+
+Status: decided 2026-09-18, not built.
+
+### D275. One usage record everywhere and one place that computes cost (2026-09-18)
+
+Token counts are recorded in more than one shape, so cache reads and writes, reasoning tokens and output tokens cannot be added up the same way twice, and a cost number cannot be audited.
+
+The rule. One usage record everywhere (fresh input, cached input, output, reasoning), and cost computed in one place.
+
+Checked in code. Nothing was checked in code for this decision.
+
+Against it. Nothing was recorded against this in the grill.
+
+Status: decided 2026-09-18, not built.
+
+### D276. The stop rule reads the numbers the loop is for, and records a reason every time (2026-09-18)
+
+A round loop that stops on a count of rounds or on a refusal stops for reasons unrelated to whether the Environment got better, and a stop with no recorded reason cannot be read afterwards.
+
+The rule. The stop rule reads the fidelity rate and the trusted share, and records a reason every time it stops.
+
+Checked in code. Nothing was checked in code for this decision. Not checked: whether "done" is reachable by refusal today.
+
+Against it. Nothing was recorded against this in the grill.
+
+Status: decided 2026-09-18, not built.
+
+### D277. A mined fact carries the calls that support it, and a name is only a starting assumption (2026-09-18)
+
+A fact mined from a name (a column called something id-shaped, a tool whose name reads like a write) is a guess, and once it is stored beside a fact witnessed by calls the two are indistinguishable.
+
+The rule. Every mined fact carries its supporting calls. A name guess is a starting assumption that evidence can overrule, a kind the source declares outranks both, and facts resting on a name alone are counted per corpus.
+
+Checked in code. Nothing was checked in code for this decision.
+
+Against it. Nothing was recorded against this in the grill.
+
+Status: decided 2026-09-18, not built.
+
+### D278. What the grill removes, and what stays (2026-09-18)
+
+A design that adds mechanisms without naming what leaves keeps both, and the second copy is the one that decides a Verdict when nobody is looking. The grill closed with the removals each decision above owes, and with two things that explicitly stay.
+
+The rule. Removed: the second scorer's own meaning (D254); the ten-word affirmation list and the substring communicated check (D255); the judge inside the pass condition (D255); the three user construction sites (D256); the all-or-nothing intake gate (D263); hand-set stage versions (D274); and, on generality grounds, `tau2` and `data_model` in the allowed imports together with the "any dict with messages is tau2" guess (D261). Staying: the current synthetic generator (D259) and D215's replay effect check (D257).
+
+Checked in code. The evidence for each removal sits with the entry that owns it: gates/verifier_suite.py:760-762 and :797-799 for the scorer; gates/verifier_suite.py:56 with runner/atom_context.py:154-155 and :160-166 for the affirmations and the communicated check; runner/verdict.py:121-140 for the judge in the pass evaluation; rounds.py:1432, cli.py:812 and builder/build.py:2217 for the user construction sites; gates/artifacts.py:50-71 for the intake gate; gates/confinement.py:31-33 for the allowed imports; builder/ingest.py:96-110 for the format guess. Not checked: the hand-set stage versions and the three said to be wrong.
+
+Against it. Nothing was recorded against the list itself; every removal carries its own counter-evidence in the entry that owns it, and the two strictest, D255 and D257, are expected to lower a number before they raise it.
+
+Status: decided 2026-09-18, not built.
+
 ## Pending (asked, not yet answered)
 
 - ~~The user's own tools and the world they act on (D71, first part).~~ Decided as D176 (2026-09-07): one world, rows revealed by a requestor marked by it, readers as code under the free gate.
@@ -1917,4 +2294,21 @@ Tests on an invented kiln domain: two ware shapes, one held out, `test_body` nam
 - ~~Verifiers as LLM judges with rubrics~~ Closed the same evening, see D110. Kept for the record (founder, 2026-08-29): "environment is one major step the next major step is good and accurate verifiers -> i think mostly the research has converged them with llm as judges / reward models with rubrics, here we don't have reward models so we use llm as judges." Today's design is the other way round: a Verdict is code over the End state (D25, D43), a judge decides only what code cannot (semantic equality, an uncompilable rule, the cause of a failure, D12, D76, D92) and can never award a pass. The evidence on file cuts against judges as the grader: the Holistic Agent Leaderboard measured LLM judges at 0.65 AUROC on tau2 trajectories and 0.54 on AppWorld traces, with false-success rates from 3 to 76 percent by domain (`docs/synthetic-rows.md` section 4), and tau3 shipped its verifier fixes as code. What the research did converge on is the rubric: a written per-Task list of what the End state must hold, which is what the atoms are. The open question for the grill is whether the rubric is scored by code atoms with judge atoms as the residue (today), by a judge over a code-written rubric, or both with the disagreement rate reported. Not decided here.
 - Grill of 2026-08-29 paused after D112. Not yet asked: how Verifier correctness is reported per Task beyond the D79 suite; the loophole probe's cost and cap; what "comparison against the real Environment" adds beyond replay fidelity (state diff after the same writes); whether airline and telecom get the same defaults; the UI over Builder and Runner.
 - Size bands in design section 10 no longer describe the code. The overage is recorded in that section, not fixed: whether the bands move or the modules split is the design owner's call.
+- From the architecture grill of 2026-09-18, the nine things Claude decided by default and the founder has not ruled on:
+  - D252: whether the Run interface records each Run (seed, cost, route per call) from day one.
+  - D256: Claude's default, that the typed user turn record rides with the step split's re-freeze because it is additive and leaves every old field byte-identical.
+  - D259: Claude's reading, that Frontier Task, Decline Task and Mixed Task are the names (agreed in passing, the founder did not object) and that "unsolvable" is dropped.
+  - D261: which ten telemetry formats sit behind the intake seam, to be listed from research-traces.md and confirmed.
+  - D261: Claude's default for how an adapter earns a label, "proven on a build" where a real public corpus exists and "conformant" by checklist plus the same-recording test where none does, with the label saying which; and the correction from the data, that AgentTrove is one trace format rather than ten.
+  - D262: Claude's scoping of "always", that a tool is run for real where the real tool is available and safe to run in a sandbox, giving the order real, compiled code, recording, model stand-in.
+  - D262: Claude's addition, that a Real tool runs only in a sandbox nothing can leave, with no outside network by default.
+  - D263: Claude's reading of the five terminal cheats, that in recordings they only set aside and report while in Runs each has a structural defence, with the protected-path hash the only one exact enough to fail a Verdict.
+  - D265: Claude's shape for "one source of truth", that every signal field has exactly one owner, code or model, so the two readers can never disagree about the same field.
 
+## Implementation checkpoint, 2026-09-19
+
+The entries above preserve the decision-time reasoning and reported experiments. This checkpoint does not revalidate historical experiment figures or replace the per-change fidelity ledger.
+
+Main is at 6b06c5f with Wave 1 and PR #79 merged. PR #81 is reviewed and pushed at e3cc1fd, with the seven-patch re-freeze sequence verified; its frozen changes are not applied on main. PR #83 is retargeted to main and remains under review. The G1 Run interface is still uncommitted and under verification. The incomplete work includes G4, G7 to G9, G14 and G15, G19 and G20, G22 and G25, but that list is not exhaustive. No other D252 to D278 decision is claimed complete by this checkpoint: completion requires a named implementation and its acceptance evidence, not omission from this list.
+
+The owner approved re-freezing on a dedicated integration branch, not on main; rerunning the grouping proof after the tighter scorer is applied; the PR #69 live comparison with a $6 hard spend ceiling; and evaluating last-answered-call AgentTrove prefixes as a separate cohort while preserving the original recordings. Approval is not evidence that any of those runs has finished. Truncated prefixes must not be reported as complete recordings.
