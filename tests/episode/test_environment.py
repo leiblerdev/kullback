@@ -181,6 +181,44 @@ def test_no_confirmed_rows_selects_nothing(tmp_path):
     assert env.reference(task) is None
 
 
+def test_batch_choice_follows_the_confirmed_reference(tmp_path):
+    from kullback.episode import loading
+
+    root = write_env(tmp_path / "env")
+    _write_reference_fixture(root)
+    task = BuiltEnvironment(root).task("widget_task")
+    rules = loading._user_rules(root, task)
+    assert [f.value for f in rules.facts if f.field == "speaker"] == ["rec2"]
+
+
+def test_batch_choice_with_no_replays_file_takes_first_non_held(tmp_path):
+    from kullback.episode import loading
+
+    root = write_env(tmp_path / "env")
+    _write_reference_fixture(root, replays=None)
+    task = BuiltEnvironment(root).task("widget_task")
+    rules = loading._user_rules(root, task)
+    assert [f.value for f in rules.facts if f.field == "speaker"] == ["rec1"]
+
+
+def test_batch_choice_with_no_confirmed_rows_is_none(tmp_path):
+    from kullback.episode import loading
+
+    root = write_env(tmp_path / "env")
+    _write_reference_fixture(
+        root,
+        replays={
+            "widget_task": {
+                "rec1": {"trace_id": "rec1", "confirmed": False},
+                "held": {"trace_id": "held", "confirmed": False},
+                "rec2": {"trace_id": "rec2", "confirmed": False},
+            }
+        },
+    )
+    task = BuiltEnvironment(root).task("widget_task")
+    assert loading._user_rules(root, task) is None
+
+
 def test_rules_path_rejects_unsafe_recording_ids(tmp_path):
     root = write_env(tmp_path / "env")
     env = BuiltEnvironment(root)

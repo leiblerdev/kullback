@@ -275,10 +275,51 @@ def _vocab_from(workdir: Path) -> vocabulary.Vocabulary:
     return vocabulary.Vocabulary.model_validate(stored) if stored else vocabulary.GENERIC
 
 
-def _user_rules(workdir: Path, task: Task) -> Optional[UserRules]:
-    for run_id in task.run_ids:
-        path = Path(workdir) / "user_rules" / f"{run_id}.json"
-        if not path.is_file():
-            continue
-        return _record(path, UserRules)
+def _safe_recording_id(run_id: Any) -> bool:
+    """Whether `run_id` names one rules file and nothing above it."""
+    return (isinstance(run_id, str) and bool(run_id) and run_id not in (".", "..")
+            and "/" not in run_id and "\\" not in run_id)
+
+
+def _reference_run_id(task: Task, rows: Optional[dict], held_out: set, rules_dir: Path) -> Optional[str]:
+    """The recording whose user rules drive the Task: first seed, confirmed one with rules on disk.
+
+    One function for the Episode (`environment.BuiltEnvironment._reference_id`) and the Builder's
+    `run_batch` (through `_user_rules`), so a stored Run was driven by exactly the rules a replay
+    of it drives. `rows` is the Task's replays.json rows, or None where the file names no Task;
+    a row the Builder never validated is skipped where the Episode would have refused it sooner.
+    """
+    seeds = [run_id for run_id in task.run_ids if run_id not in held_out]
+    candidates = list(seeds)
+    if rows is not None:
+        candidates = []
+        for rid, row in sorted(rows.items()):
+            if not isinstance(row, dict):
+                continue
+            trace_id = row.get("trace_id")
+            if rid in seeds and row.get("confirmed") and trace_id in seeds:
+                candidates.append(trace_id)
+    for run_id in candidates:
+        if not _safe_recording_id(run_id):
+            raise EnvironmentError("recording id must be a single safe path component")
+        if (Path(rules_dir) / f"{run_id}.json").is_file():
+            return run_id
     return None
+
+
+def _user_rules(workdir: Path, task: Task) -> Optional[UserRules]:
+    """The Task's Simulated user rules through the same choice the Episode replays with.
+
+    `run_batch` reads through this, so a batch Run is driven by exactly the rules a replay of it
+    drives. Where the Task's first recording is unconfirmed this is no longer the first recording.
+    """
+    workdir = Path(workdir)
+    anchor = _shaped_json(workdir / "anchor.json", "object", {}, what="an anchor record")
+    held_out = anchor.get("held_out", {})
+    held = {run_id for runs in held_out.values() for run_id in runs} \
+        if isinstance(held_out, dict) else set()
+    replays = _shaped_json(workdir / "replays.json", "object", {}, what="replay records")
+    run_id = _reference_run_id(task, replays.get(task.id), held, workdir / "user_rules")
+    if run_id is None:
+        return None
+    return _record(workdir / "user_rules" / f"{run_id}.json", UserRules)

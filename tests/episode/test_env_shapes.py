@@ -97,3 +97,26 @@ def test_broken_verifier_file_is_refused(tmp_path):
     with pytest.raises(EnvironmentError) as excinfo:
         env.verifier("widget_task")
     assert "widget_task.json" in str(excinfo.value)
+
+
+@pytest.mark.parametrize("replays", [
+    {"widget_task": []},
+    {"widget_task": {"rec1": ["rec1"]}},
+    {"widget_task": {"rec1": {"confirmed": True}}},
+    {"widget_task": {"rec1": {"trace_id": 7, "confirmed": True}}},
+    {"widget_task": {"rec1": {"trace_id": "rec1", "confirmed": "yes"}}},
+])
+def test_misshapen_replay_rows_are_refused_at_construction(tmp_path, replays):
+    root = write_env(tmp_path / "root")
+    (root / "replays.json").write_text(json.dumps(replays), encoding="utf-8")
+    with pytest.raises(EnvironmentError) as excinfo:
+        BuiltEnvironment(root)
+    assert "replays.json" in str(excinfo.value)
+
+
+def test_well_formed_replay_rows_still_load(tmp_path):
+    root = write_env(tmp_path / "root")
+    (root / "replays.json").write_text(json.dumps(
+        {"widget_task": {"rec1": {"trace_id": "rec1", "confirmed": True}}}), encoding="utf-8")
+    env = BuiltEnvironment(root)
+    assert env.rules(env.task("widget_task")) is not None
