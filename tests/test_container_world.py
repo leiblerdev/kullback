@@ -16,6 +16,7 @@ from kullback.container_world import (
     DockerUnavailable,
     ExecutorResult,
     ExecutorTimeout,
+    ExportError,
     ImagePinError,
     LaunchFailure,
     LimitError,
@@ -1840,3 +1841,110 @@ def test_r9_shell_probe_leaves_world_usable():
     assert rms == []
     execs = [argv for argv, _ in calls if len(argv) > 1 and argv[1] == "exec"]
     assert [argv[-1] for argv in execs] == [":", "echo hi"]
+
+
+def _r10_tar_extra(mode, raw):
+    def extra(argv, timeout):
+        if argv[1] == "exec":
+            if argv[-1] == ":":
+                return ExecutorResult(0, b"", b"")
+            if mode == "timeout":
+                raise ExecutorTimeout(b"part", b"")
+            if mode == "overflow":
+                raise OutputLimitExceeded(b"x" * 10, b"")
+            if mode == "nonzero":
+                return ExecutorResult(2, b"", b"tar: failed\n")
+            return ExecutorResult(0, raw, b"")
+        raise AssertionError("unexpected " + argv[1])
+
+    return extra
+
+
+def test_r10_export_sends_direct_tar_argv_and_returns_raw_bytes():
+    # Direct argv, no sh -c: the tar arguments are fixed strings with no
+    # shell metacharacters, so a shell would only add an injection surface.
+    raw = b"\xff\xfe\x00tar-bytes\x01\x00end"
+    seen = {}
+
+    def extra(argv, timeout):
+        if argv[1] == "exec":
+            if argv[-1] == ":":
+                return ExecutorResult(0, b"", b"")
+            seen["argv"] = argv
+            return ExecutorResult(0, raw, b"")
+        raise AssertionError("unexpected " + argv[1])
+
+    world = _fresh_std([], extra)
+    assert world.export_workspace(65536) == raw
+    assert seen["argv"] == [DOCK, "exec", IDA, "tar", "-cf", "-", "-C", "/workspace", "."]
+
+
+def test_r10_export_uses_own_limit_not_step_cap():
+    payload = b"y" * 100
+
+    def extra(argv, timeout):
+        if argv[1] == "exec":
+            if argv[-1] == ":":
+                return ExecutorResult(0, b"", b"")
+            return ExecutorResult(0, payload, b"")
+        raise AssertionError("unexpected " + argv[1])
+
+    world = _fresh_std([], extra, output_limit_bytes=10)
+    assert world.export_workspace(1024) == payload
+    receipt = world.step("yes")
+    assert receipt.truncated is True
+    assert len(receipt.stdout) + len(receipt.stderr) <= 10
+
+
+@pytest.mark.parametrize(
+    "mode",
+    ["timeout", "overflow", "nonzero"],
+    ids=["timeout-removes-world", "overflow-removes-world", "nonzero-exit-keeps-world"],
+)
+def test_r10_export_failure_cleans_up_like_step(mode):
+    calls = []
+    world = _fresh_std(calls, _r10_tar_extra(mode, b""))
+    with pytest.raises(ExportError):
+        world.export_workspace(65536)
+    verbs = [argv[1] for argv, _ in calls]
+    if mode == "nonzero":
+        assert world._active is True
+        assert world._container_id == IDA
+        assert "rm" not in verbs
+    else:
+        assert world._container_id is None
+        assert world._active is False
+        assert "rm" in verbs
+        with pytest.raises(StateError):
+            world.step("echo hi")
+
+
+def test_r10_export_before_reset_refuses_like_step():
+    world = make_world([], lambda a, t: ExecutorResult(0, b"", b""))
+    with pytest.raises(StateError):
+        world.export_workspace(1024)
+
+
+def test_r10_export_while_unresolved_refuses_like_step():
+    world = make_world([], _scripted([ExecutorTimeout(b"", b"")]))
+    with pytest.raises(UnresolvedError):
+        world.reset()
+    with pytest.raises(UnresolvedError):
+        world.step("echo hi")
+    with pytest.raises(UnresolvedError):
+        world.export_workspace(1024)
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [0, -5, True, "1024", None, 16777217],
+    ids=["zero", "negative", "bool", "str", "none", "above-max"],
+)
+def test_r10_export_rejects_bad_limits(bad):
+    calls = []
+    world = _fresh_std(calls, _r10_tar_extra("ok", b""))
+    n_exec_before = len([c for c in calls if c[0][1] == "exec"])
+    with pytest.raises(LimitError):
+        world.export_workspace(bad)
+    assert world._active is True
+    assert len([c for c in calls if c[0][1] == "exec"]) == n_exec_before

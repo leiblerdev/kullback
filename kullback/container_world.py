@@ -1,6 +1,6 @@
 """Disposable container backend: run commands in a fresh container per world.
 
-An image must provide sleep and sh.
+An image must provide sleep and sh; an image must also provide tar to be exported.
 """
 
 from __future__ import annotations
@@ -49,6 +49,16 @@ class StateError(WorldError):
 
 class UnresolvedError(WorldError):
     pass
+
+
+class ExportError(WorldError):
+    pass
+
+
+class _GuardedFailure(Exception):
+    def __init__(self, receipt):
+        super().__init__("guarded exec produced no result")
+        self.receipt = receipt
 
 
 class CleanupError(WorldError):
@@ -594,13 +604,37 @@ class ContainerWorld:
             raise WorldError("control output exceeds bound")
         return res
 
-    def _exec_call(self, argv: list, timeout: float) -> ExecutorResult:
+    def _exec_call(self, argv: list, timeout: float, limit: int) -> ExecutorResult:
         try:
-            return self._call(argv, timeout, self.output_limit_bytes)
+            return self._call(argv, timeout, limit)
         except FileNotFoundError as exc:
             raise DockerUnavailable(str(exc)) from exc
         except OSError as exc:
             raise DockerUnavailable(str(exc)) from exc
+
+    def _exec_guarded(self, argv: list, limit: int) -> ExecutorResult:
+        try:
+            res = self._exec_call(argv, self.timeout_s, limit)
+        except ExecutorTimeout as exc:
+            out, err = _trim_combined(bytes(exc.stdout), bytes(exc.stderr), limit)
+            receipt = self._cleanup_after_output(out, err, True, False)
+            raise _GuardedFailure(receipt) from exc
+        except (OutputLimitExceeded, CaptureIncomplete) as exc:
+            out, err = _trim_combined(bytes(exc.stdout), bytes(exc.stderr), limit)
+            receipt = self._cleanup_after_output(out, err, False, True)
+            raise _GuardedFailure(receipt) from exc
+        except BaseException as intr:
+            self._active = False
+            try:
+                self._remove_owned()
+            except BaseException as clean_exc:
+                raise intr from clean_exc
+            raise
+        if len(res.stdout) + len(res.stderr) > limit:
+            out, err = _trim_combined(bytes(res.stdout), bytes(res.stderr), limit)
+            receipt = self._cleanup_after_output(out, err, False, True)
+            raise _GuardedFailure(receipt)
+        return res
 
     def _create_argv(self) -> list:
         return [
@@ -869,24 +903,32 @@ class ContainerWorld:
         if not isinstance(command, str):
             raise WorldError("command must be a string")
         try:
-            res = self._exec_call([self.docker, "exec", self._container_id, "sh", "-c", command], self.timeout_s)
-        except ExecutorTimeout as exc:
-            out, err = _trim_combined(bytes(exc.stdout), bytes(exc.stderr), self.output_limit_bytes)
-            return self._cleanup_after_output(out, err, True, False)
-        except (OutputLimitExceeded, CaptureIncomplete) as exc:
-            out, err = _trim_combined(bytes(exc.stdout), bytes(exc.stderr), self.output_limit_bytes)
-            return self._cleanup_after_output(out, err, False, True)
-        except BaseException as intr:
-            self._active = False
-            try:
-                self._remove_owned()
-            except BaseException as clean_exc:
-                raise intr from clean_exc
-            raise
-        if len(res.stdout) + len(res.stderr) > self.output_limit_bytes:
-            out, err = _trim_combined(bytes(res.stdout), bytes(res.stderr), self.output_limit_bytes)
-            return self._cleanup_after_output(out, err, False, True)
+            res = self._exec_guarded(
+                [self.docker, "exec", self._container_id, "sh", "-c", command],
+                self.output_limit_bytes,
+            )
+        except _GuardedFailure as failed:
+            return failed.receipt
         return StepReceipt(bytes(res.stdout), bytes(res.stderr), res.returncode, False, False)
+
+    def export_workspace(self, limit_bytes: int) -> bytes:
+        if self._unresolved:
+            raise UnresolvedError("world creation is unresolved")
+        if not self._active or self._container_id is None:
+            raise StateError("world needs reset before export")
+        _check_int("limit_bytes", limit_bytes, 1, 16777216)
+        try:
+            res = self._exec_guarded(
+                [self.docker, "exec", self._container_id, "tar", "-cf", "-", "-C", "/workspace", "."],
+                limit_bytes,
+            )
+        except _GuardedFailure as failed:
+            if failed.receipt.timed_out:
+                raise ExportError("workspace export timed out") from failed
+            raise ExportError("workspace export exceeded its byte limit") from failed
+        if res.returncode != 0:
+            raise ExportError("workspace export exited with code " + str(res.returncode))
+        return bytes(res.stdout)
 
     def close(self) -> bool:
         if self._unresolved:
