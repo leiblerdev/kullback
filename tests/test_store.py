@@ -1400,6 +1400,121 @@ def test_session_acquire_interrupt_cleans_fd(tmp_path, monkeypatch):
     assert _mod._OPEN_FDS == set()
 
 
+def test_session_release_unlock_failure_clears_state(tmp_path, monkeypatch):
+    import fcntl as _fcntl
+
+    from kullback import store as _mod
+    root = tmp_path / "w"
+    store = WorkdirStore(root, [_session_spec()])
+    root.mkdir(parents=True, exist_ok=True)
+    identity = Path(store._root_str).stat()
+    key = (os.getpid(), identity.st_dev, identity.st_ino)
+    before = _mod._state_for(key)
+    real_flock = _fcntl.flock
+    once = {"armed": True}
+    def _once(fd, op):
+        if once["armed"] and op == _fcntl.LOCK_UN:
+            once["armed"] = False
+            raise OSError(errno.EIO, "injected unlock")
+        return real_flock(fd, op)
+    monkeypatch.setattr(_fcntl, "flock", _once)
+    kept = []
+    try:
+        with store.exclusive_session():
+            pass
+    except OSError as exc:
+        kept.append(exc)
+    assert len(kept) == 1
+    assert kept[0].errno == errno.EIO
+    monkeypatch.setattr(_fcntl, "flock", real_flock)
+    assert _mod._state_for(key) is before
+    assert before.session_active is False
+    assert before.session_closing is False
+    assert before.session_fd is None
+    assert _mod._OPEN_FDS == set()
+    with store.exclusive_session():
+        with store.transaction():
+            store.write("n", 1)
+    other = WorkdirStore(root, [_session_spec()])
+    with other.exclusive_session():
+        pass
+    with store.transaction():
+        assert store.read("n").value == 1
+    assert kept[0].errno == errno.EIO
+
+
+def test_session_release_interrupt_clears_state(tmp_path, monkeypatch):
+    import fcntl as _fcntl
+
+    from kullback import store as _mod
+    root = tmp_path / "w"
+    store = WorkdirStore(root, [_session_spec()])
+    real_flock = _fcntl.flock
+    def _raiser(kind):
+        once = {"armed": True}
+        def _once(fd, op):
+            if once["armed"] and op == _fcntl.LOCK_UN:
+                once["armed"] = False
+                raise kind()
+            return real_flock(fd, op)
+        return _once
+    kept = []
+    for kind in (KeyboardInterrupt, SystemExit):
+        monkeypatch.setattr(_fcntl, "flock", _raiser(kind))
+        try:
+            with store.exclusive_session():
+                pass
+        except kind as exc:
+            kept.append(exc)
+        else:
+            raise AssertionError("release interruption swallowed")
+        monkeypatch.setattr(_fcntl, "flock", real_flock)
+        assert _mod._OPEN_FDS == set()
+        with store.exclusive_session():
+            pass
+    assert len(kept) == 2
+
+
+def test_session_release_close_failure_consistent_state(tmp_path, monkeypatch):
+    from kullback import store as _mod
+    root = tmp_path / "w"
+    store = WorkdirStore(root, [_session_spec()])
+    root.mkdir(parents=True, exist_ok=True)
+    identity = Path(store._root_str).stat()
+    key = (os.getpid(), identity.st_dev, identity.st_ino)
+    state = _mod._state_for(key)
+    holder = store.exclusive_session()
+    holder.__enter__()
+    fd = state.session_fd
+    assert fd is not None
+    real_close = os.close
+    once = {"armed": True}
+    def _failing_close(fd2):
+        if once["armed"] and fd2 == fd:
+            once["armed"] = False
+            raise OSError(errno.EIO, "injected close")
+        return real_close(fd2)
+    monkeypatch.setattr(os, "close", _failing_close)
+    kept = []
+    try:
+        holder.__exit__(None, None, None)
+    except OSError as exc:
+        kept.append(exc)
+    assert len(kept) == 1
+    assert kept[0].errno == errno.EIO
+    monkeypatch.setattr(os, "close", real_close)
+    assert state.session_active is False
+    assert state.session_closing is False
+    assert state.session_fd is None
+    assert fd not in _mod._OPEN_FDS
+    real_close(fd)
+    with store.exclusive_session():
+        with store.transaction():
+            store.write("n", 2)
+    assert store.read("n").value == 2
+    assert kept[0].errno == errno.EIO
+
+
 def test_session_survives_store_drop(tmp_path):
     import gc
 

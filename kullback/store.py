@@ -283,11 +283,13 @@ def _session_release(state: _LockState) -> None:
         fd = state.session_fd
         state.session_fd = None
         try:
-            _fcntl.flock(fd, _fcntl.LOCK_UN)
+            try:
+                _fcntl.flock(fd, _fcntl.LOCK_UN)
+            finally:
+                _close_lock_file(fd)
         finally:
-            _close_lock_file(fd)
-        state.session_active = False
-        state.session_closing = False
+            state.session_active = False
+            state.session_closing = False
     finally:
         state.rlock.release()
 
