@@ -642,6 +642,31 @@ def test_time_only_in_older_row_object_gets_no_creation_evidence():
     assert "now_evidence" not in feed
 
 
+def test_read_returning_existing_row_with_stored_date_serves_seeded_now():
+    read = ToolCall(id="r1", name="get_loan", args={"patron": "ann"},
+                    result={"loan_id": "L100", "opened": STORED_TIME}, raw_ptr=PTR)
+    feed = ce.recorded_call_contexts([read], LOANS_SCHEMA)["r1"]
+    assert feed.get("now_evidence") == "created_row"
+    toolkit = ce.load_toolkit(
+        ce.module_source(LOANS_SCHEMA, [OPEN_SIG], {"open_loan": OPEN_BODY}),
+        {table: dict(rows) for table, rows in LOANS_DB.items()})
+    toolkit.ctx.feed_call(feed)
+    assert toolkit.ctx.now() != STORED_TIME
+    assert toolkit.ctx.usage() == {"recorded": 0, "seeded": 1}
+
+
+def test_new_id_is_per_table_against_the_start_state():
+    """A loan 42 is new although a user 42 exists: the exemption compares per table."""
+    toolkit = ce.load_toolkit(
+        ce.module_source(TWO_TABLE_SCHEMA, [OPEN_SIG], {"open_loan": OPEN_BODY}),
+        {"users": {"42": {"user_id": "42"}},
+         "loans": {"L100": {"loan_id": "L100", "opened": STORED_TIME}}})
+    toolkit.ctx.feed_call({"now": STORED_TIME, "new_ids": {"loans": ["42"]},
+                           "now_evidence": "created_row"})
+    assert toolkit.ctx.now() == STORED_TIME
+    assert toolkit.ctx.usage() == {"recorded": 1, "seeded": 0}
+
+
 def test_a_reseeded_context_matches_a_fresh_one_after_a_row_is_deleted():
     source = ce.module_source(LOANS_SCHEMA, [OPEN_SIG], {"open_loan": OPEN_BODY})
     used = ce.load_toolkit(source, {table: dict(rows) for table, rows in LOANS_DB.items()})

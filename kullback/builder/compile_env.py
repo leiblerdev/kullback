@@ -2021,9 +2021,27 @@ _CONTEXT_SHIM = '''class ToolContext:
             items = list(values) if isinstance(values, (list, tuple)) else [values]
             if items:
                 ids[str(table)] = items
-        self._current = {"now": feed.get("now"), "new_ids": ids}
+        self._current = {"now": feed.get("now"), "new_ids": ids,
+                         "created_exempt": self._created_exempt(feed)}
         if feed.get("now_evidence") is not None:
             self._current["now_evidence"] = feed.get("now_evidence")
+
+    def _created_exempt(self, feed):
+        """Whether a created-row feed vouches for ids the start state never held.
+
+        First appearance in the trace is not proof of creation; absence from the start
+        state is the missing half. Compared per table, the way new_id compares: a loan 42
+        is new although a user 42 exists. Decided here, before new_id starts popping the
+        lists, so the whole feed is judged, not what is left of it.
+        """
+        if feed.get("now_evidence") != "created_row":
+            return False
+        for table, values in (feed.get("new_ids") or {}).items():
+            held = self._starting_ids.get(str(table), set())
+            items = list(values) if isinstance(values, (list, tuple)) else [values]
+            if any(str(value) in held for value in items):
+                return False
+        return True
 
     def attach_recorded(self, recorded):
         """Serve a whole Run's witnessed values in call order: ids per table, times in turn."""
@@ -2057,12 +2075,13 @@ _CONTEXT_SHIM = '''class ToolContext:
 
         A witnessed time the world already held at reset is what the call found, not what it
         made, so the seeded feed answers for it, counted as seeded. A feed the creation rule
-        evidenced says the call made the row the stamp sits in, so the reset check is skipped
-        for it only; a feed without the key behaves as before.
+        evidenced, and whose new ids the start state never held, says the call made the row
+        the stamp sits in, so the reset check is skipped for it only; any other feed behaves
+        as before.
         """
         self._step += 1
         witnessed = (self._current or {}).get("now")
-        created = (self._current or {}).get("now_evidence") == "created_row"
+        created = bool((self._current or {}).get("created_exempt"))
         if witnessed is not None and witnessed in self._starting_times and not created:
             witnessed = None
         if witnessed is not None:
