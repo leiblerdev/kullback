@@ -246,8 +246,9 @@ def _update_call():
 
 
 def test_an_update_echoing_its_own_id_feeds_no_new_id():
-    feeds = ce.recorded_call_contexts([_update_call()], LOANS_SCHEMA)
-    assert feeds["u1"]["new_ids"] == {}
+    call = _update_call()
+    feeds = ce.recorded_call_contexts([call], LOANS_SCHEMA)
+    assert feeds[ce.context_feed_key(call)]["new_ids"] == {}
 
 
 def test_a_wrong_update_body_is_not_certified_from_the_fed_old_id(tmp_path):
@@ -267,8 +268,8 @@ def test_an_id_observed_earlier_in_the_recording_is_withheld():
     echo = ToolCall(id="r2", name="get_loan", args={},
                     result={"loan_id": "L101"}, raw_ptr=PTR, trace_id="t1")
     feeds = ce.recorded_call_contexts([create, echo], LOANS_SCHEMA)
-    assert feeds["c1"]["new_ids"] == {"loans": ["L101"]}
-    assert feeds["r2"]["new_ids"] == {}
+    assert feeds[ce.context_feed_key(create)]["new_ids"] == {"loans": ["L101"]}
+    assert feeds[ce.context_feed_key(echo)]["new_ids"] == {}
 
 
 def test_a_scalar_spelling_does_not_suppress_per_call_newness():
@@ -276,7 +277,7 @@ def test_a_scalar_spelling_does_not_suppress_per_call_newness():
                     result={"note": "L101"}, raw_ptr=PTR)
     create = _call("c1", {"loan_id": "L101", "opened": "2024-03-04T05:06:07"})
     feeds = ce.recorded_call_contexts([note, create], LOANS_SCHEMA)
-    assert feeds["c1"]["new_ids"] == {"loans": ["L101"]}
+    assert feeds[ce.context_feed_key(create)]["new_ids"] == {"loans": ["L101"]}
 
 
 def test_separate_recordings_never_share_prior_observation():
@@ -285,8 +286,8 @@ def test_separate_recordings_never_share_prior_observation():
     second = ToolCall(id="b1", name="open_loan", args={"patron": "bea"},
                       result={"loan_id": "L102"}, raw_ptr=PTR, trace_id="tb")
     feeds = ce.recorded_call_contexts([first, second], LOANS_SCHEMA)
-    assert feeds["a1"]["new_ids"] == {"loans": ["L102"]}
-    assert feeds["b1"]["new_ids"] == {"loans": ["L102"]}
+    assert feeds[ce.context_feed_key(first)]["new_ids"] == {"loans": ["L102"]}
+    assert feeds[ce.context_feed_key(second)]["new_ids"] == {"loans": ["L102"]}
 
 
 def test_new_id_refuses_a_witnessed_id_the_table_already_holds():
@@ -353,8 +354,8 @@ def test_the_recordings_own_order_decides_newness_not_the_handover_order():
                       raw_ptr=RawPtr(file_hash="testfile", sim_index=0, msg_index=1), trace_id="t1")
     ordered = ce.recorded_call_contexts([first, second], LOANS_SCHEMA)
     assert ce.recorded_call_contexts([second, first], LOANS_SCHEMA) == ordered
-    assert ordered["c1"]["new_ids"] == {"loans": ["L101"]}
-    assert ordered["c2"]["new_ids"] == {}
+    assert ordered[ce.context_feed_key(first)]["new_ids"] == {"loans": ["L101"]}
+    assert ordered[ce.context_feed_key(second)]["new_ids"] == {}
 
 
 def test_a_positioned_call_decides_newness_before_unpositioned_calls_in_its_trace():
@@ -367,9 +368,9 @@ def test_a_positioned_call_decides_newness_before_unpositioned_calls_in_its_trac
                      result={"loan_id": "L101"}, raw_ptr=PTR, trace_id="t1")
     feeds = ce.recorded_call_contexts([later, earlier, placed], LOANS_SCHEMA)
     assert feeds == ce.recorded_call_contexts([placed, earlier, later], LOANS_SCHEMA)
-    assert feeds["p0"]["new_ids"] == {"loans": ["L101"]}
-    assert feeds["u1"]["new_ids"] == {}
-    assert feeds["u2"]["new_ids"] == {}
+    assert feeds[ce.context_feed_key(placed)]["new_ids"] == {"loans": ["L101"]}
+    assert feeds[ce.context_feed_key(earlier)]["new_ids"] == {}
+    assert feeds[ce.context_feed_key(later)]["new_ids"] == {}
 
 
 def test_dict_calls_in_one_trace_withhold_a_reobserved_id():
@@ -378,8 +379,8 @@ def test_dict_calls_in_one_trace_withhold_a_reobserved_id():
     second = {"id": "c2", "name": "get_loan", "args": {},
               "result": {"loan_id": "L101"}, "trace_id": "t1"}
     feeds = ce.recorded_call_contexts([first, second], LOANS_SCHEMA)
-    assert feeds["c1"]["new_ids"] == {"loans": ["L101"]}
-    assert feeds["c2"]["new_ids"] == {}
+    assert feeds[ce.context_feed_key(first)]["new_ids"] == {"loans": ["L101"]}
+    assert feeds[ce.context_feed_key(second)]["new_ids"] == {}
 
 
 FRESH_TIME = "2024-05-06T07:08:09"
@@ -399,7 +400,8 @@ TWO_TABLE_SCHEMA = EntitySchema(
 
 def test_fresh_create_timestamp_feeds_now():
     call = _call("c1", {"loan_id": "L101", "opened": FRESH_TIME})
-    assert ce.recorded_call_contexts([call], LOANS_SCHEMA)["c1"]["now"] == FRESH_TIME
+    key = ce.context_feed_key(call)
+    assert ce.recorded_call_contexts([call], LOANS_SCHEMA)[key]["now"] == FRESH_TIME
 
 
 def test_read_result_showing_stored_date_serves_seeded_now():
@@ -408,7 +410,7 @@ def test_read_result_showing_stored_date_serves_seeded_now():
     toolkit = ce.load_toolkit(
         ce.module_source(LOANS_SCHEMA, [OPEN_SIG], {"open_loan": OPEN_BODY}),
         {table: dict(rows) for table, rows in LOANS_DB.items()})
-    toolkit.ctx.feed_call(ce.recorded_call_contexts([read], LOANS_SCHEMA)["r1"])
+    toolkit.ctx.feed_call(ce.recorded_call_contexts([read], LOANS_SCHEMA)[ce.context_feed_key(read)])
     assert toolkit.ctx.now() != STORED_TIME
     assert toolkit.ctx.usage() == {"recorded": 0, "seeded": 1}
 
@@ -416,19 +418,22 @@ def test_read_result_showing_stored_date_serves_seeded_now():
 def test_result_with_two_differing_fresh_times_feeds_no_now():
     call = _call("c1", {"loan_id": "L101", "created_at": FRESH_TIME,
                         "updated_at": OTHER_FRESH_TIME})
-    assert ce.recorded_call_contexts([call], LOANS_SCHEMA)["c1"]["now"] is None
+    key = ce.context_feed_key(call)
+    assert ce.recorded_call_contexts([call], LOANS_SCHEMA)[key]["now"] is None
 
 
 def test_equal_times_across_two_leaves_feed_one_now():
     call = _call("c1", {"loan_id": "L101", "created_at": FRESH_TIME,
                         "updated_at": FRESH_TIME})
-    assert ce.recorded_call_contexts([call], LOANS_SCHEMA)["c1"]["now"] == FRESH_TIME
+    key = ce.context_feed_key(call)
+    assert ce.recorded_call_contexts([call], LOANS_SCHEMA)[key]["now"] == FRESH_TIME
 
 
 def test_timestamp_echoed_from_arguments_feeds_no_now():
     call = ToolCall(id="c1", name="open_loan", args={"patron": FRESH_TIME},
                     result={"loan_id": "L101", "opened": FRESH_TIME}, raw_ptr=PTR)
-    assert ce.recorded_call_contexts([call], LOANS_SCHEMA)["c1"]["now"] is None
+    key = ce.context_feed_key(call)
+    assert ce.recorded_call_contexts([call], LOANS_SCHEMA)[key]["now"] is None
 
 
 def test_timestamp_seen_in_earlier_call_of_same_trace_feeds_no_now():
@@ -439,8 +444,8 @@ def test_timestamp_seen_in_earlier_call_of_same_trace_feeds_no_now():
                       result={"loan_id": "L101", "opened": FRESH_TIME},
                       raw_ptr=PTR, trace_id="t1")
     feeds = ce.recorded_call_contexts([first, second], LOANS_SCHEMA)
-    assert feeds["c1"]["now"] == FRESH_TIME
-    assert feeds["c2"]["now"] is None
+    assert feeds[ce.context_feed_key(first)]["now"] == FRESH_TIME
+    assert feeds[ce.context_feed_key(second)]["now"] is None
 
 
 def test_two_traces_do_not_share_time_observations():
@@ -451,8 +456,8 @@ def test_two_traces_do_not_share_time_observations():
                       result={"loan_id": "L102", "opened": FRESH_TIME},
                       raw_ptr=PTR, trace_id="tb")
     feeds = ce.recorded_call_contexts([first, second], LOANS_SCHEMA)
-    assert feeds["a1"]["now"] == FRESH_TIME
-    assert feeds["b1"]["now"] == FRESH_TIME
+    assert feeds[ce.context_feed_key(first)]["now"] == FRESH_TIME
+    assert feeds[ce.context_feed_key(second)]["now"] == FRESH_TIME
 
 
 def test_id_of_other_table_seen_earlier_stays_new():
@@ -462,7 +467,7 @@ def test_id_of_other_table_seen_earlier_stays_new():
                       result={"loan_id": "42", "opened": FRESH_TIME},
                       raw_ptr=PTR, trace_id="t1")
     feeds = ce.recorded_call_contexts([seen, create], TWO_TABLE_SCHEMA)
-    assert feeds["c2"]["new_ids"] == {"loans": ["42"]}
+    assert feeds[ce.context_feed_key(create)]["new_ids"] == {"loans": ["42"]}
 
 
 def test_id_of_same_table_seen_earlier_stays_suppressed():
@@ -473,8 +478,8 @@ def test_id_of_same_table_seen_earlier_stays_suppressed():
                       result={"loan_id": "L102", "opened": OTHER_FRESH_TIME},
                       raw_ptr=PTR, trace_id="t1")
     feeds = ce.recorded_call_contexts([first, second], TWO_TABLE_SCHEMA)
-    assert feeds["c1"]["new_ids"] == {"loans": ["L102"]}
-    assert feeds["c2"]["new_ids"] == {}
+    assert feeds[ce.context_feed_key(first)]["new_ids"] == {"loans": ["L102"]}
+    assert feeds[ce.context_feed_key(second)]["new_ids"] == {}
 
 
 def test_id_under_a_key_no_table_claims_suppresses_every_table():
@@ -484,20 +489,21 @@ def test_id_under_a_key_no_table_claims_suppresses_every_table():
                       result={"loan_id": "X42", "opened": FRESH_TIME},
                       raw_ptr=PTR, trace_id="t1")
     feeds = ce.recorded_call_contexts([seen, create], LOANS_SCHEMA)
-    assert feeds["c2"]["new_ids"] == {}
+    assert feeds[ce.context_feed_key(create)]["new_ids"] == {}
 
 
 def test_list_result_with_two_new_rows_feeds_both_ids_in_order():
     call = _call("c1", [{"loan_id": "L101", "opened": FRESH_TIME},
                         {"loan_id": "L102", "opened": OTHER_FRESH_TIME}])
-    feed = ce.recorded_call_contexts([call], LOANS_SCHEMA)["c1"]
+    feed = ce.recorded_call_contexts([call], LOANS_SCHEMA)[ce.context_feed_key(call)]
     assert feed["new_ids"] == {"loans": ["L101", "L102"]}
     assert feed["now"] is None
 
 
 def test_single_id_result_still_feeds_one_id_list():
     call = _call("c1", {"loan_id": "L101", "opened": FRESH_TIME})
-    assert ce.recorded_call_contexts([call], LOANS_SCHEMA)["c1"]["new_ids"] == {"loans": ["L101"]}
+    key = ce.context_feed_key(call)
+    assert ce.recorded_call_contexts([call], LOANS_SCHEMA)[key]["new_ids"] == {"loans": ["L101"]}
 
 
 def test_third_new_id_falls_back_to_seeded_feed():
@@ -570,13 +576,14 @@ def test_search_query_in_earlier_args_does_not_block_later_new_id():
                       result={"loan_id": "L200", "opened": FRESH_TIME},
                       raw_ptr=PTR, trace_id="t1")
     feeds = ce.recorded_call_contexts([search, create], LOANS_SCHEMA)
-    assert feeds["c2"]["new_ids"] == {"loans": ["L200"]}
+    assert feeds[ce.context_feed_key(create)]["new_ids"] == {"loans": ["L200"]}
 
 
 def test_create_whose_own_arguments_state_the_value_feeds_nothing():
     create = ToolCall(id="c1", name="open_loan", args={"patron": "L200"},
                       result={"loan_id": "L200", "opened": FRESH_TIME}, raw_ptr=PTR)
-    assert ce.recorded_call_contexts([create], LOANS_SCHEMA)["c1"]["new_ids"] == {}
+    key = ce.context_feed_key(create)
+    assert ce.recorded_call_contexts([create], LOANS_SCHEMA)[key]["new_ids"] == {}
 
 
 def test_two_creates_in_same_second_both_feed_recorded_now():
@@ -587,9 +594,9 @@ def test_two_creates_in_same_second_both_feed_recorded_now():
                       result={"loan_id": "L102", "opened": FRESH_TIME},
                       raw_ptr=PTR, trace_id="t1")
     feeds = ce.recorded_call_contexts([first, second], LOANS_SCHEMA)
-    assert feeds["c1"]["now"] == FRESH_TIME
-    assert feeds["c2"]["now"] == FRESH_TIME
-    assert feeds["c2"].get("now_evidence") == "created_row"
+    assert feeds[ce.context_feed_key(first)]["now"] == FRESH_TIME
+    assert feeds[ce.context_feed_key(second)]["now"] == FRESH_TIME
+    assert feeds[ce.context_feed_key(second)].get("now_evidence") == "created_row"
 
 
 def test_two_creates_with_same_date_only_stamp_both_feed_it():
@@ -600,13 +607,13 @@ def test_two_creates_with_same_date_only_stamp_both_feed_it():
                       result={"loan_id": "L102", "opened": DATE_ONLY},
                       raw_ptr=PTR, trace_id="t1")
     feeds = ce.recorded_call_contexts([first, second], LOANS_SCHEMA)
-    assert feeds["c1"]["now"] == DATE_ONLY
-    assert feeds["c2"]["now"] == DATE_ONLY
+    assert feeds[ce.context_feed_key(first)]["now"] == DATE_ONLY
+    assert feeds[ce.context_feed_key(second)]["now"] == DATE_ONLY
 
 
 def test_create_stamped_like_stored_row_serves_recorded_now():
-    feed = ce.recorded_call_contexts(
-        [_call("c1", {"loan_id": "L101", "opened": STORED_TIME})], LOANS_SCHEMA)["c1"]
+    call = _call("c1", {"loan_id": "L101", "opened": STORED_TIME})
+    feed = ce.recorded_call_contexts([call], LOANS_SCHEMA)[ce.context_feed_key(call)]
     assert feed["now"] == STORED_TIME
     assert feed.get("now_evidence") == "created_row"
     toolkit = ce.load_toolkit(
@@ -620,7 +627,7 @@ def test_create_stamped_like_stored_row_serves_recorded_now():
 def test_created_row_with_differing_times_feeds_nothing():
     call = _call("c1", {"loan_id": "L101", "created_at": FRESH_TIME,
                         "updated_at": OTHER_FRESH_TIME})
-    feed = ce.recorded_call_contexts([call], LOANS_SCHEMA)["c1"]
+    feed = ce.recorded_call_contexts([call], LOANS_SCHEMA)[ce.context_feed_key(call)]
     assert feed["now"] is None
     assert "now_evidence" not in feed
 
@@ -628,7 +635,7 @@ def test_created_row_with_differing_times_feeds_nothing():
 def test_created_row_with_equal_times_feeds_one_with_evidence():
     call = _call("c1", {"loan_id": "L101", "created_at": FRESH_TIME,
                         "updated_at": FRESH_TIME})
-    feed = ce.recorded_call_contexts([call], LOANS_SCHEMA)["c1"]
+    feed = ce.recorded_call_contexts([call], LOANS_SCHEMA)[ce.context_feed_key(call)]
     assert feed["now"] == FRESH_TIME
     assert feed.get("now_evidence") == "created_row"
 
@@ -637,7 +644,7 @@ def test_time_only_in_older_row_object_gets_no_creation_evidence():
     call = ToolCall(id="c1", name="open_loan", args={"loan_id": "L100"},
                     result={"prev": {"loan_id": "L100", "opened": FRESH_TIME},
                             "new": {"loan_id": "L102"}}, raw_ptr=PTR)
-    feed = ce.recorded_call_contexts([call], LOANS_SCHEMA)["c1"]
+    feed = ce.recorded_call_contexts([call], LOANS_SCHEMA)[ce.context_feed_key(call)]
     assert feed["now"] == FRESH_TIME
     assert "now_evidence" not in feed
 
@@ -645,7 +652,7 @@ def test_time_only_in_older_row_object_gets_no_creation_evidence():
 def test_read_returning_existing_row_with_stored_date_serves_seeded_now():
     read = ToolCall(id="r1", name="get_loan", args={"patron": "ann"},
                     result={"loan_id": "L100", "opened": STORED_TIME}, raw_ptr=PTR)
-    feed = ce.recorded_call_contexts([read], LOANS_SCHEMA)["r1"]
+    feed = ce.recorded_call_contexts([read], LOANS_SCHEMA)[ce.context_feed_key(read)]
     assert feed.get("now_evidence") == "created_row"
     toolkit = ce.load_toolkit(
         ce.module_source(LOANS_SCHEMA, [OPEN_SIG], {"open_loan": OPEN_BODY}),
@@ -671,7 +678,7 @@ def test_created_loan_beside_existing_user_serves_witnessed_date():
     call = ToolCall(id="c1", name="open_loan", args={"patron": "ann"},
                     result={"loan_id": "L101", "user_id": "42", "opened": STORED_TIME},
                     raw_ptr=PTR)
-    feed = ce.recorded_call_contexts([call], TWO_TABLE_SCHEMA)["c1"]
+    feed = ce.recorded_call_contexts([call], TWO_TABLE_SCHEMA)[ce.context_feed_key(call)]
     assert feed["now"] == STORED_TIME
     assert feed.get("now_evidence") == "created_row"
     assert feed["now_ids"] == {"users": ["42"], "loans": ["L101"]}
@@ -688,7 +695,7 @@ def test_found_row_supplying_time_is_not_exempt():
     call = ToolCall(id="c1", name="open_loan", args={"patron": "ann"},
                     result={"known": {"user_id": "42", "seen_at": STORED_TIME},
                             "fresh": {"loan_id": "L102"}}, raw_ptr=PTR)
-    feed = ce.recorded_call_contexts([call], TWO_TABLE_SCHEMA)["c1"]
+    feed = ce.recorded_call_contexts([call], TWO_TABLE_SCHEMA)[ce.context_feed_key(call)]
     assert feed["new_ids"] == {"loans": ["L102"], "users": ["42"]}
     assert feed["now"] == STORED_TIME
     assert feed["now_ids"] == {"users": ["42"]}
@@ -715,7 +722,7 @@ def test_union_of_two_rows_time_needs_one_absent_id():
     db = {"loans": {"L101": {"loan_id": "L101", "opened": FRESH_TIME}}}
     call = _call("c1", [{"loan_id": "L101", "opened": FRESH_TIME},
                         {"loan_id": "L102", "opened": FRESH_TIME}])
-    feed = ce.recorded_call_contexts([call], LOANS_SCHEMA)["c1"]
+    feed = ce.recorded_call_contexts([call], LOANS_SCHEMA)[ce.context_feed_key(call)]
     assert feed["now"] == FRESH_TIME
     assert feed["now_ids"] == {"loans": ["L101", "L102"]}
     toolkit = ce.load_toolkit(
@@ -729,7 +736,7 @@ def test_union_of_two_rows_time_needs_one_absent_id():
 def test_now_ids_emitted_only_with_creation_evidence():
     call = ToolCall(id="c1", name="get_loan", args={"loan_id": "L100"},
                     result={"loan_id": "L100", "opened": FRESH_TIME}, raw_ptr=PTR)
-    feed = ce.recorded_call_contexts([call], LOANS_SCHEMA)["c1"]
+    feed = ce.recorded_call_contexts([call], LOANS_SCHEMA)[ce.context_feed_key(call)]
     assert feed["now"] == FRESH_TIME
     assert "now_evidence" not in feed
     assert "now_ids" not in feed
@@ -751,7 +758,7 @@ SHARED_DB = {"loans": {"L100": {"id": "L100", "opened": STORED_TIME}}, "users": 
 def test_shared_key_found_value_is_not_exempt():
     read = ToolCall(id="r1", name="get_loan", args={"patron": "ann"},
                     result={"id": "L100", "opened": STORED_TIME}, raw_ptr=PTR)
-    feed = ce.recorded_call_contexts([read], SHARED_ID_SCHEMA)["r1"]
+    feed = ce.recorded_call_contexts([read], SHARED_ID_SCHEMA)[ce.context_feed_key(read)]
     assert feed["now_ids"] == {"loans": ["L100"], "users": ["L100"]}
     toolkit = ce.load_toolkit(
         ce.module_source(SHARED_ID_SCHEMA, [OPEN_SIG], {"open_loan": OPEN_BODY}),
@@ -764,7 +771,7 @@ def test_shared_key_found_value_is_not_exempt():
 def test_shared_key_value_absent_from_both_tables_is_exempt():
     create = ToolCall(id="c1", name="open_loan", args={"patron": "ann"},
                       result={"id": "L200", "opened": STORED_TIME}, raw_ptr=PTR)
-    feed = ce.recorded_call_contexts([create], SHARED_ID_SCHEMA)["c1"]
+    feed = ce.recorded_call_contexts([create], SHARED_ID_SCHEMA)[ce.context_feed_key(create)]
     assert feed["now_ids"] == {"loans": ["L200"], "users": ["L200"]}
     toolkit = ce.load_toolkit(
         ce.module_source(SHARED_ID_SCHEMA, [OPEN_SIG], {"open_loan": OPEN_BODY}),
@@ -772,6 +779,69 @@ def test_shared_key_value_absent_from_both_tables_is_exempt():
     toolkit.ctx.feed_call(feed)
     assert toolkit.ctx.now() == STORED_TIME
     assert toolkit.ctx.usage() == {"recorded": 1, "seeded": 0}
+
+
+def _positioned(call_id, trace_id, msg_index, name, args, result):
+    return ToolCall(id=call_id, name=name, args=args, result=result,
+                    raw_ptr=RawPtr(file_hash="testfile", sim_index=0, msg_index=msg_index),
+                    trace_id=trace_id)
+
+
+def test_reused_id_after_resolve_feeds_each_call_its_own_values(tmp_path):
+    first = _positioned("c1", "t1", 0, "open_loan", {"patron": "ann"},
+                        {"loan_id": "L101", "opened": FRESH_TIME})
+    second = _positioned("c1", "t1", 1, "open_loan", {"patron": "bea"},
+                         {"loan_id": "L102", "opened": OTHER_FRESH_TIME})
+    feeds = ce.recorded_call_contexts([first, second], LOANS_SCHEMA)
+    assert feeds[ce.context_feed_key(first)]["now"] == FRESH_TIME
+    assert feeds[ce.context_feed_key(first)]["new_ids"] == {"loans": ["L101"]}
+    assert feeds[ce.context_feed_key(second)]["now"] == OTHER_FRESH_TIME
+    assert feeds[ce.context_feed_key(second)]["new_ids"] == {"loans": ["L102"]}
+    source = ce.module_source(LOANS_SCHEMA, [OPEN_SIG], {"open_loan": OPEN_BODY})
+    box = ce.Sandbox(source, {table: dict(rows) for table, rows in LOANS_DB.items()},
+                     tmp_path, call_context=feeds)
+    assert box.run([first, second]) == [
+        {"ok": True, "value": {"loan_id": "L101", "opened": FRESH_TIME}},
+        {"ok": True, "value": {"loan_id": "L102", "opened": OTHER_FRESH_TIME}}]
+
+
+def test_same_id_in_two_traces_feeds_each_trace_its_own_values():
+    first = _positioned("c1", "ta", 0, "open_loan", {"patron": "ann"},
+                        {"loan_id": "L101", "opened": FRESH_TIME})
+    second = _positioned("c1", "tb", 0, "open_loan", {"patron": "bea"},
+                         {"loan_id": "L102", "opened": OTHER_FRESH_TIME})
+    feeds = ce.recorded_call_contexts([first, second], LOANS_SCHEMA)
+    assert ce.context_feed_key(first) != ce.context_feed_key(second)
+    assert feeds[ce.context_feed_key(first)]["now"] == FRESH_TIME
+    assert feeds[ce.context_feed_key(second)]["now"] == OTHER_FRESH_TIME
+
+
+def test_call_without_id_and_with_position_gets_its_feed():
+    call = ToolCall(id=None, name="open_loan", args={"patron": "ann"},
+                    result={"loan_id": "L101", "opened": FRESH_TIME},
+                    raw_ptr=RawPtr(file_hash="testfile", sim_index=0, msg_index=3),
+                    trace_id="t1")
+    feeds = ce.recorded_call_contexts([call], LOANS_SCHEMA)
+    assert feeds[ce.context_feed_key(call)]["now"] == FRESH_TIME
+    assert feeds[ce.context_feed_key(call)]["new_ids"] == {"loans": ["L101"]}
+
+
+def test_two_calls_with_same_key_are_both_served_seeded():
+    first = _positioned("c1", "t1", 0, "open_loan", {"patron": "ann"},
+                        {"loan_id": "L101", "opened": FRESH_TIME})
+    second = _positioned("c1", "t1", 0, "open_loan", {"patron": "bea"},
+                         {"loan_id": "L102", "opened": OTHER_FRESH_TIME})
+    feeds = ce.recorded_call_contexts([first, second], LOANS_SCHEMA)
+    key = ce.context_feed_key(first)
+    assert key == ce.context_feed_key(second)
+    assert key not in feeds
+    toolkit = ce.load_toolkit(
+        ce.module_source(LOANS_SCHEMA, [OPEN_SIG], {"open_loan": OPEN_BODY}),
+        {table: dict(rows) for table, rows in LOANS_DB.items()})
+    toolkit.ctx.feed_call(feeds.get(key, {}))
+    toolkit.ctx.new_id("loans")
+    toolkit.ctx.now()
+    assert toolkit.ctx.usage() == {"recorded": 0, "seeded": 2}
 
 
 def test_a_reseeded_context_matches_a_fresh_one_after_a_row_is_deleted():

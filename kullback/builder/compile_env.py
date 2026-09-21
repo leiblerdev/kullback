@@ -34,6 +34,7 @@ from kullback.builder.sandbox import (
     Sandbox,
     SandboxError,
     args_text,
+    context_feed_key,
     gate_parses,
     id_field,
     id_pattern_for,
@@ -42,6 +43,7 @@ from kullback.builder.sandbox import (
     match_table,
     parse_result,
     partial_key,
+    recorded_call_parts,
     row_key,
     run_gates,
 )
@@ -4084,25 +4086,6 @@ def recorded_call_context(call: ToolCall, schema: EntitySchema,
     return feed
 
 
-# Calls without a recorded position order after positioned calls, by call id, so the result never depends on input order.
-_MISSING_MSG_INDEX = 1 << 62
-
-
-def _recorded_call_parts(call: Any) -> tuple:
-    if isinstance(call, ToolCall):
-        return (call.id, call.trace_id, call.raw_ptr, call.args or {}, call.result)
-    node = call or {}
-    return (node.get("id"), node.get("trace_id"), node.get("raw_ptr"), node.get("args") or {}, node.get("result"))
-
-
-def _recorded_call_key(call: Any) -> tuple:
-    call_id, trace_id, raw, _, _ = _recorded_call_parts(call)
-    position = raw.get("msg_index") if isinstance(raw, dict) else getattr(raw, "msg_index", None)
-    if not isinstance(position, int):
-        position = _MISSING_MSG_INDEX
-    return (trace_id or "", position, call_id or "")
-
-
 def _observe_context_call(state: dict, schema: EntitySchema, args: Any, result: Any) -> None:
     """Fold one call's arguments and result into a trace's prior observations.
 
@@ -4118,21 +4101,40 @@ def _observe_context_call(state: dict, schema: EntitySchema, args: Any, result: 
     state["seen"] |= _context_seen_strings(args, result)
 
 
-def recorded_call_contexts(calls: Iterable[ToolCall], schema: EntitySchema) -> dict[str, dict]:
-    """One recorded feed per call id, the keying D215 already uses for per-call evidence."""
-    calls = sorted(list(calls), key=_recorded_call_key)
-    feeds: dict[str, dict] = {}
+def recorded_call_contexts(calls: Iterable[ToolCall], schema: EntitySchema) -> dict[tuple, dict]:
+    """One recorded feed per call, keyed by the call's feed key (trace, position, id).
+
+    Two calls sharing a whole key cannot be told apart: neither is fed, and the seeded feed
+    answers both, counted as seeded. The trace's prior observations still fold both calls in.
+    """
+    calls = sorted(list(calls), key=context_feed_key)
+    feeds: dict[tuple, dict] = {}
+    seen: set = set()
+    dropped: set = set()
     observed: dict[Any, dict] = {}
     for call in calls:
-        call_id, trace_id, _, args, result = _recorded_call_parts(call)
-        if not call_id:
-            continue
-        if trace_id is None:
-            feeds[call_id] = recorded_call_context(call, schema)
-            continue
-        state = observed.setdefault(trace_id, {"pairs": set(), "blocked": set(), "seen": set()})
-        feeds[call_id] = recorded_call_context(call, schema, state)
-        _observe_context_call(state, schema, args, result)
+        key = context_feed_key(call)
+        _, trace_id, _, args, result = recorded_call_parts(call)
+        if key in dropped:
+            dupe = True
+        elif key in seen:
+            dropped.add(key)
+            feeds.pop(key, None)
+            dupe = True
+        else:
+            seen.add(key)
+            dupe = False
+        if not dupe:
+            if trace_id is None:
+                feeds[key] = recorded_call_context(call, schema)
+            else:
+                state = observed.setdefault(trace_id, {"pairs": set(), "blocked": set(),
+                                                       "seen": set()})
+                feeds[key] = recorded_call_context(call, schema, state)
+        if trace_id is not None:
+            state = observed.setdefault(trace_id, {"pairs": set(), "blocked": set(),
+                                                   "seen": set()})
+            _observe_context_call(state, schema, args, result)
     return feeds
 
 

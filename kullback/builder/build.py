@@ -1560,7 +1560,7 @@ def _replay_context(toolkit: Any, trace: Any, schema: Any) -> dict:
     feeds = compile_env.recorded_call_contexts(trace.tool_calls, schema)
 
     def before_call(call: Any) -> None:
-        toolkit.ctx.feed_call(feeds.get(getattr(call, "id", None), {}))
+        toolkit.ctx.feed_call(feeds.get(compile_env.context_feed_key(call), {}))
 
     return {"before_call": before_call}
 
