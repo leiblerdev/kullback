@@ -656,6 +656,10 @@ class RunnerVersion(Record):
     confirmed_by: Optional[str] = None
 
 
+# The version of the scoring rules a Verdict was computed under; bump it when the rules change so cached Verdicts are not reused and reports prefer the current one.
+VERDICT_VERSION = "3"
+
+
 class Verdict(Record):
     """The pass or fail of one Run, on End state only (D46, D88, D97).
 

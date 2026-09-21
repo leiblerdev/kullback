@@ -7,14 +7,13 @@ from typing import Any, Iterable, Optional
 from kullback.runner import target as _target
 from kullback.runner.atom_context import AtomContext, _evaluate, gate
 from kullback.runner.canon import UNRESOLVED, Unresolved, record_use
-from kullback.runner.records import Atom, Run, Verdict, Verifier, load_run_jsonl
+from kullback.runner.records import VERDICT_VERSION, Atom, Run, Verdict, Verifier, load_run_jsonl
 
 # AtomContext, gate and _evaluate live in runner/atom_context.py: they are what a Verdict evaluates
 # an atom's predicate against, and the confinement gate they share with gates/confinement.py's
 # constraint gate (runner/confinement.py) is easier to find next to that world model than buried in
 # this module's own top.
 
-VERDICT_VERSION = "3"
 MUST_HOLD = {"required", "question", "communicate", "hard"}
 TRANSFER_HINTS = ("transfer", "escalate", "handoff", "hand_off")
 GAVE_UP = {"transfer", "transferred", "agent_transfer", "gave_up", "no_action"}
