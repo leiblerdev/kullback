@@ -16,7 +16,7 @@ These are the items I pushed past the first build. Each line says what it buys a
 - stop-rule.patch waits for the founder's re-freeze: the round stop reads the fidelity rate and the trusted share, refusal-only finishes exit refused, and every stop carries a reason. The round end event already accepts refused and the driver lands the reason behind a guard that goes at the re-freeze.
 - step-split.patch waits for the founder's re-freeze: the Runner's step is ask plus advance, proven by a byte-identical step snapshot; re-run tests/runner with the patch applied.
 - confinement-imports.patch waits for the founder's re-freeze: the confinement gate stops allowing two skeleton only names in tool bodies, re-run tests/gates and tests/builder.
-- tool-context.patch waits for the founder's re-freeze behind it: apply confinement-imports.patch first, then tool-context.patch (both edit the allowed imports literal in kullback/gates/confinement.py), re-run tests/gates and tests/builder with both applied.
+- tool-context.patch is integrated on this lineage at 657d757: the per-call context binds recorded ids and times to the call that witnessed them. The retained source patch applies to the pre-integration baseline 35924ee and must not be reapplied to an integrated tree.
 - body-transactions.patch waits for the founder's re-freeze: every tool call is a transaction and a body fault is its own outcome.
 - one-scorer.patch waits for the founder's re-freeze: the Verdict and the gates score an atom with one interpreter over its structured target.
 - mined-evidence.patch waits for the founder's re-freeze: ClassifiedBy gains declared so a kind the source declares rides as its own basis.

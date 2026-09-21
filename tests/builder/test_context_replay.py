@@ -25,7 +25,7 @@ def test_two_new_ids_before_insertion_are_unique():
 
 def test_one_recorded_call_does_not_reuse_its_id_twice():
     tools = toolkit()
-    tools.ctx.feed_call({'new_ids': {'loans': 'L101'}, 'now': None})
+    tools.ctx.feed_call({'new_ids': {'loans': ['L101']}, 'now': None})
     assert tools.ctx.new_id('loans') != tools.ctx.new_id('loans')
 
 @pytest.mark.skipif(not hasattr(replay.ScoredRouter, "_feed_context"), reason="needs tool-context replay patch")
@@ -42,10 +42,10 @@ def test_replay_feeds_each_recorded_call_even_if_previous_body_ignored_context()
 
 def test_consuming_a_call_feed_does_not_mutate_the_saved_evidence():
     tools = toolkit()
-    feed = {'new_ids': {'loans': 'L101'}, 'now': None}
+    feed = {'new_ids': {'loans': ['L101']}, 'now': None}
     tools.ctx.feed_call(feed)
     assert tools.ctx.new_id('loans') == 'L101'
-    assert feed == {'new_ids': {'loans': 'L101'}, 'now': None}
+    assert feed == {'new_ids': {'loans': ['L101']}, 'now': None}
 
 
 def test_replay_refuses_a_wrong_update_body_its_recorded_old_id():
