@@ -71,11 +71,18 @@ layers = [
     "hub",
     "rounds",
     "builder | examiner",
+    "episode",
     "user",
     "gates",
     "agent | runner",
     "ai",
 ]
+
+[[tool.importlinter.contracts]]
+name = "the Run interface never imports the Builder it moved down out of"
+type = "forbidden"
+source_modules = ["kullback.episode"]
+forbidden_modules = ["kullback.builder", "kullback.examiner", "kullback.rounds"]
 
 [[tool.importlinter.contracts]]
 name = "the Simulated user never imports the two agents that drive it"
@@ -98,6 +105,7 @@ source_modules = [
     "kullback.runner",
     "kullback.gates",
     "kullback.user",
+    "kullback.episode",
     "kullback.builder",
     "kullback.examiner",
     "kullback.rounds",

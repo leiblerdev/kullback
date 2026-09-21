@@ -29,8 +29,9 @@ from typing import Any, Iterable, Optional
 # here. Everything else the callers read straight out of kullback.gates.
 from kullback.builder import effects as effects_mod
 from kullback.builder import mine
+from kullback.episode.loading import DB_CLASS, HELPERS, SandboxError
 from kullback.gates import tool_runs
-from kullback.gates.confinement import PROVIDED_HELPERS, TOOLS_CLASS, gate_confined
+from kullback.gates.confinement import TOOLS_CLASS, gate_confined
 from kullback.gates.tool_runs import (
     MAX_SENSITIVITY_PAIRS,
     WHOLE_ANSWER,
@@ -48,29 +49,11 @@ from kullback.gates.tool_runs import (
 from kullback.runner import arith
 from kullback.runner.records import EntitySchema, GateResult, ToolCall, content_hash
 
-DB_CLASS = "DomainDB"
-
-# What both loaders put in the generated module's namespace beside `__name__`, and nothing else:
-# code-owned functions a tool body may call by name without importing anything. Only
-# `evaluate_arithmetic` so far, for the reason runner/arith.py gives: a recorded tool that evaluates
-# an expression string cannot be written without a parser, `ast`, `eval`, `exec` and `compile` are
-# refused, and the parser the model writes instead is wrong in a new way on every build.
-#
-# Keyed off the confinement gate's own `PROVIDED_HELPERS` rather than written out again, so the two
-# cannot drift: a name the gate counts as bound with no function behind it fails at import here, and
-# a function the gate has never heard of is never bound into a body's namespace, where it would have
-# been refused as a name nothing binds.
-_HELPER_FUNCTIONS = {"evaluate_arithmetic": arith.evaluate_arithmetic}
-HELPERS = {name: _HELPER_FUNCTIONS[name] for name in sorted(PROVIDED_HELPERS)}
 # The child runs under `python -I` with the environment cleared, so it cannot be relied on to import
 # kullback at all. It gets the evaluator's own bytes instead, prepended to the runner script, and the
 # job names which of them to bind, so the body in the subprocess calls exactly the function the body
 # in the Runner's process calls.
 _ARITH_SOURCE = Path(arith.__file__).read_text(encoding="utf-8")
-
-
-class SandboxError(RuntimeError):
-    """The generated module did not load, or the subprocess crashed or ran out of time."""
 
 
 # The row helpers moved with the rulings (the replay ruling compares rows column by column); they

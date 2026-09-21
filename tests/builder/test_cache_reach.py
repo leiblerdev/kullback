@@ -46,7 +46,7 @@ MUST_REACH: dict[str, set[str]] = {
                "kullback.gates.stages", "kullback.runner.records"},
     "rerolls": {"kullback.builder.compile_env", "kullback.runner.loop", "kullback.runner.route",
                 "kullback.user.rules", "kullback.builder.intent", "kullback.user.agent",
-                "kullback.user.context", "kullback.builder.vocabulary", "kullback.runner.records"},
+                "kullback.user.context", "kullback.episode.loading", "kullback.runner.records"},
 }
 
 MUST_REACH_HELPERS: dict[str, set[str]] = {
@@ -61,7 +61,7 @@ MUST_REACH_HELPERS: dict[str, set[str]] = {
                          "_write_runs_index"},
     "intent": {"_read_intents"},
     "rerolls": {"_reroll_key", "_candidate_task_ctx", "_candidate_run_once", "_user_driver",
-                "_tool_definitions", "_vocab_from", "_write_runs_index"},
+                "_write_runs_index"},
 }
 
 MUST_REACH_CONSTS: dict[str, set[str]] = {
@@ -71,8 +71,8 @@ MUST_REACH_CONSTS: dict[str, set[str]] = {
     "compile_tools": {"KEPT_BODY_DIR", "REPLAYS_FILE", "FIDELITY_REASONS", "REPLAY_AGREED",
                         "REPLAY_LESSON_HEAD"},
     "replay_reference": {"REPLAY_EVIDENCE_FILE", "EQUIVALENCE_FILE", "EFFECTS_FILE"},
-    "rerolls": {"REROLL_SEED", "REROLL_TURNS", "REROLL_KEY_FORMAT", "RUN_SEED_KIND",
-                "_JSON_TYPES", "REROLL_RECORD", "REROLL_KEY_NOTE"},
+    "rerolls": {"REROLL_SEED", "REROLL_TURNS", "REROLL_KEY_FORMAT",
+                "REROLL_RECORD", "REROLL_KEY_NOTE"},
 }
 
 

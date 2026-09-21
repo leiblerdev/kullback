@@ -61,6 +61,16 @@ from kullback.builder import (
     lesson as lesson_mod,
 )
 from kullback.builder.repair import KEPT_BODIES_FILE, SHAPES_SHOWN, failure_shapes
+from kullback.episode import loading as episode_loading
+from kullback.episode.loading import (
+    _JSON_TYPES,
+    RUN_SEED_KIND,
+    _json_schema,
+    _system_prompt_for,
+    _tool_definitions,
+    _user_rules,
+    _vocab_from,
+)
 from kullback.gates import artifacts, fidelity, tool_runs, verifier_suite
 from kullback.gates import ledger as ledger_mod
 from kullback.gates import scorecard as scorecard_mod
@@ -1341,12 +1351,6 @@ def _vocab_of(inputs: dict) -> vocabulary.Vocabulary:
     return vocabulary.Vocabulary.model_validate(inputs["vocabulary"]) if inputs.get("vocabulary") else vocabulary.GENERIC
 
 
-def _vocab_from(workdir: Path) -> vocabulary.Vocabulary:
-    """The build's Vocabulary off disk, for a Run made outside the pipeline (run_batch, the probe)."""
-    stored = _read_json(Path(workdir) / "vocabulary.json", None)
-    return vocabulary.Vocabulary.model_validate(stored) if stored else vocabulary.GENERIC
-
-
 def _user_rules_stage():
     """The Simulated user's rules per Run, for every Run of the corpus (D44).
 
@@ -1838,7 +1842,6 @@ rerolls_gate = stage_gates.rerolls_gate  # the ruling moved to kullback.gates in
 REROLL_RECORD = "rerolls.json"  # beside the Task's Runs, under runs/<task>/; never inside a Run file
 REROLL_KEY_FORMAT = 1
 REROLL_SEED = 0  # the stage's own first attempt index; the Examiner's reroll verb rotates its prefix (D133)
-RUN_SEED_KIND = "run_seed"  # D212: the kind a Candidate-shaped Run's seed is drawn under, keyed on its Run id
 REROLL_TURNS = 30  # the loop's cap for a re-roll, the same as a Candidate batch's default
 REROLL_KEY_NOTE = (
     "a Task keeps its re-rolls while its own inputs hold. A body of a tool its recordings never call "
@@ -2101,7 +2104,7 @@ def _rerolls_stage(model: Any, rerolls: int, workers: int = 1, only: Optional[It
     # D214: whose turns the Runs get is part of what this stage produces, so a build that names a
     # user driver puts it in the key. A build that names none adds nothing, so its key, its cache
     # and the Run ids it derives from the key are the ones it had before D214.
-    version = (f"{_version('rerolls', run, loop, route, user_sim, intent, provider, compile_env, parallel, runner_parallel, vocabulary, verifier_suite, canon, records_mod, user_agent_mod, user_context_mod, user_fidelity_mod, user_lesson_mod, helpers=(_reroll_run_jobs, _reroll_run_one, _gather_reroll_rows, _candidate_task_ctx, _candidate_run_once, _discard_runs, _json_schema, _members_of, _reroll_key, _reroll_reason, _reroll_record, _reroll_reuse, _reroll_rows, _system_prompt_for, _tool_definitions, _tools_called, _user_driver, _vocab_from, _write_runs_index, with_synthetic_rows))}:"
+    version = (f"{_version('rerolls', run, loop, route, user_sim, intent, provider, compile_env, episode_loading, parallel, runner_parallel, vocabulary, verifier_suite, canon, records_mod, user_agent_mod, user_context_mod, user_fidelity_mod, user_lesson_mod, helpers=(_reroll_run_jobs, _reroll_run_one, _gather_reroll_rows, _candidate_task_ctx, _candidate_run_once, _discard_runs, _json_schema, _members_of, _reroll_key, _reroll_reason, _reroll_record, _reroll_reuse, _reroll_rows, _system_prompt_for, _tool_definitions, _tools_called, _user_driver, _vocab_from, _write_runs_index, with_synthetic_rows))}:"
                f"{getattr(model, 'name', 'none')}:{rerolls}"
                f":REROLL_KEY_FORMAT={REROLL_KEY_FORMAT}:REROLL_KEY_NOTE={REROLL_KEY_NOTE}"
                f":REROLL_RECORD={REROLL_RECORD}:REROLL_SEED={REROLL_SEED}:REROLL_TURNS={REROLL_TURNS}"
@@ -2187,7 +2190,7 @@ def _candidate_run_once(workdir: Path, task: Task, model: Any, *, ctx: dict, num
     state = loop.new_run_state(run_id, workdir=workdir / "runs" / task.id, env_id=ctx["env_id"],
                                task_id=task.id,
                                model=getattr(model, "name", None) or (prefix or "candidate"),
-                               seed=sampling.sample_seed(RUN_SEED_KIND, run_id, ctx["salt"]),
+                               seed=episode_loading.run_seed(run_id, ctx["salt"]),
                                user=simulated, user_rules=ctx["rules"], max_turns=ctx["max_turns"],
                                system_prompt=ctx["system_prompt"])
     try:
@@ -2264,15 +2267,6 @@ def _user_driver(workdir: Path, task: Task, fallback: Any, model: Any, *, vocab:
     return AgentUser(ctx, fallback, model, vocab=vocab, write_tools=write_tools,
                      goal_writes=goal_writes, answer_strip=answer_strip, record_values=record,
                      trace=trace)
-
-
-def _system_prompt_for(task: Task, traces: dict, policy_text: Optional[str] = None) -> Optional[str]:
-    """The instructions a Candidate runs under: the recorded agent's own system prompt, else the policy text."""
-    for run_id in task.run_ids:
-        trace = traces.get(run_id)
-        if trace is not None and trace.system_prompt:
-            return trace.system_prompt
-    return policy_text or None
 
 
 def probe_runner(plan: BuildPlan):
@@ -2484,33 +2478,6 @@ def _probe_prompt(task: Task, verifier: Any, sigs: list) -> str:
     return "\n".join(lines)
 
 
-_JSON_TYPES = {"str": "string", "int": "integer", "float": "number", "bool": "boolean", "dict": "object",
-               "list": "array", "NoneType": "null"}
-
-
-def _tool_definitions(sigs: list, vocab: Optional[vocabulary.Vocabulary] = None) -> list[dict]:
-    """The mined signatures in the shape provider.py sends to a model: name, description, parameters.
-
-    mine.py records Python type names (`["str"]`); a model endpoint wants JSON Schema names, and
-    OpenAI refuses a tool whose parameter type it does not know. An argument the Vocabulary knows
-    gets the values the corpus showed for it as its description: build 8's re-roll model dropped
-    the mark from 132 order ids over a schema that showed it nothing, and the traces declare no
-    tool descriptions of their own.
-    """
-    out = []
-    for sig in sigs:
-        schema = sig.args_schema if isinstance(sig.args_schema, dict) and "properties" in sig.args_schema else {
-            "type": "object", "properties": {name: {"type": "string"} for name in (sig.args_schema or {})}}
-        parameters = _json_schema(schema)
-        for arg, prop in (parameters.get("properties") or {}).items():
-            spec = vocab.get(arg) if vocab is not None else None
-            if spec is not None and spec.examples and isinstance(prop, dict) and not prop.get("description"):
-                prop["description"] = "for example " + ", ".join(str(v) for v in spec.examples[:3])
-        out.append({"name": sig.name, "description": sig.description or f"{sig.kind} tool {sig.name}",
-                    "parameters": parameters})
-    return out
-
-
 def _discard_runs(run_dir: Path, prefix: str) -> int:
     """Drop the Run files an earlier build left under this name before the stage writes its own.
 
@@ -2523,19 +2490,6 @@ def _discard_runs(run_dir: Path, prefix: str) -> int:
         path.unlink()
         count += 1
     return count
-
-
-def _json_schema(node: Any) -> Any:
-    if isinstance(node, dict):
-        out = {key: _json_schema(value) for key, value in node.items() if key != "type"}
-        if "type" in node:
-            types = node["type"] if isinstance(node["type"], list) else [node["type"]]
-            names = sorted({_JSON_TYPES.get(str(t), str(t)) for t in types})
-            out["type"] = names[0] if len(names) == 1 else names
-        return out
-    if isinstance(node, list):
-        return [_json_schema(item) for item in node]
-    return node
 
 
 # --- the plan, the declaration, and the two entry points cli.py calls --------
@@ -2798,14 +2752,6 @@ def run_batch(workdir: Any, task_id: str, model: Any, count: int = 1, seed: int 
 
 def _missing(what: str):
     raise BuildError(f"{what} is not on disk; run build first")
-
-
-def _user_rules(workdir: Path, task: Task) -> Optional[UserRules]:
-    for run_id in task.run_ids:
-        body = _read_json(workdir / "user_rules" / f"{run_id}.json", None)
-        if body is not None:
-            return UserRules.model_validate(body)
-    return None
 
 
 def _clear_cache(workdir: Path) -> None:
