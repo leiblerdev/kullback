@@ -6,7 +6,17 @@ from typing import Any, Optional
 
 from pydantic import ConfigDict, StrictBool
 
-from kullback.runner.records import Record, Task, Trace, UserRules, as_dict, canonical_json, content_hash
+from kullback.runner.records import (
+    Record,
+    Task,
+    ToolCall,
+    ToolCallError,
+    Trace,
+    UserRules,
+    as_dict,
+    canonical_json,
+    content_hash,
+)
 from kullback.sampling import sample_key
 
 
@@ -41,13 +51,85 @@ class Selection(Record):
     population_fingerprint: str
 
 
+DETERMINISTIC_REJECTIONS = frozenset(
+    {
+        "tool_not_found",
+        "invalid_arguments",
+        "permission_denied",
+        "business_error",
+        "not_found_entity",
+    }
+)
+
+
+def _success(call: ToolCall) -> Optional[bool]:
+    if call.error is None:
+        return True
+    if isinstance(call.error, ToolCallError):
+        return False
+    return None
+
+
+def _indeterminate(call: ToolCall) -> bool:
+    return isinstance(call.error, ToolCallError) and call.error.class_ not in DETERMINISTIC_REJECTIONS
+
+
+def _error_marker(call: ToolCall) -> Any:
+    if call.error is None:
+        return None
+    if isinstance(call.error, ToolCallError):
+        return call.error.class_
+    return "malformed"
+
+
 def _write_signature(trace: Trace, write_tools: Collection[str]) -> tuple[tuple[str, str], ...]:
     tools = set(write_tools)
     pairs: list[tuple[str, str]] = []
     for call in trace.tool_calls:
-        if call.name in tools:
+        if call.name in tools and _success(call) is True:
             pairs.append((call.name, canonical_json(call.args)))
     return tuple(pairs)
+
+
+def _write_failure_reasons(
+    trace: Trace,
+    tools_set: set[str],
+    ref_sig: tuple[tuple[str, str], ...],
+    ok_sig: tuple[tuple[str, str], ...],
+) -> list[str]:
+    missing: dict[tuple[str, str], int] = {}
+    for pair in ref_sig:
+        missing[pair] = missing.get(pair, 0) + 1
+    for pair in ok_sig:
+        if pair in missing:
+            missing[pair] -= 1
+    out: list[str] = []
+    for call in trace.tool_calls:
+        reason = _failure_reason(call, tools_set, missing)
+        if reason is not None:
+            out.append(reason)
+    return out
+
+
+def _failure_reason(
+    call: ToolCall,
+    tools_set: set[str],
+    missing: dict[tuple[str, str], int],
+) -> Optional[str]:
+    if call.name not in tools_set:
+        return None
+    outcome = _success(call)
+    if outcome is True:
+        return None
+    if outcome is None:
+        return f"malformed_error:{call.name}"
+    if _indeterminate(call):
+        return f"write_indeterminate:{call.name}"
+    pair = (call.name, canonical_json(call.args))
+    if missing.get(pair, 0) > 0:
+        missing[pair] -= 1
+        return f"write_failed:{call.name}"
+    return None
 
 
 def _trace_reasons(trace: Trace) -> list[str]:
@@ -105,7 +187,17 @@ def _reference_signature(
     call_problems = _trace_reasons(trace)
     if call_problems:
         raise ValueError("reference calls " + call_problems[0])
+    bad_write = _reference_indeterminate(trace, tools_set)
+    if bad_write is not None:
+        raise ValueError(f"reference calls write_indeterminate:{bad_write}")
     return _write_signature(trace, tools_set)
+
+
+def _reference_indeterminate(trace: Trace, tools_set: set[str]) -> Optional[str]:
+    for call in trace.tool_calls:
+        if call.name in tools_set and _indeterminate(call):
+            return call.name
+    return None
 
 
 def _candidate_reasons(
@@ -128,8 +220,10 @@ def _candidate_reasons(
         out.append("missing_rules")
     if trace is not None:
         out.extend(_trace_reasons(trace))
-        if _write_signature(trace, tools_set) != ref_sig:
+        ok_sig = _write_signature(trace, tools_set)
+        if ok_sig != ref_sig:
             out.append("write_mismatch")
+        out.extend(_write_failure_reasons(trace, tools_set, ref_sig, ok_sig))
     return out
 
 
@@ -168,7 +262,7 @@ def _fingerprint(
             writes_part = writes
             calls: list[Any] = []
             for call in trace.tool_calls:
-                calls.append([call.truncated, call.has_result, call.resolved])
+                calls.append([call.truncated, call.has_result, call.resolved, _error_marker(call)])
             calls_part = calls
         runs.append(
             {

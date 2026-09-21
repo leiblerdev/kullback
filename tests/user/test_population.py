@@ -7,7 +7,7 @@ import pytest
 from pydantic import ValidationError
 
 from kullback import sampling
-from kullback.runner.records import DisclosureRule, RawPtr, Task, ToolCall, Trace, UserFact, UserRules
+from kullback.runner.records import DisclosureRule, RawPtr, Task, ToolCall, ToolCallError, Trace, UserFact, UserRules
 from kullback.user.population import Population, RecordingStanding, build_population, pick_user
 
 WRITE_TOOL = "set_address"
@@ -732,3 +732,304 @@ def test_post_build_rule_mutation_does_not_alter_fingerprint():
     ok_rules.facts.append(UserFact(field="city", value="Shelbyville"))
     assert pop.fingerprint == before
     assert _pop_for_rules(rules_map).fingerprint != before
+
+
+def _failed_call(name=WRITE_TOOL, args=None, error_class="business_error"):
+    base = {"city": "Springfield", "primary": True}
+    if args is not None:
+        base = dict(args)
+    return ToolCall(
+        name=name,
+        args=base,
+        result=None,
+        error=ToolCallError(class_=error_class, payload="refused", classified_by="code"),
+        has_result=True,
+        resolved=True,
+        truncated=False,
+        raw_ptr=_ptr(),
+    )
+
+
+def test_failed_required_write_withheld():
+    ref_args = {"city": "Springfield", "primary": True}
+    task = _task(["ref", "failed"])
+    traces = {
+        "ref": _trace("ref", [_ok_call(args=ref_args)]),
+        "failed": _trace("failed", [_failed_call(args=dict(ref_args))]),
+    }
+    standings = {"ref": _st(), "failed": _st()}
+    rules = {k: _rules() for k in traces}
+    pop = build_population(
+        task,
+        traces,
+        reference_id="ref",
+        standings=standings,
+        rules=rules,
+        held_out_ids=set(),
+        write_tools=list(WRITE_TOOLS),
+    )
+    assert list(pop.eligible_ids) == ["ref"]
+    reasons = _withheld_map(pop)["failed"]
+    assert "write_mismatch" in reasons
+    assert f"write_failed:{WRITE_TOOL}" in reasons
+
+
+def test_retry_after_failure_stays_eligible():
+    ref_args = {"city": "Springfield", "primary": True}
+    task = _task(["ref", "retry"])
+    traces = {
+        "ref": _trace("ref", [_ok_call(args=ref_args)]),
+        "retry": _trace(
+            "retry",
+            [_failed_call(args=dict(ref_args)), _ok_call(args=dict(ref_args))],
+        ),
+    }
+    standings = {"ref": _st(), "retry": _st()}
+    rules = {k: _rules() for k in traces}
+    pop = build_population(
+        task,
+        traces,
+        reference_id="ref",
+        standings=standings,
+        rules=rules,
+        held_out_ids=set(),
+        write_tools=list(WRITE_TOOLS),
+    )
+    assert list(pop.eligible_ids) == ["ref", "retry"]
+    assert "retry" not in _withheld_map(pop)
+
+
+def test_failed_read_stays_eligible():
+    ref_args = {"city": "Springfield", "primary": True}
+    task = _task(["ref", "reader"])
+    traces = {
+        "ref": _trace("ref", [_ok_call(args=ref_args)]),
+        "reader": _trace(
+            "reader",
+            [
+                _ok_call(args=dict(ref_args)),
+                _failed_call(name="get_address", args={"city": "Springfield"}),
+            ],
+        ),
+    }
+    standings = {"ref": _st(), "reader": _st()}
+    rules = {k: _rules() for k in traces}
+    pop = build_population(
+        task,
+        traces,
+        reference_id="ref",
+        standings=standings,
+        rules=rules,
+        held_out_ids=set(),
+        write_tools=list(WRITE_TOOLS),
+    )
+    assert list(pop.eligible_ids) == ["reader", "ref"]
+
+
+def test_fingerprint_moves_with_membership():
+    ref_args = {"city": "Springfield", "primary": True}
+    task = _task(["ref", "cand"])
+    ok_traces = {
+        "ref": _trace("ref", [_ok_call(args=ref_args)]),
+        "cand": _trace("cand", [_ok_call(args=dict(ref_args))]),
+    }
+    bad_traces = {
+        "ref": _trace("ref", [_ok_call(args=ref_args)]),
+        "cand": _trace("cand", [_failed_call(args=dict(ref_args))]),
+    }
+    standings = {"ref": _st(), "cand": _st()}
+    rules = {k: _rules() for k in ok_traces}
+    pop_ok = build_population(
+        task,
+        ok_traces,
+        reference_id="ref",
+        standings=standings,
+        rules=rules,
+        held_out_ids=set(),
+        write_tools=list(WRITE_TOOLS),
+    )
+    pop_bad = build_population(
+        task,
+        bad_traces,
+        reference_id="ref",
+        standings=standings,
+        rules=rules,
+        held_out_ids=set(),
+        write_tools=list(WRITE_TOOLS),
+    )
+    assert list(pop_ok.eligible_ids) == ["cand", "ref"]
+    assert list(pop_bad.eligible_ids) == ["ref"]
+    assert pop_bad.fingerprint != pop_ok.fingerprint
+
+
+def test_malformed_error_withheld():
+    ref_args = {"city": "Springfield", "primary": True}
+    broken = ToolCall.model_construct(
+        name=WRITE_TOOL,
+        args=dict(ref_args),
+        result=None,
+        error="boom",
+        has_result=True,
+        resolved=True,
+        truncated=False,
+        raw_ptr=_ptr(),
+    )
+    task = _task(["ref", "broken"])
+    traces = {
+        "ref": _trace("ref", [_ok_call(args=ref_args)]),
+        "broken": _trace("broken", [broken]),
+    }
+    standings = {"ref": _st(), "broken": _st()}
+    rules = {k: _rules() for k in traces}
+    pop = build_population(
+        task,
+        traces,
+        reference_id="ref",
+        standings=standings,
+        rules=rules,
+        held_out_ids=set(),
+        write_tools=list(WRITE_TOOLS),
+    )
+    assert list(pop.eligible_ids) == ["ref"]
+    assert f"malformed_error:{WRITE_TOOL}" in _withheld_map(pop)["broken"]
+
+
+def test_indeterminate_extra_write_withheld():
+    ref_args = {"city": "Springfield", "primary": True}
+    tools = [WRITE_TOOL, "set_email"]
+    task = _task(["ref", "extra"])
+    traces = {
+        "ref": _trace("ref", [_ok_call(args=ref_args)]),
+        "extra": _trace(
+            "extra",
+            [
+                _ok_call(args=dict(ref_args)),
+                _failed_call(name="set_email", args={"email": "a@b.c"}, error_class="transient"),
+            ],
+        ),
+    }
+    standings = {"ref": _st(), "extra": _st()}
+    rules = {k: _rules() for k in traces}
+    pop = build_population(
+        task,
+        traces,
+        reference_id="ref",
+        standings=standings,
+        rules=rules,
+        held_out_ids=set(),
+        write_tools=list(tools),
+    )
+    assert list(pop.eligible_ids) == ["ref"]
+    assert "write_indeterminate:set_email" in _withheld_map(pop)["extra"]
+
+
+def test_indeterminate_retry_still_withheld():
+    ref_args = {"city": "Springfield", "primary": True}
+    task = _task(["ref", "retry"])
+    traces = {
+        "ref": _trace("ref", [_ok_call(args=ref_args)]),
+        "retry": _trace(
+            "retry",
+            [
+                _failed_call(args=dict(ref_args), error_class="transient"),
+                _ok_call(args=dict(ref_args)),
+            ],
+        ),
+    }
+    standings = {"ref": _st(), "retry": _st()}
+    rules = {k: _rules() for k in traces}
+    pop = build_population(
+        task,
+        traces,
+        reference_id="ref",
+        standings=standings,
+        rules=rules,
+        held_out_ids=set(),
+        write_tools=list(WRITE_TOOLS),
+    )
+    assert list(pop.eligible_ids) == ["ref"]
+    assert f"write_indeterminate:{WRITE_TOOL}" in _withheld_map(pop)["retry"]
+
+
+def test_deterministic_extra_rejection_stays_eligible():
+    ref_args = {"city": "Springfield", "primary": True}
+    tools = [WRITE_TOOL, "set_email"]
+    task = _task(["extra", "ref"])
+    traces = {
+        "ref": _trace("ref", [_ok_call(args=ref_args)]),
+        "extra": _trace(
+            "extra",
+            [
+                _ok_call(args=dict(ref_args)),
+                _failed_call(
+                    name="set_email", args={"email": "a@b.c"}, error_class="invalid_arguments"
+                ),
+            ],
+        ),
+    }
+    standings = {"ref": _st(), "extra": _st()}
+    rules = {k: _rules() for k in traces}
+    pop = build_population(
+        task,
+        traces,
+        reference_id="ref",
+        standings=standings,
+        rules=rules,
+        held_out_ids=set(),
+        write_tools=list(tools),
+    )
+    assert list(pop.eligible_ids) == ["extra", "ref"]
+
+
+def test_reference_indeterminate_write_raises():
+    ref_args = {"city": "Springfield", "primary": True}
+    task = _task(["ref", "ok"])
+    traces = {
+        "ref": _trace(
+            "ref",
+            [
+                _ok_call(args=ref_args),
+                _failed_call(args={"city": "Shelbyville", "primary": True}, error_class="unknown"),
+            ],
+        ),
+        "ok": _trace("ok", [_ok_call(args=dict(ref_args))]),
+    }
+    standings = {"ref": _st(), "ok": _st()}
+    rules = {k: _rules() for k in traces}
+    with pytest.raises(ValueError, match="write_indeterminate"):
+        build_population(
+            task,
+            traces,
+            reference_id="ref",
+            standings=standings,
+            rules=rules,
+            held_out_ids=set(),
+            write_tools=list(WRITE_TOOLS),
+        )
+
+
+def test_indeterminate_read_stays_eligible():
+    ref_args = {"city": "Springfield", "primary": True}
+    task = _task(["reader", "ref"])
+    traces = {
+        "ref": _trace("ref", [_ok_call(args=ref_args)]),
+        "reader": _trace(
+            "reader",
+            [
+                _ok_call(args=dict(ref_args)),
+                _failed_call(name="get_address", args={"city": "Springfield"}, error_class="transient"),
+            ],
+        ),
+    }
+    standings = {"ref": _st(), "reader": _st()}
+    rules = {k: _rules() for k in traces}
+    pop = build_population(
+        task,
+        traces,
+        reference_id="ref",
+        standings=standings,
+        rules=rules,
+        held_out_ids=set(),
+        write_tools=list(WRITE_TOOLS),
+    )
+    assert list(pop.eligible_ids) == ["reader", "ref"]
