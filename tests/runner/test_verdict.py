@@ -373,7 +373,17 @@ def test_judge_used_only_when_judge_results_are_supplied(verifier, write_run):
 
     with_pass = verdict(path, judged, canon_value, {"a_polite": True}, write_tools=WRITE_TOOLS)
     assert with_pass.judge_used is True
-    assert with_pass.passed is True
+    assert with_pass.passed is False
+    assert with_pass.class_ == "not_verdicted"
+    assert with_pass.failing_atom == "a_polite"
+    assert "judge_reported:a_polite:pass" in with_pass.notes
+
+    with_fail = verdict(path, judged, canon_value, {"a_polite": False}, write_tools=WRITE_TOOLS)
+    assert with_fail.judge_used is True
+    assert with_fail.passed is False
+    assert with_fail.class_ == "not_verdicted"
+    assert with_fail.failing_atom == "a_polite"
+    assert "judge_reported:a_polite:fail" in with_fail.notes
 
 
 # --- same path (D46) ---
@@ -697,11 +707,15 @@ def test_every_judge_use_maps_its_own_verdict_words(verifier, write_run):
     for word in holds:
         out = verdict(write_run(oracle_lines()), judged, canon_value,
                       {"a_polite": {"verdict": word}}, write_tools=WRITE_TOOLS)
-        assert out.passed is True, word
+        assert out.passed is False and out.class_ == "not_verdicted", word
+        assert out.failing_atom == "a_polite", word
+        assert "judge_reported:a_polite:pass" in out.notes, word
     for word in fails:
         out = verdict(write_run(oracle_lines()), judged, canon_value,
                       {"a_polite": {"verdict": word}}, write_tools=WRITE_TOOLS)
-        assert out.passed is False and out.failing_atom == "a_polite", word
+        assert out.passed is False and out.class_ == "not_verdicted", word
+        assert out.failing_atom == "a_polite", word
+        assert "judge_reported:a_polite:fail" in out.notes, word
 
 
 def test_an_abstaining_judge_atom_leaves_the_run_not_verdicted(verifier, write_run):

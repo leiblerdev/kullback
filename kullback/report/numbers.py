@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Optional
 
 from kullback.report.data import ReportData
+from kullback.runner import records
 from kullback.runner.records import Run, Task, Verdict, disagreement_stats
 
 
@@ -167,7 +168,8 @@ def overlay_rows(data: ReportData, task_id: str) -> int:
 
 
 def _wanted_versions(data: ReportData, task: Task) -> dict[str, Optional[str]]:
-    """The versions on disk now that a Verdict of this Task is scored against. Constant per Task."""
+    """The versions on disk now that a Verdict of this Task is scored against, the Verdict
+    version the code scores under now among them. Constant per Task."""
     verifier = next((v for v in data.verifiers if v.task_id == task.id), None)
     return {
         "verifier_version": getattr(verifier, "verifier_version", None),
@@ -175,6 +177,7 @@ def _wanted_versions(data: ReportData, task: Task) -> dict[str, Optional[str]]:
         "schema_version": getattr(data.environment, "schema_version", None),
         "tools_version": getattr(data.environment, "tools_version", None),
         "policy_version": getattr(data.environment, "policy_version", None),
+        "verdict_version": records.VERDICT_VERSION,
     }
 
 

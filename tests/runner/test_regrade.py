@@ -214,8 +214,12 @@ def test_judge_results_are_looked_up_per_run(runs, tmp_path):
         judge_version="j1",
         write_tools=WRITE_TOOLS,
     )
-    assert [v.passed for v in out] == [True, False]
+    assert [v.passed for v in out] == [False, False]
     assert all(v.judge_used for v in out)
+    assert [v.class_ for v in out] == ["not_verdicted", "not_verdicted"]
+    assert [v.failing_atom for v in out] == ["a_polite", "a_polite"]
+    assert "judge_reported:a_polite:pass" in out[0].notes
+    assert "judge_reported:a_polite:fail" in out[1].notes
 
 
 def test_regrade_run_returns_one_verdict(runs, tmp_path):
@@ -335,8 +339,13 @@ def test_changed_judge_results_are_not_served_from_the_cache(runs, tmp_path):
     out_dir = tmp_path / "verdicts"
     held = regrade(runs[:1], verifier, canon_value, out_dir=out_dir, judge_version="j1",
                    judge_results={"r1": {"a_polite": {"verdict": "pass"}}}, write_tools=WRITE_TOOLS)[0]
-    assert held.passed is True
+    assert held.passed is False
+    assert held.class_ == "not_verdicted"
+    assert held.failing_atom == "a_polite"
+    assert "judge_reported:a_polite:pass" in held.notes
     turned = regrade(runs[:1], verifier, canon_value, out_dir=out_dir, judge_version="j1",
                      judge_results={"r1": {"a_polite": {"verdict": "fail"}}}, write_tools=WRITE_TOOLS)[0]
     assert turned.passed is False
+    assert turned.class_ == "not_verdicted"
     assert turned.failing_atom == "a_polite"
+    assert "judge_reported:a_polite:fail" in turned.notes

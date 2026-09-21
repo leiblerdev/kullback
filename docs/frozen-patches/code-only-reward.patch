@@ -1,0 +1,214 @@
+diff --git a/kullback/runner/target.py b/kullback/runner/target.py
+index bcb04b4..701aba7 100644
+--- a/kullback/runner/target.py
++++ b/kullback/runner/target.py
+@@ -15,12 +15,38 @@ from typing import Any, Callable, Iterable, Optional
+ 
+ from kullback.runner.canon import CanonRules, canon_value
+ from kullback.runner.confinement import SAFE_BUILTINS, confine
+-from kullback.runner.records import Atom, Event, RawPtr, Run, canonical_json, load_run_jsonl
++from kullback.runner.records import Atom, Event, RawPtr, Run, Verifier, canonical_json, load_run_jsonl
+ 
+ _TOKEN = re.compile(r"[#$]?[A-Za-z0-9][A-Za-z0-9_./#-]*")
+ _WORD = re.compile(r"[A-Za-z0-9#$€£¥._/-]+")
+ CURRENCY = "".join(CanonRules().currency_symbols)
+ AFFIRMATIONS = ("yes", "yeah", "yep", "sure", "please do", "go ahead", "confirm", "correct", "ok", "okay")
++JUDGE_MUST_HOLD = frozenset({"required", "question", "communicate", "hard"})
++
++
++def is_judge_must_hold(atom: Atom) -> bool:
++    return atom.judge and atom.kind in JUDGE_MUST_HOLD
++
++
++def judge_must_hold_atoms(verifier: Verifier) -> list[Atom]:
++    return [atom for atom in verifier.atoms if is_judge_must_hold(atom)]
++
++
++def code_atoms(verifier: Verifier) -> list[Atom]:
++    return [atom for atom in verifier.atoms if not atom.judge]
++
++
++def first_refusal(verifier: Verifier, effects: dict,
++                  write_tools: Optional[Iterable[str]],
++                  resolved: Optional[Iterable[str]] = None) -> Optional[str]:
++    candidate = resolved if (resolved is not None and judge_write_tools(verifier)) else write_tools
++    extra = _extra_write(verifier, effects, candidate)
++    if extra is not None:
++        return extra
++    refused = judge_must_hold_atoms(verifier)
++    if refused:
++        return refused[0].id
++    return None
+ 
+ 
+ def load_run(path: Any) -> Run:
+@@ -295,14 +321,20 @@ def names_no_row(payload: dict) -> bool:
+ 
+ 
+ def verifier_write_tools(verifier: Any) -> set[str]:
+-    return {p["tool"] for p in map(atom_payload, verifier.atoms) if p.get("tool")}
++    return {p["tool"] for p in map(atom_payload, code_atoms(verifier)) if p.get("tool")}
++
++
++def judge_write_tools(verifier: Any) -> set[str]:
++    return {p["tool"] for p in map(atom_payload, [a for a in verifier.atoms if a.judge])
++            if p.get("kind") in ("write", "write_value") and isinstance(p.get("tool"), str)
++            and p.get("tool")}
+ 
+ 
+ def scored_write_tools(verifier: Any, run: Run, write_tools: Optional[Iterable[str]] = None) -> set[str]:
+     """The tools whose calls count as writes when scoring this Run."""
+     if write_tools:
+         return set(write_tools)
+-    return resolve_write_tools([run], verifier_write_tools(verifier))
++    return resolve_write_tools([run], verifier_write_tools(verifier) | judge_write_tools(verifier))
+ 
+ 
+ def start_state(run: Run) -> dict:
+@@ -402,7 +434,7 @@ def _extra_write(verifier: Any, effects: dict, write_tools: Optional[Iterable[st
+         return None
+     covered = set()
+     whole_tool = set()
+-    for atom in verifier.atoms:
++    for atom in code_atoms(verifier):
+         payload = atom_payload(atom)
+         if atom.kind != "forbidden" and payload.get("kind") in ("write", "write_value"):
+             covered.add((payload.get("tool"), payload.get("entity")))
+@@ -483,7 +515,7 @@ def check_run(verifier: Any, run: Any, canon: Any = None, *,
+     wrote_with = {e["tool"] for e in effects.values()}
+     values = {(e["tool"], e["entity"], f, v) for e in effects.values() for f, v in e["values"].items()}
+     asked, said = set(question_keys(run, effects, fn)), set(communicate_values(run, fn))
+-    for atom in verifier.atoms:
++    for atom in code_atoms(verifier):
+         payload = atom_payload(atom)
+         kind = payload.get("kind")
+         target = (payload.get("tool"), payload.get("entity"))
+@@ -508,5 +540,5 @@ def check_run(verifier: Any, run: Any, canon: Any = None, *,
+             return False, atom.id
+         if kind == "communicate" and payload.get("value") not in said:
+             return False, atom.id
+-    extra = _extra_write(verifier, effects, write_tools)
++    extra = first_refusal(verifier, effects, write_tools, tools)
+     return (True, None) if extra is None else (False, extra)
+diff --git a/kullback/runner/verdict.py b/kullback/runner/verdict.py
+index 2ad485a..c967221 100644
+--- a/kullback/runner/verdict.py
++++ b/kullback/runner/verdict.py
+@@ -14,7 +14,7 @@ from kullback.runner.records import Atom, Run, Verdict, Verifier, load_run_jsonl
+ # constraint gate (runner/confinement.py) is easier to find next to that world model than buried in
+ # this module's own top.
+ 
+-VERDICT_VERSION = "2"
++VERDICT_VERSION = "3"
+ MUST_HOLD = {"required", "question", "communicate", "hard"}
+ TRANSFER_HINTS = ("transfer", "escalate", "handoff", "hand_off")
+ GAVE_UP = {"transfer", "transferred", "agent_transfer", "gave_up", "no_action"}
+@@ -22,6 +22,7 @@ ENV_ERROR_REASONS = {"env_error", "environment_error", "environment_cannot_answe
+ # How each judge use says "this holds", "this does not" and "I did not decide" (judge.py's _USES).
+ JUDGE_HOLDS = {"pass", "equivalent", "acceptable", "good_reference"}
+ JUDGE_FAILS = {"fail", "not_equivalent", "unacceptable", "bad_reference"}
++_JUDGE_WORDS = {True: "pass", False: "fail", None: "abstain"}
+ CAUSES = {"candidate", "environment", "simulated_user", "undetermined"}
+ 
+ 
+@@ -158,10 +159,11 @@ def _score_judge_atom(atom: Atom, judge_results: Optional[dict], notes: list[str
+     if judge_results is None or atom.id not in judge_results:
+         notes.append(f"judge_atom_unevaluated:{atom.id}")
+         return None, False
+-    holds = _judge_says(judge_results[atom.id])
+-    if holds is None:
++    opinion = _judge_says(judge_results[atom.id])
++    notes.append(f"judge_reported:{atom.id}:{_JUDGE_WORDS[opinion]}")
++    if opinion is None:
+         notes.append(f"judge_abstained:{atom.id}")
+-    return holds, True
++    return None, True
+ 
+ 
+ def _tally_atom(atom: Atom, holds: Optional[bool], unresolved_ids: set[str],
+@@ -259,7 +261,9 @@ def _extra_write_outcome(verifier: Verifier, context: AtomContext) -> Optional[t
+         _fn = _target.canon_fn(context.rules if context.rules is not None else context._canon)
+         _tools = _target.scored_write_tools(verifier, context.run, context.write_tools)
+         _effects = _target.write_effects(context.run, _tools, _fn)
+-        _extra = _target._extra_write(verifier, _effects, context.write_tools)
++        _extra = _target._extra_write(
++            verifier, _effects,
++            _tools if _target.judge_write_tools(verifier) else context.write_tools)
+         if _extra is not None:
+             return _extra, f"failing_atom:{_extra}: write not required and not allowed by any atom"
+         return None
+@@ -282,6 +286,37 @@ def _note_comparisons(context: AtomContext, verifier: Verifier, workdir: Any, ru
+     return judged
+ 
+ 
++def _decide_outcome(verifier: Verifier, context: AtomContext, failures: list[Atom],
++                    unevaluable: list[Atom], notes: list[str]) -> tuple[Optional[str], bool]:
++    # One scorer (G3): covered writes are read off the Verifier atoms, as check_run does,
++    # because non-Hard atoms no longer evaluate wrote() and mark nothing covered. Verifiers
++    # with no structured write target (unit fixtures only) keep the covered-set check.
++    uneven = [atom for atom in unevaluable if not atom.judge]
++    extra = None if (failures or uneven) else _extra_write_outcome(verifier, context)
++    if failures:
++        first = failures[0]
++        notes.append(f"failing_atom:{first.id}: {first.description or first.predicate_src or first.kind}")
++        return first.id, False
++    if extra is not None and not uneven:
++        failing_atom, note = extra
++        notes.append(note)
++        return failing_atom, False
++    if unevaluable:
++        first = unevaluable[0]
++        notes.append(f"not_verdicted:{first.id}: a {first.kind} atom could not be evaluated")
++        return first.id, True
++    if context.write_tools is None:
++        notes.append("side_effect_check_skipped")
++    return None, False
++
++
++def _side_effect_count(verifier: Verifier, context: AtomContext) -> int:
++    if not _target.judge_write_tools(verifier):
++        return context.writes_count()
++    tools = _target.scored_write_tools(verifier, context.run, context.write_tools)
++    return sum(1 for call in context.calls if not call["error"] and call["name"] in tools)
++
++
+ def verdict(run_jsonl: Any, verifier: Verifier, canon: Any = None, judge_results: Optional[dict] = None,
+             *, environment: Any = None, runner_version: Optional[str] = None,
+             reference_path: Optional[Iterable[str]] = None, write_tools: Optional[Iterable[str]] = None,
+@@ -307,26 +342,7 @@ def verdict(run_jsonl: Any, verifier: Verifier, canon: Any = None, judge_results
+     failures.sort(key=lambda a: order.get(a.id, 0))
+     unevaluable.sort(key=lambda a: order.get(a.id, 0))
+ 
+-    failing_atom = None
+-    not_verdicted = False
+-    if failures:
+-        first = failures[0]
+-        failing_atom = first.id
+-        notes.append(f"failing_atom:{first.id}: {first.description or first.predicate_src or first.kind}")
+-    elif unevaluable:
+-        first = unevaluable[0]
+-        failing_atom, not_verdicted = first.id, True
+-        notes.append(f"not_verdicted:{first.id}: a {first.kind} atom could not be evaluated")
+-    elif context.write_tools is not None:
+-        # One scorer (G3): covered writes are read off the Verifier atoms, as check_run does,
+-        # because non-Hard atoms no longer evaluate wrote() and mark nothing covered. Verifiers
+-        # with no structured write target (unit fixtures only) keep the covered-set check.
+-        extra = _extra_write_outcome(verifier, context)
+-        if extra is not None:
+-            failing_atom, note = extra
+-            notes.append(note)
+-    else:
+-        notes.append("side_effect_check_skipped")
++    failing_atom, not_verdicted = _decide_outcome(verifier, context, failures, unevaluable, notes)
+ 
+     marks = _env_marks(run, flagged_tools)
+     is_env_error = _env_error(run)
+@@ -337,7 +353,7 @@ def verdict(run_jsonl: Any, verifier: Verifier, canon: Any = None, judge_results
+         notes.append(f"environment_cannot_answer:{_cannot_answer_tool(run)}")
+     passed = failing_atom is None and not is_env_error and not not_verdicted
+     names = [call["name"] for call in context.calls]
+-    side_effects = context.writes_count()
++    side_effects = _side_effect_count(verifier, context)
+ 
+     klass, cause, suspected = _classify(
+         run, context, cause_result, marks, names, passed, is_env_error, not_verdicted, notes
