@@ -50,29 +50,20 @@ def test_builder_and_episode_share_the_strip_implementation():
     assert intent.strip_intent is value_strip.strip_intent
 
 
-def test_stage_hash_tracks_the_moved_strip_module(monkeypatch):
-    from kullback.builder import build, intent
-    from kullback.user import value_strip
+@pytest.mark.parametrize("owner_name,dependency_name", [
+    ("kullback.builder.compile_env", "kullback.episode.loading"),
+    ("kullback.builder.sandbox", "kullback.episode.loading"),
+    ("kullback.builder.intent", "kullback.user.value_strip"),
+])
+def test_closure_hash_of_owner_follows_the_moved_module(owner_name, dependency_name):
+    """The G1 move put the implementation in episode.loading and user.value_strip; the closure
+    hash carries those bytes inside the owning module's hash, so an edit there moves it."""
+    import importlib
 
-    original = build._module_hash
-    before = build._version("strip-probe", test_stage_hash_tracks_the_moved_strip_module, intent)
-    monkeypatch.setattr(build, "_module_hash", lambda module: "changed" if module is value_strip else original(module))
-    after = build._version("strip-probe", test_stage_hash_tracks_the_moved_strip_module, intent)
-    assert before != after
-
-
-@pytest.mark.parametrize("parent_name", ["compile_env", "sandbox", "intent"])
-def test_direct_module_hash_tracks_moved_implementation(monkeypatch, parent_name):
-    from kullback.builder import build
-    from kullback.episode import loading
-    from kullback.user import value_strip
-
-    parent = getattr(build, parent_name)
-    dependency = value_strip if parent_name == "intent" else loading
-    original = build._module_hash
-    before = original(parent)
-    monkeypatch.setattr(build, "_module_hash", lambda module: "changed" if module is dependency else original(module))
-    assert build._module_hash(parent) != before
+    from kullback.builder import cache_reach as reach
+    assert dependency_name in reach.import_closure(owner_name)
+    owner = importlib.import_module(owner_name)
+    assert reach.closure_hash(owner) != reach.closure_hash(owner, exempt=frozenset({dependency_name}))
 
 
 def test_unrelated_module_hash_does_not_follow_loader(monkeypatch):

@@ -109,7 +109,7 @@ class RoundEnd(_Event):
     counts: dict[str, Any] = Field(default_factory=dict)
     # `target_built` is a run asked for a stage earlier than the derivation's inputs: the target was
     # built and there was no Verifier to examine, so the run ends rather than rebuilding it.
-    exit: Optional[Literal["done", "stalled", "ceiling", "max_rounds", "target_built"]] = None
+    exit: Optional[Literal["done", "stalled", "ceiling", "max_rounds", "target_built", "refused"]] = None
 
 
 class BeatStart(_Event):
