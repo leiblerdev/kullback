@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import hashlib
 import json
 import os
 import stat
 import sys
+import tempfile
 from pathlib import Path
 
 from pydantic import ValidationError
@@ -139,14 +141,43 @@ def inputs_error(before, after):
     return None
 
 
-def write_exclusive(output, text):
+class PublishError(Exception):
+    pass
+
+
+def stage_file(target, text):
+    handle, tmppath = tempfile.mkstemp(prefix=target.name + ".staging-", dir=str(target.parent))
     try:
-        handle = os.open(output, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        with os.fdopen(handle, "w", encoding="utf-8") as stream:
+            stream.write(text)
+            stream.flush()
+            os.fsync(stream.fileno())
+    except BaseException:
+        with contextlib.suppress(OSError):
+            os.unlink(tmppath)
+        raise
+    return tmppath
+
+
+def publish_staged(output, text):
+    target = Path(output)
+    try:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        staged = stage_file(target, text)
+    except OSError as exc:
+        raise PublishError("cannot stage manifest: " + type(exc).__name__) from None
+    try:
+        os.link(staged, target)
     except FileExistsError:
-        return False
-    with os.fdopen(handle, "w", encoding="utf-8") as stream:
-        stream.write(text)
-    return True
+        outcome = False
+    except OSError as exc:
+        raise PublishError("cannot publish manifest: " + type(exc).__name__) from None
+    else:
+        outcome = True
+    finally:
+        with contextlib.suppress(OSError):
+            os.unlink(staged)
+    return outcome
 
 
 def derive_memory(path):
@@ -337,9 +368,20 @@ def finish(output, before, after, entries, totals, heldout_source, heldout_count
         and totals["recordings"] == historical["total"],
         "standing_note": "every selected prefix evidence_only; original standings unchanged",
     }
-    text = json.dumps(manifest, indent=2, sort_keys=True)
-    Path(output).parent.mkdir(parents=True, exist_ok=True)
-    if not write_exclusive(output, text):
+    try:
+        text = json.dumps(manifest, indent=2, sort_keys=True)
+    except (TypeError, ValueError) as exc:
+        print("cannot serialize manifest: " + type(exc).__name__, file=sys.stderr)
+        return 2
+    try:
+        published = publish_staged(output, text)
+    except PublishError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+    except ValueError as exc:
+        print("cannot encode manifest: " + type(exc).__name__, file=sys.stderr)
+        return 2
+    if not published:
         print("refusing to overwrite existing manifest: " + str(output), file=sys.stderr)
         return 2
     print("recordings: " + str(totals["recordings"]))

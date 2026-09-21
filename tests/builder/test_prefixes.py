@@ -4,7 +4,10 @@ import copy
 import importlib
 import json
 import os
+import signal
+import subprocess
 import sys
+import threading
 from pathlib import Path
 
 import pytest
@@ -649,3 +652,117 @@ def test_snapshot_roundtrip_regular(tmp_path):
     digests, err = cohort_module().take_digest_map([target])
     assert err is None
     assert digests["invented.json"] == rows[0][2]
+
+
+def test_publish_writes_valid_json(tmp_path):
+    output = tmp_path / "m.json"
+    assert cohort_module().publish_staged(output, '{"a": 1}') is True
+    assert json.loads(output.read_text(encoding="utf-8")) == {"a": 1}
+
+
+def test_publish_refuses_existing(tmp_path):
+    output = tmp_path / "m.json"
+    output.write_bytes(b"invented-prior")
+    assert cohort_module().publish_staged(output, '{"a": 1}') is False
+    assert output.read_bytes() == b"invented-prior"
+
+
+def test_publish_leaves_no_tempfile(tmp_path):
+    output = tmp_path / "m.json"
+    assert cohort_module().publish_staged(output, '{"a": 1}') is True
+    assert [path.name for path in tmp_path.iterdir()] == ["m.json"]
+
+
+def test_finish_unserializable_then_retry(tmp_path):
+    output = tmp_path / "sub" / "m.json"
+    before = [("a.json", 3, "invented-digest")]
+    totals = {"recordings": 1, "original_eligible": 0, "selected_prefixes": 0}
+    entries = [{"file": "a.json", "bad": object()}]
+    code = cohort_module().finish(str(output), before, {"a.json": "invented-digest"}, entries, totals, "none", 0)
+    assert code == 2
+    assert not output.exists()
+    code = cohort_module().finish(str(output), before, {"a.json": "invented-digest"}, [], totals, "none", 0)
+    assert code == 0
+    assert json.loads(output.read_text(encoding="utf-8"))["inputs_unchanged"] is True
+
+
+def test_cli_blocked_parent(tmp_path):
+    src = tmp_path / "src"
+    src.mkdir()
+    invented_cli_input(src, [invented_cli_recording(True)])
+    blocker = tmp_path / "blocker"
+    blocker.write_text("invented-file", encoding="utf-8")
+    output = blocker / "m.json"
+    assert run_cli(["--input-dir", str(src), "--output", str(output)]) == 2
+    assert blocker.read_text(encoding="utf-8") == "invented-file"
+
+
+def test_publish_concurrent_winner_kept(tmp_path):
+    output = tmp_path / "m.json"
+    barrier = threading.Barrier(2)
+    results = []
+
+    def bidder(text):
+        barrier.wait(timeout=60)
+        results.append((text, cohort_module().publish_staged(str(output), text)))
+
+    first = threading.Thread(target=bidder, args=('{"bidder": 1}',))
+    second = threading.Thread(target=bidder, args=('{"bidder": 2}',))
+    first.start()
+    second.start()
+    first.join(timeout=60)
+    second.join(timeout=60)
+    assert not first.is_alive() and not second.is_alive()
+    wins = [text for text, ok in results if ok]
+    losses = [text for text, ok in results if not ok]
+    assert len(wins) == 1 and len(losses) == 1
+    assert json.loads(output.read_text(encoding="utf-8")) == json.loads(wins[0])
+    assert [path.name for path in tmp_path.iterdir()] == ["m.json"]
+
+
+def test_publish_encoding_failure_cleans_up(tmp_path):
+    output = tmp_path / "m.json"
+    with pytest.raises(ValueError):
+        cohort_module().publish_staged(str(output), "invented \ud800 text")
+    assert not output.exists()
+    assert list(tmp_path.iterdir()) == []
+    assert cohort_module().publish_staged(str(output), '{"retry": true}') is True
+    assert json.loads(output.read_text(encoding="utf-8")) == {"retry": True}
+
+
+def test_publish_rlimit_failure_cleans_up(tmp_path):
+    resource = pytest.importorskip("resource")
+    if not hasattr(signal, "SIGXFSZ"):
+        pytest.skip("platform cannot ignore SIGXFSZ for the bounded write-failure regression")
+    del resource
+    scripts_dir = Path(__file__).resolve().parents[2] / "scripts"
+    output = tmp_path / "m.json"
+    code = "\n".join(
+        [
+            "import os, resource, signal, sys",
+            "sys.path.insert(0, sys.argv[1])",
+            "resource.setrlimit(resource.RLIMIT_FSIZE, (8192, 8192))",
+            "signal.signal(signal.SIGXFSZ, signal.SIG_IGN)",
+            "from agenttrove_prefix_cohort import publish_staged",
+            "try:",
+            "    ok = publish_staged(sys.argv[2], 'x' * 100000)",
+            "except Exception as exc:",
+            "    print('raised:' + type(exc).__name__)",
+            "else:",
+            "    print('returned:' + str(ok))",
+        ]
+    )
+    env = dict(os.environ)
+    env["PYTHONDONTWRITEBYTECODE"] = "1"
+    done = subprocess.run(
+        [sys.executable, "-c", code, str(scripts_dir), str(output)],
+        capture_output=True,
+        text=True,
+        timeout=60,
+        env=env,
+    )
+    assert "raised:PublishError" in done.stdout
+    assert not output.exists()
+    assert list(tmp_path.iterdir()) == []
+    assert cohort_module().publish_staged(str(output), '{"retry": true}') is True
+    assert json.loads(output.read_text(encoding="utf-8")) == {"retry": True}
