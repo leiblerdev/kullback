@@ -15,12 +15,38 @@ from typing import Any, Callable, Iterable, Optional
 
 from kullback.runner.canon import CanonRules, canon_value
 from kullback.runner.confinement import SAFE_BUILTINS, confine
-from kullback.runner.records import Atom, Event, RawPtr, Run, canonical_json, load_run_jsonl
+from kullback.runner.records import Atom, Event, RawPtr, Run, Verifier, canonical_json, load_run_jsonl
 
 _TOKEN = re.compile(r"[#$]?[A-Za-z0-9][A-Za-z0-9_./#-]*")
 _WORD = re.compile(r"[A-Za-z0-9#$€£¥._/-]+")
 CURRENCY = "".join(CanonRules().currency_symbols)
 AFFIRMATIONS = ("yes", "yeah", "yep", "sure", "please do", "go ahead", "confirm", "correct", "ok", "okay")
+JUDGE_MUST_HOLD = frozenset({"required", "question", "communicate", "hard"})
+
+
+def is_judge_must_hold(atom: Atom) -> bool:
+    return atom.judge and atom.kind in JUDGE_MUST_HOLD
+
+
+def judge_must_hold_atoms(verifier: Verifier) -> list[Atom]:
+    return [atom for atom in verifier.atoms if is_judge_must_hold(atom)]
+
+
+def code_atoms(verifier: Verifier) -> list[Atom]:
+    return [atom for atom in verifier.atoms if not atom.judge]
+
+
+def first_refusal(verifier: Verifier, effects: dict,
+                  write_tools: Optional[Iterable[str]],
+                  resolved: Optional[Iterable[str]] = None) -> Optional[str]:
+    candidate = resolved if (resolved is not None and judge_write_tools(verifier)) else write_tools
+    extra = _extra_write(verifier, effects, candidate)
+    if extra is not None:
+        return extra
+    refused = judge_must_hold_atoms(verifier)
+    if refused:
+        return refused[0].id
+    return None
 
 
 def load_run(path: Any) -> Run:
@@ -295,14 +321,20 @@ def names_no_row(payload: dict) -> bool:
 
 
 def verifier_write_tools(verifier: Any) -> set[str]:
-    return {p["tool"] for p in map(atom_payload, verifier.atoms) if p.get("tool")}
+    return {p["tool"] for p in map(atom_payload, code_atoms(verifier)) if p.get("tool")}
+
+
+def judge_write_tools(verifier: Any) -> set[str]:
+    return {p["tool"] for p in map(atom_payload, [a for a in verifier.atoms if a.judge])
+            if p.get("kind") in ("write", "write_value") and isinstance(p.get("tool"), str)
+            and p.get("tool")}
 
 
 def scored_write_tools(verifier: Any, run: Run, write_tools: Optional[Iterable[str]] = None) -> set[str]:
     """The tools whose calls count as writes when scoring this Run."""
     if write_tools:
         return set(write_tools)
-    return resolve_write_tools([run], verifier_write_tools(verifier))
+    return resolve_write_tools([run], verifier_write_tools(verifier) | judge_write_tools(verifier))
 
 
 def start_state(run: Run) -> dict:
@@ -402,7 +434,7 @@ def _extra_write(verifier: Any, effects: dict, write_tools: Optional[Iterable[st
         return None
     covered = set()
     whole_tool = set()
-    for atom in verifier.atoms:
+    for atom in code_atoms(verifier):
         payload = atom_payload(atom)
         if atom.kind != "forbidden" and payload.get("kind") in ("write", "write_value"):
             covered.add((payload.get("tool"), payload.get("entity")))
@@ -483,7 +515,7 @@ def check_run(verifier: Any, run: Any, canon: Any = None, *,
     wrote_with = {e["tool"] for e in effects.values()}
     values = {(e["tool"], e["entity"], f, v) for e in effects.values() for f, v in e["values"].items()}
     asked, said = set(question_keys(run, effects, fn)), set(communicate_values(run, fn))
-    for atom in verifier.atoms:
+    for atom in code_atoms(verifier):
         payload = atom_payload(atom)
         kind = payload.get("kind")
         target = (payload.get("tool"), payload.get("entity"))
@@ -508,5 +540,5 @@ def check_run(verifier: Any, run: Any, canon: Any = None, *,
             return False, atom.id
         if kind == "communicate" and payload.get("value") not in said:
             return False, atom.id
-    extra = _extra_write(verifier, effects, write_tools)
+    extra = first_refusal(verifier, effects, write_tools, tools)
     return (True, None) if extra is None else (False, extra)

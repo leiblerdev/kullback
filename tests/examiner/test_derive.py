@@ -387,9 +387,12 @@ def test_a_judge_atom_is_never_answered_by_code(tmp_path):
     assert atom.judge is True
     assert not atom.predicate_src  # nothing for verdict.py to evaluate
     assert S.hard_holds(atom, reference_run(), WRITE_TOOLS) is None
-    # It is not silently satisfied either: a rude Run passes only because code did not decide.
-    assert S.check_run(verifier, reference_run()) == (True, None)
-    assert S.check_run(verifier, make_run("rude", reference_events(final="No."))) [1] != "hard.k2"
+    # A must-hold judge atom leaves the Run without a code score, whatever the Run said.
+    assert S.check_run(verifier, reference_run()) == (False, "hard.k2")
+    rude = make_run("rude", reference_events(
+        final="No. Your order #W123 is cancelled and 150.0 is refunded, deal with it."))
+    assert S.check_run(derive(tmp_path), rude) == (True, None)
+    assert S.check_run(verifier, rude) == (False, "hard.k2")
 
 
 def test_verifier_records_its_seed_runs_and_round_trips(tmp_path):

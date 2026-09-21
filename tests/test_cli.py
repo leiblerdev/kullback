@@ -637,7 +637,8 @@ def test_no_judge_model_means_no_judge_results_and_no_model_call(tmp_path):
 
 
 def test_a_failure_code_left_unmarked_gets_a_cause_and_one_verdict_file(tmp_path):
-    """D88: code marks the Run, the judge names the cause, and the Run keeps one Verdict, not two."""
+    """D88: code marks the Run, the judge names the cause, and the Run keeps one Verdict, not two.
+    D255: a judge's pass no longer makes r1 a pass."""
     from kullback.runner.regrade import regrade, regrade_run
 
     verifier = _judge_verifier()
@@ -647,7 +648,8 @@ def test_a_failure_code_left_unmarked_gets_a_cause_and_one_verdict_file(tmp_path
     answers = cli._judged_atoms(verifier, paths, (_judge("a", "pass"), _judge("b", "pass")), tmp_path)
     verdicts = regrade(paths, verifier, None, out_dir=out_dir, judge_results=answers,
                        judge_version="1", **common)
-    assert [v.cause for v in verdicts] == [None, None]
+    assert [v.class_ for v in verdicts] == ["not_verdicted", "fail"]
+    assert [v.cause for v in verdicts] == ["undetermined", None]
     assert "cause_pending_judge" in dict((v.run_id, v.notes) for v in verdicts)["r2"]
 
     named = cli._name_causes(
@@ -659,7 +661,7 @@ def test_a_failure_code_left_unmarked_gets_a_cause_and_one_verdict_file(tmp_path
     for path in sorted(out_dir.glob("*.json")):
         body = json.loads(path.read_text(encoding="utf-8"))
         stored.setdefault(body["run_id"], []).append(body.get("cause"))
-    assert stored == {"r1": [None], "r2": ["candidate"]}
+    assert stored == {"r1": ["undetermined"], "r2": ["candidate"]}
 
 
 # --- build --grow table=count (D107) ---

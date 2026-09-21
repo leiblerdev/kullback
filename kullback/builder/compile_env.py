@@ -3965,8 +3965,9 @@ def _context_feed_now(result: Any, schema: EntitySchema, state: dict, own_pairs:
     Creation evidence wins: when the result shows a new id, the time candidates are the
     time-like leaves in the same row object, and equality with an earlier sighting or a
     stored stamp proves nothing, so only the call's own argument strings exclude a value.
-    One distinct survivor feeds with "created_row" evidence; otherwise the round 0 rule
-    decides over every time-like leaf, without evidence.
+    One distinct survivor feeds with "created_row" evidence; otherwise the found-value
+    rule decides over every time-like leaf, without evidence: not in the arguments, not seen
+    earlier in the trace, not stored at reset, one survivor.
     """
     if new_ids:
         prior_pairs = state.get("pairs") or set()
@@ -3993,10 +3994,11 @@ def recorded_call_context(call: ToolCall, schema: EntitySchema,
     feeds every id. An id is new only for its own table: seen under another table's key it still
     feeds, seen under the same table's key or under a key no table claims it feeds nothing. A
     value the call's own arguments state is what the body was given, so it feeds nothing.
-    The time follows creation evidence where there is any, else the round 0 rule; a feed the
-    creation rule produced carries "now_evidence" so the context knows the reset check does
-    not apply to it. A call whose result carries neither leaves both empty, and the seeded
-    feed answers, counted.
+    The time follows creation evidence where there is any, else the found-value rule (not
+    in the arguments, not seen earlier in the trace, not stored at reset, one survivor); a
+    feed the creation rule produced carries "now_evidence" so the context knows the reset
+    check does not apply to it. A call whose result carries neither leaves both empty, and
+    the seeded feed answers, counted.
     """
     feed: dict = {"now": None, "new_ids": {}}
     args = call.args if isinstance(call, ToolCall) else (call or {}).get("args") or {}

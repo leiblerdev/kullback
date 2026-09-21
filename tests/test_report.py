@@ -974,3 +974,41 @@ def test_the_exit_cell_reads_the_beat_error_under_the_key_the_driver_writes_it_u
     rows[-1]["counts"][rounds.BEAT_ERROR] = {"beat": "builder", "kind": "LedgerUnreadable"}
     (workdir / "rounds.json").write_text(json.dumps(rows), encoding="utf-8")
     assert "stalled (ended by builder error)" in block_of(render(load(workdir)), "## Rounds")
+
+
+# --- current Verdict across Verdict versions ----------------------------------
+
+def test_a_stale_verdict_version_never_beats_the_current_scoring_version(data):
+    """D255: after the Verdict version bumped, a v2 pass must not beat a v3 not-verdicted file."""
+    from kullback.report import current_verdicts
+    from kullback.runner.verdict import VERDICT_VERSION
+
+    task = data.tasks[0]
+    old = a_verdict("r1", True, verdict_version="2", verifier_version="v2")
+    new = a_verdict("r1", False, verdict_version=VERDICT_VERSION, verifier_version="v2",
+                    **{"class": "not_verdicted", "failing_atom": "a_tone"})
+    for ordered in ([old, new], [new, old]):
+        current, superseded = current_verdicts(data, task, ordered)
+        assert [v.verdict_version for v in current] == [VERDICT_VERSION]
+        assert [v.verdict_version for v in superseded] == ["2"]
+
+
+def test_a_verdict_without_a_version_still_ties_on_the_remaining_versions(data):
+    """A Verdict that left its version empty ties as before: the last file read wins."""
+    from kullback.report import current_verdicts
+
+    task = data.tasks[0]
+    first = a_verdict("r1", True, verifier_version="v2")
+    second = a_verdict("r1", False, verifier_version="v2", failing_atom="a_cancel")
+    current, superseded = current_verdicts(data, task, [first, second])
+    assert [v.failing_atom for v in current] == ["a_cancel"]
+    assert [v.failing_atom for v in superseded] == [None]
+
+
+def test_the_verdict_version_is_one_object_with_the_value_three():
+    """The constant lives with the record; verdict.py only re-exports it."""
+    from kullback.runner import records
+    from kullback.runner import verdict as verdict_module
+
+    assert verdict_module.VERDICT_VERSION is records.VERDICT_VERSION
+    assert records.VERDICT_VERSION == "3"
