@@ -183,6 +183,21 @@ def test_full_live_inputs_never_touch_the_disk(workdir):
     assert isinstance(user, AgentUser)
 
 
+def test_the_disk_fallback_carries_write_tools_goal_writes_and_strip(workdir):
+    """The disk fallback ends and strips like the dict's own values, not unchecked (P1)."""
+    user = factory_mod.build_user(workdir, "task_1", TestModel([], loop=True),
+                                  factory_mod.PURPOSE_SCORE)
+    assert isinstance(user, AgentUser)
+    fallback = user.fallback
+    assert sorted(fallback.write_tools) == sorted(user.write_tools)
+    assert fallback.goal_writes is not None
+    assert sorted(fallback.goal_writes) == sorted(user.protocol.goal_writes)
+    assert fallback.answer_strip is not None
+    for probe in ("My plot number is PLOT-4471.", "The courier reference is CR-90881.",
+                  "Hello."):
+        assert fallback.answer_strip(probe) == user.guards.strip(probe)
+
+
 def test_the_disk_derivation_equals_what_the_build_passes_live(workdir):
     """Goal writes, strip and members off disk match the build's live expressions field by field."""
     from kullback.builder import build as build_mod

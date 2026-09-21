@@ -77,7 +77,10 @@ def build_user(workdir: Any, task_id: str, model: Any, purpose: str, *,
 
 
 def _disk_state(workdir: Any, task_id: str, purpose: str) -> Optional[dict]:
-    """Everything the workdir knows about one Task's user, or None where the score has nothing."""
+    """Everything the workdir knows about one Task's user, or None where the score has nothing.
+
+    No live world exists here, so the fallback takes no starting_state_reader.
+    """
     index = fidelity_mod.trace_index(workdir)
     trace_id = fidelity_mod.references(workdir).get(task_id)
     trace = index.get(trace_id) if trace_id else None
@@ -92,14 +95,17 @@ def _disk_state(workdir: Any, task_id: str, purpose: str) -> Optional[dict]:
     lessons = lesson_mod.lines_for(lesson_mod.load_lessons(workdir), task_id)
     ctx = context_mod.curate(task_id, user_rules, trace, vocab=vocab, write_tools=writes,
                              record_fields=sorted(record), lessons=lessons)
+    goal_writes = rules_mod.goal_write_set(trace, writes)
+    answer_strip = _strip_for(workdir, task_id, index)
     return {
         "ctx": ctx,
-        "fallback": rules_mod.SimulatedUser(user_rules, vocab=vocab),
+        "fallback": rules_mod.SimulatedUser(user_rules, vocab=vocab, write_tools=writes,
+                                            goal_writes=goal_writes, answer_strip=answer_strip),
         "record_values": record,
         "vocab": vocab,
         "write_tools": writes,
-        "goal_writes": rules_mod.goal_write_set(trace, writes),
-        "answer_strip": _strip_for(workdir, task_id, index),
+        "goal_writes": goal_writes,
+        "answer_strip": answer_strip,
         "trace": trace,
     }
 

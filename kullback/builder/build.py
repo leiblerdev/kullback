@@ -1569,17 +1569,6 @@ def _refuse_stand_in(router: Any) -> None:
         raise ValueError("a scored Run cannot use a Router carrying a model stand-in (G28)")
 
 
-def _replay_context(toolkit: Any, trace: Any, schema: Any) -> dict:
-    if trace is None or not hasattr(replay_mod.ScoredRouter, "_feed_context"):
-        return {}
-    feeds = compile_env.recorded_call_contexts(trace.tool_calls, schema)
-
-    def before_call(call: Any) -> None:
-        toolkit.ctx.feed_call(feeds.get(getattr(call, "id", None), {}))
-
-    return {"before_call": before_call}
-
-
 def _replay_stage(judging: Optional[SemanticJudging] = None, only: Optional[Iterable[str]] = None):
     """Every Trace of every Task replayed through the built tools: the Reference Runs and Gate A (D108).
 
@@ -2314,11 +2303,6 @@ def _user_driver(workdir: Path, task: Task, fallback: Any, model: Any, *, vocab:
                                    fallback=fallback, vocab=vocab, write_tools=write_tools,
                                    goal_writes=goal_writes, answer_strip=answer_strip,
                                    record_values=record, trace=trace)
-
-
-def _probe_seed(workdir: Path, task_id: str) -> int:
-    return sampling.sample_seed(
-        RUN_SEED_KIND, f"probe-{task_id}", sampling.read_salt(workdir) or sampling.DEFAULT_SALT)
 
 
 def _probe_seed(workdir: Path, task_id: str) -> int:
