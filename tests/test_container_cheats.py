@@ -14,6 +14,7 @@ from kullback.container_cheats import (
     CheatResult,
     ScanHit,
     ScanReport,
+    _all_defeated,
     aim_cheats,
     run_cheats,
     scan_start,
@@ -392,6 +393,22 @@ def _scan_candidate(answers):
     return (make, store)
 
 
+ID_A = "a" * 40
+ID_B = "b" * 40
+ID_C = "c" * 40
+ID_D = "d" * 40
+ID_E = "e" * 40
+ID_F = "f" * 64
+
+
+def _history_answers(all_out, head_out, fsck_out, repo=b"/workspace/a/.git\n"):
+    return [_ok(b""), _ok(repo), _ok(b"/usr/bin/git\n"), all_out, head_out, fsck_out]
+
+
+def _ids(*ids):
+    return _ok(("\n".join(ids) + "\n").encode())
+
+
 def _sha_line(data, path):
     import hashlib
 
@@ -568,15 +585,14 @@ def test_scan_duplicate_answer_lines_are_fed_once():
 
 
 def test_scan_history_hit_when_all_commits_exceed_head():
-    answers = [
-        _ok(b""),
-        _ok(b"/workspace/proj/.git\n"),
-        _ok(b"/usr/bin/git\n"),
-        _ok(b"5\n"),
-        _ok(b"aaa\nbbb\nccc\n"),
-        _ok(b""),
-    ]
-    make, store = _scan_candidate(answers)
+    make, store = _scan_candidate(
+        _history_answers(
+            _ids(ID_A, ID_B, ID_C, ID_D, ID_E),
+            _ids(ID_A, ID_B, ID_C),
+            _ok(b""),
+            repo=b"/workspace/proj/.git\n",
+        )
+    )
     report = scan_start(make, grader_tar=SCAN_TAR)
     assert report.history.outcome == "hit"
     assert report.history.hits == (
@@ -586,33 +602,69 @@ def test_scan_history_hit_when_all_commits_exceed_head():
 
 
 def test_scan_history_hit_on_unreachable_commit_only():
-    answers = [
-        _ok(b""),
-        _ok(b"/workspace/proj/.git\n"),
-        _ok(b"/usr/bin/git\n"),
-        _ok(b"3\n"),
-        _ok(b"aaa\nbbb\nccc\n"),
-        _ok(b"unreachable commit abc123\nunreachable blob def456\n"),
-    ]
-    make, _store = _scan_candidate(answers)
+    make, _store = _scan_candidate(
+        _history_answers(
+            _ids(ID_A, ID_B, ID_C),
+            _ids(ID_A, ID_B, ID_C),
+            _ok(b"unreachable commit abc123\nunreachable blob def456\n"),
+            repo=b"/workspace/proj/.git\n",
+        )
+    )
     report = scan_start(make, grader_tar=SCAN_TAR)
     assert report.history.outcome == "hit"
     assert report.history.hits[0].detail == "all=3 head=3 unreachable=1"
 
 
 def test_scan_history_clean_on_equal_counts_ignoring_blank_lines():
-    answers = [
-        _ok(b""),
-        _ok(b"/workspace/proj/.git\n\n"),
-        _ok(b"/usr/bin/git\n"),
-        _ok(b"2\n"),
-        _ok(b"aaa\nbbb\n"),
-        _ok(b"unreachable blob def456\n"),
-    ]
-    make, _store = _scan_candidate(answers)
+    make, _store = _scan_candidate(
+        _history_answers(
+            _ids(ID_A, ID_B),
+            _ok((ID_A + "\n\n" + ID_B + "\n").encode()),
+            _ok(b"unreachable blob def456\n"),
+            repo=b"/workspace/proj/.git\n\n",
+        )
+    )
     report = scan_start(make, grader_tar=SCAN_TAR)
     assert report.history.outcome == "clean"
     assert report.clean is True
+
+
+@pytest.mark.parametrize(
+    "answer",
+    [_failed(128), _truncated()],
+    ids=["exit-128", "truncated"],
+)
+def test_scan_history_broken_all_listing_is_no_signal(answer):
+    make, _store = _scan_candidate(_history_answers(answer, _ids(ID_A), _ok(b"")))
+    report = scan_start(make, grader_tar=SCAN_TAR)
+    assert report.history.outcome == "no_signal"
+    assert report.clean is False
+
+
+@pytest.mark.parametrize(
+    "slot",
+    ["all", "head"],
+    ids=["junk-in-all", "junk-in-head"],
+)
+def test_scan_history_junk_line_is_no_signal(slot):
+    junk = _ok(b"lots\n")
+    if slot == "all":
+        answers = _history_answers(junk, _ids(ID_A), _ok(b""))
+    else:
+        answers = _history_answers(_ids(ID_A), junk, _ok(b""))
+    make, _store = _scan_candidate(answers)
+    report = scan_start(make, grader_tar=SCAN_TAR)
+    assert report.history.outcome == "no_signal"
+    assert report.clean is False
+
+
+def test_scan_history_duplicate_ids_count_once():
+    fed = [ID_F, ID_A, ID_F]
+    make, _store = _scan_candidate(_history_answers(_ids(*fed), _ids(ID_F), _ok(b"")))
+    report = scan_start(make, grader_tar=SCAN_TAR)
+    assert report.history.outcome == "hit"
+    assert report.history.hits[0].detail == "all=2 head=1 unreachable=0"
+    assert len(set(fed)) == 2
 
 
 @pytest.mark.parametrize(
@@ -625,6 +677,132 @@ def test_scan_history_unreadable_repo_listing_is_no_signal(answer):
     report = scan_start(make, grader_tar=SCAN_TAR)
     assert report.history.outcome == "no_signal"
     assert report.clean is False
+
+
+def test_run_cheats_close_error_is_no_verdict_and_next_cheat_runs():
+    class _BadClose(_FakeCandidate):
+        def close(self):
+            raise WorldError("stuck lid")
+
+    fakes = [_BadClose(), _FakeCandidate()]
+    candidates = []
+    graders = []
+
+    def make_candidate():
+        fake = fakes[len(candidates)]
+        candidates.append(fake)
+        return fake
+
+    report = run_cheats(
+        make_candidate,
+        _maker(graders, lambda: _FakeGrader(_grader_defeated())),
+        grader_tar=GRADER_TAR,
+        command=COMMAND,
+        cheats=(CHEATS[0], CHEATS[1]),
+    )
+    assert fakes[0].export_limits == [16_777_216]
+    assert report.results[0].outcome == "no_verdict"
+    assert "stuck lid" in report.results[0].detail
+    assert report.results[1].outcome == "defeated"
+    assert len(graders) == 1
+    assert candidates[1].close_calls == 1
+    assert report.all_defeated is False
+
+
+def test_run_cheats_close_error_wins_over_play_error():
+    class _BadBoth(_FakeCandidate):
+        def close(self):
+            raise WorldError("stuck lid")
+
+    candidates = []
+    graders = []
+    report = run_cheats(
+        _maker(candidates, lambda: _BadBoth(export_error=ExportError("disk gone"))),
+        _maker(graders, lambda: _FakeGrader(_grader_defeated())),
+        grader_tar=GRADER_TAR,
+        command=COMMAND,
+        cheats=(CHEATS[0],),
+    )
+    assert report.results[0].outcome == "no_verdict"
+    assert "stuck lid" in report.results[0].detail
+    assert graders == []
+
+
+def test_run_cheats_close_interrupt_propagates_without_next_cheat():
+    class _InterruptedClose(_FakeCandidate):
+        def close(self):
+            raise KeyboardInterrupt()
+
+    candidates = []
+    graders = []
+    with pytest.raises(KeyboardInterrupt):
+        run_cheats(
+            _maker(candidates, lambda: _InterruptedClose()),
+            _maker(graders, lambda: _FakeGrader(_grader_defeated())),
+            grader_tar=GRADER_TAR,
+            command=COMMAND,
+            cheats=(CHEATS[0], CHEATS[1]),
+        )
+    assert len(candidates) == 1
+    assert graders == []
+
+
+def test_scan_close_error_keeps_outcomes_but_not_clean():
+    class _BadClose(_FakeCandidate):
+        def close(self):
+            raise WorldError("stuck lid")
+
+    store = []
+
+    def make():
+        fake = _BadClose([_ok(b""), _ok(b"")])
+        store.append(fake)
+        return fake
+
+    report = scan_start(make, grader_tar=SCAN_TAR)
+    assert report.hidden_tests.outcome == "clean"
+    assert report.history.outcome == "clean"
+    assert report.close_error != ""
+    assert "stuck lid" in report.close_error
+    assert report.clean is False
+
+
+@pytest.mark.parametrize("empty", [(), None], ids=["empty-tuple", "none"])
+def test_run_cheats_empty_suite_refused_before_any_world_call(empty):
+    candidates = []
+    graders = []
+    with pytest.raises(ValueError):
+        run_cheats(
+            _maker(candidates, _FakeCandidate),
+            _maker(graders, lambda: _FakeGrader(_grader_defeated())),
+            grader_tar=GRADER_TAR,
+            command=COMMAND,
+            cheats=empty,
+        )
+    assert candidates == []
+    assert graders == []
+
+
+@pytest.mark.parametrize(
+    ("results", "defeated"),
+    [
+        ((), False),
+        ((CheatResult("a", "defeated", ""),), True),
+        ((CheatResult("a", "defeated", ""), CheatResult("b", "succeeded", "")), False),
+        ((CheatResult("a", "no_verdict", "x"),), False),
+    ],
+    ids=["empty", "single-defeated", "mixed", "no-verdict"],
+)
+def test_all_defeated_fold_needs_a_run_and_every_defeat(results, defeated):
+    assert _all_defeated(results) is defeated
+
+
+def test_scan_history_find_has_no_depth_limit():
+    make, store = _scan_candidate(_history_answers(_ids(ID_A), _ids(ID_A), _ok(b"")))
+    report = scan_start(make, grader_tar=SCAN_TAR)
+    assert report.history.outcome == "clean"
+    assert "find /workspace -name .git" in store[0].commands
+    assert all("-maxdepth" not in c for c in store[0].commands)
 
 
 def test_scan_history_no_git_binary_is_no_signal():
@@ -643,21 +821,19 @@ def test_scan_history_no_git_dir_is_clean():
 
 def test_scan_history_repo_path_is_shell_quoted_when_reused():
     repo = "/workspace/my dir/o'brien/.git"
-    answers = [
-        _ok(b""),
-        _ok((repo + "\n").encode()),
-        _ok(b"/usr/bin/git\n"),
-        _ok(b"1\n"),
-        _ok(b"aaa\n"),
-        _ok(b""),
-    ]
-    make, store = _scan_candidate(answers)
+    make, store = _scan_candidate(
+        _history_answers(_ids(ID_A), _ids(ID_A), _ok(b""), repo=(repo + "\n").encode())
+    )
     report = scan_start(make, grader_tar=SCAN_TAR)
     assert report.history.outcome == "clean"
     quoted = shlex.quote(repo)
     git_cmds = [c for c in store[0].commands if c.startswith("git -C")]
-    assert len(git_cmds) == 3
-    assert all(quoted in c for c in git_cmds)
+    assert git_cmds == [
+        "git -C " + quoted + " rev-list --all --reflog",
+        "git -C " + quoted + " rev-list HEAD",
+        "git -C " + quoted + " fsck --unreachable --no-reflogs",
+    ]
+    assert all("|" not in c for c in store[0].commands)
 
 
 def test_scan_history_repo_step_error_is_no_signal():
@@ -673,28 +849,9 @@ def test_scan_history_repo_step_error_is_no_signal():
 
 
 def test_scan_history_head_failure_is_no_signal():
-    answers = [
-        _ok(b""),
-        _ok(b"/workspace/a/.git\n"),
-        _ok(b"/usr/bin/git\n"),
-        _ok(b"4\n"),
-        _failed(128),
-    ]
-    make, _store = _scan_candidate(answers)
-    report = scan_start(make, grader_tar=SCAN_TAR)
-    assert report.history.outcome == "no_signal"
-
-
-def test_scan_history_unparsable_count_is_no_signal():
-    answers = [
-        _ok(b""),
-        _ok(b"/workspace/a/.git\n"),
-        _ok(b"/usr/bin/git\n"),
-        _ok(b"lots\n"),
-        _ok(b"aaa\n"),
-        _ok(b""),
-    ]
-    make, _store = _scan_candidate(answers)
+    make, _store = _scan_candidate(
+        _history_answers(_ids(ID_A, ID_B, ID_C, ID_D), _failed(128), _ok(b""))
+    )
     report = scan_start(make, grader_tar=SCAN_TAR)
     assert report.history.outcome == "no_signal"
 
@@ -938,29 +1095,21 @@ def test_run_cheats_paths_only_builds_default_member_cheat():
 
 
 def test_scan_history_warning_and_blob_lines_are_clean():
-    answers = [
-        _ok(b""),
-        _ok(b"/workspace/a/.git\n"),
-        _ok(b"/usr/bin/git\n"),
-        _ok(b"2\n"),
-        _ok(b"aaa\nbbb\n"),
-        _ok(b"warning: 2 commits were skipped\n\nunreachable blob def456\n"),
-    ]
-    make, _store = _scan_candidate(answers)
+    make, _store = _scan_candidate(
+        _history_answers(
+            _ids(ID_A, ID_B),
+            _ids(ID_A, ID_B),
+            _ok(b"warning: 2 commits were skipped\n\nunreachable blob def456\n"),
+        )
+    )
     report = scan_start(make, grader_tar=SCAN_TAR)
     assert report.history.outcome == "clean"
 
 
 def test_scan_history_dangling_commit_is_hit():
-    answers = [
-        _ok(b""),
-        _ok(b"/workspace/a/.git\n"),
-        _ok(b"/usr/bin/git\n"),
-        _ok(b"1\n"),
-        _ok(b"aaa\n"),
-        _ok(b"dangling commit abc123\n"),
-    ]
-    make, _store = _scan_candidate(answers)
+    make, _store = _scan_candidate(
+        _history_answers(_ids(ID_A), _ids(ID_A), _ok(b"dangling commit abc123\n"))
+    )
     report = scan_start(make, grader_tar=SCAN_TAR)
     assert report.history.outcome == "hit"
     assert report.history.hits[0].detail == "all=1 head=1 unreachable=1"

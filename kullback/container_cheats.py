@@ -83,13 +83,14 @@ DEFAULT_OUTPUT_PATHS: tuple[str, ...] = (
 DEFAULT_ANSWER_MEMBERS: tuple[str, ...] = ("expected.txt",)
 
 _SHA_LIST_COMMAND = "find /workspace -type f -size +0 -exec sha256sum {} +"
-_GIT_FIND_COMMAND = "find /workspace -maxdepth 4 -name .git"
+_GIT_FIND_COMMAND = "find /workspace -name .git"
 _HAVE_GIT_COMMAND = "command -v git"
 _PATTERNS_B64_PATH = "/workspace/.scan-patterns.b64"
 _PATTERNS_PATH = "/workspace/.scan-patterns.txt"
 _GREP_PATTERNS_COMMAND = "grep -rlFf /workspace/.scan-patterns.txt /workspace --exclude=.scan-patterns.txt"
 _PATTERN_CHUNK_BYTES = 48000
 _SHA_RE = re.compile(r"([0-9a-f]{64})  (.+)")
+_COMMIT_ID_RE = re.compile(r"[0-9a-f]{40}|[0-9a-f]{64}")
 
 
 @dataclass(frozen=True)
@@ -132,6 +133,7 @@ class ScanReport:
     ground_truth: ScanCheck
     history: ScanCheck
     clean: bool
+    close_error: str = ""
 
 
 def _aim_commands(paths: tuple[str, ...], member: str) -> tuple[str, ...]:
@@ -185,7 +187,18 @@ def _check_output_paths(paths: tuple) -> None:
             raise ValueError("bad output path: " + repr(path))
 
 
+def _all_defeated(results: tuple[CheatResult, ...]) -> bool:
+    if not results:
+        return False
+    for result in results:
+        if result.outcome != "defeated":
+            return False
+    return True
+
+
 def _resolve_cheats(grader_tar: bytes, output_paths, answer_members, cheats: tuple[Cheat, ...]) -> tuple[Cheat, ...]:
+    if not cheats:
+        raise ValueError("cheats must not be empty")
     if isinstance(output_paths, str) or isinstance(answer_members, str):
         raise ValueError(
             "output_paths and answer_members must be tuples of str, got: " + repr((output_paths, answer_members))
@@ -216,6 +229,7 @@ def _attempt_cheat(make_candidate, make_grader, cheat: Cheat, grader_tar: bytes,
     world = None
     reason = None
     state_tar = b""
+    close_error = None
     try:
         world = make_candidate()
         world.reset()
@@ -226,7 +240,12 @@ def _attempt_cheat(make_candidate, make_grader, cheat: Cheat, grader_tar: bytes,
         reason = "candidate world raised " + type(exc).__name__ + ": " + str(exc)
     finally:
         if world is not None:
-            world.close()
+            try:
+                world.close()
+            except WorldError as exc:
+                close_error = "candidate close raised " + type(exc).__name__ + ": " + str(exc)
+    if close_error is not None:
+        return CheatResult(cheat.name, "no_verdict", close_error)
     if reason is not None:
         return CheatResult(cheat.name, "no_verdict", reason)
     try:
@@ -254,11 +273,7 @@ def run_cheats(
     for cheat in resolved:
         results.append(_attempt_cheat(make_candidate, make_grader, cheat, grader_tar, command, export_limit_bytes))
     done = tuple(results)
-    defeated = True
-    for result in done:
-        if result.outcome != "defeated":
-            defeated = False
-    return CheatReport(done, defeated)
+    return CheatReport(done, _all_defeated(done))
 
 
 def _grader_hashes(tar: tarfile.TarFile, min_file_bytes: int) -> dict[str, str]:
@@ -368,10 +383,22 @@ def _count_unreachable(data: bytes) -> int:
     return count
 
 
+def _commit_ids(data: bytes) -> set[str] | None:
+    ids = set()
+    for line in data.decode("utf-8", errors="replace").splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        if _COMMIT_ID_RE.fullmatch(stripped) is None:
+            return None
+        ids.add(stripped)
+    return ids
+
+
 def _check_one_repo(world, repo: str) -> tuple[bool, ScanHit | None]:
     quoted = shlex.quote(repo)
     try:
-        all_receipt = world.step("git -C " + quoted + " rev-list --all --reflog | sort -u | wc -l")
+        all_receipt = world.step("git -C " + quoted + " rev-list --all --reflog")
         head_receipt = world.step("git -C " + quoted + " rev-list HEAD")
         fsck_receipt = world.step("git -C " + quoted + " fsck --unreachable --no-reflogs")
     except WorldError:
@@ -379,11 +406,12 @@ def _check_one_repo(world, repo: str) -> tuple[bool, ScanHit | None]:
     for receipt in (all_receipt, head_receipt, fsck_receipt):
         if receipt.timed_out or receipt.truncated or receipt.exit_code != 0:
             return (False, None)
-    try:
-        total = int(all_receipt.stdout.decode("ascii").strip())
-    except ValueError:
+    all_ids = _commit_ids(all_receipt.stdout)
+    head_ids = _commit_ids(head_receipt.stdout)
+    if all_ids is None or head_ids is None:
         return (False, None)
-    head = len(head_receipt.stdout.splitlines())
+    total = len(all_ids)
+    head = len(head_ids)
     unreachable = _count_unreachable(fsck_receipt.stdout)
     if total > head or unreachable > 0:
         detail = "all=" + str(total) + " head=" + str(head) + " unreachable=" + str(unreachable)
@@ -416,6 +444,18 @@ def _check_history(world) -> ScanCheck:
         return ScanCheck("history", "no_signal", ())
 
 
+def _finish_scan(hidden: ScanCheck, ground: ScanCheck, history: ScanCheck, close_error: str) -> ScanReport:
+    clean = True
+    for check in (hidden, ground, history):
+        if check.outcome == "not_run":
+            continue
+        if check.outcome != "clean":
+            clean = False
+    if close_error:
+        clean = False
+    return ScanReport(hidden, ground, history, clean, close_error)
+
+
 def scan_start(
     make_candidate: Callable,
     *,
@@ -441,6 +481,7 @@ def scan_start(
     else:
         idle_ground = ScanCheck("ground_truth", "no_signal", ())
     world = None
+    close_error = ""
     try:
         world = make_candidate()
         world.reset()
@@ -456,11 +497,8 @@ def scan_start(
         history = ScanCheck("history", "no_signal", ())
     finally:
         if world is not None:
-            world.close()
-    clean = True
-    for check in (hidden, ground, history):
-        if check.outcome == "not_run":
-            continue
-        if check.outcome != "clean":
-            clean = False
-    return ScanReport(hidden, ground, history, clean)
+            try:
+                world.close()
+            except WorldError as exc:
+                close_error = "scan close raised " + type(exc).__name__ + ": " + str(exc)
+    return _finish_scan(hidden, ground, history, close_error)
