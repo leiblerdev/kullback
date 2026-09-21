@@ -1960,6 +1960,22 @@ _CONTEXT_SHIM = '''class ToolContext:
         self._issued = {}
         self._served_recorded = 0
         self._served_seeded = 0
+        self._starting_ids = self._snapshot_starting_ids()
+
+    def _snapshot_starting_ids(self):
+        try:
+            names = list(vars(self._db)) if hasattr(self._db, "__dict__") else []
+        except Exception:
+            names = []
+        return {str(name): self._table_keys(name) for name in names if not str(name).startswith("_")}
+
+    def _table_keys(self, table):
+        try:
+            rows = getattr(self._db, table, None)
+            keys = rows.keys() if hasattr(rows, "keys") else list(rows or [])
+        except Exception:
+            keys = []
+        return {str(k) for k in keys if k}
 
     def feed_call(self, feed):
         """Serve one recorded call's witnessed values until the next feed arrives."""
@@ -1977,6 +1993,16 @@ _CONTEXT_SHIM = '''class ToolContext:
     def reseed(self, seed):
         """Draw from this seed from here on; the step restarts with the Run."""
         self._seed = int(seed) & self._MASK64
+        self._step = 0
+        self._issued = {}
+        self._current = None
+        self._recorded_ids = {}
+        self._id_cursors = {}
+        self._recorded_times = []
+        self._time_cursor = 0
+        self._served_recorded = 0
+        self._served_seeded = 0
+        self._starting_ids = self._snapshot_starting_ids()
 
     def usage(self):
         """How many servings each feed answered, so the caller can count the fallback."""
@@ -2017,6 +2043,8 @@ _CONTEXT_SHIM = '''class ToolContext:
         if witnessed is not None:
             if witnessed in issued:
                 raise ValueError("recorded tool context repeated an allocated id")
+            if str(witnessed) in self._starting_ids.get(table, set()) or str(witnessed) in self._table_keys(table):
+                raise ValueError("recorded tool context fed an id the table already holds")
             value = witnessed
             self._served_recorded += 1
         else:
@@ -3748,7 +3776,7 @@ def _tables_for_id_key(schema: EntitySchema, key: str) -> list[str]:
                    if id_field(schema, table) == key})
 
 
-def recorded_call_context(call: ToolCall, schema: EntitySchema) -> dict:
+def recorded_call_context(call: ToolCall, schema: EntitySchema, prior_ids: Optional[set] = None) -> dict:
     """The values one recorded call witnessed for the tool context: its new ids and its time.
 
     The new ids are the id-valued leaves of the recorded result, filed under each table the
@@ -3757,13 +3785,17 @@ def recorded_call_context(call: ToolCall, schema: EntitySchema) -> dict:
     Only the result is read: arguments are what the body is given, so they need no feed.
     """
     feed: dict = {"now": None, "new_ids": {}}
+    args = call.args if isinstance(call, ToolCall) else (call or {}).get("args") or {}
     result = call.result if isinstance(call, ToolCall) else (call or {}).get("result")
     if not isinstance(result, dict):
         return feed
+    seen = set(prior_ids or ()) | _context_arg_values(args)
     for key, value in _result_leaves(result):
         if not isinstance(value, str):
             continue
         if _is_id_key(key):
+            if value in seen:
+                continue
             for table in _tables_for_id_key(schema, key):
                 feed["new_ids"].setdefault(table, value)
         if feed["now"] is None and _TIME_RE.match(value.strip()):
@@ -3771,14 +3803,50 @@ def recorded_call_context(call: ToolCall, schema: EntitySchema) -> dict:
     return feed
 
 
+# Calls without a recorded position order after positioned calls, by call id, so the result never depends on input order.
+_MISSING_MSG_INDEX = 1 << 62
+
+
+def _recorded_call_parts(call: Any) -> tuple:
+    if isinstance(call, ToolCall):
+        return (call.id, call.trace_id, call.raw_ptr, call.args or {}, call.result)
+    node = call or {}
+    return (node.get("id"), node.get("trace_id"), node.get("raw_ptr"), node.get("args") or {}, node.get("result"))
+
+
+def _recorded_call_key(call: Any) -> tuple:
+    call_id, trace_id, raw, _, _ = _recorded_call_parts(call)
+    position = raw.get("msg_index") if isinstance(raw, dict) else getattr(raw, "msg_index", None)
+    if not isinstance(position, int):
+        position = _MISSING_MSG_INDEX
+    return (trace_id or "", position, call_id or "")
+
+
 def recorded_call_contexts(calls: Iterable[ToolCall], schema: EntitySchema) -> dict[str, dict]:
     """One recorded feed per call id, the keying D215 already uses for per-call evidence."""
-    return {call.id: recorded_call_context(call, schema) for call in calls if call.id}
+    calls = sorted(list(calls), key=_recorded_call_key)
+    feeds: dict[str, dict] = {}
+    observed: dict[Any, set] = {}
+    for call in calls:
+        call_id, trace_id, _, args, result = _recorded_call_parts(call)
+        if not call_id:
+            continue
+        if trace_id is None:
+            feeds[call_id] = recorded_call_context(call, schema)
+            continue
+        prior = observed.setdefault(trace_id, set())
+        feeds[call_id] = recorded_call_context(call, schema, prior)
+        prior |= _context_entity_ids(args) | _context_entity_ids(result)
+    return feeds
 
 
 def _context_entity_ids(node: Any) -> set:
     return {value for key, value in _result_leaves(node)
             if isinstance(value, str) and _is_id_key(key)}
+
+
+def _context_arg_values(node: Any) -> set:
+    return {value for _, value in _result_leaves(node) if isinstance(value, str)}
 
 
 def _append_recorded_context(call: ToolCall, schema: EntitySchema, seen: set,
