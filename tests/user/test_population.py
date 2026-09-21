@@ -98,179 +98,139 @@ def test_eligible_support_and_reasons():
     assert set(pop.eligible_ids) | set(reasons) == set(task.run_ids)
 
 
-def test_missing_standing_withheld():
-    task = _task(["ref", "ghost"])
-    traces = {
-        "ref": _trace("ref", [_ok_call()]),
-        "ghost": _trace("ghost", [_ok_call()]),
-    }
-    standings = {"ref": _st()}
-    rules = {k: _rules() for k in traces}
-    pop = build_population(
-        task,
-        traces,
-        reference_id="ref",
-        standings=standings,
-        rules=rules,
-        held_out_ids=set(),
-        write_tools=list(WRITE_TOOLS),
-    )
-    assert list(pop.eligible_ids) == ["ref"]
-    assert _withheld_map(pop)["ghost"] == ("unknown_standing",)
+def _ok_writes(args):
+    return [_ok_call(args=dict(args))]
 
 
-def test_held_out_exclusion():
-    task = _task(["ref", "held"])
-    traces = {"ref": _trace("ref", [_ok_call()]), "held": _trace("held", [_ok_call()])}
-    standings = {"ref": _st(), "held": _st()}
-    rules = {k: _rules() for k in traces}
-    pop = build_population(
-        task,
-        traces,
-        reference_id="ref",
-        standings=standings,
-        rules=rules,
-        held_out_ids=["held"],
-        write_tools=list(WRITE_TOOLS),
-    )
-    assert list(pop.eligible_ids) == ["ref"]
-    assert "held_out" in _withheld_map(pop)["held"]
-
-
-def test_reference_not_in_task_raises():
-    task = _task(["a", "b"])
-    traces = {"a": _trace("a", [_ok_call()]), "b": _trace("b", [_ok_call()])}
-    standings = {"a": _st(), "b": _st()}
-    rules = {k: _rules() for k in traces}
-    with pytest.raises(ValueError):
-        build_population(
-            task,
-            traces,
-            reference_id="zzz",
-            standings=standings,
-            rules=rules,
-            held_out_ids=set(),
-            write_tools=list(WRITE_TOOLS),
+def _cut_writes(args):
+    return [
+        ToolCall(
+            name=WRITE_TOOL,
+            args=dict(args),
+            result="done",
+            has_result=True,
+            resolved=True,
+            truncated=True,
+            raw_ptr=_ptr(),
         )
+    ]
 
 
-def test_reference_held_out_raises():
-    task = _task(["ref", "ok"])
-    traces = {"ref": _trace("ref", [_ok_call()]), "ok": _trace("ok", [_ok_call()])}
-    standings = {"ref": _st(), "ok": _st()}
-    rules = {k: _rules() for k in traces}
-    with pytest.raises(ValueError):
-        build_population(
-            task,
-            traces,
-            reference_id="ref",
-            standings=standings,
-            rules=rules,
-            held_out_ids={"ref"},
-            write_tools=list(WRITE_TOOLS),
-        )
-
-
-def test_reference_standing_raises():
-    task = _task(["ref", "ok"])
-    traces = {"ref": _trace("ref", [_ok_call()]), "ok": _trace("ok", [_ok_call()])}
-    standings = {"ref": _st(e=False), "ok": _st()}
-    rules = {k: _rules() for k in traces}
-    with pytest.raises(ValueError):
-        build_population(
-            task,
-            traces,
-            reference_id="ref",
-            standings=standings,
-            rules=rules,
-            held_out_ids=set(),
-            write_tools=list(WRITE_TOOLS),
-        )
-
-
-def test_reference_missing_trace_or_rules_raises():
-    task = _task(["ref", "ok"])
-    traces = {"ref": _trace("ref", [_ok_call()]), "ok": _trace("ok", [_ok_call()])}
-    standings = {"ref": _st(), "ok": _st()}
-    rules = {"ok": _rules()}
-    with pytest.raises(ValueError):
-        build_population(
-            task,
-            traces,
-            reference_id="ref",
-            standings=standings,
-            rules=rules,
-            held_out_ids=set(),
-            write_tools=list(WRITE_TOOLS),
-        )
-    traces_only_ok = {"ok": _trace("ok", [_ok_call()])}
-    rules_full = {"ref": _rules(), "ok": _rules()}
-    with pytest.raises(ValueError):
-        build_population(
-            task,
-            traces_only_ok,
-            reference_id="ref",
-            standings=standings,
-            rules=rules_full,
-            held_out_ids=set(),
-            write_tools=list(WRITE_TOOLS),
-        )
-
-
-def test_complete_vs_confirmed():
-    task = _task(["ref", "unconfirmed", "incomplete"])
+@pytest.mark.parametrize(
+    ("cand_id", "make_calls", "standing_kw", "with_rules", "held", "want", "exact"),
+    [
+        pytest.param(
+            "ghost", _ok_writes, None, True, (), ("unknown_standing",), True, id="unknown_standing"
+        ),
+        pytest.param(
+            "held", _ok_writes, {}, True, ("held",), ("held_out",), False, id="held_out"
+        ),
+        pytest.param(
+            "norules", _ok_writes, {}, False, (), ("missing_rules",), False, id="missing_rules"
+        ),
+        pytest.param(
+            "cut", _cut_writes, {}, True, (), ("truncated",), False, id="truncated"
+        ),
+        pytest.param(
+            "unconfirmed",
+            _ok_writes,
+            {"e": True, "c": True, "r": False},
+            True,
+            (),
+            ("unconfirmed",),
+            True,
+            id="unconfirmed",
+        ),
+        pytest.param(
+            "incomplete",
+            _ok_writes,
+            {"e": True, "c": False, "r": True},
+            True,
+            (),
+            ("incomplete",),
+            True,
+            id="incomplete",
+        ),
+    ],
+)
+def test_candidate_withheld_for_single_cause(
+    cand_id, make_calls, standing_kw, with_rules, held, want, exact
+):
     ref_args = {"city": "Springfield", "primary": True}
     traces = {
         "ref": _trace("ref", [_ok_call(args=ref_args)]),
-        "unconfirmed": _trace("unconfirmed", [_ok_call(args=dict(ref_args))]),
-        "incomplete": _trace("incomplete", [_ok_call(args=dict(ref_args))]),
+        cand_id: _trace(cand_id, make_calls(ref_args)),
     }
-    standings = {
-        "ref": _st(),
-        "unconfirmed": _st(e=True, c=True, r=False),
-        "incomplete": _st(e=True, c=False, r=True),
-    }
-    rules = {k: _rules() for k in traces}
+    rules = {"ref": _rules()}
+    if with_rules:
+        rules[cand_id] = _rules()
+    standings = {"ref": _st()}
+    if standing_kw is not None:
+        standings[cand_id] = _st(**standing_kw)
     pop = build_population(
-        task,
+        _task(["ref", cand_id]),
         traces,
         reference_id="ref",
         standings=standings,
         rules=rules,
-        held_out_ids=set(),
-        write_tools=list(WRITE_TOOLS),
-    )
-    reasons = _withheld_map(pop)
-    assert reasons["unconfirmed"] == ("unconfirmed",)
-    assert reasons["incomplete"] == ("incomplete",)
-
-
-def test_truncated_withheld():
-    task = _task(["ref", "cut"])
-    good = _ok_call()
-    cut = ToolCall(
-        name=WRITE_TOOL,
-        args={"city": "Springfield", "primary": True},
-        result="done",
-        has_result=True,
-        resolved=True,
-        truncated=True,
-        raw_ptr=_ptr(),
-    )
-    traces = {"ref": _trace("ref", [good]), "cut": _trace("cut", [cut])}
-    standings = {"ref": _st(), "cut": _st()}
-    rules = {k: _rules() for k in traces}
-    pop = build_population(
-        task,
-        traces,
-        reference_id="ref",
-        standings=standings,
-        rules=rules,
-        held_out_ids=set(),
+        held_out_ids=set(held),
         write_tools=list(WRITE_TOOLS),
     )
     assert list(pop.eligible_ids) == ["ref"]
-    assert "truncated" in _withheld_map(pop)["cut"]
+    reasons = _withheld_map(pop)[cand_id]
+    if exact:
+        assert reasons == want
+    else:
+        for reason in want:
+            assert reason in reasons
+
+
+def _reference_inputs(case):
+    traces = {"ref": _trace("ref", [_ok_call()]), "ok": _trace("ok", [_ok_call()])}
+    standings = {"ref": _st(), "ok": _st()}
+    rules = {k: _rules() for k in traces}
+    task = _task(["ref", "ok"])
+    ref_id = "ref"
+    held = set()
+    if case == "outside_task":
+        task = _task(["a", "b"])
+        traces = {"a": _trace("a", [_ok_call()]), "b": _trace("b", [_ok_call()])}
+        standings = {"a": _st(), "b": _st()}
+        rules = {k: _rules() for k in traces}
+        ref_id = "zzz"
+    elif case == "held_out":
+        held = {"ref"}
+    elif case == "bad_standing":
+        standings = {"ref": _st(e=False), "ok": _st()}
+    elif case == "missing_rules":
+        rules = {"ok": _rules()}
+    elif case == "missing_trace":
+        traces = {"ok": _trace("ok", [_ok_call()])}
+    return task, traces, standings, rules, held, ref_id
+
+
+@pytest.mark.parametrize(
+    "case",
+    [
+        pytest.param("outside_task", id="outside_task"),
+        pytest.param("held_out", id="held_out"),
+        pytest.param("bad_standing", id="bad_standing"),
+        pytest.param("missing_rules", id="missing_rules"),
+        pytest.param("missing_trace", id="missing_trace"),
+    ],
+)
+def test_reference_problems_raise(case):
+    task, traces, standings, rules, held, ref_id = _reference_inputs(case)
+    with pytest.raises(ValueError):
+        build_population(
+            task,
+            traces,
+            reference_id=ref_id,
+            standings=standings,
+            rules=rules,
+            held_out_ids=held,
+            write_tools=list(WRITE_TOOLS),
+        )
 
 
 def test_unanswered_vs_null_success():
@@ -314,77 +274,43 @@ def test_unanswered_vs_null_success():
     assert "unanswered" in _withheld_map(pop)["silent"]
 
 
-def test_bool_int_mismatch():
-    task = _task(["ref", "candidate"])
-    traces = {
-        "ref": _trace("ref", [_ok_call(args={"flag": True})]),
-        "candidate": _trace("candidate", [_ok_call(args={"flag": 1})]),
-    }
-    standings = {"ref": _st(), "candidate": _st()}
-    rules = {k: _rules() for k in traces}
-    pop = build_population(
-        task,
-        traces,
-        reference_id="ref",
-        standings=standings,
-        rules=rules,
-        held_out_ids=set(),
-        write_tools=list(WRITE_TOOLS),
+def _mismatch_inputs(kind):
+    if kind == "bool_int":
+        return (
+            list(WRITE_TOOLS),
+            [_ok_call(args={"flag": True})],
+            [_ok_call(args={"flag": 1})],
+        )
+    return (
+        ["write_a", "write_b"],
+        [_ok_call(name="write_a", args={"n": 1}), _ok_call(name="write_b", args={"n": 2})],
+        [_ok_call(name="write_b", args={"n": 2}), _ok_call(name="write_a", args={"n": 1})],
     )
-    assert list(pop.eligible_ids) == ["ref"]
-    assert "write_mismatch" in _withheld_map(pop)["candidate"]
 
 
-def test_reordered_writes_mismatch():
-    tools = ["write_a", "write_b"]
-    task = _task(["ref", "candidate"])
-    traces = {
-        "ref": _trace(
-            "ref",
-            [
-                _ok_call(name="write_a", args={"n": 1}),
-                _ok_call(name="write_b", args={"n": 2}),
-            ],
-        ),
-        "candidate": _trace(
-            "candidate",
-            [
-                _ok_call(name="write_b", args={"n": 2}),
-                _ok_call(name="write_a", args={"n": 1}),
-            ],
-        ),
-    }
-    standings = {"ref": _st(), "candidate": _st()}
-    rules = {k: _rules() for k in traces}
+@pytest.mark.parametrize(
+    "kind",
+    [
+        pytest.param("bool_int", id="bool_int"),
+        pytest.param("reordered", id="reordered"),
+    ],
+)
+def test_write_signature_mismatch_withheld(kind):
+    tools, ref_calls, cand_calls = _mismatch_inputs(kind)
     pop = build_population(
-        task,
-        traces,
+        _task(["ref", "candidate"]),
+        {
+            "ref": _trace("ref", ref_calls),
+            "candidate": _trace("candidate", cand_calls),
+        },
         reference_id="ref",
-        standings=standings,
-        rules=rules,
+        standings={"ref": _st(), "candidate": _st()},
+        rules={"ref": _rules(), "candidate": _rules()},
         held_out_ids=set(),
         write_tools=list(tools),
     )
     assert list(pop.eligible_ids) == ["ref"]
     assert "write_mismatch" in _withheld_map(pop)["candidate"]
-
-
-def test_missing_rules_withheld():
-    task = _task(["ref", "norules"])
-    traces = {"ref": _trace("ref", [_ok_call()]), "norules": _trace("norules", [_ok_call()])}
-    standings = {"ref": _st(), "norules": _st()}
-    rules = {"ref": _rules()}
-    pop = build_population(
-        task,
-        traces,
-        reference_id="ref",
-        standings=standings,
-        rules=rules,
-        held_out_ids=set(),
-        write_tools=list(WRITE_TOOLS),
-    )
-    assert list(pop.eligible_ids) == ["ref"]
-    assert "missing_rules" in _withheld_map(pop)["norules"]
 
 
 def test_nonbool_standing_rejected():
@@ -480,7 +406,7 @@ def test_pool_change_changes_fingerprint():
     assert pop_b.fingerprint != pop_a.fingerprint
 
 
-def test_empty_population_pick_none():
+def test_empty_population_pick_none_without_draw():
     pop = Population(
         task_id="t1",
         reference_id="ref",
@@ -489,11 +415,13 @@ def test_empty_population_pick_none():
         support_count=0,
         fingerprint="abc",
     )
+    before = sampling.draws_by_kind()
     sel = pick_user(pop, seed=0, salt=SALT)
     assert sel.chosen_id is None
     assert sel.task_id == "t1"
     assert sel.seed == 0
     assert sel.population_fingerprint == "abc"
+    assert sampling.draws_since(before) == {}
 
 
 def test_mutation_isolation():
@@ -571,21 +499,6 @@ def test_nonempty_pick_counts_one_draw():
     sel = pick_user(pop_a, seed=5, salt=SALT)
     assert sel.chosen_id is not None
     assert sampling.draws_since(before) == {"user_population": 1}
-
-
-def test_empty_pick_counts_no_draw():
-    pop = Population(
-        task_id="t1",
-        reference_id="ref",
-        eligible_ids=(),
-        withheld=(),
-        support_count=0,
-        fingerprint="abc",
-    )
-    before = sampling.draws_by_kind()
-    sel = pick_user(pop, seed=0, salt=SALT)
-    assert sel.chosen_id is None
-    assert sampling.draws_since(before) == {}
 
 
 def test_repeated_draws_identical_and_counted():
