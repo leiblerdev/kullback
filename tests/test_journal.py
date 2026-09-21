@@ -52,6 +52,12 @@ def _write_raw(root, seq, value, owner="rounds", fmt=1, store_format=1):
     return target
 
 
+def _opened_journal(root):
+    journal = RoundJournal(root)
+    journal.append(run_id="r1", kind="run_open", payload=_run_open_payload(), round=None)
+    return journal
+
+
 def _gated_worker(root_str, run_id, count, ready_evt, go_evt):
     from kullback.journal import RoundJournal as _J
     journal = _J(root_str)
@@ -155,8 +161,7 @@ def test_second_invocation_preserves_bytes(tmp_path):
 
 def test_stable_global_sequence(tmp_path):
     root = tmp_path / "w"
-    journal = RoundJournal(root)
-    journal.append(run_id="r1", kind="run_open", payload=_run_open_payload(), round=None)
+    journal = _opened_journal(root)
     journal.append(run_id="r2", kind="run_open", payload=_run_open_payload(), round=None)
     journal.append(run_id="r1", kind="round_open", payload={}, round=1)
     seen = journal.read()
@@ -184,8 +189,7 @@ def test_nested_mutation_isolation(tmp_path):
 
 def test_output_list_detached(tmp_path):
     root = tmp_path / "w"
-    journal = RoundJournal(root)
-    journal.append(run_id="r1", kind="run_open", payload=_run_open_payload(), round=None)
+    journal = _opened_journal(root)
     first = journal.read()
     second = journal.read()
     assert first.value is not second.value
@@ -197,8 +201,7 @@ def test_output_list_detached(tmp_path):
 
 def test_reject_duplicate_run_open(tmp_path):
     root = tmp_path / "w"
-    journal = RoundJournal(root)
-    journal.append(run_id="r1", kind="run_open", payload=_run_open_payload(), round=None)
+    journal = _opened_journal(root)
     with pytest.raises(JournalError):
         journal.append(run_id="r1", kind="run_open", payload=_run_open_payload(), round=None)
     assert len(journal.read().value) == 1
@@ -206,8 +209,7 @@ def test_reject_duplicate_run_open(tmp_path):
 
 def test_reject_second_round_open_without_close(tmp_path):
     root = tmp_path / "w"
-    journal = RoundJournal(root)
-    journal.append(run_id="r1", kind="run_open", payload=_run_open_payload(), round=None)
+    journal = _opened_journal(root)
     journal.append(run_id="r1", kind="round_open", payload={}, round=1)
     with pytest.raises(JournalError):
         journal.append(run_id="r1", kind="round_open", payload={}, round=2)
@@ -225,8 +227,7 @@ def test_reject_event_before_run(tmp_path):
 
 def test_reject_terminal_duplicates(tmp_path):
     root = tmp_path / "w"
-    journal = RoundJournal(root)
-    journal.append(run_id="r1", kind="run_open", payload=_run_open_payload(), round=None)
+    journal = _opened_journal(root)
     journal.append(run_id="r1", kind="round_open", payload={}, round=1)
     journal.append(run_id="r1", kind="abort", payload={}, round=1)
     with pytest.raises(JournalError):
@@ -239,8 +240,7 @@ def test_reject_terminal_duplicates(tmp_path):
 
 def test_reject_round_open_not_greater(tmp_path):
     root = tmp_path / "w"
-    journal = RoundJournal(root)
-    journal.append(run_id="r1", kind="run_open", payload=_run_open_payload(), round=None)
+    journal = _opened_journal(root)
     journal.append(run_id="r1", kind="round_open", payload={}, round=3)
     journal.append(run_id="r1", kind="round_close", payload={}, round=3)
     with pytest.raises(JournalError):
@@ -258,8 +258,7 @@ def test_reject_unknown_kind(tmp_path):
 
 def test_reject_bool_round(tmp_path):
     root = tmp_path / "w"
-    journal = RoundJournal(root)
-    journal.append(run_id="r1", kind="run_open", payload=_run_open_payload(), round=None)
+    journal = _opened_journal(root)
     with pytest.raises(ValueError):
         journal.append(run_id="r1", kind="round_open", payload={}, round=True)
 
@@ -299,8 +298,7 @@ def test_reject_bad_run_id_and_shapes(tmp_path):
 
 def test_reject_beat_end_bad_agent(tmp_path):
     root = tmp_path / "w"
-    journal = RoundJournal(root)
-    journal.append(run_id="r1", kind="run_open", payload=_run_open_payload(), round=None)
+    journal = _opened_journal(root)
     journal.append(run_id="r1", kind="round_open", payload={}, round=1)
     with pytest.raises(ValueError):
         journal.append(run_id="r1", kind="beat_end", payload={}, round=1)
@@ -317,8 +315,7 @@ def test_reject_run_open_with_round(tmp_path):
 
 def test_multiple_beats_same_agent_preserved(tmp_path):
     root = tmp_path / "w"
-    journal = RoundJournal(root)
-    journal.append(run_id="r1", kind="run_open", payload=_run_open_payload(), round=None)
+    journal = _opened_journal(root)
     journal.append(run_id="r1", kind="round_open", payload={}, round=1)
     journal.append(run_id="r1", kind="beat_end", payload={"agent": "builder"}, round=1)
     journal.append(run_id="r1", kind="beat_end", payload={"agent": "builder"}, round=1)
@@ -329,8 +326,7 @@ def test_multiple_beats_same_agent_preserved(tmp_path):
 
 def test_torn_gap(tmp_path):
     root = tmp_path / "w"
-    journal = RoundJournal(root)
-    journal.append(run_id="r1", kind="run_open", payload=_run_open_payload(), round=None)
+    journal = _opened_journal(root)
     _write_raw(root, 3, {"seq": 3, "run_id": "r1", "kind": "round_open", "round": 1, "recorded_at": 1.0, "payload": {}})
     seen = journal.read()
     assert seen.status == "torn"
@@ -348,8 +344,7 @@ def test_torn_first_seq_not_one(tmp_path):
 
 def test_torn_malformed_event(tmp_path):
     root = tmp_path / "w"
-    journal = RoundJournal(root)
-    journal.append(run_id="r1", kind="run_open", payload=_run_open_payload(), round=None)
+    journal = _opened_journal(root)
     target = _journal_dir(root) / "00000000000000000001.json"
     target.write_bytes(b'{"store_format": 1,')
     seen = journal.read()
@@ -358,60 +353,28 @@ def test_torn_malformed_event(tmp_path):
     assert isinstance(seen.reason, str) and len(seen.reason) > 0
 
 
-def test_torn_unsupported_envelope(tmp_path):
+@pytest.mark.parametrize(
+    ("field", "bad_value"),
+    [("format", 999), ("owner", "someone"), ("artifact", "other")],
+    ids=["format", "owner", "artifact"],
+)
+def test_torn_wrong_envelope_field(tmp_path, field, bad_value):
     root = tmp_path / "w"
-    journal = RoundJournal(root)
-    journal.append(run_id="r1", kind="run_open", payload=_run_open_payload(), round=None)
+    journal = _opened_journal(root)
     target = _journal_dir(root) / "00000000000000000001.json"
     obj = json.loads(target.read_text(encoding="utf-8"))
-    obj["format"] = 999
+    obj[field] = bad_value
     target.write_text(json.dumps(obj, sort_keys=True, indent=2), encoding="utf-8")
     seen = journal.read()
     assert seen.status == "torn"
     assert seen.value is None
 
 
-def test_torn_wrong_owner(tmp_path):
+@pytest.mark.parametrize("fname", ["abc.json", "00000000000000000000.json"], ids=["non-numeric", "zero-seq"])
+def test_torn_bad_sequence_filename(tmp_path, fname):
     root = tmp_path / "w"
-    journal = RoundJournal(root)
-    journal.append(run_id="r1", kind="run_open", payload=_run_open_payload(), round=None)
-    target = _journal_dir(root) / "00000000000000000001.json"
-    obj = json.loads(target.read_text(encoding="utf-8"))
-    obj["owner"] = "someone"
-    target.write_text(json.dumps(obj, sort_keys=True, indent=2), encoding="utf-8")
-    seen = journal.read()
-    assert seen.status == "torn"
-    assert seen.value is None
-
-
-def test_torn_wrong_name(tmp_path):
-    root = tmp_path / "w"
-    journal = RoundJournal(root)
-    journal.append(run_id="r1", kind="run_open", payload=_run_open_payload(), round=None)
-    target = _journal_dir(root) / "00000000000000000001.json"
-    obj = json.loads(target.read_text(encoding="utf-8"))
-    obj["artifact"] = "other"
-    target.write_text(json.dumps(obj, sort_keys=True, indent=2), encoding="utf-8")
-    seen = journal.read()
-    assert seen.status == "torn"
-    assert seen.value is None
-
-
-def test_torn_invalid_filename(tmp_path):
-    root = tmp_path / "w"
-    journal = RoundJournal(root)
-    journal.append(run_id="r1", kind="run_open", payload=_run_open_payload(), round=None)
-    (_journal_dir(root) / "abc.json").write_text("{}", encoding="utf-8")
-    seen = journal.read()
-    assert seen.status == "torn"
-    assert seen.value is None
-
-
-def test_torn_zero_seq_filename(tmp_path):
-    root = tmp_path / "w"
-    journal = RoundJournal(root)
-    journal.append(run_id="r1", kind="run_open", payload=_run_open_payload(), round=None)
-    (_journal_dir(root) / "00000000000000000000.json").write_text("{}", encoding="utf-8")
+    journal = _opened_journal(root)
+    (_journal_dir(root) / fname).write_text("{}", encoding="utf-8")
     seen = journal.read()
     assert seen.status == "torn"
     assert seen.value is None
@@ -419,8 +382,7 @@ def test_torn_zero_seq_filename(tmp_path):
 
 def test_torn_lifecycle_conflict_in_stored_history(tmp_path):
     root = tmp_path / "w"
-    journal = RoundJournal(root)
-    journal.append(run_id="r1", kind="run_open", payload=_run_open_payload(), round=None)
+    journal = _opened_journal(root)
     _write_raw(root, 2, {"seq": 2, "run_id": "r1", "kind": "run_open", "round": None, "recorded_at": 2.0, "payload": {"config": {}}})
     seen = journal.read()
     assert seen.status == "torn"
@@ -429,8 +391,7 @@ def test_torn_lifecycle_conflict_in_stored_history(tmp_path):
 
 def test_staging_files_ignored(tmp_path):
     root = tmp_path / "w"
-    journal = RoundJournal(root)
-    journal.append(run_id="r1", kind="run_open", payload=_run_open_payload(), round=None)
+    journal = _opened_journal(root)
     staging = _journal_dir(root) / "tmp_staging_123"
     staging.write_text("partial", encoding="utf-8")
     seen = journal.read()
@@ -441,8 +402,7 @@ def test_staging_files_ignored(tmp_path):
 
 def test_io_propagation_on_read(tmp_path, monkeypatch):
     root = tmp_path / "w"
-    journal = RoundJournal(root)
-    journal.append(run_id="r1", kind="run_open", payload=_run_open_payload(), round=None)
+    journal = _opened_journal(root)
 
     def _denied(self):
         raise PermissionError("injected")
@@ -455,8 +415,7 @@ def test_io_propagation_on_read(tmp_path, monkeypatch):
 
 def test_symlink_journal_dir_refused(tmp_path):
     root = tmp_path / "w"
-    journal = RoundJournal(root)
-    journal.append(run_id="r1", kind="run_open", payload=_run_open_payload(), round=None)
+    journal = _opened_journal(root)
     real = _journal_dir(root)
     backup = tmp_path / "real_backup"
     try:
@@ -471,8 +430,7 @@ def test_symlink_journal_dir_refused(tmp_path):
 
 def test_symlink_event_refused(tmp_path):
     root = tmp_path / "w"
-    journal = RoundJournal(root)
-    journal.append(run_id="r1", kind="run_open", payload=_run_open_payload(), round=None)
+    journal = _opened_journal(root)
     target = _journal_dir(root) / "00000000000000000001.json"
     data = target.read_bytes()
     other = tmp_path / "other.json"
@@ -489,8 +447,7 @@ def test_symlink_event_refused(tmp_path):
 
 def test_hardlink_event_refused(tmp_path):
     root = tmp_path / "w"
-    journal = RoundJournal(root)
-    journal.append(run_id="r1", kind="run_open", payload=_run_open_payload(), round=None)
+    journal = _opened_journal(root)
     journal.append(run_id="r1", kind="round_open", payload={}, round=1)
     first = _journal_dir(root) / "00000000000000000001.json"
     second = _journal_dir(root) / "00000000000000000002.json"
@@ -506,8 +463,7 @@ def test_hardlink_event_refused(tmp_path):
 
 def test_append_refusal_on_torn_preserves_bytes(tmp_path):
     root = tmp_path / "w"
-    journal = RoundJournal(root)
-    journal.append(run_id="r1", kind="run_open", payload=_run_open_payload(), round=None)
+    journal = _opened_journal(root)
     target = _journal_dir(root) / "00000000000000000001.json"
     target.write_bytes(b"broken")
     after_corrupt = _snapshot_bytes(root)
@@ -519,8 +475,7 @@ def test_append_refusal_on_torn_preserves_bytes(tmp_path):
 
 def test_append_never_overwrites_existing_slot(tmp_path):
     root = tmp_path / "w"
-    journal = RoundJournal(root)
-    journal.append(run_id="r1", kind="run_open", payload=_run_open_payload(), round=None)
+    journal = _opened_journal(root)
     _write_raw(root, 2, {"seq": 999, "run_id": "r1", "kind": "round_open", "round": 1, "recorded_at": 1.0, "payload": {}})
     before = _snapshot_bytes(root)
     with pytest.raises(JournalError):
@@ -530,8 +485,7 @@ def test_append_never_overwrites_existing_slot(tmp_path):
 
 def test_pre_replacement_failure_preserves_bytes(tmp_path, monkeypatch):
     root = tmp_path / "w"
-    journal = RoundJournal(root)
-    journal.append(run_id="r1", kind="run_open", payload=_run_open_payload(), round=None)
+    journal = _opened_journal(root)
     before = _snapshot_bytes(root)
     real_replace = os.replace
 
@@ -549,8 +503,7 @@ def test_pre_replacement_failure_preserves_bytes(tmp_path, monkeypatch):
 
 def test_post_replacement_durability_retains_event(tmp_path, monkeypatch):
     root = tmp_path / "w"
-    journal = RoundJournal(root)
-    journal.append(run_id="r1", kind="run_open", payload=_run_open_payload(), round=None)
+    journal = _opened_journal(root)
     real_fsync = os.fsync
 
     def _fsync_fail(fd):
@@ -644,8 +597,7 @@ def test_recorded_at_generated(tmp_path, monkeypatch):
 
 def test_envelope_shape_on_disk(tmp_path):
     root = tmp_path / "w"
-    journal = RoundJournal(root)
-    journal.append(run_id="r1", kind="run_open", payload=_run_open_payload(), round=None)
+    _opened_journal(root)
     target = _journal_dir(root) / "00000000000000000001.json"
     obj = json.loads(target.read_text(encoding="utf-8"))
     assert obj["store_format"] == 1
@@ -673,23 +625,11 @@ def test_root_binding_stable_across_chdir(tmp_path, monkeypatch):
     assert not (second / "work").exists()
 
 
-def test_torn_superscript_digit_filename(tmp_path):
+@pytest.mark.parametrize("digit", ["\u00b2", "\u0661"], ids=["superscript", "arabic-indic"])
+def test_torn_non_ascii_digit_filename(tmp_path, digit):
     root = tmp_path / "w"
-    journal = RoundJournal(root)
-    journal.append(run_id="r1", kind="run_open", payload=_run_open_payload(), round=None)
-    bad = "\u00b2" * 20 + ".json"
-    (_journal_dir(root) / bad).write_text("{}", encoding="utf-8")
-    seen = journal.read()
-    assert seen.status == "torn"
-    assert seen.value is None
-    assert isinstance(seen.reason, str) and len(seen.reason) > 0
-
-
-def test_torn_arabic_indic_digit_filename(tmp_path):
-    root = tmp_path / "w"
-    journal = RoundJournal(root)
-    journal.append(run_id="r1", kind="run_open", payload=_run_open_payload(), round=None)
-    bad = "\u0661" * 20 + ".json"
+    journal = _opened_journal(root)
+    bad = digit * 20 + ".json"
     (_journal_dir(root) / bad).write_text("{}", encoding="utf-8")
     seen = journal.read()
     assert seen.status == "torn"
@@ -699,8 +639,7 @@ def test_torn_arabic_indic_digit_filename(tmp_path):
 
 def test_append_refusal_on_superscript_filename_preserves_bytes(tmp_path):
     root = tmp_path / "w"
-    journal = RoundJournal(root)
-    journal.append(run_id="r1", kind="run_open", payload=_run_open_payload(), round=None)
+    journal = _opened_journal(root)
     bad = "\u00b2" * 20 + ".json"
     (_journal_dir(root) / bad).write_text("{}", encoding="utf-8")
     before = _snapshot_bytes(root)
@@ -719,8 +658,7 @@ def test_reject_unhashable_kind(tmp_path):
 
 def test_reject_unhashable_agent(tmp_path):
     root = tmp_path / "w"
-    journal = RoundJournal(root)
-    journal.append(run_id="r1", kind="run_open", payload=_run_open_payload(), round=None)
+    journal = _opened_journal(root)
     journal.append(run_id="r1", kind="round_open", payload={}, round=1)
     with pytest.raises(ValueError):
         journal.append(run_id="r1", kind="beat_end", payload={"agent": {}}, round=1)
@@ -728,8 +666,7 @@ def test_reject_unhashable_agent(tmp_path):
 
 def test_torn_persisted_unhashable_kind(tmp_path):
     root = tmp_path / "w"
-    journal = RoundJournal(root)
-    journal.append(run_id="r1", kind="run_open", payload=_run_open_payload(), round=None)
+    journal = _opened_journal(root)
     _write_raw(root, 2, {"seq": 2, "run_id": "r1", "kind": [], "round": 1, "recorded_at": 2.0, "payload": {}})
     seen = journal.read()
     assert seen.status == "torn"
@@ -738,8 +675,7 @@ def test_torn_persisted_unhashable_kind(tmp_path):
 
 def test_torn_persisted_unhashable_agent(tmp_path):
     root = tmp_path / "w"
-    journal = RoundJournal(root)
-    journal.append(run_id="r1", kind="run_open", payload=_run_open_payload(), round=None)
+    journal = _opened_journal(root)
     journal.append(run_id="r1", kind="round_open", payload={}, round=1)
     _write_raw(root, 3, {"seq": 3, "run_id": "r1", "kind": "beat_end", "round": 1, "recorded_at": 3.0, "payload": {"agent": {}}})
     seen = journal.read()
@@ -749,8 +685,7 @@ def test_torn_persisted_unhashable_agent(tmp_path):
 
 def test_abort_between_rounds_retains_records(tmp_path):
     root = tmp_path / "w"
-    journal = RoundJournal(root)
-    journal.append(run_id="r1", kind="run_open", payload=_run_open_payload(), round=None)
+    journal = _opened_journal(root)
     journal.append(run_id="r1", kind="round_open", payload={}, round=1)
     journal.append(run_id="r1", kind="round_close", payload={"exit": "done"}, round=1)
     event = journal.append(run_id="r1", kind="abort", payload={}, round=None)
@@ -764,8 +699,7 @@ def test_abort_between_rounds_retains_records(tmp_path):
 
 def test_abort_setup_without_rounds(tmp_path):
     root = tmp_path / "w"
-    journal = RoundJournal(root)
-    journal.append(run_id="r1", kind="run_open", payload=_run_open_payload(), round=None)
+    journal = _opened_journal(root)
     event = journal.append(run_id="r1", kind="abort", payload={}, round=None)
     assert event["seq"] == 2
     assert journal.read().status == "ok"
@@ -773,8 +707,7 @@ def test_abort_setup_without_rounds(tmp_path):
 
 def test_reject_abort_none_with_active_round(tmp_path):
     root = tmp_path / "w"
-    journal = RoundJournal(root)
-    journal.append(run_id="r1", kind="run_open", payload=_run_open_payload(), round=None)
+    journal = _opened_journal(root)
     journal.append(run_id="r1", kind="round_open", payload={}, round=1)
     with pytest.raises(JournalError):
         journal.append(run_id="r1", kind="abort", payload={}, round=None)
