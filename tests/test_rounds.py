@@ -95,9 +95,11 @@ TARGET = "environment"
 # with main: the closure hash moved every stage key and the rerolls key now names episode.loading
 # outright, so every re-rolled Run id moved with both, and moved again when the batch and replay
 # choice of user rules came to share one function in episode/loading.py and moved once more
-# when the replay row checks moved into that file. The pin is for the tree
-# without the step-split patch, and the refreeze that applies that patch re-pins.
-TASK_STATUS_SHA256_BEFORE_THE_PHASE = "aa4666cb92f11ba3eadaf8c2daf0d1d4ef9350d5f9c23655127c2a367e12c631"
+# when the replay row checks moved into that file. This tree carries the re-freeze: the
+# frozen patches are applied in kullback/runner and kullback/gates, and the stage keys
+# moved with the sources they name. With the key tags normalized the rows are byte
+# identical to main's.
+TASK_STATUS_SHA256_BEFORE_THE_PHASE = "101cb4232ef97fea4dcaaf0e55b649117a8c6fd22ddc5773073c182ba95985c6"
 
 
 def _fixture(request) -> Path:
