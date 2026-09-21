@@ -735,6 +735,45 @@ def test_now_ids_emitted_only_with_creation_evidence():
     assert "now_ids" not in feed
 
 
+SHARED_ID_SCHEMA = EntitySchema(
+    tables=["loans", "users"],
+    columns=[
+        Column(table="loans", name="id", **{"class": "hard"}, classified_by="rule"),
+        Column(table="loans", name="opened", **{"class": "hard"}, classified_by="rule"),
+        Column(table="users", name="id", **{"class": "hard"}, classified_by="rule"),
+    ],
+    id_patterns={"loans.id": r"^L\d+$", "users.id": r"^L\d+$"},
+)
+
+SHARED_DB = {"loans": {"L100": {"id": "L100", "opened": STORED_TIME}}, "users": {}}
+
+
+def test_shared_key_found_value_is_not_exempt():
+    read = ToolCall(id="r1", name="get_loan", args={"patron": "ann"},
+                    result={"id": "L100", "opened": STORED_TIME}, raw_ptr=PTR)
+    feed = ce.recorded_call_contexts([read], SHARED_ID_SCHEMA)["r1"]
+    assert feed["now_ids"] == {"loans": ["L100"], "users": ["L100"]}
+    toolkit = ce.load_toolkit(
+        ce.module_source(SHARED_ID_SCHEMA, [OPEN_SIG], {"open_loan": OPEN_BODY}),
+        {table: dict(rows) for table, rows in SHARED_DB.items()})
+    toolkit.ctx.feed_call(feed)
+    assert toolkit.ctx.now() != STORED_TIME
+    assert toolkit.ctx.usage() == {"recorded": 0, "seeded": 1}
+
+
+def test_shared_key_value_absent_from_both_tables_is_exempt():
+    create = ToolCall(id="c1", name="open_loan", args={"patron": "ann"},
+                      result={"id": "L200", "opened": STORED_TIME}, raw_ptr=PTR)
+    feed = ce.recorded_call_contexts([create], SHARED_ID_SCHEMA)["c1"]
+    assert feed["now_ids"] == {"loans": ["L200"], "users": ["L200"]}
+    toolkit = ce.load_toolkit(
+        ce.module_source(SHARED_ID_SCHEMA, [OPEN_SIG], {"open_loan": OPEN_BODY}),
+        {table: dict(rows) for table, rows in SHARED_DB.items()})
+    toolkit.ctx.feed_call(feed)
+    assert toolkit.ctx.now() == STORED_TIME
+    assert toolkit.ctx.usage() == {"recorded": 1, "seeded": 0}
+
+
 def test_a_reseeded_context_matches_a_fresh_one_after_a_row_is_deleted():
     source = ce.module_source(LOANS_SCHEMA, [OPEN_SIG], {"open_loan": OPEN_BODY})
     used = ce.load_toolkit(source, {table: dict(rows) for table, rows in LOANS_DB.items()})

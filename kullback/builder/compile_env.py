@@ -2029,22 +2029,26 @@ _CONTEXT_SHIM = '''class ToolContext:
     def _created_exempt(self, feed):
         """Whether a created-row feed vouches for a row the start state never held.
 
-        The evidence is judged on the row that supplied the time, not on the whole feed:
-        the exemption holds when at least one (table, id) of now_ids is absent from the
-        start state of its table, compared per table the way new_id compares, so a loan 42
-        is new although a user 42 exists. All of them held is a found row, no exemption,
-        and a created-row feed without now_ids is not exempt. Decided here, before new_id
-        starts popping the lists.
+        The evidence is judged per id value, not per (table, id) pair: the tables listing
+        a value are the tables that could own it, and a value is new only when it is absent
+        from the start state of every table listing it. Where the key names one table, a
+        loan 42 is still new although a user 42 exists; where the key is shared and any
+        candidate table holds the value, the feed is not exempt and the stored-time check
+        applies as for any found value. A created-row feed without now_ids is not exempt.
+        Decided here, before new_id starts popping the lists.
         """
         if feed.get("now_evidence") != "created_row":
             return False
         now_ids = feed.get("now_ids") or {}
         if not now_ids:
             return False
+        by_value: dict = {}
         for table, values in now_ids.items():
-            held = self._starting_ids.get(str(table), set())
             items = list(values) if isinstance(values, (list, tuple)) else [values]
-            if any(str(value) not in held for value in items):
+            for value in items:
+                by_value.setdefault(str(value), []).append(str(table))
+        for value, tables in by_value.items():
+            if all(value not in self._starting_ids.get(table, set()) for table in tables):
                 return True
         return False
 
