@@ -70,4 +70,10 @@ column and both values: fix that column's rule. `expected a result, got <Error>`
 recorded call: fix the lookup that raised. `expected error <class>, got None` means the body
 accepted what the recording refused: add the check with the customer's own message. `answers every
 call the same way` means the body ignored the arguments. A second attempt that repeats the first
-attempt's failure has not read the line."""
+attempt's failure has not read the line.
+
+Time, randomness and new ids come from the context on self.ctx, never from an import the body
+writes. A row the call creates takes its id from the context for its table and its time from the
+context once, as in a new shelf row that is inserted under the id the context gave for shelves
+and stamped with the time it gave for the call. A number the recording varies that no argument
+and no row explains is drawn from the context, never read off the clock or the process."""
