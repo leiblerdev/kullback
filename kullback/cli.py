@@ -489,6 +489,46 @@ def run(
     typer.echo(json.dumps(result, default=str))
 
 
+@app.command("solve-rate")
+def solve_rate(
+    workdir: Path = WORKDIR,
+    tasks: Optional[str] = typer.Option(None, "--tasks", help="Task ids to run, comma separated; "
+                                                                 "default is every Task with a file."),
+    model: str = typer.Option(..., "--model", help="Policy model id, as provider/model."),
+    runs: int = typer.Option(1, "--runs", help="Runs per Task, each under its own drawn seed."),
+    ceiling_usd: Optional[float] = typer.Option(None, "--ceiling-usd", help="Spend ceiling (D86): "
+                                                                               "the stage stops where it stands."),
+    outdir: Optional[Path] = typer.Option(None, "--outdir", help="Where the Runs and the table go; "  # noqa: B008
+                                                                  "default is episodes/ under the directory."),
+    base_url: Optional[str] = typer.Option(None, "--base-url", help="Endpoint for an OpenAI-compatible model."),
+):
+    """Run a policy model over Tasks through the reset and step interface and print the solve-rate table (G1).
+
+    A measuring instrument, not a trainer: no-signal Runs (not verdicted, environment failures)
+    stand outside the rate and inside the count.
+    """
+    package = _entry("kullback.episode", "BuiltEnvironment")
+    stage = _entry("kullback.episode", "solve_rate")
+    lines = _entry("kullback.episode", "markdown_table")
+    env = package(workdir)
+    wanted = [part.strip() for part in tasks.split(",")] if tasks else None
+    task_ids = [task_id for task_id in env.task_ids() if wanted is None or task_id in wanted]
+    if wanted:
+        unknown = sorted(set(wanted) - set(task_ids))
+        if unknown:
+            typer.echo(f"no Task named {', '.join(unknown)}")
+            raise typer.Exit(2)
+    table = stage(env, task_ids, _live_model(model, base_url), runs_per_task=runs,
+                  ceiling_usd=ceiling_usd,
+                  outdir=Path(outdir) if outdir is not None else Path(workdir) / "episodes")
+    for line in lines(table):
+        typer.echo(line)
+    typer.echo(f"estimated spend {table['spent_usd']:.4f} USD" +
+               (" (ceiling reached, stopped where it stood)" if table["ceiling_stopped"] else ""))
+    if table.get("unpriced_calls"):
+        typer.echo(f"{table['unpriced_calls']} calls are unpriced; the spend estimate is incomplete")
+
+
 @app.command()
 def verdict(workdir: Path = WORKDIR, task: Optional[str] = typer.Option(None, "--task", help="One Task id."),
             judge_model: Optional[str] = JUDGE_MODEL, base_url: Optional[str] = BASE_URL,

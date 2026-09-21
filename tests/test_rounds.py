@@ -81,8 +81,9 @@ TARGET = "environment"
 # providers there and every id moved once, the same three Tasks with the same verdicts and reasons.
 # Re-pinned for D250: compile hold-out is by argument shape, so a tool whose recorded calls disagree
 # on nested keys holds a different split, and the Task rows name the replay that split produced.
-# Same three Tasks, same verdicts.
-TASK_STATUS_SHA256_BEFORE_THE_PHASE = "6b792954cc2f52ca4a7b62c7e0f7b72d00311f04341f93b05a3e18487e4cadad"
+# Same three Tasks, same verdicts. The pin is for the tree without the step-split patch, and the
+# refreeze that applies that patch re-pins.
+TASK_STATUS_SHA256_BEFORE_THE_PHASE = "9360e58df3bd1a2ff1ce3b35f463dee63e8bd145696001f4c97322635e352806"
 
 
 def _fixture(request) -> Path:

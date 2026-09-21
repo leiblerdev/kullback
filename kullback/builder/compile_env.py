@@ -30,7 +30,6 @@ from kullback.builder.mine import is_assistant_call, is_scalar_result
 from kullback.builder.repair import SHAPES_SHOWN, failure_shapes
 from kullback.builder.sandbox import (
     DB_CLASS,
-    HELPERS,
     Sandbox,
     SandboxError,
     args_text,
@@ -52,7 +51,16 @@ from kullback.builder.sandbox import gate_deterministic as gate_deterministic
 from kullback.builder.sandbox import gate_executes_on_s0 as gate_executes_on_s0
 from kullback.builder.sandbox import gate_non_trivial as gate_non_trivial
 from kullback.builder.sandbox import gate_replay_fidelity as gate_replay_fidelity
-from kullback.gates.confinement import ALLOWED_IMPORTS, DENIED_BUILTINS, TOOLS_CLASS, source_confinement
+from kullback.episode.loading import (
+    OVERLAY_DIR,
+    _with_run_scope,
+    merge_overlays,
+)
+from kullback.episode.loading import OverlayConflict as OverlayConflict
+from kullback.episode.loading import load_overlay as load_overlay
+from kullback.episode.loading import load_toolkit as load_toolkit
+from kullback.gates.confinement import ALLOWED_IMPORTS, DENIED_BUILTINS, TOOLS_CLASS
+from kullback.gates.confinement import source_confinement as source_confinement
 from kullback.gates.tool_runs import body_replay_fidelity_gate
 from kullback.runner.budget import (
     CHARS_PER_TOKEN,
@@ -85,7 +93,6 @@ from kullback.runner.records import (
 from kullback.runner.route import call_fingerprint  # D197: one fingerprint, written and served alike
 
 DB_FILE = "db.json"
-OVERLAY_DIR = "overlays"
 PINS_FILE = "overlay_pins.json"  # what the Starting-state pinner pinned per Task, and what it could not
 NODE_DIR = "tool_nodes"
 OUTCOME_DETAIL_CHARS = 300  # how much of one differing call's sentence a per-call row carries (D171)
@@ -109,10 +116,6 @@ MAX_TOOL_ROUNDS = 6
 MAX_EVIDENCE_CHARS = context_cap_tokens(CONTEXT_WINDOW, CONTEXT_CAP_FRACTION) * CHARS_PER_TOKEN
 EVIDENCE_LABELS = ("initial", "failing_call", "all_failing_calls", "full_call_table")
 HELD_OUT_LABEL = "held_out_failed, shown calls only"  # no shown call failed, so none can be pointed at
-
-
-class OverlayConflict(ValueError):
-    """Two Tasks pin the same row in different versions: a Gate failure for the tau2 export (D74)."""
 
 
 @dataclass
@@ -1353,17 +1356,6 @@ def _run_scoped_rows(task: Task, rows: dict, recorded: dict, reference: str,
     return _RunScoped(agreed=agreed, per_run=per_run, disagreeing=disagreeing, split_candidates=splits)
 
 
-def _with_run_scope(overlay: TaskOverlay, scope: Optional[dict]) -> TaskOverlay:
-    """The Task overlay with one Run's own rows and its own step sequence laid over it (D213)."""
-    if not scope:
-        return overlay
-    replaced = {(str(row["table"]), str(row["id"])): row for row in scope.get("rows") or ()}
-    rows = [OverlayRow.model_validate(replaced[(row.table, row.id)])
-            if (row.table, row.id) in replaced else row for row in overlay.rows]
-    return overlay.model_copy(update={
-        "rows": rows, "steps": [OverlayStep.model_validate(step) for step in scope.get("steps") or ()]})
-
-
 def _key_class(schema: Optional[EntitySchema], table: str) -> str:
     """Whether the table's rows are named by one column or by several (D207's own two classes)."""
     return "composite" if schema is not None and len(key_fields(schema, table)) > 1 else "own"
@@ -1806,23 +1798,6 @@ def _write_overlay(workdir: Path, overlay: TaskOverlay, values: dict,
     return path
 
 
-def load_overlay(workdir: Path | str, task_id: str,
-                 run_id: Optional[str] = None) -> tuple[TaskOverlay, dict]:
-    """The overlay one Run of the Task replays against, and its row values (D74, D213).
-
-    Without a Run, or with one this Task has no layer for, which is every generated Candidate Run,
-    the Reference Run's layer is served: one Run's world whole rather than a mix of two. route.py
-    reads this before the shared db.json.
-    """
-    payload = json.loads((Path(workdir) / OVERLAY_DIR / f"{task_id}.json").read_text(encoding="utf-8"))
-    overlay = TaskOverlay.model_validate(payload["overlay"])
-    runs = payload.get("runs") or {}
-    scope = runs.get(run_id) if run_id else None
-    if scope is None:
-        scope = runs.get(str(payload.get("reference_run_id") or ""))
-    return _with_run_scope(overlay, scope), payload["values"]
-
-
 def load_run_overlays(workdir: Path | str) -> dict[str, dict[str, TaskOverlay]]:
     """Per Task, the overlay each of its Runs replays against (D213), for the gates' per-call worlds."""
     directory = Path(workdir) / OVERLAY_DIR
@@ -1843,36 +1818,6 @@ def overlay_values(workdir: Path | str) -> dict:
         values.update(json.loads(path.read_text(encoding="utf-8"))["values"])
     return values
 
-
-def merge_overlays(db: dict, overlays: Iterable[TaskOverlay], values: dict,
-                   conflicts: Optional[list[str]] = None) -> dict:
-    """Merge every Task overlay into the one db tau2's harness loads (D74).
-
-    Two Tasks pinning one row in different versions is a disagreement about the world, which the
-    per-Task overlays in the Runner never have to settle: each Task reads its own. The single db of
-    the tau2 export has to pick one, so with `conflicts` given it keeps the version a Task saw before
-    any write (over one seen after a write) and, between two of the same standing, the first Task's,
-    and appends one line per conflict for the export gate. Without `conflicts` a disagreement raises,
-    which is the contract the single-overlay callers rely on.
-    """
-    merged = copy.deepcopy(db)
-    pinned: dict[tuple[str, str], tuple[str, str, bool]] = {}
-    for overlay in overlays:
-        for row in overlay.rows:
-            seen = pinned.get((row.table, row.id))
-            if seen and seen[0] != row.version_hash:
-                if conflicts is None:
-                    raise OverlayConflict(f"tasks {seen[1]} and {overlay.task_id} pin {row.table} row "
-                                          f"{row.id} in different versions")
-                conflicts.append(f"tasks {seen[1]} and {overlay.task_id} pin {row.table} row {row.id} in "
-                                 f"different versions; the tau2 export keeps "
-                                 f"{overlay.task_id if seen[2] and not row.after_write else seen[1]}'s")
-                if not (seen[2] and not row.after_write):
-                    continue  # the pinned version stands: it was seen before a write, or both were
-            pinned[(row.table, row.id)] = (row.version_hash, overlay.task_id, row.after_write)
-            if row.version_hash in values:
-                merged.setdefault(row.table, {})[row.id] = values[row.version_hash]
-    return merged
 
 # --- rendering the tau2 file shape: code writes the signature, docstring and schema (D56) ---
 
@@ -2068,37 +2013,6 @@ def module_source(schema: EntitySchema, sigs: Iterable[ToolSig], bodies: dict) -
     """One self-contained module, data model plus toolkit, for the gates to execute."""
     return render_data_model(schema) + "\n\n" + render_tools(schema, sigs, bodies, with_imports=False)
 
-
-def load_toolkit(source: str, db: dict, class_name: str = TOOLS_CLASS, db_class: str = DB_CLASS,
-                 overlay: Optional[TaskOverlay] = None, overlay_values: Optional[dict] = None):
-    """The generated module loaded in this process, with the Task's Starting state inside it.
-
-    Given a Task's overlay, the world handed to the toolkit is the shared db with that overlay
-    merged, so the March Task's code-routed call sees the March row and not the June one (D74). A
-    generated body reads `self.db` and cannot do the overlay lookup itself, so a toolkit built on the
-    shared db alone leaves the overlay dead for every code route; `route.py`'s StateView stays the
-    lookup for the recording and stand-in routes.
-
-    dont_inherit keeps a caller's `from __future__ import annotations` out of the generated module:
-    a postponed annotation has no module globals for pydantic to resolve against. This is the loader
-    the Runner's router is given; the gates use the subprocess Sandbox instead.
-
-    `evaluate_arithmetic` is put in the namespace, not imported by the body: `ast`, `eval`, `exec`
-    and `compile` stay refused, and a recorded tool that evaluates an expression string is served by
-    the one code-owned evaluator instead of a parser the model writes again on every build (see
-    runner/arith.py). `PROVIDED_HELPERS` is what the confinement gate reads it under, so the two
-    cannot drift: a name bound here that the gate does not know is a body refused for a NameError it
-    would never have raised.
-    """
-    if overlay is not None:
-        db = merge_overlays(db, [overlay], overlay_values or {})
-    refused = source_confinement(source, class_name)
-    if refused:
-        raise SandboxError("the generated module is not confined and would run in this process: "
-                           + "; ".join(refused))
-    namespace: dict = {"__name__": "generated_tools", **HELPERS}
-    exec(compile(source, "<generated>", "exec", dont_inherit=True), namespace)  # noqa: S102
-    return namespace[class_name](namespace[db_class].model_validate(db))
 
 # --- the model writes the body (D56, D75) ---
 
