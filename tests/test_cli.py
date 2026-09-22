@@ -93,6 +93,22 @@ def test_ingest_passes_each_file_to_the_ingest_module(tmp_path, workdir, fake_mo
     assert [call["args"][0] for call in calls] == [first, second]
 
 
+def test_ingest_forwards_a_declared_floor(tmp_path, workdir, fake_modules):
+    target = tmp_path / "c.json"
+    target.write_text("{}", encoding="utf-8")
+    result = invoke("ingest", str(target), "--workdir", str(workdir), "--intake-floor", "0.4")
+    assert result.exit_code == 0
+    call = fake_modules["kullback.builder.ingest.ingest_file"][0]
+    assert call["kwargs"]["intake_floor"] == 0.4
+
+
+def test_ingest_refuses_a_floor_outside_unit_interval(tmp_path, workdir):
+    target = tmp_path / "c.json"
+    target.write_text("{}", encoding="utf-8")
+    refused = invoke("ingest", str(target), "--workdir", str(workdir), "--intake-floor", "2")
+    assert refused.exit_code != 0 and "within [0, 1]" in refused.output
+
+
 @pytest.mark.parametrize("extra_args,iterate", [(["--iterate"], True), ([], False)])
 def test_build_passes_iterate_through_to_the_builder(workdir, fake_modules, extra_args, iterate):
     result = invoke("build", "--workdir", str(workdir), *extra_args)

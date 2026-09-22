@@ -260,10 +260,19 @@ def runner_version(routing_config: Optional[Path] = None) -> RunnerVersion:
 
 @app.command()
 def ingest(files: list[Path] = typer.Argument(..., help="The customer's export files."),  # noqa: B008
-          workdir: Path = WORKDIR):
+          workdir: Path = WORKDIR,
+          intake_floor: Optional[float] = typer.Option(
+              None, "--intake-floor",
+              help="Task-eligible share each file must keep (default: the intake floor); "
+                   "refused outside [0, 1].")):
     """Store the customer's files byte for byte and derive Traces from them (D66)."""
+    if intake_floor is not None and not 0.0 <= intake_floor <= 1.0:
+        raise typer.BadParameter("--intake-floor must lie within [0, 1]")
     ingest_file = _entry("kullback.builder.ingest", "ingest_file")
-    summaries = [ingest_file(path, workdir) for path in files]
+    if intake_floor is None:
+        summaries = [ingest_file(path, workdir) for path in files]
+    else:
+        summaries = [ingest_file(path, workdir, intake_floor=intake_floor) for path in files]
     _write(Path(workdir) / "ingest_summary.json", summaries)
 
 

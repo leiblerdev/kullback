@@ -743,3 +743,168 @@ def test_rejects_do_not_linger_when_the_file_is_ingested_again(workdir, tmp_path
     other = ingest.store_raw(write_json(tmp_path / "fixed.json", tau2_file([fixed])), workdir)
     ingest.derive_traces(other.raw_hash, workdir)
     assert ingest.read_rejects(workdir, other.raw_hash) == []
+
+
+# --- declared intake floor and D263 rescue -----------------------------------
+
+# Every recording below is invented in the terminal shape: one complete, one whose
+# only unresolved call is its last, one with an interior call left unanswered.
+
+
+def rescue_batch(keystrokes):
+    return json.dumps({"analysis": "invented", "commands": [{"keystrokes": keystrokes, "duration": 0.2}]})
+
+
+def rescue_empty():
+    return json.dumps({"analysis": "invented", "commands": []})
+
+
+def rescue_recording(name, turns):
+    return {"trial_name": name, "original_source": "invented", "conversations": turns}
+
+
+def rescue_sims():
+    opening = {"role": "user", "content": "Invented instruction"}
+    whole = rescue_recording("invented-whole", [
+        opening,
+        {"role": "assistant", "content": rescue_batch("invented-a")},
+        {"role": "user", "content": "New Terminal Output:\ninvented-a"},
+        {"role": "assistant", "content": rescue_empty()},
+    ])
+    tailed = rescue_recording("invented-tailed", [
+        opening,
+        {"role": "assistant", "content": rescue_batch("invented-a")},
+        {"role": "user", "content": "New Terminal Output:\ninvented-a"},
+        {"role": "assistant", "content": rescue_batch("invented-b")},
+    ])
+    gappy = rescue_recording("invented-gappy", [
+        opening,
+        {"role": "assistant", "content": rescue_batch("invented-a")},
+        {"role": "user", "content": "invented note: retry"},
+        {"role": "assistant", "content": rescue_batch("invented-b")},
+        {"role": "user", "content": "New Terminal Output:\ninvented-b"},
+    ])
+    return [whole, tailed, gappy]
+
+
+def rescue_path(tmp_path):
+    envelope = {"rows": [{"row": sim} for sim in rescue_sims()]}
+    return write_json(tmp_path / "rescue.json", envelope)
+
+
+def derive_rescue(workdir, tmp_path):
+    """The invented file derived once: three originals plus the rescued prefix."""
+    raw = ingest.store_raw(rescue_path(tmp_path), workdir)
+    traces = ingest.derive_traces(raw.raw_hash, workdir)
+    assert [t.trace_id for t in traces[:3]] == ["invented-whole", "invented-tailed", "invented-gappy"]
+    return raw, traces
+
+
+def test_ruling_carries_the_declared_floor_and_passes_below_the_share(workdir, tmp_path):
+    raw, traces = derive_rescue(workdir, tmp_path)
+    ruling = ingest.rule_recordings(raw.raw_hash, "terminus_2", rescue_sims(), traces[:3], [], floor=0.25)
+    assert ruling["floor"] == 0.25
+    assert ruling["counts"] == {"task_eligible": 1, "evidence_only": 2, "rejected": 0}
+    assert ruling["eligible_share"] == pytest.approx(1 / 3)
+    assert ruling["passed"] is True
+
+
+def test_default_floor_refuses_the_same_file(workdir, tmp_path):
+    raw, traces = derive_rescue(workdir, tmp_path)
+    ruling = ingest.rule_recordings(raw.raw_hash, "terminus_2", rescue_sims(), traces[:3], [])
+    assert ruling["floor"] == ingest.MIN_TASK_ELIGIBLE_SHARE == 0.75
+    assert ruling["eligible_share"] == pytest.approx(1 / 3)
+    assert ruling["passed"] is False
+
+
+@pytest.mark.parametrize("floor", [-0.5, 1.5])
+def test_floor_outside_unit_interval_is_refused(workdir, tmp_path, floor):
+    raw, traces = derive_rescue(workdir, tmp_path)
+    with pytest.raises(ValueError, match=r"within \[0, 1\]"):
+        ingest.rule_recordings(raw.raw_hash, "terminus_2", rescue_sims(), traces[:3], [], floor=floor)
+    with pytest.raises(ValueError, match=r"within \[0, 1\]"):
+        ingest.gate_ingest(traces[:3], workdir, floor=floor)
+
+
+def rescue_case(workdir, tmp_path):
+    """The derived invented file with its ruling and the one rescued row."""
+    raw, traces = derive_rescue(workdir, tmp_path)
+    ruling = ingest.read_intake_ruling(workdir, raw.raw_hash)
+    assert ruling["rescued"]["count"] == 1
+    (row,) = ruling["rescued"]["rows"]
+    return raw, traces, ruling, row
+
+
+def test_last_call_unresolved_is_rescued_as_its_prefix(workdir, tmp_path):
+    _raw, traces, _ruling, row = rescue_case(workdir, tmp_path)
+    assert row["standing"] == "evidence_only" and row["reason"] == "rescued_prefix"
+    rescue = row["rescue"]
+    assert rescue["kind"] == "last_answered_prefix"
+    assert rescue["cohort_id"].startswith("prefix-")
+    parent = next(t for t in traces if t.trace_id == "invented-tailed" and t.hash != row["trace_hash"])
+    assert rescue["parent_trace_hash"] == parent.hash
+    assert (rescue["retained_calls"], rescue["dropped_calls"]) == (1, 1)
+
+
+def test_rescued_prefix_carries_only_answered_calls(workdir, tmp_path):
+    _raw, traces, _ruling, row = rescue_case(workdir, tmp_path)
+    rescued = next(t for t in traces if t.hash == row["trace_hash"])
+    assert len(rescued.tool_calls) == 1
+    assert all(call.resolved for call in rescued.tool_calls)
+
+
+def test_rescue_leaves_the_parent_row_untouched(workdir, tmp_path):
+    _raw, _traces, ruling, row = rescue_case(workdir, tmp_path)
+    original = next(r for r in ruling["recordings"] if r["trace_id"] == "invented-tailed")
+    assert original["standing"] == "evidence_only" and original["reason"] == "unresolved_call"
+    assert "rescue" not in original
+    assert original["trace_hash"] != row["trace_hash"]
+
+
+def test_interior_unresolved_call_is_withheld_and_counted(workdir, tmp_path):
+    raw, _traces = derive_rescue(workdir, tmp_path)
+    ruling = ingest.read_intake_ruling(workdir, raw.raw_hash)
+    assert ruling["rescued"]["count"] == 1
+    assert ruling["rescued"]["reasons_withheld"] == {"interior_unresolved": 1}
+    assert all(row["trace_id"] != "invented-gappy" for row in ruling["rescued"]["rows"])
+
+
+def test_rescued_prefix_never_counts_toward_the_share_and_is_marked_not_complete(workdir, tmp_path):
+    raw, traces = derive_rescue(workdir, tmp_path)
+    ruling = ingest.read_intake_ruling(workdir, raw.raw_hash)
+    assert ruling["counts"] == {"task_eligible": 1, "evidence_only": 2, "rejected": 0}
+    assert ruling["eligible_share"] == pytest.approx(1 / 3)
+    assert ruling["passed"] is False
+    (row,) = ruling["rescued"]["rows"]
+    assert row["standing"] == "evidence_only" and row["reason"] == "rescued_prefix"
+    assert "rescue" in row
+    gate = ingest.gate_ingest(traces, workdir, raw_hash=raw.raw_hash)
+    assert gate.metrics["task_eligible"] == 1 and gate.metrics["evidence_only"] == 2
+    assert gate.passed is False
+
+
+def test_rescued_prefix_publishes_beside_its_parent_but_builds_nothing(workdir, tmp_path):
+    summary = ingest.ingest_file(rescue_path(tmp_path), workdir, intake_floor=0.0)
+    assert summary["gate"]["pass"] is True
+    assert summary["rescued"] == 1
+    ruling = ingest.read_intake_ruling(workdir, summary["raw_hash"])
+    parent = next(r for r in ruling["recordings"] if r["trace_id"] == "invented-tailed")
+    (rescued_row,) = ruling["rescued"]["rows"]
+    evidence = {p.stem for p in (workdir / "evidence_traces").glob("*.json")}
+    assert parent["trace_hash"] in evidence
+    assert rescued_row["trace_hash"] in evidence
+    published = json.loads(
+        (workdir / "evidence_traces" / (rescued_row["trace_hash"] + ".json")).read_text(encoding="utf-8"))
+    assert len(published["tool_calls"]) == 1
+    assert all(call["resolved"] for call in published["tool_calls"])
+    assert [p.stem for p in (workdir / "traces").glob("*.json")] == summary["trace_hashes"]
+
+
+def test_failed_gate_publishes_nothing_rescued_or_not(workdir, tmp_path):
+    with pytest.raises(ingest.IntakeGateError):
+        ingest.ingest_file(rescue_path(tmp_path), workdir)
+    ruling = ingest.read_intake_ruling(workdir, ingest.store_raw(rescue_path(tmp_path), workdir).raw_hash)
+    assert ruling["rescued"]["count"] == 1
+    assert not list((workdir / "traces").glob("*.json")) if (workdir / "traces").exists() else True
+    if (workdir / "evidence_traces").exists():
+        assert list((workdir / "evidence_traces").glob("*.json")) == []
