@@ -634,6 +634,112 @@ def solve_rate(
         typer.echo(f"{table['unpriced_calls']} calls are unpriced; the spend estimate is incomplete")
 
 
+def _format_consistency(value: Optional[float]) -> str:
+    """One consistency number as four decimals, or n/a where no law was checked."""
+    return "n/a" if value is None else f"{value:.4f}"
+
+
+def _consistency_line(task_id: str, checked: int, broken: int, consistency: Optional[float]) -> str:
+    """One Task's law counts and its Environment consistency as one line."""
+    return f"{task_id}: checked {checked} broken {broken} consistency {_format_consistency(consistency)}"
+
+
+def _mean_consistency(rows: dict) -> Optional[float]:
+    """The mean consistency over the Tasks that checked anything, else nothing."""
+    values = [row["consistency"] for row in rows.values() if row["consistency"] is not None]
+    return sum(values) / len(values) if values else None
+
+
+def _echo_gaps(task_id: str, gaps: dict) -> dict:
+    """One line per unfit tool, returned for the JSON where any exist."""
+    for name in sorted(gaps):
+        typer.echo(f"task {task_id}: unfit tool {name}, {gaps[name]}")
+    return {task_id: gaps} if gaps else {}
+
+
+def _finish_consistency(rows: dict, skipped: dict, unfit: dict, out: Optional[Path],
+                        laws_version: int, task: Optional[str]) -> None:
+    """The final line, the JSON beside it, and the exit: 3 on a skipped request or none completed."""
+    mean = _mean_consistency(rows)
+    violated = sum(1 for row in rows.values() if row["broken"])
+    typer.echo(f"mean consistency {_format_consistency(mean)} over {len(rows)} Tasks, "
+               f"{violated} with violations, {len(skipped)} skipped")
+    if out is not None:
+        body = {"tasks": rows, "mean_consistency": mean, "tasks_with_violations": violated,
+                "laws_version": laws_version, "skipped": skipped, "unfit": unfit}
+        Path(out).write_text(json.dumps(body, indent=2, sort_keys=True), encoding="utf-8")
+    if task is not None and task in skipped:
+        raise typer.Exit(3)
+    if not rows:
+        raise typer.Exit(3)
+
+
+@app.command("consistency")
+def consistency(
+    workdir: Path = WORKDIR,
+    task: Optional[str] = typer.Option(None, "--task", help="Check one Task instead of every Task."),  # noqa: B008
+    sequences: int = typer.Option(20, "--sequences", help="Call sequences generated per Task."),
+    max_length: int = typer.Option(5, "--max-length", help="Longest generated call sequence."),
+    seed: int = typer.Option(0, "--seed", help="Seed the sequences are drawn under."),
+    out: Optional[Path] = typer.Option(None, "--out", help="Where to write the JSON; nothing is written without it."),  # noqa: B008
+):
+    """Check the laws that hold for any tool over each built Environment, with no model (D258).
+
+    One line per Task names its checked and broken law counts and its Environment
+    consistency, one line per skipped Task names why it was skipped, and one line
+    per unfit tool names why no sequence may check it. The final line gives the
+    mean consistency over completed Tasks, how many broke a law and how many
+    were skipped. The workdir is read in place and never written into; --out
+    writes the same numbers as JSON beside the laws version. A skipped request,
+    or no completed Task at all, exits 3.
+    """
+    from kullback.episode.loading import EnvironmentError
+
+    if sequences < 0 or max_length < 1:
+        raise typer.BadParameter("--sequences takes 0 or more and --max-length takes 1 or more")
+    check = _entry("kullback.laws", "check_laws")
+    build = _entry("kullback.episode", "BuiltEnvironment")
+    make_world = _entry("kullback.episode.law_world", "EnvironmentLawWorld")
+    laws_module = importlib.import_module("kullback.episode.law_world")
+    try:
+        env = build(workdir)
+        ids = env.task_ids()
+    except EnvironmentError as exc:
+        typer.echo(f"no built Environment under {workdir}: {exc}")
+        raise typer.Exit(1) from None
+    if task is not None:
+        if task not in ids:
+            typer.echo(f"no Task named {task}")
+            raise typer.Exit(2)
+        ids = [task]
+    rows: dict[str, dict] = {}
+    skipped: dict[str, str] = {}
+    unfit: dict[str, dict] = {}
+
+    def _one(task_id: str):
+        """One Task's row, its unfit tools and its skip reason; only row or reason is set."""
+        try:
+            world = make_world(env, task_id, seed=seed)
+            gaps = world.unfit()
+            report = check(world, seed=seed, sequences=sequences, max_length=max_length)
+        except EnvironmentError as exc:
+            return None, {}, str(exc)
+        row = {"checked": sum(report.checked.values()), "broken": sum(report.broken.values()),
+               "consistency": report.consistency}
+        return row, gaps, None
+
+    for task_id in ids:
+        row, gaps, reason = _one(task_id)
+        if reason is not None:
+            skipped[task_id] = reason
+            typer.echo(f"task {task_id}: skipped, {reason}")
+            continue
+        rows[task_id] = row
+        unfit.update(_echo_gaps(task_id, gaps))
+        typer.echo(_consistency_line(task_id, row["checked"], row["broken"], row["consistency"]))
+    _finish_consistency(rows, skipped, unfit, out, laws_module.LAWS_VERSION, task)
+
+
 @app.command()
 def verdict(workdir: Path = WORKDIR, task: Optional[str] = typer.Option(None, "--task", help="One Task id."),
             judge_model: Optional[str] = JUDGE_MODEL, base_url: Optional[str] = BASE_URL,
