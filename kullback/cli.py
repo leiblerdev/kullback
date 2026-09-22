@@ -414,7 +414,7 @@ def build(
     try:
         result = _entry("kullback.builder.session", "build")(
             workdir, adapter, files=list(files or []), ceiling_usd=ceiling_usd,
-            subscribers=[_echo_tool_result])
+            subscribers=[_session_subscriber(workdir)])
     except Exception:
         pulse.stop()
         heartbeat.beat(workdir, model, "failed")
@@ -425,17 +425,29 @@ def build(
     typer.echo(json.dumps(result, indent=2, default=str))
 
 
-def _echo_tool_result(event: Any) -> None:
-    """The subscriber the build hands the session: a line per tool result as each lands."""
-    if getattr(event, "type", None) != "tool_execution_end":
-        return
-    result = event.result
-    content = str(getattr(result, "content", "") or "")
-    lines = content.splitlines()
-    typer.echo(f"{event.tool_name}: {lines[0] if lines else ''}")
-    for ruling in (getattr(result, "details", None) or {}).get("rulings") or ():
-        mark = "accepted" if ruling.get("accepted") else "rejected"
-        typer.echo(f"  ruling {ruling.get('name')}: {mark} ({ruling.get('line')})")
+def _session_subscriber(workdir: Path):
+    """The subscriber the build hands the session: a line per tool result as each lands.
+
+    After every examine result the workdir is checkpointed under the next number, so status
+    and report keep the drift section the rounds used to feed.
+    """
+    seen = {"examine": 0}
+
+    def handle(event: Any) -> None:
+        if getattr(event, "type", None) != "tool_execution_end":
+            return
+        result = event.result
+        content = str(getattr(result, "content", "") or "")
+        lines = content.splitlines()
+        typer.echo(f"{event.tool_name}: {lines[0] if lines else ''}")
+        for ruling in (getattr(result, "details", None) or {}).get("rulings") or ():
+            mark = "accepted" if ruling.get("accepted") else "rejected"
+            typer.echo(f"  ruling {ruling.get('name')}: {mark} ({ruling.get('line')})")
+        if event.tool_name == "examine":
+            seen["examine"] += 1
+            round_snapshot.checkpoint(workdir, seen["examine"])
+
+    return handle
 
 
 def _counts_line(workdir: Path) -> str:
