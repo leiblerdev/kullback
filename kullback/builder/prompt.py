@@ -26,14 +26,15 @@ TOOLS = (
     'edit: {"path": "tools/lookup.py", "old": "return self.db.rows.get(key)", '
     '"new": "row = self.db.rows.get(key)\\n    return row"}\n'
     'bash: {"command": "grep -rn label tools/ | head"}\n'
-    'grep: {"pattern": "label"}\n'
     'find: {"glob": "tools/*.py"}\n'
     'ls: {"path": "tools"}\n'
     'web_search: {"query": "how the client words a label"}\n'
     'ingest: {"files": ["batch.json"]}\n'
     'derive_world: {"grow": null}\n'
+    'grow: {"table": "a-table", "count": 2}\n'
     'replay: {"task_id": "task-1"}\n'
     'run: {"task_id": "task-1", "count": 2}\n'
+    'status: {}\n'
     'examine: {"task_ids": null}'
 )
 

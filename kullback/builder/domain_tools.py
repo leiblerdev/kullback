@@ -1,11 +1,11 @@
-"""The Builder's domain tools: ingest, derive_world, replay, run, examine.
+"""The Builder's domain tools: ingest, derive_world, grow, replay, run, status, examine.
 
 Each tool wraps a pure, measured module the way the Examiner's tools do (pydantic args in,
 a short rendered result out): `ingest_files` and `derive_world` for the first pass, the
-runner tool for replay and reroll, and the function the session passes in for examine
-(stream 6 delivers it as `kullback.examiner.session.examine`; the session resolves it
-lazily, so this module never imports the examiner). Every result carries per-call rows,
-never a count alone.
+runner tool for replay and reroll, `trusted_gate` for the per-Task status, and the function
+the session passes in for examine (stream 6 delivers it as `kullback.examiner.session.examine`;
+the session resolves it lazily, so this module never imports the examiner). Every result
+carries rows, never a count alone.
 
 Carried: D155 (the recording is the standard a replay row measures against), D171
 (per-call rows in every answer), D224 (growing the world never lands in a trusted Task).
@@ -13,6 +13,7 @@ Carried: D155 (the recording is the standard a replay row measures against), D17
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Any, Callable, Optional
 
@@ -20,7 +21,9 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from kullback.agent.tools import AgentTool
 from kullback.builder import env_files, world_tools
+from kullback.gates.trust import trusted_gate
 from kullback.runner import tool as runner_tool
+from kullback.runner.records import read_json
 
 #: How many per-call rows the rendered text carries before the count of the rest.
 ROWS_SHOWN = 20
@@ -211,9 +214,120 @@ def _coerce_examine(raw: Any) -> ExamineResult:
     return ExamineResult(summary=str(body.get("summary") or ""), findings=rows)
 
 
+def status_of(workdir: Any) -> dict[str, Any]:
+    """One row per Task (trusted, refused or open, with its reason) and per tool (last replay fidelity).
+
+    Read off the workdir files through `trusted_gate`, the way the Examiner's summary does;
+    the reading is carried here, not the import, since that module is going away. Files not
+    there yet read as empty, so a Task with no Verifier is open with its reason.
+    """
+    root = Path(workdir)
+    task_ids = [path.stem for path in sorted((root / "tasks").glob("*.json")) if path.name != "tasks.json"]
+    task_status = read_json(root / "task_status.json", None) or {}
+    verifiers: list[dict] = []
+    if (root / "verifiers").is_dir():
+        for path in sorted((root / "verifiers").glob("*.json")):
+            try:
+                verifiers.append(json.loads(path.read_text(encoding="utf-8")))
+            except (OSError, ValueError):
+                continue
+    refusals: dict[str, Any] = {}
+    for folder in (root / "refusals", root / "env" / "refusals"):
+        if folder.is_dir():
+            for path in sorted(folder.glob("*.json")):
+                try:
+                    refusals.setdefault(path.stem, json.loads(path.read_text(encoding="utf-8")))
+                except (OSError, ValueError):
+                    continue
+    ruling = trusted_gate(task_status if isinstance(task_status, dict) else {}, verifiers, {},
+                          read_json(root / "history.json", None) or {}, refusals,
+                          read_json(root / "task_runs.json", None) or {},
+                          read_json(root / "replays.json", None) or {},
+                          read_json(root / "rerolls.json", None) or {},
+                          read_json(root / "canon-rules.json", None),
+                          read_json(root / "tool_sigs.json", None) or [])
+    trusted = set(ruling.metrics.get("trusted") or [])
+    refused = ruling.metrics.get("refused") or {}
+    untrusted = ruling.metrics.get("untrusted") or {}
+    tasks = []
+    for task_id in task_ids:
+        if task_id in trusted:
+            tasks.append({"task_id": task_id, "state": "trusted", "reason": ""})
+        elif task_id in refused:
+            tasks.append({"task_id": task_id, "state": "refused", "reason": str(refused[task_id])})
+        else:
+            tasks.append({"task_id": task_id, "state": "open",
+                          "reason": str(untrusted.get(task_id) or "no Verifier derived yet")})
+    outcomes = read_json(root / "tool_call_outcomes.json", None) or {}
+    tools = []
+    for sig in read_json(root / "tool_sigs.json", None) or []:
+        name = sig.get("name") if isinstance(sig, dict) else None
+        if not name:
+            continue
+        rows = outcomes.get(name) if isinstance(outcomes, dict) else None
+        rows = [row for row in rows or [] if isinstance(row, dict)]
+        if rows:
+            done = sum(1 for row in rows if row.get("replayed"))
+            tools.append({"tool": name, "fidelity": done / len(rows), "calls": len(rows), "reason": ""})
+        else:
+            tools.append({"tool": name, "fidelity": None, "calls": 0, "reason": "no replay rows yet"})
+    return {"tasks": tasks, "tools": tools}
+
+
+class GrowArgs(BaseModel):
+    """The table to grow with synthetic rows, and the row count to reach."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    table: str = Field(description="The table to grow with synthetic rows.")
+    count: int = Field(ge=1, description="The row count for the table to reach.")
+
+
+class GrowResult(BaseModel):
+    """What growing the world added: the rows per table and the ruling behind them."""
+
+    summary: str = ""
+    tables: dict[str, int] = Field(default_factory=dict)
+    paths: list[str] = Field(default_factory=list)
+
+
+def _render_grow(result: GrowResult) -> str:
+    lines = [result.summary]
+    for table, count in sorted(result.tables.items()):
+        lines.append(f"table {table}: {count} rows")
+    return "\n".join(lines)
+
+
+class StatusArgs(BaseModel):
+    """No arguments: the status is read off the workdir files."""
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class StatusResult(BaseModel):
+    """One row per Task and per tool, in text and in details."""
+
+    summary: str = ""
+    tasks: list[dict] = Field(default_factory=list)
+    tools: list[dict] = Field(default_factory=list)
+
+
+def _render_status(result: StatusResult) -> str:
+    lines = [result.summary]
+    for row in result.tasks:
+        lines.append(f"task {row.get('task_id')}: {row.get('state')}"
+                     + (f" ({row.get('reason')})" if row.get("reason") else ""))
+    for row in result.tools:
+        fidelity = row.get("fidelity")
+        lines.append(f"tool {row.get('tool')}: "
+                     + (f"fidelity {fidelity:.4f} over {row.get('calls')} calls"
+                        if fidelity is not None else str(row.get("reason"))))
+    return "\n".join(lines)
+
+
 def domain_tools(*, workdir: Any, model: Any = None,
                  examine_fn: Optional[Callable[[Any, Any], Any]] = None) -> list[AgentTool]:
-    """The five domain tools bound to one workdir: ingest, derive_world, replay, run, examine.
+    """The seven domain tools bound to one workdir.
 
     `model` drives the fresh Runs `run` buys; `examine_fn(workdir, task_ids)` answers
     `examine` and defaults to the lazily resolved examination stream 6 delivers.
@@ -239,6 +353,22 @@ def domain_tools(*, workdir: Any, model: Any = None,
             tables=dict(report.tables), tools={k: int(v) for k, v in report.tools.items()},
             tasks={k: int(v) for k, v in report.tasks.items()}, files_written=files_written,
             calls_exposed={k: int(v) for k, v in (exposed.get("calls") or {}).items()})
+
+    async def grow(args: GrowArgs) -> GrowResult:
+        report = world_tools.derive_world(root, grow={args.table: args.count})
+        return GrowResult(summary=(f"grew table {args.table} to {args.count} rows with synthetic rows"),
+                          tables={key: int(value) for key, value in report.tables.items()},
+                          paths=list(report.paths))
+
+    async def status(args: StatusArgs) -> StatusResult:
+        _ = args
+        body = status_of(root)
+        states = [row["state"] for row in body["tasks"]]
+        return StatusResult(
+            summary=(f"{states.count('trusted')} trusted, {states.count('refused')} refused, "
+                     f"{states.count('open')} open over {len(states)} tasks"),
+            tasks=body["tasks"], tools=body["tools"])
+
 
     async def replay(args: ReplayArgs) -> ReplayResult:
         report = runner_tool.replay(root, args.task_id, workdir=root)
@@ -275,13 +405,17 @@ def domain_tools(*, workdir: Any, model: Any = None,
         AgentTool("derive_world", "Derive the world from the stored traces: rows, signatures, "
                   "Tasks, the Starting state. Writes the tool files and the read surface.",
                   DeriveArgs, DeriveResult, derive, render=_render_derive),
+        AgentTool("grow", "Grow one table with synthetic rows, never in a trusted Task.",
+                  GrowArgs, GrowResult, grow, render=_render_grow),
         AgentTool("replay", "Replay one Task's recorded calls through the built tools, call by call.",
                   ReplayArgs, ReplayResult, replay, render=_render_replay),
         AgentTool("run", "Play fresh Runs of one Task through the runner and report each one.",
                   RunArgs, RunResult, run, render=_render_run),
+        AgentTool("status", "Read one row per Task and per tool off the workdir files.",
+                  StatusArgs, StatusResult, status, render=_render_status),
         AgentTool("examine", "Examine Tasks when the Environment looks ready and file the findings.",
                   ExamineArgs, ExamineResult, examine, render=_render_examine),
     ]
 
 
-__all__ = ["ROWS_SHOWN", "default_examine_fn", "domain_tools"]
+__all__ = ["ROWS_SHOWN", "default_examine_fn", "domain_tools", "status_of"]

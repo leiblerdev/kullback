@@ -134,3 +134,28 @@ def test_derive_writes_tool_files_and_the_read_surface(tmp_path):
     assert (root / "env" / "tools" / "rename_widget.py").is_file()
     assert (root / "env" / "calls" / "rename_widget.jsonl").is_file()
     assert "rename_widget" in result.content
+
+
+def test_grow_adds_rows_to_the_table_named_and_says_how_many(tmp_path):
+    root = _workdir(tmp_path)
+    before = len((json.loads((root / "db.json").read_text(encoding="utf-8")) or {}).get("widgets", {}))
+    assert before == 1
+    (grow,) = [tool for tool in domain_tools_mod.domain_tools(workdir=root) if tool.name == "grow"]
+    result = _run(grow, {"table": "widgets", "count": 3})
+    assert not result.is_error, result.content
+    after = len((json.loads((root / "db.json").read_text(encoding="utf-8")) or {}).get("widgets", {}))
+    assert after == 3
+    assert result.details["tables"]["widgets"] == after
+    assert "widgets" in result.content and "3" in result.content
+
+def test_status_answers_one_row_per_task_and_per_tool(tmp_path):
+    root = _workdir(tmp_path)
+    tools = {tool.name: tool for tool in domain_tools_mod.domain_tools(workdir=root)}
+    replayed = _run(tools["replay"], {"task_id": "widget_task"})
+    assert not replayed.is_error, replayed.content
+    result = _run(tools["status"], {})
+    assert not result.is_error, result.content
+    assert [(row["task_id"], row["state"]) for row in result.details["tasks"]] == [("widget_task", "open")]
+    assert result.details["tasks"][0]["reason"]
+    assert {row["tool"] for row in result.details["tools"]} == {"describe_widget", "rename_widget"}
+    assert "widget_task" in result.content and "rename_widget" in result.content
