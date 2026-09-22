@@ -699,6 +699,36 @@ def replay_lesson(failures: dict[str, str], shown_ids: Iterable[str]) -> str:
     return f"{REPLAY_LESSON_HEAD}\n- {text}" if text else ""
 
 
+def _effect_reader(readers_artifact: Any, traces: Iterable[Any], workdir: Any):
+    """One reader for the stage, built once and handed to every consumer.
+
+    The comparer and the Starting state read prose results through this same function, and the
+    effect evidence reads every recorded result through it too, so a sentence answer that names
+    a row and a column is a sighting of that row wherever results are read.
+    """
+    return readers.result_reader(readers_artifact, traces, workdir)
+
+
+def compile_stage_effects(traces: Iterable[Any], schema: Any, write_tools: Iterable[str],
+                          db: Optional[dict], worlds: Optional[dict], readers_artifact: Any,
+                          workdir: Any):
+    """The compile stage's effect evidence, read through the reader the stage built once."""
+    return effects_mod.observe_effects(
+        traces, schema, write_tools, db=db, worlds=worlds,
+        read_result=_effect_reader(readers_artifact, traces, workdir))
+
+
+def replay_stage_effects(task_traces: Iterable[Any], schema: Any, write_tools: Iterable[str],
+                         db: Optional[dict], effect_reader: Any):
+    """One task's effect evidence on the replay path, read through the stage's own reader.
+
+    The reader arrives built, because the stage builds it once over every trace and hands the
+    same one to each task; building one per task would read the same results once per task.
+    """
+    return effects_mod.observe_effects(task_traces, schema, write_tools, db=db,
+                                       read_result=effect_reader)
+
+
 def compile_snapshot_rows(kept: Iterable[dict], fresh: dict[str, list[dict]],
                           only: Optional[Iterable[str]]) -> list[dict]:
     """The per tool rulings a compile leaves on file: this run's, over the ones it replaces.
@@ -782,10 +812,11 @@ def _tools_stage(model: Any, max_attempts: int, workers: int = 1, only: Optional
         # D215: what each write's recorded calls were seen to change beyond their own answers, read
         # from the Runs the Builder may learn from and from those alone, so a held-out Run reaches
         # no writer through this any more than through the evidence calls above.
-        observed = effects_mod.observe_effects(
+        observed = compile_stage_effects(
             [t for t in traces if t.trace_id in seeds], inputs["schema"],
             cluster.write_tool_names(inputs["sigs"]), db=inputs["db"],
-            worlds=trace_worlds(inputs["db"], inputs["overlays"], overlay_values, tasks))
+            worlds=trace_worlds(inputs["db"], inputs["overlays"], overlay_values, tasks),
+            readers_artifact=inputs["readers"], workdir=ctx.workdir)
         tool_names = [sig.name for sig in inputs["sigs"]]
         # The transport's error wrapper is one per corpus, not one per tool: read it once over
         # every recorded call, so a tool with a single error still has it peeled.
@@ -1069,7 +1100,7 @@ def _tools_stage(model: Any, max_attempts: int, workers: int = 1, only: Optional
                f"{content_hash(pipeline._fn_identity(attribute_fidelity, 'compile_tools'))[:16]}:"
                # The filters and the snapshot shape are this file's own functions too, named one
                # by one the way the attribution is: an edit to any of them re-asks the writer.
-               f"{content_hash([pipeline._fn_identity(callers_by_tool, 'compile_tools'), pipeline._fn_identity(compile_snapshot_rows, 'compile_tools'), pipeline._fn_identity(holdout_world, 'compile_tools'), pipeline._fn_identity(trace_worlds, 'compile_tools'), pipeline._fn_identity(_effect_sentence, 'compile_tools'), pipeline._fn_identity(_record_hardcoded_lesson, 'compile_tools'), pipeline._fn_identity(_task_of, 'compile_tools')])[:16]}:"
+               f"{content_hash([pipeline._fn_identity(callers_by_tool, 'compile_tools'), pipeline._fn_identity(compile_snapshot_rows, 'compile_tools'), pipeline._fn_identity(holdout_world, 'compile_tools'), pipeline._fn_identity(trace_worlds, 'compile_tools'), pipeline._fn_identity(_effect_sentence, 'compile_tools'), pipeline._fn_identity(_record_hardcoded_lesson, 'compile_tools'), pipeline._fn_identity(_task_of, 'compile_tools'), pipeline._fn_identity(_effect_reader, 'compile_tools'), pipeline._fn_identity(compile_stage_effects, 'compile_tools')])[:16]}:"
                # The evidence set and the lesson are this file's own functions too (D191), so their
                # bytes are in no module hash above either: a change to which recorded calls a body
                # is written against is a different question and must not be answered from the cache.
@@ -1617,13 +1648,15 @@ def _replay_stage(judging: Optional[SemanticJudging] = None, only: Optional[Iter
         # this is code, it is never shown to anyone who writes a body, and a held-out Run has to be
         # scored the same way or the number the report carries is not the number the corpus earns.
         observed: dict[str, list] = {}
+        effect_reader = _effect_reader(inputs["readers"], inputs["traces"], ctx.workdir)
         for task in tasks:
             # The Task's own overlay, the layer no Run of it disagrees on, is what the effects are
             # read against: one statement per Task, where each Run below replays on its own layer.
             task_overlay, task_overlay_rows = compile_env.load_overlay(ctx.workdir, task.id)
-            seen = effects_mod.observe_effects(
+            seen = replay_stage_effects(
                 [by_trace[t] for t in task.run_ids if t in by_trace], schema, write_tools,
-                db=compile_env.merge_overlays(db, [task_overlay], task_overlay_rows))
+                db=compile_env.merge_overlays(db, [task_overlay], task_overlay_rows),
+                effect_reader=effect_reader)
             for tool, rows in seen.items():
                 observed.setdefault(tool, []).extend(rows)
             effect_rows = effects_mod.replay_evidence(seen)
@@ -1679,7 +1712,7 @@ def _replay_stage(judging: Optional[SemanticJudging] = None, only: Optional[Iter
     # The judge's identity and the equivalence table's version ride in the key beside the verdict
     # format: a replay scored with no judge and one scored with a judge are different readings of
     # the same bytes, and a cache that cannot tell them apart hands back the unjudged one (D219).
-    version = (f"{_version('replay_reference', run, replay_mod, fidelity, compile_env, route, loop, tool_runs, effects_mod, repair, verifier_suite, canon, judge_mod, records_mod, helpers=(holdout_answers, holdout_world, replay_failures_of, replay_difference, _effect_sentence, _replay_context, _refuse_stand_in, _write_runs_index, with_synthetic_rows, SemanticJudging.save, SemanticJudging._ask, SemanticJudging._answer, SemanticJudging.__init__, SemanticJudging.judge.fget, _gate_for, _memo_get, _memo_put, _count_judgement, _save_table))}"
+    version = (f"{_version('replay_reference', run, replay_mod, fidelity, compile_env, route, loop, tool_runs, effects_mod, repair, verifier_suite, canon, judge_mod, records_mod, readers, helpers=(holdout_answers, holdout_world, replay_failures_of, replay_difference, _effect_sentence, _replay_context, _refuse_stand_in, _write_runs_index, with_synthetic_rows, SemanticJudging.save, SemanticJudging._ask, SemanticJudging._answer, SemanticJudging.__init__, SemanticJudging.judge.fget, _gate_for, _memo_get, _memo_put, _count_judgement, _save_table, _effect_reader, replay_stage_effects))}"
                f":verdicts={replay_mod.VERDICT_FORMAT}"
                f":judge={judging.identity}:equivalence={judging.table.version}"
                f":EFFECTS_FILE={EFFECTS_FILE}:EQUIVALENCE_FILE={EQUIVALENCE_FILE}"
