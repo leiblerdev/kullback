@@ -857,3 +857,73 @@ def test_consistency_names_unfit_tools_in_output_and_json(workdir, tmp_path):
     assert body["unfit"]["widget_task"]["describe_widget"] == \
         "required argument widget_id has no type"
     assert "widget_task" in body["tasks"]
+
+
+@pytest.mark.parametrize("sequences", ["0", "-1"])
+def test_consistency_refuses_zero_sequences(workdir, sequences):
+    seed_built_env(workdir)
+    refused = invoke("consistency", "--workdir", str(workdir), "--sequences", sequences)
+    assert refused.exit_code == 2
+    assert "--sequences" in refused.output and "1 or more" in refused.output
+
+
+def test_consistency_skips_a_task_that_checked_nothing(workdir, tmp_path):
+    seed_built_env(workdir)
+    (workdir / "tool_sigs.json").write_text(json.dumps([
+        {"name": "describe_widget", "kind": "read", "unclassified": False,
+         "args_fields": [{"name": "widget_id", "types": [], "optional": False}],
+         "args_schema": {"type": "object", "properties": {"widget_id": {}},
+                         "required": ["widget_id"]}},
+        {"name": "rename_widget", "kind": "write", "unclassified": False,
+         "args_fields": [{"name": "widget_id", "types": [], "optional": False},
+                         {"name": "label", "types": [], "optional": False}],
+         "args_schema": {"type": "object",
+                         "properties": {"widget_id": {}, "label": {}},
+                         "required": ["widget_id", "label"]}},
+    ]), encoding="utf-8")
+    out = tmp_path / "consistency.json"
+    refused = invoke("consistency", "--workdir", str(workdir), "--sequences", "2",
+                     "--max-length", "2", "--out", str(out))
+    assert refused.exit_code == 3
+    assert "no law checked" in refused.output
+    body = json.loads(out.read_text(encoding="utf-8"))
+    assert body["tasks"] == {}
+    assert body["skipped"]["widget_task"] == "no law checked"
+    assert "unfit tool describe_widget" in refused.output
+    assert "unfit tool rename_widget" in refused.output
+    assert body["unfit"]["widget_task"]["describe_widget"] == \
+        "required argument widget_id has no type"
+    assert body["unfit"]["widget_task"]["rename_widget"] == \
+        "required argument label has no type; required argument widget_id has no type"
+
+
+def test_consistency_skips_a_task_whose_toolkit_fails_to_load(workdir, tmp_path):
+    from tests.episode.invented import TOOLS
+
+    seed_built_env(workdir)
+    (workdir / "tasks" / "t2.json").write_text(json.dumps({
+        "id": "t2", "run_ids": ["ghost"], "intent": "nothing recorded",
+    }), encoding="utf-8")
+    (workdir / "overlays" / "t2.json").write_text(json.dumps({
+        "overlay": {"task_id": "t2",
+                    "rows": [{"table": "widgets", "id": "w1", "version_hash": "h-poison"}],
+                    "steps": []},
+        "values": {"h-poison": {"widget_id": "w1", "label": "poison"}},
+    }), encoding="utf-8")
+    tools_path = workdir / "env" / "tools.py"
+    poisoned = tools_path.read_text(encoding="utf-8").replace(
+        "        super().__init__(db)\n        self.db = db",
+        "        super().__init__(db)\n        self.db = db\n"
+        "        if any(row.label == \"poison\" for row in self.db.widgets.values()):\n"
+        "            raise KeyError(\"poison\")",
+    )
+    assert poisoned != TOOLS
+    tools_path.write_text(poisoned, encoding="utf-8")
+    out = tmp_path / "consistency.json"
+    result = invoke("consistency", "--workdir", str(workdir), "--sequences", "2",
+                    "--max-length", "2", "--out", str(out))
+    assert result.exit_code == 0, result.output
+    assert "t2" in result.output and "skipped" in result.output
+    body = json.loads(out.read_text(encoding="utf-8"))
+    assert "widget_task" in body["tasks"]
+    assert "KeyError" in body["skipped"]["t2"]
