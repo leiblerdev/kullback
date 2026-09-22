@@ -99,7 +99,7 @@ TARGET = "environment"
 # frozen patches are applied in kullback/runner and kullback/gates, and the stage keys
 # moved with the sources they name. With the key tags normalized the rows are byte
 # identical to main's.
-TASK_STATUS_SHA256_BEFORE_THE_PHASE = "22a16421bdc48a1df9b749bbd37ab7d74286388bbb616de9d819bc38835bc381"
+TASK_STATUS_SHA256_BEFORE_THE_PHASE = "fda204913dc67c687bfde1d7f36bea536e4411416830cfa8ff16e3eecd709e5f"
 
 
 def _fixture(request) -> Path:

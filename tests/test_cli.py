@@ -751,3 +751,360 @@ def test_the_round_line_reads_the_beat_error_under_the_key_the_driver_writes_it_
     line = cli._round_line({"fidelity": 4, "tasks": 9,
                             rounds.BEAT_ERROR: {"beat": "builder", "kind": "LedgerUnreadable"}})
     assert line.startswith("ended by builder error (LedgerUnreadable), fidelity 4/9 tasks")
+
+
+# --- rescue -----------------------------------------------------------------
+
+def _rescue_turns(instruction: str) -> list[dict]:
+    """An invented recording whose first user turn carries the instruction between headers."""
+    return [
+        {"role": "user",
+         "content": ("Invented preamble.\n\nTask Description:\n" + instruction
+                     + "\n\nCurrent terminal state:\n\ninvented-ready")},
+        {"role": "assistant", "content": json.dumps({"commands": [
+            {"keystrokes": "invented-solo"}]})},
+        {"role": "user", "content": "New Terminal Output:\n\ninvented solo output"},
+    ]
+
+
+def _rescue_blob(instruction: str, with_content_check: bool) -> str:
+    """An invented registry entry on the wire: base64 of the gzipped task tar."""
+    import base64
+    import gzip
+    import io
+    import tarfile
+
+    tests = {"tests/test.sh": b"cmp /output/actual.txt tests/expected_output.txt\n",
+             "tests/expected_output.txt": b"invented golden\n"} if with_content_check else {}
+    files = {
+        "instruction.md": instruction.encode("utf-8"),
+        "task.toml": b"[environment]\ndocker_image = \"invented-image:1\"\n\n[verifier]\ntimeout_sec = 30\n",
+        "environment/Dockerfile": b"FROM invented-base:1\n",
+        **tests,
+    }
+    buffer = io.BytesIO()
+    with tarfile.open(fileobj=buffer, mode="w") as tar:
+        for name, body in files.items():
+            info = tarfile.TarInfo(name=name)
+            info.size = len(body)
+            tar.addfile(info, io.BytesIO(body))
+    return base64.b64encode(gzip.compress(buffer.getvalue())).decode("ascii")
+
+
+def _rescue_workdir(tmp_path: Path, workdir: Path) -> dict:
+    """Three invented recordings ingested for real: one match, one mismatch, one missing."""
+    from kullback.builder import ingest
+
+    rows = [
+        ("invented-task-21__invented-a", "# invented twenty-one\nSolve invented.\n"),
+        ("invented-task-22__invented-b", "# invented twenty-two\nSolve invented.\n"),
+        ("invented-task-23__invented-c", "# invented twenty-three\nSolve invented.\n"),
+    ]
+    envelope = {"rows": [
+        {"row_idx": index,
+         "row": {"conversations": _rescue_turns(instruction), "trial_name": trial,
+                 "original_source": "invented-source"},
+         "truncated_cells": []}
+        for index, (trial, instruction) in enumerate(rows)]}
+    target = tmp_path / "invented.json"
+    target.write_text(json.dumps(envelope), encoding="utf-8")
+    summary = ingest.ingest_file(target, workdir)
+    assert summary["runs"] == 3
+    rows_path = tmp_path / "rows.json"
+    rows_path.write_text(json.dumps([
+        {"path": "invented-task-21",
+         "task_binary": _rescue_blob("# invented twenty-one\nSolve invented.\n", True)},
+        {"path": "invented-task-22",
+         "task_binary": _rescue_blob("# invented twenty-two and something else entirely\n", False)},
+    ]), encoding="utf-8")
+    return {"summary": summary, "rows_path": rows_path}
+
+
+def _task_of(workdir: Path, trace_hash: str) -> str:
+    sidecar = json.loads((workdir / "grader" / f"{trace_hash}.json").read_text(encoding="utf-8"))
+    return sidecar["fields"]["task_ref"]["id"]
+
+
+def test_rescue_attaches_matching_skips_mismatched_reports_missing(tmp_path, workdir):
+    built = _rescue_workdir(tmp_path, workdir)
+    result = invoke("rescue", "--workdir", str(workdir), "--registry", str(built["rows_path"]))
+    assert result.exit_code == 0, result.output
+    assert "looked up 3" in result.output
+    assert "attached 1" in result.output
+    assert "mismatched 1" in result.output
+    assert "missing 1" in result.output
+    by_task = {_task_of(workdir, trace_hash): trace_hash
+               for trace_hash in built["summary"]["trace_hashes"]}
+    attached = workdir / "task_defs" / f"{by_task['invented-task-21']}.json"
+    assert attached.is_file()
+    body = json.loads(attached.read_text(encoding="utf-8"))
+    assert body["matched"] is True
+    assert body["verifier_strength"] == "content"
+    assert body["task_id"] == "invented-task-21"
+    assert "content 1" in result.output
+    assert not (workdir / "task_defs" / f"{by_task['invented-task-22']}.json").exists()
+    assert not (workdir / "task_defs" / f"{by_task['invented-task-23']}.json").exists()
+
+
+def test_rescue_raw_hash_scopes_the_lookup(tmp_path, workdir):
+    built = _rescue_workdir(tmp_path, workdir)
+    raw_hash = built["summary"]["raw_hash"]
+    scoped = invoke("rescue", "--workdir", str(workdir), "--registry", str(built["rows_path"]),
+                    "--raw-hash", raw_hash)
+    assert scoped.exit_code == 0, scoped.output
+    assert "looked up 3" in scoped.output
+    other = invoke("rescue", "--workdir", str(workdir), "--registry", str(built["rows_path"]),
+                   "--raw-hash", "0" * 64, "--dry-run")
+    assert other.exit_code == 0, other.output
+    assert "looked up 0" in other.output
+
+
+def test_rescue_dry_run_writes_nothing(tmp_path, workdir):
+    built = _rescue_workdir(tmp_path, workdir)
+    result = invoke("rescue", "--workdir", str(workdir), "--registry", str(built["rows_path"]),
+                    "--dry-run")
+    assert result.exit_code == 0, result.output
+    assert "attached 1" in result.output
+    assert not (workdir / "task_defs").exists()
+
+
+def test_rescue_reaches_set_aside_recordings(tmp_path, workdir):
+    """Set-aside recordings keep their sidecar, so the lookup reads them like eligible ones."""
+    from kullback.builder import ingest
+
+    clean = {"conversations": _rescue_turns("# invented clean\nSolve invented.\n"),
+             "trial_name": "invented-task-31__invented-a", "original_source": "invented-source"}
+    damaged = {"conversations": [
+        {"role": "user",
+         "content": "Invented preamble.\n\nTask Description:\n# invented set aside\nSolve invented.\n"
+                    "\n\nCurrent terminal state:\n\ninvented-ready"},
+        {"role": "assistant", "content": "Invented prose with no commands in it."},
+        {"role": "user", "content": "New Terminal Output:\n\ninvented stray output"},
+    ], "trial_name": "invented-task-32__invented-b", "original_source": "invented-source"}
+    envelope = {"rows": [
+        {"row_idx": 0, "row": clean, "truncated_cells": []},
+        {"row_idx": 1, "row": dict(clean, trial_name="invented-task-33__invented-c"),
+         "truncated_cells": []},
+        {"row_idx": 2, "row": dict(clean, trial_name="invented-task-34__invented-d"),
+         "truncated_cells": []},
+        {"row_idx": 3, "row": damaged, "truncated_cells": []}]}
+    target = tmp_path / "invented.json"
+    target.write_text(json.dumps(envelope), encoding="utf-8")
+    summary = ingest.ingest_file(target, workdir)
+    assert summary["runs"] == 3
+    assert len(list((workdir / "evidence_traces").glob("*.json"))) == 1
+    rows_path = tmp_path / "rows.json"
+    rows_path.write_text(json.dumps([
+        {"path": "invented-task-32",
+         "task_binary": _rescue_blob("# invented set aside\nSolve invented.\n", True)},
+    ]), encoding="utf-8")
+    result = invoke("rescue", "--workdir", str(workdir), "--registry", str(rows_path))
+    assert result.exit_code == 0, result.output
+    assert "looked up 4" in result.output
+    assert "attached 1" in result.output
+    assert "missing 3" in result.output
+    (sole,) = list((workdir / "task_defs").glob("*.json"))
+    assert json.loads(sole.read_text(encoding="utf-8"))["task_id"] == "invented-task-32"
+# --- consistency (D258 laws over a built Environment) -------------------------
+
+def seed_built_env(workdir: Path) -> Path:
+    """The invented built Environment the law tests drive, written into the workdir."""
+    from tests.episode.invented import write_env
+
+    return write_env(workdir)
+
+
+def test_consistency_prints_one_line_per_task_and_the_mean(workdir):
+    seed_built_env(workdir)
+    result = invoke("consistency", "--workdir", str(workdir), "--sequences", "4",
+                    "--max-length", "2", "--seed", "7")
+    assert result.exit_code == 0, result.output
+    lines = result.output.splitlines()
+    assert lines[0].startswith("widget_task: checked ")
+    assert "broken 0" in lines[0] and "consistency 1.0000" in lines[0]
+    assert lines[-1] == "mean consistency 1.0000 over 1 Tasks, 0 with violations, 0 skipped"
+
+
+def test_consistency_checks_one_named_task_and_refuses_an_unknown_one(workdir):
+    seed_built_env(workdir)
+    assert invoke("consistency", "--workdir", str(workdir), "--task", "widget_task",
+                  "--sequences", "2").exit_code == 0
+    refused = invoke("consistency", "--workdir", str(workdir), "--task", "nope")
+    assert refused.exit_code != 0 and "no Task named nope" in refused.output
+
+
+def test_consistency_writes_nothing_without_out(workdir):
+    seed_built_env(workdir)
+    before = {path for path in workdir.rglob("*")}
+    result = invoke("consistency", "--workdir", str(workdir), "--sequences", "2",
+                    "--max-length", "2")
+    assert result.exit_code == 0, result.output
+    assert {path for path in workdir.rglob("*")} == before
+
+
+def test_consistency_out_writes_the_same_numbers_as_json(workdir, tmp_path):
+    seed_built_env(workdir)
+    out = tmp_path / "consistency.json"
+    result = invoke("consistency", "--workdir", str(workdir), "--sequences", "2",
+                    "--max-length", "2", "--out", str(out))
+    assert result.exit_code == 0, result.output
+    body = json.loads(out.read_text(encoding="utf-8"))
+    assert body["tasks"]["widget_task"]["broken"] == 0
+    assert body["tasks"]["widget_task"]["checked"] > 0
+    assert body["tasks"]["widget_task"]["consistency"] == 1.0
+    assert body["mean_consistency"] == 1.0
+    assert body["tasks_with_violations"] == 0
+    assert body["laws_version"] == 1
+
+
+def test_consistency_refuses_a_missing_workdir(tmp_path):
+    result = invoke("consistency", "--workdir", str(tmp_path / "absent"))
+    assert result.exit_code != 0
+    assert result.output.strip()
+
+
+def test_consistency_requested_task_with_broken_overlay_exits_3(workdir, tmp_path):
+    seed_built_env(workdir)
+    (workdir / "overlays" / "widget_task.json").write_text("{", encoding="utf-8")
+    refused = invoke("consistency", "--workdir", str(workdir), "--task", "widget_task",
+                     "--sequences", "2")
+    assert refused.exit_code == 3
+    assert "widget_task" in refused.output and "skipped" in refused.output
+    out = tmp_path / "consistency.json"
+    refused = invoke("consistency", "--workdir", str(workdir), "--task", "widget_task",
+                     "--sequences", "2", "--out", str(out))
+    assert refused.exit_code == 3
+    assert "widget_task" in json.loads(out.read_text(encoding="utf-8"))["skipped"]
+
+
+def test_consistency_all_tasks_skipped_exits_3(workdir):
+    seed_built_env(workdir)
+    (workdir / "overlays" / "widget_task.json").write_text("{", encoding="utf-8")
+    refused = invoke("consistency", "--workdir", str(workdir), "--sequences", "2")
+    assert refused.exit_code == 3
+    assert "1 skipped" in refused.output
+
+
+def test_consistency_one_skip_among_several_still_succeeds(workdir, tmp_path):
+    seed_built_env(workdir)
+    (workdir / "tasks" / "t2.json").write_text(json.dumps({
+        "id": "t2", "run_ids": ["ghost"], "intent": "nothing recorded",
+    }), encoding="utf-8")
+    (workdir / "overlays" / "t2.json").write_text("{", encoding="utf-8")
+    out = tmp_path / "consistency.json"
+    result = invoke("consistency", "--workdir", str(workdir), "--sequences", "2",
+                    "--max-length", "2", "--out", str(out))
+    assert result.exit_code == 0, result.output
+    body = json.loads(out.read_text(encoding="utf-8"))
+    assert set(body["tasks"]) == {"widget_task"}
+    assert "t2" in body["skipped"]
+    assert "1 skipped" in result.output
+
+
+def test_consistency_names_unfit_tools_in_output_and_json(workdir, tmp_path):
+    seed_built_env(workdir)
+    (workdir / "tool_sigs.json").write_text(json.dumps([
+        {"name": "describe_widget", "kind": "read", "unclassified": False,
+         "args_fields": [{"name": "widget_id", "types": [], "optional": False}],
+         "args_schema": {"type": "object", "properties": {"widget_id": {}},
+                         "required": ["widget_id"]}},
+        {"name": "rename_widget", "kind": "write", "unclassified": False,
+         "args_fields": [{"name": "widget_id", "types": ["str"], "optional": False},
+                         {"name": "label", "types": ["str"], "optional": False}],
+         "args_schema": {"type": "object",
+                         "properties": {"widget_id": {"type": ["str"]},
+                                        "label": {"type": ["str"]}},
+                         "required": ["widget_id", "label"]}},
+    ]), encoding="utf-8")
+    out = tmp_path / "consistency.json"
+    result = invoke("consistency", "--workdir", str(workdir), "--sequences", "2",
+                    "--max-length", "2", "--out", str(out))
+    assert result.exit_code == 0, result.output
+    assert "unfit tool describe_widget" in result.output
+    body = json.loads(out.read_text(encoding="utf-8"))
+    assert body["unfit"]["widget_task"]["describe_widget"] == \
+        "required argument widget_id has no type"
+    assert "widget_task" in body["tasks"]
+
+
+def test_consistency_names_the_requestor_of_each_tool(workdir, tmp_path):
+    seed_built_env(workdir)
+    out = tmp_path / "consistency.json"
+    result = invoke("consistency", "--workdir", str(workdir), "--sequences", "2",
+                    "--max-length", "2", "--out", str(out))
+    assert result.exit_code == 0, result.output
+    assert "describe_widget as assistant" in result.output
+    assert "rename_widget as assistant" in result.output
+    body = json.loads(out.read_text(encoding="utf-8"))
+    assert body["tasks"]["widget_task"]["requestors"] == {
+        "describe_widget": "assistant", "rename_widget": "assistant"}
+
+
+@pytest.mark.parametrize("sequences", ["0", "-1"])
+def test_consistency_refuses_zero_sequences(workdir, sequences):
+    seed_built_env(workdir)
+    refused = invoke("consistency", "--workdir", str(workdir), "--sequences", sequences)
+    assert refused.exit_code == 2
+    assert "--sequences" in refused.output and "1 or more" in refused.output
+
+
+def test_consistency_skips_a_task_that_checked_nothing(workdir, tmp_path):
+    seed_built_env(workdir)
+    (workdir / "tool_sigs.json").write_text(json.dumps([
+        {"name": "describe_widget", "kind": "read", "unclassified": False,
+         "args_fields": [{"name": "widget_id", "types": [], "optional": False}],
+         "args_schema": {"type": "object", "properties": {"widget_id": {}},
+                         "required": ["widget_id"]}},
+        {"name": "rename_widget", "kind": "write", "unclassified": False,
+         "args_fields": [{"name": "widget_id", "types": [], "optional": False},
+                         {"name": "label", "types": [], "optional": False}],
+         "args_schema": {"type": "object",
+                         "properties": {"widget_id": {}, "label": {}},
+                         "required": ["widget_id", "label"]}},
+    ]), encoding="utf-8")
+    out = tmp_path / "consistency.json"
+    refused = invoke("consistency", "--workdir", str(workdir), "--sequences", "2",
+                     "--max-length", "2", "--out", str(out))
+    assert refused.exit_code == 3
+    assert "no law checked" in refused.output
+    body = json.loads(out.read_text(encoding="utf-8"))
+    assert body["tasks"] == {}
+    assert body["skipped"]["widget_task"] == "no law checked"
+    assert "unfit tool describe_widget" in refused.output
+    assert "unfit tool rename_widget" in refused.output
+    assert body["unfit"]["widget_task"]["describe_widget"] == \
+        "required argument widget_id has no type"
+    assert body["unfit"]["widget_task"]["rename_widget"] == \
+        "required argument label has no type; required argument widget_id has no type"
+
+
+def test_consistency_skips_a_task_whose_toolkit_fails_to_load(workdir, tmp_path):
+    from tests.episode.invented import TOOLS
+
+    seed_built_env(workdir)
+    (workdir / "tasks" / "t2.json").write_text(json.dumps({
+        "id": "t2", "run_ids": ["ghost"], "intent": "nothing recorded",
+    }), encoding="utf-8")
+    (workdir / "overlays" / "t2.json").write_text(json.dumps({
+        "overlay": {"task_id": "t2",
+                    "rows": [{"table": "widgets", "id": "w1", "version_hash": "h-poison"}],
+                    "steps": []},
+        "values": {"h-poison": {"widget_id": "w1", "label": "poison"}},
+    }), encoding="utf-8")
+    tools_path = workdir / "env" / "tools.py"
+    poisoned = tools_path.read_text(encoding="utf-8").replace(
+        "        super().__init__(db)\n        self.db = db",
+        "        super().__init__(db)\n        self.db = db\n"
+        "        if any(row.label == \"poison\" for row in self.db.widgets.values()):\n"
+        "            raise KeyError(\"poison\")",
+    )
+    assert poisoned != TOOLS
+    tools_path.write_text(poisoned, encoding="utf-8")
+    out = tmp_path / "consistency.json"
+    result = invoke("consistency", "--workdir", str(workdir), "--sequences", "2",
+                    "--max-length", "2", "--out", str(out))
+    assert result.exit_code == 0, result.output
+    assert "t2" in result.output and "skipped" in result.output
+    body = json.loads(out.read_text(encoding="utf-8"))
+    assert "widget_task" in body["tasks"]
+    assert "KeyError" in body["skipped"]["t2"]
