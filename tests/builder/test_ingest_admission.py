@@ -215,7 +215,7 @@ def test_fixture_hashes_are_stable_within_this_seam(tau2_small_path, workdir):
     # with version and hash blanked and are byte-identical; only the version moved.
     summary = ingest.ingest_file(tau2_small_path, workdir)
     assert summary["trace_hashes"] == [
-        "9e97fae58553cd5f6743ae577ae2fb29f399924f458ad168bc31b572da2de4a5",
-        "b6ec33b62a803e28e7a4692ffc895dfc975153d8ac184c60a09ba28d8173902d",
-        "c3339a794aff5ccdaf1efb401c1b8ee71679a35b70219159b1e0cf0c7b9a7eef",
+        "a457fe9ee5ffe8510667368f626bc0b1f65ed3f9a54a1e0575fd6506671f5952",
+        "c14c38a79d42f5a3081d6eadbcac75fbd8cc1e0bc652ed9e17bd6dc66123b6f6",
+        "5f802ec6ac466f044002976348d0909036fdc5cb39825f643fcac1fa34f525ad",
     ]

@@ -908,3 +908,22 @@ def test_failed_gate_publishes_nothing_rescued_or_not(workdir, tmp_path):
     assert not list((workdir / "traces").glob("*.json")) if (workdir / "traces").exists() else True
     if (workdir / "evidence_traces").exists():
         assert list((workdir / "evidence_traces").glob("*.json")) == []
+
+
+def test_stricter_reingest_withdraws_only_that_hash(workdir, tmp_path):
+    """A file that passed permissive and fails strict leaves no artifact naming its hash,
+    while a different file's traces in the same workdir stay put."""
+    first = ingest.ingest_file(rescue_path(tmp_path), workdir, intake_floor=0.0)
+    other_path = write_json(tmp_path / "other.json", {"rows": [{"row": rescue_sims()[0]}]})
+    other = ingest.ingest_file(other_path, workdir)
+    assert other["gate"]["pass"] is True
+    with pytest.raises(ingest.IntakeGateError):
+        ingest.ingest_file(rescue_path(tmp_path), workdir)
+    gone = first["raw_hash"]
+    for folder in ("traces", "evidence_traces", "grader"):
+        for path in (workdir / folder).glob("*.json"):
+            body = json.loads(path.read_text(encoding="utf-8"))
+            assert body.get("raw_hash") != gone, path
+    ruling = ingest.read_intake_ruling(workdir, gone)
+    assert ruling["withdrawn"] is True
+    assert (workdir / "traces" / (other["trace_hashes"][0] + ".json")).is_file()

@@ -921,6 +921,34 @@ def _gate_message(path: str | Path, gate: GateResult) -> str:
     return f"intake for {path} failed: {shown}{extra}"
 
 
+# Published artifact folders keyed by content hash; ownership is read from the file,
+# which names the raw hash it was derived from (trace, evidence trace and sidecar alike).
+_WITHDRAW_FOLDERS = ("traces", "evidence_traces", "grader")
+
+
+def _withdraw_raw_hash(raw_hash: str, workdir: str | Path) -> int:
+    """Remove every published artifact naming this raw hash, and only those.
+
+    A stricter re-ingest must not leave the traces an earlier permissive ingest published:
+    downstream loads every JSON under traces/ without consulting the ruling, so a failed
+    file would still feed the build. Files that do not parse are left alone, since their
+    ownership cannot be proven."""
+    removed = 0
+    for folder in _WITHDRAW_FOLDERS:
+        directory = Path(workdir) / folder
+        if not directory.is_dir():
+            continue
+        for path in sorted(directory.glob("*.json")):
+            try:
+                body = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                continue
+            if isinstance(body, dict) and body.get("raw_hash") == raw_hash:
+                path.unlink()
+                removed += 1
+    return removed
+
+
 def ingest_file(path: str | Path, workdir: str | Path, model: Optional[Model] = None,
                 intake_floor: float = MIN_TASK_ELIGIBLE_SHARE) -> dict:
     """Store one customer file, derive its Traces, write them, run the gate, print the counts.
@@ -930,8 +958,9 @@ def ingest_file(path: str | Path, workdir: str | Path, model: Optional[Model] = 
     consumes them yet. Rescued prefixes publish as evidence beside their parents, never as
     task-eligible traces. The floor is declared per ingest and rules the file; a floor outside
     [0, 1] is refused. When the gate fails the file raises IntakeGateError instead of returning,
-    so a build stops under the floor rather than building on what was set aside, and nothing is
-    published, rescued or not."""
+    so a build stops under the floor rather than building on what was set aside: nothing is
+    published, rescued or not, and the traces, evidence traces and sidecars an earlier ingest
+    published for the same bytes are withdrawn while the ruling records withdrawn True."""
     intake_floor = _check_floor(intake_floor)
     raw = store_raw(path, workdir)
     traces = derive_traces(raw.raw_hash, workdir, model=model, floor=intake_floor)
@@ -940,6 +969,9 @@ def ingest_file(path: str | Path, workdir: str | Path, model: Optional[Model] = 
         _update_aggregate_ruling(workdir, raw.raw_hash, ruling)
     gate = gate_ingest(traces, workdir, raw_hash=raw.raw_hash, floor=intake_floor)
     if not gate.passed:
+        _withdraw_raw_hash(raw.raw_hash, workdir)
+        ruling["withdrawn"] = True
+        _write_ruling(raw.raw_hash, ruling, workdir)
         raise IntakeGateError(_gate_message(path, gate), gate)
     # Eligible traces publish only on a passing gate: a failed intake raises above, so a later
     # build reusing this workdir never loads recordings from a file that failed admission.
