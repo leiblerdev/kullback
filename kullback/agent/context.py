@@ -43,7 +43,6 @@ __all__ = [
     "ContextEstimate",
     "ContextManager",
     "ContextStats",
-    "Refused",
     "entry_kind",
     "entry_text",
     "entry_tokens",
@@ -58,16 +57,6 @@ DEFAULT_LINE = 0.40
 KEEP_RECENT_BATCHES = 3
 
 _ENTRY_ID = re.compile(r"^e(\d+)$")
-
-
-class Refused(Exception):
-    """An operation the rules do not allow; `rule` names which one. The tool result the model
-    reads is this message with `is_error` set, so the refusal is something it can act on."""
-
-    def __init__(self, rule: str, message: str):
-        super().__init__(f"rule {rule}: {message}")
-        self.rule = rule
-        self.message = message
 
 
 # --- the estimate ---

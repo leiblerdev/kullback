@@ -14,7 +14,6 @@ from kullback.agent.context import (
     ContextEstimate,
     ContextManager,
     ContextStats,
-    Refused,
     estimate_context,
 )
 from kullback.agent.events import AgentEvent
@@ -48,7 +47,6 @@ __all__ = [
     "LoopState",
     "Message",
     "ModelProvider",
-    "Refused",
     "Skills",
     "ToolCall",
     "ToolRegistry",
