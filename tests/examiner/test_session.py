@@ -10,8 +10,9 @@ from kullback.agent.harness import AgentHarness, drive_tool
 from kullback.ai.provider import ModelReply, TestModel, ToolCallRequest
 from kullback.examiner import session as S
 from kullback.examiner.exam_files import ExamRoot
+from kullback.gates.probes import version_hash
 from kullback.runner import tool
-from kullback.runner.records import as_dict, read_json, write_json
+from kullback.runner.records import Verifier, as_dict, read_json, write_json
 from tests.runner.test_tool import _env_with_trace
 
 
@@ -57,7 +58,19 @@ def _ends(events, tool):
     return [e for e in events if isinstance(e, ToolExecutionEnd) and e.tool_name == tool]
 
 
-def test_model_propose_verifier_carries_rulings_in_details(tmp_path):
+def test_fresh_session_seeds_version_1_accepted_for_each_derived_verifier(tmp_path):
+    world = make_world(tmp_path)
+    materialize(world)
+    _scripted_events(world, [reply("done")])
+    derived = Verifier.model_validate(read_json(world.workdir / "verifiers" / "t1.json"))
+    written = read_json(world.workdir / "exam" / "history.json")
+    [row] = written["t1"]["versions"]
+    assert (row["verifier_version"], row["accepted"], row["by"]) == ("1", True, "derive")
+    assert row["reason"] == "the Verifier on disk before any repair"
+    assert row["content_hash"] == version_hash(derived)
+
+
+def test_model_propose_verifier_is_refused_while_the_suite_has_not_run(tmp_path):
     world = make_world(tmp_path)
     materialize(world)
     events = _scripted_events(world, [
@@ -66,9 +79,13 @@ def test_model_propose_verifier_carries_rulings_in_details(tmp_path):
         reply("done"),
     ])
     [proposed] = _ends(events, "propose_verifier")
-    assert proposed.is_error is False
-    rulings = proposed.result.details["rulings"]
-    assert rulings and all(record["accepted"] for record in rulings)
+    assert proposed.is_error is True
+    assert "trusted fail" in proposed.result.content
+    assert "rows" in proposed.result.content
+    assert not (world.workdir / "exam" / "verifiers" / "t1.json").exists()
+    written = read_json(world.workdir / "exam" / "history.json")
+    assert [v["accepted"] for v in written["t1"]["versions"]] == [True, False]
+    assert written["t1"]["versions"][-1]["rejected_by"] == ["trusted"]
 
 
 def test_model_write_of_verifiers_carries_rulings_runs_write_refused(tmp_path):

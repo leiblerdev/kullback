@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 from examiner.worlds import make_world
+from gates import verifier_fixtures as VF
 from kullback.examiner import exam_files as F
-from kullback.runner.records import as_dict, write_json
+from kullback.gates.probes import version_hash
+from kullback.runner.records import ProbePool, as_dict, read_json, write_json
 
 
 def test_expose_copies_runs_json_records_and_spoken(tmp_path):
@@ -63,3 +65,46 @@ def test_finding_carries_rows_path_change_and_source():
     assert body["change"] == "the body answers the recorded call"
     assert body["source"] == "derive"
     assert body["finding_id"] == finding.as_dict()["finding_id"]
+
+
+def _verifier(tmp_path):
+    (tmp_path / "v").mkdir(exist_ok=True)
+    return VF.derive(tmp_path / "v")
+
+
+def test_seeded_history_starts_a_task_at_version_1_accepted(tmp_path):
+    verifier = _verifier(tmp_path)
+    hist = F.seeded_history({}, "t1", verifier)
+    [row] = hist.versions
+    assert (row.verifier_version, row.accepted, row.by) == ("1", True, "derive")
+    assert row.reason == "the Verifier on disk before any repair"
+    assert row.content_hash == version_hash(verifier)
+    assert F.seeded_history({"t1": hist}, "t1", verifier).versions == hist.versions
+
+
+def test_history_round_trips_per_task_through_history_json(tmp_path):
+    verifier = _verifier(tmp_path)
+    root = F.ExamRoot(workdir=tmp_path)
+    history = {"t1": F.seeded_history({}, "t1", verifier)}
+    F.save_history(root, history)
+    assert F.history_path(root) == tmp_path / "exam" / "history.json"
+    loaded = F.load_history(root)
+    assert loaded["t1"].versions == history["t1"].versions
+    assert read_json(tmp_path / "exam" / "history.json")["t1"]["versions"][0]["accepted"] is True
+    assert F.load_history(F.ExamRoot(workdir=tmp_path / "missing")) == {}
+
+
+def test_evidence_of_carries_the_binding_reads_and_task_status(tmp_path):
+    world = make_world(tmp_path)
+    verifier = _verifier(tmp_path)
+    root = F.ExamRoot(workdir=world.workdir, verifiers={"t1": verifier},
+                      replays=world.inputs["replays"], rerolls=world.inputs["rerolls"],
+                      task_status={"t1": {"verifier_passed": True}},
+                      probes={"t1": [VF.reference_run()]},
+                      history={"t1": F.seeded_history({}, "t1", verifier)})
+    evidence = F.evidence_of(root)
+    assert {"replays", "rerolls", "history", "task_runs", "verifiers", "probes", "sigs",
+            "rules"} <= set(evidence)
+    assert evidence["task_status"] == {"t1": {"verifier_passed": True}}
+    assert evidence["task_runs"]["t1"], "the loosening Runs load off the replay rows"
+    assert isinstance(evidence["probes"]["t1"], ProbePool)
