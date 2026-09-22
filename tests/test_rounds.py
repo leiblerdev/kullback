@@ -98,7 +98,7 @@ TARGET = "environment"
 # differ on 36 lines, all of them a re-rolled Run id carrying one of two eight-hex stage
 # key tags; with those tags normalized the two files are byte identical. Same three
 # Tasks, same verdicts, same reasons.
-TASK_STATUS_SHA256_BEFORE_THE_PHASE = "0f1576602e48c11b3bb20b3e5be824c0f5920f7309b84ba2827f7c2aed00c356"
+TASK_STATUS_SHA256_BEFORE_THE_PHASE = "eb7cc4cc7847a0c8953c5a24270fcdebadc0136bd508a710cef96de2d6d4f317"
 
 
 def _fixture(request) -> Path:

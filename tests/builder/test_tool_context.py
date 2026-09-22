@@ -902,3 +902,22 @@ def test_a_reseeded_context_matches_a_fresh_one_after_a_row_is_deleted():
     fresh.ctx.feed_call({"now": None, "new_ids": {"loans": ["L100"]}})
     assert used.ctx.new_id("loans") == fresh.ctx.new_id("loans") == "L100"
     assert (used.ctx.now(), used.ctx.random(), used.ctx.usage()) == (fresh.ctx.now(), fresh.ctx.random(), fresh.ctx.usage())
+
+
+def test_created_row_with_nested_list_and_dict_feeds_created_time_with_one_group():
+    call = _call("c1", {"loan_id": "L101", "opened": "2024-05-06",
+                        "items": [], "meta": {"a": 1}})
+    feed = ce.recorded_call_context(call, LOANS_SCHEMA)
+    assert feed["now"] == "2024-05-06"
+    assert feed.get("now_evidence") == "created_row"
+    assert feed["now_ids"] == [{"key": "loan_id", "value": "L101", "tables": ["loans"]}]
+
+
+def test_created_row_with_nested_list_and_dict_feeds_end_to_end_through_recorded_call_contexts():
+    call = _call("c1", {"loan_id": "L101", "opened": "2024-05-06",
+                        "items": [], "meta": {"a": 1}})
+    feeds = ce.recorded_call_contexts([call], LOANS_SCHEMA)
+    feed = feeds[ce.context_feed_key(call)]
+    assert feed["now"] == "2024-05-06"
+    assert feed.get("now_evidence") == "created_row"
+    assert feed["now_ids"] == [{"key": "loan_id", "value": "L101", "tables": ["loans"]}]

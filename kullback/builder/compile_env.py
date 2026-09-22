@@ -4021,7 +4021,7 @@ def _context_stamp_ids(rows: list, stamp: str, schema: EntitySchema, own_pairs: 
         if stamp not in {value for value in row.values() if isinstance(value, str)}:
             continue
         for key, value in row.items():
-            if (key, value) in seen:
+            if not isinstance(value, str) or (key, value) in seen:
                 continue
             tables = _context_id_tables(key, value, schema, own_pairs, own_blocked,
                                         prior_pairs, prior_blocked)
