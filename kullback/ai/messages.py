@@ -50,6 +50,10 @@ class AssistantMessage(BaseModel):
 
     role: Literal["assistant"] = "assistant"
     content: Optional[str] = None
+    # What the model reasoned before it answered, when the provider streamed a thinking channel.
+    # It is kept for a reader and never sent back: replaying reasoning we did not produce would
+    # be fabrication, so `to_wire` leaves it out.
+    thinking: Optional[str] = None
     tool_calls: list[ToolCall] = Field(default_factory=list)
     usage: Usage = Field(default_factory=Usage)
     stop_reason: StopReason = "stop"

@@ -1,26 +1,81 @@
-"""One interface for model calls, with the three offline models tests are allowed to use."""
+"""The provider contract every model answers through, and the model handle the Harness holds.
+
+Two things live here, mirroring tau_ai/provider.py plus what Kullback still needs beside it.
+
+`ModelProvider` is the contract: `stream_response` yields the canonical events of `events.py` as
+the provider produces them. The streaming adapters (`openai_compatible.py`, `anthropic.py`) and the
+replay seam (`replay.py`) implement it, and the agent core sees one interface for live and replayed
+models.
+
+`Model`, `ModelReply` and the adapters under them are the older synchronous handle: one blocking
+`query` that returns a whole reply. It is temporary. Every caller listed in the overhaul brief
+(builder, examiner, user, runner) still holds a `Model`, so the handle stays until they take a
+`ModelProvider` instead; `replay.ReplayProvider` is how a handle is used behind the new contract in
+the meantime.
+
+The three offline models tests are allowed to use (TestModel, RecordedModel, MemoModel) are handles
+and live here with the live adapters, because `ADAPTERS`, `model_for` and the live-call switch are
+read off this module by name from elsewhere in the Harness.
+"""
 
 from __future__ import annotations
 
 import copy
 import hashlib
 import json
-import math
 import os
 import random
 import re
 import threading
 import time
 import uuid
-from email.utils import parsedate_to_datetime
 from pathlib import Path
-from typing import Any, Iterable, NamedTuple, Optional
+from typing import Any, AsyncIterator, Iterable, Optional, Protocol, Sequence, runtime_checkable
 from urllib.parse import urlparse
 
 import httpx
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from kullback.ai.usage import Usage
+# ruff: noqa: F401 - the imports below that this module does not itself use are the re-exports
+# named in the note under them: the rest of the Harness spells them kullback.ai.provider.X.
+from kullback.ai.events import StreamEvent
+from kullback.ai.http import (
+    CONNECT_TIMEOUT_S,
+    DEFAULT_READ_TIMEOUT_S,
+    MODEL_TIMEOUT_ENV_VAR,
+    REQUEST_ID_HEADERS,
+    Posted,
+    body_hash,
+    json_body,
+    model_read_timeout_s,
+    request_id_of,
+    request_timeout,
+    timeout_note,
+)
+from kullback.ai.http_errors import (
+    CONTEXT_OVERFLOW_MARKERS,
+    ContextOverflowError,
+    ProviderError,
+    RetryExhausted,
+    error_text,
+    is_context_overflow,
+)
+from kullback.ai.messages import Message
+from kullback.ai.retry import (
+    RetryPolicy,
+    backoff_delay,
+    retry_after_seconds,
+    retryable_status,
+)
+from kullback.ai.tool_call_ids import ID_ALLOWED, ID_DIGEST_LEN, clean_tool_call_id
+from kullback.ai.usage import Usage, reasoning_of, reasoning_share
+
+# The names below were defined here before the modules above were carved out of this one. They
+# stay importable from `kullback.ai.provider` because the rest of the Harness spells them that way.
+_error_text = error_text
+_retryable_status = retryable_status
+_reasoning_share = reasoning_share
+_reasoning_of = reasoning_of
 
 # Tests never call a real model. Only a real adapter checks this flag; TestModel, RecordedModel
 # and MemoModel ignore it: the first two never leave the machine and the third only forwards to
@@ -134,6 +189,37 @@ TOOL_CHOICES = ("auto", "required", "none")
 
 # Anthropic spells the same three answers its own way on the Messages API.
 ANTHROPIC_TOOL_CHOICE = {"auto": {"type": "auto"}, "required": {"type": "any"}, "none": {"type": "none"}}
+
+
+@runtime_checkable
+class CancellationToken(Protocol):
+    """Anything that can say the Run behind a stream was cancelled."""
+
+    def is_cancelled(self) -> bool:
+        ...
+
+
+@runtime_checkable
+class ModelProvider(Protocol):
+    """The contract every model answers through: one response, streamed as canonical events.
+
+    `stream_response` returns the iterator without awaiting anything, so the caller decides when
+    the first byte is asked for. It never raises for a provider failure: a refusal, a dead host or
+    an exhausted retry arrives as a StreamError event, because the loop has to record it in the
+    transcript rather than unwind through it.
+    """
+
+    def stream_response(
+        self,
+        *,
+        model: str,
+        system: str,
+        messages: Sequence[Message],
+        tools: Sequence[dict],
+        signal: Optional[CancellationToken] = None,
+        session_id: Optional[str] = None,
+    ) -> AsyncIterator[StreamEvent]:
+        ...
 
 
 class Model:
@@ -401,45 +487,6 @@ def _reply_from_dict(data: dict) -> ModelReply:
     )
 
 
-def _reasoning_of(usage: Any) -> int:
-    """The reasoning count a provider usage payload reports, or zero when it carries none.
-
-    One reader for every shape the adapters parse: a flat reasoning key on a stored reply,
-    the chat shape's completion_tokens_details.reasoning_tokens, and the Responses shape's
-    output_tokens_details.reasoning_tokens. This reads the reported number only; whether it is
-    a share of output is the boundary's call in `_reasoning_share` below. Zero here means the
-    provider did not report it, not that no reasoning happened.
-    """
-    if not isinstance(usage, dict):
-        return 0
-    direct = usage.get("reasoning", 0) or 0
-    chat = usage.get("completion_tokens_details") or {}
-    answered = usage.get("output_tokens_details") or {}
-    if not isinstance(chat, dict):
-        chat = {}
-    if not isinstance(answered, dict):
-        answered = {}
-    return int(direct or chat.get("reasoning_tokens", 0) or answered.get("reasoning_tokens", 0) or 0)
-
-
-def _reasoning_share(usage: Any, output: int) -> int:
-    """The reported count as a share of output, or zero when it is not one.
-
-    The boundary is tolerant where the record is strict: some routed providers report reasoning
-    outside the completion total, and a reply the build already paid for must not die over a
-    telemetry field. A count that is negative or above the reported output is recorded as zero,
-    which means "not reported as a part of output", and is never rewritten into a different
-    nonzero number. The oddity stays visible on the reply's `raw` payload beside it, which is
-    the one way this module surfaces something non-fatal (there is no log line and no warning
-    here). `Usage` itself still refuses such a record, so a stored file carrying one fails at
-    load instead of loading wrong.
-    """
-    reported = _reasoning_of(usage)
-    if reported < 0 or reported > output:
-        return 0
-    return reported
-
-
 def _arguments_of(call: dict) -> dict:
     args = call.get("arguments")
     if args is None:
@@ -477,111 +524,19 @@ def _read_assistant_replies(path: Path) -> list[ModelReply]:
 # require_live_calls_enabled() first.
 
 
-class ProviderError(RuntimeError):
-    """A provider said no. Carries the status, the body and how many attempts were made.
-
-    `attempts` is 1 for an error raised without a retry loop behind it (a missing key, a body the
-    provider refused once); the retry loop sets the real count on the error it raises, which is what
-    a Run's error event reports (D159).
-    """
-
-    def __init__(self, message: str, status: Optional[int] = None, body: Any = None,
-                 attempts: int = 1):
-        self.status = status
-        self.body = body
-        self.attempts = attempts
-        super().__init__(message)
-
-
-class ContextOverflowError(ProviderError):
-    """The prompt did not fit. Never retried: the same prompt will not fit next time either."""
-
-
-class RetryExhausted(ProviderError):
-    """Every attempt failed on a retryable error."""
-
-
-class RetryPolicy(BaseModel):
-    """Five attempts, exponential backoff with jitter, nothing clever."""
-
-    attempts: int = 5
-    base_delay_s: float = 0.5
-    max_delay_s: float = 30.0
-    jitter: float = 0.25
-    # A provider may ask for a wait longer than the build is willing to sit still for; past
-    # this the call gives up rather than blocking the build for hours.
-    max_retry_after_s: float = 120.0
-
-
-CONTEXT_OVERFLOW_MARKERS = (
-    "context length",
-    "context window",
-    "context_length",
-    "prompt is too long",
-    "too long for",
-    "maximum context",
-    "reduce the length",
-)
-ID_ALLOWED = re.compile(r"[^a-zA-Z0-9_-]")
 ENV_VAR = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}")
 CACHE_CONTROL = {"type": "ephemeral"}
 TEXT_BLOCK_TYPES = ("text", "reasoning", "thinking")
-ID_DIGEST_LEN = 8
 # The keys of a request body that are the prompt itself rather than the sampling: each adapter
 # builds a different body, so the sampling is what is left after these come out, never a list of
 # the fields worth keeping (a field nobody enumerated is a field a Run would not record).
 PROMPT_BODY_KEYS = ("messages", "tools", "input", "system", "instructions")
-# The provider's own id for one exchange, under whichever header that provider sends it.
-REQUEST_ID_HEADERS = ("x-request-id", "request-id", "cf-ray")
 # The Responses API returns logprobs only for what the include list asks for.
 RESPONSES_LOGPROBS_INCLUDE = "message.output_text.logprobs"
 # An empty user turn cannot be dropped (that would end the request on an assistant message,
 # which the current Anthropic API rejects: prefill is gone on 4.6 and later), and it cannot be
 # sent empty either, so it goes as one placeholder block.
 EMPTY_USER_PLACEHOLDER = "(no content)"
-# The read budget for one model call. A code-generating answer at the size the compile_tools
-# stage asks for can take minutes, while a dead host should still fail fast, so the default is
-# generous and only establishing contact stays short. One variable overrides it per process.
-MODEL_TIMEOUT_ENV_VAR = "KULLBACK_MODEL_TIMEOUT_S"
-DEFAULT_READ_TIMEOUT_S = 300.0
-CONNECT_TIMEOUT_S = 10.0
-
-
-def model_read_timeout_s(env: dict[str, str], explicit: Optional[float] = None) -> float:
-    """The read timeout in seconds: an explicit argument wins, then the environment, then 300 s.
-
-    A set variable that is not a positive finite number is an error naming the variable,
-    never a silent default. An empty value counts as set, so it raises too.
-    """
-    if explicit is not None:
-        return float(explicit)
-    raw = env.get(MODEL_TIMEOUT_ENV_VAR)
-    if raw is None:
-        return DEFAULT_READ_TIMEOUT_S
-    try:
-        value = float(raw)
-    except (TypeError, ValueError):
-        raise ValueError(
-            f"{MODEL_TIMEOUT_ENV_VAR} must be a number of seconds, got {raw!r}"
-        ) from None
-    if not (value > 0 and math.isfinite(value)):
-        raise ValueError(
-            f"{MODEL_TIMEOUT_ENV_VAR} must be a positive number of seconds, got {raw!r}"
-        )
-    return value
-
-
-def timeout_note(exc: Exception, connect_s: float, read_s: float) -> str:
-    """Name the budget an expired timeout spent: read for a slow answer, connect or pool for a dead host."""
-    if isinstance(exc, (httpx.ReadTimeout, httpx.WriteTimeout)):
-        return f" (read timeout {read_s:g}s)"
-    if isinstance(exc, httpx.PoolTimeout):
-        return f" (pool timeout {connect_s:g}s)"
-    if isinstance(exc, httpx.ConnectTimeout):
-        return f" (connect timeout {connect_s:g}s)"
-    return ""
-
-
 def split_model_id(model_id: str) -> tuple[str, str]:
     """'anthropic/claude-opus-5' into the provider and the wire id sent on the wire."""
     provider, _, wire_id = model_id.partition("/")
@@ -615,22 +570,6 @@ def strip_surrogates_deep(value: Any) -> Any:
     if isinstance(value, list):
         return [strip_surrogates_deep(v) for v in value]
     return value
-
-
-def clean_tool_call_id(call_id: Any) -> str:
-    """Tool call ids are restricted to [a-zA-Z0-9_-]; other characters become underscores.
-
-    Replacing characters can collide: 'a:b' and 'a_b' both cleaned to 'a_b', and a tool_result
-    could then be paired with the wrong tool_use in the same message. When anything was
-    replaced, a short digest of the original id is appended so distinct ids stay distinct.
-    """
-    original = str(call_id or "")
-    cleaned = ID_ALLOWED.sub("_", original)
-    if not cleaned:
-        return "id"
-    if cleaned == original:
-        return cleaned
-    return f"{cleaned}_{hashlib.sha256(original.encode('utf-8')).hexdigest()[:ID_DIGEST_LEN]}"
 
 
 def _is_empty_block(block: Any) -> bool:
@@ -699,91 +638,6 @@ def cache_last_two(messages: list[dict]) -> list[dict]:
     return out
 
 
-def json_body(request: Any) -> dict:
-    """The JSON a request carries; used by the adapters' tests and by error reporting."""
-    try:
-        return json.loads(request.content or b"{}")
-    except (json.JSONDecodeError, TypeError):
-        return {}
-
-
-def body_hash(part: Any) -> str:
-    """sha256 of one part of a request body, so a renderer can check it rebuilt the same prompt.
-
-    `records.content_hash` does the same job for the Harness' records, and this is not it: `ai`
-    imports nothing of ours (D121), so the hash the adapters take is written here. It is a
-    fingerprint of what was sent, compared with itself, never with a record's hash.
-    """
-    return hashlib.sha256(json.dumps(part, sort_keys=True, default=str).encode("utf-8")).hexdigest()
-
-
-def request_id_of(headers: Any) -> Optional[str]:
-    """The provider's id for one exchange: the first of the known headers that is there."""
-    get = getattr(headers, "get", None)
-    if get is None:
-        return None
-    for key in REQUEST_ID_HEADERS:
-        value = get(key)
-        if value:
-            return str(value)
-    return None
-
-
-class Posted(NamedTuple):
-    """One finished post: the JSON it answered with, and how it answered.
-
-    `post` returns the JSON alone, as it always did; `query` takes this so the Exchange it records
-    can say how many attempts the retry loop made and which request the provider logged.
-    """
-
-    data: dict
-    status: Optional[int] = None
-    attempts: int = 0
-    headers: Any = None
-
-
-def retry_after_seconds(headers: Any, now: Optional[float] = None) -> Optional[float]:
-    """Retry-After as seconds, whether the provider sent a count or an HTTP date."""
-    raw = None
-    for key in ("Retry-After", "retry-after"):
-        if key in headers:
-            raw = headers[key]
-            break
-    if raw is None:
-        return None
-    try:
-        return max(0.0, float(raw))
-    except (TypeError, ValueError):
-        pass
-    stamp = parsedate_to_datetime(str(raw))
-    if stamp is None:
-        return None
-    reference = time.time() if now is None else now
-    return max(0.0, stamp.timestamp() - reference)
-
-
-def backoff_delay(attempt: int, policy: RetryPolicy, rng: random.Random) -> float:
-    """Exponential backoff with jitter, capped."""
-    delay = min(policy.max_delay_s, policy.base_delay_s * (2 ** (attempt - 1)))
-    return delay + rng.random() * policy.jitter * delay
-
-
-def _retryable_status(status: int) -> bool:
-    """Only rate limits and server faults. A 400 is our bug and retrying it wastes money."""
-    return status == 429 or status >= 500
-
-
-def _error_text(body: Any) -> str:
-    if isinstance(body, dict):
-        error = body.get("error")
-        if isinstance(error, dict):
-            return str(error.get("message") or error)
-        if error:
-            return str(error)
-        return str(body.get("message") or body)
-    return str(body)
-
-
 class HttpModel(Model):
     """Shared plumbing for the HTTP adapters: ids, keys, the retry loop, one httpx client."""
 
@@ -816,12 +670,7 @@ class HttpModel(Model):
         # then 300 s. Reads and writes share it; only establishing contact stays short, so
         # the post below carries a split timeout object rather than one number.
         self.timeout = model_read_timeout_s(self.env, timeout)
-        self.request_timeout = httpx.Timeout(
-            connect=CONNECT_TIMEOUT_S,
-            read=self.timeout,
-            write=self.timeout,
-            pool=CONNECT_TIMEOUT_S,
-        )
+        self.request_timeout = request_timeout(self.timeout)
         self.sleep = sleep or time.sleep
         self.rng = rng or random.Random()
         self._client = client
@@ -923,7 +772,7 @@ class HttpModel(Model):
                     continue
             error = self.error_for(response)
             error.attempts = attempt
-            if isinstance(error, ContextOverflowError) or not _retryable_status(response.status_code):
+            if isinstance(error, ContextOverflowError) or not retryable_status(response.status_code):
                 raise error
             if last_attempt:
                 raise RetryExhausted(
@@ -949,9 +798,8 @@ class HttpModel(Model):
             body = response.json()
         except ValueError:
             body = response.text
-        message = _error_text(body).lower()
-        text = f"{self.name}: HTTP {response.status_code}: {_error_text(body)}"
-        if any(marker in message for marker in CONTEXT_OVERFLOW_MARKERS):
+        text = f"{self.name}: HTTP {response.status_code}: {error_text(body)}"
+        if is_context_overflow(body):
             return ContextOverflowError(text, status=response.status_code, body=body)
         return ProviderError(text, status=response.status_code, body=body)
 
