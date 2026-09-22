@@ -17,7 +17,7 @@ def test_every_tool_has_one_example_call():
     tools = prompt_mod.TOOLS
     for name in ("read", "write", "edit", "bash", "grep", "find", "ls", "web_search",
                  "ingest", "derive_world", "grow", "replay", "run", "status", "examine"):
-        assert f"{name}:" in tools or f'"{name}"' in tools or f"{name} " in tools
+        assert f"{name}:" in tools
 
 
 def test_sections_name_no_corpus():

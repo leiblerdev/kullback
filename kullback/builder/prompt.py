@@ -26,6 +26,7 @@ TOOLS = (
     'edit: {"path": "tools/lookup.py", "old": "return self.db.rows.get(key)", '
     '"new": "row = self.db.rows.get(key)\\n    return row"}\n'
     'bash: {"command": "grep -rn label tools/ | head"}\n'
+    'grep: {"pattern": "label"}\n'
     'find: {"glob": "tools/*.py"}\n'
     'ls: {"path": "tools"}\n'
     'web_search: {"query": "how the client words a label"}\n'
