@@ -17,7 +17,7 @@ none of them is written into this module.
 1. The full diff (`differing_leaves`): every leaf a recorded answer and the body's answer part on,
    with the path and both sides, capped, with the count of leaves left out.
 2. The relation step (`relations_over`, `refusal_predicates`): a small catalogue of relations
-   tested against the (arguments, recorded, ours) triples of one tool's failing calls. A relation
+   tested against the (arguments, world, recorded, ours) triples of one tool's failing calls. A relation
    that holds on every failing call and no passing call is stated with its counts; one that holds
    on most is stated with its exceptions named.
 3. The witnessed-branch read (`constructs_of`, `unwitnessed`, `missing_refusal`): the lines each
@@ -82,7 +82,8 @@ GATES_BEFORE_FIDELITY = ("parses", "confined", MEMORISED_STAGE, "executes_on_s0"
                          "deterministic", "non_trivial", SENSITIVITY_STAGE)
 FIDELITY_STAGE = "replay_fidelity"
 
-RELATION_KINDS = ("broadcast", "shared_value", "refusal_predicate", "arithmetic", "order")
+RELATION_KINDS = ("broadcast", "shared_value", "refusal_predicate", "invented_refusal",
+                  "arithmetic", "order")
 # Which construct a line is named as when two of them start on it, most telling first: the branch
 # an evidence set never enters is the thing to remove, and the assignment inside it follows from it.
 CONSTRUCT_ORDER = ("branch not taken", "loop not taken", "branch", "loop", "raise", "assignment")
@@ -96,7 +97,9 @@ class Triple:
     """One recorded call as the relation step reads it: what it was given, what came back, what ours did.
 
     `theirs` and `ours` are the two answers as values; where a side raised instead, its value is
-    None and the class it raised is on `their_error` or `our_error`. A relation is asked of the
+    None and the class it raised is on `their_error` or `our_error`. `world` carries the world
+    columns witnessed at that call, from the trace's own earlier sightings or the starting state,
+    and is empty where the caller passes none. A relation is asked of the
     triples and never of a record, so a caller that has the three parts from anywhere can use it.
     """
 
@@ -107,6 +110,7 @@ class Triple:
     their_error: str = ""
     our_error: str = ""
     matched: bool = False
+    world: dict = field(default_factory=dict)
 
 
 # --- 1. the full diff -------------------------------------------------------------
@@ -379,7 +383,8 @@ def _arithmetic_signatures(triple: Triple, rules: Any = None) -> set[tuple[str, 
     return found
 
 
-_PER_CALL = (_broadcast_signatures, _shared_value_signatures, _order_signatures, _arithmetic_signatures)
+_PER_CALL_DETECTORS = (_broadcast_signatures, _shared_value_signatures, _order_signatures,
+                       _arithmetic_signatures)
 
 
 def _across_calls(failing: list[Triple], rules: Any = None) -> list[Relation]:
@@ -451,12 +456,49 @@ def _value_class(value: Any) -> str:
     return "a value"
 
 
+def _predicate_leaves(triple: Triple) -> dict[str, Any]:
+    """Every scalar the predicate step may name: the argument leaves beside the witnessed columns.
+
+    A guard that refuses a call reads the world as well as the arguments, so a refusal that turns
+    on a world column is stated over the column and the value the trace showed, not only over what
+    the call was given. An argument leaf keeps its name where the two meet.
+    """
+    leaves = _argument_leaves(triple.args)
+    for name in sorted(triple.world or {}):
+        leaves.setdefault(name, triple.world[name])
+    return leaves
+
+
+def _same_value(rows: list[dict], name: str) -> tuple[bool, Any]:
+    """Whether every row carries this leaf with one shared value, and the value."""
+    if not all(name in row for row in rows):
+        return False, None
+    values = {_shown(row[name]) for row in rows}
+    if len(values) != 1:
+        return False, None
+    return True, next(iter(values))
+
+
+def _value_predicate(name: str, refused: list[dict], accepted: list[dict]) -> Optional[Relation]:
+    """A leaf one value on every refused call that no accepted call ever carries, or None."""
+    same, value = _same_value(refused, name)
+    if not same:
+        return None
+    if any(_shown(row.get(name)) == value for row in accepted if name in row):
+        return None
+    return Relation("refusal_predicate", name,
+                    f"the recording refused every call whose {name} is {value}, and no call it "
+                    f"accepted carries that value",
+                    len(refused), len(refused))
+
+
 def refusal_predicates(triples: Iterable[Triple]) -> list[Relation]:
     """What the calls the recording refused share that the calls it accepted do not.
 
-    Two predicates, both over the argument leaves alone: an argument the refused calls all carry
-    and no accepted call does (or the reverse), and an argument whose class of value on every
-    refused call is one no accepted call ever passes. A tool the recording never refused, or never
+    Three predicates, over the argument leaves beside the witnessed world columns: a leaf the
+    refused calls all carry and no accepted call does (or the reverse), a leaf whose class of
+    value on every refused call is one no accepted call ever passes, and a leaf one value on
+    every refused call that no accepted call carries. A tool the recording never refused, or never
     accepted, has no predicate to state, and the step says nothing rather than guessing one.
     """
     triples = list(triples)
@@ -464,8 +506,8 @@ def refusal_predicates(triples: Iterable[Triple]) -> list[Relation]:
     accepted = [t for t in triples if not t.their_error]
     if not refused or not accepted:
         return []
-    refused_args = [_argument_leaves(t.args) for t in refused]
-    accepted_args = [_argument_leaves(t.args) for t in accepted]
+    refused_args = [_predicate_leaves(t) for t in refused]
+    accepted_args = [_predicate_leaves(t) for t in accepted]
     names = sorted({name for row in refused_args + accepted_args for name in row})
     out: list[Relation] = []
     for name in names:
@@ -482,6 +524,10 @@ def refusal_predicates(triples: Iterable[Triple]) -> list[Relation]:
                                 f"the recording accepted no call without {name}",
                                 len(refused), len(refused)))
             continue
+        found = _value_predicate(name, refused_args, accepted_args)
+        if found is not None:
+            out.append(found)
+            continue
         refused_classes = {_value_class(row.get(name)) for row in refused_args}
         accepted_classes = {_value_class(row.get(name)) for row in accepted_args}
         if len(refused_classes) == 1 and not (refused_classes & accepted_classes):
@@ -491,6 +537,42 @@ def refusal_predicates(triples: Iterable[Triple]) -> list[Relation]:
                                 f"call it accepted passes one",
                                 len(refused), len(refused)))
     return out
+
+
+def _recorded_outcome(triple: Triple) -> str:
+    """What the recording answered on a call the body refused, in one short phrase."""
+    if triple.theirs is None:
+        return "an answer"
+    return _shown(triple.theirs)
+
+
+def _invented_refusal_signatures(triple: Triple, rules: Any = None) -> set[tuple[str, str, str]]:
+    """The body refused or raised where the recording succeeded on the same call.
+
+    Each signature names the refusal text, the recorded outcome, and the world column the guard
+    read with the value that column held at that call, so the writer can widen or drop the guard.
+    Where the caller passed no witnessed columns the signature says so and names the call, so the
+    refusal is still stated rather than dropped.
+    """
+    if not triple.our_error or triple.their_error:
+        return set()
+    recorded = _recorded_outcome(triple)
+    world = triple.world or {}
+    if not world:
+        return {("invented_refusal", "call",
+                 f"the body raised {triple.our_error} where the recording answered {recorded}; "
+                 f"no witnessed world value was passed for this call, so check the guard against "
+                 f"the recorded answer")}
+    found: set[tuple[str, str, str]] = set()
+    for name in sorted(world):
+        value = _shown(world[name])
+        found.add(("invented_refusal", str(name),
+                   f"the body raised {triple.our_error} where the recording answered {recorded}; "
+                   f"{name} held {value} at that call, so widen or drop the guard that reads {name}"))
+    return found
+
+
+_PER_CALL = _PER_CALL_DETECTORS + (_invented_refusal_signatures,)
 
 
 def relations_over(failing: Iterable[Triple], passing: Iterable[Triple] = (),

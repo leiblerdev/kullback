@@ -366,3 +366,47 @@ def test_a_body_that_clears_the_gates_is_read_for_nothing(tmp_path):
     schema, sig = _depot_schema(), _depot_sig()
     build = ce.grade_body(sig, DEPOT_BODY, _depot_calls(), schema, DEPOT_DB, tmp_path)
     assert not build.assisted and build.diagnosis is None
+
+
+# --- an invented refusal: the body refused where the recording succeeded ---
+
+
+def _refused_triple(call_id, error="NotPending", world=None):
+    return lesson.Triple(call_id=call_id, args={"crate": "k1"},
+                         theirs={"note": "filed"}, ours=None,
+                         our_error=error, world=world or {})
+
+
+def test_a_body_refusal_where_the_recording_succeeded_is_an_invented_refusal():
+    found = lesson.relations_over([_refused_triple("c1"), _refused_triple("c2")])
+    invented = [r for r in found if r.kind == "invented_refusal"]
+    assert invented and invented[0].on_all
+    assert "NotPending" in invented[0].sentence()
+    assert "invented_refusal" in lesson.RELATION_KINDS
+
+
+def test_an_invented_refusal_names_the_world_column_and_the_value_it_held():
+    triples = [_refused_triple("c1", world={"standing": "quarantined"}),
+               _refused_triple("c2", world={"standing": "quarantined"})]
+    found = lesson.relations_over(triples)
+    invented = [r for r in found if r.kind == "invented_refusal"]
+    assert invented
+    assert any("standing" in r.sentence() and "quarantined" in r.sentence() for r in invented)
+    assert any("filed" in r.sentence() for r in invented)
+
+
+def test_a_refusal_predicate_may_name_a_world_column_beside_argument_leaves():
+    refused = [lesson.Triple(call_id=f"r{i}", args={"crate": "k1"}, theirs=None,
+                             ours={"price": 1}, their_error="NotPermitted",
+                             world={"standing": "quarantined"}) for i in range(3)]
+    accepted = [lesson.Triple(call_id=f"a{i}", args={"crate": "k1"}, theirs={"price": 1},
+                              ours={"price": 1}, matched=True,
+                              world={"standing": "cleared"}) for i in range(3)]
+    found = lesson.relations_over(refused, accepted)
+    predicates = [r for r in found if r.kind == "refusal_predicate"]
+    assert any(r.where == "standing" for r in predicates)
+
+
+def test_an_invented_refusal_leaves_the_missing_refusal_lesson_as_it_was():
+    triples = [_refused_triple("c1"), _refused_triple("c2")]
+    assert lesson.missing_refusal(triples) == ""
