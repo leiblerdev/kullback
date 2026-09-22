@@ -68,7 +68,14 @@ from kullback.ai.retry import (
     retryable_status,
 )
 from kullback.ai.tool_call_ids import ID_ALLOWED, ID_DIGEST_LEN, clean_tool_call_id
-from kullback.ai.usage import Usage, reasoning_of, reasoning_share
+from kullback.ai.usage import (
+    Usage,
+    reasoning_of,
+    reasoning_share,
+    usage_from_anthropic,
+    usage_from_openai_chat,
+    usage_from_openai_responses,
+)
 
 # The names below were defined here before the modules above were carved out of this one. They
 # stay importable from `kullback.ai.provider` because the rest of the Harness spells them that way.
@@ -872,20 +879,10 @@ class AnthropicModel(HttpModel):
                         arguments=block.get("input") or {},
                     )
                 )
-        usage = data.get("usage") or {}
-        output = int(usage.get("output_tokens", 0) or 0)
         return ModelReply(
             content="".join(text) or None,
             tool_calls=calls,
-            usage=Usage(
-                input=int(usage.get("input_tokens", 0) or 0),
-                output=output,
-                cache_read=int(usage.get("cache_read_input_tokens", 0) or 0),
-                cache_write=int(usage.get("cache_creation_input_tokens", 0) or 0),
-                # The Messages API reports no separate reasoning count today (thinking tokens
-                # sit inside output_tokens), so this reads zero until the payload carries one.
-                reasoning=_reasoning_share(usage, output),
-            ),
+            usage=usage_from_anthropic(data.get("usage")),
             model=data.get("model") or self.wire_id,
             stop_reason=data.get("stop_reason"),
             raw=data,
@@ -960,17 +957,6 @@ class OpenAIModel(HttpModel):
     def parse_reply(self, data: dict) -> ModelReply:
         choices = data.get("choices") or [{}]
         message = (choices[0] or {}).get("message") or {}
-        usage = data.get("usage") or {}
-        details = usage.get("prompt_tokens_details") or {}
-        # Usage.input means uncached input everywhere in the Harness, which is what Anthropic
-        # already reports. OpenAI's prompt_tokens includes the cached ones, so subtract here,
-        # at the adapter, and let budget.py bill each count at its own rate with no arithmetic.
-        cached = int(details.get("cached_tokens", 0) or 0)
-        # Endpoints that charge to write the cache report what they wrote, and this one does:
-        # a reply carrying cached_tokens 0 still carried cache_write_tokens 1339, billed at the
-        # model's own cache_write rate. Dropping it billed a build for less than it cost.
-        written = int(details.get("cache_write_tokens", 0) or 0)
-        output = int(usage.get("completion_tokens", 0) or 0)
         return ModelReply(
             content=message.get("content"),
             tool_calls=[
@@ -981,13 +967,7 @@ class OpenAIModel(HttpModel):
                 )
                 for call in (message.get("tool_calls") or [])
             ],
-            usage=Usage(
-                input=max(0, int(usage.get("prompt_tokens", 0) or 0) - cached),
-                output=output,
-                cache_read=cached,
-                cache_write=written,
-                reasoning=_reasoning_share(usage, output),
-            ),
+            usage=usage_from_openai_chat(data.get("usage")),
             model=data.get("model") or self.wire_id,
             stop_reason=(choices[0] or {}).get("finish_reason"),
             raw=data,
@@ -1158,23 +1138,10 @@ class OpenAIResponsesModel(HttpModel):
                         arguments=_arguments_of({"arguments": item.get("arguments")}),
                     )
                 )
-        usage = data.get("usage") or {}
-        details = usage.get("input_tokens_details") or {}
-        # Same convention as the chat adapter: Usage.input means uncached input everywhere,
-        # so the cached tokens come off here, at the adapter, and budget.py bills plain counts.
-        cached = int(details.get("cached_tokens", 0) or 0)
-        written = int(details.get("cache_write_tokens", 0) or 0)
-        output = int(usage.get("output_tokens", 0) or 0)
         return ModelReply(
             content="".join(texts) or None,
             tool_calls=calls,
-            usage=Usage(
-                input=max(0, int(usage.get("input_tokens", 0) or 0) - cached),
-                output=output,
-                cache_read=cached,
-                cache_write=written,
-                reasoning=_reasoning_share(usage, output),
-            ),
+            usage=usage_from_openai_responses(data.get("usage")),
             model=data.get("model") or self.wire_id,
             stop_reason=data.get("status"),
             raw=data,
@@ -1296,6 +1263,27 @@ def model_for(model_id: str, base_url: Optional[str] = None, **kwargs) -> Model:
     return RegistryModel(model_id, base_url=endpoint.base_url, key_env_var=endpoint.key_env_var, **kwargs)
 
 
+def provider_for(model_id: str, base_url: Optional[str] = None, **kwargs) -> Any:
+    """The streaming provider for a model id: the same three ways in as `model_for`.
+
+    The handle `model_for` built decides the shape, and the provider that reads that shape wraps it,
+    so a model reached through the registry streams exactly as one with an adapter of its own does.
+    The adapter modules are imported here rather than at the top because they import this one: the
+    request shaping they stream is the handle's, written once.
+    """
+    from kullback.ai.anthropic import AnthropicProvider
+    from kullback.ai.openai_compatible import OpenAICompatibleProvider
+
+    handle = model_for(model_id, base_url, **kwargs)
+    if isinstance(handle, AnthropicModel):
+        return AnthropicProvider(handle)
+    if isinstance(handle, HttpModel):
+        return OpenAICompatibleProvider(handle)
+    from kullback.ai.replay import ReplayProvider
+
+    return ReplayProvider(handle)
+
+
 def live_model(model_id: str, base_url: Optional[str] = None, **kwargs) -> Model:
     """One live adapter, after the environment has said live calls are allowed.
 
@@ -1308,6 +1296,15 @@ def live_model(model_id: str, base_url: Optional[str] = None, **kwargs) -> Model
         raise RuntimeError(
             f"live model requests are off; put {LIVE_ENV_VAR}=1 in .env or export it")
     return model_for(model_id, base_url, **kwargs)
+
+
+def live_provider(model_id: str, base_url: Optional[str] = None, **kwargs) -> Any:
+    """One live streaming provider, after the environment has said live calls are allowed."""
+    load_dotenv()
+    if not enable_live_calls_from_env():
+        raise RuntimeError(
+            f"live model requests are off; put {LIVE_ENV_VAR}=1 in .env or export it")
+    return provider_for(model_id, base_url, **kwargs)
 
 
 def _anthropic_tool(tool: dict) -> dict:

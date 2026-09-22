@@ -95,3 +95,62 @@ def reasoning_share(usage: Any, output: int) -> int:
     if reported < 0 or reported > output:
         return 0
     return reported
+
+
+def usage_from_openai_chat(usage: Any) -> Usage:
+    """One chat completions usage payload as ours.
+
+    `Usage.input` means uncached input everywhere in the Harness, which is what Anthropic already
+    reports. OpenAI's prompt_tokens includes the cached ones, so the subtraction happens here and
+    budget.py bills each count at its own rate with no arithmetic. Endpoints that charge to write
+    the cache report what they wrote, and dropping that billed a build for less than it cost.
+    """
+    usage = usage if isinstance(usage, dict) else {}
+    details = usage.get("prompt_tokens_details") or {}
+    if not isinstance(details, dict):
+        details = {}
+    cached = int(details.get("cached_tokens", 0) or 0)
+    written = int(details.get("cache_write_tokens", 0) or 0)
+    output = int(usage.get("completion_tokens", 0) or 0)
+    return Usage(
+        input=max(0, int(usage.get("prompt_tokens", 0) or 0) - cached),
+        output=output,
+        cache_read=cached,
+        cache_write=written,
+        reasoning=reasoning_share(usage, output),
+    )
+
+
+def usage_from_openai_responses(usage: Any) -> Usage:
+    """One Responses API usage payload as ours, on the same uncached-input convention."""
+    usage = usage if isinstance(usage, dict) else {}
+    details = usage.get("input_tokens_details") or {}
+    if not isinstance(details, dict):
+        details = {}
+    cached = int(details.get("cached_tokens", 0) or 0)
+    written = int(details.get("cache_write_tokens", 0) or 0)
+    output = int(usage.get("output_tokens", 0) or 0)
+    return Usage(
+        input=max(0, int(usage.get("input_tokens", 0) or 0) - cached),
+        output=output,
+        cache_read=cached,
+        cache_write=written,
+        reasoning=reasoning_share(usage, output),
+    )
+
+
+def usage_from_anthropic(usage: Any) -> Usage:
+    """One Messages API usage payload as ours. Its input count is already the uncached one.
+
+    The Messages API reports no separate reasoning count today (thinking tokens sit inside
+    output_tokens), so the reasoning field reads zero until the payload carries one.
+    """
+    usage = usage if isinstance(usage, dict) else {}
+    output = int(usage.get("output_tokens", 0) or 0)
+    return Usage(
+        input=int(usage.get("input_tokens", 0) or 0),
+        output=output,
+        cache_read=int(usage.get("cache_read_input_tokens", 0) or 0),
+        cache_write=int(usage.get("cache_creation_input_tokens", 0) or 0),
+        reasoning=reasoning_share(usage, output),
+    )
