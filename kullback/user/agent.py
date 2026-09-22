@@ -29,6 +29,7 @@ from kullback.agent.messages import AssistantMessage, UserMessage
 from kullback.ai.provider import Model
 from kullback.runner import budget
 from kullback.runner.records import Event
+from kullback.user import ends as ends_mod
 from kullback.user import guards as guards_mod
 from kullback.user import rules as rules_mod
 from kullback.user.context import TaskContext, volunteer_allowance
@@ -201,8 +202,8 @@ def _request_messages(transcript: Sequence) -> list:
     before every turn this user spoke and once at the end. Tool traffic is not speech."""
     out = []
     for message in transcript or ():
-        role = rules_mod._field_of(message, "role")
-        content = (rules_mod._field_of(message, "content") or "").strip()
+        role = ends_mod._field_of(message, "role")
+        content = (ends_mod._field_of(message, "content") or "").strip()
         if not content:
             continue
         if role == "assistant":
@@ -221,8 +222,8 @@ def _rules_of(fallback: Any):
 def _last_assistant(transcript: Sequence) -> str:
     question = ""
     for message in transcript or ():
-        if rules_mod._field_of(message, "role") == "assistant":
-            question = rules_mod._field_of(message, "content")
+        if ends_mod._field_of(message, "role") == "assistant":
+            question = ends_mod._field_of(message, "content")
     return question or ""
 
 

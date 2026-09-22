@@ -20,10 +20,12 @@ from kullback.runner.records import (
     UserRules,
 )
 from kullback.user import context as context_mod
+from kullback.user import ends as ends_mod
 from kullback.user import fidelity as fidelity_mod
 from kullback.user import guards as guards_mod
 from kullback.user import lesson as lesson_mod
 from kullback.user import rules as rules_mod
+from kullback.user import simulated as simulated_mod
 from kullback.user.agent import AgentUser
 from kullback.user.tools import Toolbox, user_tools
 from kullback.user.vocabulary import GENERIC_FIELDS, FieldSpec, Vocabulary
@@ -101,7 +103,7 @@ def test_the_user_package_imports_neither_of_the_two_agents_that_drive_it():
 def test_the_rule_driven_user_is_still_reachable_under_the_name_it_moved_from():
     """The re-export the move left behind: every D210 caller keeps working."""
     from kullback.builder import user_sim
-    assert user_sim.SimulatedUser is rules_mod.SimulatedUser
+    assert user_sim.SimulatedUser is simulated_mod.SimulatedUser
     assert user_sim.GOAL_SATISFIED == rules_mod.GOAL_SATISFIED
 
 
@@ -225,7 +227,7 @@ def test_a_candidate_that_twice_asks_what_nobody_told_this_user_runs_the_scenari
 # --- the agent user ---------------------------------------------------------------------------
 
 def agent_for(ctx, rules, replies, recorded=None, record=None) -> AgentUser:
-    fallback = rules_mod.SimulatedUser(rules, vocab=VOCAB)
+    fallback = simulated_mod.SimulatedUser(rules, vocab=VOCAB)
     return AgentUser(ctx, fallback, TestModel(replies, loop=True), vocab=VOCAB,
                      write_tools=["move_delivery"], goal_writes=["move_delivery"],
                      record_values=record, trace=recorded)
@@ -248,7 +250,7 @@ def test_the_rule_driven_user_answers_the_beat_a_guard_dropped(ctx, rules, recor
 
 
 def test_a_run_with_no_user_model_is_the_rule_driven_user_it_always_was(ctx, rules, recorded):
-    user = AgentUser(ctx, rules_mod.SimulatedUser(rules, vocab=VOCAB), None, vocab=VOCAB,
+    user = AgentUser(ctx, simulated_mod.SimulatedUser(rules, vocab=VOCAB), None, vocab=VOCAB,
                      trace=recorded)
     said = user.reply([{"role": "assistant", "content": "Could you provide your plot number?"}])
     assert "PLOT-4471" in said and user.counts["agent_user_turns"] == 0
@@ -281,7 +283,7 @@ def test_a_turn_that_reads_out_a_record_value_loses_the_record_reading(recorded,
 
 
 def test_the_rule_driven_user_is_scored_with_no_model_call(recorded, rules):
-    score = fidelity_mod.score_driver(rules_mod.SimulatedUser(rules, vocab=VOCAB), recorded,
+    score = fidelity_mod.score_driver(simulated_mod.SimulatedUser(rules, vocab=VOCAB), recorded,
                                       [f for f in rules.facts], task_id="task_1")
     assert 0.0 <= score.score <= 1.0 and score.turns > 0
 
@@ -405,10 +407,10 @@ DELIVERY_REFUSED = {**DELIVERY_MOVED,
 
 
 def test_the_agent_users_end_and_the_rules_read_writes_through_one_function():
-    assert guards_mod.writes_made is not rules_mod.writes_made
+    assert guards_mod.writes_made is not ends_mod.writes_made
     transcript = [{"role": "user", "content": "Hi."}, DELIVERY_REFUSED]
     assert guards_mod.writes_made(transcript, ["move_delivery"]) == \
-        rules_mod.writes_made(transcript, ["move_delivery"]) == set()
+        ends_mod.writes_made(transcript, ["move_delivery"]) == set()
 
 
 def test_the_end_protocol_does_not_satisfy_a_goal_on_a_write_the_world_refused():
@@ -701,7 +703,7 @@ def test_a_reordered_section_fails_and_names_the_turn(ctx, rules, recorded):
 
 def test_model_off_replies_are_the_rules_floor_byte_for_byte(ctx, rules, recorded):
     """With the model off, no prompt is ever built, so the floor answers exactly as before."""
-    user = AgentUser(ctx, rules_mod.SimulatedUser(rules, vocab=VOCAB), None, vocab=VOCAB,
+    user = AgentUser(ctx, simulated_mod.SimulatedUser(rules, vocab=VOCAB), None, vocab=VOCAB,
                      write_tools=["move_delivery"], goal_writes=["move_delivery"],
                      record_values=context_mod.mine_record_values(recorded), trace=recorded)
     transcript = []

@@ -34,6 +34,9 @@ from typing import Any, Iterable, Optional, Sequence
 
 from kullback import sampling
 from kullback.ai import provider
+
+# The rule-driven Simulated user under its old name (D214): it lives in kullback/user now, and the
+# stages read it from there so a stage's code version follows the module that actually changed.
 from kullback.builder import (
     body_skill,
     cache_reach,
@@ -52,6 +55,7 @@ from kullback.builder import (
     synth,
     templates,
     transaction,
+    user_sim,
     vocabulary,
 )
 from kullback.builder import (
@@ -97,14 +101,10 @@ from kullback.runner.records import (
 )
 from kullback.runner.records import read_json as _read_json
 from kullback.runner.records import write_json as _write_json
-
-# The rule-driven Simulated user under its old name (D214): it lives in kullback/user now, and the
-# stages read it from there so a stage's code version follows the module that actually changed.
 from kullback.user import context as user_context_mod
 from kullback.user import factory as user_factory_mod
 from kullback.user import fidelity as user_fidelity_mod
 from kullback.user import lesson as user_lesson_mod
-from kullback.user import rules as user_sim
 
 # This module is the graph, not the runner: assembling the stages means naming ingest, mine, cluster,
 # compile_env, policy and user_sim, and the Runner never imports the Builder (design section 3, build

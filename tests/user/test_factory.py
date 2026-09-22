@@ -15,6 +15,7 @@ from kullback.user import context as context_mod
 from kullback.user import factory as factory_mod
 from kullback.user import fidelity as fidelity_mod
 from kullback.user import rules as rules_mod
+from kullback.user import simulated as simulated_mod
 from kullback.user.agent import AgentUser
 from kullback.user.vocabulary import GENERIC_FIELDS, FieldSpec, Vocabulary
 
@@ -104,14 +105,14 @@ def test_the_three_call_paths_build_users_with_equal_configuration(workdir):
 
     ctx, user_rules, _trace, record = next(iter(
         fidelity_mod.contexts_of(workdir).values()))
-    fallback = rules_mod.SimulatedUser(user_rules, vocab=fidelity_mod.vocabulary_of(workdir))
+    fallback = simulated_mod.SimulatedUser(user_rules, vocab=fidelity_mod.vocabulary_of(workdir))
     scorer = factory_mod.build_user(workdir, "task_1", model, factory_mod.PURPOSE_SCORE,
                                     ctx=ctx, fallback=fallback, record_values=record)
     assert isinstance(scorer, AgentUser)
 
     live_ctx = context_mod.curate("task_1", user_rules, trace, vocab=VOCAB, write_tools=writes,
                                   record_fields=sorted(record), lessons=[])
-    live_floor = rules_mod.SimulatedUser(user_rules, vocab=VOCAB)
+    live_floor = simulated_mod.SimulatedUser(user_rules, vocab=VOCAB)
     live_strip = intent_mod.value_strip([trace], schema=None, rules=None)
     live = factory_mod.build_user(
         workdir, "task_1", model, factory_mod.PURPOSE_RUN, ctx=live_ctx, fallback=live_floor,
@@ -158,7 +159,7 @@ def test_an_unknown_purpose_is_an_error(workdir):
 def test_a_rules_floor_is_not_an_agent_user(workdir):
     """The factory builds the driver over the floor; the floor alone is not one."""
     rules: UserRules = fidelity_mod.rules_for(workdir, "t1")
-    floor = rules_mod.SimulatedUser(rules, vocab=VOCAB)
+    floor = simulated_mod.SimulatedUser(rules, vocab=VOCAB)
     assert not isinstance(floor, AgentUser)
     user = factory_mod.build_user(workdir, "task_1", TestModel([], loop=True),
                                   factory_mod.PURPOSE_SCORE, fallback=floor)
@@ -177,7 +178,7 @@ def test_full_live_inputs_never_touch_the_disk(workdir):
                              write_tools=["move_delivery"], record_fields=sorted(record))
     user = factory_mod.build_user(
         workdir / "nowhere", "task_1", model, factory_mod.PURPOSE_RUN, ctx=ctx,
-        fallback=rules_mod.SimulatedUser(user_rules, vocab=VOCAB), vocab=VOCAB,
+        fallback=simulated_mod.SimulatedUser(user_rules, vocab=VOCAB), vocab=VOCAB,
         write_tools=["move_delivery"], goal_writes={"move_delivery"}, answer_strip=None,
         record_values=record, trace=trace)
     assert isinstance(user, AgentUser)

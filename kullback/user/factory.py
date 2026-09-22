@@ -26,6 +26,7 @@ from kullback.user import fidelity as fidelity_mod
 from kullback.user import lesson as lesson_mod
 from kullback.user import rules as rules_mod
 from kullback.user.agent import AgentUser
+from kullback.user.simulated import SimulatedUser
 
 # What the built user is for. The two purposes build the same user; they differ only in what a
 # Task with no reference recording on disk means. An examination has nothing to examine, so it
@@ -99,8 +100,8 @@ def _disk_state(workdir: Any, task_id: str, purpose: str) -> Optional[dict]:
     answer_strip = _strip_for(workdir, task_id, index)
     return {
         "ctx": ctx,
-        "fallback": rules_mod.SimulatedUser(user_rules, vocab=vocab, write_tools=writes,
-                                            goal_writes=goal_writes, answer_strip=answer_strip),
+        "fallback": SimulatedUser(user_rules, vocab=vocab, write_tools=writes,
+                                  goal_writes=goal_writes, answer_strip=answer_strip),
         "record_values": record,
         "vocab": vocab,
         "write_tools": writes,

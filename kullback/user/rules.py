@@ -585,26 +585,3 @@ def _words(field: str) -> str:
 # and must read them exactly as the rule-driven user does, not with a second pair of cues (D214).
 closes = _closes
 names_change = _names_change
-
-
-# Re-exports kept for importers of rules; the user extension stream moves them to their homes.
-from kullback.user.ends import (  # noqa: E402,F401
-    FactLookup,
-    _attr,
-    _calls_of,
-    _column_moved,
-    _count,
-    _effect_moved_a_column,
-    _field_of,
-    _flatten,
-    _is_replay_check,
-    _one,
-    _row_value,
-    dict_reader,
-    end_kind_of,
-    end_of_run,
-    ends_by_kind,
-    write_took_effect,
-    writes_made,
-)
-from kullback.user.simulated import SimulatedUser, _matching_rows  # noqa: E402,F401
