@@ -37,6 +37,7 @@ from typing import Any, Callable, Iterable, Optional
 
 from kullback.builder import mine
 from kullback.builder.lesson import arithmetic_relations
+from kullback.gates.tool_runs import key_fields
 from kullback.runner.canon import canonicalize as canon
 from kullback.runner.canon import leaves
 from kullback.runner.records import EntitySchema, Trace
@@ -312,12 +313,30 @@ def _effects_of_trace(trace: Trace, schema: EntitySchema, writes: set[str], db: 
     return list(effects.values())
 
 
+def _is_key_column(schema: EntitySchema, table: str, path: str) -> bool:
+    """Whether this path is a part of the row's composite key.
+
+    A key part is the row's identity: a write cannot move a row's own key, so a
+    column the composed id is made of is never evidence that a write moved it.
+    """
+    fields = key_fields(schema, table)
+    if len(fields) < 2:
+        return False
+    return path.split(".")[0].split("[")[0] in fields
+
+
 def _changed(obs: Any, before: dict, schema: EntitySchema) -> tuple[dict, dict, list[str]]:
-    """The two sightings as leaf maps and the non-exempt paths they part on."""
+    """The two sightings as leaf maps and the non-exempt, non-key paths they part on.
+
+    A key part is the row's identity rather than a value a write could move, so a
+    column the composed id carries is left out here: what reads as a key sighting
+    is never filed as an effect.
+    """
     old, new = leaves(before), leaves(obs.row)
     return old, new, [path for path in sorted(set(old) & set(new))
                       if canon(old[path]) != canon(new[path])
-                      and not _exempt(schema, obs.table, path)]
+                      and not _exempt(schema, obs.table, path)
+                      and not _is_key_column(schema, obs.table, path)]
 
 
 def _proven_moves(traces: Iterable[Trace], schema: EntitySchema, writes: set[str],

@@ -505,12 +505,14 @@ def _observations(traces: list[Trace], schema: EntitySchema, write_tools: set[st
             # A result that states no row of its own is still about a row when the call named one.
             homed = None if rows else home_partial_result(schema, call.name, result, call.args, read_result)
             if homed and homed.row:
-                rows = [(homed.table, homed.row_id, homed.row, 0)]
+                rows = [(homed.table, homed.row_id,
+                         complete_key_columns(schema, homed.table, homed.row_id, homed.row), 0)]
             elif homed is not None and stats is not None:
                 stats["unread_partial_results"] = stats.get("unread_partial_results", 0) + 1
             fingerprint = call_fingerprint(call.name, call.args or {})
             for table, row_id, row, depth in rows:
-                out.append(_Obs(table, row_id, row, trace.trace_id, (trace_index, call_index),
+                out.append(_Obs(table, row_id, complete_key_columns(schema, table, row_id, row),
+                                trace.trace_id, (trace_index, call_index),
                                 is_write or row_id in written, depth, bool(homed and homed.row),
                                 fingerprint, str(call.id or ""), is_write, call.name))
             if is_write:
@@ -870,6 +872,7 @@ def build_starting_state(
         for later in sorted((o for o in pool if o.partial and o.order > chosen.order),
                             key=lambda o: o.order):
             row.update(later.row)
+        row = complete_key_columns(schema, table, row_id, row)
         if not clean:
             assumptions.append(f"{table} row {row_id} was only ever seen after a write; "
                                "its post-state is kept as the starting value")
@@ -1067,6 +1070,31 @@ def named_rows(schema: EntitySchema, args: dict) -> set[tuple[str, str]]:
     return out
 
 
+def key_part_values(schema: EntitySchema, table: str, row_id: str) -> dict[str, str]:
+    """The key fields of a composed row id, as column to the value the id carries."""
+    fields = key_fields(schema, table)
+    if len(fields) < 2:
+        return {}
+    parts = str(row_id).split(key_separator(schema))
+    if len(parts) != len(fields):
+        return {}
+    return dict(zip(fields, parts, strict=False))
+
+
+def complete_key_columns(schema: EntitySchema, table: str, row_id: str, row: dict) -> dict:
+    """One row homed under a composed id with the id's own parts as its key columns.
+
+    A key part is the row's identity, so a row filed under a composed id carries the
+    values the id is composed of: a part the sighting left null or left out is filled
+    from the id, and what the sighting actually stated stands untouched.
+    """
+    filled = dict(row) if isinstance(row, dict) else {}
+    for name, value in key_part_values(schema, table, row_id).items():
+        if filled.get(name) is None or filled.get(name) == "":
+            filled[name] = value
+    return filled
+
+
 def add_synthetic_rows(db: dict, schema: EntitySchema, traces: Iterable[Trace]) -> list[tuple[str, str]]:
     """Fill ids the traces referenced but never showed, shaped from the rows they did show (D40, D41).
 
@@ -1110,7 +1138,7 @@ def complete_partial_rows(db: dict, schema: EntitySchema, in_part: Iterable[tupl
                   if (table, key) not in mentioned and isinstance(other, dict)]
         if not isinstance(row, dict) or not stated:
             continue
-        filled = dict(_modal_row(stated), **row)
+        filled = complete_key_columns(schema, table, row_id, dict(_modal_row(stated), **row))
         if filled != row:
             rows[row_id] = filled
             completed.append((table, row_id))
@@ -1232,6 +1260,7 @@ def _build_overlays(observations: list[_Obs], tasks: Iterable[Task], workdir: Pa
                     if inverter is not None else {})
         reference = reference_run_of(task)
         scoped = _run_scoped_rows(task, rows, recorded, reference, schema)
+        _complete_overlay_keys(schema, scoped)
         for key in sorted(scoped.disagreeing):
             table, row_id = key
             classes = sorted({_column_class(schema, table, name) for name in scoped.disagreeing[key]})
@@ -1356,6 +1385,22 @@ def _run_scoped_rows(task: Task, rows: dict, recorded: dict, reference: str,
                                                                      if schema is not None else ()):
             splits.add(key)
     return _RunScoped(agreed=agreed, per_run=per_run, disagreeing=disagreeing, split_candidates=splits)
+
+
+def _complete_overlay_keys(schema: Optional[EntitySchema], scoped: _RunScoped) -> None:
+    """Every overlay row homed under a composed id with the id's own key parts.
+
+    The rows arrive from sightings that already carry their key parts; the inversion
+    step in between can add a row no sighting of the Task stated, so the fill runs
+    here, where the overlay versions are settled, rather than trusting each source.
+    """
+    if schema is None:
+        return
+    for key in scoped.agreed:
+        scoped.agreed[key] = complete_key_columns(schema, key[0], key[1], scoped.agreed[key])
+    for per in scoped.per_run.values():
+        for key in per:
+            per[key] = complete_key_columns(schema, key[0], key[1], per[key])
 
 
 def _key_class(schema: Optional[EntitySchema], table: str) -> str:
