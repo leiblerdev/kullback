@@ -267,6 +267,108 @@ def ingest(files: list[Path] = typer.Argument(..., help="The customer's export f
     _write(Path(workdir) / "ingest_summary.json", summaries)
 
 
+def _rescue_candidates(workdir: Path, raw_hash: Optional[str]) -> list:
+    """Every eligible or set-aside trace whose sidecar carries a task reference.
+
+    Eligible traces live under traces/, set-aside ones under evidence_traces/;
+    both keep a grader sidecar under the same content-hash name, which is where
+    the adapter's task_ref and instruction were written at ingest. A trace with
+    no sidecar, an unreadable one, or one with no task id is outside this round
+    and is skipped, never counted.
+    """
+    candidates = []
+    for folder in ("traces", "evidence_traces"):
+        folder_path = Path(workdir) / folder
+        if not folder_path.is_dir():
+            continue
+        for trace_path in sorted(folder_path.glob("*.json")):
+            found = _rescue_ref(Path(workdir) / "grader" / f"{trace_path.stem}.json",
+                                trace_path.stem, raw_hash)
+            if found is not None:
+                candidates.append((trace_path.stem, found[0], found[1]))
+    return candidates
+
+
+def _rescue_ref(sidecar: Path, trace_hash: str, raw_hash: Optional[str]):
+    """One grader sidecar as (task id, recorded instruction), or None outside this round.
+
+    None covers every way a trace falls outside the rescue: no sidecar, an
+    unreadable one, one belonging to another hash, the wrong file under
+    --raw-hash, or fields with no task id. Skipped traces are never counted.
+    """
+    if not sidecar.is_file():
+        return None
+    try:
+        body = json.loads(sidecar.read_text(encoding="utf-8"))
+    except ValueError:
+        return None
+    if not isinstance(body, dict) or body.get("trace_hash", trace_hash) != trace_hash:
+        return None
+    if raw_hash is not None and body.get("raw_hash") != raw_hash:
+        return None
+    fields = body.get("fields") or {}
+    if not isinstance(fields, dict):
+        return None
+    ref = fields.get("task_ref") or {}
+    if not isinstance(ref, dict) or not isinstance(ref.get("id"), str):
+        return None
+    recorded = fields.get("instruction")
+    return (ref["id"], recorded if isinstance(recorded, str) else None)
+
+
+@app.command()
+def rescue(
+    workdir: Path = WORKDIR,
+    registry: Path = typer.Option(..., "--registry", help="Local registry: a directory of task "  # noqa: B008
+                                             "directories, or a JSON file of rows."),
+    raw_hash: Optional[str] = typer.Option(None, "--raw-hash", help="Only the recordings of this "  # noqa: B008
+                                                           "ingested file."),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Print the counts without writing."),
+):
+    """Attach task definitions to the recordings that name a task id (D263).
+
+    For every eligible or set-aside recording whose sidecar carries a task_ref,
+    the id is looked up in the registry. When found and its instruction is the
+    recording's own, the definition lands under task_defs/ beside a strength
+    label; when found with a different instruction nothing is written, and when
+    absent nothing is either. Nothing else in the workdir changes: no recording
+    changes standing here.
+    """
+    from kullback.builder import registry as registry_mod
+
+    try:
+        table = registry_mod.open_registry(registry)
+    except ValueError as error:
+        typer.echo(str(error))
+        raise typer.Exit(2) from None
+    attached = mismatched = missing = 0
+    strengths = {"content": 0, "existence": 0, "none": 0}
+    for trace_hash, task_id, recorded in _rescue_candidates(Path(workdir), raw_hash):
+        try:
+            definition = table.lookup(task_id)
+        except ValueError:
+            definition = None
+        if definition is None:
+            missing += 1
+            continue
+        if not registry_mod.instruction_matches(definition, recorded):
+            mismatched += 1
+            continue
+        strength = registry_mod.verifier_strength(definition)
+        strengths[strength] += 1
+        attached += 1
+        if not dry_run:
+            body = registry_mod.definition_dict(definition)
+            body["verifier_strength"] = strength
+            body["matched"] = True
+            _write(Path(workdir) / "task_defs" / f"{trace_hash}.json", body)
+    looked = attached + mismatched + missing
+    line = (f"rescue: looked up {looked}, attached {attached}, mismatched {mismatched}, "
+            f"missing {missing} (content {strengths['content']}, "
+            f"existence {strengths['existence']}, none {strengths['none']})")
+    typer.echo(line + (" (dry run: nothing written)" if dry_run else ""))
+
+
 def _live_model(model_id: str, base_url: Optional[str]):
     """One live adapter, or the refusal in words. provider.live_model is the single place the
     live-call flag is ever set, so the screen and the CLI refuse for the same reason."""
@@ -593,13 +695,16 @@ def consistency(
     per unfit tool names why no sequence may check it. The final line gives the
     mean consistency over completed Tasks, how many broke a law and how many
     were skipped. The workdir is read in place and never written into; --out
-    writes the same numbers as JSON beside the laws version. A skipped request,
-    or no completed Task at all, exits 3.
+    writes the same numbers as JSON beside the laws version. --sequences takes
+    1 or more. A Task that checked no law is skipped as no law checked, and a
+    Task whose world fails to load or check is skipped under its error's class
+    name while the rest still run. A skipped request, or no completed Task at
+    all, exits 3.
     """
     from kullback.episode.loading import EnvironmentError
 
-    if sequences < 0 or max_length < 1:
-        raise typer.BadParameter("--sequences takes 0 or more and --max-length takes 1 or more")
+    if sequences < 1 or max_length < 1:
+        raise typer.BadParameter("--sequences takes 1 or more and --max-length takes 1 or more")
     check = _entry("kullback.laws", "check_laws")
     build = _entry("kullback.episode", "BuiltEnvironment")
     make_world = _entry("kullback.episode.law_world", "EnvironmentLawWorld")
@@ -620,14 +725,16 @@ def consistency(
     unfit: dict[str, dict] = {}
 
     def _one(task_id: str):
-        """One Task's row, its unfit tools and its skip reason; only row or reason is set."""
+        """One Task's row, its unfit tools and its skip reason; a skip keeps the unfit tools."""
         try:
             world = make_world(env, task_id, seed=seed)
             gaps = world.unfit()
             sides = {info.name: info.requestor for info in world.tools()}
             report = check(world, seed=seed, sequences=sequences, max_length=max_length)
-        except EnvironmentError as exc:
-            return None, {}, str(exc)
+        except Exception as exc:
+            return None, {}, f"{type(exc).__name__}: {exc}"
+        if not sum(report.checked.values()):
+            return None, gaps, "no law checked"
         row = {"checked": sum(report.checked.values()), "broken": sum(report.broken.values()),
                "consistency": report.consistency, "requestors": sides}
         return row, gaps, None
@@ -636,6 +743,7 @@ def consistency(
         row, gaps, reason = _one(task_id)
         if reason is not None:
             skipped[task_id] = reason
+            unfit.update(_echo_gaps(task_id, gaps))
             typer.echo(f"task {task_id}: skipped, {reason}")
             continue
         rows[task_id] = row
