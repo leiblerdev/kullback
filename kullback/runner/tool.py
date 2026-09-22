@@ -359,6 +359,7 @@ def probe(environment_dir: Any, task_id: str, model: Any, *, verifier: Any, work
     try:
         loop.run(state, model, tools=specs, router=router)
     except Exception:
+        # the loop wrote the error and the stop; a crashed probe reaches no End state
         pass
     loop.finish(state, router)
     report_version = version()
@@ -366,6 +367,7 @@ def probe(environment_dir: Any, task_id: str, model: Any, *, verifier: Any, work
         scored = score_verdict(state.path, verifier, canon=env.canon_rules, environment=env,
                                runner_version=report_version)
     except Exception:
+        # a Run that cannot be scored reached no End state to pass with
         scored = None
     taken = [{"id": event.payload.get("id"), "name": event.payload.get("name"),
               "route": event.route}
