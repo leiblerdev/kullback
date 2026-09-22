@@ -15,8 +15,8 @@ kullback/agent      the loop, the harness (transcript, state, cancel, steer and 
                     bash, grep, find, ls, web_search
 kullback/builder    extension: domain tools ingest, derive_world, examine, grow; prompt sections, skills,
                     templates; registers the base tools over its root env/ with its shell allowlist
-kullback/examiner   extension: domain tools propose_verifier, probe, finding; registers read, grep, find, ls,
-                    web_search over its root exam/ (no write, no bash)
+kullback/examiner   extension: domain tools propose_verifier, probe, finding; registers read, write, edit, grep,
+                    find, ls, web_search over its root exam/ (no bash)
 kullback/user       extension: my_facts, my_goal, what_i_said, end_run; no base tools at all
 kullback/runner     a tool, not an agent: run(environment, task, model), replay(task), reroll(task); inside it
                     the world (in-memory tables, loading from rows and overlays, laws), the route order, the Run
@@ -58,7 +58,7 @@ One bus per workdir, `bus.jsonl`: append-only, sequence-numbered, typed. Every h
 
 Two levels only.
 
-Cannot: the tool is not registered for that extension. The Simulated user has no file tools at all. The Examiner has no write and no bash. No agent has a tool that reaches the gates, the runner, the held-out Traces or the Verifiers, because those live in the workdir outside every agent's root.
+Cannot: the tool is not registered for that extension. The Simulated user has no file tools at all. The Examiner has no bash; its writes under exam/ are gated. No agent has a tool that reaches the gates, the runner, the held-out Traces or the Verifiers, because those live in the workdir outside every agent's root.
 
 Should not: stated in the extension's prompt, where a rule is a matter of judgement rather than of access.
 
@@ -95,7 +95,7 @@ The Builder never writes world rows. Rows are derived by code from the recording
 
 ## The Examiner (stream 6, pending)
 
-The Examiner derives each Task's Verifier from the Intent and the frontier's re-rolls, writes probes against it, repairs it when a gate rejects it, refuses a Task no frontier Run finishes, and returns findings to the Builder that carry the rows that differ. It reads with read, grep, find, ls and web_search over `exam/`, and it has no write and no bash. It never reads a tool body and never edits the Environment (ADR-0007).
+The Examiner derives each Task's Verifier from the Intent and the frontier's re-rolls, writes probes against it, edits it when a gate rejects it, and the gates rule on the write. It refuses a Task no frontier Run finishes, and returns findings to the Builder that carry the rows that differ. It reads and writes with read, write, edit, grep, find, ls and web_search over `exam/`, and it has no bash. It never reads a tool body and never edits the Environment (ADR-0007).
 
 ## The Simulated user (stream 7, pending)
 
@@ -117,9 +117,9 @@ flowchart LR
     CO -- yes --> OUT3[code answers]
     CO -- no --> RC{an exact recording?}
     RC -- yes --> OUT4[the recorded result]
-    RC -- no --> CA{can code answer at all?}
-    CA -- yes --> OUT5[cannot_answer, recorded as such]
-    CA -- no --> OUT6[model stand-in: reported, never counted toward trusted]
+    RC -- no --> CA{does the Environment list this tool for this caller?}
+    CA -- yes --> OUT5[cannot_answer: the Run ends here, counted for nothing]
+    CA -- no --> OUT6[model stand-in: reported, never counted]
 ```
 
 The route taken is on the event and in the Run. A Run served by a stand-in is reported and never counted, and a training Run never uses the stand-in at all.
