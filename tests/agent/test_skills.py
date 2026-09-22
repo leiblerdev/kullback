@@ -4,6 +4,7 @@ a loaded skill standing in the system prompt."""
 from __future__ import annotations
 
 from kullback.agent.harness import AgentHarness
+from kullback.agent.session import SessionStore
 from kullback.agent.skills import content_hash, skills_from_dir
 from kullback.ai.provider import TestModel
 
@@ -65,3 +66,16 @@ def test_a_skill_that_was_never_added_as_a_section_leaves_the_prompt_alone():
     assert agent.system == "sys"
     assert agent.context.catalog_skills == {"bodies": "Write a body."}
     assert agent.context.loaded_skills == set()
+
+
+def test_the_session_records_which_skill_text_was_in_context_by_hash(tmp_path):
+    store = SessionStore(tmp_path / "session.jsonl")
+    agent = AgentHarness(TestModel(["done"]), system="sys", session=store)
+    agent.context.catalog_skill("bodies", "Write a body.", loaded=True)
+    agent.context.skills.unload("bodies")
+    changes = [e for e in store.entries if e.type == "skill_change"]
+    assert [(e.name, e.action) for e in changes] == [("bodies", "load"), ("bodies", "unload")]
+    assert {e.content_hash for e in changes} == {content_hash("Write a body.")}
+    # cataloguing alone puts no text in front of the model, so it records nothing
+    agent.context.catalog_skill("answers", "Answer from the world.")
+    assert len([e for e in store.entries if e.type == "skill_change"]) == 2

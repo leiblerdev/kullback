@@ -31,6 +31,7 @@ from kullback.agent.session import (
     SessionEntry,
     SessionInfoEntry,
     SessionStore,
+    SkillChangeEntry,
 )
 from kullback.agent.skills import Skills, first_line, prompt_block
 from kullback.ai.usage import Usage
@@ -190,7 +191,7 @@ class ContextManager:
         self.config = config
         self.stats = ContextStats()
         self.protected: dict[str, str] = {}
-        self.skills = Skills(harness)
+        self.skills = Skills(harness, record=self.record_skill_change)
         self.compactor = Compactor(self)
         self._seq = 1
         self._entry_ids_by_call: dict[str, str] = {}
@@ -349,6 +350,14 @@ class ContextManager:
         """Make a skill available; with `loaded`, put its text in the prompt now and answer the
         hash of the text that went in, which is what a record of the context names (D125)."""
         return self.skills.catalog_skill(name, text, loaded=loaded)
+
+    def record_skill_change(self, name: str, action: str, digest: str) -> None:
+        """A skill entered or left the prompt: the session says which text was in context (D125)."""
+        if self.session is None:
+            return
+        self.session.append(
+            SkillChangeEntry(id=self.next_entry_id(), name=name, action=action, content_hash=digest)
+        )
 
     def skills_section(self) -> str:
         """The `<skills>` block an extension places by adding a section named `skills`."""

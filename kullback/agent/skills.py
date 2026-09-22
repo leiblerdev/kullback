@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import hashlib
 from pathlib import Path
-from typing import Any, Optional, Union
+from typing import Any, Callable, Optional, Union
 
 __all__ = ["Skills", "content_hash", "first_line", "prompt_block", "skills_from_dir"]
 
@@ -57,10 +57,16 @@ def skills_from_dir(directory: Union[str, Path]) -> dict[str, str]:
 
 
 class Skills:
-    """What a harness's skills are: the catalog, which are loaded, and the block that says so."""
+    """What a harness's skills are: the catalog, which are loaded, and the block that says so.
 
-    def __init__(self, harness: Any):
+    `record` is called with the name, the action and the hash of the text whenever a skill enters
+    or leaves the prompt, so the session says which text was in context (D125); the harness's
+    context manager passes it, and a Skills without one simply keeps no record.
+    """
+
+    def __init__(self, harness: Any, record: Optional[Callable[[str, str, str], None]] = None):
         self.harness = harness
+        self.record = record
         self.catalog: dict[str, str] = {}
         self.loaded: set[str] = set()
 
@@ -78,14 +84,20 @@ class Skills:
         self.loaded.add(name)
         self.harness.add_prompt_section(f"skill:{name}", prompt_block("skill", text, name=name))
         self.refresh_section()
-        return content_hash(text)
+        return self._changed(name, "load", text)
 
     def unload(self, name: str) -> str:
         text = self.catalog.get(name, "")
         self.loaded.discard(name)
         self.harness.remove_prompt_section(f"skill:{name}")
         self.refresh_section()
-        return content_hash(text)
+        return self._changed(name, "unload", text)
+
+    def _changed(self, name: str, action: str, text: str) -> str:
+        digest = content_hash(text)
+        if self.record is not None:
+            self.record(name, action, digest)
+        return digest
 
     def section(self) -> str:
         """The `<skills>` block: every catalogued skill and whether its text is in the prompt."""
