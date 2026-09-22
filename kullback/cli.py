@@ -4,7 +4,6 @@ hidden state."""
 
 from __future__ import annotations
 
-import contextlib
 import importlib
 import json
 from datetime import datetime, timezone
@@ -13,7 +12,7 @@ from typing import Any, Optional
 
 import typer
 
-from kullback import difficulty, round_snapshot, rounds
+from kullback import difficulty, round_snapshot
 from kullback.report import coverage_rows, load, load_tool_sigs, write_report
 from kullback.runner import feed, heartbeat
 from kullback.runner.records import (
@@ -23,6 +22,7 @@ from kullback.runner.records import (
     Task,
     Verifier,
     as_dict,
+    content_hash,
 )
 
 app = typer.Typer(add_completion=False,
@@ -387,185 +387,97 @@ def _live_model(model_id: str, base_url: Optional[str]):
         typer.echo(str(error))
         raise typer.Exit(2) from None
 
-
 @app.command()
 def build(
     workdir: Path = WORKDIR,
-    iterate: bool = typer.Option(False, "--iterate", help="Resume the content-addressed build and keep improving."),
     model: Optional[str] = typer.Option(None, "--model", help="Builder model id, as provider/model."),
-    judge_model: Optional[str] = typer.Option(None, "--judge-model",
-                                              help="Model id for the build's judge, as provider/model (D160); "
-                                                   "the default is --model."),
-    second_judge_model: Optional[str] = typer.Option(None, "--second-judge-model",
-                                                     help="Model id for the second judge, as provider/model "
-                                                          "(D160); the default is the judge's own model under "
-                                                          "a second persona."),
-    judge_agent: bool = typer.Option(False, "--judge-agent",
-                                     help="The reference judge is an agent with a bounded look over the Task; "
-                                          "default is the one-shot judge."),
-    user_model: Optional[str] = typer.Option(None, "--user-model",
-                                             help="Model id for the Simulated user, as provider/model (D232); "
-                                                  "without it the rule-driven user drives every Run."),
     base_url: Optional[str] = typer.Option(None, "--base-url", help="Endpoint for an OpenAI-compatible model."),
     files: Optional[list[Path]] = typer.Option(None, "--file", help="Customer export to ingest first."),  # noqa: B008
     ceiling_usd: Optional[float] = typer.Option(None, "--ceiling-usd", help="Per-build spend ceiling (D86)."),
-    grow: Optional[list[str]] = typer.Option(None, "--grow",  # noqa: B008
-                                             help="Grow a table to this many rows with synthetic ones, "
-                                                  "as table=count; repeatable (D107)."),
-    grow_seed: int = typer.Option(0, "--grow-seed", help="Seed for the synthetic rows."),
-    probe_limit: Optional[int] = typer.Option(None, "--probe-limit",
-                                              help="Loophole probes per build (D79 check 6); default every Task."),
-    rerolls: int = typer.Option(3, "--rerolls", help="Frontier re-rolls per Task beside its recordings (D112); "
-                                                    "0 turns them off."),
-    # 8 is the default the CLI sets (D118); build() itself defaults to 1 so a scripted model in a
-    # test still answers in the order it was given. The number lives here, not in parallel.py.
-    workers: int = typer.Option(8, "--workers", help="Model calls in flight at once across tools, policy "
-                                                     "sentences, Intents and re-rolls (D118); 1 runs them in a line."),
-    target: str = typer.Option("environment", "--target", help="What to build: environment (everything), "
-                                                                 "or one stage or artifact by name."),
-    agent: bool = typer.Option(False, "--agent", help="Let the --model drive both sessions, the Builder's and "
-                                                        "the Examiner's; without it code issues the tool calls."),
-    stall_rounds: int = typer.Option(1, "--stall-rounds", help="Rounds that move no gate count before the loop "
-                                                              "exits stalled (D126)."),
-    fidelity_stall: int = typer.Option(3, "--fidelity-stall", help="Rounds without a rise in fidelity before the "
-                                                                  "loop exits stalled, whatever the other counts "
-                                                                  "do; 0 turns it off (D169)."),
-    max_rounds: int = typer.Option(12, "--max-rounds", help="Rounds after which the loop exits max_rounds; "
-                                                            "0 is no cap (D169)."),
-    allowance_usd: Optional[float] = typer.Option(None, "--allowance-usd",
-                                                  help="Per-agent spend allowance per round; the default is "
-                                                       "each agent's own round-1 spend from round 2 on (D123)."),
 ):
-    """Run the Builder and the Examiner in rounds over the ingested Traces and write the Environment.
+    """Run the autonomous Builder session over the ingested Traces and write the Environment.
 
-    Both agents are extensions on the agent core, driven in turns on one stream (D128): the Builder
-    builds the target, the Examiner derives and examines the Verifiers, and the round ends with the
-    counts the gates report. By default code issues the tool calls, so the build is deterministic and
-    byte-identical offline; `--agent` hands both sessions to the model. The judge is a model of its
-    own when `--judge-model` names one (D160), so the model that writes the Environment need not be
-    the one that rules on it. The judge that settles a Task whose Runs disagree is the one-shot judge
-    unless `--judge-agent` asks for the one with a bounded look, which reads before it rules and
-    costs References (D185). The Simulated user is rule-driven unless `--user-model` names the
-    model that drives it, in which case the agent user drives the Tasks it beats the rules on (D232).
+    The Builder is an extension on the agent core: it ingests, derives the world, reads and edits
+    its Environment with the base tools, calls examine when the Environment is ready, acts on the
+    findings, and stops when every Task is trusted or refused, when the spend ceiling is reached,
+    or when it states why it cannot go further. By default no model drives it, so the run answers
+    nothing and stops at once; `--model` hands the session to the model.
     """
     adapter = _live_model(model, base_url) if model else None
-    if agent and adapter is None:
-        raise typer.BadParameter("--agent needs --model: a model has to drive the session")
-    if second_judge_model and not (judge_model or model):
-        raise typer.BadParameter("--second-judge-model needs a first judge: name --judge-model or --model")
-    judge_adapter = _live_model(judge_model, base_url) if judge_model else None
-    second_judge_adapter = _live_model(second_judge_model, base_url) if second_judge_model else None
-    # The Simulated user needs no Builder model beside it, so --user-model without --model is
-    # allowed (D232). Without a Builder model there are no re-rolls, so the user model pays only
-    # for the offline driver scoring.
-    user_adapter = _live_model(user_model, base_url) if user_model else None
-    search = _entry("kullback.builder.search", "search_for")(workdir)  # None unless live is on or a memo exists
     # The screen lists running builds from these heartbeats; the pid tells it who is alive. The
     # pulse keeps beating while the build runs so a screen watching from another directory sees
     # the spend move, rather than a stale $0.0000 until the build is over.
     # The feed is this build's story, opened here and appended to as it goes: /watch reads it to
-    # show the calls as they happen instead of a board that only moves when a stage ends.
-    feed.start(workdir, model=model, target=target, ceiling_usd=ceiling_usd)
+    # show the calls as they happen instead of a board that only moves when the session ends.
+    feed.start(workdir, model=model, ceiling_usd=ceiling_usd)
     pulse = heartbeat.pulse(workdir, model, "running")
     try:
-        # The provider owns an http client when it made one; close it on the way out rather than at exit.
-        with contextlib.closing(search) if search is not None else contextlib.nullcontext():
-            result = _entry("kullback.rounds", "run_rounds")(
-                workdir=workdir, iterate=iterate, model=adapter, judge_model=judge_adapter,
-                second_judge_model=second_judge_adapter, judge_agent=judge_agent,
-                user_agent_model=user_adapter, files=list(files or []),
-                ceiling_usd=ceiling_usd, grow=_grow_targets(grow), grow_seed=grow_seed,
-                probe_limit=probe_limit, rerolls=rerolls, search=search, workers=workers, target=target,
-                agent_model=adapter if agent else None, stall_rounds=stall_rounds,
-                fidelity_stall=fidelity_stall, max_rounds=max_rounds,
-                allowance_usd=allowance_usd, subscribers=[_echo_round])
+        result = _entry("kullback.builder.session", "build")(
+            workdir, adapter, files=list(files or []), ceiling_usd=ceiling_usd,
+            subscribers=[_echo_tool_result])
     except Exception:
         pulse.stop()
         heartbeat.beat(workdir, model, "failed")
         raise
     pulse.stop()
-    heartbeat.beat(workdir, model, "failed" if result.get("failed") else "done",
-                   exit=result.get("exit"))
-    if isinstance(result, dict) and result.get("exit"):
-        count = len(result.get("rounds") or [])
-        typer.echo(f"exit: {result['exit']} after {count} round{'' if count == 1 else 's'}")
+    heartbeat.beat(workdir, model, "done")
+    typer.echo(_counts_line(workdir))
     typer.echo(json.dumps(result, indent=2, default=str))
-    if isinstance(result, dict) and result.get("failed"):
-        # A stalled exit on a broken agent contract is a failed run, not a quiet one: CI and
-        # scripts must see it. Plain stalled (the gates, no progress) still exits zero.
-        raise typer.Exit(1)
 
 
-def _regrouped(counts: dict) -> str:
-    """What the round says about a grouping that no longer matches the frozen one (D216).
-
-    Nothing at all on the ordinary round, because the split of one recording set reproduces and a
-    line that said so every round would only be noise. Where it did move, the line names the input
-    that moved it, which is the whole of the finding: a corpus that grew regrouped for a reason, and
-    the harness raises rather than print anything else here.
-    """
-    moved = str(counts.get("tasks_grouping_moved") or "")
-    return f" regrouped ({moved} moved)" if moved else ""
-
-
-def _ended_by(counts: dict) -> str:
-    """How a round ended where a beat raised in it (D231), and nothing at all where none did.
-
-    The counts beside it are what the round measured before the raise, which is a real reading and
-    not a default; this is what says the round stopped short of the rest of its work.
-    """
-    row = counts.get(rounds.BEAT_ERROR) or {}
-    beat = str(row.get("beat") or "")
-    if not beat:
-        return ""
-    kind = str(row.get("kind") or "")
-    return f"ended by {beat} error" + (f" ({kind})" if kind else "") + ", "
+def _echo_tool_result(event: Any) -> None:
+    """The subscriber the build hands the session: a line per tool result as each lands."""
+    if getattr(event, "type", None) != "tool_execution_end":
+        return
+    result = event.result
+    content = str(getattr(result, "content", "") or "")
+    lines = content.splitlines()
+    typer.echo(f"{event.tool_name}: {lines[0] if lines else ''}")
+    for ruling in (getattr(result, "details", None) or {}).get("rulings") or ():
+        mark = "accepted" if ruling.get("accepted") else "rejected"
+        typer.echo(f"  ruling {ruling.get('name')}: {mark} ({ruling.get('line')})")
 
 
-def _round_line(counts: dict) -> str:
-    """One round's counts as one line, every number a gate's (D126)."""
-    compactions = counts.get("fallback_compactions") or {}
-    spend = counts.get("spend") or {}
-    return (_ended_by(counts)
-            + f"fidelity {counts.get('fidelity', 0)}/{counts.get('tasks', 0)} tasks, "
-            f"trusted {counts.get('trusted', 0)}, refused {counts.get('refused_count', 0)}, "
-            f"assisted runs {counts.get('assisted_runs', 0)}, probes passing {counts.get('probes_passing', 0)}, "
-            f"tasks frozen {counts.get('tasks_frozen', 0)} added {counts.get('tasks_added', 0)} "
-            f"(${float(counts.get('tasks_added_cost') or 0.0):.4f}) "
-            f"frozen only {counts.get('tasks_frozen_only', 0)} cleared {counts.get('tasks_cleared', 0)}"
-            f"{_regrouped(counts)}, "
-            f"compactions builder {compactions.get('builder', 0)} examiner {compactions.get('examiner', 0)}, "
-            f"spend ${float(spend.get('total') or 0.0):.4f}, cache saved ${float(spend.get('cache_saved') or 0.0):.4f}, "
-            f"buckets: {difficulty.round_summary(counts.get('buckets') or [])}"
-            + _synthetic_line(counts))
+def _counts_line(workdir: Path) -> str:
+    """The workdir counts as one line: trusted, refused and fidelity off the gate rulings."""
+    from kullback.gates import counts as counts_mod
+
+    root = Path(workdir)
+    task_status = _json_at(root, "task_status.json")
+    verifiers = _verifier_dicts(root)
+    replays = _json_at(root, "replays.json")
+    result = counts_mod.round_counts(
+        task_status, verifiers, {}, {}, _refusal_dicts(root), {}, replays,
+        _json_at(root, "rerolls.json"), _json_at(root, "canon-rules.json") or None,
+        (_json_at(root, "tool_sigs.json") or {}).get("sigs", []))
+    return (f"trusted {result['trusted']}, refused {result['refused_count']}, "
+            f"fidelity {result['fidelity']}/{result['tasks']}")
 
 
-def _synthetic_line(counts: dict) -> str:
-    """What the round's synthetic store holds, appended to the line under its own names (D224).
-
-    A round that generated nothing says nothing, so a reader never mistakes a build that was never
-    asked for synthetic Tasks for one that asked and got none.
-    """
-    if not counts.get("synthetic_tasks"):
-        return ""
-    return (f", synthetic {counts.get('synthetic_tasks', 0)} verified "
-            f"{counts.get('synthetic_verified', 0)}")
-
-
-def _echo_round(event: Any) -> None:
-    """The subscriber the build hands the driver: a line per round as each round ends."""
-    if getattr(event, "type", None) == "round_end":
-        typer.echo(f"round {event.round}: {_round_line(dict(event.counts or {}))}")
+def _verifier_dicts(root: Path) -> list:
+    """The stored Verifiers as dicts; a workdir with none yet reads as empty."""
+    folder = root / "verifiers"
+    if not folder.is_dir():
+        return []
+    out = []
+    for path in sorted(folder.glob("*.json")):
+        try:
+            out.append(json.loads(path.read_text(encoding="utf-8")))
+        except (OSError, ValueError):
+            continue
+    return out
 
 
-def _grow_targets(pairs: Optional[list[str]]) -> dict[str, int]:
-    """`--grow users=500 --grow orders=1000` as {table: count}; a malformed pair is refused."""
-    out: dict[str, int] = {}
-    for pair in pairs or []:
-        table, sep, count = pair.partition("=")
-        if not sep or not table or not count.isdigit():
-            raise typer.BadParameter(f"--grow takes table=count, got {pair!r}")
-        out[table.strip()] = int(count)
+def _refusal_dicts(root: Path) -> dict:
+    """The stored refusals keyed by Task; a workdir with none yet reads as empty."""
+    out: dict = {}
+    for folder in (root / "refusals", root / "env" / "refusals"):
+        if folder.is_dir():
+            for path in sorted(folder.glob("*.json")):
+                try:
+                    out.setdefault(path.stem, json.loads(path.read_text(encoding="utf-8")))
+                except (OSError, ValueError):
+                    continue
     return out
 
 
@@ -594,13 +506,13 @@ def run(
     task: str = typer.Option(..., "--task", help="Task id to run."),
     model: str = typer.Option(..., "--model", help="Candidate model id, as provider/model."),
     count: int = typer.Option(1, "--count", help="Runs per Task."),
-    seed: int = typer.Option(0, "--seed", help="First seed; the batch counts up from it."),
     base_url: Optional[str] = typer.Option(None, "--base-url", help="Endpoint for an OpenAI-compatible model."),
 ):
     """Run a Candidate against the built Environment and write one JSONL per Run."""
-    result = _entry("kullback.builder.build", "run_batch")(
-        workdir=workdir, task_id=task, model=_live_model(model, base_url), count=count, seed=seed)
-    typer.echo(json.dumps(result, default=str))
+    reports = _entry("kullback.runner.tool", "reroll")(
+        environment_dir=workdir, task_id=task, model=_live_model(model, base_url), count=count,
+        workdir=workdir)
+    typer.echo(json.dumps([report.as_dict() for report in reports], default=str))
 
 
 @app.command("solve-rate")
@@ -621,9 +533,9 @@ def solve_rate(
     A measuring instrument, not a trainer: no-signal Runs (not verdicted, environment failures)
     stand outside the rate and inside the count.
     """
-    package = _entry("kullback.episode", "BuiltEnvironment")
-    stage = _entry("kullback.episode", "solve_rate")
-    lines = _entry("kullback.episode", "markdown_table")
+    package = _entry("kullback.runner.world.environment", "BuiltEnvironment")
+    stage = _entry("kullback.runner.world.solve", "solve_rate")
+    lines = _entry("kullback.runner.world.solve", "markdown_table")
     env = package(workdir)
     wanted = [part.strip() for part in tasks.split(",")] if tasks else None
     task_ids = [task_id for task_id in env.task_ids() if wanted is None or task_id in wanted]
@@ -1003,10 +915,8 @@ def synthesise(
     if archetype or from_domain:
         writer = _live_model(model, base_url) if model else None
         if writer is not None:
-            writer = _entry("kullback.builder.build", "_wrap")(
-                writer, "synthetic_intent", Path(workdir),
-                _entry("kullback.builder.build", "_ceiling")(Path(workdir), ceiling_usd),
-                model_id=model)
+            writer = _wrapped_model(writer, "synthetic_intent", Path(workdir), ceiling_usd,
+                                    model_id=model)
         made = _entry("kullback.synthesise", "shape")(
             workdir, archetype_ids=list(archetype or []), per_archetype=per_archetype, seed=seed,
             model=writer, judges=[writer, writer] if writer is not None else ())
@@ -1021,12 +931,33 @@ def synthesise(
     # (D65, D86); the Intent writer is no exception because it is the only model call here.
     writer = _live_model(model, base_url) if model else None
     if writer is not None:
-        writer = _entry("kullback.builder.build", "_wrap")(
-            writer, "synthetic_intent", Path(workdir),
-            _entry("kullback.builder.build", "_ceiling")(Path(workdir), ceiling_usd), model_id=model)
+        writer = _wrapped_model(writer, "synthetic_intent", Path(workdir), ceiling_usd,
+                                model_id=model)
     body = _entry("kullback.synthesise", "synthesise")(workdir, targets, seed=seed, model=writer)
     for line in _synthesis_lines(body):
         typer.echo(line)
+
+
+def _wrapped_model(model: Any, stage: str, workdir: Path, ceiling_usd: Optional[float],
+                   model_id: Optional[str] = None) -> Any:
+    """A model priced into budget.json and refused past the ceiling, memoized on disk (D65, D86).
+
+    What the Builder's stage wrapper did for its own models, beside the Builder: the memo
+    keeps a byte-identical request from reaching the network twice, and the ceiling resumes from
+    budget.json so a stopped command does not start at zero.
+    """
+    budget = importlib.import_module("kullback.runner.budget")
+    provider = importlib.import_module("kullback.ai.provider")
+    if model is None:
+        return None
+    name = model_id or getattr(model, "name", None) or "model"
+    ceiling = budget.Ceiling.from_totals(workdir, ceiling_usd) if ceiling_usd is not None else None
+    if ceiling is not None:
+        ceiling.require_priced(name)
+    inner = provider.MemoModel(model, workdir)
+    cache_key = f"kullback-{content_hash(str(Path(workdir).resolve()))[:12]}-{stage}"
+    return budget.BudgetedModel(inner, stage=stage, workdir=workdir, model_id=name,
+                                ceiling=ceiling, prompt_cache_key=cache_key)
 
 
 user_app = typer.Typer(add_completion=False,
@@ -1241,9 +1172,8 @@ def read_domain(
         raise typer.Exit(2)
     reader = _live_model(model, base_url) if model else None
     if reader is not None:
-        reader = _entry("kullback.builder.build", "_wrap")(
-            reader, "domain_reading", Path(workdir),
-            _entry("kullback.builder.build", "_ceiling")(Path(workdir), ceiling_usd), model_id=model)
+        reader = _wrapped_model(reader, "domain_reading", Path(workdir), ceiling_usd,
+                                model_id=model)
     body = domain_mod.read(workdir, sources=urls, depth=depth, corpus_url=corpus_url,
                            exclude=list(exclude or []), reader=reader, mapper=reader, judge=reader,
                            description=str(domain_line or ""), search_query=str(search or ""))
