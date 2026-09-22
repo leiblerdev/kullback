@@ -7,6 +7,7 @@ Rows are sorted by date sent or read, newest first. "Taken as" names the decisio
 | Date | Reference | Link | Taken as | Reading |
 | --- | --- | --- | --- | --- |
 | 2026-09-22 | huggingface/Repo2RLEnv, re-read for the overhaul | https://github.com/huggingface/Repo2RLEnv | reading for the overhaul briefs (streams 5 to 8) | .claude/reports/repo2rlenv-overhaul-2026-09-22.md |
+| 2026-09-22 | huggingface/Repo2RLEnv (third reading, the auto-verification loop) | https://github.com/huggingface/Repo2RLEnv | pending founder decision (intermediate examined status, probe identity across repairs, rows cap per ruling) | .claude/reports/repo2rlenv-verification-loop-2026-09-22.md |
 | 2026-09-22 | huggingface/tau, taken as the shape of the overhaul (kullback/ai mirrors tau_ai, kullback/agent mirrors tau_agent) | https://github.com/huggingface/tau | ADR-0011 | vendor/tau (read-only clone), docs/adr/0011-one-core-one-bus-autonomous-builder.md |
 | 2026-09-22 | Oh My Pi (omp), an agent harness the founder installed to compare against Claude Code and Muse Code | https://github.com/can1357/oh-my-pi | harness comparison of 2026-09-22 | .claude/herdr/overhaul-0922/cmp/ (comparison run) |
 | 2026-09-09 | Agent-World: Scaling Real-World Environment Synthesis for Evolving General Agent Intelligence (arXiv 2604.18292) | https://www.alphaxiv.org/abs/2604.18292 | D223 claim against state (report ruling, partial completion beside trusted); D224 synthetic Tasks over the tool graph; plan docs/scaling.md | .claude/reports/paper-2604.18292-2026-09-09.md |
