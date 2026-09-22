@@ -346,6 +346,39 @@ What Kullback already has, stage by stage, and what to take:
 - Independent inspection with the trajectories in view. The Examiner replays; add two named findings: hackability (a Run passes without doing the Task; the strict-verification rule that a claimed write must show in state is briefed as D228 and not yet in the decision log) and description-versus-evaluation mismatch (the Verifier checks something the Intent never asked for, or the reverse).
 - Repair and retune, then re-enter. D201 transactional repairs plus the TaskPilot difficulty knob; a finding of "too easy" or "too hard" adjusts the evaluation points and the Task goes back through the loop rather than being dropped.
 
+## Kitaru reading (ZenML), 2026-09-22
+
+Founder: "learn from kitaru please. they are also doing something similar to be honest but more focused on evaluations rather than environment generation ( we need the evaluation aspect because that is what pulls and then environment generation because that is what keeps them )." Reading in .claude/reports/kitaru-2026-09-22.md; row in docs/papers.md.
+
+What it is, in three sentences (report section 5): Kitaru grades real production traces of an agent, recorded live through an adapter or imported from a trace store (Langfuse, LangSmith, Braintrust, Logfire, Phoenix, custom). The unit of record is the session, one full agent run as a node tree of llm_call, tool_call, subagent_call and span nodes; grading is an evaluator (code) or a model judge per session, and a judge can independently pass or fail a threshold. There is no rebuilt world for the agent to act on (replay answers tool calls from the recording, or passes them through live) and no fidelity metric anywhere in the product.
+
+Three candidates from section 6 (each candidate, not decided):
+
+- Investigation-style human calibration record. Mechanism: a coding-assistant-authored worklist of (Run id, atom id) pairs with questions pinned to exact evidence, and the human answer stored addressed to that evidence as the calibration set for the next Verifier or judge version. What it buys: today's deferred "Human audit rate validation" is a raw percentage with no queryable trail; this turns "we audit 10%" into the exact question asked on the exact Run and what the person said. Smallest version: a `kullback review` command sampling Runs by the existing false-rejection and disagreement signals (D133, D185) and storing answers keyed to (Run id, atom id). Candidate, not decided.
+- Frozen cohort plus a gate verb. Mechanism: name a set of Task ids as an immutable version, then one CLI verb replays a candidate model over exactly that set and exits nonzero on regression, reusing `kullback run` and `kullback verdict` under one call. What it buys: nothing today freezes "these are the 50 Tasks the last fix was checked against", so a future round can silently drop coverage of an old fix. Smallest version: a `workdir/cohorts/<name>.json` file listing Task ids plus `kullback gate --cohort <name> --model <id>`, failing when trusted pass rate drops versus the last recorded run of the same cohort. Candidate, not decided.
+- Held state for judge atoms. Mechanism: when a judge atom's confidence sits in a band around its threshold, record `held` instead of forcing pass or fail, and report decisive coverage (pass plus fail over pass plus fail plus held) as its own number. What it buys: stops a borderline judge call from silently landing on whichever side the threshold rounds to, cheaper than the D92 two-judge disagreement queue. Smallest version: extend `judge.py` to a three-value result and add one decisive-coverage line to the report's judge section; the judge still never awards a pass (D110). Candidate, not decided.
+
+Not taken, and why (section 6): the recording-only replay model (answer from the literal recording, or pass through live) is a step backward on fidelity, since it cannot answer an off-path call at all, which is exactly the gap the synthetic-row and assisted-tool machinery already exists to close. The object namespace (agent, session, cohort, experiment) is not imported wholesale either: several names describe UX conventions Kitaru itself was still stabilizing weeks before this reading, not settled architecture to treat as precedent.
+
+Where the reading disagrees with the founder's framing (section 6, the report's view, stated plainly): the "more focused on evaluations" half holds completely, since section 4 found zero environment-generation surface. What the framing understates is that the pull looks like it comes from replay discipline plus structured human calibration, not from evaluators alone ("your production traffic is already the test suite you don't have a way to freeze and replay"). Kullback already has the harder-to-build half of that pair (a real replay and fidelity metric) and is missing the calibration-artifact half.
+
+Open questions for the founder, verbatim from section 7:
+
+1. Kitaru bundles Cloud pricing with ZenML's own orchestration product ("one subscription covers
+   both workspaces," pricing page). Does Leibler's evaluation offering need to stand alone commercially,
+   or is bundling with an adjacent product (e.g., a future Leibler orchestration or monitoring layer)
+   part of the plan, since it changes whether "evaluation as the pull" needs to justify its own price?
+2. Kitaru's investigation loop assumes a coding assistant (Claude Code, Codex, Cursor) is already in
+   the customer's workflow and drives the whole interview via MCP/skills. Should Kullback's equivalent
+   calibration loop assume the same (an agent-native product, sold as a skill/MCP install) or a
+   plain CLI/report a person reads directly, since that changes which of section 6's proposals is
+   worth building first?
+3. Section 5's table shows Kitaru with no fidelity metric and no environment/world at all, which
+   is a stronger asymmetry than "more focused on evaluations." Does the retention story ("environment
+   generation is what keeps them") still hold if a competitor's evaluation-only product turns out to
+   be commercially sufficient without ever building a world, or is environment generation's value
+   assumed rather than measured against a real customer's stated need?
+
 ## Build order from the 2026-09-18 architecture grill
 
 Founder, 2026-09-18, on the order the work lands in: "all the improvements we discussed, and then fidelity checks (if anything improved, if yes why), and then we test on AgentTrove as well." Answering the "why" requires a fixed baseline taken on the three workdirs before anything lands, each improvement landing as its own change with its own before and after against that baseline, and one ledger of deltas per change. Changes landed together cannot be told apart afterwards, which is why the step split and the one-scorer change each carry a re-freeze of their own. The decisions are D252 to D278 in the decision log. Implementation statements in this section describe the 2026-09-18 planning snapshot; the current checkpoint is at the end of docs/decision-log.md.
