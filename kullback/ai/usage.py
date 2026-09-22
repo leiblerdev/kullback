@@ -7,6 +7,8 @@ one pydantic class and no client keeps that true while ai still imports nothing 
 
 from __future__ import annotations
 
+from typing import Any
+
 from pydantic import BaseModel, ConfigDict, Field, model_serializer, model_validator
 
 
@@ -54,3 +56,101 @@ class Usage(BaseModel):
         if self.reasoning == 0:
             data.pop("reasoning", None)
         return data
+
+
+def reasoning_of(usage: Any) -> int:
+    """The reasoning count a provider usage payload reports, or zero when it carries none.
+
+    One reader for every shape the adapters parse: a flat reasoning key on a stored reply,
+    the chat shape's completion_tokens_details.reasoning_tokens, and the Responses shape's
+    output_tokens_details.reasoning_tokens. This reads the reported number only; whether it is
+    a share of output is the boundary's call in `reasoning_share` below. Zero here means the
+    provider did not report it, not that no reasoning happened.
+    """
+    if not isinstance(usage, dict):
+        return 0
+    direct = usage.get("reasoning", 0) or 0
+    chat = usage.get("completion_tokens_details") or {}
+    answered = usage.get("output_tokens_details") or {}
+    if not isinstance(chat, dict):
+        chat = {}
+    if not isinstance(answered, dict):
+        answered = {}
+    return int(direct or chat.get("reasoning_tokens", 0) or answered.get("reasoning_tokens", 0) or 0)
+
+
+def reasoning_share(usage: Any, output: int) -> int:
+    """The reported count as a share of output, or zero when it is not one.
+
+    The boundary is tolerant where the record is strict: some routed providers report reasoning
+    outside the completion total, and a reply the build already paid for must not die over a
+    telemetry field. A count that is negative or above the reported output is recorded as zero,
+    which means "not reported as a part of output", and is never rewritten into a different
+    nonzero number. The oddity stays visible on the reply's `raw` payload beside it, which is
+    the one way this module surfaces something non-fatal (there is no log line and no warning
+    here). `Usage` itself still refuses such a record, so a stored file carrying one fails at
+    load instead of loading wrong.
+    """
+    reported = reasoning_of(usage)
+    if reported < 0 or reported > output:
+        return 0
+    return reported
+
+
+def usage_from_openai_chat(usage: Any) -> Usage:
+    """One chat completions usage payload as ours.
+
+    `Usage.input` means uncached input everywhere in the Harness, which is what Anthropic already
+    reports. OpenAI's prompt_tokens includes the cached ones, so the subtraction happens here and
+    budget.py bills each count at its own rate with no arithmetic. Endpoints that charge to write
+    the cache report what they wrote, and dropping that billed a build for less than it cost.
+    """
+    usage = usage if isinstance(usage, dict) else {}
+    details = usage.get("prompt_tokens_details") or {}
+    if not isinstance(details, dict):
+        details = {}
+    cached = int(details.get("cached_tokens", 0) or 0)
+    written = int(details.get("cache_write_tokens", 0) or 0)
+    output = int(usage.get("completion_tokens", 0) or 0)
+    return Usage(
+        input=max(0, int(usage.get("prompt_tokens", 0) or 0) - cached),
+        output=output,
+        cache_read=cached,
+        cache_write=written,
+        reasoning=reasoning_share(usage, output),
+    )
+
+
+def usage_from_openai_responses(usage: Any) -> Usage:
+    """One Responses API usage payload as ours, on the same uncached-input convention."""
+    usage = usage if isinstance(usage, dict) else {}
+    details = usage.get("input_tokens_details") or {}
+    if not isinstance(details, dict):
+        details = {}
+    cached = int(details.get("cached_tokens", 0) or 0)
+    written = int(details.get("cache_write_tokens", 0) or 0)
+    output = int(usage.get("output_tokens", 0) or 0)
+    return Usage(
+        input=max(0, int(usage.get("input_tokens", 0) or 0) - cached),
+        output=output,
+        cache_read=cached,
+        cache_write=written,
+        reasoning=reasoning_share(usage, output),
+    )
+
+
+def usage_from_anthropic(usage: Any) -> Usage:
+    """One Messages API usage payload as ours. Its input count is already the uncached one.
+
+    The Messages API reports no separate reasoning count today (thinking tokens sit inside
+    output_tokens), so the reasoning field reads zero until the payload carries one.
+    """
+    usage = usage if isinstance(usage, dict) else {}
+    output = int(usage.get("output_tokens", 0) or 0)
+    return Usage(
+        input=int(usage.get("input_tokens", 0) or 0),
+        output=output,
+        cache_read=int(usage.get("cache_read_input_tokens", 0) or 0),
+        cache_write=int(usage.get("cache_creation_input_tokens", 0) or 0),
+        reasoning=reasoning_share(usage, output),
+    )
