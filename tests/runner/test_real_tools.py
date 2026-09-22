@@ -300,3 +300,39 @@ def test_run_returns_its_state_when_the_export_fails(workdir):
     assert out.run.termination_reason == "agent_stop"
     answered = [e for e in out.run.events if e.type == "tool_result"]
     assert answered[0].payload["result"] == "hi"
+
+
+def test_timed_out_world_marks_the_outcome_as_unanswered():
+    world = FakeWorld([FakeReceipt(stdout=b"part", timed_out=True)])
+    tool = RealTool("shell", lambda: world)
+    out = tool.call(shell_batch("sleep 99"))
+    assert out.world_answered is False
+    assert out.error_class == "transient"
+
+
+def test_nonzero_exit_marks_the_outcome_as_answered():
+    world = FakeWorld([FakeReceipt(stdout=b"half", stderr=b"nope", exit_code=1)])
+    tool = RealTool("shell", lambda: world)
+    out = tool.call(shell_batch("two"))
+    assert out.world_answered is True
+    assert out.error_class is None
+    assert out.result == "halfnope"
+
+
+def test_loop_stops_at_the_first_real_world_failure_with_an_env_error_verdict(workdir):
+    """A timed out world stops the Run at once; the Verdict blames the Environment."""
+    from kullback.runner.records import Verifier
+    from kullback.runner.verdict import verdict
+    world = FakeWorld([FakeReceipt(stdout=b"part", timed_out=True)])
+    model = TestModel([
+        {"tool_calls": [{"id": "c1", "name": "shell", "arguments": shell_batch("sleep 99")},
+                        {"id": "c2", "name": "shell", "arguments": shell_batch("ls")}]},
+    ])
+    state = new_run_state("r1", workdir=workdir)
+    run(state, model, tools=[{"name": "shell"}], router=real_router(world))
+    assert state.stopped is True
+    assert state.run.termination_reason == "environment_cannot_answer"
+    assert state.run.route_counts == {"cannot_answer": 1}
+    assert [event.type for event in state.run.events].count("tool_call") == 1
+    done = verdict(state.run, Verifier(task_id="t", atoms=[]))
+    assert done.class_ == "env_error"
