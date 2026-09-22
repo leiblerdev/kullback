@@ -17,13 +17,21 @@ from typing import Any, Iterable, Optional
 from pydantic import BaseModel, ConfigDict, Field
 
 from kullback.agent.tools import AgentTool, RetryableToolError
-from kullback.examiner.exam_files import ExamRoot, Finding, evidence_of, finding_key, open_by_key
+from kullback.examiner.exam_files import (
+    ExamRoot,
+    Finding,
+    evidence_of,
+    finding_key,
+    open_by_key,
+    save_ruling_files,
+    seeded_history,
+)
 from kullback.gates.bindings import rulings_for
 from kullback.gates.hook import ruling_line
 from kullback.gates.probes import version_hash, write_tools_of
 from kullback.gates.verifier_suite import HELPERS_SRC, check_run, make_atom
 from kullback.runner import tool as runner_tool
-from kullback.runner.records import Event, Run, Verifier, as_dict, write_json
+from kullback.runner.records import Event, Run, Verifier, VerifierVersion, as_dict, write_json
 
 PRODUCED_VERIFIERS = ["verifiers"]
 PRODUCED_PROBES = ["probes"]
@@ -221,26 +229,49 @@ def _refuse_proposal(task_id: str, version: str, records: list[dict]) -> Retryab
 
 
 def _propose_verifier(root: ExamRoot):
-    """One proposal as a transaction (D201): ruled on the write, kept only when every ruling passed."""
+    """One proposal as a transaction (D201): ruled on the write, kept only when every ruling passed.
+
+    The candidate joins the Task's history as an accepted trial version before the ruling, so
+    the trusted gate reads it as the current accepted version and the loosening gate compares
+    it against the version before it (D127). A refused proposal keeps its row, rewritten as
+    rejected with the gates that rejected it: the history is the record, never dropped (D201).
+    """
     async def propose_verifier(args: ProposeArgs) -> ProposeResult:
         current = _current(root, args.task_id)
         candidate = current.model_copy(deep=True, update={
             "atoms": _candidate_atoms(current, args.drop, args.add),
             "verifier_version": _next_version(current)})
         digest = version_hash(candidate)
+        hist = seeded_history(root.history, args.task_id, current)
+        hist.versions.append(VerifierVersion(
+            task_id=args.task_id, content_hash=digest, verifier_version=str(len(hist.versions) + 1),
+            parent_hash=next((v.content_hash for v in reversed(hist.versions) if v.accepted), None),
+            by="repair", reason=args.reason, accepted=True, verifier=candidate))
+        root.history[args.task_id] = hist
         target = root.exam_dir / "verifiers" / f"{args.task_id}.json"
         previous = target.read_bytes() if target.is_file() else None
+        previous_verifier = root.verifiers.get(args.task_id)
+        root.verifiers[args.task_id] = candidate
         write_json(target, as_dict(candidate))
+        save_ruling_files(root)
         records = _ruling_records(rulings_for(
             root.exam_dir, f"verifiers/{args.task_id}.json", root.workdir,
             evidence=evidence_of(root)))
         if records and all(record["accepted"] for record in records):
-            root.verifiers[args.task_id] = candidate
             summary = (f"proposal version {candidate.verifier_version} for task {args.task_id} "
                        f"({digest[:12]}) accepted: " + "; ".join(record["line"] for record in records))
             return ProposeResult(summary=summary, task_id=args.task_id, content_hash=digest,
                                 verifier_version=candidate.verifier_version,
                                 atoms=len(candidate.atoms), rulings=records)
+        if previous_verifier is None:
+            root.verifiers.pop(args.task_id, None)
+        else:
+            root.verifiers[args.task_id] = previous_verifier
+        hist.versions[-1] = hist.versions[-1].model_copy(
+            update={"accepted": False,
+                    "rejected_by": [record["name"] for record in records if not record["accepted"]]})
+        root.history[args.task_id] = hist
+        save_ruling_files(root)
         if previous is None:
             target.unlink(missing_ok=True)
         else:
