@@ -10,7 +10,9 @@ from kullback.agent.harness import AgentHarness, drive_tool
 from kullback.ai.provider import ModelReply, TestModel, ToolCallRequest
 from kullback.examiner import session as S
 from kullback.examiner.exam_files import ExamRoot
+from kullback.runner import tool
 from kullback.runner.records import as_dict, read_json, write_json
+from tests.runner.test_tool import _env_with_trace
 
 
 def reply(content, *calls) -> ModelReply:
@@ -129,3 +131,31 @@ def test_bash_is_not_registered_and_base_tools_are_scoped_to_exam(tmp_path):
     S.expose(world.workdir)
     refused = drive_tool(harness, "write", {"path": "runs/x.jsonl", "content": "{}"})
     assert refused.is_error is True
+
+
+def _rename_loop() -> TestModel:
+    """A model that reads the widget and writes the striped label, then stops, on every Run."""
+    return TestModel([
+        ModelReply(content=None, model="test", tool_calls=[
+            ToolCallRequest(id="m1", name="describe_widget", arguments={"widget_id": "w1"})]),
+        ModelReply(content=None, model="test", tool_calls=[
+            ToolCallRequest(id="m2", name="rename_widget",
+                            arguments={"widget_id": "w1", "label": "striped"})]),
+        ModelReply(content="Done.", model="test"),
+    ], loop=True)
+
+
+def test_examine_with_a_reroll_model_buys_second_path_rerolls(tmp_path):
+    """A lone Reference buys re-rolls through the runner callable: Runs on disk, rows kept."""
+    root = _env_with_trace(tmp_path / "env")
+    seed = tool.run(root, "widget_task", _rename_loop(), workdir=root)
+    write_json(root / "replays.json", {"widget_task": {
+        "rec1": {"trace_id": "rec1", "run_id": seed.run_id,
+                 "confirmed": True, "path": seed.path}}})
+    write_json(root / "rerolls.json", {"widget_task": []})
+    write_json(root / "constraints.json", [])
+    S.examine(root, model=None, reroll_model=_rename_loop())
+    bought = sorted((root / "runs").glob("second-path-*.jsonl"))
+    assert bought, "a Reference standing alone buys re-rolls through the callable"
+    rows = (read_json(root / "examiner" / "rerolls.json", {}) or {}).get("widget_task") or []
+    assert rows and all(row.get("reason") == "second_path" for row in rows)

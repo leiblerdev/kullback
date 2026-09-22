@@ -20,6 +20,7 @@ from kullback.agent.harness import AgentHarness
 from kullback.agent.session import SessionStore
 from kullback.examiner import findings as findings_mod
 from kullback.examiner import prompt as prompt_mod
+from kullback.examiner import runners as runners_mod
 from kullback.examiner import stage as stage_mod
 from kullback.examiner.domain_tools import domain_tools
 from kullback.examiner.exam_files import ExamRoot, Finding, evidence_of, expose, names_forbidden_path
@@ -29,7 +30,7 @@ from kullback.gates.ledger import GateLedger
 from kullback.gates.verifier_suite import load_run
 from kullback.runner import budget
 from kullback.runner.canon import rules_of
-from kullback.runner.records import Constraint, Task, ToolSig, Verifier, read_json, write_json
+from kullback.runner.records import Constraint, Task, ToolSig, UserRules, Verifier, read_json, write_json
 
 BASE_ONLY = ("read", "write", "edit", "grep", "find", "ls", "web_search")
 WRITABLE_DIRS = ("verifiers", "probes")
@@ -158,13 +159,49 @@ def load_store(workdir: Any) -> dict:
              "replays": read_json(root / "replays.json", {}) or {},
              "rerolls": read_json(root / "rerolls.json", {}) or {},
              "intents": _load_keyed(root / "intents", "intents.json"),
-             "user_rules": _load_keyed(root / "user_rules", "user_rules.json"),
+             "user_rules": _load_user_rules(root),
              "traces": [], "assisted_tools": [],
              "tool_fidelity": read_json(root / "tool_fidelity.json", {}) or {}}
     missing = stage_mod.missing_inputs(store)
     if missing:
         raise ValueError(f"the workdir holds nothing to derive from: missing {', '.join(missing)}")
     return store
+
+
+def _load_user_rules(root: Path) -> dict:
+    """The user rules by run id as records, skipping what does not parse.
+
+    The derivation's leak gate scores the rules as a record; raw dicts off disk would fail
+    there rather than here, so invalid entries are left out the way invalid tasks are.
+    """
+    out: dict[str, Any] = {}
+    for key, body in _load_keyed(root / "user_rules", "user_rules.json").items():
+        try:
+            out[key] = UserRules.model_validate(body)
+        except ValueError:
+            continue
+    return out
+
+
+class _FileAnchor:
+    """anchor.json as the derivation takes it: held-out Runs never seed a Reference (D81)."""
+
+    def __init__(self, body: dict):
+        self._held_out = body.get("held_out", {}) or {}
+
+    def seed_runs(self, task_id: str, run_ids: Any) -> list:
+        """What may be built from: every Run of the Task except its anchor."""
+        held = set(self._held_out.get(task_id, []))
+        return [run_id for run_id in run_ids if run_id not in held]
+
+
+def _load_anchor(workdir: Any) -> Optional[_FileAnchor]:
+    """The workdir's anchor when one was chosen, else nothing to exclude (D81)."""
+    try:
+        body = read_json(Path(workdir) / "anchor.json", None)
+    except (OSError, ValueError):
+        return None
+    return _FileAnchor(body) if isinstance(body, dict) else None
 
 
 def _load_tasks(root: Path) -> list[Task]:
@@ -303,13 +340,20 @@ def examine(workdir: Any, *, task_ids: Optional[Iterable[str]] = None, model: An
     With `model=None` the session is code only: the derivation and its findings. With a model,
     one message over the Examiner's root, capped at `max_turns`; the Builder decides when to
     call again. Returns every finding, derive-filed and model-filed, and writes findings.json.
+
+    The probe, re-roll and variant runners come from the runner tool over the workdir (D120):
+    without a re-roll model the derivation stays code only and buys no Runs.
     """
     root = Path(workdir)
     expose(workdir)
     store = load_store(workdir)
-    ctx = stage_mod.ExamContext(root, GateLedger(root), anchor=None)
+    anchor = _load_anchor(root)
+    ctx = stage_mod.ExamContext(root, GateLedger(root), anchor=anchor)
+    runners = runners_mod.runners_for(root, reroll_model=reroll_model, anchor=anchor)
     stage_mod.derive_all(ctx, store, probe_model=probe_model, judge_model=judge_model,
-                         round_number=0)
+                         run_probe=runners["run_probe"],
+                         run_rerolls=runners["run_rerolls"] if reroll_model is not None else None,
+                         run_variant=runners["run_variant"], round_number=0)
     findings = derive_findings(workdir, store)
     if task_ids is not None:
         wanted = set(task_ids)

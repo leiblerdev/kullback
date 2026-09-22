@@ -7,7 +7,7 @@ from pathlib import Path
 
 from kullback.ai.provider import ModelReply, TestModel, ToolCallRequest
 from kullback.runner import tool
-from kullback.runner.records import RawPtr, ToolCall, Trace, Turn, write_json
+from kullback.runner.records import RawPtr, ToolCall, Trace, Turn, Verifier, write_json
 from tests.episode.invented import write_env
 
 PTR = RawPtr(file_hash="f" * 64, sim_index=0, msg_index=0)
@@ -112,6 +112,63 @@ def test_run_plays_verdicts_and_diffs_one_run(tmp_path):
         ModelReply(content="Done.", model="test"),
     ], loop=True), count=2, workdir=tmp_path / "work")
     assert [item.run_id for item in rerolled] == ["widget_task-0", "widget_task-1"]
+
+
+def _rename_script():
+    """A model that reads the widget and writes the striped label, then stops."""
+    return TestModel([
+        ModelReply(content=None, model="test", tool_calls=[
+            ToolCallRequest(id="m1", name="describe_widget", arguments={"widget_id": "w1"})]),
+        ModelReply(content=None, model="test", tool_calls=[
+            ToolCallRequest(id="m2", name="rename_widget",
+                            arguments={"widget_id": "w1", "label": "striped"})]),
+        ModelReply(content="Done.", model="test"),
+    ], loop=True)
+
+
+def test_probe_scores_the_write_it_was_told_to_reach_and_lands_under_probes(tmp_path):
+    """A probe that calls the write tool directly passes the Verifier and never lands in runs/."""
+    root = _env_with_trace(tmp_path / "env")
+    verifier = Verifier.model_validate(json.loads(
+        (root / "verifiers" / "widget_task.json").read_text(encoding="utf-8")))
+    report = tool.probe(root, "widget_task", _rename_script(), verifier=verifier,
+                        workdir=tmp_path / "work")
+    assert report.run_id == "probe-widget_task"
+    assert Path(report.path).is_file() and Path(report.path).parent.name == "probes"
+    assert list((tmp_path / "work" / "runs").glob("*.jsonl")) == []
+    assert report.verdict is not None and report.verdict.passed is True
+
+
+def test_replay_calls_writes_the_given_run_id_under_the_task_and_reseeds_stably(tmp_path):
+    """A hand-written call list replays into runs/<task>/ under its own id, same rows twice."""
+    root = _env_with_trace(tmp_path / "env")
+    calls = [
+        {"id": "c1", "name": "describe_widget", "args": {"widget_id": "w1"},
+         "requestor": "assistant", "turn": 0},
+        {"id": "c2", "name": "rename_widget", "args": {"widget_id": "w1", "label": "striped"},
+         "requestor": "assistant", "turn": 0},
+    ]
+    first = tool.replay_calls(root, "widget_task", calls, run_id="synth-1",
+                              workdir=tmp_path / "work")
+    assert first.run_id == "synth-1"
+    assert Path(first.path) == tmp_path / "work" / "runs" / "widget_task" / "synth-1.jsonl"
+    second = tool.replay_calls(root, "widget_task", calls, run_id="synth-1",
+                               workdir=tmp_path / "work")
+    assert [(call.tool, call.recorded, call.ours) for call in second.calls] == [
+        (call.tool, call.recorded, call.ours) for call in first.calls]
+
+
+def test_reroll_with_prefix_names_its_files_for_the_buyer_and_carries_user_end(tmp_path):
+    """Prefixed re-rolls file under the buyer's name and every report carries user_end."""
+    root = _env_with_trace(tmp_path / "env")
+    reports = tool.reroll(root, "widget_task", _rename_script(), count=2,
+                          workdir=tmp_path / "work", prefix="second-path-r0-b0")
+    assert [report.run_id for report in reports] == ["second-path-r0-b0-0", "second-path-r0-b0-1"]
+    assert all(Path(report.path).name.startswith("second-path-r0-b0-") for report in reports)
+    assert all(Path(report.path).is_file() for report in reports)
+    assert all("user_end" in report.as_dict() for report in reports)
+    direct = tool.run(root, "widget_task", _rename_script(), workdir=tmp_path / "named", run_id="custom-7")
+    assert direct.run_id == "custom-7" and (tmp_path / "named" / "runs" / "custom-7.jsonl").is_file()
 
 
 def test_the_shared_retail_fixture_loads():
