@@ -3524,18 +3524,121 @@ def _read_pair(tool: str, theirs: Any, ours: Any, readers: Any) -> tuple[Any, An
     return (left, right) if isinstance(left, dict) and isinstance(right, dict) else (theirs, ours)
 
 
+def _scalar_columns(row: Any) -> dict:
+    """Only the scalar columns of one row: a guard reads values, never nested objects."""
+    if not isinstance(row, dict):
+        return {}
+    return {str(name): value for name, value in row.items()
+            if isinstance(value, (str, int, float)) and not isinstance(value, bool)}
+
+
+def named_row(args: Any, schema: Optional[EntitySchema]) -> Optional[tuple[str, str]]:
+    """The (table, row id) the call's own arguments name, or None.
+
+    A guard that refuses a call reads the row the call names, and the call names it by its
+    argument ids over the schema's tables: every key column of one table present as a string.
+    Anything less names no row, because a partial key would name a row of its own.
+    """
+    if not isinstance(args, dict) or schema is None:
+        return None
+    for table in sorted(getattr(schema, "tables", None) or ()):
+        fields = key_fields(schema, table)
+        if fields and all(isinstance(args.get(name), str) for name in fields):
+            key = row_key(schema, table, args)
+            if key is not None and not partial_key(schema, table, key):
+                return (table, key)
+    return None
+
+
+def _stated_rows(result: Any) -> list[dict]:
+    """The row objects one recorded result states: the object itself, or the objects of a list."""
+    parsed = parse_result(result)
+    if isinstance(parsed, dict):
+        return [parsed]
+    if isinstance(parsed, (list, tuple)):
+        return [item for item in parsed if isinstance(item, dict)]
+    return []
+
+
+def _peer_error(peer: Any) -> bool:
+    """Whether this recorded call raised instead of answering, as a ToolCall or a plain record."""
+    if isinstance(peer, ToolCall):
+        return peer.error is not None
+    return isinstance(peer, dict) and peer.get("error") is not None
+
+
+def sighted_row(peers: Iterable[Any], call: Any, table: str, row_id: str,
+                schema: Optional[EntitySchema]) -> Optional[dict]:
+    """The latest earlier sighting of this row in the call's own trace, scalars only, or None.
+
+    Earlier is the trace's own order, and only the same trace counts: another trace ran on
+    another world, so what it saw says nothing about the columns the guard read here. A peer
+    sharing the call's whole feed key cannot be told apart from it and is left out with it.
+    """
+    if schema is None:
+        return None
+    ordered = sorted(peers, key=context_feed_key)
+    mine = context_feed_key(call)
+    _, trace_id, _, _, _ = recorded_call_parts(call)
+    found: Optional[dict] = None
+    for peer in ordered:
+        if not context_feed_key(peer) < mine:
+            break
+        _, peer_trace, _, peer_args, peer_result = recorded_call_parts(peer)
+        if peer_trace != trace_id or _peer_error(peer):
+            continue
+        for row in _stated_rows(peer_result):
+            if match_table(schema, row, peer_args) == (table, row_id):
+                found = row
+    return _scalar_columns(found) if found is not None else None
+
+
+def witnessed_worlds(calls: Iterable[Any], schema: Optional[EntitySchema],
+                     starting: Optional[dict] = None) -> dict[str, dict]:
+    """Call id to the world columns the guard could have read at that call.
+
+    The row the call names carries what the trace's own earlier sightings showed of it, else
+    what the Starting state that call ran on holds of it; only scalar columns travel, and a
+    call naming no row carries an empty world. `starting` maps a call id to that Starting
+    state, the same map the sandbox serves the call itself from.
+    """
+    calls = list(calls)
+    starting = starting or {}
+    out: dict[str, dict] = {}
+    for call in calls:
+        call_id, _, _, args, _ = recorded_call_parts(call)
+        key = str(call_id or "")
+        if not key:
+            continue
+        named = named_row(args, schema)
+        if named is None:
+            out[key] = {}
+            continue
+        table, row_id = named
+        seen = sighted_row(calls, call, table, row_id, schema)
+        if seen is not None:
+            out[key] = seen
+            continue
+        home = ((starting.get(key) or {}).get(table) or {}).get(row_id)
+        out[key] = _scalar_columns(home) if isinstance(home, dict) else {}
+    return out
+
+
 def call_triples(toolsig: ToolSig, calls: Iterable[ToolCall], results: Iterable[dict],
-                 outcomes: Iterable[dict], readers: Any = None) -> list[lesson_mod.Triple]:
+                 outcomes: Iterable[dict], readers: Any = None,
+                 worlds: Optional[dict] = None) -> list[lesson_mod.Triple]:
     """One recorded call, what it answered and what the body answered, as the relation step reads it (D211).
 
     The triples are built here and not off `tool_call_outcomes.json`, which keeps a digest of each
     answer and not the answer: a digest says two answers differ and can say nothing about how, and
     every relation in the catalogue is a statement about how. The recorded side is the call's own
     result or the class it raised; ours is what the sandbox just answered for the same call, which
-    the gates have already run and the memo already holds.
+    the gates have already run and the memo already holds. `worlds` maps a call id to the world
+    columns the guard could have read there, and is empty where the caller passes none.
     """
     matched = {str(row.get("call_id") or ""): bool(row.get("replayed"))
                for row in outcomes if isinstance(row, dict)}
+    worlds = worlds or {}
     triples: list[lesson_mod.Triple] = []
     for call, result in zip(calls, results, strict=False):
         ours = result.get("value") if isinstance(result, dict) and result.get("ok") else None
@@ -3549,13 +3652,15 @@ def call_triples(toolsig: ToolSig, calls: Iterable[ToolCall], results: Iterable[
             ours=ours,
             their_error="" if call.error is None else str(getattr(call.error, "class_", "") or "an error"),
             our_error=our_error,
-            matched=matched.get(str(call.id or ""), False)))
+            matched=matched.get(str(call.id or ""), False),
+            world=dict(worlds.get(str(call.id or "")) or {})))
     return triples
 
 
 def diagnose_body(toolsig: ToolSig, source: str, sandbox: Sandbox, calls: list[ToolCall],
                   shown: list[ToolCall], outcomes: list[dict], gates: list[GateResult],
-                  unbeaten: int = 0, blocked: str = "", rules: Any = None, readers: Any = None) -> Any:
+                  unbeaten: int = 0, blocked: str = "", rules: Any = None, readers: Any = None,
+                  schema: Optional[EntitySchema] = None) -> Any:
     """The code-only read of one body that is already there: full diff, relation, witnessed lines (D211).
 
     Nothing here calls a model. The answers are the sandbox's memo, already paid for by the gates
@@ -3576,7 +3681,10 @@ def diagnose_body(toolsig: ToolSig, source: str, sandbox: Sandbox, calls: list[T
         results = sandbox.run(shown)
     except SandboxError:
         return lesson_mod.diagnose(toolsig.name, (), unbeaten=unbeaten, blocked=blocked)
-    triples = call_triples(toolsig, shown, results, outcomes, readers)
+    worlds = (witnessed_worlds(shown, schema,
+                               {str(peer.id or ""): sandbox.state_for(peer) for peer in shown})
+              if schema is not None else None)
+    triples = call_triples(toolsig, shown, results, outcomes, readers, worlds=worlds)
     carried = (lesson_mod.FAILING_SET_SHOWN if lesson_mod.stalled(unbeaten)
                else lesson_mod.EXCEPTIONS_NAMED)
     return lesson_mod.diagnose(toolsig.name, triples, source=source, function=toolsig.name,
@@ -3626,7 +3734,7 @@ def grade_body(toolsig: ToolSig, body: str, calls: Iterable[ToolCall], schema: E
     if build.assisted:
         build.diagnosis = diagnose_body(toolsig, source, sandbox, calls, shown, build.call_outcomes,
                                         build.gates, unbeaten=unbeaten, blocked=blocked, rules=rules,
-                                        readers=readers)
+                                        readers=readers, schema=schema)
     return build
 
 

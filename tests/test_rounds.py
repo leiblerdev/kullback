@@ -101,7 +101,9 @@ TARGET = "environment"
 # identical to main's.
 # Re-pinned for the invented-refusal lesson relation: the closure hash moved the stage keys
 # with the sources it names, and with the key tags normalized the rows are byte identical.
-TASK_STATUS_SHA256_BEFORE_THE_PHASE = "ed86abb3754294d2ac80584a51154c59cf8e64adabcdfed230c3b2899b30a6b4"
+# Re-pinned again once Triples carried witnessed world: the lesson sentences name the columns
+# the guard read, and with the key tags normalized the rows are byte identical.
+TASK_STATUS_SHA256_BEFORE_THE_PHASE = "a293795da688898be4711e586cf0bbb232f3e6cc1e2fbbf3ee4ac72bda792ede"
 
 
 def _fixture(request) -> Path:
