@@ -17,11 +17,13 @@ from typing import Any, Iterable, Optional
 from pydantic import BaseModel, ConfigDict, Field
 
 from kullback.agent.tools import AgentTool, RetryableToolError
-from kullback.examiner.exam_files import ExamRoot, Finding, finding_key, open_by_key
+from kullback.examiner.exam_files import ExamRoot, Finding, evidence_of, finding_key, open_by_key
+from kullback.gates.bindings import rulings_for
+from kullback.gates.hook import ruling_line
 from kullback.gates.probes import version_hash, write_tools_of
 from kullback.gates.verifier_suite import HELPERS_SRC, check_run, make_atom
 from kullback.runner import tool as runner_tool
-from kullback.runner.records import Event, Run, Verifier, as_dict, read_json, write_json
+from kullback.runner.records import Event, Run, Verifier, as_dict, write_json
 
 PRODUCED_VERIFIERS = ["verifiers"]
 PRODUCED_PROBES = ["probes"]
@@ -51,6 +53,8 @@ class ProposeResult(BaseModel):
     content_hash: str
     verifier_version: str
     atoms: int = 0
+    rulings: list[dict] = Field(default_factory=list, description="One record per ruling in the "
+                                "shape attach_ruling uses: name, accepted, line, rows.")
     produced: list[str] = Field(default_factory=lambda: list(PRODUCED_VERIFIERS))
 
 
@@ -198,7 +202,26 @@ def _next_version(current: Verifier) -> str:
         return f"{current.verifier_version or 1}+1"
 
 
+def _ruling_records(rulings: Iterable[Any]) -> list[dict]:
+    """One record per ruling in the shape attach_ruling uses: name, accepted, line, rows."""
+    return [{"name": ruling.stage, "accepted": bool(ruling.passed), "line": ruling_line(ruling),
+             "rows": [dict(row) for row in (ruling.rows or [])]} for ruling in rulings]
+
+
+def _refuse_proposal(task_id: str, version: str, records: list[dict]) -> RetryableToolError:
+    """A refused proposal as a retryable error: every ruling line, and the rows behind each failure."""
+    lines = "\n".join(record["line"] for record in records) or "no gate ruled on the proposal"
+    rows = "; ".join(f"{record['name']}: {record['rows']!r}"
+                     for record in records if not record["accepted"])
+    return RetryableToolError(
+        f"proposal version {version} for task {task_id} refused, the previous file stands:\n"
+        f"{lines}" + (f"\nrows behind the failures: {rows}" if rows else ""),
+        ask=("Read the rows behind the failures and propose again with atoms answering them, "
+             "or file a finding naming the Environment file and what differs after two refusals."))
+
+
 def _propose_verifier(root: ExamRoot):
+    """One proposal as a transaction (D201): ruled on the write, kept only when every ruling passed."""
     async def propose_verifier(args: ProposeArgs) -> ProposeResult:
         current = _current(root, args.task_id)
         candidate = current.model_copy(deep=True, update={
@@ -206,16 +229,23 @@ def _propose_verifier(root: ExamRoot):
             "verifier_version": _next_version(current)})
         digest = version_hash(candidate)
         target = root.exam_dir / "verifiers" / f"{args.task_id}.json"
+        previous = target.read_bytes() if target.is_file() else None
         write_json(target, as_dict(candidate))
-        try:
-            root.verifiers[args.task_id] = Verifier.model_validate(read_json(target))
-        except ValueError:
+        records = _ruling_records(rulings_for(
+            root.exam_dir, f"verifiers/{args.task_id}.json", root.workdir,
+            evidence=evidence_of(root)))
+        if records and all(record["accepted"] for record in records):
             root.verifiers[args.task_id] = candidate
-        summary = (f"proposed version {candidate.verifier_version} of task {args.task_id} "
-                   f"({digest[:12]}): {len(candidate.atoms)} atoms, {len(args.drop)} dropped, "
-                   f"{len(args.add)} added; the gates rule on the write")
-        return ProposeResult(summary=summary, task_id=args.task_id, content_hash=digest,
-                             verifier_version=candidate.verifier_version, atoms=len(candidate.atoms))
+            summary = (f"proposal version {candidate.verifier_version} for task {args.task_id} "
+                       f"({digest[:12]}) accepted: " + "; ".join(record["line"] for record in records))
+            return ProposeResult(summary=summary, task_id=args.task_id, content_hash=digest,
+                                verifier_version=candidate.verifier_version,
+                                atoms=len(candidate.atoms), rulings=records)
+        if previous is None:
+            target.unlink(missing_ok=True)
+        else:
+            target.write_bytes(previous)
+        raise _refuse_proposal(args.task_id, candidate.verifier_version, records)
 
     return propose_verifier
 
@@ -276,6 +306,9 @@ def _reroll(root: ExamRoot):
     async def reroll(args: RerollArgs) -> RerollResult:
         if root.allowance_remaining is not None and root.allowance_remaining <= 0:
             raise RuntimeError(f"the allowance is spent ({root.allowance_remaining:.2f} left)")
+        if root.reroll_model is None:
+            raise ValueError("no reroll model was given to this examination; "
+                             "file a finding naming the Task instead")
         reports = runner_tool.reroll(root.workdir, args.task_id, root.reroll_model,
                                      count=args.count, workdir=root.workdir)
         rows = []

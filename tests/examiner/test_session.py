@@ -55,6 +55,20 @@ def _ends(events, tool):
     return [e for e in events if isinstance(e, ToolExecutionEnd) and e.tool_name == tool]
 
 
+def test_model_propose_verifier_carries_rulings_in_details(tmp_path):
+    world = make_world(tmp_path)
+    materialize(world)
+    events = _scripted_events(world, [
+        reply("proposing", ("propose_verifier", {"task_id": "t1", "reason": "tighten",
+                                                 "drop": [], "add": []})),
+        reply("done"),
+    ])
+    [proposed] = _ends(events, "propose_verifier")
+    assert proposed.is_error is False
+    rulings = proposed.result.details["rulings"]
+    assert rulings and all(record["accepted"] for record in rulings)
+
+
 def test_model_write_of_verifiers_carries_rulings_runs_write_refused(tmp_path):
     world = make_world(tmp_path)
     materialize(world)
@@ -67,6 +81,19 @@ def test_model_write_of_verifiers_carries_rulings_runs_write_refused(tmp_path):
     assert writes[0].is_error is False
     assert writes[0].result.details["rulings"], "the verifiers binding rules on the write"
     assert writes[1].is_error is True
+
+
+def test_scripted_reroll_is_refused_when_the_allowance_is_spent(tmp_path):
+    world = make_world(tmp_path)
+    materialize(world)
+    events: list = []
+    S.examine(world.workdir, model=TestModel([
+        reply("buying", ("reroll", {"task_id": "t1", "count": 1})),
+        reply("done"),
+    ]), reroll_model=object(), allowance_usd=0.0, subscribers=[events.append])
+    [bought] = _ends(events, "reroll")
+    assert bought.is_error is True
+    assert "allowance is spent" in bought.result.content
 
 
 def test_model_finding_publishes_and_duplicates_are_refused_with_the_id(tmp_path):

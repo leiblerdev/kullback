@@ -22,7 +22,7 @@ from kullback.examiner import findings as findings_mod
 from kullback.examiner import prompt as prompt_mod
 from kullback.examiner import stage as stage_mod
 from kullback.examiner.domain_tools import domain_tools
-from kullback.examiner.exam_files import ExamRoot, Finding, expose, names_forbidden_path
+from kullback.examiner.exam_files import ExamRoot, Finding, evidence_of, expose, names_forbidden_path
 from kullback.gates import names_protected_path
 from kullback.gates.hook import PATH_KEYS, WRITE_TOOLS, gate_writes
 from kullback.gates.ledger import GateLedger
@@ -140,11 +140,8 @@ def examiner_extension(root: ExamRoot) -> Callable[[ExtensionAPI], None]:
             "examiner_protected_paths"))
         api.tool_call(_refuse_forbidden_paths())
         api.tool_call(_refuse_outside_roots())
-        api.tool_result(gate_writes(root=root.exam_dir, workdir=root.workdir, evidence={
-            "replays": root.replays or None, "rerolls": root.rerolls or None,
-            "sigs": root.sigs or None, "rules": root.canon_rules,
-            "verifiers": list(root.verifiers.values()) or None,
-            "task_status": root.task_status or None}))
+        api.tool_result(gate_writes(root=root.exam_dir, workdir=root.workdir,
+                                    evidence=evidence_of(root)))
         api.tool_result(_result_protection(api))
 
     return setup
@@ -298,7 +295,8 @@ def _one_line(text: str, limit: int = HINT_CHARS) -> str:
 
 
 def examine(workdir: Any, *, task_ids: Optional[Iterable[str]] = None, model: Any,
-            judge_model: Any = None, probe_model: Any = None, session_path: Any = None,
+            judge_model: Any = None, probe_model: Any = None, reroll_model: Any = None,
+            allowance_usd: Optional[float] = None, session_path: Any = None,
             subscribers: Iterable[Callable] = (), max_turns: int = 8) -> list[Finding]:
     """Derive the Verifiers by code, file what the records say, then run one model session.
 
@@ -320,7 +318,8 @@ def examine(workdir: Any, *, task_ids: Optional[Iterable[str]] = None, model: An
     write_json(root / "findings.json", [f.as_dict() for f in findings])
     if model is None:
         return findings
-    exam_root = _exam_root(workdir, store, findings)
+    exam_root = _exam_root(workdir, store, findings, reroll_model=reroll_model,
+                           allowance_usd=allowance_usd)
     harness = AgentHarness(model=model, max_turns=max_turns,
                            session=SessionStore.load(session_path) if session_path is not None else None,
                            context=ContextConfig(window=budget.window_for(getattr(model, "name", None))),
@@ -338,7 +337,14 @@ def examine(workdir: Any, *, task_ids: Optional[Iterable[str]] = None, model: An
     return list(exam_root.findings)
 
 
-def _exam_root(workdir: Any, store: dict, findings: list[Finding]) -> ExamRoot:
+def _exam_root(workdir: Any, store: dict, findings: list[Finding], reroll_model: Any = None,
+               allowance_usd: Optional[float] = None) -> ExamRoot:
+    """The session root: live Verifiers, signatures, rules and rows, but no task status.
+
+    The trust gate needs version history the new flow does not keep, so feeding it the status
+    file would refuse every fresh proposal as not an accepted version. Proposals are ruled
+    through the oracle, the suite and the pool alone; the status stays readable under exam/.
+    """
     root = Path(workdir)
     verifiers: dict[str, Verifier] = {}
     if (root / "verifiers").is_dir():
@@ -351,9 +357,7 @@ def _exam_root(workdir: Any, store: dict, findings: list[Finding]) -> ExamRoot:
     return ExamRoot(workdir=root, verifiers=verifiers, sigs=list(store.get("sigs") or []),
                     canon_rules=rules_of({"canon_rules": store.get("canon_rules")}),
                     replays=store.get("replays") or {}, rerolls=store.get("rerolls") or {},
-                    task_status=read_json(root / "task_status.json", {}) or {},
-                    findings=list(findings))
-
-
+                    findings=list(findings), reroll_model=reroll_model,
+                    allowance_remaining=allowance_usd)
 __all__ = ["BASE_ONLY", "EXAMINE_MESSAGE", "derive_findings", "examine", "examiner_extension",
            "finding_from_row", "load_store", "rulings_line", "task_runs_of"]

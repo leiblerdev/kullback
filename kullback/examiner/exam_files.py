@@ -223,6 +223,21 @@ def reference_runs(root: Path, row: dict, replay_rows: Any, reroll_rows: list) -
     return runs
 
 
+def evidence_of(root: ExamRoot) -> dict:
+    """The gate evidence for a write under the Examiner's root, in one place (D79, D201).
+
+    The six bindings the verifiers gate reads: the replay rows, the re-roll rows, the mined
+    signatures, the canon rules, the live Verifiers and the task status. Empty is None, so a
+    gate with nothing to rule over is skipped the way a missing workdir file skips it. The
+    trust gate needs version history the new flow does not keep, so a session root carries no
+    task status and proposals are ruled through the oracle, the suite and the pool alone.
+    """
+    return {"replays": root.replays or None, "rerolls": root.rerolls or None,
+            "sigs": root.sigs or None, "rules": root.canon_rules,
+            "verifiers": list(root.verifiers.values()) or None,
+            "task_status": root.task_status or None}
+
+
 __all__ = ["COPIED_DIRS", "COPIED_JSON", "EXAM_DIR", "RUNS_DIR", "SPOKEN_DIR", "ExamRoot",
-           "Finding", "finding_id_of", "finding_key", "names_forbidden_path", "open_by_key",
-           "reference_runs", "subject_of", "write_spoken", "expose", "FORBIDDEN_READS"]
+           "Finding", "evidence_of", "finding_id_of", "finding_key", "names_forbidden_path",
+           "open_by_key", "reference_runs", "subject_of", "write_spoken", "expose", "FORBIDDEN_READS"]
