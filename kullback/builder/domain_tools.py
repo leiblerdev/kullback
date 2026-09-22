@@ -23,7 +23,8 @@ from kullback.agent.tools import AgentTool
 from kullback.builder import env_files, world_tools
 from kullback.gates.trust import trusted_gate
 from kullback.runner import tool as runner_tool
-from kullback.runner.records import read_json
+from kullback.runner.records import read_json, write_json
+from kullback.runner.replay import AGREES
 
 #: How many per-call rows the rendered text carries before the count of the rest.
 ROWS_SHOWN = 20
@@ -128,6 +129,47 @@ def _render_replay(result: ReplayResult) -> str:
         shown.append(f"and {rest} more of {result.total}")
     shown.append(f"fidelity: {result.fidelity:.4f} over {result.total} recorded calls")
     return "\n".join([result.summary, *shown])
+
+
+def fidelity_index(replays: Any) -> dict[str, Any]:
+    """The per-tool and per-Task replay fidelity off the replays dict, for tool_fidelity.json.
+
+    Carried shape from build.py `attribute_fidelity` (D171), keyed on the runner's ReplayCall
+    rows instead of the deleted call outcomes: `tools` counts every recorded call once,
+    `tasks` keeps the first three differing calls per Task per tool, already worded.
+    A call counts as replayed when its verdict is in the runner's AGREES, else as
+    differing; a tool with a differing call is assisted.
+    """
+    tools: dict[str, Any] = {}
+    tasks: dict[str, Any] = {}
+    for task_id, traces in (replays or {}).items():
+        if not isinstance(traces, dict):
+            continue
+        for _, row in traces.items():
+            calls = row.get("calls") if isinstance(row, dict) else None
+            for call in calls or []:
+                if not isinstance(call, dict):
+                    continue
+                name = str(call.get("tool") or "")
+                if not name:
+                    continue
+                entry = tools.setdefault(
+                    name, {"calls": 0, "replayed": 0, "differing": 0, "assisted": False})
+                task_row = tasks.setdefault(str(task_id), {}).setdefault(
+                    name, {"replayed": 0, "differing": 0, "reasons": []})
+                entry["calls"] += 1
+                if str(call.get("verdict") or "") in AGREES:
+                    entry["replayed"] += 1
+                    task_row["replayed"] += 1
+                else:
+                    entry["differing"] += 1
+                    entry["assisted"] = True
+                    task_row["differing"] += 1
+                    if len(task_row["reasons"]) < 3:
+                        task_row["reasons"].append(
+                            f"call {call.get('call_id')}: {call.get('first_differing_column')} "
+                            f"recorded {call.get('recorded')} ours {call.get('ours')}")
+    return {"tools": tools, "tasks": tasks}
 
 
 class RunArgs(BaseModel):
@@ -390,6 +432,16 @@ def domain_tools(*, workdir: Any, model: Any = None,
 
     async def replay(args: ReplayArgs) -> ReplayResult:
         report = runner_tool.replay(root, args.task_id, workdir=root)
+        replays = read_json(root / "replays.json", None) or {}
+        if not isinstance(replays, dict):
+            replays = {}
+        task_rows = replays.get(args.task_id)
+        if not isinstance(task_rows, dict):
+            task_rows = {}
+        task_rows[report.trace_id] = report.as_dict()
+        replays[args.task_id] = task_rows
+        write_json(root / "replays.json", replays)
+        write_json(root / "tool_fidelity.json", fidelity_index(replays))
         rows = [ReplayRow(call_id=str(call.call_id or ""), tool=str(call.tool),
                           verdict=str(call.verdict),
                           first_differing_column=call.first_differing_column,
@@ -436,4 +488,4 @@ def domain_tools(*, workdir: Any, model: Any = None,
     ]
 
 
-__all__ = ["ROWS_SHOWN", "default_examine_fn", "domain_tools", "status_of"]
+__all__ = ["ROWS_SHOWN", "default_examine_fn", "domain_tools", "fidelity_index", "status_of"]

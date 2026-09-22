@@ -159,6 +159,39 @@ def test_grow_adds_rows_to_the_table_named_and_says_how_many(tmp_path):
     assert result.details["tables"]["widgets"] == after
     assert "widgets" in result.content and "3" in result.content
 
+
+def test_replay_writes_replays_and_fidelity_and_replaces_on_repeat(tmp_path):
+    root = _workdir(tmp_path)
+    tools = {tool.name: tool for tool in domain_tools_mod.domain_tools(workdir=root)}
+    first = _run(tools["replay"], {"task_id": "widget_task"})
+    assert not first.is_error, first.content
+    stored = json.loads((root / "replays.json").read_text(encoding="utf-8"))
+    row = stored["widget_task"]["rec1"]
+    assert isinstance(row["confirmed"], bool) and isinstance(row["trace_id"], str)
+    fidelity = json.loads((root / "tool_fidelity.json").read_text(encoding="utf-8"))
+    assert fidelity["tools"]["rename_widget"]["calls"] == 1
+    assert fidelity["tools"]["describe_widget"]["replayed"] == 1
+    second = _run(tools["replay"], {"task_id": "widget_task"})
+    assert not second.is_error, second.content
+    again = json.loads((root / "replays.json").read_text(encoding="utf-8"))
+    assert list(again["widget_task"]) == ["rec1"]
+
+
+def test_fidelity_index_counts_both_grains_with_worded_reasons():
+    replays = {"task-1": {"trace-1": {"task_id": "task-1", "trace_id": "trace-1",
+                                      "confirmed": False, "calls": [
+                {"call_id": "c1", "tool": "a-tool", "verdict": "same",
+                 "first_differing_column": None, "recorded": "1", "ours": "1"},
+                {"call_id": "c2", "tool": "a-tool", "verdict": "differs",
+                 "first_differing_column": "label", "recorded": "plain", "ours": "smudged"},
+            ]}}}
+    index = domain_tools_mod.fidelity_index(replays)
+    assert index["tools"]["a-tool"] == {"calls": 2, "replayed": 1, "differing": 1, "assisted": True}
+    task_row = index["tasks"]["task-1"]["a-tool"]
+    assert (task_row["replayed"], task_row["differing"]) == (1, 1)
+    assert task_row["reasons"] == ["call c2: label recorded plain ours smudged"]
+
+
 def test_status_answers_one_row_per_task_and_per_tool(tmp_path):
     root = _workdir(tmp_path)
     tools = {tool.name: tool for tool in domain_tools_mod.domain_tools(workdir=root)}
