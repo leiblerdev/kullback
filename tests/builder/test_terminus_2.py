@@ -374,3 +374,39 @@ def test_ingest_file_publishes_invented_envelope(tmp_path):
 def test_new_adapter_needs_no_seam_edit():
     assert sources.by_name("terminus_2") is not None
     assert "terminus_2" in [adapter.name for adapter in sources.registered()]
+
+
+def invented_task_turn(instruction: str) -> list[dict]:
+    """An invented opening turn carrying the instruction between the boundary headers."""
+    return [
+        {"role": "user",
+         "content": ("Invented scaffold preamble.\n\nTask Description:\n" + instruction
+                     + "\n\nCurrent terminal state:\n\ninvented-shell-ready")},
+        {"role": "assistant", "content": json.dumps({"commands": [
+            {"keystrokes": "invented-solo"}]})},
+        {"role": "user", "content": "New Terminal Output:\n\ninvented solo output"},
+    ]
+
+
+def test_sidecar_carries_task_ref_and_instruction():
+    recording = invented_recording(conversations=invented_task_turn("# invented-seven\nSolve invented."),
+                                   trial_name="invented-task-7__invented-run")
+    sidecar = Terminus2Adapter().sidecar(recording, invented_envelope())
+    assert sidecar["task_ref"] == {"id": "invented-task-7", "source": "invented-source"}
+    assert sidecar["instruction"] == "# invented-seven\nSolve invented."
+    assert sidecar["task"] == "invented task text"
+    assert "conversations" not in sidecar
+
+
+def test_sidecar_task_ref_source_is_none_when_column_missing():
+    recording = invented_recording(conversations=invented_task_turn("# invented\n"),
+                                   trial_name="invented-task-8")
+    del recording["original_source"]
+    sidecar = Terminus2Adapter().sidecar(recording, invented_envelope())
+    assert sidecar["task_ref"] == {"id": "invented-task-8", "source": None}
+
+
+def test_sidecar_instruction_is_none_without_the_headers():
+    sidecar = Terminus2Adapter().sidecar(invented_recording(), invented_envelope())
+    assert sidecar["instruction"] is None
+    assert sidecar["task_ref"] == {"id": "invented-trial-1", "source": "invented-source"}

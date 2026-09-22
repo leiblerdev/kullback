@@ -735,3 +735,157 @@ def test_the_round_line_reads_the_beat_error_under_the_key_the_driver_writes_it_
     line = cli._round_line({"fidelity": 4, "tasks": 9,
                             rounds.BEAT_ERROR: {"beat": "builder", "kind": "LedgerUnreadable"}})
     assert line.startswith("ended by builder error (LedgerUnreadable), fidelity 4/9 tasks")
+
+
+# --- rescue -----------------------------------------------------------------
+
+def _rescue_turns(instruction: str) -> list[dict]:
+    """An invented recording whose first user turn carries the instruction between headers."""
+    return [
+        {"role": "user",
+         "content": ("Invented preamble.\n\nTask Description:\n" + instruction
+                     + "\n\nCurrent terminal state:\n\ninvented-ready")},
+        {"role": "assistant", "content": json.dumps({"commands": [
+            {"keystrokes": "invented-solo"}]})},
+        {"role": "user", "content": "New Terminal Output:\n\ninvented solo output"},
+    ]
+
+
+def _rescue_blob(instruction: str, with_content_check: bool) -> str:
+    """An invented registry entry on the wire: base64 of the gzipped task tar."""
+    import base64
+    import gzip
+    import io
+    import tarfile
+
+    tests = {"tests/test.sh": b"cmp /output/actual.txt tests/expected_output.txt\n",
+             "tests/expected_output.txt": b"invented golden\n"} if with_content_check else {}
+    files = {
+        "instruction.md": instruction.encode("utf-8"),
+        "task.toml": b"[environment]\ndocker_image = \"invented-image:1\"\n\n[verifier]\ntimeout_sec = 30\n",
+        "environment/Dockerfile": b"FROM invented-base:1\n",
+        **tests,
+    }
+    buffer = io.BytesIO()
+    with tarfile.open(fileobj=buffer, mode="w") as tar:
+        for name, body in files.items():
+            info = tarfile.TarInfo(name=name)
+            info.size = len(body)
+            tar.addfile(info, io.BytesIO(body))
+    return base64.b64encode(gzip.compress(buffer.getvalue())).decode("ascii")
+
+
+def _rescue_workdir(tmp_path: Path, workdir: Path) -> dict:
+    """Three invented recordings ingested for real: one match, one mismatch, one missing."""
+    from kullback.builder import ingest
+
+    rows = [
+        ("invented-task-21__invented-a", "# invented twenty-one\nSolve invented.\n"),
+        ("invented-task-22__invented-b", "# invented twenty-two\nSolve invented.\n"),
+        ("invented-task-23__invented-c", "# invented twenty-three\nSolve invented.\n"),
+    ]
+    envelope = {"rows": [
+        {"row_idx": index,
+         "row": {"conversations": _rescue_turns(instruction), "trial_name": trial,
+                 "original_source": "invented-source"},
+         "truncated_cells": []}
+        for index, (trial, instruction) in enumerate(rows)]}
+    target = tmp_path / "invented.json"
+    target.write_text(json.dumps(envelope), encoding="utf-8")
+    summary = ingest.ingest_file(target, workdir)
+    assert summary["runs"] == 3
+    rows_path = tmp_path / "rows.json"
+    rows_path.write_text(json.dumps([
+        {"path": "invented-task-21",
+         "task_binary": _rescue_blob("# invented twenty-one\nSolve invented.\n", True)},
+        {"path": "invented-task-22",
+         "task_binary": _rescue_blob("# invented twenty-two and something else entirely\n", False)},
+    ]), encoding="utf-8")
+    return {"summary": summary, "rows_path": rows_path}
+
+
+def _task_of(workdir: Path, trace_hash: str) -> str:
+    sidecar = json.loads((workdir / "grader" / f"{trace_hash}.json").read_text(encoding="utf-8"))
+    return sidecar["fields"]["task_ref"]["id"]
+
+
+def test_rescue_attaches_matching_skips_mismatched_reports_missing(tmp_path, workdir):
+    built = _rescue_workdir(tmp_path, workdir)
+    result = invoke("rescue", "--workdir", str(workdir), "--registry", str(built["rows_path"]))
+    assert result.exit_code == 0, result.output
+    assert "looked up 3" in result.output
+    assert "attached 1" in result.output
+    assert "mismatched 1" in result.output
+    assert "missing 1" in result.output
+    by_task = {_task_of(workdir, trace_hash): trace_hash
+               for trace_hash in built["summary"]["trace_hashes"]}
+    attached = workdir / "task_defs" / f"{by_task['invented-task-21']}.json"
+    assert attached.is_file()
+    body = json.loads(attached.read_text(encoding="utf-8"))
+    assert body["matched"] is True
+    assert body["verifier_strength"] == "content"
+    assert body["task_id"] == "invented-task-21"
+    assert "content 1" in result.output
+    assert not (workdir / "task_defs" / f"{by_task['invented-task-22']}.json").exists()
+    assert not (workdir / "task_defs" / f"{by_task['invented-task-23']}.json").exists()
+
+
+def test_rescue_raw_hash_scopes_the_lookup(tmp_path, workdir):
+    built = _rescue_workdir(tmp_path, workdir)
+    raw_hash = built["summary"]["raw_hash"]
+    scoped = invoke("rescue", "--workdir", str(workdir), "--registry", str(built["rows_path"]),
+                    "--raw-hash", raw_hash)
+    assert scoped.exit_code == 0, scoped.output
+    assert "looked up 3" in scoped.output
+    other = invoke("rescue", "--workdir", str(workdir), "--registry", str(built["rows_path"]),
+                   "--raw-hash", "0" * 64, "--dry-run")
+    assert other.exit_code == 0, other.output
+    assert "looked up 0" in other.output
+
+
+def test_rescue_dry_run_writes_nothing(tmp_path, workdir):
+    built = _rescue_workdir(tmp_path, workdir)
+    result = invoke("rescue", "--workdir", str(workdir), "--registry", str(built["rows_path"]),
+                    "--dry-run")
+    assert result.exit_code == 0, result.output
+    assert "attached 1" in result.output
+    assert not (workdir / "task_defs").exists()
+
+
+def test_rescue_reaches_set_aside_recordings(tmp_path, workdir):
+    """Set-aside recordings keep their sidecar, so the lookup reads them like eligible ones."""
+    from kullback.builder import ingest
+
+    clean = {"conversations": _rescue_turns("# invented clean\nSolve invented.\n"),
+             "trial_name": "invented-task-31__invented-a", "original_source": "invented-source"}
+    damaged = {"conversations": [
+        {"role": "user",
+         "content": "Invented preamble.\n\nTask Description:\n# invented set aside\nSolve invented.\n"
+                    "\n\nCurrent terminal state:\n\ninvented-ready"},
+        {"role": "assistant", "content": "Invented prose with no commands in it."},
+        {"role": "user", "content": "New Terminal Output:\n\ninvented stray output"},
+    ], "trial_name": "invented-task-32__invented-b", "original_source": "invented-source"}
+    envelope = {"rows": [
+        {"row_idx": 0, "row": clean, "truncated_cells": []},
+        {"row_idx": 1, "row": dict(clean, trial_name="invented-task-33__invented-c"),
+         "truncated_cells": []},
+        {"row_idx": 2, "row": dict(clean, trial_name="invented-task-34__invented-d"),
+         "truncated_cells": []},
+        {"row_idx": 3, "row": damaged, "truncated_cells": []}]}
+    target = tmp_path / "invented.json"
+    target.write_text(json.dumps(envelope), encoding="utf-8")
+    summary = ingest.ingest_file(target, workdir)
+    assert summary["runs"] == 3
+    assert len(list((workdir / "evidence_traces").glob("*.json"))) == 1
+    rows_path = tmp_path / "rows.json"
+    rows_path.write_text(json.dumps([
+        {"path": "invented-task-32",
+         "task_binary": _rescue_blob("# invented set aside\nSolve invented.\n", True)},
+    ]), encoding="utf-8")
+    result = invoke("rescue", "--workdir", str(workdir), "--registry", str(rows_path))
+    assert result.exit_code == 0, result.output
+    assert "looked up 4" in result.output
+    assert "attached 1" in result.output
+    assert "missing 3" in result.output
+    (sole,) = list((workdir / "task_defs").glob("*.json"))
+    assert json.loads(sole.read_text(encoding="utf-8"))["task_id"] == "invented-task-32"
