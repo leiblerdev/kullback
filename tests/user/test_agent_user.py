@@ -580,6 +580,14 @@ def test_the_head_keeps_the_founders_order(ctx, rules, recorded):
     assert positions == sorted(positions)
 
 
+def test_the_stop_section_is_last(ctx, rules, recorded):
+    """The stop rule rides last, so it is the rule the model keeps."""
+    from kullback.user import skills as skills_mod
+    harness = agent_for(ctx, rules, ["Thanks, noted."], recorded).harness()
+    assert harness.sections[-1].name == "user_stop"
+    assert harness.system.endswith(skills_mod.STOP + "\n</stop>")
+
+
 def test_the_user_harness_registers_only_its_four_tools(ctx, rules, recorded):
     """No base tools on this harness: the phone reaches four tools and nothing else."""
     user = agent_for(ctx, rules, ["Thanks, noted."], recorded)
