@@ -889,6 +889,12 @@ def test_consistency_skips_a_task_that_checked_nothing(workdir, tmp_path):
     body = json.loads(out.read_text(encoding="utf-8"))
     assert body["tasks"] == {}
     assert body["skipped"]["widget_task"] == "no law checked"
+    assert "unfit tool describe_widget" in refused.output
+    assert "unfit tool rename_widget" in refused.output
+    assert body["unfit"]["widget_task"]["describe_widget"] == \
+        "required argument widget_id has no type"
+    assert body["unfit"]["widget_task"]["rename_widget"] == \
+        "required argument label has no type; required argument widget_id has no type"
 
 
 def test_consistency_skips_a_task_whose_toolkit_fails_to_load(workdir, tmp_path):

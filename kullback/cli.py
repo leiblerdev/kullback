@@ -618,7 +618,7 @@ def consistency(
     unfit: dict[str, dict] = {}
 
     def _one(task_id: str):
-        """One Task's row, its unfit tools and its skip reason; only row or reason is set."""
+        """One Task's row, its unfit tools and its skip reason; a skip keeps the unfit tools."""
         try:
             world = make_world(env, task_id, seed=seed)
             gaps = world.unfit()
@@ -626,7 +626,7 @@ def consistency(
         except Exception as exc:
             return None, {}, f"{type(exc).__name__}: {exc}"
         if not sum(report.checked.values()):
-            return None, {}, "no law checked"
+            return None, gaps, "no law checked"
         row = {"checked": sum(report.checked.values()), "broken": sum(report.broken.values()),
                "consistency": report.consistency}
         return row, gaps, None
@@ -635,6 +635,7 @@ def consistency(
         row, gaps, reason = _one(task_id)
         if reason is not None:
             skipped[task_id] = reason
+            unfit.update(_echo_gaps(task_id, gaps))
             typer.echo(f"task {task_id}: skipped, {reason}")
             continue
         rows[task_id] = row
