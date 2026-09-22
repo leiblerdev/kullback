@@ -651,6 +651,23 @@ def test_close_real_exports_under_the_routers_limit():
     assert world.export_limit == 1234
 
 
+def test_kept_export_over_limit_is_refused_like_the_live_one():
+    from test_real_tools import FakeReceipt, FakeWorld, shell_batch
+
+    from kullback.runner.real_tools import ExportLimitError, RealTool
+    world = FakeWorld([FakeReceipt(stdout=b"a")], export=b"12345678")
+    router = Router(starting_state=StateView(shared={}),
+                    real_tools={"shell": RealTool("shell", lambda: world)})
+    router.route("shell", shell_batch("ls"))
+    with pytest.raises(ExportLimitError) as live:
+        router.real_end_state("shell", 4)
+    router.close_real()
+    assert router.real_end_state("shell", 64) == b"12345678"
+    with pytest.raises(ExportLimitError) as kept:
+        router.real_end_state("shell", 4)
+    assert str(kept.value) == str(live.value)
+
+
 def test_real_end_state_returns_the_export_bytes():
     from test_real_tools import FakeReceipt, FakeWorld
 

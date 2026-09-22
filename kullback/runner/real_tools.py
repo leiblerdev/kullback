@@ -40,6 +40,21 @@ class RealOutcome(NamedTuple):
     receipts: Optional[list] = None
 
 
+class ExportLimitError(Exception):
+    """A workspace export refused: more bytes than the caller's limit allows (D262)."""
+
+
+def limit_kept_export(kept: bytes, limit_bytes: int) -> bytes:
+    """Kept bytes under the caller's limit, refused like the live export when over (D262).
+
+    Over the limit is the same refusal the open path gives, never a silent truncation
+    and never a larger payload.
+    """
+    if len(kept) > limit_bytes:
+        raise ExportLimitError("workspace export exceeded its byte limit")
+    return kept
+
+
 # The container World's own failure names, matched by name so this module never
 # imports the backend (D262). A timeout is transient, every other world failure is
 # unknown: neither is the customer's answer and neither ends the Run.

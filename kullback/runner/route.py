@@ -10,7 +10,7 @@ from typing import Any, Iterable, NamedTuple, Optional
 from pydantic import BaseModel
 
 from kullback.runner.canon import canonical_args
-from kullback.runner.real_tools import RealTool
+from kullback.runner.real_tools import RealTool, limit_kept_export
 from kullback.runner.records import ToolCallError, ToolSig, content_hash
 from kullback.runner.records import plain as _plain
 from kullback.runner.state import StateView, _db_put, _row_model
@@ -268,12 +268,14 @@ class Router:
     def real_end_state(self, name: str, limit_bytes: int) -> bytes:
         """One real tool's workspace bytes: the live export while open, the kept bytes after close (D262).
 
-        A tool never called has nothing to export and answers empty bytes.
+        The kept bytes obey the caller's limit the same way the live export does: over the
+        limit is the same refusal the open path gives, never a silent truncation and never a
+        larger payload. A tool never called has nothing to export and answers empty bytes.
         """
         tool = self.real_tools[name]
         if tool.opened:
             return tool.end_state(limit_bytes)
-        return self.real_end_states.get(name, b"")
+        return limit_kept_export(self.real_end_states.get(name, b""), limit_bytes)
 
     def _code(self, name: str, function: Any, args: dict) -> RouteResult:
         snapshot = _snapshot_world(self.tools, self.state)

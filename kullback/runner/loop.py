@@ -155,14 +155,22 @@ def run(state: RunState, model: Any, tools: Optional[list[dict]] = None, router:
         return finish(state, router)
     finally:
         # D262: a container never outlives its Run, even when the Run raises.
-        _close_real(router)
+        _close_real(state, router)
 
 
-def _close_real(router: Any) -> None:
-    """Release every opened real world behind the router, when it has any."""
+def _close_real(state: RunState, router: Any) -> None:
+    """Release every opened real world behind the router, when it has any (D262).
+
+    One `error` event per (tool, message) pair lands on the Run's record, in the shape
+    every other event uses, so a failed export or removal leaves a trace. The payload
+    class is not `env_error`, so the Verdict reads the Run's own outcome, unchanged by
+    a cleanup failure. No field was added: the event shape already carries this.
+    """
     close = getattr(router, "close_real", None)
-    if callable(close):
-        close()
+    if not callable(close):
+        return
+    for name, message in close() or []:
+        emit(state, "error", {"class": "real_close_failure", "tool": name, "message": message})
 
 
 def _call_cost(reply: Any, model: Any) -> Cost:

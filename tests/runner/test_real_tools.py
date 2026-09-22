@@ -6,7 +6,7 @@ import pytest
 
 from kullback.ai.provider import TestModel
 from kullback.runner.loop import new_run_state, run
-from kullback.runner.real_tools import RealTool, real_tools_from
+from kullback.runner.real_tools import ExportLimitError, RealTool, real_tools_from
 from kullback.runner.route import Router
 from kullback.runner.state import StateView
 
@@ -60,6 +60,8 @@ class FakeWorld:
         self.export_limit = limit_bytes
         if self.export_error is not None:
             raise self.export_error
+        if len(self.exported) > limit_bytes:
+            raise ExportLimitError("workspace export exceeded its byte limit")
         return self.exported
 
     def close(self):
@@ -267,6 +269,24 @@ def test_run_keeps_each_called_tools_export(workdir):
         tools=[{"name": "shell"}], router=router)
     assert router.real_end_state("shell", 64) == b"tar-bytes"
     assert router.real_end_state("other", 64) == b""
+
+
+def test_close_failure_is_recorded_and_leaves_the_runs_result(workdir):
+    world = FakeWorld([FakeReceipt(stdout=b"hi")])
+    world.close_error = RuntimeError("cannot remove")
+    router = real_router(world)
+    state = new_run_state("r1", workdir=workdir)
+    out = run(state, done_after_call(shell_batch("ls")),
+              tools=[{"name": "shell"}], router=router)
+    assert out.run.termination_reason == "agent_stop"
+    answered = [e for e in out.run.events if e.type == "tool_result"]
+    assert answered[0].payload["result"] == "hi"
+    failures = [e for e in out.run.events if e.type == "error"]
+    assert [(e.payload["tool"], e.payload["message"]) for e in failures] == [
+        ("shell", "RuntimeError: cannot remove")]
+    assert failures[0].payload["class"] == "real_close_failure"
+    from kullback.runner.verdict import _env_error
+    assert _env_error(out.run) is False
 
 
 def test_run_returns_its_state_when_the_export_fails(workdir):
