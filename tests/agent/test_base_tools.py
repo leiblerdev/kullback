@@ -16,6 +16,7 @@ from kullback.agent.base_tools import (
     truncate_head,
     truncate_tail,
 )
+from kullback.agent.extensions import ExtensionAPI
 from kullback.agent.harness import AgentHarness
 from kullback.agent.tools import ToolRegistry
 from kullback.ai.provider import TestModel
@@ -273,9 +274,11 @@ def test_web_search_says_it_is_not_configured_when_the_provider_layer_has_no_sea
 
 def test_an_extension_is_registered_with_the_subset_it_is_given(root):
     harness = AgentHarness(TestModel(["done"]))
-    registered = register_base_tools(harness, root, only=["read", "grep", "find", "ls"])
+    registered = register_base_tools(ExtensionAPI(harness), root, only=["read", "grep", "find", "ls"])
     assert [tool.name for tool in registered] == ["read", "grep", "find", "ls"]
     assert [schema["name"] for schema in harness.registry.schemas()] == ["read", "grep", "find", "ls"]
+    # the tools an extension is not given are the boundary it cannot argue with
+    assert "bash" not in harness.registry and "write" not in harness.registry
 
 
 def test_a_subset_naming_a_tool_that_does_not_exist_is_a_mistake_at_registration(root):
