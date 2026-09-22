@@ -10,7 +10,7 @@ pytestmark = pytest.mark.skipif(not hasattr(loop, "advance"), reason="needs the 
 def test_episode_uses_the_shared_strip_on_nonheld_evidence(tmp_path):
     from kullback.episode import BuiltEnvironment, Episode
     from kullback.runner.records import RawPtr, ToolCall, Trace
-    from tests.episode.invented import write_env
+    from tests.episode.invented import simulated_user_factory, write_env
 
     root = write_env(tmp_path / "env")
     ptr = RawPtr(file_hash="invented")
@@ -19,7 +19,8 @@ def test_episode_uses_the_shared_strip_on_nonheld_evidence(tmp_path):
                                        result={"label": "company-secret"}, raw_ptr=ptr)])
     (root / "traces").mkdir()
     (root / "traces" / "rec1.json").write_text(trace.model_dump_json(), encoding="utf-8")
-    episode = Episode(BuiltEnvironment(root), outdir=tmp_path / "out")
+    episode = Episode(BuiltEnvironment(root), outdir=tmp_path / "out",
+                      user_factory=simulated_user_factory)
     episode.reset("widget_task", seed=7)
     strip = episode._state.user.answer_strip
     assert strip is not None

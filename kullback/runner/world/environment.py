@@ -16,10 +16,21 @@ from pathlib import Path
 from typing import Any, Iterable, Optional
 
 from kullback import sampling
-from kullback.episode import loading
-from kullback.episode.loading import EnvironmentError, _record, _shaped_json
 from kullback.runner import canon
 from kullback.runner.records import EntitySchema, Task, ToolSig, Trace, UserRules, Verifier
+from kullback.runner.world import loading
+from kullback.runner.world.loading import EnvironmentError, _record, _shaped_json
+
+# Every name the old kullback.episode.environment exported, privates included: the old module
+# path is a star-import shim, and only names listed here travel through it.
+__all__ = [
+    "BuiltEnvironment",
+    "EnvironmentError",
+    "_field",
+    "_json",
+    "_text",
+    "episode_message",
+]
 
 # Where the rendered toolkit lives: the data model plus the tools, as two files whose contents
 # join to the single module `loading.load_toolkit` executes. `module_source` renders the model,
@@ -190,14 +201,16 @@ class BuiltEnvironment:
         The interface drives the rule user only: it has no model to lend the agent user, so a
         Task the agent earned is refused at reset rather than driven by the wrong user.
         """
+        # Read straight off the scores file: the world may not import the user extension,
+        # and this is the whole of what the ruling needs (kullback.user.fidelity.load_scores
+        # reads the same file and keeps only bodies in its own format).
         try:
-            from kullback.user import fidelity as user_fidelity
-        except ImportError as exc:
-            if exc.name not in ("kullback", "kullback.user", "kullback.user.fidelity"):
-                raise
+            body = json.loads((self.root / "user_fidelity.json").read_text(encoding="utf-8"))
+        except (OSError, ValueError):
             return False
-        scores = user_fidelity.load_scores(self.root)
-        rows = scores.get("tasks") or ()
+        if not isinstance(body, dict) or body.get("format") != 1:
+            return False
+        rows = body.get("tasks") or ()
         row = next((r for r in rows if isinstance(r, dict) and r.get("task_id") == task_id), None)
         return bool(row and row.get("drives"))
 

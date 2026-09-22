@@ -279,17 +279,17 @@ def _hide_fidelity(monkeypatch, error):
     monkeypatch.setattr(sys, "meta_path", [_Blocker()] + sys.meta_path)
 
 
-def test_agent_driven_missing_module_answers_false(tmp_path, monkeypatch):
+def test_agent_driven_missing_scores_answers_false(tmp_path):
     root = write_env(tmp_path / "env")
     env = BuiltEnvironment(root)
-    _hide_fidelity(monkeypatch, ModuleNotFoundError("No module named 'kullback.user.fidelity'",
-                                                    name="kullback.user"))
     assert env.agent_driven("widget_task") is False
 
 
-def test_agent_driven_broken_transitive_import_propagates(tmp_path, monkeypatch):
+def test_agent_driven_reads_the_scores_file_without_the_user_package(tmp_path, monkeypatch):
     root = write_env(tmp_path / "env")
+    (root / "user_fidelity.json").write_text(json.dumps(
+        {"format": 1, "tasks": [{"task_id": "widget_task", "drives": True}]}), encoding="utf-8")
     env = BuiltEnvironment(root)
-    _hide_fidelity(monkeypatch, ImportError("broken transitive dependency", name="inner_dep"))
-    with pytest.raises(ImportError, match="broken transitive"):
-        env.agent_driven("widget_task")
+    _hide_fidelity(monkeypatch, ModuleNotFoundError("No module named 'kullback.user.fidelity'",
+                                                    name="kullback.user"))
+    assert env.agent_driven("widget_task") is True

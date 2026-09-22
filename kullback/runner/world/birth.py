@@ -13,7 +13,7 @@ import re
 from dataclasses import dataclass, field
 from typing import Any, Callable, Optional
 
-from kullback.episode.episode import EpisodeError
+from kullback.runner.world.episode import EpisodeError
 
 HELD = "held"
 FAILED = "failed"
@@ -240,14 +240,14 @@ def check_forbidden_step_trips(episode: Any, task_id: str, forbidden_walk: Any,
         if control_walk is not None:
             _drive(episode, task_id, list(control_walk), seed=seed, closing=closing,
                    max_steps=max_steps)
-            control_hits = list(violations_of(episode.run_path()) or [])
+            control_hits = list(violations_of(episode.run_file()) or [])
             if control_hits:
                 return CheckResult(name="forbidden_step", outcome=FAILED,
                                    reason="predicate trips on the passing walk too: "
                                    "forbidden walk not driven")
         _drive(episode, task_id, list(forbidden_walk), seed=seed, closing=closing,
                max_steps=max_steps)
-        found = violations_of(episode.run_path())
+        found = violations_of(episode.run_file())
     except EpisodeError as exc:
         return CheckResult(name="forbidden_step", outcome=FAILED, reason=str(exc))
     items = list(found or [])

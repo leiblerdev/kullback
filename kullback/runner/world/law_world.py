@@ -15,11 +15,11 @@ from __future__ import annotations
 import copy
 from typing import Any, Mapping, Optional
 
-from kullback.episode import loading
-from kullback.episode.environment import BuiltEnvironment
 from kullback.laws import ArgSpec, Outcome, ToolInfo, _type_bucket
 from kullback.runner import route
 from kullback.runner.records import Task, ToolSig, Trace, plain
+from kullback.runner.world import loading
+from kullback.runner.world.environment import BuiltEnvironment
 
 LAWS_VERSION = 1
 """The version of the law set a consistency number was checked under.

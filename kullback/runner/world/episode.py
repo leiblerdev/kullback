@@ -21,13 +21,11 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Optional
 
-from kullback.episode import loading
-from kullback.episode.environment import BuiltEnvironment, episode_message
 from kullback.runner import loop, route
 from kullback.runner.records import as_dict
 from kullback.runner.verdict import load_run, verdict
-from kullback.user.rules import SimulatedUser, goal_write_set
-from kullback.user.value_strip import value_strip
+from kullback.runner.world import loading
+from kullback.runner.world.environment import BuiltEnvironment, episode_message
 
 RUNS_DIR = "episodes"
 
@@ -79,11 +77,17 @@ def _plain_run(run: Any) -> dict:
 class Episode:
     """One recorded Run over one Task, driven from outside (G1)."""
 
-    def __init__(self, env: BuiltEnvironment, *, outdir: Any = None, max_turns: int = 30):
+    def __init__(self, env: BuiltEnvironment, *, outdir: Any = None, max_turns: int = 30,
+                 user_factory: Any = None):
         _needs_world_step()
         self.env = env
         self.outdir = Path(outdir) if outdir is not None else env.root / RUNS_DIR
         self.max_turns = max_turns
+        # Who answers as the Task's user: a callable(env, task, router, rules, reference) the
+        # caller provides. The world owns no user extension, so without one the Run has no
+        # Simulated user and ends where a package Run ends. The runner tool passes its own
+        # user object straight into the Run state instead of building one here.
+        self._user_factory = user_factory
         self.task_id: Optional[str] = None
         self.run_id: Optional[str] = None
         self._state: Any = None
@@ -114,18 +118,11 @@ class Episode:
             synthetic_rows=getattr(self.env.schema, "synthetic_rows", None) or ())
         rules = self.env.rules(task)
         reference = self.env.reference(task)
-        # The reroll's user ends by protocol on its reference and answers over the Task's own
-        # evidence: the goal's write set comes from the reference, the way the Builder's
-        # Candidate stage derives it. A package carries no Traces, so its Runs take the
-        # run_batch path, answering unchecked with no implied write set.
-        goal_writes = goal_write_set(reference, self.env.write_tools()) \
-            if reference is not None else None
-        members = self.env.members(task)
-        answer_strip = value_strip(members, schema=self.env.schema, rules=self.env.canon_rules) if members else None
-        simulated = SimulatedUser(
-            rules, starting_state_reader=self._router.state, vocab=self.env.vocab,
-            write_tools=self.env.write_tools(), goal_writes=goal_writes,
-            answer_strip=answer_strip) if rules is not None else None
+        # The caller builds the Simulated user from the Task's own evidence (its reference,
+        # its recordings, the write set the reference implies); without a factory, or where
+        # the directory carries no rules, the Run has no Simulated user.
+        simulated = self._user_factory(self.env, task, self._router, rules, reference) \
+            if rules is not None and self._user_factory is not None else None
         run_id = f"{task_id}-{seed}"
         system_prompt = self.env.system_prompt(task)
         self._tools = self.env.tool_specs()
@@ -233,9 +230,18 @@ class Episode:
                           reason=result.failing_atom or "; ".join(result.notes[-2:]))
         return Reward(score=0, class_=result.class_, reason=result.failing_atom or "")
 
-    def run_path(self) -> Optional[Path]:
-        """Where this Run is recorded, under the Episode's own folder."""
+    def run_file(self) -> Optional[Path]:
+        """Where this Run is recorded, under the Episode's own folder.
+
+        Named off `runpy.run_path`, which the runner's import boundary refuses by name: a
+        Run file accessor that kept the old name tripped that gate on every call site once
+        the world moved under runner/.
+        """
         return self._state.path if self._state is not None else None
+
+    def run_path(self) -> Optional[Path]:
+        """The old name, kept while scripts/episode_acceptance.py still calls it."""
+        return self.run_file()
 
     def transcript(self) -> list[dict]:
         """The transcript the policy is asked against: system prompt, turns so far, in order."""

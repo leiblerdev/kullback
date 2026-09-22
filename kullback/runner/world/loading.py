@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import copy
 import json
+import re
 from pathlib import Path
 from typing import Any, Iterable, Optional
 
@@ -24,7 +25,40 @@ from kullback.runner.records import (
     TaskOverlay,
     UserRules,
 )
-from kullback.user import vocabulary
+
+# Every name the old kullback.episode.loading exported, privates included: the old module path
+# is a star-import shim, and only names listed here travel through it.
+__all__ = [
+    "EnvironmentError",
+    "SandboxError",
+    "DB_CLASS",
+    "TOOLS_CLASS",
+    "HELPERS",
+    "OVERLAY_DIR",
+    "OverlayConflict",
+    "RUN_SEED_KIND",
+    "_FieldView",
+    "_JSON_TYPES",
+    "_VocabularyView",
+    "_check_replay_row",
+    "_check_replays",
+    "_field_words",
+    "_folds_into",
+    "_json_schema",
+    "_record",
+    "_reference_run_id",
+    "_safe_recording_id",
+    "_shaped_json",
+    "_system_prompt_for",
+    "_tool_definitions",
+    "_user_rules",
+    "_vocab_from",
+    "_with_run_scope",
+    "load_overlay",
+    "load_toolkit",
+    "merge_overlays",
+    "run_seed",
+]
 
 
 class EnvironmentError(RuntimeError):
@@ -233,7 +267,7 @@ _JSON_TYPES = {"str": "string", "int": "integer", "float": "number", "bool": "bo
                "list": "array", "NoneType": "null"}
 
 
-def _tool_definitions(sigs: list, vocab: Optional[vocabulary.Vocabulary] = None) -> list[dict]:
+def _tool_definitions(sigs: list, vocab: Any = None) -> list[dict]:
     """The mined signatures in the shape provider.py sends to a model: name, description, parameters.
 
     mine.py records Python type names (`["str"]`); a model endpoint wants JSON Schema names, and
@@ -269,10 +303,87 @@ def _json_schema(node: Any) -> Any:
     return node
 
 
-def _vocab_from(workdir: Path) -> vocabulary.Vocabulary:
+class _FieldView:
+    """One vocabulary field as plain data: the keys `_tool_definitions` and user drivers read."""
+
+    def __init__(self, payload: Any):
+        self._payload = dict(payload) if isinstance(payload, dict) else {}
+
+    @property
+    def field(self) -> str:
+        return str(self._payload.get("field") or "")
+
+    @property
+    def kind(self) -> str:
+        return str(self._payload.get("kind") or "value")
+
+    @property
+    def examples(self) -> list:
+        return list(self._payload.get("examples") or [])
+
+    def __getattr__(self, name: str) -> Any:
+        if name.startswith("__") or name in ("_payload",):
+            raise AttributeError(name)
+        return self._payload.get(name)
+
+
+class _VocabularyView:
+    """The build's Vocabulary off disk as plain data, without importing the package that speaks it.
+
+    The world may not import the user extension, but the tool specs still carry the corpus
+    examples and drivers built over a stored file still read its fields, so this mirrors the
+    record's own shape (field, kind, pattern, cues, aliases, sources, examples) over the stored
+    JSON. An absent file reads as a vocabulary with no fields.
+    """
+
+    def __init__(self, payload: Any):
+        self._payload = dict(payload) if isinstance(payload, dict) else {}
+        self.domain: str = str(self._payload.get("domain") or "")
+        self.fields: list = [_FieldView(item) for item in self._payload.get("fields") or []]
+        self.searched: list = list(self._payload.get("searched") or [])
+        self.notes: list = list(self._payload.get("notes") or [])
+
+    def __len__(self) -> int:
+        return len(self.fields)
+
+    def get(self, field: str) -> Optional[_FieldView]:
+        return next((spec for spec in self.fields if spec.field == field), None)
+
+    def by_kind(self, kind: str) -> list[str]:
+        return [spec.field for spec in self.fields if spec.kind == kind]
+
+    def field_for(self, arg: str) -> Optional[str]:
+        """The field a tool argument states: its own entry, else the entry whose cues ask for it."""
+        spec = self.get(arg) or _folds_into(arg, self.fields)
+        return spec.field if spec is not None else None
+
+    def model_dump(self, mode: str = "json", by_alias: bool = True, **_: Any) -> dict:
+        """The stored payload back as JSON-ready data, for callers that hash or store it."""
+        return copy.deepcopy(self._payload)
+
+
+def _field_words(field: str) -> str:
+    return field.replace("_", " ").strip()
+
+
+def _folds_into(field: str, generic: Iterable[_FieldView]) -> Optional[_FieldView]:
+    """A derived field whose name a generic entry already asks for is that entry.
+
+    Mirrors the user vocabulary's own fold, over the stored cues, so a driver reading a stored
+    file maps arguments the same way with or without the user package in the process.
+    """
+    words = _field_words(field)
+    for spec in generic:
+        cues = getattr(spec, "cues", None) or []
+        if words == spec.field or any(re.search(cue, words) for cue in cues):
+            return spec
+    return None
+
+
+def _vocab_from(workdir: Path) -> _VocabularyView:
     """The build's Vocabulary off disk, for a Run made outside the pipeline (run_batch, the probe)."""
     stored = _shaped_json(Path(workdir) / "vocabulary.json", "object", None, what="a vocabulary")
-    return vocabulary.Vocabulary.model_validate(stored) if stored else vocabulary.GENERIC
+    return _VocabularyView(stored or {"domain": "", "fields": []})
 
 
 def _safe_recording_id(run_id: Any) -> bool:

@@ -121,7 +121,7 @@ def test_run_record_matches_the_recorded_file(tmp_path):
         {"id": "c2", "name": "rename_widget", "arguments": {"widget_id": "w1", "label": "striped"}}]})
     out = episode.step({"content": "done", "tool_calls": []})
     assert out.done
-    stored = json.loads(json.dumps(as_dict(load_run(episode.run_path())),
+    stored = json.loads(json.dumps(as_dict(load_run(episode.run_file())),
                                    ensure_ascii=False, default=str))
     record = episode.run_record()
     assert record["events"] == stored["events"]
@@ -141,7 +141,7 @@ def _drive_one_step(tmp_path):
 
 def test_run_record_missing_file_with_events_raises(tmp_path):
     episode = _drive_one_step(tmp_path)
-    path = episode.run_path()
+    path = episode.run_file()
     path.unlink()
     with pytest.raises(EpisodeError, match="record is missing") as excinfo:
         episode.run_record()

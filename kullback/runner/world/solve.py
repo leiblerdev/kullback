@@ -18,10 +18,26 @@ from pathlib import Path
 from typing import Any, Optional
 
 from kullback import sampling
-from kullback.episode.environment import BuiltEnvironment, episode_message
-from kullback.episode.episode import Episode, EpisodeError
 from kullback.runner import budget
 from kullback.runner.records import write_json
+from kullback.runner.world.environment import BuiltEnvironment, episode_message
+from kullback.runner.world.episode import Episode, EpisodeError
+
+# Every name the old kullback.episode.solve exported, privates included: the old module path
+# is a star-import shim, and only names listed here travel through it.
+__all__ = [
+    "SOLVE_SEED_KIND",
+    "STAGE",
+    "_PolicyAdapter",
+    "_attempt",
+    "_attempt_cost",
+    "_settings",
+    "_task_row",
+    "_termination",
+    "attempt_seed",
+    "markdown_table",
+    "solve_rate",
+]
 
 SOLVE_SEED_KIND = "solve_seed"  # D212 after: one attempt's seed from its Task and number, keyed apart
 STAGE = "solve-rate"
@@ -63,7 +79,7 @@ def _termination(episode: Episode) -> Optional[str]:
 def _attempt_cost(episode: Episode, model: Any, before: dict) -> None:
     after = budget.load_totals(model.workdir)["total"]
     fields = ("usd", "calls", "unpriced_calls", "memo_hits", "input", "output", "cache_read", "cache_write")
-    write_json(episode.run_path().with_suffix(".cost.json"), {
+    write_json(episode.run_file().with_suffix(".cost.json"), {
         "run_id": episode.run_id, "model": model.model_id,
         "termination_reason": _termination(episode),
         "accounting": "captured_usage_estimate",

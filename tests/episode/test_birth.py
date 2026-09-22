@@ -119,7 +119,7 @@ class FakeEpisode:
         score, class_, reason = self._scorer(self.calls)
         return _Reward(score, class_, reason)
 
-    def run_path(self):
+    def run_file(self):
         slug = "+".join(_call_slug(call) for call in self.calls)
         return "fake-run/" + (slug or "empty")
 
