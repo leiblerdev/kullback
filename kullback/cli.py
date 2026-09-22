@@ -588,13 +588,16 @@ def consistency(
     per unfit tool names why no sequence may check it. The final line gives the
     mean consistency over completed Tasks, how many broke a law and how many
     were skipped. The workdir is read in place and never written into; --out
-    writes the same numbers as JSON beside the laws version. A skipped request,
-    or no completed Task at all, exits 3.
+    writes the same numbers as JSON beside the laws version. --sequences takes
+    1 or more. A Task that checked no law is skipped as no law checked, and a
+    Task whose world fails to load or check is skipped under its error's class
+    name while the rest still run. A skipped request, or no completed Task at
+    all, exits 3.
     """
     from kullback.episode.loading import EnvironmentError
 
-    if sequences < 0 or max_length < 1:
-        raise typer.BadParameter("--sequences takes 0 or more and --max-length takes 1 or more")
+    if sequences < 1 or max_length < 1:
+        raise typer.BadParameter("--sequences takes 1 or more and --max-length takes 1 or more")
     check = _entry("kullback.laws", "check_laws")
     build = _entry("kullback.episode", "BuiltEnvironment")
     make_world = _entry("kullback.episode.law_world", "EnvironmentLawWorld")
@@ -620,8 +623,10 @@ def consistency(
             world = make_world(env, task_id, seed=seed)
             gaps = world.unfit()
             report = check(world, seed=seed, sequences=sequences, max_length=max_length)
-        except EnvironmentError as exc:
-            return None, {}, str(exc)
+        except Exception as exc:
+            return None, {}, f"{type(exc).__name__}: {exc}"
+        if not sum(report.checked.values()):
+            return None, {}, "no law checked"
         row = {"checked": sum(report.checked.values()), "broken": sum(report.broken.values()),
                "consistency": report.consistency}
         return row, gaps, None
