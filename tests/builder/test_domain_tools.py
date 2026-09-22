@@ -193,13 +193,29 @@ def test_fidelity_index_counts_both_grains_with_worded_reasons():
 
 
 def test_status_answers_one_row_per_task_and_per_tool(tmp_path):
+    from kullback.runner.records import read_json as _read_json
+    from kullback.runner.records import write_json as _write_json
+
     root = _workdir(tmp_path)
     tools = {tool.name: tool for tool in domain_tools_mod.domain_tools(workdir=root)}
+    fresh = _run(tools["status"], {})
+    assert not fresh.is_error, fresh.content
+    assert [(row["task_id"], row["state"]) for row in fresh.details["tasks"]] == [("widget_task", "open")]
+    assert fresh.details["tasks"][0]["reason"]
+    assert [row["reason"] for row in fresh.details["tools"]] == ["no replay rows yet"] * 2
     replayed = _run(tools["replay"], {"task_id": "widget_task"})
     assert not replayed.is_error, replayed.content
     result = _run(tools["status"], {})
     assert not result.is_error, result.content
     assert [(row["task_id"], row["state"]) for row in result.details["tasks"]] == [("widget_task", "open")]
-    assert result.details["tasks"][0]["reason"]
-    assert {row["tool"] for row in result.details["tools"]} == {"describe_widget", "rename_widget"}
+    by_tool = {row["tool"]: row for row in result.details["tools"]}
+    assert by_tool["rename_widget"]["fidelity"] == 1.0
+    assert by_tool["rename_widget"]["calls"] == 1
     assert "widget_task" in result.content and "rename_widget" in result.content
+    fidelity = _read_json(root / "tool_fidelity.json", {})
+    fidelity["tools"].pop("describe_widget")
+    _write_json(root / "tool_fidelity.json", fidelity)
+    partial = _run(tools["status"], {})
+    by_tool = {row["tool"]: row for row in partial.details["tools"]}
+    assert by_tool["rename_widget"]["fidelity"] == 1.0
+    assert by_tool["describe_widget"]["reason"] == "no replay rows yet"

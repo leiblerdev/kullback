@@ -299,9 +299,11 @@ def status_of(workdir: Any) -> dict[str, Any]:
                     refusals.setdefault(path.stem, json.loads(path.read_text(encoding="utf-8")))
                 except (OSError, ValueError):
                     continue
+    # Probes and version history are not workdir files in this flow (the Examiner's open
+    # item), and task runs are the Examiner's derivation, so the status rules on the suite,
+    # the refusals and the version reason only.
     ruling = trusted_gate(task_status if isinstance(task_status, dict) else {}, verifiers, {},
-                          read_json(root / "history.json", None) or {}, refusals,
-                          read_json(root / "task_runs.json", None) or {},
+                          {}, refusals, {},
                           read_json(root / "replays.json", None) or {},
                           read_json(root / "rerolls.json", None) or {},
                           read_json(root / "canon-rules.json", None),
@@ -318,19 +320,21 @@ def status_of(workdir: Any) -> dict[str, Any]:
         else:
             tasks.append({"task_id": task_id, "state": "open",
                           "reason": str(untrusted.get(task_id) or "no Verifier derived yet")})
-    outcomes = read_json(root / "tool_call_outcomes.json", None) or {}
+    per_tool = (read_json(root / "tool_fidelity.json", None) or {}).get("tools") or {}
     tools = []
     for sig in read_json(root / "tool_sigs.json", None) or []:
         name = sig.get("name") if isinstance(sig, dict) else None
         if not name:
             continue
-        rows = outcomes.get(name) if isinstance(outcomes, dict) else None
-        rows = [row for row in rows or [] if isinstance(row, dict)]
-        if rows:
-            done = sum(1 for row in rows if row.get("replayed"))
-            tools.append({"tool": name, "fidelity": done / len(rows), "calls": len(rows), "reason": ""})
+        grain = per_tool.get(name) if isinstance(per_tool, dict) else None
+        calls = int((grain or {}).get("calls") or 0)
+        if grain is not None and calls:
+            replayed = int(grain.get("replayed") or 0)
+            tools.append({"tool": name, "fidelity": replayed / calls, "calls": calls,
+                          "assisted": bool(grain.get("assisted")), "reason": ""})
         else:
-            tools.append({"tool": name, "fidelity": None, "calls": 0, "reason": "no replay rows yet"})
+            tools.append({"tool": name, "fidelity": None, "calls": 0,
+                          "assisted": False, "reason": "no replay rows yet"})
     return {"tasks": tasks, "tools": tools}
 
 
