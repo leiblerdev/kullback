@@ -47,7 +47,7 @@ Build your own Environment from a trace export:
 ```bash
 uv sync
 uv run kullback ingest path/to/traces.json --workdir work
-uv run kullback build --workdir work --model provider/model --workers 8
+uv run kullback build --workdir work --model provider/model
 uv run kullback freeze-runner --workdir work --yes
 uv run kullback run --workdir work --task <task id> --model provider/candidate
 uv run kullback verdict --workdir work
