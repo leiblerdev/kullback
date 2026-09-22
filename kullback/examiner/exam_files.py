@@ -18,10 +18,22 @@ from pathlib import Path
 from typing import Any, Literal, Optional
 
 from kullback.examiner import derive as derive_mod
+from kullback.examiner.plan import task_runs_of
 from kullback.gates import PROTECTED_PATH, first_string
 from kullback.gates.probes import version_hash
 from kullback.gates.verifier_suite import load_run
-from kullback.runner.records import ToolSig, Verifier, VerifierHistory, VerifierVersion, read_json, write_json
+from kullback.runner.records import (
+    Probe,
+    ProbePool,
+    Run,
+    ToolSig,
+    Verifier,
+    VerifierHistory,
+    VerifierVersion,
+    as_dict,
+    read_json,
+    write_json,
+)
 
 EXAM_DIR = "exam"
 RUNS_DIR = "runs"
@@ -110,6 +122,8 @@ class ExamRoot:
     verifiers: dict[str, Verifier] = field(default_factory=dict)
     sigs: list[ToolSig] = field(default_factory=list)
     canon_rules: Any = None
+    replays: dict = field(default_factory=dict)
+    rerolls: dict = field(default_factory=dict)
     task_status: dict = field(default_factory=dict)
     history: dict = field(default_factory=dict)
     probes: dict[str, list] = field(default_factory=dict)
@@ -159,7 +173,7 @@ def load_history(root: ExamRoot) -> dict[str, VerifierHistory]:
 def save_history(root: ExamRoot, history: dict) -> Path:
     """history.json beside the verifiers dir: every Task's versions in order, rejected rows kept (D127)."""
     return write_json(history_path(root), {
-        task_id: hist.as_dict() if isinstance(hist, VerifierHistory) else hist
+        task_id: as_dict(hist) if isinstance(hist, VerifierHistory) else hist
         for task_id, hist in (history or {}).items()})
 
 
@@ -269,22 +283,64 @@ def reference_runs(root: Path, row: dict, replay_rows: Any, reroll_rows: list) -
     return runs
 
 
+def _probe_pools(root: ExamRoot) -> dict:
+    """The session's probe Runs as ProbePools, so the trusted gate scores what the session holds.
+
+    Scoring reads only each probe's Run; the Probe metadata the session pool does not keep (the
+    class, the version written against) reads empty. A pool the session already holds as a
+    ProbePool passes through untouched.
+    """
+    pools: dict = {}
+    for task_id, runs in (root.probes or {}).items():
+        if isinstance(runs, ProbePool):
+            pools[task_id] = runs
+            continue
+        probes = []
+        for run in runs or []:
+            if isinstance(run, Probe):
+                probes.append(run)
+            elif isinstance(run, Run):
+                probes.append(Probe(probe_id=run.run_id, task_id=task_id, bug_class="",
+                                    verifier_hash="", run=run))
+            else:
+                try:
+                    probes.append(Probe.model_validate(run))
+                except ValueError:
+                    continue
+        pools[task_id] = ProbePool(task_id=task_id, probes=probes)
+    return pools
+
+
+def save_ruling_files(root: ExamRoot) -> None:
+    """history.json and task_runs.json beside the verifiers dir, before every ruling (D201).
+
+    The bindings load both off files beside the ruled file, so the file loaders read the same
+    evidence the session holds. task_runs rows are the Run dicts, as_dict of each Run.
+    """
+    save_history(root, root.history)
+    runs = task_runs_of(root.replays, root.rerolls)
+    write_json(root.exam_dir / "task_runs.json",
+               {task_id: [as_dict(run) for run in rows] for task_id, rows in (runs or {}).items()})
+
+
 def evidence_of(root: ExamRoot) -> dict:
     """The gate evidence for a write under the Examiner's root, in one place (D79, D201).
 
-    The six bindings the verifiers gate reads: the replay rows, the re-roll rows, the mined
-    signatures, the canon rules, the live Verifiers and the task status. Empty is None, so a
-    gate with nothing to rule over is skipped the way a missing workdir file skips it. The
-    trust gate needs version history the new flow does not keep, so a session root carries no
-    task status and proposals are ruled through the oracle, the suite and the pool alone.
+    The eight reads of the verifiers binding the session holds: the replay rows, the re-roll
+    rows, the version histories, the Runs the loosening gate compares versions over, the live
+    Verifiers, the probe pools, the mined signatures and the canon rules, plus the task status
+    the trusted gate reads. Empty is None, so a gate with nothing to rule over is skipped the
+    way a missing workdir file skips it.
     """
     return {"replays": root.replays or None, "rerolls": root.rerolls or None,
+            "history": root.history or None, "task_runs": task_runs_of(root.replays, root.rerolls) or None,
+            "verifiers": list(root.verifiers.values()) or None, "probes": _probe_pools(root) or None,
             "sigs": root.sigs or None, "rules": root.canon_rules,
-            "verifiers": list(root.verifiers.values()) or None,
             "task_status": root.task_status or None}
 
 
 __all__ = ["COPIED_DIRS", "COPIED_JSON", "EXAM_DIR", "RUNS_DIR", "SPOKEN_DIR", "ExamRoot",
            "Finding", "evidence_of", "finding_id_of", "finding_key", "history_path", "load_history",
-           "names_forbidden_path", "open_by_key", "reference_runs", "save_history", "seeded_history",
+           "names_forbidden_path", "open_by_key", "reference_runs", "save_history",
+           "save_ruling_files", "seeded_history",
            "subject_of", "write_spoken", "expose", "FORBIDDEN_READS"]
