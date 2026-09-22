@@ -167,6 +167,8 @@ def test_reroll_with_prefix_names_its_files_for_the_buyer_and_carries_user_end(t
     assert all(Path(report.path).name.startswith("second-path-r0-b0-") for report in reports)
     assert all(Path(report.path).is_file() for report in reports)
     assert all("user_end" in report.as_dict() for report in reports)
+    direct = tool.run(root, "widget_task", _rename_script(), workdir=tmp_path / "named", run_id="custom-7")
+    assert direct.run_id == "custom-7" and (tmp_path / "named" / "runs" / "custom-7.jsonl").is_file()
 
 
 def test_the_shared_retail_fixture_loads():

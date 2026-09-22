@@ -174,12 +174,13 @@ def _model_name(model: Any) -> str:
     return str(getattr(model, "name", None) or type(model).__name__)
 
 
-def run(environment_dir: Any, task_id: str, model: Any, *, user: Any = None, workdir: Any,
-        seed: int = 0) -> RunReport:
+def run(environment_dir: Any, task_id: str, model: Any, *, user: Any = None, make_user: Any = None,
+        workdir: Any, seed: int = 0, run_id: Optional[str] = None) -> RunReport:
     """Play one Run of the candidate model in the Environment and report it.
 
     The candidate is driven by the runner loop with only the Environment's tools registered,
-    through the route; the passed user answers when the Task has one. Writes the Run JSONL
+    through the route; the passed user answers when the Task has one, or the user a
+    `make_user(router)` factory builds where none was passed. Writes the Run JSONL
     under workdir/runs/ and returns the Verdict, the route taken per call, the world diff
     (rows changed, per table, before and after), and the spend.
     """
@@ -189,9 +190,13 @@ def run(environment_dir: Any, task_id: str, model: Any, *, user: Any = None, wor
         raise EnvironmentError(f"Task {task_id} is driven by the agent user, which needs a model "
                                "the runner is not given")
     router = _router_for(env, task_id, seed)
+    _refuse_stand_in(router)
+    if user is None and make_user is not None:
+        user = make_user(router)
     runs_dir = Path(workdir) / RUNS_DIR
     runs_dir.mkdir(parents=True, exist_ok=True)
-    run_id = f"{task_id}-{seed}"
+    if run_id is None:
+        run_id = f"{task_id}-{seed}"
     specs = env.tool_specs()
     state = loop.new_run_state(
         run_id, workdir=runs_dir, env_id=env.env_id, task_id=task_id,
@@ -460,51 +465,10 @@ def reroll(environment_dir: Any, task_id: str, model: Any, *, count: int,
     user arrives as an object or as a `make_user(router)` factory, never as an import. Each report
     carries `user_end`, how the Simulated user ended that Run (D133).
     """
-    reports = []
-    for seed in range(max(int(count), 0)):
-        run_id = f"{prefix}-{seed}" if prefix else f"{task_id}-{seed}"
-        reports.append(_reroll_once(environment_dir, task_id, model, workdir=workdir, seed=seed,
-                                    run_id=run_id, user=user, make_user=make_user))
-    return reports
-
-
-def _reroll_once(environment_dir: Any, task_id: str, model: Any, *, workdir: Any, seed: int,
-                 run_id: str, user: Any = None, make_user: Any = None) -> RunReport:
-    """One numbered re-roll under its own id: the same Run `run` plays, under the buyer's name."""
-    env = BuiltEnvironment(environment_dir)
-    task = env.task(task_id)
-    if env.agent_driven(task_id):
-        raise EnvironmentError(f"Task {task_id} is driven by the agent user, which needs a model "
-                               "the runner is not given")
-    router = _router_for(env, task_id, seed)
-    _refuse_stand_in(router)
-    if user is None and make_user is not None:
-        user = make_user(router)
-    runs_dir = Path(workdir) / RUNS_DIR
-    runs_dir.mkdir(parents=True, exist_ok=True)
-    specs = env.tool_specs()
-    state = loop.new_run_state(
-        run_id, workdir=runs_dir, env_id=env.env_id, task_id=task_id,
-        model=_model_name(model), seed=seed, user=user,
-        user_rules=env.rules(task),
-        max_turns=MAX_TURNS, system_prompt=env.system_prompt(task),
-        first_user=task.intent if user is None else None)
-    loop.open_with_user(state)
-    loop.run(state, model, tools=specs, router=router)
-    loop.finish(state, router)
-    report_version = version()
-    verifier = env.verifier(task_id)
-    scored = score_verdict(state.path, verifier, canon=env.canon_rules, environment=env,
-                           runner_version=report_version) if verifier is not None else None
-    taken = [{"id": event.payload.get("id"), "name": event.payload.get("name"),
-              "route": event.route}
-             for event in state.run.events if event.type == "tool_result"]
-    return RunReport(run_id=run_id, task_id=task_id, path=str(state.path) if state.path else "",
-                     verdict=scored, routes=taken,
-                     world_diff=_world_diff(router.start_world, router.world()),
-                     spend=as_dict(state.run.cost), runner_version=report_version,
-                     termination_reason=state.run.termination_reason,
-                     user_end=_user_end_of(user))
+    return [run(environment_dir, task_id, model, user=user, make_user=make_user,
+                workdir=workdir, seed=seed,
+                run_id=f"{prefix}-{seed}" if prefix else None)
+            for seed in range(max(int(count), 0))]
 
 
 __all__ = ["ReplayCall", "ReplayReport", "RunReport", "call_trace", "probe", "replay",
