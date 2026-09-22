@@ -636,3 +636,51 @@ def test_missing_mint_path_breaks_minted_law():
     assert [(v.law, v.tool) for v in report.violations] == [(MINTED_IDS_UNIQUE, "make")]
     (violation,) = report.violations
     assert len(violation.sequence) == 1
+
+
+def test_id_typed_parameter_draws_an_existing_id_in_a_seeded_sequence():
+    import random
+
+    from kullback.laws import _gen_args
+
+    snapshot = {"widgets": {"w1": {"widget_id": "w1", "label": "plain"}}}
+    schema = [ArgSpec("widget_id", "string", False, True)]
+    pool = {"int": [], "str": ["zz", "b", "a", ""], "float": [], "bool": []}
+    rng = random.Random(7)
+    drawn = [_gen_args(schema, rng, pool, snapshot)["widget_id"] for _ in range(20)]
+    assert "w1" in drawn
+    assert any(value != "w1" for value in drawn)
+
+
+def test_id_draws_keep_to_the_named_table_across_a_seeded_sequence():
+    import random
+
+    from kullback.laws import _gen_args
+
+    snapshot = {
+        "groups": {"g1": {"group_id": "g1"}},
+        "members": {"m1": {"member_id": "m1"}},
+    }
+    schema = [ArgSpec("group_id", "string", False, True, "groups")]
+    pool = {"int": [], "str": ["zz"], "float": [], "bool": []}
+    rng = random.Random(3)
+    drawn = [_gen_args(schema, rng, pool, snapshot)["group_id"] for _ in range(30)]
+    assert "g1" in drawn
+    assert "m1" not in drawn
+
+
+def test_unresolved_id_draws_only_same_named_values():
+    import random
+
+    from kullback.laws import _gen_args
+
+    snapshot = {
+        "groups": {"g1": {"tag": "t1"}},
+        "members": {"m9": {"tag": "t9"}},
+    }
+    schema = [ArgSpec("tag", "string", False, True)]
+    pool = {"int": [], "str": ["zz"], "float": [], "bool": []}
+    rng = random.Random(3)
+    drawn = [_gen_args(schema, rng, pool, snapshot)["tag"] for _ in range(30)]
+    assert "t1" in drawn or "t9" in drawn
+    assert "g1" not in drawn and "m9" not in drawn

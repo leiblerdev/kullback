@@ -1011,6 +1011,19 @@ def test_consistency_names_unfit_tools_in_output_and_json(workdir, tmp_path):
     assert "widget_task" in body["tasks"]
 
 
+def test_consistency_names_the_requestor_of_each_tool(workdir, tmp_path):
+    seed_built_env(workdir)
+    out = tmp_path / "consistency.json"
+    result = invoke("consistency", "--workdir", str(workdir), "--sequences", "2",
+                    "--max-length", "2", "--out", str(out))
+    assert result.exit_code == 0, result.output
+    assert "describe_widget as assistant" in result.output
+    assert "rename_widget as assistant" in result.output
+    body = json.loads(out.read_text(encoding="utf-8"))
+    assert body["tasks"]["widget_task"]["requestors"] == {
+        "describe_widget": "assistant", "rename_widget": "assistant"}
+
+
 @pytest.mark.parametrize("sequences", ["0", "-1"])
 def test_consistency_refuses_zero_sequences(workdir, sequences):
     seed_built_env(workdir)

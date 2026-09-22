@@ -639,9 +639,14 @@ def _format_consistency(value: Optional[float]) -> str:
     return "n/a" if value is None else f"{value:.4f}"
 
 
-def _consistency_line(task_id: str, checked: int, broken: int, consistency: Optional[float]) -> str:
-    """One Task's law counts and its Environment consistency as one line."""
-    return f"{task_id}: checked {checked} broken {broken} consistency {_format_consistency(consistency)}"
+def _consistency_line(task_id: str, checked: int, broken: int, consistency: Optional[float],
+                      requestors: Optional[dict] = None) -> str:
+    """One Task's law counts, its Environment consistency, and each tool's requestor as one line."""
+    line = f"{task_id}: checked {checked} broken {broken} consistency {_format_consistency(consistency)}"
+    if requestors:
+        sides = ", ".join(f"{name} as {requestors[name]}" for name in sorted(requestors))
+        return f"{line}, {sides}"
+    return line
 
 
 def _mean_consistency(rows: dict) -> Optional[float]:
@@ -724,13 +729,14 @@ def consistency(
         try:
             world = make_world(env, task_id, seed=seed)
             gaps = world.unfit()
+            sides = {info.name: info.requestor for info in world.tools()}
             report = check(world, seed=seed, sequences=sequences, max_length=max_length)
         except Exception as exc:
             return None, {}, f"{type(exc).__name__}: {exc}"
         if not sum(report.checked.values()):
             return None, gaps, "no law checked"
         row = {"checked": sum(report.checked.values()), "broken": sum(report.broken.values()),
-               "consistency": report.consistency}
+               "consistency": report.consistency, "requestors": sides}
         return row, gaps, None
 
     for task_id in ids:
@@ -742,7 +748,8 @@ def consistency(
             continue
         rows[task_id] = row
         unfit.update(_echo_gaps(task_id, gaps))
-        typer.echo(_consistency_line(task_id, row["checked"], row["broken"], row["consistency"]))
+        typer.echo(_consistency_line(task_id, row["checked"], row["broken"], row["consistency"],
+                                     row["requestors"]))
     _finish_consistency(rows, skipped, unfit, out, laws_module.LAWS_VERSION, task)
 
 
