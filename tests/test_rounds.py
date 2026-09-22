@@ -103,7 +103,9 @@ TARGET = "environment"
 # with the sources it names, and with the key tags normalized the rows are byte identical.
 # Re-pinned again once Triples carried witnessed world: the lesson sentences name the columns
 # the guard read, and with the key tags normalized the rows are byte identical.
-TASK_STATUS_SHA256_BEFORE_THE_PHASE = "a293795da688898be4711e586cf0bbb232f3e6cc1e2fbbf3ee4ac72bda792ede"
+# Re-pinned on the merge with the base: the union tree carries both sides, and with the key
+# tags normalized the rows are byte identical.
+TASK_STATUS_SHA256_BEFORE_THE_PHASE = "4edc9d78d0dc11ff7940c3eb437c524f15ea494b8b5b788a58ac1dac30b62018"
 
 
 def _fixture(request) -> Path:
