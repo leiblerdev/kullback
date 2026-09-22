@@ -151,3 +151,25 @@ def test_to_wire_drops_details_and_empty_error_turns():
         {"role": "tool", "tool_call_id": "c1", "name": "t", "content": "ok"},
     ]
     assert "secret" not in json.dumps(wire) and "full" not in json.dumps(wire)
+
+
+def test_a_message_that_reasoned_nothing_dumps_as_one_written_before_the_field_existed():
+    """The thinking channel must not change a stored transcript: a message carrying none omits
+    the key, so a record written today is byte-identical to one written before the channel was
+    read. A message that did reason keeps it."""
+    quiet = AssistantMessage(content="hi")
+    assert "thinking" not in quiet.model_dump()
+    assert "thinking" not in json.loads(quiet.model_dump_json())
+    assert quiet.thinking is None
+
+    loud = AssistantMessage(content="hi", thinking="weighed it")
+    assert loud.model_dump()["thinking"] == "weighed it"
+    assert AssistantMessage.model_validate(loud.model_dump()).thinking == "weighed it"
+
+
+def test_an_answer_of_empty_text_stays_empty_text_rather_than_becoming_no_answer():
+    """A reply that said nothing and a reply that said "" are different records, and the stream
+    must not fold one into the other."""
+    events = events_of(TestModel([ModelReply(content="")]), [UserMessage(content="hi")])
+    assert [e.type for e in events] == ["start", "done"]
+    assert events[-1].message.content == ""

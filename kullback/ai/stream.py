@@ -222,7 +222,10 @@ async def canonicalize_provider_stream(
             final.usage = event.message.usage
             final.model = event.message.model or partial.model
             final.error_message = event.message.error_message
-            if not final.content and not final.tool_calls and event.message.content:
+            # An adapter that reported no delta but ended with content keeps it, and an answer of
+            # empty text stays empty text rather than becoming no text: a reply that said nothing
+            # and a reply that said "" are not the same record.
+            if final.content is None and not final.tool_calls and event.message.content is not None:
                 final.content = event.message.content
             final.stop_reason = normalize_stop_reason(event.finish_reason, bool(final.tool_calls))
             yield StreamDone(reason=final.stop_reason, message=final)
