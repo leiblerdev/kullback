@@ -374,6 +374,7 @@ def examine(workdir: Any, *, task_ids: Optional[Iterable[str]] = None, model: An
     if model is None:
         return findings
     exam_root = _exam_root(workdir, store, findings, reroll_model=reroll_model,
+                           probe_model=probe_model, run_probe=runners["run_probe"],
                            allowance_usd=allowance_usd)
     harness = AgentHarness(model=model, max_turns=max_turns,
                            session=SessionStore.load(session_path) if session_path is not None else None,
@@ -393,6 +394,7 @@ def examine(workdir: Any, *, task_ids: Optional[Iterable[str]] = None, model: An
 
 
 def _exam_root(workdir: Any, store: dict, findings: list[Finding], reroll_model: Any = None,
+               probe_model: Any = None, run_probe: Any = None,
                allowance_usd: Optional[float] = None) -> ExamRoot:
     """The session root: live Verifiers, signatures, rules, rows, task status and version history.
 
@@ -400,6 +402,8 @@ def _exam_root(workdir: Any, store: dict, findings: list[Finding], reroll_model:
     history is the exam history.json with every live Verifier seeded as version 1 by derive and
     saved. The trusted gate reads each derived file as the current accepted version from that
     seed, and the loosening gate compares each proposal against the version before it (D127).
+    The probe model and the probe runner examine built let the suite run its loophole check on
+    each proposal (D79).
     """
     root = Path(workdir)
     verifiers: dict[str, Verifier] = {}
@@ -416,6 +420,7 @@ def _exam_root(workdir: Any, store: dict, findings: list[Finding], reroll_model:
                          replays=store.get("replays") or {}, rerolls=store.get("rerolls") or {},
                          task_status=status if isinstance(status, dict) else {},
                          findings=list(findings), reroll_model=reroll_model,
+                         probe_model=probe_model, run_probe=run_probe,
                          allowance_remaining=allowance_usd)
     history = load_history(exam_root)
     for task_id, verifier in verifiers.items():
