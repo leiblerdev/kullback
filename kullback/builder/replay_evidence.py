@@ -12,6 +12,7 @@ import re
 from pathlib import Path
 from typing import Any, Iterable, Optional
 
+from kullback.builder import compile_env
 from kullback.runner.records import Trace
 from kullback.runner.records import read_json as _read_json
 
@@ -253,6 +254,20 @@ def is_evidence_call(call: Any, callers: dict[str, set[str]]) -> bool:
     return (call.requestor or "assistant") in callers.get(call.name, {"assistant"})
 
 
+def trace_worlds(db: dict, overlays: Iterable[Any], values: dict, tasks: Iterable[Any]) -> dict[str, dict]:
+    """Per Trace id, the world its Task starts in: the shared db with that Task's overlay merged.
+
+    The Starting-state pin, read the way `call_starting_states` reads it and by the same merge, so a
+    row a Run wrote before anything read it has a before value that is the Task's own and not the
+    shared world's (D215 rule 1). A Task with no overlay contributes nothing and its Runs fall back
+    to the shared db, which is what they would have been pinned to anyway.
+    """
+    by_task = {overlay.task_id: compile_env.merge_overlays(db, [overlay], values)
+               for overlay in overlays}
+    return {run_id: by_task[task.id] for task in tasks if task.id in by_task
+            for run_id in task.run_ids}
+
+
 __all__ = ["REPLAYS_FILE", "REPLAY_AGREED", "REPLAY_LESSON_HEAD", "SHAPES_SHOWN", "after_write_calls",
            "callers_by_tool", "evidence_calls", "failure_shape", "failure_shapes", "is_evidence_call",
-           "replay_difference", "replay_failures", "replay_failures_of", "replay_lesson"]
+           "replay_difference", "replay_failures", "replay_failures_of", "replay_lesson", "trace_worlds"]

@@ -24,17 +24,12 @@ from kullback.builder import lesson as lesson_mod
 from kullback.builder import mine, synth
 from kullback.builder.body_skill import BODY_SKILL
 from kullback.builder.mine import is_assistant_call, is_scalar_result
-
-# The failure grouping D181's rule 6 gives every other hint; repair.py imports nothing of this
-# module, so the two sit in one layer with no cycle between them.
-from kullback.builder.repair import SHAPES_SHOWN, failure_shapes
 from kullback.builder.sandbox import (
     DB_CLASS,
     Sandbox,
     SandboxError,
     args_text,
     context_feed_key,
-    gate_parses,
     id_field,
     id_pattern_for,
     key_fields,
@@ -52,6 +47,7 @@ from kullback.builder.sandbox import (
 from kullback.builder.sandbox import gate_deterministic as gate_deterministic
 from kullback.builder.sandbox import gate_executes_on_s0 as gate_executes_on_s0
 from kullback.builder.sandbox import gate_non_trivial as gate_non_trivial
+from kullback.builder.sandbox import gate_parses as gate_parses
 from kullback.builder.sandbox import gate_replay_fidelity as gate_replay_fidelity
 from kullback.episode.loading import (
     OVERLAY_DIR,
@@ -3675,45 +3671,6 @@ def grade_body(toolsig: ToolSig, body: str, calls: Iterable[ToolCall], schema: E
     return build
 
 
-KEPT_BODY_HEAD = ("This tool already has a body in this build. It was replayed under the world as it "
-                  "stands now and it failed as follows. You are not shown that body: a body in the "
-                  "prompt is a body copied, and what is wanted here is a second, better one. Write "
-                  "your own, and do not fail in these ways.")
-
-
-def kept_body_hint(gates: Iterable[GateResult], held_out: Iterable[ToolCall] = (),
-                   shapes_shown: int = SHAPES_SHOWN) -> str:
-    """What the body already kept for this tool fails at, grouped by shape; "" when it fails at nothing.
-
-    The hint goes where every other hint goes (the lesson in the first user turn), and it is grouped
-    by shape with counts for the reason D181's rule 6 gives: a gate that ruled over sixty calls
-    leaves sixty sentences, and a writer shown one of them answers one of them. The held-out split
-    is filtered the way `_failure_text` filters it, so a body the writer is asked to beat still
-    cannot hand it the calls it was never shown.
-
-    `shapes_shown` is three by default and the whole failing set once the tool has stalled (D211):
-    three shapes is a sample, and a writer that has answered the sample six times over and bought
-    nothing needs the rest of the distribution rather than the same three again.
-    """
-    hidden = [args_text(call) for call in held_out]
-    lines = []
-    for gate in gates:
-        if gate.passed:
-            continue
-        split = gate.metrics.get("split", "")
-        kept = [] if split == "held_out" else [f for f in gate.failures if not any(h in f for h in hidden)]
-        shapes = failure_shapes(kept)
-        text = "; ".join(f"{shape} ({count} call{'' if count == 1 else 's'})"
-                         for shape, count in shapes[:shapes_shown])
-        if len(shapes) > shapes_shown:
-            text += f"; {len(shapes) - shapes_shown} more shapes"
-        withheld = len(gate.failures) - len(kept)
-        if withheld:
-            text += ("; " if text else "") + f"{withheld} more on calls you were not shown"
-        lines.append(f"- gate {gate.stage}: {text}")
-    return "\n".join([KEPT_BODY_HEAD] + lines) if lines else ""
-
-
 def _evidence_label(attempt: int, gates: list[GateResult]) -> str:
     """The node's own name for its evidence, honest about the held-out case."""
     if attempt and _held_out_only(gates):
@@ -4285,236 +4242,6 @@ def _clamped_detail(text: str) -> str:
     return f"{text[:OUTCOME_DETAIL_CHARS].rstrip()} [+{len(text) - OUTCOME_DETAIL_CHARS} characters]"
 
 
-def compile_tool(model, toolsig: ToolSig, calls: Iterable[ToolCall], schema: EntitySchema, db: dict,
-                 workdir: Path | str, max_attempts: int = MAX_REPAIR_ATTEMPTS,
-                 max_evidence_chars: Optional[int] = MAX_EVIDENCE_CHARS, timeout: float = 30.0,
-                 call_states: Optional[dict] = None, rules: Any = None,
-                 tool_names: Iterable[str] = (), error_prefix: Optional[str] = None,
-                 builder_tools: bool = True, lesson: str = "", world_note: str = "",
-                 readers: Any = None, call_tasks: Optional[dict] = None,
-                 effects: str = "", effect_values: Optional[dict] = None,
-                 transition_evidence: Optional[dict] = None,
-                 holdout: Optional[dict] = None, holdout_values: Optional[dict] = None,
-                 system_head: Optional[str] = None, tool_specs: Optional[list] = None) -> ToolBuild:
-    """Write one tool body, gate it, and repair it at most three times with growing evidence (D75).
-
-    Attempt 1 sees the failing call, attempt 2 every failing call, attempt 3 the full call table, and
-    every rewrite is re-checked on the shown calls and on the held-out calls separately, with the
-    held-out calls never named back to the model. An attempt whose whole prompt would exceed the D65
-    cap is refused, not truncated, and the cap is on by default. `call_states` (from
-    `call_starting_states`) is the per-Task world each recorded call ran on; without it every call
-    replays on the shared db, which is right only where the corpus shows one version of each row.
-    `call_tasks` is the map behind it, call id to Task id, which is what lets gate 8 name the two
-    Tasks a sensitivity pair spans (D195); without it a pair is named by the Traces its calls
-    came from.
-    `rules` is the customer's CanonRules (D39): given none, the gates compare under the module
-    defaults and can fail a body over a difference the customer's own rules fold away. `tool_names`
-    is every tool name in this build, stable across every call of this stage, so it lives in the
-    system message beside the schema (docs/prompt-caching.md item 1).
-
-    `effects` and `effect_values` are D215's two halves of one observation (`builder/effects.py`):
-    the section of the prompt that says which rows this tool's recorded calls moved beyond the ones
-    their arguments named, and the values those rows were left holding, which the memorised gate
-    refuses a body for writing down. Both are empty for a tool nothing was observed of, and the
-    prompt is then the bytes it always was.
-
-    Attempt 0 sends the system and the first user turn; a retry (docs/prompt-caching.md item 2)
-    never rewrites either: it appends the previous reply as an assistant turn and the new evidence
-    and failure as a new user turn, so the first two messages of every call in the loop are the
-    same bytes a cache can reuse. An attempt that raised what the attempt before it raised is told
-    so in that new turn (`_SAME_ERROR`), with the exception quoted, since a rewrite that lands on
-    the same crash is not a rewrite of the line that crashed.
-    An attempt whose body raised a KeyError or an AttributeError also gets `raised_detail`: the
-    line it crashed on, the table that line reads and what the world says about that table, since
-    the bare exception says nothing a rewrite can aim at.
-    Each attempt is a node dict; after the last miss the tool is marked assisted (D49) and the nodes
-    are written under the workdir. When no attempt passes, the body kept is the best attempt's, not
-    the last one's (`attempt_score`, `ToolBuild.kept_attempt`).
-
-    `builder_tools` (D117, on by default) lets the model call `lookup_rows` and `test_body` while
-    it drafts this attempt's reply, inside `_reply_with_tools`'s own bounded loop
-    (`MAX_TOOL_ROUNDS`), before the reply it settles on is gated the same way an old, tool-less
-    reply always was. Turn it off for a caller that wants the old one-call-per-attempt behaviour.
-
-    The build carries `call_outcomes` (D171): one row per recorded call saying whether the kept body
-    answered it the way the recording did, so a miss can be attributed to the Task whose Trace made
-    the call and not to every Task that calls the tool.
-
-    `lesson` is what this tool already failed on in an earlier build or an earlier recompile
-    request (`memory.lesson_for`, written by `repair.record_tool_lesson`). It is carried into the
-    first user turn, so it is in the prefix every retry of this attempt chain keeps; without it the
-    recompile asks the same question again and the model has no way to know it was asked before.
-
-    `system_head`, given by the caller, is the system prefix built once per build and shared by
-    every tool; given none it is built once here and the same string object reaches every attempt
-    of this tool, so per attempt builders cannot drift a byte. `tool_specs` is the frozen helper
-    spec list in a fixed order: the same list object on every attempt and every tool round, so
-    the request envelope never splits the cache. Given none it is `BUILDER_TOOLS`.
-    """
-    workdir, calls = Path(workdir), list(calls)
-    if error_prefix is None:  # build.py passes the corpus-wide prefix; alone, this tool's own calls
-        error_prefix = shared_error_prefix(calls)
-    system_head = _head_for_tools(schema, tool_names, builder_tools, world_note, system_head)
-    specs = _specs_for(tool_specs)
-    shown, held_out = split_calls(calls)
-    # The recorded feed each gate call is served from, built once: a pure function of the calls.
-    ctx_feeds = recorded_call_contexts(shown + held_out, schema)
-    build, failure = ToolBuild(name=toolsig.name, body="", no_shape_holdout=no_shape_holdout(calls)), ""
-    skeleton = gate_parses(module_source(schema, [toolsig], {toolsig.name: "pass"}))
-    messages: list[dict] = []
-    reply_content = ""
-    # The loop grows its evidence off the attempt that just ran, not off the best one so far, so
-    # the two are kept apart: `latest` drives the next prompt, `build` holds what is kept.
-    latest: list[GateResult] = []
-    best: Optional[tuple[int, int]] = None
-    last_error = ""  # the exception the attempt before raised, so a repeat can be named as one
-    for attempt in range(max_attempts + 1):
-        if not skeleton.passed:  # code owns the skeleton, so no model call can repair it
-            build.gates = [skeleton]
-            build.nodes.append({"attempt": attempt, "tool": toolsig.name, "evidence": "none",
-                                "evidence_calls": 0, "passed": False, "refused": True,
-                                "failures": [f"the code-owned skeleton does not parse: {f}"
-                                             for f in skeleton.failures]})
-            break
-        evidence = _evidence_for(attempt, shown, latest)
-        node = {"attempt": attempt, "tool": toolsig.name, "evidence": _evidence_label(attempt, latest),
-                "evidence_calls": len(evidence), "passed": False, "refused": False}
-        if attempt == 0:
-            messages = body_messages(toolsig, evidence, schema=schema, tool_names=tool_names,
-                                     error_prefix=error_prefix, builder_tools=builder_tools,
-                                     lesson=lesson, world_note=world_note, effects=effects,
-                                     system_head=system_head)
-        else:
-            messages = _append_retry(messages, reply_content, evidence, failure, error_prefix)
-        # Fewer whole calls, never a shortened one. `_example_block` refuses to cut a call in
-        # half and that stays true: what is dropped here is the last recorded call, entire. The
-        # first live build refused `get_order_details` outright at 815,972 characters, because the
-        # last-resort evidence is every shown call and this corpus has hundreds of them; a body
-        # written from thirty complete calls is worth more than an attempt not taken.
-        while (max_evidence_chars is not None and len(evidence) > 1
-               and prompt_chars(messages) > max_evidence_chars):
-            evidence = evidence[:-1]
-            node["evidence_calls"] = len(evidence)
-            messages = (body_messages(toolsig, evidence, schema=schema, tool_names=tool_names,
-                                      error_prefix=error_prefix, builder_tools=builder_tools,
-                                      lesson=lesson, world_note=world_note, effects=effects,
-                                      system_head=system_head)
-                        if attempt == 0
-                        else _append_retry(messages[:-2], reply_content, evidence, failure, error_prefix))
-        size = prompt_chars(messages)
-        if max_evidence_chars is not None and size > max_evidence_chars:
-            node["failures"] = [f"a prompt of {size} characters is over the cap "
-                                f"of {max_evidence_chars}; refused, not truncated"]
-            build.nodes.append(dict(node, refused=True))
-            break
-        tools_impl = (_build_tools_impl(schema, toolsig, shown, held_out, db, call_states, workdir,
-                                        attempt, timeout, rules, readers, holdout=holdout,
-                                        holdout_values=holdout_values, effect_values=effect_values,
-                                        transition_evidence=transition_evidence)
-                     if builder_tools else None)
-        try:
-            if builder_tools:
-                reply_content, tool_uses, draft = _reply_with_tools(model, messages, tools_impl,
-                                                                    tool_specs=specs)
-            else:
-                reply_content, tool_uses, draft = model.query(messages).content or "", [], ""
-        except _context_cap_error() as refusal:
-            # `max_evidence_chars` above is not enough on its own, and the first live build is
-            # what showed it. It counts the characters of the message contents; budget.py counts
-            # the tokens of the JSON the request will actually carry, which is larger by the
-            # envelope and by every escaped quote and newline in a tool result. A prompt of
-            # 358,580 content characters was under the 320,000 cap on nothing and over the 80,000
-            # token cap at 89,645. No constant reconciles two different measures, so the one that
-            # is authoritative is the one the wrapper raises, and it is caught here.
-            #
-            # Before this it left compile_tool and killed the build: one tool with a large corpus
-            # took the other thirteen with it. The stage already has a word for a tool it could not
-            # write, so the refusal becomes that word: assisted (D49), and the build carries on.
-            node["failures"] = [f"{refusal}; refused, not truncated"]
-            build.nodes.append(dict(node, refused=True))
-            break
-        if tool_uses:
-            node["tool_uses"] = tool_uses
-        body = _strip_fence(reply_content)
-        if not body and draft:
-            # The rounds ran out on a model that had tested a draft and was still probing: that
-            # draft is what it was submitting, so it is gated like any reply (D117).
-            body, reply_content = _strip_fence(draft), draft
-            node["body_from_draft"] = True
-        if not body:
-            # No reply and no draft: nothing to gate, and gating "pass" would blame the code-owned
-            # skeleton for a reply the model never gave. The attempt fails and the next one runs
-            # with that said; the sixth retail build failed whole on a refusal here, because the
-            # stage gate reads an empty body as a tool the Builder could not write.
-            failure = "\nno body was submitted: every round asked for a tool; send the body as your reply"
-            reply_content = "(no body was submitted)"
-            last_error = ""  # nothing ran, so the next attempt's error follows no error of ours
-            node["failures"] = ["no body was submitted"]
-            build.nodes.append(node)
-            continue
-        body, sanitized = sanitize_body(body)
-        if sanitized:
-            # Deterministic, free and recorded on the node: a smart quote never costs an attempt,
-            # and the next attempt's evidence carries what changed so the model stops writing it.
-            node["sanitized"] = sanitized
-            reply_content = body
-        source = module_source(schema, [toolsig], {toolsig.name: body})
-        sandbox = Sandbox(source, db, workdir / f"attempt_{attempt}", timeout=timeout,
-                          call_states=call_states, call_tasks=call_tasks, call_context=ctx_feeds)
-        gates = run_gates(source, sandbox, shown, held_out, schema, rules,
-                          probe_refusals=toolsig.kind == "write", sig=toolsig, readers=readers,
-                          holdout_values=holdout_values, effect_values=effect_values,
-                          transition_evidence=transition_evidence)
-        node.update(body_hash=content_hash(body), gates=[as_dict(g) for g in gates],
-                    passed=all(g.passed for g in gates))
-        build.nodes.append(node)
-        latest = gates
-        # The last attempt is not the best attempt. A live build's fourth attempt at one write tool
-        # crashed on all 67 of its calls where the third had replayed 44 of 44 and failed only the
-        # refusal probe; keeping the last one cost 94 replay misses and 38 Tasks. So the body kept
-        # is the one that got furthest through the gates (`attempt_score`), and a later attempt
-        # replaces it only by beating it. A passing attempt ends the loop, so it is always the best.
-        score = attempt_score(gates)
-        if best is None or score > best:
-            best, build.body, build.gates, build.kept_attempt = score, body, gates, attempt
-        if node["passed"]:
-            break
-        failure = "\n" + _failure_text(gates, held_out)
-        if node.get("sanitized"):
-            failure += "\n" + node["sanitized"]
-        if any(g.stage == "non_trivial" and not g.passed for g in gates):
-            failure += _constant_evidence_note(evidence)
-        # Only when the sandbox has already run these calls, so the note costs no subprocess: a
-        # body that never parsed has nothing for the world to say about it anyway.
-        detail = raised_detail(sandbox, shown) if sandbox.cache else ""
-        failure += ("\n" + detail) if detail else ""
-        error = exception_line(gates)
-        if error and error == last_error:
-            failure += _SAME_ERROR.format(error=error)
-        last_error = error
-    build.assisted = not (build.gates and all(g.passed for g in build.gates))
-    for record in build.nodes:
-        if record["attempt"] == build.kept_attempt:
-            record["kept"] = True
-    # D171: a tool that cleared every gate replayed every recorded call, since `run_gates` holds the
-    # shown and the held-out split to 100% each and only calls a build unassisted when both passed;
-    # so its per-call rows are known without a sandbox and only an assisted tool pays for the run.
-    build.call_outcomes = (
-        replay_outcomes(toolsig, build.body, calls, schema, db, workdir, call_states=call_states,
-                        rules=rules, timeout=timeout, readers=readers)
-        if build.assisted else
-        [{"tool": toolsig.name, "call_id": call.id, "replayed": True, "detail": ""} for call in calls])
-    build.hardcoded = build.assisted and hardcoded_body(calls, build.call_outcomes)
-    directory = workdir / NODE_DIR
-    directory.mkdir(parents=True, exist_ok=True)
-    (directory / f"{toolsig.name}.json").write_text(
-        json.dumps({"tool": toolsig.name, "assisted": build.assisted,
-                    "hardcoded": build.hardcoded,
-                    "no_shape_holdout": build.no_shape_holdout,
-                    "kept_attempt": build.kept_attempt, "nodes": build.nodes,
-                    "call_outcomes": build.call_outcomes},
-                   indent=2, default=str) + "\n", encoding="utf-8")
-    return build
 
 # --- emitting tau2's five files plus the sidecar (D56) ---
 

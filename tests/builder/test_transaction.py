@@ -6,8 +6,9 @@ The domain is a seed nursery: trays of seedlings, a tool that lists them and a t
 from __future__ import annotations
 
 import json
+import time
 
-from kullback.builder import repair, transaction
+from kullback.builder import transaction
 
 
 def _write(workdir, name, body):
@@ -43,11 +44,20 @@ def _nursery(workdir, differing=()):
 
 
 def _apply(workdir, kind, target, change, round_no=1):
-    """Open a transaction, let `change` move the artifacts, close it, and record the request."""
+    """Open a transaction, let `change` move the artifacts, close it, and record the request.
+
+    The request row is what `transaction.recorded_repairs` reads back; the repair verb that used
+    to write it is gone, so the helper writes the same row itself.
+    """
     txn = transaction.open_transaction(workdir, kind, target, round_no=round_no)
     change()
     ruling = transaction.close(txn)
-    repair.record_request(workdir, kind, target, {"arguments": {}, **ruling.as_row()}, round_no=round_no)
+    folder = workdir / "repairs"
+    folder.mkdir(parents=True, exist_ok=True)
+    with (folder / f"{kind}.jsonl").open("a", encoding="utf-8") as fh:
+        fh.write(json.dumps({"verb": kind, "target": target, "at": time.time(),
+                             "round": int(round_no), "arguments": {}, **ruling.as_row()},
+                            sort_keys=True) + "\n")
     return ruling
 
 
@@ -221,5 +231,3 @@ def test_the_stages_own_ruling_is_stamped_and_not_put_back(tmp_path):
     row = json.loads((tmp_path / "kept_bodies.json").read_text(encoding="utf-8"))["water_tray"]
     assert row["attempt_score"] == [7, 12] and row["reverted"] == transaction.REVERTED_REGRESSION
     assert row["reverted_tasks"] == ["task_water replay"]
-    assert "the repair was then put back because it cost task_water replay" in \
-        repair.recompile_ruling(tmp_path, "water_tray")
