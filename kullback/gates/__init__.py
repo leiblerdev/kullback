@@ -34,8 +34,10 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from kullback.gates import (
     artifacts,
+    bindings,
     confinement,
     fidelity,
+    hook,
     ledger,
     loosening,
     probes,
@@ -72,6 +74,7 @@ from kullback.gates.artifacts import (
     verdict_golden_gate,
     verifier_gate,
 )
+from kullback.gates.bindings import BINDINGS, ROWS_CAP, Binding, binding_for, rulings_for
 from kullback.gates.confinement import (
     gate_confined,
     predicate_confinement,
@@ -86,6 +89,7 @@ from kullback.gates.fidelity import (
     summarize,
     unconfirmed_reason,
 )
+from kullback.gates.hook import attach_ruling, gate_writes
 from kullback.gates.ledger import GateLedger
 from kullback.gates.loosening import (
     FALSE_REJECTION_THRESHOLD,
@@ -191,13 +195,15 @@ def names_protected_path(value: Any) -> Optional[str]:
 
 
 class Ruling(BaseModel):
-    """One gate's answer as a tool result carries it: named, decided, the reasons in `failures`."""
+    """One gate's answer as a tool result carries it: named, decided, the reasons in
+    `failures`, and the records behind a refusal in `rows` (never a bare count)."""
 
     model_config = ConfigDict(extra="forbid")
 
     stage: str
     passed: bool
     failures: list[str] = Field(default_factory=list)
+    rows: list[dict] = Field(default_factory=list)
 
 
 def ruling_of(result: GateResult) -> Ruling:
@@ -227,13 +233,15 @@ def rulings_over(store: dict, produced: Iterable[str]) -> list[GateResult]:
 
 
 class GateSpec(NamedTuple):
-    """One registered gate: its name, what it rules on, the function, the stages it may return, and
-    the build artifacts it takes in argument order when its evidence is whole artifacts."""
+    """One registered gate: its name, what it rules on, the function, the stages it may return, the
+    build artifacts it takes in argument order when its evidence is whole artifacts, and the
+    written-file globs (`kullback gates` prints what runs where) that draw it on a write."""
     name: str
     over: str
     fn: Callable[..., Any]
     rulings: tuple[str, ...]
     artifacts: tuple[str, ...] = ()
+    paths: tuple[str, ...] = ()
 
 
 def _spec(name: str, over: str, fn: Callable[..., Any], *rulings: str,
@@ -317,6 +325,12 @@ GATES: tuple[GateSpec, ...] = (
 )
 
 
+GATES = tuple(
+    spec._replace(paths=tuple(binding.pattern for binding in BINDINGS if spec.name in binding.gates))
+    for spec in GATES
+)
+
+
 def gate_named(name: str) -> GateSpec:
     """The registered gate of this name; a name nothing is registered under is a KeyError."""
     for spec in GATES:
@@ -330,8 +344,16 @@ def gates_over(artifact: str) -> tuple[GateSpec, ...]:
     return tuple(spec for spec in GATES if artifact in spec.artifacts)
 
 
+def gates_for_path(path: str) -> tuple[GateSpec, ...]:
+    """Every gate a write of this extension-relative path draws, in registry order."""
+    binding = binding_for(path)
+    names = binding.gates if binding is not None else ()
+    return tuple(spec for spec in GATES if spec.name in names)
+
+
 __all__ = [
-    "D79_CHECKS", "D79_STAGES", "FROZEN_TASKS_NAME", "GATES", "GATE_COUNTS", "GRADER_FIELDS", "HELPERS_SRC",
+    "BINDINGS", "D79_CHECKS", "D79_STAGES", "FROZEN_TASKS_NAME", "GATES", "GATE_COUNTS", "GRADER_FIELDS",
+    "HELPERS_SRC", "ROWS_CAP", "Binding",
     "FALSE_REJECTION_THRESHOLD",
     "LEAK_MIN_LENGTH", "MEMORISED_LESSON", "MEMORISED_STAGE", "PROBE_STOP", "PROTECTED", "PROTECTED_PATH",
     "SENSITIVITY_STAGE", "SensitivityPair", "TAU2_FILES", "TOOL_RUN_STAGES", "VERDICT_GOLDEN_CHECKS",
@@ -346,12 +368,15 @@ __all__ = [
     "discarded_runs", "done",
     "environment_gate",
     "executes_gate", "exit_for", "false_rejection", "false_rejection_gate", "fidelity", "finished_runs", "first_string",
-    "freeze_tasks", "frozen_tasks", "gate_confined", "gate_named", "gates_over", "ingest_gate", "intent_gate", "leak_gate",
+    "attach_ruling", "binding_for", "bindings",
+    "freeze_tasks", "frozen_tasks", "gate_confined", "gate_named", "gate_writes", "gates_for_path",
+    "gates_over", "hook",
+    "ingest_gate", "intent_gate", "leak_gate",
     "ledger", "legitimate_runs", "load_run", "loophole_probe", "loosening", "loosening_gate", "mine_gate", "names_protected_path",
     "newly_passed", "non_trivial_gate", "oracle_replay_gate", "over_strict", "parses_gate", "policy_gate",
     "predicate_confinement", "predicate_confinement_gate", "probe_admission_gate", "probe_pool_gate",
     "probe_scores", "probes", "recorded_argument_values", "reference_replay_gate", "refuse_gate",
-    "regrade_gate", "replay_fidelity_gate", "sensitivity_lesson",
+    "regrade_gate", "replay_fidelity_gate", "rulings_for", "sensitivity_lesson",
     "readers_gate", "replay_match", "rerolls_gate", "round_counts", "round_end", "ruling_line", "ruling_of", "rulings_over", "scorecard", "scorecard_gate",
     "setup_review_gate", "source_confinement", "stages", "stalled", "starting_state_ids", "summarize",
     "task_coverage",
