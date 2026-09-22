@@ -8,7 +8,7 @@ import json
 
 import pytest
 
-from kullback.episode.environment import BuiltEnvironment, EnvironmentError
+from kullback.runner.world.environment import BuiltEnvironment, EnvironmentError
 from tests.episode.invented import write_env
 
 OBJECT_BODIES = ["null", "[]", '"label"', "4"]

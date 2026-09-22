@@ -49,14 +49,6 @@ from kullback.builder.sandbox import gate_executes_on_s0 as gate_executes_on_s0
 from kullback.builder.sandbox import gate_non_trivial as gate_non_trivial
 from kullback.builder.sandbox import gate_parses as gate_parses
 from kullback.builder.sandbox import gate_replay_fidelity as gate_replay_fidelity
-from kullback.episode.loading import (
-    OVERLAY_DIR,
-    _with_run_scope,
-    merge_overlays,
-)
-from kullback.episode.loading import OverlayConflict as OverlayConflict
-from kullback.episode.loading import load_overlay as load_overlay
-from kullback.episode.loading import load_toolkit as load_toolkit
 from kullback.gates.confinement import ALLOWED_IMPORTS, DENIED_BUILTINS, TOOLS_CLASS
 from kullback.gates.confinement import source_confinement as source_confinement
 from kullback.gates.tool_runs import body_replay_fidelity_gate
@@ -89,6 +81,14 @@ from kullback.runner.records import (
     content_hash,
 )
 from kullback.runner.route import call_fingerprint  # D197: one fingerprint, written and served alike
+from kullback.runner.world.loading import (
+    OVERLAY_DIR,
+    _with_run_scope,
+    merge_overlays,
+)
+from kullback.runner.world.loading import OverlayConflict as OverlayConflict
+from kullback.runner.world.loading import load_overlay as load_overlay
+from kullback.runner.world.loading import load_toolkit as load_toolkit
 
 DB_FILE = "db.json"
 PINS_FILE = "overlay_pins.json"  # what the Starting-state pinner pinned per Task, and what it could not

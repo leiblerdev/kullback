@@ -6,8 +6,8 @@ patch) and handed a fresh Run state, so this runs on any runtime.
 
 from types import SimpleNamespace
 
-from kullback.episode.episode import Episode
 from kullback.runner.records import Run
+from kullback.runner.world.episode import Episode
 
 
 def _episode_with_fresh_run(tmp_path, *, path):

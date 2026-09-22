@@ -12,8 +12,6 @@ import json
 
 import pytest
 
-from kullback.episode.environment import BuiltEnvironment
-from kullback.episode.law_world import EnvironmentLawWorld
 from kullback.laws import (
     READ_CHANGES_NOTHING,
     SUCCESS_CHANGED_SOMETHING,
@@ -24,6 +22,8 @@ from kullback.laws import (
 )
 from kullback.runner import loop
 from kullback.runner.records import RawPtr, ToolCall, Trace
+from kullback.runner.world.environment import BuiltEnvironment
+from kullback.runner.world.law_world import EnvironmentLawWorld
 from tests.episode.invented import write_env
 
 
@@ -67,7 +67,7 @@ def test_check_laws_runs_over_the_built_fixture_and_reports_a_number(tmp_path):
 
 @pytest.mark.skipif(not hasattr(loop, "advance"), reason="needs the step-split patch")
 def test_reset_matches_the_episode_starting_state(tmp_path):
-    from kullback.episode import Episode
+    from kullback.runner.world import Episode
 
     env = BuiltEnvironment(write_env(tmp_path / "work"))
     episode = Episode(env, outdir=tmp_path / "out")

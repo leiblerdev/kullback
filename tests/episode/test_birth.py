@@ -8,15 +8,15 @@ from __future__ import annotations
 
 import pytest
 
-from kullback.episode.birth import (
+from kullback.runner import loop
+from kullback.runner.world.birth import (
     birth_checks,
     check_arguments_trace,
     check_do_nothing_fails,
     check_forbidden_step_trips,
     check_walk_passes,
 )
-from kullback.episode.episode import EpisodeError
-from kullback.runner import loop
+from kullback.runner.world.episode import EpisodeError
 
 INTENT = "give widget w1 the label striped"
 FACTS = [{"field": "widget_id", "value": "w1"}, {"field": "label", "value": "striped"}]
@@ -491,7 +491,7 @@ def test_birth_without_intent_or_facts_leaves_trace_not_run_but_born():
 
 @needs_step_split
 def test_argument_tracing_only_through_an_earlier_real_result_is_born(tmp_path):
-    from kullback.episode import BuiltEnvironment, Episode
+    from kullback.runner.world import BuiltEnvironment, Episode
     from tests.episode.invented import write_env
 
     root = write_env(tmp_path / "env")
@@ -511,7 +511,7 @@ def test_argument_tracing_only_through_an_earlier_real_result_is_born(tmp_path):
 def test_forbidden_walk_over_the_real_episode_reads_the_run_file(tmp_path):
     from pathlib import Path
 
-    from kullback.episode import BuiltEnvironment, Episode
+    from kullback.runner.world import BuiltEnvironment, Episode
     from tests.episode.invented import write_env
 
     root = write_env(tmp_path / "env")
@@ -533,7 +533,7 @@ def test_forbidden_walk_over_the_real_episode_reads_the_run_file(tmp_path):
 
 @needs_step_split
 def test_scripted_rename_is_born_over_the_real_episode(tmp_path):
-    from kullback.episode import BuiltEnvironment, Episode
+    from kullback.runner.world import BuiltEnvironment, Episode
     from tests.episode.invented import write_env
 
     root = write_env(tmp_path / "env")

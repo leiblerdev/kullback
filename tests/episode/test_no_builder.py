@@ -10,7 +10,7 @@ from pathlib import Path
 
 
 def test_episode_sources_import_no_builder_module():
-    root = Path(__file__).resolve().parents[2] / "kullback" / "episode"
+    root = Path(__file__).resolve().parents[2] / "kullback" / "runner" / "world"
     offenders = []
     for path in sorted(root.glob("*.py")):
         for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):

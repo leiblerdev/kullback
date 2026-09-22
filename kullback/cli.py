@@ -622,14 +622,14 @@ def consistency(
     name while the rest still run. A skipped request, or no completed Task at
     all, exits 3.
     """
-    from kullback.episode.loading import EnvironmentError
+    from kullback.runner.world.loading import EnvironmentError
 
     if sequences < 1 or max_length < 1:
         raise typer.BadParameter("--sequences takes 1 or more and --max-length takes 1 or more")
     check = _entry("kullback.laws", "check_laws")
-    build = _entry("kullback.episode", "BuiltEnvironment")
-    make_world = _entry("kullback.episode.law_world", "EnvironmentLawWorld")
-    laws_module = importlib.import_module("kullback.episode.law_world")
+    build = _entry("kullback.runner.world.environment", "BuiltEnvironment")
+    make_world = _entry("kullback.runner.world.law_world", "EnvironmentLawWorld")
+    laws_module = importlib.import_module("kullback.runner.world.law_world")
     try:
         env = build(workdir)
         ids = env.task_ids()

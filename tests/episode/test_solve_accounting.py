@@ -19,7 +19,8 @@ from kullback.ai.provider import (  # noqa: E402
     TestModel,  # noqa: E402
 )
 from kullback.ai.usage import Usage  # noqa: E402
-from kullback.episode import BuiltEnvironment, solve_rate  # noqa: E402
+from kullback.runner.world import BuiltEnvironment  # noqa: E402
+from kullback.runner.world.solve import solve_rate  # noqa: E402
 from tests.episode.invented import write_env  # noqa: E402
 
 
@@ -161,8 +162,8 @@ def test_shared_root_keeps_sessions_separate(tmp_path, monkeypatch):
 
 
 def test_policy_error_aborts_without_reward(tmp_path, monkeypatch):
-    from kullback.episode import Episode
-    from kullback.episode.episode import EpisodeError
+    from kullback.runner.world import Episode
+    from kullback.runner.world.episode import EpisodeError
 
     _stub_priced(monkeypatch)
     root = write_env(tmp_path / "env", with_rules=False)
@@ -192,9 +193,9 @@ def test_policy_error_aborts_without_reward(tmp_path, monkeypatch):
 
 
 def test_env_error_counts_as_no_signal(tmp_path, monkeypatch):
-    from kullback.episode import Episode
-    from kullback.episode.episode import EpisodeError
     from kullback.runner import loop
+    from kullback.runner.world import Episode
+    from kullback.runner.world.episode import EpisodeError
 
     _stub_priced(monkeypatch)
     root = write_env(tmp_path / "env", with_rules=False)
@@ -261,7 +262,7 @@ def test_missing_record_file_still_reports_the_original_error(tmp_path, monkeypa
     from types import SimpleNamespace
 
     from kullback.ai.usage import Usage
-    from kullback.episode.episode import EpisodeError
+    from kullback.runner.world.episode import EpisodeError
 
     _stub_priced(monkeypatch)
     root = write_env(tmp_path / "env", with_rules=False)
@@ -295,9 +296,9 @@ def test_missing_record_file_still_reports_the_original_error(tmp_path, monkeypa
 def test_cost_sidecar_uses_null_when_the_record_cannot_be_read(tmp_path, monkeypatch):
     from types import SimpleNamespace
 
-    from kullback.episode import Episode
-    from kullback.episode.solve import _attempt_cost
     from kullback.runner import budget
+    from kullback.runner.world import Episode
+    from kullback.runner.world.solve import _attempt_cost
 
     _stub_priced(monkeypatch)
     root = write_env(tmp_path / "env", with_rules=False)
