@@ -226,11 +226,22 @@ class Router:
         """D262: run the tool for real in its container, before any imitation.
 
         The container is the world for that tool: the in-memory db world is untouched and
-        `state_hash` stays what it is. A world failure comes back as a routed error in the
-        tool's own encoding, counted like any other call, and the Run continues.
+        `state_hash` stays what it is. A command the world ran is an ordinary result,
+        whatever its exit code. But a world that could not run the call at all (a start
+        or exec failure, a timeout, an unavailable runtime, an export or output limit
+        refused) is an Environment failure, never the Candidate's answer: the outcome
+        carries `world_answered` False and the Run ends here as `cannot_answer` with
+        reason `environment_cannot_answer`, exactly as for a tool no code can answer,
+        with the tool name and the world's own failure class and message on the record.
         """
         outcome = self.real_tools[name].call(args)
         self._last_real_receipts[name] = list(outcome.receipts or [])
+        if not outcome.world_answered:
+            error = ToolCallError(class_="cannot_answer", payload={
+                "tool": name, "reason": CANNOT_ANSWER_REASON,
+                "world_error_class": outcome.error_class, "world_error": outcome.error_message},
+                encoding="json", classified_by="code")
+            return RouteResult(None, "cannot_answer", False, error, self._misses())
         if outcome.error_class is None:
             return RouteResult(outcome.result, "real", False, None, self._misses())
         return self._error(name, outcome.error_class, outcome.error_message or outcome.error_class,

@@ -516,10 +516,11 @@ def test_a_real_call_leaves_the_state_hash_unchanged():
     assert router.state_hash() == before
 
 
-def test_a_routed_world_error_uses_the_tools_error_encoding():
+def test_a_routed_world_error_ends_the_run_against_the_environment():
     from test_real_tools import FakeWorld, UnresolvedError
 
     from kullback.runner.real_tools import RealTool
+    from kullback.runner.route import CANNOT_ANSWER_REASON
     world = FakeWorld()
     world.step_error = UnresolvedError("creation is unresolved")
     router = Router(env_tools_module=real_shell_module(),
@@ -529,8 +530,12 @@ def test_a_routed_world_error_uses_the_tools_error_encoding():
                                    sample_payload={"error": "nope"}, encoding="json")])],
                     real_tools={"shell": RealTool("shell", lambda: world)})
     out = router.route("shell", {"commands": [{"keystrokes": "ls"}]})
-    assert out.route == "real"
-    assert out.error is not None and out.error.encoding == "json"
+    assert out.route == "cannot_answer"
+    assert out.error is not None and out.error.class_ == "cannot_answer"
+    assert out.error.payload["reason"] == CANNOT_ANSWER_REASON
+    assert out.error.payload["tool"] == "shell"
+    assert out.error.payload["world_error_class"] == "unknown"
+    assert "UnresolvedError" in (out.error.payload["world_error"] or "")
     world.step_error = None
     again = router.route("shell", {"commands": [{"keystrokes": "ls"}]})
     assert again.error is None
@@ -677,3 +682,58 @@ def test_real_end_state_returns_the_export_bytes():
                     real_tools={"shell": RealTool("shell", lambda: world)})
     router.route("shell", {"commands": [{"keystrokes": "ls"}]})
     assert router.real_end_state("shell", 64) == b"tar-here"
+
+
+def test_a_real_world_timeout_ends_routing_as_cannot_answer():
+    """A world that could not run the call ends the Run, naming the tool and the reason."""
+    from test_real_tools import FakeReceipt, FakeWorld
+
+    from kullback.runner.real_tools import RealTool
+    from kullback.runner.route import CANNOT_ANSWER_REASON
+    world = FakeWorld([FakeReceipt(stdout=b"part", timed_out=True)])
+    router = Router(env_tools_module=real_shell_module(),
+                    starting_state=StateView(shared={}),
+                    real_tools={"shell": RealTool("shell", lambda: world)})
+    out = router.route("shell", {"commands": [{"keystrokes": "sleep 99"}]})
+    assert out.route == "cannot_answer"
+    assert out.result is None
+    assert out.error is not None and out.error.class_ == "cannot_answer"
+    assert out.error.payload["reason"] == CANNOT_ANSWER_REASON
+    assert out.error.payload["tool"] == "shell"
+    assert out.error.payload["world_error_class"] == "transient"
+
+
+def test_a_real_command_exiting_nonzero_with_output_is_an_ordinary_result():
+    """A command the world ran is answered normally, whatever its exit code."""
+    from test_real_tools import FakeReceipt, FakeWorld
+
+    from kullback.runner.real_tools import RealTool
+    world = FakeWorld([FakeReceipt(stdout=b"half", stderr=b"nope", exit_code=1)])
+    router = Router(env_tools_module=real_shell_module(),
+                    starting_state=StateView(shared={}),
+                    real_tools={"shell": RealTool("shell", lambda: world)})
+    out = router.route("shell", {"commands": [{"keystrokes": "two"}]})
+    assert out.route == "real"
+    assert out.error is None
+    assert out.result == "halfnope"
+
+
+def test_a_real_world_failure_with_an_unmatched_message_still_ends_the_run():
+    """The outcome field decides, never the message text: a novel failure class still ends the Run."""
+    from kullback.runner.real_tools import RealOutcome
+    from kullback.runner.route import CANNOT_ANSWER_REASON
+
+    class StubReal:
+        def call(self, args):
+            return RealOutcome(None, "mystery_class", "mystery words", [], world_answered=False)
+
+    router = Router(env_tools_module=real_shell_module(),
+                    starting_state=StateView(shared={}),
+                    real_tools={"shell": StubReal()})
+    out = router.route("shell", {"commands": [{"keystrokes": "ls"}]})
+    assert out.route == "cannot_answer"
+    assert out.error is not None and out.error.class_ == "cannot_answer"
+    assert out.error.payload["reason"] == CANNOT_ANSWER_REASON
+    assert out.error.payload["tool"] == "shell"
+    assert out.error.payload["world_error_class"] == "mystery_class"
+    assert out.error.payload["world_error"] == "mystery words"

@@ -32,12 +32,20 @@ class RealWorld(Protocol):
 
 
 class RealOutcome(NamedTuple):
-    """What one real call did: the result, or the routed error class and message."""
+    """What one real call did: the result, or the routed error class and message.
+
+    `world_answered` tells whether the world ran the call: True when the command ran
+    (any exit code, any output) or when no world was needed at all (a bad batch, which
+    is the caller's own business error). False only when the world could not run the
+    call: a start or exec failure, a timeout, an unavailable runtime, an export or
+    output limit refused. The Router reads this field, never the message text.
+    """
 
     result: Any
     error_class: Optional[str] = None
     error_message: Optional[str] = None
     receipts: Optional[list] = None
+    world_answered: bool = True
 
 
 class ExportLimitError(Exception):
@@ -57,7 +65,8 @@ def limit_kept_export(kept: bytes, limit_bytes: int) -> bytes:
 
 # The container World's own failure names, matched by name so this module never
 # imports the backend (D262). A timeout is transient, every other world failure is
-# unknown: neither is the customer's answer and neither ends the Run.
+# unknown: neither is the customer's answer, and each marks the outcome unanswered
+# so the Router ends the Run against the Environment, never the Candidate.
 _WORLD_ERROR_NAMES = frozenset({
     "WorldError", "ImagePinError", "LimitError", "DockerUnavailable", "LaunchFailure",
     "OwnershipError", "StateError", "UnresolvedError", "ExportError", "CleanupError",
@@ -163,8 +172,9 @@ class RealTool:
         """Run the rendered commands in order; the first world failure decides the outcome.
 
         A bad batch is a business error and opens nothing. A world failure (the WorldError
-        family by name, a timed out or truncated step) is returned as a routed error and the
-        Run continues. A non-zero exit changes nothing: the scaffold types every entry of a
+        family by name, a timed out or truncated step) is returned with `world_answered`
+        False, keeping its own error class and message for the record, so the Router can
+        end the Run. A non-zero exit changes nothing: the scaffold types every entry of a
         batch whatever the earlier exit codes were, so the batch runs to its end and the
         result is always the shaped receipts, with the exit codes kept on the receipts.
         """
@@ -176,7 +186,8 @@ class RealTool:
             world = self.open()
         except Exception as exc:
             _raise_if_not_world(exc)
-            return RealOutcome(None, _world_error_class(exc), _error_message(exc), [])
+            return RealOutcome(None, _world_error_class(exc), _error_message(exc), [],
+                               world_answered=False)
         return self._run(world, commands)
 
     def _run(self, world: RealWorld, commands: list[str]) -> RealOutcome:
@@ -192,12 +203,15 @@ class RealTool:
                 receipt = world.step(command)
             except Exception as exc:
                 _raise_if_not_world(exc)
-                return RealOutcome(None, _world_error_class(exc), _error_message(exc), receipts)
+                return RealOutcome(None, _world_error_class(exc), _error_message(exc), receipts,
+                                   world_answered=False)
             receipts.append(receipt)
             if receipt.timed_out:
-                return RealOutcome(None, "transient", "the command timed out", receipts)
+                return RealOutcome(None, "transient", "the command timed out", receipts,
+                                   world_answered=False)
             if receipt.truncated:
-                return RealOutcome(None, "unknown", "the command output exceeded its limit", receipts)
+                return RealOutcome(None, "unknown", "the command output exceeded its limit",
+                                   receipts, world_answered=False)
         return RealOutcome(self.result_of(receipts), None, None, receipts)
 
     def end_state(self, limit_bytes: int) -> bytes:
