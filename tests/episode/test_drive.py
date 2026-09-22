@@ -151,10 +151,10 @@ def test_reset_preserves_the_supplied_seed(tmp_path):
 def test_repeated_seed_keeps_each_completed_run_file(tmp_path):
     root = write_env(tmp_path / "env")
     episode = drive(root, tmp_path / "out", SCRIPTED_RENAME)
-    first_path = episode.run_path()
+    first_path = episode.run_file()
     first_bytes = first_path.read_bytes()
     episode.reset("widget_task", seed=7)
-    assert episode.run_path() != first_path
+    assert episode.run_file() != first_path
     assert first_path.read_bytes() == first_bytes
 
 
@@ -162,10 +162,10 @@ def test_reset_refuses_to_abandon_an_unfinished_run(tmp_path):
     root = write_env(tmp_path / "env")
     episode = Episode(BuiltEnvironment(root), outdir=tmp_path / "out")
     episode.reset("widget_task", seed=7)
-    before = episode.run_path().read_bytes()
+    before = episode.run_file().read_bytes()
     with pytest.raises(EpisodeError, match="finish the current Run"):
         episode.reset("widget_task", seed=8)
-    assert episode.run_path().read_bytes() == before
+    assert episode.run_file().read_bytes() == before
 
 
 def test_a_package_without_user_rules_opens_with_task_intent(tmp_path):
