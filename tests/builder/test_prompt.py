@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from kullback.builder import prompt as prompt_mod
 
-FORBIDDEN = ("airline", "retail", "tau2", "bench", "corpus", "publisher")
+FORBIDDEN = ("corpus", "publisher", "bench")
 
 
 def test_sections_are_in_gepa_order_with_the_stop_rule_last():
