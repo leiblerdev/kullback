@@ -237,11 +237,14 @@ def _render_examine(result: ExamineResult) -> str:
     return "\n".join(lines)
 
 
-def default_examine_fn(workdir: Any, task_ids: Any) -> Any:
-    """The examination stream 6 delivers, resolved lazily so this module never imports it."""
+def default_examine_fn(workdir: Any, task_ids: Any, *, model: Any = None) -> Any:
+    """The examination stream 6 delivers, resolved lazily so this module never imports it.
+
+    `model` runs the Examiner session; with None the call is derivation only.
+    """
     from kullback.examiner.session import examine
 
-    return examine(Path(workdir), task_ids=task_ids, model=None)
+    return examine(Path(workdir), task_ids=task_ids, model=model)
 
 
 def _finding_row(item: Any) -> dict:
@@ -387,17 +390,20 @@ def _render_status(result: StatusResult) -> str:
                      + (f"fidelity {fidelity:.4f} over {row.get('calls')} calls"
                         if fidelity is not None else str(row.get("reason"))))
     return "\n".join(lines)
-
-
 def domain_tools(*, workdir: Any, model: Any = None,
                  examine_fn: Optional[Callable[[Any, Any], Any]] = None) -> list[AgentTool]:
     """The seven domain tools bound to one workdir.
 
-    `model` drives the fresh Runs `run` buys; `examine_fn(workdir, task_ids)` answers
-    `examine` and defaults to the lazily resolved examination stream 6 delivers.
+    `model` drives the fresh Runs `run` buys and the Examiner session the default
+    `examine` runs; `examine_fn(workdir, task_ids)` answers `examine` and defaults to
+    the lazily resolved examination stream 6 delivers.
     """
     root = Path(workdir)
-    examine_call = examine_fn if examine_fn is not None else default_examine_fn
+    if examine_fn is not None:
+        examine_call = examine_fn
+    else:
+        def examine_call(workdir: Any, task_ids: Any) -> Any:
+            return default_examine_fn(workdir, task_ids, model=model)
 
     async def ingest(args: IngestArgs) -> IngestResult:
         files = [(root / name if not Path(name).is_absolute() else Path(name)) for name in args.files]
