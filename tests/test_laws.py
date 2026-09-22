@@ -636,3 +636,17 @@ def test_missing_mint_path_breaks_minted_law():
     assert [(v.law, v.tool) for v in report.violations] == [(MINTED_IDS_UNIQUE, "make")]
     (violation,) = report.violations
     assert len(violation.sequence) == 1
+
+
+def test_id_typed_parameter_draws_an_existing_id_in_a_seeded_sequence():
+    import random
+
+    from kullback.laws import _gen_args
+
+    snapshot = {"widgets": {"w1": {"widget_id": "w1", "label": "plain"}}}
+    schema = [ArgSpec("widget_id", "string", False, True)]
+    pool = {"int": [], "str": ["zz", "b", "a", ""], "float": [], "bool": []}
+    rng = random.Random(7)
+    drawn = [_gen_args(schema, rng, pool, snapshot)["widget_id"] for _ in range(20)]
+    assert "w1" in drawn
+    assert any(value != "w1" for value in drawn)

@@ -111,13 +111,66 @@ def _drawable_type(candidates: list, values: list) -> Optional[str]:
     return _scalar_type(values)
 
 
-def _tool_specs(sig: ToolSig, recorded: dict) -> tuple:
+def _schema_columns(schema: Any) -> set:
+    """Every column name the schema's tables hold, with the id pattern columns beside them."""
+    names = set()
+    for column in getattr(schema, "columns", None) or ():
+        if getattr(column, "name", None):
+            names.add(column.name)
+    for key in getattr(schema, "id_patterns", None) or ():
+        tail = str(key).split(".")[-1]
+        if tail:
+            names.add(tail)
+    return names
+
+
+def _id_shaped(name: str) -> bool:
+    """Whether an argument name reads as an identifier: id itself, a name ending in _id, or one ending in _number."""
+    lowered = name.lower()
+    return lowered == "id" or lowered.endswith("_id") or lowered.endswith("_number")
+
+
+def _is_id_param(name: str, arg_type: Optional[str], columns: set) -> bool:
+    """Whether an argument draws existing ids: a scalar id-shaped name the schema's tables hold.
+
+    The signature gives the type and the name; the schema's tables confirm the name is a
+    column the world stores, so a label that only reads like an id never counts.
+    """
+    if arg_type is None:
+        return False
+    try:
+        bucket = _type_bucket(arg_type)
+    except ValueError:
+        return False
+    if bucket not in ("int", "str"):
+        return False
+    return _id_shaped(name) and name in columns
+
+
+def _side_of(sig: ToolSig) -> Optional[str]:
+    """The requestor the Environment lists a tool for, or None where it lists neither side.
+
+    The mined callers decide: assistant where listed, else the first listed side. A tool
+    with no mined list keeps the historical caller of assistant.
+    """
+    callers = getattr(sig, "callers", None)
+    if callers is None:
+        return "assistant"
+    if not callers:
+        return None
+    if "assistant" in callers:
+        return "assistant"
+    return callers[0]
+
+
+def _tool_specs(sig: ToolSig, recorded: dict, columns: set) -> tuple:
     """One tool's drawable ArgSpecs, or None with the reason the tool is unfit.
 
     The mined signature is the source of argument names, requiredness and type;
     the recorded calls only refine the type where the signature names none the
     laws can draw. A required argument with no drawable type makes the tool
-    unfit; an optional one is left out of the specs.
+    unfit; an optional one is left out of the specs. Id-shaped arguments the
+    schema's tables hold are marked so the drawer tries existing ids.
     """
     types = _sig_types(sig)
     optional = _sig_optional(sig)
@@ -130,7 +183,8 @@ def _tool_specs(sig: ToolSig, recorded: dict) -> tuple:
                 continue
             missing.append(name)
         else:
-            specs.append(ArgSpec(name, arg_type, optional.get(name, True)))
+            specs.append(ArgSpec(name, arg_type, optional.get(name, True),
+                                 _is_id_param(name, arg_type, columns)))
     if missing:
         reasons = "; ".join(f"required argument {name} has no type" for name in missing)
         return None, reasons
@@ -181,28 +235,39 @@ class EnvironmentLawWorld:
 
         The mined signature is the source of argument names, requiredness and
         type; the Task's recorded calls only refine the type where the
-        signature names none the laws can draw. Tools with an untyped required
-        argument are left out of the sequences; unfit() names them and why.
+        signature names none the laws can draw. Each tool carries the requestor
+        the Environment lists it for, so the laws call it the way a Run would.
+        Tools with an untyped required argument, and tools listed for neither
+        side, are left out of the sequences; unfit() names them and why.
         """
         recorded = _recorded_calls(self._env.members(self._task()))
+        columns = _schema_columns(self._env.schema)
         infos = []
         for sig in self._env.sigs:
-            specs, _ = _tool_specs(sig, recorded.get(sig.name, {}))
+            side = _side_of(sig)
+            if side is None:
+                continue
+            specs, _ = _tool_specs(sig, recorded.get(sig.name, {}), columns)
             if specs is not None:
-                infos.append(ToolInfo(sig.name, sig.kind, tuple(specs)))
+                infos.append(ToolInfo(sig.name, sig.kind, tuple(specs), (), side))
         return infos
 
     def unfit(self) -> dict:
         """The tools tools() leaves out, each with its reason.
 
-        A tool is unfit when a required argument has no drawable type: neither
+        A tool is unfit when a required argument has no drawable type (neither
         the signature names one the laws can draw nor the recorded calls show a
-        scalar. Such a tool is never reported as checked.
+        scalar), or when the Environment lists it for neither side. Such a tool
+        is never reported as checked.
         """
         recorded = _recorded_calls(self._env.members(self._task()))
+        columns = _schema_columns(self._env.schema)
         gaps = {}
         for sig in self._env.sigs:
-            _, reason = _tool_specs(sig, recorded.get(sig.name, {}))
+            if _side_of(sig) is None:
+                gaps[sig.name] = "tool is listed for neither side"
+                continue
+            _, reason = _tool_specs(sig, recorded.get(sig.name, {}), columns)
             if reason is not None:
                 gaps[sig.name] = reason
         return gaps
@@ -211,12 +276,20 @@ class EnvironmentLawWorld:
         """One call through the Run's Router, answered by code or refused, never invented.
 
         No model stand-in rides the Router (reset refused one) and no Simulated
-        user answers: an unlisted tool is refused the way a Run refuses it.
+        user answers: each tool routes under the requestor the Environment lists
+        it for, and an unlisted tool is refused the way a Run refuses it.
         """
-        result = self._ready_router().route(name, dict(args), requestor="assistant")
+        result = self._ready_router().route(name, dict(args), requestor=self._side_for(name))
         if result.error is None:
             return Outcome(True, plain(result.result))
         return Outcome(False, plain(result.result), _error_text(result.error))
+
+    def _side_for(self, name: str) -> str:
+        """The requestor one call routes under: the tool's listed side, else the historical caller."""
+        for sig in self._env.sigs:
+            if sig.name == name:
+                return _side_of(sig) or "assistant"
+        return "assistant"
 
     def snapshot(self) -> Any:
         """The world's canonical state, the value the laws compare for equality."""

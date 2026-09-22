@@ -14,7 +14,14 @@ import pytest
 
 from kullback.episode.environment import BuiltEnvironment
 from kullback.episode.law_world import EnvironmentLawWorld
-from kullback.laws import ArgSpec, Outcome, ToolInfo, check_laws
+from kullback.laws import (
+    READ_CHANGES_NOTHING,
+    SUCCESS_CHANGED_SOMETHING,
+    ArgSpec,
+    Outcome,
+    ToolInfo,
+    check_laws,
+)
 from kullback.runner import loop
 from kullback.runner.records import RawPtr, ToolCall, Trace
 from tests.episode.invented import write_env
@@ -168,6 +175,73 @@ def test_flawed_tool_world_reports_consistency_below_one():
     assert report.consistency is not None
     assert report.consistency < 1.0
     assert sum(report.broken.values()) > 0
+
+
+def _set_callers(root, callers_by_tool):
+    """Rewrite tool_sigs.json with a callers list per tool, the miner's requestor shape."""
+    sigs = json.loads((root / "tool_sigs.json").read_text(encoding="utf-8"))
+    for sig in sigs:
+        if sig["name"] in callers_by_tool:
+            sig["callers"] = callers_by_tool[sig["name"]]
+    (root / "tool_sigs.json").write_text(json.dumps(sigs), encoding="utf-8")
+
+
+def test_user_side_tool_is_called_under_its_own_requestor(tmp_path):
+    root = write_env(tmp_path / "work")
+    _set_callers(root, {"describe_widget": ["user"]})
+    world = EnvironmentLawWorld(BuiltEnvironment(root), "widget_task")
+    world.reset()
+    outcome = world.call("describe_widget", {"widget_id": "w1"})
+    assert outcome.ok is True
+    assert outcome.value == {"widget_id": "w1", "label": "plain"}
+
+
+class _CallLog:
+    """A LawWorld wrapper that logs whether each call answered or refused."""
+
+    def __init__(self, inner):
+        self._inner = inner
+        self.answered = []
+
+    def reset(self):
+        self._inner.reset()
+
+    def tools(self):
+        return self._inner.tools()
+
+    def snapshot(self):
+        return self._inner.snapshot()
+
+    def unfit(self):
+        return self._inner.unfit()
+
+    def call(self, name, args):
+        outcome = self._inner.call(name, args)
+        self.answered.append((name, outcome.ok))
+        return outcome
+
+
+def test_user_side_tool_is_checked_by_the_laws(tmp_path):
+    root = write_env(tmp_path / "work")
+    _set_callers(root, {"describe_widget": ["user"]})
+    world = _CallLog(EnvironmentLawWorld(BuiltEnvironment(root), "widget_task"))
+    report = check_laws(world, seed=7, sequences=6, max_length=3)
+    assert report.checked.get((READ_CHANGES_NOTHING, "describe_widget"), 0) > 0
+    assert any(name == "describe_widget" and ok for name, ok in world.answered)
+
+
+def test_tool_listed_for_neither_side_is_unfit(tmp_path):
+    root = write_env(tmp_path / "work")
+    _set_callers(root, {"describe_widget": []})
+    world = EnvironmentLawWorld(BuiltEnvironment(root), "widget_task")
+    assert [info.name for info in world.tools()] == ["rename_widget"]
+    assert world.unfit() == {"describe_widget": "tool is listed for neither side"}
+
+
+def test_write_needing_an_existing_id_reaches_a_successful_write(tmp_path):
+    world = EnvironmentLawWorld(BuiltEnvironment(write_env(tmp_path / "work")), "widget_task")
+    report = check_laws(world, seed=2, sequences=6, max_length=3)
+    assert report.checked.get((SUCCESS_CHANGED_SOMETHING, "rename_widget"), 0) > 0
 
 
 def test_built_world_with_noop_write_reports_consistency_below_one(tmp_path):

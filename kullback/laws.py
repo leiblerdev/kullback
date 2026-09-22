@@ -13,7 +13,7 @@ from __future__ import annotations
 import copy
 import random
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Collection, Mapping, Protocol, Sequence
 
 from kullback.consistency import shrink_sequence
@@ -62,6 +62,7 @@ class ArgSpec:
     name: str
     type: str = "int"
     optional: bool = False
+    is_id: bool = False
 
 
 @dataclass
@@ -70,6 +71,7 @@ class ToolInfo:
     kind: str
     args: Sequence[ArgSpec] = ()
     mints: Sequence[str] = ()
+    requestor: str = "assistant"
 
 
 class LawWorld(Protocol):
@@ -107,6 +109,7 @@ class LawViolation:
     tool: str
     sequence: tuple
     status: str
+    requestor: str = "assistant"
 
 
 @dataclass
@@ -115,6 +118,7 @@ class LawReport:
     broken: dict
     violations: tuple
     consistency: float | None
+    requestors: dict = field(default_factory=dict)
 
 
 def _scalars(value: Any, include_keys: bool = True) -> list:
@@ -190,19 +194,92 @@ def _invented(bucket: str, rng: random.Random) -> Any:
     return rng.choice(_INVENTED_BOOLS)
 
 
-def _gen_value(bucket: str, rng: random.Random, pool: dict) -> Any:
+def _fits_bucket(value: Any, bucket: str) -> bool:
+    """Whether a snapshot value draws as one of the bucket's type."""
+    if bucket == "bool":
+        return isinstance(value, bool)
+    if bucket == "int":
+        return isinstance(value, int) and not isinstance(value, bool)
+    if bucket == "float":
+        return isinstance(value, float) and not isinstance(value, bool)
+    if bucket == "str":
+        return isinstance(value, str)
+    return False
+
+
+def _row_ids(snapshot: Any) -> dict:
+    """The row ids the snapshot holds, by type bucket: the keys under each top level table."""
+    ids: dict = {"int": [], "str": [], "float": [], "bool": []}
+    if not isinstance(snapshot, Mapping):
+        return ids
+    for table in snapshot.values():
+        if not isinstance(table, Mapping):
+            continue
+        for row_id in table:
+            if isinstance(row_id, bool):
+                ids["bool"].append(row_id)
+            elif isinstance(row_id, int):
+                ids["int"].append(row_id)
+            elif isinstance(row_id, float):
+                ids["float"].append(row_id)
+            elif isinstance(row_id, str):
+                ids["str"].append(row_id)
+    return ids
+
+
+def _id_candidates(snapshot: Any, name: str, bucket: str) -> list:
+    """The Starting state's ids for one id-typed argument, each once.
+
+    Values stored under the argument's own name come first, then the row ids of
+    every table; both keep only values of the argument's type bucket.
+    """
+    named: list = []
+    stack = [snapshot]
+    while stack:
+        current = stack.pop()
+        if not isinstance(current, Mapping):
+            continue
+        for key, value in current.items():
+            if key == name and _fits_bucket(value, bucket):
+                named.append(value)
+            elif isinstance(value, (Mapping, list, tuple, set, frozenset)):
+                stack.append(value)
+    out = []
+    for value in named + _row_ids(snapshot).get(bucket, []):
+        if value not in out:
+            out.append(value)
+    return out
+
+
+def _gen_value(bucket: str, rng: random.Random, pool: dict, known_ids: Sequence = ()) -> Any:
+    """One drawn value: an existing id half the time where the caller names any.
+
+    The mix is seeded: the caller's rng decides, so one seed draws one sequence. With
+    no known ids the draw is exactly as before, from the pool of seen values and the
+    invented values beside it.
+    """
+    if known_ids and rng.random() < 0.5:
+        return rng.choice(list(known_ids))
     known = pool.get(bucket, [])
     if known and rng.random() < 0.7:
         return rng.choice(known)
     return _invented(bucket, rng)
 
 
-def _gen_args(schema: Sequence[ArgSpec], rng: random.Random, pool: dict) -> dict:
+def _gen_args(
+    schema: Sequence[ArgSpec],
+    rng: random.Random,
+    pool: dict,
+    snapshot: Any = None,
+) -> dict:
+    """One argument map: an id-typed parameter draws an existing id beside invented values."""
     args: dict = {}
     for spec in schema:
         if spec.optional and rng.random() < 0.5:
             continue
-        args[spec.name] = _gen_value(_type_bucket(spec.type), rng, pool)
+        bucket = _type_bucket(spec.type)
+        known = _id_candidates(snapshot, spec.name, bucket) if spec.is_id and snapshot is not None else []
+        args[spec.name] = _gen_value(bucket, rng, pool, known)
     return args
 
 
@@ -467,12 +544,13 @@ def _run_planned(
 ) -> tuple:
     length = rng.randint(1, max_length)
     world.reset()
-    pool = _pool_from_snapshot(_snapshot(world))
+    starting = _snapshot(world)
+    pool = _pool_from_snapshot(starting)
     steps: list = []
     entries: list = []
     for _ in range(length):
         info = rng.choice(tools)
-        step = Step(info.name, _gen_args(info.args, rng, pool))
+        step = Step(info.name, _gen_args(info.args, rng, pool, starting))
         entry = _run_step(world, step)
         steps.append(step)
         entries.append(entry)
@@ -486,9 +564,11 @@ def _assemble(
     world: LawWorld,
     kinds: dict,
     mints: dict,
+    requestors: dict,
     call_budget_s: float,
     shrink_evaluations: int,
 ) -> LawReport:
+    """The report: per law and tool counts, shrunk violations, consistency, and each tool's requestor."""
     checked: dict = {}
     broken: dict = {}
     violations: list = []
@@ -505,13 +585,15 @@ def _assemble(
                 _make_fails(law, world, kinds, mints, tool, call_budget_s),
                 max_evaluations=shrink_evaluations,
             )
-            violations.append(LawViolation(law, tool, tuple(result.subsequence), result.status))
+            violations.append(
+                LawViolation(law, tool, tuple(result.subsequence), result.status,
+                             requestors.get(tool, "assistant")))
     total = sum(checked.values())
     if total == 0:
         consistency = None
     else:
         consistency = (total - sum(broken.values())) / total
-    return LawReport(checked, broken, tuple(violations), consistency)
+    return LawReport(checked, broken, tuple(violations), consistency, dict(requestors))
 
 
 def check_laws(
@@ -544,8 +626,9 @@ def check_laws(
     rng = random.Random(seed)
     kinds = {info.name: info.kind for info in tools}
     mints = {info.name: tuple(info.mints) for info in tools}
+    requestors = {info.name: info.requestor for info in tools}
     tally: dict = {}
     for _ in range(sequences):
         steps, entries = _run_planned(world, tools, rng, max_length)
         _check_all(world, steps, entries, kinds, mints, tally, gaps, call_budget_s)
-    return _assemble(tally, world, kinds, mints, call_budget_s, shrink_evaluations)
+    return _assemble(tally, world, kinds, mints, requestors, call_budget_s, shrink_evaluations)
