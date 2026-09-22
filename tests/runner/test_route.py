@@ -474,3 +474,206 @@ def test_a_code_route_that_touches_no_synthetic_row_is_not_assisted():
     router = make_router(synthetic_rows=["999"])
     assert router.route("get_order_details", {"order_id": "123"}).assisted is False
     assert make_router().route("get_order_details", {"order_id": "123"}).assisted is False
+
+
+# --- a Real tool runs for real before any imitation (D262) ---
+
+def real_shell_module():
+    """A compiled toolkit that also carries a shell body, which the real route must beat."""
+    module = types.ModuleType("real_shell_module")
+
+    def shell(commands):
+        return "compiled"
+
+    module.shell = shell
+    return module
+
+
+def test_a_real_tool_answers_before_a_compiled_body_of_the_same_name():
+    from test_real_tools import FakeReceipt, FakeWorld
+
+    from kullback.runner.real_tools import RealTool
+    world = FakeWorld([FakeReceipt(stdout=b"real-out")])
+    router = Router(env_tools_module=real_shell_module(),
+                    starting_state=StateView(shared={}),
+                    real_tools={"shell": RealTool("shell", lambda: world)})
+    out = router.route("shell", {"commands": [{"keystrokes": "ls"}]})
+    assert out.route == "real" and out.error is None
+    assert out.result == "real-out"
+    assert world.commands == ["ls"]
+
+
+def test_a_real_call_leaves_the_state_hash_unchanged():
+    from test_real_tools import FakeReceipt, FakeWorld
+
+    from kullback.runner.real_tools import RealTool
+    world = FakeWorld([FakeReceipt(stdout=b"out")])
+    router = Router(env_tools_module=real_shell_module(),
+                    starting_state=StateView(shared=json.loads(json.dumps(SHARED))),
+                    real_tools={"shell": RealTool("shell", lambda: world)})
+    before = router.state_hash()
+    router.route("shell", {"commands": [{"keystrokes": "ls"}]})
+    assert router.state_hash() == before
+
+
+def test_a_routed_world_error_uses_the_tools_error_encoding():
+    from test_real_tools import FakeWorld, UnresolvedError
+
+    from kullback.runner.real_tools import RealTool
+    world = FakeWorld()
+    world.step_error = UnresolvedError("creation is unresolved")
+    router = Router(env_tools_module=real_shell_module(),
+                    starting_state=StateView(shared={}),
+                    tool_sigs=[ToolSig(name="shell", error_shapes=[
+                        ErrorShape(class_="unknown", count=1,
+                                   sample_payload={"error": "nope"}, encoding="json")])],
+                    real_tools={"shell": RealTool("shell", lambda: world)})
+    out = router.route("shell", {"commands": [{"keystrokes": "ls"}]})
+    assert out.route == "real"
+    assert out.error is not None and out.error.encoding == "json"
+    world.step_error = None
+    again = router.route("shell", {"commands": [{"keystrokes": "ls"}]})
+    assert again.error is None
+
+
+def test_refuse_stand_in_leaves_real_tools_answering():
+    from test_real_tools import FakeReceipt, FakeWorld
+
+    from kullback.runner.real_tools import RealTool
+    from kullback.runner.route import refuse_stand_in
+    world = FakeWorld([FakeReceipt(stdout=b"real-out")])
+    router = Router(env_tools_module=real_shell_module(),
+                    starting_state=StateView(shared={}),
+                    real_tools={"shell": RealTool("shell", lambda: world)})
+    refuse_stand_in(router)
+    out = router.route("shell", {"commands": [{"keystrokes": "ls"}]})
+    assert out.route == "real" and out.result == "real-out"
+
+
+def test_close_real_closes_opened_worlds_and_opens_nothing_new():
+    from test_real_tools import FakeReceipt, FakeWorld
+
+    from kullback.runner.real_tools import RealTool
+    first, second = FakeWorld([FakeReceipt(stdout=b"a")]), FakeWorld()
+    made_second = []
+    router = Router(starting_state=StateView(shared={}), real_tools={
+        "one": RealTool("one", lambda: first),
+        "two": RealTool("two", lambda: made_second.append(second) or second)})
+    router.route("one", {"commands": [{"keystrokes": "ls"}]})
+    router.close_real()
+    assert first.closed is True
+    assert made_second == []
+
+
+def test_a_caller_the_tool_never_answered_is_refused_before_any_real_run():
+    from test_real_tools import FakeWorld
+
+    from kullback.runner.real_tools import RealTool
+    world = FakeWorld()
+    router = Router(env_tools_module=real_shell_module(),
+                    starting_state=StateView(shared={}),
+                    tool_sigs=[ToolSig(name="shell", callers=["user"])],
+                    real_tools={"shell": RealTool("shell", lambda: world)})
+    out = router.route("shell", {"commands": [{"keystrokes": "ls"}]}, requestor="assistant")
+    assert out.error is not None and out.error.class_ == "tool_not_found"
+    assert world.reset_count == 0
+
+
+def test_a_listed_tool_with_a_real_route_does_not_end_the_run():
+    from test_real_tools import FakeReceipt, FakeWorld
+
+    from kullback.runner.real_tools import RealTool
+    world = FakeWorld([FakeReceipt(stdout=b"real-out")])
+    router = Router(starting_state=StateView(shared={}),
+                    tool_sigs=[ToolSig(name="shell", callers=["assistant"])],
+                    real_tools={"shell": RealTool("shell", lambda: world)})
+    out = router.route("shell", {"commands": [{"keystrokes": "ls"}]})
+    assert out.route == "real" and out.result == "real-out"
+
+
+def test_last_real_receipts_carries_the_exit_codes_and_starts_empty():
+    from test_real_tools import FakeReceipt, FakeWorld, shell_batch
+
+    from kullback.runner.real_tools import RealTool
+    world = FakeWorld([FakeReceipt(stdout=b"one"),
+                       FakeReceipt(stdout=b"two", exit_code=1)])
+    router = Router(starting_state=StateView(shared={}), real_tools={
+        "shell": RealTool("shell", lambda: world),
+        "other": RealTool("other", lambda: FakeWorld())})
+    assert router.last_real_receipts("shell") == []
+    out = router.route("shell", shell_batch("one", "two"))
+    assert out.error is None and isinstance(out.result, str)
+    assert [receipt.exit_code for receipt in router.last_real_receipts("shell")] == [0, 1]
+    assert router.last_real_receipts("other") == []
+
+
+def test_close_real_closes_every_tool_and_reports_failures():
+    from test_real_tools import FakeReceipt, FakeWorld, shell_batch
+
+    from kullback.runner.real_tools import RealTool
+    first = FakeWorld([FakeReceipt(stdout=b"a")])
+    first.close_error = RuntimeError("cannot remove")
+    second = FakeWorld([FakeReceipt(stdout=b"b")])
+    router = Router(starting_state=StateView(shared={}), real_tools={
+        "a": RealTool("a", lambda: first), "b": RealTool("b", lambda: second)})
+    router.route("a", shell_batch("ls"))
+    router.route("b", shell_batch("ls"))
+    assert router.close_real() == [("a", "RuntimeError: cannot remove")]
+    assert second.closed is True
+
+
+def test_failed_export_is_listed_and_leaves_the_answered_result():
+    from test_real_tools import FakeReceipt, FakeWorld, UnresolvedError, shell_batch
+
+    from kullback.runner.real_tools import RealTool
+    world = FakeWorld([FakeReceipt(stdout=b"out")], export=b"tar-here")
+    router = Router(starting_state=StateView(shared={}),
+                    real_tools={"shell": RealTool("shell", lambda: world)})
+    out = router.route("shell", shell_batch("ls"))
+    world.export_error = UnresolvedError("export blew up")
+    assert router.close_real() == [("shell", "UnresolvedError: export blew up")]
+    assert out.result == "out"
+    assert router.real_end_state("shell", 64) == b""
+
+
+def test_close_real_exports_under_the_routers_limit():
+    from test_real_tools import FakeReceipt, FakeWorld, shell_batch
+
+    from kullback.runner.real_tools import RealTool
+    from kullback.runner.route import REAL_EXPORT_LIMIT_BYTES
+    world = FakeWorld([FakeReceipt(stdout=b"a")], export=b"tar-here")
+    router = Router(starting_state=StateView(shared={}),
+                    real_tools={"shell": RealTool("shell", lambda: world)})
+    assert router.real_export_limit == REAL_EXPORT_LIMIT_BYTES == 64 * 1024 * 1024
+    router.real_export_limit = 1234
+    router.route("shell", shell_batch("ls"))
+    router.close_real()
+    assert world.export_limit == 1234
+
+
+def test_kept_export_over_limit_is_refused_like_the_live_one():
+    from test_real_tools import FakeReceipt, FakeWorld, shell_batch
+
+    from kullback.runner.real_tools import ExportLimitError, RealTool
+    world = FakeWorld([FakeReceipt(stdout=b"a")], export=b"12345678")
+    router = Router(starting_state=StateView(shared={}),
+                    real_tools={"shell": RealTool("shell", lambda: world)})
+    router.route("shell", shell_batch("ls"))
+    with pytest.raises(ExportLimitError) as live:
+        router.real_end_state("shell", 4)
+    router.close_real()
+    assert router.real_end_state("shell", 64) == b"12345678"
+    with pytest.raises(ExportLimitError) as kept:
+        router.real_end_state("shell", 4)
+    assert str(kept.value) == str(live.value)
+
+
+def test_real_end_state_returns_the_export_bytes():
+    from test_real_tools import FakeReceipt, FakeWorld
+
+    from kullback.runner.real_tools import RealTool
+    world = FakeWorld([FakeReceipt(stdout=b"a")], export=b"tar-here")
+    router = Router(starting_state=StateView(shared={}),
+                    real_tools={"shell": RealTool("shell", lambda: world)})
+    router.route("shell", {"commands": [{"keystrokes": "ls"}]})
+    assert router.real_end_state("shell", 64) == b"tar-here"

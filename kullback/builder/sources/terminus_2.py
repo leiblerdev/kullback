@@ -18,9 +18,14 @@ from kullback.runner.records import RawPtr, ToolCall, Trace
 # The wire vocabulary of this format, kept here so no other module names it (G12, wave rule 5).
 COLUMN_TURNS = "conversations"
 COLUMN_TRIAL = "trial_name"
+COLUMN_SOURCE = "original_source"
 FIELD_COMMANDS = "commands"
 FIELD_KEYSTROKES = "keystrokes"
 FIELD_DURATION = "duration"
+
+# The two boundary headers of the opening turn: the instruction sits between them.
+HEADER_TASK = "Task Description:"
+HEADER_STATE = "Current terminal state:"
 
 # The one tool these recordings show: the shell the agent typed into, named by what it is.
 TOOL_SHELL = "shell"
@@ -61,10 +66,20 @@ class Terminus2Adapter:
         return {}
 
     def sidecar(self, recording: Any, document: Any) -> dict:
-        """Every column beside the turn list: outcomes, grader fields and grouping hints alike."""
+        """Every column beside the turn list: outcomes, grader fields and grouping hints alike.
+
+        Two derived keys join them: `task_ref` names the task the recording claims
+        (the trial marker up to its first `__`, with the source column beside it)
+        and `instruction` carries the opening turn's instruction, or None where
+        the turn carries no such headers. The recording's own text is the truth;
+        a fetched copy can only cross-check it, never replace it.
+        """
         if not isinstance(recording, dict):
             return {}
-        return {key: value for key, value in recording.items() if key != COLUMN_TURNS}
+        fields = {key: value for key, value in recording.items() if key != COLUMN_TURNS}
+        fields["task_ref"] = _task_ref(recording)
+        fields["instruction"] = _opening_instruction(recording.get(COLUMN_TURNS))
+        return fields
 
     def to_trace(self, recording: dict, ctx: Any) -> Trace:
         from kullback.builder.ingest import detect_truncation
@@ -154,6 +169,32 @@ def _unwrap(item: Any) -> Any:
     if isinstance(item, dict) and isinstance(item.get("row"), dict):
         return item["row"]
     return item
+
+
+def _task_ref(recording: dict) -> dict:
+    """The task the recording claims: the trial marker before its first `__`, and the source."""
+    trial = recording.get(COLUMN_TRIAL)
+    task_id = trial.split("__", 1)[0] if isinstance(trial, str) else None
+    source = recording.get(COLUMN_SOURCE)
+    return {"id": task_id, "source": source if isinstance(source, str) else None}
+
+
+def _opening_instruction(turns: Any) -> Optional[str]:
+    """The instruction of the first user turn, between the two boundary headers.
+
+    None when there is no user turn, when its content is not text, or when
+    either header is absent. The text between the headers is the instruction;
+    the headers themselves are scaffold, not content.
+    """
+    first_user = next((turn for turn in turns or []
+                       if isinstance(turn, dict) and turn.get("role") == "user"), None)
+    content = first_user.get("content") if first_user is not None else None
+    if not isinstance(content, str) or HEADER_TASK not in content:
+        return None
+    after = content.split(HEADER_TASK, 1)[1]
+    if HEADER_STATE not in after:
+        return None
+    return after.split(HEADER_STATE, 1)[0].strip()
 
 
 def _is_recording(candidate: Any) -> bool:
