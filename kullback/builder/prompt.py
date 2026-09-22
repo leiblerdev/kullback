@@ -43,8 +43,9 @@ EXAMPLES = (
     "A ruling names two rows where the recording answers alike and your body answers "
     "otherwise, with the recorded value and yours on each. Read the rows, form one "
     "hypothesis about what the body misreads, and edit the kept body in place to test it.\n"
-    "A finding names what is wrong and the hint it needs. Answer it with an edit to the "
-    "tool it points at, then replay the Task it names.\n"
+    "A finding names the Environment file to edit and one line saying what should differ, "
+    "with the rows behind it. Answer it with an edit to that path, then replay the Task "
+    "it names. A finding never names a verb; the path is the whole address.\n"
     "A Task with no finished Run cannot be trusted yet. Run it first; only when no "
     "frontier Run finished may you refuse it, with the reason in refusals/<task>.json."
 )
@@ -60,14 +61,16 @@ CHOICE = (
 FEEDBACK = (
     "Feedback. A write result carries its rulings, each with the per-call rows behind it: "
     "call id, tool, recorded value, your value, first differing column. A finding carries "
-    "what is wrong, the verb that answers it, and the one-line hint that verb needs. "
-    "Both stay in front of you until the next write of the same path answers them."
+    "the path of the Environment file to edit and the change, one line saying what should "
+    "differ, with the rows. Both stay in front of you until the next write of the same path "
+    "answers them."
 )
 
 STOP = (
     "Stopping. Answer with no tool call when every Task is trusted or refused with a "
-    "reason, when the spend ceiling is reached, or when you state why you cannot go "
-    "further. Say which of the three stopped you, in one line."
+    "reason, when the spend ceiling is reached, or when two consecutive edits of one "
+    "file left its ruling unchanged and ended that line of work. Say which of the three "
+    "stopped you and what remains, in one line."
 )
 
 #: The sections in GEPA order: what is received, the tools, examples, choice, feedback, stop last.
