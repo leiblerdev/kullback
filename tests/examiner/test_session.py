@@ -1,0 +1,104 @@
+"""The Examiner called by the Builder: derive by code, then one model session (D79, D128, D230)."""
+
+from __future__ import annotations
+
+from examiner.worlds import make_world
+from gates.examiner_fixtures import SIGS
+from kullback.agent.events import ToolExecutionEnd
+from kullback.agent.extensions import load_extensions
+from kullback.agent.harness import AgentHarness, drive_tool
+from kullback.ai.provider import ModelReply, TestModel, ToolCallRequest
+from kullback.examiner import session as S
+from kullback.examiner.exam_files import ExamRoot
+from kullback.runner.records import as_dict, read_json, write_json
+
+
+def reply(content, *calls) -> ModelReply:
+    """One scripted assistant turn, the shape tests/builder/session_fixtures.py:reply gives."""
+    return ModelReply(content=content, tool_calls=[ToolCallRequest(id=f"c{i}", name=n, arguments=a)
+                                                  for i, (n, a) in enumerate(calls)])
+
+
+def materialize(world) -> None:
+    """The derivation's store as workdir files: tasks, sigs, replays, re-rolls, rules."""
+    workdir = world.workdir
+    (workdir / "tasks").mkdir(exist_ok=True)
+    for task in world.inputs["tasks"]:
+        write_json(workdir / "tasks" / f"{task.id}.json", as_dict(task))
+    write_json(workdir / "tool_sigs.json", [as_dict(sig) for sig in SIGS])
+    write_json(workdir / "constraints.json", [])
+    write_json(workdir / "canon-rules.json", {})
+    write_json(workdir / "replays.json", world.inputs["replays"])
+    write_json(workdir / "rerolls.json", world.inputs["rerolls"])
+
+
+def test_examine_without_a_model_returns_derive_filed_findings_with_rows(tmp_path):
+    world = make_world(tmp_path, confirmed=False)
+    materialize(world)
+    findings = S.examine(world.workdir, model=None)
+    assert findings, "an unconfirmed world owes a fidelity finding"
+    assert all(f.rows for f in findings)
+    assert all(f.source == "derive" for f in findings)
+    assert {f.kind for f in findings} <= {"assisted_tool", "fidelity", "reference_disagreement",
+                                          "suite", "false_rejection", "environment", "other"}
+    written = read_json(world.workdir / "findings.json", [])
+    assert len(written) == len(findings) and all(w["rows"] for w in written)
+
+
+def _scripted_events(world, replies):
+    events: list = []
+    S.examine(world.workdir, model=TestModel(replies), subscribers=[events.append])
+    return events
+
+
+def _ends(events, tool):
+    return [e for e in events if isinstance(e, ToolExecutionEnd) and e.tool_name == tool]
+
+
+def test_model_write_of_verifiers_carries_rulings_runs_write_refused(tmp_path):
+    world = make_world(tmp_path)
+    materialize(world)
+    events = _scripted_events(world, [
+        reply("proposing", ("write", {"path": "verifiers/t1.json", "content": "{}"})),
+        reply("bad idea", ("write", {"path": "runs/x.jsonl", "content": "{}"})),
+        reply("done"),
+    ])
+    writes = _ends(events, "write")
+    assert writes[0].is_error is False
+    assert writes[0].result.details["rulings"], "the verifiers binding rules on the write"
+    assert writes[1].is_error is True
+
+
+def test_model_finding_publishes_and_duplicates_are_refused_with_the_id(tmp_path):
+    world = make_world(tmp_path)
+    materialize(world)
+    args = {"task_id": "t1", "kind": "fidelity", "text": "replays differ",
+            "rows": [{"run_id": "ref"}], "path": "env/tools/x.py", "change": "answer the call"}
+    events = _scripted_events(world, [
+        reply("filing", ("finding", args)),
+        reply("filing again", ("finding", args)),
+        reply("done"),
+    ])
+    filed = _ends(events, "finding")
+    assert filed[0].is_error is False
+    finding_id = filed[0].result.details["finding"]["finding_id"]
+    assert filed[1].is_error is True
+    assert finding_id in filed[1].result.content
+    bus_lines = (world.workdir / "bus.jsonl").read_text().splitlines()
+    assert any(finding_id in line for line in bus_lines)
+    written = read_json(world.workdir / "findings.json", [])
+    assert any(w.get("finding_id") == finding_id for w in written)
+
+
+def test_bash_is_not_registered_and_base_tools_are_scoped_to_exam(tmp_path):
+    world = make_world(tmp_path)
+    root = ExamRoot(workdir=world.workdir)
+    harness = AgentHarness(model=TestModel([]))
+    load_extensions(harness, [S.examiner_extension(root)])
+    names = harness.registry.names()
+    assert "bash" not in names
+    assert {"read", "write", "edit", "grep", "find", "ls", "web_search",
+            "propose_verifier", "probe", "finding", "reroll"} <= set(names)
+    S.expose(world.workdir)
+    refused = drive_tool(harness, "write", {"path": "runs/x.jsonl", "content": "{}"})
+    assert refused.is_error is True
