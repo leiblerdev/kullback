@@ -19,8 +19,9 @@ from typing import Any, Literal, Optional
 
 from kullback.examiner import derive as derive_mod
 from kullback.gates import PROTECTED_PATH, first_string
+from kullback.gates.probes import version_hash
 from kullback.gates.verifier_suite import load_run
-from kullback.runner.records import ToolSig, Verifier, read_json
+from kullback.runner.records import ToolSig, Verifier, VerifierHistory, VerifierVersion, read_json, write_json
 
 EXAM_DIR = "exam"
 RUNS_DIR = "runs"
@@ -109,9 +110,8 @@ class ExamRoot:
     verifiers: dict[str, Verifier] = field(default_factory=dict)
     sigs: list[ToolSig] = field(default_factory=list)
     canon_rules: Any = None
-    replays: dict = field(default_factory=dict)
-    rerolls: dict = field(default_factory=dict)
     task_status: dict = field(default_factory=dict)
+    history: dict = field(default_factory=dict)
     probes: dict[str, list] = field(default_factory=dict)
     findings: list[Finding] = field(default_factory=list)
     bus: Any = None
@@ -132,6 +132,52 @@ class ExamRoot:
             except ValueError:
                 pass
         return self.verifiers.get(task_id)
+
+
+def history_path(root: ExamRoot) -> Path:
+    """Where the session keeps the per-Task Verifier histories: history.json beside the verifiers dir."""
+    return root.exam_dir / "history.json"
+
+
+def load_history(root: ExamRoot) -> dict[str, VerifierHistory]:
+    """The per-Task Verifier histories off history.json (D127); a missing file or a bad row reads as none."""
+    try:
+        raw = read_json(history_path(root), None)
+    except ValueError:
+        return {}
+    if not isinstance(raw, dict):
+        return {}
+    out: dict[str, VerifierHistory] = {}
+    for task_id, body in raw.items():
+        try:
+            out[str(task_id)] = body if isinstance(body, VerifierHistory) else VerifierHistory.model_validate(body)
+        except ValueError:
+            continue
+    return out
+
+
+def save_history(root: ExamRoot, history: dict) -> Path:
+    """history.json beside the verifiers dir: every Task's versions in order, rejected rows kept (D127)."""
+    return write_json(history_path(root), {
+        task_id: hist.as_dict() if isinstance(hist, VerifierHistory) else hist
+        for task_id, hist in (history or {}).items()})
+
+
+def seeded_history(history: dict, task_id: str, current: Verifier, round_number: int = 0) -> VerifierHistory:
+    """The Task's history, with the Verifier on disk as version 1 when it holds no version yet.
+
+    Carried from kullback/examiner/tools.py `_seeded_history`: version 1, by "derive", the Verifier
+    on disk before any repair, accepted, so the trusted gate reads the derived file as the current
+    accepted version and the loosening gate has something to compare the first proposal against.
+    """
+    hist = history.get(task_id) or VerifierHistory(task_id=task_id)
+    if not hist.versions:
+        hist.versions.append(VerifierVersion(
+            task_id=task_id, content_hash=version_hash(current), verifier_version=str(1),
+            round=round_number, by="derive", reason="the Verifier on disk before any repair",
+            accepted=True, verifier=current))
+    history[task_id] = hist
+    return hist
 
 
 def expose(workdir: Any) -> dict:
@@ -239,5 +285,6 @@ def evidence_of(root: ExamRoot) -> dict:
 
 
 __all__ = ["COPIED_DIRS", "COPIED_JSON", "EXAM_DIR", "RUNS_DIR", "SPOKEN_DIR", "ExamRoot",
-           "Finding", "evidence_of", "finding_id_of", "finding_key", "names_forbidden_path",
-           "open_by_key", "reference_runs", "subject_of", "write_spoken", "expose", "FORBIDDEN_READS"]
+           "Finding", "evidence_of", "finding_id_of", "finding_key", "history_path", "load_history",
+           "names_forbidden_path", "open_by_key", "reference_runs", "save_history", "seeded_history",
+           "subject_of", "write_spoken", "expose", "FORBIDDEN_READS"]
