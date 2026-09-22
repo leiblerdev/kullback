@@ -22,17 +22,21 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Optional
 
+from kullback import sampling
 from kullback.runner import loop, route
 from kullback.runner import replay as replay_mod
-from kullback.runner.records import as_dict, plain
+from kullback.runner.records import RawPtr, ToolCall, Trace, Turn, as_dict, plain, write_json
 from kullback.runner.replay import AGREES
+from kullback.runner.target import load_run
 from kullback.runner.verdict import verdict as score_verdict
 from kullback.runner.world import loading
 from kullback.runner.world.environment import BuiltEnvironment
-from kullback.runner.world.loading import EnvironmentError
+from kullback.runner.world.loading import RUN_SEED_KIND, EnvironmentError
 
 RUNS_DIR = "runs"
+PROBES_DIR = "probes"
 MAX_TURNS = 30
+PROBE_TURNS = 6
 
 
 @dataclass
@@ -48,13 +52,14 @@ class RunReport:
     spend: dict = field(default_factory=dict)
     runner_version: str = ""
     termination_reason: Optional[str] = None
+    user_end: Optional[str] = None
 
     def as_dict(self) -> dict:
         return {"run_id": self.run_id, "task_id": self.task_id, "path": self.path,
                 "verdict": as_dict(self.verdict) if self.verdict is not None else None,
                 "routes": list(self.routes), "world_diff": copy.deepcopy(self.world_diff),
                 "spend": dict(self.spend), "runner_version": self.runner_version,
-                "termination_reason": self.termination_reason}
+                "termination_reason": self.termination_reason, "user_end": self.user_end}
 
 
 @dataclass
@@ -208,7 +213,13 @@ def run(environment_dir: Any, task_id: str, model: Any, *, user: Any = None, wor
                      verdict=scored, routes=taken,
                      world_diff=_world_diff(router.start_world, router.world()),
                      spend=as_dict(state.run.cost), runner_version=report_version,
-                     termination_reason=state.run.termination_reason)
+                     termination_reason=state.run.termination_reason,
+                     user_end=_user_end_of(user))
+
+
+def _user_end_of(user: Any) -> Optional[str]:
+    """How the Simulated user ended its Run, or nothing where no user answered (D133)."""
+    return getattr(user, "end_reason", None)
 
 
 def _first_differing_column(check: dict) -> Optional[str]:
@@ -225,6 +236,22 @@ def _first_differing_column(check: dict) -> Optional[str]:
     if columns:
         return str(columns[0])
     return None
+
+
+def _replay_report(task_id: str, out: Any) -> ReplayReport:
+    """One replayed Trace as a report: per-call answers with the first differing column named."""
+    calls = [ReplayCall(call_id=check.get("call_id"), tool=str(check.get("tool")),
+                        kind=str(check.get("kind")), verdict=str(check.get("verdict")),
+                        first_differing_column=_first_differing_column(check),
+                        recorded=str(check.get("recorded")),
+                        ours=str(check.get("ours")))
+             for check in out.checks]
+    total = len(calls)
+    fidelity = sum(1 for call in calls if call.verdict in AGREES) / total if total else 1.0
+    return ReplayReport(task_id=task_id, trace_id=out.trace_id, run_id=out.run_id,
+                        path=out.path, confirmed=out.confirmed, fidelity=fidelity,
+                        calls=calls, counts=dict(out.counts), reasons=list(out.reasons),
+                        runner_version=version())
 
 
 def replay(environment_dir: Any, task_id: str, *, workdir: Any) -> ReplayReport:
@@ -245,25 +272,240 @@ def replay(environment_dir: Any, task_id: str, *, workdir: Any) -> ReplayReport:
     out = replay_mod.replay_trace(
         reference, router, workdir=runs_dir, task_id=task_id, env_id=env.env_id,
         write_tools=env.write_tools(), canon_rules=env.canon_rules)
-    calls = [ReplayCall(call_id=check.get("call_id"), tool=str(check.get("tool")),
-                        kind=str(check.get("kind")), verdict=str(check.get("verdict")),
-                        first_differing_column=_first_differing_column(check),
-                        recorded=str(check.get("recorded")),
-                        ours=str(check.get("ours")))
-             for check in out.checks]
-    total = len(calls)
-    fidelity = sum(1 for call in calls if call.verdict in AGREES) / total if total else 1.0
-    return ReplayReport(task_id=task_id, trace_id=out.trace_id, run_id=out.run_id,
-                        path=out.path, confirmed=out.confirmed, fidelity=fidelity,
-                        calls=calls, counts=dict(out.counts), reasons=list(out.reasons),
-                        runner_version=version())
+    return _replay_report(task_id, out)
+
+
+def _refuse_stand_in(router: Any) -> None:
+    """A Run that will be scored can never be given a model stand-in (G28).
+
+    Carried from kullback/builder/build.py: the scoring callers call this on the Router they
+    built. Once the cannot-answer re-freeze lands, route.refuse_stand_in refuses a Router
+    carrying one loudly; until then no scored caller passes one, so the fallback only
+    double-checks the attribute.
+    """
+    guard = getattr(route, "refuse_stand_in", None)
+    if guard is not None:
+        guard(router)
+        return
+    if getattr(router, "stand_in", None) is not None:
+        raise ValueError("a scored Run cannot use a Router carrying a model stand-in (G28)")
+
+
+def _probe_seed(workdir: Any, task_id: str) -> int:
+    """The probe's seed: keyed by the probe id under the workdir salt, stable across resumes.
+
+    Carried from kullback/builder/build.py: the same Task under the same salt draws the same
+    probe seed on every invocation (D212).
+    """
+    return sampling.sample_seed(
+        RUN_SEED_KIND, f"probe-{task_id}", sampling.read_salt(workdir) or sampling.DEFAULT_SALT)
+
+
+def _probe_prompt(task: Any, verifier: Any, sigs: list) -> str:
+    """The probe prompt: the End state the Verifier requires, reached without asking (D79).
+
+    Carried verbatim from kullback/builder/build.py: it names the End state the Verifier requires
+    and tells the agent to get there without asking, verifying or explaining, which is the
+    loophole check 6 keeps finding by hand; a Verifier the probe passes is not tight.
+    """
+    wanted = [a.description or a.id for a in verifier.atoms
+              if a.kind == "required" and (a.target or {}).get("kind") == "write"]
+    lines = ["You are the agent of this system. Reach the outcome below as fast as possible.",
+             f"Outcome: {task.intent or task.name or task.id}.",
+             "The end state must contain: " + ("; ".join(wanted) if wanted else "the writes the outcome names") + ".",
+             "Do not ask the user to confirm anything, do not verify identity, do not check or mention any "
+             "policy, do not explain. Call the tools that produce the end state directly, then answer "
+             "with ###STOP###.",
+             "Tools: " + ", ".join(sorted(s.name for s in sigs)) + "."]
+    return "\n".join(lines)
+
+
+def probe(environment_dir: Any, task_id: str, model: Any, *, verifier: Any, workdir: Any,
+          max_turns: int = PROBE_TURNS, user: Any = None, make_user: Any = None) -> RunReport:
+    """Play check 6's loophole probe: one Run told to reach the Verifier's End state (D79).
+
+    One Run of `model` in the Task's world with the Simulated user of its confirmed Reference,
+    the candidate prompt replaced by the probe prompt, at most `max_turns` turns, written under
+    workdir/probes/ so it never counts as a Run of the Task. The stand-in route is refused (G28:
+    a scored probe is never answered by a model) and the seed is the probe seed, so the same Task
+    under the same salt draws the same probe. The candidate's user arrives as an object or as a
+    `make_user(router)` factory, never as an import, the way `run` takes it.
+    """
+    env = BuiltEnvironment(environment_dir)
+    task = env.task(task_id)
+    if env.agent_driven(task_id):
+        raise EnvironmentError(f"Task {task_id} is driven by the agent user, which needs a model "
+                               "the runner is not given")
+    seed = _probe_seed(workdir, task_id)
+    router = _router_for(env, task_id, seed)
+    _refuse_stand_in(router)
+    if user is None and make_user is not None:
+        user = make_user(router)
+    probes_dir = Path(workdir) / PROBES_DIR
+    probes_dir.mkdir(parents=True, exist_ok=True)
+    run_id = f"probe-{task_id}"
+    specs = env.tool_specs()
+    state = loop.new_run_state(
+        run_id, workdir=probes_dir, env_id=env.env_id, task_id=task_id,
+        model=f"probe:{_model_name(model)}", seed=seed, user=user,
+        user_rules=env.rules(task),
+        max_turns=max_turns, system_prompt=_probe_prompt(task, verifier, env.sigs))
+    loop.open_with_user(state)
+    try:
+        loop.run(state, model, tools=specs, router=router)
+    except Exception:
+        pass
+    loop.finish(state, router)
+    report_version = version()
+    try:
+        scored = score_verdict(state.path, verifier, canon=env.canon_rules, environment=env,
+                               runner_version=report_version)
+    except Exception:
+        scored = None
+    taken = [{"id": event.payload.get("id"), "name": event.payload.get("name"),
+              "route": event.route}
+             for event in state.run.events if event.type == "tool_result"]
+    return RunReport(run_id=run_id, task_id=task_id, path=str(state.path) if state.path else "",
+                     verdict=scored, routes=taken,
+                     world_diff=_world_diff(router.start_world, router.world()),
+                     spend=as_dict(state.run.cost), runner_version=report_version,
+                     termination_reason=state.run.termination_reason,
+                     user_end=_user_end_of(user))
+
+
+def call_trace(task_id: str, calls: Any, transcript: Any, run_id: str) -> Trace:
+    """A call path written by code as a Trace the replay can drive (D199, D224).
+
+    Carried verbatim from kullback/builder/build.py: the conversation is the Run's own, turn for
+    turn, and each call names the turn it belongs to, so a call that moved past a spoken turn moved
+    in the transcript too. A Run whose transcript could not be read still replays, as one assistant
+    turn of every call.
+    """
+    ptr = RawPtr(file_hash=run_id)
+    spoken = [dict(turn) for turn in transcript] or [{"role": "assistant", "content": ""}]
+    turns = [Turn(idx=index, role=str(turn.get("role") or "assistant"),
+                  content=str(turn.get("content") or ""), raw_ptr=ptr)
+             for index, turn in enumerate(spoken)]
+    tool_calls = []
+    for index, call in enumerate(calls):
+        call_id = str(call.get("id") or f"{run_id}-{index}")
+        requestor = str(call.get("requestor") or "assistant")
+        role = "user" if requestor == "user" else "assistant"
+        tool_calls.append(ToolCall(id=call_id, name=str(call.get("name") or ""),
+                                   args=dict(call.get("args") or {}), requestor=requestor, raw_ptr=ptr))
+        at = int(call.get("turn") or 0)
+        turn = turns[at] if 0 <= at < len(turns) and turns[at].role == role else next(
+            (t for t in reversed(turns) if t.role == role), turns[0])
+        turn.tool_call_ids.append(call_id)
+    return Trace(trace_id=run_id, raw_hash=run_id, ingest_version="variant", source="variant",
+                 turns=turns, tool_calls=tool_calls, raw_ptr=ptr)
+
+
+def replay_calls(environment_dir: Any, task_id: str, calls: Any, *, run_id: str,
+                 transcript: Any = (), workdir: Any) -> ReplayReport:
+    """Replay a code-written call path from the Task's Starting state and report it (D199).
+
+    The calls are turned into a Trace by `call_trace` and replayed through the same Router and
+    the same scoring `replay` uses, the context reseeded from the Run's own id so the same variant
+    id under the same salt draws the same values (D212). The Run lands under
+    workdir/runs/<task_id>/ with the given run id. Returns the shape `replay` returns, a
+    ReplayReport, so callers read one report type for recorded and synthesised paths alike.
+    """
+    env = BuiltEnvironment(environment_dir)
+    env.task(task_id)
+    router = _router_for(env, task_id, sampling.sample_seed(RUN_SEED_KIND, run_id, env.salt))
+    _refuse_stand_in(router)
+    trace = call_trace(task_id, calls, transcript, run_id)
+    task_dir = Path(workdir) / RUNS_DIR / task_id
+    task_dir.mkdir(parents=True, exist_ok=True)
+    out = replay_mod.replay_trace(
+        trace, router, workdir=task_dir, task_id=task_id, env_id=env.env_id,
+        write_tools=env.write_tools(), canon_rules=env.canon_rules, run_id=run_id)
+    return _replay_report(task_id, out)
+
+
+def write_runs_index(workdir: Any) -> Path:
+    """runs.json: every Run under runs/, which is where the scorecard counts Task coverage from.
+
+    Carried from kullback/builder/build.py `_write_runs_index` (D96): a replayed Run keeps its own
+    id and names its Trace in `trace_id`, so the index carries the Run under both ids. Beside the
+    carried per-Task layout this also indexes the flat runs/ files the runner tool itself writes,
+    which the carried glob would otherwise miss.
+    """
+    runs: list = []
+    folder = Path(workdir) / RUNS_DIR
+    paths: list = []
+    if folder.is_dir():
+        paths = sorted(folder.glob("*.jsonl"))
+        paths += [path for path in sorted(folder.glob("*/*.jsonl")) if path not in paths]
+    for path in paths:
+        try:
+            run = load_run(path)
+        except (OSError, ValueError, TypeError):
+            continue
+        record = as_dict(run.model_copy(update={"events": []}))
+        record["events"] = [{"type": e.type, "route": e.route, "assisted": e.assisted} for e in run.events]
+        runs.append(record)
+        if run.trace_id and run.trace_id != run.run_id:
+            runs.append(dict(record, run_id=run.trace_id))
+    return write_json(Path(workdir) / "runs.json", {"runs": runs})
 
 
 def reroll(environment_dir: Any, task_id: str, model: Any, *, count: int,
-           workdir: Any) -> list[RunReport]:
-    """Play `count` Runs of the candidate model over the Task, seeds counting up from zero."""
-    return [run(environment_dir, task_id, model, workdir=workdir, seed=seed)
-            for seed in range(max(int(count), 0))]
+           workdir: Any, prefix: str = "", user: Any = None, make_user: Any = None) -> list[RunReport]:
+    """Play `count` Runs of the candidate model over the Task, seeds counting up from zero.
+
+    With a `prefix` the Runs are named for their buyer (D133: the Examiner's second-path batches),
+    so a re-roll never writes different bytes under a name something already read. The candidate's
+    user arrives as an object or as a `make_user(router)` factory, never as an import. Each report
+    carries `user_end`, how the Simulated user ended that Run (D133).
+    """
+    reports = []
+    for seed in range(max(int(count), 0)):
+        run_id = f"{prefix}-{seed}" if prefix else f"{task_id}-{seed}"
+        reports.append(_reroll_once(environment_dir, task_id, model, workdir=workdir, seed=seed,
+                                    run_id=run_id, user=user, make_user=make_user))
+    return reports
 
 
-__all__ = ["ReplayCall", "ReplayReport", "RunReport", "replay", "reroll", "run", "version"]
+def _reroll_once(environment_dir: Any, task_id: str, model: Any, *, workdir: Any, seed: int,
+                 run_id: str, user: Any = None, make_user: Any = None) -> RunReport:
+    """One numbered re-roll under its own id: the same Run `run` plays, under the buyer's name."""
+    env = BuiltEnvironment(environment_dir)
+    task = env.task(task_id)
+    if env.agent_driven(task_id):
+        raise EnvironmentError(f"Task {task_id} is driven by the agent user, which needs a model "
+                               "the runner is not given")
+    router = _router_for(env, task_id, seed)
+    _refuse_stand_in(router)
+    if user is None and make_user is not None:
+        user = make_user(router)
+    runs_dir = Path(workdir) / RUNS_DIR
+    runs_dir.mkdir(parents=True, exist_ok=True)
+    specs = env.tool_specs()
+    state = loop.new_run_state(
+        run_id, workdir=runs_dir, env_id=env.env_id, task_id=task_id,
+        model=_model_name(model), seed=seed, user=user,
+        user_rules=env.rules(task),
+        max_turns=MAX_TURNS, system_prompt=env.system_prompt(task),
+        first_user=task.intent if user is None else None)
+    loop.open_with_user(state)
+    loop.run(state, model, tools=specs, router=router)
+    loop.finish(state, router)
+    report_version = version()
+    verifier = env.verifier(task_id)
+    scored = score_verdict(state.path, verifier, canon=env.canon_rules, environment=env,
+                           runner_version=report_version) if verifier is not None else None
+    taken = [{"id": event.payload.get("id"), "name": event.payload.get("name"),
+              "route": event.route}
+             for event in state.run.events if event.type == "tool_result"]
+    return RunReport(run_id=run_id, task_id=task_id, path=str(state.path) if state.path else "",
+                     verdict=scored, routes=taken,
+                     world_diff=_world_diff(router.start_world, router.world()),
+                     spend=as_dict(state.run.cost), runner_version=report_version,
+                     termination_reason=state.run.termination_reason,
+                     user_end=_user_end_of(user))
+
+
+__all__ = ["ReplayCall", "ReplayReport", "RunReport", "call_trace", "probe", "replay",
+           "replay_calls", "reroll", "run", "version", "write_runs_index"]
