@@ -20,6 +20,7 @@ import json
 import os
 import tarfile
 import tomllib
+import zlib
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal, Mapping, Protocol
@@ -79,8 +80,10 @@ def _decompress_capped(raw: bytes) -> bytes:
     """Gunzip one archive in chunks, refusing past the cap before holding it all.
 
     No more than the cap plus one chunk is ever held: each chunk joins a
-    running total that is checked as it grows. Not gzip raises a ValueError
-    naming the cause.
+    running total that is checked as it grows. A body that is not gzip, whose
+    deflate data is corrupt, or that ends mid-stream is refused with a
+    ValueError naming the row as unreadable, so one malformed row never aborts
+    the caller; the size cap behaves exactly as before.
     """
     try:
         with gzip.GzipFile(fileobj=io.BytesIO(raw)) as reader:
@@ -92,7 +95,9 @@ def _decompress_capped(raw: bytes) -> bytes:
                 out += chunk
                 if len(out) > MAX_ARCHIVE_BYTES:
                     raise ValueError(f"task archive expands past {MAX_ARCHIVE_BYTES} bytes")
-    except (OSError, EOFError) as error:
+    except (zlib.error, EOFError, gzip.BadGzipFile) as error:
+        raise ValueError(f"task archive is unreadable: {error}") from error
+    except OSError as error:
         raise ValueError(f"task archive is not gzip: {error}") from error
 
 

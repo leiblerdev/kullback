@@ -302,3 +302,74 @@ def test_directory_lookup_refuses_a_linked_directory_escaping_the_root(tmp_path)
     (root / "invented-near").symlink_to(outside, target_is_directory=True)
     with pytest.raises(ValueError, match="outside the registry root"):
         DirectoryRegistry(root).lookup("invented-near")
+
+
+def _garbage_after_header_blob() -> str:
+    """A real gzip header followed by bytes no deflate stream can hold."""
+    valid = gzip.compress(b"invented payload " * 64)
+    return base64.b64encode(valid[:10] + b"\xff" * 64).decode("ascii")
+
+
+def _truncated_blob() -> str:
+    """A valid gzip body cut in the middle of its deflate stream."""
+    valid = gzip.compress(b"invented payload " * 1024)
+    return base64.b64encode(valid[:len(valid) // 2]).decode("ascii")
+
+
+def test_unpack_refuses_garbage_after_a_real_gzip_header_as_unreadable():
+    with pytest.raises(ValueError, match="unreadable"):
+        unpack_task_binary(_garbage_after_header_blob())
+
+
+def test_unpack_refuses_a_truncated_gzip_body_as_unreadable():
+    with pytest.raises(ValueError, match="unreadable"):
+        unpack_task_binary(_truncated_blob())
+
+
+def test_rescue_attaches_the_sound_row_when_another_row_is_corrupt(tmp_path, workdir):
+    """One malformed registry row must not stop the rescue of the recordings after it."""
+    from typer.testing import CliRunner
+
+    from kullback import cli
+    from kullback.builder import ingest
+
+    def _turns(instruction: str) -> list[dict]:
+        return [
+            {"role": "user",
+             "content": ("Invented preamble.\n\nTask Description:\n" + instruction
+                         + "\n\nCurrent terminal state:\n\ninvented-ready")},
+            {"role": "assistant", "content": json.dumps({"commands": [
+                {"keystrokes": "invented-solo"}]})},
+            {"role": "user", "content": "New Terminal Output:\n\ninvented solo output"},
+        ]
+
+    envelope = {"rows": [
+        {"row_idx": 0,
+         "row": {"conversations": _turns("# invented forty-one\nSolve invented.\n"),
+                 "trial_name": "invented-task-41__invented-a",
+                 "original_source": "invented-source"},
+         "truncated_cells": []},
+        {"row_idx": 1,
+         "row": {"conversations": _turns("# invented forty-two\nSolve invented.\n"),
+                 "trial_name": "invented-task-42__invented-b",
+                 "original_source": "invented-source"},
+         "truncated_cells": []}]}
+    target = tmp_path / "invented.json"
+    target.write_text(json.dumps(envelope), encoding="utf-8")
+    summary = ingest.ingest_file(target, workdir)
+    assert summary["runs"] == 2
+    rows_path = tmp_path / "rows.json"
+    rows_path.write_text(json.dumps([
+        {"path": "invented-task-41", "task_binary": _garbage_after_header_blob()},
+        {"path": "invented-task-42",
+         "task_binary": make_blob(
+             invented_files("invented-task-42", b"# invented forty-two\nSolve invented.\n",
+                            CONTENT_TESTS))},
+    ]), encoding="utf-8")
+    result = CliRunner().invoke(cli.app, ["rescue", "--workdir", str(workdir),
+                                          "--registry", str(rows_path)])
+    assert result.exit_code == 0, result.output
+    assert "attached 1" in result.output
+    assert "missing 1" in result.output
+    (sole,) = list((workdir / "task_defs").glob("*.json"))
+    assert json.loads(sole.read_text(encoding="utf-8"))["task_id"] == "invented-task-42"
