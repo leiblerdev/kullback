@@ -203,3 +203,102 @@ def test_instruction_match_ignores_whitespace_but_rejects_different_text():
     assert instruction_matches(definition, "  # invented   \n\n Solve   invented.  ") is True
     assert instruction_matches(definition, "# invented\nSolve something else.\n") is False
     assert instruction_matches(definition, None) is False
+
+
+def test_unpack_blob_expanding_past_the_cap_is_refused():
+    """A large zero run compresses small but must still hit the expansion cap."""
+    from kullback.builder.registry import MAX_ARCHIVE_BYTES
+
+    zeros = b"\x00" * (MAX_ARCHIVE_BYTES + 1)
+    blob = base64.b64encode(gzip.compress(zeros)).decode("ascii")
+    assert len(blob) < MAX_ARCHIVE_BYTES
+    with pytest.raises(ValueError, match="expands past"):
+        unpack_task_binary(blob)
+
+
+def test_unpack_decompresses_through_a_streaming_reader(monkeypatch):
+    """The one-shot decompress entry point is never called; nothing real can show
+    how much memory an expansion holds, so this run faults that call instead."""
+    import gzip as gzip_mod
+
+    def _boom(data, *args, **kwargs):
+        raise AssertionError("one-shot gzip.decompress must not run")
+
+    monkeypatch.setattr(gzip_mod, "decompress", _boom)
+    blob = make_blob(invented_files("invented-task-1", b"# invented\n", None))
+    assert unpack_task_binary(blob).instruction == "# invented\n"
+
+
+@pytest.mark.parametrize("task_id", ["../invented-evil", "/invented-absolute", "..", ".", "",
+                                     "invented/sub"])
+def test_directory_lookup_refuses_ids_outside_the_root(tmp_path, task_id):
+    """An id from a recording is one plain segment; anything else is refused by name."""
+    root = tmp_path / "root"
+    root.mkdir()
+    with pytest.raises(ValueError, match="task id"):
+        DirectoryRegistry(root).lookup(task_id)
+
+
+def test_directory_lookup_reads_nothing_outside_the_root(tmp_path):
+    """A sibling directory beside the root stays unread even when the id names it."""
+    root = tmp_path / "root"
+    root.mkdir()
+    outside = tmp_path / "invented-outside"
+    (outside / "environment").mkdir(parents=True)
+    (outside / "instruction.md").write_bytes(b"# invented outside\n")
+    (outside / "task.toml").write_bytes(b"[verifier]\ntimeout_sec = 1\n")
+    (outside / "environment" / "Dockerfile").write_bytes(b"FROM invented-base:1\n")
+    with pytest.raises(ValueError, match="task id"):
+        DirectoryRegistry(root).lookup("../invented-outside")
+    assert (outside / "instruction.md").read_bytes() == b"# invented outside\n"
+
+
+def test_read_task_dir_refuses_a_symlinked_file(tmp_path):
+    """A link under a task directory is refused like a link in an archive."""
+    root = tmp_path / "invented-task-5"
+    (root / "tests").mkdir(parents=True)
+    (root / "instruction.md").write_bytes(b"# invented five\n")
+    (root / "task.toml").write_bytes(b"[verifier]\ntimeout_sec = 1\n")
+    (root / "tests" / "sneaky").symlink_to(root / "instruction.md")
+    with pytest.raises(ValueError, match="[Ll]ink"):
+        read_task_dir(root)
+
+
+def test_read_task_dir_refuses_a_symlinked_directory(tmp_path):
+    """A linked directory is refused before anything under it is read."""
+    root = tmp_path / "invented-task-6"
+    root.mkdir()
+    elsewhere = tmp_path / "invented-elsewhere"
+    elsewhere.mkdir()
+    (elsewhere / "instruction.md").write_bytes(b"# invented elsewhere\n")
+    (root / "tests").symlink_to(elsewhere, target_is_directory=True)
+    with pytest.raises(ValueError, match="[Ll]ink"):
+        read_task_dir(root)
+
+
+@pytest.mark.parametrize("document", ["null", '"just a string"'])
+def test_rows_from_file_refuses_scalar_documents_with_words(tmp_path, document):
+    """A rows file holds a list or a mapping; a scalar names its own refusal."""
+    rows_path = tmp_path / "rows.json"
+    rows_path.write_text(document, encoding="utf-8")
+    with pytest.raises(ValueError, match="[Ll]ist|[Mm]apping"):
+        rows_from_file(rows_path)
+
+
+def test_rows_from_file_refuses_a_mapping_without_a_rows_list(tmp_path):
+    rows_path = tmp_path / "rows.json"
+    rows_path.write_text(json.dumps({"rows": "not a list"}), encoding="utf-8")
+    with pytest.raises(ValueError, match="[Ll]ist"):
+        rows_from_file(rows_path)
+
+
+def test_directory_lookup_refuses_a_linked_directory_escaping_the_root(tmp_path):
+    """A plain-segment id can still escape through a link; the resolved path decides."""
+    root = tmp_path / "root"
+    root.mkdir()
+    outside = tmp_path / "invented-far"
+    (outside / "environment").mkdir(parents=True)
+    (outside / "instruction.md").write_bytes(b"# invented far\n")
+    (root / "invented-near").symlink_to(outside, target_is_directory=True)
+    with pytest.raises(ValueError, match="outside the registry root"):
+        DirectoryRegistry(root).lookup("invented-near")

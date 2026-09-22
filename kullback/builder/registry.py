@@ -17,6 +17,7 @@ import binascii
 import gzip
 import io
 import json
+import os
 import tarfile
 import tomllib
 from dataclasses import dataclass, field
@@ -28,6 +29,10 @@ from typing import Any, Literal, Mapping, Protocol
 MAX_ARCHIVE_BYTES = 32 * 1024 * 1024
 MAX_MEMBER_BYTES = 8 * 1024 * 1024
 MAX_MEMBERS = 1024
+
+# One read of an expansion; the cap check runs per chunk, so no more than the
+# cap plus one chunk is ever held.
+_DECOMPRESS_CHUNK = 64 * 1024
 
 
 @dataclass(frozen=True)
@@ -49,27 +54,46 @@ def unpack_task_binary(blob: str | bytes, task_id: str = "",
                        source_ref: str = "") -> TaskDefinition:
     """One encoded archive to its definition: base64 of a gzip tar of the task directory.
 
-    The archive is never written to disk, only read, and every member name is
-    checked before any byte is kept: absolute paths, `..` segments and links
-    (symbolic or hard) are refused with a ValueError naming the reason, as is
-    an archive over the size or member caps. A blob that is not base64, not
-    gzip, or not a tar is refused the same way.
+    The archive is never written to disk, only read, and it is expanded through
+    a streaming reader in chunks: once the running total passes the size cap
+    the blob is refused with a ValueError, so a highly compressible archive
+    never fills memory first. Every member name is checked before any byte is
+    kept: absolute paths, `..` segments and links (symbolic or hard) are
+    refused with a ValueError naming the reason, as is an archive over the
+    member caps. A blob that is not base64, not gzip, or not a tar is refused
+    the same way.
     """
     try:
         raw = base64.b64decode(blob, validate=True) if isinstance(blob, str) else bytes(blob)
     except (binascii.Error, ValueError) as error:
         raise ValueError(f"task archive is not base64: {error}") from error
-    try:
-        expanded = gzip.decompress(raw)
-    except (OSError, EOFError) as error:
-        raise ValueError(f"task archive is not gzip: {error}") from error
-    if len(expanded) > MAX_ARCHIVE_BYTES:
-        raise ValueError(f"task archive expands past {MAX_ARCHIVE_BYTES} bytes")
+    expanded = _decompress_capped(raw)
     try:
         members = _safe_members(expanded)
     except tarfile.TarError as error:
         raise ValueError(f"task archive is not a tar: {error}") from error
     return _definition_from_members(members, task_id=task_id, source_ref=source_ref)
+
+
+def _decompress_capped(raw: bytes) -> bytes:
+    """Gunzip one archive in chunks, refusing past the cap before holding it all.
+
+    No more than the cap plus one chunk is ever held: each chunk joins a
+    running total that is checked as it grows. Not gzip raises a ValueError
+    naming the cause.
+    """
+    try:
+        with gzip.GzipFile(fileobj=io.BytesIO(raw)) as reader:
+            out = bytearray()
+            while True:
+                chunk = reader.read(_DECOMPRESS_CHUNK)
+                if not chunk:
+                    return bytes(out)
+                out += chunk
+                if len(out) > MAX_ARCHIVE_BYTES:
+                    raise ValueError(f"task archive expands past {MAX_ARCHIVE_BYTES} bytes")
+    except (OSError, EOFError) as error:
+        raise ValueError(f"task archive is not gzip: {error}") from error
 
 
 def _safe_members(expanded: bytes) -> list[tuple[str, bytes]]:
@@ -159,8 +183,27 @@ def read_task_dir(path: str | Path) -> TaskDefinition:
 
 
 def _walk_files(root: Path) -> list[Path]:
-    """Every file under the directory, relative, sorted so reads are stable."""
-    return sorted(path.relative_to(root) for path in root.rglob("*") if path.is_file())
+    """Every file under the directory, relative, sorted so reads are stable.
+
+    Links are refused the way archive links are: a symlink, to a file or to a
+    directory, raises a ValueError naming the member before anything is read.
+    Directories are descended without following links, so a linked directory
+    is refused itself rather than read through.
+    """
+    out: list[Path] = []
+    stack = [root]
+    while stack:
+        current = stack.pop()
+        with os.scandir(current) as entries:
+            for entry in sorted(entries, key=lambda item: item.name):
+                if entry.is_symlink():
+                    member = Path(entry.path).relative_to(root).as_posix()
+                    raise ValueError(f"task member {member!r} is a link, links are refused")
+                if entry.is_dir(follow_symlinks=False):
+                    stack.append(Path(entry.path))
+                elif entry.is_file(follow_symlinks=False):
+                    out.append(Path(entry.path).relative_to(root))
+    return sorted(out)
 
 
 class Registry(Protocol):
@@ -178,11 +221,31 @@ class DirectoryRegistry:
         self.root = Path(root)
 
     def lookup(self, task_id: str) -> TaskDefinition | None:
-        """The plain directory named by the task id, or None when it is missing."""
-        target = self.root / task_id
+        """The plain directory named by the task id, or None when it is missing.
+
+        The id comes from a recording, so it is held to one plain path
+        segment: anything else (empty, ".", "..", or any separator) is refused
+        with a ValueError naming the id, and the resolved directory must sit
+        under the resolved root, so no id reads outside it.
+        """
+        _check_task_id(task_id)
+        root = self.root.resolve()
+        target = (self.root / task_id).resolve()
+        try:
+            target.relative_to(root)
+        except ValueError:
+            raise ValueError(f"task id {task_id!r} resolves outside the registry root, "
+                             "refused") from None
         if not target.is_dir():
             return None
         return read_task_dir(target)
+
+
+def _check_task_id(task_id: Any) -> None:
+    """One plain path segment, or a ValueError naming the id that is not."""
+    if (not isinstance(task_id, str) or not task_id or task_id in (".", "..")
+            or "/" in task_id or "\\" in task_id):
+        raise ValueError(f"task id {task_id!r} is not one plain path segment, refused")
 
 
 class TableRegistry:
@@ -220,10 +283,13 @@ def open_registry(path: str | Path) -> Registry:
 def rows_from_file(path: str | Path) -> list[dict]:
     """The rows file as a list of mappings: JSON always, parquet only with pyarrow.
 
-    Parquet needs pyarrow, which is not a declared dependency of this project, so
-    asking for a parquet file raises a ValueError saying so instead of importing
-    something the install cannot provide. A fetch from a remote table is out of
-    scope: the path must be local.
+    The top level must be a list of rows or a mapping holding a rows list;
+    anything else (a scalar, or a rows value that is not a list) is refused
+    with a ValueError saying so, which the rescue command prints as an exit 2.
+    Parquet needs pyarrow, which is not a declared dependency of this project,
+    so asking for a parquet file raises a ValueError saying so instead of
+    importing something the install cannot provide. A fetch from a remote
+    table is out of scope: the path must be local.
     """
     target = Path(path)
     if target.suffix.lower() == ".parquet":
@@ -236,7 +302,16 @@ def rows_from_file(path: str | Path) -> list[dict]:
 
         return [dict(row) for row in parquet_mod.read_table(target).to_pylist()]
     body = json.loads(target.read_text(encoding="utf-8"))
-    rows = body if isinstance(body, list) else body.get("rows", [])
+    if isinstance(body, list):
+        rows = body
+    elif isinstance(body, dict):
+        rows = body.get("rows", [])
+    else:
+        raise ValueError(f"registry rows file {target} holds {type(body).__name__}, "
+                         "not a list or a mapping with rows")
+    if not isinstance(rows, list):
+        raise ValueError(f"registry rows file {target} holds rows of {type(rows).__name__}, "
+                         "not a list")
     return [row for row in rows if isinstance(row, dict)]
 
 
