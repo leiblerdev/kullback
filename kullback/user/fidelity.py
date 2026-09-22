@@ -24,6 +24,7 @@ from pathlib import Path
 from typing import Any, Iterable, Iterator, Optional, Sequence
 
 from kullback.runner.records import Record, Trace, UserFact, read_json, write_json
+from kullback.user import ends as ends_mod
 from kullback.user import rules as rules_mod
 
 FILE_NAME = "user_fidelity.json"
@@ -354,7 +355,7 @@ def score_workdir(workdir: Any, *, make_agent: Any = None, tasks: Optional[Itera
     Task and costs one model call per recorded turn; without it only the baseline is computed, and
     that is the whole offline measurement.
     """
-    from kullback.user import rules as rules_module
+    from kullback.user.simulated import SimulatedUser
     wanted = set(tasks or ())
     vocab = vocabulary_of(workdir)
     rows: list[dict] = []
@@ -363,14 +364,14 @@ def score_workdir(workdir: Any, *, make_agent: Any = None, tasks: Optional[Itera
         if wanted and task_id not in wanted:
             continue
         facts = ctx.askable()
-        floor = rules_module.SimulatedUser(user_rules, vocab=vocab)
+        floor = SimulatedUser(user_rules, vocab=vocab)
         rules_score = score_driver(floor, trace, facts, task_id=task_id,
                                    driver_name=RULES_DRIVER, record_values=record)
         row = {"task_id": task_id, RULES_DRIVER: rules_score.score, AGENT_DRIVER: None,
                "turns": rules_score.turns, "band": band(rules_score.score)}
         agent_score = None
         if make_agent is not None:
-            driver = make_agent(ctx, rules_module.SimulatedUser(user_rules, vocab=vocab), record)
+            driver = make_agent(ctx, SimulatedUser(user_rules, vocab=vocab), record)
             if driver is not None:
                 agent_score = score_driver(driver, trace, facts, task_id=task_id,
                                            driver_name=AGENT_DRIVER, record_values=record)
@@ -417,12 +418,12 @@ def refused_write_ends(workdir: Any, write_tools: Optional[Iterable[str]] = None
             if kind == "tool_result" and payload.get("name") in names:
                 called = True
                 took_effect = took_effect or payload.get("error") is None
-            elif kind == "user_turn" and rules_mod.end_kind_of(payload) is not None:
+            elif kind == "user_turn" and ends_mod.end_kind_of(payload) is not None:
                 classified = True
                 # Only the one kind the old rule reached over a refused write. A Run the Candidate
                 # closed or the user ran out of scenario on ended the way it would have ended
                 # anyway, so counting those would say this decision moved Runs it never touched.
-                satisfied = satisfied or rules_mod.end_kind_of(payload) == rules_mod.GOAL_SATISFIED
+                satisfied = satisfied or ends_mod.end_kind_of(payload) == rules_mod.GOAL_SATISFIED
         out["runs_read"] += 1
         out["runs_with_a_write"] += int(called)
         # A Run written before the end kinds existed carries none, and its stop reason is `user_stop`
@@ -464,7 +465,7 @@ def ends_by_driver(workdir: Any) -> dict[str, dict[str, int]]:
             if event.get("type") != "user_turn":
                 continue
             payload = event.get("payload") or {}
-            kind = rules_mod.end_kind_of(payload)
+            kind = ends_mod.end_kind_of(payload)
             if kind is not None:
                 ended = (str(payload.get("driver") or RULES_DRIVER), kind)
         if ended is None:

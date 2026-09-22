@@ -101,10 +101,12 @@ from kullback.runner.records import write_json as _write_json
 # The rule-driven Simulated user under its old name (D214): it lives in kullback/user now, and the
 # stages read it from there so a stage's code version follows the module that actually changed.
 from kullback.user import context as user_context_mod
+from kullback.user import ends as user_ends
 from kullback.user import factory as user_factory_mod
 from kullback.user import fidelity as user_fidelity_mod
 from kullback.user import lesson as user_lesson_mod
 from kullback.user import rules as user_sim
+from kullback.user import simulated as user_simulated
 
 # This module is the graph, not the runner: assembling the stages means naming ingest, mine, cluster,
 # compile_env, policy and user_sim, and the Runner never imports the Builder (design section 3, build
@@ -2063,7 +2065,7 @@ def _gather_reroll_rows(workdir: Path, jobs: list, got: list, *, rerolls: Option
         ordered = [(run, path) for _, run, path
                    in sorted(by_task.get(task.id, []), key=lambda item: item[0])]
         rows = [{"run_id": r.run_id, "path": p, "termination_reason": r.termination_reason,
-                 "user_end": user_sim.end_of_run(r)} for r, p in ordered]
+                 "user_end": user_ends.end_of_run(r)} for r, p in ordered]
         _write_json(workdir / "runs" / task.id / REROLL_RECORD,
                     {"task_id": task.id, "key": key,
                      "runs": _reroll_rows(workdir, rows, relative=True)})
@@ -2159,7 +2161,7 @@ def _rerolls_stage(model: Any, rerolls: int, workers: int = 1, only: Optional[It
             **ruling.metrics, "reused": len(reused), "rerolled": len(rolled),
             # D210: how the Simulated user ended each re-roll, so a round can tell a Run that did
             # what it came for from one whose scenario ran dry or that spent its turns.
-            "user_ends_by_kind": user_sim.ends_by_kind(
+            "user_ends_by_kind": user_ends.ends_by_kind(
                 [row for rows in out.values() for row in rows]),
             "rerolled_because": dict(sorted(reasons.items())), "note": REROLL_KEY_NOTE}}))
         return {"rerolls": out}
@@ -2167,7 +2169,7 @@ def _rerolls_stage(model: Any, rerolls: int, workers: int = 1, only: Optional[It
     # D214: whose turns the Runs get is part of what this stage produces, so a build that names a
     # user driver puts it in the key. A build that names none adds nothing, so its key, its cache
     # and the Run ids it derives from the key are the ones it had before D214.
-    version = (f"{_version('rerolls', run, loop, route, user_sim, intent, provider, compile_env, episode_loading, parallel, runner_parallel, vocabulary, verifier_suite, canon, records_mod, user_factory_mod, user_context_mod, user_fidelity_mod, user_lesson_mod, helpers=(_reroll_run_jobs, _reroll_run_one, _gather_reroll_rows, _candidate_task_ctx, _candidate_run_once, _discard_runs, _json_schema, _members_of, _reroll_key, _reroll_reason, _reroll_record, _reroll_reuse, _reroll_rows, _refuse_stand_in, _system_prompt_for, _tool_definitions, _tools_called, _user_driver, _vocab_from, _write_runs_index, with_synthetic_rows))}:"
+    version = (f"{_version('rerolls', run, loop, route, user_sim, user_ends, user_simulated, intent, provider, compile_env, episode_loading, parallel, runner_parallel, vocabulary, verifier_suite, canon, records_mod, user_factory_mod, user_context_mod, user_fidelity_mod, user_lesson_mod, helpers=(_reroll_run_jobs, _reroll_run_one, _gather_reroll_rows, _candidate_task_ctx, _candidate_run_once, _discard_runs, _json_schema, _members_of, _reroll_key, _reroll_reason, _reroll_record, _reroll_reuse, _reroll_rows, _refuse_stand_in, _system_prompt_for, _tool_definitions, _tools_called, _user_driver, _vocab_from, _write_runs_index, with_synthetic_rows))}:"
                f"{getattr(model, 'name', 'none')}:{rerolls}"
                f":REROLL_KEY_FORMAT={REROLL_KEY_FORMAT}:REROLL_KEY_NOTE={REROLL_KEY_NOTE}"
                f":REROLL_RECORD={REROLL_RECORD}:REROLL_SEED={REROLL_SEED}:REROLL_TURNS={REROLL_TURNS}"
@@ -2248,7 +2250,7 @@ def _candidate_run_once(workdir: Path, task: Task, model: Any, *, ctx: dict, num
                           tool_sigs=ctx["sigs"], canon_rules=ctx["canon_rules"],
                           synthetic_rows=ctx["schema"].synthetic_rows)
     _refuse_stand_in(router)  # G28: a scored re-roll is never answered by a model
-    simulated = user_sim.SimulatedUser(ctx["rules"], starting_state_reader=router.state,
+    simulated = user_simulated.SimulatedUser(ctx["rules"], starting_state_reader=router.state,
                                        vocab=ctx["vocab"], write_tools=ctx["write_tools"],
                                        goal_writes=ctx["goal_writes"],
                                        answer_strip=ctx["answer_strip"]) if ctx["rules"] else None
@@ -2383,7 +2385,7 @@ def probe_runner(plan: BuildPlan):
         probe_seed = _probe_seed(workdir, task.id)
         toolkit.ctx.reseed(probe_seed)
         members = _members_of(task, traces)
-        simulated = user_sim.SimulatedUser(
+        simulated = user_simulated.SimulatedUser(
             rules, starting_state_reader=router.state, vocab=_vocab_from(workdir),
             write_tools=writes,
             goal_writes=user_sim.goal_write_set(recorded, writes) if recorded is not None else None,
@@ -2448,7 +2450,7 @@ def reroll_runner(plan: BuildPlan):
                                user_agent_model=plan.models.get("user_agent"))
         _write_runs_index(plan.workdir)
         return [{"run_id": r.run_id, "path": p, "termination_reason": r.termination_reason,
-                 "user_end": user_sim.end_of_run(r)} for r, p in runs]
+                 "user_end": user_ends.end_of_run(r)} for r, p in runs]
 
     return run_rerolls
 

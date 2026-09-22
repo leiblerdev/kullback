@@ -19,6 +19,7 @@ import importlib
 from pathlib import Path
 from typing import Any, Optional
 
+from kullback.agent.bus import Bus
 from kullback.runner import canon
 from kullback.runner.records import EntitySchema, read_json
 from kullback.user import context as context_mod
@@ -26,6 +27,7 @@ from kullback.user import fidelity as fidelity_mod
 from kullback.user import lesson as lesson_mod
 from kullback.user import rules as rules_mod
 from kullback.user.agent import AgentUser
+from kullback.user.simulated import SimulatedUser
 
 # What the built user is for. The two purposes build the same user; they differ only in what a
 # Task with no reference recording on disk means. An examination has nothing to examine, so it
@@ -47,7 +49,8 @@ def build_user(workdir: Any, task_id: str, model: Any, purpose: str, *,
                ctx: Any = _MISSING, fallback: Any = _MISSING,
                record_values: Any = _MISSING, vocab: Any = _MISSING,
                write_tools: Any = _MISSING, goal_writes: Any = _MISSING,
-               answer_strip: Any = _MISSING, trace: Any = _MISSING) -> Optional[AgentUser]:
+               answer_strip: Any = _MISSING, trace: Any = _MISSING,
+               bus: Any = None) -> Optional[AgentUser]:
     """The Simulated user of one Task: the agent user over the rules floor, fully specified.
 
     The caller passes what it has live and the workdir supplies the rest, so the round scorer and
@@ -68,11 +71,13 @@ def build_user(workdir: Any, task_id: str, model: Any, purpose: str, *,
     for key, value in given:
         if value is not _MISSING:
             disk[key] = value
+    if bus is None and workdir is not None:
+        bus = Bus(Path(workdir) / "bus.jsonl", "user")
     return AgentUser(
         disk["ctx"], disk["fallback"], model, vocab=disk["vocab"],
         write_tools=disk["write_tools"], goal_writes=disk["goal_writes"],
         answer_strip=disk["answer_strip"], record_values=disk["record_values"],
-        trace=disk["trace"],
+        trace=disk["trace"], bus=bus,
     )
 
 
@@ -99,8 +104,8 @@ def _disk_state(workdir: Any, task_id: str, purpose: str) -> Optional[dict]:
     answer_strip = _strip_for(workdir, task_id, index)
     return {
         "ctx": ctx,
-        "fallback": rules_mod.SimulatedUser(user_rules, vocab=vocab, write_tools=writes,
-                                            goal_writes=goal_writes, answer_strip=answer_strip),
+        "fallback": SimulatedUser(user_rules, vocab=vocab, write_tools=writes,
+                                  goal_writes=goal_writes, answer_strip=answer_strip),
         "record_values": record,
         "vocab": vocab,
         "write_tools": writes,

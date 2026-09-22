@@ -21,14 +21,16 @@ from __future__ import annotations
 import asyncio
 from typing import Any, Callable, Iterable, Optional, Sequence
 
+from kullback.agent.bus import Bus
 from kullback.agent.context import ContextConfig
 from kullback.agent.events import MessageEnd
 from kullback.agent.extensions import load_extensions
-from kullback.agent.harness import AgentHarness
+from kullback.agent.harness import AgentHarness, AgentHarnessConfig
 from kullback.agent.messages import AssistantMessage, UserMessage
 from kullback.ai.provider import Model
 from kullback.runner import budget
 from kullback.runner.records import Event
+from kullback.user import ends as ends_mod
 from kullback.user import guards as guards_mod
 from kullback.user import rules as rules_mod
 from kullback.user.context import TaskContext, volunteer_allowance
@@ -71,13 +73,14 @@ class AgentUser:
                  goal_writes: Optional[Iterable[str]] = None,
                  answer_strip: Optional[Callable[[str], tuple[str, list]]] = None,
                  record_values: Optional[dict] = None, trace: Any = None,
-                 max_tool_turns: int = MAX_TURNS_PER_REPLY):
+                 max_tool_turns: int = MAX_TURNS_PER_REPLY, bus: Optional[Bus] = None):
         self.ctx = ctx
         self.fallback = fallback
         self.model = model
         self.vocab = vocab
         self.trace = trace
         self.max_tool_turns = max_tool_turns
+        self.bus = bus
         self.guards = guards_mod.Guards(
             guards_mod.grounding_for(ctx.askable(), ctx.grounding()),
             record_values=record_values, strip=answer_strip)
@@ -136,9 +139,10 @@ class AgentUser:
         The agent's own tool calls and thinking never persist past the turn, and every turn
         still builds a new harness, because a user that keeps a transcript of its own thinking
         between turns is a user with a second memory the recorded person did not have."""
-        harness = AgentHarness(model=self.model, max_turns=self.max_tool_turns,
-                               messages=_request_messages(transcript),
-                               context=context_config(self.model))
+        harness = AgentHarnessConfig(
+            model=self.model, tools=[], hooks=None, context=context_config(self.model),
+            session=None, bus=self.bus, max_turns=self.max_tool_turns,
+            messages=_request_messages(transcript)).build()
         load_extensions(harness, [user_extension(self.ctx, self.box)])
         return harness
 
@@ -201,8 +205,8 @@ def _request_messages(transcript: Sequence) -> list:
     before every turn this user spoke and once at the end. Tool traffic is not speech."""
     out = []
     for message in transcript or ():
-        role = rules_mod._field_of(message, "role")
-        content = (rules_mod._field_of(message, "content") or "").strip()
+        role = ends_mod._field_of(message, "role")
+        content = (ends_mod._field_of(message, "content") or "").strip()
         if not content:
             continue
         if role == "assistant":
@@ -221,8 +225,8 @@ def _rules_of(fallback: Any):
 def _last_assistant(transcript: Sequence) -> str:
     question = ""
     for message in transcript or ():
-        if rules_mod._field_of(message, "role") == "assistant":
-            question = rules_mod._field_of(message, "content")
+        if ends_mod._field_of(message, "role") == "assistant":
+            question = ends_mod._field_of(message, "content")
     return question or ""
 
 
