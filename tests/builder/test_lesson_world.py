@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from kullback.builder import compile_env as ce
 from kullback.builder import lesson
-from kullback.runner.records import Column, EntitySchema, RawPtr, ToolCall, ToolSig
+from kullback.runner.records import Column, EntitySchema, RawPtr, ToolCall, ToolCallError, ToolSig
 
 
 def _schema():
@@ -60,6 +60,54 @@ def test_a_call_naming_no_row_carries_an_empty_world():
     starting = {"crates": {"k1": dict(ROW_K1)}}
     worlds = ce.witnessed_worlds([failing], _schema(), starting)
     assert worlds["c3"] == {}
+
+
+def _two_table_schema():
+    columns = [Column(table=table, name=name, **{"class": "hard"}, classified_by="rule")
+               for table in ("bins", "crates") for name in ("id", "status")]
+    return EntitySchema(tables=["bins", "crates"], columns=columns,
+                        id_patterns={"bins.id": r"^b\d+$", "crates.id": r"^k\d+$"})
+
+
+def test_two_tables_sharing_a_key_name_resolve_by_argument_name_and_pattern():
+    schema = _two_table_schema()
+    assert ce.named_row({"id": "k1"}, schema) == ("crates", "k1")
+    assert ce.named_row({"id": "b2"}, schema) == ("bins", "b2")
+
+
+def test_a_call_naming_two_rows_carries_an_empty_world():
+    schema = _two_table_schema()
+    call = _call("c1", {"crate": {"id": "k1"}, "bin": {"id": "b2"}}, {"note": "filed"},
+                 position=0)
+    starting = {"c1": {"bins": {"b2": {"id": "b2", "status": "cleared"}}}}
+    assert ce.witnessed_worlds([call], schema, starting) == {"c1": {}}
+
+
+def test_a_held_out_earlier_call_naming_the_row_masks_the_starting_fallback():
+    stated = _call("c1", {"crate_id": "k1"}, {"crate_id": "k1", "status": "recanted"}, position=0)
+    failing = _call("c3", {"crate_id": "k1", "parcel": "p9"}, {"note": "filed"}, position=1)
+    starting = {"c3": {"crates": {"k1": {"crate_id": "k1", "status": "pending"}}}}
+    worlds = ce.witnessed_worlds([stated, failing], _schema(), starting, shown=[failing])
+    assert worlds["c3"] == {}
+
+
+def test_a_shown_earlier_call_still_carries_the_sighted_value():
+    stated = _call("c1", {"crate_id": "k1"}, {"crate_id": "k1", "status": "recanted"}, position=0)
+    failing = _call("c3", {"crate_id": "k1", "parcel": "p9"}, {"note": "filed"}, position=1)
+    starting = {"c3": {"crates": {"k1": {"crate_id": "k1", "status": "pending"}}}}
+    worlds = ce.witnessed_worlds([stated, failing], _schema(), starting, shown=[stated, failing])
+    assert worlds["c3"]["status"] == "recanted"
+
+
+def test_a_held_out_earlier_call_that_errors_does_not_mask():
+    error = ToolCallError(**{"class": "not_found_entity", "payload": "gone"})
+    stated = ToolCall(id="c1", name="file_parcel", args={"crate_id": "k1"}, result=None,
+                      trace_id="t1", raw_ptr=RawPtr(file_hash="testfile", sim_index=0, msg_index=0),
+                      error=error)
+    failing = _call("c3", {"crate_id": "k1", "parcel": "p9"}, {"note": "filed"}, position=1)
+    starting = {"c3": {"crates": {"k1": {"crate_id": "k1", "status": "pending"}}}}
+    worlds = ce.witnessed_worlds([stated, failing], _schema(), starting, shown=[failing])
+    assert worlds["c3"]["status"] == "pending"
 
 
 def test_the_rendered_lesson_names_the_status_column_and_its_witnessed_value():

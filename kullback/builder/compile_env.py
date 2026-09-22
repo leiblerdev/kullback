@@ -3535,19 +3535,19 @@ def _scalar_columns(row: Any) -> dict:
 def named_row(args: Any, schema: Optional[EntitySchema]) -> Optional[tuple[str, str]]:
     """The (table, row id) the call's own arguments name, or None.
 
-    A guard that refuses a call reads the row the call names, and the call names it by its
-    argument ids over the schema's tables: every key column of one table present as a string.
-    Anything less names no row, because a partial key would name a row of its own.
+    The resolver is `named_rows`: the argument name and the id pattern say which table an
+    id belongs to, at any depth of the arguments, so two tables sharing one key column name
+    never resolve alphabetically. Exactly one distinct row yields that row; none or more
+    than one yields None, and that call carries an empty world, so the lesson falls back
+    to its form without world columns instead of naming a row the guard may not have read.
+    There is no tie break to invent.
     """
     if not isinstance(args, dict) or schema is None:
         return None
-    for table in sorted(getattr(schema, "tables", None) or ()):
-        fields = key_fields(schema, table)
-        if fields and all(isinstance(args.get(name), str) for name in fields):
-            key = row_key(schema, table, args)
-            if key is not None and not partial_key(schema, table, key):
-                return (table, key)
-    return None
+    rows = named_rows(schema, args)
+    if len(rows) != 1:
+        return None
+    return next(iter(rows))
 
 
 def _stated_rows(result: Any) -> list[dict]:
@@ -3593,34 +3593,83 @@ def sighted_row(peers: Iterable[Any], call: Any, table: str, row_id: str,
     return _scalar_columns(found) if found is not None else None
 
 
+def _masked_by_held_out(calls: list[Any], call: Any, table: str, row_id: str,
+                        schema: Optional[EntitySchema], shown_ids: set[str]) -> bool:
+    """Whether an earlier held-out call names this row, masking the Starting fallback.
+
+    The held-out split may never contribute a value to a lesson, and the Starting state is
+    the world before the trace's earlier calls rather than after them: where a held-out
+    call already named the row, the Starting value is not what the guard read, so the
+    fallback is masked and the call carries an empty world for that row. Reading the
+    held-out call's arguments to decide that produces only an absence, never a value in
+    the prompt. An earlier held-out call that errored names nothing and masks nothing.
+    """
+    if schema is None:
+        return False
+    mine = context_feed_key(call)
+    _, trace_id, _, _, _ = recorded_call_parts(call)
+    for peer in sorted(calls, key=context_feed_key):
+        if not context_feed_key(peer) < mine:
+            break
+        pid, peer_trace, _, peer_args, _ = recorded_call_parts(peer)
+        if peer_trace != trace_id or str(pid or "") in shown_ids or _peer_error(peer):
+            continue
+        if (table, row_id) in named_rows(schema, peer_args):
+            return True
+    return False
+
+
+def _readable_ids(calls: list[Any], shown: Optional[Iterable[Any]]) -> set[str]:
+    """The call ids whose values a lesson may read: the shown split, or every call."""
+    peers = shown if shown is not None else calls
+    return {str(recorded_call_parts(peer)[0] or "") for peer in peers}
+
+
+def _world_for(call: Any, peers: list[Any], readable: list[Any], schema: Optional[EntitySchema],
+               starting: dict, shown_ids: set[str]) -> dict:
+    """One call's world columns: the sighted row, else the Starting state unless masked.
+
+    A call naming no row carries an empty world, and one whose row an earlier held-out
+    call named carries an empty world too, since the Starting fallback is masked there.
+    """
+    call_id, _, _, args, _ = recorded_call_parts(call)
+    named = named_row(args, schema)
+    if named is None:
+        return {}
+    table, row_id = named
+    seen = sighted_row(readable, call, table, row_id, schema)
+    if seen is not None:
+        return seen
+    if _masked_by_held_out(peers, call, table, row_id, schema, shown_ids):
+        return {}
+    home = ((starting.get(str(call_id or "")) or {}).get(table) or {}).get(row_id)
+    return _scalar_columns(home) if isinstance(home, dict) else {}
+
+
 def witnessed_worlds(calls: Iterable[Any], schema: Optional[EntitySchema],
-                     starting: Optional[dict] = None) -> dict[str, dict]:
+                     starting: Optional[dict] = None,
+                     shown: Optional[Iterable[Any]] = None) -> dict[str, dict]:
     """Call id to the world columns the guard could have read at that call.
 
     The row the call names carries what the trace's own earlier sightings showed of it, else
     what the Starting state that call ran on holds of it; only scalar columns travel, and a
     call naming no row carries an empty world. `starting` maps a call id to that Starting
-    state, the same map the sandbox serves the call itself from.
+    state, the same map the sandbox serves the call itself from. `shown` are the calls whose
+    values may be read; sightings come from them alone, and an earlier held-out call naming
+    the row masks the Starting fallback, so a held-out value never reaches a lesson either
+    directly or through a stale fallback. Where `shown` is None every call may be read.
     """
     calls = list(calls)
     starting = starting or {}
+    shown_ids = _readable_ids(calls, shown)
+    readable = [peer for peer in calls
+                if str(recorded_call_parts(peer)[0] or "") in shown_ids]
     out: dict[str, dict] = {}
     for call in calls:
-        call_id, _, _, args, _ = recorded_call_parts(call)
-        key = str(call_id or "")
+        key = str(recorded_call_parts(call)[0] or "")
         if not key:
             continue
-        named = named_row(args, schema)
-        if named is None:
-            out[key] = {}
-            continue
-        table, row_id = named
-        seen = sighted_row(calls, call, table, row_id, schema)
-        if seen is not None:
-            out[key] = seen
-            continue
-        home = ((starting.get(key) or {}).get(table) or {}).get(row_id)
-        out[key] = _scalar_columns(home) if isinstance(home, dict) else {}
+        out[key] = _world_for(call, calls, readable, schema, starting, shown_ids)
     return out
 
 
@@ -3639,22 +3688,27 @@ def call_triples(toolsig: ToolSig, calls: Iterable[ToolCall], results: Iterable[
     matched = {str(row.get("call_id") or ""): bool(row.get("replayed"))
                for row in outcomes if isinstance(row, dict)}
     worlds = worlds or {}
-    triples: list[lesson_mod.Triple] = []
-    for call, result in zip(calls, results, strict=False):
-        ours = result.get("value") if isinstance(result, dict) and result.get("ok") else None
-        our_error = "" if not isinstance(result, dict) or result.get("ok") else str(
-            result.get("error") or "an error")
-        theirs = parse_result(call.result) if call.error is None else None
-        theirs, ours = _read_pair(toolsig.name, theirs, ours, readers)
-        triples.append(lesson_mod.Triple(
-            call_id=str(call.id or ""), args=dict(call.args or {}),
-            theirs=theirs,
-            ours=ours,
-            their_error="" if call.error is None else str(getattr(call.error, "class_", "") or "an error"),
-            our_error=our_error,
-            matched=matched.get(str(call.id or ""), False),
-            world=dict(worlds.get(str(call.id or "")) or {})))
-    return triples
+    return [_triple_for(toolsig, call, result, matched.get(str(call.id or ""), False),
+                        readers, worlds.get(str(call.id or "")))
+            for call, result in zip(calls, results, strict=False)]
+
+
+def _triple_for(toolsig: ToolSig, call: ToolCall, result: Any, matched: bool, readers: Any,
+                world: Optional[dict]) -> lesson_mod.Triple:
+    """One recorded call as the relation step reads it: given, recorded, ours, and world."""
+    ours = result.get("value") if isinstance(result, dict) and result.get("ok") else None
+    our_error = "" if not isinstance(result, dict) or result.get("ok") else str(
+        result.get("error") or "an error")
+    theirs = parse_result(call.result) if call.error is None else None
+    theirs, ours = _read_pair(toolsig.name, theirs, ours, readers)
+    return lesson_mod.Triple(
+        call_id=str(call.id or ""), args=dict(call.args or {}),
+        theirs=theirs,
+        ours=ours,
+        their_error="" if call.error is None else str(getattr(call.error, "class_", "") or "an error"),
+        our_error=our_error,
+        matched=matched,
+        world=dict(world or {}))
 
 
 def diagnose_body(toolsig: ToolSig, source: str, sandbox: Sandbox, calls: list[ToolCall],
@@ -3681,8 +3735,9 @@ def diagnose_body(toolsig: ToolSig, source: str, sandbox: Sandbox, calls: list[T
         results = sandbox.run(shown)
     except SandboxError:
         return lesson_mod.diagnose(toolsig.name, (), unbeaten=unbeaten, blocked=blocked)
-    worlds = (witnessed_worlds(shown, schema,
-                               {str(peer.id or ""): sandbox.state_for(peer) for peer in shown})
+    worlds = (witnessed_worlds(calls, schema,
+                               {str(peer.id or ""): sandbox.state_for(peer) for peer in calls},
+                               shown=shown)
               if schema is not None else None)
     triples = call_triples(toolsig, shown, results, outcomes, readers, worlds=worlds)
     carried = (lesson_mod.FAILING_SET_SHOWN if lesson_mod.stalled(unbeaten)

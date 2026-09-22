@@ -105,7 +105,11 @@ TARGET = "environment"
 # the guard read, and with the key tags normalized the rows are byte identical.
 # Re-pinned on the merge with the base: the union tree carries both sides, and with the key
 # tags normalized the rows are byte identical.
-TASK_STATUS_SHA256_BEFORE_THE_PHASE = "4edc9d78d0dc11ff7940c3eb437c524f15ea494b8b5b788a58ac1dac30b62018"
+# Re-pinned where the row resolver answers and held-out calls mask the fallback: the lesson
+# sentences changed shape, and with the key tags normalized the rows are byte identical.
+# Re-pinned after splitting the world helpers for the complexity ceiling: same sentences under
+# new stage keys, and with the key tags normalized the rows are byte identical.
+TASK_STATUS_SHA256_BEFORE_THE_PHASE = "c9cc9b5da6b03c48f71a865d85fcff43ca28a9f38507b1d787f17a810a692bad"
 
 
 def _fixture(request) -> Path:
