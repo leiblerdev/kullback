@@ -102,17 +102,28 @@ def test_examine_calls_the_function_the_session_passed_in(tmp_path):
     root = _workdir(tmp_path)
     seen = {}
 
+    class FakeFinding:
+        def __init__(self, kind, task_id):
+            self._body = {"finding_id": f"f-{kind}", "task_id": task_id, "kind": kind,
+                          "text": f"{kind} is off", "rows": [{"call_id": "c1"}], "path": "tools/a.py",
+                          "change": "answer the recorded call", "source": "examiner"}
+
+        def as_dict(self):
+            return dict(self._body)
+
     def examine_fn(workdir, task_ids):
         seen["workdir"] = workdir
         seen["task_ids"] = task_ids
-        return {"summary": "two findings open", "findings": [{"text": "the body misses a call"}]}
+        return [FakeFinding("fidelity", "widget_task"), FakeFinding("suite", "widget_task")]
 
     (examine,) = [tool for tool in domain_tools_mod.domain_tools(workdir=root, examine_fn=examine_fn)
                   if tool.name == "examine"]
     result = _run(examine, {"task_ids": ["widget_task"]})
     assert not result.is_error, result.content
     assert seen["task_ids"] == ["widget_task"]
-    assert "the body misses a call" in result.content
+    assert len(result.details["findings"]) == 2
+    assert result.details["findings"][0]["finding_id"] == "f-fidelity"
+    assert "fidelity on widget_task: tools/a.py: answer the recorded call [1 rows]" in result.content
 
 
 RENAME_BODY = (

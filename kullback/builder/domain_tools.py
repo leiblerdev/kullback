@@ -189,7 +189,9 @@ class ExamineResult(BaseModel):
 def _render_examine(result: ExamineResult) -> str:
     lines = [result.summary]
     for finding in result.findings:
-        lines.append(str(finding.get("text") or finding.get("summary") or finding))
+        rows = finding.get("rows") or []
+        lines.append(f"{finding.get('kind')} on {finding.get('task_id')}: {finding.get('path')}: "
+                     f"{finding.get('change')} [{len(rows)} rows]")
     return "\n".join(lines)
 
 
@@ -197,12 +199,28 @@ def default_examine_fn(workdir: Any, task_ids: Any) -> Any:
     """The examination stream 6 delivers, resolved lazily so this module never imports it."""
     from kullback.examiner.session import examine
 
-    return examine(Path(workdir), task_ids)
+    return examine(Path(workdir), task_ids=task_ids, model=None)
+
+
+def _finding_row(item: Any) -> dict:
+    """One finding as a dict: `as_dict()` where the examiner's Finding offers it."""
+    if isinstance(item, dict):
+        return dict(item)
+    as_dict = getattr(item, "as_dict", None)
+    if callable(as_dict):
+        try:
+            return dict(as_dict())
+        except Exception:  # noqa: BLE001 - a finding that cannot render still counts
+            pass
+    return {"text": str(item)}
 
 
 def _coerce_examine(raw: Any) -> ExamineResult:
     if isinstance(raw, ExamineResult):
         return raw
+    if isinstance(raw, list):
+        rows = [_finding_row(item) for item in raw]
+        return ExamineResult(summary=f"{len(rows)} findings open", findings=rows)
     if isinstance(raw, BaseModel):
         body = raw.model_dump(mode="json")
     elif isinstance(raw, dict):
@@ -210,7 +228,7 @@ def _coerce_examine(raw: Any) -> ExamineResult:
     else:
         return ExamineResult(summary=str(raw))
     findings = body.get("findings") or []
-    rows = [item if isinstance(item, dict) else {"text": str(item)} for item in findings]
+    rows = [_finding_row(item) for item in findings]
     return ExamineResult(summary=str(body.get("summary") or ""), findings=rows)
 
 
