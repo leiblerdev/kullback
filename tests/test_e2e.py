@@ -181,10 +181,9 @@ def build(tmp_path_factory, request) -> dict:
 
     builds = {}
     for sig in sigs:
-        model = TestModel([TOOL_BODIES[sig.name]], loop=True)
-        builds[sig.name] = compile_env.compile_tool(
-            model, sig, calls_by_tool[sig.name], schema, state.db,
-            workdir / "tools" / sig.name, max_attempts=0)
+        builds[sig.name] = compile_env.grade_body(
+            sig, TOOL_BODIES[sig.name], calls_by_tool[sig.name], schema, state.db,
+            workdir / "tools" / sig.name)
     bodies = {name: build.body for name, build in builds.items()}
 
     policy_text = next((t.system_prompt for t in traces if t.system_prompt), "")

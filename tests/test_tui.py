@@ -73,27 +73,27 @@ def test_the_board_reads_the_typed_stage_events_of_the_agent_core_too(tmp_path):
     assert board.seconds["mine"] >= 0
 
 
-def test_the_screen_builds_through_the_round_driver_the_cli_uses(tmp_path, monkeypatch):
-    """/build goes through rounds.run_rounds, the same entry the CLI uses, with the dict events wired.
+def test_the_screen_builds_through_the_session_entry_the_cli_uses(tmp_path, monkeypatch):
+    """/build goes through session.build, the same entry the CLI uses, with the subscribers wired.
 
     The one claim the `runner=` seam every other Screen test uses cannot make is which callable
     the Screen reaches for when nothing is injected, so this test alone replaces that default.
-    The real run_rounds would drive whole rounds off an empty workdir.
     """
-    from kullback import rounds
+    from kullback.builder import session as session_module
 
     seen = {}
 
     def fake(**kwargs):
         seen.update(kwargs)
-        kwargs["on_event"]({"kind": "round", "state": "end", "round": 1, "counts": {}, "exit": "done"})
-        kwargs["on_event"]({"kind": "pipeline", "state": "complete"})
+        for subscriber in kwargs.get("subscribers", ()):
+            subscriber({"kind": "pipeline", "state": "complete"})
         return {}
 
-    monkeypatch.setattr(rounds, "run_rounds", fake)
+    monkeypatch.setattr(session_module, "build", fake)
     screen = Screen(tmp_path, console=_console())
-    assert screen.command("/build --iterate") is True
-    assert seen["iterate"] is True and seen["workdir"] == tmp_path and seen["model"] is None
+    assert screen.command("/build") is True
+    assert seen["workdir"] == tmp_path and seen["model"] is None
+    assert seen["files"] == [] and "subscribers" in seen
 
 
 def test_the_board_shows_the_round_and_the_beat_from_the_typed_events(tmp_path):
@@ -242,15 +242,14 @@ def test_an_unknown_command_says_so_rather_than_doing_something(tmp_path):
     assert screen.runner.calls == []
 
 
-@pytest.mark.parametrize("line,iterate,files", [
-    ("/build --iterate --file traces.json", True, ["traces.json"]),
-    ("/build", False, []),
+@pytest.mark.parametrize("line,files", [
+    ("/build --file traces.json", ["traces.json"]),
+    ("/build", []),
 ])
-def test_build_passes_the_flags_it_was_typed_and_no_model_by_default(tmp_path, line, iterate, files):
+def test_build_passes_the_flags_it_was_typed_and_no_model_by_default(tmp_path, line, files):
     screen = _screen(tmp_path)
     screen.command(line)
     call = screen.runner.calls[0]
-    assert call["iterate"] is iterate
     assert [p.name for p in call["files"]] == files
     assert call["model"] is None
 
@@ -367,24 +366,19 @@ def test_map_before_any_build_says_there_is_none(tmp_path):
     assert "no stages yet" in diagrams.dag_text([], {}).plain
 
 
-def test_loop_without_rounds_says_single_pass(tmp_path):
+def test_loop_draws_the_session_loop_and_its_stop_rule(tmp_path):
     from kullback.tui import diagrams
 
-    assert "single-pass" in diagrams.loop_text(diagrams.read_rounds_file(tmp_path)).plain
-
-
-def test_loop_draws_beats_counts_and_exit(tmp_path):
-    from kullback.tui import diagrams
-
-    (tmp_path / "rounds.json").write_text(json.dumps([
-        {"round": 1, "counts": {"fidelity": 12, "tasks": 20, "trusted": 8, "refused_count": 1,
-                                "probes_passing": 5, "spend": {"total": 0.4231}}, "exit": None},
-        {"round": 2, "counts": {"fidelity": 20, "tasks": 20, "trusted": 15, "refused_count": 1,
-                                "probes_passing": 9, "spend": {"total": 0.9}}, "exit": "done"},
-    ]), encoding="utf-8")
     plain = diagrams.loop_text(diagrams.read_rounds_file(tmp_path)).plain
-    assert "round 1" in plain and "round 2" in plain
-    assert "12/20" in plain and "exit: done" in plain
+    assert "Builder base tools" in plain and "examine" in plain
+    assert "every Task is trusted or refused" in plain
+
+
+def test_loop_names_the_agent_holding_the_stream(tmp_path):
+    from kullback.tui import diagrams
+
+    plain = diagrams.loop_text([], agent="builder").plain
+    assert "builder holds the stream" in plain
 
 
 def test_layers_names_every_package(tmp_path):
@@ -407,7 +401,7 @@ def test_map_loop_layers_commands_print(tmp_path):
     assert screen.command("/layers") is True
     assert screen.command("/loop") is True
     out = _text(console)
-    assert "mine" in out and "builder" in out and "single-pass" in out
+    assert "mine" in out and "builder" in out and "Builder base tools" in out
 
 
 # --- /login and /logout -----------------------------------------------------
@@ -534,20 +528,6 @@ def test_a_login_secret_reaches_no_file_and_no_line(tmp_path, monkeypatch):
     screen.command("/logout")
 
 
-def test_loop_shows_pending_findings_and_exit_notes(tmp_path):
-    from kullback.tui import diagrams
-
-    (tmp_path / "rounds.json").write_text(json.dumps([
-        {"round": 1, "counts": {}, "exit": None, "exit_note": "2 finding(s) owe the Builder a beat; the round continues",
-         "pending_findings": [{"finding_id": "f1"}, {"finding_id": "f2"}]},
-        {"round": 2, "counts": {}, "exit": "ceiling", "exit_note": "the ceiling ended the run first",
-         "pending_findings": [{"finding_id": "f3"}]},
-    ]), encoding="utf-8")
-    plain = diagrams.loop_text(diagrams.read_rounds_file(tmp_path)).plain
-    assert "2 finding(s) owed the Builder a beat" in plain
-    assert "exit: ceiling" in plain and "the ceiling ended the run first" in plain
-
-
 def test_the_banner_is_a_gradient_styles_vary_plain_does_not(tmp_path):
     from kullback.tui import banner
 
@@ -580,17 +560,6 @@ def test_open_hides_zero_spend(tmp_path, monkeypatch):
     monkeypatch.delenv("HARNESS_ALLOW_MODEL_REQUESTS", raising=False)
     Screen(tmp_path, console=console).open()
     assert "$" not in _text(console)
-
-
-def test_loop_marks_a_failed_round(tmp_path):
-    from kullback.tui import diagrams
-
-    (tmp_path / "rounds.json").write_text(json.dumps([
-        {"round": 1, "counts": {}, "exit": "stalled", "exit_note": "examiner failed: no derive",
-         "failed": True, "pending_findings": []},
-    ]), encoding="utf-8")
-    plain = diagrams.loop_text(diagrams.read_rounds_file(tmp_path)).plain
-    assert "exit: stalled (failed)" in plain and "examiner failed" in plain
 
 
 # --- the entry screen, the / menu, sessions, the login menu, loop-aware status ---

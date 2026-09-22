@@ -20,9 +20,7 @@ import re
 from typing import Any
 
 from conftest import PTR
-from kullback.builder import build as build_module
 from kullback.builder import effects
-from kullback.builder import templates as stand_in_module
 from kullback.runner.records import Column, EntitySchema, ToolCall, Trace, Turn
 
 READ = "get_account"
@@ -98,103 +96,22 @@ def test_the_same_sentence_answers_leave_the_column_unattributed_without_the_rea
     assert effects.counts(seen)["effect_columns_checked"] == 0
 
 
-def test_the_compile_stage_reads_its_effect_evidence_through_the_stage_reader(
-        monkeypatch, tmp_path):
-    """The compile stage builds its reader from its own inputs and hands it to the evidence."""
-    built = {}
-
-    def fake_result_reader(artifact, traces, workdir):
-        built["artifact"] = artifact
-        return sentence_reader
-
-    monkeypatch.setattr(build_module.readers, "result_reader", fake_result_reader)
-    seen = build_module.compile_stage_effects([sentence_trace()], schema(), {WRITE, AUDIT},
-                                              db=dict(START), worlds=None,
-                                              readers_artifact={"note": "test"}, workdir=tmp_path)
-    assert built["artifact"] == {"note": "test"}
+def test_effect_evidence_reads_through_the_given_reader(tmp_path):
+    """The evidence reads results through the reader it is handed."""
+    seen = effects.observe_effects([sentence_trace()], schema(), {WRITE, AUDIT},
+                                   db=dict(START), worlds=None, read_result=sentence_reader)
     columns = [column for column in balance_columns(seen) if column.checked]
     assert len(columns) == 1
     assert (columns[0].before, columns[0].after) == (100, 82)
 
 
-def test_the_replay_stage_reads_each_task_through_the_one_stage_reader(monkeypatch):
-    """The replay path takes the reader the stage built once, and builds none of its own."""
-    def no_reader(artifact, traces, workdir):
-        raise AssertionError("the replay path builds its reader once per stage, not per task")
-
-    monkeypatch.setattr(build_module.readers, "result_reader", no_reader)
-    seen = build_module.replay_stage_effects([sentence_trace()], schema(), {WRITE, AUDIT},
-                                             db=dict(START), effect_reader=sentence_reader)
-    columns = [column for column in balance_columns(seen) if column.checked]
+def test_effect_evidence_without_a_reader_leaves_the_column_unchecked():
+    """With no reader the effect is seen but not checked."""
+    seen = effects.observe_effects([sentence_trace()], schema(), {WRITE, AUDIT},
+                                   db=dict(START), read_result=None)
+    columns = balance_columns(seen)
     assert len(columns) == 1
     assert (columns[0].before, columns[0].after) == (100, 82)
-    bare = build_module.replay_stage_effects([sentence_trace()], schema(), {WRITE, AUDIT},
-                                             db=dict(START), effect_reader=None)
-    assert effects.counts(bare)["effect_columns_checked"] == 0
+    assert effects.counts(seen)["effect_columns_checked"] == 0
 
 
-def invented_effect_reader(artifact, traces, workdir):
-    """A stand-in stage reader with different source, which moves any key that hashes it."""
-    raise AssertionError("invented stage reader")
-
-
-def invented_compile_effects(traces, schema, write_tools, db, worlds, readers_artifact,
-                             workdir):
-    """A stand-in compile evidence helper with different source."""
-    raise AssertionError("invented compile evidence")
-
-
-def invented_replay_effects(task_traces, schema, write_tools, db, effect_reader):
-    """A stand-in replay evidence helper with different source."""
-    raise AssertionError("invented replay evidence")
-
-
-def compile_key() -> str:
-    return build_module._tools_stage(None, 0).code_version
-
-
-def replay_key() -> str:
-    return build_module._replay_stage().code_version
-
-
-def test_the_compile_key_moves_when_the_stage_reader_source_moves(monkeypatch):
-    """The compile key hashes the stage reader, so an edit to it invalidates cached evidence."""
-    before = compile_key()
-    monkeypatch.setattr(build_module, "_effect_reader", invented_effect_reader)
-    assert compile_key() != before
-
-
-def test_the_compile_key_moves_when_the_compile_evidence_source_moves(monkeypatch):
-    """The compile key hashes its evidence helper, so an edit to it rebuilds the bodies."""
-    before = compile_key()
-    monkeypatch.setattr(build_module, "compile_stage_effects", invented_compile_effects)
-    assert compile_key() != before
-
-
-def test_the_replay_key_moves_when_the_stage_reader_source_moves(monkeypatch):
-    """The replay key hashes the stage reader, so an edit to it invalidates cached replays."""
-    before = replay_key()
-    monkeypatch.setattr(build_module, "_effect_reader", invented_effect_reader)
-    assert replay_key() != before
-
-
-def test_the_replay_key_moves_when_the_replay_evidence_source_moves(monkeypatch):
-    """The replay key hashes its evidence helper, so an edit to it replays the tasks again."""
-    before = replay_key()
-    monkeypatch.setattr(build_module, "replay_stage_effects", invented_replay_effects)
-    assert replay_key() != before
-
-
-def test_the_replay_key_moves_when_the_readers_module_moves(monkeypatch):
-    """The replay key hashes the readers module beside the helpers, so a reader edit rebuilds."""
-    before = replay_key()
-    monkeypatch.setattr(build_module, "readers", stand_in_module)
-    assert replay_key() != before
-
-
-def test_the_compile_key_moves_when_the_readers_module_moves(monkeypatch):
-    """The compile key hashes the readers module too: the writer note and the stage reader
-    both read through it, so a reader edit must invalidate cached bodies as well."""
-    before = compile_key()
-    monkeypatch.setattr(build_module, "readers", stand_in_module)
-    assert compile_key() != before

@@ -251,6 +251,9 @@ def _as_dict_event(event: Any) -> Optional[dict]:
     if kind in ("round_start", "round_end"):
         return {"kind": "round", "state": "start" if kind == "round_start" else "end", "round": event.round,
                 "counts": dict(getattr(event, "counts", None) or {}), "exit": getattr(event, "exit", None)}
+    if kind in ("beat_start", "beat_end"):
+        return {"kind": "beat", "state": "start" if kind == "beat_start" else "end",
+                "agent": event.agent, "round": event.round}
     if kind == "tool_execution_start":
         return {"kind": "stage", "stage": event.tool_name, "state": "start", "attempt": 1}
     if kind == "tool_execution_end":

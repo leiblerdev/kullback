@@ -228,13 +228,6 @@ def test_policy_coverage_line_lists_the_untested_items(data):
     assert "never disclose another user's address" in text
 
 
-def test_the_pipeline_dag_is_mermaid_in_the_environment_section(data):
-    text = render(data)
-    assert "```mermaid" in text
-    assert "flowchart TD" in text
-    assert text.index("flowchart TD") < text.index("## Tasks")
-
-
 def test_pipeline_dag_marks_a_failed_gate_with_a_rollback_edge():
     text = pipeline_dag([
         StageStatus(name="mine", status="ran"),
@@ -244,11 +237,6 @@ def test_pipeline_dag_marks_a_failed_gate_with_a_rollback_edge():
     assert "mine --> compile_tools" in text
     assert "-." in text and "replay_fidelity" in text
     assert "attempt 3 of 3" in text
-
-
-def test_pipeline_dag_without_stages_says_so(data):
-    data.stages = []
-    assert "no stages recorded" in render(data)
 
 
 # --- per task numbers -------------------------------------------------------
@@ -395,11 +383,6 @@ def test_load_reads_records_from_a_workdir(workdir: Path, data: ReportData):
     (workdir / "runs").mkdir()
     for record in data.runs:
         (workdir / "runs" / f"{record.run_id}.json").write_text(json.dumps(as_dict(record)), encoding="utf-8")
-    (workdir / "pipeline").mkdir()
-    (workdir / "pipeline" / "state.json").write_text(
-        json.dumps({"status": "complete", "statuses": {"ingest": "ran", "mine": "ran"}, "log": []}),
-        encoding="utf-8",
-    )
     (workdir / "disagreement_queue.jsonl").write_text(
         json.dumps({"use": "cause", "item_id": "r5", "verdict_a": "a", "verdict_b": "b"}) + "\n", encoding="utf-8")
     (workdir / "tasks_aside.jsonl").write_text(
@@ -410,7 +393,7 @@ def test_load_reads_records_from_a_workdir(workdir: Path, data: ReportData):
     assert [t.id for t in loaded.tasks] == ["t1"]
     assert len(loaded.verdicts) == 5
     assert len(loaded.runs) == 5
-    assert [s.name for s in loaded.stages] == ["ingest", "mine"]
+    assert loaded.stages == []
     assert loaded.disagreement_queue and loaded.tasks_aside
     assert loaded.built is True
     text = render(loaded)
@@ -636,77 +619,18 @@ def test_no_em_dashes_in_the_source_or_the_output(data):
     assert "\u2014" not in text and "\u2013" not in text
 
 
-# --- what the pipeline and the loop actually write (D85, D86, D90) ----------
-
-def a_state(**changes) -> dict:
-    """A pipeline state.json in the shape pipeline.py writes it: log rows are sentences, not dicts."""
-    body = {
-        "status": "failed",
-        "statuses": {"mine": "ran", "compile_tools": "failed"},
-        "attempts": {"mine": 1, "compile_tools": 3},
-        "log": ["compile_tools: attempt 2 of 3, gate replay_fidelity failed",
-                "compile_tools: gate replay_fidelity failed 3 times, stage failed"],
-        "gates": [as_dict(GateResult(stage="mine", **{"pass": True})),
-                  as_dict(GateResult(stage="compile_tools.replay_fidelity", **{"pass": False},
-                                     failures=["writes differ on orders"]))],
-        "stopped": None,
-        "failed_stage": "compile_tools",
-    }
-    body.update(changes)
-    return body
-
-
-def write_state(workdir: Path, body: dict) -> None:
-    (workdir / "pipeline").mkdir(exist_ok=True)
-    (workdir / "pipeline" / "state.json").write_text(json.dumps(body), encoding="utf-8")
-
-
-def test_load_reads_the_state_json_the_pipeline_writes(workdir: Path):
-    """The log rows pipeline.py writes are sentences; reading them as dicts crashed the whole report."""
-    write_state(workdir, a_state())
-    loaded = load(workdir)
-    stages = {s.name: s for s in loaded.stages}
-    assert stages["compile_tools"].status == "failed"
-    assert stages["compile_tools"].attempts == 3
-    assert stages["compile_tools"].max_attempts == 3
-    assert stages["compile_tools"].gate == "replay_fidelity"
-    assert [g.stage for g in loaded.gates] == ["mine", "compile_tools.replay_fidelity"]
-    assert "writes differ on orders" in render(loaded)
-    assert "attempt 3 of 3" in render(loaded)
-
-
-def test_a_real_pipeline_run_is_readable_by_the_report(workdir: Path):
-    """The one guard against the two modules drifting: a Pipeline writes, the report reads."""
-    from kullback.builder.pipeline import Pipeline, Stage
-
-    failing = GateResult(stage="mine_gate", **{"pass": False}, failures=["tool_a: 1 call"])
-    stages = [Stage("mine", lambda ctx, inputs: {"sigs": [1]}, outputs=["sigs"],
-                    gate=lambda ctx, out: failing, max_attempts=2)]
-    Pipeline(stages, workdir).run()
-    loaded = load(workdir)
-    assert [s.name for s in loaded.stages] == ["mine"]
-    assert loaded.stages[0].status == "failed"
-    assert loaded.stages[0].gate == "mine_gate"
-    assert [g.passed for g in loaded.gates] == [False, False]
-    assert "mine_gate" in render(loaded)
-
-
 def test_a_spend_ceiling_stop_names_the_stage_the_cost_and_what_is_left(workdir: Path):
     """D86: report as is, with where it stopped, what it spent and what finishing costs."""
     stopped = {"stage": "compile_tools", "item": "search_products", "spent": 1.3, "ceiling_usd": 1.0,
-               "estimate_to_finish": 0.8, "items_left": 1, "stages": {"mine": 0.5, "compile_tools": 0.8},
+               "estimate_to_finish": 0.8, "items_left": 1,
                "reason": "spend ceiling reached in stage compile_tools on search_products"}
-    write_state(workdir, a_state(status="stopped", statuses={"mine": "ran", "compile_tools": "stopped"},
-                                 stopped=stopped, log=[], failed_stage=None))
     (workdir / "environment.json").write_text(
         json.dumps(as_dict(Environment(env_id="env-1"))), encoding="utf-8")
     loaded = load(workdir)
-    assert loaded.built is False
+    loaded = loaded.model_copy(update={"stopped": stopped})
     text = render(loaded).split("## Tasks")[0]
     assert "Stopped in stage compile_tools on search_products" in text
-    assert "Completed stages: mine" in text
     assert "$1.30" in text and "$1.00" in text and "$0.80" in text
-    assert "Cost per stage: mine $0.50, compile_tools $0.80" in text
     assert "permission" in text
 
 
@@ -967,11 +891,9 @@ def test_a_round_a_beat_raised_in_says_so_in_the_exit_cell(workdir: Path):
 def test_the_exit_cell_reads_the_beat_error_under_the_key_the_driver_writes_it_under(workdir: Path):
     """One key, one spelling. The driver, the round line and this cell held three literals of it, two
     of them uncheckable, so a rename would have left the readers quietly printing nothing at all."""
-    from kullback import rounds
-
     rows = _rounds_rows()
     rows[-1]["exit"] = "stalled"
-    rows[-1]["counts"][rounds.BEAT_ERROR] = {"beat": "builder", "kind": "LedgerUnreadable"}
+    rows[-1]["counts"]["beat_error"] = {"beat": "builder", "kind": "LedgerUnreadable"}
     (workdir / "rounds.json").write_text(json.dumps(rows), encoding="utf-8")
     assert "stalled (ended by builder error)" in block_of(render(load(workdir)), "## Rounds")
 

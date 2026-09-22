@@ -20,24 +20,35 @@ def fake_modules(monkeypatch):
     only thing on the wire.
 
     Everything a real run leaves on disk is asserted on the real path instead (verdict, regrade and
-    report below). What is left is `build` and `run`, whose real work is a whole pipeline or a live
-    adapter, and the three verdict kwargs (write_tools, flagged_tools, schema) that the stored
-    Verdict does not carry. cli._score reads the regrade gate through getattr for this stub's sake.
-    `run_rounds` answers the way the driver does: two rounds ended through the subscribers the
-    command handed it (ROUND_COUNTS), then the dict with the rounds and the exit.
+    report below). What is left is `build` and `run`, whose real work is a whole session or a live
+    adapter. `build` answers the way the session does: one tool result per domain tool through the
+    subscribers the command handed it, then the dict with the status and the stop.
     """
-    from kullback.agent.events import RoundEnd
+    from kullback.agent.events import ToolExecutionEndEvent
+    from kullback.agent.tools import ToolResult
 
     calls: dict[str, list] = {}
 
-    def run_rounds(**kwargs):
-        records = []
-        for n, counts in enumerate(ROUND_COUNTS, start=1):
-            exit_ = "stalled" if n == len(ROUND_COUNTS) else None
-            for subscriber in kwargs.get("subscribers", ()):
-                subscriber(RoundEnd(round=n, counts=counts, exit=exit_))
-            records.append({"round": n, "counts": counts, "exit": exit_})
-        return {"status": "complete", "rounds": records, "exit": "stalled", "trusted": ["t1"], "refused": {}}
+    def end(tool_name, content, rulings=None):
+        return ToolExecutionEndEvent(tool_call_id=f"{tool_name}-1", tool_name=tool_name,
+                                     result=ToolResult(content=content,
+                                                       details={"rulings": rulings} if rulings else None),
+                                     is_error=False)
+
+    def session_build(*args, **kwargs):
+        for subscriber in kwargs.get("subscribers", ()):
+            subscriber(end("derive_world", "derived the world: 3 tasks, 12 calls"))
+            subscriber(end("examine", "2 findings filed",
+                           [{"name": "replay_fidelity", "accepted": True, "line": 12}]))
+        return {"status": {"tasks": []}, "trusted": 1, "refused": 0, "open": 0, "spend": 0.0,
+                "turns": 3, "stopped": "no tool call", "last_line": ""}
+
+    def reroll(*args, **kwargs):
+        from types import SimpleNamespace
+
+        count = kwargs.get("count", 1)
+        return [SimpleNamespace(as_dict=lambda n=n: {"run_id": f"r{n}", "task_id": kwargs.get("task_id")})
+                for n in range(count)]
 
     def entry(path: str, name: str):
         def fn(*args, **kwargs):
@@ -46,19 +57,13 @@ def fake_modules(monkeypatch):
             # search with; the stub answers None, which is the case a build without live or a memo hits.
             if name == "search_for":
                 return None
-            return run_rounds(**kwargs) if name == "run_rounds" else {"ok": True}
+            if name == "reroll":
+                return reroll(*args, **kwargs)
+            return session_build(*args, **kwargs) if name == "build" else {"ok": True}
         return fn
 
     monkeypatch.setattr(cli, "_entry", entry)
     return calls
-
-
-ROUND_COUNTS = [
-    {"fidelity": 1, "tasks": 2, "trusted": 0, "refused_count": 0, "assisted_runs": 3, "probes_passing": 0,
-     "fallback_compactions": {"builder": 0, "examiner": 0}, "spend": {"builder": 0.0, "examiner": 0.0, "total": 0.0}},
-    {"fidelity": 2, "tasks": 2, "trusted": 1, "refused_count": 1, "assisted_runs": 3, "probes_passing": 4,
-     "fallback_compactions": {"builder": 1, "examiner": 0}, "spend": {"builder": 0.5, "examiner": 0.75, "total": 1.25}},
-]
 
 
 def invoke(*args, **kwargs):
@@ -109,25 +114,15 @@ def test_ingest_refuses_a_floor_outside_unit_interval(tmp_path, workdir):
     assert refused.exit_code != 0 and "within [0, 1]" in refused.output
 
 
-@pytest.mark.parametrize("extra_args,iterate", [(["--iterate"], True), ([], False)])
-def test_build_passes_iterate_through_to_the_builder(workdir, fake_modules, extra_args, iterate):
-    result = invoke("build", "--workdir", str(workdir), *extra_args)
-    assert result.exit_code == 0
-    call = fake_modules["kullback.rounds.run_rounds"][0]
-    assert call["kwargs"]["iterate"] is iterate
-
-
-def test_build_is_driven_by_code_unless_agent_is_asked_for(workdir, fake_modules):
-    """`kullback build` issues build(target) itself, so the offline build stays deterministic; the
-    model drives only under --agent, and --agent without a model has nothing to drive with."""
-    assert invoke("build", "--workdir", str(workdir), "--target", "cluster").exit_code == 0
-    kwargs = fake_modules["kullback.rounds.run_rounds"][0]["kwargs"]
-    assert kwargs["agent_model"] is None and kwargs["model"] is None and kwargs["target"] == "cluster"
-    assert kwargs["workers"] == 8
-    assert invoke("build", "--workdir", str(workdir)).exit_code == 0
-    assert fake_modules["kullback.rounds.run_rounds"][1]["kwargs"]["target"] == "environment"
-    refused = invoke("build", "--workdir", str(workdir), "--agent")
-    assert refused.exit_code != 0 and "--agent needs --model" in refused.output
+def test_build_passes_files_and_the_ceiling_through_to_the_session(workdir, fake_modules, tmp_path):
+    target = tmp_path / "traces.json"
+    target.write_text("[]", encoding="utf-8")
+    result = invoke("build", "--workdir", str(workdir), "--file", str(target), "--ceiling-usd", "2.5")
+    assert result.exit_code == 0, result.output
+    call = fake_modules["kullback.builder.session.build"][0]
+    assert [Path(f).name for f in call["kwargs"]["files"]] == ["traces.json"]
+    assert call["kwargs"]["ceiling_usd"] == 2.5
+    assert call["args"][1] is None, "no --model, so the session gets no adapter"
 
 
 def test_a_missing_entry_point_is_one_clear_message(capsys):
@@ -135,113 +130,37 @@ def test_a_missing_entry_point_is_one_clear_message(capsys):
     import typer
 
     with pytest.raises(typer.Exit) as stopped:
-        cli._entry("kullback.builder.pipeline", "no_such_entry_point")
+        cli._entry("kullback.builder.session", "no_such_entry_point")
     assert stopped.value.exit_code == 2
-    assert "kullback.builder.pipeline.no_such_entry_point is not available yet" in capsys.readouterr().out
+    assert "kullback.builder.session.no_such_entry_point is not available yet" in capsys.readouterr().out
 
 
 def test_build_and_run_reach_a_function_that_actually_exists():
-    """cli build and cli run are the only path to a build; a missing entry point makes both dead ends.
-
-    The wiring lives in `kullback.builder.build`, not in `runner/pipeline.py`: assembling the stage
-    graph means naming every Builder module, and the Runner never imports the Builder (design
-    section 3, build brief rule 7, D89). `pipeline.py` stays the stage runner the graph runs on.
-    """
+    """cli build and cli run are the only path to a build; a missing entry point makes both dead ends."""
     import inspect
 
-    from kullback import rounds
-    from kullback.builder import agent as agent_module
-    from kullback.builder import build as build_module
+    from kullback.builder import session as session_module
+    from kullback.runner import tool as runner_tool
 
-    assert callable(getattr(build_module, "build", None)), "build.build is the whole graph, what run_builder drives"
-    assert callable(getattr(agent_module, "run_builder", None)), "agent.run_builder is the Builder's beat"
-    assert callable(getattr(rounds, "run_rounds", None)), "rounds.run_rounds is what cli build calls"
-    assert callable(getattr(build_module, "run_batch", None)), "build.run_batch is what cli run calls"
-    build_args = inspect.signature(build_module.build).parameters
-    assert {"workdir", "iterate"} <= set(build_args)
-    round_args = inspect.signature(rounds.run_rounds).parameters
-    assert {"workdir", "iterate", "agent_model", "stall_rounds", "allowance_usd", "subscribers"} <= set(round_args)
-    run_args = inspect.signature(build_module.run_batch).parameters
-    assert {"workdir", "task_id", "model", "count", "seed"} <= set(run_args)
+    assert callable(getattr(session_module, "build", None)), "session.build is what cli build calls"
+    assert callable(getattr(runner_tool, "reroll", None)), "runner.tool.reroll is what cli run calls"
+    build_args = inspect.signature(session_module.build).parameters
+    assert {"files", "ceiling_usd", "subscribers"} <= set(build_args)
+    reroll_args = inspect.signature(runner_tool.reroll).parameters
+    assert {"count", "workdir"} <= set(reroll_args)
 
 
-def test_build_prints_one_line_per_round_and_the_exit_before_the_json(workdir, fake_modules):
+def test_build_prints_one_line_per_tool_result_and_the_counts_before_the_json(workdir, fake_modules):
     result = invoke("build", "--workdir", str(workdir))
     assert result.exit_code == 0, result.output
     lines = result.output.splitlines()
-    assert lines[0] == ("round 1: fidelity 1/2 tasks, trusted 0, refused 0, assisted runs 3, probes passing 0, "
-                        "tasks frozen 0 added 0 ($0.0000) frozen only 0 cleared 0, "
-                        "compactions builder 0 examiner 0, spend $0.0000, cache saved $0.0000, "
-                        "buckets: none")
-    assert lines[1] == ("round 2: fidelity 2/2 tasks, trusted 1, refused 1, assisted runs 3, probes passing 4, "
-                        "tasks frozen 0 added 0 ($0.0000) frozen only 0 cleared 0, "
-                        "compactions builder 1 examiner 0, spend $1.2500, cache saved $0.0000, "
-                        "buckets: none")
-    assert lines[2] == "exit: stalled after 2 rounds"
-    body = json.loads("\n".join(lines[3:]))
-    assert body["exit"] == "stalled" and [r["round"] for r in body["rounds"]] == [1, 2]
+    assert lines[0] == "derive_world: derived the world: 3 tasks, 12 calls"
+    assert lines[1] == "examine: 2 findings filed"
+    assert lines[2] == "  ruling replay_fidelity: accepted (12)"
+    assert lines[3] == "trusted 0, refused 0, fidelity 0/0"
+    body = json.loads("\n".join(lines[4:]))
+    assert (body["trusted"], body["refused"]) == (1, 0) and body["stopped"] == "no tool call"
 
-
-def test_stall_rounds_and_allowance_reach_the_driver(workdir, fake_modules):
-    assert invoke("build", "--workdir", str(workdir)).exit_code == 0
-    kwargs = fake_modules["kullback.rounds.run_rounds"][0]["kwargs"]
-    assert kwargs["stall_rounds"] == 1 and kwargs["allowance_usd"] is None
-    assert invoke("build", "--workdir", str(workdir), "--stall-rounds", "3", "--allowance-usd", "0.5").exit_code == 0
-    kwargs = fake_modules["kullback.rounds.run_rounds"][1]["kwargs"]
-    assert kwargs["stall_rounds"] == 3 and kwargs["allowance_usd"] == 0.5
-
-
-def test_agent_drives_both_agents_with_the_one_model(workdir, fake_modules):
-    """--agent hands the one --model to both sessions: the driver gets it as `model` for the
-    Builder's stages and as `agent_model` for the two harnesses; without --agent, agent_model is None."""
-    result = invoke("build", "--workdir", str(workdir), "--model", "some/model", "--agent")
-    assert result.exit_code == 0, result.output
-    kwargs = fake_modules["kullback.rounds.run_rounds"][0]["kwargs"]
-    assert kwargs["agent_model"] is kwargs["model"] and kwargs["model"] is not None
-    assert invoke("build", "--workdir", str(workdir), "--model", "some/model").exit_code == 0
-    kwargs = fake_modules["kullback.rounds.run_rounds"][1]["kwargs"]
-    assert kwargs["agent_model"] is None and kwargs["model"] is not None
-
-
-def test_build_takes_a_judge_model_and_a_second_one_and_defaults_both_to_the_build_model(workdir, fake_modules):
-    """D160: `kullback build` can name the judge, and a second judge, without touching --model."""
-    plain = invoke("build", "--workdir", str(workdir), "--model", "some/model")
-    assert plain.exit_code == 0, plain.output
-    kwargs = fake_modules["kullback.rounds.run_rounds"][0]["kwargs"]
-    assert kwargs["judge_model"] is None and kwargs["second_judge_model"] is None, \
-        "no flags, so the plan judges with the build model as it always did"
-
-    named = invoke("build", "--workdir", str(workdir), "--model", "some/model",
-                   "--judge-model", "other/small", "--second-judge-model", "third/tiny")
-    assert named.exit_code == 0, named.output
-    kwargs = fake_modules["kullback.rounds.run_rounds"][1]["kwargs"]
-    assert kwargs["judge_model"] is not None and kwargs["second_judge_model"] is not None
-
-    alone = invoke("build", "--workdir", str(workdir), "--second-judge-model", "third/tiny")
-    assert alone.exit_code != 0 and "needs a first judge" in alone.output
-
-
-def test_build_takes_a_user_model_for_the_simulated_user_and_defaults_to_the_rules(workdir, fake_modules):
-    """D232: `kullback build` can name the model that drives the Simulated user, with or without
-    --model; without the flag the driver gets None and every Run stays rule-driven."""
-    plain = invoke("build", "--workdir", str(workdir), "--model", "some/model")
-    assert plain.exit_code == 0, plain.output
-    assert fake_modules["kullback.rounds.run_rounds"][0]["kwargs"]["user_agent_model"] is None
-
-    named = invoke("build", "--workdir", str(workdir), "--model", "some/model",
-                   "--user-model", "other/small")
-    assert named.exit_code == 0, named.output
-    assert fake_modules["kullback.rounds.run_rounds"][1]["kwargs"]["user_agent_model"] is not None
-    assert fake_modules["kullback.ai.provider.live_model"][-1]["args"][0] == "other/small", \
-        "the user adapter is resolved from --user-model, not borrowed from another flag"
-
-    code_driven = invoke("build", "--workdir", str(workdir), "--user-model", "other/small")
-    assert code_driven.exit_code == 0, code_driven.output
-    kwargs = fake_modules["kullback.rounds.run_rounds"][2]["kwargs"]
-    assert kwargs["user_agent_model"] is not None and kwargs["model"] is None
-
-
-# --- freeze-runner ----------------------------------------------------------
 
 def version_file(workdir: Path) -> Path:
     return Path(workdir) / "runner_version.json"
@@ -324,13 +243,14 @@ def seed_runs(workdir: Path, runs: list) -> None:
             json.dumps(as_dict(verdict)), encoding="utf-8")
 
 
-def test_run_asks_the_pipeline_for_a_batch(workdir, fake_modules):
+def test_run_asks_the_runner_for_that_many_rerolls(workdir, fake_modules):
     seed_task(workdir)
     result = invoke("run", "--workdir", str(workdir), "--task", "t1", "--model", "candidate-model", "--count", "2")
-    assert result.exit_code == 0
-    call = fake_modules["kullback.builder.build.run_batch"][0]
+    assert result.exit_code == 0, result.output
+    call = fake_modules["kullback.runner.tool.reroll"][0]
     assert call["kwargs"]["task_id"] == "t1"
     assert call["kwargs"]["count"] == 2
+    assert [row["run_id"] for row in json.loads(result.output)] == ["r0", "r1"]
 
 
 def stored_verdicts(workdir: Path, task_id: str = "t1") -> list[dict]:
@@ -680,45 +600,6 @@ def test_a_failure_code_left_unmarked_gets_a_cause_and_one_verdict_file(tmp_path
     assert stored == {"r1": ["undetermined"], "r2": ["candidate"]}
 
 
-# --- build --grow table=count (D107) ---
-
-def test_grow_targets_parse_table_equals_count_and_refuse_anything_else():
-    assert cli._grow_targets(["users=500", "orders=1000"]) == {"users": 500, "orders": 1000}
-    assert cli._grow_targets(None) == {}
-    for bad in ("users", "users=", "=5", "users=many"):
-        with pytest.raises(Exception, match="table=count"):
-            cli._grow_targets([bad])
-
-
-def test_build_passes_grow_through(workdir, fake_modules):
-    result = runner.invoke(cli.app, ["build", "--workdir", str(workdir), "--grow", "users=500",
-                                     "--grow", "orders=1000", "--grow-seed", "7"])
-    assert result.exit_code == 0, result.output
-    kwargs = fake_modules["kullback.rounds.run_rounds"][0]["kwargs"]
-    assert kwargs["grow"] == {"users": 500, "orders": 1000} and kwargs["grow_seed"] == 7
-
-
-def test_build_fails_when_the_run_failed_on_a_broken_agent(workdir, fake_modules, monkeypatch):
-    """A stalled exit on a broken agent contract is a failed run: the command exits non-zero so CI
-    and scripts see it. A plain stalled exit (the gates, no progress) still exits zero."""
-    def failed_run(**kwargs):
-        return {"status": "complete", "rounds": [{"round": 1, "counts": {}, "exit": "stalled", "failed": True}],
-                "exit": "stalled", "failed": True, "trusted": [], "refused": {}}
-
-    def entry(path, name):
-        def fn(*args, **kwargs):
-            if name == "run_rounds":
-                return failed_run(**kwargs)
-            if name == "search_for":
-                return None
-            return {"ok": True}
-        return fn
-
-    monkeypatch.setattr(cli, "_entry", entry)
-    result = invoke("build", "--workdir", str(workdir))
-    assert result.exit_code == 1 and '"failed": true' in result.output
-
-
 def test_tui_defaults_to_work_when_it_holds_a_build(tmp_path, monkeypatch):
     from kullback.cli import _default_workdir
 
@@ -731,29 +612,6 @@ def test_tui_defaults_to_work_when_it_holds_a_build(tmp_path, monkeypatch):
     assert _default_workdir(Path(".")) == Path("work")
     assert _default_workdir(Path("/elsewhere")) == Path("/elsewhere")
 
-
-def test_the_round_line_says_which_beat_ended_the_round_before_the_counts_it_measured():
-    """D231: a round that lost a beat used to print its defaults and say nothing about why, so a
-    round that measured 75 Tasks of 119 and then lost its Examiner read as a round that measured
-    none. The counts beside the note are what it did measure."""
-    line = cli._round_line({"fidelity": 75, "tasks": 119,
-                            "beat_error": {"beat": "examiner", "kind": "ExaminerError",
-                                           "message_class": "derive failed: LookupError"}})
-    assert line.startswith("ended by examiner error (ExaminerError), fidelity 75/119 tasks")
-    assert not cli._round_line({"fidelity": 75, "tasks": 119}).startswith("ended by")
-
-
-def test_the_round_line_reads_the_beat_error_under_the_key_the_driver_writes_it_under():
-    """One key, one spelling. The driver, the line and the report held three literals of it, two of
-    them uncheckable, so a rename would have left the readers quietly printing nothing at all."""
-    from kullback import rounds
-
-    line = cli._round_line({"fidelity": 4, "tasks": 9,
-                            rounds.BEAT_ERROR: {"beat": "builder", "kind": "LedgerUnreadable"}})
-    assert line.startswith("ended by builder error (LedgerUnreadable), fidelity 4/9 tasks")
-
-
-# --- rescue -----------------------------------------------------------------
 
 def _rescue_turns(instruction: str) -> list[dict]:
     """An invented recording whose first user turn carries the instruction between headers."""

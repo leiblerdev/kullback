@@ -9,9 +9,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from kullback import claims, difficulty, report, rounds
-from kullback.builder import agent as builder_agent
-from kullback.builder.build import BuildPlan
+from kullback import claims, difficulty, report
 from kullback.examiner import findings
 from kullback.report.render import _claims_table
 from kullback.runner.records import Atom, Event, Run, ToolSig, Verifier, as_dict, write_json
@@ -236,15 +234,12 @@ def test_a_workdir_with_no_claim_file_reads_as_no_rows_rather_than_failing(tmp_p
     assert difficulty.partial_by_task(tmp_path) == {}
 
 
-def test_the_round_carries_the_four_counters_off_the_rows_it_wrote(tmp_path):
-    plan = BuildPlan(workdir=tmp_path / "work")
-    loop = rounds.Loop(plan=plan, builder=builder_agent.build_harness(plan))
-    _, store = _workdir(tmp_path, ["I have fired the kiln."], [READ_S2])
-    counts = loop.claim_counts(store)
-    assert set(counts) == {"claims", "claims_unwritten", "writes_unclaimed", "partial_completion_mean"}
-    assert (counts["claims"], counts["claims_unwritten"], counts["writes_unclaimed"]) == (1, 1, 0)
-    assert counts["partial_completion_mean"] == 0.0
-    assert (plan.workdir / claims.FILE_NAME).is_file()
+def test_the_claims_file_carries_the_four_counters_off_the_rows_it_wrote(tmp_path):
+    workdir, store = _workdir(tmp_path, ["I have fired the kiln."], [READ_S2])
+    totals = claims.refresh(workdir, store=store)["totals"]
+    assert (totals["claims"], totals["claims_unwritten"], totals["writes_unclaimed"]) == (1, 1, 0)
+    assert totals["partial_completion_mean"] == 0.0
+    assert (workdir / claims.FILE_NAME).is_file()
 
 
 def test_the_report_says_what_was_claimed_against_what_the_state_received(tmp_path):
