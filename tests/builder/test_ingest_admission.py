@@ -210,9 +210,12 @@ def test_a_recording_with_no_end_marker_reads_as_complete_when_every_call_resolv
 
 
 def test_fixture_hashes_are_stable_within_this_seam(tau2_small_path, workdir):
+    # D66 keys the trace hash on INGEST_VERSION, so these goldens move with every
+    # ingest.py change (D263 rescue). The bodies were diffed against the pristine tree
+    # with version and hash blanked and are byte-identical; only the version moved.
     summary = ingest.ingest_file(tau2_small_path, workdir)
     assert summary["trace_hashes"] == [
-        "452ccae335ba1c9999ac120978ac32927f8265b45a2cc0e225cd541b4172fb81",
-        "82818ebaba242db1498492ecb33943741acb23daf983e62e89b3a82949ebccc3",
-        "b201add5d7eb96a93d8f079b63ea3067519757f7f122fe569dfde84f1193cdb2",
+        "a457fe9ee5ffe8510667368f626bc0b1f65ed3f9a54a1e0575fd6506671f5952",
+        "c14c38a79d42f5a3081d6eadbcac75fbd8cc1e0bc652ed9e17bd6dc66123b6f6",
+        "5f802ec6ac466f044002976348d0909036fdc5cb39825f643fcac1fa34f525ad",
     ]
