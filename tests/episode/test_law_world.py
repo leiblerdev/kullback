@@ -32,6 +32,24 @@ def _trace(root, trace_id, calls):
     (folder / f"{trace_id}.json").write_text(trace.model_dump_json(), encoding="utf-8")
 
 
+def _write_sigs(root, tools):
+    """tool_sigs.json from (name, kind, [(arg, types, optional)]) triples, the miner's shape."""
+    sigs = []
+    for name, kind, fields in tools:
+        sigs.append({
+            "name": name, "kind": kind, "unclassified": False,
+            "args_fields": [{"name": arg, "types": list(types), "optional": optional}
+                            for arg, types, optional in fields],
+            "args_schema": {
+                "type": "object",
+                "properties": {arg: ({"type": list(types)} if types else {})
+                               for arg, types, _ in fields},
+                "required": [arg for arg, _, optional in fields if not optional],
+            },
+        })
+    (root / "tool_sigs.json").write_text(json.dumps(sigs), encoding="utf-8")
+
+
 def test_check_laws_runs_over_the_built_fixture_and_reports_a_number(tmp_path):
     env = BuiltEnvironment(write_env(tmp_path / "work"))
     report = check_laws(EnvironmentLawWorld(env, "widget_task"), seed=7, sequences=6, max_length=3)
@@ -71,34 +89,58 @@ def test_call_refuses_an_unknown_tool_and_a_missing_row(tmp_path):
     assert unknown.ok is False and unknown.error
 
 
-def test_tools_draw_argument_shapes_from_the_task_traces(tmp_path):
+def test_tools_take_names_and_types_from_the_signature_not_the_recordings(tmp_path):
     root = write_env(tmp_path / "work")
     _trace(root, "rec1", [
         ("describe_widget", {"widget_id": "w1"}),
-        ("rename_widget", {"widget_id": "w1", "label": "striped", "n": 3,
-                           "score": 1.5, "chosen": True}),
-        ("rename_widget", {"widget_id": "w1", "n": 4, "score": 2.5, "chosen": False}),
+        ("rename_widget", {"widget_id": "w1", "label": "striped", "n": 3}),
     ])
     world = EnvironmentLawWorld(BuiltEnvironment(root), "widget_task")
     shapes = {info.name: (info.kind, [(spec.name, spec.type, spec.optional)
                                      for spec in info.args])
               for info in world.tools()}
-    assert shapes["describe_widget"] == ("read", [("widget_id", "str", False)])
-    assert shapes["rename_widget"] == ("write", [("chosen", "bool", False),
-                                                ("label", "str", True),
-                                                ("n", "int", False),
-                                                ("score", "float", False),
-                                                ("widget_id", "str", False)])
+    assert shapes["describe_widget"] == ("read", [("widget_id", "string", True)])
+    assert shapes["rename_widget"] == ("write", [("label", "string", True),
+                                                ("widget_id", "string", True)])
 
 
-def test_tools_without_recorded_calls_list_names_with_no_arguments(tmp_path):
+def test_tools_without_recorded_calls_use_the_signature(tmp_path):
     root = write_env(tmp_path / "work")
     (root / "tasks" / "ghost.json").write_text(json.dumps({
         "id": "ghost", "run_ids": ["ghost"], "intent": "nothing recorded",
     }), encoding="utf-8")
     world = EnvironmentLawWorld(BuiltEnvironment(root), "ghost")
-    assert [(info.name, info.kind, list(info.args)) for info in world.tools()] == [
-        ("describe_widget", "read", []), ("rename_widget", "write", [])]
+    shapes = {info.name: [(spec.name, spec.type, spec.optional) for spec in info.args]
+              for info in world.tools()}
+    assert shapes["describe_widget"] == [("widget_id", "string", True)]
+    assert shapes["rename_widget"] == [("label", "string", True), ("widget_id", "string", True)]
+
+
+def test_required_argument_absent_from_recordings_comes_from_the_signature(tmp_path):
+    from kullback.laws import SUCCESS_CHANGED_SOMETHING
+
+    root = write_env(tmp_path / "work")
+    _write_sigs(root, [
+        ("describe_widget", "read", [("widget_id", [], False)]),
+        ("rename_widget", "write", [("widget_id", ["str"], False), ("label", ["str"], False)]),
+    ])
+    _trace(root, "rec1", [("describe_widget", {"widget_id": "w1"})])
+    world = EnvironmentLawWorld(BuiltEnvironment(root), "widget_task")
+    assert [(spec.name, spec.type, spec.optional) for spec in world.tools()[0].args] == [
+        ("widget_id", "str", False)]
+    report = check_laws(world, seed=7, sequences=10, max_length=3)
+    assert report.checked.get((SUCCESS_CHANGED_SOMETHING, "rename_widget"), 0) > 0
+
+
+def test_untyped_required_argument_makes_the_tool_unfit(tmp_path):
+    root = write_env(tmp_path / "work")
+    _write_sigs(root, [
+        ("describe_widget", "read", [("widget_id", [], False)]),
+        ("rename_widget", "write", [("widget_id", ["str"], False), ("label", ["str"], False)]),
+    ])
+    world = EnvironmentLawWorld(BuiltEnvironment(root), "widget_task")
+    assert world.unfit() == {"describe_widget": "required argument widget_id has no type"}
+    assert [info.name for info in world.tools()] == ["rename_widget"]
 
 
 class _CountingReadWorld:
@@ -135,10 +177,13 @@ def test_built_world_with_noop_write_reports_consistency_below_one(tmp_path):
     root = write_env(tmp_path / "work")
     (root / "env" / "tools.py").write_text(
         TOOLS.replace("        row.label = label\n", ""), encoding="utf-8")
-    _trace(root, "rec1", [("rename_widget", {"widget_id": "w1", "label": "striped"})])
+    _write_sigs(root, [
+        ("describe_widget", "read", [("widget_id", ["str"], False)]),
+        ("rename_widget", "write", [("widget_id", ["str"], False), ("label", ["str"], False)]),
+    ])
     world = EnvironmentLawWorld(BuiltEnvironment(root), "widget_task")
     report = check_laws(world, seed=7, sequences=10, max_length=3)
     assert report.consistency is not None
     assert report.consistency < 1.0
-    assert [(v.law, v.tool) for v in report.violations] == [
-        (SUCCESS_CHANGED_SOMETHING, "rename_widget")]
+    assert (SUCCESS_CHANGED_SOMETHING, "rename_widget") in [
+        (v.law, v.tool) for v in report.violations]

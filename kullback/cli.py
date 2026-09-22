@@ -548,6 +548,30 @@ def _mean_consistency(rows: dict) -> Optional[float]:
     return sum(values) / len(values) if values else None
 
 
+def _echo_gaps(task_id: str, gaps: dict) -> dict:
+    """One line per unfit tool, returned for the JSON where any exist."""
+    for name in sorted(gaps):
+        typer.echo(f"task {task_id}: unfit tool {name}, {gaps[name]}")
+    return {task_id: gaps} if gaps else {}
+
+
+def _finish_consistency(rows: dict, skipped: dict, unfit: dict, out: Optional[Path],
+                        laws_version: int, task: Optional[str]) -> None:
+    """The final line, the JSON beside it, and the exit: 3 on a skipped request or none completed."""
+    mean = _mean_consistency(rows)
+    violated = sum(1 for row in rows.values() if row["broken"])
+    typer.echo(f"mean consistency {_format_consistency(mean)} over {len(rows)} Tasks, "
+               f"{violated} with violations, {len(skipped)} skipped")
+    if out is not None:
+        body = {"tasks": rows, "mean_consistency": mean, "tasks_with_violations": violated,
+                "laws_version": laws_version, "skipped": skipped, "unfit": unfit}
+        Path(out).write_text(json.dumps(body, indent=2, sort_keys=True), encoding="utf-8")
+    if task is not None and task in skipped:
+        raise typer.Exit(3)
+    if not rows:
+        raise typer.Exit(3)
+
+
 @app.command("consistency")
 def consistency(
     workdir: Path = WORKDIR,
@@ -560,9 +584,12 @@ def consistency(
     """Check the laws that hold for any tool over each built Environment, with no model (D258).
 
     One line per Task names its checked and broken law counts and its Environment
-    consistency, then a final line gives the mean consistency over Tasks and how
-    many Tasks broke a law. The workdir is read in place and never written into;
-    --out writes the same numbers as JSON beside the laws version.
+    consistency, one line per skipped Task names why it was skipped, and one line
+    per unfit tool names why no sequence may check it. The final line gives the
+    mean consistency over completed Tasks, how many broke a law and how many
+    were skipped. The workdir is read in place and never written into; --out
+    writes the same numbers as JSON beside the laws version. A skipped request,
+    or no completed Task at all, exits 3.
     """
     from kullback.episode.loading import EnvironmentError
 
@@ -584,25 +611,31 @@ def consistency(
             raise typer.Exit(2)
         ids = [task]
     rows: dict[str, dict] = {}
-    for task_id in ids:
+    skipped: dict[str, str] = {}
+    unfit: dict[str, dict] = {}
+
+    def _one(task_id: str):
+        """One Task's row, its unfit tools and its skip reason; only row or reason is set."""
         try:
             world = make_world(env, task_id, seed=seed)
+            gaps = world.unfit()
             report = check(world, seed=seed, sequences=sequences, max_length=max_length)
         except EnvironmentError as exc:
-            typer.echo(f"task {task_id}: skipped, {exc}")
+            return None, {}, str(exc)
+        row = {"checked": sum(report.checked.values()), "broken": sum(report.broken.values()),
+               "consistency": report.consistency}
+        return row, gaps, None
+
+    for task_id in ids:
+        row, gaps, reason = _one(task_id)
+        if reason is not None:
+            skipped[task_id] = reason
+            typer.echo(f"task {task_id}: skipped, {reason}")
             continue
-        checked = sum(report.checked.values())
-        broken = sum(report.broken.values())
-        rows[task_id] = {"checked": checked, "broken": broken, "consistency": report.consistency}
-        typer.echo(_consistency_line(task_id, checked, broken, report.consistency))
-    mean = _mean_consistency(rows)
-    violated = sum(1 for row in rows.values() if row["broken"])
-    typer.echo(f"mean consistency {_format_consistency(mean)} over {len(rows)} Tasks, "
-               f"{violated} with violations")
-    if out is not None:
-        body = {"tasks": rows, "mean_consistency": mean, "tasks_with_violations": violated,
-                "laws_version": laws_module.LAWS_VERSION}
-        Path(out).write_text(json.dumps(body, indent=2, sort_keys=True), encoding="utf-8")
+        rows[task_id] = row
+        unfit.update(_echo_gaps(task_id, gaps))
+        typer.echo(_consistency_line(task_id, row["checked"], row["broken"], row["consistency"]))
+    _finish_consistency(rows, skipped, unfit, out, laws_module.LAWS_VERSION, task)
 
 
 @app.command()
