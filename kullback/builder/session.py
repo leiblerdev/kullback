@@ -105,15 +105,15 @@ def _rel_in_env(env: Path, written_path: str) -> Optional[str]:
         return None
 
 
-def regenerate_and_guard(api: ExtensionAPI, workdir: Any) -> Callable[[Any, Any], Any]:
+def regenerate_and_guard(api: ExtensionAPI, root: BuilderRoot) -> Callable[[Any, Any], Any]:
     """Guard an unacted ruling and regenerate the rendered modules (D124).
 
     A write result carrying a failed ruling is protected until the next write of the same
     path, which releases it; after every write or edit under `tools/` the bodies and the
     rendered modules are regenerated from the files the model wrote.
     """
-    root = Path(workdir)
-    env = root / "env"
+    workdir = Path(root.workdir)
+    env = root.env
     guards: dict[str, str] = {}
 
     def hook(call: Any, result: Any) -> Any:
@@ -137,7 +137,7 @@ def regenerate_and_guard(api: ExtensionAPI, workdir: Any) -> Callable[[Any, Any]
                 guards[rel] = entry
                 api.protect([entry], f"unacted ruling: {', '.join(failed)} on {rel}")
         if rel == "tools" or rel.startswith("tools/"):
-            env_files.regenerate(root)
+            env_files.regenerate(workdir, env)
         return None
 
     hook.hook_name = "builder_regenerate_and_guard"  # type: ignore[attr-defined]
@@ -159,8 +159,8 @@ def builder_extension(root: BuilderRoot) -> Callable[[ExtensionAPI], None]:
         api.tool_call(no_agent_writes_gates_or_runner)
         api.tool_call(write_fence)
         api.tool_result(gate_writes(root=env, workdir=root.workdir,
-                                    execute=env_files.executor(root.workdir)))
-        api.tool_result(regenerate_and_guard(api, root.workdir))
+                                    execute=env_files.executor(root.workdir, env)))
+        api.tool_result(regenerate_and_guard(api, root))
 
     return setup
 

@@ -105,7 +105,7 @@ def explode(workdir: Any) -> list[str]:
     return written
 
 
-def regenerate(workdir: Any) -> dict[str, Any]:
+def regenerate(workdir: Any, env: Any = None) -> dict[str, Any]:
     """Read every `env/tools/*.py` back into `bodies.json`, `env/tools.py`, `env/data_model.py`.
 
     `bodies.json` keeps the shape the build writes today (a flat name to body dict, what
@@ -113,10 +113,11 @@ def regenerate(workdir: Any) -> dict[str, Any]:
     `render_data_model`, so code owns everything but the body. Returns the bodies and paths.
     """
     root = Path(workdir)
+    env_root = Path(env) if env is not None else root / "env"
     schema = _read_schema(root)
     sigs = _read_sigs(root)
     bodies: dict[str, str] = {}
-    tools_dir = root / "env" / TOOLS_DIR
+    tools_dir = env_root / TOOLS_DIR
     if tools_dir.is_dir():
         for path in sorted(tools_dir.glob("*.py")):
             try:
@@ -127,10 +128,10 @@ def regenerate(workdir: Any) -> dict[str, Any]:
     ordered = {sig.name: bodies[sig.name] for sig in sigs if sig.name in bodies}
     ordered.update({name: bodies[name] for name in sorted(bodies) if name not in ordered})
     write_json(root / BODIES_FILE, ordered)
-    tools_path = root / "env" / "tools.py"
+    tools_path = env_root / "tools.py"
     tools_path.parent.mkdir(parents=True, exist_ok=True)
     tools_path.write_text(render_tools(schema, sigs, ordered), encoding="utf-8")
-    model_path = root / "env" / "data_model.py"
+    model_path = env_root / "data_model.py"
     model_path.write_text(render_data_model(schema), encoding="utf-8")
     return {"bodies": ordered, "paths": [BODIES_FILE, "env/tools.py", "env/data_model.py"]}
 
@@ -220,7 +221,7 @@ def _read_db(workdir: Path, db: Any) -> dict:
     return {}
 
 
-def executor(workdir: Any) -> Callable[[Any, Iterable[ToolCall], Any], list[dict]]:
+def executor(workdir: Any, env: Any = None) -> Callable[[Any, Iterable[ToolCall], Any], list[dict]]:
     """The gates' `execute(source, calls, db)`: the current bodies as one module, run in the sandbox.
 
     Bodies come from `env/tools/*.py` as `regenerate` reads them, overlaid with the written
@@ -228,13 +229,14 @@ def executor(workdir: Any) -> Callable[[Any, Iterable[ToolCall], Any], list[dict
     result dict per call. Carried: D122 (the sandbox is where model-written code runs).
     """
     root = Path(workdir)
+    env_root = Path(env) if env is not None else root / "env"
 
     def execute(source: Any, calls: Iterable[ToolCall], db: Any) -> list[dict]:
         calls = list(calls)
         schema = _read_schema(root)
         sigs = _read_sigs(root)
         bodies: dict[str, str] = {}
-        tools_dir = root / "env" / TOOLS_DIR
+        tools_dir = env_root / TOOLS_DIR
         if tools_dir.is_dir():
             for path in sorted(tools_dir.glob("*.py")):
                 try:
