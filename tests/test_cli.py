@@ -735,3 +735,125 @@ def test_the_round_line_reads_the_beat_error_under_the_key_the_driver_writes_it_
     line = cli._round_line({"fidelity": 4, "tasks": 9,
                             rounds.BEAT_ERROR: {"beat": "builder", "kind": "LedgerUnreadable"}})
     assert line.startswith("ended by builder error (LedgerUnreadable), fidelity 4/9 tasks")
+
+
+# --- consistency (D258 laws over a built Environment) -------------------------
+
+def seed_built_env(workdir: Path) -> Path:
+    """The invented built Environment the law tests drive, written into the workdir."""
+    from tests.episode.invented import write_env
+
+    return write_env(workdir)
+
+
+def test_consistency_prints_one_line_per_task_and_the_mean(workdir):
+    seed_built_env(workdir)
+    result = invoke("consistency", "--workdir", str(workdir), "--sequences", "4",
+                    "--max-length", "2", "--seed", "7")
+    assert result.exit_code == 0, result.output
+    lines = result.output.splitlines()
+    assert lines[0].startswith("widget_task: checked ")
+    assert "broken 0" in lines[0] and "consistency 1.0000" in lines[0]
+    assert lines[-1] == "mean consistency 1.0000 over 1 Tasks, 0 with violations, 0 skipped"
+
+
+def test_consistency_checks_one_named_task_and_refuses_an_unknown_one(workdir):
+    seed_built_env(workdir)
+    assert invoke("consistency", "--workdir", str(workdir), "--task", "widget_task",
+                  "--sequences", "2").exit_code == 0
+    refused = invoke("consistency", "--workdir", str(workdir), "--task", "nope")
+    assert refused.exit_code != 0 and "no Task named nope" in refused.output
+
+
+def test_consistency_writes_nothing_without_out(workdir):
+    seed_built_env(workdir)
+    before = {path for path in workdir.rglob("*")}
+    result = invoke("consistency", "--workdir", str(workdir), "--sequences", "2",
+                    "--max-length", "2")
+    assert result.exit_code == 0, result.output
+    assert {path for path in workdir.rglob("*")} == before
+
+
+def test_consistency_out_writes_the_same_numbers_as_json(workdir, tmp_path):
+    seed_built_env(workdir)
+    out = tmp_path / "consistency.json"
+    result = invoke("consistency", "--workdir", str(workdir), "--sequences", "2",
+                    "--max-length", "2", "--out", str(out))
+    assert result.exit_code == 0, result.output
+    body = json.loads(out.read_text(encoding="utf-8"))
+    assert body["tasks"]["widget_task"]["broken"] == 0
+    assert body["tasks"]["widget_task"]["checked"] > 0
+    assert body["tasks"]["widget_task"]["consistency"] == 1.0
+    assert body["mean_consistency"] == 1.0
+    assert body["tasks_with_violations"] == 0
+    assert body["laws_version"] == 1
+
+
+def test_consistency_refuses_a_missing_workdir(tmp_path):
+    result = invoke("consistency", "--workdir", str(tmp_path / "absent"))
+    assert result.exit_code != 0
+    assert result.output.strip()
+
+
+def test_consistency_requested_task_with_broken_overlay_exits_3(workdir, tmp_path):
+    seed_built_env(workdir)
+    (workdir / "overlays" / "widget_task.json").write_text("{", encoding="utf-8")
+    refused = invoke("consistency", "--workdir", str(workdir), "--task", "widget_task",
+                     "--sequences", "2")
+    assert refused.exit_code == 3
+    assert "widget_task" in refused.output and "skipped" in refused.output
+    out = tmp_path / "consistency.json"
+    refused = invoke("consistency", "--workdir", str(workdir), "--task", "widget_task",
+                     "--sequences", "2", "--out", str(out))
+    assert refused.exit_code == 3
+    assert "widget_task" in json.loads(out.read_text(encoding="utf-8"))["skipped"]
+
+
+def test_consistency_all_tasks_skipped_exits_3(workdir):
+    seed_built_env(workdir)
+    (workdir / "overlays" / "widget_task.json").write_text("{", encoding="utf-8")
+    refused = invoke("consistency", "--workdir", str(workdir), "--sequences", "2")
+    assert refused.exit_code == 3
+    assert "1 skipped" in refused.output
+
+
+def test_consistency_one_skip_among_several_still_succeeds(workdir, tmp_path):
+    seed_built_env(workdir)
+    (workdir / "tasks" / "t2.json").write_text(json.dumps({
+        "id": "t2", "run_ids": ["ghost"], "intent": "nothing recorded",
+    }), encoding="utf-8")
+    (workdir / "overlays" / "t2.json").write_text("{", encoding="utf-8")
+    out = tmp_path / "consistency.json"
+    result = invoke("consistency", "--workdir", str(workdir), "--sequences", "2",
+                    "--max-length", "2", "--out", str(out))
+    assert result.exit_code == 0, result.output
+    body = json.loads(out.read_text(encoding="utf-8"))
+    assert set(body["tasks"]) == {"widget_task"}
+    assert "t2" in body["skipped"]
+    assert "1 skipped" in result.output
+
+
+def test_consistency_names_unfit_tools_in_output_and_json(workdir, tmp_path):
+    seed_built_env(workdir)
+    (workdir / "tool_sigs.json").write_text(json.dumps([
+        {"name": "describe_widget", "kind": "read", "unclassified": False,
+         "args_fields": [{"name": "widget_id", "types": [], "optional": False}],
+         "args_schema": {"type": "object", "properties": {"widget_id": {}},
+                         "required": ["widget_id"]}},
+        {"name": "rename_widget", "kind": "write", "unclassified": False,
+         "args_fields": [{"name": "widget_id", "types": ["str"], "optional": False},
+                         {"name": "label", "types": ["str"], "optional": False}],
+         "args_schema": {"type": "object",
+                         "properties": {"widget_id": {"type": ["str"]},
+                                        "label": {"type": ["str"]}},
+                         "required": ["widget_id", "label"]}},
+    ]), encoding="utf-8")
+    out = tmp_path / "consistency.json"
+    result = invoke("consistency", "--workdir", str(workdir), "--sequences", "2",
+                    "--max-length", "2", "--out", str(out))
+    assert result.exit_code == 0, result.output
+    assert "unfit tool describe_widget" in result.output
+    body = json.loads(out.read_text(encoding="utf-8"))
+    assert body["unfit"]["widget_task"]["describe_widget"] == \
+        "required argument widget_id has no type"
+    assert "widget_task" in body["tasks"]
