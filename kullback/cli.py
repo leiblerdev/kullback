@@ -532,6 +532,79 @@ def solve_rate(
         typer.echo(f"{table['unpriced_calls']} calls are unpriced; the spend estimate is incomplete")
 
 
+def _format_consistency(value: Optional[float]) -> str:
+    """One consistency number as four decimals, or n/a where no law was checked."""
+    return "n/a" if value is None else f"{value:.4f}"
+
+
+def _consistency_line(task_id: str, checked: int, broken: int, consistency: Optional[float]) -> str:
+    """One Task's law counts and its Environment consistency as one line."""
+    return f"{task_id}: checked {checked} broken {broken} consistency {_format_consistency(consistency)}"
+
+
+def _mean_consistency(rows: dict) -> Optional[float]:
+    """The mean consistency over the Tasks that checked anything, else nothing."""
+    values = [row["consistency"] for row in rows.values() if row["consistency"] is not None]
+    return sum(values) / len(values) if values else None
+
+
+@app.command("consistency")
+def consistency(
+    workdir: Path = WORKDIR,
+    task: Optional[str] = typer.Option(None, "--task", help="Check one Task instead of every Task."),  # noqa: B008
+    sequences: int = typer.Option(20, "--sequences", help="Call sequences generated per Task."),
+    max_length: int = typer.Option(5, "--max-length", help="Longest generated call sequence."),
+    seed: int = typer.Option(0, "--seed", help="Seed the sequences are drawn under."),
+    out: Optional[Path] = typer.Option(None, "--out", help="Where to write the JSON; nothing is written without it."),  # noqa: B008
+):
+    """Check the laws that hold for any tool over each built Environment, with no model (D258).
+
+    One line per Task names its checked and broken law counts and its Environment
+    consistency, then a final line gives the mean consistency over Tasks and how
+    many Tasks broke a law. The workdir is read in place and never written into;
+    --out writes the same numbers as JSON beside the laws version.
+    """
+    from kullback.episode.loading import EnvironmentError
+
+    if sequences < 0 or max_length < 1:
+        raise typer.BadParameter("--sequences takes 0 or more and --max-length takes 1 or more")
+    check = _entry("kullback.laws", "check_laws")
+    build = _entry("kullback.episode", "BuiltEnvironment")
+    make_world = _entry("kullback.episode.law_world", "EnvironmentLawWorld")
+    laws_module = importlib.import_module("kullback.episode.law_world")
+    try:
+        env = build(workdir)
+        ids = env.task_ids()
+    except EnvironmentError as exc:
+        typer.echo(f"no built Environment under {workdir}: {exc}")
+        raise typer.Exit(1) from None
+    if task is not None:
+        if task not in ids:
+            typer.echo(f"no Task named {task}")
+            raise typer.Exit(2)
+        ids = [task]
+    rows: dict[str, dict] = {}
+    for task_id in ids:
+        try:
+            world = make_world(env, task_id, seed=seed)
+            report = check(world, seed=seed, sequences=sequences, max_length=max_length)
+        except EnvironmentError as exc:
+            typer.echo(f"task {task_id}: skipped, {exc}")
+            continue
+        checked = sum(report.checked.values())
+        broken = sum(report.broken.values())
+        rows[task_id] = {"checked": checked, "broken": broken, "consistency": report.consistency}
+        typer.echo(_consistency_line(task_id, checked, broken, report.consistency))
+    mean = _mean_consistency(rows)
+    violated = sum(1 for row in rows.values() if row["broken"])
+    typer.echo(f"mean consistency {_format_consistency(mean)} over {len(rows)} Tasks, "
+               f"{violated} with violations")
+    if out is not None:
+        body = {"tasks": rows, "mean_consistency": mean, "tasks_with_violations": violated,
+                "laws_version": laws_module.LAWS_VERSION}
+        Path(out).write_text(json.dumps(body, indent=2, sort_keys=True), encoding="utf-8")
+
+
 @app.command()
 def verdict(workdir: Path = WORKDIR, task: Optional[str] = typer.Option(None, "--task", help="One Task id."),
             judge_model: Optional[str] = JUDGE_MODEL, base_url: Optional[str] = BASE_URL,

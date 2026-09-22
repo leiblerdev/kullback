@@ -735,3 +735,61 @@ def test_the_round_line_reads_the_beat_error_under_the_key_the_driver_writes_it_
     line = cli._round_line({"fidelity": 4, "tasks": 9,
                             rounds.BEAT_ERROR: {"beat": "builder", "kind": "LedgerUnreadable"}})
     assert line.startswith("ended by builder error (LedgerUnreadable), fidelity 4/9 tasks")
+
+
+# --- consistency (D258 laws over a built Environment) -------------------------
+
+def seed_built_env(workdir: Path) -> Path:
+    """The invented built Environment the law tests drive, written into the workdir."""
+    from tests.episode.invented import write_env
+
+    return write_env(workdir)
+
+
+def test_consistency_prints_one_line_per_task_and_the_mean(workdir):
+    seed_built_env(workdir)
+    result = invoke("consistency", "--workdir", str(workdir), "--sequences", "4",
+                    "--max-length", "2", "--seed", "7")
+    assert result.exit_code == 0, result.output
+    lines = result.output.splitlines()
+    assert lines[0].startswith("widget_task: checked ")
+    assert "broken 0" in lines[0] and "consistency 1.0000" in lines[0]
+    assert lines[-1] == "mean consistency 1.0000 over 1 Tasks, 0 with violations"
+
+
+def test_consistency_checks_one_named_task_and_refuses_an_unknown_one(workdir):
+    seed_built_env(workdir)
+    assert invoke("consistency", "--workdir", str(workdir), "--task", "widget_task",
+                  "--sequences", "2").exit_code == 0
+    refused = invoke("consistency", "--workdir", str(workdir), "--task", "nope")
+    assert refused.exit_code != 0 and "no Task named nope" in refused.output
+
+
+def test_consistency_writes_nothing_without_out(workdir):
+    seed_built_env(workdir)
+    before = {path for path in workdir.rglob("*")}
+    result = invoke("consistency", "--workdir", str(workdir), "--sequences", "2",
+                    "--max-length", "2")
+    assert result.exit_code == 0, result.output
+    assert {path for path in workdir.rglob("*")} == before
+
+
+def test_consistency_out_writes_the_same_numbers_as_json(workdir, tmp_path):
+    seed_built_env(workdir)
+    out = tmp_path / "consistency.json"
+    result = invoke("consistency", "--workdir", str(workdir), "--sequences", "2",
+                    "--max-length", "2", "--out", str(out))
+    assert result.exit_code == 0, result.output
+    body = json.loads(out.read_text(encoding="utf-8"))
+    assert body["tasks"]["widget_task"]["broken"] == 0
+    assert body["tasks"]["widget_task"]["checked"] > 0
+    assert body["tasks"]["widget_task"]["consistency"] == 1.0
+    assert body["mean_consistency"] == 1.0
+    assert body["tasks_with_violations"] == 0
+    assert body["laws_version"] == 1
+
+
+def test_consistency_refuses_a_missing_workdir(tmp_path):
+    result = invoke("consistency", "--workdir", str(tmp_path / "absent"))
+    assert result.exit_code != 0
+    assert result.output.strip()
