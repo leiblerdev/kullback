@@ -112,13 +112,43 @@ def test_a_read_of_the_exposed_calls_works(tmp_path):
 
 def test_the_session_ends_when_the_model_answers_without_a_tool_call(tmp_path):
     _, result, _ = _scripted_session(tmp_path)
-    assert result["stopped"] == "the model answered with no tool call"
-    assert not result["ceiling_reached"]
+    assert result["stopped"] == "no tool call"
+    assert (result["trusted"], result["refused"], result["open"]) == (0, 0, 1)
+    assert [row["task_id"] for row in result["status"]["tasks"]] == ["widget_task"]
+    assert result["spend"] == 0.0
+    assert result["turns"] == 5
+    assert result["last_line"] == "Done."
+
+
+def test_the_ceiling_cancels_after_the_tool_call_that_crossed_it(tmp_path):
+    from kullback.runner import budget as budget_mod
+
+    root = _workdir(tmp_path)
+    crossed = []
+
+    def cross(event):
+        if isinstance(event, ToolEnd) and not crossed:
+            crossed.append(event)
+            totals = budget_mod.empty_totals()
+            totals["total"]["usd"] = 5.0
+            totals["total"]["calls"] = 1
+            budget_mod.save_totals(root, totals)
+
+    model = TestModel([
+        reply("Writing the body.",
+              ("write", {"path": "tools/rename_widget.py", "content": TOOL_FILE})),
+        reply("Reading the calls.", ("read", {"path": "calls/rename_widget.jsonl"})),
+        reply("Never reached."),
+    ])
+    result = session_mod.build(root, model, ceiling_usd=0.01, subscribers=[cross])
+    assert result["stopped"] == "ceiling"
+    assert result["spend"] == 5.0
+    assert model.index == 1
 
 
 def test_the_bus_holds_the_events_in_gapless_order(tmp_path):
-    root, result, _ = _scripted_session(tmp_path)
+    root, _, _ = _scripted_session(tmp_path)
     lines = (root / "bus.jsonl").read_text(encoding="utf-8").splitlines()
-    assert len(lines) == result["events"]
+    assert len(lines) > 0
     seqs = [json.loads(line)["seq"] for line in lines]
     assert seqs == list(range(1, len(lines) + 1))

@@ -34,7 +34,7 @@ from kullback.agent.harness import AgentHarness
 from kullback.agent.session.store import SessionStore
 from kullback.builder import env_files
 from kullback.builder import prompt as prompt_mod
-from kullback.builder.domain_tools import domain_tools
+from kullback.builder.domain_tools import domain_tools, status_of
 from kullback.builder.world_tools import ingest_files
 from kullback.gates import names_protected_path
 from kullback.gates.hook import PATH_KEYS, gate_writes
@@ -65,12 +65,20 @@ class BuilderRoot:
     workdir: Path
     env_root: Optional[Path] = None
     examine_fn: Optional[Callable[[Any, Any], Any]] = None
-    ceiling: Optional[float] = None
+    ceiling_usd: Optional[float] = None
 
     @property
     def env(self) -> Path:
         """The Builder's root: everything it reads and writes."""
         return Path(self.env_root) if self.env_root is not None else Path(self.workdir) / "env"
+
+
+@dataclass
+class _GuardPlan:
+    """The two fields `ceiling_guard` reads: the workdir ledger and the ceiling."""
+
+    workdir: Path
+    ceiling: Any = None
 
 CEILING_STAGE = "builder_session"
 
@@ -203,7 +211,6 @@ def builder_extension(root: BuilderRoot) -> Callable[[ExtensionAPI], None]:
 
     return setup
 
-
 def _collect(aiter: Any) -> list:
     async def go() -> list:
         return [event async for event in aiter]
@@ -213,13 +220,15 @@ def _collect(aiter: Any) -> list:
 
 def build(workdir: Any, model: Any, *, files: Optional[list] = None,
           examine_fn: Optional[Callable[[Any, Any], Any]] = None,
-          ceiling: Optional[float] = None, max_turns: Optional[int] = None,
-          subscribers: Iterable[Callable[[Any], Any]] = ()) -> dict:
+          ceiling_usd: Optional[float] = None, session_path: Any = None,
+          subscribers: Iterable[Callable[[Any], Any]] = (),
+          max_turns: Optional[int] = None) -> dict:
     """Run one Builder session over the workdir and say how it stopped.
 
-    `files` are customer files to ingest first, as paths under the workdir. The session ends
-    when the model answers with no tool call, when the spend ceiling is reached (D86, D135),
-    or when the harness stops another way; the dict names which of the three stopped it.
+    `files` are customer files to ingest first, as paths under the workdir. `session_path`
+    defaults to workdir/sessions/builder.jsonl. The dict carries the status tool's rows,
+    the trusted, refused and open counts, the spend, the turns, how it stopped (one of:
+    no tool call, ceiling, cancelled, max turns) and the last assistant line.
     """
     root = Path(workdir)
     env = root / "env"
@@ -229,35 +238,40 @@ def build(workdir: Any, model: Any, *, files: Optional[list] = None,
                       for name in files], root)
     env_files.expose(root)
     env_files.explode(root)
-    session = SessionStore.load(root / "sessions" / "builder.jsonl")
+    session = SessionStore.load(Path(session_path) if session_path is not None
+                                else root / "sessions" / "builder.jsonl")
     harness = AgentHarness(
         model=model, session=session,
         context=ContextConfig(window=budget.window_for(getattr(model, "name", None))),
         bus=Bus(root / "bus.jsonl", agent="builder"), max_turns=max_turns)
     load_extensions(harness, [builder_extension(
-        BuilderRoot(workdir=root, env_root=env, examine_fn=examine_fn, ceiling=ceiling))])
+        BuilderRoot(workdir=root, env_root=env, examine_fn=examine_fn, ceiling_usd=ceiling_usd))])
     for subscriber in subscribers:
         harness.subscribe(subscriber)
-    state = {"ceiling_reached": False}
-    if ceiling is not None:
-        def watch(event: Any) -> None:
-            try:
-                spent = float(budget.load_totals(root)["total"].get("usd") or 0.0)
-            except (OSError, ValueError):
-                return
-            if spent >= ceiling and not state["ceiling_reached"]:
-                state["ceiling_reached"] = True
-                harness.cancel()
-
-        harness.subscribe(watch)
+    guard_stop: dict = {}
+    if ceiling_usd is not None:
+        _, guard_stop = ceiling_guard(
+            harness, _GuardPlan(workdir=root,
+                                ceiling=budget.Ceiling.from_totals(root, ceiling_usd)))
     events = _collect(harness.prompt(OPENING))
-    if state["ceiling_reached"]:
-        stopped = f"the spend ceiling of {ceiling} USD is reached"
+    turns = [event for event in events if event.type == "turn_end"]
+    last_message = turns[-1].message if turns else None
+    last_line = str(getattr(last_message, "content", None) or "")
+    status = status_of(root)
+    states = [row["state"] for row in status["tasks"]]
+    if guard_stop:
+        stopped = "ceiling"
+    elif max_turns is not None and len(turns) >= max_turns:
+        stopped = "max turns"
+    elif last_message is not None and list(getattr(last_message, "tool_calls", None) or []):
+        stopped = "cancelled"
     else:
-        stopped = "the model answered with no tool call"
-    return {"stopped": stopped, "events": len(events),
-            "ceiling_reached": state["ceiling_reached"]}
+        stopped = "no tool call"
+    return {"status": status, "trusted": states.count("trusted"), "refused": states.count("refused"),
+            "open": states.count("open"), "spend": spent_in(root), "turns": len(turns),
+            "stopped": stopped, "last_line": last_line}
 
 
-__all__ = ["BuilderRoot", "OPENING", "WRITABLE_NAMES", "WRITABLE_PREFIXES", "build", "builder_extension",
-           "no_agent_writes_gates_or_runner", "regenerate_and_guard", "write_fence"]
+__all__ = ["BuilderRoot", "CEILING_STAGE", "OPENING", "WRITABLE_NAMES", "WRITABLE_PREFIXES", "build",
+           "builder_extension", "ceiling_guard", "no_agent_writes_gates_or_runner", "regenerate_and_guard",
+           "spent_in", "write_fence"]
