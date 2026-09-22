@@ -23,7 +23,16 @@ from kullback.examiner import prompt as prompt_mod
 from kullback.examiner import runners as runners_mod
 from kullback.examiner import stage as stage_mod
 from kullback.examiner.domain_tools import domain_tools
-from kullback.examiner.exam_files import ExamRoot, Finding, evidence_of, expose, names_forbidden_path
+from kullback.examiner.exam_files import (
+    ExamRoot,
+    Finding,
+    evidence_of,
+    expose,
+    load_history,
+    names_forbidden_path,
+    save_history,
+    seeded_history,
+)
 from kullback.gates import names_protected_path
 from kullback.gates.hook import PATH_KEYS, WRITE_TOOLS, gate_writes
 from kullback.gates.ledger import GateLedger
@@ -340,6 +349,8 @@ def examine(workdir: Any, *, task_ids: Optional[Iterable[str]] = None, model: An
     With `model=None` the session is code only: the derivation and its findings. With a model,
     one message over the Examiner's root, capped at `max_turns`; the Builder decides when to
     call again. Returns every finding, derive-filed and model-filed, and writes findings.json.
+    The session seeds one Verifier history per Task at version 1 from the derived files, so the
+    trusted and loosening gates rule on proposals (D127).
 
     The probe, re-roll and variant runners come from the runner tool over the workdir (D120):
     without a re-roll model the derivation stays code only and buys no Runs.
@@ -383,11 +394,12 @@ def examine(workdir: Any, *, task_ids: Optional[Iterable[str]] = None, model: An
 
 def _exam_root(workdir: Any, store: dict, findings: list[Finding], reroll_model: Any = None,
                allowance_usd: Optional[float] = None) -> ExamRoot:
-    """The session root: live Verifiers, signatures, rules and rows, but no task status.
+    """The session root: live Verifiers, signatures, rules, rows, task status and version history.
 
-    The trust gate needs version history the new flow does not keep, so feeding it the status
-    file would refuse every fresh proposal as not an accepted version. Proposals are ruled
-    through the oracle, the suite and the pool alone; the status stays readable under exam/.
+    Task status is what derive_all wrote to task_status.json in this same examine call, and the
+    history is the exam history.json with every live Verifier seeded as version 1 by derive and
+    saved. The trusted gate reads each derived file as the current accepted version from that
+    seed, and the loosening gate compares each proposal against the version before it (D127).
     """
     root = Path(workdir)
     verifiers: dict[str, Verifier] = {}
@@ -398,10 +410,18 @@ def _exam_root(workdir: Any, store: dict, findings: list[Finding], reroll_model:
             except ValueError:
                 continue
             verifiers[verifier.task_id] = verifier
-    return ExamRoot(workdir=root, verifiers=verifiers, sigs=list(store.get("sigs") or []),
-                    canon_rules=rules_of({"canon_rules": store.get("canon_rules")}),
-                    replays=store.get("replays") or {}, rerolls=store.get("rerolls") or {},
-                    findings=list(findings), reroll_model=reroll_model,
-                    allowance_remaining=allowance_usd)
+    status = read_json(root / "task_status.json", None)
+    exam_root = ExamRoot(workdir=root, verifiers=verifiers, sigs=list(store.get("sigs") or []),
+                         canon_rules=rules_of({"canon_rules": store.get("canon_rules")}),
+                         replays=store.get("replays") or {}, rerolls=store.get("rerolls") or {},
+                         task_status=status if isinstance(status, dict) else {},
+                         findings=list(findings), reroll_model=reroll_model,
+                         allowance_remaining=allowance_usd)
+    history = load_history(exam_root)
+    for task_id, verifier in verifiers.items():
+        seeded_history(history, task_id, verifier)
+    exam_root.history = history
+    save_history(exam_root, history)
+    return exam_root
 __all__ = ["BASE_ONLY", "EXAMINE_MESSAGE", "derive_findings", "examine", "examiner_extension",
            "finding_from_row", "load_store", "rulings_line", "task_runs_of"]
