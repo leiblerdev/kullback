@@ -45,7 +45,8 @@ MUST_REACH: dict[str, set[str]] = {
     "intent": {"kullback.builder.intent", "kullback.builder.parallel",
                "kullback.gates.stages", "kullback.runner.records"},
     "rerolls": {"kullback.builder.compile_env", "kullback.runner.loop", "kullback.runner.route",
-                "kullback.user.rules", "kullback.builder.intent", "kullback.user.factory",
+                "kullback.user.rules", "kullback.user.ends", "kullback.user.simulated",
+                "kullback.builder.intent", "kullback.user.factory",
                 "kullback.user.context", "kullback.episode.loading", "kullback.runner.records"},
 }
 
