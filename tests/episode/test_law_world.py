@@ -244,6 +244,16 @@ def test_write_needing_an_existing_id_reaches_a_successful_write(tmp_path):
     assert report.checked.get((SUCCESS_CHANGED_SOMETHING, "rename_widget"), 0) > 0
 
 
+def test_id_argument_keeps_the_table_its_name_resolves_to(tmp_path):
+    world = EnvironmentLawWorld(BuiltEnvironment(write_env(tmp_path / "work")), "widget_task")
+    specs = {spec.name: spec
+             for info in world.tools() if info.name == "rename_widget"
+             for spec in info.args}
+    assert specs["widget_id"].is_id is True
+    assert specs["widget_id"].id_table == "widgets"
+    assert specs["label"].is_id is False
+
+
 def test_built_world_with_noop_write_reports_consistency_below_one(tmp_path):
     from kullback.laws import SUCCESS_CHANGED_SOMETHING
     from tests.episode.invented import TOOLS

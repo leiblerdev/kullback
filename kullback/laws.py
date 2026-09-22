@@ -14,7 +14,7 @@ import copy
 import random
 import time
 from dataclasses import dataclass, field
-from typing import Any, Collection, Mapping, Protocol, Sequence
+from typing import Any, Collection, Mapping, Optional, Protocol, Sequence
 
 from kullback.consistency import shrink_sequence
 
@@ -63,6 +63,7 @@ class ArgSpec:
     type: str = "int"
     optional: bool = False
     is_id: bool = False
+    id_table: Optional[str] = None
 
 
 @dataclass
@@ -207,15 +208,18 @@ def _fits_bucket(value: Any, bucket: str) -> bool:
     return False
 
 
-def _row_ids(snapshot: Any) -> dict:
-    """The row ids the snapshot holds, by type bucket: the keys under each top level table."""
+def _row_ids(snapshot: Any, table: Optional[str] = None) -> dict:
+    """The row ids the snapshot holds, by type bucket: one table's keys where named, else every table's."""
     ids: dict = {"int": [], "str": [], "float": [], "bool": []}
     if not isinstance(snapshot, Mapping):
         return ids
-    for table in snapshot.values():
-        if not isinstance(table, Mapping):
-            continue
-        for row_id in table:
+    if table is None:
+        tables = [value for value in snapshot.values() if isinstance(value, Mapping)]
+    else:
+        only = snapshot.get(table)
+        tables = [only] if isinstance(only, Mapping) else []
+    for rows in tables:
+        for row_id in rows:
             if isinstance(row_id, bool):
                 ids["bool"].append(row_id)
             elif isinstance(row_id, int):
@@ -227,11 +231,12 @@ def _row_ids(snapshot: Any) -> dict:
     return ids
 
 
-def _id_candidates(snapshot: Any, name: str, bucket: str) -> list:
+def _id_candidates(snapshot: Any, name: str, bucket: str, table: Optional[str] = None) -> list:
     """The Starting state's ids for one id-typed argument, each once.
 
     Values stored under the argument's own name come first, then the row ids of
-    every table; both keep only values of the argument's type bucket.
+    the argument's own table only. A name with no table keeps only its own
+    values and never the pooled row ids.
     """
     named: list = []
     stack = [snapshot]
@@ -244,8 +249,9 @@ def _id_candidates(snapshot: Any, name: str, bucket: str) -> list:
                 named.append(value)
             elif isinstance(value, (Mapping, list, tuple, set, frozenset)):
                 stack.append(value)
+    rows = _row_ids(snapshot, table).get(bucket, []) if table is not None else []
     out = []
-    for value in named + _row_ids(snapshot).get(bucket, []):
+    for value in named + rows:
         if value not in out:
             out.append(value)
     return out
@@ -278,7 +284,10 @@ def _gen_args(
         if spec.optional and rng.random() < 0.5:
             continue
         bucket = _type_bucket(spec.type)
-        known = _id_candidates(snapshot, spec.name, bucket) if spec.is_id and snapshot is not None else []
+        if spec.is_id and snapshot is not None:
+            known = _id_candidates(snapshot, spec.name, bucket, spec.id_table)
+        else:
+            known = []
         args[spec.name] = _gen_value(bucket, rng, pool, known)
     return args
 

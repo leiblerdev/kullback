@@ -147,6 +147,32 @@ def _is_id_param(name: str, arg_type: Optional[str], columns: set) -> bool:
     return _id_shaped(name) and name in columns
 
 
+def _id_table(name: str, schema: Any) -> Optional[str]:
+    """The table an id argument names, or None where the schema cannot resolve it.
+
+    The schema's id patterns decide first; else the table of the column the name
+    matches. Where several tables match, the one the name stems from wins; a name
+    no table owns stays unresolved and draws only its own values.
+    """
+    patterns = getattr(schema, "id_patterns", None) or {}
+    owned = sorted({str(key).split(".")[0]
+                    for key in patterns if str(key).split(".")[-1] == name})
+    if not owned:
+        owned = sorted({column.table
+                        for column in getattr(schema, "columns", None) or ()
+                        if getattr(column, "name", None) == name
+                        and getattr(column, "table", None)})
+    if len(owned) == 1:
+        return owned[0]
+    stem = name.lower()
+    if stem.endswith("_id"):
+        stem = stem[:-3]
+    for table in owned:
+        if table.lower() in (stem, stem + "s"):
+            return table
+    return None
+
+
 def _side_of(sig: ToolSig) -> Optional[str]:
     """The requestor the Environment lists a tool for, or None where it lists neither side.
 
@@ -163,17 +189,19 @@ def _side_of(sig: ToolSig) -> Optional[str]:
     return callers[0]
 
 
-def _tool_specs(sig: ToolSig, recorded: dict, columns: set) -> tuple:
+def _tool_specs(sig: ToolSig, recorded: dict, schema: Any) -> tuple:
     """One tool's drawable ArgSpecs, or None with the reason the tool is unfit.
 
     The mined signature is the source of argument names, requiredness and type;
     the recorded calls only refine the type where the signature names none the
     laws can draw. A required argument with no drawable type makes the tool
     unfit; an optional one is left out of the specs. Id-shaped arguments the
-    schema's tables hold are marked so the drawer tries existing ids.
+    schema's tables hold are marked with their table, so the drawer tries that
+    table's existing ids.
     """
     types = _sig_types(sig)
     optional = _sig_optional(sig)
+    columns = _schema_columns(schema)
     specs = []
     missing = []
     for name in _sig_names(sig):
@@ -183,8 +211,9 @@ def _tool_specs(sig: ToolSig, recorded: dict, columns: set) -> tuple:
                 continue
             missing.append(name)
         else:
-            specs.append(ArgSpec(name, arg_type, optional.get(name, True),
-                                 _is_id_param(name, arg_type, columns)))
+            is_id = _is_id_param(name, arg_type, columns)
+            specs.append(ArgSpec(name, arg_type, optional.get(name, True), is_id,
+                                 _id_table(name, schema) if is_id else None))
     if missing:
         reasons = "; ".join(f"required argument {name} has no type" for name in missing)
         return None, reasons
@@ -241,13 +270,12 @@ class EnvironmentLawWorld:
         side, are left out of the sequences; unfit() names them and why.
         """
         recorded = _recorded_calls(self._env.members(self._task()))
-        columns = _schema_columns(self._env.schema)
         infos = []
         for sig in self._env.sigs:
             side = _side_of(sig)
             if side is None:
                 continue
-            specs, _ = _tool_specs(sig, recorded.get(sig.name, {}), columns)
+            specs, _ = _tool_specs(sig, recorded.get(sig.name, {}), self._env.schema)
             if specs is not None:
                 infos.append(ToolInfo(sig.name, sig.kind, tuple(specs), (), side))
         return infos
@@ -261,13 +289,12 @@ class EnvironmentLawWorld:
         is never reported as checked.
         """
         recorded = _recorded_calls(self._env.members(self._task()))
-        columns = _schema_columns(self._env.schema)
         gaps = {}
         for sig in self._env.sigs:
             if _side_of(sig) is None:
                 gaps[sig.name] = "tool is listed for neither side"
                 continue
-            _, reason = _tool_specs(sig, recorded.get(sig.name, {}), columns)
+            _, reason = _tool_specs(sig, recorded.get(sig.name, {}), self._env.schema)
             if reason is not None:
                 gaps[sig.name] = reason
         return gaps
