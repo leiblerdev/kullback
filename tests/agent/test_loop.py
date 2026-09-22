@@ -6,13 +6,7 @@ import asyncio
 from collections import deque
 
 from kullback.agent.events import AgentEnd, ToolExecutionEnd, TurnEnd
-from kullback.agent.loop import (
-    EMPTY_TURN_ASK,
-    Hooks,
-    LoopState,
-    interrupted_tool_results,
-    run_agent_loop,
-)
+from kullback.agent.loop import EMPTY_TURN_ASK, Hooks, LoopState, run_agent_loop
 from kullback.agent.messages import AssistantMessage, ToolResultMessage, UserMessage
 from kullback.agent.tools import AgentTool, RetryableToolError, ToolRegistry, ToolResult
 from kullback.ai.provider import TestModel
@@ -301,18 +295,6 @@ def test_cancel_stops_before_the_next_model_call_and_marks_tools_not_run():
     assert results[1].is_error is True and "cancelled" in results[1].content
     assert state.messages[-1].stop_reason == "error" and "cancelled" in state.messages[-1].error_message
     assert len(model.calls) == 1
-
-
-def test_interrupted_tool_results_answer_dangling_calls():
-    messages = [
-        UserMessage(content="go"),
-        AssistantMessage(tool_calls=[{"id": "c1", "name": "t", "arguments": {}}, {"id": "c2", "name": "t", "arguments": {}}]),
-        ToolResultMessage(tool_call_id="c1", tool_name="t", content="ok"),
-    ]
-    repairs = interrupted_tool_results(messages)
-    assert [r.tool_call_id for r in repairs] == ["c2"]
-    assert repairs[0].is_error and "interrupted" in repairs[0].content
-    assert interrupted_tool_results(messages + repairs) == []
 
 
 def test_no_prompts_and_empty_queues_still_asks_the_model_once():

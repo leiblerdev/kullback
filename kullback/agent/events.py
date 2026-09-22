@@ -1,10 +1,15 @@
 """The typed events one run of the loop emits. Every state change is one of these.
 
-The transcript is the source of truth and the events are its changelog: a frontend, a session store
-or a test reads the stream and never the loop's internals. The agent, turn, message and tool
-execution events are tau's; stage, round, beat, compaction and custom_message are ours: the DAG
-scheduler (phase 4) emits the stage events, the round driver (phase 5) the round and beat events,
-the context tools (phase 7) the compaction.
+The transcript is the source of truth and the events are its changelog: a frontend, a session store,
+the bus or a test reads the stream and never the loop's internals. The agent, turn, message and tool
+execution events are tau_agent/events.py's, under tau's names. What tau does not have: the
+compaction event, the custom message an extension queues, the error event, the generic `CustomEvent`
+an application publishes on the bus, and the stage, round and beat events of the scheduler the
+overhaul removes (the stream that removes the round driver removes those four with it).
+
+Two field names differ from tau and are kept because the packages above read them: the tool
+execution events carry `arguments` (tau's `args`, also readable under that name) and the message
+update carries `stream_event` (tau's `assistant_message_event`, also readable under that name).
 """
 
 from __future__ import annotations
@@ -22,62 +27,72 @@ class _Event(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
-class AgentStart(_Event):
+class AgentStartEvent(_Event):
     type: Literal["agent_start"] = "agent_start"
 
 
-class AgentEnd(_Event):
+class AgentEndEvent(_Event):
     """The messages this run appended, in order; the transcript holds them too."""
 
     type: Literal["agent_end"] = "agent_end"
     messages: list[Message] = Field(default_factory=list)
 
 
-class TurnStart(_Event):
+class TurnStartEvent(_Event):
     type: Literal["turn_start"] = "turn_start"
     turn: int
 
 
-class TurnEnd(_Event):
+class TurnEndEvent(_Event):
     type: Literal["turn_end"] = "turn_end"
     turn: int
     message: AssistantMessage
     tool_results: list[ToolResultMessage] = Field(default_factory=list)
 
 
-class MessageStart(_Event):
+class MessageStartEvent(_Event):
     type: Literal["message_start"] = "message_start"
     message: Message
 
 
-class MessageUpdate(_Event):
+class MessageUpdateEvent(_Event):
     """One stream event of the assistant message being assembled, with the partial so far."""
 
     type: Literal["message_update"] = "message_update"
     message: AssistantMessage
     stream_event: StreamEvent
 
+    @property
+    def assistant_message_event(self) -> StreamEvent:
+        """tau's name for `stream_event`."""
+        return self.stream_event
 
-class MessageEnd(_Event):
+
+class MessageEndEvent(_Event):
     type: Literal["message_end"] = "message_end"
     message: Message
 
 
-class ToolExecutionStart(_Event):
+class ToolExecutionStartEvent(_Event):
     type: Literal["tool_execution_start"] = "tool_execution_start"
     tool_call_id: str
     tool_name: str
     arguments: dict[str, Any] = Field(default_factory=dict)
 
+    @property
+    def args(self) -> dict[str, Any]:
+        """tau's name for `arguments`."""
+        return self.arguments
 
-class ToolExecutionUpdate(_Event):
+
+class ToolExecutionUpdateEvent(_Event):
     type: Literal["tool_execution_update"] = "tool_execution_update"
     tool_call_id: str
     tool_name: str
     partial: ToolResult
 
 
-class ToolExecutionEnd(_Event):
+class ToolExecutionEndEvent(_Event):
     type: Literal["tool_execution_end"] = "tool_execution_end"
     tool_call_id: str
     tool_name: str
@@ -137,17 +152,18 @@ class ErrorEvent(_Event):
 class Compaction(_Event):
     """A compaction entry landed on the session: what it replaced and what stood in.
 
-    `by` is `model` for a forget, `code_fallback` for the 40% floor (D124, D131), `code` for any
-    other code-driven compaction; `entry_id` names the entry, `note` carries the floor's account
-    of why it fired and whether the summary was the model's or mechanical.
+    `by` is `model` when the model wrote the summary and `code` when the mechanical summary stood
+    in for it; `reason` says what asked for the compaction (the line, or a caller), `entry_id`
+    names the entry and `first_kept_entry_id` the oldest entry kept verbatim.
     """
 
     type: Literal["compaction"] = "compaction"
     summary: str
     replaces_entry_ids: list[str] = Field(default_factory=list)
     first_kept_entry_id: Optional[str] = None
-    by: Literal["model", "code", "code_fallback"] = "model"
+    by: Literal["model", "code"] = "model"
     entry_id: Optional[str] = None
+    reason: Optional[str] = None
     note: Optional[str] = None
 
 
@@ -160,18 +176,26 @@ class CustomMessage(_Event):
     deliver_as: Literal["steer", "follow_up"] = "steer"
 
 
+class CustomEvent(_Event):
+    """Anything an application publishes on the bus that the core has no type for."""
+
+    type: Literal["custom"] = "custom"
+    name: str
+    payload: dict[str, Any] = Field(default_factory=dict)
+
+
 AgentEvent = Annotated[
     Union[
-        AgentStart,
-        AgentEnd,
-        TurnStart,
-        TurnEnd,
-        MessageStart,
-        MessageUpdate,
-        MessageEnd,
-        ToolExecutionStart,
-        ToolExecutionUpdate,
-        ToolExecutionEnd,
+        AgentStartEvent,
+        AgentEndEvent,
+        TurnStartEvent,
+        TurnEndEvent,
+        MessageStartEvent,
+        MessageUpdateEvent,
+        MessageEndEvent,
+        ToolExecutionStartEvent,
+        ToolExecutionUpdateEvent,
+        ToolExecutionEndEvent,
         StageStart,
         StageEnd,
         RoundStart,
@@ -181,6 +205,21 @@ AgentEvent = Annotated[
         ErrorEvent,
         Compaction,
         CustomMessage,
+        CustomEvent,
     ],
     Field(discriminator="type"),
 ]
+
+# The names this package used before it took tau's. The packages above still import them; the
+# stream that rewrites each of those packages onto the tau names drops its line here.
+AgentStart = AgentStartEvent
+AgentEnd = AgentEndEvent
+TurnStart = TurnStartEvent
+TurnEnd = TurnEndEvent
+MessageStart = MessageStartEvent
+MessageUpdate = MessageUpdateEvent
+MessageEnd = MessageEndEvent
+ToolExecutionStart = ToolExecutionStartEvent
+ToolExecutionUpdate = ToolExecutionUpdateEvent
+ToolExecutionEnd = ToolExecutionEndEvent
+Custom = CustomEvent

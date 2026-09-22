@@ -1,13 +1,16 @@
-"""AgentTool: the schema comes from the args model; both sides are validated; failures are results."""
+"""AgentTool: the schema comes from the args model; both sides are validated; failures are results.
+And the one format a gate's ruling takes when it rides a tool result."""
 
 from __future__ import annotations
 
 import asyncio
 import json
+from dataclasses import dataclass
+from dataclasses import field as dataclass_field
 
 import pytest
 
-from kullback.agent.tools import AgentTool, NoArgs, TextResult, ToolRegistry
+from kullback.agent.tools import AgentTool, NoArgs, TextResult, ToolRegistry, ToolResult, attach_ruling
 from tests.agent.conftest import AddArgs, AddResult
 
 
@@ -93,3 +96,56 @@ def test_the_registry_refuses_a_duplicate_name_and_removes_a_tool_by_name(add_to
         registry.register(add_tool)
     registry.remove("add")
     assert registry.names() == ["echo"] and len(registry) == 1
+
+
+# --- the ruling a gate attaches to a tool result ---
+
+
+@dataclass
+class Ruling:
+    name: str
+    accepted: bool
+    line: str = ""
+    rows: list = dataclass_field(default_factory=list)
+
+
+def test_a_ruling_is_appended_in_one_format_with_the_rows_that_still_differ():
+    rows = [{"call": "c1", "recorded": 3, "ours": 4}, {"call": "c2", "recorded": 1, "ours": 0}]
+    result = attach_ruling(
+        ToolResult(content="wrote a new file t.py, 40 characters", details={"path": "t.py"}),
+        Ruling(name="body", accepted=False, line="2 of 5 calls differ", rows=rows),
+    )
+    assert result.content.splitlines() == [
+        "wrote a new file t.py, 40 characters",
+        '<ruling name="body" accepted="no">',
+        "2 of 5 calls differ",
+        '{"call": "c1", "ours": 4, "recorded": 3}',
+        '{"call": "c2", "ours": 0, "recorded": 1}',
+        "2 row(s) still differ; each line above is one of them.",
+        "</ruling>",
+    ]
+    assert result.details["path"] == "t.py"
+    assert result.details["rulings"] == [
+        {"name": "body", "accepted": False, "line": "2 of 5 calls differ", "rows": rows}
+    ]
+
+
+def test_an_accepted_ruling_with_no_rows_is_the_head_the_line_and_the_close():
+    result = attach_ruling(ToolResult(content="ok"), Ruling(name="verifier", accepted=True, line="every check held"))
+    assert result.content == 'ok\n<ruling name="verifier" accepted="yes">\nevery check held\n</ruling>'
+    assert result.details == {"rulings": [{"name": "verifier", "accepted": True, "line": "every check held", "rows": []}]}
+
+
+def test_a_second_ruling_is_appended_beside_the_first_and_both_stand_in_details():
+    first = attach_ruling(ToolResult(content="ok"), Ruling(name="body", accepted=True))
+    second = attach_ruling(first, Ruling(name="shape", accepted=False, line="one column is missing"))
+    assert second.content.count("<ruling") == 2
+    assert [r["name"] for r in second.details["rulings"]] == ["body", "shape"]
+    assert [r["accepted"] for r in second.details["rulings"]] == [True, False]
+
+
+def test_a_ruling_never_changes_whether_the_call_itself_failed():
+    failed = attach_ruling(ToolResult(content="write failed", is_error=True), Ruling(name="body", accepted=True))
+    assert failed.is_error is True
+    passed = attach_ruling(ToolResult(content="ok"), Ruling(name="body", accepted=False))
+    assert passed.is_error is False
