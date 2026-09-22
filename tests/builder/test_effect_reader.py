@@ -22,6 +22,7 @@ from typing import Any
 from conftest import PTR
 from kullback.builder import build as build_module
 from kullback.builder import effects
+from kullback.builder import templates as stand_in_module
 from kullback.runner.records import Column, EntitySchema, ToolCall, Trace, Turn
 
 READ = "get_account"
@@ -130,3 +131,70 @@ def test_the_replay_stage_reads_each_task_through_the_one_stage_reader(monkeypat
     bare = build_module.replay_stage_effects([sentence_trace()], schema(), {WRITE, AUDIT},
                                              db=dict(START), effect_reader=None)
     assert effects.counts(bare)["effect_columns_checked"] == 0
+
+
+def invented_effect_reader(artifact, traces, workdir):
+    """A stand-in stage reader with different source, which moves any key that hashes it."""
+    raise AssertionError("invented stage reader")
+
+
+def invented_compile_effects(traces, schema, write_tools, db, worlds, readers_artifact,
+                             workdir):
+    """A stand-in compile evidence helper with different source."""
+    raise AssertionError("invented compile evidence")
+
+
+def invented_replay_effects(task_traces, schema, write_tools, db, effect_reader):
+    """A stand-in replay evidence helper with different source."""
+    raise AssertionError("invented replay evidence")
+
+
+def compile_key() -> str:
+    return build_module._tools_stage(None, 0).code_version
+
+
+def replay_key() -> str:
+    return build_module._replay_stage().code_version
+
+
+def test_the_compile_key_moves_when_the_stage_reader_source_moves(monkeypatch):
+    """The compile key hashes the stage reader, so an edit to it invalidates cached evidence."""
+    before = compile_key()
+    monkeypatch.setattr(build_module, "_effect_reader", invented_effect_reader)
+    assert compile_key() != before
+
+
+def test_the_compile_key_moves_when_the_compile_evidence_source_moves(monkeypatch):
+    """The compile key hashes its evidence helper, so an edit to it rebuilds the bodies."""
+    before = compile_key()
+    monkeypatch.setattr(build_module, "compile_stage_effects", invented_compile_effects)
+    assert compile_key() != before
+
+
+def test_the_replay_key_moves_when_the_stage_reader_source_moves(monkeypatch):
+    """The replay key hashes the stage reader, so an edit to it invalidates cached replays."""
+    before = replay_key()
+    monkeypatch.setattr(build_module, "_effect_reader", invented_effect_reader)
+    assert replay_key() != before
+
+
+def test_the_replay_key_moves_when_the_replay_evidence_source_moves(monkeypatch):
+    """The replay key hashes its evidence helper, so an edit to it replays the tasks again."""
+    before = replay_key()
+    monkeypatch.setattr(build_module, "replay_stage_effects", invented_replay_effects)
+    assert replay_key() != before
+
+
+def test_the_replay_key_moves_when_the_readers_module_moves(monkeypatch):
+    """The replay key hashes the readers module beside the helpers, so a reader edit rebuilds."""
+    before = replay_key()
+    monkeypatch.setattr(build_module, "readers", stand_in_module)
+    assert replay_key() != before
+
+
+def test_the_compile_key_moves_when_the_readers_module_moves(monkeypatch):
+    """The compile key hashes the readers module too: the writer note and the stage reader
+    both read through it, so a reader edit must invalidate cached bodies as well."""
+    before = compile_key()
+    monkeypatch.setattr(build_module, "readers", stand_in_module)
+    assert compile_key() != before
