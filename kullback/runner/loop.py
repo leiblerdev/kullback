@@ -143,15 +143,26 @@ def step(state: RunState, model: Any, tools: Optional[list[dict]] = None, router
 def run(state: RunState, model: Any, tools: Optional[list[dict]] = None, router: Any = None,
         max_steps: Optional[int] = None) -> RunState:
     """Call step until the Run stops: no tool calls and the user is done, or max turns."""
-    steps = 0
-    while not state.stopped:
-        step(state, model, tools, router)
-        steps += 1
-        if max_steps is not None and steps >= max_steps:
-            if not state.stopped:  # a Run left by the caller's cap still says how it ended (D90)
-                _stop(state, "max_steps")
-            break
-    return finish(state, router)
+    try:
+        steps = 0
+        while not state.stopped:
+            step(state, model, tools, router)
+            steps += 1
+            if max_steps is not None and steps >= max_steps:
+                if not state.stopped:  # a Run left by the caller's cap still says how it ended (D90)
+                    _stop(state, "max_steps")
+                break
+        return finish(state, router)
+    finally:
+        # D262: a container never outlives its Run, even when the Run raises.
+        _close_real(router)
+
+
+def _close_real(router: Any) -> None:
+    """Release every opened real world behind the router, when it has any."""
+    close = getattr(router, "close_real", None)
+    if callable(close):
+        close()
 
 
 def _call_cost(reply: Any, model: Any) -> Cost:

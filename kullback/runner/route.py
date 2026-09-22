@@ -1,4 +1,4 @@
-"""Answers one tool call: code first, then the recording table, then an LLM stand-in (D45, D49, D74)."""
+"""Answers one tool call: real first, then code, the recording table, an LLM stand-in (D262, D45, D49, D74)."""
 
 from __future__ import annotations
 
@@ -10,6 +10,7 @@ from typing import Any, Iterable, NamedTuple, Optional
 from pydantic import BaseModel
 
 from kullback.runner.canon import canonical_args
+from kullback.runner.real_tools import RealTool
 from kullback.runner.records import ToolCallError, ToolSig, content_hash
 from kullback.runner.records import plain as _plain
 from kullback.runner.state import StateView, _db_put, _row_model
@@ -73,14 +74,17 @@ def recording(tool: str, args: dict, state_hash: str, result: Any, error: Option
 
 
 class Router:
-    """Route order: code, then recording, then the LLM stand-in; a bad call gets an error, not a raise."""
+    """Route order: real, then code, then recording, then the LLM stand-in (D262); a bad call gets an error, not a raise."""
 
     def __init__(self, env_tools_module: Any = None, recordings: Any = None, starting_state: Any = None,
                  overlay: Any = None, stand_in_model: Any = None, tool_sigs: Optional[list[ToolSig]] = None,
                  overlay_rows: Optional[dict] = None, canon_rules: Any = None,
                  synthetic_rows: Optional[Iterable[str]] = None,
-                 overlay_steps: Optional[Iterable[Any]] = None):
+                 overlay_steps: Optional[Iterable[Any]] = None,
+                 real_tools: Optional[dict[str, RealTool]] = None):
         self.tools = env_tools_module
+        self.real_tools = dict(real_tools or {})
+        self._last_real_receipts: dict[str, list] = {}
         # D40: a result that names a synthetic row was answered from a row no trace showed.
         self.synthetic_rows = frozenset(synthetic_rows or ())
         self.state = starting_state if isinstance(starting_state, StateView) else StateView(starting_state)
@@ -137,6 +141,10 @@ class Router:
             # Run refuses it too, in the same class, before any code, recording or stand-in is asked
             # and without touching the world.
             return self._error(name, "tool_not_found", f"no tool named {name} for the {requestor}")
+        if name in self.real_tools:
+            # D262: a Real tool runs for real before any imitation, and never touches the
+            # in-memory world, so the pin bookkeeping below does not see the call either.
+            return self._real(name, args)
         self._advance(name, args)
         function = getattr(self.tools, name, None) if self.tools is not None else None
         if self._is_tool(name, function):
@@ -207,6 +215,37 @@ class Router:
     def _misses(self) -> Optional[list]:
         """D88: a Starting state the Builder could not pin is an environment mark on every call of the Run."""
         return list(self.state.overlay_misses) or None
+
+    def _real(self, name: str, args: dict) -> RouteResult:
+        """D262: run the tool for real in its container, before any imitation.
+
+        The container is the world for that tool: the in-memory db world is untouched and
+        `state_hash` stays what it is. A world failure comes back as a routed error in the
+        tool's own encoding, counted like any other call, and the Run continues.
+        """
+        outcome = self.real_tools[name].call(args)
+        self._last_real_receipts[name] = list(outcome.receipts or [])
+        if outcome.error_class is None:
+            return RouteResult(outcome.result, "real", False, None, self._misses())
+        return self._error(name, outcome.error_class, outcome.error_message or outcome.error_class,
+                           route="real")
+
+    def last_real_receipts(self, name: str) -> list:
+        """The receipts of the latest real call of that tool, oldest first (D262).
+
+        The result stays the terminal text; the exit codes live here for the record, so a
+        later round can read them without re-running. Empty before any call of the tool.
+        """
+        return list(self._last_real_receipts.get(name) or [])
+
+    def close_real(self) -> None:
+        """Release every opened real world; a Run never outlives its containers (D262)."""
+        for tool in self.real_tools.values():
+            tool.close()
+
+    def real_end_state(self, name: str, limit_bytes: int) -> bytes:
+        """Export one real tool's workspace bytes, for the grader's own container (D262)."""
+        return self.real_tools[name].end_state(limit_bytes)
 
     def _code(self, name: str, function: Any, args: dict) -> RouteResult:
         snapshot = _snapshot_world(self.tools, self.state)
@@ -280,7 +319,8 @@ class Router:
         reply = self.stand_in.query([{"role": "user", "content": prompt}])
         return RouteResult(_parsed(reply.content), "llm", True, None, self._misses())
 
-    def _error(self, name: str, error_class: str, message: str, sample: Any = None) -> RouteResult:
+    def _error(self, name: str, error_class: str, message: str, sample: Any = None,
+               route: str = "code") -> RouteResult:
         """D45: answered in the customer's own error encoding, taken from ToolSig.error_shapes.
 
         `sample` is the corpus's own payload for this class on this tool, used in place of the
@@ -294,7 +334,7 @@ class Router:
         else:
             payload = message if encoding == "text" else {"error": message, "class": error_class}
         error = ToolCallError(class_=error_class, payload=payload, encoding=encoding, classified_by="code")
-        return RouteResult(payload, "code", False, error, self._misses())
+        return RouteResult(payload, route, False, error, self._misses())
 
 
 def _freeze(value: Any) -> tuple[str, Any]:
