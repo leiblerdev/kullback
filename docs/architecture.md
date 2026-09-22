@@ -1,6 +1,6 @@
 # Architecture
 
-Kullback is one provider layer, one agent core, and domain environments as extensions of that core, a layering taken from [huggingface/tau](https://github.com/huggingface/tau). The domain environments are what makes Kullback Kullback; the core knows nothing about them. This page is the map. The decision is ADR-0008, the decisions behind it are in `decision-log.md` and `adr/`, and `overhaul/learnings-ledger.md` says where every earlier learning lives now.
+Kullback is one provider layer, one agent core, and domain environments as extensions of that core, a layering taken from [huggingface/tau](https://github.com/huggingface/tau). The domain environments are what makes Kullback Kullback; the core knows nothing about them. This page is the map. The decision is ADR-0011, the decisions behind it are in `decision-log.md` and `adr/`, and `overhaul/learnings-ledger.md` says where every earlier learning lives now.
 
 The rebuild runs in eight streams and this page marks what is not yet built with "(stream N, pending)": 1 this page and the ledger, 2 the core, 3 the runner, 4 the gates, 5 the Builder, 6 the Examiner, 7 the Simulated user, 8 the first build.
 

@@ -1,6 +1,6 @@
 # The learnings ledger of the 2026-09-22 overhaul
 
-Every decision (D01 to D278), every learning in `docs/learnings.md` without a decision of its own (L<section>.<n>) and every standing founder word (F<n>) has a row here, and each row says where that learning lives in the shape of ADR-0008 or why it is dropped.
+Every decision (D01 to D278), every learning in `docs/learnings.md` without a decision of its own (L<section>.<n>) and every standing founder word (F<n>) has a row here, and each row says where that learning lives in the shape of ADR-0011 or why it is dropped. Two counts, so the next reader does not re-derive them: `docs/decision-log.md` carries 196 headed entries, from D69 on, and 68 earlier ones as bold entries in the same file, so the table has 264 decision rows and covers 196 of 196 headings.
 How to use it: a brief cites the rows its stream owns, and it may not carry a learning that no row points at its package.
 A stream's acceptance re-checks its own rows: for each one, the module named is present at the named path, the gate named rules, the prompt section named exists, or the drop is still true.
 A row that says "dropped" carries no work, but the paragraph it points at in `docs/learnings.md` still holds and the next reader must be able to find it.
@@ -24,7 +24,7 @@ Locations use the vocabulary of the brief (carried module, gate, hook, prompt se
 | D175 | A read answers an index for a whole file and is never longer than the read limit | base tool (read) | registered for the Examiner over exam/ |
 | D178 | The floor cuts a protected result that is alone over the line, and the harness takes the model's window | carried module kullback/agent/ (compaction) | the Examiner's search half becomes the grep and find base tools |
 | D245 | Single-message stages send a stable system head | prompt section of every extension | a stable head is what the prompt cache keys on |
-| D266 | The harness's own agents read recordings and Runs through one set of tools | base tool (read, grep, find, ls) | ADR-0008 makes this the base tool set of the core |
+| D266 | The harness's own agents read recordings and Runs through one set of tools | base tool (read, grep, find, ls) | ADR-0011 makes this the base tool set of the core |
 | D267 | One workdir store, and an append-only journal | carried module kullback/store.py | the journal becomes the one bus, append-only and sequence-numbered |
 | D269 | Prompts grow by appending, and the head stays stable | prompt section of every extension | |
 | D272 | Every tool call is a transaction, and a crash is its own outcome | carried module kullback/agent/ (the tool call path) | the wrapper is in the core, the rollback is the runner's world |
@@ -168,7 +168,7 @@ Locations use the vocabulary of the brief (carried module, gate, hook, prompt se
 | D110 | Code verifies what code can verify, a judge only where it cannot, and it never awards a pass | runner tool (Verdict) | |
 | D112 | Three extra Runs per Task by default | runner tool (reroll) | the scorecard beside it was scaffolding |
 | D119 | A Reference stopped one step short must score no pass | gate verifier_suite | the unsolved-state check is one of the D79 negatives |
-| D120 | The Runner is a tool the agent calls, not an agent | runner tool | reaffirmed by ADR-0008: run, replay, reroll |
+| D120 | The Runner is a tool the agent calls, not an agent | runner tool | reaffirmed by ADR-0011: run, replay, reroll |
 | D148 | Arithmetic in a body goes through a code-owned evaluator | carried module kullback/runner/arith.py | |
 | D159 | A Run records the call it made, not only the answer it got | carried module kullback/runner/records.py | |
 | D160 | The judge model is chosen, named, and may be two different models | carried module kullback/runner/judge.py | |
@@ -263,7 +263,7 @@ Locations use the vocabulary of the brief (carried module, gate, hook, prompt se
 | D50 | The first build must prove faithful replay and agreement with the customer's own outcome | standing rule | |
 | D51 | Generalizability over overfitting | standing rule (house rule: every fix is general) | |
 | D52 | Real-world tool-using traces, not coding traces, are the first input | standing rule | the coding domain reopened as D262 and AgentTrove |
-| D53 | The harness is layered like tau: a provider layer, a core, and the faces | standing rule (docs/architecture.md) | the layering is now the shape of ADR-0008 |
+| D53 | The harness is layered like tau: a provider layer, a core, and the faces | standing rule (docs/architecture.md) | the layering is now the shape of ADR-0011 |
 | D55 | The smallest slice runs all the way through the Verdict | standing rule | |
 | D56 | Emit a known shape first, then mould it into our own | standing rule | |
 | D58 | The customer intake questions live in one place | standing rule (docs/trace-intake.md) | |
@@ -304,36 +304,36 @@ Locations use the vocabulary of the brief (carried module, gate, hook, prompt se
 | D144 | Agent prompts follow the GEPA order and carry general examples; feedback is text, not a score | prompt section of every extension | |
 | D276 | The stop rule reads the numbers the loop is for, and records a reason every time | prompt section of builder (the stop rule) | |
 | **dropped** | | | |
-| D54 | The build follows four fixed stages | dropped: superseded by ADR-0008 | the Builder has no stages; ingest, derive_world, examine and grow are tools it calls when it judges them needed |
-| D69 | Which missing components enter the first build, and the Builder may modify itself | dropped: superseded by ADR-0008 | first-build scope, spent; the self-modification half lives in the builder's skills (D125) |
-| D75 | Tool body repair is bounded retries with growing evidence | dropped: superseded by ADR-0008 | the retry ladder goes with the one-shot writer; "every rewrite is checked against the traces" is the body gates, learnings.md section 7 paragraph 2 |
-| D80 | Scorecard thresholds measured on tau2, with every miss explained | dropped: superseded by ADR-0008 | the scorecard was scaffolding (D112); "every miss explained" lives in the report |
-| D82 | The Builder changes one thing per round, batches later | dropped: superseded by ADR-0008 | there is no round; learnings.md section 2, repairs |
+| D54 | The build follows four fixed stages | dropped: superseded by ADR-0011 | the Builder has no stages; ingest, derive_world, examine and grow are tools it calls when it judges them needed |
+| D69 | Which missing components enter the first build, and the Builder may modify itself | dropped: superseded by ADR-0011 | first-build scope, spent; the self-modification half lives in the builder's skills (D125) |
+| D75 | Tool body repair is bounded retries with growing evidence | dropped: superseded by ADR-0011 | the retry ladder goes with the one-shot writer; "every rewrite is checked against the traces" is the body gates, learnings.md section 7 paragraph 2 |
+| D80 | Scorecard thresholds measured on tau2, with every miss explained | dropped: superseded by ADR-0011 | the scorecard was scaffolding (D112); "every miss explained" lives in the report |
+| D82 | The Builder changes one thing per round, batches later | dropped: superseded by ADR-0011 | there is no round; learnings.md section 2, repairs |
 | D91 | The Verifier code lives in the Builder and reaches the Runner through records only | dropped: reversed by D123 and ADR-0007 | the Examiner owns the Verifiers |
-| D109 | Every stage hashes the modules it delegates to | dropped: superseded by ADR-0008 | no stages; the hash learning lives in the runner tool's version hash |
-| D124 | The model manages its own context with forget, recall, load and unload, over a code floor | dropped: superseded by ADR-0008 | compaction mirrors tau: automatic at 40 percent, manual on request, the older prefix summarised; learnings.md section 1 keeps why an unread tool result is still evidence |
-| D126 | A round is four beats ending at gates | dropped: superseded by ADR-0008 | there is no round; the three exits become the Builder's stop rule (D276) |
-| D128 | The two agents take turns on one event stream | dropped: superseded by ADR-0008 | the one event stream stands as the bus; the turn-taking scheduler goes, the Builder calls examine |
-| D130 | Seven phases, each small, each leaving the artifacts byte-identical until the phase that changes them | dropped: superseded by ADR-0008 | the phase plan of the 2026-09-02 rebuild, spent; the "move verbatim, then change" rule is the carve rule of DESIGN.md |
-| D131 | Research on the context manager: dependency guards, protected tool output, capped loaded tools | dropped: superseded by ADR-0008 | drops with D124 |
-| D135 | The model is the driver and the graph refreshes stale inputs | dropped: superseded by ADR-0008 | the driver half is taken all the way; the graph is gone, so nothing is left to refresh |
-| D136 | The mechanic repairs what the model wrote | dropped: superseded by ADR-0008 | the Builder edits its own files with the base tools; learnings.md section 7 paragraph 2 |
-| D137 | Build 9 measures the mechanic on the Tasks that write | dropped: superseded by ADR-0008 | build-plan entry, spent |
-| D141 | The Examiner's finding names the Builder verb and carries a hint | dropped: superseded by ADR-0008 | there are no verbs; a finding carries the rows that differ, learnings.md section 7 paragraph 1 |
-| D142 | A round has moved when a gate count, an artifact or a ruling changed | dropped: superseded by ADR-0008 | there is no round; movement is now what the bus shows between two calls |
-| D145 | A repair result opens with its own target's ruling | dropped: superseded by ADR-0008 | the verb tools are gone; the ruling rides the tool result through the hook |
-| D146 | The Intent stage ratchets, and a repaired file moves the cache key | dropped: superseded by ADR-0008 | no stage cache; "a grounded record is kept" is gate artifacts |
-| D149 | A Task the re-rolls stage skips loses the re-rolls an earlier build left it | dropped: superseded by ADR-0008 | stage bookkeeping |
-| D153 | The driver builds the target when the model repaired and never called build | dropped: superseded by ADR-0008 | there is no driver and no build verb |
-| D161 | The driver builds the target again after a narrowed repair | dropped: superseded by ADR-0008 | as D153 |
-| D166 | A round is not done until the target was built | dropped: superseded by ADR-0008 | there is no round; the Builder states why it stops |
-| D169 | Two more exits: fidelity flat for k rounds, and a round cap | dropped: superseded by ADR-0008 | no rounds to count; the stop rule (D276) keeps "stop and say why" |
-| D181 | Nine repairs to the Builder's and the Examiner's loop | dropped: superseded by ADR-0008 | loop bookkeeping read off five builds; what it taught is in learnings.md section 2 |
-| D192 | Five loop repairs read off the second watch | dropped: superseded by ADR-0008 | as D181 |
-| D218 | A round's Task rows are written once, at round close | dropped: superseded by ADR-0008 | no round close; the one-snapshot rule survives as a bus subscriber, L1.4 |
-| D231 | Round accounting survives a raised beat | dropped: superseded by ADR-0008 | there are no beats |
-| D246 | The compile heads are built once per build and the helper specs ride one object | dropped: superseded by ADR-0008 | compile-stage plumbing; the caching learning is in docs/prompt-caching.md and D245 |
-| D274 | A stage's cache key is computed from the code it imports | dropped: superseded by ADR-0008 | no stages; the learning lives in the runner tool's version hash, which covers its own code and the core loop it ran on |
+| D109 | Every stage hashes the modules it delegates to | dropped: superseded by ADR-0011 | no stages; the hash learning lives in the runner tool's version hash |
+| D124 | The model manages its own context with forget, recall, load and unload, over a code floor | dropped: superseded by ADR-0011 | compaction mirrors tau: automatic at 40 percent, manual on request, the older prefix summarised; learnings.md section 1 keeps why an unread tool result is still evidence |
+| D126 | A round is four beats ending at gates | dropped: superseded by ADR-0011 | there is no round; the three exits become the Builder's stop rule (D276) |
+| D128 | The two agents take turns on one event stream | dropped: superseded by ADR-0011 | the one event stream stands as the bus; the turn-taking scheduler goes, the Builder calls examine |
+| D130 | Seven phases, each small, each leaving the artifacts byte-identical until the phase that changes them | dropped: superseded by ADR-0011 | the phase plan of the 2026-09-02 rebuild, spent; the "move verbatim, then change" rule is the carve rule of DESIGN.md |
+| D131 | Research on the context manager: dependency guards, protected tool output, capped loaded tools | dropped: superseded by ADR-0011 | drops with D124 |
+| D135 | The model is the driver and the graph refreshes stale inputs | dropped: superseded by ADR-0011 | the driver half is taken all the way; the graph is gone, so nothing is left to refresh |
+| D136 | The mechanic repairs what the model wrote | dropped: superseded by ADR-0011 | the Builder edits its own files with the base tools; learnings.md section 7 paragraph 2 |
+| D137 | Build 9 measures the mechanic on the Tasks that write | dropped: superseded by ADR-0011 | build-plan entry, spent |
+| D141 | The Examiner's finding names the Builder verb and carries a hint | dropped: superseded by ADR-0011 | there are no verbs; a finding carries the rows that differ, learnings.md section 7 paragraph 1 |
+| D142 | A round has moved when a gate count, an artifact or a ruling changed | dropped: superseded by ADR-0011 | there is no round; movement is now what the bus shows between two calls |
+| D145 | A repair result opens with its own target's ruling | dropped: superseded by ADR-0011 | the verb tools are gone; the ruling rides the tool result through the hook |
+| D146 | The Intent stage ratchets, and a repaired file moves the cache key | dropped: superseded by ADR-0011 | no stage cache; "a grounded record is kept" is gate artifacts |
+| D149 | A Task the re-rolls stage skips loses the re-rolls an earlier build left it | dropped: superseded by ADR-0011 | stage bookkeeping |
+| D153 | The driver builds the target when the model repaired and never called build | dropped: superseded by ADR-0011 | there is no driver and no build verb |
+| D161 | The driver builds the target again after a narrowed repair | dropped: superseded by ADR-0011 | as D153 |
+| D166 | A round is not done until the target was built | dropped: superseded by ADR-0011 | there is no round; the Builder states why it stops |
+| D169 | Two more exits: fidelity flat for k rounds, and a round cap | dropped: superseded by ADR-0011 | no rounds to count; the stop rule (D276) keeps "stop and say why" |
+| D181 | Nine repairs to the Builder's and the Examiner's loop | dropped: superseded by ADR-0011 | loop bookkeeping read off five builds; what it taught is in learnings.md section 2 |
+| D192 | Five loop repairs read off the second watch | dropped: superseded by ADR-0011 | as D181 |
+| D218 | A round's Task rows are written once, at round close | dropped: superseded by ADR-0011 | no round close; the one-snapshot rule survives as a bus subscriber, L1.4 |
+| D231 | Round accounting survives a raised beat | dropped: superseded by ADR-0011 | there are no beats |
+| D246 | The compile heads are built once per build and the helper specs ride one object | dropped: superseded by ADR-0011 | compile-stage plumbing; the caching learning is in docs/prompt-caching.md and D245 |
+| D274 | A stage's cache key is computed from the code it imports | dropped: superseded by ADR-0011 | no stages; the learning lives in the runner tool's version hash, which covers its own code and the core loop it ran on |
 
 ## Counts
 
@@ -350,4 +350,4 @@ Locations use the vocabulary of the brief (carried module, gate, hook, prompt se
 | base tool | 5 |
 | hook | 3 |
 
-Thirty rows are dropped, all of them to ADR-0008, and every one of them names the paragraph of `docs/learnings.md` that keeps what it taught. Nothing else is dropped: the other 284 rows name a module, a gate, a hook, a prompt section, a tool or a document that a later stream has to produce.
+Thirty rows are dropped, all of them to ADR-0011, and every one of them names the paragraph of `docs/learnings.md` that keeps what it taught. Nothing else is dropped: the other 284 rows name a module, a gate, a hook, a prompt section, a tool or a document that a later stream has to produce.
