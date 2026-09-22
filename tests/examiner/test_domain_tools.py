@@ -206,3 +206,16 @@ def test_proposal_on_a_task_with_a_reference_is_refused_while_the_loophole_probe
     assert root.history["t1"].versions[-1].rejected_by == ["verifier_loophole"]
     assert root.task_status["t1"] == {"verifier_passed": True}, "a refusal changes no status"
     assert not (world.workdir / "exam" / "task_status.json").exists()
+
+
+def test_proposal_on_a_task_with_a_reference_is_refused_when_the_loophole_probe_passes(tmp_path):
+    root, world, _ = _root(tmp_path, probe_model=object(), run_probe=probe_runner_over(VF.reference_run()),
+                           task_status={"t1": {"verifier_passed": True}})
+    _with_reference(world)
+    [tool] = [t for t in D.domain_tools(root) if t.name == "propose_verifier"]
+    with pytest.raises(RetryableToolError) as excinfo:
+        _run(tool.execute(D.ProposeArgs(task_id="t1", reason="tighten", drop=[], add=[])))
+    assert "verifier_loophole fail" in str(excinfo.value)
+    assert "reached the End state and scored pass" in str(excinfo.value)
+    assert root.history["t1"].versions[-1].rejected_by == ["verifier_loophole"]
+    assert not (world.workdir / "exam" / "task_status.json").exists(), "a refusal changes no status"

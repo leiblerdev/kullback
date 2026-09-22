@@ -108,3 +108,15 @@ def test_evidence_of_carries_the_binding_reads_and_task_status(tmp_path):
     assert evidence["task_status"] == {"t1": {"verifier_passed": True}}
     assert evidence["task_runs"]["t1"], "the loosening Runs load off the replay rows"
     assert isinstance(evidence["probes"]["t1"], ProbePool)
+
+
+def test_evidence_of_a_referenced_task_hands_the_probe_model_and_runner_to_the_suite(tmp_path):
+    world = make_world(tmp_path)
+    refs = [{"run_id": row["run_id"]} for row in world.inputs["replays"]["t1"].values()]
+    write_json(world.workdir / "references.json", {"t1": {"references": refs}})
+    model, runner = object(), lambda model, verifier: VF.wrong_run()
+    keyword = dict(workdir=world.workdir, verifiers={"t1": _verifier(tmp_path)},
+                   replays=world.inputs["replays"], rerolls=world.inputs["rerolls"])
+    evidence = F.evidence_of(F.ExamRoot(probe_model=model, run_probe=runner, **keyword), "t1")
+    assert evidence["reference"] is not None
+    assert evidence["probe_model"] is model and evidence["run_probe"] is runner

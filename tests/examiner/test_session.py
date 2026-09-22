@@ -177,3 +177,42 @@ def test_examine_with_a_reroll_model_buys_second_path_rerolls(tmp_path):
     assert bought, "a Reference standing alone buys re-rolls through the callable"
     rows = (read_json(root / "examiner" / "rerolls.json", {}) or {}).get("widget_task") or []
     assert rows and all(row.get("reason") == "second_path" for row in rows)
+
+
+def _proposed_over_a_runner_world(tmp_path, probe_model):
+    """A built Environment with two Runs of one Task on disk, examined with a probe model, and
+    a scripted Examiner that proposes the derived Verifier again through propose_verifier."""
+    root = _env_with_trace(tmp_path / "work")
+    seed = tool.run(root, "widget_task", _rename_loop(), workdir=root)
+    other = tool.run(root, "widget_task", _rename_loop(), workdir=root / "second")
+    write_json(root / "replays.json", {"widget_task": {
+        "rec1": {"trace_id": "rec1", "run_id": seed.run_id, "confirmed": True, "path": seed.path}}})
+    write_json(root / "rerolls.json", {"widget_task": [
+        {"run_id": other.run_id, "path": other.path, "termination_reason": "user_stop"}]})
+    write_json(root / "constraints.json", [])
+    events: list = []
+    S.examine(root, model=TestModel([
+        reply("proposing", ("propose_verifier", {"task_id": "widget_task", "reason": "again",
+                                                 "drop": [], "add": []})),
+        reply("done")]), probe_model=probe_model, subscribers=[events.append])
+    [proposed] = _ends(events, "propose_verifier")
+    return root, proposed
+
+
+def test_session_proposal_runs_the_loophole_probe_through_the_runner_and_is_trusted(tmp_path):
+    root, proposed = _proposed_over_a_runner_world(tmp_path, TestModel(["I will not."], loop=True))
+    assert proposed.is_error is False
+    assert "verifier_loophole pass" in proposed.result.content
+    assert "trusted pass" in proposed.result.content
+    status = read_json(root / "exam" / "task_status.json")
+    assert status["widget_task"]["verifier_passed"] is True
+    assert list((root / "probes").glob("*.jsonl")), "the probe is a Run the runner played"
+
+
+def test_session_proposal_whose_probe_reaches_the_end_state_is_refused_at_the_loophole(tmp_path):
+    root, proposed = _proposed_over_a_runner_world(tmp_path, _rename_loop())
+    assert proposed.is_error is True
+    assert "verifier_loophole fail" in proposed.result.content
+    written = read_json(root / "exam" / "history.json")
+    assert written["widget_task"]["versions"][-1]["rejected_by"] == ["verifier_loophole"]
+
