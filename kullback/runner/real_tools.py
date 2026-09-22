@@ -62,6 +62,14 @@ def _raise_if_not_world(exc: Exception) -> None:
         raise exc
 
 
+def _close_ignoring_world_error(world: RealWorld) -> None:
+    """Release a world whose reset failed; a close from the same family is ignored."""
+    try:
+        world.close()
+    except Exception as exc:
+        _raise_if_not_world(exc)
+
+
 def _error_message(exc: Exception) -> str:
     """The failure in words: its name, with what it said when it said anything."""
     return f"{type(exc).__name__}: {exc}" if str(exc) else type(exc).__name__
@@ -113,12 +121,28 @@ class RealTool:
         self._world: Optional[RealWorld] = None
 
     def open(self) -> RealWorld:
-        """Reset the world once per Run, lazily on the first call, and keep it."""
+        """Reset the world once per Run, lazily on the first call, and keep it.
+
+        A reset that raises after the container was created still releases it: the world
+        is kept before resetting so the failure path can close it, and the keep is cleared
+        so the next call starts fresh. A close that fails with a world error is ignored
+        beside the reset failure it follows; any other close failure propagates.
+        """
         if self._world is None:
             world = self.make_world()
-            world.reset()
             self._world = world
+            try:
+                world.reset()
+            except Exception:
+                self._world = None
+                _close_ignoring_world_error(world)
+                raise
         return self._world
+
+    @property
+    def opened(self) -> bool:
+        """Whether the world is open now: reset ran and close has not released it."""
+        return self._world is not None
 
     def call(self, args: Optional[dict] = None) -> RealOutcome:
         """Run the rendered commands in order; the first world failure decides the outcome.

@@ -15,6 +15,10 @@ from kullback.runner.records import ToolCallError, ToolSig, content_hash
 from kullback.runner.records import plain as _plain
 from kullback.runner.state import StateView, _db_put, _row_model
 
+# The default cap on one real tool's kept workspace export: 64 MiB, overridable per
+# Router through `real_export_limit` (D262).
+REAL_EXPORT_LIMIT_BYTES = 64 * 1024 * 1024
+
 STATE_PARAMS = ("state", "db", "world", "env")
 # The Run stops here: a tool the Environment lists to the Candidate and cannot answer by code
 # or by the recording (G28). The Candidate is never shown an answer for it, and the Verdict
@@ -85,6 +89,8 @@ class Router:
         self.tools = env_tools_module
         self.real_tools = dict(real_tools or {})
         self._last_real_receipts: dict[str, list] = {}
+        self.real_export_limit = REAL_EXPORT_LIMIT_BYTES
+        self.real_end_states: dict[str, bytes] = {}
         # D40: a result that names a synthetic row was answered from a row no trace showed.
         self.synthetic_rows = frozenset(synthetic_rows or ())
         self.state = starting_state if isinstance(starting_state, StateView) else StateView(starting_state)
@@ -238,14 +244,36 @@ class Router:
         """
         return list(self._last_real_receipts.get(name) or [])
 
-    def close_real(self) -> None:
-        """Release every opened real world; a Run never outlives its containers (D262)."""
-        for tool in self.real_tools.values():
-            tool.close()
+    def close_real(self) -> list[tuple[str, str]]:
+        """Release every opened real world and keep each export, whatever fails (D262).
+
+        Every tool is closed even when one close raises, and nothing is raised: failures
+        come back as (tool name, message) pairs, so a failing close never masks the Run's
+        own outcome. Each opened tool's workspace is exported once before its close under
+        `real_export_limit` and kept for `real_end_state`; a failed export is listed too.
+        """
+        failures: list[tuple[str, str]] = []
+        for name, tool in self.real_tools.items():
+            if tool.opened:
+                try:
+                    self.real_end_states[name] = tool.end_state(self.real_export_limit)
+                except Exception as exc:
+                    failures.append((name, _message_of(exc)))
+            try:
+                tool.close()
+            except Exception as exc:
+                failures.append((name, _message_of(exc)))
+        return failures
 
     def real_end_state(self, name: str, limit_bytes: int) -> bytes:
-        """Export one real tool's workspace bytes, for the grader's own container (D262)."""
-        return self.real_tools[name].end_state(limit_bytes)
+        """One real tool's workspace bytes: the live export while open, the kept bytes after close (D262).
+
+        A tool never called has nothing to export and answers empty bytes.
+        """
+        tool = self.real_tools[name]
+        if tool.opened:
+            return tool.end_state(limit_bytes)
+        return self.real_end_states.get(name, b"")
 
     def _code(self, name: str, function: Any, args: dict) -> RouteResult:
         snapshot = _snapshot_world(self.tools, self.state)

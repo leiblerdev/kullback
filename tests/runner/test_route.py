@@ -607,6 +607,50 @@ def test_last_real_receipts_carries_the_exit_codes_and_starts_empty():
     assert router.last_real_receipts("other") == []
 
 
+def test_close_real_closes_every_tool_and_reports_failures():
+    from test_real_tools import FakeReceipt, FakeWorld, shell_batch
+
+    from kullback.runner.real_tools import RealTool
+    first = FakeWorld([FakeReceipt(stdout=b"a")])
+    first.close_error = RuntimeError("cannot remove")
+    second = FakeWorld([FakeReceipt(stdout=b"b")])
+    router = Router(starting_state=StateView(shared={}), real_tools={
+        "a": RealTool("a", lambda: first), "b": RealTool("b", lambda: second)})
+    router.route("a", shell_batch("ls"))
+    router.route("b", shell_batch("ls"))
+    assert router.close_real() == [("a", "RuntimeError: cannot remove")]
+    assert second.closed is True
+
+
+def test_failed_export_is_listed_and_leaves_the_answered_result():
+    from test_real_tools import FakeReceipt, FakeWorld, UnresolvedError, shell_batch
+
+    from kullback.runner.real_tools import RealTool
+    world = FakeWorld([FakeReceipt(stdout=b"out")], export=b"tar-here")
+    router = Router(starting_state=StateView(shared={}),
+                    real_tools={"shell": RealTool("shell", lambda: world)})
+    out = router.route("shell", shell_batch("ls"))
+    world.export_error = UnresolvedError("export blew up")
+    assert router.close_real() == [("shell", "UnresolvedError: export blew up")]
+    assert out.result == "out"
+    assert router.real_end_state("shell", 64) == b""
+
+
+def test_close_real_exports_under_the_routers_limit():
+    from test_real_tools import FakeReceipt, FakeWorld, shell_batch
+
+    from kullback.runner.real_tools import RealTool
+    from kullback.runner.route import REAL_EXPORT_LIMIT_BYTES
+    world = FakeWorld([FakeReceipt(stdout=b"a")], export=b"tar-here")
+    router = Router(starting_state=StateView(shared={}),
+                    real_tools={"shell": RealTool("shell", lambda: world)})
+    assert router.real_export_limit == REAL_EXPORT_LIMIT_BYTES == 64 * 1024 * 1024
+    router.real_export_limit = 1234
+    router.route("shell", shell_batch("ls"))
+    router.close_real()
+    assert world.export_limit == 1234
+
+
 def test_real_end_state_returns_the_export_bytes():
     from test_real_tools import FakeReceipt, FakeWorld
 

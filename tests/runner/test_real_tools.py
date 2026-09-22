@@ -37,6 +37,9 @@ class FakeWorld:
         self.exported = export
         self.step_error = None
         self.reset_error = None
+        self.close_error = None
+        self.export_error = None
+        self.export_limit = None
 
     def reset(self):
         self.reset_count += 1
@@ -54,9 +57,14 @@ class FakeWorld:
 
     def export_workspace(self, limit_bytes):
         assert limit_bytes > 0
+        self.export_limit = limit_bytes
+        if self.export_error is not None:
+            raise self.export_error
         return self.exported
 
     def close(self):
+        if self.close_error is not None:
+            raise self.close_error
         self.closed = True
         return True
 
@@ -174,6 +182,34 @@ def real_router(world) -> Router:
     return Router(starting_state=StateView(shared={}), real_tools={"shell": tool})
 
 
+def test_reset_failure_closes_the_created_world():
+    world = FakeWorld()
+    world.reset_error = UnresolvedError("creation is unresolved")
+    tool = RealTool("shell", lambda: world)
+    out = tool.call(shell_batch("ls"))
+    assert out.error_class == "unknown"
+    assert world.closed is True
+    world.reset_error = None
+    assert tool.call(shell_batch("ls")).result == "ok"
+
+
+def test_reset_failure_with_a_failing_close_still_answers_the_reset_error():
+    world = FakeWorld()
+    world.reset_error = UnresolvedError("creation is unresolved")
+    world.close_error = UnresolvedError("remove failed")
+    tool = RealTool("shell", lambda: world)
+    assert tool.call(shell_batch("ls")).error_class == "unknown"
+
+
+def test_reset_failure_with_an_honest_close_error_raises_it():
+    world = FakeWorld()
+    world.reset_error = UnresolvedError("creation is unresolved")
+    world.close_error = RuntimeError("cannot remove")
+    tool = RealTool("shell", lambda: world)
+    with pytest.raises(RuntimeError):
+        tool.call(shell_batch("ls"))
+
+
 def test_loop_releases_the_world_when_the_run_raises(workdir):
     world = FakeWorld([FakeReceipt(stdout=b"hi")])
     state = new_run_state("r1", workdir=workdir)
@@ -200,3 +236,47 @@ def test_loop_releases_the_world_when_the_run_ends(workdir):
     assert state.run.route_counts.get("real") == 1
     answered = [e for e in state.run.events if e.type == "tool_result"]
     assert [e.route for e in answered] == ["real"]
+
+
+def done_after_call(batch) -> TestModel:
+    return TestModel([
+        {"content": None,
+         "tool_calls": [{"id": "c1", "name": "shell", "arguments": batch}]},
+        {"content": "done"},
+    ])
+
+
+def test_run_returns_its_state_when_a_close_fails(workdir):
+    world = FakeWorld([FakeReceipt(stdout=b"hi")])
+    world.close_error = RuntimeError("cannot remove")
+    state = new_run_state("r1", workdir=workdir)
+    out = run(state, done_after_call(shell_batch("ls")),
+              tools=[{"name": "shell"}], router=real_router(world))
+    assert out.stopped is True
+    assert out.run.termination_reason == "agent_stop"
+    assert out.run.route_counts.get("real") == 1
+
+
+def test_run_keeps_each_called_tools_export(workdir):
+    world = FakeWorld([FakeReceipt(stdout=b"hi")], export=b"tar-bytes")
+    router = Router(starting_state=StateView(shared={}), real_tools={
+        "shell": RealTool("shell", lambda: world),
+        "other": RealTool("other", lambda: FakeWorld())})
+    state = new_run_state("r1", workdir=workdir)
+    run(state, done_after_call(shell_batch("ls")),
+        tools=[{"name": "shell"}], router=router)
+    assert router.real_end_state("shell", 64) == b"tar-bytes"
+    assert router.real_end_state("other", 64) == b""
+
+
+def test_run_returns_its_state_when_the_export_fails(workdir):
+    world = FakeWorld([FakeReceipt(stdout=b"hi")])
+    world.export_error = UnresolvedError("export blew up")
+    router = real_router(world)
+    state = new_run_state("r1", workdir=workdir)
+    out = run(state, done_after_call(shell_batch("ls")),
+              tools=[{"name": "shell"}], router=router)
+    assert out.stopped is True
+    assert out.run.termination_reason == "agent_stop"
+    answered = [e for e in out.run.events if e.type == "tool_result"]
+    assert answered[0].payload["result"] == "hi"
