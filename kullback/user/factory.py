@@ -19,6 +19,7 @@ import importlib
 from pathlib import Path
 from typing import Any, Optional
 
+from kullback.agent.bus import Bus
 from kullback.runner import canon
 from kullback.runner.records import EntitySchema, read_json
 from kullback.user import context as context_mod
@@ -48,7 +49,8 @@ def build_user(workdir: Any, task_id: str, model: Any, purpose: str, *,
                ctx: Any = _MISSING, fallback: Any = _MISSING,
                record_values: Any = _MISSING, vocab: Any = _MISSING,
                write_tools: Any = _MISSING, goal_writes: Any = _MISSING,
-               answer_strip: Any = _MISSING, trace: Any = _MISSING) -> Optional[AgentUser]:
+               answer_strip: Any = _MISSING, trace: Any = _MISSING,
+               bus: Any = None) -> Optional[AgentUser]:
     """The Simulated user of one Task: the agent user over the rules floor, fully specified.
 
     The caller passes what it has live and the workdir supplies the rest, so the round scorer and
@@ -69,11 +71,13 @@ def build_user(workdir: Any, task_id: str, model: Any, purpose: str, *,
     for key, value in given:
         if value is not _MISSING:
             disk[key] = value
+    if bus is None and workdir is not None:
+        bus = Bus(Path(workdir) / "bus.jsonl", "user")
     return AgentUser(
         disk["ctx"], disk["fallback"], model, vocab=disk["vocab"],
         write_tools=disk["write_tools"], goal_writes=disk["goal_writes"],
         answer_strip=disk["answer_strip"], record_values=disk["record_values"],
-        trace=disk["trace"],
+        trace=disk["trace"], bus=bus,
     )
 
 

@@ -228,3 +228,23 @@ def test_the_disk_derivation_equals_what_the_build_passes_live(workdir):
     for probe in ("My plot number is PLOT-4471.", "The courier reference is CR-90881.",
                   "Hello."):
         assert user.guards.strip(probe) == live_strip(probe)
+
+
+def test_the_built_user_carries_the_workdirs_bus_by_default(workdir):
+    """No bus passed means the workdir's own, named for this agent."""
+    user = factory_mod.build_user(workdir, "task_1", TestModel([], loop=True),
+                                  factory_mod.PURPOSE_SCORE)
+    assert user.bus is not None
+    assert user.bus.path == workdir / "bus.jsonl"
+    assert user.bus.agent == "user"
+    assert user.harness().bus is user.bus
+
+
+def test_an_explicit_bus_reaches_the_harness_unchanged(workdir):
+    """A caller with its own bus keeps it; the factory makes no second one."""
+    from kullback.agent.bus import Bus
+    bus = Bus(workdir / "custom.jsonl", "user")
+    user = factory_mod.build_user(workdir, "task_1", TestModel([], loop=True),
+                                  factory_mod.PURPOSE_SCORE, bus=bus)
+    assert user.bus is bus
+    assert user.harness().bus is bus

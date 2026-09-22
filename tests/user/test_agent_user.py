@@ -580,6 +580,12 @@ def test_the_head_keeps_the_founders_order(ctx, rules, recorded):
     assert positions == sorted(positions)
 
 
+def test_the_user_harness_registers_only_its_four_tools(ctx, rules, recorded):
+    """No base tools on this harness: the phone reaches four tools and nothing else."""
+    user = agent_for(ctx, rules, ["Thanks, noted."], recorded)
+    assert user.harness().registry.names() == ["my_facts", "my_goal", "what_i_said", "end_run"]
+
+
 # --- the conversation appended as messages (G24) --------------------------------------------------
 
 def test_the_conversation_arrives_as_messages_with_the_turn_line_last(ctx, rules, recorded):
