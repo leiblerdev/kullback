@@ -23,11 +23,12 @@ from __future__ import annotations
 import asyncio
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Iterable, Optional
+from typing import TYPE_CHECKING, Any, Callable, Iterable, Optional
 
 from kullback.agent.base_tools import DEFAULT_ALLOWLIST, register_base_tools
 from kullback.agent.bus import Bus
 from kullback.agent.context import ContextConfig
+from kullback.agent.events import ToolExecutionEnd
 from kullback.agent.extensions import ExtensionAPI, load_extensions, refuse_paths
 from kullback.agent.harness import AgentHarness
 from kullback.agent.session.store import SessionStore
@@ -38,6 +39,9 @@ from kullback.builder.world_tools import ingest_files
 from kullback.gates import names_protected_path
 from kullback.gates.hook import PATH_KEYS, gate_writes
 from kullback.runner import budget
+
+if TYPE_CHECKING:
+    from kullback.builder.build import BuildPlan
 
 #: The directories under env/ the model may write; everything else there is read-only for it.
 WRITABLE_PREFIXES = ("tools/", "intents/", "refusals/", "policy/")
@@ -67,6 +71,41 @@ class BuilderRoot:
     def env(self) -> Path:
         """The Builder's root: everything it reads and writes."""
         return Path(self.env_root) if self.env_root is not None else Path(self.workdir) / "env"
+
+CEILING_STAGE = "builder_session"
+
+
+def spent_in(workdir: Any) -> float:
+    """What this workdir has paid for so far, off the one ledger budget.py writes."""
+    return float(budget.load_totals(workdir)["total"].get("usd") or 0.0)
+
+
+def ceiling_guard(harness: AgentHarness, plan: BuildPlan) -> tuple[Callable[[], None], dict]:
+    """Cancel the run the moment the workdir's spend reaches the build's ceiling (D86, D135).
+
+    The ceiling is the hard stop of a model-driven session: a stage that crosses it raises inside
+    its own tool and the pipeline records the stop, but nothing stopped the model from calling the
+    next tool, and with no turn cap that is an unbounded run. The guard reads the ledger after every
+    tool call and cancels, so the tool that reached the ceiling is the last one. The dict it returns
+    is empty until then and afterwards is the ceiling's own stop report, which is what the caller
+    hands to a report (D86: stop where you are and say what it cost).
+    """
+    stop: dict = {}
+    ceiling = plan.ceiling
+    if ceiling is None:
+        return (lambda: None), stop
+
+    def watch(event: Any) -> None:
+        if stop or not isinstance(event, ToolExecutionEnd):
+            return
+        spent = spent_in(plan.workdir)
+        if spent < ceiling.usd:
+            return
+        ceiling.spent = max(ceiling.spent, spent)
+        stop.update(ceiling.report(CEILING_STAGE, event.tool_name))
+        harness.cancel()
+
+    return harness.subscribe(watch), stop
 
 
 def _written_path(call: Any) -> Optional[str]:
