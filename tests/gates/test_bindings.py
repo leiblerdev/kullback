@@ -23,10 +23,12 @@ from gates.examiner_fixtures import (
 )
 from gates.verifier_fixtures import (
     WRITE_TOOLS,
+    alt_path_run,
     derive,
     extra_write_run,
     other_reason_run,
     reference_run,
+    wrong_run,
 )
 from kullback.builder import compile_env as ce
 from kullback.builder import sandbox as sb
@@ -272,6 +274,39 @@ def test_the_verifier_suite_refusal_names_the_check_and_the_atom(tmp_path):
     assert refused
     for ruling in refused:
         assert ruling.rows, ruling.stage
+
+
+def _suite_evidence(verifier, **overrides) -> dict:
+    """What a verifiers write carries when its Task has a Reference: every D79 input, check 6 on a
+    hand-built probe Run, and a status row whose suite did not pass."""
+    evidence = {"reference": reference_run(), "alt_path_run": alt_path_run(), "seed_runs": [alt_path_run()],
+                "wrong_run": wrong_run(), "write_tools": set(WRITE_TOOLS), "probe_model": object(),
+                "run_probe": lambda model, ruled: wrong_run(), "verifiers": [verifier],
+                "history": history(version(verifier)),
+                "task_status": {verifier.task_id: {"verifier_passed": False}}}
+    evidence.update(overrides)
+    return evidence
+
+
+def test_a_verifiers_write_with_a_reference_draws_the_suite_rulings(tmp_path):
+    verifier = derive(tmp_path)
+    root = tmp_path / "root"
+    rel = _write(root, "verifiers/t1.json", json.dumps(as_dict(verifier)))
+    out = rulings_for(root, rel, tmp_path / "work", evidence=_suite_evidence(verifier))
+    assert [r.stage for r in out if r.stage in S.D79_STAGES] == list(S.D79_STAGES)
+
+
+def test_the_trusted_ruling_reads_the_suite_that_just_ran_not_the_status_row(tmp_path):
+    verifier = derive(tmp_path)
+    root = tmp_path / "root"
+    rel = _write(root, "verifiers/t1.json", json.dumps(as_dict(verifier)))
+    out = rulings_for(root, rel, tmp_path / "work", evidence=_suite_evidence(verifier))
+    trusted = next(r for r in out if r.stage == "trusted")
+    assert not any("suite" in failure for failure in trusted.failures), trusted.failures
+
+    no_suite = rulings_for(root, rel, tmp_path / "work", evidence=_suite_evidence(verifier, reference=None))
+    trusted = next(r for r in no_suite if r.stage == "trusted")
+    assert any("D79 suite did not pass" in failure for failure in trusted.failures), trusted.failures
 
 
 def test_loosening_and_false_rejection_refusals_name_their_runs(tmp_path):

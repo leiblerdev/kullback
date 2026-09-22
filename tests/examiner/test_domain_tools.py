@@ -6,7 +6,7 @@ import asyncio
 
 import pytest
 
-from examiner.worlds import events_of, make_world
+from examiner.worlds import events_of, make_world, probe_runner_over
 from gates import verifier_fixtures as VF
 from gates.examiner_fixtures import SIGS
 from kullback.agent.bus import Bus
@@ -29,6 +29,11 @@ def _root(tmp_path, **kwargs):
                    bus=Bus(tmp_path / "bus.jsonl", agent="examiner"))
     keyword.update(kwargs)
     return ExamRoot(**keyword), world, verifier
+
+
+def _with_reference(world) -> None:
+    """The Task's Reference as derive_all leaves it: a references.json row naming the replayed Run and a second path."""
+    write_json(world.workdir / "references.json", {"t1": {"references": [{"run_id": "ref"}, {"run_id": "alt"}]}})
 
 
 def _run(coro):
@@ -62,7 +67,7 @@ def test_propose_verifier_refuses_an_atom_of_the_wrong_shape(tmp_path):
 def test_refused_proposal_restores_the_previous_file_and_names_rows(tmp_path):
     root, world, current = _root(tmp_path)
     write_json(world.workdir / "exam" / "verifiers" / "t1.json", as_dict(current))
-    write_json(world.workdir / "reference.json", world.paths["ref"])
+    _with_reference(world)
     [tool] = [t for t in D.domain_tools(root) if t.name == "propose_verifier"]
     drop = [a.id for a in current.atoms if a.id != "w0.reason"]
     before = (world.workdir / "exam" / "verifiers" / "t1.json").read_bytes()
@@ -147,7 +152,7 @@ def test_accepted_proposal_appends_version_2_with_parent_hash_of_version_1(tmp_p
 
 def test_refused_proposal_keeps_a_rejected_row_naming_the_gate(tmp_path):
     root, world, current = _root(tmp_path)
-    write_json(world.workdir / "reference.json", world.paths["ref"])
+    _with_reference(world)
     [tool] = [t for t in D.domain_tools(root) if t.name == "propose_verifier"]
     drop = [a.id for a in current.atoms if a.id != "w0.reason"]
     with pytest.raises(RetryableToolError):
@@ -174,3 +179,30 @@ def test_accepted_proposal_rules_trusted_when_status_and_history_are_present(tmp
     verifiers_dir = world.workdir / "exam" / "verifiers"
     assert (verifiers_dir.parent / "history.json").is_file()
     assert (verifiers_dir.parent / "task_runs.json").is_file()
+
+
+def test_accepted_proposal_on_a_task_with_a_reference_carries_the_suite_and_keeps_its_status(tmp_path):
+    root, world, current = _root(tmp_path, probe_model=object(), run_probe=probe_runner_over(),
+                                 task_status={"t1": {"verifier_passed": False, "references": 1}})
+    _with_reference(world)
+    [tool] = [t for t in D.domain_tools(root) if t.name == "propose_verifier"]
+    result = _run(tool.execute(D.ProposeArgs(task_id="t1", reason="tighten", drop=[], add=[])))
+    names = [record["name"] for record in result.rulings]
+    assert [name for name in names if name in D79_STAGES] == list(D79_STAGES)
+    assert "trusted" in names and all(record["accepted"] for record in result.rulings)
+    row = read_json(world.workdir / "exam" / "task_status.json")["t1"]
+    assert row["verifier_passed"] is True and row["not_run"] == []
+    assert row["checks"] == {name: True for name in D79_STAGES.values()}
+    assert row["references"] == 1, "the rest of the derivation's row stands"
+    assert not (world.workdir / "task_status.json").exists(), "the workdir's file is derive_all's"
+
+
+def test_proposal_on_a_task_with_a_reference_is_refused_while_the_loophole_probe_cannot_run(tmp_path):
+    root, world, _ = _root(tmp_path, task_status={"t1": {"verifier_passed": True}})
+    _with_reference(world)
+    [tool] = [t for t in D.domain_tools(root) if t.name == "propose_verifier"]
+    with pytest.raises(RetryableToolError, match="verifier_loophole"):
+        _run(tool.execute(D.ProposeArgs(task_id="t1", reason="tighten", drop=[], add=[])))
+    assert root.history["t1"].versions[-1].rejected_by == ["verifier_loophole"]
+    assert root.task_status["t1"] == {"verifier_passed": True}, "a refusal changes no status"
+    assert not (world.workdir / "exam" / "task_status.json").exists()

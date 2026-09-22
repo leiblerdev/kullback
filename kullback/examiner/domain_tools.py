@@ -29,7 +29,7 @@ from kullback.examiner.exam_files import (
 from kullback.gates.bindings import rulings_for
 from kullback.gates.hook import ruling_line
 from kullback.gates.probes import version_hash, write_tools_of
-from kullback.gates.verifier_suite import HELPERS_SRC, check_run, make_atom
+from kullback.gates.verifier_suite import D79_STAGES, HELPERS_SRC, check_run, make_atom
 from kullback.runner import tool as runner_tool
 from kullback.runner.records import Event, Run, Verifier, VerifierVersion, as_dict, write_json
 
@@ -216,6 +216,20 @@ def _ruling_records(rulings: Iterable[Any]) -> list[dict]:
              "rows": [dict(row) for row in (ruling.rows or [])]} for ruling in rulings]
 
 
+def _keep_suite_status(root: ExamRoot, task_id: str, records: list[dict]) -> None:
+    """An accepted proposal's D79 suite as the Task's status row, in the exposed exam/task_status.json.
+
+    Never the workdir's file: that one is derive_all's. A ruling with no suite leaves the row as it was.
+    """
+    ran = {record["name"]: record["accepted"] for record in records if record["name"] in D79_STAGES}
+    if not ran:
+        return
+    root.task_status[task_id] = {**(root.task_status.get(task_id) or {}), "verifier_passed": all(ran.values()),
+                                 "checks": {D79_STAGES[stage]: passed for stage, passed in ran.items()},
+                                 "not_run": [stage for stage in D79_STAGES if stage not in ran]}
+    write_json(root.exam_dir / "task_status.json", root.task_status)
+
+
 def _refuse_proposal(task_id: str, version: str, records: list[dict]) -> RetryableToolError:
     """A refused proposal as a retryable error: every ruling line, and the rows behind each failure."""
     lines = "\n".join(record["line"] for record in records) or "no gate ruled on the proposal"
@@ -256,8 +270,9 @@ def _propose_verifier(root: ExamRoot):
         save_ruling_files(root)
         records = _ruling_records(rulings_for(
             root.exam_dir, f"verifiers/{args.task_id}.json", root.workdir,
-            evidence=evidence_of(root)))
+            evidence=evidence_of(root, task_id=args.task_id)))
         if records and all(record["accepted"] for record in records):
+            _keep_suite_status(root, args.task_id, records)
             summary = (f"proposal version {candidate.verifier_version} for task {args.task_id} "
                        f"({digest[:12]}) accepted: " + "; ".join(record["line"] for record in records))
             return ProposeResult(summary=summary, task_id=args.task_id, content_hash=digest,

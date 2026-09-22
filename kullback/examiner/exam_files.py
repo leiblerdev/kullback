@@ -20,8 +20,8 @@ from typing import Any, Literal, Optional
 from kullback.examiner import derive as derive_mod
 from kullback.examiner.plan import task_runs_of
 from kullback.gates import PROTECTED_PATH, first_string
-from kullback.gates.probes import version_hash
-from kullback.gates.verifier_suite import load_run
+from kullback.gates.probes import version_hash, write_tools_of
+from kullback.gates.verifier_suite import load_run, wrong_run
 from kullback.runner.records import (
     Probe,
     ProbePool,
@@ -131,6 +131,8 @@ class ExamRoot:
     bus: Any = None
     allowance_remaining: Optional[float] = None
     reroll_model: Any = None
+    probe_model: Any = None
+    run_probe: Any = None
 
     @property
     def exam_dir(self) -> Path:
@@ -323,7 +325,7 @@ def save_ruling_files(root: ExamRoot) -> None:
                {task_id: [as_dict(run) for run in rows] for task_id, rows in (runs or {}).items()})
 
 
-def evidence_of(root: ExamRoot) -> dict:
+def evidence_of(root: ExamRoot, task_id: Optional[str] = None) -> dict:
     """The gate evidence for a write under the Examiner's root, in one place (D79, D201).
 
     The eight reads of the verifiers binding the session holds: the replay rows, the re-roll
@@ -331,16 +333,49 @@ def evidence_of(root: ExamRoot) -> dict:
     Verifiers, the probe pools, the mined signatures and the canon rules, plus the task status
     the trusted gate reads. Empty is None, so a gate with nothing to rule over is skipped the
     way a missing workdir file skips it.
+
+    With a `task_id`, the D79 suite's inputs for that Task join them (`reference_evidence`), so
+    the suite rules on the write. A Task with no Reference Run on disk adds nothing, and the
+    suite is skipped for missing evidence as before.
     """
-    return {"replays": root.replays or None, "rerolls": root.rerolls or None,
-            "history": root.history or None, "task_runs": task_runs_of(root.replays, root.rerolls) or None,
-            "verifiers": list(root.verifiers.values()) or None, "probes": _probe_pools(root) or None,
-            "sigs": root.sigs or None, "rules": root.canon_rules,
-            "task_status": root.task_status or None}
+    evidence = {"replays": root.replays or None, "rerolls": root.rerolls or None,
+                "history": root.history or None, "task_runs": task_runs_of(root.replays, root.rerolls) or None,
+                "verifiers": list(root.verifiers.values()) or None, "probes": _probe_pools(root) or None,
+                "sigs": root.sigs or None, "rules": root.canon_rules,
+                "task_status": root.task_status or None}
+    if task_id is not None:
+        evidence.update(reference_evidence(root, task_id))
+    return evidence
+
+
+def reference_evidence(root: ExamRoot, task_id: str) -> dict:
+    """The D79 suite's inputs for one Task, off the References derive_all wrote (D79).
+
+    The first Reference Run is the Reference, the rest are the seed Runs, the second is the
+    alternate path when there is one, and the wrong Run is built from the Reference against the
+    Task's Verifier in `root.verifiers` (the candidate while a proposal is ruled, which is what
+    the suite tests). The loophole probe runs when the root holds a probe model and a
+    `run_probe(model, verifier)`, else check 6 is not run. No Reference Run on disk is an empty
+    dict, so "reference" stays absent.
+    """
+    workdir = Path(root.workdir)
+    row = (read_json(workdir / "references.json", {}) or {}).get(task_id) or {}
+    runs = reference_runs(workdir, row, (root.replays or {}).get(task_id), (root.rerolls or {}).get(task_id) or [])
+    if not runs:
+        return {}
+    reference, verifier = runs[0], root.verifiers.get(task_id)
+    try:
+        wrong = wrong_run(verifier, reference, root.canon_rules) if verifier is not None else None
+    except Exception:  # noqa: BLE001, a wrong Run that cannot be built leaves check 4 not run
+        wrong = None
+    return {"reference": reference, "seed_runs": runs[1:] or None,
+            "alt_path_run": runs[1] if len(runs) > 1 else None, "wrong_run": wrong,
+            "write_tools": write_tools_of(root.sigs), "probe_model": root.probe_model,
+            "run_probe": root.run_probe}
 
 
 __all__ = ["COPIED_DIRS", "COPIED_JSON", "EXAM_DIR", "RUNS_DIR", "SPOKEN_DIR", "ExamRoot",
            "Finding", "evidence_of", "finding_id_of", "finding_key", "history_path", "load_history",
-           "names_forbidden_path", "open_by_key", "reference_runs", "save_history",
+           "names_forbidden_path", "open_by_key", "reference_evidence", "reference_runs", "save_history",
            "save_ruling_files", "seeded_history",
            "subject_of", "write_spoken", "expose", "FORBIDDEN_READS"]

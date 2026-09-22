@@ -308,8 +308,9 @@ def _gate_suite(evidence: dict) -> Optional[list[GateResult]]:
         return None
     return list(validate_verifier(verifier, evidence["reference"], evidence.get("empty_run"),
                                  evidence.get("wrong_run"), evidence.get("alt_path_run"),
-                                 write_tools=evidence.get("write_tools"),
-                                 seed_runs=evidence.get("seed_runs")))
+                                 canon=evidence.get("rules"), write_tools=evidence.get("write_tools"),
+                                 seed_runs=evidence.get("seed_runs"), model=evidence.get("probe_model"),
+                                 run_probe=evidence.get("run_probe")))
 
 
 def _gate_loosening(evidence: dict) -> Optional[list[GateResult]]:
@@ -328,10 +329,30 @@ def _gate_false_rejection(evidence: dict) -> Optional[list[GateResult]]:
                                 task_status=evidence.get("task_status"))]
 
 
-def _gate_trusted(evidence: dict) -> Optional[list[GateResult]]:
-    if evidence.get("verifiers") is None or evidence.get("task_status") is None:
+def _suite_status(evidence: dict) -> Optional[tuple[str, dict]]:
+    """The ruled Verifier's Task and the status row the D79 suite that ran in this ruling gives it,
+    in the shape the derivation writes: `verifier_passed`, `checks` by check name, `not_run` by stage."""
+    ran = {ruling.stage: bool(ruling.passed) for ruling in evidence.get("rulings") or ()
+           if getattr(ruling, "stage", None) in D79_STAGES}
+    verifier = _verifier_of(evidence)
+    if not ran or verifier is None:
         return None
-    return [trusted_gate(evidence["task_status"], evidence["verifiers"], evidence.get("probes") or {},
+    return verifier.task_id, {"verifier_passed": all(ran.values()),
+                              "checks": {D79_STAGES[stage]: passed for stage, passed in ran.items()},
+                              "not_run": [stage for stage in D79_STAGES if stage not in ran]}
+
+
+def _gate_trusted(evidence: dict) -> Optional[list[GateResult]]:
+    """The trusted gate rules on the suite that just ran on the write: its row overlays the Task's
+    status for this ruling only. With no suite in this ruling it falls back to the file row."""
+    task_status = evidence.get("task_status")
+    suite = _suite_status(evidence)
+    if suite is not None:
+        task_id, row = suite
+        task_status = {**(task_status or {}), task_id: {**((task_status or {}).get(task_id) or {}), **row}}
+    if evidence.get("verifiers") is None or task_status is None:
+        return None
+    return [trusted_gate(task_status, evidence["verifiers"], evidence.get("probes") or {},
                          evidence.get("history") or {}, evidence.get("refusals") or {},
                          evidence.get("task_runs") or {}, evidence.get("replays") or {},
                          evidence.get("rerolls") or {}, evidence.get("rules"), evidence.get("sigs") or [])]
@@ -632,7 +653,8 @@ def rulings_for(root: Any, written_path: str, workdir: Any, *, execute: Any = No
 
     `execute(source, calls, db)` runs a tool body over recorded calls; without it the
     execution gates are skipped for missing evidence. `evidence` overrides or extends
-    what the loaders read from the workdir, keyed by evidence name.
+    what the loaders read from the workdir, keyed by evidence name. Each gate sees the
+    rulings drawn before it as evidence "rulings", so trusted reads the suite that just ran.
     """
     rel = _rel(root, written_path)
     binding = binding_for(rel) if rel is not None else None
@@ -676,4 +698,5 @@ def rulings_for(root: Any, written_path: str, workdir: Any, *, execute: Any = No
             out.append(_to_ruling(gate_result, merged))
             if not out[-1].passed:
                 return out
+        merged["rulings"] = list(out)
     return out

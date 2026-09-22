@@ -70,7 +70,7 @@ def test_fresh_session_seeds_version_1_accepted_for_each_derived_verifier(tmp_pa
     assert row["content_hash"] == version_hash(derived)
 
 
-def test_model_propose_verifier_is_refused_while_the_suite_has_not_run(tmp_path):
+def test_model_propose_verifier_is_refused_while_the_loophole_probe_cannot_run(tmp_path):
     world = make_world(tmp_path)
     materialize(world)
     events = _scripted_events(world, [
@@ -80,12 +80,13 @@ def test_model_propose_verifier_is_refused_while_the_suite_has_not_run(tmp_path)
     ])
     [proposed] = _ends(events, "propose_verifier")
     assert proposed.is_error is True
-    assert "trusted fail" in proposed.result.content
+    assert "verifier_loophole fail (not run: no model" in proposed.result.content
     assert "rows" in proposed.result.content
     assert not (world.workdir / "exam" / "verifiers" / "t1.json").exists()
     written = read_json(world.workdir / "exam" / "history.json")
     assert [v["accepted"] for v in written["t1"]["versions"]] == [True, False]
-    assert written["t1"]["versions"][-1]["rejected_by"] == ["trusted"]
+    assert written["t1"]["versions"][-1]["rejected_by"] == ["verifier_loophole"]
+    assert not (world.workdir / "exam" / "task_status.json").exists(), "a refusal writes no status"
 
 
 def test_model_write_of_verifiers_carries_rulings_runs_write_refused(tmp_path):
