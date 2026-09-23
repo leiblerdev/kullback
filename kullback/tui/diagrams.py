@@ -74,7 +74,7 @@ def dag_text(order: list[str], status: dict[str, str], attempts: Optional[dict[s
     """The pipeline as a downward flow: one box per stage, a ▼ between stages, provenance on the right."""
     out = Text()
     if not order:
-        return Text("no stages yet — /build to start, /status for the last build", style="dim")
+        return Text("no stages yet, /build to start, /status for the last build", style="dim")
     attempts, hashes = attempts or {}, hashes or {}
     inner = max(len(name) + len(_state_label(status.get(name, "pending"), attempts.get(name, 0))) + 12
                 for name in order)
