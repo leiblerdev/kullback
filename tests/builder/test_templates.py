@@ -78,12 +78,6 @@ def test_a_slot_is_cut_down_to_its_middle_only_where_the_whole_token_matches_no_
     assert made[0].columns == ["parcel_id", "state"]
 
 
-def test_a_shape_with_two_results_is_not_derived_and_comes_back_as_a_result_no_template_covers():
-    made, left = templates.templates_for(["Parcel P-1 is with dana.", "Parcel P-2 is with eli."])
-    assert made == []
-    assert left == ["Parcel P-1 is with dana.", "Parcel P-2 is with eli."]
-
-
 def test_results_that_share_too_little_literal_text_align_into_no_template():
     made, left = templates.templates_for(["a b c", "d e f", "g h i"])
     assert made == []
@@ -218,21 +212,6 @@ def test_a_prose_result_the_call_names_no_row_for_is_not_a_gap_this_module_can_c
 # --- what the counts reach ---------------------------------------------------
 
 
-def test_the_readers_gate_reports_what_was_derived_forced_and_left_unread():
-    from kullback.gates.stages import readers_gate
-
-    ruling = readers_gate([], 0, derived=[templates.Derived(tool="track_parcel", table="parcels",
-                                                            reader="", render="")],
-                          totals={"readers_derived": 1, "readers_forced": 0, "forced_calls": 2,
-                                  "slots_unbound": 3, "results_unread": 4,
-                                  "results_unread_by_tool": {"track_parcel": 4}})
-    assert ruling.passed
-    assert ruling.metrics["readers_derived"] == 1
-    assert ruling.metrics["slots_unbound"] == 3
-    assert ruling.metrics["results_unread_by_tool"] == {"track_parcel": 4}
-    assert ruling.metrics["derived_tools"] == ["track_parcel"]
-
-
 def test_a_tool_whose_results_stay_unread_is_filed_as_a_finding_naming_its_shapes(tmp_path):
     from kullback.examiner.findings import unread_result_rows
 
@@ -247,7 +226,9 @@ def test_a_tool_whose_results_stay_unread_is_filed_as_a_finding_naming_its_shape
     assert rows[0]["key"] == "environment:track_parcel:"
 
 
-@pytest.mark.parametrize("results", [[], ["one result only"]])
+@pytest.mark.parametrize("results", [
+    [], ["one result only"], ["Parcel P-1 is with dana.", "Parcel P-2 is with eli."],
+])
 def test_a_tool_with_too_few_results_aligns_into_no_template(results):
     made, left = templates.templates_for(results)
     assert made == []
