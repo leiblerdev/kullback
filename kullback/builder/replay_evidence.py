@@ -19,6 +19,7 @@ from kullback.runner.records import read_json as _read_json
 # What the replay of the References wrote, and the two verdicts it leaves on a check that agreed.
 # Everything else is a recorded call the replay failed to reproduce (D191).
 REPLAYS_FILE = "replays.json"
+HOLDOUT_ANSWERS_FILE = "holdout_answers.json"
 REPLAY_AGREED = frozenset({"same", "both_refused"})
 # The head of the lesson those failures become, said once above the shapes.
 REPLAY_LESSON_HEAD = (
@@ -124,6 +125,67 @@ def replay_failures_of(replays: Any) -> dict[str, dict[str, str]]:
                     continue
                 rows.setdefault(str(tool), {}).setdefault(str(call_id), replay_difference(check))
     return rows
+
+
+class HeldOutRuns:
+    """anchor.json's held-out Runs, answering the one question `holdout_answers` asks of an anchor."""
+
+    def __init__(self, held_out: Any):
+        self.held_out = held_out if isinstance(held_out, dict) else {}
+
+    @classmethod
+    def of(cls, workdir: Any) -> "HeldOutRuns":
+        """The workdir's anchor, or one holding nothing out where no anchor was chosen."""
+        body = _read_json(Path(workdir) / "anchor.json", None)
+        return cls((body or {}).get("held_out") if isinstance(body, dict) else None)
+
+    def is_held_out(self, run_id: str) -> bool:
+        return any(run_id in (runs or ()) for runs in self.held_out.values())
+
+
+def holdout_answers(replays: dict, anchor: Any = None) -> dict:
+    """How many replayed calls were answered out of a value only a held-out Run witnessed (D220 2c).
+
+    Counted per Task and over the corpus, and split by whether the Run being replayed is itself one
+    of the held-out ones, because those are the Runs the number is asked about: a held-out Run that
+    passes on a value the world holds only on its own word passed on the world, not on the body.
+    This is a finding on the record; no gate reads it.
+    """
+    per_task: dict[str, dict] = {}
+    per_tool: dict[str, dict] = {}
+    totals = {"calls": 0, "held_out_calls": 0, "runs": 0, "held_out_runs": 0}
+    columns: set[str] = set()
+    for task_id, rows in sorted((replays or {}).items()):
+        for trace_id, row in sorted((rows or {}).items()):
+            counts = (row or {}).get("counts") or {}
+            calls = int(counts.get("answered_from_holdout") or 0)
+            held = bool(anchor is not None and anchor.is_held_out(trace_id))
+            # The runner's ReplayReport keeps its per-call rows under "calls"; the deleted stage
+            # wrote the replay's own "checks". Either is read, the first one present.
+            for check in (row or {}).get("checks") or (row or {}).get("calls") or ():
+                if not isinstance(check, dict) or not check.get("answered_from_holdout"):
+                    continue
+                tool = per_tool.setdefault(str(check.get("tool") or ""),
+                                           {"calls": 0, "held_out_calls": 0})
+                tool["calls"] += 1
+                if held:
+                    tool["held_out_calls"] += 1
+            if not calls:
+                continue
+            columns.update(counts.get("holdout_columns") or ())
+            slot = per_task.setdefault(task_id, {"calls": 0, "held_out_calls": 0, "runs": 0,
+                                                 "held_out_runs": 0})
+            slot["calls"] += calls
+            slot["runs"] += 1
+            totals["calls"] += calls
+            totals["runs"] += 1
+            if held:
+                slot["held_out_calls"] += calls
+                slot["held_out_runs"] += 1
+                totals["held_out_calls"] += calls
+                totals["held_out_runs"] += 1
+    return {"totals": totals, "columns": sorted(columns), "tasks": per_task,
+            "tools": dict(sorted(per_tool.items()))}
 
 
 def _effect_sentence(check: dict) -> str:
@@ -268,6 +330,7 @@ def trace_worlds(db: dict, overlays: Iterable[Any], values: dict, tasks: Iterabl
             for run_id in task.run_ids}
 
 
-__all__ = ["REPLAYS_FILE", "REPLAY_AGREED", "REPLAY_LESSON_HEAD", "SHAPES_SHOWN", "after_write_calls",
-           "callers_by_tool", "evidence_calls", "failure_shape", "failure_shapes", "is_evidence_call",
+__all__ = ["HOLDOUT_ANSWERS_FILE", "HeldOutRuns", "REPLAYS_FILE", "REPLAY_AGREED", "REPLAY_LESSON_HEAD", "SHAPES_SHOWN", "after_write_calls",
+           "callers_by_tool", "evidence_calls", "failure_shape", "failure_shapes", "holdout_answers",
+           "is_evidence_call",
            "replay_difference", "replay_failures", "replay_failures_of", "replay_lesson", "trace_worlds"]
