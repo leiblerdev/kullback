@@ -93,7 +93,8 @@ def test_model_propose_verifier_is_refused_while_the_loophole_probe_cannot_run(t
     written = read_json(world.workdir / "exam" / "history.json")
     assert [v["accepted"] for v in written["t1"]["versions"]] == [True, False]
     assert written["t1"]["versions"][-1]["rejected_by"] == ["verifier_loophole"]
-    assert not (world.workdir / "exam" / "task_status.json").exists(), "a refusal writes no status"
+    assert (read_json(world.workdir / "exam" / "task_status.json")
+            == read_json(world.workdir / "task_status.json")), "a refusal writes no status"
 
 
 def test_a_model_write_or_edit_under_verifiers_is_refused_and_names_the_tools_that_write(tmp_path):
@@ -293,7 +294,8 @@ def test_session_prompt_names_dot_as_root_lists_entries_and_the_paths_of_each_ta
     system = " ".join(str(m.get("content")) for m in call["messages"])
     assert 'Your root is "."' in system
     assert str(world.workdir) not in system
-    assert "The root holds: history.json, replays.json, rerolls.json, runs/, tasks/." in system
+    assert ("The root holds: derived/, history.json, references.json, replays.json, rerolls.json, "
+            "runs/, spoken/, task_status.json, tasks/.") in system
     assert "on your first write under them: verifiers/, probes/" in system
     assert "runs: runs/t1/ref.jsonl, runs/t1/alt.jsonl" in system
     assert "proposal: verifiers/t1.json once you first propose one" in system
@@ -384,17 +386,38 @@ def _not_derived(findings) -> list:
     return [f for f in findings if any("not_derived" in row for row in f.rows)]
 
 
-def test_examine_derives_at_most_the_cap_and_names_the_rest_until_a_second_call_derives_them(tmp_path, monkeypatch):
-    """F40: one call derives TASKS_PER_CALL Tasks in id order; one finding names the rest, the next call clears it."""
-    monkeypatch.setattr(S, "TASKS_PER_CALL", 2)
+def test_one_examine_call_derives_all_twelve_confirmed_tasks_and_files_no_not_derived_note(tmp_path):
+    """F40, F55: examine derives every Task derive_pick returns, with no cap per call."""
+    world = make_world(tmp_path, tasks=12)
+    materialize(world)
+    findings = S.examine(world.workdir, model=None)
+    assert _derived(world) == sorted(f"t{n}" for n in range(1, 13))
+    assert not _not_derived(findings)
+    assert S.derive_pick(world.workdir, S.load_store(world.workdir), None) == []
+
+
+def test_the_exam_view_after_examine_holds_the_verifiers_and_status_this_call_derived(tmp_path):
+    """F52: expose runs after the derivation, so the first call's session reads current files."""
+    world = make_world(tmp_path, tasks=2)
+    materialize(world)
+    S.examine(world.workdir, model=None)
+    exam = world.workdir / "exam"
+    assert sorted(read_json(exam / "task_status.json")) == ["t1", "t2"]
+    assert read_json(exam / "task_status.json") == read_json(world.workdir / "task_status.json")
+    assert sorted(p.stem for p in (exam / "derived").glob("*.json")) == ["t1", "t2"]
+
+
+def test_examine_with_a_limit_derives_that_many_and_names_the_rest_until_a_second_call(tmp_path):
+    """F40: an explicit limit derives the first Tasks in id order; one finding names the rest."""
     world = make_world(tmp_path, tasks=4)
     materialize(world)
-    first = S.examine(world.workdir, model=None)
+    first = S.examine(world.workdir, model=None, limit=2)
     assert _derived(world) == ["t1", "t2"]
     [note] = _not_derived(first)
     assert note.kind == "other" and note.source == "derive"
     assert note.text == "2 confirmed Tasks not derived yet: t3, t4; call examine again"
-    assert note.rows == [{"task_id": t, "not_derived": "cap"} for t in ("t3", "t4")]
+    assert note.change.startswith("this examine call was limited to 2 Tasks; ")
+    assert note.rows == [{"task_id": t, "not_derived": "limit"} for t in ("t3", "t4")]
     second = S.examine(world.workdir, model=None)
     assert _derived(world) == ["t1", "t2", "t3", "t4"]
     assert not _not_derived(second)

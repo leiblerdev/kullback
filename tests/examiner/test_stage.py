@@ -944,3 +944,45 @@ def test_derive_all_with_only_as_a_set_derives_those_tasks_and_merges_them_into_
     assert sorted(_read(world.workdir / "task_status.json")) == ["t1", "t2", "t3"]
     with pytest.raises(ValueError, match="no Task is named t9"):
         _derive(world.workdir, world.inputs, only={"t1", "t9"})
+
+
+# --- every Task derived at once, probe slots after the residue (F40, F49, F55) -----
+
+def test_a_derivation_on_three_workers_writes_the_same_files_as_one_on_one_worker(tmp_path):
+    """F55: the per Task work is independent, so the worker count moves no byte of what is written."""
+    written = {}
+    for workers in (1, 3):
+        world = make_world(tmp_path / f"workers-{workers}", tasks=6)
+        out = _derive(world.workdir, world.inputs, probe_model=object(), run_probe=probe_runner_over(),
+                      workers=workers)
+        assert out["ran"] == 6
+        written[workers] = _derived_bytes(world.workdir, 6)
+    assert written[3] == written[1]
+
+
+def test_a_task_whose_reference_a_residue_settled_holds_a_probe_slot_and_is_probed(tmp_path):
+    """F49: the probe slots are handed out after the residue settles, so the survivor's Reference
+    is probed rather than reported as not run for want of a model."""
+    abstains = json.dumps({"failed": [], "evidence": ["end_states"], "reason": "cannot tell"})
+    world = make_world(tmp_path, rerolls=("wrong",))
+    calls: list[str] = []
+    out = _derive(world.workdir, world.inputs, judge_model=TestModel([abstains, abstains]),
+                  probe_model=object(), run_probe=_counted_probe(calls))
+    assert _read(world.workdir / "references.json")["t1"]["residue_derived"]
+    assert calls == ["t1"]
+    row = out["task_status"]["t1"]
+    assert row["checks"]["loophole_probe_fails"] is True
+    assert "loophole_probe_fails" not in (row.get("not_run_reasons") or {})
+
+
+def test_a_task_the_probe_limit_left_out_says_the_limit_and_never_no_model(tmp_path):
+    """F49: a Task with a probe model and no slot names the limit, the true reason it was not probed."""
+    world = make_world(tmp_path, tasks=3)
+    out = _derive(world.workdir, world.inputs, probe_model=object(), run_probe=probe_runner_over(),
+                  probe_limit=1)
+    reasons = [row.get("not_run_reasons", {}).get("loophole_probe_fails")
+               for row in out["task_status"].values()]
+    skipped = [reason for reason in reasons if reason]
+    assert len(skipped) == 2
+    assert all(reason.startswith("the probe limit of 1 Tasks was spent") for reason in skipped)
+    assert not any("no model" in reason for reason in skipped)
