@@ -44,7 +44,7 @@ from kullback.runner import budget
 from kullback.runner.canon import rules_of
 from kullback.runner.records import Constraint, Task, ToolSig, UserRules, Verifier, read_json, run_path, write_json
 
-BASE_ONLY = ("read", "grep", "find", "ls", "web_search")
+BASE_ONLY = ("read", "grep", "find", "ls", "inspect", "web_search")
 WRITABLE_DIRS = prompt_mod.WRITABLE_DIRS
 EXAMINE_MESSAGE = "Examine."
 # The Examiner's turn cap: reading Runs, replays and Verifiers before filing takes tens of turns, and
