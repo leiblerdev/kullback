@@ -46,11 +46,14 @@ PRICES: dict[str, dict[str, float]] = {
                                                 "cache_write": 0.0},
     # The harness default model (provider.DEFAULT_MODEL). OpenRouter's catalogue
     # (api/v1/models, read 2026-09-23), per-token prices times 1M, the tier below 272,000 prompt
-    # tokens; a longer prompt is billed at twice the input and one and a half times the output.
-    "openai/gpt-6-luna": {"input": 0.10, "output": 0.50, "cache_read": 0.01, "cache_write": 0.125},
+    # tokens; a longer prompt is billed at twice the input and one and a half times the output,
+    # so prompt_tier_limit keeps the D65 cap inside the priced tier (window_for).
+    "openai/gpt-6-luna": {"input": 0.10, "output": 0.50, "cache_read": 0.01, "cache_write": 0.125,
+                          "prompt_tier_limit": 272_000},
     # models.dev's snapshot lacks it. OpenRouter's catalogue (api/v1/models, read 2026-09-23),
-    # per-token prices times 1M, the tier below 272,000 prompt tokens.
-    "openai/gpt-6-sol": {"input": 2.0, "output": 10.0, "cache_read": 0.2, "cache_write": 2.5},
+    # per-token prices times 1M, the tier below 272,000 prompt tokens (prompt_tier_limit).
+    "openai/gpt-6-sol": {"input": 2.0, "output": 10.0, "cache_read": 0.2, "cache_write": 2.5,
+                         "prompt_tier_limit": 272_000},
 }
 
 # What fits in one call, per model, for the D65 cap. A model with no row uses the default.
@@ -211,10 +214,18 @@ def window_for(model_id: Optional[str]) -> int:
     The hand table first, since two of its rows were measured against a live endpoint rather than
     read off a page, then models.dev, then the default. A model the registry knows no longer takes
     the 200,000 default and a cap four fifths smaller than the one it could have had.
+
+    A price row that carries `prompt_tier_limit` is priced only for prompts under that many
+    tokens, so the window is cut to the limit over CONTEXT_CAP_FRACTION: the D65 cap never lets
+    a prompt past the priced tier, where the ledger would bill it at the lower rate.
     """
-    return (_lookup(CONTEXT_WINDOWS, model_id)
-            or pricing_module.window_from_catalog(_price_catalog(), model_id)
-            or DEFAULT_CONTEXT_WINDOW)
+    window = (_lookup(CONTEXT_WINDOWS, model_id)
+              or pricing_module.window_from_catalog(_price_catalog(), model_id)
+              or DEFAULT_CONTEXT_WINDOW)
+    tier_limit = (_lookup(PRICES, model_id) or {}).get("prompt_tier_limit")
+    if tier_limit:
+        return min(window, int(tier_limit / CONTEXT_CAP_FRACTION))
+    return window
 
 
 def priced_model_id(cost: Any) -> Optional[str]:

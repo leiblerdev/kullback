@@ -24,7 +24,7 @@ def call_event(idx=0, model="anthropic/claude-opus-5", **usage):
 def test_price_table_entries_have_the_four_prices():
     assert budget.PRICES
     for name, price in budget.PRICES.items():
-        assert set(price) == {"input", "output", "cache_read", "cache_write"}, name
+        assert set(price) - {"prompt_tier_limit"} == {"input", "output", "cache_read", "cache_write"}, name
         assert all(value >= 0 for value in price.values()), name
         assert price["input"] > 0 and price["output"] > price["input"], name
         assert price["cache_read"] < price["input"], name
@@ -448,8 +448,18 @@ def test_the_subscriber_ignores_a_message_without_usage_and_the_turn_end_that_re
     assert not budget.totals_path(workdir).exists()
 
 
-def test_gpt_6_sol_is_priced_from_the_table_and_has_its_catalogue_window():
+def test_gpt_6_sol_is_priced_from_the_table_and_its_window_is_cut_to_the_priced_tier():
     assert budget.price_for("openai/gpt-6-sol") == {
-        "input": 2.0, "output": 10.0, "cache_read": 0.2, "cache_write": 2.5}
+        "input": 2.0, "output": 10.0, "cache_read": 0.2, "cache_write": 2.5, "prompt_tier_limit": 272_000}
     assert budget.price_source("openai/gpt-6-sol") == "table"
-    assert budget.window_for("openai/gpt-6-sol") == 1_050_000
+    assert budget.window_for("openai/gpt-6-sol") == 680_000
+    assert budget.context_cap_tokens(budget.window_for("openai/gpt-6-sol")) <= 272_000
+
+
+def test_a_model_whose_price_row_carries_a_tier_limit_gets_a_window_whose_cap_stays_in_the_tier(monkeypatch):
+    monkeypatch.setitem(budget.PRICES, "vendor/tiered", {"input": 1.0, "output": 2.0, "cache_read": 0.1,
+                                                         "cache_write": 0.0, "prompt_tier_limit": 272_000})
+    monkeypatch.setitem(budget.CONTEXT_WINDOWS, "vendor/tiered", 1_050_000)
+    assert budget.window_for("vendor/tiered") == 680_000
+    monkeypatch.setitem(budget.CONTEXT_WINDOWS, "vendor/tiered", 400_000)
+    assert budget.window_for("vendor/tiered") == 400_000, "a window already inside the tier stays"
