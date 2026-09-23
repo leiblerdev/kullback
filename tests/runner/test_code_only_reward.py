@@ -104,64 +104,96 @@ def test_must_hold_judge_is_unscoreable_for_every_judge_value(tmp_path, judge_ki
     assert out.class_ == "not_verdicted"
     assert out.failing_atom == "j0"
 
+    judge_write = S.make_atom("j0", judge_kind, {"kind": "write", "tool": "archive_entry",
+                                                 "entity": _entity("E-100")}, judge=True)
+    no_write = Verifier(task_id="t9", verifier_version="v1", atoms=[judge_write])
+    malformed = Verifier(task_id="t9", verifier_version="v1", atoms=[
+        S.make_atom("w0", "required", {"kind": "write", "tool": "archive_entry", "entity": _entity("E-100")}),
+        S.make_atom("j0", judge_kind, {"kind": "write", "tool": ["archive_entry"],
+                                       "entity": _entity("E-100")}, judge=True),
+    ])
+    for unscoreable, run in ((no_write, _quiet_run()), (malformed, _unmarked_write_run())):
+        assert S.check_run(unscoreable, run) == (False, "j0")
+        out = verdict(run, unscoreable, judge_results=results)
+        assert out.passed is False
+        assert out.class_ == "not_verdicted"
+        assert out.failing_atom == "j0"
 
-@pytest.mark.parametrize("judge_value", [True, False, {"verdict": "abstain"}, None],
-                         ids=["true", "false", "abstain", "missing"])
-def test_code_failure_dominates_a_must_hold_judge(tmp_path, judge_value):
-    verifier = Verifier(
-        task_id="t9",
-        verifier_version="v1",
-        atoms=[
-            Atom(id="w0", kind="required",
-                 predicate_src='wrote("archive_entry", entry_id="E-999")'),
-            Atom(id="j0", kind="required", judge=True, description="policy tone"),
-        ],
-    )
+
+def _predicate_write(entity: str) -> Atom:
+    return Atom(id="w0", kind="required", predicate_src=f'wrote("archive_entry", entry_id="{entity}")')
+
+
+def _judge(kind: str = "required") -> Atom:
+    return Atom(id="j0", kind=kind, judge=True, description="policy tone")
+
+
+def _lines_run(tmp_path):
+    return _write_path(tmp_path, _write_lines())
+
+
+_EXTRA_TOOLS = {"archive_entry", "purge_entry"}
+_JUDGE_VALUES = [(True, "true"), (False, "false"), ({"verdict": "abstain"}, "abstain"), (None, "missing")]
+_CODE_WINS = [
+    *[pytest.param(lambda: [_predicate_write("E-999"), _judge()], _lines_run, WRITE_TOOLS,
+                   value, False, "w0", id=f"predicate_write_over_{name}_judge")
+      for value, name in _JUDGE_VALUES],
+    pytest.param(lambda: [S.make_atom("w0", "required", {"kind": "write", "tool": "archive_entry", "entity": "E-999"}),
+                          _judge("hard")],
+                 lambda _: _passing_run(), WRITE_TOOLS, True, True, "w0", id="gate_keeps_first_code_failure"),
+    *[pytest.param(lambda kind=kind: [_structured_judge(kind),
+                                      S.make_atom("w0", "required",
+                                                  {"kind": "write", "tool": "archive_entry", "entity": "E-888"})],
+                   lambda _: _passing_run(), WRITE_TOOLS, True, True, "w0", id=f"structured_{kind}_judge")
+      for kind in ("required", "hard", "question", "communicate", "allowed", "forbidden")],
+    pytest.param(lambda: [S.make_atom("w0", "required",
+                                      {"kind": "write", "tool": "archive_entry", "entity": _entity("E-100")}),
+                          _judge()],
+                 lambda _: _extra_run(), _EXTRA_TOOLS, True, True, "extra_write:purge_entry", id="extra_write"),
+    pytest.param(lambda: [S.make_atom("w0", "required", {"kind": "write", "tool": "archive_entry", "entity": "E-888"}),
+                          S.make_atom("j0", "required", {"kind": "write", "tool": ["archive_entry"],
+                                                         "entity": _entity("E-100")}, judge=True)],
+                 lambda _: _unmarked_write_run(), None, True, True, "w0", id="malformed_judge_tool"),
+]
+
+
+@pytest.mark.parametrize("atoms, run, tools, judge_value, gate, failing", _CODE_WINS)
+def test_a_code_failure_fails_the_verdict_whatever_the_judge_says(tmp_path, atoms, run, tools, judge_value,
+                                                                     gate, failing):
+    """A failing code atom or an extra write decides the Verdict before any judge atom, must-hold,
+    structured or malformed, and the build-time gate names the same failure."""
+    verifier = Verifier(task_id="t9", verifier_version="v1", atoms=atoms())
+    if gate:
+        assert S.check_run(verifier, run(tmp_path), write_tools=tools) == (False, failing)
     results = {} if judge_value is None else {"j0": judge_value}
-    out = verdict(_write_path(tmp_path, _write_lines()), verifier, write_tools=WRITE_TOOLS,
-                  judge_results=results)
+    out = verdict(run(tmp_path), verifier, write_tools=tools, judge_results=results)
     assert out.passed is False
     assert out.class_ == "fail"
-    assert out.failing_atom == "w0"
+    assert out.failing_atom == failing
 
 
+@pytest.mark.parametrize("code_passes", [True, False], ids=["code_pass", "code_fail"])
+@pytest.mark.parametrize("structured", [False, True], ids=["predicate", "structured"])
+@pytest.mark.parametrize("judge_kind", ["allowed", "forbidden"])
 @pytest.mark.parametrize("judge_value", [True, False, {"verdict": "abstain"}, None],
                          ids=["true", "false", "abstain", "missing"])
-def test_optional_judge_never_changes_a_code_pass(tmp_path, judge_value):
-    verifier = Verifier(
-        task_id="t9",
-        verifier_version="v1",
-        atoms=[
-            Atom(id="w0", kind="required",
-                 predicate_src='wrote("archive_entry", entry_id="E-100")'),
-            Atom(id="j0", kind="allowed", judge=True, description="policy tone"),
-        ],
-    )
+def test_an_optional_judge_never_changes_the_code_verdict(tmp_path, judge_value, judge_kind, structured, code_passes):
+    """An allowed or forbidden judge atom stays diagnostic: the code atoms decide pass or fail alone."""
+    if structured:
+        write = S.make_atom("w0", "required", {"kind": "write", "tool": "archive_entry",
+                                               "entity": _entity("E-100") if code_passes else "E-888"})
+        run = _passing_run()
+    else:
+        write = _predicate_write("E-100" if code_passes else "E-999")
+        run = _write_path(tmp_path, _write_lines())
+    verifier = Verifier(task_id="t9", verifier_version="v1", atoms=[write, _judge(judge_kind)])
     results = {} if judge_value is None else {"j0": judge_value}
-    out = verdict(_write_path(tmp_path, _write_lines()), verifier, write_tools=WRITE_TOOLS,
-                  judge_results=results)
-    assert out.passed is True
-    assert out.class_ == "pass"
-    assert out.failing_atom is None
-
-
-@pytest.mark.parametrize("judge_value", [True, False, None], ids=["true", "false", "missing"])
-def test_optional_judge_never_changes_a_code_fail(tmp_path, judge_value):
-    verifier = Verifier(
-        task_id="t9",
-        verifier_version="v1",
-        atoms=[
-            Atom(id="w0", kind="required",
-                 predicate_src='wrote("archive_entry", entry_id="E-999")'),
-            Atom(id="j0", kind="allowed", judge=True, description="policy tone"),
-        ],
-    )
-    results = {} if judge_value is None else {"j0": judge_value}
-    out = verdict(_write_path(tmp_path, _write_lines()), verifier, write_tools=WRITE_TOOLS,
-                  judge_results=results)
-    assert out.passed is False
-    assert out.class_ == "fail"
-    assert out.failing_atom == "w0"
+    if structured:
+        assert S.check_run(verifier, run, write_tools=WRITE_TOOLS) == ((True, None) if code_passes else (False, "w0"))
+    out = verdict(run, verifier, write_tools=WRITE_TOOLS, judge_results=results)
+    assert out.passed is code_passes
+    assert out.class_ == ("pass" if code_passes else "fail")
+    assert out.failing_atom == (None if code_passes else "w0")
 
 
 @pytest.mark.parametrize("judge_value", [True, False, {"verdict": "abstain"}, None],
@@ -237,24 +269,6 @@ def test_gate_scoreability_refuses_a_judge_only_must_hold():
     assert S.check_run(verifier, _passing_run(), write_tools=WRITE_TOOLS) == (False, "j0")
 
 
-def test_gate_keeps_first_code_failure_before_a_judge_only_must_hold():
-    verifier = Verifier(
-        task_id="t9",
-        verifier_version="v1",
-        atoms=[
-            S.make_atom("w0", "required",
-                        {"kind": "write", "tool": "archive_entry", "entity": "E-999"}),
-            Atom(id="j0", kind="hard", judge=True, description="policy tone"),
-        ],
-    )
-    assert S.check_run(verifier, _passing_run(), write_tools=WRITE_TOOLS) == (False, "w0")
-    out_verdict = verdict(_passing_run(), verifier, write_tools=WRITE_TOOLS,
-                          judge_results={"j0": True})
-    assert out_verdict.passed is False
-    assert out_verdict.class_ == "fail"
-    assert out_verdict.failing_atom == "w0"
-
-
 def test_grounded_communicate_still_scores_without_any_judge(tmp_path):
     key = T._key(T.canon_fn(None), "E-999")
     atom = S.make_atom("c0", "communicate", {"kind": "communicate", "value": key, "text": "E-999"})
@@ -328,21 +342,6 @@ def _structured_judge(kind):
                         "entity": _entity("E-100")}, judge=True)
 
 
-@pytest.mark.parametrize("judge_kind", ["required", "hard", "question", "communicate",
-                                        "allowed", "forbidden"])
-def test_structured_judge_never_preempts_a_real_code_failure(judge_kind):
-    failing_write = S.make_atom("w0", "required",
-                                {"kind": "write", "tool": "archive_entry", "entity": "E-888"})
-    verifier = Verifier(task_id="t9", verifier_version="v1",
-                        atoms=[_structured_judge(judge_kind), failing_write])
-    assert S.check_run(verifier, _passing_run(), write_tools=WRITE_TOOLS) == (False, "w0")
-    out = verdict(_passing_run(), verifier, write_tools=WRITE_TOOLS,
-                  judge_results={"j0": True})
-    assert out.passed is False
-    assert out.class_ == "fail"
-    assert out.failing_atom == "w0"
-
-
 def test_judge_write_target_present_does_not_authorize_the_write():
     verifier = Verifier(
         task_id="t9",
@@ -358,9 +357,6 @@ def test_judge_write_target_present_does_not_authorize_the_write():
     assert out.passed is False
     assert out.class_ == "fail"
     assert out.failing_atom == "extra_write:archive_entry"
-
-
-def test_allowed_judge_target_does_not_cover_an_extra_write():
     tools = {"archive_entry", "purge_entry"}
     verifier = Verifier(
         task_id="t9",
@@ -398,9 +394,6 @@ def test_malformed_write_entity_stays_unverdicted():
     assert out.class_ == "not_verdicted"
     assert out.failing_atom == "bad"
     assert "atom_error:bad:TypeError" in out.notes
-
-
-def test_malformed_write_entity_after_judge_keeps_first_unevaluable():
     verifier = Verifier(task_id="t", verifier_version="v", atoms=[
         Atom(id="j0", kind="required", judge=True, description="policy tone"),
         _malformed_atom(),
@@ -467,49 +460,6 @@ def test_broken_predicate_keeps_unproven_coverage_unverdicted():
     assert out.failing_atom == "j0"
 
 
-@pytest.mark.parametrize("judge_kind", ["allowed", "forbidden"])
-@pytest.mark.parametrize("judge_value", [True, False, {"verdict": "abstain"}, None],
-                         ids=["true", "false", "abstain", "missing"])
-def test_optional_judge_kinds_stay_diagnostic_on_a_code_pass(tmp_path, judge_kind, judge_value):
-    verifier = Verifier(
-        task_id="t9",
-        verifier_version="v1",
-        atoms=[
-            S.make_atom("w0", "required",
-                        {"kind": "write", "tool": "archive_entry",
-                         "entity": _entity("E-100")}),
-            Atom(id="j0", kind=judge_kind, judge=True, description="policy tone"),
-        ],
-    )
-    results = {} if judge_value is None else {"j0": judge_value}
-    assert S.check_run(verifier, _passing_run(), write_tools=WRITE_TOOLS) == (True, None)
-    out = verdict(_passing_run(), verifier, write_tools=WRITE_TOOLS, judge_results=results)
-    assert out.passed is True
-    assert out.class_ == "pass"
-    assert out.failing_atom is None
-
-
-@pytest.mark.parametrize("judge_kind", ["allowed", "forbidden"])
-@pytest.mark.parametrize("judge_value", [True, False, {"verdict": "abstain"}, None],
-                         ids=["true", "false", "abstain", "missing"])
-def test_optional_judge_kinds_stay_diagnostic_on_a_code_fail(judge_kind, judge_value):
-    verifier = Verifier(
-        task_id="t9",
-        verifier_version="v1",
-        atoms=[
-            S.make_atom("w0", "required",
-                        {"kind": "write", "tool": "archive_entry", "entity": "E-888"}),
-            Atom(id="j0", kind=judge_kind, judge=True, description="policy tone"),
-        ],
-    )
-    results = {} if judge_value is None else {"j0": judge_value}
-    assert S.check_run(verifier, _passing_run(), write_tools=WRITE_TOOLS) == (False, "w0")
-    out = verdict(_passing_run(), verifier, write_tools=WRITE_TOOLS, judge_results=results)
-    assert out.passed is False
-    assert out.class_ == "fail"
-    assert out.failing_atom == "w0"
-
-
 def _extra_run() -> Run:
     return _make_run(
         "r2",
@@ -522,26 +472,6 @@ def _extra_run() -> Run:
             _assistant("Done."),
         ],
     )
-
-
-def test_extra_write_dominates_a_must_hold_judge():
-    tools = {"archive_entry", "purge_entry"}
-    verifier = Verifier(
-        task_id="t9",
-        verifier_version="v1",
-        atoms=[
-            S.make_atom("w0", "required",
-                        {"kind": "write", "tool": "archive_entry",
-                         "entity": _entity("E-100")}),
-            Atom(id="j0", kind="required", judge=True, description="policy tone"),
-        ],
-    )
-    assert S.check_run(verifier, _extra_run(), write_tools=tools) == (
-        False, "extra_write:purge_entry")
-    out = verdict(_extra_run(), verifier, write_tools=tools, judge_results={"j0": True})
-    assert out.passed is False
-    assert out.class_ == "fail"
-    assert out.failing_atom == "extra_write:purge_entry"
 
 
 def _unmarked_write_run() -> Run:
@@ -584,9 +514,6 @@ def test_required_judge_write_detected_without_metadata_or_kind():
     assert out.passed is False
     assert out.class_ == "fail"
     assert out.failing_atom == "extra_write:archive_entry"
-
-
-def test_allowed_judge_write_detected_without_metadata_or_kind():
     verifier = Verifier(
         task_id="t9",
         verifier_version="v1",
@@ -617,21 +544,6 @@ def test_allowed_judge_write_detected_without_metadata_or_kind():
     assert cout.passed is True
     assert cout.class_ == "pass"
     assert cout.failing_atom is None
-
-
-def test_no_write_judge_only_without_metadata_stays_unscoreable():
-    verifier = Verifier(
-        task_id="t9",
-        verifier_version="v1",
-        atoms=[S.make_atom("j0", "required",
-                           {"kind": "write", "tool": "archive_entry",
-                            "entity": _entity("E-100")}, judge=True)],
-    )
-    assert S.check_run(verifier, _quiet_run()) == (False, "j0")
-    out = verdict(_quiet_run(), verifier, judge_results={"j0": True})
-    assert out.passed is False
-    assert out.class_ == "not_verdicted"
-    assert out.failing_atom == "j0"
 
 
 _MISSING = object()
@@ -671,45 +583,6 @@ def test_malformed_judge_tool_grants_no_detection_and_never_crashes(bad_tool):
     assert explicit.failing_atom == "extra_write:archive_entry"
 
 
-def test_code_failure_dominates_a_malformed_judge_tool():
-    verifier = Verifier(
-        task_id="t9",
-        verifier_version="v1",
-        atoms=[
-            S.make_atom("w0", "required",
-                        {"kind": "write", "tool": "archive_entry", "entity": "E-888"}),
-            S.make_atom("j0", "required",
-                        {"kind": "write", "tool": ["archive_entry"],
-                         "entity": _entity("E-100")}, judge=True),
-        ],
-    )
-    assert S.check_run(verifier, _unmarked_write_run()) == (False, "w0")
-    out = verdict(_unmarked_write_run(), verifier, judge_results={"j0": True})
-    assert out.passed is False
-    assert out.class_ == "fail"
-    assert out.failing_atom == "w0"
-
-
-def test_malformed_judge_stays_unscoreable_when_code_holds():
-    verifier = Verifier(
-        task_id="t9",
-        verifier_version="v1",
-        atoms=[
-            S.make_atom("w0", "required",
-                        {"kind": "write", "tool": "archive_entry",
-                         "entity": _entity("E-100")}),
-            S.make_atom("j0", "required",
-                        {"kind": "write", "tool": ["archive_entry"],
-                         "entity": _entity("E-100")}, judge=True),
-        ],
-    )
-    assert S.check_run(verifier, _unmarked_write_run()) == (False, "j0")
-    out = verdict(_unmarked_write_run(), verifier, judge_results={"j0": True})
-    assert out.passed is False
-    assert out.class_ == "not_verdicted"
-    assert out.failing_atom == "j0"
-
-
 def _side_effects(out) -> str:
     return next(note for note in out.notes if note.startswith("side_effects="))
 
@@ -746,67 +619,31 @@ def _unmarked_mixed_write_run() -> Run:
     )
 
 
-def test_detected_extra_write_counts_one_side_effect():
-    verifier = Verifier(
-        task_id="t9",
-        verifier_version="v1",
-        atoms=[S.make_atom("j0", "required",
-                           {"kind": "write", "tool": "archive_entry",
-                            "entity": _entity("E-100")}, judge=True)],
-    )
-    out = verdict(_unmarked_write_run(), verifier, judge_results={"j0": True})
-    assert out.passed is False
-    assert out.class_ == "fail"
-    assert out.failing_atom == "extra_write:archive_entry"
-    assert _side_effects(out) == "side_effects=1"
+def _judge_write(kind: str) -> Atom:
+    return S.make_atom("j0", kind, {"kind": "write", "tool": "archive_entry", "entity": _entity("E-100")}, judge=True)
 
 
-def test_detected_extra_write_counts_repeated_calls():
-    verifier = Verifier(
-        task_id="t9",
-        verifier_version="v1",
-        atoms=[S.make_atom("j0", "required",
-                           {"kind": "write", "tool": "archive_entry",
-                            "entity": _entity("E-100")}, judge=True)],
-    )
-    out = verdict(_unmarked_double_write_run(), verifier, judge_results={"j0": True})
-    assert out.passed is False
-    assert out.class_ == "fail"
-    assert out.failing_atom == "extra_write:archive_entry"
-    assert _side_effects(out) == "side_effects=2"
+@pytest.mark.parametrize("run, covered, count", [
+    (_unmarked_write_run, False, 1),
+    (_unmarked_double_write_run, False, 2),
+    (_unmarked_mixed_write_run, False, 1),
+    (_unmarked_write_run, True, 1),
+], ids=["one_call", "repeated_calls", "failed_call_skipped", "covered_write"])
+def test_each_extra_write_call_that_succeeded_counts_one_side_effect(run, covered, count):
+    """Every write call that succeeded counts once, a failed call not at all, and a write an allowed
+    atom covers still counts though it is no extra write."""
+    if covered:
+        atoms = [S.make_atom("a0", "allowed", {"kind": "write", "tool": "archive_entry", "entity": _entity("E-100")}),
+                 _judge_write("allowed")]
+    else:
+        atoms = [_judge_write("required")]
+    verifier = Verifier(task_id="t9", verifier_version="v1", atoms=atoms)
+    if covered:
+        assert S.check_run(verifier, run()) == (True, None)
+    out = verdict(run(), verifier, judge_results={"j0": True})
+    assert out.passed is covered
+    assert out.class_ == ("pass" if covered else "fail")
+    assert out.failing_atom == (None if covered else "extra_write:archive_entry")
+    assert _side_effects(out) == f"side_effects={count}"
 
 
-def test_detected_extra_write_skips_failed_calls():
-    verifier = Verifier(
-        task_id="t9",
-        verifier_version="v1",
-        atoms=[S.make_atom("j0", "required",
-                           {"kind": "write", "tool": "archive_entry",
-                            "entity": _entity("E-100")}, judge=True)],
-    )
-    out = verdict(_unmarked_mixed_write_run(), verifier, judge_results={"j0": True})
-    assert out.passed is False
-    assert out.class_ == "fail"
-    assert out.failing_atom == "extra_write:archive_entry"
-    assert _side_effects(out) == "side_effects=1"
-
-
-def test_covered_write_counts_side_effect_without_extra():
-    verifier = Verifier(
-        task_id="t9",
-        verifier_version="v1",
-        atoms=[
-            S.make_atom("a0", "allowed",
-                        {"kind": "write", "tool": "archive_entry",
-                         "entity": _entity("E-100")}),
-            S.make_atom("j0", "allowed",
-                        {"kind": "write", "tool": "archive_entry",
-                         "entity": _entity("E-100")}, judge=True),
-        ],
-    )
-    assert S.check_run(verifier, _unmarked_write_run()) == (True, None)
-    out = verdict(_unmarked_write_run(), verifier, judge_results={"j0": True})
-    assert out.passed is True
-    assert out.class_ == "pass"
-    assert out.failing_atom is None
-    assert _side_effects(out) == "side_effects=1"
