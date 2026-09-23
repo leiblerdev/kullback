@@ -148,6 +148,15 @@ def test_bash_write_and_edit_are_not_registered_and_base_tools_are_scoped_to_exa
     assert refused.is_error is True
 
 
+def test_the_examiner_gets_inspect_among_its_base_tools_and_still_no_write_edit_or_bash(tmp_path):
+    world = make_world(tmp_path)
+    harness = AgentHarness(model=TestModel([]))
+    load_extensions(harness, [S.examiner_extension(ExamRoot(workdir=world.workdir))])
+    names = set(harness.registry.names())
+    assert "inspect" in names
+    assert not {"write", "edit", "bash"} & names
+
+
 def _rename_loop() -> TestModel:
     """A model that reads the widget and writes the striped label, then stops, on every Run."""
     return TestModel([
