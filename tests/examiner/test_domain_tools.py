@@ -12,6 +12,7 @@ from gates.examiner_fixtures import SIGS
 from kullback.agent.bus import Bus
 from kullback.agent.tools import RetryableToolError
 from kullback.examiner import domain_tools as D
+from kullback.examiner import prompt as P
 from kullback.examiner.exam_files import ExamRoot
 from kullback.gates.verifier_suite import D79_STAGES
 from kullback.runner.records import as_dict, read_json, write_json
@@ -56,6 +57,11 @@ def test_accepted_proposal_returns_rulings_and_keeps_the_file(tmp_path):
     assert body["verifier_version"] != current.verifier_version
     assert result.content_hash and result.verifier_version == body["verifier_version"]
     assert root.current("t1").verifier_version == body["verifier_version"]
+    versions = root.history["t1"].versions
+    assert [(v.verifier_version, v.accepted, v.by) for v in versions] == [("1", True, "derive"),
+                                                                          ("2", True, "repair")]
+    assert versions[1].parent_hash == versions[0].content_hash
+    assert versions[1].reason == "tighten" and versions[1].content_hash == result.content_hash
 
 
 def test_propose_verifier_refuses_an_atom_of_the_wrong_shape(tmp_path):
@@ -64,6 +70,8 @@ def test_propose_verifier_refuses_an_atom_of_the_wrong_shape(tmp_path):
     with pytest.raises(Exception, match="payload"):
         _run(tool.execute(D.ProposeArgs(task_id="t1", reason="x",
                                         add=[{"id": "a", "kind": "required", "payload": "nope"}])))
+
+
 def test_refused_proposal_restores_the_previous_file_and_names_rows(tmp_path):
     root, world, current = _root(tmp_path)
     write_json(world.workdir / "exam" / "verifiers" / "t1.json", as_dict(current))
@@ -71,13 +79,18 @@ def test_refused_proposal_restores_the_previous_file_and_names_rows(tmp_path):
     [tool] = [t for t in D.domain_tools(root) if t.name == "propose_verifier"]
     drop = [a.id for a in current.atoms if a.id != "w0.reason"]
     before = (world.workdir / "exam" / "verifiers" / "t1.json").read_bytes()
-    with pytest.raises(Exception) as excinfo:
+    with pytest.raises(RetryableToolError) as excinfo:
         _run(tool.execute(D.ProposeArgs(task_id="t1", reason="loosen", drop=drop, add=[])))
     message = str(excinfo.value)
     assert "verifier_empty_run" in message, message
     assert "rows" in message, message
     assert (world.workdir / "exam" / "verifiers" / "t1.json").read_bytes() == before
     assert root.current("t1").verifier_version == current.verifier_version
+    versions = root.history["t1"].versions
+    assert len(versions) == 2, "a rejected row is never dropped"
+    assert versions[1].accepted is False and versions[1].rejected_by == ["verifier_empty_run"]
+    written = read_json(world.workdir / "exam" / "history.json")
+    assert written["t1"]["versions"][-1]["accepted"] is False
 
 def test_probe_scores_a_run_and_keeps_it_in_the_pool(tmp_path):
     root, world, _ = _root(tmp_path)
@@ -133,36 +146,12 @@ def test_reroll_without_a_model_is_refused_before_touching_the_runner(tmp_path):
 
 def test_domain_tools_are_exactly_the_four_named_in_the_prompt(tmp_path):
     root, _, _ = _root(tmp_path)
-    assert [t.name for t in D.domain_tools(root)] == list(D.tool_names())
-
-def test_accepted_proposal_appends_version_2_with_parent_hash_of_version_1(tmp_path):
-    root, world, current = _root(tmp_path)
-    [tool] = [t for t in D.domain_tools(root) if t.name == "propose_verifier"]
-    keep = current.atoms[0].id
-    add = {"id": "atom-new", "kind": current.atoms[0].kind,
-           "payload": dict(current.atoms[0].target)}
-    result = _run(tool.execute(D.ProposeArgs(task_id="t1", reason="tighten", drop=[keep], add=[add])))
-    assert all(record["accepted"] for record in result.rulings)
-    versions = root.history["t1"].versions
-    assert [(v.verifier_version, v.accepted, v.by) for v in versions] == [("1", True, "derive"),
-                                                                          ("2", True, "repair")]
-    assert versions[1].parent_hash == versions[0].content_hash
-    assert versions[1].reason == "tighten" and versions[1].content_hash == result.content_hash
-
-
-def test_refused_proposal_keeps_a_rejected_row_naming_the_gate(tmp_path):
-    root, world, current = _root(tmp_path)
-    _with_reference(world)
-    [tool] = [t for t in D.domain_tools(root) if t.name == "propose_verifier"]
-    drop = [a.id for a in current.atoms if a.id != "w0.reason"]
-    with pytest.raises(RetryableToolError):
-        _run(tool.execute(D.ProposeArgs(task_id="t1", reason="loosen", drop=drop, add=[])))
-    versions = root.history["t1"].versions
-    assert len(versions) == 2, "a rejected row is never dropped"
-    assert versions[1].accepted is False and versions[1].rejected_by == ["verifier_empty_run"]
-    written = read_json(world.workdir / "exam" / "history.json")
-    assert written["t1"]["versions"][-1]["accepted"] is False
-    assert root.current("t1").verifier_version == current.verifier_version
+    names = [t.name for t in D.domain_tools(root)]
+    assert names == list(D.tool_names())
+    assert set(names) == {"propose_verifier", "probe", "finding", "reroll"}
+    text = P.tools_section()
+    for name in names:
+        assert name in text, name
 
 
 def test_accepted_proposal_rules_trusted_when_status_and_history_are_present(tmp_path):
