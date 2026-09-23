@@ -971,3 +971,81 @@ def test_the_login_menu_starts_openai_at_the_harness_default_model():
     from kullback.tui import LOGIN_DEFAULT_MODELS
 
     assert LOGIN_DEFAULT_MODELS["openai"] == DEFAULT_MODEL
+
+
+# --- the live transcript ------------------------------------------------------
+
+def _tool_events(name="write", arguments=None, content="written; 1 of 2 calls replay",
+                 details=None, is_error=False):
+    from kullback.agent.events import ToolExecutionEndEvent, ToolExecutionStartEvent
+    from kullback.agent.tools import ToolResult
+
+    return [ToolExecutionStartEvent(tool_call_id="c1", tool_name=name,
+                                    arguments=arguments or {"path": "tools/rename.py"}),
+            ToolExecutionEndEvent(tool_call_id="c1", tool_name=name, is_error=is_error,
+                                  result=ToolResult(content=content, details=details))]
+
+
+RULED = {"rulings": [{"name": "fidelity", "accepted": False, "line": "1 of 2 calls replay"},
+                     {"name": "schema", "accepted": True, "line": "every call parses"}]}
+
+
+def test_watching_a_build_reads_its_bus_as_a_transcript_of_calls_results_and_rulings(
+        tmp_path, monkeypatch):
+    """A Builder session in another process writes every harness event to bus.jsonl; watching it
+    shows the tool call, the first line of its result and each gate ruling, not only the board."""
+    from kullback.agent.bus import Bus
+
+    other, screen = _watched(tmp_path, monkeypatch, alive=[True, True])
+    bus = Bus(other / "bus.jsonl", agent="builder")
+    for event in _tool_events(content="written\nsecond line not shown", details=RULED):
+        bus.append(event)
+    screen.command("/watch 1")
+    out = _text(screen.console)
+    assert "▸ write: path=tools/rename.py" in out
+    assert "✔ write: written" in out and "second line not shown" not in out
+    assert "ruling fidelity: rejected (1 of 2 calls replay)" in out
+    assert "ruling schema: accepted (every call parses)" in out
+    assert "waiting for the build's next call" not in out
+
+
+def test_the_transcript_streams_assistant_text_a_line_at_a_time_and_prints_the_rest_at_the_end():
+    from kullback.agent.events import MessageEndEvent, MessageStartEvent, MessageUpdateEvent
+    from kullback.agent.messages import AssistantMessage
+    from kullback.ai.events import TextDelta
+    from kullback.tui import Transcript
+
+    seen = []
+    transcript = Transcript(on_line=lambda text, style: seen.append(text))
+    partial = AssistantMessage(content="")
+    transcript.event(MessageStartEvent(message=partial))
+    for delta in ("Reading the ", "calls.\nThen the", " body."):
+        transcript.event(MessageUpdateEvent(message=partial, stream_event=TextDelta(
+            content_index=0, delta=delta, partial=partial)))
+        if delta == "Reading the ":
+            assert seen == []
+    assert seen == ["  Reading the calls."]
+    transcript.event(MessageEndEvent(message=AssistantMessage(content="Reading the calls.\nThen the body.")))
+    assert seen == ["  Reading the calls.", "  Then the body."]
+
+
+def test_the_transcript_shows_examine_findings_and_a_compaction():
+    from kullback.agent.events import Compaction
+    from kullback.tui import Transcript
+
+    transcript = Transcript()
+    for event in _tool_events("examine", {}, "1 findings open", {"findings": [
+            {"kind": "fidelity", "task_id": "t1", "path": "tools/a.py", "change": "keep the label"}]}):
+        transcript.event(event)
+    transcript.event(Compaction(summary="s", replaces_entry_ids=["e1", "e2"], by="code",
+                                reason="over the line"))
+    said = [text for text, _ in transcript.lines]
+    assert "    finding fidelity on t1: tools/a.py: keep the label" in said
+    assert "compaction by code: 2 entries became one summary (over the line)" in said
+
+
+def test_a_long_argument_is_one_cut_line_not_the_whole_file():
+    from kullback.tui import _args_summary
+
+    line = _args_summary({"path": "tools/a.py", "content": "def f():\n    return 1\n" * 50})
+    assert line.startswith("path=tools/a.py, content=def f():...") and "\n" not in line

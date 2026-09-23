@@ -416,6 +416,125 @@ class Board:
         return Panel(Group(*parts), title=self.title, title_align="left", border_style="dim")
 
 
+# How many transcript lines the screen keeps for its panel. The terminal's own scrollback holds the
+# whole session when the screen runs it; the panel is what /status and /watch show under the board.
+TRANSCRIPT_LINES = 200
+
+# One tool line's arguments are cut here, so a call that writes a whole file is one line, not fifty.
+ARGS_WIDTH = 100
+
+
+def _args_summary(arguments: Any, width: int = ARGS_WIDTH) -> str:
+    """A tool call's arguments as one line: key=value, the first line of each value, cut to fit."""
+    if not isinstance(arguments, dict):
+        return ""
+    parts = []
+    for key, value in arguments.items():
+        text = value if isinstance(value, str) else json.dumps(value, default=str)
+        first = (text.splitlines() or [""])[0]
+        if len(first) > 40 or first != text:
+            first = first[:40] + "..."
+        parts.append(f"{key}={first}")
+    line = ", ".join(parts)
+    return line if len(line) <= width else line[:width - 3] + "..."
+
+
+class Transcript:
+    """The Builder session as it happens, one line per thing it did, from its typed events.
+
+    This is tau's event adapter in small: the harness stream in, display lines out, nothing kept
+    that a replay of the same events would not rebuild, so the live session and a bus read by
+    /watch come out the same. Assistant text streams a line at a time: each delta is added to the
+    open line, and the line is printed when the model ends it, because a line-oriented screen
+    that takes commands on the same terminal cannot redraw half a line under the prompt. A tool
+    call is one line when it starts ("tool: args") and one when it ends (the first line of the
+    result, then each gate ruling it carries, then the findings when it is examine), the shape
+    cli._session_subscriber prints. A turn end prints the footer, which the caller supplies,
+    because the context fill and the spend are the harness's and the ledger's, not the events'.
+    """
+
+    def __init__(self, on_line: Optional[Any] = None, footer: Optional[Any] = None,
+                 keep: int = TRANSCRIPT_LINES):
+        self.on_line, self.footer, self.keep = on_line, footer, keep
+        self.lines: list[tuple[str, str]] = []
+        self._open = ""
+        self._streamed = False
+
+    def say(self, text: str, style: str = "") -> None:
+        self.lines.append((text, style))
+        del self.lines[:-self.keep]
+        if self.on_line is not None:
+            self.on_line(text, style)
+
+    def event(self, event: Any) -> None:
+        kind = getattr(event, "type", None)
+        if kind == "message_start":
+            self._open, self._streamed = "", False
+        elif kind == "message_update":
+            stream = getattr(event, "stream_event", None)
+            if getattr(stream, "type", None) == "text_delta":
+                self._streamed = True
+                self._open += stream.delta
+                while "\n" in self._open:
+                    line, self._open = self._open.split("\n", 1)
+                    self.say(f"  {line}", "white")
+        elif kind == "message_end":
+            self._message_end(event.message)
+        elif kind == "tool_execution_start":
+            self.say(f"▸ {event.tool_name}: {_args_summary(event.arguments)}", "yellow")
+        elif kind == "tool_execution_end":
+            self._tool_end(event)
+        elif kind == "turn_end" and self.footer is not None:
+            self.say(f"  {self.footer(event.turn)}", "dim")
+        elif kind == "compaction":
+            replaced = len(event.replaces_entry_ids)
+            self.say(f"compaction by {event.by}: {replaced} entries became one summary"
+                     + (f" ({event.reason})" if event.reason else ""), "magenta")
+        elif kind == "custom_message":
+            self.say(f"queued ({event.deliver_as}): {_first_line(event.content)}", "cyan")
+        elif kind == "error":
+            self.say(f"error: {event.message}", "red")
+        elif kind == "agent_end":
+            self.say("session run ended", "dim")
+
+    def _message_end(self, message: Any) -> None:
+        role = getattr(message, "role", None)
+        if role == "assistant":
+            rest = self._open if self._streamed else str(getattr(message, "content", None) or "")
+            for line in rest.splitlines():
+                self.say(f"  {line}", "white")
+            self._open, self._streamed = "", False
+        elif role == "user":
+            self.say(f"› {_first_line(str(getattr(message, 'content', '') or ''))}", "cyan")
+
+    def _tool_end(self, event: Any) -> None:
+        result = event.result
+        mark, style = ("✘", "red") if event.is_error else ("✔", "green")
+        self.say(f"{mark} {event.tool_name}: {_first_line(str(result.content or ''))}", style)
+        details = result.details or {}
+        for ruling in details.get("rulings") or ():
+            if isinstance(ruling, dict):
+                accepted = ruling.get("accepted")
+                self.say(f"    ruling {ruling.get('name')}: {'accepted' if accepted else 'rejected'}"
+                         f" ({ruling.get('line')})", "green" if accepted else "red")
+        if event.tool_name == "examine":
+            for finding in details.get("findings") or ():
+                if isinstance(finding, dict):
+                    self.say(f"    finding {finding.get('kind')} on {finding.get('task_id')}: "
+                             f"{finding.get('path')}: {finding.get('change')}", "magenta")
+
+    def render(self, limit: int = FEED_LINES * 2) -> Text:
+        out = Text()
+        for text, style in self.lines[-limit:]:
+            out.append(f"{text}\n", style=style or None)
+        return out
+
+
+def _first_line(text: str, width: int = 160) -> str:
+    first = (text.strip().splitlines() or [""])[0]
+    return first if len(first) <= width else first[:width - 3] + "..."
+
+
 def _values(words: list[str], flag: str) -> list[str]:
     """Every value given to `flag`, in order. A flag with nothing after it, or with another flag
     after it, is a mistake the person typing can act on, so it is said in those words rather than
@@ -640,17 +759,31 @@ class Screen:
     def _follow(self, pid: Any, every_seconds: float = 1.0) -> None:
         """Re-read this build's files until its pid goes, or until the person stops watching.
 
-        Two things are read: the board, off the records the build writes, and the feed, which is
-        the build's own event stream (kullback.runner.feed) and is what makes the calls visible as
-        they happen rather than a stage at a time. Ctrl-C stops the watching, never the build:
+        Two things are read: the board, off the records the build writes, and the build's own
+        event stream. A Builder session writes every event of its harness to workdir/bus.jsonl,
+        and that is read through the same Transcript the screen uses for a session it runs itself,
+        so watching another process reads the same lines as running here. A build with no bus
+        falls back to the feed (kullback.runner.feed). Ctrl-C stops the watching, never the build:
         they are different processes, and the build does not know anyone is here.
 
-        A build that writes no feed is still followed. The feed is new, so a build already running
-        under older code never opens it, and watching one showed a still board and nothing else;
-        for those the calls are read off the reply cache instead, which every build writes."""
+        A build that writes neither is still followed. For those the calls are read off the reply
+        cache instead, which every build writes."""
+        from kullback.agent.bus import Bus
         from kullback.runner import feed, heartbeat
 
+        bus = Bus(self.workdir / "bus.jsonl")
+        transcript = Transcript()
+        seq = 0
+
         def since(offset: int, mtime: float, first: bool) -> tuple[list[str], int, float]:
+            nonlocal seq
+            if bus.path.is_file():
+                # One pass of the follower: every record after the last one read, then stop, so
+                # the pid check above decides when watching ends, not the log.
+                for record in bus.tail(seq, stop=lambda: True):
+                    seq = record.seq
+                    transcript.event(record.event)
+                return [], offset, mtime  # the transcript holds them
             if feed.path_for(self.workdir).is_file():
                 rows, offset = feed.read_since(self.workdir, offset)
             else:
@@ -658,25 +791,30 @@ class Screen:
                     self.workdir, mtime, limit=FEED_LINES if first else None)
             return [feed.describe(row) for row in rows], offset, mtime
 
+        def shown(recent: list[str]) -> Any:
+            return self._watching(recent, transcript if bus.path.is_file() else None)
+
         lines, offset, mtime = since(0, 0.0, True)
         recent = lines[-FEED_LINES:]
-        with Live(self._watching(recent), console=self.console, refresh_per_second=4) as live:
+        with Live(shown(recent), console=self.console, refresh_per_second=4) as live:
             try:
                 while heartbeat.alive(pid):
                     time.sleep(every_seconds)
                     lines, offset, mtime = since(offset, mtime, False)
                     recent = (recent + lines)[-FEED_LINES:]
-                    live.update(self._watching(recent))
+                    live.update(shown(recent))
                 lines, offset, mtime = since(offset, mtime, False)
                 recent = (recent + lines)[-FEED_LINES:]
-                live.update(self._watching(recent))
+                live.update(shown(recent))
             except KeyboardInterrupt:
                 pass
         self.console.print(Text("  stopped watching; the build is untouched", style="dim"))
 
-    def _watching(self, recent: list[str]) -> Any:
+    def _watching(self, recent: list[str], transcript: Optional[Transcript] = None) -> Any:
         """The board with the build's last few events under it: state above, story below."""
         board = self._status_renderable()
+        if transcript is not None and transcript.lines:
+            return Group(board, transcript.render(FEED_LINES))
         if not recent:
             return Group(board, Text("  waiting for the build's next call", style="dim"))
         lines = Text()
