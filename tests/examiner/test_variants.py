@@ -78,16 +78,13 @@ def test_a_run_whose_only_read_follows_every_write_still_has_a_read_to_insert():
     assert [c["name"] for c in rows[0]["calls"]] == ["read_bench", WATER, "read_bench"]
 
 
-def test_a_read_whose_answer_a_later_call_carries_in_its_arguments_is_not_dropped():
-    calls = [_read_bench("b1", pots=("p1",)), _water("p1")]
-    assert variants.dropped_reads(calls, WRITE_TOOLS) == []
-
-
-def test_a_read_nothing_later_used_is_dropped():
+def test_a_read_nothing_later_used_is_dropped_and_one_a_later_call_carries_is_not():
     calls = [_read_bench("b7", pots=("p7",)), _water("p1")]
     rows = variants.dropped_reads(calls, WRITE_TOOLS)
     assert _kinds(rows) == [variants.DROP_READ]
     assert [c["name"] for c in rows[0]["calls"]] == [WATER]
+    used = [_read_bench("b1", pots=("p1",)), _water("p1")]
+    assert variants.dropped_reads(used, WRITE_TOOLS) == []
 
 
 def test_a_run_that_offers_no_rewrite_of_any_kind_yields_nothing():
