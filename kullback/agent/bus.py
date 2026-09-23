@@ -111,8 +111,7 @@ class Bus:
             data = line.encode("utf-8")
             handle = os.open(self.path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o644)
             try:
-                os.write(handle, data)
-                os.fsync(handle)
+                _write_whole(handle, data)
             finally:
                 os.close(handle)
             self._seq = record.seq
@@ -236,3 +235,21 @@ def _unlock(handle) -> None:
     import fcntl
 
     fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
+
+def _write_whole(handle: int, data: bytes) -> None:
+    """Write every byte of one record, or none: a short write is continued, a failure truncated.
+
+    os.write may write fewer bytes than asked; the rest follows until the count is reached. On
+    any exception the file goes back to its length before this record, so no partial line stays
+    for the next append to join, and the exception is raised again.
+    """
+    start = os.fstat(handle).st_size
+    view = memoryview(data)
+    try:
+        while view:
+            view = view[os.write(handle, view):]
+        os.fsync(handle)
+    except BaseException:
+        os.ftruncate(handle, start)
+        raise
