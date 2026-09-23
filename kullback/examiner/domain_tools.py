@@ -11,6 +11,7 @@ rows, never a count alone.
 
 from __future__ import annotations
 
+import hashlib
 import json
 from typing import Any, Iterable, Optional
 
@@ -31,7 +32,7 @@ from kullback.gates.hook import ruling_line
 from kullback.gates.probes import version_hash, write_tools_of
 from kullback.gates.verifier_suite import D79_STAGES, HELPERS_SRC, check_run, make_atom
 from kullback.runner import tool as runner_tool
-from kullback.runner.records import Event, Run, Verifier, VerifierVersion, as_dict, write_json
+from kullback.runner.records import Atom, Event, Run, Verifier, VerifierVersion, as_dict, write_json
 
 PRODUCED_VERIFIERS = ["verifiers"]
 PRODUCED_PROBES = ["probes"]
@@ -147,33 +148,42 @@ def payload_shape(atoms: Iterable[Any], kind: Any) -> dict:
     return dict(rows[0].target) if rows else {}
 
 
+# The fields propose_verifier sets itself on an atom: a row's own copy is taken out first (F30).
+SET_BY_TOOL = ("id", "kind", "payload", "target", "predicate_src")
+# The fields a row may carry beside them, passed through to the Atom as they are.
+ROW_FIELDS = tuple(name for name in Atom.model_fields if name not in SET_BY_TOOL)
+
+
 def corrected_atom(row: dict, atoms: Iterable[Any] = ()) -> str:
     """The row the model sent, written out in the shape the tool takes."""
-    body = dict(row)
-    body.pop("payload", None)
-    body.pop("target", None)
-    example = {"id": body.pop("id", None) or "atom-1", "kind": body.pop("kind", None) or "required",
+    example = {"id": row.get("id") or "atom-1", "kind": row.get("kind") or "required",
                "payload": payload_shape(atoms, row.get("kind"))}
-    example.update({key: value for key, value in body.items() if key != "predicate_src"})
+    example.update({key: value for key, value in row.items() if key in ROW_FIELDS})
     return json.dumps(example, sort_keys=True, default=str, ensure_ascii=False)
+
 
 def _atom_of(row: dict, atoms: Iterable[Any] = ()):
     """One `add` row as an Atom, carried from kullback/examiner/tools.py (`_atom_of`)."""
-    body = dict(row)
-    missing = [name for name in ("id", "kind") if not body.get(name)]
+    missing = [name for name in ("id", "kind") if not row.get(name)]
     if missing:
         raise RetryableToolError(
             f"the atom {row!r} names no {', '.join(missing)}: {ATOM_SHAPE}. The same atom with "
             f"every field it needs: {corrected_atom(row, atoms)}",
             ask=_SHAPE_ASK.format(shape=corrected_atom(row, atoms)))
-    atom_id, kind = body.pop("id"), body.pop("kind")
-    payload = body.pop("payload", None) or body.pop("target", None) or {}
-    if not isinstance(payload, dict):
+    unknown = sorted(key for key in row if key not in SET_BY_TOOL and key not in ROW_FIELDS)
+    if unknown:
         raise RetryableToolError(
-            f"the atom {atom_id!r} carries its payload as a {type(payload).__name__}, not an object: "
+            f"the atom {row['id']!r} carries fields an atom does not have: {', '.join(unknown)}. "
             f"{ATOM_SHAPE}. The same atom with every field it needs: {corrected_atom(row, atoms)}",
             ask=_SHAPE_ASK.format(shape=corrected_atom(row, atoms)))
-    return make_atom(atom_id, kind, payload, helpers=HELPERS_SRC, **body)
+    payload = row.get("payload") or row.get("target") or {}
+    if not isinstance(payload, dict):
+        raise RetryableToolError(
+            f"the atom {row['id']!r} carries its payload as a {type(payload).__name__}, not an object: "
+            f"{ATOM_SHAPE}. The same atom with every field it needs: {corrected_atom(row, atoms)}",
+            ask=_SHAPE_ASK.format(shape=corrected_atom(row, atoms)))
+    fields = {key: value for key, value in row.items() if key in ROW_FIELDS}
+    return make_atom(row["id"], row["kind"], payload, helpers=HELPERS_SRC, **fields)
 
 
 def _candidate_atoms(current: Verifier, drop: Iterable[str], add: Iterable[Any]) -> list:
@@ -238,16 +248,46 @@ def _keep_suite_status(root: ExamRoot, task_id: str, records: list[dict]) -> Non
     write_json(root.exam_dir / "task_status.json", root.task_status)
 
 
-def _refuse_proposal(task_id: str, version: str, records: list[dict]) -> RetryableToolError:
+# The D79 checks a Run should fail or pass, where the atom the rows name is the one to change.
+_ATOM_CHECKS = {"verifier_empty_run": "the atom the empty Run passed on",
+                "verifier_alt_path": "the atom that turned the second path away"}
+
+# How many refusals of one Task a session takes before the tool says to stop proposing for it (F32).
+REFUSALS_PER_TASK = 3
+_STOP = " Stop proposing for this Task in this session."
+
+
+def _atoms_named(records: list[dict]) -> str:
+    """The atom ids the empty-run and alt-path failures turn on, off their rows, when the rows carry them."""
+    lines = []
+    for record in records:
+        if record["accepted"] or record["name"] not in _ATOM_CHECKS:
+            continue
+        for row in record["rows"]:
+            if isinstance(row, dict) and row.get("atom"):
+                text = f" ({row['text']})" if row.get("text") else ""
+                lines.append(f"{record['name']}: {_ATOM_CHECKS[record['name']]} is {row['atom']}{text}")
+    return "\n".join(lines)
+
+
+def _refuse_proposal(task_id: str, version: str, records: list[dict], stop: bool = False) -> RetryableToolError:
     """A refused proposal as a retryable error: every ruling line, and the rows behind each failure."""
     lines = "\n".join(record["line"] for record in records) or "no gate ruled on the proposal"
     rows = "; ".join(f"{record['name']}: {record['rows']!r}"
                      for record in records if not record["accepted"])
+    atoms = _atoms_named(records)
     return RetryableToolError(
         f"proposal version {version} for task {task_id} refused, the previous file stands:\n"
-        f"{lines}" + (f"\nrows behind the failures: {rows}" if rows else ""),
+        f"{lines}" + (f"\nrows behind the failures: {rows}" if rows else "")
+        + (f"\n{atoms}" if atoms else "") + (_STOP if stop else ""),
         ask=("Read the rows behind the failures and propose again with atoms answering them, "
              "or file a finding naming the Environment file and what differs after two refusals."))
+
+
+def atoms_hash(atoms: Iterable[Any]) -> str:
+    """The content hash of a candidate's atoms, so a proposal refused once is known again (F32)."""
+    body = json.dumps([as_dict(atom) for atom in atoms], sort_keys=True, default=str)
+    return hashlib.sha256(body.encode()).hexdigest()
 
 
 def _propose_verifier(root: ExamRoot):
@@ -258,11 +298,25 @@ def _propose_verifier(root: ExamRoot):
     it against the version before it (D127). A refused proposal keeps its row, rewritten as
     rejected with the gates that rejected it: the history is the record, never dropped (D201).
     """
+    # Per Task in this session: each refused candidate's atoms hash, with its version and the gates
+    # that refused it, and how many refusals the Task has had (F32).
+    refused: dict[str, dict[str, tuple[str, list[str]]]] = {}
+    refusals: dict[str, int] = {}
+
     async def propose_verifier(args: ProposeArgs) -> ProposeResult:
         current = _current(root, args.task_id)
         candidate = current.model_copy(deep=True, update={
             "atoms": _candidate_atoms(current, args.drop, args.add),
             "verifier_version": _next_version(current)})
+        atoms_digest = atoms_hash(candidate.atoms)
+        seen = refused.setdefault(args.task_id, {}).get(atoms_digest)
+        if seen is not None:
+            refusals[args.task_id] = refusals.get(args.task_id, 0) + 1
+            version, gates = seen
+            raise RetryableToolError(
+                f"already refused at version {version} for {', '.join(gates) or 'no gate'}: change the "
+                f"atoms or move on to another Task"
+                + (_STOP if refusals[args.task_id] > REFUSALS_PER_TASK else ""))
         digest = version_hash(candidate)
         hist = seeded_history(root.history, args.task_id, current)
         hist.versions.append(VerifierVersion(
@@ -290,16 +344,18 @@ def _propose_verifier(root: ExamRoot):
             root.verifiers.pop(args.task_id, None)
         else:
             root.verifiers[args.task_id] = previous_verifier
-        hist.versions[-1] = hist.versions[-1].model_copy(
-            update={"accepted": False,
-                    "rejected_by": [record["name"] for record in records if not record["accepted"]]})
+        gates = [record["name"] for record in records if not record["accepted"]]
+        hist.versions[-1] = hist.versions[-1].model_copy(update={"accepted": False, "rejected_by": gates})
         root.history[args.task_id] = hist
         save_ruling_files(root)
         if previous is None:
             target.unlink(missing_ok=True)
         else:
             target.write_bytes(previous)
-        raise _refuse_proposal(args.task_id, candidate.verifier_version, records)
+        refused[args.task_id][atoms_digest] = (candidate.verifier_version, gates)
+        refusals[args.task_id] = refusals.get(args.task_id, 0) + 1
+        raise _refuse_proposal(args.task_id, candidate.verifier_version, records,
+                               stop=refusals[args.task_id] > REFUSALS_PER_TASK)
 
     return propose_verifier
 
@@ -409,5 +465,5 @@ def tool_names() -> tuple[str, ...]:
     return ("propose_verifier", "probe", "finding", "reroll")
 
 
-__all__ = ["FindingArgs", "FindingResult", "ProbeArgs", "ProbeResult", "ProposeArgs",
-           "ProposeResult", "RerollArgs", "RerollResult", "domain_tools", "render", "tool_names"]
+__all__ = ["REFUSALS_PER_TASK", "ROW_FIELDS", "SET_BY_TOOL", "FindingArgs", "FindingResult", "ProbeArgs", "ProbeResult", "ProposeArgs",
+           "ProposeResult", "RerollArgs", "RerollResult", "atoms_hash", "domain_tools", "render", "tool_names"]

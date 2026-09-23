@@ -288,7 +288,7 @@ def test_session_prompt_names_dot_as_root_lists_entries_and_the_paths_of_each_ta
     assert "The root holds: history.json, replays.json, rerolls.json, runs/, tasks/." in system
     assert "on your first write under them: verifiers/, probes/" in system
     assert "runs: runs/t1/ref.jsonl, runs/t1/alt.jsonl" in system
-    assert "verifier: verifiers/t1.json once you first propose one" in system
+    assert "proposal: verifiers/t1.json once you first propose one" in system
 
 
 def test_examine_with_no_finished_run_opens_no_session_and_names_the_task_left_out(tmp_path):
@@ -323,3 +323,17 @@ def test_the_rulings_line_covers_only_the_tasks_the_session_examines(tmp_path):
     root = ExamRoot(workdir=world.workdir, replays=world.inputs["replays"])
     lines = S.rulings_line(root, ["t2"]).splitlines()
     assert [line.split(":")[0] for line in lines] == ["t2"]
+
+
+def test_the_rulings_line_names_the_derived_verifier_and_the_user_rules_of_a_confirmed_replay(tmp_path):
+    world = make_world(tmp_path, tasks=2)
+    write_json(world.workdir / "verifiers" / "t1.json", {"task_id": "t1"})
+    S.expose(world.workdir)
+    replays = dict(world.inputs["replays"])
+    replays["t2"] = {"ref": {**replays["t2"]["ref"], "confirmed": False}}
+    root = ExamRoot(workdir=world.workdir, replays=replays)
+    lines = dict(line.split(": ", 1) for line in S.rulings_line(root).splitlines())
+    assert "derived verifier: derived/t1.json" in lines["t1"]
+    assert "proposal: verifiers/t1.json once you first propose one" in lines["t1"]
+    assert "user rules: user_rules/ref.json" in lines["t1"]
+    assert "no user rules until the Reference is confirmed" in lines["t2"]

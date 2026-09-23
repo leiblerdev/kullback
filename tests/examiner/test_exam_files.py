@@ -120,3 +120,15 @@ def test_evidence_of_a_referenced_task_hands_the_probe_model_and_runner_to_the_s
     evidence = F.evidence_of(F.ExamRoot(probe_model=model, run_probe=runner, **keyword), "t1")
     assert evidence["reference"] is not None
     assert evidence["probe_model"] is model and evidence["run_probe"] is runner
+
+
+def test_expose_writes_the_derived_verifier_under_derived_and_leaves_verifiers_alone(tmp_path):
+    world = make_world(tmp_path)
+    workdir = world.workdir
+    (tmp_path / "v").mkdir()
+    verifier = VF.derive(tmp_path / "v")
+    write_json(workdir / "verifiers" / "t1.json", as_dict(verifier))
+    out = F.expose(workdir)
+    assert read_json(workdir / "exam" / "derived" / "t1.json") == as_dict(verifier)
+    assert "derived/t1.json" in out["copied"]
+    assert not (workdir / "exam" / "verifiers").exists(), "the proposal path stays the Examiner's own"
