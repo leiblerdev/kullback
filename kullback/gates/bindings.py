@@ -8,8 +8,8 @@ a refusal (call id, tool, arguments digest, recorded value, our value, first dif
 column), never a bare count.
 
 The loaders read the workdir files the build already writes (`traces/`, `schema.json`,
-`db.json`, `tool_sigs.json`, `canon-rules.json`, and the Examiner-side JSON beside
-them); anything a loader cannot find is missing evidence and the gates that need it
+`db.json`, `tool_sigs.json`, `canon-rules.json`, and the Examiner's history, task runs
+and probe pools where records names them); anything a loader cannot find is missing evidence and the gates that need it
 are skipped, never failed. Running a tool body needs an executor, which lives outside
 this package (the gates never import an agent or a builder): `rulings_for` and
 `gate_writes` take it as `execute(source, calls, db)`, returning one sandbox-shaped
@@ -48,7 +48,16 @@ from kullback.gates.trust import finished_runs, refuse_gate, trusted_gate
 from kullback.gates.verifier_suite import D79_STAGES, validate_verifier
 from kullback.runner.canon import CanonRules
 from kullback.runner.canon import load_rules as load_canon_rules
-from kullback.runner.records import EntitySchema, GateResult, ToolCall, Verifier, content_hash
+from kullback.runner.records import (
+    EntitySchema,
+    GateResult,
+    ToolCall,
+    Verifier,
+    content_hash,
+    load_exam_history,
+    load_exam_task_runs,
+    load_probe_pools,
+)
 
 #: How many rows one ruling carries before the count of the rest.
 ROWS_CAP = 20
@@ -137,6 +146,24 @@ def load_rules(workdir: Path, path: str) -> Optional[CanonRules]:
         return None
 
 
+def load_history(workdir: Path, path: str) -> Optional[dict]:
+    """The Verifier histories the Examiner saved (records.exam_history_path), or None when there are none."""
+    _ = path
+    return load_exam_history(workdir) or None
+
+
+def load_task_runs(workdir: Path, path: str) -> Optional[dict]:
+    """The Runs per Task the Examiner saved (records.exam_task_runs_path), or None when there are none."""
+    _ = path
+    return load_exam_task_runs(workdir) or None
+
+
+def load_probes(workdir: Path, path: str) -> Optional[dict]:
+    """Every probe pool on disk (records.load_probe_pools), or None when there are none."""
+    _ = path
+    return load_probe_pools(workdir) or None
+
+
 def _file_loader(name: str) -> Loader:
     def load(workdir: Path, path: str) -> Any:
         _ = path
@@ -155,9 +182,9 @@ BINDINGS: tuple[Binding, ...] = (
             {"calls": load_calls, "db": load_db, "schema": load_schema, "rules": load_rules}),
     Binding("verifiers/*.json", VERIFIER_GATES,
             {"replays": _file_loader("replays.json"), "rerolls": _file_loader("rerolls.json"),
-             "history": _file_loader("history.json"), "task_runs": _file_loader("task_runs.json"),
+             "history": load_history, "task_runs": load_task_runs,
              "reference": _file_loader("reference.json"), "verifiers": _file_loader("verifiers.json"),
-             "probes": _file_loader("probes.json"), "sigs": _file_loader("tool_sigs.json"),
+             "probes": load_probes, "sigs": _file_loader("tool_sigs.json"),
              "rules": load_rules}),
     Binding("refusals/*.json", ("refuse",),
             {"replays": _file_loader("replays.json"), "rerolls": _file_loader("rerolls.json")}),

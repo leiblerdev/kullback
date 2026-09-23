@@ -23,19 +23,21 @@ from kullback.gates import PROTECTED_PATH, first_string
 from kullback.gates.probes import version_hash, write_tools_of
 from kullback.gates.verifier_suite import load_run, wrong_run
 from kullback.runner.records import (
-    Probe,
-    ProbePool,
-    Run,
+    EXAM_DIR,
     ToolSig,
     Verifier,
     VerifierHistory,
     VerifierVersion,
     as_dict,
+    as_probe_pool,
+    exam_history_path,
+    exam_task_runs_path,
+    exam_verifier_path,
+    load_exam_history,
     read_json,
     write_json,
 )
 
-EXAM_DIR = "exam"
 RUNS_DIR = "runs"
 SPOKEN_DIR = "spoken"
 
@@ -141,7 +143,7 @@ class ExamRoot:
 
     def current(self, task_id: str) -> Optional[Verifier]:
         """The Task's live Verifier: the exam proposal first, else the derived one."""
-        path = self.exam_dir / "verifiers" / f"{task_id}.json"
+        path = exam_verifier_path(self.workdir, task_id)
         if path.is_file():
             try:
                 return Verifier.model_validate(read_json(path))
@@ -152,24 +154,12 @@ class ExamRoot:
 
 def history_path(root: ExamRoot) -> Path:
     """Where the session keeps the per-Task Verifier histories: history.json beside the verifiers dir."""
-    return root.exam_dir / "history.json"
+    return exam_history_path(root.workdir)
 
 
 def load_history(root: ExamRoot) -> dict[str, VerifierHistory]:
     """The per-Task Verifier histories off history.json (D127); a missing file or a bad row reads as none."""
-    try:
-        raw = read_json(history_path(root), None)
-    except ValueError:
-        return {}
-    if not isinstance(raw, dict):
-        return {}
-    out: dict[str, VerifierHistory] = {}
-    for task_id, body in raw.items():
-        try:
-            out[str(task_id)] = body if isinstance(body, VerifierHistory) else VerifierHistory.model_validate(body)
-        except ValueError:
-            continue
-    return out
+    return load_exam_history(root.workdir)
 
 
 def save_history(root: ExamRoot, history: dict) -> Path:
@@ -286,42 +276,19 @@ def reference_runs(root: Path, row: dict, replay_rows: Any, reroll_rows: list) -
 
 
 def _probe_pools(root: ExamRoot) -> dict:
-    """The session's probe Runs as ProbePools, so the trusted gate scores what the session holds.
-
-    Scoring reads only each probe's Run; the Probe metadata the session pool does not keep (the
-    class, the version written against) reads empty. A pool the session already holds as a
-    ProbePool passes through untouched.
-    """
-    pools: dict = {}
-    for task_id, runs in (root.probes or {}).items():
-        if isinstance(runs, ProbePool):
-            pools[task_id] = runs
-            continue
-        probes = []
-        for run in runs or []:
-            if isinstance(run, Probe):
-                probes.append(run)
-            elif isinstance(run, Run):
-                probes.append(Probe(probe_id=run.run_id, task_id=task_id, bug_class="",
-                                    verifier_hash="", run=run))
-            else:
-                try:
-                    probes.append(Probe.model_validate(run))
-                except ValueError:
-                    continue
-        pools[task_id] = ProbePool(task_id=task_id, probes=probes)
-    return pools
+    """The session's probe Runs as ProbePools, so the trusted gate scores what the session holds."""
+    return {task_id: as_probe_pool(task_id, runs) for task_id, runs in (root.probes or {}).items()}
 
 
 def save_ruling_files(root: ExamRoot) -> None:
     """history.json and task_runs.json beside the verifiers dir, before every ruling (D201).
 
-    The bindings load both off files beside the ruled file, so the file loaders read the same
-    evidence the session holds. task_runs rows are the Run dicts, as_dict of each Run.
+    The gates' loaders and the Builder's status read both through the same path functions
+    (records.exam_history_path, exam_task_runs_path), so they rule over the evidence the session holds. task_runs rows are the Run dicts, as_dict of each Run.
     """
     save_history(root, root.history)
     runs = task_runs_of(root.replays, root.rerolls, workdir=root.workdir)
-    write_json(root.exam_dir / "task_runs.json",
+    write_json(exam_task_runs_path(root.workdir),
                {task_id: [as_dict(run) for run in rows] for task_id, rows in (runs or {}).items()})
 
 
