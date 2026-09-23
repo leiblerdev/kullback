@@ -60,6 +60,9 @@ def test_reset_hands_the_policy_what_it_needs_to_act():
         assert {spec["name"] for spec in info.tools} == {"describe_widget", "rename_widget"}
         assert info.system_prompt is not None
         assert info.opening is not None
+        seeded = Episode(env, outdir=Path(tmp) / "out_seeded")
+        assert seeded.reset("widget_task", seed=123).seed == 123
+        assert seeded.run_record()["seed"] == 123
 
 
 def test_same_seed_same_task_same_messages_gives_the_same_run():
@@ -74,26 +77,15 @@ def test_same_seed_same_task_same_messages_gives_the_same_run():
         assert first["seed"] == second["seed"]
 
 
-def test_finished_episode_refuses_further_steps():
-    import tempfile
-    from pathlib import Path
-    with tempfile.TemporaryDirectory() as tmp:
-        root = Path(tmp) / "env"
-        write_env(root)
-        episode = drive(root, Path(tmp) / "out", SCRIPTED_RENAME)
-        with pytest.raises(EpisodeError):
-            episode.step({"content": "hello", "tool_calls": []})
-
-
-def test_step_before_reset_is_refused():
-    import tempfile
-    from pathlib import Path
-    with tempfile.TemporaryDirectory() as tmp:
-        root = Path(tmp) / "env"
-        write_env(root)
-        episode = Episode(BuiltEnvironment(root), outdir=Path(tmp) / "out")
-        with pytest.raises(EpisodeError):
-            episode.step({"content": "hello", "tool_calls": []})
+@pytest.mark.parametrize("finished", [True, False])
+def test_step_is_refused_before_reset_and_after_the_run_finished(tmp_path, finished):
+    root = write_env(tmp_path / "env")
+    if finished:
+        episode = drive(root, tmp_path / "out", SCRIPTED_RENAME)
+    else:
+        episode = Episode(BuiltEnvironment(root), outdir=tmp_path / "out")
+    with pytest.raises(EpisodeError):
+        episode.step({"content": "hello", "tool_calls": []})
 
 
 def test_reward_scores_a_finished_run_by_code():
@@ -141,13 +133,6 @@ def test_reward_fails_where_only_a_judge_names_the_write():
         assert reward.reason == "extra_write:rename_widget"
 
 
-def test_reset_preserves_the_supplied_seed(tmp_path):
-    root = write_env(tmp_path / "env")
-    episode = Episode(BuiltEnvironment(root), outdir=tmp_path / "out")
-    assert episode.reset("widget_task", seed=123).seed == 123
-    assert episode.run_record()["seed"] == 123
-
-
 def test_repeated_seed_keeps_each_completed_run_file(tmp_path):
     root = write_env(tmp_path / "env")
     episode = drive(root, tmp_path / "out", SCRIPTED_RENAME)
@@ -176,26 +161,6 @@ def test_a_package_without_user_rules_opens_with_task_intent(tmp_path):
     assert episode.transcript()[-1] == {"role": "user", "content": reset.opening}
 
 
-def test_returned_transcript_cannot_mutate_recorded_tool_calls(tmp_path):
-    root = write_env(tmp_path / "env")
-    episode = Episode(BuiltEnvironment(root), outdir=tmp_path / "out")
-    episode.reset("widget_task", seed=7)
-    episode.step(SCRIPTED_RENAME[0])
-    transcript = episode.transcript()
-    assistant = next(m for m in transcript if m.get("tool_calls"))
-    assistant["tool_calls"][0]["name"] = "changed_by_caller"
-    assert next(m for m in episode.transcript() if m.get("tool_calls"))["tool_calls"][0]["name"] == "describe_widget"
-
-
-def test_reset_tool_specs_are_detached_from_recording(tmp_path):
-    root = write_env(tmp_path / "env")
-    episode = Episode(BuiltEnvironment(root), outdir=tmp_path / "out")
-    reset = episode.reset("widget_task", seed=7)
-    reset.tools[0]["parameters"]["properties"].clear()
-    assert episode._state.tools[0]["parameters"]["properties"]
-    assert episode._tools[0]["parameters"]["properties"]
-
-
 def test_step_does_not_retain_callers_argument_objects(tmp_path):
     import copy
     root = write_env(tmp_path / "env")
@@ -210,10 +175,13 @@ def test_step_does_not_retain_callers_argument_objects(tmp_path):
     assert call.payload["args"]["widget_id"] == "w1"
 
 
-def test_step_results_cannot_mutate_world_or_recording(tmp_path):
+def test_reset_step_and_transcript_outputs_cannot_mutate_world_or_recording(tmp_path):
     root = write_env(tmp_path / "env")
     episode = Episode(BuiltEnvironment(root), outdir=tmp_path / "out")
-    episode.reset("widget_task", seed=7)
+    reset = episode.reset("widget_task", seed=7)
+    reset.tools[0]["parameters"]["properties"].clear()
+    assert episode._state.tools[0]["parameters"]["properties"]
+    assert episode._tools[0]["parameters"]["properties"]
     row = episode._router.tools.db.widgets["w1"]
     episode._router.tools.describe_widget = lambda widget_id: row.__dict__
     result = episode.step(SCRIPTED_RENAME[0])
@@ -221,3 +189,6 @@ def test_step_results_cannot_mutate_world_or_recording(tmp_path):
     assert row.label == "plain"
     recorded = next(e for e in episode._state.run.events if e.type == "tool_result")
     assert recorded.payload["result"]["label"] == "plain"
+    assistant = next(m for m in episode.transcript() if m.get("tool_calls"))
+    assistant["tool_calls"][0]["name"] = "changed_by_caller"
+    assert next(m for m in episode.transcript() if m.get("tool_calls"))["tool_calls"][0]["name"] == "describe_widget"

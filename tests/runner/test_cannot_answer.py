@@ -116,8 +116,9 @@ def test_a_cannot_answer_verdict_carries_no_pass_and_no_fail(workdir):
     assert any(note.startswith("environment_cannot_answer:quote_ledger") for note in done.notes)
 
 
-def test_an_unlisted_tool_name_is_still_an_ordinary_refusal(workdir):
-    """A Candidate mistake stays scoreable: the Run carries on with a refusal it can recover from."""
+def test_an_unlisted_or_other_caller_tool_name_is_still_an_ordinary_refusal(workdir):
+    """A Candidate mistake stays scoreable: the Run carries on with a refusal it can recover from,
+    and a tool listed only to another caller keeps that refusal (D164), not the Environment failing."""
     model = TestModel([
         {"tool_calls": [{"id": "c1", "name": "conjure_ledger", "arguments": {}}]},
         {"content": "sorry, I cannot do that"},
@@ -129,25 +130,18 @@ def test_an_unlisted_tool_name_is_still_an_ordinary_refusal(workdir):
     assert result_event.payload["error"]["class"] == "tool_not_found"
     assert result_event.route == "code"
     assert state.messages[-1]["role"] == "assistant"
-
-
-def test_a_tool_listed_only_to_another_caller_keeps_its_refusal():
-    """The D164 refusal is a Candidate error, not the Environment failing: the Run goes on."""
     out = make_router().route("tap_counter", {}, requestor="assistant")
     assert out.route == "code"
     assert out.error is not None and out.error.class_ == "tool_not_found"
 
 
-def test_a_scoring_caller_refuses_a_router_with_a_stand_in():
-    """G28 as a lock, not a convention: the scoring path raises instead of answering by model."""
+def test_a_scoring_caller_refuses_a_router_with_a_stand_in_and_a_listed_tool_never_reaches_it():
+    """G28 as a lock, not a convention: the scoring path raises instead of answering by model, and
+    even where a stand-in was handed in, a listed tool ends the Run instead of asking the model."""
     router = make_router(stand_in_model=TestModel(['{"quoted": true}']))
     with pytest.raises(ValueError):
         route_mod.refuse_stand_in(router)
     route_mod.refuse_stand_in(make_router())
-
-
-def test_a_listed_tool_is_never_answered_by_the_stand_in():
-    """Even where a stand-in was handed in, a listed tool ends the Run instead of asking the model."""
     model = TestModel(['{"quoted": true}'])
     out = make_router(stand_in_model=model).route("quote_ledger", {"ledger_id": "l1"})
     assert out.route == "cannot_answer"
