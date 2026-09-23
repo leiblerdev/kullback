@@ -51,10 +51,13 @@ src = [".", "tests"]
 select = ["E", "F", "I", "B"]
 ignore = ["E501"]
 
-# The direction of D121/D123: ai imports nothing of ours; agent and runner each import only ai and
-# never each other; gates imports runner (never agent); builder and examiner both import agent,
-# gates, runner and ai, and never each other (D120, D122, D123, ADR-0007); nothing imports the three
-# frontends except themselves. Written for all six packages now, though agent, gates and examiner
+# The direction of D121/D123: ai imports nothing of ours; agent holds no import of runner
+# or gates by discipline (its layer sits above theirs); runner and gates share one layer
+# because the world executes built toolkits under the confinement gate while the gates grade
+# the runner's records, so each imports the other; gates still never reaches into the agent
+# core (forbidden contract below); builder and examiner both import agent, gates, runner and
+# ai, and never each other (D120, D122, D123, ADR-0007); nothing imports the three frontends
+# except themselves. Written for all six packages now, though agent, gates and examiner
 # are still empty, so phase 2 and phase 3 do not have to touch this file (D130).
 # D214 adds the user package under builder and examiner and over gates: the Builder derives the
 # vocabulary the user speaks and drives the Runs it answers in, so it may import the user, and the
@@ -64,31 +67,30 @@ ignore = ["E501"]
 root_package = "kullback"
 
 [[tool.importlinter.contracts]]
-name = "the round driver sits on the Builder and the Examiner, they on gates, on the Runner and the agent core, on the provider layer"
+name = "the Builder sits on the Examiner, both on the user, the agent core, the Runner and the gates, on the provider layer"
 type = "layers"
 containers = ["kullback"]
 layers = [
     "hub",
-    "rounds",
-    "builder | examiner",
-    "episode",
+    "builder",
+    "examiner",
     "user",
-    "gates",
-    "agent | runner",
+    "agent",
+    "runner:gates",
     "ai",
 ]
 
 [[tool.importlinter.contracts]]
-name = "the Run interface never imports the Builder it moved down out of"
+name = "the world inside the runner imports neither builder, examiner nor user"
 type = "forbidden"
-source_modules = ["kullback.episode"]
-forbidden_modules = ["kullback.builder", "kullback.examiner", "kullback.rounds"]
+source_modules = ["kullback.runner.world"]
+forbidden_modules = ["kullback.builder", "kullback.examiner", "kullback.user"]
 
 [[tool.importlinter.contracts]]
 name = "the Simulated user never imports the two agents that drive it"
 type = "forbidden"
 source_modules = ["kullback.user"]
-forbidden_modules = ["kullback.builder", "kullback.examiner", "kullback.rounds"]
+forbidden_modules = ["kullback.builder", "kullback.examiner"]
 
 [[tool.importlinter.contracts]]
 name = "gates rules on the Runner's work; it never reaches into the agent core"
@@ -105,9 +107,7 @@ source_modules = [
     "kullback.runner",
     "kullback.gates",
     "kullback.user",
-    "kullback.episode",
     "kullback.builder",
     "kullback.examiner",
-    "kullback.rounds",
 ]
 forbidden_modules = ["kullback.cli", "kullback.tui", "kullback.report"]

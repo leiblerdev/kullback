@@ -118,9 +118,9 @@ class _Tally:
 def _workdir_setup(root: Path, tally: _Tally) -> dict | None:
     """One workdir's replay inputs, or None where it refuses to replay (recorded)."""
     from kullback.builder import compile_env
-    from kullback.episode import BuiltEnvironment
     from kullback.runner import canon
     from kullback.runner.records import EntitySchema, ToolSig
+    from kullback.runner.world import BuiltEnvironment
 
     name = root.name
     env = BuiltEnvironment(root)
@@ -207,8 +207,8 @@ def _check_task(env, task_id: str, tally: _Tally):
 def _replay_run(ctx: dict, tally: _Tally, task_id: str, task, path: Path,
                 footer: dict, events: list[dict], verifier) -> bool:
     """Replay one stored Run and compare world, stop and Verdict; disagreements recorded."""
-    from kullback.episode import Episode
     from kullback.runner.verdict import load_run, verdict
+    from kullback.runner.world import Episode
 
     run_id = footer.get("run_id") or path.stem
     episode = Episode(ctx["env"], outdir=tally.outdir / ctx["name"] / task_id)
