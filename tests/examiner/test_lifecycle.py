@@ -242,17 +242,14 @@ def test_withdrawing_the_reference_retires_the_verifier_and_no_gate_scores_it(de
                            plan.store["replays"], plan.store["rerolls"], plan.store["canon_rules"],
                            plan.store["sigs"])
     assert WITHDRAWN not in trusted.metrics["untrusted"] and WITHDRAWN not in trusted.metrics["trusted"]
-
-
-def test_the_task_reads_verifier_retired_with_the_reason_rather_than_over_strict(derived):
-    _withdraw(derived)
-    _derive(derived, round_number=1)
-    row = lifecycle.retired_row(_plan(derived).store["task_status"][WITHDRAWN])
+    # The Task reads verifier retired, with the reason, rather than over strict.
+    row = lifecycle.retired_row(plan.store["task_status"][WITHDRAWN])
     assert row is not None and row["reason"] == lifecycle.REFERENCE_WITHDRAWN and row["round"] == 1
     assert row["source_run_ids"] == ["ref", "alt"]
-    assert lifecycle.counts(lifecycle.retired_in_round(_plan(derived).store["task_status"], 1)) == {
+    assert lifecycle.counts(lifecycle.retired_in_round(plan.store["task_status"], 1)) == {
         "verifiers_retired": 1,
         "verifiers_retired_by_reason": {lifecycle.REFERENCE_WITHDRAWN: 1, lifecycle.REFERENCE_REDERIVED: 0}}
+
 
 def test_the_task_that_kept_its_reference_is_untouched(derived):
     was = _plan(derived).current(KEPT)
