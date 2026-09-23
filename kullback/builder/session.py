@@ -233,7 +233,8 @@ def build(workdir: Any, model: Any, *, files: Optional[list] = None,
     `files` are customer files to ingest first, as paths under the workdir. `session_path`
     defaults to workdir/sessions/builder.jsonl. The dict carries the status tool's rows,
     the trusted, refused and open counts, the spend, the turns, how it stopped (one of:
-    no tool call, ceiling, cancelled, max turns) and the last assistant line. `judge_model`, `probe_model` and `reroll_model` reach examine;
+    no tool call, ceiling, cancelled, max turns, error) and the last assistant line, or the
+    provider's error message when the last turn ended in an error. `judge_model`, `probe_model` and `reroll_model` reach examine;
     each is `model` when not named. `on_harness` is handed the live harness once it exists and
     before the first model turn, so a caller on another thread can steer, follow up, compact or
     cancel it while this call runs.
@@ -272,6 +273,9 @@ def build(workdir: Any, model: Any, *, files: Optional[list] = None,
     states = [row["state"] for row in status["tasks"]]
     if guard_stop:
         stopped = "ceiling"
+    elif getattr(last_message, "stop_reason", None) == "error":
+        stopped = "error"
+        last_line = str(getattr(last_message, "error_message", None) or last_line)
     elif max_turns is not None and len(turns) >= max_turns:
         stopped = "max turns"
     elif last_message is not None and list(getattr(last_message, "tool_calls", None) or []):

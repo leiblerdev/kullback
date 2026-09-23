@@ -427,9 +427,13 @@ def build(
         heartbeat.beat(workdir, model, "failed")
         raise
     pulse.stop()
-    heartbeat.beat(workdir, model, "done")
+    # A session that ended on a provider error failed, even though nothing was raised.
+    failed = isinstance(result, dict) and result.get("stopped") == "error"
+    heartbeat.beat(workdir, model, "failed" if failed else "done")
     typer.echo(_counts_line(workdir))
     typer.echo(json.dumps(result, indent=2, default=str))
+    if failed:
+        raise typer.Exit(code=1)
 
 
 def _session_subscriber(workdir: Path):

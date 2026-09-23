@@ -1008,3 +1008,15 @@ def test_consistency_skips_a_task_whose_toolkit_fails_to_load(workdir, tmp_path)
     body = json.loads(out.read_text(encoding="utf-8"))
     assert "widget_task" in body["tasks"]
     assert "KeyError" in body["skipped"]["t2"]
+
+
+def test_a_build_that_ended_on_a_provider_error_beats_failed_and_exits_one(workdir, fake_modules, monkeypatch):
+    from kullback.runner import heartbeat
+
+    stopped = {"status": {"tasks": []}, "trusted": 0, "refused": 0, "open": 0, "spend": 0.0, "turns": 1,
+               "stopped": "error", "last_line": "HTTP 400: the endpoint refused the request"}
+    monkeypatch.setattr(cli, "_entry", lambda path, name: lambda *args, **kwargs: dict(stopped))
+    result = invoke("build", "--workdir", str(workdir))
+    assert result.exit_code == 1, result.output
+    assert '"stopped": "error"' in result.output
+    assert [record["status"] for record in heartbeat.read_all()] == ["failed"]
