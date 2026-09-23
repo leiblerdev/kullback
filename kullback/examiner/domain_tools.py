@@ -26,7 +26,7 @@ from kullback.examiner.exam_files import (
     save_ruling_files,
     seeded_history,
 )
-from kullback.gates.bindings import rulings_for
+from kullback.gates.bindings import ALT_PATH_STAGE, WAIVED_ROW, rulings_for
 from kullback.gates.hook import ruling_line
 from kullback.gates.probes import version_hash, write_tools_of
 from kullback.gates.verifier_suite import D79_STAGES, HELPERS_SRC, check_run, make_atom
@@ -224,7 +224,15 @@ def _keep_suite_status(root: ExamRoot, task_id: str, records: list[dict]) -> Non
     ran = {record["name"]: record["accepted"] for record in records if record["name"] in D79_STAGES}
     if not ran:
         return
-    root.task_status[task_id] = {**(root.task_status.get(task_id) or {}), "verifier_passed": all(ran.values()),
+    # D199: a waived alt-path check passed the ruling on the waiver its row names; the row keeps the
+    # check as not passed and the waiver beside it, as the derivation writes them.
+    waived = any(record["name"] == ALT_PATH_STAGE and record["accepted"]
+                 and any(WAIVED_ROW in row for row in record["rows"]) for record in records)
+    passed = all(ran.values())
+    if waived:
+        ran[ALT_PATH_STAGE] = False
+    root.task_status[task_id] = {**(root.task_status.get(task_id) or {}), "verifier_passed": passed,
+                                 "second_path_waived": waived,
                                  "checks": {D79_STAGES[stage]: passed for stage, passed in ran.items()},
                                  "not_run": [stage for stage in D79_STAGES if stage not in ran]}
     write_json(root.exam_dir / "task_status.json", root.task_status)

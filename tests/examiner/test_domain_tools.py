@@ -197,6 +197,21 @@ def test_accepted_proposal_on_a_task_with_a_reference_carries_the_suite_and_keep
     assert not (world.workdir / "task_status.json").exists(), "the workdir's file is derive_all's"
 
 
+def test_proposal_on_a_single_reference_task_with_a_waived_row_is_accepted_and_keeps_the_waiver(tmp_path):
+    root, world, _ = _root(tmp_path, probe_model=object(), run_probe=probe_runner_over(),
+                           task_status={"t1": {"verifier_passed": True, "second_path_waived": True}})
+    write_json(world.workdir / "references.json", {"t1": {"references": [{"run_id": "ref"}]}})
+    [tool] = [t for t in D.domain_tools(root) if t.name == "propose_verifier"]
+    result = _run(tool.execute(D.ProposeArgs(task_id="t1", reason="tighten", drop=[], add=[])))
+    assert "trusted" in [record["name"] for record in result.rulings]
+    assert all(record["accepted"] for record in result.rulings)
+    alt = next(record for record in result.rulings if record["name"] == "verifier_alt_path")
+    assert alt["rows"][0]["second_path_waived"], "the ruling says the pass is the D199 waiver"
+    row = read_json(world.workdir / "exam" / "task_status.json")["t1"]
+    assert row["verifier_passed"] is True and row["second_path_waived"] is True
+    assert row["checks"] == {name: name != "second_path_passes" for name in D79_STAGES.values()}
+
+
 def test_proposal_on_a_task_with_a_reference_is_refused_while_the_loophole_probe_cannot_run(tmp_path):
     root, world, _ = _root(tmp_path, task_status={"t1": {"verifier_passed": True}})
     _with_reference(world)
