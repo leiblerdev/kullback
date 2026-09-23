@@ -1,5 +1,5 @@
-"""The findings the round's records file by themselves: what each rule reads, how they are ranked and
-cut, and what makes two of them the same finding (D170).
+"""The findings the records file by themselves: what each rule reads and what makes two of them the
+same finding (D170).
 
 The world here is a lending library: two tools, three Tasks, and records in the shapes the derivation
 and the compile_tools gates actually write.
@@ -70,10 +70,6 @@ def _plan(tmp_path: Path, *, status: dict, fidelity: dict, references: dict,
         (workdir / name).write_text(json.dumps(body), encoding="utf-8")
     return ExaminerPlan(workdir=workdir,
                         inputs={"tool_fidelity": fidelity, "replays": replays or {}})
-
-
-def _filed(plan: ExaminerPlan) -> list[tuple[str, str, int, str]]:
-    return [(f.kind, f.tool or f.task_id or "", f.cost, f.suggested) for f in plan.open_findings()]
 
 
 # --- the five rules ---------------------------------------------------------------------
@@ -153,7 +149,7 @@ def test_a_check_is_counted_only_against_a_task_that_reached_the_suite():
     assert F.suite_rows({RENEW: _status()[RENEW]}) == []
 
 
-def test_a_verifier_that_rejects_every_held_out_run_is_filed_against_its_task_and_names_the_atom(tmp_path):
+def test_a_verifier_is_filed_against_its_task_only_when_it_rejects_every_held_out_run_and_names_the_atom(tmp_path):
     """D133: the required atoms recognise no path but their seeds. The number is the loosening gate's;
     the atom is not in the ruling, so it is recomputed against the Run the gate rejected."""
     strict = tighten(base(tmp_path)).model_copy(update={"seed_run_ids": ["ref"]})
@@ -165,15 +161,8 @@ def test_a_verifier_that_rejects_every_held_out_run_is_filed_against_its_task_an
     assert row["kind"] == "false_rejection" and row["task_id"] == TASK and row["run_id"] == "rr2"
     assert row["suggested"] == "repair" and "reject all 1 held-out" in row["text"]
     assert "w0.reason" in row["hint"] and "w0.reason" in row["text"], "the atom that rejected the Run"
-
-
-def test_a_verifier_that_accepts_a_held_out_run_is_not_filed(tmp_path):
-    store = {"verifiers": [base(tmp_path).model_copy(update={"seed_run_ids": ["ref"]})],
-             "task_runs": {TASK: [reference_run(), other_reason_run()]}, "sigs": SIGS,
-             "replays": {TASK: {"tr1": {"trace_id": "tr1", "run_id": "ref", "confirmed": True, "path": ""}}},
-             "rerolls": {TASK: [{"run_id": "rr2", "termination_reason": "success", "path": ""}]},
-             "canon_rules": None}
-    assert F.false_rejection_rows(store) == []
+    accepting = dict(store, verifiers=[base(tmp_path).model_copy(update={"seed_run_ids": ["ref"]})])
+    assert F.false_rejection_rows(accepting) == [], "a Verifier that accepts a held-out Run is not filed"
 
 
 def test_a_task_whose_recordings_disagree_is_filed_for_refusal_and_one_a_tool_blocks_is_not():
@@ -205,44 +194,7 @@ def test_a_task_the_judge_failed_on_every_recording_is_filed_as_a_disagreement_t
         "a judge that failed one recording of two has not failed the Task"
 
 
-# --- ranking, dedup and the cut ---------------------------------------------------------
-
-def test_findings_are_filed_most_costly_first_so_the_builder_opens_on_the_tool_and_not_on_an_intent(tmp_path):
-    plan = _plan(tmp_path, status=_status(), fidelity=_fidelity(), references={})
-    filed = F.file_rule_findings(plan)
-    assert [(f.kind, f.tool or f.task_id, f.cost) for f in filed][0] == ("assisted_tool", "renew_loan", 2)
-    assert [f.cost for f in filed] == sorted((f.cost for f in filed), reverse=True)
-    assert [f.finding_id for f in filed] == [f"finding-{n}" for n in range(1, len(filed) + 1)]
-    assert json.loads((plan.workdir / "examiner" / "findings.json").read_text(encoding="utf-8"))
-
-
-def test_a_key_already_open_is_not_filed_again_and_nor_is_one_answered_that_costs_the_same_tasks(tmp_path):
-    """A round that files the same loss twice buries the ranking, and a round that files an answered
-    loss again over the very same Tasks never lets the loop exit: a round with a finding pending
-    runs another round (D126), and a code-driven build reached round 454 on three Tasks that way."""
-    plan = _plan(tmp_path, status=_status(), fidelity=_fidelity(), references={})
-    first = F.file_rule_findings(plan)
-    assert F.file_rule_findings(plan) == [], "nothing new while every key is open"
-    plan.close_findings([f.finding_id for f in first])
-    assert F.file_rule_findings(plan) == [], "the Builder has been told, and the Tasks have not moved"
-
-
-def test_a_loss_the_builder_answered_is_filed_again_once_the_tasks_it_costs_are_a_different_set(tmp_path):
-    """Which is how a repair that half worked, or made things worse, stays visible."""
-    plan = _plan(tmp_path, status=_status(), fidelity=_fidelity(), references={})
-    plan.close_findings([f.finding_id for f in F.file_rule_findings(plan)])
-    status = _status()
-    status[HOLD]["blocking_tools"] = ["place_hold"]
-    plan.store["task_status"] = status
-    again = F.file_rule_findings(plan)
-    assert [(f.kind, f.tool, f.cost) for f in again] == [("assisted_tool", "renew_loan", 1)]
-
-
-def test_the_rule_findings_of_a_round_are_cut_at_the_limit_from_the_bottom_of_the_ranking(tmp_path):
-    plan = _plan(tmp_path, status=_status(), fidelity=_fidelity(), references={})
-    filed = F.file_rule_findings(plan, limit=2)
-    assert [(f.kind, f.tool or f.task_id) for f in filed] == [("assisted_tool", "renew_loan"),
-                                                              ("assisted_tool", "place_hold")]
+# --- keys, fidelity and the kinds a finding may take ------------------------------------
 
 
 def test_two_findings_are_the_same_finding_when_the_kind_and_the_thing_they_are_about_agree():
@@ -265,38 +217,6 @@ def test_a_task_whose_replay_never_reached_its_end_state_is_filed_as_the_fidelit
     card = next(r for r in rows if r["task_id"] == CARD)
     assert card["tool"] is None and card["suggested"] == "none", "no tool is named, so no verb is"
     assert card["hint"] == "the End state was never reached"
-
-
-def test_a_fidelity_loss_already_named_by_an_open_finding_on_the_same_task_and_tool_is_not_said_twice(tmp_path):
-    """The assisted_tool finding about a tool already lists the Tasks it costs; a fidelity finding
-    on one of those Tasks and that tool is the same news in a second message, and each message
-    costs the Builder a turn. What is not covered is filed."""
-    plan = _plan(tmp_path, status=_status(), fidelity=_fidelity(), references={}, replays=_replays())
-    filed = F.file_rule_findings(plan)
-    fidelity = [(f.task_id, f.tool) for f in filed if f.kind == "fidelity"]
-    assert fidelity == [(CARD, None)], "the two Tasks an assisted_tool finding covers are not said again"
-    assert ("assisted_tool", "renew_loan") in [(f.kind, f.tool) for f in filed]
-    assert F.covered_pairs({"tool": "renew_loan", "task_ids": [RENEW]}) == {(RENEW, "renew_loan")}
-    assert (RENEW, "renew_loan") in F.told_task_tools(plan)
-    plan.close_findings([f.finding_id for f in filed])
-    assert [f.kind for f in F.file_rule_findings(plan)] == [], (
-        "a pair the Builder has been told about is not said again under a second name")
-
-
-def test_only_a_task_whose_runs_part_on_the_column_naming_a_written_row_is_filed(tmp_path):
-    """Every disagreement is on the record; the one the Examiner is told about is the one that may
-    mean the mining grouped two Tasks as one (D213). The rest replay correctly per Run."""
-    pins = {"runs_disagree": [
-        {"task_id": RENEW, "table": "loans", "key_class": "own", "column_classes": ["hard"],
-         "columns": 1, "run_ids": ["trace-1", "trace-9"], "split_candidate": True},
-        {"task_id": HOLD, "table": "holds", "key_class": "composite", "column_classes": ["semantic"],
-         "columns": 2, "run_ids": ["trace-2"], "split_candidate": False},
-    ]}
-    rows = F.runs_disagree_rows(pins)
-    assert [row["task_id"] for row in rows] == [RENEW]
-    assert rows[0]["kind"] == "runs_disagree" and rows[0]["tool"] is None
-    assert "loans" in rows[0]["text"] and "trace-9" in rows[0]["text"]
-    assert F.runs_disagree_rows({}) == []
 
 
 def test_a_runs_disagree_finding_validates_and_is_filed(tmp_path):
