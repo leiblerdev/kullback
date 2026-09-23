@@ -289,6 +289,36 @@ def test_an_exception_is_answered_in_the_corpus_words_for_its_class():
     assert own_words.result == "ValueError: Order is not pending"
 
 
+def test_arguments_the_signature_cannot_take_are_invalid_arguments_and_the_body_never_runs():
+    """F57: the signature is bound before the body runs, so a bad call is the caller's and the world is untouched."""
+    router = make_router()
+    out = router.route("cancel_order", {"order_id": "123", "colour": "red"})
+    assert out.error.class_ == "invalid_arguments"
+    assert "colour" in out.result
+    assert router.state.row("orders", "123")["status"] == "delivered"
+
+
+def test_a_type_error_inside_the_body_is_a_body_fault_that_keeps_its_message_and_line():
+    """F57: a TypeError the body raises after binding is the body's bug, not a bad call; the record says where."""
+
+    class AddingToolkit:
+        def __init__(self, db):
+            self.db = db
+
+        def refund(self, order_id):
+            total = "25"
+            return total + 1
+
+    out = make_router(env_tools_module=AddingToolkit({}), tool_sigs=[ToolSig(name="refund")]).route(
+        "refund", {"order_id": "123"})
+    assert out.error.class_ == "body_fault"
+    assert out.result == "unavailable"
+    assert out.error.payload["fault"] == "TypeError"
+    assert out.error.payload["message"].startswith("TypeError: can only concatenate str")
+    assert out.error.payload["code"] == "return total + 1"
+    assert isinstance(out.error.payload["line"], int)
+
+
 def test_the_error_encoding_follows_the_traces_and_falls_back_to_text():
     out = make_router(tool_sigs=[ToolSig(name="get_order_details")]).route("get_order_details", {"order_id": "999"})
     assert out.error.encoding == "text"

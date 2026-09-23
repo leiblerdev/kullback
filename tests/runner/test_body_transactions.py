@@ -243,7 +243,10 @@ def test_an_attribute_error_is_a_body_fault_not_an_answer():
     assert out.result == "unavailable"
     assert "no attribute" not in json.dumps(out.result)
     assert out.error is not None and out.error.class_ == "body_fault"
-    assert out.error.payload == {"tool": "crash_attr", "fault": "AttributeError"}
+    # F57: the record names the tool and the fault, and keeps the message and the body line that raised.
+    assert {key: out.error.payload[key] for key in ("tool", "fault")} == {"tool": "crash_attr", "fault": "AttributeError"}
+    assert out.error.payload["message"] == "AttributeError: no attribute on g1"
+    assert isinstance(out.error.payload["line"], int)
     assert out.overlay_miss == [{"body_fault": "crash_attr", "fault": "AttributeError"}]
     assert router.tools.db["gadgets"]["g1"] == {"id": "g1", "status": "new"}
     for name, fault in (("refuse_subclass", "PickyRefusal"), ("decode_crash", "JSONDecodeError")):
@@ -251,14 +254,20 @@ def test_an_attribute_error_is_a_body_fault_not_an_answer():
         out = router.route(name, {"gadget_id": "g1"})
         assert out.error is not None and out.error.class_ == "body_fault"
         assert out.result == "unavailable"
-        assert out.error.payload == {"tool": name, "fault": fault}
+        assert {key: out.error.payload[key] for key in ("tool", "fault")} == {"tool": name, "fault": fault}
+        assert out.error.payload["message"].startswith(f"{fault}: ")
+        assert isinstance(out.error.payload["line"], int)
         assert router.state.shared["gadgets"]["g1"] == {"id": "g1", "status": "new"}
     toolkit = GadgetToolkit({"gadgets": {"g1": {"id": "g1", "status": "new"}}, "spares": {}})
     router = make_router(module=toolkit, tool_sigs=[ToolSig(name="validate_then_crash"),
                                                     ToolSig(name="read_gadget")])
     out = router.route("validate_then_crash", {"gadget_id": "g1"})
     assert out.error is not None and out.error.class_ == "body_fault"
-    assert out.error.payload == {"tool": "validate_then_crash", "fault": "ValidationError"}
+    fault = out.error.payload
+    assert {key: fault[key] for key in ("tool", "fault")} == {"tool": "validate_then_crash", "fault": "ValidationError"}
+    assert fault["message"].startswith("ValidationError: ")
+    # The line is the body's own, not the library frame the error was raised in.
+    assert fault["code"] == 'Gadget.model_validate({"id": gadget_id, "status": {"nested": "dict"}})'
     assert toolkit.db.gadgets["g1"].status == "new"
     assert router.route("read_gadget", {"gadget_id": "g1"}).result["status"] == "new"
 
