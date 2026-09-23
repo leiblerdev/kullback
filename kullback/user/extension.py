@@ -16,7 +16,7 @@ refusal is what stops one being reached through a rewritten argument.
 
 from __future__ import annotations
 
-from typing import Callable, Iterable, Optional, Sequence
+from typing import Callable, Iterable, Optional
 
 from kullback.agent.extensions import ExtensionAPI, refuse_paths
 from kullback.agent.harness import prompt_block
@@ -62,8 +62,7 @@ no_user_reads_the_world = refuse_paths(
     "no_user_reads_the_world")
 
 
-def user_extension(ctx: TaskContext, box: Toolbox,
-                   prefix: Sequence = (), asked: Iterable[str] = ()) -> Callable[[ExtensionAPI], None]:
+def user_extension(ctx: TaskContext, box: Toolbox) -> Callable[[ExtensionAPI], None]:
     """The setup the harness loads: the tools, the prompt in skills.py's order, the two refusals."""
 
     def setup(api: ExtensionAPI) -> None:
@@ -75,7 +74,7 @@ def user_extension(ctx: TaskContext, box: Toolbox,
         api.catalog_skill(skills.USER_SKILL_NAME, skills.USER_SKILL, loaded=True)
         api.add_prompt_section("user_examples", prompt_block("examples", skills.EXAMPLES))
         api.add_prompt_section("user_rules", prompt_block("rules", skills.RULES))
-        for section in sections(ctx, prefix, asked):
+        for section in sections(ctx):
             api.add_prompt_section(section.name, prompt_block(section.name, section.text))
         api.add_prompt_section("user_feedback", prompt_block("feedback", skills.FEEDBACK))
         api.add_prompt_section("user_stop", prompt_block("stop", skills.STOP))
