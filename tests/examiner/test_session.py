@@ -72,12 +72,17 @@ def test_fresh_session_seeds_version_1_accepted_for_each_derived_verifier(tmp_pa
     assert row["content_hash"] == version_hash(derived)
 
 
+# A proposal that changes the atoms and none of the rulings: a write cap no Run reaches, which
+# no check can mutate. A proposal of no change is refused before the suite (F37).
+_WIDE_CAP = {"id": "wide_cap", "kind": "allowed", "payload": {"kind": "entity_count", "count": 1000}}
+
+
 def test_model_propose_verifier_is_refused_while_the_loophole_probe_cannot_run(tmp_path):
     world = make_world(tmp_path)
     materialize(world)
     events = _scripted_events(world, [
         reply("proposing", ("propose_verifier", {"task_id": "t1", "reason": "tighten",
-                                                 "drop": [], "add": []})),
+                                                 "add": [_WIDE_CAP]})),
         reply("done"),
     ])
     [proposed] = _ends(events, "propose_verifier")
@@ -170,7 +175,7 @@ def test_examine_with_a_reroll_model_buys_second_path_rerolls(tmp_path):
 
 def _proposed_over_a_runner_world(tmp_path, probe_model):
     """A built Environment with two Runs of one Task on disk, examined with a probe model, and
-    a scripted Examiner that proposes the derived Verifier again through propose_verifier."""
+    a scripted Examiner that proposes the derived Verifier with a wide write cap through propose_verifier."""
     root = _env_with_trace(tmp_path / "work")
     seed = tool.run(root, "widget_task", _rename_loop(), workdir=root)
     other = tool.run(root, "widget_task", _rename_loop(), workdir=root / "second")
@@ -183,7 +188,7 @@ def _proposed_over_a_runner_world(tmp_path, probe_model):
     events: list = []
     S.examine(root, model=TestModel([
         reply("proposing", ("propose_verifier", {"task_id": "widget_task", "reason": "again",
-                                                 "drop": [], "add": []})),
+                                                 "add": [_WIDE_CAP]})),
         reply("done")]), probe_model=probe_model, subscribers=[events.append])
     [proposed] = _ends(events, "propose_verifier")
     return root, proposed

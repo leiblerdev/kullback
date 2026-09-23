@@ -554,10 +554,11 @@ def validate_verifier(verifier: Verifier, reference_run: Any, empty_run: Any = N
         _spans_gate(verifier, runs, canon_fn(canon)),
         _run_gate("verifier_oracle", oracle_scored, reference, expect_pass=True),
         _run_gate("verifier_empty_run", scored,
-                  empty_run if empty_run is not None else _empty_run(reference), expect_pass=False),
-        _run_gate("verifier_wrong_run", scored, wrong_run, expect_pass=False),
+                  empty_run if empty_run is not None else _empty_run(reference), expect_pass=False,
+                  atoms=verifier.atoms),
+        _run_gate("verifier_wrong_run", scored, wrong_run, expect_pass=False, atoms=verifier.atoms),
         _run_gate("verifier_unfinished_run", scored, unfinished_run(verifier, reference, canon),
-                  expect_pass=False),
+                  expect_pass=False, atoms=verifier.atoms),
         _run_gate("verifier_alt_path", scored, alt_path_run, expect_pass=True, missing=ALT_PATH_NOT_RUN),
         loophole_probe(verifier, model, run_probe=run_probe, canon=canon, write_tools=write_tools),
         _leak_gate(verifier, reference, intent_text, user_rules, runs.values(), intent),
@@ -725,12 +726,16 @@ def _spans_gate(verifier: Verifier, runs: dict[str, Run], fn: Callable) -> GateR
 
 
 def _run_gate(stage: str, scored: Callable, run: Any, *, expect_pass: bool,
-              missing: str = "no Run was supplied for this check") -> GateResult:
+              missing: str = "no Run was supplied for this check",
+              atoms: Iterable[Atom] = ()) -> GateResult:
     """Checks 2 to 5: one Run, one expected outcome. No Run, no evidence, so no pass.
 
     A check with no Run is still a failure, and `missing` says which kind it is: the second path is
     missing because the Task has one Reference and not because the Verifier turned a second path
     away, and a reader that cannot tell those apart reaches for the wrong repair (D173).
+
+    A Run expected to fail that passed passed every atom of the Verifier, so the result names them
+    by id and kind as the atoms to change (F37).
     """
     if run is None:
         return GateResult(stage=stage, passed=False, metrics={"skipped": True, "not_run_reason": missing},
@@ -738,8 +743,10 @@ def _run_gate(stage: str, scored: Callable, run: Any, *, expect_pass: bool,
     passed, failing_atom = scored(run)
     want = "pass" if expect_pass else "fail"
     failures = [] if passed is expect_pass else [f"expected {want}, got {'pass' if passed else 'fail'}"]
-    return GateResult(stage=stage, passed=passed is expect_pass, failures=failures,
-                      metrics={"run_passed": passed, "failing_atom": failing_atom})
+    metrics = {"run_passed": passed, "failing_atom": failing_atom}
+    if passed and not expect_pass:
+        metrics["passing_atoms"] = [{"id": atom.id, "kind": atom.kind} for atom in atoms]
+    return GateResult(stage=stage, passed=passed is expect_pass, failures=failures, metrics=metrics)
 
 
 def _mutation_gate(verifier: Verifier, reference: Run, score: Callable, fn: Callable,
