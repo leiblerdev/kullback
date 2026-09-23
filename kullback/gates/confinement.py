@@ -274,15 +274,50 @@ def _scope_bindings(scope: ast.AST) -> set[str]:
     return bound
 
 
-def gate_confined(source: str, class_name: str = TOOLS_CLASS) -> GateResult:
+def written_body(source: str) -> str | None:
+    """The name of the one function a tool file holds, or None when it holds no single one.
+
+    A write under tools/ is one plain function (builder/env_files.py `body_of` reads it the same
+    way); the confinement ruling of that write is about that name.
+    """
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        return None
+    names = [node.name for node in tree.body if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))]
+    return names[0] if len(names) == 1 else None
+
+
+def _tool_methods(source: str, class_name: str) -> set[str]:
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        return set()
+    return {member.name for node in ast.walk(tree) if isinstance(node, ast.ClassDef) and node.name == class_name
+            for member in node.body if isinstance(member, (ast.FunctionDef, ast.AsyncFunctionDef))}
+
+
+def gate_confined(source: str, class_name: str = TOOLS_CLASS, written: str | None = None) -> GateResult:
     """Every name a tool body loads is one it may name and one something binds.
 
     Two static rules over the same names, both about what the body may say before it runs anywhere:
     nothing reaches past the customer's world (`source_confinement`), and nothing is loaded that
     neither the body, the module nor Python binds (`unbound_names`). The gate keeps one ruling
     because the fix is the same shape either way: the offending name, and what to do about it.
+
+    `written` names the body a write just changed. The whole module is still checked, since the
+    Runner refuses the whole module, but only that body's failures decide the ruling: every failure
+    line starts with the method it is about, so a line naming another tool method is that body's,
+    and it rides the ruling as `metrics["note"]`, never as a fail of this write. A line naming no
+    method (the module does not parse) stays the write's own.
     """
     failures = source_confinement(source, class_name) + unbound_names(source, class_name)
-    return GateResult(stage="confined", passed=not failures,
-                      metrics={"chars": len(source), "unbound": len(unbound_names(source, class_name))},
+    metrics: dict = {"chars": len(source), "unbound": len(unbound_names(source, class_name))}
+    others = _tool_methods(source, class_name) - {written} if written else set()
+    elsewhere = [line for line in failures if line.split(" ", 1)[0] in others]
+    if elsewhere:
+        failures = [line for line in failures if line not in elsewhere]
+        metrics["note"] = ("the module still fails confinement on: "
+                           + "; ".join(elsewhere[:MAX_NAMED_FAILURES]))
+    return GateResult(stage="confined", passed=not failures, metrics=metrics,
                       failures=failures[:MAX_NAMED_FAILURES])

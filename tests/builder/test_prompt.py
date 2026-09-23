@@ -41,6 +41,7 @@ def test_receive_points_at_the_tool_file_header_and_names_every_provided_helper(
     from kullback.gates.confinement import PROVIDED_HELPERS
 
     assert "header of every tool file names the imports and helpers" in prompt_mod.RECEIVE
+    assert "names the confinement gate refuses" in prompt_mod.RECEIVE
     assert all(helper in prompt_mod.RECEIVE for helper in PROVIDED_HELPERS)
 
 

@@ -196,7 +196,8 @@ def names_protected_path(value: Any) -> Optional[str]:
 
 class Ruling(BaseModel):
     """One gate's answer as a tool result carries it: named, decided, the reasons in
-    `failures`, and the records behind a refusal in `rows` (never a bare count)."""
+    `failures`, the records behind a refusal in `rows` (never a bare count), and in `note` what
+    the ruling saw that is not this write's to answer for (another body's confinement failures)."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -204,6 +205,7 @@ class Ruling(BaseModel):
     passed: bool
     failures: list[str] = Field(default_factory=list)
     rows: list[dict] = Field(default_factory=list)
+    note: str = ""
 
 
 def ruling_of(result: GateResult) -> Ruling:

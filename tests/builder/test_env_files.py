@@ -8,7 +8,7 @@ from pathlib import Path
 
 from kullback.builder import compile_env, env_files
 from kullback.gates.bindings import rulings_for
-from kullback.gates.confinement import ALLOWED_IMPORTS, CONTEXT_READS, PROVIDED_HELPERS
+from kullback.gates.confinement import ALLOWED_IMPORTS, CONTEXT_READS, DENIED_BUILTINS, PROVIDED_HELPERS
 from kullback.runner.records import RawPtr, ToolCall, Trace, Turn, read_json, write_json
 from kullback.runner.world.loading import SandboxError, load_toolkit
 from tests.episode.invented import write_env
@@ -231,5 +231,6 @@ def test_every_stub_header_names_the_gate_s_allowed_imports_helpers_and_context_
     assert ", ".join(sorted(ALLOWED_IMPORTS)) in header
     assert all(helper in header for helper in PROVIDED_HELPERS)
     assert all(read in header for read in CONTEXT_READS)
-    assert "eval, exec, compile and ast are refused" in header
+    refused = next(line for line in header.splitlines() if line.startswith("# Names refused: "))
+    assert refused == f"# Names refused: {', '.join(sorted(DENIED_BUILTINS))}."
     assert len(header.splitlines()) <= 8

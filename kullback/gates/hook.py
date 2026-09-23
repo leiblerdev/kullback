@@ -25,13 +25,16 @@ PATH_KEYS = ("path", "file", "target", "filename")
 
 
 def ruling_line(ruling: Any) -> str:
-    """One ruling as the model reads it: name, pass or fail, first reason, row count."""
+    """One ruling as the model reads it: name, pass or fail, first reason, row count, and its note
+    on a line of its own."""
     verdict = "pass" if ruling.passed else "fail"
     line = f"{ruling.stage} {verdict}"
     if ruling.failures and not ruling.passed:
         line += f" ({ruling.failures[0]})"
     if getattr(ruling, "rows", None):
         line += f" [{len(ruling.rows)} rows]"
+    if getattr(ruling, "note", ""):
+        line += f"\n{ruling.note}"
     return line
 
 
