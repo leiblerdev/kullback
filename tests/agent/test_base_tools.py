@@ -100,6 +100,18 @@ def test_read_of_a_missing_file_and_of_a_directory_are_both_refused(root):
     assert "is a directory" in run(read, path="sub").content
 
 
+def test_read_of_a_missing_file_names_the_file_beside_it_with_the_same_stem(root):
+    result = run(tools(root)["read"], path="notes.json")
+    assert result.is_error is True
+    assert "no file 'notes.json'" in result.content and "the directory holds notes.txt" in result.content
+
+
+def test_read_of_a_missing_file_whose_stem_nobody_has_keeps_the_plain_refusal(root):
+    result = run(tools(root)["read"], path="sub/gone.json")
+    assert result.is_error is True and "no file" in result.content
+    assert "the directory holds" not in result.content
+
+
 def test_output_over_the_limit_keeps_the_head_or_the_tail_and_read_says_how_to_continue(root):
     (root / "big.txt").write_text("\n".join(str(i) for i in range(MAX_OUTPUT_LINES + 500)), encoding="utf-8")
     result = run(tools(root)["read"], path="big.txt")

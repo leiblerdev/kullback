@@ -428,13 +428,17 @@ def _finding(root: ExamRoot):
 
 
 def _reroll(root: ExamRoot):
+    from kullback.examiner.runners import _priced  # imported here: this closure is the only user
+
     async def reroll(args: RerollArgs) -> RerollResult:
         if root.allowance_remaining is not None and root.allowance_remaining <= 0:
             raise RuntimeError(f"the allowance is spent ({root.allowance_remaining:.2f} left)")
         if root.reroll_model is None:
             raise ValueError("no reroll model was given to this examination; "
                              "file a finding naming the Task instead")
-        reports = runner_tool.reroll(root.workdir, args.task_id, root.reroll_model,
+        # Priced under the runner stage like every other Run, so the re-roll counts (F29).
+        model = _priced(root.reroll_model, root.workdir)
+        reports = runner_tool.reroll(root.workdir, args.task_id, model,
                                      count=args.count, workdir=root.workdir)
         rows = []
         spent = 0.0

@@ -364,3 +364,17 @@ def test_a_refusal_on_an_empty_run_that_passes_a_communicate_atom_names_it_and_g
     message = str(D._refuse_proposal("t1", "2", _empty_run_records_proposal(verifier, answering)))
     assert f"verifier_empty_run: the atom the empty Run passed on is {said.id}" in message, message
     assert "every atom here passes an empty Run" not in message, message
+
+
+def test_a_reroll_from_the_tool_lands_its_model_calls_in_the_runner_stage(tmp_path):
+    """The Examiner's own reroll tool prices its Runs like the derivation's runners (F29)."""
+    from kullback.runner import budget
+    from tests.examiner.test_runners import _exam_env, _priced_script
+
+    workdir = _exam_env(tmp_path / "env")
+    model = _priced_script()
+    root = ExamRoot(workdir=workdir, reroll_model=model)
+    [tool] = [t for t in D.domain_tools(root) if t.name == "reroll"]
+    _run(tool.execute(D.RerollArgs(task_id="widget_task", count=1)))
+    stage = budget.load_totals(workdir)["stages"]["runner"]
+    assert stage["calls"] == len(model.calls) > 0 and stage["usd"] > 0
