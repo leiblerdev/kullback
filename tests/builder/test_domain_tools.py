@@ -7,7 +7,7 @@ import json
 
 from kullback.ai.provider import TestModel
 from kullback.builder import domain_tools as domain_tools_mod
-from kullback.builder import world_tools
+from kullback.builder import env_files, world_tools
 from kullback.runner.records import RawPtr, ToolCall, Trace, Turn, write_json
 from tests.builder.session_fixtures import reply
 from tests.episode.invented import write_env
@@ -116,7 +116,7 @@ def test_examine_calls_the_function_the_session_passed_in(tmp_path):
     assert seen["task_ids"] == ["widget_task"]
     assert len(result.details["findings"]) == 2
     assert result.details["findings"][0]["finding_id"] == "f-fidelity"
-    assert "fidelity on widget_task: tools/a.py: answer the recorded call [1 rows]" in result.content
+    assert "widget_task: fidelity: answer the recorded call (tools/a.py) [1 rows]" in result.content
 
 
 RENAME_BODY = (
@@ -459,3 +459,66 @@ def test_the_examine_summary_leads_with_the_tasks_not_derived_yet(tmp_path):
     result = _run(examine, {"task_ids": None})
     assert not result.is_error, result.content
     assert result.content.startswith("2 confirmed Tasks not derived yet: t3, t4; call examine again")
+
+
+def _exposed(tmp_path):
+    root = _workdir(tmp_path)
+    sigs = json.loads((root / "tool_sigs.json").read_text(encoding="utf-8"))
+    for sig in sigs:
+        sig["args_fields"] = [{"name": "widget_id", "types": ["str"], "optional": False}]
+    (root / "tool_sigs.json").write_text(json.dumps(sigs), encoding="utf-8")
+    env_files.explode(root)
+    env_files.expose(root)
+    return root
+
+
+def _tool(root, name, **kwargs):
+    return {tool.name: tool for tool in domain_tools_mod.domain_tools(workdir=root, **kwargs)}[name]
+
+
+def test_the_rulings_tool_rules_a_tool_file_on_disk_and_names_the_raising_call_and_body_line(tmp_path):
+    root = _exposed(tmp_path)
+    body = root / "env" / "tools" / "describe_widget.py"
+    body.write_text(body.read_text(encoding="utf-8").replace("raise NotImplementedError",
+                                                             "table = {}\n    return table[widget_id]"),
+                    encoding="utf-8")
+    before = {path: path.read_bytes() for path in (root / "env").rglob("*") if path.is_file()}
+    result = _run(_tool(root, "rulings"), {"path": "tools/describe_widget.py"})
+    assert not result.is_error, result.content
+    assert result.content.startswith("rulings on tools/describe_widget.py: fails ")
+    assert "1 rows raise KeyError:" in result.content
+    assert "trace rec1 call c1 args {\"widget_id\":\"w1\"}: KeyError: 'w1' at `return table[widget_id]`" in result.content
+    assert {path: path.read_bytes() for path in (root / "env").rglob("*") if path.is_file()} == before
+
+
+def test_replay_rows_carry_the_task_and_the_arguments_off_the_calls_files(tmp_path):
+    root = _exposed(tmp_path)
+    result = _run(_tool(root, "replay"), {"task_id": "widget_task"})
+    first = result.details["rows"][0]
+    assert (first["task_id"], first["arguments"], first["error"]) == ("widget_task", '{"widget_id":"w1"}', None)
+    assert "task widget_task call c1 describe_widget args {\"widget_id\":\"w1\"}: recorded" in result.content
+
+
+def test_run_plays_only_tasks_with_a_verifier_and_counts_the_ones_skipped(tmp_path):
+    root = _workdir(tmp_path)
+    _run(_tool(root, "replay"), {"task_id": "widget_task"})
+    (root / "verifiers" / "widget_task.json").unlink()
+    model = TestModel([reply("Done.")], loop=True)
+    result = _run(_tool(root, "run", model=model), {})
+    assert not result.is_error, result.content
+    assert result.details["runs"] == [] and model.calls == []
+    assert result.content.splitlines()[-1] == "1 open Tasks skipped for no Verifier: examine derives them first"
+
+
+def test_examine_names_each_finding_by_task_and_each_held_task_by_the_check_holding_it(tmp_path):
+    root = _workdir(tmp_path)
+    write_json(root / "exam" / "task_status.json", {
+        "task_a": {"verifier_passed": False, "checks": {"loophole_probe_fails": False, "empty_fails": True},
+                   "not_run_reasons": {"loophole_probe_fails": "no model"}},
+        "task_b": {"verifier_passed": True, "checks": {"second_path_passes": False}},
+        "task_c": {"verifier_passed": False, "checks": {"empty_fails": False}}})
+    finding = {"task_id": "task_c", "kind": "suite", "change": "tighten the\n   atom", "rows": []}
+    result = _run(_tool(root, "examine", examine_fn=lambda workdir, task_ids: [finding]), {})
+    lines = result.content.splitlines()
+    assert "task_c: suite: tighten the atom [0 rows]" in lines
+    assert lines[-2:] == ["task_a: loophole_probe_fails not run", "task_c: empty_fails failed"]
