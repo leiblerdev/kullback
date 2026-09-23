@@ -29,6 +29,7 @@ from kullback.builder.sandbox import (
     Sandbox,
     SandboxError,
     args_text,
+    calls_by_trace,
     context_feed_key,
     id_field,
     id_pattern_for,
@@ -3125,6 +3126,9 @@ def _build_tools_impl(schema: EntitySchema, toolsig: ToolSig, shown: list[ToolCa
     probes = {"n": 0}
     # The recorded feed each gate call is served from, built once: a pure function of the calls.
     ctx_feeds = recorded_call_contexts(list(shown) + list(held_out), schema)
+    # The module holds this one tool, so the prefix each gated call replays first is its own
+    # tool's earlier calls in the same trace; the others would name a tool it does not hold.
+    by_trace = calls_by_trace(list(shown) + list(held_out))
 
     def lookup_rows(table: Optional[str] = None, key: Optional[str] = None) -> str:
         return _lookup_rows_text(schema, db, shown, call_states, table, key, holdout=holdout)
@@ -3137,7 +3141,7 @@ def _build_tools_impl(schema: EntitySchema, toolsig: ToolSig, shown: list[ToolCa
         body, sanitized = sanitize_body(body or "")
         source = module_source(schema, [toolsig], {toolsig.name: body})
         sandbox = Sandbox(source, db, workdir / f"attempt_{attempt}_probe_{probes['n']}", timeout=timeout,
-                          call_states=call_states, call_context=ctx_feeds)
+                          call_states=call_states, call_context=ctx_feeds, trace_calls=by_trace)
         gates = run_gates(source, sandbox, shown, held_out, schema, rules,
                           probe_refusals=toolsig.kind == "write", sig=toolsig, readers=readers,
                           holdout_values=holdout_values, effect_values=effect_values,
@@ -3651,7 +3655,8 @@ def grade_body(toolsig: ToolSig, body: str, calls: Iterable[ToolCall], schema: E
     source = module_source(schema, [toolsig], {toolsig.name: build.body})
     sandbox = Sandbox(source, db, workdir, timeout=timeout, call_states=call_states,
                       call_tasks=call_tasks,
-                      call_context=recorded_call_contexts(shown + held_out, schema))
+                      call_context=recorded_call_contexts(shown + held_out, schema),
+                      trace_calls=calls_by_trace(shown + held_out))
     build.gates = run_gates(source, sandbox, shown, held_out, schema, rules,
                             probe_refusals=toolsig.kind == "write", sig=toolsig, readers=readers,
                             holdout_values=holdout_values, effect_values=effect_values,
@@ -4143,7 +4148,7 @@ def replay_outcomes(toolsig: ToolSig, body: str, calls: Iterable[ToolCall], sche
         return missed("no body was compiled for this tool")
     source = module_source(schema, [toolsig], {toolsig.name: body})
     sandbox = Sandbox(source, db, Path(workdir) / "attribution", timeout=timeout, call_states=call_states,
-                      call_context=recorded_call_contexts(calls, schema))
+                      call_context=recorded_call_contexts(calls, schema), trace_calls=calls_by_trace(calls))
     try:
         results = sandbox.run(calls)
     except SandboxError as exc:
