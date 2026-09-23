@@ -309,6 +309,30 @@ def test_the_trusted_ruling_reads_the_suite_that_just_ran_not_the_status_row(tmp
     assert any("D79 suite did not pass" in failure for failure in trusted.failures), trusted.failures
 
 
+def test_a_single_reference_task_with_a_waived_row_is_trusted_on_a_passing_suite(tmp_path):
+    verifier = derive(tmp_path)
+    root = tmp_path / "root"
+    rel = _write(root, "verifiers/t1.json", json.dumps(as_dict(verifier)))
+    waived_row = {verifier.task_id: {"verifier_passed": True, "second_path_waived": True}}
+    out = rulings_for(root, rel, tmp_path / "work",
+                      evidence=_suite_evidence(verifier, alt_path_run=None, task_status=waived_row))
+    alt = next(r for r in out if r.stage == "verifier_alt_path")
+    assert alt.passed and alt.rows[0]["second_path_waived"] == S.ALT_PATH_NOT_RUN
+    trusted = next(r for r in out if r.stage == "trusted")
+    assert trusted.passed, trusted.failures
+    assert all(r.passed for r in out), [(r.stage, r.failures) for r in out if not r.passed]
+
+
+def test_a_single_reference_task_without_the_waiver_is_refused_at_the_alt_path_stage(tmp_path):
+    verifier = derive(tmp_path)
+    root = tmp_path / "root"
+    rel = _write(root, "verifiers/t1.json", json.dumps(as_dict(verifier)))
+    out = rulings_for(root, rel, tmp_path / "work", evidence=_suite_evidence(verifier, alt_path_run=None))
+    assert out[-1].stage == "verifier_alt_path" and not out[-1].passed
+    assert S.ALT_PATH_NOT_RUN in out[-1].failures[0]
+    assert not any(r.stage == "trusted" for r in out)
+
+
 def test_loosening_and_false_rejection_refusals_name_their_runs(tmp_path):
     strict, plain = tighten(base(tmp_path)), base(tmp_path)
     runs = {TASK: [reference_run(), extra_write_run(), other_reason_run()]}

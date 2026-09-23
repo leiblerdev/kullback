@@ -51,6 +51,11 @@ from kullback.runner.records import EntitySchema, GateResult, ToolCall, Verifier
 #: How many rows one ruling carries before the count of the rest.
 ROWS_CAP = 20
 
+#: The D79 stage a single-path Task fails by structure, the one D199 may waive, and the key of the
+#: row a waived ruling carries so a reader of the ruling alone can tell a waiver from a pass.
+ALT_PATH_STAGE = "verifier_alt_path"
+WAIVED_ROW = "second_path_waived"
+
 #: Evidence loaders: (workdir, written relpath) -> the artifact, or None when absent.
 Loader = Callable[[Path, str], Any]
 
@@ -302,15 +307,29 @@ def _gate_oracle_replay(evidence: dict) -> Optional[list[GateResult]]:
     return [oracle_replay_gate(evidence["replays"], evidence.get("rules"))]
 
 
+def _waive_alt_path(evidence: dict, verifier: Verifier, results: list[GateResult]) -> list[GateResult]:
+    """D199 on the write, as the derivation rules it: a Task whose file row says its second path was
+    waived (single by structure, a held-out Run at the Reference) has the not-run alt-path check pass
+    as waived, where every other stage passed. The flag is read off the row, never re-derived here."""
+    row = (evidence.get("task_status") or {}).get(verifier.task_id) or {}
+    failing = [result for result in results if not result.passed]
+    if not (row.get("second_path_waived") and len(failing) == 1 and failing[0].stage == ALT_PATH_STAGE
+            and (failing[0].metrics or {}).get("skipped")):
+        return results
+    waived = GateResult(stage=ALT_PATH_STAGE, passed=True, failures=[],
+                        metrics={**(failing[0].metrics or {}), WAIVED_ROW: True})
+    return [waived if result is failing[0] else result for result in results]
+
+
 def _gate_suite(evidence: dict) -> Optional[list[GateResult]]:
     verifier = _verifier_of(evidence)
     if verifier is None or evidence.get("reference") is None:
         return None
-    return list(validate_verifier(verifier, evidence["reference"], evidence.get("empty_run"),
+    return _waive_alt_path(evidence, verifier, list(validate_verifier(verifier, evidence["reference"], evidence.get("empty_run"),
                                  evidence.get("wrong_run"), evidence.get("alt_path_run"),
                                  canon=evidence.get("rules"), write_tools=evidence.get("write_tools"),
                                  seed_runs=evidence.get("seed_runs"), model=evidence.get("probe_model"),
-                                 run_probe=evidence.get("run_probe")))
+                                 run_probe=evidence.get("run_probe"))))
 
 
 def _gate_loosening(evidence: dict) -> Optional[list[GateResult]]:
@@ -329,17 +348,30 @@ def _gate_false_rejection(evidence: dict) -> Optional[list[GateResult]]:
                                 task_status=evidence.get("task_status"))]
 
 
+def _alt_path_waived(rulings: Any) -> bool:
+    """Whether the alt-path ruling among these passed by the D199 waiver: its row says so."""
+    return any(getattr(ruling, "stage", None) == ALT_PATH_STAGE and ruling.passed
+               and any(WAIVED_ROW in row for row in ruling.rows or ()) for ruling in rulings or ())
+
+
 def _suite_status(evidence: dict) -> Optional[tuple[str, dict]]:
     """The ruled Verifier's Task and the status row the D79 suite that ran in this ruling gives it,
-    in the shape the derivation writes: `verifier_passed`, `checks` by check name, `not_run` by stage."""
-    ran = {ruling.stage: bool(ruling.passed) for ruling in evidence.get("rulings") or ()
+    in the shape the derivation writes: `verifier_passed`, `checks` by check name, `not_run` by stage.
+    A waived alt-path check (D199) is written as the derivation writes it: the check not passed, the
+    Verifier passed, `second_path_waived` true."""
+    rulings = evidence.get("rulings") or ()
+    ran = {ruling.stage: bool(ruling.passed) for ruling in rulings
            if getattr(ruling, "stage", None) in D79_STAGES}
     verifier = _verifier_of(evidence)
     if not ran or verifier is None:
         return None
-    return verifier.task_id, {"verifier_passed": all(ran.values()),
-                              "checks": {D79_STAGES[stage]: passed for stage, passed in ran.items()},
-                              "not_run": [stage for stage in D79_STAGES if stage not in ran]}
+    row = {"verifier_passed": all(ran.values()),
+           "checks": {D79_STAGES[stage]: passed for stage, passed in ran.items()},
+           "not_run": [stage for stage in D79_STAGES if stage not in ran]}
+    if _alt_path_waived(rulings):
+        row["checks"][D79_STAGES[ALT_PATH_STAGE]] = False
+        row["second_path_waived"] = True
+    return verifier.task_id, row
 
 
 def _gate_trusted(evidence: dict) -> Optional[list[GateResult]]:
@@ -509,6 +541,9 @@ def _atom_text(evidence: dict, atom_id: Any) -> str:
 def _suite_rows(evidence: dict, result: GateResult) -> list[dict]:
     import re as _re
 
+    if (result.metrics or {}).get(WAIVED_ROW):
+        return [{"check": result.stage, WAIVED_ROW: (result.metrics or {}).get("not_run_reason", ""),
+                 "why": "D199: single path by structure, a held-out Run reached the Reference"}]
     atom_id = (result.metrics or {}).get("failing_atom")
     if atom_id:
         return [{"check": result.stage, "atom": atom_id, "text": _atom_text(evidence, atom_id)}]
