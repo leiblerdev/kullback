@@ -186,14 +186,6 @@ def _run(world, **kwargs):
     return check_laws(world, **params)
 
 
-def test_honest_world_holds_every_law():
-    report = _run(HonestWorld())
-    assert report.violations == ()
-    assert report.consistency == 1.0
-    assert sum(report.broken.values()) == 0
-    assert sum(report.checked.values()) > 0
-
-
 @pytest.mark.parametrize(
     "world_cls,law,tool,length",
     [
@@ -238,13 +230,29 @@ def test_exemption_silences_exactly_one_law_for_one_tool():
     assert report.consistency == 1.0
     other = _run(LoggingReadWorld(), exempt={"store": [READ_CHANGES_NOTHING]})
     assert [(v.law, v.tool) for v in other.violations] == [(READ_CHANGES_NOTHING, "scan")]
+    half = _run(HalfWriteWorld(), exempt={"store": [ERROR_CHANGED_NOTHING]})
+    assert half.violations == ()
+    assert half.consistency == 1.0
 
 
-def test_empty_tool_list_gives_consistency_none():
+def test_a_world_with_nothing_to_check_gives_consistency_none():
     report = _run(EmptyWorld())
     assert report.consistency is None
     assert report.violations == ()
     assert report.checked == {}
+    every_law = [
+        READ_CHANGES_NOTHING,
+        SAME_WRITE_SAME_RESULT,
+        SUCCESS_CHANGED_SOMETHING,
+        ERROR_CHANGED_NOTHING,
+        WRITE_CAN_BE_READ_BACK,
+        MINTED_IDS_UNIQUE,
+        NOTHING_CRASHES_OR_HANGS,
+    ]
+    exempt_all = _run(LoggingReadWorld(), exempt={"scan": every_law, "store": every_law})
+    assert exempt_all.violations == ()
+    assert exempt_all.checked == {}
+    assert exempt_all.consistency is None
 
 
 class TypedWorld:
@@ -335,66 +343,30 @@ class FlakyWorld:
         return Outcome(True, 0, None)
 
 
-def test_typed_world_holds_every_law():
-    report = _run(TypedWorld(), sequences=30)
+@pytest.mark.parametrize(
+    "world_cls,sequences", [(HonestWorld, 12), (TypedWorld, 30)], ids=["int-args", "typed-args"]
+)
+def test_an_honest_world_holds_every_law_whatever_its_argument_types(world_cls, sequences):
+    report = _run(world_cls(), sequences=sequences)
     assert report.violations == ()
     assert report.consistency == 1.0
-
-
-def test_unsupported_argument_type_is_rejected():
-    with pytest.raises(ValueError):
-        _run(BadTypeWorld())
-
-
-def test_flaky_world_reports_replay_failure_and_crash():
-    report = _run(FlakyWorld())
-    assert {(v.law, v.tool) for v in report.violations} == {
-        (SAME_WRITE_SAME_RESULT, "store"),
-        (NOTHING_CRASHES_OR_HANGS, "store"),
-    }
-
-
-def test_exemption_silences_error_law_for_half_write_tool():
-    report = _run(HalfWriteWorld(), exempt={"store": [ERROR_CHANGED_NOTHING]})
-    assert report.violations == ()
-    assert report.consistency == 1.0
-
-
-def test_full_exemption_checks_nothing():
-    exempt = {
-        "scan": [
-            READ_CHANGES_NOTHING,
-            SAME_WRITE_SAME_RESULT,
-            SUCCESS_CHANGED_SOMETHING,
-            ERROR_CHANGED_NOTHING,
-            WRITE_CAN_BE_READ_BACK,
-            MINTED_IDS_UNIQUE,
-            NOTHING_CRASHES_OR_HANGS,
-        ],
-        "store": [
-            READ_CHANGES_NOTHING,
-            SAME_WRITE_SAME_RESULT,
-            SUCCESS_CHANGED_SOMETHING,
-            ERROR_CHANGED_NOTHING,
-            WRITE_CAN_BE_READ_BACK,
-            MINTED_IDS_UNIQUE,
-            NOTHING_CRASHES_OR_HANGS,
-        ],
-    }
-    report = _run(LoggingReadWorld(), exempt=exempt)
-    assert report.violations == ()
-    assert report.checked == {}
-    assert report.consistency is None
+    assert sum(report.broken.values()) == 0
+    assert sum(report.checked.values()) > 0
 
 
 @pytest.mark.parametrize(
-    "kwargs",
-    [{"max_length": 0}, {"sequences": -1}, {"call_budget_s": 0.0}],
-    ids=["max-length", "sequences", "budget"],
+    "world_cls,kwargs",
+    [
+        (HonestWorld, {"max_length": 0}),
+        (HonestWorld, {"sequences": -1}),
+        (HonestWorld, {"call_budget_s": 0.0}),
+        (BadTypeWorld, {}),
+    ],
+    ids=["max-length", "sequences", "budget", "argument-type"],
 )
-def test_bad_configuration_is_rejected(kwargs):
+def test_bad_configuration_is_rejected(world_cls, kwargs):
     with pytest.raises(ValueError):
-        _run(HonestWorld(), **kwargs)
+        _run(world_cls(), **kwargs)
 
 
 class SecondLifeWorld:
@@ -444,8 +416,11 @@ class LiveReadWorld:
         return Outcome(True, self._state["reads"], None)
 
 
-def test_write_failing_only_on_replay_reports_both_laws():
-    report = _run(SecondLifeWorld(), sequences=1)
+@pytest.mark.parametrize(
+    "world_cls,sequences", [(SecondLifeWorld, 1), (FlakyWorld, 12)], ids=["second-life", "flaky"]
+)
+def test_write_failing_only_on_replay_reports_both_laws(world_cls, sequences):
+    report = _run(world_cls(), sequences=sequences)
     assert {(v.law, v.tool) for v in report.violations} == {
         (SAME_WRITE_SAME_RESULT, "store"),
         (NOTHING_CRASHES_OR_HANGS, "store"),
@@ -558,18 +533,6 @@ class TwoPathsWorld:
         return Outcome(True, {"a": {"id": self._made}, "b": {"id": self._made}})
 
 
-def test_ids_in_separate_spaces_hold_minted_law():
-    report = _run(TwoSpacesWorld())
-    assert report.violations == ()
-    assert report.consistency == 1.0
-
-
-def test_coinciding_values_on_two_paths_hold_minted_law():
-    report = _run(TwoPathsWorld())
-    assert report.violations == ()
-    assert report.consistency == 1.0
-
-
 def test_crash_counts_match_planned_calls_only():
     inner = CrashProbeWorld()
     recording = CallCountingWorld(inner)
@@ -625,8 +588,13 @@ class MissingMintWorld:
         return Outcome(True, {"order": 5, "blank": None}, None)
 
 
-def test_fresh_id_with_repeated_status_holds_minted_law():
-    report = _run(StatusEchoWorld())
+@pytest.mark.parametrize(
+    "world_cls",
+    [TwoSpacesWorld, TwoPathsWorld, StatusEchoWorld],
+    ids=["separate-spaces", "coinciding-paths", "repeated-status"],
+)
+def test_minted_ids_unique_per_path_hold_minted_law(world_cls):
+    report = _run(world_cls())
     assert report.violations == ()
     assert report.consistency == 1.0
 
@@ -638,7 +606,7 @@ def test_missing_mint_path_breaks_minted_law():
     assert len(violation.sequence) == 1
 
 
-def test_id_typed_parameter_draws_an_existing_id_in_a_seeded_sequence():
+def test_an_id_argument_draws_existing_ids_where_its_name_points_and_some_fresh_ones():
     import random
 
     from kullback.laws import _gen_args
@@ -651,12 +619,6 @@ def test_id_typed_parameter_draws_an_existing_id_in_a_seeded_sequence():
     assert "w1" in drawn
     assert any(value != "w1" for value in drawn)
 
-
-def test_id_draws_keep_to_the_named_table_across_a_seeded_sequence():
-    import random
-
-    from kullback.laws import _gen_args
-
     snapshot = {
         "groups": {"g1": {"group_id": "g1"}},
         "members": {"m1": {"member_id": "m1"}},
@@ -666,13 +628,7 @@ def test_id_draws_keep_to_the_named_table_across_a_seeded_sequence():
     rng = random.Random(3)
     drawn = [_gen_args(schema, rng, pool, snapshot)["group_id"] for _ in range(30)]
     assert "g1" in drawn
-    assert "m1" not in drawn
-
-
-def test_unresolved_id_draws_only_same_named_values():
-    import random
-
-    from kullback.laws import _gen_args
+    assert "m1" not in drawn, "a named table keeps the draw to its own rows"
 
     snapshot = {
         "groups": {"g1": {"tag": "t1"}},
@@ -683,4 +639,6 @@ def test_unresolved_id_draws_only_same_named_values():
     rng = random.Random(3)
     drawn = [_gen_args(schema, rng, pool, snapshot)["tag"] for _ in range(30)]
     assert "t1" in drawn or "t9" in drawn
-    assert "g1" not in drawn and "m9" not in drawn
+    assert "g1" not in drawn and "m9" not in drawn, "an unresolved id draws only same-named values"
+
+

@@ -38,12 +38,24 @@ def test_a_differing_hard_column_is_reported_at_its_leaf_with_both_values():
     assert notes == ['rooms[1].bed: ours "king", recorded "twin"']
 
 
-def test_a_semantic_column_nobody_settled_fails_under_its_own_name():
+def test_a_semantic_column_is_settled_by_the_judge_and_fails_under_its_own_name_when_nobody_settles_it():
     ok, notes = compare_results(SCHEMA, _booking("twin"), _booking("twin", "sea  view"))
     assert ok is True and notes == []
     ok, notes = compare_results(SCHEMA, _booking("twin"), _booking("twin", "garden"))
     assert ok is False
     assert notes[0].startswith("unresolved:note: nobody settled")
+
+    asked: list = []
+    schema = EntitySchema(tables=["lamps"], columns=[
+        Column(table="lamps", name="lamp_id", **{"class": "hard"}),
+        Column(table="lamps", name="lamp_note", **{"class": "semantic"})])
+    recorded = {"lamp_id": "L1", "lamp_note": "steady glow"}
+    ours = {"lamp_id": "L1", "lamp_note": "a glow that holds steady"}
+    assert compare_columns(schema, "lamps", recorded, ours,
+                           judge=_judge_saying_equivalent(asked)) == (True, ["semantic:lamp_note"])
+    assert asked == ["lamp_note"]
+    ok, notes = compare_columns(schema, "lamps", recorded, ours)
+    assert ok is False and notes[0].startswith("unresolved:lamp_note")
 
 
 def test_noise_the_learned_precision_absorbs_is_no_difference():
@@ -137,7 +149,7 @@ def _judge_saying_equivalent(asked: list):
     return judge
 
 
-def test_two_prose_results_parting_in_a_semantic_column_are_equal_only_once_a_judge_says_so():
+def test_prose_read_into_columns_fails_on_a_hard_column_forgives_an_exempt_one_and_asks_the_judge_on_a_semantic_one():
     asked: list = []
     ok, notes = compare_results(LAMP_SCHEMA, "on | steady glow | 41", "on | a steady glow | 41",
                                 tool="check_lamp", readers=LAMP_READERS)
@@ -147,15 +159,11 @@ def test_two_prose_results_parting_in_a_semantic_column_are_equal_only_once_a_ju
                                 judge=_judge_saying_equivalent(asked))
     assert ok is True and notes == ["semantic:lamp_note"] and asked == ["lamp_note"]
 
-
-def test_two_prose_results_differing_in_a_hard_column_do_not_compare_equal():
     ok, notes = compare_results(LAMP_SCHEMA, "on | steady glow | 41", "off | steady glow | 41",
                                 tool="check_lamp", readers=LAMP_READERS)
     assert ok is False
     assert notes == ['read as columns: lamp_state: ours "off", recorded "on"']
 
-
-def test_a_prose_result_differing_only_in_an_exempt_column_compares_equal():
     ok, notes = compare_results(LAMP_SCHEMA, "on | steady glow | 41", "on | steady glow | 77",
                                 tool="check_lamp", readers=LAMP_READERS)
     assert ok is True and notes == ["exempt:lamp_reading"]
@@ -181,24 +189,6 @@ def test_a_returned_rows_exempt_column_cannot_fail_a_replay_and_a_hard_one_does(
     assert notes == ['total: ours 13, recorded 12', "exempt:created_at"]
 
 
-def test_a_semantic_column_takes_the_judge_when_one_is_given():
-    asked = []
-
-    def judge(column, ours, theirs):
-        asked.append(column)
-        return {"verdict": "equivalent"}
-
-    schema = EntitySchema(tables=["lamps"], columns=[
-        Column(table="lamps", name="lamp_id", **{"class": "hard"}),
-        Column(table="lamps", name="lamp_note", **{"class": "semantic"})])
-    recorded = {"lamp_id": "L1", "lamp_note": "steady glow"}
-    ours = {"lamp_id": "L1", "lamp_note": "a glow that holds steady"}
-    assert compare_columns(schema, "lamps", recorded, ours, judge=judge) == (True, ["semantic:lamp_note"])
-    assert asked == ["lamp_note"]
-    ok, notes = compare_columns(schema, "lamps", recorded, ours)
-    assert ok is False and notes[0].startswith("unresolved:lamp_note")
-
-
 def test_a_pair_the_judge_settles_is_kept_so_the_next_comparison_asks_nobody():
     """D219: every answer goes into the equivalence table keyed by column and canonical pair, so a
     pair is judged once however many Traces meet it."""
@@ -220,21 +210,7 @@ def test_a_pair_the_judge_settles_is_kept_so_the_next_comparison_asks_nobody():
     assert len(table.entries) == 1
 
 
-def test_the_counts_tell_a_judged_pair_from_one_nobody_settled():
-    schema = EntitySchema(tables=["lamps"], columns=[
-        Column(table="lamps", name="lamp_id", **{"class": "hard"}),
-        Column(table="lamps", name="lamp_note", **{"class": "semantic"})])
-    recorded = {"lamp_id": "L1", "lamp_note": "steady glow"}
-    ours = {"lamp_id": "L1", "lamp_note": "a glow that holds steady"}
-    open_pair: dict = {}
-    compare_columns(schema, "lamps", recorded, ours, tally=open_pair)
-    assert open_pair == {"semantic_compared": 1, "semantic_unresolved": 1}
-    judged: dict = {}
-    compare_columns(schema, "lamps", recorded, ours, judge=_judge_saying_equivalent([]), tally=judged)
-    assert judged == {"semantic_compared": 1, "semantic_judged": 1, "semantic_equal": 1}
-
-
-def test_two_lists_of_keyed_rows_compare_equal_whatever_order_they_come_back_in():
+def test_keyed_rows_pair_by_key_whatever_their_order_and_keyless_rows_pair_by_position():
     schema = EntitySchema(tables=["bills"], id_patterns={"bills.bill_id": r"^#L\d+$"}, columns=[
         Column(table="bills", name="bill_id", **{"class": "hard"}),
         Column(table="bills", name="amount", **{"class": "hard"})])
@@ -244,8 +220,6 @@ def test_two_lists_of_keyed_rows_compare_equal_whatever_order_they_come_back_in(
     ok, notes = compare_results(schema, [first, second], [second, dict(first, amount=11)])
     assert ok is False and notes == ['amount: ours 11, recorded 10']
 
-
-def test_two_lists_of_rows_carrying_no_key_are_still_paired_by_position():
     schema = EntitySchema(tables=["bills"], columns=[
         Column(table="bills", name="amount", **{"class": "hard"})])
     ok, notes = compare_results(schema, [{"amount": 10}, {"amount": 20}], [{"amount": 20}, {"amount": 10}])
@@ -263,15 +237,13 @@ KILN_SCHEMA = EntitySchema(tables=["kilns"], columns=[
     Column(table="kilns", name="kiln_reading", **{"class": "exempt"})])
 
 
-def test_a_value_only_one_side_holds_fails_even_on_a_column_the_schema_exempts():
+def test_a_value_only_one_side_holds_fails_even_on_an_exempt_column_or_one_the_judge_would_forgive():
     recorded = {"kiln_id": "K1", "kiln_reading": 640}
     ours = {"kiln_id": "K1"}
     ok, notes = compare_columns(KILN_SCHEMA, "kilns", recorded, ours)
     assert ok is False
     assert notes == ["presence:kiln_reading: ours null, recorded 640"]
 
-
-def test_a_value_only_one_side_holds_fails_even_where_the_judge_would_forgive_it():
     asked: list = []
     recorded = {"kiln_id": "K1", "kiln_report": "the kiln is firing"}
     ours = {"kiln_id": "K1"}
@@ -292,16 +264,7 @@ def test_a_column_both_sides_leave_empty_is_not_a_difference_in_presence():
     assert ok is True and notes == []
 
 
-def test_two_sentences_carrying_the_same_states_are_put_to_the_judge():
-    asked: list = []
-    recorded = {"kiln_id": "K1", "kiln_report": "the kiln is firing"}
-    ours = {"kiln_id": "K1", "kiln_report": "firing, as it happens"}
-    assert compare_columns(KILN_SCHEMA, "kilns", recorded, ours,
-                           judge=_judge_saying_equivalent(asked)) == (True, ["semantic:kiln_report"])
-    assert asked == ["kiln_report"]
-
-
-def test_two_sentences_carrying_different_states_part_without_asking_the_judge():
+def test_two_sentences_go_to_the_judge_only_when_they_carry_the_same_states():
     asked: list = []
     recorded = {"kiln_id": "K1", "kiln_report": "the kiln is firing and vented"}
     ours = {"kiln_id": "K1", "kiln_report": "the kiln is firing"}
@@ -310,6 +273,13 @@ def test_two_sentences_carrying_different_states_part_without_asking_the_judge()
     assert ok is False
     assert notes == ["token_set:kiln_report: ours [firing], recorded [firing, vented]"]
     assert asked == [], "the states differ, so there is nothing to weigh the wording of"
+
+    asked.clear()
+    recorded = {"kiln_id": "K1", "kiln_report": "the kiln is firing"}
+    ours = {"kiln_id": "K1", "kiln_report": "firing, as it happens"}
+    assert compare_columns(KILN_SCHEMA, "kilns", recorded, ours,
+                           judge=_judge_saying_equivalent(asked)) == (True, ["semantic:kiln_report"])
+    assert asked == ["kiln_report"]
 
 
 def test_a_state_named_inside_a_longer_word_is_not_that_state():
@@ -350,26 +320,15 @@ def test_a_schema_mined_before_the_vocabulary_lends_the_states_its_samples_showe
     assert domain_tokens(schema, "kilns", "kiln_state") == {"firing", "idle"}
 
 
-def test_a_schema_that_counted_nothing_lends_no_ids_however_short_they_are():
-    """Greptile P1 (PR 28): an older schema kept short id sightings and no count of what the column held.
-
-    Read as a set of names those ids reach every free text column of the table and fail replays on
-    an id that differs incidentally, so the stand-in takes the miner's own two other tests: an id
-    column lends nothing, and a set of names repeats.
-    """
-    schema = EntitySchema(tables=["kilns"], columns=[
-        Column(table="kilns", name="kiln_id", **{"class": "hard"}, samples=["K1A", "K2B"]),
-        Column(table="kilns", name="tag", **{"class": "hard"}, samples=["wx7", "yz8"]),
-        Column(table="kilns", name="note", **{"class": "semantic"}, samples=["the kiln is firing"])])
-    assert domain_tokens(schema, "kilns", "note") == frozenset()
-    assert domain_tokens(schema, "kilns", "kiln_id") == frozenset()
-
-
-def test_a_column_the_corpus_showed_keying_its_table_lends_no_names_whatever_it_is_called():
-    """Greptile P1 (PR 28, round 2): an id is not always named like one.
+def test_an_id_column_lends_no_names_whatever_it_is_called_and_however_short_its_ids():
+    """Greptile P1 (PR 28): an id is not always named like one, and an older schema kept short id
+    sightings and no count of what the column held.
 
     A column the table is keyed by, and a column whose every sighting has a mined id shape, are
-    both holding ids under a name no suffix rule would catch.
+    both holding ids under a name no suffix rule would catch. Read as a set of names, short ids
+    would reach every free text column of the table and fail replays on an id that differs
+    incidentally, so where nothing was counted the stand-in takes the miner's own two other tests:
+    an id column lends nothing, and a set of names repeats.
     """
     schema = EntitySchema(
         tables=["kilns"], id_patterns={"kilns.slug": r"[a-z]{2}-\d{3}"},
@@ -379,3 +338,9 @@ def test_a_column_the_corpus_showed_keying_its_table_lends_no_names_whatever_it_
             Column(table="kilns", name="bay", **{"class": "hard"}, samples=["ef-300", "gh-400"]),
             Column(table="kilns", name="note", **{"class": "semantic"}, samples=["the kiln is firing"])])
     assert domain_tokens(schema, "kilns", "note") == frozenset()
+    uncounted = EntitySchema(tables=["kilns"], columns=[
+        Column(table="kilns", name="kiln_id", **{"class": "hard"}, samples=["K1A", "K2B"]),
+        Column(table="kilns", name="tag", **{"class": "hard"}, samples=["wx7", "yz8"]),
+        Column(table="kilns", name="note", **{"class": "semantic"}, samples=["the kiln is firing"])])
+    assert domain_tokens(uncounted, "kilns", "note") == frozenset()
+    assert domain_tokens(uncounted, "kilns", "kiln_id") == frozenset()

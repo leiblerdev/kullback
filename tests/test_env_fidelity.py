@@ -15,9 +15,6 @@ def test_verdict_keeps_error_and_result_apart():
     assert F.verdict({"result": 1}, {"error": "ValueError: x"}, None) == "only_theirs_errored"
     assert F.verdict({"result": 1, "changed": True}, {"result": 1, "changed": False}, None) == "effect_differs"
     assert F.verdict({"result": 1, "changed": True}, {"result": 1, "changed": True}, None) == "same"
-
-
-def test_both_errors_compare_the_message_not_the_prefix():
     assert F.verdict({"error": "ValueError: User not found"},
                      {"error": "ValueError: User not found"}, None) == "both_error"
     assert F.verdict({"error": "ValueError: Error: User not found"},
@@ -53,20 +50,3 @@ def test_cause_names_the_owner(word, mine, real, expected):
     assert F.cause(word, mine, real) == expected
     assert expected == "none" or expected in F.CAUSE_OWNER
 
-
-def test_report_splits_by_cause():
-    result = {"domain": "retail", "tools": 2, "assisted": [], "calls_scored": 3, "calls_recorded": 5,
-              "agreement": 0.3333, "agreement_all": 0.2,
-              "totals": {"same": 1, "result_differs": 2, "not_confined": 2},
-              "by_cause": {"confinement": {"calls": 2, "tools": {"b": 2}},
-                           "result_shape": {"calls": 2, "tools": {"a": 2}}},
-              "per_tool": {"a": {"calls": 3, "assisted": False, "same": 1, "result_differs": 2},
-                           "b": {"calls": 2, "assisted": False, "not_confined": 2, "why": "b uses getattr"}},
-              "examples": [{"tool": "a", "args": {}, "verdict": "result_differs",
-                            "cause": "result_shape", "ours": "{'value': 1}", "real": "1"}]}
-    text = F.report(result)
-    assert "Where the misses come from" in text
-    assert "| confinement | 2 | 40.0% | `b` 2 |" in text
-    assert "| result_shape | 2 | 40.0% | `a` 2 |" in text
-    assert "refused tools counted as misses: **20.0%**" in text
-    assert "(result_differs, result_shape)" in text

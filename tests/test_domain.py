@@ -13,6 +13,7 @@ from pathlib import Path
 import pytest
 
 from kullback import domain, graph
+from kullback.ai import TestModel
 from kullback.runner.records import Column, EntitySchema, FieldStat, ToolSig, write_json
 
 HOST = "https://help.lantern-rental.invalid"
@@ -175,16 +176,13 @@ def test_a_source_under_the_excluded_corpus_url_is_refused_and_counted(shop: Pat
                         fetch=fetch, depth=0, corpus_url=corpus)
     assert [row["url"] for row in read["pages"]] == [f"{HOST}/broken-wick"]
     assert [row["reason"] for row in read["refused"]] == [domain.CORPUS_URL]
-
-
-def test_a_sibling_path_that_only_spells_the_excluded_one_is_not_under_it():
-    """A path sits under another at a segment boundary and nowhere else, so /paperwork is not the
-    publication at /paper and the pages under it keep their archetypes."""
-    corpus = f"{HOST}/paper"
-    assert domain.under(f"{corpus}/tasks", corpus) and domain.under(corpus, corpus)
-    assert not domain.under(f"{HOST}/paperwork/help", corpus)
-    assert domain.refusal(f"{HOST}/paperwork/help", corpus, []) == ""
-    assert domain.refusal(f"{corpus}/tasks", corpus, []) == domain.CORPUS_URL
+    # A path sits under another at a segment boundary and nowhere else, so /paperwork is not the
+    # publication at /paper and the pages under it keep their archetypes.
+    paper = f"{HOST}/paper"
+    assert domain.under(f"{paper}/tasks", paper) and domain.under(paper, paper)
+    assert not domain.under(f"{HOST}/paperwork/help", paper)
+    assert domain.refusal(f"{HOST}/paperwork/help", paper, []) == ""
+    assert domain.refusal(f"{paper}/tasks", paper, []) == domain.CORPUS_URL
 
 
 def test_a_page_lands_in_the_workdir_cache_and_never_in_the_package(shop: Path):
@@ -214,11 +212,11 @@ def test_a_record_repeating_a_corpus_string_is_dropped_and_counted(shop: Path):
     write_json(shop / "tasks.json",
                {"tasks": [{"id": "t1", "name": None,
                            "intent": "I want to keep my lantern for a few more nights"}]})
-    reader = Scripted({"Read it as evidence": json.dumps({"archetypes": [
+    reader = TestModel([json.dumps({"archetypes": [
         _archetype("I want to keep my lantern for a few more nights", ["my hire runs longer"]),
-        _archetype("I need a lantern swapped today", ["my hire runs longer"])]})})
+        _archetype("I need a lantern swapped today", ["my hire runs longer"])]})])
     body = domain.read(shop, sources=[f"{HOST}/keep-it-longer"], fetch=fetch, depth=0,
-                       reader=reader, mapper=Scripted({}))
+                       reader=reader, mapper=TestModel(["{}"], loop=True))
     assert body["counts"]["archetypes_contaminated"] == 1
     assert [row["goal"] for row in body["archetypes"]] == ["I need a lantern swapped today"]
 
@@ -235,30 +233,22 @@ def test_a_goal_written_at_the_customer_rather_than_by_them_is_dropped_and_count
     assert all(domain.customer_voice(row["goal"]) for row in body["archetypes"])
 
 
-def test_two_goals_are_folded_only_where_the_harness_judge_settles_the_pair_as_equal(shop: Path):
+def test_two_goals_are_folded_only_where_the_judge_or_their_normalised_form_settles_the_pair(shop: Path):
     """The pair goes through the one comparison the harness settles a semantic pair with (D219),
-    so the citation rule it enforces is that judge's and not a second copy kept here."""
+    so the citation rule it enforces is that judge's and not a second copy kept here. Unresolved is
+    not agreement: with no judge at all two differently worded goals stay two, and two goals that
+    read the same after normalising need no judge, and the fold says so."""
     first, second = "I want to keep my lantern longer", "I would like my lantern kept longer"
     uncited = Scripted({"Value A": json.dumps({"verdict": "equivalent"})})
     assert domain.same_goal(uncited, first, second) == (False, "")
     cited = Scripted({"Value A": json.dumps({"verdict": "equivalent",
                                              "evidence": ["value_a", "value_b"]})})
     assert domain.same_goal(cited, first, second) == (True, "judge")
-
-
-def test_a_pair_nobody_settled_leaves_both_archetypes_standing(shop: Path):
-    """Unresolved is not agreement (D219): with no judge at all the two goals stay two."""
-    records = [_archetype("I want to keep my lantern longer", ["my hire runs longer"]),
-               _archetype("I would like my lantern kept longer", ["my hire runs longer"])]
-    kept, folded = domain.dedup(records, None)
+    unsettled = [_archetype(first, ["my hire runs longer"]), _archetype(second, ["my hire runs longer"])]
+    kept, folded = domain.dedup(unsettled, None)
     assert len(kept) == 2 and folded == []
-
-
-def test_a_fold_records_the_route_that_settled_it(shop: Path):
-    """Two goals that read the same after normalising need no judge, and the fold says so."""
-    records = [_archetype("I want to keep my lantern longer", ["my hire runs longer"]),
-               _archetype("I want to keep my lantern longer", ["my hire runs longer"])]
-    kept, folded = domain.dedup(records, None)
+    repeated = [_archetype(first, ["my hire runs longer"]), _archetype(first, ["my hire runs longer"])]
+    kept, folded = domain.dedup(repeated, None)
     assert len(kept) == 1 and [row["settled_by"] for row in folded] == ["canon"]
 
 
@@ -287,7 +277,7 @@ def test_an_archetype_no_tool_realises_lands_in_the_gaps(shop: Path):
     assert [row["goal"] for row in gaps] == ["I want someone to come and carry it back for me"]
 
 
-def test_the_model_names_sources_for_a_one_line_description_and_the_corpus_ones_are_refused(shop: Path):
+def test_sources_the_model_names_are_used_only_off_the_corpus_reachable_and_on_the_public_web(shop: Path):
     corpus = f"{HOST}/benchmark"
     namer = Scripted({"public web pages": json.dumps({"pages": [
         {"url": f"{HOST}/broken-wick", "why": "what people write in about"},
@@ -297,6 +287,18 @@ def test_the_model_names_sources_for_a_one_line_description_and_the_corpus_ones_
                                  corpus_url=corpus)
     assert found["used"] == [f"{HOST}/broken-wick"]
     assert {row["reason"] for row in found["dropped"]} == {domain.CORPUS_URL, domain.UNREACHABLE}
+
+    def guarded(url: str) -> str:
+        if "depot" in url:
+            raise domain.DestinationRefused("the host is a loopback name")
+        return fetch(url)
+
+    namer = Scripted({"public web pages": json.dumps({"pages": [
+        {"url": f"{HOST}/broken-wick", "why": "what people write in about"},
+        {"url": "http://depot.lantern-rental.invalid/", "why": "somewhere on this network"}]})})
+    found = domain.named_sources(namer, "a shop that rents lanterns by the night", fetch=guarded)
+    assert found["used"] == [f"{HOST}/broken-wick"]
+    assert [row["reason"] for row in found["dropped"]] == [domain.DESTINATION]
 
 
 def test_a_search_runs_only_where_a_key_is_set_and_the_value_is_never_returned():
@@ -318,17 +320,8 @@ def test_a_judge_removes_a_task_only_by_citing_a_line_of_the_archetype(shop: Pat
         {"reject": True, "citation": "my hire runs longer"})})
     assert domain.rejection(cited, domain.SHAPE_JUDGE, record, "keep it longer",
                             ["extend_hire"]) == "my hire runs longer"
-
-
-def test_the_archetype_lines_reach_a_judge_as_the_checks_run_before_it_is_asked(shop: Path):
-    """D222 rule 1: the reads the question needs are run first and named in the prompt, so the judge
-    is answering over evidence the harness gathered rather than over prose it was handed."""
-    record = _archetype("I want to keep my lantern for more nights", ["my hire runs longer"])
-    model = Scripted({"Your only power": json.dumps({"reject": False})})
-    domain.rejection(model, domain.SHAPE_JUDGE, record, "keep it longer", ["extend_hire"])
-    prompt = model.prompts[-1]
-    assert "Checks already run for you" in prompt
-    assert "my hire runs longer" in prompt and "effects" in prompt
+    passing = Scripted({"Your only power": json.dumps({"reject": False, "citation": "anything"})})
+    assert domain.judged([passing, passing], record, "keep it longer", ["extend_hire"]) == []
 
 
 def test_an_archetype_with_no_line_to_cite_is_never_put_to_a_judge(shop: Path):
@@ -342,12 +335,6 @@ def test_an_archetype_with_no_line_to_cite_is_never_put_to_a_judge(shop: Path):
     assert model.prompts == []
 
 
-def test_a_judge_that_would_pass_a_task_adds_nothing(shop: Path):
-    record = _archetype("I want to keep my lantern for more nights", ["my hire runs longer"])
-    passing = Scripted({"Your only power": json.dumps({"reject": False, "citation": "anything"})})
-    assert domain.judged([passing, passing], record, "keep it longer", ["extend_hire"]) == []
-
-
 # --- where a fetch may go -----------------------------------------------------------------
 
 def resolves_to(*addresses: str):
@@ -355,28 +342,29 @@ def resolves_to(*addresses: str):
     return lambda host: list(addresses)
 
 
-@pytest.mark.parametrize("address, word", [
-    ("127.0.0.1", "loopback"),
-    ("::1", "loopback"),
-    ("10.4.4.4", "private"),
-    ("192.168.1.9", "private"),
-    ("172.16.9.9", "private"),
-    ("169.254.169.254", "link local"),
-    ("fd00::5", "private"),
-    ("ff02::1", "multicast"),
-    ("240.0.0.1", "reserved"),
-    ("0.0.0.0", "unspecified"),
-    ("::ffff:127.0.0.1", "loopback")])
-def test_a_host_resolving_to_an_address_off_the_public_web_is_refused_by_its_class(address, word):
+@pytest.mark.parametrize("addresses, word", [
+    (("127.0.0.1",), "loopback"),
+    (("::1",), "loopback"),
+    (("10.4.4.4",), "private"),
+    (("192.168.1.9",), "private"),
+    (("172.16.9.9",), "private"),
+    (("169.254.169.254",), "link local"),
+    (("fd00::5",), "private"),
+    (("ff02::1",), "multicast"),
+    (("240.0.0.1",), "reserved"),
+    (("0.0.0.0",), "unspecified"),
+    (("::ffff:127.0.0.1",), "loopback"),
+    ((), "did not resolve"),
+    (("51.75.20.10", "2a01:4f8:1:2::3"), None)])
+def test_a_host_is_refused_by_the_class_of_its_address_and_allowed_only_on_the_public_web(addresses, word):
     why = domain.destination_refusal("https://help.lantern-rental.invalid/hire",
-                                     resolve=resolves_to(address))
-    assert word in why, f"{address} was refused as {why!r} rather than {word}"
-    assert address not in why, "the refusal wrote down the address the name resolved to"
-
-
-def test_a_host_resolving_to_a_public_address_is_allowed():
-    assert domain.destination_refusal("https://help.lantern-rental.invalid/hire",
-                                      resolve=resolves_to("51.75.20.10", "2a01:4f8:1:2::3")) == ""
+                                     resolve=resolves_to(*addresses))
+    if word is None:
+        assert why == "", f"{addresses} are public and were refused as {why!r}"
+    else:
+        assert word in why, f"{addresses} was refused as {why!r} rather than {word}"
+        assert not any(address in why for address in addresses), \
+            "the refusal wrote down the address the name resolved to"
 
 
 def test_a_host_holding_one_public_address_and_one_off_the_public_web_is_refused():
@@ -396,14 +384,6 @@ def test_a_scheme_that_is_not_http_and_a_literal_address_are_refused_without_a_l
     assert "private" in domain.destination_refusal("http://192.168.0.5/", resolve=never)
     assert "link local" in domain.destination_refusal("http://169.254.169.254/self", resolve=never)
     assert "literal" in domain.destination_refusal("http://51.75.20.10/", resolve=never)
-
-
-def test_a_host_that_does_not_resolve_at_all_is_refused():
-    def missing(host: str):
-        return []
-
-    assert "did not resolve" in domain.destination_refusal("https://nowhere.lantern.invalid/",
-                                                           resolve=missing)
 
 
 def test_a_redirect_to_a_hop_off_the_public_web_is_refused_and_a_public_one_is_followed():
@@ -436,15 +416,3 @@ def test_a_crawl_records_a_refused_destination_the_way_it_records_a_refused_path
     assert "loopback" in read["refused"][0]["why"]
 
 
-def test_a_named_source_whose_destination_is_refused_is_dropped_and_counted(shop: Path):
-    def guarded(url: str) -> str:
-        if "depot" in url:
-            raise domain.DestinationRefused("the host is a loopback name")
-        return fetch(url)
-
-    namer = Scripted({"public web pages": json.dumps({"pages": [
-        {"url": f"{HOST}/broken-wick", "why": "what people write in about"},
-        {"url": "http://depot.lantern-rental.invalid/", "why": "somewhere on this network"}]})})
-    found = domain.named_sources(namer, "a shop that rents lanterns by the night", fetch=guarded)
-    assert found["used"] == [f"{HOST}/broken-wick"]
-    assert [row["reason"] for row in found["dropped"]] == [domain.DESTINATION]

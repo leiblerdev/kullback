@@ -74,13 +74,9 @@ def test_a_walk_holds_the_writes_and_the_tools_its_band_asks_for():
     steps = graph.walk(body, "w1t3p1", "seed-1")
     writes, tools = graph.reached(steps, ["retie_kite"])
     assert writes == 1 and tools == 3
-
-
-def test_a_walk_of_a_band_asking_for_no_write_makes_none():
-    body = graph.mine([_run(LOOKUP, DETAILS, RETIE)], write_tools=["retie_kite"])
-    steps = graph.walk(body, "w0t2p1", "seed-1")
-    writes, _tools = graph.reached(steps, ["retie_kite"])
-    assert writes == 0
+    no_write = graph.walk(body, "w0t2p1", "seed-1")
+    writes, _tools = graph.reached(no_write, ["retie_kite"])
+    assert writes == 0, "a band asking for no write makes none"
 
 
 def test_a_walk_starts_where_a_recorded_run_started():

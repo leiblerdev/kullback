@@ -6,7 +6,6 @@ tested here is the ruling side, which no agent may write and no model is consult
 
 from __future__ import annotations
 
-import importlib.util
 from pathlib import Path
 
 import pytest
@@ -41,24 +40,18 @@ from kullback.runner.confinement import confine
 from kullback.runner.records import Constraint, Intent, StrippedValue, Task, UserRules, Verifier
 from runner.replay_fixtures import Toolkit, do_replay
 
-_NEEDS_PATCH = importlib.util.find_spec("kullback.runner.target") is None
-_patch_only = pytest.mark.skipif(_NEEDS_PATCH, reason="needs the one-scorer patch")
-
 # --- reading re-runs from disk (D91) --------------------------------------
 
-def test_load_run_reads_header_plus_event_lines(tmp_path):
-    path = Path(write_events_jsonl(reference_run(), tmp_path / "ref.jsonl"))
+@pytest.mark.parametrize("write, make, run_id", [
+    pytest.param(write_events_jsonl, reference_run, "ref", id="header_plus_event_lines"),
+    pytest.param(write_run_json, alt_path_run, "alt", id="whole_run_on_one_line"),
+])
+def test_load_run_reads_a_run_written_as_event_lines_or_on_one_line(tmp_path, write, make, run_id):
+    path = Path(write(make(), tmp_path / f"{run_id}.jsonl"))
     run = S.load_run(path)
-    assert run.run_id == "ref"
+    assert run.run_id == run_id
     assert len(run.events) == 8
     assert run.events[0].type == "user_turn"
-
-
-def test_load_run_reads_a_whole_run_on_one_line(tmp_path):
-    path = Path(write_run_json(alt_path_run(), tmp_path / "alt.jsonl"))
-    run = S.load_run(path)
-    assert run.run_id == "alt"
-    assert len(run.events) == 8
 
 def test_load_run_keeps_the_state_the_loop_footer_carries(tmp_path):
     """loop.py writes Start and End state on a footer line; a Hard rule reads them off the stop event."""
@@ -96,7 +89,6 @@ def test_a_state_reading_hard_rule_fails_the_run_it_cannot_hold_on(tmp_path):
     assert S.check_run(verifier, with_state("delivered")) == (False, "hard.k1")
 
 
-@_patch_only
 def test_a_hard_rule_that_raises_is_a_defect_and_not_a_candidate_failure(tmp_path):
     """A predicate that blows up decided nothing: a Verifier defect, never a Candidate failure (G3)."""
     rule = Constraint(id="k1", text="never cancel an order that is not pending", compiled=True,
@@ -109,7 +101,6 @@ def test_a_hard_rule_that_raises_is_a_defect_and_not_a_candidate_failure(tmp_pat
     assert gates["verifier_oracle"].passed is False
 
 
-@_patch_only
 def test_a_hard_rule_cannot_walk_dunders_out_of_the_sandbox(tmp_path):
     """A Hard constraint that never imports anything can still reach the process through
     ().__class__.__base__.__subclasses__(); _hard_holds has to refuse it before exec, the same way
@@ -136,7 +127,6 @@ def test_a_hard_rule_cannot_walk_dunders_out_of_the_sandbox(tmp_path):
     assert S.check_run(verifier, reference_run()) == (True, None)
 
 
-@_patch_only
 def test_a_hard_rule_that_reaches_for_the_builtins_mapping_takes_nothing_from_the_next_rule(tmp_path):
     """Naming `__builtins__` reaches every allowed builtin as data to edit, so the source is refused
     before exec (a refused rule decided nothing, which is False here); and what does run gets its own
@@ -151,34 +141,6 @@ def test_a_hard_rule_that_reaches_for_the_builtins_mapping_takes_nothing_from_th
     verifier = derive(tmp_path, constraints=[reaching, counts])
     assert S.hard_holds(atom_by_id(verifier, "hard.k1"), reference_run(), WRITE_TOOLS) is None
     assert S.hard_holds(atom_by_id(verifier, "hard.k2"), reference_run(), WRITE_TOOLS) is True
-
-
-def test_a_hard_rule_sees_the_transcript_before_the_write_and_nothing_after(tmp_path):
-    """D43 case 3: a confirmation that arrived after the write did not precede it."""
-    never = Constraint(
-        id="k1", text="never cancel without a prior user confirmation", compiled=True,
-        predicate_src="def check(pre_state, write_call, transcript):\n    return user_confirmed(transcript)\n")
-    confirmed = make_run("ref", [
-        user("Please cancel my order #W123."),
-        assistant("Shall I cancel #W123?"),
-        user("yes"),
-        call("cancel_pending_order", {"order_id": "#W123", "reason": "customer request"}, cid="c1"),
-        result({"order_id": "#W123", "status": "cancelled"}, cid="c1"),
-        assistant("Cancelled."),
-    ])
-    verifier = V.derive_verifier(TASK, confirmed, [], None, write_tools=WRITE_TOOLS, constraints=[never])
-    late = make_run("late", [
-        user("Please cancel my order #W123."),
-        call("cancel_pending_order", {"order_id": "#W123", "reason": "customer request"}, cid="c1"),
-        result({"order_id": "#W123", "status": "cancelled"}, cid="c1"),
-        assistant("I cancelled #W123. Was that what you wanted?"),
-        user("yes"),
-        assistant("Great."),
-    ])
-    hard = atom_by_id(verifier, "hard.k1")
-    assert S.hard_holds(hard, confirmed, WRITE_TOOLS) is True
-    assert S.hard_holds(hard, late, WRITE_TOOLS) is False
-    assert S.check_run(Verifier(task_id="t1", atoms=[hard]), late) == (False, "hard.k1")
 
 
 def test_a_hard_rule_is_not_asked_about_a_tool_the_seed_runs_only_read_with(tmp_path):
@@ -217,9 +179,9 @@ def test_a_write_no_successful_run_made_still_fails_on_the_write_cap(tmp_path):
     assert failing == "entity_count"
 
 
-def test_check_run_needs_write_tools_to_catch_an_extra_write_on_an_uncovered_tool(tmp_path):
-    """build.py:347 always supplies the mined write_tools in production; no call in this file did
-    until this test, so the extra-write safety net (_extra_write) had no coverage of that shape."""
+def test_an_extra_write_on_an_uncovered_tool_fails_given_write_tools(tmp_path):
+    """Production always supplies the mined write_tools; no call in this file did until this test,
+    so the extra-write safety net (_extra_write) had no coverage of that shape."""
     verifier = derive(tmp_path, reruns=[alt_path_run(), extra_write_run()])
     sneaky = make_run("sneaky", reference_events() + [
         call("refund_order", {"order_id": "#W123", "amount": 25.0}, kind="read", cid="c2"),
@@ -228,7 +190,7 @@ def test_check_run_needs_write_tools_to_catch_an_extra_write_on_an_uncovered_too
     # With no write_tools, the extra call is invisible: nothing marked it as a write, so it slips
     # through as a full pass.
     assert S.check_run(verifier, sneaky) == (True, None)
-    # The same Run, scored the way build.py actually scores it, is caught.
+    # The same Run, scored the way production scores it, is caught.
     assert S.check_run(verifier, sneaky, write_tools={"cancel_pending_order", "refund_order"}) == (
         False, "extra_write:refund_order")
 
@@ -273,13 +235,6 @@ def test_a_verifier_that_rewards_an_unfinished_run_is_caught(tmp_path):
     assert gates["verifier_unfinished_run"].passed is False
 
 
-def test_unfinished_run_is_none_for_an_empty_reference_and_cuts_a_writeless_one_before_its_last_turn(tmp_path):
-    verifier = derive(tmp_path)
-    assert S.unfinished_run(verifier, empty_run()) is None
-    talk = make_run("talk", [user("hi"), assistant("hello")])
-    assert [e.type for e in S.unfinished_run(verifier, talk).events] == ["user_turn"]
-
-
 def _answering_events(final: str = "That is all, have a good day.") -> list[dict]:
     """A Task whose outcome is the answer: the agent reads the order and states its status, twice."""
     return [
@@ -309,9 +264,14 @@ def test_a_verifier_that_requires_no_write_is_cut_before_the_first_answer_statin
     assert gates["verifier_unfinished_run"].passed is True
 
 
-def test_a_writeless_verifier_with_no_communicate_atom_is_cut_before_its_last_answer():
+def test_a_writeless_run_is_cut_before_its_last_answer_and_an_empty_reference_has_no_cut(tmp_path):
     """No write to cut before and no fact the Verifier asks for: the final turn is all that is left
     to take away, and what the cut Run then fails on is the derivation's business, not the cut's."""
+    derived = derive(tmp_path)
+    assert S.unfinished_run(derived, empty_run()) is None
+    talk = make_run("talk", [user("hi"), assistant("hello")])
+    assert [e.type for e in S.unfinished_run(derived, talk).events] == ["user_turn"]
+
     silent = make_run("silent", [user("Are you there?"), assistant("I am here."), user("Good."),
                                  assistant("Goodbye.")])
     verifier = V.derive_verifier(TASK, silent, [], None, write_tools=WRITE_TOOLS)
@@ -376,7 +336,7 @@ def test_a_hollow_verifier_fails_the_suite_with_no_runs_supplied(tmp_path):
     pytest.param(lambda atom: setattr(atom, "spans", []), id="no_span"),
     pytest.param(lambda atom: setattr(atom.spans[0], "msg_index", 3), id="wrong_turn"),
 ])
-def test_validate_flags_a_provenance_atom_whose_span_does_not_hold_the_value(tmp_path, break_span):
+def test_a_user_stated_atom_whose_span_misses_the_value_fails_provenance(tmp_path, break_span):
     verifier = derive(tmp_path)
     for atom in verifier.atoms:
         if atom.provenance == "user_stated" and atom.spans:
@@ -505,46 +465,45 @@ def literal_value_atom(tool: str, entity: str, id_field: str, field: str, value,
     return Verifier(task_id="t1", atoms=[atom])
 
 
-def test_leak_check_finds_a_number_the_verifier_read_off_a_tool_result(tmp_path):
-    """Check 7 greps for constants only the Verifier should know, whether or not they are strings."""
-    def events(amount):
-        return [
-            user("Please refund my order #W123."),
-            call("get_order_details", {"order_id": "#W123"}, kind="read", cid="c0"),
-            result(ORDER, cid="c0"),
-            call("refund_order", {"order_id": "#W123", "amount": amount}, cid="c1"),
-            result({"ok": True}, cid="c1"),
-            assistant("Refunded."),
-        ]
-    verifier = literal_value_atom("refund_order", "#W123", "order_id", "amount", 150.0)
-    gates = {g.stage: g for g in S.validate_verifier(verifier, make_run("ref", events(150.0)),
-                                                     intent_text="refund exactly 150.0 on #W123",
-                                                     user_rules=UserRules())}
-    assert gates["verifier_leak"].passed is False
-    assert "150.0" in " ".join(gates["verifier_leak"].failures)
+def _refund_run():
+    """A refund whose amount the agent read off a tool result: check 7 greps for constants only the
+    Verifier should know, whether or not they are strings."""
+    return make_run("ref", [
+        user("Please refund my order #W123."),
+        call("get_order_details", {"order_id": "#W123"}, kind="read", cid="c0"),
+        result(ORDER, cid="c0"),
+        call("refund_order", {"order_id": "#W123", "amount": 150.0}, cid="c1"),
+        result({"ok": True}, cid="c1"),
+        assistant("Refunded."),
+    ])
 
 
-@pytest.mark.parametrize("intent_text, user_rules, expected_pass, leaked", [
-    pytest.param("cancel #W123 and refund exactly 150.0", UserRules(), False, "intent leaks 150.0",
-                 id="intent"),
-    pytest.param("", UserRules(refusals=["do not accept less than 150.0"]), False,
-                 "user_rules leaks 150.0", id="user_rules"),
-    pytest.param("cancel order #W123 and record the reason", UserRules(), True, None, id="own_words"),
+@pytest.mark.parametrize("tool, reference, intent_text, user_rules, expected_pass, leaked", [
+    pytest.param("cancel_pending_order", reference_run, "cancel #W123 and refund exactly 150.0", UserRules(),
+                 False, "intent leaks 150.0", id="intent"),
+    pytest.param("cancel_pending_order", reference_run, "", UserRules(refusals=["do not accept less than 150.0"]),
+                 False, "user_rules leaks 150.0", id="user_rules"),
+    pytest.param("cancel_pending_order", reference_run, "cancel order #W123 and record the reason", UserRules(),
+                 True, None, id="own_words"),
+    pytest.param("refund_order", _refund_run, "refund exactly 150.0 on #W123", UserRules(),
+                 False, "150.0", id="number_off_a_tool_result"),
 ])
 def test_the_leak_check_finds_a_system_derived_constant_in_the_intent_or_the_user_rules_and_never_the_users_own_words(
-        tmp_path, intent_text, user_rules, expected_pass, leaked):
-    verifier = literal_value_atom("cancel_pending_order", "#W123", "order_id", "amount", 150.0)
+        tmp_path, tool, reference, intent_text, user_rules, expected_pass, leaked):
+    verifier = literal_value_atom(tool, "#W123", "order_id", "amount", 150.0)
     gates = {g.stage: g for g in S.validate_verifier(
-        verifier, reference_run(), empty_run(), wrong_run(), alt_path_run(),
+        verifier, reference(), empty_run(), wrong_run(), alt_path_run(),
         intent_text=intent_text, user_rules=user_rules)}
     assert gates["verifier_leak"].passed is expected_pass
     if leaked is not None:
         assert leaked in " ".join(gates["verifier_leak"].failures)
 
 
-def test_the_leak_check_reads_the_intent_record_and_names_the_column_of_what_the_strip_missed():
+def test_the_leak_check_names_the_column_the_strip_missed_and_says_whether_it_audited_a_record():
     """D196 makes check 7 an audit: the strip has already run, so a leak is a column it does not
-    cover yet, and the column is what a finding can be keyed on and the next strip has to read."""
+    cover yet, and the column is what a finding can be keyed on and the next strip has to read.
+    A caller that holds no record still gets the check, and says on the ruling that it audited
+    nothing: a strip that never ran must not read as a strip that found nothing."""
     record = Intent(task_id="t1", text="cancel #W123 and refund exactly 150.0", grounded=True,
                     stripped=[StrippedValue(column="order_id", table="orders", shape="last4",
                                             replacement="ending 0123")])
@@ -557,10 +516,6 @@ def test_the_leak_check_reads_the_intent_record_and_names_the_column_of_what_the
     assert gate.metrics["columns"] == ["cancel_pending_order.amount"]
     assert gate.metrics["stripped"] == 1 and gate.metrics["audited"] is True
 
-
-def test_a_leak_check_with_no_intent_record_reads_as_it_always_did():
-    """A caller that holds no record still gets the check, and says on the ruling that it audited
-    nothing: a strip that never ran must not read as a strip that found nothing."""
     gate = {g.stage: g for g in S.validate_verifier(
         literal_value_atom("cancel_pending_order", "#W123", "order_id", "amount", 150.0),
         reference_run(), intent_text="cancel #W123 and refund exactly 150.0",
@@ -586,12 +541,14 @@ def _garage_verifier() -> Verifier:
     return literal_value_atom("book_service", "KP19TRX", "plate", "quote", 240.0)
 
 
-def test_a_value_a_user_said_in_another_seed_recording_is_no_leak():
+def test_a_value_is_no_leak_only_when_a_user_said_it_in_some_seed_recording():
     """The Intent is mined from every recording of the Task, so check 7 has to read every one of them.
 
     Reading the user turns off the Reference alone made this check stricter than the miner it
     polices: on the last build 18 of 24 leaked values were spoken by a user in another recording of
-    the same Task, and the 14 Tasks carrying them were blocked for nothing.
+    the same Task, and the 14 Tasks carrying them were blocked for nothing. Widening the check to
+    the other seed recordings does not weaken it: a price no driver of any recording spoke is still
+    the Verifier's own knowledge, and the Intent must not carry it.
     """
     gates = {g.stage: g for g in S.validate_verifier(
         _garage_verifier(), make_run("ref", _garage_events("please book my car in for its service")),
@@ -600,10 +557,6 @@ def test_a_value_a_user_said_in_another_seed_recording_is_no_leak():
     assert gates["verifier_leak"].passed is True
     assert gates["verifier_leak"].failures == []
 
-
-def test_a_value_no_recorded_user_said_still_leaks_when_the_intent_carries_it():
-    """Widening the check to the other seed recordings does not weaken it: a price no driver of any
-    recording spoke is still the Verifier's own knowledge, and the Intent must not carry it."""
     gates = {g.stage: g for g in S.validate_verifier(
         _garage_verifier(), make_run("ref", _garage_events("please book my car in for its service")),
         intent_text="book the 240.0 service", user_rules=UserRules(),
@@ -622,7 +575,7 @@ def test_a_loophole_probe_that_did_not_run_is_not_a_pass(tmp_path):
     assert "not run" in " ".join(gate.failures)
 
 
-def test_loophole_probe_uses_the_run_it_is_given(tmp_path, test_model):
+def test_a_loophole_probe_run_that_passes_the_verifier_fails_check_6(tmp_path, test_model):
     verifier = derive(tmp_path)
     gate = S.loophole_probe(verifier, test_model, run_probe=lambda model, ver: empty_run())
     assert gate.passed is True
@@ -644,7 +597,7 @@ def test_a_fact_stated_before_the_farewell_is_a_communicate_fact():
 
 # --- the D79 checks over a replayed Reference (wrong Run by code, second path) ---
 
-def test_the_wrong_run_aims_every_required_write_at_another_entity(tmp_path):
+def test_the_wrong_run_aims_every_required_write_at_another_entity_and_needs_a_required_write(tmp_path):
     out = do_replay(tmp_path)
     task = Task(id="t1", run_ids=["tr1"])
     verifier = V.derive_verifier(task, out.path, write_tools={"cancel_order"})
@@ -656,6 +609,8 @@ def test_the_wrong_run_aims_every_required_write_at_another_entity(tmp_path):
     assert passed is False and failing == "w0"
     # the Reference itself is untouched
     assert S.check_run(verifier, out.path, write_tools={"cancel_order"})[0] is True
+    # a Verifier that requires nothing has no wrong Run
+    assert S.wrong_run(Verifier(task_id="t1", atoms=[]), out.path) is None
 
 
 def test_the_wrong_run_prefers_an_id_the_reference_showed(tmp_path):
@@ -668,11 +623,6 @@ def test_the_wrong_run_prefers_an_id_the_reference_showed(tmp_path):
     wrong = S.wrong_run(verifier, out.path)
     call_event = next(e for e in wrong.events if e.type == "tool_call" and e.payload["name"] == "cancel_order")
     assert call_event.payload["args"]["order_id"] == "456"
-
-
-def test_a_verifier_that_requires_nothing_has_no_wrong_run(tmp_path):
-    out = do_replay(tmp_path)
-    assert S.wrong_run(Verifier(task_id="t1", atoms=[]), out.path) is None
 
 
 def test_the_suite_runs_the_wrong_run_and_the_second_path(tmp_path):

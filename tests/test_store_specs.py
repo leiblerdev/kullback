@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 
 from kullback import store_specs
-from kullback.store import WorkdirStore
+from kullback.store import ArtifactSpec, WorkdirStore
 
 EXAMPLES: dict[str, object] = {
     "rounds": [{"round": 1}],
@@ -157,24 +157,20 @@ def test_every_declared_artifact_has_a_valid_and_a_wrong_shape_example():
     assert set(WRONG_SHAPE) == set(EXAMPLES)
 
 
-def test_no_two_artifacts_share_a_name():
-    names = [spec.name for spec in store_specs.STORE_SPECS]
-    assert len(set(names)) == len(names)
-
-
-def test_no_two_artifacts_share_a_path_even_by_letter_case():
+def test_no_two_artifacts_share_a_path_even_by_letter_case(tmp_path):
     paths = [spec.path.casefold() for spec in store_specs.STORE_SPECS]
     assert len(set(paths)) == len(paths)
+    with pytest.raises(ValueError):
+        WorkdirStore(tmp_path / "w", [ArtifactSpec(name="a1", path="data.json", format=1, owner="o", validate=int),
+                                      ArtifactSpec(name="a2", path="DATA.json", format=1, owner="o", validate=int)])
 
 
-def test_every_declared_artifact_is_found_by_its_name():
+def test_every_declared_artifact_is_found_by_its_unique_name():
+    names = [spec.name for spec in store_specs.STORE_SPECS]
+    assert len(set(names)) == len(names)
     assert set(store_specs.BY_NAME) == set(EXAMPLES)
     for spec in store_specs.STORE_SPECS:
         assert store_specs.BY_NAME[spec.name] is spec
-
-
-def test_all_declared_artifacts_share_one_store(tmp_path):
-    _store(tmp_path)
 
 
 @pytest.mark.parametrize("name", NAMES)
