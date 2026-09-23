@@ -103,6 +103,11 @@ def test_a_build_that_writes_no_feed_is_still_followed_through_its_reply_cache(t
     rows, cursor = feed.derived_since(tmp_path, cursor)
     assert [row["input"] for row in rows] == [90] and cursor == 2000
 
+    line = feed.describe({"kind": "model_call", "model": "openai/gpt-5.6-luna",
+                          "input": 700, "output": 400})
+    assert "700 in / 400 out" in line and "$" not in line and "0.0s" not in line
+    assert feed.derived_since(tmp_path / "nowhere", 0.0) == ([], 0.0)
+
 
 def test_opening_a_watch_on_a_long_build_shows_the_last_calls_not_every_call(tmp_path):
     import os
@@ -112,13 +117,3 @@ def test_opening_a_watch_on_a_long_build_shows_the_last_calls_not_every_call(tmp
     rows, cursor = feed.derived_since(tmp_path, 0.0, limit=2)
     assert len(rows) == 2 and cursor == 1005
     assert feed.derived_since(tmp_path, cursor)[0] == []
-
-
-def test_a_derived_call_says_the_tokens_it_knows_and_no_cost_it_does_not(tmp_path):
-    line = feed.describe({"kind": "model_call", "model": "openai/gpt-5.6-luna",
-                          "input": 700, "output": 400})
-    assert "700 in / 400 out" in line and "$" not in line and "0.0s" not in line
-
-
-def test_a_workdir_with_no_cache_at_all_is_silence_not_a_crash(tmp_path):
-    assert feed.derived_since(tmp_path / "nowhere", 0.0) == ([], 0.0)
