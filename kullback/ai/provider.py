@@ -686,6 +686,8 @@ class HttpModel(Model):
         self.rng = rng or random.Random()
         self._client = client
         self._client_lock = threading.Lock()
+        # Request-shape fields an endpoint's 400 taught this instance (see `shape_adjustment`).
+        self.shape_fixes: set[str] = set()
 
     def client(self) -> Any:
         # httpx.Client is safe to share across threads; creating it is the one step that is
@@ -705,9 +707,19 @@ class HttpModel(Model):
         require_live_calls_enabled()
         if self.key_required and not self.api_key:
             raise ProviderError(f"no API key for {self.name}; set {self.key_env_var} or pass api_key")
-        body = self.build_body(messages, tools, config or ModelConfig())
+        config = config or ModelConfig()
+        body = self.build_body(messages, tools, config)
         started = time.monotonic()
-        posted = self._post_full(body)
+        try:
+            posted = self._post_full(body)
+        except ProviderError as error:
+            # One silent retry when the 400 named a shape field this instance can adjust; the
+            # adjustment stays, so the next call never pays the 400.
+            retry = self.build_body(messages, tools, config) if self.learn_shape(error, config) else body
+            if retry == body:
+                raise
+            body = retry
+            posted = self._post_full(body)
         wall_ms = (time.monotonic() - started) * 1000.0
         reply = self.parse_reply(posted.data)
         reply.exchange = self.exchange_of(body, posted, wall_ms)
@@ -804,6 +816,10 @@ class HttpModel(Model):
             self.sleep(backoff_delay(attempt, self.retry, self.rng) if wait is None else wait)
         raise RetryExhausted(f"{self.name}: no attempts were made", attempts=0)
 
+    def learn_shape(self, error: ProviderError, config: ModelConfig) -> bool:
+        """Whether this error taught a request-shape adjustment. Only the OpenAI shape learns."""
+        return False
+
     def error_for(self, response: Any) -> ProviderError:
         try:
             body = response.json()
@@ -893,6 +909,32 @@ class AnthropicModel(HttpModel):
         )
 
 
+# gpt-<major> or o<digit>, after an optional gateway prefix such as 'openai/'.
+_REASONING_WIRE = re.compile(r"(?:.*/)?(?:gpt-(\d+)|o\d)(?![a-z])")
+
+
+def reasoning_family(wire_id: str) -> bool:
+    """Whether a wire id has the reasoning-family shape: gpt-<major> with major 5 or above, or o<digit>."""
+    match = _REASONING_WIRE.match(wire_id.lower())
+    return bool(match) and (match.group(1) is None or int(match.group(1)) >= 5)
+
+
+def shape_adjustment(error_text: str) -> Optional[str]:
+    """The request-shape field a 400's text asks to change, or None.
+
+    'reasoning_effort': send it as 'none' with tools. 'max_completion_tokens': cap under that name.
+    'temperature': drop it.
+    """
+    text = (error_text or "").lower()
+    if "reasoning_effort" in text and ("tool" in text or "'none'" in text or '"none"' in text):
+        return "reasoning_effort"
+    if "max_completion_tokens" in text:
+        return "max_completion_tokens"
+    if "temperature" in text:
+        return "temperature"
+    return None
+
+
 class OpenAIModel(HttpModel):
     """OpenAI chat completions: messages as given, tool calls with JSON string arguments."""
 
@@ -917,7 +959,7 @@ class OpenAIModel(HttpModel):
                 body["tool_choice"] = config.tool_choice
         if config.max_tokens is not None:
             body[self.token_cap_field()] = config.max_tokens
-        if config.temperature is not None and not self._reasoning_family():
+        if config.temperature is not None and not self._reasoning_family() and "temperature" not in self.shape_fixes:
             body["temperature"] = config.temperature
         if config.seed is not None:
             body["seed"] = config.seed
@@ -930,7 +972,8 @@ class OpenAIModel(HttpModel):
         if config.top_logprobs is not None:
             body["top_logprobs"] = config.top_logprobs
         body.update(self.reasoning_fields(config))
-        if tools and self._reasoning_family() and "reasoning_effort" not in body:
+        wants_none = self._reasoning_family() or "reasoning_effort" in self.shape_fixes
+        if tools and wants_none and "reasoning_effort" not in body:
             # Found live: gpt-5.6-luna answers a tool call with HTTP 400 saying function tools and
             # reasoning_effort cannot be combined on /v1/chat/completions unless the effort is
             # 'none'. The endpoint applies a default effort we never sent, so not sending one is
@@ -945,14 +988,27 @@ class OpenAIModel(HttpModel):
 
         Found live, not read: gpt-5.6-luna answers `max_tokens` with HTTP 400 telling us to send
         `max_completion_tokens`, and the same families refuse any temperature but the default. The
-        test is on the wire id rather than a list of model names, because a list would be stale the
-        week after it was written and the failure mode is a whole build dying on its first call.
+        test is a shape of the wire id (gpt-<major> with major 5 or above, or o<digit>) rather than
+        a list of names: a prefix list went stale the week after it was written. `learn_shape` is the
+        safety net when the guess is wrong.
         """
-        wire = (self.wire_id or "").lower()
-        return wire.startswith(("gpt-5", "o1", "o3", "o4"))
+        return reasoning_family(self.wire_id or "")
 
     def token_cap_field(self) -> str:
-        return "max_completion_tokens" if self._reasoning_family() else "max_tokens"
+        learned = "max_completion_tokens" in self.shape_fixes
+        return "max_completion_tokens" if self._reasoning_family() or learned else "max_tokens"
+
+    def learn_shape(self, error: ProviderError, config: ModelConfig) -> bool:
+        """Keep the adjustment a 400 names. A caller who asked for an effort keeps it and the 400."""
+        if getattr(error, "status", None) != 400:
+            return False
+        field = shape_adjustment(str(error))
+        if field is None or field in self.shape_fixes:
+            return False
+        if field == "reasoning_effort" and config.reasoning_effort:
+            return False
+        self.shape_fixes.add(field)
+        return True
 
     def reasoning_fields(self, config: ModelConfig) -> dict:
         """Reasoning branch two of three: OpenAI takes one reasoning_effort field."""
