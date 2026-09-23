@@ -964,3 +964,10 @@ def test_the_spend_since_the_last_close_counts_every_closed_round_not_only_the_l
     heartbeat.beat(tmp_path, "openai/gpt-5.6-luna", "running")
     said = tui_module.in_flight(tmp_path) or ""
     assert "round 3 running" in said and "$0.2500 since round 2 closed" in said
+
+
+def test_the_login_menu_starts_openai_at_the_harness_default_model():
+    from kullback.ai.provider import DEFAULT_MODEL
+    from kullback.tui import LOGIN_DEFAULT_MODELS
+
+    assert LOGIN_DEFAULT_MODELS["openai"] == DEFAULT_MODEL
