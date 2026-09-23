@@ -6,6 +6,8 @@ import json
 from collections import deque
 from types import SimpleNamespace
 
+import pytest
+
 from kullback.builder import effects as effects_mod
 from kullback.examiner import derive as verifier_mod
 from kullback.gates import verifier_suite as suite
@@ -76,23 +78,21 @@ def _checks(out, verdict: str) -> list[dict]:
     return [check for check in out.checks if check["verdict"] == verdict]
 
 
-def test_a_check_that_agreed_carries_no_difference_record(tmp_path):
-    """The record is written for the calls that parted and for those only, so a replay that agreed
-    all the way writes the same bytes it always did."""
-    out = do_replay(tmp_path)
-    assert out.confirmed and out.checks
-    assert all("difference" not in check for check in out.checks)
-    assert all(set(check) == {"tool", "kind", "requestor", "verdict", "verdict_route", "route", "call_id", "ours", "recorded"}
-               for check in out.checks)
-
-
-def test_a_differing_answer_records_which_keys_parted_and_both_answers_whole(tmp_path):
+def test_a_parted_call_alone_records_its_keys_and_both_answers_whole(tmp_path):
     """The two preview fields keep their 160 characters; the difference record is what a report
-    reads the cause off, so it says the types, the keys and the answers themselves."""
+    reads the cause off, so it says the types, the keys and the answers themselves. The record is
+    written for the calls that parted and for those only, so a replay that agreed all the way writes
+    the same bytes it always did."""
+    agreed = do_replay(tmp_path / "agreed")
+    assert agreed.confirmed and agreed.checks
+    assert all("difference" not in check for check in agreed.checks)
+    assert all(set(check) == {"tool", "kind", "requestor", "verdict", "verdict_route", "route", "call_id", "ours", "recorded"}
+               for check in agreed.checks)
+
     class Misspelt(Toolkit):
         cancelled = "canceled"
 
-    out = do_replay(tmp_path, Misspelt)
+    out = do_replay(tmp_path / "parted", Misspelt)
     parted = _checks(out, replay.DIFFERS)
     assert [check["tool"] for check in parted] == ["cancel_order"]
     difference = parted[0]["difference"]
@@ -105,16 +105,14 @@ def test_a_differing_answer_records_which_keys_parted_and_both_answers_whole(tmp
     assert difference["ours_errored"] is False and difference["ours_error"] == ""
     assert difference["leaf"] == 'status: ours "canceled", recorded "cancelled"', "the leaf, not only the key"
 
-
-def test_a_refusal_on_one_side_records_the_error_message_in_full(tmp_path):
-    """160 characters is not always enough to reach the message inside a refusal, and the message is
-    the whole of what says whose error it was."""
+    # 160 characters is not always enough to reach the message inside a refusal, and the message is
+    # the whole of what says whose error it was.
     class Broken(Toolkit):
         def get_order_details(self, order_id):
             raise KeyError("x" * 300)
 
-    out = do_replay(tmp_path, Broken)
-    difference = _checks(out, replay.OURS_REFUSED)[0]["difference"]
+    refused = do_replay(tmp_path / "refused", Broken)
+    difference = _checks(refused, replay.OURS_REFUSED)[0]["difference"]
     assert difference["ours_errored"] is True and difference["theirs_errored"] is False
     assert "x" * 300 in difference["ours_error"] and difference["theirs_error"] == ""
     assert difference["ours_type"] == "error" and difference["type_mismatch"] is True
@@ -168,19 +166,21 @@ def _kiln_comparer():
     return ReplayComparer(schema)
 
 
-def test_a_column_the_schema_marks_exempt_does_not_part_a_replayed_call():
+@pytest.mark.parametrize(
+    "ours, verdict, notes",
+    [
+        ({"firing_id": "F9", "peak_c": 1230, "logged_at": "2031-07-04T18:00:00"}, replay.COSMETIC,
+         ["exempt:logged_at"]),
+        ({"firing_id": "F9", "peak_c": 900, "logged_at": "2031-01-01T00:00:00"}, replay.DIFFERS,
+         ["peak_c: ours 900, recorded 1230"]),
+    ],
+    ids=["exempt_column_is_forgiven", "hard_column_parts_and_is_named"],
+)
+def test_a_replayed_call_parts_by_the_column_classes_the_schema_names(ours, verdict, notes):
     recorded = call("x", "t", {}, {"firing_id": "F9", "peak_c": 1230, "logged_at": "2031-01-01T00:00:00"})
-    ours = {"firing_id": "F9", "peak_c": 1230, "logged_at": "2031-07-04T18:00:00"}
     assert replay.compare_call(recorded, ours, None) == replay.DIFFERS
-    assert replay.compare_call(recorded, ours, None, comparer=_kiln_comparer()) == replay.COSMETIC
-
-
-def test_a_hard_column_still_parts_a_replayed_call_and_the_note_names_it():
-    recorded = call("x", "t", {}, {"firing_id": "F9", "peak_c": 1230, "logged_at": "2031-01-01T00:00:00"})
-    ours = {"firing_id": "F9", "peak_c": 900, "logged_at": "2031-01-01T00:00:00"}
-    verdict, notes = replay.compare_call_notes(recorded, ours, None, comparer=_kiln_comparer())
-    assert verdict == replay.DIFFERS
-    assert notes == ["peak_c: ours 900, recorded 1230"]
+    assert replay.compare_call(recorded, ours, None, comparer=_kiln_comparer()) == verdict
+    assert replay.compare_call_notes(recorded, ours, None, comparer=_kiln_comparer()) == (verdict, notes)
 
 
 # --- D204: a run of consecutive turns of one role is one logical turn ---
@@ -197,10 +197,12 @@ def _turn(idx, role, content=None, call_ids=()):
     return Turn(idx=idx, role=role, content=content, tool_call_ids=list(call_ids), raw_ptr=PTR)
 
 
-def test_two_user_turns_in_a_row_are_one_turn_and_the_assistant_ask_that_follows_sees_both(tmp_path):
+def test_a_run_of_turns_of_one_role_is_one_turn_and_the_other_role_is_asked_once(tmp_path):
     """The loop asks the user once, so a recording where the user speaks twice has to hand both over
-    at once or the cursor stalls on the second and every later turn is a gap."""
-    out = _replay_of(tmp_path, [
+    at once or the cursor stalls on the second and every later turn is a gap. An assistant turn that
+    called nothing is not one the loop comes back to, so a second assistant turn beside it is
+    absorbed rather than left for an ask that never comes."""
+    out = _replay_of(tmp_path / "users", [
         _turn(0, "assistant", "How can I help?"),
         _turn(1, "user", "Cancel order 123."),
         _turn(2, "user", "It is the delivered one."),
@@ -218,11 +220,23 @@ def test_two_user_turns_in_a_row_are_one_turn_and_the_assistant_ask_that_follows
     assert spoken == ["Cancel order 123.\nIt is the delivered one.", "Thanks."]
     assert out.counts["writes"] == 1 and out.counts["writes_matched"] == 1, "the write after the run replays"
 
+    out = _replay_of(tmp_path / "assistants", [
+        _turn(0, "assistant", "Hello."),
+        _turn(1, "assistant", "How can I help?"),
+        _turn(2, "user", "Nothing, thanks."),
+    ])
+    assert out.confirmed, out.reasons
+    assert out.counts["absorbed_model_runs"] == 1 and out.counts["gaps"] == 0
+    run = suite.load_run(out.path)
+    said = [e.payload["reply"]["content"] for e in run.events if e.type == "model_call"]
+    assert said[0] == "Hello.\nHow can I help?"
+    assert len([e for e in run.events if e.type == "user_turn"]) == 1
 
-def test_a_tool_a_user_turn_called_inside_a_run_is_routed_and_compared(tmp_path):
+
+def test_a_tool_a_user_turn_called_inside_a_run_is_routed_compared_and_named_a_user_call(tmp_path):
     """The user's own call is part of what the assistant answers next, so it has to reach the
     Environment before the next assistant ask, and it is scored like any other recorded call."""
-    out = _replay_of(tmp_path, [
+    out = _replay_of(tmp_path / "same", [
         _turn(0, "assistant", "How can I help?"),
         _turn(1, "user", "What is my balance?", ["u1"]),
         _turn(2, "tool", '{"balance": 10}', ["u1"]),
@@ -242,38 +256,22 @@ def test_a_tool_a_user_turn_called_inside_a_run_is_routed_and_compared(tmp_path)
     called = [e.payload["name"] for e in run.events if e.type == "tool_call"]
     assert called == ["check_balance", "cancel_order"], "the user's call is routed in recorded order"
 
-
-def test_a_user_turns_own_call_that_parts_is_named_a_user_call_in_the_reasons(tmp_path):
-    out = _replay_of(tmp_path, [
+    parted = _replay_of(tmp_path / "parted", [
         _turn(0, "assistant", "How can I help?"),
         _turn(1, "user", "What is my balance?", ["u1"]),
         _turn(2, "tool", '{"balance": 99}', ["u1"]),
         _turn(3, "user", "Thanks."),
         _turn(4, "assistant", "Anything else?"),
     ], [call("u1", "check_balance", {}, {"balance": 99}, requestor="user")])
-    assert out.reasons == ["check_balance user_call: differs (value)"]
+    assert parted.reasons == ["check_balance user_call: differs (value)"]
 
 
-def test_two_assistant_turns_in_a_row_are_one_turn_and_the_user_is_asked_once(tmp_path):
-    """An assistant turn that called nothing is not one the loop comes back to, so a second
-    assistant turn beside it is absorbed rather than left for an ask that never comes."""
-    out = _replay_of(tmp_path, [
-        _turn(0, "assistant", "Hello."),
-        _turn(1, "assistant", "How can I help?"),
-        _turn(2, "user", "Nothing, thanks."),
-    ])
-    assert out.confirmed, out.reasons
-    assert out.counts["absorbed_model_runs"] == 1 and out.counts["gaps"] == 0
-    run = suite.load_run(out.path)
-    said = [e.payload["reply"]["content"] for e in run.events if e.type == "model_call"]
-    assert said[0] == "Hello.\nHow can I help?"
-    assert len([e for e in run.events if e.type == "user_turn"]) == 1
-
-
-def test_a_role_standing_where_the_other_was_due_counts_one_gap_and_then_resyncs(tmp_path):
+def test_only_a_role_standing_where_the_other_was_due_counts_a_gap_and_then_resyncs(tmp_path):
     """A recorded user turn where an assistant turn was due is a real mismatch, and it is counted
-    once: the cursor takes the user run on the next ask instead of stalling on it for good."""
-    out = _replay_of(tmp_path, [
+    once: the cursor takes the user run on the next ask instead of stalling on it for good.
+    Assistant turns separated by the tool turns of their own calls are not a run: the loop asks
+    the model again after each, so absorbing them would swallow the ask the user is owed."""
+    out = _replay_of(tmp_path / "gap", [
         _turn(0, "assistant", None, ["c1"]),
         _turn(1, "tool", '{"id": "123"}', ["c1"]),
         _turn(2, "user", "Any update?"),
@@ -287,15 +285,12 @@ def test_a_role_standing_where_the_other_was_due_counts_one_gap_and_then_resyncs
     run = suite.load_run(out.path)
     assert [e.payload["text"] for e in run.events if e.type == "user_turn"] == ["Any update?", "Thanks."]
 
+    alternating = _replay_of(tmp_path / "alternating", list(trace().turns), trace().tool_calls)
+    assert alternating.confirmed and alternating.reasons == []
+    assert alternating.counts["absorbed_user_runs"] == 0 and alternating.counts["absorbed_model_runs"] == 0
+    assert alternating.counts["absorbed_turns"] == 0 and alternating.counts["gaps"] == 0
+    assert alternating.counts["writes"] == 1 and alternating.counts["reads"] == 1
 
-def test_a_trace_whose_roles_alternate_absorbs_nothing_and_replays_as_it_did(tmp_path):
-    """Assistant turns separated by the tool turns of their own calls are not a run: the loop asks
-    the model again after each, so absorbing them would swallow the ask the user is owed."""
-    out = _replay_of(tmp_path, list(trace().turns), trace().tool_calls)
-    assert out.confirmed and out.reasons == []
-    assert out.counts["absorbed_user_runs"] == 0 and out.counts["absorbed_model_runs"] == 0
-    assert out.counts["absorbed_turns"] == 0 and out.counts["gaps"] == 0
-    assert out.counts["writes"] == 1 and out.counts["reads"] == 1
 
 
 # --- D217: a cosmetic verdict says which way it was reached, and states are not cosmetic ---
@@ -314,32 +309,33 @@ def _kiln_state_comparer(judge=None):
     return ReplayComparer(schema, judge=judge)
 
 
-def test_the_same_bytes_and_the_same_canonical_form_are_told_apart_by_the_route():
-    same = call("x", "t", {}, {"a": 1})
-    assert replay.compare_call_route(same, {"a": 1}, None) == (replay.SAME, [], replay.BY_BYTES)
-    assert replay.compare_call_route(same, {"a": 1.0}, None) == (replay.COSMETIC, [], replay.BY_CANONICAL)
+_EQUIVALENT = lambda column, ours, theirs: {"verdict": "equivalent"}  # noqa: E731
+_NOT_EQUIVALENT = lambda column, ours, theirs: {"verdict": "not_equivalent"}  # noqa: E731
+_PROSE = {"firing_id": "F9", "firing_report": "the damper is open"}
+_PROSE_OURS = {"firing_id": "F9", "firing_report": "open damper, that is"}
 
 
-def test_whitespace_and_key_order_stay_cosmetic_by_the_canonical_route():
-    recorded = call("x", "t", {}, {"firing_id": "F9", "firing_report": "damper open"})
-    ours = {"firing_report": "  damper   open ", "firing_id": "F9"}
-    verdict, _notes, route = replay.compare_call_route(recorded, ours, None,
-                                                       comparer=_kiln_state_comparer())
-    assert verdict == replay.COSMETIC and route == replay.BY_CANONICAL
-
-
-def test_a_forgiven_column_and_a_judged_one_are_told_apart_by_the_route():
-    exempt_only = call("x", "t", {}, {"firing_id": "F9", "logged_at": "2031-01-01T00:00:00"})
-    verdict, _notes, route = replay.compare_call_route(
-        exempt_only, {"firing_id": "F9", "logged_at": "2031-07-04T18:00:00"}, None,
-        comparer=_kiln_state_comparer())
-    assert verdict == replay.COSMETIC and route == replay.BY_EXEMPT
-    prose = call("x", "t", {}, {"firing_id": "F9", "firing_report": "the damper is open"})
-    judged = lambda column, ours, theirs: {"verdict": "equivalent"}  # noqa: E731
-    verdict, _notes, route = replay.compare_call_route(
-        prose, {"firing_id": "F9", "firing_report": "open damper, that is"}, None,
-        comparer=_kiln_state_comparer(judged))
-    assert verdict == replay.COSMETIC and route == replay.BY_JUDGE
+@pytest.mark.parametrize(
+    "recorded, ours, comparer, verdict, route",
+    [
+        ({"a": 1}, {"a": 1}, None, replay.SAME, replay.BY_BYTES),
+        ({"a": 1}, {"a": 1.0}, None, replay.COSMETIC, replay.BY_CANONICAL),
+        ({"firing_id": "F9", "firing_report": "damper open"}, {"firing_report": "  damper   open ", "firing_id": "F9"},
+         _kiln_state_comparer, replay.COSMETIC, replay.BY_CANONICAL),
+        ({"firing_id": "F9", "logged_at": "2031-01-01T00:00:00"}, {"firing_id": "F9", "logged_at": "2031-07-04T18:00:00"},
+         _kiln_state_comparer, replay.COSMETIC, replay.BY_EXEMPT),
+        (_PROSE, _PROSE_OURS, lambda: _kiln_state_comparer(_EQUIVALENT), replay.COSMETIC, replay.BY_JUDGE),
+        (_PROSE, _PROSE_OURS, lambda: _kiln_state_comparer(_NOT_EQUIVALENT), replay.DIFFERS, replay.BY_JUDGE),
+        ({"firing_id": "F9", "logged_at": "2031-01-01T00:00:00"}, {"firing_id": "F9"},
+         _kiln_state_comparer, replay.DIFFERS, replay.BY_PRESENCE),
+    ],
+    ids=["same_bytes", "same_canonical_form", "whitespace_and_key_order", "forgiven_column", "judged_equivalent",
+         "judged_different_not_by_the_columns", "value_only_one_side_answers"],
+)
+def test_each_agreement_names_the_route_that_decided_it(recorded, ours, comparer, verdict, route):
+    extra = {"comparer": comparer()} if comparer else {}
+    got_verdict, _notes, got_route = replay.compare_call_route(call("x", "t", {}, recorded), ours, None, **extra)
+    assert (got_verdict, got_route) == (verdict, route)
 
 
 def test_a_semantic_column_nobody_settled_parts_and_says_so_rather_than_agreeing():
@@ -353,15 +349,6 @@ def test_a_semantic_column_nobody_settled_parts_and_says_so_rather_than_agreeing
     assert notes[0].startswith("unresolved:firing_report")
 
 
-def test_a_pair_the_judge_calls_different_parts_by_the_judge_and_not_by_the_columns():
-    prose = call("x", "t", {}, {"firing_id": "F9", "firing_report": "the damper is open"})
-    parted = lambda column, ours, theirs: {"verdict": "not_equivalent"}  # noqa: E731
-    verdict, _notes, route = replay.compare_call_route(
-        prose, {"firing_id": "F9", "firing_report": "open damper, that is"}, None,
-        comparer=_kiln_state_comparer(parted))
-    assert verdict == replay.DIFFERS and route == replay.BY_JUDGE
-
-
 def test_an_answer_naming_a_different_state_parts_and_names_the_states_on_each_side():
     recorded = call("x", "t", {}, {"firing_id": "F9", "firing_report": "damper open, kiln loaded"})
     ours = {"firing_id": "F9", "firing_report": "damper closed, kiln loaded"}
@@ -371,14 +358,7 @@ def test_an_answer_naming_a_different_state_parts_and_names_the_states_on_each_s
     assert notes == ["token_set:firing_report: ours [closed], recorded [open]"]
 
 
-def test_a_value_only_one_side_answers_parts_and_the_route_says_so():
-    recorded = call("x", "t", {}, {"firing_id": "F9", "logged_at": "2031-01-01T00:00:00"})
-    verdict, _notes, route = replay.compare_call_route(recorded, {"firing_id": "F9"}, None,
-                                                       comparer=_kiln_state_comparer())
-    assert verdict == replay.DIFFERS and route == replay.BY_PRESENCE
-
-
-def test_the_round_counts_how_much_of_its_agreement_rested_on_each_route(tmp_path):
+def test_the_replay_counts_how_much_agreement_rested_on_each_route(tmp_path):
     class Floaty(Toolkit):
         total_as = float
 
@@ -421,37 +401,40 @@ def _check_effects(effects):
     return scored, check
 
 
-def test_an_unattributed_row_is_counted_apart_and_never_fails_its_call():
-    scored, check = _check_effects({"c2": [_effect_row(True, after="shipped")]})
-    assert check.get("effect_failures") is None
-    assert check.get("effect_failures_total") is None
-    assert check["effect_checks"] == 0
-    assert check["unattributed_effects"] == 1
+def test_an_unattributed_row_is_counted_apart_and_never_fails_its_call(tmp_path):
+    """Only a row that is attributed to the call, by a flag that is exactly True, can fail it; an
+    unattributed miss leaves no stale row for downstream blame."""
+    cases = [
+        # rows, effect_checks, failures, unattributed, stale
+        ([_effect_row(True, after="shipped")], 0, None, 1, 0),
+        ([_effect_row(False, after="shipped")], 1, 1, None, None),
+        ([_effect_row(False, after="shipped"), _effect_row(True, after="shipped")], 1, 1, 1, None),
+        ([_effect_row("yes", after="shipped")], None, 1, None, None),
+    ]
+    for rows, checks, failures, unattributed, stale in cases:
+        scored, check = _check_effects({"c2": rows})
+        if checks is not None:
+            assert check["effect_checks"] == checks
+        if failures is None:
+            assert check.get("effect_failures") is None
+        else:
+            assert len(check["effect_failures"]) == failures
+        assert check.get("effect_failures_total") == failures
+        assert check.get("unattributed_effects") == unattributed
+        if stale is not None:
+            assert len(scored.stale) == stale
+
+    out = replay.replay_trace(trace(), router(), workdir=tmp_path / "runs" / "t8", task_id="t8",
+                              env_id="env1", write_tools={"cancel_order"},
+                              effects={"c2": [_effect_row(False)],
+                                       STRAY: [_effect_row(True, after="shipped")]})
+    assert out.confirmed, out.reasons
+    assert out.counts["effect_checks"] == 1
+    assert out.counts["effect_failures"] == 0
+    assert out.counts["effect_unattributed"] == 1
 
 
-def test_attributed_rows_still_fail_the_call_that_moved_them_wrong():
-    scored, check = _check_effects({"c2": [_effect_row(False, after="shipped")]})
-    assert check["effect_checks"] == 1
-    assert len(check["effect_failures"]) == 1
-    assert check["effect_failures_total"] == 1
-    assert check.get("unattributed_effects") is None
-
-
-def test_mixed_attributed_and_unattributed_rows_check_attributed_only():
-    scored, check = _check_effects({"c2": [_effect_row(False, after="shipped"),
-                                           _effect_row(True, after="shipped")]})
-    assert check["effect_checks"] == 1
-    assert len(check["effect_failures"]) == 1
-    assert check["unattributed_effects"] == 1
-
-
-def test_a_truthy_nonboolean_unattributed_flag_grants_no_exemption():
-    scored, check = _check_effects({"c2": [_effect_row("yes", after="shipped")]})
-    assert len(check.get("effect_failures") or []) == 1
-    assert check.get("unattributed_effects") is None
-
-
-def test_a_stray_bucket_colliding_with_a_call_id_still_fails_nothing():
+def test_a_stray_bucket_colliding_with_a_call_id_still_fails_nothing(tmp_path):
     cid = effects_mod.UNATTRIBUTED
     effect = effects_mod.WriteEffect(tool="cancel_order", call_id=cid, trace_id="tr1", columns=[
         effects_mod.EffectColumn(table="orders", row_id="123", path="status", before="delivered",
@@ -477,31 +460,7 @@ def test_a_stray_bucket_colliding_with_a_call_id_still_fails_nothing():
     assert len(scored.stale) == 2
     assert replay._count_unattributed_effects(evidence) == 2
 
-
-def test_unattributed_misses_leave_no_stale_rows_for_downstream_blame():
-    scored, check = _check_effects({"c2": [_effect_row(True, after="shipped")]})
-    assert scored.stale == []
-
-
-def test_empty_expected_effects_leave_no_effect_fields():
-    scored, check = _check_effects({"c2": []})
-    assert "effect_checks" not in check
-    assert "effect_failures" not in check
-
-
-def test_a_replay_with_stray_evidence_counts_it_apart_and_stays_confirmed(tmp_path):
-    out = replay.replay_trace(trace(), router(), workdir=tmp_path / "runs" / "t8", task_id="t8",
-                              env_id="env1", write_tools={"cancel_order"},
-                              effects={"c2": [_effect_row(False)],
-                                       STRAY: [_effect_row(True, after="shipped")]})
-    assert out.confirmed, out.reasons
-    assert out.counts["effect_checks"] == 1
-    assert out.counts["effect_failures"] == 0
-    assert out.counts["effect_unattributed"] == 1
-
-
-def test_a_colliding_call_id_replays_its_stray_apart_and_blames_the_read_downstream(tmp_path):
-    cid = effects_mod.UNATTRIBUTED
+    # the same collision replayed: the stray is scored apart and the later read is blamed downstream
     colliding = Trace(trace_id="tr9", raw_hash="r" * 64, ingest_version="1", source="test", turns=[
         Turn(idx=0, role="assistant", content="Hi! How can I help you today?", raw_ptr=PTR),
         Turn(idx=1, role="user", content="Please cancel order 123.", raw_ptr=PTR),
