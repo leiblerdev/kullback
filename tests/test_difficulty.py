@@ -64,7 +64,7 @@ MOVE_P9 = (MOVE, {"pot_id": "p9", "bench_id": "b2"}, {"pot_id": "p9", "moved": T
 
 # --- the record ----------------------------------------------------------------
 
-def test_a_record_counts_the_writes_the_tools_the_paths_and_the_questions_of_one_task():
+def test_a_record_counts_the_writes_the_tools_the_paths_the_questions_and_the_partial_band_of_one_task():
     verifier = _verifier(_write_atom("w0"), _value_atom("w0.litres"), _question_atom("q.litres"))
     record = difficulty.record_for(verifier, calls=_calls(READ_B1, WATER_P1, MOVE_P9),
                                    write_tools=WRITE_TOOLS, status_row={"references": 3},
@@ -76,6 +76,9 @@ def test_a_record_counts_the_writes_the_tools_the_paths_and_the_questions_of_one
     assert record["second_paths"] == 2, "three References are the Reference and two other paths"
     assert record["held_out_solve_rate"] == 0.75
     assert record["bucket"] == "w1t3+p2+"
+    assert record["partial_band"] == "none", "no partial number, no band"
+    banded = difficulty.record_for(verifier, calls=[], partial_completion=0.5)
+    assert banded["partial_completion"] == 0.5 and banded["partial_band"] == "p2"
     single = difficulty.record_for(_verifier(_write_atom("w0")), calls=_calls(WATER_P1),
                                    write_tools=WRITE_TOOLS, status_row={"references": 1})
     assert single["branching_depth"] == 0, "a single call path has no rewrite"
