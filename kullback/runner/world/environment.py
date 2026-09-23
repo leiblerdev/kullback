@@ -159,9 +159,12 @@ class BuiltEnvironment:
         start = head + 1 if head >= 0 else found
         return model_path.read_text(encoding="utf-8") + "\n\n" + tools_text[start:]
 
-    def overlay(self, task_id: str) -> tuple[Any, dict]:
-        """The Task's overlay and its row values (D74)."""
-        return loading.load_overlay(self.root, task_id)
+    def overlay(self, task_id: str, trace_id: Optional[str] = None) -> tuple[Any, dict]:
+        """The Task's overlay and its row values (D74), on one Run's own layer when named (D213).
+
+        Without a Trace, or with one the Task has no layer for, the Reference Run's layer is served.
+        """
+        return loading.load_overlay(self.root, task_id, trace_id)
 
     def rules(self, task: Task) -> Any:
         """The Simulated user's rules for the Task, or None where the directory has none.

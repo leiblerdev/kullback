@@ -21,6 +21,15 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from kullback.agent.tools import AgentTool
 from kullback.builder import env_files, world_tools
+from kullback.builder.replay_evidence import (
+    HOLDOUT_ANSWERS_FILE,
+    REPLAYS_FILE,
+    HeldOutRuns,
+    holdout_answers,
+)
+from kullback.gates.fidelity import reference_replay_gate
+from kullback.gates.hook import ruling_line
+from kullback.gates.ledger import GateLedger
 from kullback.gates.trust import trusted_gate
 from kullback.runner import tool as runner_tool
 from kullback.runner.records import read_json, write_json
@@ -111,24 +120,53 @@ class ReplayRow(BaseModel):
     ours: str = ""
 
 
+class ReplayTrace(BaseModel):
+    """One Trace of the Task replayed: whose it is and how far it played back."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    trace_id: str = ""
+    reference: bool = False
+    held_out: bool = False
+    confirmed: bool = False
+    fidelity: float = 0.0
+    differing: int = 0
+    calls: int = 0
+
+
 class ReplayResult(BaseModel):
-    """One Task replayed: the per-call rows and the fidelity they compose."""
+    """One Task replayed over every Trace: a line per Trace, the reference's per-call rows."""
 
     summary: str = ""
     task_id: str = ""
     fidelity: float = 0.0
+    traces: list[ReplayTrace] = Field(default_factory=list)
     rows: list[ReplayRow] = Field(default_factory=list)
     total: int = 0
+    rulings: list[dict] = Field(default_factory=list, description="One record per ruling in the "
+                                "shape attach_ruling uses: name, accepted, line, rows.")
 
 
 def _render_replay(result: ReplayResult) -> str:
-    shown = [f"{row.call_id} {row.tool}: recorded {row.recorded} against ours {row.ours} "
-             f"[{row.first_differing_column or 'agrees'}]" for row in result.rows[:ROWS_SHOWN]]
+    lines = [result.summary]
+    for trace in result.traces:
+        grain = "reference" if trace.reference else "held out" if trace.held_out else "seed"
+        lines.append(f"trace {trace.trace_id} ({grain}): fidelity {trace.fidelity:.4f}, "
+                     f"{trace.differing} differing of {trace.calls} calls")
+    lines += [f"{row.call_id} {row.tool}: recorded {row.recorded} against ours {row.ours} "
+              f"[{row.first_differing_column or 'agrees'}]" for row in result.rows[:ROWS_SHOWN]]
     rest = result.total - len(result.rows[:ROWS_SHOWN])
     if rest > 0:
-        shown.append(f"and {rest} more of {result.total}")
-    shown.append(f"fidelity: {result.fidelity:.4f} over {result.total} recorded calls")
-    return "\n".join([result.summary, *shown])
+        lines.append(f"and {rest} more of {result.total}")
+    lines.append(f"fidelity: {result.fidelity:.4f} over {result.total} recorded calls")
+    lines += [ruling["line"] for ruling in result.rulings]
+    return "\n".join(lines)
+
+
+def _ruling_record(ruling: Any) -> dict:
+    """One ruling in the shape attach_ruling uses: name, accepted, line, rows."""
+    return {"name": ruling.stage, "accepted": bool(ruling.passed), "line": ruling_line(ruling),
+            "rows": [dict(row) for row in (getattr(ruling, "rows", None) or [])]}
 
 
 def fidelity_index(replays: Any) -> dict[str, Any]:
@@ -447,25 +485,36 @@ def domain_tools(*, workdir: Any, model: Any = None,
 
 
     async def replay(args: ReplayArgs) -> ReplayResult:
-        report = runner_tool.replay(root, args.task_id, workdir=root)
-        replays = read_json(root / "replays.json", None) or {}
+        reports = runner_tool.replay_all(root, args.task_id, workdir=root)
+        if not reports:
+            raise ValueError(f"task {args.task_id} holds no recorded Trace to replay")
+        replays = read_json(root / REPLAYS_FILE, None) or {}
         if not isinstance(replays, dict):
             replays = {}
-        task_rows = replays.get(args.task_id)
-        if not isinstance(task_rows, dict):
-            task_rows = {}
-        task_rows[report.trace_id] = report.as_dict()
-        replays[args.task_id] = task_rows
-        write_json(root / "replays.json", replays)
+        # Every Trace of the Task was replayed just now, so the Task's rows are replaced whole.
+        replays[args.task_id] = {report.trace_id: report.as_dict() for report in reports}
+        write_json(root / REPLAYS_FILE, replays)
         write_json(root / "tool_fidelity.json", fidelity_index(replays))
+        write_json(root / HOLDOUT_ANSWERS_FILE, holdout_answers(replays, HeldOutRuns.of(root)))
+        # D108 section 6: a Task none of whose Traces replay to their End state is named.
+        ruling = GateLedger(root).record("replay_reference", reference_replay_gate(replays))
+        reference = reports[0]
         rows = [ReplayRow(call_id=str(call.call_id or ""), tool=str(call.tool),
                           verdict=str(call.verdict),
                           first_differing_column=call.first_differing_column,
                           recorded=str(call.recorded), ours=str(call.ours))
-                for call in report.calls]
+                for call in reference.calls]
+        traces = [ReplayTrace(trace_id=report.trace_id, reference=report.reference,
+                              held_out=report.held_out,
+                              confirmed=report.confirmed, fidelity=report.fidelity,
+                              differing=sum(1 for call in report.calls if call.verdict not in AGREES),
+                              calls=len(report.calls))
+                  for report in reports]
         return ReplayResult(
-            summary=f"replay of task {args.task_id}: {report.fidelity:.4f} fidelity",
-            task_id=args.task_id, fidelity=report.fidelity, rows=rows, total=len(rows))
+            summary=(f"replay of task {args.task_id} over {len(reports)} traces: reference "
+                     f"{reference.trace_id} at {reference.fidelity:.4f} fidelity"),
+            task_id=args.task_id, fidelity=reference.fidelity, traces=traces, rows=rows,
+            total=len(rows), rulings=[_ruling_record(ruling)])
 
     async def run(args: RunArgs) -> RunResult:
         if model is None:
@@ -493,7 +542,8 @@ def domain_tools(*, workdir: Any, model: Any = None,
                   DeriveArgs, DeriveResult, derive, render=_render_derive),
         AgentTool("grow", "Grow one table with synthetic rows, never in a trusted Task.",
                   GrowArgs, GrowResult, grow, render=_render_grow),
-        AgentTool("replay", "Replay one Task's recorded calls through the built tools, call by call.",
+        AgentTool("replay", "Replay every recorded Trace of one Task through the built tools, "
+                  "call by call.",
                   ReplayArgs, ReplayResult, replay, render=_render_replay),
         AgentTool("run", "Play fresh Runs of one Task through the runner and report each one.",
                   RunArgs, RunResult, run, render=_render_run),

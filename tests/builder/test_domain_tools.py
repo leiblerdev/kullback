@@ -7,7 +7,7 @@ import json
 
 from kullback.ai.provider import TestModel
 from kullback.builder import domain_tools as domain_tools_mod
-from kullback.runner.records import RawPtr, ToolCall, Trace, Turn
+from kullback.runner.records import RawPtr, ToolCall, Trace, Turn, write_json
 from tests.builder.session_fixtures import reply
 from tests.episode.invented import write_env
 
@@ -175,6 +175,70 @@ def test_replay_writes_replays_and_fidelity_and_replaces_on_repeat(tmp_path):
     assert not second.is_error, second.content
     again = json.loads((root / "replays.json").read_text(encoding="utf-8"))
     assert list(again["widget_task"]) == ["rec1"]
+
+
+def _with_held_out_run(root):
+    """A second Run of the widget Task that only looks w1 up, held out by the anchor."""
+    turns = [
+        Turn(idx=0, role="assistant", content="Hi! How can I help?", raw_ptr=PTR),
+        Turn(idx=1, role="user", content="What label does widget w1 carry?", raw_ptr=PTR),
+        Turn(idx=2, role="assistant", content=None, tool_call_ids=["h1"], raw_ptr=PTR),
+        Turn(idx=3, role="tool", content='{"widget_id": "w1", "label": "plain"}',
+             tool_call_ids=["h1"], raw_ptr=PTR),
+        Turn(idx=4, role="assistant", content="It carries plain.", raw_ptr=PTR),
+        Turn(idx=5, role="user", content="Thanks.", raw_ptr=PTR),
+    ]
+    calls = [ToolCall(id="h1", name="describe_widget", args={"widget_id": "w1"},
+                      result={"widget_id": "w1", "label": "plain"}, raw_ptr=PTR, trace_id="rec2")]
+    trace = Trace(trace_id="rec2", raw_hash="h" * 64, ingest_version="1", source="test",
+                  turns=turns, tool_calls=calls, raw_ptr=PTR)
+    write_json(root / "traces" / "rec2.json", trace.model_dump(mode="json", by_alias=True))
+    write_json(root / "tasks" / "widget_task.json",
+               {"id": "widget_task", "run_ids": ["rec1", "rec2"],
+                "intent": "give widget w1 the label striped"})
+    write_json(root / "anchor.json", {"held_out": {"widget_task": ["rec2"]}})
+    return root
+
+
+def test_replay_writes_every_traces_row_and_the_holdout_answers(tmp_path):
+    root = _with_held_out_run(_workdir(tmp_path))
+    tools = {tool.name: tool for tool in domain_tools_mod.domain_tools(workdir=root)}
+    result = _run(tools["replay"], {"task_id": "widget_task"})
+    assert not result.is_error, result.content
+    stored = json.loads((root / "replays.json").read_text(encoding="utf-8"))
+    assert sorted(stored["widget_task"]) == ["rec1", "rec2"]
+    assert stored["widget_task"]["rec2"]["held_out"] is True
+    fidelity = json.loads((root / "tool_fidelity.json").read_text(encoding="utf-8"))
+    assert fidelity["tools"]["describe_widget"]["calls"] == 2
+    answers = json.loads((root / "holdout_answers.json").read_text(encoding="utf-8"))
+    assert set(answers) == {"totals", "columns", "tasks", "tools"}
+    assert "trace rec1 (reference): fidelity 1.0000, 0 differing of 2 calls" in result.content
+    assert "trace rec2 (held out): fidelity 1.0000, 0 differing of 1 calls" in result.content
+    assert [row["call_id"] for row in result.details["rows"]] == ["c1", "c2"]
+
+
+def test_replay_attaches_the_reference_replay_ruling(tmp_path):
+    root = _workdir(tmp_path)
+    tools = {tool.name: tool for tool in domain_tools_mod.domain_tools(workdir=root)}
+    result = _run(tools["replay"], {"task_id": "widget_task"})
+    (ruling,) = result.details["rulings"]
+    assert (ruling["name"], ruling["accepted"]) == ("replay_reference", True)
+    assert ruling["line"] in result.content
+    ledger = json.loads((root / "gates.json").read_text(encoding="utf-8"))
+    assert [row["stage"] for row in ledger] == ["replay_reference"]
+
+
+def test_a_task_whose_traces_all_fail_is_named_by_the_ruling(tmp_path):
+    root = _workdir(tmp_path)
+    path = root / "env" / "tools.py"
+    path.write_text(path.read_text(encoding="utf-8").replace("row.label = label", 'row.label = "smudged"')
+                    .replace('return {"widget_id": widget_id, "label": label}',
+                             'return {"widget_id": widget_id, "label": "smudged"}'), encoding="utf-8")
+    tools = {tool.name: tool for tool in domain_tools_mod.domain_tools(workdir=root)}
+    result = _run(tools["replay"], {"task_id": "widget_task"})
+    (ruling,) = result.details["rulings"]
+    assert not ruling["accepted"]
+    assert "replay_reference fail (task widget_task:" in ruling["line"]
 
 
 def test_fidelity_index_counts_both_grains_with_worded_reasons():
