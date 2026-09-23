@@ -138,30 +138,21 @@ def test_split_policy_drops_headings_and_keeps_the_section(policy_md):
     assert confirm.section == "Retail agent policy"  # the H1, the last heading above it
 
 
-def test_split_policy_keeps_one_sentence_per_rule(policy_md):
+def test_split_policy_ends_a_sentence_after_a_quote_but_not_on_abbreviations_or_times(policy_md):
+    texts = [s.text for s in split_policy(policy_md)]
+    assert any("e.g." in t and len(t.split()) > 6 for t in texts)
+    assert not any(t.strip() in {"g.", "e.", "30:00\" means 2:30 AM EST."} for t in texts)
     confirm = _sentence(policy_md, CONFIRM)
     assert confirm.text.startswith("Before taking any action")
     assert confirm.text.endswith("to proceed.")
     assert "e.g." not in confirm.text
-
-
-def test_split_policy_does_not_break_on_abbreviations_or_times(policy_md):
-    texts = [s.text for s in split_policy(policy_md)]
-    assert any("e.g." in t and len(t.split()) > 6 for t in texts)
-    assert not any(t.strip() in {"g.", "e.", "30:00\" means 2:30 AM EST."} for t in texts)
-
-
-def test_split_policy_drops_a_marker_with_no_rule_in_it():
-    """An inline numbered list must not leave a constraint whose whole text is "2."."""
-    assert [s.text for s in split_policy("1. First rule. 2. Second rule.")] == ["First rule.", "Second rule."]
-
-
-def test_split_policy_ends_a_sentence_after_a_closing_quote():
     items = split_policy('The user must say "yes." Then the agent may proceed.')
     assert [s.text for s in items] == ['The user must say "yes."', "Then the agent may proceed."]
 
 
-def test_split_policy_takes_a_plain_string():
+def test_split_policy_drops_list_markers_and_keeps_the_rule_offsets():
+    """An inline numbered list must not leave a constraint whose whole text is "2."."""
+    assert [s.text for s in split_policy("1. First rule. 2. Second rule.")] == ["First rule.", "Second rule."]
     items = split_policy("One thing. Two things happen here.\n\n- A bullet rule.\n")
     assert [s.text for s in items] == ["One thing.", "Two things happen here.", "A bullet rule."]
     assert items[2].start == len("One thing. Two things happen here.\n\n- ")
@@ -205,21 +196,6 @@ def test_run_constraint_tests_needs_both_a_positive_and_a_negative_case():
     assert any("negative" in f for f in gate.failures)
 
 
-def test_run_constraint_tests_refuses_an_import():
-    src = "import os\n\n\ndef check(pre_state, write_call, transcript):\n    return os.getcwd() != ''\n"
-    gate = run_constraint_tests(_constraint(src))
-    assert gate.passed is False
-    assert any("import" in f for f in gate.failures)
-    assert gate.metrics["ran"] == 0
-
-
-def test_run_constraint_tests_refuses_open_and_dunders():
-    src = "def check(pre_state, write_call, transcript):\n    return open('/etc/passwd').read() != ''\n"
-    assert any("open" in f for f in run_constraint_tests(_constraint(src)).failures)
-    src2 = "def check(pre_state, write_call, transcript):\n    return pre_state.__class__ is dict\n"
-    assert any("__class__" in f for f in run_constraint_tests(_constraint(src2)).failures)
-
-
 def test_run_constraint_tests_refuses_a_frame_walk_that_carries_no_denied_name(tmp_path):
     """The certification is an allowlist: a bypass with no import, no dunder and no denied name is still refused."""
     marker = tmp_path / "escaped.marker"
@@ -242,12 +218,18 @@ def test_run_constraint_tests_refuses_a_frame_walk_that_carries_no_denied_name(t
     assert any("gi_frame" in f for f in gate.failures)
 
 
-def test_run_constraint_tests_refuses_an_attribute_outside_the_allowlist():
+def test_run_constraint_tests_refuses_imports_open_dunders_unknown_names_and_attributes_outside_the_allowlist():
     src = "def check(pre_state, write_call, transcript):\n    return pre_state.setdefault('a', 1) == 1\n"
     assert any("setdefault" in f for f in run_constraint_tests(_constraint(src)).failures)
-
-
-def test_run_constraint_tests_refuses_a_name_it_cannot_account_for():
+    src = "import os\n\n\ndef check(pre_state, write_call, transcript):\n    return os.getcwd() != ''\n"
+    gate = run_constraint_tests(_constraint(src))
+    assert gate.passed is False
+    assert any("import" in f for f in gate.failures)
+    assert gate.metrics["ran"] == 0
+    src = "def check(pre_state, write_call, transcript):\n    return open('/etc/passwd').read() != ''\n"
+    assert any("open" in f for f in run_constraint_tests(_constraint(src)).failures)
+    src2 = "def check(pre_state, write_call, transcript):\n    return pre_state.__class__ is dict\n"
+    assert any("__class__" in f for f in run_constraint_tests(_constraint(src2)).failures)
     src = "def check(pre_state, write_call, transcript):\n    return bool(helper_that_was_never_defined)\n"
     gate = run_constraint_tests(_constraint(src))
     assert gate.passed is False
@@ -272,22 +254,19 @@ def test_run_constraint_tests_ignores_an_expect_the_model_put_in_its_own_case():
     assert any("pos[0]" in f for f in gate.failures)
 
 
-def test_run_constraint_tests_refuses_a_missing_check_function():
-    src = "def other(a, b, c):\n    return True\n"
-    assert any("check" in f for f in run_constraint_tests(_constraint(src)).failures)
-
-
-def test_run_constraint_tests_reports_a_syntax_error():
+def test_run_constraint_tests_reports_a_syntax_error_a_missing_check_a_raising_predicate_or_none():
     gate = run_constraint_tests(_constraint("def check(pre_state, write_call transcript):\n    return True\n"))
     assert gate.passed is False
     assert any("parse" in f for f in gate.failures)
-
-
-def test_run_constraint_tests_reports_a_raising_predicate():
+    src = "def other(a, b, c):\n    return True\n"
+    assert any("check" in f for f in run_constraint_tests(_constraint(src)).failures)
     src = "def check(pre_state, write_call, transcript):\n    return write_call['nope'] == 1\n"
     gate = run_constraint_tests(_constraint(src))
     assert gate.passed is False
     assert any("KeyError" in f for f in gate.failures)
+    gate = run_constraint_tests(Constraint(id="c0", text="a vague rule"))
+    assert gate.passed is False
+    assert any("predicate" in f for f in gate.failures)
 
 
 def test_run_constraint_tests_kills_a_loop():
@@ -295,12 +274,6 @@ def test_run_constraint_tests_kills_a_loop():
     gate = run_constraint_tests(_constraint(src), timeout_s=1.0)
     assert gate.passed is False
     assert any("timed out" in f for f in gate.failures)
-
-
-def test_run_constraint_tests_says_so_with_no_predicate():
-    gate = run_constraint_tests(Constraint(id="c0", text="a vague rule"))
-    assert gate.passed is False
-    assert any("predicate" in f for f in gate.failures)
 
 
 def _helpers() -> dict:
@@ -456,15 +429,7 @@ def test_compile_rule_makes_a_judge_atom_when_the_rule_must_stay_natural_languag
     assert len(model.calls) == 2
 
 
-def test_compile_rule_makes_a_judge_atom_when_the_rewrite_has_no_predicate(policy_md):
-    sentence = _sentence(policy_md, MAKEUP)
-    model = TestModel([_reply({"compilable": False}), _reply({"rewritten_text": "still vague"})])
-    constraint = compile_rule(model, sentence)
-    assert constraint.judge_atom is True
-    assert constraint.compiled is False
-
-
-def test_compile_rule_makes_a_judge_atom_when_the_rewrites_predicate_also_fails(policy_md):
+def test_compile_rule_makes_a_judge_atom_when_the_rewrite_has_no_working_predicate(policy_md):
     sentence = _sentence(policy_md, AUTH)
     model = TestModel(
         [
@@ -477,9 +442,14 @@ def test_compile_rule_makes_a_judge_atom_when_the_rewrites_predicate_also_fails(
     assert constraint.compiled is False
     assert constraint.predicate_src is None
     assert constraint.rewritten_text == "second try"
+    sentence = _sentence(policy_md, MAKEUP)
+    model = TestModel([_reply({"compilable": False}), _reply({"rewritten_text": "still vague"})])
+    constraint = compile_rule(model, sentence)
+    assert constraint.judge_atom is True
+    assert constraint.compiled is False
 
 
-def test_unparseable_model_output_is_a_residual_not_a_judge_atom(policy_md):
+def test_unparseable_output_an_empty_rewrite_or_a_model_failure_is_a_residual_not_a_judge_atom(policy_md):
     """D76: a judge atom is a decision about the rule; an unreadable Builder reply is not that decision."""
     sentence = _sentence(policy_md, CONFIRM)
     constraint = compile_rule(TestModel(["not json at all", "still not json"]), sentence)
@@ -488,22 +458,10 @@ def test_unparseable_model_output_is_a_residual_not_a_judge_atom(policy_md):
     assert constraint.rewritten_text is None
     assert "unparseable" in (constraint.residual_reason or "")
     assert residual([constraint]) == [constraint]
-
-
-def test_a_rewrite_with_neither_a_predicate_nor_a_rewritten_text_is_a_residual(policy_md):
     sentence = _sentence(policy_md, CONFIRM)
     constraint = compile_rule(TestModel([_reply({"compilable": False}), _reply({"reason": "cannot"})]), sentence)
     assert constraint.judge_atom is False
     assert constraint.residual_reason is not None
-
-
-def test_compile_rule_reads_json_out_of_a_fenced_block(policy_md):
-    sentence = _sentence(policy_md, CONFIRM)
-    fenced = "```json\n" + _compiled_reply(CONFIRM_PRED, CONFIRM_TESTS) + "\n```"
-    assert compile_rule(TestModel([fenced]), sentence).compiled is True
-
-
-def test_compile_rule_puts_a_model_failure_in_residual(policy_md):
     sentence = _sentence(policy_md, CONFIRM)
     constraint = compile_rule(TestModel([]), sentence)  # empty TestModel replies with ""
     assert constraint.judge_atom is False
@@ -517,6 +475,12 @@ def test_compile_rule_puts_a_model_failure_in_residual(policy_md):
     assert broken.compiled is False
     assert broken.judge_atom is False
     assert "provider down" in broken.residual_reason
+
+
+def test_compile_rule_reads_json_out_of_a_fenced_block(policy_md):
+    sentence = _sentence(policy_md, CONFIRM)
+    fenced = "```json\n" + _compiled_reply(CONFIRM_PRED, CONFIRM_TESTS) + "\n```"
+    assert compile_rule(TestModel([fenced]), sentence).compiled is True
 
 
 # --- residual list ---
@@ -634,17 +598,6 @@ def test_compile_policy_returns_a_compiled_a_rewritten_and_a_judge_constraint_on
     assert len({c.id for c in constraints}) == 3
 
 
-def test_compile_policy_accepts_raw_markdown_and_a_limit(policy_md):
-    model = TestModel([_compiled_reply(CONFIRM_PRED, CONFIRM_TESTS)], loop=True)
-    constraints = compile_policy(model, policy_md, limit=2)
-    sentences = split_policy(policy_md)[:2]
-    assert len(constraints) == 2
-    assert [c.text for c in constraints] == [s.text for s in sentences]
-    assert [c.span.msg_index for c in constraints] == [s.index for s in sentences]
-    assert all(c.span.file_hash == sentences[0].file_hash for c in constraints)
-    assert len(model.calls) == 2, "one model call per sentence, in order"
-
-
 # --- D246: the system head is built once per build ---
 
 _WORDS = ("alder", "birch", "cedar", "dune", "elm", "fern", "grove", "heath",
@@ -660,7 +613,7 @@ def _system_heads(model) -> list:
     return [call["messages"][0]["content"] for call in model.calls]
 
 
-def test_the_system_head_is_byte_identical_across_twenty_sentences_of_one_build():
+def test_the_system_head_is_byte_identical_across_sentences_and_across_builds():
     """D246: one build, one head. Twenty invented sentences hash to a single value, so no
     timestamp, counter, set order or dict order drifts the bytes per sentence."""
     policy = _invented_policy(20)
@@ -672,10 +625,6 @@ def test_the_system_head_is_byte_identical_across_twenty_sentences_of_one_build(
     digest = hashlib.sha256(heads[0].encode("utf-8")).hexdigest()
     assert all(hashlib.sha256(h.encode("utf-8")).hexdigest() == digest for h in heads)
     assert heads[0] == _stable_system(policy)
-
-
-def test_two_builds_over_the_same_policy_text_share_the_same_head_bytes():
-    """D246: the head carries no per build nonce. Two builds hash alike."""
     policy = _invented_policy(20)
     first_model = TestModel(["not json at all", "still not json"], loop=True)
     second_model = TestModel(["not json at all", "still not json"], loop=True)

@@ -24,16 +24,12 @@ from kullback.builder import lesson as lesson_mod
 from kullback.builder import mine, synth
 from kullback.builder.body_skill import BODY_SKILL
 from kullback.builder.mine import is_assistant_call, is_scalar_result
-
-# The failure grouping D181's rule 6 gives every other hint; repair.py imports nothing of this
-# module, so the two sit in one layer with no cycle between them.
-from kullback.builder.repair import SHAPES_SHOWN, failure_shapes
 from kullback.builder.sandbox import (
     DB_CLASS,
     Sandbox,
     SandboxError,
     args_text,
-    gate_parses,
+    context_feed_key,
     id_field,
     id_pattern_for,
     key_fields,
@@ -41,6 +37,7 @@ from kullback.builder.sandbox import (
     match_table,
     parse_result,
     partial_key,
+    recorded_call_parts,
     row_key,
     run_gates,
 )
@@ -50,15 +47,8 @@ from kullback.builder.sandbox import (
 from kullback.builder.sandbox import gate_deterministic as gate_deterministic
 from kullback.builder.sandbox import gate_executes_on_s0 as gate_executes_on_s0
 from kullback.builder.sandbox import gate_non_trivial as gate_non_trivial
+from kullback.builder.sandbox import gate_parses as gate_parses
 from kullback.builder.sandbox import gate_replay_fidelity as gate_replay_fidelity
-from kullback.episode.loading import (
-    OVERLAY_DIR,
-    _with_run_scope,
-    merge_overlays,
-)
-from kullback.episode.loading import OverlayConflict as OverlayConflict
-from kullback.episode.loading import load_overlay as load_overlay
-from kullback.episode.loading import load_toolkit as load_toolkit
 from kullback.gates.confinement import ALLOWED_IMPORTS, DENIED_BUILTINS, TOOLS_CLASS
 from kullback.gates.confinement import source_confinement as source_confinement
 from kullback.gates.tool_runs import body_replay_fidelity_gate
@@ -91,6 +81,14 @@ from kullback.runner.records import (
     content_hash,
 )
 from kullback.runner.route import call_fingerprint  # D197: one fingerprint, written and served alike
+from kullback.runner.world.loading import (
+    OVERLAY_DIR,
+    _with_run_scope,
+    merge_overlays,
+)
+from kullback.runner.world.loading import OverlayConflict as OverlayConflict
+from kullback.runner.world.loading import load_overlay as load_overlay
+from kullback.runner.world.loading import load_toolkit as load_toolkit
 
 DB_FILE = "db.json"
 PINS_FILE = "overlay_pins.json"  # what the Starting-state pinner pinned per Task, and what it could not
@@ -503,12 +501,14 @@ def _observations(traces: list[Trace], schema: EntitySchema, write_tools: set[st
             # A result that states no row of its own is still about a row when the call named one.
             homed = None if rows else home_partial_result(schema, call.name, result, call.args, read_result)
             if homed and homed.row:
-                rows = [(homed.table, homed.row_id, homed.row, 0)]
+                rows = [(homed.table, homed.row_id,
+                         complete_key_columns(schema, homed.table, homed.row_id, homed.row), 0)]
             elif homed is not None and stats is not None:
                 stats["unread_partial_results"] = stats.get("unread_partial_results", 0) + 1
             fingerprint = call_fingerprint(call.name, call.args or {})
             for table, row_id, row, depth in rows:
-                out.append(_Obs(table, row_id, row, trace.trace_id, (trace_index, call_index),
+                out.append(_Obs(table, row_id, complete_key_columns(schema, table, row_id, row),
+                                trace.trace_id, (trace_index, call_index),
                                 is_write or row_id in written, depth, bool(homed and homed.row),
                                 fingerprint, str(call.id or ""), is_write, call.name))
             if is_write:
@@ -868,6 +868,7 @@ def build_starting_state(
         for later in sorted((o for o in pool if o.partial and o.order > chosen.order),
                             key=lambda o: o.order):
             row.update(later.row)
+        row = complete_key_columns(schema, table, row_id, row)
         if not clean:
             assumptions.append(f"{table} row {row_id} was only ever seen after a write; "
                                "its post-state is kept as the starting value")
@@ -1065,6 +1066,31 @@ def named_rows(schema: EntitySchema, args: dict) -> set[tuple[str, str]]:
     return out
 
 
+def key_part_values(schema: EntitySchema, table: str, row_id: str) -> dict[str, str]:
+    """The key fields of a composed row id, as column to the value the id carries."""
+    fields = key_fields(schema, table)
+    if len(fields) < 2:
+        return {}
+    parts = str(row_id).split(key_separator(schema))
+    if len(parts) != len(fields):
+        return {}
+    return dict(zip(fields, parts, strict=False))
+
+
+def complete_key_columns(schema: EntitySchema, table: str, row_id: str, row: dict) -> dict:
+    """One row homed under a composed id with the id's own parts as its key columns.
+
+    A key part is the row's identity, so a row filed under a composed id carries the
+    values the id is composed of: a part the sighting left null or left out is filled
+    from the id, and what the sighting actually stated stands untouched.
+    """
+    filled = dict(row) if isinstance(row, dict) else {}
+    for name, value in key_part_values(schema, table, row_id).items():
+        if filled.get(name) is None or filled.get(name) == "":
+            filled[name] = value
+    return filled
+
+
 def add_synthetic_rows(db: dict, schema: EntitySchema, traces: Iterable[Trace]) -> list[tuple[str, str]]:
     """Fill ids the traces referenced but never showed, shaped from the rows they did show (D40, D41).
 
@@ -1108,7 +1134,7 @@ def complete_partial_rows(db: dict, schema: EntitySchema, in_part: Iterable[tupl
                   if (table, key) not in mentioned and isinstance(other, dict)]
         if not isinstance(row, dict) or not stated:
             continue
-        filled = dict(_modal_row(stated), **row)
+        filled = complete_key_columns(schema, table, row_id, dict(_modal_row(stated), **row))
         if filled != row:
             rows[row_id] = filled
             completed.append((table, row_id))
@@ -1230,6 +1256,7 @@ def _build_overlays(observations: list[_Obs], tasks: Iterable[Task], workdir: Pa
                     if inverter is not None else {})
         reference = reference_run_of(task)
         scoped = _run_scoped_rows(task, rows, recorded, reference, schema)
+        _complete_overlay_keys(schema, scoped)
         for key in sorted(scoped.disagreeing):
             table, row_id = key
             classes = sorted({_column_class(schema, table, name) for name in scoped.disagreeing[key]})
@@ -1354,6 +1381,22 @@ def _run_scoped_rows(task: Task, rows: dict, recorded: dict, reference: str,
                                                                      if schema is not None else ()):
             splits.add(key)
     return _RunScoped(agreed=agreed, per_run=per_run, disagreeing=disagreeing, split_candidates=splits)
+
+
+def _complete_overlay_keys(schema: Optional[EntitySchema], scoped: _RunScoped) -> None:
+    """Every overlay row homed under a composed id with the id's own key parts.
+
+    The rows arrive from sightings that already carry their key parts; the inversion
+    step in between can add a row no sighting of the Task stated, so the fill runs
+    here, where the overlay versions are settled, rather than trusting each source.
+    """
+    if schema is None:
+        return
+    for key in scoped.agreed:
+        scoped.agreed[key] = complete_key_columns(schema, key[0], key[1], scoped.agreed[key])
+    for per in scoped.per_run.values():
+        for key in per:
+            per[key] = complete_key_columns(schema, key[0], key[1], per[key])
 
 
 def _key_class(schema: Optional[EntitySchema], table: str) -> str:
@@ -1867,6 +1910,340 @@ except ImportError:
 '''
 
 
+_CONTEXT_SHIM = '''class ToolContext:
+    """The call's time, randomness and new ids, behind one interface.
+
+    Every tool body reaches this as self.ctx, so no body signature changes. Three feeds
+    sit behind the one interface, and a body cannot tell which feed answered. At replay
+    and in the build gates the values the recording witnessed for the call are fed in
+    (the new row's id the recording shows, the time the recording shows). Off the
+    recorded path the values are drawn from the Run's seed, so the same seed draws the
+    same Run. Where a recorded call witnessed no value, the seeded feed answers and the
+    serving is counted as seeded.
+
+    The draws are pure functions of the seed and the step: each serving call advances
+    the step once, whatever feed answered, so the step sequence of a Run never depends
+    on which feed any call landed on. now() off the path is a calendar date in 2024
+    fixed by the seed and the step, never the wall clock. random() is always seeded.
+    new_id(table) off the path mints an id shaped like the ids the table already
+    holds (a numeric sequence continues, a fixed shape draws per position from the
+    observed alphabet, a table with no rows mints under the prefix new_), and an id
+    that collides with a row the table holds is drawn again.
+    """
+
+    _MASK64 = (1 << 64) - 1
+    _MIX1 = 0x9E3779B97F4A7C15
+    _A = 0xBF58476D1CE4E5B9
+    _B = 0x94D049BB133111EB
+
+    def __init__(self, db, seed=0):
+        self._db = db
+        self._seed = int(seed) & self._MASK64
+        self._step = 0
+        self._recorded_ids = {}
+        self._id_cursors = {}
+        self._recorded_times = []
+        self._time_cursor = 0
+        self._current = None
+        self._issued = {}
+        self._served_recorded = 0
+        self._served_seeded = 0
+        self._starting_ids = self._snapshot_starting_ids()
+        self._starting_times = self._snapshot_starting_times()
+
+    def _snapshot_starting_ids(self):
+        try:
+            names = list(vars(self._db)) if hasattr(self._db, "__dict__") else []
+        except Exception:
+            names = []
+        return {str(name): self._table_keys(name) for name in names if not str(name).startswith("_")}
+
+    def _table_keys(self, table):
+        try:
+            rows = getattr(self._db, table, None)
+            keys = rows.keys() if hasattr(rows, "keys") else list(rows or [])
+        except Exception:
+            keys = []
+        return {str(k) for k in keys if k}
+
+    def _snapshot_starting_times(self):
+        """Every time-like string the world holds at reset, so a stored stamp is never fed as now.
+
+        Built once per reset, not once per call: the feed carries only what the call generated,
+        and a date the world already held is what the call found, not what it made.
+        """
+        import re
+        pattern = re.compile(r"__TIME_PATTERN__")
+        try:
+            world = self._db.model_dump()
+        except Exception:
+            return set()
+        if not isinstance(world, dict):
+            return set()
+        found: set = set()
+        seen: set = set()
+        stack = [world]
+        while stack:
+            node = stack.pop()
+            if id(node) in seen:
+                continue
+            seen.add(id(node))
+            if isinstance(node, dict):
+                stack.extend(node.values())
+            elif isinstance(node, (list, tuple, set)):
+                stack.extend(node)
+            elif isinstance(node, str):
+                if pattern.match(node.strip()):
+                    found.add(node)
+        return found
+
+    def feed_call(self, feed):
+        """Serve one recorded call's witnessed values until the next feed arrives.
+
+        New ids arrive as an ordered list per table and are handed out in order; the lists are
+        copied so serving never mutates the saved evidence. A bare string still reads as one id.
+        """
+        feed = feed or {}
+        ids: dict = {}
+        for table, values in (feed.get("new_ids") or {}).items():
+            items = list(values) if isinstance(values, (list, tuple)) else [values]
+            if items:
+                ids[str(table)] = items
+        self._current = {"now": feed.get("now"), "new_ids": ids,
+                         "created_exempt": self._created_exempt(feed)}
+        if feed.get("now_evidence") is not None:
+            self._current["now_evidence"] = feed.get("now_evidence")
+
+    def _created_exempt(self, feed):
+        """Whether a created-row feed vouches for a row the start state never held.
+
+        The unit of evidence is one id leaf, and the leaf's key decides which tables could
+        own it: a key that names one table is judged against that table only, so a loan 42
+        is new although a user 42 exists, equal values or not; a key several tables share
+        is judged against all of them together, so any of them holding the value means not
+        new. The exemption holds when at least one group is new. A created-row feed without
+        now_ids, or with a malformed one, is not exempt. Decided here, before new_id starts
+        popping the lists.
+        """
+        if feed.get("now_evidence") != "created_row":
+            return False
+        now_ids = feed.get("now_ids")
+        if not isinstance(now_ids, list) or not now_ids:
+            return False
+        for group in now_ids:
+            if not isinstance(group, dict):
+                continue
+            value = group.get("value")
+            tables = group.get("tables")
+            if value is None or not isinstance(tables, list) or not tables:
+                continue
+            if all(str(value) not in self._starting_ids.get(str(table), set())
+                   for table in tables):
+                return True
+        return False
+
+    def attach_recorded(self, recorded):
+        """Serve a whole Run's witnessed values in call order: ids per table, times in turn."""
+        recorded = recorded or {}
+        self._recorded_ids = {t: list(v) for t, v in (recorded.get("ids") or {}).items()}
+        self._recorded_times = list(recorded.get("times") or [])
+        self._id_cursors = {}
+        self._time_cursor = 0
+
+    def reseed(self, seed):
+        """Draw from this seed from here on; the step restarts with the Run."""
+        self._seed = int(seed) & self._MASK64
+        self._step = 0
+        self._issued = {}
+        self._current = None
+        self._recorded_ids = {}
+        self._id_cursors = {}
+        self._recorded_times = []
+        self._time_cursor = 0
+        self._served_recorded = 0
+        self._served_seeded = 0
+        self._starting_ids = self._snapshot_starting_ids()
+        self._starting_times = self._snapshot_starting_times()
+
+    def usage(self):
+        """How many servings each feed answered, so the caller can count the fallback."""
+        return {"recorded": self._served_recorded, "seeded": self._served_seeded}
+
+    def now(self):
+        """The call's time: the recorded time at replay, a fixed function of seed and step off it.
+
+        A witnessed time the world already held at reset is what the call found, not what it
+        made, so the seeded feed answers for it, counted as seeded. A feed the creation rule
+        evidenced, and whose new ids the start state never held, says the call made the row
+        the stamp sits in, so the reset check is skipped for it only; any other feed behaves
+        as before.
+        """
+        self._step += 1
+        witnessed = (self._current or {}).get("now")
+        created = bool((self._current or {}).get("created_exempt"))
+        if witnessed is not None and witnessed in self._starting_times and not created:
+            witnessed = None
+        if witnessed is not None:
+            self._served_recorded += 1
+            return witnessed
+        while (self._time_cursor < len(self._recorded_times)
+               and self._recorded_times[self._time_cursor] in self._starting_times):
+            self._time_cursor += 1
+        if self._time_cursor < len(self._recorded_times):
+            value = self._recorded_times[self._time_cursor]
+            self._time_cursor += 1
+            self._served_recorded += 1
+            return value
+        self._served_seeded += 1
+        return self._seeded_now()
+
+    def random(self):
+        """The call's random number in [0, 1): always seeded, never witnessed."""
+        self._step += 1
+        self._served_seeded += 1
+        return self._draw(1) / 18446744073709551616.0
+
+    def new_id(self, table):
+        """The new row's id: the recorded ids at replay in recording order, a shaped draw off it.
+
+        One recorded id is served per call; when the call's list is used up the seeded feed
+        answers, counted as seeded.
+        """
+        self._step += 1
+        current_ids = (self._current or {}).get("new_ids") or {}
+        queue = current_ids.get(table)
+        if isinstance(queue, list):
+            witnessed = queue.pop(0) if queue else None
+        else:
+            witnessed = current_ids.pop(table, None)
+        recorded = self._recorded_ids.get(table) or []
+        at = self._id_cursors.get(table, 0)
+        if witnessed is None and at < len(recorded):
+            witnessed = recorded[at]
+            self._id_cursors[table] = at + 1
+        issued = self._issued.setdefault(table, set())
+        if witnessed is not None:
+            if witnessed in issued:
+                raise ValueError("recorded tool context repeated an allocated id")
+            if str(witnessed) in self._starting_ids.get(table, set()) or str(witnessed) in self._table_keys(table):
+                raise ValueError("recorded tool context fed an id the table already holds")
+            value = witnessed
+            self._served_recorded += 1
+        else:
+            value = self._mint(table)
+            self._served_seeded += 1
+        issued.add(str(value))
+        return value
+
+    def _draw(self, salt):
+        z = (self._seed + int(salt)) & self._MASK64
+        z = (z + self._step * self._MIX1) & self._MASK64
+        z = ((z ^ (z >> 30)) * self._A) & self._MASK64
+        z = ((z ^ (z >> 27)) * self._B) & self._MASK64
+        return (z ^ (z >> 31)) & self._MASK64
+
+    def _seeded_now(self):
+        days = self._draw(2) % 366
+        secs = self._draw(3) % 86400
+        months = [31, 29, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
+        month = 0
+        while days >= months[month]:
+            days -= months[month]
+            month += 1
+        return "{:04d}-{:02d}-{:02d}T{:02d}:{:02d}:{:02d}".format(
+            2024, month + 1, days + 1, secs // 3600, (secs // 60) % 60, secs % 60)
+
+    def _mint(self, table):
+        try:
+            rows = getattr(self._db, table, None)
+            keys = [str(k) for k in (rows.keys() if hasattr(rows, "keys") else list(rows or []))]
+        except Exception:
+            keys = []
+        keys = [k for k in keys if k]
+        keyset = set(keys) | self._issued.get(table, set())
+        shape = self._shape_of(keys)
+        for attempt in range(1000):
+            candidate = self._draw_id(shape, attempt)
+            if candidate not in keyset:
+                return candidate
+        raise ValueError("tool context could not mint an id for table " + str(table))
+
+    def _shape_of(self, keys):
+        if not keys:
+            return ("free", None)
+        if all(k.isdigit() for k in keys):
+            width = max(len(k) for k in keys)
+            return ("seq", ("", max(int(k) for k in keys) + 1, width))
+        prefix = keys[0]
+        for other in keys[1:]:
+            i = 0
+            while i < len(prefix) and i < len(other) and prefix[i] == other[i]:
+                i += 1
+            prefix = prefix[:i]
+        suffixes = [k[len(prefix):] for k in keys]
+        if prefix and all(s and s.isdigit() for s in suffixes):
+            width = max(len(s) for s in suffixes)
+            return ("seq", (prefix, max(int(s) for s in suffixes) + 1, width))
+        if len({len(k) for k in keys}) == 1:
+            if not any(suffixes):
+                first, digits = keys[0], ""
+                while first and first[-1].isdigit():
+                    digits, first = first[-1] + digits, first[:-1]
+                if digits:
+                    return ("seq", (first, int(digits) + 1, len(digits)))
+                return ("pattern", ("", [self._broaden({k[i] for k in keys})
+                                             for i in range(len(keys[0]))]))
+            return ("pattern", (prefix, [self._broaden({s[i] for s in suffixes})
+                                           for i in range(len(suffixes[0]))]))
+        lengths = sorted({len(k) for k in keys})
+        by_pos = []
+        for i in range(max(len(k) for k in keys)):
+            chars = {k[i] for k in keys if len(k) > i}
+            by_pos.append(self._broaden(chars or {c for k in keys for c in k}))
+        return ("ragged", (lengths, by_pos))
+
+    def _broaden(self, chars):
+        """The observed characters widened to their class, so a draw can miss the taken rows.
+
+        A table holding two of twenty six suffix letters would otherwise mint from those two
+        alone and collide forever. The class keeps the shape (a letter stays a letter) while the
+        space grows to the alphabet the table evidently draws from.
+        """
+        chars = set(chars)
+        if chars and all(c.isdigit() for c in chars):
+            return sorted(set("0123456789"))
+        if chars and all(c.islower() for c in chars):
+            return sorted(set("abcdefghijklmnopqrstuvwxyz"))
+        if chars and all(c.isupper() for c in chars):
+            return sorted(set("ABCDEFGHIJKLMNOPQRSTUVWXYZ"))
+        if chars and all(c.isalnum() for c in chars):
+            return sorted(set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"))
+        return sorted(chars)
+
+    def _draw_id(self, shape, attempt):
+        kind, spec = shape
+        if kind == "seq":
+            prefix, start, width = spec
+            return prefix + str(start + attempt).zfill(width)
+        if kind == "pattern":
+            prefix, alphabets = spec
+            return prefix + "".join(
+                alphabets[i][self._draw(2000 + attempt * 128 + i) % len(alphabets[i])]
+                for i in range(len(alphabets)))
+        if kind == "ragged":
+            lengths, by_pos = spec
+            length = lengths[self._draw(2100 + attempt) % len(lengths)]
+            out = []
+            for i in range(length):
+                alphabet = by_pos[i] if i < len(by_pos) else by_pos[-1]
+                out.append(alphabet[self._draw(2200 + attempt * 128 + i) % len(alphabet)])
+            return "".join(out)
+        alphabet = "abcdefghijklmnopqrstuvwxyz0123456789"
+        return "new_" + "".join(
+            alphabet[self._draw(2300 + attempt * 16 + i) % len(alphabet)] for i in range(8))
+'''
+
+
 def _class_name(table: str) -> str:
     """orders -> Order, payment_methods -> PaymentMethod."""
     singular = table[:-1] if table.endswith("s") and not table.endswith("ss") else table
@@ -1998,10 +2375,10 @@ def render_tools(schema: EntitySchema, sigs: Iterable[ToolSig], bodies: dict,
         names = ", ".join([DB_CLASS] + [_class_name(t) for t in sorted(schema.tables)])
         head = ('"""Generated by the Harness from the customer\'s traces. Do not edit by hand."""\n'
                 f"from typing import Any, Optional\n\nfrom data_model import {names}\n\n")
-    parts = [head, _TOOLKIT_SHIM,
+    parts = [head, _TOOLKIT_SHIM, _CONTEXT_SHIM,
              f'\n\nclass {class_name}(_ToolKitBase):\n    """Every tool mined from the customer\'s '
              f'traces."""\n\n    def __init__(self, db) -> None:\n        super().__init__(db)\n'
-             "        self.db = db\n"]
+             "        self.db = db\n        self.ctx = ToolContext(db)\n"]
     for sig in sigs:
         body = textwrap.dedent(bodies.get(sig.name, "raise NotImplementedError")).strip("\n") or "pass"
         parts.append(f"\n    @is_tool(ToolType.{sig.kind.upper()})\n{_signature(sig)}\n{_docstring(sig)}\n"
@@ -2078,6 +2455,14 @@ _SYSTEM = ("You write the body of one Python method of a tool class rebuilt from
            "with the customer's own message where the traces show an error. Where every recorded error "
            "in this corpus begins with the same transport prefix, it is shown with that prefix removed, "
            "so write the message exactly as shown and do not put a prefix of your own in front of it.")
+
+
+_TOOL_CONTEXT_PARAGRAPH = (
+    "Time, randomness and new ids come from the tool context on self.ctx, never from an import. "
+    "Read the call's time as self.ctx.now() and draw randomness as self.ctx.random(), so Runs "
+    "under the same seed answer alike and Runs under different seeds may differ. "
+    "Mint the id of a row the call creates with self.ctx.new_id naming its table before "
+    "inserting the row under it, as in loan_id = self.ctx.new_id(\"loans\") for a new row of loans.")
 
 
 def _example_block(calls: Iterable[ToolCall], error_prefix: Optional[str] = None) -> str:
@@ -2484,7 +2869,7 @@ def _stable_system(schema: Optional[EntitySchema] = None, tool_names: Iterable[s
     """
     # The body skill (D168) sits in the prefix too: it is the same bytes for every tool of a build,
     # and it is read before the tables, which is where a body's mistakes are made.
-    parts = [_SYSTEM, BODY_SKILL, _confinement_block()]
+    parts = [_SYSTEM, BODY_SKILL, _confinement_block(), _TOOL_CONTEXT_PARAGRAPH]
     if schema is not None:
         parts.append(_schema_block(schema))
     if world_note:
@@ -2738,6 +3123,8 @@ def _build_tools_impl(schema: EntitySchema, toolsig: ToolSig, shown: list[ToolCa
     the wrong reason.
     """
     probes = {"n": 0}
+    # The recorded feed each gate call is served from, built once: a pure function of the calls.
+    ctx_feeds = recorded_call_contexts(list(shown) + list(held_out), schema)
 
     def lookup_rows(table: Optional[str] = None, key: Optional[str] = None) -> str:
         return _lookup_rows_text(schema, db, shown, call_states, table, key, holdout=holdout)
@@ -2750,7 +3137,7 @@ def _build_tools_impl(schema: EntitySchema, toolsig: ToolSig, shown: list[ToolCa
         body, sanitized = sanitize_body(body or "")
         source = module_source(schema, [toolsig], {toolsig.name: body})
         sandbox = Sandbox(source, db, workdir / f"attempt_{attempt}_probe_{probes['n']}", timeout=timeout,
-                          call_states=call_states)
+                          call_states=call_states, call_context=ctx_feeds)
         gates = run_gates(source, sandbox, shown, held_out, schema, rules,
                           probe_refusals=toolsig.kind == "write", sig=toolsig, readers=readers,
                           holdout_values=holdout_values, effect_values=effect_values,
@@ -2990,17 +3377,32 @@ _SAME_ERROR = ("\nThe same error as the attempt before, at the same call. The bo
 _UNDEFINED_NAME = re.compile(r"NameError: name '(\w+)' is not defined")
 
 
+# Time, randomness and new ids come from the tool context, never from an import, so a body
+# that reaches for one of these modules is pointed at the context instead of at an import line.
+_CONTEXT_HINTS = {"datetime": "self.ctx.now()", "time": "self.ctx.now()",
+                  "random": "self.ctx.random()", "uuid": "self.ctx.new_id(table)"}
+
+
 def _import_hints(gates: list[GateResult]) -> list[str]:
     """A NameError on a module the sandbox allows names the fix; say it instead of the traceback.
 
     transfer_to_human_agents called re.findall on the first live build and never imported re, and
     every one of its 25 replays died on the same NameError. The gate already knew which name was
     missing and that the module is on the allowed list; the retry was handing back the raw error.
+    The four time, randomness and id modules are not importable: a body naming one is pointed at
+    the tool context instead.
     """
     names = sorted({m.group(1) for gate in gates if not gate.passed
                     for failure in gate.failures for m in _UNDEFINED_NAME.finditer(failure)})
-    return [f"- `{name}` is on the allowed import list but the body never imported it; put "
-            f"`import {name}` at the top of the body" for name in names if name in ALLOWED_IMPORTS]
+    out = []
+    for name in names:
+        if name in _CONTEXT_HINTS:
+            out.append(f"- `{name}` is not importable; take it from the tool context instead, "
+                       f"as in `{_CONTEXT_HINTS[name]}`")
+        elif name in ALLOWED_IMPORTS:
+            out.append(f"- `{name}` is on the allowed import list but the body never imported it; put "
+                       f"`import {name}` at the top of the body")
+    return out
 
 
 RAISED_KINDS = ("KeyError", "AttributeError")
@@ -3248,7 +3650,8 @@ def grade_body(toolsig: ToolSig, body: str, calls: Iterable[ToolCall], schema: E
     shown, held_out = split_calls(calls)
     source = module_source(schema, [toolsig], {toolsig.name: build.body})
     sandbox = Sandbox(source, db, workdir, timeout=timeout, call_states=call_states,
-                      call_tasks=call_tasks)
+                      call_tasks=call_tasks,
+                      call_context=recorded_call_contexts(shown + held_out, schema))
     build.gates = run_gates(source, sandbox, shown, held_out, schema, rules,
                             probe_refusals=toolsig.kind == "write", sig=toolsig, readers=readers,
                             holdout_values=holdout_values, effect_values=effect_values,
@@ -3266,45 +3669,6 @@ def grade_body(toolsig: ToolSig, body: str, calls: Iterable[ToolCall], schema: E
                                         build.gates, unbeaten=unbeaten, blocked=blocked, rules=rules,
                                         readers=readers)
     return build
-
-
-KEPT_BODY_HEAD = ("This tool already has a body in this build. It was replayed under the world as it "
-                  "stands now and it failed as follows. You are not shown that body: a body in the "
-                  "prompt is a body copied, and what is wanted here is a second, better one. Write "
-                  "your own, and do not fail in these ways.")
-
-
-def kept_body_hint(gates: Iterable[GateResult], held_out: Iterable[ToolCall] = (),
-                   shapes_shown: int = SHAPES_SHOWN) -> str:
-    """What the body already kept for this tool fails at, grouped by shape; "" when it fails at nothing.
-
-    The hint goes where every other hint goes (the lesson in the first user turn), and it is grouped
-    by shape with counts for the reason D181's rule 6 gives: a gate that ruled over sixty calls
-    leaves sixty sentences, and a writer shown one of them answers one of them. The held-out split
-    is filtered the way `_failure_text` filters it, so a body the writer is asked to beat still
-    cannot hand it the calls it was never shown.
-
-    `shapes_shown` is three by default and the whole failing set once the tool has stalled (D211):
-    three shapes is a sample, and a writer that has answered the sample six times over and bought
-    nothing needs the rest of the distribution rather than the same three again.
-    """
-    hidden = [args_text(call) for call in held_out]
-    lines = []
-    for gate in gates:
-        if gate.passed:
-            continue
-        split = gate.metrics.get("split", "")
-        kept = [] if split == "held_out" else [f for f in gate.failures if not any(h in f for h in hidden)]
-        shapes = failure_shapes(kept)
-        text = "; ".join(f"{shape} ({count} call{'' if count == 1 else 's'})"
-                         for shape, count in shapes[:shapes_shown])
-        if len(shapes) > shapes_shown:
-            text += f"; {len(shapes) - shapes_shown} more shapes"
-        withheld = len(gate.failures) - len(kept)
-        if withheld:
-            text += ("; " if text else "") + f"{withheld} more on calls you were not shown"
-        lines.append(f"- gate {gate.stage}: {text}")
-    return "\n".join([KEPT_BODY_HEAD] + lines) if lines else ""
 
 
 def _evidence_label(attempt: int, gates: list[GateResult]) -> str:
@@ -3378,6 +3742,376 @@ def call_starting_states(db: dict, overlays: Iterable[TaskOverlay], values: dict
     return out
 
 
+# A result value that reads as a calendar date or a clock time, the way created_at does.
+# The text lives here alone: _TIME_RE compiles it, and the tool context shim receives the
+# same text by placeholder below, so the two can never disagree about what a time is.
+_TIME_PATTERN = (r"^\d{4}-\d{2}-\d{2}([T ]\d{2}:\d{2}(:\d{2}(\.\d{1,6})?)?"
+                 r"(Z|[+-]\d{2}:?\d{2})?)?$|^\d{2}:\d{2}(:\d{2})?$")
+_TIME_RE = re.compile(_TIME_PATTERN)
+# The generated module stays self-contained (it cannot import the builder), so the shim
+# carries the pattern as text: one placeholder, replaced once, at module level.
+_CONTEXT_SHIM = _CONTEXT_SHIM.replace("__TIME_PATTERN__", _TIME_PATTERN, 1)
+
+
+def _is_id_key(key: Any) -> bool:
+    """A result key that names a row's id, the way reservation_id does."""
+    name = str(key).lower()
+    return name == "id" or name.endswith("_id")
+
+
+def _result_leaves(result: Any) -> list[tuple[str, Any]]:
+    """Every (key, leaf) of a recorded result, in a deterministic order.
+
+    Dicts walk in sorted key order so the first time-like leaf of a result is the same one on
+    every invocation; lists walk in order, since reordering a list would hand a different call's
+    time to this one.
+    """
+    out: list[tuple[str, Any]] = []
+
+    def walk(node: Any, key: str) -> None:
+        if isinstance(node, dict):
+            for name in sorted(node, key=str):
+                walk(node[name], str(name))
+        elif isinstance(node, (list, tuple)):
+            for inner in node:
+                walk(inner, key)
+        else:
+            out.append((key, node))
+
+    walk(result, "")
+    return out
+
+
+def _tables_for_id_key(schema: EntitySchema, key: str) -> list[str]:
+    """The tables whose id column this result key names, by the miner's own rule.
+
+    The rule is `tool_runs.id_field`, the same one that reads a table's id column everywhere
+    else: a key it attributes to no table carries no recorded feed, and the seeded feed answers
+    for that table instead. A key two tables share (a user id echoed on the row it made) is
+    recorded under both, so whichever table the body asks for gets what the recording showed.
+    """
+    return sorted({table for table in (schema.tables or [])
+                   if id_field(schema, table) == key})
+
+
+def _context_id_observations(node: Any, schema: EntitySchema) -> tuple[set, set]:
+    """The id sightings of one arguments or result node: (pairs, blocked).
+
+    Pairs are (table, value) for an id key the miner's rule attributes to a table. Blocked
+    values were seen under an id key no table claims, so they suppress that value for every
+    table. A non id key of a result states no id and is ignored here: a note echoing the new
+    id must not cost the creation its recorded id.
+    """
+    pairs: set = set()
+    blocked: set = set()
+    for key, value in _result_leaves(node):
+        if not isinstance(value, str) or not _is_id_key(key):
+            continue
+        tables = _tables_for_id_key(schema, key)
+        if tables:
+            pairs.update((table, value) for table in tables)
+        else:
+            blocked.add(value)
+    return pairs, blocked
+
+
+def _context_arg_observations(args: Any, schema: EntitySchema) -> tuple[set, set]:
+    """The id sightings of one call's arguments: (pairs, blocked).
+
+    Like the result rule, except a value under a key that is not an id key also suppresses
+    that value for every table: the body was given it, so it generated nothing.
+    """
+    pairs, blocked = _context_id_observations(args, schema)
+    blocked.update(value for key, value in _result_leaves(args)
+                   if isinstance(value, str) and not _is_id_key(key))
+    return pairs, blocked
+
+
+def _context_seen_strings(args: Any, result: Any) -> set:
+    """Every string two nodes state, for the time rule's earlier observation check."""
+    return ({value for _, value in _result_leaves(args) if isinstance(value, str)}
+            | {value for _, value in _result_leaves(result) if isinstance(value, str)})
+
+
+def _context_id_tables(key: Any, value: Any, schema: EntitySchema, own_pairs: set,
+                       own_blocked: set, prior_pairs: set, prior_blocked: set) -> list:
+    """The tables one id leaf is new for, possibly none.
+
+    Seen under another table's key the value still feeds; seen under the same table's key, under
+    a key no table claims, or among the call's own argument strings, it feeds nothing.
+    """
+    if not isinstance(value, str) or not _is_id_key(key):
+        return []
+    if value in own_blocked or value in prior_blocked:
+        return []
+    return [table for table in _tables_for_id_key(schema, key)
+            if (table, value) not in own_pairs and (table, value) not in prior_pairs]
+
+
+def _context_new_ids(result: Any, schema: EntitySchema, own_pairs: set, own_blocked: set,
+                     prior_pairs: set, prior_blocked: set) -> dict:
+    """The result's new ids as an ordered list per table, in recording order, no duplicates."""
+    found: dict = {}
+    for key, value in _result_leaves(result):
+        for table in _context_id_tables(key, value, schema, own_pairs, own_blocked,
+                                        prior_pairs, prior_blocked):
+            ids = found.setdefault(table, [])
+            if value not in ids:
+                ids.append(value)
+    return found
+
+
+def _context_witnessed_time(result: Any, arg_strings: set, prior_seen: set) -> Optional[str]:
+    """The result's one surviving time-like leaf, or None when zero or several survive.
+
+    A leaf among the call's argument strings or observed earlier in the same trace is what the
+    call found, not what it made. Two differing survivors are ambiguous, so they feed nothing;
+    equal values are one value.
+    """
+    survivors: list = []
+    for _, value in _result_leaves(result):
+        if not isinstance(value, str) or not _TIME_RE.match(value.strip()):
+            continue
+        if value in arg_strings or value in prior_seen:
+            continue
+        if value not in survivors:
+            survivors.append(value)
+    if len(survivors) == 1:
+        return survivors[0]
+    return None
+
+
+def _context_creation_rows(result: Any, schema: EntitySchema, own_pairs: set,
+                           own_blocked: set, prior_pairs: set, prior_blocked: set) -> list:
+    """The row objects directly holding a filed new id, in walk order.
+
+    Only a row the call created speaks for the call's time: a time leaf in another row
+    object of the same result is not creation evidence.
+    """
+    rows: list = []
+
+    def walk(node: Any) -> None:
+        if isinstance(node, dict):
+            if any(_context_id_tables(key, value, schema, own_pairs, own_blocked,
+                                      prior_pairs, prior_blocked)
+                   for key, value in node.items()):
+                rows.append(node)
+            for value in node.values():
+                walk(value)
+        elif isinstance(node, (list, tuple)):
+            for value in node:
+                walk(value)
+
+    walk(result)
+    return rows
+
+
+def _context_creation_stamp(rows: list, arg_strings: set) -> Optional[str]:
+    """The one distinct time-like leaf across the created rows, or None.
+
+    Equal times from two row objects are one survivor; zero or several feed nothing.
+    """
+    survivors: list = []
+    for row in rows:
+        for value in row.values():
+            if not isinstance(value, str) or not _TIME_RE.match(value.strip()) \
+                    or value in arg_strings:
+                continue
+            if value not in survivors:
+                survivors.append(value)
+    if len(survivors) == 1:
+        return survivors[0]
+    return None
+
+
+def _context_stamp_ids(rows: list, stamp: str, schema: EntitySchema, own_pairs: set,
+                       own_blocked: set, prior_pairs: set, prior_blocked: set) -> list:
+    """Ownership groups of the rows that supplied the surviving time.
+
+    One group per distinct (key, value) leaf, in walk order, no duplicates: the key decides
+    which tables could own the value, so equal values under different keys are never merged.
+    """
+    groups: list = []
+    seen: set = set()
+    for row in rows:
+        if stamp not in {value for value in row.values() if isinstance(value, str)}:
+            continue
+        for key, value in row.items():
+            if not isinstance(value, str) or (key, value) in seen:
+                continue
+            tables = _context_id_tables(key, value, schema, own_pairs, own_blocked,
+                                        prior_pairs, prior_blocked)
+            if tables:
+                seen.add((key, value))
+                groups.append({"key": key, "value": value, "tables": list(tables)})
+    return groups
+
+
+def _context_feed_now(result: Any, schema: EntitySchema, state: dict, own_pairs: set,
+                      own_blocked: set, arg_strings: set, new_ids: dict) -> tuple:
+    """The call's witnessed time, how it was evidenced, and the ids behind the evidence.
+
+    Creation evidence wins: when the result shows a new id, the time candidates are the
+    time-like leaves in the same row object, and equality with an earlier sighting or a
+    stored stamp proves nothing, so only the call's own argument strings exclude a value.
+    One distinct survivor feeds with "created_row" evidence and the ids of the rows that
+    supplied it; otherwise the found-value rule decides over every time-like leaf, with
+    neither evidence nor ids.
+    """
+    if new_ids:
+        prior_pairs = state.get("pairs") or set()
+        prior_blocked = state.get("blocked") or set()
+        rows = _context_creation_rows(result, schema, own_pairs, own_blocked,
+                                      prior_pairs, prior_blocked)
+        stamp = _context_creation_stamp(rows, arg_strings)
+        if stamp is not None:
+            return stamp, "created_row", _context_stamp_ids(
+                rows, stamp, schema, own_pairs, own_blocked, prior_pairs, prior_blocked)
+    return _context_witnessed_time(result, arg_strings, state.get("seen") or set()), None, None
+
+
+def recorded_call_context(call: ToolCall, schema: EntitySchema,
+                          prior: Optional[dict] = None) -> dict:
+    """The values one recorded call witnessed for the tool context: its new ids and its time.
+
+    The new ids are the id-valued leaves of the recorded result, in recording order with no
+    duplicates, filed as an ordered list under each table the miner's id rule attributes the
+    key to. A top level list result reads like a dict result, so one call creating several rows
+    feeds every id. An id is new only for its own table: seen under another table's key it still
+    feeds, seen under the same table's key or under a key no table claims it feeds nothing. A
+    value the call's own arguments state is what the body was given, so it feeds nothing.
+    The time follows creation evidence where there is any, else the found-value rule (not
+    in the arguments, not seen earlier in the trace, not stored at reset, one survivor); a
+    feed the creation rule produced carries "now_evidence" and "now_ids" (one ownership
+    group per id leaf of the rows that supplied the time: key, value, and the tables that
+    key could own), so the context can judge the evidence leaf by leaf. A call whose result
+    carries neither leaves both empty, and the seeded feed answers, counted.
+    """
+    feed: dict = {"now": None, "new_ids": {}}
+    args = call.args if isinstance(call, ToolCall) else (call or {}).get("args") or {}
+    result = call.result if isinstance(call, ToolCall) else (call or {}).get("result")
+    if not isinstance(result, (dict, list, tuple)):
+        return feed
+    state = prior or {}
+    own_pairs, own_blocked = _context_arg_observations(args, schema)
+    feed["new_ids"] = _context_new_ids(result, schema, own_pairs, own_blocked,
+                                       state.get("pairs") or set(),
+                                       state.get("blocked") or set())
+    arg_strings = {value for _, value in _result_leaves(args) if isinstance(value, str)}
+    feed["now"], evidence, now_ids = _context_feed_now(
+        result, schema, state, own_pairs, own_blocked, arg_strings, feed["new_ids"])
+    if evidence is not None:
+        feed["now_evidence"] = evidence
+        feed["now_ids"] = now_ids
+    return feed
+
+
+def _observe_context_call(state: dict, schema: EntitySchema, args: Any, result: Any) -> None:
+    """Fold one call's arguments and result into a trace's prior observations.
+
+    Across calls only id sightings persist: (table, value) pairs, and values under an id key
+    no table claims. A plain argument string (a search query that found nothing) observed no
+    entity, so it stays local to the call that stated it and never blocks a later new id.
+    Every string still joins the seen strings for the time rule.
+    """
+    own_pairs, own_blocked = _context_id_observations(args, schema)
+    res_pairs, res_blocked = _context_id_observations(result, schema)
+    state["pairs"] |= own_pairs | res_pairs
+    state["blocked"] |= own_blocked | res_blocked
+    state["seen"] |= _context_seen_strings(args, result)
+
+
+def recorded_call_contexts(calls: Iterable[ToolCall], schema: EntitySchema) -> dict[tuple, dict]:
+    """One recorded feed per call, keyed by the call's feed key (trace, position, id).
+
+    Two calls sharing a whole key cannot be told apart: neither is fed, and the seeded feed
+    answers both, counted as seeded. The trace's prior observations still fold both calls in.
+    """
+    calls = sorted(list(calls), key=context_feed_key)
+    feeds: dict[tuple, dict] = {}
+    seen: set = set()
+    dropped: set = set()
+    observed: dict[Any, dict] = {}
+    for call in calls:
+        key = context_feed_key(call)
+        _, trace_id, _, args, result = recorded_call_parts(call)
+        if key in dropped:
+            dupe = True
+        elif key in seen:
+            dropped.add(key)
+            feeds.pop(key, None)
+            dupe = True
+        else:
+            seen.add(key)
+            dupe = False
+        if not dupe:
+            if trace_id is None:
+                feeds[key] = recorded_call_context(call, schema)
+            else:
+                state = observed.setdefault(trace_id, {"pairs": set(), "blocked": set(),
+                                                       "seen": set()})
+                feeds[key] = recorded_call_context(call, schema, state)
+        if trace_id is not None:
+            state = observed.setdefault(trace_id, {"pairs": set(), "blocked": set(),
+                                                   "seen": set()})
+            _observe_context_call(state, schema, args, result)
+    return feeds
+
+
+
+def _context_entity_ids(node: Any) -> set:
+    return {value for key, value in _result_leaves(node)
+            if isinstance(value, str) and _is_id_key(key)}
+
+
+def _append_recorded_context(call: ToolCall, schema: EntitySchema, seen: set,
+                             seen_ids: set, arg_strings: set, ids: dict, times: list) -> None:
+    feed = recorded_call_context(call, schema)
+    fresh_ids = [(table, value) for table, values in feed["new_ids"].items() for value in values
+                 if value not in seen_ids and value not in arg_strings]
+    for table, value in fresh_ids:
+        ids.setdefault(table, []).append(value)
+    if feed["now"] is not None and (fresh_ids or feed["now"] not in seen
+                                      and feed["now"] not in arg_strings):
+        times.append(feed["now"])
+
+
+def recorded_run_context(calls: Iterable[ToolCall], schema: EntitySchema,
+                           write_tools: Optional[Iterable[str]] = None) -> dict:
+    """Legacy consumption-ordered feed; production replay uses per-call context. One Run's witnessed values in call order: new ids per table, times in turn.
+
+    The Runner's Router carries no call ids, so a Run served call by call cannot look a feed up
+    the way the gates do. It advances through these lists instead: the nth new id asked for a
+    table is the nth the recording showed for it, the nth time asked for is the nth the recording
+    showed. Past the end of either list the seeded feed answers, counted.
+
+    Only write calls contribute, and an id only when neither the call's own arguments nor any
+    earlier call showed that entity before. A read echoes rows the world already holds, and an
+    update echoes the id its arguments named: neither is a new row, and listing either would hand
+    a later creation an existing row's id and shift every creation after it. Newness is read off
+    entity ids alone (id-keyed leaves), never off every scalar: an unrelated earlier value that
+    happens to spell the new id must not discard it. A write's time rides when the write minted
+    something: it carries a trace-new id, or the time itself was never shown before. An update
+    echoing the row's old stamp minted nothing, and listing it would hand a later creation the
+    wrong time the same way a listed echo id hands it the wrong row. Times otherwise ride in
+    call order with no dedup, so two creations the recording stamped alike are served alike.
+    """
+    ids: dict[str, list] = {}
+    times: list = []
+    seen: set = set()
+    seen_ids: set = set()
+    for call in calls:
+        args = call.args if isinstance(call, ToolCall) else (call or {}).get("args") or {}
+        result = call.result if isinstance(call, ToolCall) else (call or {}).get("result")
+        arg_strings = {value for _, value in _result_leaves(args)}
+        values = {value for _, value in _result_leaves(result)} if result is not None else set()
+        if write_tools is None or call.name in set(write_tools):
+            _append_recorded_context(call, schema, seen, seen_ids, arg_strings, ids, times)
+        seen |= arg_strings | values
+        seen_ids |= _context_entity_ids(args) | _context_entity_ids(result)
+    return {"ids": ids, "times": times}
+
+
 def replay_outcomes(toolsig: ToolSig, body: str, calls: Iterable[ToolCall], schema: EntitySchema, db: dict,
                     workdir: Path | str, call_states: Optional[dict] = None, rules: Any = None,
                     timeout: float = 30.0, readers: Any = None) -> list[dict]:
@@ -3408,7 +4142,8 @@ def replay_outcomes(toolsig: ToolSig, body: str, calls: Iterable[ToolCall], sche
     if not (body or "").strip():
         return missed("no body was compiled for this tool")
     source = module_source(schema, [toolsig], {toolsig.name: body})
-    sandbox = Sandbox(source, db, Path(workdir) / "attribution", timeout=timeout, call_states=call_states)
+    sandbox = Sandbox(source, db, Path(workdir) / "attribution", timeout=timeout, call_states=call_states,
+                      call_context=recorded_call_contexts(calls, schema))
     try:
         results = sandbox.run(calls)
     except SandboxError as exc:
@@ -3507,234 +4242,6 @@ def _clamped_detail(text: str) -> str:
     return f"{text[:OUTCOME_DETAIL_CHARS].rstrip()} [+{len(text) - OUTCOME_DETAIL_CHARS} characters]"
 
 
-def compile_tool(model, toolsig: ToolSig, calls: Iterable[ToolCall], schema: EntitySchema, db: dict,
-                 workdir: Path | str, max_attempts: int = MAX_REPAIR_ATTEMPTS,
-                 max_evidence_chars: Optional[int] = MAX_EVIDENCE_CHARS, timeout: float = 30.0,
-                 call_states: Optional[dict] = None, rules: Any = None,
-                 tool_names: Iterable[str] = (), error_prefix: Optional[str] = None,
-                 builder_tools: bool = True, lesson: str = "", world_note: str = "",
-                 readers: Any = None, call_tasks: Optional[dict] = None,
-                 effects: str = "", effect_values: Optional[dict] = None,
-                 transition_evidence: Optional[dict] = None,
-                 holdout: Optional[dict] = None, holdout_values: Optional[dict] = None,
-                 system_head: Optional[str] = None, tool_specs: Optional[list] = None) -> ToolBuild:
-    """Write one tool body, gate it, and repair it at most three times with growing evidence (D75).
-
-    Attempt 1 sees the failing call, attempt 2 every failing call, attempt 3 the full call table, and
-    every rewrite is re-checked on the shown calls and on the held-out calls separately, with the
-    held-out calls never named back to the model. An attempt whose whole prompt would exceed the D65
-    cap is refused, not truncated, and the cap is on by default. `call_states` (from
-    `call_starting_states`) is the per-Task world each recorded call ran on; without it every call
-    replays on the shared db, which is right only where the corpus shows one version of each row.
-    `call_tasks` is the map behind it, call id to Task id, which is what lets gate 8 name the two
-    Tasks a sensitivity pair spans (D195); without it a pair is named by the Traces its calls
-    came from.
-    `rules` is the customer's CanonRules (D39): given none, the gates compare under the module
-    defaults and can fail a body over a difference the customer's own rules fold away. `tool_names`
-    is every tool name in this build, stable across every call of this stage, so it lives in the
-    system message beside the schema (docs/prompt-caching.md item 1).
-
-    `effects` and `effect_values` are D215's two halves of one observation (`builder/effects.py`):
-    the section of the prompt that says which rows this tool's recorded calls moved beyond the ones
-    their arguments named, and the values those rows were left holding, which the memorised gate
-    refuses a body for writing down. Both are empty for a tool nothing was observed of, and the
-    prompt is then the bytes it always was.
-
-    Attempt 0 sends the system and the first user turn; a retry (docs/prompt-caching.md item 2)
-    never rewrites either: it appends the previous reply as an assistant turn and the new evidence
-    and failure as a new user turn, so the first two messages of every call in the loop are the
-    same bytes a cache can reuse. An attempt that raised what the attempt before it raised is told
-    so in that new turn (`_SAME_ERROR`), with the exception quoted, since a rewrite that lands on
-    the same crash is not a rewrite of the line that crashed.
-    An attempt whose body raised a KeyError or an AttributeError also gets `raised_detail`: the
-    line it crashed on, the table that line reads and what the world says about that table, since
-    the bare exception says nothing a rewrite can aim at.
-    Each attempt is a node dict; after the last miss the tool is marked assisted (D49) and the nodes
-    are written under the workdir. When no attempt passes, the body kept is the best attempt's, not
-    the last one's (`attempt_score`, `ToolBuild.kept_attempt`).
-
-    `builder_tools` (D117, on by default) lets the model call `lookup_rows` and `test_body` while
-    it drafts this attempt's reply, inside `_reply_with_tools`'s own bounded loop
-    (`MAX_TOOL_ROUNDS`), before the reply it settles on is gated the same way an old, tool-less
-    reply always was. Turn it off for a caller that wants the old one-call-per-attempt behaviour.
-
-    The build carries `call_outcomes` (D171): one row per recorded call saying whether the kept body
-    answered it the way the recording did, so a miss can be attributed to the Task whose Trace made
-    the call and not to every Task that calls the tool.
-
-    `lesson` is what this tool already failed on in an earlier build or an earlier recompile
-    request (`memory.lesson_for`, written by `repair.record_tool_lesson`). It is carried into the
-    first user turn, so it is in the prefix every retry of this attempt chain keeps; without it the
-    recompile asks the same question again and the model has no way to know it was asked before.
-
-    `system_head`, given by the caller, is the system prefix built once per build and shared by
-    every tool; given none it is built once here and the same string object reaches every attempt
-    of this tool, so per attempt builders cannot drift a byte. `tool_specs` is the frozen helper
-    spec list in a fixed order: the same list object on every attempt and every tool round, so
-    the request envelope never splits the cache. Given none it is `BUILDER_TOOLS`.
-    """
-    workdir, calls = Path(workdir), list(calls)
-    if error_prefix is None:  # build.py passes the corpus-wide prefix; alone, this tool's own calls
-        error_prefix = shared_error_prefix(calls)
-    system_head = _head_for_tools(schema, tool_names, builder_tools, world_note, system_head)
-    specs = _specs_for(tool_specs)
-    shown, held_out = split_calls(calls)
-    build, failure = ToolBuild(name=toolsig.name, body="", no_shape_holdout=no_shape_holdout(calls)), ""
-    skeleton = gate_parses(module_source(schema, [toolsig], {toolsig.name: "pass"}))
-    messages: list[dict] = []
-    reply_content = ""
-    # The loop grows its evidence off the attempt that just ran, not off the best one so far, so
-    # the two are kept apart: `latest` drives the next prompt, `build` holds what is kept.
-    latest: list[GateResult] = []
-    best: Optional[tuple[int, int]] = None
-    last_error = ""  # the exception the attempt before raised, so a repeat can be named as one
-    for attempt in range(max_attempts + 1):
-        if not skeleton.passed:  # code owns the skeleton, so no model call can repair it
-            build.gates = [skeleton]
-            build.nodes.append({"attempt": attempt, "tool": toolsig.name, "evidence": "none",
-                                "evidence_calls": 0, "passed": False, "refused": True,
-                                "failures": [f"the code-owned skeleton does not parse: {f}"
-                                             for f in skeleton.failures]})
-            break
-        evidence = _evidence_for(attempt, shown, latest)
-        node = {"attempt": attempt, "tool": toolsig.name, "evidence": _evidence_label(attempt, latest),
-                "evidence_calls": len(evidence), "passed": False, "refused": False}
-        if attempt == 0:
-            messages = body_messages(toolsig, evidence, schema=schema, tool_names=tool_names,
-                                     error_prefix=error_prefix, builder_tools=builder_tools,
-                                     lesson=lesson, world_note=world_note, effects=effects,
-                                     system_head=system_head)
-        else:
-            messages = _append_retry(messages, reply_content, evidence, failure, error_prefix)
-        # Fewer whole calls, never a shortened one. `_example_block` refuses to cut a call in
-        # half and that stays true: what is dropped here is the last recorded call, entire. The
-        # first live build refused `get_order_details` outright at 815,972 characters, because the
-        # last-resort evidence is every shown call and this corpus has hundreds of them; a body
-        # written from thirty complete calls is worth more than an attempt not taken.
-        while (max_evidence_chars is not None and len(evidence) > 1
-               and prompt_chars(messages) > max_evidence_chars):
-            evidence = evidence[:-1]
-            node["evidence_calls"] = len(evidence)
-            messages = (body_messages(toolsig, evidence, schema=schema, tool_names=tool_names,
-                                      error_prefix=error_prefix, builder_tools=builder_tools,
-                                      lesson=lesson, world_note=world_note, effects=effects,
-                                      system_head=system_head)
-                        if attempt == 0
-                        else _append_retry(messages[:-2], reply_content, evidence, failure, error_prefix))
-        size = prompt_chars(messages)
-        if max_evidence_chars is not None and size > max_evidence_chars:
-            node["failures"] = [f"a prompt of {size} characters is over the cap "
-                                f"of {max_evidence_chars}; refused, not truncated"]
-            build.nodes.append(dict(node, refused=True))
-            break
-        tools_impl = (_build_tools_impl(schema, toolsig, shown, held_out, db, call_states, workdir,
-                                        attempt, timeout, rules, readers, holdout=holdout,
-                                        holdout_values=holdout_values, effect_values=effect_values,
-                                        transition_evidence=transition_evidence)
-                     if builder_tools else None)
-        try:
-            if builder_tools:
-                reply_content, tool_uses, draft = _reply_with_tools(model, messages, tools_impl,
-                                                                    tool_specs=specs)
-            else:
-                reply_content, tool_uses, draft = model.query(messages).content or "", [], ""
-        except _context_cap_error() as refusal:
-            # `max_evidence_chars` above is not enough on its own, and the first live build is
-            # what showed it. It counts the characters of the message contents; budget.py counts
-            # the tokens of the JSON the request will actually carry, which is larger by the
-            # envelope and by every escaped quote and newline in a tool result. A prompt of
-            # 358,580 content characters was under the 320,000 cap on nothing and over the 80,000
-            # token cap at 89,645. No constant reconciles two different measures, so the one that
-            # is authoritative is the one the wrapper raises, and it is caught here.
-            #
-            # Before this it left compile_tool and killed the build: one tool with a large corpus
-            # took the other thirteen with it. The stage already has a word for a tool it could not
-            # write, so the refusal becomes that word: assisted (D49), and the build carries on.
-            node["failures"] = [f"{refusal}; refused, not truncated"]
-            build.nodes.append(dict(node, refused=True))
-            break
-        if tool_uses:
-            node["tool_uses"] = tool_uses
-        body = _strip_fence(reply_content)
-        if not body and draft:
-            # The rounds ran out on a model that had tested a draft and was still probing: that
-            # draft is what it was submitting, so it is gated like any reply (D117).
-            body, reply_content = _strip_fence(draft), draft
-            node["body_from_draft"] = True
-        if not body:
-            # No reply and no draft: nothing to gate, and gating "pass" would blame the code-owned
-            # skeleton for a reply the model never gave. The attempt fails and the next one runs
-            # with that said; the sixth retail build failed whole on a refusal here, because the
-            # stage gate reads an empty body as a tool the Builder could not write.
-            failure = "\nno body was submitted: every round asked for a tool; send the body as your reply"
-            reply_content = "(no body was submitted)"
-            last_error = ""  # nothing ran, so the next attempt's error follows no error of ours
-            node["failures"] = ["no body was submitted"]
-            build.nodes.append(node)
-            continue
-        body, sanitized = sanitize_body(body)
-        if sanitized:
-            # Deterministic, free and recorded on the node: a smart quote never costs an attempt,
-            # and the next attempt's evidence carries what changed so the model stops writing it.
-            node["sanitized"] = sanitized
-            reply_content = body
-        source = module_source(schema, [toolsig], {toolsig.name: body})
-        sandbox = Sandbox(source, db, workdir / f"attempt_{attempt}", timeout=timeout,
-                          call_states=call_states, call_tasks=call_tasks)
-        gates = run_gates(source, sandbox, shown, held_out, schema, rules,
-                          probe_refusals=toolsig.kind == "write", sig=toolsig, readers=readers,
-                          holdout_values=holdout_values, effect_values=effect_values,
-                          transition_evidence=transition_evidence)
-        node.update(body_hash=content_hash(body), gates=[as_dict(g) for g in gates],
-                    passed=all(g.passed for g in gates))
-        build.nodes.append(node)
-        latest = gates
-        # The last attempt is not the best attempt. A live build's fourth attempt at one write tool
-        # crashed on all 67 of its calls where the third had replayed 44 of 44 and failed only the
-        # refusal probe; keeping the last one cost 94 replay misses and 38 Tasks. So the body kept
-        # is the one that got furthest through the gates (`attempt_score`), and a later attempt
-        # replaces it only by beating it. A passing attempt ends the loop, so it is always the best.
-        score = attempt_score(gates)
-        if best is None or score > best:
-            best, build.body, build.gates, build.kept_attempt = score, body, gates, attempt
-        if node["passed"]:
-            break
-        failure = "\n" + _failure_text(gates, held_out)
-        if node.get("sanitized"):
-            failure += "\n" + node["sanitized"]
-        if any(g.stage == "non_trivial" and not g.passed for g in gates):
-            failure += _constant_evidence_note(evidence)
-        # Only when the sandbox has already run these calls, so the note costs no subprocess: a
-        # body that never parsed has nothing for the world to say about it anyway.
-        detail = raised_detail(sandbox, shown) if sandbox.cache else ""
-        failure += ("\n" + detail) if detail else ""
-        error = exception_line(gates)
-        if error and error == last_error:
-            failure += _SAME_ERROR.format(error=error)
-        last_error = error
-    build.assisted = not (build.gates and all(g.passed for g in build.gates))
-    for record in build.nodes:
-        if record["attempt"] == build.kept_attempt:
-            record["kept"] = True
-    # D171: a tool that cleared every gate replayed every recorded call, since `run_gates` holds the
-    # shown and the held-out split to 100% each and only calls a build unassisted when both passed;
-    # so its per-call rows are known without a sandbox and only an assisted tool pays for the run.
-    build.call_outcomes = (
-        replay_outcomes(toolsig, build.body, calls, schema, db, workdir, call_states=call_states,
-                        rules=rules, timeout=timeout, readers=readers)
-        if build.assisted else
-        [{"tool": toolsig.name, "call_id": call.id, "replayed": True, "detail": ""} for call in calls])
-    build.hardcoded = build.assisted and hardcoded_body(calls, build.call_outcomes)
-    directory = workdir / NODE_DIR
-    directory.mkdir(parents=True, exist_ok=True)
-    (directory / f"{toolsig.name}.json").write_text(
-        json.dumps({"tool": toolsig.name, "assisted": build.assisted,
-                    "hardcoded": build.hardcoded,
-                    "no_shape_holdout": build.no_shape_holdout,
-                    "kept_attempt": build.kept_attempt, "nodes": build.nodes,
-                    "call_outcomes": build.call_outcomes},
-                   indent=2, default=str) + "\n", encoding="utf-8")
-    return build
 
 # --- emitting tau2's five files plus the sidecar (D56) ---
 

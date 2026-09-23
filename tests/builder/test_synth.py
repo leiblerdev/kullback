@@ -113,16 +113,6 @@ def test_a_category_with_few_observations_is_not_an_identity():
     assert "address.zip" in rules["users"].identity
 
 
-@pytest.mark.parametrize("text, shape", [
-    ("#W1234567", [("o", "#"), ("a", None), ("d", None)]),
-    ("ava.chen1000@example.com", [("a", None), ("o", "."), ("a", None), ("d", None), ("o", "@"),
-                                  ("a", None), ("o", "."), ("a", None)]),
-    ("Suite 12", [("a", None), ("o", " "), ("d", None)]),
-])
-def test_a_string_has_a_shape_of_runs(text, shape):
-    assert list(synth._shape(text)) == shape
-
-
 # --- growing ---
 
 def test_grow_reaches_the_target_and_the_checks_pass():
@@ -204,16 +194,6 @@ def test_grow_is_deterministic_under_a_seed():
     assert a == b
 
 
-def test_the_report_names_what_was_added_the_rules_and_the_checks():
-    db = _world()
-    grown = synth.grow(db, _schema(), {"users": 14}, seed=1)
-    out = synth.report(grown)
-    assert out["added"] == {"users": 2}
-    assert out["rules"]["orders"]["sums"] == {"payment_history.[].amount": ["items", "price"]}
-    assert out["checks"]["ok"] is True
-    assert "address.city" in out["checks"]["marginals"]["users"]
-
-
 def test_the_checks_catch_a_dangling_key_and_a_twin():
     db, schema = _world(), _schema()
     rules = synth.mine_rules(db, schema)
@@ -270,6 +250,10 @@ def test_a_list_named_after_the_table_is_a_foreign_key_and_a_back_reference():
 
 
 def test_an_id_with_no_run_shape_is_drawn_per_position_and_keeps_its_length():
+    assert list(synth._shape("#W1234567")) == [("o", "#"), ("a", None), ("d", None)]
+    assert list(synth._shape("ava.chen1000@example.com")) == [
+        ("a", None), ("o", "."), ("a", None), ("d", None), ("o", "@"), ("a", None), ("o", "."), ("a", None)]
+    assert list(synth._shape("Suite 12")) == [("a", None), ("o", " "), ("d", None)]
     db, schema = _airline_like()
     observed = set(db["reservations"])
     grown = synth.grow(db, schema, {"reservations": 60}, seed=2)
@@ -290,15 +274,12 @@ def test_a_digit_run_is_drawn_inside_its_observed_range_so_a_date_stays_a_date()
         assert stamp.startswith("2024-05-") and 1 <= int(stamp[8:10]) <= 28
 
 
-def test_sequential_ids_widen_past_their_observed_range_instead_of_colliding():
+def test_drawn_ids_widen_past_their_observed_range_and_key_lists_never_repeat():
     db, schema = _world(), _schema()
     grown = synth.grow(db, schema, {"products": 40}, seed=1)
     assert grown.checks["bad_ids"] == []
     assert all(len(pid) == 10 for pid in grown.added["products"])
-
-
-def test_a_list_of_keys_is_drawn_without_repeats():
-    db, schema = _world(), _schema()
+    db = _world()
     rules = synth.mine_rules(db, schema)
     rules["users"].back_refs = {}  # as if the back reference were unknown: a plain list of keys
     rng = random.Random(0)

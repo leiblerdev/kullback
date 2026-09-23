@@ -9,19 +9,25 @@ this file never has to be edited again; it goes away when the next decision move
 
 from __future__ import annotations
 
+from kullback.user.ends import *  # noqa: F401,F403
+from kullback.user.ends import (  # noqa: F401  - the underscored helpers a caller or a test reads
+    _field_of,
+    _row_value,
+)
 from kullback.user.rules import *  # noqa: F401,F403
-from kullback.user.rules import (  # noqa: F401  - the underscored helpers a caller or a test reads
+from kullback.user.rules import (  # noqa: F401  - as above
     _bare_value,
     _closes,
-    _field_of,
     _flattened,
-    _matching_rows,
     _names_change,
     _norm,
     _request_sentences,
-    _row_value,
     _sentences,
     _spoken_args,
     _stated_in,
     _words,
+)
+from kullback.user.simulated import *  # noqa: F401,F403
+from kullback.user.simulated import (  # noqa: F401  - as above
+    _matching_rows,
 )

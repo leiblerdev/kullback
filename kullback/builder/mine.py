@@ -2210,6 +2210,69 @@ def _with_id_table_evidence(evidence: dict, name: str, observed: bool, refuted: 
                                             distinct_refs)}
 
 
+def _record_table_id_facts(facts: dict, table: str, rows: list[dict], args: dict, ref: list) -> None:
+    for name in {str(name) for row in rows for name in row}:
+        values = [canonical_json(row[name]) for row in rows if name in row]
+        fact = facts.setdefault((table, name), {"addressed": [], "distinct": [], "refuting": [], "repeated": False, "values": set()})
+        fact["values"].update(values)
+        if name in args and canonical_json(args[name]) in values:
+            fact["addressed"].append(ref)
+        if len(values) > 1:
+            if len(set(values)) == len(values):
+                fact["distinct"].append(ref)
+            else:
+                fact["repeated"] = True
+                if _is_id(name):
+                    fact["refuting"].append(ref)
+
+
+def _link_addressed_table_ids(facts: dict, traces: list[Trace]) -> None:
+    candidates: dict = {}
+    for (_table, name), fact in facts.items():
+        if not (_is_id(name) or fact["distinct"]):
+            continue
+        for value in fact["values"]:
+            candidates.setdefault((name, value), []).append(fact)
+    for trace in traces:
+        for call_index, call in enumerate(trace.tool_calls):
+            if not is_assistant_call(call) or call.error is not None or call.truncated:
+                continue
+            ref = [trace.trace_id, call_index]
+            for name, value in (call.args or {}).items():
+                matches = candidates.get((str(name), canonical_json(value)), [])
+                if len(matches) == 1 and ref not in matches[0]["addressed"]:
+                    matches[0]["addressed"].append(ref)
+
+
+def _table_id_facts(traces: list[Trace], id_names: set[str]) -> dict:
+    facts: dict = {}
+    for trace in traces:
+        for call_index, call in enumerate(trace.tool_calls):
+            if not is_assistant_call(call) or call.error is not None or call.result is None or call.truncated:
+                continue
+            rows = _result_rows(_parse(call.result))
+            by_table: dict[str, list[dict]] = {}
+            for row in rows:
+                table = _table_of(call.name, row, id_names, rows, call.args)
+                if table is not None:
+                    by_table.setdefault(table, []).append(row)
+            for table, held in by_table.items():
+                _record_table_id_facts(facts, table, held, call.args or {}, [trace.trace_id, call_index])
+    _link_addressed_table_ids(facts, traces)
+    return facts
+
+
+def _column_id_facts(name: str, fact: dict) -> tuple:
+    addressed = fact.get("addressed", [])
+    distinct = fact.get("distinct", [])
+    rejected = fact.get("refuting", [])
+    observed = bool(addressed) and (_is_id(name) or bool(distinct)) and not fact.get("repeated", False)
+    refuted = {name} if rejected else set()
+    id_refs = {name: {"supporting_calls": addressed, "support_count": len(addressed)}}
+    refuting = {name: {"supporting_calls": rejected[:MAX_SUPPORT_CALLS], "support_count": len(rejected)}}
+    return observed, refuted, id_refs, refuting, {name: distinct}
+
+
 def mine_schema(traces: list[Trace], db_json_path: Optional[Path] = None,
                 model: Optional[Model] = None,
                 write_tools: Optional[Sequence[str]] = None) -> EntitySchema:
@@ -2222,10 +2285,7 @@ def mine_schema(traces: list[Trace], db_json_path: Optional[Path] = None,
                 for name, value in row.items():
                     _add_value(store, str(table), str(name), value)
     id_names = id_columns(traces)
-    refuted = refuted_ids(traces)
-    id_refs = id_supporting_calls(traces)
-    refuting = _refuted_with_calls(traces)
-    distinct_refs = _id_distinct_refs(traces, id_names)
+    table_id_facts = _table_id_facts(traces, id_names)
     sightings: dict[tuple[str, str], dict] = {}
     for trace in traces:
         for call_index, call in enumerate(trace.tool_calls):
@@ -2256,7 +2316,8 @@ def mine_schema(traces: list[Trace], db_json_path: Optional[Path] = None,
         for name in sorted(store[table]):
             cell = store[table][name]
             sight = sightings.get((table, name))
-            observed = name in id_names
+            observed, refuted, id_refs, refuting, distinct_refs = _column_id_facts(
+                name, table_id_facts.get((table, name), {}))
             proposal = propose_column_class(table, name, cell["values"], count=cell["count"],
                                             observed_id=observed,
                                             id_refuted=name in refuted,
@@ -2267,7 +2328,7 @@ def mine_schema(traces: list[Trace], db_json_path: Optional[Path] = None,
                             class_rule=proposal.column_class, class_confidence=proposal.confidence,
                             class_reason=proposal.reason, classified_by="rule",
                             evidence=evidence, samples=_samples(cell["values"]),
-                            vocabulary=_vocabulary(cell["values"], _is_id(name) or name in id_names))
+                            vocabulary=_vocabulary(cell["values"], _is_id(name) or observed))
             if model is not None:
                 verified = classify_column(model, table, name, proposal, cell["values"])
                 if verified is not None:
@@ -2276,7 +2337,7 @@ def mine_schema(traces: list[Trace], db_json_path: Optional[Path] = None,
                     column.class_reason = verified.reason
                     column.classified_by = "llm"
             columns.append(column)
-            if _is_id(name) or name in id_names:
+            if _is_id(name) or observed:
                 pattern = id_pattern(cell["values"])
                 if pattern:
                     id_patterns[f"{table}.{name}"] = pattern

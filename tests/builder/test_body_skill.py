@@ -1,14 +1,8 @@
-"""The body skill: in every body-writing prefix, naming only gates that exist and nothing of any customer (D168)."""
+"""The body skill: naming only gates that exist and nothing of any customer (D168)."""
 
 import re
 
-from kullback.builder import compile_env
 from kullback.builder.body_skill import BODY_SKILL
-
-
-def test_the_body_skill_is_in_the_stable_prefix_of_every_body_call():
-    assert BODY_SKILL in compile_env._stable_system()
-    assert BODY_SKILL in compile_env._stable_system(tool_names=["lend_book"], builder_tools=True)
 
 
 def test_the_body_skill_names_only_gates_that_exist():

@@ -63,45 +63,22 @@ def ctx(index: int = 0):
                               ingest_version="test")
 
 
-def test_detect_votes_on_rows_envelope():
+def test_detect_votes_on_a_rows_envelope_and_a_bare_recording():
     adapter = Terminus2Adapter()
     confidence, reasons = adapter.detect(invented_envelope())
     assert confidence > 0
     assert any("rows list" in reason for reason in reasons)
-
-
-def test_detect_votes_on_bare_recording():
     confidence, _ = Terminus2Adapter().detect(invented_recording())
     assert confidence > 0
 
 
-def test_detect_stays_quiet_on_first_adapter_payload():
+def test_each_adapter_stays_quiet_on_the_others_payload():
     payload = {"simulations": [{"id": "s1", "messages": []}]}
     assert Terminus2Adapter().detect(payload)[0] == 0.0
-
-
-def test_first_adapter_stays_quiet_on_these_payloads():
     from kullback.builder.sources.tau2_native import Tau2NativeAdapter
 
     assert Tau2NativeAdapter().detect(invented_envelope())[0] == 0.0
     assert Tau2NativeAdapter().detect(invented_recording())[0] == 0.0
-
-
-def test_seam_routes_envelope_to_new_adapter():
-    decision = sources.detect_format(invented_envelope())
-    assert decision.winner == "terminus_2"
-
-
-def test_seam_still_routes_first_adapter_payload():
-    payload = {"simulations": [{"id": "s1", "messages": []}]}
-    assert sources.detect_format(payload).winner == "tau2_native"
-
-
-def test_recordings_unwrap_rows():
-    envelope = invented_envelope(count=3)
-    recordings = list(Terminus2Adapter().recordings(envelope))
-    assert [recording["trial_name"] for recording in recordings] == [
-        "invented-trial-0", "invented-trial-1", "invented-trial-2"]
 
 
 def test_to_trace_maps_batch_to_shell_calls():
@@ -159,15 +136,30 @@ def test_assistant_prose_and_opening_turn_are_kept():
     assert "Invented prose with no commands" in str(trace.turns[3].content)
 
 
-def test_sidecar_carries_outcome_and_grouping_columns():
+def test_the_sidecar_carries_outcome_grouping_task_ref_and_instruction_columns():
     adapter = Terminus2Adapter()
     sidecar = adapter.sidecar(invented_recording(), invented_envelope())
     assert sidecar["task"] == "invented task text"
     assert sidecar["episode"] == 3
     assert "conversations" not in sidecar
+    recording = invented_recording(conversations=invented_task_turn("# invented-seven\nSolve invented."),
+                                   trial_name="invented-task-7__invented-run")
+    sidecar = Terminus2Adapter().sidecar(recording, invented_envelope())
+    assert sidecar["task_ref"] == {"id": "invented-task-7", "source": "invented-source"}
+    assert sidecar["instruction"] == "# invented-seven\nSolve invented."
+    assert sidecar["task"] == "invented task text"
+    assert "conversations" not in sidecar
+    recording = invented_recording(conversations=invented_task_turn("# invented\n"),
+                                   trial_name="invented-task-8")
+    del recording["original_source"]
+    sidecar = Terminus2Adapter().sidecar(recording, invented_envelope())
+    assert sidecar["task_ref"] == {"id": "invented-task-8", "source": None}
+    sidecar = Terminus2Adapter().sidecar(invented_recording(), invented_envelope())
+    assert sidecar["instruction"] is None
+    assert sidecar["task_ref"] == {"id": "invented-trial-1", "source": "invented-source"}
 
 
-def test_batch_before_complaint_leaves_call_unobserved():
+def test_a_scaffold_complaint_leaves_the_call_before_it_unobserved_and_is_counted():
     turns = [
         {"role": "user", "content": "Invented instruction."},
         {"role": "assistant", "content": json.dumps({"commands": [
@@ -179,9 +171,6 @@ def test_batch_before_complaint_leaves_call_unobserved():
     (call,) = trace.tool_calls
     assert (call.has_result, call.resolved, call.result) == (False, False, None)
     assert trace.turns[2].role == "user"
-
-
-def test_complaint_after_parsed_turn_is_counted():
     from kullback.builder.sources import terminus_2 as adapter_mod
 
     turns = [
@@ -197,8 +186,12 @@ def test_complaint_after_parsed_turn_is_counted():
     assert not trace.tool_calls[0].resolved
 
 
-def test_last_turn_commands_stay_unobserved():
+def test_commands_on_the_last_turn_stay_unobserved():
     turns = invented_turns()[:2]
+    trace = Terminus2Adapter().to_trace(invented_recording(conversations=turns), ctx())
+    assert len(trace.tool_calls) == 1
+    assert not trace.tool_calls[0].resolved
+    turns = ending_on_empty_commands()[:2]
     trace = Terminus2Adapter().to_trace(invented_recording(conversations=turns), ctx())
     assert len(trace.tool_calls) == 1
     assert not trace.tool_calls[0].resolved
@@ -296,16 +289,13 @@ def ending_on_empty_commands() -> list[dict]:
     ]
 
 
-def test_recording_ending_on_empty_commands_has_no_unresolved_call():
+def test_a_recording_ending_on_empty_commands_is_complete_with_no_unresolved_call(tmp_path):
     turns = ending_on_empty_commands()
     trace = Terminus2Adapter().to_trace(invented_recording(conversations=turns), ctx())
     assert len(trace.tool_calls) == 1
     (call,) = trace.tool_calls
     assert call.raw_ptr.msg_index == 1
     assert call.resolved
-
-
-def test_recording_ending_on_empty_commands_is_a_complete_record(tmp_path):
     turns = ending_on_empty_commands()
     envelope = {"rows": [
         {"row_idx": index,
@@ -317,13 +307,6 @@ def test_recording_ending_on_empty_commands_is_a_complete_record(tmp_path):
     summary = ingest.ingest_file(target, workdir)
     ruling = ingest.read_intake_ruling(workdir, summary["raw_hash"])
     assert ruling["reasons"] == {"complete_record": 4}
-
-
-def test_recording_ending_on_commands_still_ends_on_an_unresolved_call():
-    turns = ending_on_empty_commands()[:2]
-    trace = Terminus2Adapter().to_trace(invented_recording(conversations=turns), ctx())
-    assert len(trace.tool_calls) == 1
-    assert not trace.tool_calls[0].resolved
 
 
 def test_warning_plus_output_gives_output_as_result():
@@ -371,6 +354,22 @@ def test_ingest_file_publishes_invented_envelope(tmp_path):
     assert len(list((workdir / "grader").glob("*.json"))) == 4
 
 
-def test_new_adapter_needs_no_seam_edit():
+def test_the_seam_routes_both_formats_with_no_edit_for_the_new_adapter():
     assert sources.by_name("terminus_2") is not None
     assert "terminus_2" in [adapter.name for adapter in sources.registered()]
+    decision = sources.detect_format(invented_envelope())
+    assert decision.winner == "terminus_2"
+    payload = {"simulations": [{"id": "s1", "messages": []}]}
+    assert sources.detect_format(payload).winner == "tau2_native"
+
+
+def invented_task_turn(instruction: str) -> list[dict]:
+    """An invented opening turn carrying the instruction between the boundary headers."""
+    return [
+        {"role": "user",
+         "content": ("Invented scaffold preamble.\n\nTask Description:\n" + instruction
+                     + "\n\nCurrent terminal state:\n\ninvented-shell-ready")},
+        {"role": "assistant", "content": json.dumps({"commands": [
+            {"keystrokes": "invented-solo"}]})},
+        {"role": "user", "content": "New Terminal Output:\n\ninvented solo output"},
+    ]

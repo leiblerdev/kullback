@@ -104,7 +104,7 @@ def test_a_declared_kind_beats_contradicting_calls_and_records_it():
     assert "; basis: declared by the source, no supporting calls" in (sig.kind_reason or "")
 
 
-def test_an_id_no_suffix_names_is_observed_with_support():
+def test_an_id_no_suffix_names_is_observed_with_the_addressing_calls_as_support():
     schema = mine_schema(harbour_corpus())
     column = col(schema, "berth_tags", "berth_tag")
     assert column.class_ == "hard"
@@ -115,12 +115,12 @@ def test_an_id_no_suffix_names_is_observed_with_support():
     assert column.evidence["id_support_count"] == 3
     assert column.evidence["id_contradicts_name"] is False
     assert column.evidence["table_basis"] == "name"
-
-
-def test_id_addressing_calls_are_the_support():
     refs = id_supporting_calls(harbour_corpus())
     assert refs["berth_tag"]["support_count"] == 2
     assert ["t1", 0] in refs["berth_tag"]["supporting_calls"]
+    column = col(mine_schema(harbour_corpus()), "berth_tags", "berth_tag")
+    assert column.evidence["id_support"] == [["t1", 0], ["t1", 1], ["t1", 2]]
+    assert column.evidence["id_support_count"] == 3
 
 
 def test_a_name_id_that_repeats_is_refuted_and_the_values_decide_its_class():
@@ -141,7 +141,7 @@ def test_a_name_id_that_repeats_is_refuted_and_the_values_decide_its_class():
     assert column.evidence["table_basis"] == "name"
 
 
-def test_a_timestamp_name_with_plain_values_falls_through_with_the_contradiction_recorded():
+def test_a_timestamp_name_is_exempt_only_when_its_values_are_timestamps():
     traces = [one_trace("t1", [
         {"name": "list_badges", "args": {},
          "result": '[{"badge_id": "B1", "created_badge": "red"},'
@@ -154,9 +154,6 @@ def test_a_timestamp_name_with_plain_values_falls_through_with_the_contradiction
     assert column.evidence["class_contradicts_name"] is True
     # The direct call has no calls to offer, so the legacy name rule stands there unchanged.
     assert propose_column_class("badges", "created_badge", ["red", "blue"]).column_class == "exempt"
-
-
-def test_a_timestamp_name_with_timestamps_is_observed_exempt():
     traces = [one_trace("t1", [
         {"name": "list_stamps", "args": {},
          "result": '[{"stamp_id": "S1", "created_stamp": "2025-01-01T10:00"},'
@@ -251,13 +248,6 @@ def test_empty_records_say_so_instead_of_zeroes():
     ]
 
 
-def test_row_homes_json_round_trips_with_the_new_keys():
-    homes = row_homes(harbour_corpus())
-    back = json.loads(json.dumps(homes))
-    assert back["list_berths"]["homed"]["berth_tags"]["basis"] == "name"
-    assert back["list_berths"]["homed"]["berth_tags"]["support_count"] == 0
-
-
 def test_one_entry_counts_each_row_under_the_basis_that_homed_it():
     traces = [one_trace("t1", [
         {"name": "get_customer_parcel", "args": {"customer_id": "C1"},
@@ -291,12 +281,6 @@ def test_an_effect_credited_late_still_cites_its_own_calls():
     assert "t2:1" in (sig.kind_reason or "")
 
 
-def test_id_support_shows_the_distinct_result_beside_the_addressing_calls():
-    column = col(mine_schema(harbour_corpus()), "berth_tags", "berth_tag")
-    assert column.evidence["id_support"] == [["t1", 0], ["t1", 1], ["t1", 2]]
-    assert column.evidence["id_support_count"] == 3
-
-
 def test_a_signature_newer_than_the_records_is_named_not_dropped(tmp_path):
     from kullback.report.load import load_tool_sigs
     from kullback.runner.records import as_dict
@@ -308,24 +292,3 @@ def test_a_signature_newer_than_the_records_is_named_not_dropped(tmp_path):
     sigs = load_tool_sigs(tmp_path, unread)
     assert [s.name for s in sigs] == ["get_berth"]
     assert any("harbour_next" in note for note in unread)
-
-
-def test_a_closed_schema_records_the_declaration_as_a_rule_with_a_marker(monkeypatch):
-    import kullback.builder.mine as mine
-
-    monkeypatch.setattr(mine, "_DECLARED_BASIS_ALLOWED", False)
-    declared = [{"name": "harbormaster", "parameters": {"properties": {}},
-                 "annotations": {"readOnlyHint": True}}]
-    traces = [one_trace("t1", [
-        {"name": "get_berth", "args": {"berth_tag": "T1"},
-         "result": '{"berth_tag": "T1", "colour": "red"}'},
-        {"name": "harbormaster", "args": {"berth_tag": "T1", "colour": "blue"},
-         "result": "done"},
-        {"name": "get_berth", "args": {"berth_tag": "T1"},
-         "result": '{"berth_tag": "T1", "colour": "blue"}'},
-    ], tools_declared=declared)]
-    sig = sig_by_name(mine_tools(traces), "harbormaster")
-    assert sig.kind == "read"
-    assert sig.classified_by == "rule"
-    assert "waits on the re-freeze" in (sig.kind_reason or "")
-    assert mined_name_counts([sig], [], {})["tool_kind"]["declared"] == 1

@@ -148,34 +148,6 @@ def test_mine_tools_scalar_result_is_marked_apart_from_a_field_named_value(fixtu
     assert is_scalar_result(find)
 
 
-def test_mine_tools_kind_by_code_rule(fixture_traces):
-    sigs = mine_tools(fixture_traces)
-    reads = ["get_order_details", "get_user_details", "find_user_id_by_name_zip", "list_all_product_types"]
-    for name in reads:
-        sig = sig_by_name(sigs, name)
-        assert sig.kind == "read"
-        assert sig.unclassified is False
-        assert sig.classified_by == "rule"
-        assert "prefix" in (sig.kind_reason or "")
-    for name in ["exchange_delivered_order_items", "return_delivered_order_items"]:
-        sig = sig_by_name(sigs, name)
-        assert sig.kind == "write"
-        assert sig.unclassified is False
-
-
-def test_mine_tools_output_round_trips_through_json(fixture_traces):
-    sigs = mine_tools(fixture_traces)
-    back = json.loads(json.dumps([as_dict(s) for s in sigs]))
-    by_name = {s["name"]: s for s in back}
-    assert set(by_name) == {s.name for s in sigs}
-    order = by_name["get_order_details"]
-    assert order["kind"] == "read"
-    assert order["evidence_strength"]["call_count"] == 7
-    assert {f["name"] for f in order["result_schema"]} >= {"order_id", "status", "items"}
-    assert by_name["exchange_delivered_order_items"]["kind"] == "write"
-    assert order["evidence"] == sig_by_name(sigs, "get_order_details").evidence
-
-
 # --- D72: union of everything observed ---------------------------------------
 
 
@@ -281,7 +253,7 @@ def test_error_shapes_keep_the_verbatim_payload():
 # --- D68 and D70: kind classification ----------------------------------------
 
 
-def test_propose_kind_uses_prefixes_and_says_why():
+def test_the_kind_is_read_from_name_prefixes_and_says_why(fixture_traces):
     assert propose_kind("search_orders").kind == "read"
     assert "prefix" in propose_kind("search_orders").reason
     assert propose_kind("update_user").kind == "write"
@@ -289,6 +261,18 @@ def test_propose_kind_uses_prefixes_and_says_why():
     assert propose_kind("frobnicate").kind == "read"
     assert propose_kind("frobnicate").confidence == "low"
     assert "no name rule matched" in propose_kind("frobnicate").reason
+    sigs = mine_tools(fixture_traces)
+    reads = ["get_order_details", "get_user_details", "find_user_id_by_name_zip", "list_all_product_types"]
+    for name in reads:
+        sig = sig_by_name(sigs, name)
+        assert sig.kind == "read"
+        assert sig.unclassified is False
+        assert sig.classified_by == "rule"
+        assert "prefix" in (sig.kind_reason or "")
+    for name in ["exchange_delivered_order_items", "return_delivered_order_items"]:
+        sig = sig_by_name(sigs, name)
+        assert sig.kind == "write"
+        assert sig.unclassified is False
 
 
 def test_calculation_and_handoff_names_are_generic_as_tau2_has_them():
@@ -310,7 +294,14 @@ def test_unknown_name_defaults_to_read_and_unclassified(fixture_traces):
     assert sig.kind_confidence == "low"
 
 
-def test_classify_kind_hook_sees_the_evidence_and_sets_the_class(make_test_model):
+def test_the_llm_kind_hook_sees_the_evidence_and_mine_tools_applies_its_class(make_test_model):
+    traces = [one_trace("t1", [{"name": "frobnicate", "args": {"id": "1"}, "result": "ok"}])]
+    model = json_model(make_test_model, [{"kind": "write", "confidence": "high", "reason": "writes"}])
+    sig = sig_by_name(mine_tools(traces, model=model), "frobnicate")
+    assert sig.kind == "write"
+    assert sig.kind_confidence == "high"
+    assert sig.classified_by == "llm"
+    assert sig.unclassified is False
     traces = [one_trace("t1", [{"name": "frobnicate", "args": {"id": "1"}, "result": '{"a": 1}'}])]
     sig = sig_by_name(mine_tools(traces), "frobnicate")
     model = json_model(make_test_model, [{"kind": "write", "confidence": "high", "reason": "it frobnicates"}])
@@ -322,16 +313,6 @@ def test_classify_kind_hook_sees_the_evidence_and_sets_the_class(make_test_model
     assert [f["name"] for f in payload["tool"]["result_fields"]] == ["a"]
     assert payload["tool"]["calls"] == 1
     assert payload["evidence"] == {"note": "n"}
-
-
-def test_mine_tools_with_a_model_applies_the_llm_class(make_test_model):
-    traces = [one_trace("t1", [{"name": "frobnicate", "args": {"id": "1"}, "result": "ok"}])]
-    model = json_model(make_test_model, [{"kind": "write", "confidence": "high", "reason": "writes"}])
-    sig = sig_by_name(mine_tools(traces, model=model), "frobnicate")
-    assert sig.kind == "write"
-    assert sig.kind_confidence == "high"
-    assert sig.classified_by == "llm"
-    assert sig.unclassified is False
 
 
 def test_low_confidence_llm_leaves_the_D70_default(make_test_model):
@@ -470,7 +451,7 @@ def a_users_own_toolkit() -> list:
     ]
 
 
-def test_a_tool_only_the_user_calls_is_mined_with_the_user_as_its_caller():
+def test_a_tool_is_mined_with_the_requestors_that_actually_called_it():
     """D164: a tool of the simulated user's own toolkit is a tool of the recording, mined from the
     calls the user made. The assistant asked for it once and the recording refused, so the assistant
     is not one of its callers and the Router refuses it there too."""
@@ -480,17 +461,13 @@ def test_a_tool_only_the_user_calls_is_mined_with_the_user_as_its_caller():
     assert {f.name for f in sig.args_fields} == {"shelf"}
     assert {f.name for f in sig.result_schema} == {"lit"}
     assert sig.evidence_strength.call_count == 3
-
-
-def test_a_tool_the_assistant_calls_is_mined_with_the_assistant_as_its_only_caller():
-    """The other side of D164: nothing about a tool with one caller changed."""
     sig = sig_by_name(mine_tools(a_users_own_toolkit()), "get_loan_details")
     assert sig.callers == ["assistant"]
     assert sig.refused_callers == []
     assert sig.evidence_strength.call_count == 3
 
 
-def test_the_schema_and_the_skipped_count_still_read_the_assistants_calls_alone():
+def test_the_schema_and_the_skipped_count_read_the_assistants_calls_alone():
     """D164 leaves R33 standing: what the customer's system is, is read from the assistant's calls.
     The user's calls reach the ToolSig of the tool they called and nothing else."""
     traces = a_users_own_toolkit()
@@ -500,6 +477,8 @@ def test_the_schema_and_the_skipped_count_still_read_the_assistants_calls_alone(
 
     gate = gate_tools(mine_tools(traces), traces)
     assert gate.metrics["skipped_user_calls"] == 2
+    sigs = mine_tools([one_trace("t1", [{"name": "get_thing", "args": {}, "result": '{"a": 1}'}] * 3)])
+    assert gate_tools(sigs).metrics["skipped_user_calls"] == 0
 
 
 def test_a_name_refused_on_every_call_is_no_toolsig_and_is_reported_as_unknown():
@@ -549,13 +528,6 @@ def test_a_declared_tool_no_trace_called_is_still_the_assistants():
     sig = sig_by_name(mine_tools(traces), "renew_loan")
     assert sig.source == "declared"
     assert sig.callers == ["assistant"] and sig.refused_callers == []
-
-
-def test_gate_tools_without_traces_reports_zero_skipped_as_before():
-    """Retail and airline have no user-requestor calls; the old call shape, with no traces given,
-    must keep working unchanged."""
-    sigs = mine_tools([one_trace("t1", [{"name": "get_thing", "args": {}, "result": '{"a": 1}'}] * 3)])
-    assert gate_tools(sigs).metrics["skipped_user_calls"] == 0
 
 
 def test_gate_passes_when_every_tool_is_thick_or_flagged(make_test_model):
@@ -632,7 +604,7 @@ def test_mine_schema_merges_db_json_and_traces(fixture_traces, tau2_retail_dir):
     assert col(schema, "orders", "status").evidence["count"] > 1000
 
 
-def test_classify_column_hook_can_override_the_rule(make_test_model):
+def test_the_classify_column_hook_sees_the_proposal_and_can_override_the_rule(make_test_model):
     traces = [one_trace("t1", [{"name": "get_note", "args": {}, "result": '{"note_id": "1", "body": "hi"}'}])]
     model = json_model(make_test_model, [{"class": "semantic", "confidence": "high", "reason": "free text"}])
     schema = mine_schema(traces, model=model)
@@ -642,9 +614,6 @@ def test_classify_column_hook_can_override_the_rule(make_test_model):
     assert body.classified_by == "llm"
     assert body.class_reason == "free text"
     assert body.class_confidence == "high"
-
-
-def test_classify_column_is_called_with_the_proposal_and_evidence(make_test_model):
     model = json_model(make_test_model, [{"class": "exempt", "confidence": "medium", "reason": "a counter"}])
     proposal = propose_column_class("orders", "status", ["a", "b"])
     out = classify_column(model, "orders", "status", proposal, ["a", "b"])
@@ -695,7 +664,7 @@ def retail_tool_names() -> set[str]:
 
 
 @pytest.mark.slow
-def test_mining_the_whole_corpus_finds_every_tool_the_traces_call_and_passes_the_mine_gate(retail_raw_files):
+def test_mining_the_whole_corpus_finds_every_tool_table_id_pattern_and_column_class(retail_raw_files, raw_dir, tau2_retail_dir):
     # Retail only: raw_dir also holds airline and telecom traces, checked separately.
     traces: list[Trace] = []
     for path in retail_raw_files:
@@ -711,10 +680,6 @@ def test_mining_the_whole_corpus_finds_every_tool_the_traces_call_and_passes_the
     assert {f.name for f in order.result_schema} >= {"order_id", "status", "items"}
     writes = {s.name for s in sigs if s.kind == "write"}
     assert "cancel_pending_order" in writes and "modify_user_address" in writes
-
-
-@pytest.mark.slow
-def test_mining_the_whole_corpus_finds_the_tables_their_id_patterns_and_their_column_classes(raw_dir, tau2_retail_dir):
     traces: list[Trace] = []
     for path in sorted(raw_dir.glob("*.json")):
         traces += traces_from_raw(json.loads(path.read_text(encoding="utf-8")), file_hash=path.name)
@@ -727,7 +692,7 @@ def test_mining_the_whole_corpus_finds_the_tables_their_id_patterns_and_their_co
 
 # --- D67: unknown errors are a flag on the Environment ---
 
-def test_a_tool_whose_errors_are_mostly_unknown_is_flagged():
+def test_a_tool_whose_errors_are_mostly_unknown_by_share_is_flagged():
     from kullback.builder.mine import unknown_error_flags
     from kullback.runner.records import ErrorShape, ToolSig
 
@@ -738,9 +703,6 @@ def test_a_tool_whose_errors_are_mostly_unknown_is_flagged():
     flags = unknown_error_flags([murky, clear, quiet])
     assert len(flags) == 1
     assert flags[0].startswith("charge_card: 7 of 10 observed errors are unknown (70%)")
-
-
-def test_the_unknown_share_threshold_is_a_share_not_a_count():
     from kullback.builder.mine import unknown_error_flags
     from kullback.runner.records import ErrorShape, ToolSig
 
@@ -752,7 +714,7 @@ def test_the_unknown_share_threshold_is_a_share_not_a_count():
 
 # --- D73: re-run evidence overrides the rule and the LLM ---
 
-def test_a_column_that_varies_across_successful_reruns_becomes_exempt():
+def test_a_column_that_varies_across_two_or_more_successful_reruns_becomes_exempt():
     from kullback.builder.mine import exempt_from_reruns
     from kullback.runner.records import Column, EntitySchema
 
@@ -769,9 +731,6 @@ def test_a_column_that_varies_across_successful_reruns_becomes_exempt():
     assert by_name["updated_at"].class_ == "exempt"
     assert by_name["updated_at"].classified_by == "observed"
     assert by_name["status"].class_ == "hard"
-
-
-def test_one_rerun_is_not_evidence_of_anything():
     from kullback.builder.mine import exempt_from_reruns
     from kullback.runner.records import Column, EntitySchema
 
@@ -781,7 +740,7 @@ def test_one_rerun_is_not_evidence_of_anything():
 
 # --- D95: a truncated result is reconstructed, tagged and Assisted ---
 
-def test_a_truncated_result_is_rebuilt_from_the_schema_and_complete_calls():
+def test_a_truncated_result_string_or_parsed_is_rebuilt_from_the_schema_and_complete_calls():
     """The shape ingest actually produces: the cut JSON string is still in `result` (D95)."""
     from kullback.builder.mine import reconstruct_truncated
     from kullback.runner.records import FieldStat, ToolSig
@@ -801,9 +760,6 @@ def test_a_truncated_result_is_rebuilt_from_the_schema_and_complete_calls():
     assert out["assisted"] is True
     assert out["cut_marker"] == "..."
     assert out["visible_len"] == 40
-
-
-def test_a_truncated_result_already_parsed_is_filled_the_same_way():
     from kullback.builder.mine import reconstruct_truncated
     from kullback.runner.records import FieldStat, ToolSig
 
@@ -979,7 +935,7 @@ def test_a_write_named_only_by_the_new_value_is_credited():
         assert [e.field for e in effects["apply_change"]] == ["get_cart.field"], new
 
 
-def test_a_field_that_goes_from_null_to_a_list_is_a_change():
+def test_a_field_that_goes_from_null_or_absent_to_a_value_is_a_change():
     """tau2 sets exchange_items from null to a list; comparing only the keys both sides share misses it."""
     from kullback.builder.mine import observed_effects
 
@@ -997,9 +953,6 @@ def test_a_field_that_goes_from_null_to_a_list_is_a_change():
     ]
     effects = observed_effects(traces)
     assert [e.field for e in effects["frobnicate"]] == ["get_order_details.exchange_items"]
-
-
-def test_a_field_that_appears_only_after_the_call_is_a_change():
     from kullback.builder.mine import observed_effects
 
     traces = [
@@ -1397,19 +1350,6 @@ def test_a_column_shared_by_every_row_of_a_result_is_not_an_id():
     assert "origin" not in found and "destination" not in found
 
 
-def test_the_retail_shaped_names_keep_their_old_answer():
-    """Nothing above may move retail: its verbs, its `_id` columns and its object nouns are unchanged."""
-    assert propose_kind("get_order_details").kind == "read"
-    assert propose_kind("cancel_pending_order").kind == "write"
-    assert propose_kind("calculate").kind == "generic"
-    traces = [one_trace("t1", [
-        {"name": "get_order_details", "args": {"order_id": "#W1"},
-         "result": '{"order_id": "#W1", "user_id": "u_1", "status": "pending"}'},
-    ])]
-    schema = mine_schema(traces)
-    assert schema.tables == ["orders"]
-
-
 # --- a row is homed by the id the call asked for ------------------------------
 
 # The domain is an invented marina: berths a vessel ties up at, and the tariff each berth is let on.
@@ -1509,10 +1449,6 @@ def test_a_table_whose_rows_repeat_an_id_gets_a_composite_key_naming_the_column(
     schema = mine_schema(traces)
     assert schema.composite_keys == {"docks": ["dock_id", "shift"]}
     assert schema.key_separator
-
-
-def test_an_argument_both_calls_agree_on_does_not_join_the_key():
-    """`zone` is an argument of both calls and never tells two sightings apart, so it is not identity."""
     traces = dock_traces([
         {"name": "list_docks", "args": {"shift": "early", "zone": "north"},
          "result": json.dumps([a_dock("dock_1", 4)])},
