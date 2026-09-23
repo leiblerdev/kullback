@@ -4,6 +4,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "branch_checks.py"
 
 BANNED = "ret" + "ail"
@@ -73,15 +75,28 @@ def test_added_banned_word_in_harness_fails_no_corpus_names(tmp_path):
     assert f"FAIL no-corpus-names: kullback/toolbox.py:2 names {BANNED!r}" in lines
 
 
-def test_added_forbidden_path_fails_no_forbidden_paths(tmp_path):
+def add_secret_file(repo):
+    write_file(repo, ".env", "SECRET = 1\n")
+    commit_paths(repo, "add secret file", [".env"])
+    return ".env"
+
+
+def rename_into_raw(repo):
+    (Path(repo) / "data" / "raw").mkdir(parents=True, exist_ok=True)
+    subprocess.run(["git", "mv", "notes.txt", "data/raw/leaked.txt"], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "move into raw"], cwd=repo, check=True)
+    return "data/raw/leaked.txt"
+
+
+@pytest.mark.parametrize("change", [add_secret_file, rename_into_raw])
+def test_a_file_added_or_renamed_onto_a_forbidden_path_fails_no_forbidden_paths(tmp_path, change):
     repo = make_repo(tmp_path)
     write_file(repo, "notes.txt", "plain line\n")
     base = commit_paths(repo, "add notes", ["notes.txt"])
-    write_file(repo, ".env", "SECRET = 1\n")
-    commit_paths(repo, "add secret file", [".env"])
+    path = change(repo)
     code, lines = run_checks(repo, base)
     assert code == 1
-    assert "FAIL no-forbidden-paths: .env is on a forbidden path" in lines
+    assert f"FAIL no-forbidden-paths: {path} is on a forbidden path" in lines
 
 
 def test_attribution_trailer_fails_no_attribution_trailers(tmp_path):
@@ -102,15 +117,19 @@ def test_attribution_trailer_fails_no_attribution_trailers(tmp_path):
     assert "carries Co-Authored-By" in failures[0]
 
 
-def test_changed_frozen_file_fails_frozen_trees(tmp_path):
+@pytest.mark.parametrize(
+    ("tree", "path"),
+    [("kullback/runner", "kullback/runner/engine.py"), ("kullback/gates", "kullback/gates/policy.py")],
+)
+def test_changed_frozen_file_fails_frozen_trees(tmp_path, tree, path):
     repo = make_repo(tmp_path)
-    write_file(repo, "kullback/runner/engine.py", "VALUE = 1\n")
-    base = commit_paths(repo, "add engine", ["kullback/runner/engine.py"])
-    write_file(repo, "kullback/runner/engine.py", "VALUE = 2\n")
-    commit_paths(repo, "tweak engine", ["kullback/runner/engine.py"])
+    write_file(repo, path, "VALUE = 1\n")
+    base = commit_paths(repo, "add frozen file", [path])
+    write_file(repo, path, "VALUE = 2\n")
+    commit_paths(repo, "tweak frozen file", [path])
     code, lines = run_checks(repo, base)
     assert code == 1
-    assert f"FAIL frozen-trees: kullback/runner differs between {base} and HEAD" in lines
+    assert f"FAIL frozen-trees: {tree} differs between {base} and HEAD" in lines
 
 
 def test_removed_decision_log_line_fails_append_only(tmp_path):
@@ -155,18 +174,6 @@ def test_risen_function_above_ceiling_fails_complexity_ceiling(tmp_path):
     assert "FAIL complexity-ceiling: calc.py score rose from 15 to 17" in lines
 
 
-def test_new_function_over_ceiling_fails_complexity_ceiling(tmp_path):
-    repo = make_repo(tmp_path)
-    write_file(repo, "notes.txt", "plain line\n")
-    base = commit_paths(repo, "add notes", ["notes.txt"])
-    branches = "".join(f"    if x == {i}:\n        return {i}\n" for i in range(15))
-    write_file(repo, "big.py", f"def evaluate(x):\n{branches}    return -1\n")
-    commit_paths(repo, "add big function", ["big.py"])
-    code, lines = run_checks(repo, base)
-    assert code == 1
-    assert "FAIL complexity-ceiling: big.py evaluate is new at 16 (ceiling 15)" in lines
-
-
 def test_same_method_name_in_two_classes_is_tracked_per_class(tmp_path):
     repo = make_repo(tmp_path)
     write_file(
@@ -202,12 +209,16 @@ def test_long_subject_fails_subject_length(tmp_path):
     assert "subject is 73 characters" in failures[0]
 
 
-def test_allowed_readme_change_passes_frozen_trees(tmp_path):
+@pytest.mark.parametrize(
+    ("path", "trailer"),
+    [("README.md", "Allow: readme"), ("docs/adr/0001-choice.md", "Allow: adr")],
+)
+def test_a_change_the_allow_trailer_names_passes_frozen_trees(tmp_path, path, trailer):
     repo = make_repo(tmp_path)
-    write_file(repo, "README.md", "Hello\n")
-    base = commit_paths(repo, "add readme", ["README.md"])
-    write_file(repo, "README.md", "Hello again\n")
-    commit_paths(repo, "update readme", ["README.md"], body="Allow: readme")
+    write_file(repo, path, "Hello\n")
+    base = commit_paths(repo, "add file", [path])
+    write_file(repo, path, "Hello again\n")
+    commit_paths(repo, "update file", [path], body=trailer)
     code, lines = run_checks(repo, base)
     assert "ok frozen-trees" in lines
     assert code == 0
@@ -263,29 +274,6 @@ def test_unresolvable_base_fails_setup(tmp_path):
     assert "FAIL setup: origin/nonexistent does not resolve" in out.stdout.splitlines()
 
 
-def test_renamed_into_forbidden_path_fails_no_forbidden_paths(tmp_path):
-    repo = make_repo(tmp_path)
-    write_file(repo, "keep.txt", "plain line\n")
-    base = commit_paths(repo, "add keep", ["keep.txt"])
-    (Path(repo) / "data" / "raw").mkdir(parents=True, exist_ok=True)
-    subprocess.run(["git", "mv", "keep.txt", "data/raw/leaked.txt"], cwd=repo, check=True)
-    subprocess.run(["git", "commit", "-q", "-m", "move into raw"], cwd=repo, check=True)
-    code, lines = run_checks(repo, base)
-    assert code == 1
-    assert "FAIL no-forbidden-paths: data/raw/leaked.txt is on a forbidden path" in lines
-
-
-def test_allowed_adr_change_passes_frozen_trees(tmp_path):
-    repo = make_repo(tmp_path)
-    write_file(repo, "docs/adr/0001-choice.md", "Choice\n")
-    base = commit_paths(repo, "add adr", ["docs/adr/0001-choice.md"])
-    write_file(repo, "docs/adr/0001-choice.md", "Choice again\n")
-    commit_paths(repo, "update adr", ["docs/adr/0001-choice.md"], body="Allow: adr")
-    code, lines = run_checks(repo, base)
-    assert "ok frozen-trees" in lines
-    assert code == 0
-
-
 def test_configured_import_contract_passes(tmp_path):
     repo = make_repo(tmp_path)
     write_file(repo, "pack/__init__.py", "")
@@ -311,17 +299,6 @@ def test_configured_import_contract_passes(tmp_path):
     code, lines = run_checks(repo, base)
     assert code == 0
     assert "ok import-contract" in lines
-
-
-def test_changed_gates_file_fails_frozen_trees(tmp_path):
-    repo = make_repo(tmp_path)
-    write_file(repo, "kullback/gates/policy.py", "VALUE = 1\n")
-    base = commit_paths(repo, "add policy", ["kullback/gates/policy.py"])
-    write_file(repo, "kullback/gates/policy.py", "VALUE = 2\n")
-    commit_paths(repo, "tweak policy", ["kullback/gates/policy.py"])
-    code, lines = run_checks(repo, base)
-    assert code == 1
-    assert f"FAIL frozen-trees: kullback/gates differs between {base} and HEAD" in lines
 
 
 def test_clean_change_passes_every_check(tmp_path):
@@ -353,18 +330,27 @@ def big_body(count):
     return branches
 
 
-def test_moved_function_over_ceiling_passes(tmp_path):
+@pytest.mark.parametrize("add_created", [False, True])
+def test_a_moved_function_over_ceiling_is_not_counted_as_new(tmp_path, add_created):
     repo = make_repo(tmp_path)
     body = big_body(15)
     write_file(repo, "kullback/oldmod.py", f"def evaluate(x):\n{body}    return -1\n")
     base = commit_paths(repo, "add old module", ["kullback/oldmod.py"])
     subprocess.run(["git", "rm", "-q", "kullback/oldmod.py"], cwd=repo, check=True)
-    write_file(repo, "kullback/newmod.py", f"def evaluate(x):\n{body}    return -1\n")
+    created = f"\n\ndef judge(x):\n{big_body(15)}    return -1\n" if add_created else ""
+    write_file(repo, "kullback/newmod.py", f"def evaluate(x):\n{body}    return -1\n{created}")
     subprocess.run(["git", "add", "--", "kullback/newmod.py"], cwd=repo, check=True)
     subprocess.run(["git", "commit", "-q", "-m", "move function"], cwd=repo, check=True)
     code, lines = run_checks(repo, base)
-    assert code == 0
-    assert "ok complexity-ceiling" in lines
+    failures = [line for line in lines if line.startswith("FAIL complexity-ceiling: ")]
+    if add_created:
+        assert code == 1
+        assert len(failures) == 1
+        assert "judge is new at 16" in failures[0]
+        assert "evaluate" not in failures[0]
+    else:
+        assert code == 0
+        assert "ok complexity-ceiling" in lines
 
 
 def test_moved_function_grown_fails_naming_both_files(tmp_path):
@@ -386,33 +372,24 @@ def test_moved_function_grown_fails_naming_both_files(tmp_path):
     assert "17" in failures[0]
 
 
-def test_genuinely_new_function_over_ceiling_still_fails(tmp_path):
+@pytest.mark.parametrize(
+    ("old_path", "old_text", "new_path"),
+    [
+        ("notes.txt", "plain line\n", "big.py"),
+        (
+            "kullback/oldmod.py",
+            "def double(n):\n    if n:\n        return 2 * n\n    return 0\n",
+            "kullback/newmod.py",
+        ),
+    ],
+)
+def test_genuinely_new_function_over_ceiling_still_fails(tmp_path, old_path, old_text, new_path):
     repo = make_repo(tmp_path)
-    write_file(repo, "kullback/oldmod.py", "def double(n):\n    if n:\n        return 2 * n\n    return 0\n")
-    base = commit_paths(repo, "add old module", ["kullback/oldmod.py"])
-    write_file(repo, "kullback/newmod.py", f"def evaluate(x):\n{big_body(15)}    return -1\n")
-    commit_paths(repo, "add new function", ["kullback/newmod.py"])
+    write_file(repo, old_path, old_text)
+    base = commit_paths(repo, "add old file", [old_path])
+    write_file(repo, new_path, f"def evaluate(x):\n{big_body(15)}    return -1\n")
+    commit_paths(repo, "add new function", [new_path])
     code, lines = run_checks(repo, base)
     assert code == 1
-    assert "FAIL complexity-ceiling: kullback/newmod.py evaluate is new at 16 (ceiling 15)" in lines
+    assert f"FAIL complexity-ceiling: {new_path} evaluate is new at 16 (ceiling 15)" in lines
 
-
-def test_moved_function_passes_while_created_function_fails(tmp_path):
-    repo = make_repo(tmp_path)
-    moved = big_body(15)
-    write_file(repo, "kullback/oldmod.py", f"def evaluate(x):\n{moved}    return -1\n")
-    base = commit_paths(repo, "add old module", ["kullback/oldmod.py"])
-    subprocess.run(["git", "rm", "-q", "kullback/oldmod.py"], cwd=repo, check=True)
-    write_file(
-        repo,
-        "kullback/newmod.py",
-        f"def evaluate(x):\n{moved}    return -1\n\n\ndef judge(x):\n{big_body(15)}    return -1\n",
-    )
-    subprocess.run(["git", "add", "--", "kullback/newmod.py"], cwd=repo, check=True)
-    subprocess.run(["git", "commit", "-q", "-m", "move one add one"], cwd=repo, check=True)
-    code, lines = run_checks(repo, base)
-    assert code == 1
-    failures = [line for line in lines if line.startswith("FAIL complexity-ceiling: ")]
-    assert len(failures) == 1
-    assert "judge is new at 16" in failures[0]
-    assert "evaluate" not in failures[0]
