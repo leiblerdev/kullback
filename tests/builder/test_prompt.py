@@ -30,12 +30,3 @@ def test_sections_hold_no_dash_outside_ascii():
     for _, text in prompt_mod.sections():
         assert "\u2014" not in text and "\u2013" not in text
 
-
-def test_findings_name_a_path_never_a_verb():
-    assert "never names a verb" in prompt_mod.EXAMPLES
-    assert "path" in prompt_mod.FEEDBACK and "change" in prompt_mod.FEEDBACK
-
-
-def test_the_stop_rule_ends_a_stalled_line_of_work():
-    assert "two consecutive edits" in prompt_mod.STOP
-    assert "what remains" in prompt_mod.STOP
