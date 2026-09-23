@@ -14,7 +14,7 @@ from kullback.agent.tools import RetryableToolError
 from kullback.examiner import domain_tools as D
 from kullback.examiner import prompt as P
 from kullback.examiner.exam_files import ExamRoot
-from kullback.gates.verifier_suite import D79_STAGES
+from kullback.gates.verifier_suite import ALT_PATH_NOT_RUN, D79_STAGES
 from kullback.runner.records import as_dict, read_json, write_json
 
 
@@ -206,15 +206,95 @@ def test_proposal_on_a_single_reference_task_with_a_waived_row_is_accepted_and_k
     assert row["checks"] == {name: name != "second_path_passes" for name in D79_STAGES.values()}
 
 
-def test_proposal_on_a_task_with_a_reference_is_refused_while_the_loophole_probe_cannot_run(tmp_path):
+def test_proposal_whose_loophole_probe_cannot_run_lands_and_the_task_stays_untrusted(tmp_path):
+    """F45: a check nobody could run is no refusal of the proposal. The gates after it still rule,
+    the file is kept, and the Task's row holds it untrusted with the check named and why."""
     root, world, _ = _root(tmp_path, task_status={"t1": {"verifier_passed": True}})
     _with_reference(world)
     [tool] = [t for t in D.domain_tools(root) if t.name == "propose_verifier"]
-    with pytest.raises(RetryableToolError, match="verifier_loophole"):
-        _run(tool.execute(D.ProposeArgs(task_id="t1", reason="tighten", add=[_WIDE_CAP_PROPOSAL])))
-    assert root.history["t1"].versions[-1].rejected_by == ["verifier_loophole"]
-    assert root.task_status["t1"] == {"verifier_passed": True}, "a refusal changes no status"
-    assert not (world.workdir / "exam" / "task_status.json").exists()
+    result = _run(tool.execute(D.ProposeArgs(task_id="t1", reason="tighten", add=[_WIDE_CAP_PROPOSAL])))
+    by_name = {record["name"]: record for record in result.rulings}
+    assert [name for name in by_name if name in D79_STAGES] == list(D79_STAGES), "every check ruled"
+    assert {"loosening", "false_rejection", "trusted"} <= set(by_name), "the gates after the suite ruled"
+    assert by_name["verifier_loophole"]["accepted"] is None
+    assert by_name["verifier_loophole"]["not_run"].startswith("no model")
+    assert by_name["trusted"]["accepted"] is None
+    assert "loophole_probe_fails not run (no model" in by_name["trusted"]["line"]
+    assert not any(record["accepted"] is False for record in result.rulings)
+    assert root.history["t1"].versions[-1].accepted is True
+    assert (world.workdir / "exam" / "verifiers" / "t1.json").is_file()
+    row = read_json(world.workdir / "exam" / "task_status.json")["t1"]
+    assert row["verifier_passed"] is False and row["not_run"] == ["verifier_loophole"]
+    assert row["not_run_reasons"]["loophole_probe_fails"].startswith("no model")
+
+
+def test_proposal_on_a_single_reference_task_is_accepted_and_reported_not_trusted_for_the_second_path(tmp_path):
+    root, world, _ = _root(tmp_path, probe_model=object(), run_probe=probe_runner_over(),
+                           task_status={"t1": {"verifier_passed": False}})
+    write_json(world.workdir / "references.json", {"t1": {"references": [{"run_id": "ref"}]}})
+    [tool] = [t for t in D.domain_tools(root) if t.name == "propose_verifier"]
+    result = _run(tool.execute(D.ProposeArgs(task_id="t1", reason="tighten", add=[_WIDE_CAP_PROPOSAL])))
+    by_name = {record["name"]: record for record in result.rulings}
+    assert by_name["verifier_alt_path"]["accepted"] is None
+    assert by_name["verifier_alt_path"]["not_run"] == ALT_PATH_NOT_RUN
+    assert by_name["trusted"]["accepted"] is None
+    assert f"second_path_passes not run ({ALT_PATH_NOT_RUN})" in by_name["trusted"]["line"]
+    assert "accepted" in result.summary
+    row = read_json(world.workdir / "exam" / "task_status.json")["t1"]
+    assert row["verifier_passed"] is False and row["second_path_waived"] is False
+    assert row["not_run"] == ["verifier_alt_path"]
+
+
+def test_proposal_on_one_task_is_not_refused_for_another_tasks_untrusted_verifier(tmp_path):
+    """F47: a proposal is judged by its own Task only. Task t2 is untrusted (a probe in its pool scores
+    a pass), and a proposal on t1 passes the trusted and false_rejection gates."""
+    root, _, current = _root(tmp_path, task_status={
+        task_id: {"verifier_passed": True, "checks": {name: True for name in D79_STAGES.values()}}
+        for task_id in ("t1", "t2")})
+    other = current.model_copy(update={"task_id": "t2"})
+    root.verifiers["t2"] = other
+    root.probes["t2"] = [VF.reference_run().model_copy(update={"task_id": "t2", "run_id": "probe-t2-1"})]
+    [tool] = [t for t in D.domain_tools(root) if t.name == "propose_verifier"]
+    add = {"id": "atom-new", "kind": current.atoms[0].kind, "payload": dict(current.atoms[0].target)}
+    result = _run(tool.execute(D.ProposeArgs(task_id="t1", reason="tighten", drop=[current.atoms[0].id],
+                                             add=[add])))
+    by_name = {record["name"]: record for record in result.rulings}
+    assert by_name["trusted"]["accepted"] is True and by_name["false_rejection"]["accepted"] is True
+    assert "t2" not in " ".join(record["line"] for record in result.rulings)
+
+
+def test_proposal_adding_an_atom_check_run_does_not_score_is_refused_before_any_gate(tmp_path):
+    """F51: an atom whose payload kind check_run has no branch for, or whose payload is empty, would
+    pass every Run; the proposal is refused with the kinds that are scored, and no version is written."""
+    root, _, _ = _root(tmp_path)
+    [tool] = [t for t in D.domain_tools(root) if t.name == "propose_verifier"]
+    for row in ({"id": "r0", "kind": "required", "payload": {"kind": "read", "tool": "look_up"}},
+                {"id": "r1", "kind": "required", "payload": {}},
+                {"id": "h0", "kind": "hard", "payload": {"kind": "hard"}}):
+        with pytest.raises(RetryableToolError) as excinfo:
+            _run(tool.execute(D.ProposeArgs(task_id="t1", reason="tighten", add=[row])))
+        assert f"the atom {row['id']!r} is not scored" in str(excinfo.value)
+        assert "write, write_value, entity_count, question, communicate" in str(excinfo.value)
+        assert "predicate_src" in str(excinfo.value)
+    assert "t1" not in root.history, "refused before any gate, so no version is written"
+
+
+def test_a_hard_atom_proposed_with_predicate_src_is_scored_by_the_suite(tmp_path):
+    root, world, _ = _root(tmp_path, probe_model=object(), run_probe=probe_runner_over())
+    _with_reference(world)
+    [tool] = [t for t in D.domain_tools(root) if t.name == "propose_verifier"]
+    rule = "def check(pre_state, write_call, transcript):\n    return False\n"
+    with pytest.raises(RetryableToolError) as excinfo:
+        _run(tool.execute(D.ProposeArgs(task_id="t1", reason="a rule no call keeps",
+                                        add=[{"id": "h0", "kind": "hard", "predicate_src": rule}])))
+    assert "verifier_oracle fail" in str(excinfo.value)
+    assert root.history["t1"].versions[-1].rejected_by == ["verifier_oracle"]
+
+
+def test_the_propose_tool_describes_the_atoms_check_run_scores():
+    description = D.ProposeArgs.model_fields["add"].description
+    assert "write, write_value, entity_count, question, communicate" in description
+    assert "`hard` atom needs `predicate_src`" in description
 
 
 def test_proposal_on_a_task_with_a_reference_is_refused_when_the_loophole_probe_passes(tmp_path):

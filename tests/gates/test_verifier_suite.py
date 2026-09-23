@@ -319,6 +319,38 @@ def test_the_second_path_check_says_it_had_no_second_path_rather_than_that_one_f
     assert given.passed is True and "not_run_reason" not in given.metrics
 
 
+def test_a_check_with_no_input_says_not_run_and_a_check_that_ran_does_not(tmp_path):
+    """F45: the line a check with no input carries is read as not run, never as a failure of the
+    atoms, by whoever rules on a proposal; a check that ran and failed has no not-run reason."""
+    verifier = derive(tmp_path)
+    gates = {g.stage: g for g in S.validate_verifier(verifier, reference_run(), empty_run=reference_run())}
+    assert S.not_run_reason(gates["verifier_alt_path"].failures) == S.ALT_PATH_NOT_RUN
+    assert gates["verifier_empty_run"].passed is False
+    assert S.not_run_reason(gates["verifier_empty_run"].failures) is None
+    assert S.not_run_reason([]) is None
+
+
+def test_a_required_atom_whose_payload_kind_check_run_does_not_score_fails_the_run(tmp_path):
+    """F51: a required atom nothing scores used to pass every Run; it is a failure that names it."""
+    verifier = derive(tmp_path)
+    assert S.check_run(verifier, reference_run(), write_tools=WRITE_TOOLS) == (True, None)
+    for payload in ({"kind": "read", "tool": "look_up"}, {}):
+        unscored = verifier.model_copy(update={"atoms": [*verifier.atoms, S.make_atom("r0", "required", payload)]})
+        kind = payload.get("kind")
+        assert S.check_run(unscored, reference_run(), write_tools=WRITE_TOOLS) == (
+            False, f"atom r0: kind {kind} is not scored")
+
+
+def test_a_hard_atom_with_predicate_src_is_scored_on_every_call(tmp_path):
+    verifier = derive(tmp_path)
+    never = S.make_atom("h0", "hard", {"kind": "hard", "predicate_src": _NEVER_KEPT})
+    ruled = verifier.model_copy(update={"atoms": [*verifier.atoms, never]})
+    assert S.check_run(ruled, reference_run(), write_tools=WRITE_TOOLS) == (False, "h0")
+
+
+_NEVER_KEPT = "def check(pre_state, write_call, transcript):\n    return False\n"
+
+
 def test_a_hollow_verifier_fails_the_suite_with_no_runs_supplied(tmp_path):
     """The empty Run needs no Runner, so check 3 always runs and an atomless Verifier cannot clear it."""
     hollow = Verifier(task_id="t1", atoms=[])
