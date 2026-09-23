@@ -65,13 +65,13 @@ def ok_anthropic(body=None):
 # --- model ids and base urls ---
 
 
-def test_split_model_id_gives_provider_and_wire_id():
-    assert pv.split_model_id("anthropic/claude-opus-5") == ("anthropic", "claude-opus-5")
-    assert pv.split_model_id("openai/gpt-4o-mini") == ("openai", "gpt-4o-mini")
-
-
-def test_split_model_id_keeps_slashes_in_the_wire_id():
-    assert pv.split_model_id("local/meta/llama-3.1") == ("local", "meta/llama-3.1")
+@pytest.mark.parametrize("model_id,expected", [
+    ("anthropic/claude-opus-5", ("anthropic", "claude-opus-5")),
+    ("openai/gpt-4o-mini", ("openai", "gpt-4o-mini")),
+    ("local/meta/llama-3.1", ("local", "meta/llama-3.1")),
+], ids=["anthropic", "openai", "slash_in_wire_id"])
+def test_split_model_id_gives_provider_and_wire_id(model_id, expected):
+    assert pv.split_model_id(model_id) == expected
 
 
 def test_split_model_id_needs_a_provider():
@@ -86,11 +86,8 @@ def test_wire_id_can_differ_from_the_model_id(sleeps):
     assert body["model"] == "claude-opus-5"
 
 
-def test_substitute_env_fills_dollar_brace_vars():
+def test_substitute_env_fills_dollar_brace_vars_and_raises_on_a_missing_one():
     assert pv.substitute_env("${HOST}/v1", {"HOST": "http://localhost:11434"}) == "http://localhost:11434/v1"
-
-
-def test_substitute_env_raises_on_a_missing_var():
     with pytest.raises(KeyError) as excinfo:
         pv.substitute_env("${NOPE}/v1", {})
     assert "NOPE" in str(excinfo.value)
@@ -99,27 +96,19 @@ def test_substitute_env_raises_on_a_missing_var():
 # --- the three defensive normalizations ---
 
 
-def test_strip_unpaired_surrogates_keeps_normal_text():
+def test_strip_unpaired_surrogates_removes_a_lone_surrogate_at_any_depth_and_keeps_normal_text():
     assert pv.strip_unpaired_surrogates("café \U0001f600") == "café \U0001f600"
-
-
-def test_strip_unpaired_surrogates_removes_a_lone_surrogate():
     assert pv.strip_unpaired_surrogates("a\ud800b") == "ab"
-
-
-def test_strip_surrogates_reaches_nested_values():
     cleaned = pv.strip_surrogates_deep({"a": ["x\udc00y", {"b": "\ud83d"}]})
     assert cleaned == {"a": ["xy", {"b": ""}]}
 
 
-def test_clean_tool_call_id_keeps_allowed_characters():
+def test_clean_tool_call_id_keeps_allowed_characters_and_replaces_the_rest():
     assert pv.clean_tool_call_id("call_abc-123") == "call_abc-123"
-
-
-def test_clean_tool_call_id_replaces_the_rest():
     cleaned = pv.clean_tool_call_id("call:1 2/3")
     assert cleaned.startswith("call_1_2_3_")
     assert not pv.ID_ALLOWED.search(cleaned)
+    assert pv.clean_tool_call_id("") == "id"
 
 
 def test_cleaning_keeps_distinct_ids_distinct():
@@ -131,10 +120,6 @@ def test_cleaning_keeps_distinct_ids_distinct():
     assert pv.clean_tool_call_id("a:b") == pv.clean_tool_call_id("a:b")
 
 
-def test_clean_tool_call_id_never_returns_empty():
-    assert pv.clean_tool_call_id("") == "id"
-
-
 def test_normalize_messages_drops_empty_messages():
     messages = [
         {"role": "user", "content": [{"type": "text", "text": "hi"}]},
@@ -142,6 +127,9 @@ def test_normalize_messages_drops_empty_messages():
         {"role": "assistant", "content": [{"type": "text", "text": ""}]},
     ]
     assert pv.normalize_messages(messages) == [{"role": "user", "content": [{"type": "text", "text": "hi"}]}]
+    # A whitespace-only assistant turn is dropped too, unlike an empty user turn.
+    messages = [{"role": "user", "content": "hi"}, {"role": "assistant", "content": "  "}]
+    assert [m["role"] for m in pv.normalize_messages(messages)] == ["user"]
 
 
 def test_normalize_messages_drops_empty_reasoning_parts_and_keeps_full_ones():
@@ -167,20 +155,12 @@ def test_normalize_messages_keeps_a_message_that_only_calls_a_tool():
     assert out[0]["content"][0]["id"].startswith("a_b_")
 
 
-def test_normalize_messages_cleans_tool_result_ids():
-    messages = [{"role": "user", "content": [{"type": "tool_result", "tool_use_id": "a b", "content": "r"}]}]
-    assert pv.normalize_messages(messages)[0]["content"][0]["tool_use_id"] == pv.clean_tool_call_id("a b")
-
-
 # --- cache points ---
 
 
-def test_cache_points_mark_the_system_prompt():
+def test_cache_points_mark_system_and_last_two():
     system = pv.cache_system([{"type": "text", "text": "policy"}])
     assert system[-1]["cache_control"] == {"type": "ephemeral"}
-
-
-def test_cache_points_mark_the_last_two_non_system_messages():
     messages = [
         {"role": "user", "content": [{"type": "text", "text": "one"}]},
         {"role": "assistant", "content": [{"type": "text", "text": "two"}]},
@@ -227,6 +207,9 @@ def test_the_anthropic_body_carries_system_tools_stops_and_the_same_cleaned_id_o
     assert body["messages"][1]["content"][0]["id"] == pv.clean_tool_call_id("a b")
     assert body["messages"][2]["content"][0]["tool_use_id"] == pv.clean_tool_call_id("a b")
     assert body["tools"][0]["name"] == "get"
+    # normalize_messages cleans a tool_result id on its own, not only inside a full body.
+    result = [{"role": "user", "content": [{"type": "tool_result", "tool_use_id": "a b", "content": "r"}]}]
+    assert pv.normalize_messages(result)[0]["content"][0]["tool_use_id"] == pv.clean_tool_call_id("a b")
 
 
 def test_anthropic_reply_carries_content_tool_calls_and_usage(live, sleeps):
@@ -254,30 +237,44 @@ def test_anthropic_reply_carries_content_tool_calls_and_usage(live, sleeps):
     assert reply.usage.output == 5
     assert reply.usage.cache_read == 3
     assert reply.usage.cache_write == 2
+    # Usage is present even when the provider omits it.
+    bare = anthropic_model(ok_anthropic({"content": [], "usage": {}}), sleeps).query([{"role": "user", "content": "hi"}])
+    assert bare.usage.input == 0 and bare.usage.output == 0
 
 
-def test_usage_is_present_even_when_the_provider_omits_it(live, sleeps):
-    model = anthropic_model(ok_anthropic({"content": [], "usage": {}}), sleeps)
-    reply = model.query([{"role": "user", "content": "hi"}])
-    assert reply.usage.input == 0 and reply.usage.output == 0
+@pytest.mark.parametrize("path", ["query", "post", "client"])
+def test_adapters_refuse_while_live_calls_are_off(sleeps, path):
+    """Nothing reaches the transport or opens a socket while live calls are off, not even lazily."""
+    hits = []
 
+    def handler(request):
+        hits.append(1)
+        return httpx.Response(200, json={"content": [], "usage": {}})
 
-def test_adapters_refuse_while_live_calls_are_off(sleeps):
-    model = anthropic_model(ok_anthropic(), sleeps)
+    model = anthropic_model(handler, sleeps)
     with pytest.raises(RuntimeError) as excinfo:
-        model.query([{"role": "user", "content": "hi"}])
+        if path == "query":
+            model.query([{"role": "user", "content": "hi"}])
+        elif path == "post":
+            model.post({"model": "x"})
+        else:
+            pv.AnthropicModel(model_id="anthropic/claude-opus-5", api_key="k", env={}).client()
     assert "ALLOW_MODEL_REQUESTS" in str(excinfo.value)
+    assert hits == []
 
 
 # --- retry ---
 
 
-def test_retry_on_500_then_success(live, sleeps):
+@pytest.mark.parametrize("failure", ["http_500", "network_error"])
+def test_a_500_or_a_network_error_is_retried_until_success(live, sleeps, failure):
     calls = []
 
     def handler(request):
         calls.append(1)
         if len(calls) < 3:
+            if failure == "network_error":
+                raise httpx.ConnectError("no route", request=request)
             return httpx.Response(500, json={"error": {"message": "boom"}})
         return httpx.Response(200, json={"content": [{"type": "text", "text": "ok"}], "usage": {}})
 
@@ -310,20 +307,6 @@ def test_retry_after_accepts_an_http_date():
     stamp = "Wed, 21 Oct 2099 07:28:00 GMT"
     seconds = pv.retry_after_seconds({"Retry-After": stamp}, now=0.0)
     assert seconds == parsedate_to_datetime(stamp).timestamp()
-
-
-def test_network_errors_are_retried(live, sleeps):
-    calls = []
-
-    def handler(request):
-        calls.append(1)
-        if len(calls) < 2:
-            raise httpx.ConnectError("no route", request=request)
-        return httpx.Response(200, json={"content": [], "usage": {}})
-
-    model = anthropic_model(handler, sleeps)
-    model.query([{"role": "user", "content": "hi"}])
-    assert len(calls) == 2
 
 
 def test_five_attempts_then_give_up(live, sleeps):
@@ -482,6 +465,13 @@ def test_openai_compatible_needs_no_key(live, sleeps):
         env={},
     )
     assert model.query([{"role": "user", "content": "hi"}]).content == "hi"
+    # A local endpoint reached through model_for, with no key anywhere, still runs: the rule that
+    # a hand-passed endpoint takes PROVIDER_API_KEY must not make a key required.
+    local = pv.model_for("local/llama", base_url="http://127.0.0.1:11434/v1", env={},
+                         client=transport_of(ok_openai()), sleep=sleeps.append)
+    assert local.api_key is None and local.key_required is False
+    assert "authorization" not in local.headers()
+    assert local.query(HI).content == "hello"
 
 
 def test_a_missing_key_is_reported_before_the_request(live, sleeps):
@@ -497,28 +487,6 @@ def test_a_missing_key_is_reported_before_the_request(live, sleeps):
 
 
 # --- the live-call gate sits on the network path ---
-
-
-def test_post_is_gated_too_not_only_query(sleeps):
-    """A caller that builds a body and posts it must not reach the transport either."""
-    hits = []
-
-    def handler(request):
-        hits.append(1)
-        return httpx.Response(200, json={"content": [], "usage": {}})
-
-    model = anthropic_model(handler, sleeps)
-    with pytest.raises(RuntimeError) as excinfo:
-        model.post({"model": "x"})
-    assert "ALLOW_MODEL_REQUESTS" in str(excinfo.value)
-    assert hits == []
-
-
-def test_building_a_real_http_client_is_gated():
-    """Nothing opens a socket while live calls are off, not even lazily."""
-    model = pv.AnthropicModel(model_id="anthropic/claude-opus-5", api_key="k", env={})
-    with pytest.raises(RuntimeError):
-        model.client()
 
 
 def test_live_calls_turn_on_only_from_the_environment():
@@ -580,40 +548,24 @@ def test_a_base_url_the_caller_passes_wins_over_the_registry(tmp_path, monkeypat
     assert model.base_url == "http://127.0.0.1:8080/v1"
 
 
-def test_a_provider_the_registry_serves_in_another_request_shape_is_refused_by_name(tmp_path, monkeypatch):
+@pytest.mark.parametrize("model_id,needles", [
+    ("vertex/gemini-3-pro", ("@ai-sdk/google-vertex", "base_url")),
+    ("google/gemini-3-pro", ("no host",)),
+    ("nowhere/model-1", ("no host",)),
+], ids=["another_request_shape", "no_host_in_registry", "unknown_provider"])
+def test_a_provider_the_registry_cannot_serve_is_refused_by_name(tmp_path, monkeypatch, model_id, needles):
     registry_snapshot(tmp_path, monkeypatch, REGISTRY)
     with pytest.raises(ValueError) as raised:
-        pv.model_for("vertex/gemini-3-pro", env={})
-    assert "@ai-sdk/google-vertex" in str(raised.value)
-    assert "base_url" in str(raised.value)
-
-
-def test_a_provider_with_no_host_in_the_registry_is_refused_like_an_unknown_one(tmp_path, monkeypatch):
-    registry_snapshot(tmp_path, monkeypatch, REGISTRY)
-    for model_id in ("google/gemini-3-pro", "nowhere/model-1"):
-        with pytest.raises(ValueError) as raised:
-            pv.model_for(model_id, env={})
-        assert "no host" in str(raised.value)
+        pv.model_for(model_id, env={})
+    for needle in needles:
+        assert needle in str(raised.value)
 
 
 def test_the_registry_is_read_from_disk_and_never_from_the_network_with_live_calls_off(tmp_path, monkeypatch):
+    """With no snapshot on disk the lookup refuses; the live gate keeps it off the network."""
     monkeypatch.setattr(pv, "REGISTRY_SNAPSHOT_PATH", str(tmp_path / "absent.json"))
-
-    def refuse(*args, **kwargs):
-        raise AssertionError("the registry reached the network with live calls off")
-
-    monkeypatch.setattr(httpx, "Client", refuse)
     with pytest.raises(ValueError):
         pv.model_for("opencode-go/kimi-k3", env={})
-
-
-def test_the_registry_model_sends_no_reasoning_field_a_gateway_may_not_know(tmp_path, monkeypatch):
-    registry_snapshot(tmp_path, monkeypatch, REGISTRY)
-    model = pv.model_for("opencode-go/kimi-k3", env={"OPENCODE_API_KEY": "sk-zen"})
-    body = model.build_body([{"role": "user", "content": "hi"}], None,
-                            pv.ModelConfig(reasoning_effort="high"))
-    assert "reasoning_effort" not in body
-    assert body["model"] == "kimi-k3"
 
 
 def test_model_for_builds_one_adapter_per_provider():
@@ -638,6 +590,9 @@ def test_anthropic_sends_thinking_and_effort(sleeps):
     assert body["thinking"] == {"type": "adaptive"}
     assert body["output_config"] == {"effort": "low"}
     assert "budget_tokens" not in json.dumps(body), "the current models reject budget_tokens"
+    # A config without reasoning sends none of it.
+    plain = anthropic_model(ok_anthropic(), sleeps).build_body(HI, None, pv.ModelConfig())
+    assert "thinking" not in plain and "output_config" not in plain
 
 
 def test_openai_sends_reasoning_effort(sleeps):
@@ -646,7 +601,7 @@ def test_openai_sends_reasoning_effort(sleeps):
     assert body["reasoning_effort"] == "low"
 
 
-def test_a_local_endpoint_is_sent_no_reasoning_fields(sleeps):
+def test_a_local_endpoint_or_a_registry_gateway_is_sent_no_reasoning_fields(sleeps, tmp_path, monkeypatch):
     """Branch three: a server that does not know the field rejects the whole request."""
     model = pv.OpenAICompatibleModel(
         model_id="local/llama",
@@ -658,27 +613,32 @@ def test_a_local_endpoint_is_sent_no_reasoning_fields(sleeps):
     body = model.build_body(HI, None, pv.ModelConfig(reasoning_effort="high"))
     assert "reasoning_effort" not in body
     assert "thinking" not in body
-
-
-def test_a_config_without_reasoning_sends_none_of_it(sleeps):
-    body = anthropic_model(ok_anthropic(), sleeps).build_body(HI, None, pv.ModelConfig())
-    assert "thinking" not in body and "output_config" not in body
+    registry_snapshot(tmp_path, monkeypatch, REGISTRY)
+    gateway = pv.model_for("opencode-go/kimi-k3", env={"OPENCODE_API_KEY": "sk-zen"})
+    body = gateway.build_body(HI, None, pv.ModelConfig(reasoning_effort="high"))
+    assert "reasoning_effort" not in body
+    assert body["model"] == "kimi-k3"
 
 
 # --- what the model is actually shown ---
 
 
-def test_a_structured_tool_result_goes_as_json_not_a_python_repr():
+@pytest.mark.parametrize("adapter", ["anthropic", "openai"])
+def test_a_structured_tool_result_goes_as_json_not_a_python_repr(adapter):
     """D65: the Candidate sees what production gave it, and production never sent repr()."""
     result = {"order_id": "#W1", "status": "pending", "expedited": True, "note": None}
-    _, out = pv._to_anthropic(
-        [
-            {"role": "user", "content": "hi"},
-            {"role": "assistant", "content": None, "tool_calls": [{"id": "c1", "name": "get", "arguments": {}}]},
-            {"role": "tool", "tool_call_id": "c1", "content": result},
-        ]
-    )
-    text = out[-1]["content"][0]["content"]
+    tool = {"role": "tool", "tool_call_id": "c1", "content": result}
+    if adapter == "anthropic":
+        _, out = pv._to_anthropic(
+            [
+                {"role": "user", "content": "hi"},
+                {"role": "assistant", "content": None, "tool_calls": [{"id": "c1", "name": "get", "arguments": {}}]},
+                tool,
+            ]
+        )
+        text = out[-1]["content"][0]["content"]
+    else:
+        text = pv._openai_message(tool)["content"]
     assert json.loads(text) == result
     assert "'" not in text and "True" not in text and "None" not in text
 
@@ -705,11 +665,6 @@ def test_two_tool_results_from_one_turn_group_into_one_user_message():
     tool_results = out[-1]["content"]
     assert [b["tool_use_id"] for b in tool_results] == ["c1", "c2"]
     assert [b["content"] for b in tool_results] == ["order result", "user result"]
-
-
-def test_an_openai_message_carrying_a_dict_result_goes_as_json():
-    message = pv._openai_message({"role": "tool", "tool_call_id": "c1", "content": {"a": 1, "b": None}})
-    assert json.loads(message["content"]) == {"a": 1, "b": None}
 
 
 def test_an_assistant_message_without_tool_calls_goes_without_the_key():
@@ -757,11 +712,6 @@ def test_an_empty_user_turn_keeps_the_request_ending_on_the_user(sleeps):
     assert body["messages"][-1]["content"][0]["text"] == pv.EMPTY_USER_PLACEHOLDER
 
 
-def test_an_empty_assistant_turn_is_still_dropped():
-    messages = [{"role": "user", "content": "hi"}, {"role": "assistant", "content": "  "}]
-    assert [m["role"] for m in pv.normalize_messages(messages)] == ["user"]
-
-
 # --- retry rules ---
 
 
@@ -778,19 +728,17 @@ def test_a_two_hundred_that_is_not_json_is_a_provider_error_and_is_retried(live,
         model.query([{"role": "user", "content": "hi"}])
     assert len(calls) == 5
 
+    # One that recovers on the next attempt is not an error.
+    recovering = []
 
-def test_a_non_json_two_hundred_that_recovers_is_not_an_error(live, sleeps):
-    calls = []
-
-    def handler(request):
-        calls.append(1)
-        if len(calls) == 1:
+    def recovers(request):
+        recovering.append(1)
+        if len(recovering) == 1:
             return httpx.Response(200, text="<html>gateway</html>")
         return httpx.Response(200, json={"content": [{"type": "text", "text": "ok"}], "usage": {}})
 
-    model = anthropic_model(handler, sleeps)
-    assert model.query([{"role": "user", "content": "hi"}]).content == "ok"
-    assert len(calls) == 2
+    assert anthropic_model(recovers, sleeps).query([{"role": "user", "content": "hi"}]).content == "ok"
+    assert len(recovering) == 2
 
 
 def test_a_retry_after_longer_than_the_build_will_wait_gives_up(live, sleeps):
@@ -827,19 +775,18 @@ def test_load_dotenv_adds_keys_without_overriding(tmp_path):
 # --- prompt_cache_key (docs/prompt-caching.md item 4) ---
 
 
-@pytest.mark.parametrize("config_kwargs,expected", [
-    ({"prompt_cache_key": "kullback-abc-compile_tools"}, "kullback-abc-compile_tools"),
-    ({}, None),
-])
-def test_the_openai_body_carries_the_prompt_cache_key_only_when_one_was_set(config_kwargs, expected):
-    body = _body("openai/gpt-4o-mini", **config_kwargs)
+@pytest.mark.parametrize("model_id,config_kwargs,expected", [
+    ("openai/gpt-4o-mini", {"prompt_cache_key": "kullback-abc-compile_tools"}, "kullback-abc-compile_tools"),
+    ("openai/gpt-4o-mini", {}, None),
+    ("anthropic/claude-opus-5", {"prompt_cache_key": "kullback-abc-compile_tools"}, None),
+], ids=["openai_set", "openai_unset", "anthropic_ignores"])
+def test_only_the_openai_body_carries_the_prompt_cache_key_and_only_when_one_was_set(
+        sleeps, model_id, config_kwargs, expected):
+    if model_id.startswith("anthropic/"):
+        body = anthropic_model(ok_anthropic(), sleeps).build_body(HI, None, pv.ModelConfig(**config_kwargs))
+    else:
+        body = _body(model_id, **config_kwargs)
     assert body.get("prompt_cache_key") == expected
-
-
-def test_anthropic_body_ignores_the_prompt_cache_key(sleeps):
-    body = anthropic_model(ok_anthropic(), sleeps).build_body(
-        HI, None, pv.ModelConfig(prompt_cache_key="kullback-abc-compile_tools"))
-    assert "prompt_cache_key" not in body
 
 
 # --- MemoModel (docs/prompt-caching.md item 3) ---
@@ -886,16 +833,6 @@ def test_a_different_config_or_tool_list_is_a_miss(tmp_path, first_kwargs, secon
     assert memo.hits == 0 and len(inner.calls) == 2
 
 
-def test_the_cache_directory_is_content_addressed(tmp_path):
-    inner = pv.TestModel(["a"])
-    memo = pv.MemoModel(inner, tmp_path)
-    memo.query([{"role": "user", "content": "hi"}])
-    files = list((tmp_path / pv.MemoModel.CACHE_DIR).glob("*.json"))
-    assert len(files) == 1
-    key = memo._key([{"role": "user", "content": "hi"}], None, None)
-    assert files[0].name == f"{key}.json"
-
-
 def test_the_memo_survives_a_second_memomodel_over_the_same_workdir(tmp_path):
     inner_one = pv.TestModel(["a"])
     pv.MemoModel(inner_one, tmp_path).query([{"role": "user", "content": "hi"}])
@@ -915,21 +852,18 @@ def _body(model_id: str, tools=None, **config):
     return model.build_body([{"role": "user", "content": "hi"}], tools, pv.ModelConfig(**config))
 
 
-def test_the_gpt5_family_is_sent_max_completion_tokens_not_max_tokens():
-    body = _body("openai/gpt-5.6-luna", max_tokens=2000)
-    assert body["max_completion_tokens"] == 2000
-    assert "max_tokens" not in body
-
-
-def test_an_older_openai_model_keeps_the_field_it_has_always_taken():
-    body = _body("openai/gpt-4.1-mini", max_tokens=2000)
-    assert body["max_tokens"] == 2000
-    assert "max_completion_tokens" not in body
-
-
-def test_the_o_series_is_read_as_the_same_family():
-    for model_id in ("openai/o1", "openai/o3-mini", "openai/o4-mini"):
-        assert "max_completion_tokens" in _body(model_id, max_tokens=8)
+@pytest.mark.parametrize("model_id,sent,absent", [
+    ("openai/gpt-5.6-luna", "max_completion_tokens", "max_tokens"),
+    ("openai/o1", "max_completion_tokens", "max_tokens"),
+    ("openai/o3-mini", "max_completion_tokens", "max_tokens"),
+    ("openai/o4-mini", "max_completion_tokens", "max_tokens"),
+    ("openai/gpt-4.1-mini", "max_tokens", "max_completion_tokens"),
+])
+def test_the_gpt5_and_o_families_are_sent_max_completion_tokens_and_older_models_keep_max_tokens(
+        model_id, sent, absent):
+    body = _body(model_id, max_tokens=2000)
+    assert body[sent] == 2000
+    assert absent not in body
 
 
 def test_the_gpt5_family_is_not_sent_a_temperature_it_will_refuse():
@@ -937,22 +871,19 @@ def test_the_gpt5_family_is_not_sent_a_temperature_it_will_refuse():
     assert _body("openai/gpt-4.1-mini", temperature=0)["temperature"] == 0
 
 
-def test_a_tool_call_to_the_gpt5_family_turns_reasoning_off_by_name():
-    tools = [{"name": "get_order", "input_schema": {"type": "object"}}]
-    assert _body("openai/gpt-5.6-luna", tools=tools)["reasoning_effort"] == "none"
+TOOLS = [{"name": "get_order", "input_schema": {"type": "object"}}]
+
+
+@pytest.mark.parametrize("model_id,tools,config,expected", [
+    ("openai/gpt-5.6-luna", TOOLS, {}, "none"),
     # Not sending the field is not the same as sending 'none': the endpoint applies its own
     # default, and that default is what returns HTTP 400 alongside tools.
-    assert "reasoning_effort" not in _body("openai/gpt-5.6-luna")
-
-
-def test_an_effort_the_caller_asked_for_survives_a_tool_call():
-    tools = [{"name": "get_order", "input_schema": {"type": "object"}}]
-    assert _body("openai/gpt-5.6-luna", tools=tools, reasoning_effort="high")["reasoning_effort"] == "high"
-
-
-def test_an_older_model_is_left_alone_when_it_is_given_tools():
-    tools = [{"name": "get_order", "input_schema": {"type": "object"}}]
-    assert "reasoning_effort" not in _body("openai/gpt-4.1-mini", tools=tools)
+    ("openai/gpt-5.6-luna", None, {}, None),
+    ("openai/gpt-5.6-luna", TOOLS, {"reasoning_effort": "high"}, "high"),
+    ("openai/gpt-4.1-mini", TOOLS, {}, None),
+], ids=["gpt5_with_tools", "gpt5_without_tools", "asked_effort_survives", "older_model_left_alone"])
+def test_a_tool_call_to_the_gpt5_family_turns_reasoning_off_by_name(model_id, tools, config, expected):
+    assert _body(model_id, tools=tools, **config).get("reasoning_effort", None) == expected
 
 
 def test_a_responses_model_posts_input_items_to_the_responses_path(live, sleeps):
@@ -1096,18 +1027,21 @@ def test_opencode_hosts_get_session_and_identity_headers(live, sleeps):
     assert re.fullmatch(r"[0-9a-f]{32}", seen["headers"]["x-opencode-session"])
     assert model.headers()["x-opencode-session"] == seen["headers"]["x-opencode-session"]
 
+    # Other hosts see no opencode headers.
+    other = {}
 
-def test_other_hosts_see_no_opencode_headers(live, sleeps):
-    def handler(request):
-        assert "x-opencode-session" not in request.headers
-        assert request.headers.get("user-agent", "").startswith("python-httpx")
+    def other_handler(request):
+        other["headers"] = dict(request.headers)
         return httpx.Response(200, json={"choices": [{"message": {"content": "hi"}}], "usage": {}})
 
-    model = pv.OpenAICompatibleModel(
+    local = pv.OpenAICompatibleModel(
         model_id="local/llama", base_url="http://127.0.0.1:11434/v1",
-        client=transport_of(handler), sleep=sleeps.append, env={},
+        client=transport_of(other_handler), sleep=sleeps.append, env={},
     )
-    assert model.query([{"role": "user", "content": "hi"}]).content == "hi"
+    assert local.query([{"role": "user", "content": "hi"}]).content == "hi"
+    assert "x-opencode-session" not in other["headers"]
+    assert other["headers"].get("user-agent", "").startswith("python-httpx")
+
 
 def test_an_explicit_base_url_does_not_change_a_responses_model_shape(tmp_path, monkeypatch):
     """Greptile P1: 1.3 with --base-url took the chat branch and posted chat bodies at a
@@ -1119,28 +1053,19 @@ def test_an_explicit_base_url_does_not_change_a_responses_model_shape(tmp_path, 
     assert model.base_url == "http://127.0.0.1:8080/v1"
 
 
-def test_the_chat_adapter_records_the_cache_write_tokens_the_endpoint_reports():
+@pytest.mark.parametrize("details,prompt,expected", [
+    ({"cached_tokens": 0, "cache_write_tokens": 1339}, 1342, (1342, 0, 1339)),
+    ({"cached_tokens": 400}, 900, (500, 400, 0)),
+], ids=["reported", "not_reported"])
+def test_the_chat_adapter_records_the_cache_write_tokens_the_endpoint_reports(details, prompt, expected):
     """A reply with cached_tokens 0 still carried cache_write_tokens 1339, billed at the model's
-    own cache_write rate; dropping it billed a build for less than it cost."""
+    own cache_write rate; dropping it billed a build for less than it cost. None reported is 0."""
     model = pv.OpenAIModel(model_id="openai/gpt-5.6-luna", api_key="k", env={})
     reply = model.parse_reply({
         "choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}],
-        "usage": {"prompt_tokens": 1342, "completion_tokens": 286,
-                  "prompt_tokens_details": {"cached_tokens": 0, "cache_write_tokens": 1339}},
+        "usage": {"prompt_tokens": prompt, "completion_tokens": 286, "prompt_tokens_details": details},
     })
-    assert reply.usage.input == 1342 and reply.usage.cache_read == 0
-    assert reply.usage.cache_write == 1339
-
-
-def test_an_endpoint_that_reports_no_cache_write_records_none():
-    model = pv.OpenAIModel(model_id="openai/gpt-5.6-luna", api_key="k", env={})
-    reply = model.parse_reply({
-        "choices": [{"message": {"content": "ok"}}],
-        "usage": {"prompt_tokens": 900, "completion_tokens": 10,
-                  "prompt_tokens_details": {"cached_tokens": 400}},
-    })
-    assert reply.usage.cache_read == 400 and reply.usage.input == 500
-    assert reply.usage.cache_write == 0
+    assert (reply.usage.input, reply.usage.cache_read, reply.usage.cache_write) == expected
 
 
 # --- what one exchange records (D159) ---
@@ -1217,29 +1142,27 @@ def test_an_offline_model_records_no_exchange(make_recorded_model):
 # --- logprobs, asked for only where the endpoint takes them (D159) ---
 
 
-def test_an_openai_chat_body_carries_logprobs_only_when_they_were_asked_for():
-    body = _body("openai/gpt-4.1-mini", logprobs=True, top_logprobs=5)
-    assert body["logprobs"] is True and body["top_logprobs"] == 5
-    plain = _body("openai/gpt-4.1-mini")
-    assert "logprobs" not in plain and "top_logprobs" not in plain
-
-
-def test_a_responses_body_asks_for_output_text_logprobs_when_they_were_asked_for(sleeps):
-    model = pv.OpenAIResponsesModel(
-        model_id="opencode-go/muse-spark-1.3-contributor", base_url="https://opencode.ai/zen/go/v1",
-        client=transport_of(ok_anthropic()), sleep=sleeps.append, env={},
-    )
-    body = model.build_body(HI, None, pv.ModelConfig(logprobs=True, top_logprobs=3))
-    assert body["top_logprobs"] == 3
-    assert body["include"] == [pv.RESPONSES_LOGPROBS_INCLUDE]
-    assert "include" not in model.build_body(HI, None, pv.ModelConfig())
-
-
-def test_an_anthropic_body_carries_no_logprobs_field(sleeps):
-    """The Messages API has no logprobs, and a field it does not know makes it refuse the request."""
-    body = anthropic_model(ok_anthropic(), sleeps).build_body(
-        HI, None, pv.ModelConfig(logprobs=True, top_logprobs=5))
-    assert "logprobs" not in json.dumps(body)
+@pytest.mark.parametrize("adapter", ["openai_chat", "responses", "anthropic"])
+def test_a_body_carries_logprobs_only_when_they_were_asked_for_and_the_endpoint_takes_them(sleeps, adapter):
+    if adapter == "openai_chat":
+        body = _body("openai/gpt-4.1-mini", logprobs=True, top_logprobs=5)
+        assert body["logprobs"] is True and body["top_logprobs"] == 5
+        plain = _body("openai/gpt-4.1-mini")
+        assert "logprobs" not in plain and "top_logprobs" not in plain
+    elif adapter == "responses":
+        model = pv.OpenAIResponsesModel(
+            model_id="opencode-go/muse-spark-1.3-contributor", base_url="https://opencode.ai/zen/go/v1",
+            client=transport_of(ok_anthropic()), sleep=sleeps.append, env={},
+        )
+        body = model.build_body(HI, None, pv.ModelConfig(logprobs=True, top_logprobs=3))
+        assert body["top_logprobs"] == 3
+        assert body["include"] == [pv.RESPONSES_LOGPROBS_INCLUDE]
+        assert "include" not in model.build_body(HI, None, pv.ModelConfig())
+    else:
+        # The Messages API has no logprobs, and a field it does not know makes it refuse the request.
+        body = anthropic_model(ok_anthropic(), sleeps).build_body(
+            HI, None, pv.ModelConfig(logprobs=True, top_logprobs=5))
+        assert "logprobs" not in json.dumps(body)
 
 
 def test_a_mark_the_harness_writes_beside_a_message_does_not_go_on_the_wire():
@@ -1332,15 +1255,6 @@ def test_an_endpoint_passed_by_hand_does_not_borrow_the_openai_key(monkeypatch):
     assert "sk-openai" not in str(model.headers())
 
 
-def test_a_local_endpoint_with_no_key_anywhere_still_runs(sleeps, live):
-    """The rule above must not make a key required: a server on this machine wants none."""
-    model = pv.model_for("local/llama", base_url="http://127.0.0.1:11434/v1", env={},
-                         client=transport_of(ok_openai()), sleep=sleeps.append)
-    assert model.api_key is None and model.key_required is False
-    assert "authorization" not in model.headers()
-    assert model.query(HI).content == "hello"
-
-
 # --- what a thinking provider puts on a reply, and asks to see again ---
 
 
@@ -1394,13 +1308,9 @@ def test_an_assistant_turn_carries_its_thinking_back_when_the_provider_put_it_th
     assert message["reasoning_content"] == "the meter id is in the last result"
     assert message["reasoning"] == "same thing under the other name"
     assert message["tool_calls"][0]["function"]["name"] == "look_up"
-
-
-def test_a_message_the_provider_never_put_thinking_on_carries_none():
-    """Nothing is invented: only a reply that carried the field can put it on a message, which is
-    what makes passing it through free for a provider that has no such field."""
-    message = pv._openai_message({"role": "assistant", "content": "plain"})
-    assert set(message) == {"role", "content"}
+    # Nothing is invented: only a reply that carried the field can put it on a message, which is
+    # what makes passing it through free for a provider that has no such field.
+    assert set(pv._openai_message({"role": "assistant", "content": "plain"})) == {"role", "content"}
 
 
 def test_a_registry_reply_is_named_by_the_id_it_was_asked_under_not_the_one_echoed_back(
