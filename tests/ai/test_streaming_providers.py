@@ -202,11 +202,13 @@ def test_a_memo_round_trip_yields_the_events_the_live_stream_yielded(live, tmp_p
 
     stored = ModelReply(content=answered.content, usage=answered.usage, model=answered.model,
                         stop_reason=answered.stop_reason)
-    memo = MemoModel(TestModel([stored], name=answered.model, loop=True), tmp_path)
+    inner = TestModel([stored], name=answered.model, loop=True)
+    memo = MemoModel(inner, tmp_path)
 
     miss = collect(ReplayProvider(memo), messages=[UserMessage(content="hi")])
     hit = collect(ReplayProvider(memo), messages=[UserMessage(content="hi")])
     assert (memo.calls, memo.hits) == (2, 1)
+    assert len(inner.calls) == 1
 
     assert miss == live_events
     assert [event.type for event in hit] == [event.type for event in live_events]
