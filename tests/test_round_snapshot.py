@@ -15,7 +15,6 @@ import pytest
 from typer.testing import CliRunner
 
 from kullback import cli, round_snapshot
-from kullback.builder.build import compile_snapshot_rows
 from kullback.examiner import loosen, stage
 from kullback.gates.ledger import COMPILE_NAME, GateLedger
 from kullback.gates.verifier_suite import D79_STAGES
@@ -129,17 +128,6 @@ def test_gates_json_holds_the_rounds_rulings_after_a_mid_round_compile(tmp_path)
     assert json.loads((tmp_path / "gates.json").read_text(encoding="utf-8")) == closed
     body = json.loads((tmp_path / COMPILE_NAME).read_text(encoding="utf-8"))
     assert body["round"] == 4 and body["rows"][0]["tool"] == "find_copy"
-
-
-def test_a_narrowed_compile_keeps_the_rows_of_the_tools_it_did_not_measure():
-    kept = [{"tool": "find_copy", "stage": "parses", "pass": True},
-            {"tool": "mark_lent", "stage": "parses", "pass": False}]
-    fresh = {"mark_lent": [{"tool": "mark_lent", "stage": "parses", "pass": True}]}
-    assert compile_snapshot_rows(kept, fresh, ["mark_lent"]) == [
-        {"tool": "find_copy", "stage": "parses", "pass": True},
-        {"tool": "mark_lent", "stage": "parses", "pass": True}]
-    # A full run measured every tool, so it replaces the file rather than merging into it.
-    assert compile_snapshot_rows(kept, fresh, None) == [{"tool": "mark_lent", "stage": "parses", "pass": True}]
 
 
 def test_a_status_row_keeps_its_stamp_until_the_row_itself_moves():

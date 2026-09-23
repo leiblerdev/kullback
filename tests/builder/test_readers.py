@@ -9,14 +9,10 @@ from __future__ import annotations
 
 import json
 
-import pytest
-
 from kullback.ai.provider import ModelReply, TestModel
-from kullback.builder import build as build_module
 from kullback.builder import readers
-from kullback.builder.build import BuildPlan, execute
 from kullback.gates.stages import readers_gate
-from kullback.runner.records import EntitySchema, RawPtr, ToolCall, Trace, Turn, as_dict
+from kullback.runner.records import EntitySchema, RawPtr, ToolCall, Trace, Turn
 
 PTR = RawPtr(file_hash="testfile", sim_index=0)
 CARETAKER = "caretaker"
@@ -486,96 +482,6 @@ def test_the_stage_ruling_reports_the_silent_shapes_and_the_fills_and_fails_no_b
     assert ruling.metrics["write_tools"] == ["open_vent"] and ruling.metrics["read_tools"] == ["check_vent"]
     assert CARETAKER in ruling.failures[0]
     assert readers_gate([], 0).passed is True
-
-
-# --- the stage inside the build ---------------------------------------------
-
-def _write_traces(workdir, traces):
-    for record in traces:
-        path = workdir / "traces" / f"{record.trace_id}.json"
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(as_dict(record)), encoding="utf-8")
-
-
-def test_a_corpus_with_no_prose_results_records_the_note_and_asks_no_model(tmp_path):
-    """The other corpora have no requestor of their own, so the stage is a no-op there."""
-    _write_traces(tmp_path, [trace("run_a", [call("look_up_plot", {"plot_id": "p1"},
-                                                  requestor="assistant", call_id="c1")])])
-    plan = BuildPlan(workdir=tmp_path, model=TestModel([]))  # a call would raise
-    result = execute(plan, "readers")
-    assert result.artifacts["readers"]["note"] == readers.NO_PROSE
-    assert result.artifacts["schema"] is result.artifacts["mined_schema"]
-    assert result.artifacts["sigs"] is result.artifacts["mined_sigs"]
-    assert json.loads((tmp_path / readers.READERS_FILE).read_text(encoding="utf-8")) == {
-        "note": readers.NO_PROSE}
-
-
-def test_the_stage_puts_the_revealed_row_in_the_world_and_the_recordings_split_the_tasks(tmp_path):
-    """The row is this stage's, the split is the recordings' (D216): the two are no longer one step."""
-    _write_traces(tmp_path, two_traces())
-    plan = BuildPlan(workdir=tmp_path, model=TestModel([proposal_json()], loop=True))
-    result = execute(plan, "db")
-    db = result.artifacts["db"]
-    assert list(db["greenhouse"]) == [CARETAKER]
-    overlays = {o.task_id: o for o in result.artifacts["overlays"]}
-    pinned = {t: [(r.table, r.id) for r in o.rows] for t, o in overlays.items()}
-    assert all(("greenhouse", CARETAKER) in rows for rows in pinned.values())
-    assert len(result.artifacts["tasks"]) == 2, "the two recordings started with the vent in two states"
-    assert readers.revealed_tables(result.artifacts["schema"]) == {"greenhouse": CARETAKER}
-
-
-def test_the_stage_records_every_column_it_filled_from_the_corpus_as_an_assumption(tmp_path):
-    """A recording that never read a column starts on what the corpus showed, and says so."""
-    traces = [trace("run_a", [call("check_vent", "Vent: OPEN"),
-                              call("check_climate", "Vent: OPEN\nWarmth: 21 units")]),
-              trace("run_c", [call("check_climate", "Vent: OPEN\nWarmth: 19 units")])]
-    _write_traces(tmp_path, traces)
-    plan = BuildPlan(workdir=tmp_path, model=TestModel([json.dumps({
-        "table": "greenhouse",
-        "columns": [{"name": "vent"}, {"name": "warmth"}, {"name": "lamp"}],
-        "readers": [{"tool": "check_vent", "source": VENT_READER},
-                    {"tool": "check_climate", "source": CLIMATE_READER}],
-        "renders": [{"tool": "check_vent", "source": VENT_RENDER},
-                    {"tool": "check_climate", "source": CLIMATE_RENDER}]})], loop=True))
-    result = execute(plan, "db")
-    artifact = result.artifacts["readers"]
-    assert artifact["fills"][CARETAKER] == {}, "both recordings read every column they hold"
-    assert artifact["unset"][CARETAKER] == ["lamp"], "nothing in the corpus ever read the lamp"
-    assert "lamp" not in result.artifacts["db"]["greenhouse"][CARETAKER]
-    assumptions = json.loads((tmp_path / "assumptions.json").read_text(encoding="utf-8"))
-    assert result.artifacts["assumptions"] == assumptions
-
-
-def test_a_fill_reaches_the_starting_state_and_its_assumption_file(tmp_path):
-    traces = [trace("run_a", [call("check_vent", "Vent: OPEN"),
-                              call("check_climate", "Vent: OPEN\nWarmth: 21 units")]),
-              trace("run_c", [call("check_warmth", "Warmth: 19 units")])]
-    _write_traces(tmp_path, traces)
-    body = json.dumps({
-        "table": "greenhouse",
-        "columns": [{"name": "vent"}, {"name": "warmth"}],
-        "readers": [{"tool": "check_vent", "source": VENT_READER},
-                    {"tool": "check_climate", "source": CLIMATE_READER},
-                    {"tool": "check_warmth",
-                     "source": "def read(result):\n    return {'warmth': int(result.split()[1])}"}],
-        "renders": [{"tool": "check_vent", "source": VENT_RENDER},
-                    {"tool": "check_climate", "source": CLIMATE_RENDER},
-                    {"tool": "check_warmth",
-                     "source": "def render(row):\n    return 'Warmth: %d units' % row['warmth']"}]})
-    plan = BuildPlan(workdir=tmp_path, model=TestModel([body], loop=True))
-    result = execute(plan, "db")
-    assert result.artifacts["readers"]["fills"][CARETAKER] == {"vent": "open"}
-    assumptions = json.loads((tmp_path / "assumptions.json").read_text(encoding="utf-8"))
-    assert any("column vent was not read before a write in 1 of 2 recordings" in line
-               for line in assumptions), assumptions
-
-
-def test_the_stage_needs_a_model_where_a_corpus_has_prose_results(tmp_path):
-    _write_traces(tmp_path, two_traces())
-    with pytest.raises(build_module.BuildError, match="no model"):
-        execute(BuildPlan(workdir=tmp_path), "readers")
-
-
 # --- the round trip: what the render is held to ------------------------------
 
 STATUS_READER = r"""

@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 
-from kullback.builder import pipeline
 from kullback.gates.ledger import GateLedger
 from kullback.runner.records import GateResult
 
@@ -103,18 +102,3 @@ def test_a_round_snapshotted_twice_keeps_one_row_and_the_rows_stay_in_round_orde
     ledger.snapshot(2)
     assert [row["round"] for row in _history(tmp_path)] == [1, 2]
     assert _history(tmp_path)[1]["rulings"][0]["pass"] is False
-
-
-def test_the_pipeline_still_reaches_the_ledger_under_its_old_name(tmp_path):
-    """builder/pipeline.py names GateLedger as before and it is the one class in kullback/gates, so both
-    agents record their rulings through the same code and the same lock; a ledger built under either
-    name writes the same file the same way."""
-    assert pipeline.GateLedger is GateLedger
-    old, new = pipeline.GateLedger(tmp_path / "old"), GateLedger(tmp_path / "new")
-    for ledger in (old, new):
-        ledger.begin()
-        ledger.record("a", _ruling("stage_a", n=1))
-        ledger.record("b", _ruling("stage_b", passed=False, n=2))
-        ledger.record("a", _ruling("stage_a", n=3))
-    assert (tmp_path / "old" / "gates.json").read_bytes() == (tmp_path / "new" / "gates.json").read_bytes()
-    assert old.rulings("a") == new.rulings("a") == ["stage_a"]

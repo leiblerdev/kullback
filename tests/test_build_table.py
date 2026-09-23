@@ -8,9 +8,6 @@ from pathlib import Path
 
 import pytest
 
-from builder.test_build import Bodies
-from kullback import rounds
-
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 
 import build_table as B  # noqa: E402
@@ -23,24 +20,6 @@ TASKS = 3
 CONFIRMED = "2 of 3"
 WRITES = "3 of 3"
 READS = "1 of 19"
-
-
-@pytest.fixture(scope="module")
-def built(tmp_path_factory, request) -> Path:
-    """One whole offline build, driven by code, the way tests/test_rounds.py drives one."""
-    workdir = tmp_path_factory.mktemp("table")
-    fixture = Path(request.config.rootpath) / "tests" / "fixtures" / "tau2_retail_small.json"
-    # One round: the fixture's Tasks never get a Reference, and under D172 that is unfinished work,
-    # so the round cap (D169) ends the run after the one round these tests read.
-    rounds.run_rounds(workdir, model=Bodies(), files=[fixture], max_attempts=0, max_rounds=1)
-    return workdir
-
-
-@pytest.fixture(scope="module")
-def printed(built: Path) -> str:
-    return B.render(B.Build(built))
-
-
 def rows_of(text: str, section: str) -> list[str]:
     """The table rows under one heading of the report, without its header and rule lines."""
     body = text.split(f"# {section}\n", 1)[1] if section else text
@@ -53,35 +32,6 @@ def cells(row: str) -> list[str]:
 
 
 # --- the headline -------------------------------------------------------------
-
-def test_the_headline_is_the_tasks_covered_out_of_the_frozen_task_list(printed: str, built: Path):
-    frozen = json.loads((built / "tasks_frozen.json").read_text(encoding="utf-8"))["task_ids"]
-    assert len(frozen) == TASKS
-    assert f"**Tasks covered: 0 of {TASKS} frozen Tasks (0.0%), 0 of {TASKS} Runs (0.0%)**" in printed
-
-
-def test_the_headline_rows_are_the_same_ones_every_build_in_the_same_order(printed: str):
-    names = [cells(row)[0] for row in rows_of(printed, "")]
-    assert names == ["Tasks covered (D96)", "Traces confirming their Reference",
-                     "Writes replaying exactly", "Reads differing in substance", "Gates green",
-                     "What the mechanic called", "Repairs requested",
-                     "Repairs that turned a red gate green", "Repairs that did not", "Dollars",
-                     "Model calls", "Model call wall time", "Build duration",
-                     "Peak context fill, Builder", "Peak context fill, Examiner"]
-
-
-def test_the_replay_rows_say_what_the_stages_own_ruling_says(printed: str, built: Path):
-    ruling = [row for row in json.loads((built / "gates.json").read_text(encoding="utf-8"))
-              if row["stage"] == "replay_reference"][-1]
-    values = {cells(row)[0]: cells(row)[1] for row in rows_of(printed, "")}
-    assert values["Traces confirming their Reference"].startswith(CONFIRMED)
-    assert values["Writes replaying exactly"].startswith(WRITES)
-    assert values["Reads differing in substance"].startswith(READS)
-    assert ruling["metrics"]["confirmed"] == 2 and ruling["metrics"]["traces"] == TASKS
-    assert ruling["metrics"]["writes_matched"] == 3 and ruling["metrics"]["reads_semantic"] == 1
-    assert {cells(row)[2] for row in rows_of(printed, "")} >= {"`gates.json replay_reference metrics`"}
-
-
 def test_every_row_a_workdir_cannot_answer_names_the_record_it_would_need(tmp_path):
     empty = tmp_path / "nothing"
     empty.mkdir()
@@ -91,17 +41,6 @@ def test_every_row_a_workdir_cannot_answer_names_the_record_it_would_need(tmp_pa
     assert values["Dollars"] == "n/a (needs budget.json total)"
     assert "replay_reference" in values["Writes replaying exactly"]
     assert "`gates.json`" in text and "`scorecard.json`" in text
-
-
-def test_the_peak_context_fill_is_the_fill_each_round_recorded_for_that_agent(printed: str, built: Path):
-    counts = json.loads((built / "rounds.json").read_text(encoding="utf-8"))[0]["counts"]
-    assert counts["context_fill"] == {"builder": 0.0, "examiner": 0.0}
-    values = {cells(row)[0]: cells(row)[1] for row in rows_of(printed, "")}
-    for agent in ("Builder", "Examiner"):
-        assert values[f"Peak context fill, {agent}"] == \
-            "0.0%; the agent took no model turn, which is the code driver (D135)"
-
-
 def test_the_peak_context_fill_is_the_largest_a_round_recorded_over_the_rounds(tmp_path):
     workdir = tmp_path / "filled"
     workdir.mkdir()
@@ -113,18 +52,6 @@ def test_the_peak_context_fill_is_the_largest_a_round_recorded_over_the_rounds(t
     values = {cells(row)[0]: cells(row)[1] for row in rows_of(B.render(B.Build(workdir)), "")}
     assert values["Peak context fill, Builder"] == "62.0% of the window at a turn end, over 5 turns in 2 rounds"
     assert values["Peak context fill, Examiner"] == "12.0% of the window at a turn end, over 2 turns in 2 rounds"
-
-
-def test_the_build_duration_is_the_first_rounds_start_to_the_last_rounds_end(printed: str, built: Path):
-    counts = [record["counts"] for record in
-              json.loads((built / "rounds.json").read_text(encoding="utf-8"))]
-    assert counts[0]["started_at"] > 0 and counts[-1]["ended_at"] >= counts[0]["started_at"]
-    value = {cells(row)[0]: cells(row)[1] for row in rows_of(printed, "")}["Build duration"]
-    assert value.endswith(f"{B.clock(counts[0]['started_at'])} to {B.clock(counts[-1]['ended_at'])}")
-    assert value.startswith(B.duration((counts[-1]["ended_at"] - counts[0]["started_at"]) * 1000))
-    assert "over 1 round," in value
-
-
 def test_the_build_duration_names_the_record_when_no_round_kept_a_clock(tmp_path):
     workdir = tmp_path / "clockless"
     workdir.mkdir()
@@ -132,16 +59,6 @@ def test_the_build_duration_names_the_record_when_no_round_kept_a_clock(tmp_path
     value = {cells(row)[0]: cells(row)[1] for row in rows_of(B.render(B.Build(workdir)), "")}["Build duration"]
     assert value == ("n/a (needs rounds.json counts.started_at and counts.ended_at; pipeline/state.json "
                      "records the stage statuses and no clock)")
-
-
-def test_the_mechanic_row_says_no_model_turn_was_recorded_under_the_code_driver(printed: str):
-    """The one round this build runs (D172) files its findings and ends on the cap before any beat
-    acts on them, so the repairs D170 drives are counted in tests/test_rounds.py and not here."""
-    values = {cells(row)[0]: cells(row)[1] for row in rows_of(printed, "")}
-    assert values["What the mechanic called"].startswith("0 over 0 model turns")
-    assert values["Repairs requested"].startswith("0;")
-
-
 def test_the_mechanic_row_counts_the_tool_calls_in_the_builders_session_by_verb(tmp_path):
     workdir = tmp_path / "driven"
     (workdir / "builder").mkdir(parents=True)
@@ -161,33 +78,7 @@ def test_the_mechanic_row_counts_the_tool_calls_in_the_builders_session_by_verb(
 
 
 # --- the gates ----------------------------------------------------------------
-
-def test_every_gate_in_the_ledger_is_named_with_its_ruling_and_how_many_rulings_were_green(printed: str, built: Path):
-    ledger = json.loads((built / "gates.json").read_text(encoding="utf-8"))
-    named = {cells(row)[0].strip("`"): cells(row) for row in rows_of(printed, "Gates")}
-    assert set(named) == {row["stage"] for row in ledger}
-    for stage, row in named.items():
-        rulings = [entry for entry in ledger if entry["stage"] == stage]
-        green = sum(1 for entry in rulings if entry["pass"])
-        assert row[2] == f"{green} of {len(rulings)}"
-        assert row[1] == ("green" if green == len(rulings) else "red")
-    assert named["replay_reference"][1] == "red", "no Task on the fixture confirms every Trace"
-
-
 # --- per tool -----------------------------------------------------------------
-
-def test_the_per_tool_rows_count_every_replayed_call_of_that_tool(printed: str, built: Path):
-    replays = json.loads((built / "replays.json").read_text(encoding="utf-8"))
-    calls: dict[str, int] = {}
-    for traces in replays.values():
-        for replay in traces.values():
-            for check in replay["checks"]:
-                calls[check["tool"]] = calls.get(check["tool"], 0) + 1
-    printed_calls = {cells(row)[0].strip("`"): int(cells(row)[2].replace(",", ""))
-                     for row in rows_of(printed, "Per tool, over the replayed calls")}
-    assert printed_calls == calls
-
-
 def test_a_cause_is_one_env_fidelity_already_names_or_the_word_for_a_preview_it_cannot_read():
     read = {"verdict": "ours_refused", "ours": '{"payload": "NameError: name \'decimal\' is not defined"}',
             "recorded": '"27.4"'}
@@ -226,42 +117,6 @@ def test_an_answer_too_long_even_for_the_difference_is_named_off_its_keys_and_ty
     both_cut["difference"] = {"ours_truncated": True, "theirs_truncated": True, "type_mismatch": False,
                               "keys_only_ours": [], "keys_only_theirs": [], "keys_changed": []}
     assert B.check_cause(both_cut) == B.UNREADABLE, "nothing in the record names this one"
-
-
-def test_the_cause_table_names_the_builder_stage_that_owns_each_miss(printed: str):
-    rows = [cells(row) for row in rows_of(printed, "Where the misses come from")]
-    assert rows, "the fixture's list_all_product_types read differs from its recording"
-    for cause, _calls, _share, _tools, owner, where in rows:
-        if cause in CAUSE_OWNER:
-            assert owner == CAUSE_OWNER[cause]
-        else:
-            assert cause == B.UNREADABLE and "160 character preview" in owner
-        assert where == "`replays.json`"
-
-
-def test_no_miss_on_the_fixture_is_unreadable_now_that_the_checks_record_their_difference(printed: str,
-                                                                                          built: Path):
-    """Every check that did not agree carries a difference record, so a cause is nameable even where
-    the two 160 character previews were cut."""
-    misses = [cells(row)[0] for row in rows_of(printed, "Where the misses come from")]
-    assert misses and B.UNREADABLE not in misses
-    parted = [check for check in B.Build(built).checks() if check["verdict"] in B.PARTS]
-    assert parted and all("difference" in check for check in parted)
-    assert all(B.check_cause(check) != B.UNREADABLE for check in parted)
-
-
-# --- per Task, per round, per repair ------------------------------------------
-
-def test_every_frozen_task_has_a_row_saying_how_far_it_got(printed: str, built: Path):
-    frozen = json.loads((built / "tasks_frozen.json").read_text(encoding="utf-8"))["task_ids"]
-    rows = rows_of(printed, "Per Task")
-    assert {cells(row)[0].strip("`") for row in rows} == set(frozen)
-    for row in rows:
-        # No fixture Task clears the D79 suite; two of them keep a Reference, chosen among the End
-        # states the judge left in (D198), so the Reference column is not "no" everywhere.
-        assert cells(row)[1] in {"yes", "no"} and cells(row)[2] == "no"
-        assert cells(row)[7] == f"`task_status.json {cells(row)[0].strip('`')}`"
-    assert [cells(row)[1] for row in rows].count("yes") == 2
 
 
 def test_a_task_whose_verifier_the_suite_refused_carries_the_checks_that_failed_and_its_atoms(tmp_path):
@@ -333,14 +188,6 @@ def test_a_round_that_kept_no_turn_count_names_the_record_it_would_need(tmp_path
     assert first[5] == "n/a (needs rounds.json counts.turns)"
     assert second[3] == "n/a (needs rounds.json counts.artifacts_changed)", \
         "a build from before the fingerprint names the record it would need"
-
-
-def test_a_round_that_moved_no_count_says_so(printed: str):
-    row = cells(rows_of(printed, "Per round")[0])
-    assert row[0] == "1" and row[6] == "max_rounds"
-    assert row[5] == "builder 0, examiner 0, total 0"
-
-
 def _repaired(workdir: Path) -> Path:
     """A workdir with a repair in round 2, one in round 3, and the rulings each round left."""
     (workdir / "repairs").mkdir(parents=True)
@@ -407,24 +254,7 @@ def test_a_repair_of_round_one_has_no_earlier_ruling_to_be_read_against(tmp_path
     assert values["Repairs that turned a red gate green"].endswith(
         "; 1 not placed: n/a (needs " + B.REPAIR_GAP + ")")
     assert values["Repairs that did not"].startswith("1 of 3: repair_escalate on task_a (round 3)")
-
-
-def test_no_repair_verb_leaves_the_section_saying_the_code_driver_files_none(printed: str):
-    assert "No repair verb was called" in printed.split("## Per repair verb", 1)[1]
-
-
 # --- per failing Run ----------------------------------------------------------
-
-def test_a_failing_run_is_ours_or_the_models_by_the_rule_that_matched_it(printed: str, built: Path):
-    rows = [cells(row) for row in rows_of(printed, "Per failing Run: the model's error or ours")]
-    listed = [row for row in rows if row[0].startswith("`replay-")]
-    assert listed, "the fixture's third Trace does not replay its reads the way it recorded them"
-    for row in listed:
-        assert row[2] == "ours" and row[3] == "answer_differs"
-        assert ": differs (" in row[4] and ("read" in row[4] or "write" in row[4])
-        assert row[5].startswith("`runs/")
-
-
 @pytest.mark.parametrize("lines, rule, side", [
     ([{"type": "error", "payload": {"class": "env_error",
        "message": "ProviderError: openai/x: HTTP 400: Invalid 'messages': empty array."}}],
@@ -461,35 +291,6 @@ def test_a_run_that_ended_the_way_the_recording_did_is_not_a_failing_run(tmp_pat
 
 
 # --- the shape of the output --------------------------------------------------
-
-def test_the_report_is_markdown_with_the_detail_under_the_headline(printed: str):
-    assert printed.startswith("# Build table: ")
-    for section in ("## Gates", "## Per tool, over the replayed calls", "## Per Task", "## Per round",
-                    "## Per repair verb", "## Per failing Run: the model's error or ours"):
-        assert f"\n{section}\n" in printed
-    assert printed.endswith("\n")
-    assert "—" not in printed and "–" not in printed
-
-
-def test_a_long_detail_table_is_capped_and_says_how_many_rows_it_did_not_print(built: Path):
-    build = B.Build(built)
-    short = B.render(build, limit=1)
-    assert "2 more Tasks not listed; pass `--limit 0` to print every row." in short
-    assert len(rows_of(short, "Per Task")) == 1
-    assert len(rows_of(B.render(build, limit=0), "Per Task")) == TASKS
-
-
-def test_the_table_reads_the_workdir_and_never_writes_into_it(built: Path):
-    before = {path: path.stat().st_mtime_ns for path in sorted(built.rglob("*")) if path.is_file()}
-    B.render(B.Build(built))
-    after = {path: path.stat().st_mtime_ns for path in sorted(built.rglob("*")) if path.is_file()}
-    assert before == after
-
-
-def test_the_script_prints_the_table_for_the_workdir_it_is_given(built: Path, capsys):
-    assert B.main([str(built)]) == 0
-    assert capsys.readouterr().out == B.render(B.Build(built))
-
 
 def test_a_workdir_that_is_not_a_directory_is_one_clear_message(tmp_path):
     with pytest.raises(SystemExit) as stopped:

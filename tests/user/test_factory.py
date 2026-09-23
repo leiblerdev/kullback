@@ -199,19 +199,16 @@ def test_the_disk_fallback_carries_write_tools_goal_writes_and_strip(workdir):
         assert fallback.answer_strip(probe) == user.guards.strip(probe)
 
 
-def test_the_disk_derivation_equals_what_the_build_passes_live(workdir):
-    """Goal writes, strip and members off disk match the build's live expressions field by field."""
-    from kullback.builder import build as build_mod
+def test_the_disk_derivation_lists_the_tasks_own_recordings_as_members(workdir):
+    """Members off disk are the Task's own recordings, in a fixed order."""
     from kullback.builder import intent as intent_mod
     from kullback.builder import user_sim as user_sim_mod
     from kullback.runner import canon as canon_mod
-    from kullback.runner.records import EntitySchema, Task, read_json
+    from kullback.runner.records import EntitySchema, read_json
 
-    task = Task(id="task_1", run_ids=["t1"])
     index = fidelity_mod.trace_index(workdir)
-    live_members = build_mod._members_of(task, dict(index))
     disk_members = factory_mod._members_of(workdir, "task_1", index)
-    assert [t.trace_id for t in disk_members] == [t.trace_id for t in live_members]
+    assert [t.trace_id for t in disk_members] == ["t1"]
 
     writes = fidelity_mod.write_tools_of(workdir)
     assert writes == ["move_delivery"]
@@ -223,7 +220,7 @@ def test_the_disk_derivation_equals_what_the_build_passes_live(workdir):
     assert user.trace is not None and user.trace.trace_id == reference.trace_id
 
     schema = EntitySchema.model_validate(read_json(workdir / "schema.json", {}))
-    live_strip = intent_mod.value_strip(live_members, schema=schema,
+    live_strip = intent_mod.value_strip(disk_members, schema=schema,
                                         rules=canon_mod.load_rules(workdir / "canon-rules.json"))
     for probe in ("My plot number is PLOT-4471.", "The courier reference is CR-90881.",
                   "Hello."):

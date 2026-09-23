@@ -25,7 +25,6 @@ from typing import Any, Iterable, Optional
 from kullback import sampling
 from kullback.builder import cache_reach, cluster, compile_env, ingest, mine, readers, synth, templates
 from kullback.builder.compile_env import DB_FILE
-from kullback.episode.loading import OVERLAY_DIR
 from kullback.gates import artifacts, tool_runs
 from kullback.gates import ledger as ledger_mod
 from kullback.gates import scorecard as scorecard_mod
@@ -38,6 +37,7 @@ from kullback.runner.records import (
 )
 from kullback.runner.records import read_json as _read_json
 from kullback.runner.records import write_json as _write_json
+from kullback.runner.world.loading import OVERLAY_DIR
 
 CANON_RULES = "canon-rules.json"
 TASK_SPLIT = "task_split.json"

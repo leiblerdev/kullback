@@ -67,13 +67,13 @@ ignore = ["E501"]
 root_package = "kullback"
 
 [[tool.importlinter.contracts]]
-name = "the round driver sits on the Builder and the Examiner, they on gates, on the Runner and the agent core, on the provider layer"
+name = "the Builder sits on the Examiner, both on the user, the agent core, the Runner and the gates, on the provider layer"
 type = "layers"
 containers = ["kullback"]
 layers = [
     "hub",
-    "rounds",
-    "builder | examiner",
+    "builder",
+    "examiner",
     "user",
     "agent",
     "runner:gates",
@@ -81,16 +81,16 @@ layers = [
 ]
 
 [[tool.importlinter.contracts]]
-name = "the world inside the runner imports neither builder, examiner, user nor rounds"
+name = "the world inside the runner imports neither builder, examiner nor user"
 type = "forbidden"
 source_modules = ["kullback.runner.world"]
-forbidden_modules = ["kullback.builder", "kullback.examiner", "kullback.user", "kullback.rounds"]
+forbidden_modules = ["kullback.builder", "kullback.examiner", "kullback.user"]
 
 [[tool.importlinter.contracts]]
 name = "the Simulated user never imports the two agents that drive it"
 type = "forbidden"
 source_modules = ["kullback.user"]
-forbidden_modules = ["kullback.builder", "kullback.examiner", "kullback.rounds"]
+forbidden_modules = ["kullback.builder", "kullback.examiner"]
 
 [[tool.importlinter.contracts]]
 name = "gates rules on the Runner's work; it never reaches into the agent core"
@@ -109,6 +109,5 @@ source_modules = [
     "kullback.user",
     "kullback.builder",
     "kullback.examiner",
-    "kullback.rounds",
 ]
 forbidden_modules = ["kullback.cli", "kullback.tui", "kullback.report"]

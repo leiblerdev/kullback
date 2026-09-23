@@ -788,10 +788,10 @@ def propose(model: Any, requestor: str, calls_by_tool: dict[str, list[ToolCall]]
     The prompt is two messages: a system prefix that is the same bytes for every attempt and every
     requestor of a build, and a user turn carrying this requestor's evidence. A retry keeps both
     exactly as they were sent and appends the previous reply and the failures as new turns, so the
-    prefix a provider caches never moves, the way compile_tool's repair loop does it (D75).
+    prefix a provider caches never moves, the way a gated repair loop does it (D75).
 
     Nothing is cached here: the model handed in is already memoized on the bytes of its request
-    (`build._wrap`), and those bytes carry every recorded result this proposal saw, so a rebuild
+    (`_wrap`), and those bytes carry every recorded result this proposal saw, so a rebuild
     over the same results never reaches the network.
 
     After the last attempt the proposal with the fewest failing shapes is kept, marked assisted, and

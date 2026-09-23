@@ -4,12 +4,10 @@ from __future__ import annotations
 
 import itertools
 import json
-from unittest import mock
 
 import pytest
 
 from conftest import PTR
-from kullback.builder import pipeline
 from kullback.builder.cluster import (
     UnexplainedRegrouping,
     category_signature,
@@ -684,16 +682,6 @@ def test_the_same_recordings_give_the_same_grouping_whatever_the_schema_classes_
     for class_ in ("hard", "semantic", "exempt"):
         recast = [{**column, "class": class_} for column in PLOT_SCHEMA_COLUMNS]
         assert worlds_of(traces) == worlds_of(traces, plot_schema(recast))
-
-
-def test_the_same_recordings_give_the_same_grouping_under_two_cache_formats():
-    """Nothing of the encoder is inside a version, so bumping the format cannot regroup a corpus."""
-    traces = dry_and_wet_traces()
-    before = worlds_of(traces)
-    with mock.patch.object(pipeline, "CACHE_FORMAT", pipeline.CACHE_FORMAT + 1):
-        assert worlds_of(traces) == before
-
-
 def test_a_list_projection_and_a_detail_projection_of_one_row_do_not_split_a_cluster():
     """The two tools answer different columns of one row, which is a difference of shape, not of state."""
     traces = [
@@ -737,33 +725,6 @@ def test_the_fingerprint_names_the_input_that_moved():
     wider.composite_keys = {"plots": ["plot_id", "state"]}
     rehomed = {"recordings": recordings_hash(traces), "homing": homing_hash(wider)}
     assert moved_input("a different fingerprint", rehomed, frozen) == "homing"
-
-
-def test_the_record_re_baselines_the_round_an_input_moved_so_a_later_bug_still_raises(tmp_path):
-    """Greptile P1 (PR 30): what a round compares against is the last grouping that was explained.
-
-    Left at the first grouping ever taken, one legitimate move would go on explaining every
-    regrouping after it and the raise could never fire again.
-    """
-    from kullback.builder import build as build_module
-
-    traces = dry_and_wet_traces()
-    schema = plot_schema()
-    tasks = cluster_runs(traces, PLOT_SIGS, worlds=worlds_of(traces))[1]
-    inputs = {"traces": traces, "schema": schema}
-    assert build_module._grouping(tmp_path, tasks, inputs)["grouping_moved"] == ""
-
-    grown = traces + [plot_trace("run_third", [("get_plot", {"plot_id": "p2"},
-                                                {"plot_id": "p2", "state": "dry"})])]
-    after = cluster_runs(grown, PLOT_SIGS, worlds=worlds_of(grown))[1]
-    grown_inputs = {"traces": grown, "schema": schema}
-    assert build_module._grouping(tmp_path, after, grown_inputs)["grouping_moved"] == "recordings"
-    assert build_module._grouping(tmp_path, after, grown_inputs)["grouping_moved"] == "", "re-baselined"
-
-    with pytest.raises(UnexplainedRegrouping):
-        build_module._grouping(tmp_path, list(after)[:1], grown_inputs)
-
-
 def test_a_grouping_that_moved_with_both_inputs_still_is_a_bug_and_raises():
     frozen = {"fingerprint": "f1", "recordings": "r1", "homing": "h1"}
     with pytest.raises(UnexplainedRegrouping):

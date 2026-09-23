@@ -3,7 +3,6 @@ from types import SimpleNamespace
 
 import pytest
 
-from kullback.builder import build
 from kullback.builder import compile_env as ce
 from kullback.runner import replay
 from kullback.runner.records import Column, EntitySchema, FieldStat, RawPtr, ToolCall, ToolSig
@@ -12,6 +11,16 @@ from kullback.runner.route import Router
 SCHEMA = EntitySchema(tables=['loans'], columns=[Column(table='loans', name='loan_id', **{'class': 'hard'}, classified_by='rule'), Column(table='loans', name='opened', **{'class': 'hard'}, classified_by='rule')], id_patterns={'loans.loan_id': r'^L\d+$'})
 SIGS = [ToolSig(name=name, args_fields=[FieldStat(name='patron', types=['str'], optional=False)], kind='write', unclassified=False) for name in ('open_plain', 'open_context')]
 BODIES = {'open_plain': "return {'loan_id': 'L101', 'opened': '2024-03-04T05:06:07'}", 'open_context': "return {'loan_id': self.ctx.new_id('loans'), 'opened': self.ctx.now()}"}
+
+def _replay_context(tools, trace, schema):
+    """The context feed each recorded call runs on, built once over the trace."""
+    feeds = ce.recorded_call_contexts(trace.tool_calls, schema)
+
+    def before_call(call):
+        tools.ctx.feed_call(feeds.get(ce.context_feed_key(call), {}))
+
+    return {"before_call": before_call}
+
 
 def toolkit():
     return ce.load_toolkit(ce.module_source(SCHEMA, SIGS, BODIES), {'loans': {'L100': {'loan_id': 'L100', 'opened': '2024-01-02T10:00:00'}}})
@@ -34,7 +43,7 @@ def test_replay_feeds_each_recorded_call_even_if_previous_body_ignored_context()
     second = call('open_context', 'c2', {'loan_id': 'L102', 'opened': '2024-03-05T05:06:07'})
     tools = toolkit()
     inner = Router(env_tools_module=tools, starting_state={}, tool_sigs=SIGS)
-    kwargs = build._replay_context(tools, SimpleNamespace(tool_calls=[first, second]), SCHEMA)
+    kwargs = _replay_context(tools, SimpleNamespace(tool_calls=[first, second]), SCHEMA)
     scored = replay.ScoredRouter(inner, deque([first, second]), **kwargs)
     scored.route(first.name, first.args)
     assert scored.route(second.name, second.args).result == second.result
@@ -55,7 +64,7 @@ def test_replay_refuses_a_wrong_update_body_its_recorded_old_id():
     tools = ce.load_toolkit(ce.module_source(schema, [update_sig], wrong), {'loans': {'L100': {'loan_id': 'L100', 'opened': '2024-01-02T10:00:00'}}})
     recorded = ToolCall(id='u1', name='touch_loan', args={'loan_id': 'L100'}, result={'loan_id': 'L100', 'opened': '2024-01-02T10:00:00'}, raw_ptr=RawPtr(file_hash='invented'))
     inner = Router(env_tools_module=tools, starting_state={}, tool_sigs=[update_sig])
-    kwargs = build._replay_context(tools, SimpleNamespace(tool_calls=[recorded]), schema)
+    kwargs = _replay_context(tools, SimpleNamespace(tool_calls=[recorded]), schema)
     scored = replay.ScoredRouter(inner, deque([recorded]), write_tools={'touch_loan'}, **kwargs)
     scored.route('touch_loan', {'loan_id': 'L100'})
     assert scored.checks[0]['verdict'] == replay.DIFFERS

@@ -15,7 +15,7 @@ pytestmark = pytest.mark.skipif(
     reason="needs the step-split patch",
 )
 
-from kullback.episode import BuiltEnvironment, Episode, EpisodeError  # noqa: E402
+from kullback.runner.world import BuiltEnvironment, Episode, EpisodeError  # noqa: E402
 from tests.episode.invented import SCRIPTED_RENAME, write_env  # noqa: E402
 
 

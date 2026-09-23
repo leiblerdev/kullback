@@ -10,7 +10,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from kullback import cli, difficulty, report
+from kullback import difficulty, report
 from kullback.examiner import lifecycle, variants
 from kullback.report.render import _difficulty_table
 from kullback.runner.records import Atom, Event, Run, Verifier, as_dict, write_json
@@ -132,13 +132,12 @@ def test_a_bucket_row_counts_tasks_and_trusted_and_means_the_rate_over_the_tasks
 
 # --- where the buckets are reported --------------------------------------------
 
-def test_the_round_line_carries_trusted_over_tasks_for_every_bucket_that_holds_a_task():
-    line = cli._round_line({"trusted": 4, "tasks": 6, "buckets": [
+def test_the_bucket_summary_carries_trusted_over_tasks_for_every_bucket_that_holds_a_task():
+    assert difficulty.round_summary([
         {"bucket": "w0t1p1", "tasks": 2, "trusted": 1},
         {"bucket": "w1t2p2+", "tasks": 4, "trusted": 3},
-    ]})
-    assert "buckets: w0t1p1 1/2 w1t2p2+ 3/4" in line
-    assert "buckets: none" in cli._round_line({"trusted": 0, "tasks": 0})
+    ]) == "w0t1p1 1/2 w1t2p2+ 3/4"
+    assert difficulty.round_summary([]) == "none"
 
 
 def test_the_report_table_names_every_bucket_and_says_which_tasks_carry_no_record():

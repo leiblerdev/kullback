@@ -50,7 +50,7 @@ MARKS = {
 }
 
 HELP = """\
-/build [--iterate] [--file PATH]   run the Builder and the Examiner in rounds over the ingested traces
+/build [--file PATH]              run the autonomous Builder session over the ingested traces
 /run TASK [--count N]              run the Candidate against the built Environment
 /status                            the last build's stages, gates, rounds and spend
 /map                               the pipeline as a diagram: stages, states, hashes
@@ -126,7 +126,7 @@ def registry_refusal(catalog: Optional[dict], model: str) -> Optional[str]:
 # are rendered from this, so a command added here appears in both; HELP stays a literal
 # beside it, and a test fails when a table name is missing from HELP, so the two cannot drift.
 COMMANDS = [
-    ("build", "/build [--iterate] [--file PATH]", "run the Builder over the ingested traces"),
+    ("build", "/build [--file PATH]", "run the Builder over the ingested traces"),
     ("run", "/run TASK [--count N]", "run the Candidate against the built Environment"),
     ("status", "/status", "the last build's stages, gates, rounds and spend"),
     ("map", "/map", "the pipeline as a diagram: stages, states, hashes"),
@@ -239,8 +239,8 @@ def _round_spend(record: dict) -> float:
 
 
 def _as_dict_event(event: Any) -> Optional[dict]:
-    """A typed stage, round or beat event of the agent core as the dict the board reads; anything else
-    is not for the board. The round and beat shapes are the ones rounds.emit sends to on_event."""
+    """A typed stage, round, beat or tool event of the agent core as the dict the board reads; anything
+    else is not for the board."""
     kind = getattr(event, "type", None)
     if kind == "stage_start":
         return {"kind": "stage", "stage": event.name, "state": "start", "attempt": 1}
@@ -254,6 +254,11 @@ def _as_dict_event(event: Any) -> Optional[dict]:
     if kind in ("beat_start", "beat_end"):
         return {"kind": "beat", "state": "start" if kind == "beat_start" else "end",
                 "agent": event.agent, "round": event.round}
+    if kind == "tool_execution_start":
+        return {"kind": "stage", "stage": event.tool_name, "state": "start", "attempt": 1}
+    if kind == "tool_execution_end":
+        return {"kind": "stage", "stage": event.tool_name,
+                "state": "error" if getattr(event, "is_error", False) else "ran", "attempt": 1}
     return None
 
 
@@ -808,17 +813,17 @@ class Screen:
         files = [Path(value) for value in _values(rest, "--file")]
         runner = self.runner
         if runner is None:
-            # the same entry the CLI uses: whole rounds, Builder then Examiner (D126)
-            from kullback import rounds
-            runner = rounds.run_rounds
-        runner(workdir=self.workdir, iterate="--iterate" in rest, model=self._adapter(), files=files,
-               on_event=on_event, ceiling_usd=self.ceiling_usd)
+            # the same entry the CLI uses: the autonomous Builder session
+            from kullback.builder import session as session_mod
+            runner = session_mod.build
+        runner(workdir=self.workdir, model=self._adapter(), files=files,
+               ceiling_usd=self.ceiling_usd, subscribers=[on_event])
 
     def _run(self, on_event: Any, rest: list[str]) -> None:
         runner = self.runner
         if runner is None:
-            from kullback.builder import build as builder
-            runner = builder.run_batch
+            from kullback.runner import tool as runner_tool
+            runner = runner_tool.reroll
         counts = _values(rest, "--count")
         try:
             count = int(counts[-1]) if counts else 1
@@ -827,8 +832,8 @@ class Screen:
         if count < 1:
             raise ValueError(f"--count takes a number of runs, not {count}")
         on_event({"kind": "stage", "stage": rest[0], "state": "start", "attempt": 1})
-        runner(workdir=self.workdir, task_id=rest[0], model=self._adapter(), count=count,
-               ceiling_usd=self.ceiling_usd)
+        runner(environment_dir=self.workdir, task_id=rest[0], model=self._adapter(), count=count,
+               workdir=self.workdir)
         on_event({"kind": "stage", "stage": rest[0], "state": "ran", "attempt": 1})
         on_event({"kind": "pipeline", "state": "complete"})
 

@@ -72,7 +72,7 @@ def test_one_bad_call_sets_that_recording_aside_and_the_rest_build(workdir, tmp_
 
 
 def test_nothing_downstream_reads_the_evidence_folder(workdir, tmp_path):
-    from kullback.builder.build import load_traces
+    from kullback.builder.world_tools import load_traces
 
     sims = [good_sim("g1"), good_sim("g2"), good_sim("g3"), dangling_sim("b1")]
     ingest_payload(wrap(sims), workdir, tmp_path)

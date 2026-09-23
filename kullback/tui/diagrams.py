@@ -74,7 +74,7 @@ def dag_text(order: list[str], status: dict[str, str], attempts: Optional[dict[s
     """The pipeline as a downward flow: one box per stage, a ▼ between stages, provenance on the right."""
     out = Text()
     if not order:
-        return Text("no stages yet — /build to start, /status for the last build", style="dim")
+        return Text("no stages yet, /build to start, /status for the last build", style="dim")
     attempts, hashes = attempts or {}, hashes or {}
     inner = max(len(name) + len(_state_label(status.get(name, "pending"), attempts.get(name, 0))) + 12
                 for name in order)
@@ -105,41 +105,14 @@ def _state_label(state: str, tries: int) -> str:
 
 
 def loop_text(rounds: list[dict], current_round: int = 0, agent: str = "") -> Text:
-    """The loop as beats: Builder beat, gates, Examiner beat, round_end, with the counts the gates reported."""
+    """The session loop: Builder tools, gates ruling on writes, examine, findings back to the Builder."""
     out = Text()
-    if not rounds and not current_round:
-        return Text("single-pass Builder — no rounds.json yet (the loop writes one record per round)",
-                    style="dim")
-    for row in rounds:
-        n = row.get("round", "?")
-        counts = dict(row.get("counts") or {})
-        out.append(f"round {n} ── [builder beat] ── gates ──▶ [examiner beat] ──▶ round_end\n", style="bold")
-        out.append(f"  {_counts_line(counts)}\n", style="dim")
-        pending = row.get("pending_findings") or []
-        if row.get("exit"):
-            style = "bold red" if (row["exit"] != "done" or row.get("failed")) else "bold"
-            out.append(f"  exit: {row['exit']}" + (" (failed)" if row.get("failed") else "") + "\n",
-                         style=style)
-        elif pending:
-            out.append(f"  {len(pending)} finding(s) owed the Builder a beat — the round continued\n",
-                         style="yellow")
-        if row.get("exit_note"):
-            out.append(f"  note: {row['exit_note']}\n", style="dim")
-    if current_round and (not rounds or current_round != rounds[-1].get("round")):
-        beat = f", {agent} beat ●" if agent else ""
-        out.append(f"round {current_round}{beat}\n", style="yellow")
+    out.append("Builder base tools + domain tools ──▶ gates rule on writes\n", style="bold")
+    out.append("  ──▶ examine ──▶ findings back to the Builder ──▶ stop when every Task is trusted or refused\n",
+               style="dim")
+    if agent:
+        out.append(f"  {agent} holds the stream ●\n", style="yellow")
     return out
-
-
-def _counts_line(counts: dict) -> str:
-    spend = counts.get("spend") or {}
-    try:
-        dollars = float(spend.get("total") or 0.0)
-    except (TypeError, ValueError):
-        dollars = 0.0
-    return (f"fidelity {counts.get('fidelity', 0)}/{counts.get('tasks', 0)} · "
-            f"trusted {counts.get('trusted', 0)} · refused {counts.get('refused_count', 0)} · "
-            f"probes passing {counts.get('probes_passing', 0)} · spend ${dollars:,.4f}")
 
 
 def layers_text() -> Text:
@@ -151,6 +124,6 @@ def layers_text() -> Text:
         title = left if right is None else f"{left} + {right}"
         line = f"{edge[0]} {title} " + "─" * max(1, width - len(title) - 3) + edge[1]
         out.append(line + f"  {note}\n", style="cyan" if i == 0 else ("yellow" if i == 1 else "dim"))
-    out.append("build ──▶ gates ──▶ examine ──▶ round_end ──▶ follow-ups ──▶ build …\n", style="dim")
-    out.append("(one agent holds the stream at a time; findings reach the Builder as follow-ups)", style="dim")
+    out.append("build ──▶ gates ──▶ examine ──▶ findings ──▶ build …\n", style="dim")
+    out.append("(one agent holds the stream at a time; the stop rule is every Task trusted or refused)", style="dim")
     return out

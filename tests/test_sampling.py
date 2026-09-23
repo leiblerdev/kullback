@@ -12,7 +12,7 @@ from pathlib import Path
 import pytest
 
 from kullback import sampling
-from kullback.builder.pipeline import ANCHOR_KIND, choose_anchor, load_anchor
+from kullback.builder import world_tools
 from kullback.runner.records import Task
 
 SALT = "loan-desk-salt"
@@ -141,78 +141,47 @@ def test_a_round_is_told_how_many_draws_of_each_kind_it_took_since_the_round_bef
     assert sampling.draws_since(baseline) == {"reroll": 2, "run_seed": 1}
     assert sampling.draws_since(baseline) == {"reroll": 2, "run_seed": 1}, "reading is not taking"
     assert sampling.draws_since(sampling.draws_by_kind()) == {}
-
-
-def test_a_loop_built_after_a_draw_does_not_report_that_draw_as_its_own(tmp_path):
-    """Greptile P1 (PR 26): the counter is process-global, so a second Loop starts from what it finds.
-
-    Without this the first round of any Loop but the first in a process reports the draws an
-    earlier build or an earlier Loop took.
-    """
-    from kullback import rounds
-    from kullback.builder import agent as builder_agent
-    from kullback.builder.build import BuildPlan
-
-    sampling.sample_key("reroll", "open-facility", SALT)
-    plan = BuildPlan(workdir=tmp_path / "work")
-    loop = rounds.Loop(plan=plan, builder=builder_agent.build_harness(plan))
-    assert sampling.draws_since(loop.draws_seen) == {}
-    sampling.sample_key("reroll", "raise-limit", SALT)
-    assert sampling.draws_since(loop.draws_seen) == {"reroll": 1}
-
-
 # --- the anchor, which is the one draw with a workdir behind it -------------
 
-def test_the_anchor_holds_out_the_same_runs_on_two_invocations_over_one_task_list(tmp_path):
-    left, right = tmp_path / "left", tmp_path / "right"
-    left.mkdir()
-    right.mkdir()
+def test_the_anchor_holds_out_the_same_runs_on_two_invocations_over_one_task_list(workdir):
     tasks = _tasks(TASKS)
-    assert choose_anchor(tasks, left).held_out == choose_anchor(tasks, right).held_out
+    first = world_tools.draw_anchor(tasks, workdir)
+    second = world_tools.draw_anchor(tasks, workdir)
+    assert first["held_out"] == second["held_out"]
 
 
-def test_a_task_added_to_a_fresh_build_moves_no_other_tasks_held_out_runs(tmp_path):
-    before, after = tmp_path / "before", tmp_path / "after"
-    before.mkdir()
-    after.mkdir()
-    was = choose_anchor(_tasks(TASKS), before).held_out
-    now = choose_anchor(_tasks(TASKS + ("novate-loan",)), after).held_out
+def test_a_task_added_to_a_fresh_build_moves_no_other_tasks_held_out_runs(workdir):
+    was = world_tools.draw_anchor(_tasks(TASKS), workdir)["held_out"]
+    now = world_tools.draw_anchor(_tasks(TASKS + ("novate-loan",)), workdir)["held_out"]
     assert {task_id: now[task_id] for task_id in TASKS} == was
 
 
-def test_a_run_added_to_a_task_leaves_the_other_runs_membership_to_their_own_keys(tmp_path):
-    ten, eleven = tmp_path / "ten", tmp_path / "eleven"
-    ten.mkdir()
-    eleven.mkdir()
+def test_a_run_added_to_a_task_keeps_the_held_out_runs_the_anchor_already_had(workdir):
     task = Task(id="open-facility", run_ids=[f"open-facility-r{i}" for i in range(10)])
     grown = Task(id="open-facility", run_ids=[f"open-facility-r{i}" for i in range(11)])
-    was = set(choose_anchor([task], ten).anchor_runs("open-facility"))
-    now = set(choose_anchor([grown], eleven).anchor_runs("open-facility"))
-    # The count is D81's share of a longer list, so it may take one more Run; what it must not do is
-    # drop a Run whose key still ranks inside the share.
-    assert was <= now or now <= was
+    was = world_tools.draw_anchor([task], workdir)["held_out"]["open-facility"]
+    now = world_tools.draw_anchor([grown], workdir)["held_out"]["open-facility"]
+    assert was == now, "a stored anchor keeps the Runs it held out"
 
 
 def test_the_anchor_records_the_salt_it_was_keyed_under_and_reads_it_back(workdir):
-    anchor = choose_anchor(_tasks(TASKS), workdir)
-    assert anchor.salt == sampling.read_salt(workdir)
-    assert load_anchor(workdir).salt == anchor.salt
+    anchor = world_tools.draw_anchor(_tasks(TASKS), workdir)
+    assert anchor["salt"] == sampling.read_salt(workdir)
+    body = json.loads((workdir / "anchor.json").read_text(encoding="utf-8"))
+    assert body.get("salt", "") == anchor["salt"]
+    assert body["held_out"] == anchor["held_out"]
 
 
 def test_an_anchor_stored_before_the_salt_existed_loads_and_keeps_its_own_rule(workdir):
     (Path(workdir) / "anchor.json").write_text(json.dumps({
         "held_out": {"open-facility": ["open-facility-r3"]}, "unguarded": [],
         "share": 0.2, "min_runs": 3, "seed": 20260827}), encoding="utf-8")
-    stored = load_anchor(workdir)
-    assert stored.salt == ""
-    assert "salt" not in stored.to_dict(), "an anchor drawn before D212 hashes as it always did"
-    grown = choose_anchor(_tasks(TASKS), workdir)
-    assert grown.anchor_runs("open-facility") == ["open-facility-r3"]
-    assert grown.salt == "", "a Task appended to that anchor is drawn under the rule that anchor used"
+    grown = world_tools.draw_anchor(_tasks(TASKS), workdir)
+    assert grown["held_out"]["open-facility"] == ["open-facility-r3"]
 
 
 def test_the_anchor_kind_is_the_one_name_every_held_out_draw_goes_through():
-    assert ANCHOR_KIND == "anchor"
+    assert world_tools.ANCHOR_KIND == "anchor"
     runs = ["open-facility-r0", "open-facility-r1", "open-facility-r2"]
-    assert sampling.keyed_share(ANCHOR_KIND, runs, SALT, 0.2, minimum=1, maximum=1) == sampling.keyed_share(
+    assert sampling.keyed_share(world_tools.ANCHOR_KIND, runs, SALT, 0.2, minimum=1, maximum=1) == sampling.keyed_share(
         "anchor", runs, SALT, 0.2, minimum=1, maximum=1)

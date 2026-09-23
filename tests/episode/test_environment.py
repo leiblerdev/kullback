@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from kullback.episode.environment import BuiltEnvironment, EnvironmentError, _json
+from kullback.runner.world.environment import BuiltEnvironment, EnvironmentError, _json
 from tests.episode.invented import write_env
 
 
@@ -44,14 +44,14 @@ def test_missing_root_db_still_uses_the_package_db(tmp_path, monkeypatch):
 
 
 def test_missing_policy_text_is_optional(tmp_path):
-    from kullback.episode.environment import _text
+    from kullback.runner.world.environment import _text
     assert _text(tmp_path / "absent.md") is None
 
 
 def test_present_unreadable_policy_text_is_not_silently_dropped(tmp_path, monkeypatch):
     from pathlib import Path
 
-    from kullback.episode.environment import EnvironmentError, _text
+    from kullback.runner.world.environment import EnvironmentError, _text
     def unreadable(self, *args, **kwargs):
         raise PermissionError("unreadable")
     monkeypatch.setattr(Path, "read_text", unreadable)
@@ -60,7 +60,7 @@ def test_present_unreadable_policy_text_is_not_silently_dropped(tmp_path, monkey
 
 
 def test_invalid_utf8_policy_text_is_reported(tmp_path):
-    from kullback.episode.environment import EnvironmentError, _text
+    from kullback.runner.world.environment import EnvironmentError, _text
     path = tmp_path / "policy.md"
     path.write_bytes(b"\xff")
     with pytest.raises(EnvironmentError, match="unreadable or torn"):
@@ -182,7 +182,7 @@ def test_no_confirmed_rows_selects_nothing(tmp_path):
 
 
 def test_batch_choice_follows_the_confirmed_reference(tmp_path):
-    from kullback.episode import loading
+    from kullback.runner.world import loading
 
     root = write_env(tmp_path / "env")
     _write_reference_fixture(root)
@@ -192,7 +192,7 @@ def test_batch_choice_follows_the_confirmed_reference(tmp_path):
 
 
 def test_batch_choice_with_no_replays_file_takes_first_non_held(tmp_path):
-    from kullback.episode import loading
+    from kullback.runner.world import loading
 
     root = write_env(tmp_path / "env")
     _write_reference_fixture(root, replays=None)
@@ -202,7 +202,7 @@ def test_batch_choice_with_no_replays_file_takes_first_non_held(tmp_path):
 
 
 def test_batch_choice_with_no_confirmed_rows_is_none(tmp_path):
-    from kullback.episode import loading
+    from kullback.runner.world import loading
 
     root = write_env(tmp_path / "env")
     _write_reference_fixture(
@@ -227,8 +227,8 @@ def test_batch_choice_with_no_confirmed_rows_is_none(tmp_path):
     {"widget_task": {"rec1": {"trace_id": "rec1", "confirmed": "yes"}}},
 ])
 def test_user_rules_refuses_misshapen_replay_rows(tmp_path, replays):
-    from kullback.episode import loading
     from kullback.runner.records import Task
+    from kullback.runner.world import loading
 
     root = write_env(tmp_path / "env")
     _write_reference_fixture(root)
@@ -242,8 +242,8 @@ def test_user_rules_refuses_misshapen_replay_rows(tmp_path, replays):
 
 
 def test_user_rules_refuses_misshapen_held_out(tmp_path):
-    from kullback.episode import loading
     from kullback.runner.records import Task
+    from kullback.runner.world import loading
 
     root = write_env(tmp_path / "env")
     _write_reference_fixture(root)

@@ -23,7 +23,7 @@ from __future__ import annotations
 import asyncio
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Callable, Iterable, Optional
+from typing import Any, Callable, Iterable, Optional
 
 from kullback.agent.base_tools import DEFAULT_ALLOWLIST, register_base_tools
 from kullback.agent.bus import Bus
@@ -39,9 +39,6 @@ from kullback.builder.world_tools import ingest_files
 from kullback.gates import names_protected_path
 from kullback.gates.hook import PATH_KEYS, gate_writes
 from kullback.runner import budget
-
-if TYPE_CHECKING:
-    from kullback.builder.build import BuildPlan
 
 #: The directories under env/ the model may write; everything else there is read-only for it.
 WRITABLE_PREFIXES = ("tools/", "intents/", "refusals/", "policy/")
@@ -88,7 +85,7 @@ def spent_in(workdir: Any) -> float:
     return float(budget.load_totals(workdir)["total"].get("usd") or 0.0)
 
 
-def ceiling_guard(harness: AgentHarness, plan: BuildPlan) -> tuple[Callable[[], None], dict]:
+def ceiling_guard(harness: AgentHarness, plan: _GuardPlan) -> tuple[Callable[[], None], dict]:
     """Cancel the run the moment the workdir's spend reaches the build's ceiling (D86, D135).
 
     The ceiling is the hard stop of a model-driven session: a stage that crosses it raises inside

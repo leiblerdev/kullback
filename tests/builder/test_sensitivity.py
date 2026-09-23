@@ -234,34 +234,6 @@ def test_the_chain_goes_on_past_a_failed_sensitivity_ruling_so_the_replay_count_
     assert stages[-2:] == ["sensitivity", "replay_fidelity"]
 
 
-def test_the_lesson_the_next_attempt_is_written_with_names_the_column(tmp_path):
-    """The repair a memorising body needs is a column, and the ruling is what knows which one."""
-    import json
-
-    from kullback.builder import repair
-
-    (tmp_path / "tool_builds.json").write_text(json.dumps({"tray_status": {"nodes": [
-        {"gates": [{"stage": "sensitivity", "pass": False,
-                    "metrics": {"pairs": 1, "failed": 1, "columns": ["stage"]},
-                    "failures": ["the body answers both alike"]}]}]}}), encoding="utf-8")
-    lesson = repair.sensitivity_lesson(tmp_path, "tray_status")
-    assert "stage" in lesson
-    assert repair.sensitivity_lesson(tmp_path, "bench_status") == ""
-
-
-def test_a_tool_written_properly_since_leaves_no_lesson(tmp_path):
-    import json
-
-    from kullback.builder import repair
-
-    (tmp_path / "tool_builds.json").write_text(json.dumps({"tray_status": {"nodes": [
-        {"gates": [{"stage": "sensitivity", "pass": False, "metrics": {"columns": ["stage"]},
-                    "failures": ["x"]}]},
-        {"gates": [{"stage": "sensitivity", "pass": True, "metrics": {"columns": []}, "failures": []}]},
-    ]}}), encoding="utf-8")
-    assert repair.sensitivity_lesson(tmp_path, "tray_status") == ""
-
-
 def test_a_column_the_two_worlds_hold_alike_is_no_pair_however_the_recordings_differ(tmp_path):
     """The second stage of the check: the state has to be able to tell the body which world it is in.
 

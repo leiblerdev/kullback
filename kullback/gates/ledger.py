@@ -1,9 +1,8 @@
 """gates.json under one lock: the one ledger both agents record their rulings through (D122, D128).
 
-The class moved here verbatim from `builder/pipeline.py` in phase 5 so the Builder's stages and the
-Examiner's tools write the file through one class with one lock and the same replace-and-append
-rule; `builder/pipeline.py` re-imports it under the same name. Turn-taking (D128) makes one writer
-at a time, and the lock is what keeps a beat's own threads honest.
+The class moved here verbatim from `builder/pipeline.py` in phase 5 so the Builder and the
+Examiner write the file through one class with one lock and the same replace-and-append rule.
+Turn-taking (D128) makes one writer at a time, and the lock is what keeps a beat's own threads honest.
 """
 
 from __future__ import annotations

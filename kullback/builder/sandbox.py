@@ -29,7 +29,6 @@ from typing import Any, Iterable, Optional
 # here. Everything else the callers read straight out of kullback.gates.
 from kullback.builder import effects as effects_mod
 from kullback.builder import mine
-from kullback.episode.loading import DB_CLASS, HELPERS, SandboxError
 from kullback.gates import tool_runs
 from kullback.gates.confinement import TOOLS_CLASS, gate_confined
 from kullback.gates.tool_runs import (
@@ -48,6 +47,7 @@ from kullback.gates.tool_runs import (
 )
 from kullback.runner import arith
 from kullback.runner.records import EntitySchema, GateResult, ToolCall, content_hash
+from kullback.runner.world.loading import DB_CLASS, HELPERS, SandboxError
 
 # The child runs under `python -I` with the environment cleared, so it cannot be relied on to import
 # kullback at all. It gets the evaluator's own bytes instead, prepended to the runner script, and the

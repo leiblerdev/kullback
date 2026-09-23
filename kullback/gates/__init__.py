@@ -21,7 +21,7 @@ by the stage alone.
 Phase 5 adds the Examiner's gates (D127, D133, D128, D126): `probe_pool` and `probe_admission` over
 the monotone probe pools, `loosening` and `false_rejection` over the Verifier histories and the
 legitimate pool of frontier Runs, `refuse` over the refusals, and `trusted`, whose count is the
-round's "Tasks with a trusted Verifier"; `round_end` holds the counts and the three exits, and
+round's "Tasks with a trusted Verifier"; `counts` holds the workdir counts, and
 `ledger.GateLedger` is the one class both agents write gates.json through.
 """
 
@@ -36,12 +36,12 @@ from kullback.gates import (
     artifacts,
     bindings,
     confinement,
+    counts,
     fidelity,
     hook,
     ledger,
     loosening,
     probes,
-    round_end,
     scorecard,
     stages,
     tool_runs,
@@ -81,6 +81,7 @@ from kullback.gates.confinement import (
     predicate_confinement_gate,
     source_confinement,
 )
+from kullback.gates.counts import GATE_COUNTS, fidelity_rate, goal_met, round_counts, trusted_share
 from kullback.gates.fidelity import (
     oracle_replay_gate,
     reference_replay_gate,
@@ -110,7 +111,6 @@ from kullback.gates.probes import (
     probe_scores,
     version_hash,
 )
-from kullback.gates.round_end import GATE_COUNTS, done, exit_for, round_counts, stalled
 from kullback.gates.scorecard import FROZEN_TASKS_NAME, freeze_tasks, frozen_tasks, task_coverage
 from kullback.gates.scorecard import scorecard as scorecard_gate
 from kullback.gates.stages import (
@@ -363,11 +363,11 @@ __all__ = [
     "body_parses_gate", "body_refuses_unknown_gate", "body_replay_fidelity_gate",
     "body_sensitivity_gate", "budget_gate",
     "candidate_runs_gate", "check_run", "cluster_gate", "compile_tools_gate", "compile_tools_gates",
-    "column_differences", "confinement", "consecutive_failed", "d79_results", "deterministic_gate",
+    "column_differences", "confinement", "consecutive_failed", "counts", "d79_results", "deterministic_gate",
     "differing_columns",
-    "discarded_runs", "done",
+    "discarded_runs",
     "environment_gate",
-    "executes_gate", "exit_for", "false_rejection", "false_rejection_gate", "fidelity", "finished_runs", "first_string",
+    "executes_gate", "false_rejection", "false_rejection_gate", "fidelity", "fidelity_rate", "finished_runs", "first_string",
     "attach_ruling", "binding_for", "bindings",
     "freeze_tasks", "frozen_tasks", "gate_confined", "gate_named", "gate_writes", "gates_for_path",
     "gates_over", "hook",
@@ -377,10 +377,10 @@ __all__ = [
     "predicate_confinement", "predicate_confinement_gate", "probe_admission_gate", "probe_pool_gate",
     "probe_scores", "probes", "recorded_argument_values", "reference_replay_gate", "refuse_gate",
     "regrade_gate", "replay_fidelity_gate", "rulings_for", "sensitivity_lesson",
-    "readers_gate", "replay_match", "rerolls_gate", "round_counts", "round_end", "ruling_line", "ruling_of", "rulings_over", "scorecard", "scorecard_gate",
-    "setup_review_gate", "source_confinement", "stages", "stalled", "starting_state_ids", "summarize",
+    "readers_gate", "replay_match", "rerolls_gate", "goal_met", "round_counts", "ruling_line", "ruling_of", "rulings_over", "scorecard", "scorecard_gate",
+    "setup_review_gate", "source_confinement", "stages", "starting_state_ids", "summarize",
     "task_coverage",
-    "task_verifiers_gate", "tau2_export_gate", "tool_runs", "trust", "trusted_gate", "unconfirmed_reason",
+    "task_verifiers_gate", "tau2_export_gate", "tool_runs", "trust", "trusted_gate", "trusted_share", "unconfirmed_reason",
     "unfinished_run", "user_rules_gate", "validate_verifier", "verdict_golden_gate", "verifier_gate",
     "verifier_suite", "version_hash", "vocabulary_gate", "wrong_run",
 ]

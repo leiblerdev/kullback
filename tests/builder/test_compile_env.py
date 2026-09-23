@@ -1,10 +1,9 @@
-"""Tests for compile_env: inverse replay, per-Task overlays, the tau2 shape, the five gates and the repair loop."""
+"""Tests for compile_env: inverse replay, per-Task overlays, the tau2 shape and the five gates."""
 
 from __future__ import annotations
 
 import ast
 import hashlib
-import inspect
 import json
 import tokenize
 
@@ -13,7 +12,6 @@ import pytest
 from conftest import PTR
 from kullback.builder import compile_env as ce
 from kullback.builder import sandbox as sandbox_mod
-from kullback.builder import tools as builder_tools
 from kullback.gates.confinement import PROVIDED_HELPERS, gate_confined
 from kullback.runner.records import (
     Atom,
@@ -27,7 +25,6 @@ from kullback.runner.records import (
     ToolSig,
     Trace,
     Verifier,
-    as_dict,
 )
 
 # --- hand-written tool bodies, standing in for what a model would write ---
@@ -488,87 +485,6 @@ def test_split_calls_falls_back_to_every_third_when_every_call_shares_one_shape(
     assert ce.no_shape_holdout(order_calls) is True
 
 
-def test_a_single_shape_tool_records_no_shape_holdout(
-    make_test_model, schema, sigs, db0, workdir, order_calls
-):
-    build = ce.compile_tool(make_test_model([CORRECT_BODY]), sigs[0], order_calls, schema, db0, workdir)
-    assert build.no_shape_holdout is True
-    written = json.loads((workdir / ce.NODE_DIR / "get_order_details.json").read_text(encoding="utf-8"))
-    assert written["no_shape_holdout"] is True
-
-
-def test_a_two_shape_tool_does_not_record_no_shape_holdout(make_test_model, workdir):
-    calls = _ware_calls()
-    build = ce.compile_tool(make_test_model([COPY_WARE_BODY]), KILN_SIG, calls, KILN_SCHEMA, KILN_DB,
-                            workdir)
-    assert build.no_shape_holdout is False
-    written = json.loads((workdir / ce.NODE_DIR / "describe_ware.json").read_text(encoding="utf-8"))
-    assert written["no_shape_holdout"] is False
-    assert build.assisted is False
-
-
-# --- the repair loop (D75) ---
-
-
-def test_the_repair_loop_accepts_a_correct_rewrite(
-    make_test_model, schema, sigs, db0, workdir, order_calls
-):
-    model = make_test_model([WRONG_BODY, CORRECT_BODY])
-    build = ce.compile_tool(model, sigs[0], order_calls, schema, db0, workdir)
-    assert build.assisted is False
-    assert len(build.nodes) == 2
-    assert build.nodes[0]["evidence"] == "initial"
-    assert build.nodes[1]["evidence"] == "failing_call"
-    assert build.nodes[-1]["passed"] is True
-    assert build.body.strip() == CORRECT_BODY.strip()
-
-
-def test_the_repair_loop_grows_the_evidence_and_marks_the_tool_assisted(
-    make_test_model, schema, sigs, db0, workdir, order_calls
-):
-    model = make_test_model([WRONG_BODY] * 4)
-    build = ce.compile_tool(model, sigs[0], order_calls, schema, db0, workdir)
-    assert build.assisted is True
-    assert [node["evidence"] for node in build.nodes] == list(ce.EVIDENCE_LABELS)
-    assert len(model.calls) == 4
-    assert all(node["passed"] is False for node in build.nodes)
-    assert len(model.calls[3]["messages"][-1]["content"]) > len(model.calls[1]["messages"][-1]["content"])
-    written = json.loads((workdir / ce.NODE_DIR / "get_order_details.json").read_text(encoding="utf-8"))
-    assert len(written["nodes"]) == 4
-
-
-def test_a_retry_keeps_the_first_two_messages_byte_identical(
-    make_test_model, schema, sigs, db0, workdir, order_calls
-):
-    """docs/prompt-caching.md item 2: the system message and the first user turn are the cached
-    prefix; a retry must append, never rewrite them."""
-    model = make_test_model([WRONG_BODY] * 4)
-    ce.compile_tool(model, sigs[0], order_calls, schema, db0, workdir)
-    assert len(model.calls) == 4
-    first_two = model.calls[0]["messages"][:2]
-    for call in model.calls[1:]:
-        assert call["messages"][:2] == first_two
-        assert len(call["messages"]) > 2
-
-
-def test_a_later_attempt_that_crashes_does_not_replace_an_earlier_one_that_replays(
-    make_test_model, schema, sigs, db0, workdir, order_calls
-):
-    """A live build's fourth attempt at one write tool crashed on all 67 of its calls where the
-    third had replayed 44 of 44 and failed only the refusal probe. The last attempt was the one
-    kept, which cost 94 replay misses and 38 Tasks; the best attempt is kept now."""
-    model = make_test_model([WRONG_BODY] + [CRASHING_BODY] * 3)
-    build = ce.compile_tool(model, sigs[0], order_calls, schema, db0, workdir)
-    assert build.assisted is True and all(not node["passed"] for node in build.nodes)
-    assert build.kept_attempt == 0
-    assert build.body.strip() == WRONG_BODY.strip()
-    assert [gate.stage for gate in build.gates if gate.passed][:4] == [
-        "parses", "confined", "compile_tools.memorised_values", "executes_on_s0"]
-    written = json.loads((workdir / ce.NODE_DIR / "get_order_details.json").read_text(encoding="utf-8"))
-    assert written["kept_attempt"] == 0
-    assert [node["attempt"] for node in written["nodes"] if node.get("kept")] == [0]
-
-
 def test_the_kept_attempt_is_the_one_that_got_furthest_through_the_gates():
     """The gates run in one order and stop at the first failure, so how many passed is how far the
     body got; two bodies that fell at the same gate are separated by what their replay matched."""
@@ -583,95 +499,6 @@ def test_the_kept_attempt_is_the_one_that_got_furthest_through_the_gates():
     assert ce.attempt_score(gates(6, 44)) > ce.attempt_score(gates(2, 0))
     assert ce.attempt_score(gates(6, 44)) > ce.attempt_score(gates(6, 12))
     assert ce.attempt_score([]) == (0, 0)
-
-
-# --- an attempt that raises what the attempt before raised is told so ---
-
-LOANS_BY_ATTRIBUTE = """
-member = self.db.members[member_id]
-return {"member_id": member_id, "copy_id": member.loans[0].copy_id}
-"""
-
-LOANS_BY_ANOTHER_ATTRIBUTE = """
-member = self.db.members[member_id]
-return {"member_id": member_id, "due": member.loans[0].due}
-"""
-
-
-def _library_world():
-    """A lending library, its schema, the tool that reads one member and four recorded calls."""
-    db = {"members": {f"m-{i}": {"member_id": f"m-{i}",
-                                 "loans": [{"copy_id": f"c-{i}", "due": "2026-01-02"}]}
-                      for i in range(1, 5)},
-          "titles": {}}
-    sig = ToolSig(name="get_member", description="Read one member and their loans.",
-                  args_fields=[FieldStat(name="member_id", types=["str"], optional=False)],
-                  kind="read", unclassified=False)
-    calls = [_call("get_member", {"member_id": member_id},
-                   result={"member_id": member_id, "copy_id": row["loans"][0]["copy_id"]}, idx=i)
-             for i, (member_id, row) in enumerate(sorted(db["members"].items()))]
-    return db, _library_schema(), sig, calls
-
-
-MEMBER_BY_A_KEY_NOBODY_HOLDS = """
-return self.db.members[member_id + "-x"]
-"""
-
-WRONG_MEMBER_BODY = """
-member = self.db.members[member_id]
-return {"member_id": member.member_id}
-"""
-
-
-def test_a_body_that_raises_on_a_missing_row_is_told_the_table_and_that_the_id_is_absent(
-    make_test_model, workdir
-):
-    """A bare KeyError says nothing about what the body was reading, so the next attempt guesses.
-    The crashing line names the table and the world in front of it answers for the id."""
-    db, schema, sig, calls = _library_world()
-    model = make_test_model([MEMBER_BY_A_KEY_NOBODY_HOLDS] * 4)
-    ce.compile_tool(model, sig, calls, schema, db, workdir)
-    retry = model.calls[1]["messages"][-1]["content"]
-    assert "raised KeyError at `return self.db.members[member_id + \"-x\"]`" in retry
-    assert "`members` holds 4 rows and not `m-1-x`" in retry
-    assert "its ids look like a-#" in retry, retry
-    assert "m-2" not in retry.split("holds 4 rows")[1], "the other ids are shapes, not values"
-
-
-def test_a_body_that_does_not_raise_gets_no_table_note(make_test_model, workdir):
-    db, schema, sig, calls = _library_world()
-    model = make_test_model([WRONG_MEMBER_BODY] * 4)
-    ce.compile_tool(model, sig, calls, schema, db, workdir)
-    retry = model.calls[1]["messages"][-1]["content"]
-    assert "holds" not in retry and "look like" not in retry
-
-
-CONSTANT_MEMBER_BODY = """
-return {"member_id": "none", "copy_id": "none"}
-"""
-
-
-def test_a_body_that_answers_one_constant_to_calls_with_different_arguments_is_marked_hardcoded(
-    make_test_model, workdir
-):
-    """One live build kept a body that picked the first row and raised one fixed refusal on every
-    call, round after round: assisted was all anyone was told, and no hint reaches a body with no
-    argument in it."""
-    db, schema, sig, calls = _library_world()
-    model = make_test_model([CONSTANT_MEMBER_BODY] * 4)
-    build = ce.compile_tool(model, sig, calls, schema, db, workdir)
-    assert build.assisted is True and build.hardcoded is True
-    written = json.loads((workdir / ce.NODE_DIR / "get_member.json").read_text(encoding="utf-8"))
-    assert written["hardcoded"] is True
-    assert ce.mark_hardcoded(build.body).splitlines()[0] == ce.HARDCODED_MARK
-    assert ce.mark_hardcoded(ce.mark_hardcoded(build.body)).count(ce.HARDCODED_MARK) == 1
-
-
-def test_a_body_that_answers_per_argument_is_assisted_but_not_hardcoded(make_test_model, workdir):
-    db, schema, sig, calls = _library_world()
-    model = make_test_model([WRONG_MEMBER_BODY] * 4)
-    build = ce.compile_tool(model, sig, calls, schema, db, workdir)
-    assert build.assisted is True and build.hardcoded is False
 
 
 def test_a_tool_whose_own_recordings_answer_alike_is_not_called_hardcoded():
@@ -704,33 +531,6 @@ def test_the_shape_of_an_id_generalizes_its_characters_and_keeps_the_rest():
     assert ce.table_read("return {}") == ""
 
 
-def test_an_attempt_that_raises_what_the_attempt_before_raised_is_told_so_with_the_exception(
-    make_test_model, workdir
-):
-    """One write tool of a live build crashed on all four attempts with the same AttributeError at
-    the same call. Each retry showed the crash and none said the error had not moved."""
-    db, schema, sig, calls = _library_world()
-    model = make_test_model([LOANS_BY_ATTRIBUTE] * 4)
-    build = ce.compile_tool(model, sig, calls, schema, db, workdir)
-    assert build.assisted is True and len(model.calls) == 4
-    third_turn = model.calls[2]["messages"][-1]["content"]
-    assert "The same error as the attempt before, at the same call" in third_turn
-    assert "AttributeError: 'dict' object has no attribute 'copy_id'" in third_turn
-    assert model.calls[2]["messages"][:2] == model.calls[0]["messages"][:2]
-
-
-def test_an_attempt_that_raises_a_different_exception_is_not_told_it_is_the_same_error(
-    make_test_model, workdir
-):
-    db, schema, sig, calls = _library_world()
-    model = make_test_model([LOANS_BY_ATTRIBUTE, LOANS_BY_ANOTHER_ATTRIBUTE,
-                             LOANS_BY_ATTRIBUTE, LOANS_BY_ANOTHER_ATTRIBUTE])
-    ce.compile_tool(model, sig, calls, schema, db, workdir)
-    assert len(model.calls) == 4
-    for call in model.calls[1:]:
-        assert "The same error as the attempt before" not in call["messages"][-1]["content"]
-
-
 def test_the_exception_a_failing_gate_quotes_is_read_off_its_failure_line():
     from kullback.runner.records import GateResult
 
@@ -742,41 +542,11 @@ def test_the_exception_a_failing_gate_quotes_is_read_off_its_failure_line():
     assert ce.exception_in("get_member(member_id='m-1') answered differently on a second run") == ""
 
 
-def test_a_recompile_hint_reaches_the_compiler_prompt_for_that_tool(
-    make_test_model, schema, sigs, db0, workdir, order_calls
-):
-    """A hint nothing reads changes nothing. The lesson `repair.record_tool_lesson` wrote is what
-    the next attempt at this one tool is shown; without it the live build asked for the same
-    recompile seven times and was handed the same body every time."""
-    from kullback.builder import repair
-
-    repair.record_tool_lesson(workdir, sigs[0].name, ["executes: the body raised KeyError on every call"])
-    model = make_test_model([CORRECT_BODY])
-    ce.compile_tool(model, sigs[0], order_calls, schema, db0, workdir,
-                    lesson=repair.lesson_for_tool(workdir, sigs[0].name))
-    system, user = model.calls[0]["messages"][0]["content"], model.calls[0]["messages"][-1]["content"]
-    assert "raised KeyError on every call" in user
-    assert f"Past gate failures for {sigs[0].name}" in user
-    assert "KeyError" not in system, "one tool's lesson must not move the prefix every tool shares"
-
-
 def test_with_no_lesson_the_compile_prompt_is_unchanged(schema, sigs, order_calls):
     """The offline builds are deterministic byte for byte, so a tool with no lesson has to send
     exactly the messages it sent before there was such a thing as a lesson."""
     assert (ce.body_messages(sigs[0], order_calls[:3], schema=schema, lesson="")
             == ce.body_messages(sigs[0], order_calls[:3], schema=schema))
-
-
-def test_an_attempt_over_the_evidence_cap_is_refused_not_truncated(
-    make_test_model, schema, sigs, db0, workdir, order_calls
-):
-    model = make_test_model([WRONG_BODY] * 4)
-    build = ce.compile_tool(
-        model, sigs[0], order_calls, schema, db0, workdir, max_evidence_chars=10
-    )
-    assert build.assisted is True
-    assert build.nodes[-1]["refused"] is True
-    assert model.calls == []
 
 
 # --- the tau2 file shape (D56) ---
@@ -909,24 +679,6 @@ def test_a_changed_policy_only_moves_the_policy_version():
     assert first.env_id != second.env_id
 
 
-def test_the_evidence_cap_is_on_by_default_and_is_forty_percent_of_the_window(
-    make_test_model, schema, sigs, db0, workdir, order_calls
-):
-    """D65 in numbers, not in the formula that defines it, and on by default in compile_tool."""
-    assert ce.CONTEXT_WINDOW == 200_000
-    assert ce.MAX_EVIDENCE_CHARS == 320_000  # 40 percent of 200,000 tokens, 4 characters a token
-    assert inspect.signature(ce.compile_tool).parameters["max_evidence_chars"].default == 320_000
-
-    # and it is a cap on the prompt that is sent, not on the evidence block alone
-    wordy = sigs[0].model_copy(update={"description": "x" * 5000})
-    cap = len(ce._example_block(order_calls[:3])) + 100
-    model = make_test_model([CORRECT_BODY] * 4)
-    build = ce.compile_tool(model, wordy, order_calls, schema, db0, workdir, max_evidence_chars=cap)
-    assert model.calls == [], "a prompt of over 5,000 characters went out under a cap of a few hundred"
-    assert build.nodes[-1]["refused"] is True
-    assert build.assisted is True
-
-
 # --- every recorded call replays on its own Starting state (D74, design section 6 gate 2) ---
 
 
@@ -999,7 +751,7 @@ def test_the_same_write_call_twice_answers_from_the_starting_state_both_times(
 
 
 def test_a_row_the_corpus_shows_in_two_versions_replays_on_each_tasks_own_world(
-    make_test_model, sample, sigs, workdir
+    sample, sigs, workdir
 ):
     """The March Task saw the order pending, the June Task saw it cancelled; one body serves both."""
     pending = sample["by_status"]["pending"]
@@ -1027,11 +779,9 @@ def test_a_row_the_corpus_shows_in_two_versions_replays_on_each_tasks_own_world(
     states = ce.call_starting_states(
         state.db, state.overlays, ce.overlay_values(workdir), {"c0": "tA", "c1": "tC", "c2": "tA"}
     )
-    model = make_test_model([CORRECT_BODY] * 4)
-    build = ce.compile_tool(model, sigs[0], calls, schema, state.db, workdir / "tool",
-                            call_states=states)
-    assert build.assisted is False, [g.failures for g in build.gates if not g.passed]
-    assert len(model.calls) == 1
+    rows = ce.replay_outcomes(sigs[0], CORRECT_BODY, calls, schema, state.db, workdir / "tool",
+                              call_states=states)
+    assert [row["replayed"] for row in rows] == [True] * len(calls), rows
 
 
 # --- a recorded invalid_arguments call is an answer, not a crash (D67) ---
@@ -1094,26 +844,6 @@ def test_a_body_that_writes_the_result_file_itself_is_refused(sample, sigs, work
     assert "nonce" in str(caught.value)
     gate = ce.gate_non_trivial(box, calls)
     assert gate.passed is False
-
-
-# --- the evidence block is not cut (D75 attempt 3, D65) ---
-
-
-def test_the_full_call_table_attempt_shows_every_shown_call_uncut(
-    make_test_model, sample, sigs, db0, schema, workdir
-):
-    order = sample["by_status"]["pending"]
-    orders = [dict(order, order_id=f"#W{i:07d}") for i in range(30)]
-    db = {"orders": {o["order_id"]: o for o in orders}, "users": {}, "products": {}}
-    calls = [_call("get_order_details", {"order_id": o["order_id"]}, result=o, idx=i)
-             for i, o in enumerate(orders)]
-    shown, _ = ce.split_calls(calls)
-    model = make_test_model([CONSTANT_BODY] * 4)
-    build = ce.compile_tool(model, sigs[0], calls, _schema_for(db), db, workdir)
-    last = model.calls[-1]["messages"][-1]["content"]
-    rows = [line for line in last.splitlines() if line.startswith("- args")]
-    assert len(rows) == len(shown) == build.nodes[-1]["evidence_calls"]
-    assert json.dumps(orders[0], default=str)[-40:] in last, "a recorded result was cut short"
 
 
 # --- column classes decide inside a list result too (D73, D84) ---
@@ -1292,82 +1022,6 @@ def test_load_toolkit_puts_the_tasks_overlay_inside_the_toolkit(sample, schema, 
     assert ce.load_toolkit(source, state.db).get_order_details(oid).status == "cancelled"
 
 
-# --- the held-out split stays hidden through the whole repair loop (D51, D75) ---
-
-
-def _held_out_body(refused_status):
-    """A body that reads the world for every id and gets only the held-out call wrong.
-
-    It refuses the one status the shown calls never carry, so the shown split replays whole and the
-    hidden call does not. It names no id of its own: a body that memorised the shown ids is refused
-    by the memorised_values gate before any call replays (D162), and this fixture is about the
-    held-out split staying hidden, not about memorisation.
-    """
-    return (f"order = self.db.orders.get(order_id)\n"
-            f"if order is None or order.status == {refused_status!r}:\n"
-            "    raise ValueError('Order not found')\n"
-            "return order\n")
-
-
-@pytest.fixture
-def split_world(sample):
-    """Four recorded calls whose held-out one is a read the body will get wrong."""
-    orders = list(sample["orders"].values())
-    db = {"orders": {o["order_id"]: o for o in orders}, "users": {}, "products": {}}
-    calls = [_call("get_order_details", {"order_id": o["order_id"]}, result=o, idx=i)
-             for i, o in enumerate(orders)]
-    calls.append(_call("get_order_details", {"order_id": "#W0000000"},
-                       error=ToolCallError(**{"class": "not_found_entity"}, payload="Order not found"),
-                       idx=9))
-    return db, _schema_for(db), calls
-
-
-def test_no_held_out_call_reaches_the_model_through_the_repair_prompts(
-    make_test_model, split_world, sigs, workdir
-):
-    db, schema, calls = split_world
-    shown, held_out = ce.split_calls(calls)
-    body = _held_out_body(held_out[0].result["status"])
-    model = make_test_model([body] * 4)
-    build = ce.compile_tool(model, sigs[0], calls, schema, db, workdir)
-
-    assert build.assisted is True
-    held_ids = [c.args["order_id"] for c in held_out]
-    prompts = [c["messages"][-1]["content"] for c in model.calls]
-    assert len(prompts) == 4
-    leaked = [i for i, p in enumerate(prompts) for h in held_ids if h in p]
-    assert leaked == [], f"held-out arguments reached the model in prompts {leaked}"
-    assert "not shown" in prompts[1], "the model was not told that a hidden call failed"
-
-
-def test_the_node_says_so_when_only_the_held_out_split_failed(
-    make_test_model, split_world, sigs, workdir
-):
-    db, schema, calls = split_world
-    shown, held_out = ce.split_calls(calls)
-    body = _held_out_body(held_out[0].result["status"])
-    model = make_test_model([body] * 4)
-    build = ce.compile_tool(model, sigs[0], calls, schema, db, workdir)
-    assert build.nodes[0]["evidence"] == "initial"
-    assert [node["evidence"] for node in build.nodes[1:]] == [ce.HELD_OUT_LABEL] * 3
-    assert build.nodes[1]["evidence_calls"] == len(shown)
-
-
-def test_the_repair_loop_grows_the_evidence_until_the_cap_refuses_an_attempt(
-    make_test_model, schema, sigs, db0, workdir, order_calls
-):
-    """D75's grow-then-refuse path: attempt 0 fits, a later attempt does not and is refused whole."""
-    shown, _ = ce.split_calls(order_calls)
-    cap = ce.prompt_chars(ce.body_messages(sigs[0], shown[:3], schema=schema)) + 50
-    model = make_test_model([WRONG_BODY] * 4)
-    build = ce.compile_tool(model, sigs[0], order_calls, schema, db0, workdir, max_evidence_chars=cap)
-    assert model.calls, "attempt 0 fitted under the cap and should have been sent"
-    assert all(ce.prompt_chars(call["messages"]) <= cap for call in model.calls)
-    assert build.nodes[-1]["refused"] is True
-    assert len(build.nodes) > 1, "the loop refused before it ever grew the evidence"
-    assert build.assisted is True
-
-
 # --- confinement: the static check that stands in for the deferred sandbox ---
 
 def test_a_body_that_reaches_outside_the_world_is_refused_before_it_runs(schema, sigs, db0, workdir):
@@ -1449,41 +1103,6 @@ def test_the_id_pattern_lookup_reads_a_hand_written_schema_too():
     assert id_pattern_for(by_column, "orders", "order_id") == r"^#W\d+$"
     assert id_pattern_for(by_table, "orders", "order_id") == r"^#W\d+$"
     assert id_pattern_for(by_column, "orders", "user_id") is None
-
-
-def test_a_tool_the_model_wrapper_refuses_on_size_does_not_take_the_build_with_it(
-    make_test_model, schema, sigs, db0, workdir, order_calls
-):
-    """The live case: budget.py counts the request, compile_env counts the contents, and only the
-    first one is authoritative. A refusal from the wrapper has to land as an assisted tool."""
-    from kullback.runner.budget import ContextCapExceeded
-
-    class Refusing:
-        name = "refusing"
-        calls = 0
-
-        def query(self, messages, tools=None, config=None):
-            Refusing.calls += 1
-            raise ContextCapExceeded(89_645, 80_000, 200_000)
-
-    build = ce.compile_tool(Refusing(), sigs[0], order_calls, schema, db0, workdir)
-    assert Refusing.calls == 1, "it should not keep retrying a prompt that is too big"
-    assert build.nodes[-1]["refused"] is True
-    assert build.assisted is True
-    assert "refused, not truncated" in build.nodes[-1]["failures"][0]
-
-
-def test_a_refusal_on_size_is_the_only_exception_compile_tool_swallows(
-    make_test_model, schema, sigs, db0, workdir, order_calls
-):
-    class Broken:
-        name = "broken"
-
-        def query(self, messages, tools=None, config=None):
-            raise RuntimeError("the provider is down")
-
-    with pytest.raises(RuntimeError, match="the provider is down"):
-        ce.compile_tool(Broken(), sigs[0], order_calls, schema, db0, workdir)
 
 
 def test_a_relative_workdir_still_finds_the_runner_it_just_wrote(tmp_path, monkeypatch, db0, sigs, schema, order_calls):
@@ -1587,34 +1206,6 @@ def test_the_prompt_names_the_helper_so_no_body_has_to_write_a_parser():
         assert name in block, f"the loaders bind {name} and the prompt never says so"
     assert "never write a parser" in block
     assert "evaluate_arithmetic" in ce.body_messages(QUOTES_SIG, [], schema=QUOTES_SCHEMA)[0]["content"]
-
-
-def test_evidence_shrinks_by_whole_calls_rather_than_giving_up(
-    make_test_model, schema, sigs, db0, workdir, order_calls
-):
-    """The live build refused `get_order_details` at 815,972 characters because the last-resort
-    evidence is every shown call. Dropping whole calls keeps the attempt; no call is ever cut."""
-    model = make_test_model([CORRECT_BODY] * 4)
-    one_call = len(ce._example_block(order_calls[:1]))
-    cap = len(ce.body_messages(sigs[0], [], schema=schema)[0]["content"]) + 4 * one_call
-    build = ce.compile_tool(model, sigs[0], order_calls, schema, db0, workdir,
-                            max_evidence_chars=cap)
-    assert model.calls, "the attempt was taken rather than refused"
-    assert build.nodes[0]["refused"] is False
-    assert 1 <= build.nodes[0]["evidence_calls"] <= 3
-    # what went out is whole calls: the block ends where a call ends, never mid row.
-    sent = model.calls[0]["messages"][-1]["content"]
-    assert not sent.rstrip().endswith(",")
-
-
-def test_a_single_call_that_cannot_fit_is_still_refused_not_cut(
-    make_test_model, schema, sigs, db0, workdir, order_calls
-):
-    model = make_test_model([CORRECT_BODY] * 4)
-    build = ce.compile_tool(model, sigs[0], order_calls, schema, db0, workdir, max_evidence_chars=10)
-    assert model.calls == []
-    assert build.nodes[-1]["refused"] is True
-    assert build.assisted is True
 
 
 def test_a_scalar_result_tool_is_described_as_a_bare_value_not_an_object():
@@ -1739,23 +1330,6 @@ def test_constant_evidence_note_speaks_only_when_the_recorded_calls_already_agre
     assert "already answer every one of them the same way" in ce._constant_evidence_note(same)
     assert ce._constant_evidence_note(order_calls) == ""
     assert ce._constant_evidence_note(same[:1]) == ""
-
-
-def test_a_body_that_is_constant_like_the_recorded_tool_passes_gate_four_first_time(
-    make_test_model, workdir
-):
-    """transfer_to_human_agents's own recorded calls all answer "Transfer successful". A body that
-    also answers that way is right, and is not sent back to invent detail (second retail build)."""
-    schema = EntitySchema(tables=[], columns=[])
-    sig = ToolSig(name="transfer_to_human_agents", kind="generic", unclassified=False,
-                  args_fields=[FieldStat(name="summary", types=["str"], optional=False)])
-    calls = [_call("transfer_to_human_agents", {"summary": f"issue {i}"},
-                   result="Transfer successful", idx=i) for i in range(4)]
-    model = make_test_model(['return "Transfer successful"'] * 4)
-    build = ce.compile_tool(model, sig, calls, schema, {}, workdir)
-    assert len(model.calls) == 1 and build.assisted is False
-    gate_four = next(g for g in build.gates if g.stage == "non_trivial")
-    assert gate_four.passed is True and gate_four.metrics["recorded_constant"] is True
 
 
 def test_the_example_block_peels_the_transport_error_prefix_off_the_payload():
@@ -1979,34 +1553,6 @@ return {"order_id": order_id, "status": statuses[order_id]}
 """
 
 
-def test_the_compile_stage_retries_a_memorising_body_and_its_red_light_asks_for_a_recompile(
-    make_test_model, schema, sigs, db0, workdir, order_calls
-):
-    """Build 13's tool that replaces items on an order held three recorded item ids in a dict, so
-    every other id raised KeyError: 126 of the 150 replay calls that differed. A body like it is
-    refused before a subprocess runs, every attempt, and the red light names the verb that owns it."""
-    model = make_test_model([MEMORISING_BODY] * 4)
-    build = ce.compile_tool(model, sigs[0], order_calls, schema, db0, workdir)
-
-    assert len(model.calls) == 4, "the stage retried the refused body up to max_attempts"
-    assert build.assisted is True
-    ruling = next(g for g in build.gates if g.stage == "compile_tools.memorised_values")
-    assert ruling.passed is False
-    assert any("'#W1006327'" in f for f in ruling.failures)
-    assert all("does not execute" not in f for f in ruling.failures), "refused before it ran anywhere"
-    assert [g.stage for g in build.gates][-1] == "compile_tools.memorised_values", \
-        "no later gate ran on a body the memorised_values gate refused"
-    failure_shown = model.calls[1]["messages"][-1]["content"]
-    assert "gate compile_tools.memorised_values" in failure_shown
-
-    (workdir / "gates.json").write_text(json.dumps([as_dict(g) for g in build.gates]), encoding="utf-8")
-    lights = [light for light in builder_tools.red_lights(workdir)
-              if light.stage == "compile_tools.memorised_values"]
-    assert lights, "a refused body leaves no red light"
-    assert {light.verb for light in lights} == {"repair_recompile"}
-    assert {light.target for light in lights} == {"get_order_details"}
-
-
 def test_reference_args_are_the_arguments_whose_values_the_world_holds(schema, sigs, db0, workdir, sample):
     source, box = _both_tools(schema, sigs, db0, workdir, STRICT_CANCEL_BODY)
     assert list(sandbox_mod.reference_args(box, _cancel_calls(sample))) == ["order_id"]  # reason is free text
@@ -2039,62 +1585,6 @@ def test_build_environment_lists_the_assisted_tools_it_is_told(schema, sigs):
 # --- the builder tools: lookup_rows and test_body, in a bounded loop (D117) ---
 
 
-def _tool_call_reply(call_id, name, arguments):
-    return {"content": None, "tool_calls": [{"id": call_id, "name": name, "arguments": arguments}]}
-
-
-def test_a_lookup_rows_call_returns_the_row_and_the_body_still_gets_gated(
-    make_test_model, schema, sigs, db0, workdir, order_calls
-):
-    order_id = order_calls[0].args["order_id"]
-    model = make_test_model([
-        _tool_call_reply("tc1", "lookup_rows", {"table": "orders", "key": order_id}),
-        CORRECT_BODY,
-    ])
-    build = ce.compile_tool(model, sigs[0], order_calls, schema, db0, workdir)
-
-    tool_messages = [m for call in model.calls for m in call["messages"] if m.get("role") == "tool"]
-    assert len(tool_messages) == 1
-    result_text = tool_messages[0]["content"]
-    assert tool_messages[0]["tool_call_id"] == "tc1"
-    assert order_id in result_text and "status" in result_text
-
-    assert build.assisted is False
-    assert build.body.strip() == CORRECT_BODY.strip()
-    assert build.nodes[0]["tool_uses"] == [
-        {"name": "lookup_rows", "arguments": {"table": "orders", "key": order_id},
-         "result_chars": len(result_text)}
-    ]
-    # two rounds of the tool loop, one model call each
-    assert len(model.calls) == 2
-    assert model.calls[0]["tools"] == ce.BUILDER_TOOLS
-
-
-def test_a_test_body_call_returns_the_gate_failure_and_never_names_a_held_out_call(
-    make_test_model, schema, sigs, db0, workdir, order_calls
-):
-    shown, held_out = ce.split_calls(order_calls)
-    hidden_id = held_out[0].args["order_id"]
-    model = make_test_model([
-        _tool_call_reply("tc1", "test_body", {"body": WRONG_BODY}),
-        CORRECT_BODY,
-    ])
-    build = ce.compile_tool(model, sigs[0], order_calls, schema, db0, workdir)
-
-    tool_messages = [m for call in model.calls for m in call["messages"] if m.get("role") == "tool"]
-    assert len(tool_messages) == 1
-    result_text = tool_messages[0]["content"]
-    assert "gate" in result_text
-    assert hidden_id not in result_text, "a held-out call's argument reached the model through test_body"
-
-    assert build.assisted is False
-    assert build.body.strip() == CORRECT_BODY.strip()
-    tool_use = build.nodes[0]["tool_uses"][0]
-    assert tool_use["name"] == "test_body"
-    assert tool_use["arguments"] == {"body_sha256": hashlib.sha256(WRONG_BODY.encode("utf-8")).hexdigest()}
-    assert "body" not in tool_use["arguments"]
-
-
 def test_test_body_reports_a_held_out_shape_fail_without_quoting_values(workdir):
     calls = _ware_calls()
     shown, held_out = ce.split_calls(calls)
@@ -2109,55 +1599,6 @@ def test_test_body_reports_a_held_out_shape_fail_without_quoting_values(workdir)
     leaked = [word for word in hidden_words if word in text]
     assert leaked == [], f"held-out values reached test_body: {leaked}"
     assert "passed every gate" not in text
-
-
-def test_the_tool_rounds_cap_ends_the_attempt_with_no_body_submitted(
-    make_test_model, schema, sigs, db0, workdir, order_calls
-):
-    model = make_test_model(
-        [_tool_call_reply("tc", "lookup_rows", {"table": "orders"})], loop=True
-    )
-    build = ce.compile_tool(model, sigs[0], order_calls, schema, db0, workdir)
-
-    # Every attempt gets its rounds, is told no body arrived, and the tool ends assisted with no
-    # body: the stage gate then names it, as it would any tool the Builder could not write.
-    attempts = ce.MAX_REPAIR_ATTEMPTS + 1  # the first attempt plus the repairs (D75)
-    assert len(model.calls) == ce.MAX_TOOL_ROUNDS * attempts
-    assert len(build.nodes) == attempts
-    assert build.assisted is True and build.body == ""
-    assert all(n["failures"] == ["no body was submitted"] and not n.get("refused") for n in build.nodes)
-    assert len(build.nodes[-1]["tool_uses"]) == ce.MAX_TOOL_ROUNDS
-    retry = model.calls[ce.MAX_TOOL_ROUNDS]["messages"]
-    assert retry[-2]["content"] == "(no body was submitted)" and "send the body as your reply" in retry[-1]["content"]
-
-
-def test_the_last_tested_draft_is_the_body_when_the_rounds_run_out(
-    make_test_model, schema, sigs, db0, workdir, order_calls
-):
-    """The sixth retail build: three drafts tested, a row looked up, the rounds gone, no reply."""
-    model = make_test_model(
-        [_tool_call_reply("t1", "test_body", {"body": WRONG_BODY}),
-         _tool_call_reply("t2", "test_body", {"body": CORRECT_BODY})]
-        + [_tool_call_reply("l", "lookup_rows", {"table": "orders"})] * (ce.MAX_TOOL_ROUNDS - 2)
-    )
-    build = ce.compile_tool(model, sigs[0], order_calls, schema, db0, workdir)
-
-    assert len(model.calls) == ce.MAX_TOOL_ROUNDS and len(build.nodes) == 1
-    assert build.nodes[0]["body_from_draft"] is True and build.nodes[0]["passed"] is True
-    assert build.assisted is False and build.body.strip() == CORRECT_BODY.strip()
-
-
-def test_builder_tools_false_sends_no_tools_and_keeps_the_old_behaviour(
-    make_test_model, schema, sigs, db0, workdir, order_calls
-):
-    model = make_test_model([CORRECT_BODY])
-    build = ce.compile_tool(model, sigs[0], order_calls, schema, db0, workdir, builder_tools=False)
-
-    assert len(model.calls) == 1
-    assert not model.calls[0]["tools"]
-    assert build.body.strip() == CORRECT_BODY.strip()
-    assert build.assisted is False
-    assert "tool_uses" not in build.nodes[0]
 
 
 # --- per-call replay outcomes, the per-Task grain of the fidelity ruling (D171) ---
@@ -2219,18 +1660,6 @@ def test_a_tool_with_no_body_replays_none_of_its_recorded_calls(workdir):
     rows = ce.replay_outcomes(LIBRARY_SIG, "", _loan_calls(), LIBRARY_SCHEMA, LIBRARY_DB, workdir)
     assert [row["replayed"] for row in rows] == [False, False, False]
     assert all("no body" in row["detail"] for row in rows)
-
-
-def test_a_compiled_tool_carries_one_call_outcome_per_recorded_call(
-    make_test_model, schema, sigs, db0, workdir, order_calls
-):
-    """D171: every build carries the rows, and a build that cleared the gates replayed every call."""
-    build = ce.compile_tool(make_test_model([CORRECT_BODY]), sigs[0], order_calls, schema, db0, workdir)
-    assert build.assisted is False
-    assert [row["call_id"] for row in build.call_outcomes] == [c.id for c in order_calls]
-    assert all(row["replayed"] for row in build.call_outcomes)
-    written = json.loads((workdir / ce.NODE_DIR / "get_order_details.json").read_text(encoding="utf-8"))
-    assert written["call_outcomes"] == build.call_outcomes
 
 
 # --- rows whose identity is more than one column (composite row keys) ---------
@@ -2477,21 +1906,6 @@ def test_the_confinement_prompt_asks_for_ascii_only():
     assert "ASCII only" in ce._confinement_block()
 
 
-def test_a_sanitized_body_is_recorded_on_the_node_and_shown_to_the_next_attempt(
-    make_test_model, schema, sigs, db0, workdir, order_calls
-):
-    """The change is free and deterministic, so it never costs an attempt, but the attempt is told it
-    happened, so the model stops writing the character."""
-    poisoned = WRONG_BODY.replace("return {", f"# a note {DASH} in a comment\nreturn {{")
-    model = make_test_model([poisoned, CORRECT_BODY])
-    build = ce.compile_tool(model, sigs[0], order_calls, schema, db0, workdir)
-    assert build.nodes[0]["sanitized"].startswith("replaced typographic characters outside strings")
-    assert "sanitized" not in build.nodes[1]
-    assert build.nodes[0]["passed"] is False  # sanitizing repairs the character, not the body
-    assert DASH in model.calls[1]["messages"][-1]["content"]
-    assert build.body.strip() == CORRECT_BODY.strip()
-
-
 # --- mined names are text, not identifiers (a review walked past the gate through one) ---
 
 def test_a_column_name_carrying_python_source_is_refused_before_it_is_written():
@@ -2587,16 +2001,3 @@ def test_the_helper_paragraph_is_last_so_the_shared_prefix_caches(schema):
     assert on == off + "\n\n" + ce._BUILDER_TOOLS_PARAGRAPH
 
 
-def test_every_attempt_sends_the_same_head_bytes_and_the_same_spec_object(
-    make_test_model, schema, sigs, db0, workdir, order_calls
-):
-    """D246: attempts share one head string and one spec list object."""
-    model = make_test_model([WRONG_BODY] * 4)
-    ce.compile_tool(model, sigs[0], order_calls, schema, db0, workdir)
-    assert len(model.calls) == 4
-    heads = [call["messages"][0]["content"] for call in model.calls]
-    assert len(set(heads)) == 1
-    first_specs = model.calls[0]["tools"]
-    assert first_specs == ce.BUILDER_TOOLS
-    assert all(call["tools"] == first_specs for call in model.calls)
-    assert all(call["tools"] is first_specs for call in model.calls)

@@ -36,7 +36,7 @@ sys.path.insert(0, str(REPO / "scripts"))
 from xdomain_check import VENDOR, norm  # noqa: E402
 
 from kullback.builder import compile_env  # noqa: E402
-from kullback.builder.build import CANON_RULES  # noqa: E402
+from kullback.builder.world_tools import CANON_RULES  # noqa: E402
 from kullback.gates.confinement import source_confinement  # noqa: E402
 from kullback.runner import canon  # noqa: E402
 from kullback.runner.records import EntitySchema, ToolSig  # noqa: E402

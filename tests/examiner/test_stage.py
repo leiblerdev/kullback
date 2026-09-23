@@ -15,11 +15,10 @@ from types import SimpleNamespace
 import pytest
 
 from conftest import PTR
-from examiner.worlds import anchor_of, make_world, probe_runner_over
+from examiner.worlds import make_world, probe_runner_over
 from gates import verifier_fixtures as VF
 from kullback import sampling
 from kullback.ai.provider import ModelReply, TestModel, ToolCallRequest
-from kullback.builder.pipeline import Anchor
 from kullback.examiner import reference, stage
 from kullback.gates import verifier_suite
 from kullback.gates.artifacts import D79_CHECKS, D79_STAGES
@@ -66,66 +65,6 @@ def _read(path: Path):
 def _derive(workdir: Path, inputs: dict, **kwargs) -> dict:
     ctx = stage.ExamContext(workdir, GateLedger(workdir), anchor=kwargs.pop("anchor", None))
     return stage.derive_all(ctx, inputs, **kwargs)
-
-
-def test_derive_all_over_the_builder_store_writes_the_task_status_and_references_the_pipeline_stage_wrote(
-        fixture_build, tmp_path):
-    workdir = fixture_build.copy(tmp_path)
-    inputs = fixture_build.inputs_for(workdir)
-    out = _derive(workdir, inputs, anchor=anchor_of(workdir))
-    status = _read(workdir / "task_status.json")
-    references = _read(workdir / "references.json")
-    task_ids = {task.id for task in inputs["tasks"]}
-    assert set(status) == task_ids == set(references) and out["task_status"] == status
-    # No Task of the small fixture has a Reference: the rows are the stage's no-Reference rows, each
-    # with the reason the setup review reads, and the same rows land in the returned status.
-    assert all(set(row) == STATUS_KEYS and row["reference_confirmed"] is False for row in status.values())
-    assert all(set(row) == REFERENCE_KEYS and row["references"] == [] for row in references.values())
-    assert not (workdir / "verifiers").exists() and out["verifiers"] == []
-    stages = [row["stage"] for row in _read(workdir / "gates.json")]
-    assert stages[-2:] == ["compile_policy", "derive_verifier"]
-    assert (workdir / "constraints_check.json").is_file()
-
-
-def test_derive_for_one_task_leaves_the_other_tasks_rows_untouched(fixture_build, tmp_path):
-    workdir = fixture_build.copy(tmp_path)
-    inputs = fixture_build.inputs_for(workdir)
-    _derive(workdir, inputs)
-    first, *others = [task.id for task in inputs["tasks"]]
-    status = _read(workdir / "task_status.json")
-    for task_id in others:
-        status[task_id]["marker"] = "left alone"
-    (workdir / "task_status.json").write_text(json.dumps(status), encoding="utf-8")
-    out = _derive(workdir, inputs, only=first)
-    after = _read(workdir / "task_status.json")
-    assert out["task_status"] == after and set(after) == {first, *others}
-    assert "marker" not in after[first] and set(after[first]) == STATUS_KEYS
-    assert all(after[task_id]["marker"] == "left alone" for task_id in others)
-    assert set(_read(workdir / "references.json")) == set(after)
-    with pytest.raises(ValueError, match="no Task is named"):
-        _derive(workdir, inputs, only="no-such-task")
-
-
-def test_a_task_without_a_reference_gets_no_verifier_and_names_only_the_tools_its_own_calls_differ_on(
-        fixture_build, tmp_path):
-    workdir = fixture_build.copy(tmp_path)
-    inputs = fixture_build.inputs_for(workdir)
-    assisted = set(inputs["assisted_tools"])
-    assert assisted, "the fixture build has at least one assisted tool"
-    status = _derive(workdir, inputs)["task_status"]
-    named = {task_id: row for task_id, row in status.items() if row["assisted_tools"]}
-    assert named, "one Task's seed Trace calls an assisted tool"
-    for row in named.values():
-        assert row["reference_confirmed"] is False and row["verifier_passed"] is False
-        assert set(row["assisted_tools"]) <= assisted
-        # D171: the corpus fact stays on the row, and only a tool one of this Task's own recorded
-        # calls parts from blocks it; the reason names those tools and no others.
-        assert set(row["blocking_tools"]) <= assisted
-        assert set(row["blocking_tools"]) == set(row["tool_calls_differing"])
-        assert all(tool in row["reason"] for tool in row["blocking_tools"])
-        if not row["blocking_tools"]:
-            assert "do not replay" not in row["reason"]
-    assert not (workdir / "verifiers").exists()
 
 
 def _library_trace(trace_id: str, tools: list) -> Trace:
@@ -186,18 +125,22 @@ def test_the_suite_for_a_repaired_verifier_runs_every_d79_check_the_derivation_r
     assert all(g.passed for g in gates)
 
 
-def test_the_context_seeds_from_the_anchor_when_given_and_from_every_run_without_one(fixture_build, tmp_path):
-    # The fixture is too small to hold a Run out of any Task, so its anchor seeds from every Run;
-    # a build large enough holds a share out, and the context seeds from the rest (D81).
-    task = fixture_build.inputs["tasks"][0]
-    assert set(task.run_ids) and not anchor_of(fixture_build.workdir).held_out.get(task.id)
+class _Anchor:
+    """anchor.json as the derivation takes it: held-out Runs never seed a Reference (D81)."""
+
+    def __init__(self, held_out: dict):
+        self._held_out = held_out
+
+    def seed_runs(self, task_id: str, run_ids: list) -> list:
+        held = set(self._held_out.get(task_id, []))
+        return [run_id for run_id in run_ids if run_id not in held]
+
+
+def test_the_context_seeds_from_the_anchor_when_given_and_from_every_run_without_one(tmp_path):
     plain = stage.ExamContext(tmp_path, GateLedger(tmp_path))
-    assert plain.seed_runs(task.id, task.run_ids) == list(task.run_ids)
-    empty = stage.ExamContext(tmp_path, GateLedger(tmp_path), anchor=anchor_of(fixture_build.workdir))
-    assert empty.seed_runs(task.id, task.run_ids) == list(task.run_ids)
     held = Task(id="t", run_ids=["a", "b", "c"])
-    anchored = stage.ExamContext(tmp_path, GateLedger(tmp_path),
-                                 anchor=Anchor(held_out={"t": ["b"]}, unguarded=[]))
+    assert plain.seed_runs(held.id, held.run_ids) == ["a", "b", "c"]
+    anchored = stage.ExamContext(tmp_path, GateLedger(tmp_path), anchor=_Anchor({"t": ["b"]}))
     assert anchored.seed_runs(held.id, held.run_ids) == ["a", "c"]
     assert stage.seed_ids(anchored, held) == {"a", "c"} and stage.seed_ids(plain, held) == {"a", "b", "c"}
 
@@ -443,7 +386,7 @@ def _world_with_a_held_out_run(tmp_path, run):
     world.inputs["replays"]["t1"][run.run_id] = {"trace_id": run.run_id, "run_id": run.run_id,
                                                  "confirmed": True, "path": path, "reasons": []}
     world.inputs["tasks"] = [Task(id="t1", intent=VF.TASK.intent, run_ids=["ref", run.run_id])]
-    return world, Anchor(held_out={"t1": [run.run_id]}, unguarded=[])
+    return world, _Anchor({"t1": [run.run_id]})
 
 
 def _ruling(workdir: Path, stage_name: str = "derive_verifier") -> dict:
@@ -654,7 +597,7 @@ def test_a_path_single_by_structure_is_named_and_stops_blocking_when_the_pool_ho
     path = VF.write_events_jsonl(held, world.workdir / "runs" / "t1" / "held.jsonl")
     world.inputs["replays"]["t1"]["held"] = {"trace_id": "held", "run_id": "held", "confirmed": True,
                                              "path": path, "reasons": []}
-    anchor = Anchor(held_out={"t1": ["held"]}, unguarded=[])
+    anchor = _Anchor({"t1": ["held"]})
     world.inputs["tasks"] = [Task(id="t1", intent=VF.TASK.intent, run_ids=["ref", "held"])]
     seen: list = []
     out = _derive(world.workdir, world.inputs, anchor=anchor,
