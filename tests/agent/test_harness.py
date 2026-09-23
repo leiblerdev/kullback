@@ -1,4 +1,4 @@
-"""The harness: transcript across runs, subscribers, the queues, cancel, and the one-run rule."""
+"""The harness: transcript across runs, the queues, cancel, and the one-run rule."""
 
 from __future__ import annotations
 
@@ -21,30 +21,6 @@ def test_prompt_yields_events_and_keeps_the_transcript():
     assert harness.messages[-1].content == "two"
     assert types_of(second).count("turn_start") == 1
     assert harness.is_running is False
-
-
-def test_subscribers_see_every_event_in_order_and_can_unsubscribe():
-    harness = AgentHarness(TestModel(["one", "two"]))
-    seen = []
-    unsubscribe = harness.subscribe(seen.append)
-    yielded = collect(harness.prompt("a"))
-    assert types_of(seen) == types_of(yielded)
-    unsubscribe()
-    collect(harness.prompt("b"))
-    assert len(seen) == len(yielded)
-
-
-def test_async_subscriber_is_awaited():
-    harness = AgentHarness(TestModel(["one"]))
-    seen = []
-
-    async def listen(event):
-        await asyncio.sleep(0)
-        seen.append(event.type)
-
-    harness.subscribe(listen)
-    collect(harness.prompt("a"))
-    assert seen[0] == "agent_start" and seen[-1] == "agent_end"
 
 
 def test_steer_from_a_subscriber_lands_after_the_tool_batch(add_tool):
@@ -150,24 +126,3 @@ def test_subscriber_exception_stops_the_run():
     with pytest.raises(OSError):
         collect(harness.prompt("go"))
     assert harness.is_running is False
-
-
-def test_beat_start_beat_end_and_the_exit_on_round_end_are_events_of_the_union_and_serialize_by_type():
-    """The round driver's beats (D128) and the exit on round_end (D126) travel the one typed stream
-    every subscriber reads, so a dict off the wire comes back as the typed event by its `type`."""
-    from pydantic import TypeAdapter
-
-    from kullback.agent.events import AgentEvent, BeatEnd, BeatStart, RoundEnd
-
-    events = TypeAdapter(AgentEvent)
-    start = events.validate_python({"type": "beat_start", "agent": "builder", "round": 1})
-    end = events.validate_python({"type": "beat_end", "agent": "examiner", "round": 1, "spend": 0.25})
-    finished = events.validate_python({"type": "round_end", "round": 1, "counts": {"trusted": 1}, "exit": "done"})
-    assert isinstance(start, BeatStart) and isinstance(end, BeatEnd) and isinstance(finished, RoundEnd)
-    assert (start.agent, start.round, end.spend, finished.exit) == ("builder", 1, 0.25, "done")
-    assert BeatEnd(agent="builder", round=2).model_dump()["spend"] == 0.0
-    assert RoundEnd(round=2).exit is None
-    with pytest.raises(ValueError):
-        events.validate_python({"type": "beat_start", "agent": "referee", "round": 1})
-    with pytest.raises(ValueError):
-        events.validate_python({"type": "round_end", "round": 1, "exit": "gave up"})
