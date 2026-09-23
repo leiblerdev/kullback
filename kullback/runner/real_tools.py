@@ -71,6 +71,7 @@ _WORLD_ERROR_NAMES = frozenset({
     "WorldError", "ImagePinError", "LimitError", "DockerUnavailable", "LaunchFailure",
     "OwnershipError", "StateError", "UnresolvedError", "ExportError", "CleanupError",
     "ExecutorTimeout", "OutputLimitExceeded", "CaptureIncomplete", "TimeoutError",
+    "RuntimeUnavailable",
 })
 _TIMEOUT_ERROR_NAMES = frozenset({"TimeoutError", "ExecutorTimeout"})
 
@@ -239,3 +240,21 @@ def real_tools_from(spec: Optional[dict],
     for name, declaration in (spec or {}).items():
         tools[name] = RealTool(name, make_world_for(declaration or {}))
     return tools
+
+
+class RuntimeUnavailable(RuntimeError):
+    """No container runtime is configured, so a declared real tool cannot open its world."""
+
+
+def default_world_factory(declaration: dict) -> Callable[[], RealWorld]:
+    """The factory a declared real tool opens when no container runtime is configured.
+
+    Opening it raises, so the call reaches the real route and the Run ends as the Environment
+    cannot answer, with the reason named, rather than running compiled code in its place.
+    """
+    name = (declaration or {}).get("name") or "unnamed"
+
+    def make() -> RealWorld:
+        raise RuntimeUnavailable(f"no container runtime is configured for real tool {name}")
+
+    return make
