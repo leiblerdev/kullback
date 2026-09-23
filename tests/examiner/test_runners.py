@@ -8,8 +8,9 @@ from pathlib import Path
 import pytest
 
 from kullback.ai.provider import ModelReply, TestModel, ToolCallRequest
+from kullback.ai.usage import Usage
 from kullback.examiner import runners as R
-from kullback.runner import tool
+from kullback.runner import budget, tool
 from kullback.runner.records import Verifier, write_json
 from kullback.runner.target import check_run
 from tests.runner.test_tool import _env_with_trace
@@ -63,6 +64,26 @@ def test_run_rerolls_buys_prefixed_rows_that_carry_user_end(tmp_path):
     assert all(Path(row["path"]).is_file() for row in rows)
     assert all(set(row) >= {"run_id", "path", "termination_reason", "user_end"} for row in rows)
     assert all(row["user_end"] is not None for row in rows)
+
+
+def _priced_script():
+    """The rename script under a priced model id, each turn carrying a provider's usage."""
+    usage = Usage(input=1890, output=17)
+    return TestModel([reply.model_copy(update={"model": None, "usage": usage})
+                      for reply in _rename_script().replies], loop=True, name=next(iter(budget.PRICES)))
+
+
+def test_examiner_rerolls_and_probes_are_priced_under_the_runner_stage(tmp_path):
+    """Every model call of an Examiner Run lands in budget.json under runner, with its usd (F29)."""
+    root = _exam_env(tmp_path / "env")
+    reroll = _priced_script()
+    runners = R.runners_for(root, reroll_model=reroll)
+    runners["run_rerolls"]("widget_task", 1, "second-path-r0-b0")
+    stage = budget.load_totals(root)["stages"]["runner"]
+    assert stage["calls"] == len(reroll.calls) > 0 and stage["usd"] > 0
+    probe = _priced_script()
+    runners["run_probe"](probe, _verifier(root))
+    assert budget.load_totals(root)["stages"]["runner"]["calls"] == len(reroll.calls) + len(probe.calls)
 
 
 def test_run_rerolls_without_a_model_is_refused(tmp_path):

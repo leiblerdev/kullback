@@ -418,17 +418,16 @@ def _fresh_workdir(tmp_path):
     return root
 
 
-def test_a_fresh_run_without_user_rules_stops_at_the_greeting_with_no_calls(tmp_path):
-    """Before derive_world writes rules, nobody speaks first or answers: the Run ends agent_stop."""
+def test_a_fresh_run_without_user_rules_is_not_played_and_says_why(tmp_path):
+    """Before derive_world writes rules there is no Simulated user, so the Task is named, not played (F34)."""
     root = _fresh_workdir(tmp_path)
-    tools = {tool.name: tool for tool in
-             domain_tools_mod.domain_tools(workdir=root, model=_greeting_first_candidate())}
+    candidate = _greeting_first_candidate()
+    tools = {tool.name: tool for tool in domain_tools_mod.domain_tools(workdir=root, model=candidate)}
     result = _run(tools["run"], {"task_id": "widget_task", "count": 1})
     assert not result.is_error, result.content
-    (row,) = result.details["runs"]
-    assert row["termination_reason"] == "agent_stop"
-    assert row["routes"] == []
-    assert "0 finished" in result.content and "no calls" in result.content
+    assert result.details["runs"] == [] and candidate.calls == []
+    assert result.details["not_run"] == ["widget_task"]
+    assert "no Simulated user" in result.content
 
 
 def test_derived_user_rules_open_a_fresh_run_that_finishes_with_a_verdict(tmp_path):

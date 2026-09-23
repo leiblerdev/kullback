@@ -35,8 +35,9 @@ from kullback.gates.loosening import legitimate_runs
 from kullback.gates.trust import trusted_gate
 from kullback.runner import budget
 from kullback.runner import tool as runner_tool
-from kullback.runner.records import read_json, write_json
+from kullback.runner.records import read_json, run_path, write_json
 from kullback.runner.replay import AGREES
+from kullback.runner.target import as_run
 from kullback.runner.world.environment import BuiltEnvironment
 from kullback.user import fidelity as user_fidelity
 from kullback.user.rules import GOAL_SATISFIED, goal_write_set
@@ -302,6 +303,24 @@ class RunResult(BaseModel):
     task_id: str = ""
     runs: list[RunRow] = Field(default_factory=list)
     not_run: list[str] = Field(default_factory=list)
+    reasons: list[str] = Field(default_factory=list, description="Why each not_run Task was not played, "
+                               "in the same order.")
+
+
+# Why a named Task was not played: past the per-call cap, or no Simulated user to answer it (F34).
+CAP_REASON = "past the cap of {cap} Runs per call"
+NO_USER_REASON = "no Simulated user: the Reference is not confirmed, replay first"
+
+
+def _run_spend(root: Path, report: Any) -> dict:
+    """What one Run cost, summed off its own model_call events: the runner never totals it (F29)."""
+    spend = dict(report.spend or {}) if isinstance(report.spend, dict) else {}
+    try:
+        events = as_run(run_path(root, report.path)).events if report.path else []
+    except (OSError, ValueError, TypeError):
+        return spend
+    costs = [event.cost for event in events if event.type == "model_call" and event.cost is not None]
+    return {**spend, "usd": round(sum(cost.usd for cost in costs), 6), "calls": len(costs)}
 
 
 def _render_run(result: RunResult) -> str:
@@ -315,11 +334,15 @@ def _render_run(result: RunResult) -> str:
                      + (f", user {row.user_end}" if row.user_end else "")
                      + ("; no Verifier yet: examine derives it from the confirmed Reference, "
                         "then run scores against it" if row.verdict is None else ""))
-    if result.not_run:
-        shown = ", ".join(result.not_run[:ROWS_SHOWN])
-        more = len(result.not_run) - len(result.not_run[:ROWS_SHOWN])
-        lines.append(f"not run, past the cap of {RUNS_PER_CALL} Runs per call: {shown}"
-                     + (f" and {more} more" if more > 0 else ""))
+    by_reason: dict[str, list[str]] = {}
+    for index, task_id in enumerate(result.not_run):
+        reason = result.reasons[index] if index < len(result.reasons) else CAP_REASON
+        by_reason.setdefault(reason, []).append(task_id)
+    for reason, task_ids in by_reason.items():
+        shown = ", ".join(task_ids[:ROWS_SHOWN])
+        more = len(task_ids) - len(task_ids[:ROWS_SHOWN])
+        reason = reason.format(cap=RUNS_PER_CALL)
+        lines.append(f"not run, {reason}: {shown}" + (f" and {more} more" if more > 0 else ""))
     return "\n".join(lines)
 
 
@@ -362,12 +385,27 @@ def default_examine_fn(workdir: Any, task_ids: Any, *, model: Any = None, judge_
                    probe_model=probe_model or model, reroll_model=reroll_model or model)
 
 
+def priced_model(model: Any, workdir: Any, stage: str, *, cap_context: bool = True) -> Any:
+    """The model priced into budget.json under `stage`, so every call it makes lands in the ledger.
+
+    A model already priced is passed through as it is: wrapping it twice would charge each call
+    twice. The candidate of a Run is tested under the production setting and never capped (D65),
+    so the runner stage passes `cap_context=False`.
+    """
+    if model is None or isinstance(model, budget.BudgetedModel):
+        return model
+    return budget.BudgetedModel(model, stage=stage, workdir=Path(workdir),
+                                model_id=getattr(model, "name", None), cap_context=cap_context)
+
+
 def reader_model(model: Any, workdir: Any) -> Any:
     """The session model as the readers step takes it, priced under its own stage (F12, F23)."""
-    if model is None:
-        return None
-    return budget.BudgetedModel(model, stage="readers", workdir=Path(workdir),
-                                model_id=getattr(model, "name", None))
+    return priced_model(model, workdir, "readers")
+
+
+def runner_model(model: Any, workdir: Any) -> Any:
+    """The model a fresh Run plays, priced under the runner stage (F29)."""
+    return priced_model(model, workdir, "runner", cap_context=False)
 
 
 def _finding_row(item: Any) -> dict:
@@ -740,32 +778,42 @@ def domain_tools(*, workdir: Any, model: Any = None,
             raise ValueError("run needs the session model to play fresh Runs with")
         named = args.task_ids if args.task_ids is not None else [args.task_id] if args.task_id else None
         task_ids = list(named) if named is not None else runnable_tasks()
+        # A Task without user rules would be played against no Simulated user: the candidate
+        # gets its system prompt alone and invents a customer. It is named, never played (F34).
+        env = BuiltEnvironment(root)
+        userless = [task_id for task_id in task_ids if env.rules(env.task(task_id)) is None]
+        playable = [task_id for task_id in task_ids if task_id not in userless]
         fits = max(1, RUNS_PER_CALL // args.count)
-        played, not_run = task_ids[:fits], task_ids[fits:]
+        played, capped = playable[:fits], playable[fits:]
+        not_run = userless + capped
+        reasons = [NO_USER_REASON] * len(userless) + [CAP_REASON] * len(capped)
+        priced = runner_model(model, root)
         rows: list[RunRow] = []
         finished = 0
         for task_id in played:
-            reports = runner_tool.reroll(root, task_id, model, count=args.count, workdir=root,
+            reports = runner_tool.reroll(root, task_id, priced, count=args.count, workdir=root,
                                          make_user=lambda router, task_id=task_id: rule_user(root, task_id, router))
             rows += [RunRow(run_id=item.run_id, verdict=item.verdict,
                             routes=[dict(route) for route in item.routes],
                             world_diff=dict(item.world_diff or {}),
-                            spend=dict(item.spend or {}) if isinstance(item.spend, dict) else {},
+                            spend=_run_spend(root, item),
                             termination_reason=str(item.termination_reason or ""),
                             user_end=item.user_end, task_id=task_id)
                      for item in reports]
             # A Run is finished when its Simulated user ended it with the goal met (D210); the loop's
             # own end reason says only who stopped, never whether the goal was reached.
             finished += sum(1 for item in reports if item.user_end == GOAL_SATISFIED)
-        if len(task_ids) == 1 and named is not None:
+        if len(task_ids) == 1 and named is not None and played:
             summary = f"reroll of task {task_ids[0]}: {len(rows)} Runs, {finished} finished"
+        elif len(task_ids) == 1 and named is not None:
+            summary = f"task {task_ids[0]} not run: {reasons[0].format(cap=RUNS_PER_CALL)}"
         else:
             summary = (f"reroll of {len(played)} Tasks: {len(rows)} Runs, {finished} finished, "
                        f"{len(not_run)} Tasks left not run"
                        + ("" if task_ids or named is not None
                           else "; no open Task has a confirmed Reference, replay first"))
         return RunResult(summary=summary, task_id=task_ids[0] if len(task_ids) == 1 else "",
-                         runs=rows, not_run=not_run)
+                         runs=rows, not_run=not_run, reasons=reasons)
 
     async def examine(args: ExamineArgs) -> ExamineResult:
         # The Examiner session owns its own event loop, so it runs off the Builder's, on a thread.
