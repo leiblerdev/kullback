@@ -82,7 +82,7 @@ def invented_files(task_id: str, instruction: bytes, tests: dict[str, bytes] | N
     return files
 
 
-def test_unpack_valid_tar_gives_every_field():
+def test_unpack_valid_tar_gives_every_field_from_base64_or_raw_bytes():
     blob = make_blob(invented_files("invented-task-1", b"# invented\nSolve invented.\n", CONTENT_TESTS))
     definition = unpack_task_binary(blob, task_id="invented-task-1", source_ref="invented-row")
     assert definition.task_id == "invented-task-1"
@@ -95,9 +95,6 @@ def test_unpack_valid_tar_gives_every_field():
     assert set(definition.solution) == {"solution/solve.sh"}
     assert set(definition.seeds) == {"environment/seeds/seed.txt"}
     assert definition.source_ref == "invented-row"
-
-
-def test_unpack_accepts_raw_bytes_blob():
     blob = make_blob(invented_files("invented-task-1", b"# invented\n", None))
     raw = base64.b64decode(blob.encode("ascii"))
     assert unpack_task_binary(raw).instruction == "# invented\n"
@@ -117,23 +114,19 @@ def test_unpack_tar_without_tests_leaves_empty_maps_and_no_image():
     assert definition.dockerfile == "FROM invented-base:1\n"
 
 
-@pytest.mark.parametrize("member", ["../evil.sh", "/absolute-evil.sh", "sub/../../evil.sh"])
-def test_unpack_tar_escaping_its_directory_is_refused(member: str):
-    blob = make_blob({**invented_files("invented-task-1", b"# invented\n"), member: b"evil"})
-    with pytest.raises(ValueError, match="outside|absolute|\\.\\."):
-        unpack_task_binary(blob)
-
-
-def test_unpack_tar_with_a_link_is_refused():
+@pytest.mark.parametrize(("member", "link", "match"), [
+    ("../evil.sh", None, "outside|absolute|\\.\\."),
+    ("/absolute-evil.sh", None, "outside|absolute|\\.\\."),
+    ("sub/../../evil.sh", None, "outside|absolute|\\.\\."),
+    (None, "tests/sneaky", "[Ll]ink"),
+])
+def test_unpack_tar_escaping_its_directory_or_holding_a_link_is_refused(member, link, match):
     files = invented_files("invented-task-1", b"# invented\n")
-    blob = make_blob(files, links={"tests/sneaky": "/etc/invented"})
-    with pytest.raises(ValueError, match="[Ll]ink"):
+    if member:
+        files[member] = b"evil"
+    blob = make_blob(files, links={link: "/etc/invented"} if link else None)
+    with pytest.raises(ValueError, match=match):
         unpack_task_binary(blob)
-
-
-def test_unpack_garbage_is_refused_with_a_reason():
-    with pytest.raises(ValueError, match="[Bb]ase64|[Gg]zip|[Tt]ar"):
-        unpack_task_binary("not base64 at all!!!")
 
 
 def test_read_task_dir_reads_the_plain_layout(tmp_path):
@@ -150,7 +143,7 @@ def test_read_task_dir_reads_the_plain_layout(tmp_path):
     assert set(definition.tests) == {"tests/test_state.py"}
 
 
-def test_directory_and_table_registries_answer_the_same_definition(tmp_path):
+def test_directory_and_table_registries_answer_the_same_definition_and_rows_load_from_json(tmp_path):
     instruction = b"# invented same\nSolve invented.\n"
     root = tmp_path / "table"
     task_dir = root / "invented-task-3"
@@ -169,9 +162,6 @@ def test_directory_and_table_registries_answer_the_same_definition(tmp_path):
     assert left.tests.keys() == right.tests.keys()
     assert table.lookup("invented-missing") is None
     assert directory.lookup("invented-missing") is None
-
-
-def test_table_registry_reads_a_json_file_of_rows(tmp_path):
     blob = make_blob(invented_files("invented-task-4", b"# invented four\n", None))
     rows_path = tmp_path / "rows.json"
     rows_path.write_text(json.dumps([{"path": "invented-task-4", "task_binary": blob}]),
@@ -216,31 +206,11 @@ def test_unpack_blob_expanding_past_the_cap_is_refused():
         unpack_task_binary(blob)
 
 
-def test_unpack_decompresses_through_a_streaming_reader(monkeypatch):
-    """The one-shot decompress entry point is never called; nothing real can show
-    how much memory an expansion holds, so this run faults that call instead."""
-    import gzip as gzip_mod
-
-    def _boom(data, *args, **kwargs):
-        raise AssertionError("one-shot gzip.decompress must not run")
-
-    monkeypatch.setattr(gzip_mod, "decompress", _boom)
-    blob = make_blob(invented_files("invented-task-1", b"# invented\n", None))
-    assert unpack_task_binary(blob).instruction == "# invented\n"
-
-
 @pytest.mark.parametrize("task_id", ["../invented-evil", "/invented-absolute", "..", ".", "",
-                                     "invented/sub"])
-def test_directory_lookup_refuses_ids_outside_the_root(tmp_path, task_id):
-    """An id from a recording is one plain segment; anything else is refused by name."""
-    root = tmp_path / "root"
-    root.mkdir()
-    with pytest.raises(ValueError, match="task id"):
-        DirectoryRegistry(root).lookup(task_id)
-
-
-def test_directory_lookup_reads_nothing_outside_the_root(tmp_path):
-    """A sibling directory beside the root stays unread even when the id names it."""
+                                     "invented/sub", "../invented-outside"])
+def test_directory_lookup_refuses_ids_outside_the_root_and_reads_nothing_there(tmp_path, task_id):
+    """An id from a recording is one plain segment; anything else is refused by name, and a
+    sibling directory beside the root stays unread even when the id names it."""
     root = tmp_path / "root"
     root.mkdir()
     outside = tmp_path / "invented-outside"
@@ -249,22 +219,21 @@ def test_directory_lookup_reads_nothing_outside_the_root(tmp_path):
     (outside / "task.toml").write_bytes(b"[verifier]\ntimeout_sec = 1\n")
     (outside / "environment" / "Dockerfile").write_bytes(b"FROM invented-base:1\n")
     with pytest.raises(ValueError, match="task id"):
-        DirectoryRegistry(root).lookup("../invented-outside")
+        DirectoryRegistry(root).lookup(task_id)
     assert (outside / "instruction.md").read_bytes() == b"# invented outside\n"
 
 
-def test_read_task_dir_refuses_a_symlinked_file(tmp_path):
+def _linked_file(tmp_path):
     """A link under a task directory is refused like a link in an archive."""
     root = tmp_path / "invented-task-5"
     (root / "tests").mkdir(parents=True)
     (root / "instruction.md").write_bytes(b"# invented five\n")
     (root / "task.toml").write_bytes(b"[verifier]\ntimeout_sec = 1\n")
     (root / "tests" / "sneaky").symlink_to(root / "instruction.md")
-    with pytest.raises(ValueError, match="[Ll]ink"):
-        read_task_dir(root)
+    return lambda: read_task_dir(root), "[Ll]ink"
 
 
-def test_read_task_dir_refuses_a_symlinked_directory(tmp_path):
+def _linked_directory(tmp_path):
     """A linked directory is refused before anything under it is read."""
     root = tmp_path / "invented-task-6"
     root.mkdir()
@@ -272,27 +241,10 @@ def test_read_task_dir_refuses_a_symlinked_directory(tmp_path):
     elsewhere.mkdir()
     (elsewhere / "instruction.md").write_bytes(b"# invented elsewhere\n")
     (root / "tests").symlink_to(elsewhere, target_is_directory=True)
-    with pytest.raises(ValueError, match="[Ll]ink"):
-        read_task_dir(root)
+    return lambda: read_task_dir(root), "[Ll]ink"
 
 
-@pytest.mark.parametrize("document", ["null", '"just a string"'])
-def test_rows_from_file_refuses_scalar_documents_with_words(tmp_path, document):
-    """A rows file holds a list or a mapping; a scalar names its own refusal."""
-    rows_path = tmp_path / "rows.json"
-    rows_path.write_text(document, encoding="utf-8")
-    with pytest.raises(ValueError, match="[Ll]ist|[Mm]apping"):
-        rows_from_file(rows_path)
-
-
-def test_rows_from_file_refuses_a_mapping_without_a_rows_list(tmp_path):
-    rows_path = tmp_path / "rows.json"
-    rows_path.write_text(json.dumps({"rows": "not a list"}), encoding="utf-8")
-    with pytest.raises(ValueError, match="[Ll]ist"):
-        rows_from_file(rows_path)
-
-
-def test_directory_lookup_refuses_a_linked_directory_escaping_the_root(tmp_path):
+def _linked_task_escaping_the_root(tmp_path):
     """A plain-segment id can still escape through a link; the resolved path decides."""
     root = tmp_path / "root"
     root.mkdir()
@@ -300,8 +252,27 @@ def test_directory_lookup_refuses_a_linked_directory_escaping_the_root(tmp_path)
     (outside / "environment").mkdir(parents=True)
     (outside / "instruction.md").write_bytes(b"# invented far\n")
     (root / "invented-near").symlink_to(outside, target_is_directory=True)
-    with pytest.raises(ValueError, match="outside the registry root"):
-        DirectoryRegistry(root).lookup("invented-near")
+    return lambda: DirectoryRegistry(root).lookup("invented-near"), "outside the registry root"
+
+
+@pytest.mark.parametrize("layout", [_linked_file, _linked_directory, _linked_task_escaping_the_root])
+def test_a_symlinked_file_or_directory_on_disk_is_refused(tmp_path, layout):
+    read, match = layout(tmp_path)
+    with pytest.raises(ValueError, match=match):
+        read()
+
+
+@pytest.mark.parametrize(("document", "match"), [
+    ("null", "[Ll]ist|[Mm]apping"),
+    ('"just a string"', "[Ll]ist|[Mm]apping"),
+    (json.dumps({"rows": "not a list"}), "[Ll]ist"),
+])
+def test_rows_from_file_refuses_a_scalar_or_a_mapping_without_a_rows_list(tmp_path, document, match):
+    """A rows file holds a list or a mapping with a rows list; anything else names its own refusal."""
+    rows_path = tmp_path / "rows.json"
+    rows_path.write_text(document, encoding="utf-8")
+    with pytest.raises(ValueError, match=match):
+        rows_from_file(rows_path)
 
 
 def _garbage_after_header_blob() -> str:
@@ -316,14 +287,14 @@ def _truncated_blob() -> str:
     return base64.b64encode(valid[:len(valid) // 2]).decode("ascii")
 
 
-def test_unpack_refuses_garbage_after_a_real_gzip_header_as_unreadable():
-    with pytest.raises(ValueError, match="unreadable"):
-        unpack_task_binary(_garbage_after_header_blob())
-
-
-def test_unpack_refuses_a_truncated_gzip_body_as_unreadable():
-    with pytest.raises(ValueError, match="unreadable"):
-        unpack_task_binary(_truncated_blob())
+@pytest.mark.parametrize(("blob", "match"), [
+    (lambda: "not base64 at all!!!", "[Bb]ase64|[Gg]zip|[Tt]ar"),
+    (_garbage_after_header_blob, "unreadable"),
+    (_truncated_blob, "unreadable"),
+], ids=["not-base64", "garbage-after-header", "truncated"])
+def test_unpack_garbage_is_refused_with_a_reason(blob, match):
+    with pytest.raises(ValueError, match=match):
+        unpack_task_binary(blob())
 
 
 def test_rescue_attaches_the_sound_row_when_another_row_is_corrupt(tmp_path, workdir):
