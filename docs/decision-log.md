@@ -1988,7 +1988,7 @@ The rule. The harness changes now in flight, one line each:
 - Refusals compare the message, and the body header says raise ValueError.
 - Body faults carry their line.
 - An inspect tool.
-- Web search and web fetch.
+- Web search and web fetch: withdrawn by the founder the same day; the agents get no web access until it is needed.
 - Proposal gates are scoped to the proposed Task.
 - Not run is not a failure.
 - Unscored atoms are refused.
