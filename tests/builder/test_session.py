@@ -8,7 +8,7 @@ from kullback.agent.events import ToolExecutionEnd as ToolEnd
 from kullback.ai.provider import TestModel
 from kullback.builder import session as session_mod
 from kullback.runner.records import RawPtr, ToolCall, Trace, Turn
-from tests.builder.session_fixtures import reply
+from tests.builder.session_fixtures import error, reply
 from tests.episode.invented import write_env
 
 PTR = RawPtr(file_hash="f" * 64, sim_index=0, msg_index=0)
@@ -188,3 +188,9 @@ def test_build_hands_the_caller_the_live_harness_before_the_first_model_turn(tmp
     assert result["stopped"] == "no tool call" and result["last_line"] == "Done."
     first_prompt = model.calls[0]["messages"]
     assert any("Read the calls first." in str(message.get("content")) for message in first_prompt)
+
+
+def test_a_provider_error_on_the_last_turn_is_reported_as_an_error_stop(tmp_path):
+    result = session_mod.build(_workdir(tmp_path), error("HTTP 400: the endpoint refused the request"))
+    assert result["stopped"] == "error"
+    assert "HTTP 400: the endpoint refused the request" in result["last_line"]

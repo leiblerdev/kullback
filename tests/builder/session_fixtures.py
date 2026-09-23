@@ -11,7 +11,8 @@ from __future__ import annotations
 import asyncio
 from pathlib import Path
 
-from kullback.ai.provider import ModelReply, ToolCallRequest
+from kullback.ai.http_errors import ProviderError
+from kullback.ai.provider import Model, ModelReply, ToolCallRequest
 
 COMPARED = ("bodies.json", "constraints.json", "gates.json", "environment.json", "replays.json",
             "tasks.json", "schema.json", "tool_sigs.json", "user_facts.json", "vocabulary.json")
@@ -52,3 +53,19 @@ def tree(workdir: Path) -> dict:
     for path in sorted((workdir / "runs").rglob("*.jsonl")):
         out[str(path.relative_to(workdir))] = read(path)
     return out
+
+
+class ErrorModel(Model):
+    """A model whose every call is refused the way an endpoint refuses one, with `text`."""
+
+    def __init__(self, text: str, name: str = "error"):
+        self.name = name
+        self.text = text
+
+    def query(self, messages, tools=None, config=None) -> ModelReply:
+        raise ProviderError(self.text, status=400)
+
+
+def error(text: str) -> ErrorModel:
+    """A scripted session whose first model call fails with `text`."""
+    return ErrorModel(text)
