@@ -4,6 +4,7 @@ segment, the truncation, the exact-match edit, and the subset an extension is re
 from __future__ import annotations
 
 import asyncio
+import subprocess
 
 import pytest
 
@@ -255,6 +256,69 @@ def test_bash_reports_a_failing_command_as_its_exit_code_not_as_a_tool_error(roo
     result = run(tools(root)["bash"], command="cat gone.txt")
     assert result.is_error is False and result.details["exit_code"] != 0
     assert "[exit code" in result.content
+
+
+@pytest.mark.parametrize(
+    "command, primitive",
+    [
+        ("awk 'BEGIN{system(\"id\")}'", "awk may not use system("),
+        ("awk 'BEGIN{\"id\" | getline x; print x}'", "awk may not use getline"),
+        ("find . -exec cat {} +", "find may not use -exec"),
+        ("find . -name x -delete", "find may not use -delete"),
+        ("sed -i s/alpha/omega/ notes.txt", "sed may not use -i"),
+        ("sed -e 's/alpha/id/e' notes.txt", "sed may not use the e or w flag"),
+        ("sed '1e id' notes.txt", "sed may not use the e command"),
+        ("sed 'w copy.txt' notes.txt", "sed may not use the w command"),
+        ("sort -o copy.txt notes.txt", "sort may not use -o"),
+    ],
+)
+def test_bash_refuses_an_allowed_program_the_argument_that_would_start_or_write_through_another(
+        root, command, primitive):
+    result = run(tools(root)["bash"], command=command)
+    assert result.is_error is True and "rule spawning" in result.content and primitive in result.content
+    assert (root / "notes.txt").read_text(encoding="utf-8") == "alpha\nbeta\ngamma\n"
+    assert not (root / "copy.txt").exists()
+
+
+def test_bash_still_runs_the_harmless_forms_of_the_programs_that_can_spawn(root):
+    bash = tools(root)["bash"]
+    assert run(bash, command="sed -n 2p notes.txt").details["output"] == "beta\n"
+    assert run(bash, command="awk '{print $1}' notes.txt").details["output"].split() == ["alpha", "beta", "gamma"]
+    assert run(bash, command="sort -r notes.txt").details["output"].split() == ["gamma", "beta", "alpha"]
+
+
+@pytest.mark.parametrize("command", ["cat notes.txt; cat notes.txt", "cat notes.txt && ls", "ls || ls",
+                                     "echo x > out.txt", "cat < notes.txt", "ls &"])
+def test_bash_refuses_every_operator_but_the_pipe(root, command):
+    result = run(tools(root)["bash"], command=command)
+    assert result.is_error is True and "rule shell: only pipes join commands here" in result.content
+    assert not (root / "out.txt").exists()
+
+
+def test_a_pipeline_without_a_shell_gives_the_output_the_shell_gave(root):
+    for name in ("a", "b", "c"):
+        (root / "sub" / name).mkdir()
+        (root / "sub" / name / "x").write_text("", encoding="utf-8")
+    command = "find . -name x | head -2"
+    shell = subprocess.run(command, shell=True, cwd=root, capture_output=True, text=True, check=True).stdout
+    result = run(tools(root)["bash"], command=command)
+    assert result.details["output"] == shell
+    assert len(result.details["output"].split()) == 2
+    assert result.details["exit_code"] == 0
+
+
+def test_a_stage_that_exits_non_zero_reports_its_exit_code(root):
+    result = run(tools(root)["bash"], command="cat gone.txt | wc -l")
+    assert result.details["exit_code"] == 1
+    assert "gone.txt" in result.details["output"]
+
+
+def test_a_stage_sees_only_path_and_lang_in_its_environment(root, monkeypatch):
+    monkeypatch.setenv("KULLBACK_SECRET_FOR_TEST", "leaked")
+    allowlist = Allowlist.of(("env",))
+    result = run(tools(root, allowlist=allowlist)["bash"], command="env")
+    names = {line.split("=", 1)[0] for line in result.details["output"].splitlines()}
+    assert "KULLBACK_SECRET_FOR_TEST" not in names and "PATH" in names
 
 
 # --- truncation on its own ---

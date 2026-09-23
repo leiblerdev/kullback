@@ -12,7 +12,9 @@ Should not: what the prompt says. Between them sits the one mechanical rule the 
 themselves, because a path is an argument and not a registration: every path is relative to the
 root, and an absolute path or a step above the root is refused with the rule named in the result.
 The shell is the one tool that is many tools, so `bash` takes an `Allowlist`: the first word of
-every pipeline segment must be on it, and a segment matching a refused pattern never runs.
+every pipeline segment must be on it, and a segment matching a refused pattern never runs. There is
+no host shell behind it: each stage runs as its own program with argv from the tokens, joined only
+by pipes, so an allowed program is also refused the arguments that would start another (`SPAWNING`).
 """
 
 from __future__ import annotations
@@ -22,6 +24,7 @@ import fnmatch
 import os
 import re
 import shlex
+import signal
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -195,6 +198,25 @@ DEFAULT_REFUSED_PATTERNS = (
 )
 
 _OPERATORS = {"|", "||", "&&", ";", "&", "\n", "(", ")", "{", "}"}
+_PUNCTUATION = set("();<>|&\n")
+
+# The arguments by which an allowed program would start another program, write where it was not
+# asked to, or run code it read from a file nobody checked: a pattern per primitive, matched against
+# every argument after the program's name, and the primitive named in the refusal.
+_SED_ADDRESS = r"(\d+|\$|/[^/]*/)?(,(\d+|\$|/[^/]*/))?\s*!?\s*"
+SPAWNING: dict[str, tuple[tuple[str, str], ...]] = {
+    "awk": (("system(", r"system\s*\("), ("getline", r"getline"), ("a pipe", r"\|"),
+            ("a program file", r"^(-f|--file)")),
+    "find": (("-exec", r"^-exec$"), ("-execdir", r"^-execdir$"), ("-ok", r"^-ok$"), ("-okdir", r"^-okdir$"),
+             ("-delete", r"^-delete$"), ("-fprint", r"^-fprint0?$"), ("-fprintf", r"^-fprintf$"),
+             ("-fls", r"^-fls$")),
+    "sed": (("the e command", rf"(^|[;{{}}\n])\s*{_SED_ADDRESS}e(\s|;|}}|$)"),
+            ("the w command", rf"(^|[;{{}}\n])\s*{_SED_ADDRESS}[wW](\s|$)"),
+            ("the e or w flag", r"(^|[;{}\n\s])s(.)(?:\\.|(?!\2).)*\2(?:\\.|(?!\2).)*\2[0-9gpiImM]*[ewW]"),
+            ("-i", r"^(-[a-zA-Z]*i|--in-place)"), ("a script file", r"^(-[a-zA-Z]*f|--file)")),
+    "sort": (("-o", r"^(-[a-zA-Z]*o|--output)"), ("--compress-program", r"^--compress-program")),
+}
+SPAWNING["gawk"] = SPAWNING["awk"] + (("@load", r"@load"),)
 
 
 @dataclass(frozen=True)
@@ -217,16 +239,20 @@ class Allowlist:
             refused_patterns=tuple(DEFAULT_REFUSED_PATTERNS if refused_patterns is None else refused_patterns),
         )
 
-    def segments(self, command: str) -> list[list[str]]:
-        """The command's pipeline segments as token lists; a shell it cannot parse is one segment."""
+    @staticmethod
+    def tokens(command: str) -> list[str]:
+        """The command's words and operators, as a POSIX shell would split them."""
         try:
             lexer = shlex.shlex(command, posix=True, punctuation_chars=True)
             lexer.whitespace_split = True
-            tokens = list(lexer)
+            return list(lexer)
         except ValueError as exc:
             raise CommandRefused(f"rule shell: the command does not parse as a shell command ({exc})") from exc
+
+    def segments(self, command: str) -> list[list[str]]:
+        """The command's pipeline segments as token lists; a shell it cannot parse is one segment."""
         segments: list[list[str]] = [[]]
-        for token in tokens:
+        for token in self.tokens(command):
             if token in _OPERATORS:
                 segments.append([])
                 continue
@@ -247,12 +273,40 @@ class Allowlist:
                     raise CommandRefused(
                         f"rule refused_pattern: the segment {text!r} matches {pattern!r} and is not run"
                     )
-            name = next((token for token in segment if "=" not in token.split("/")[0]), segment[0])
+            argv = _argv(segment)
+            name = argv[0]
             if name not in self.commands:
                 allowed = ", ".join(sorted(self.commands)) or "nothing"
                 raise CommandRefused(
                     f"rule allowlist: {name!r} is not one of the commands this agent may run ({allowed})"
                 )
+            for primitive, pattern in SPAWNING.get(name, ()):
+                if any(re.search(pattern, argument) for argument in argv[1:]):
+                    raise CommandRefused(
+                        f"rule spawning: {name} may not use {primitive} here, it would start another program "
+                        "or write outside what the command shows"
+                    )
+        self.stages(command)
+
+    def stages(self, command: str) -> list[list[str]]:
+        """The argv of each pipeline stage; any operator other than `|` is refused."""
+        stages: list[list[str]] = [[]]
+        for token in self.tokens(command):
+            if token == "|":
+                stages.append([])
+            elif token and set(token) <= _PUNCTUATION:
+                raise CommandRefused(f"rule shell: only pipes join commands here, not {token!r}")
+            else:
+                stages[-1].append(token)
+        if any(not stage for stage in stages):
+            raise CommandRefused("rule shell: a pipe needs a command on both sides")
+        return [_argv(stage) for stage in stages]
+
+
+def _argv(segment: list[str]) -> list[str]:
+    """The segment from its program's name on: leading `NAME=value` words are dropped, not exported."""
+    start = next((index for index, token in enumerate(segment) if "=" not in token.split("/")[0]), 0)
+    return segment[start:]
 
 
 DEFAULT_ALLOWLIST = Allowlist.of(
@@ -709,30 +763,14 @@ def _bash_tool(config: BaseToolConfig) -> AgentTool:
         if timeout <= 0:
             raise ValueError("timeout must be greater than 0")
         started = time.monotonic()
-        process = await asyncio.create_subprocess_shell(
-            args.command,
-            cwd=str(config.root),
-            stdin=asyncio.subprocess.DEVNULL,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.STDOUT,
-            start_new_session=os.name == "posix",
-        )
-        timed_out = False
-        try:
-            raw, _ = await asyncio.wait_for(process.communicate(), timeout=timeout)
-        except asyncio.TimeoutError:
-            timed_out = True
-            raw = b""
-            _kill(process)
-            with _suppress_process_errors():
-                await process.wait()
+        raw, exit_code, timed_out = await _run_pipeline(config.allowlist.stages(args.command), config.root, timeout)
         output, truncation = truncate_tail(raw.decode(errors="replace"))
         if timed_out:
             output = f"{output}\n[the command was killed after {timeout:g} seconds]".strip()
         return BashResult(
             command=args.command,
             output=output or "(no output)",
-            exit_code=process.returncode,
+            exit_code=exit_code,
             timed_out=timed_out,
             duration_seconds=round(time.monotonic() - started, 3),
             truncation=truncation,
@@ -790,6 +828,85 @@ def register_base_tools(api: Any, root: Any, allowlist: Optional[Allowlist] = No
     for tool in tools:
         api.register_tool(tool)
     return tools
+
+
+def _pipeline_env() -> dict[str, str]:
+    """PATH and LANG from the host and nothing else: no credential in the environment reaches a stage."""
+    return {"PATH": os.environ.get("PATH", os.defpath), "LANG": os.environ.get("LANG", "C.UTF-8")}
+
+
+async def _run_pipeline(stages: list[list[str]], root: Path,
+                        timeout: float) -> tuple[bytes, Optional[int], bool]:
+    """Run each stage as its own program, stdout of one into stdin of the next, with no shell between.
+
+    Every stage's stderr and the last stage's stdout land in one pipe, read as the output. The exit
+    code is the last non-zero one of any stage, as with pipefail, except a stage the next one stopped
+    reading from (SIGPIPE), which is how `find | head` ends and not a failure.
+    """
+    env = _pipeline_env()
+    out_read, out_write = os.pipe()
+    processes: list[Any] = []
+    stdin: int = asyncio.subprocess.DEVNULL
+    failure: Optional[str] = None
+    try:
+        for index, argv in enumerate(stages):
+            last = index == len(stages) - 1
+            next_stdin, stdout = (asyncio.subprocess.DEVNULL, out_write) if last else os.pipe()
+            try:
+                processes.append(await asyncio.create_subprocess_exec(
+                    *argv, cwd=str(root), env=env, stdin=stdin, stdout=stdout, stderr=out_write,
+                    start_new_session=os.name == "posix",
+                ))
+            except OSError as exc:
+                failure = f"{argv[0]}: {exc.strerror or exc}"
+            finally:
+                if stdin != asyncio.subprocess.DEVNULL:
+                    os.close(stdin)
+                if not last:
+                    os.close(stdout)
+                stdin = next_stdin
+            if failure is not None:
+                break
+    finally:
+        if stdin != asyncio.subprocess.DEVNULL:
+            os.close(stdin)
+        os.close(out_write)
+    reader = asyncio.ensure_future(asyncio.to_thread(_read_all, out_read))
+    timed_out = False
+    try:
+        raw = await asyncio.wait_for(asyncio.shield(reader), timeout=timeout)
+        for process in processes:
+            await process.wait()
+    except asyncio.TimeoutError:
+        timed_out = True
+        for process in processes:
+            _kill(process)
+        for process in processes:
+            with _suppress_process_errors():
+                await process.wait()
+        raw = await reader
+    if failure is not None:
+        return raw + f"{failure}\n".encode(), 127, timed_out
+    return raw, _pipeline_exit_code(processes), timed_out
+
+
+def _read_all(descriptor: int) -> bytes:
+    chunks: list[bytes] = []
+    try:
+        while chunk := os.read(descriptor, 65536):
+            chunks.append(chunk)
+    finally:
+        os.close(descriptor)
+    return b"".join(chunks)
+
+
+def _pipeline_exit_code(processes: list[Any]) -> Optional[int]:
+    codes = [process.returncode for process in processes]
+    if not codes or any(code is None for code in codes):
+        return None
+    failing = [code for index, code in enumerate(codes)
+               if code != 0 and not (index < len(codes) - 1 and code == -signal.SIGPIPE)]
+    return failing[-1] if failing else 0
 
 
 def _kill(process: Any) -> None:
