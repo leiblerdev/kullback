@@ -77,7 +77,7 @@ def test_fresh_session_seeds_version_1_accepted_for_each_derived_verifier(tmp_pa
 _WIDE_CAP = {"id": "wide_cap", "kind": "allowed", "payload": {"kind": "entity_count", "count": 1000}}
 
 
-def test_model_propose_verifier_is_refused_while_the_loophole_probe_cannot_run(tmp_path):
+def test_model_propose_verifier_lands_while_the_loophole_probe_cannot_run(tmp_path):
     world = make_world(tmp_path)
     materialize(world)
     events = _scripted_events(world, [
@@ -86,14 +86,13 @@ def test_model_propose_verifier_is_refused_while_the_loophole_probe_cannot_run(t
         reply("done"),
     ])
     [proposed] = _ends(events, "propose_verifier")
-    assert proposed.is_error is True
-    assert "verifier_loophole fail (not run: no model" in proposed.result.content
-    assert "rows" in proposed.result.content
-    assert not (world.workdir / "exam" / "verifiers" / "t1.json").exists()
+    assert proposed.is_error is False
+    assert "verifier_loophole not run (no model" in proposed.result.content
+    assert (world.workdir / "exam" / "verifiers" / "t1.json").is_file()
     written = read_json(world.workdir / "exam" / "history.json")
-    assert [v["accepted"] for v in written["t1"]["versions"]] == [True, False]
-    assert written["t1"]["versions"][-1]["rejected_by"] == ["verifier_loophole"]
-    assert not (world.workdir / "exam" / "task_status.json").exists(), "a refusal writes no status"
+    assert [v["accepted"] for v in written["t1"]["versions"]] == [True, True]
+    row = read_json(world.workdir / "exam" / "task_status.json")["t1"]
+    assert row["verifier_passed"] is False and "verifier_loophole" in row["not_run"]
 
 
 def test_a_model_write_or_edit_under_verifiers_is_refused_and_names_the_tools_that_write(tmp_path):
