@@ -45,7 +45,7 @@ def test_replay_fidelity_fails_an_explained_miss_on_a_recorded_call():
 
 # --- gate A, oracle replay ---
 
-def test_oracle_replay_gate_splits_seed_and_held_out():
+def test_gate_a_fails_a_held_out_write_mismatch_and_names_the_run():
     replays = [
         {"run_id": "r1", "held_out": False, "writes": [{"expected": {"total": 25}, "actual": {"total": 25.0}}]},
         {"run_id": "r2", "held_out": True, "writes": [{"expected": {"total": 25}, "actual": {"total": 26}}]},
@@ -67,9 +67,11 @@ def test_oracle_replay_gate_fails_a_semantic_read_mismatch():
     assert out.metrics["seed"]["semantic_mismatches"] == 1
 
 
-def test_oracle_replay_gate_reads_a_semantic_mismatch_as_cosmetic_under_the_customers_equivalence_table():
-    """A gate that compared under the module defaults could differ from the Verdict (D39, D84)."""
-    from kullback.runner.canon import EquivalenceTable, canon_value, put
+def test_the_fidelity_gates_compare_under_the_customers_rules_and_equivalence_table_like_the_verdict():
+    """A gate that compared under the module defaults could differ from the Verdict (D39, D84): Gate A
+    reads a semantic mismatch the customer's table calls cosmetic as a match, and the per-tool gate
+    the scorecard reads compares numbers under the customer's canon rules."""
+    from kullback.runner.canon import CanonRules, EquivalenceTable, canon_value, put
 
     replays = [{"run_id": "r1", "held_out": False, "writes": [],
                 "semantic_reads": [{"column": "orders.note", "expected": "blue shirt",
@@ -79,17 +81,10 @@ def test_oracle_replay_gate_reads_a_semantic_mismatch_as_cosmetic_under_the_cust
         classified_by="human")
     assert oracle_replay_gate(replays).passed is False
     assert oracle_replay_gate(replays, equivalence=table).passed is True
-
-
-def test_replay_fidelity_compares_under_the_customers_rules():
-    """The gate the scorecard reads has to compare the way the Verdict does, not under the defaults."""
-    from kullback.runner.canon import CanonRules
-
     calls = [{"tool": "get_order", "expected": {"total": 25.4}, "actual": {"total": 25.0},
               "held_out": False}]
     assert replay_fidelity_gate(calls).passed is False
     assert replay_fidelity_gate(calls, canon_rules=CanonRules(number_precision=0)).passed is True
-
 
 
 # --- the per-Task ruling over the replays (D108) ---
@@ -98,15 +93,6 @@ def _replay(confirmed: bool, *reasons: str, writes: int = 1, matched: int = 1) -
     return {"confirmed": confirmed, "reasons": list(reasons),
             "counts": {"writes": writes, "writes_matched": matched, "reads": 2, "reads_semantic": 0,
                        "reads_cosmetic": 1, "unmade": 0}}
-
-
-def test_summarize_counts_traces_tasks_and_calls():
-    good, bad = _replay(True), _replay(False, "cancel_order write: differs", matched=0)
-    summary = summarize({"t1": {"tr1": good}, "t2": {"tr1": bad, "tr2": bad}})
-    assert summary["traces"] == 3 and summary["confirmed"] == 1
-    assert summary["tasks"] == 2 and summary["tasks_confirmed"] == 1
-    assert summary["writes"] == 3 and summary["writes_matched"] == 1
-    assert summary["reads"] == 6 and summary["reads_cosmetic"] == 3
 
 
 def test_unconfirmed_reason_is_the_most_common_first_reason():
@@ -120,7 +106,8 @@ def test_unconfirmed_reason_is_the_most_common_first_reason():
 
 def test_reference_replay_gate_fails_only_the_task_no_trace_confirms():
     """Section 6: a Task none of whose Traces reach their End state is rejected for that Task, with
-    the reason its replays agree on; a Task one Trace confirms is fine whatever the others did."""
+    the reason its replays agree on; a Task one Trace confirms is fine whatever the others did. No
+    Task replayed is no Task rejected; the stage's own gate says how many Tasks there were."""
     replays = {
         "t1": {"tr1": _replay(True), "tr2": _replay(False, "get_order read: differs")},
         "t2": {"tr1": _replay(False, "cancel_order write: differs", matched=0)},
@@ -134,12 +121,8 @@ def test_reference_replay_gate_fails_only_the_task_no_trace_confirms():
     assert out.metrics["tasks"] == 3 and out.metrics["tasks_confirmed"] == 1
     assert out.metrics == summarize(replays)
     assert reference_replay_gate({"t1": {"tr1": _replay(True)}}).passed is True
-
-
-def test_reference_replay_gate_over_no_replays_passes_with_nothing_counted():
-    """No Task replayed is no Task rejected; the stage's own gate says how many Tasks there were."""
-    out = reference_replay_gate({})
-    assert out.passed is True and out.metrics["tasks"] == 0 and out.metrics["traces"] == 0
+    empty = reference_replay_gate({})
+    assert empty.passed is True and empty.metrics["tasks"] == 0 and empty.metrics["traces"] == 0
 
 
 # --- summarize over real replays (D108) ---
@@ -153,3 +136,9 @@ def test_summarize_counts_traces_tasks_and_calls_and_names_the_common_miss(tmp_p
     assert summary["writes"] == 3 and summary["writes_matched"] == 1
     assert unconfirmed_reason({"tr1": bad, "tr2": bad}) == "cancel_order write: differs (value)"
     assert unconfirmed_reason({}) == "no Trace of the Task was replayed"
+    built_good, built_bad = _replay(True), _replay(False, "cancel_order write: differs", matched=0)
+    built = summarize({"t1": {"tr1": built_good}, "t2": {"tr1": built_bad, "tr2": built_bad}})
+    assert built["traces"] == 3 and built["confirmed"] == 1
+    assert built["tasks"] == 2 and built["tasks_confirmed"] == 1
+    assert built["writes"] == 3 and built["writes_matched"] == 1
+    assert built["reads"] == 6 and built["reads_cosmetic"] == 3
