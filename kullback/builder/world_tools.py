@@ -38,6 +38,8 @@ from kullback.runner.records import (
 from kullback.runner.records import read_json as _read_json
 from kullback.runner.records import write_json as _write_json
 from kullback.runner.world.loading import OVERLAY_DIR
+from kullback.user import fidelity as user_fidelity
+from kullback.user import rules as user_rules
 
 CANON_RULES = "canon-rules.json"
 TASK_SPLIT = "task_split.json"
@@ -403,16 +405,36 @@ def _world_key(traces: list[Trace], model: Any, grow: Optional[dict]) -> str:
             digest.update(b"\0")
     digest.update(f"model={getattr(model, 'name', 'none')}".encode("utf-8"))
     digest.update(json.dumps({"grow": grow or {}}, sort_keys=True, default=str).encode("utf-8"))
-    for module in (mine, readers, cluster, canon, compile_env, synth):
+    for module in (mine, readers, cluster, canon, compile_env, synth, user_rules):
         digest.update(_module_hash(module).encode("utf-8"))
     return digest.hexdigest()
+
+
+def _user_rules_step(workdir: Path, traces: list[Trace], sigs: list) -> list[Path]:
+    """One Simulated user rules file per stored Trace, read off its user turns by code (D44).
+
+    The file is what a fresh Run's user answers from (`BuiltEnvironment.rules`), so a workdir
+    without it plays every Run with nobody to open or to answer. The vocabulary is this build's
+    own where it derived one, the generic core otherwise; rewriting on a rerun is idempotent.
+    """
+    writes = sorted(s.name for s in sigs if s.kind == "write")
+    vocab = user_fidelity.vocabulary_of(workdir)
+    out = workdir / user_fidelity.RULES_DIR
+    out.mkdir(parents=True, exist_ok=True)
+    paths = []
+    for trace in traces:
+        path = out / f"{trace.trace_id}.json"
+        _write_json(path, as_dict(user_rules.derive_user_rules(trace, vocab, writes)))
+        paths.append(path)
+    return paths
 
 
 def derive_world(workdir: Path, *, reader_model: Any = None,
                  grow: Optional[dict] = None) -> WorldReport:
     """Run the first pass over the traces on disk: mine, readers, cluster, canon, state.
 
-    No model is asked except the readers step, through `reader_model`. Tables
+    No model is asked except the readers step, through `reader_model`. Every Trace's
+    Simulated user rules are written under user_rules/ by code (D44). Tables
     grow synthetic rows only in untrusted Tasks, never here: `grow` names a row
     count per table to reach with rows composed from the observed ones, and the
     added ids are reported as synthetic. Content cache: the inputs (trace
@@ -445,6 +467,8 @@ def derive_world(workdir: Path, *, reader_model: Any = None,
     canon_rules = _canon_step(workdir, traces, schema)
     db, _, _, synthetic = _state_step(workdir, traces, schema, tasks, sigs,
                                       readers_artifact, canon_rules, anchor, grow)
+    for path in _user_rules_step(workdir, traces, sigs):
+        note(path)
 
     for name in ("tool_sigs.json", "unknown_tools.json", "row_homes.json",
                  "world_constants.json", "schema.json", readers.READERS_FILE,

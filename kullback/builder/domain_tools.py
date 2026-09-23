@@ -33,9 +33,15 @@ from kullback.gates.hook import ruling_line
 from kullback.gates.ledger import GateLedger
 from kullback.gates.loosening import legitimate_runs
 from kullback.gates.trust import trusted_gate
+from kullback.runner import budget
 from kullback.runner import tool as runner_tool
 from kullback.runner.records import read_json, write_json
 from kullback.runner.replay import AGREES
+from kullback.runner.world.environment import BuiltEnvironment
+from kullback.user import fidelity as user_fidelity
+from kullback.user.rules import GOAL_SATISFIED, goal_write_set
+from kullback.user.simulated import SimulatedUser
+from kullback.user.value_strip import value_strip
 
 #: How many per-call rows the rendered text carries before the count of the rest.
 ROWS_SHOWN = 20
@@ -232,6 +238,7 @@ class RunRow(BaseModel):
     world_diff: dict = Field(default_factory=dict)
     spend: dict = Field(default_factory=dict)
     termination_reason: str = ""
+    user_end: Optional[str] = None
 
 
 class RunResult(BaseModel):
@@ -249,7 +256,8 @@ def _render_run(result: RunResult) -> str:
         diff_tables = ", ".join(sorted(row.world_diff)) or "no table moved"
         spend = row.spend.get("usd") if isinstance(row.spend, dict) else None
         lines.append(f"run {row.run_id}: verdict {row.verdict} [{routes or 'no calls'}]; "
-                     f"world: {diff_tables}; spend: {spend} USD; ended: {row.termination_reason}")
+                     f"world: {diff_tables}; spend: {spend} USD; ended: {row.termination_reason}"
+                     + (f", user {row.user_end}" if row.user_end else ""))
     return "\n".join(lines)
 
 
@@ -479,6 +487,28 @@ def _render_status(result: StatusResult) -> str:
                      + (f"fidelity {fidelity:.4f} over {row.get('calls')} calls"
                         if fidelity is not None else str(row.get("reason"))))
     return "\n".join(lines)
+def rule_user(workdir: Any, task_id: str, router: Any) -> Optional[SimulatedUser]:
+    """The rule-driven Simulated user of a fresh Run, or nothing where the Task has no rules.
+
+    It opens with the goal the recorded user stated and answers from the rules, then the Run's
+    own Starting state (D44, D77). The runner cannot import the user package, so the Run gets it
+    through `make_user`; without rules the Run falls back to the Task's intent as before.
+    """
+    env = BuiltEnvironment(workdir)
+    task = env.task(task_id)
+    rules = env.rules(task)
+    if rules is None:
+        return None
+    writes = env.write_tools()
+    reference = env.reference(task)
+    members = env.members(task)
+    return SimulatedUser(
+        rules, starting_state_reader=router.state, vocab=user_fidelity.vocabulary_of(workdir),
+        write_tools=writes,
+        goal_writes=goal_write_set(reference, writes) if reference is not None else None,
+        answer_strip=value_strip(members) if members else None)
+
+
 def domain_tools(*, workdir: Any, model: Any = None,
                  examine_fn: Optional[Callable[[Any, Any], Any]] = None, judge_model: Any = None,
                  probe_model: Any = None, reroll_model: Any = None) -> list[AgentTool]:
@@ -506,7 +536,13 @@ def domain_tools(*, workdir: Any, model: Any = None,
                             paths=list(report.paths))
 
     async def derive(args: DeriveArgs) -> DeriveResult:
-        report = world_tools.derive_world(root, grow=dict(args.grow or {}) if args.grow else None)
+        # A corpus with prose results needs a model to propose its readers: the session model,
+        # priced under its own stage so its calls land in budget.json.
+        reader_model = (budget.BudgetedModel(model, stage="readers", workdir=root,
+                                             model_id=getattr(model, "name", None))
+                        if model is not None else None)
+        report = world_tools.derive_world(root, reader_model=reader_model,
+                                          grow=dict(args.grow or {}) if args.grow else None)
         written = env_files.explode(root)
         env_files.regenerate(root)
         exposed = env_files.expose(root)
@@ -568,14 +604,18 @@ def domain_tools(*, workdir: Any, model: Any = None,
     async def run(args: RunArgs) -> RunResult:
         if model is None:
             raise ValueError("run needs the session model to play fresh Runs with")
-        reports = runner_tool.reroll(root, args.task_id, model, count=args.count, workdir=root)
+        reports = runner_tool.reroll(root, args.task_id, model, count=args.count, workdir=root,
+                                     make_user=lambda router: rule_user(root, args.task_id, router))
         rows = [RunRow(run_id=item.run_id, verdict=item.verdict,
                        routes=[dict(route) for route in item.routes],
                        world_diff=dict(item.world_diff or {}),
                        spend=dict(item.spend or {}) if isinstance(item.spend, dict) else {},
-                       termination_reason=str(item.termination_reason or ""))
+                       termination_reason=str(item.termination_reason or ""),
+                       user_end=item.user_end)
                 for item in reports]
-        finished = sum(1 for item in reports if (item.termination_reason or "") == "finished")
+        # A Run is finished when its Simulated user ended it with the goal met (D210); the loop's
+        # own end reason says only who stopped, never whether the goal was reached.
+        finished = sum(1 for item in reports if item.user_end == GOAL_SATISFIED)
         return RunResult(summary=(f"reroll of task {args.task_id}: {len(rows)} Runs, "
                                   f"{finished} finished"),
                          task_id=args.task_id, runs=rows)
