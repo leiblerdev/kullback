@@ -10,8 +10,11 @@ from dataclasses import field as dataclass_field
 
 import pytest
 
+from kullback.agent.events import ToolExecutionEnd
+from kullback.agent.harness import AgentHarness
 from kullback.agent.tools import AgentTool, NoArgs, TextResult, ToolRegistry, ToolResult, attach_ruling
-from tests.agent.conftest import AddArgs, AddResult
+from kullback.ai.provider import TestModel
+from tests.agent.conftest import AddArgs, AddResult, call, collect, reply
 
 
 def test_schema_is_derived_from_the_args_model(add_tool):
@@ -29,6 +32,14 @@ def test_valid_arguments_run_and_the_result_is_json_with_details(add_tool):
     assert json.loads(result.content) == {"total": 5}
     assert result.details == {"total": 5}
 
+    # a dict of the right shape is validated into the result model
+    async def as_dict(args: AddArgs):
+        return {"total": args.a + args.b}
+
+    tool = AgentTool("add", "adds", AddArgs, AddResult, as_dict)
+    result = asyncio.run(tool.run({"a": 1, "b": 1}))
+    assert result.is_error is False and result.details == {"total": 2}
+
 
 def test_invalid_arguments_are_an_error_result_not_an_exception(add_tool):
     result = asyncio.run(add_tool.run({"a": "x"}))
@@ -36,6 +47,15 @@ def test_invalid_arguments_are_an_error_result_not_an_exception(add_tool):
     assert "invalid arguments for add" in result.content
     assert "a:" in result.content and "b:" in result.content
     assert result.details is None
+    # in a run the error result reaches the transcript and the model answers it
+    harness = AgentHarness(TestModel([reply(None, call("add", {"a": "two", "b": 3})), reply("sorry")]), tools=[add_tool])
+    events = collect(harness.prompt("go"))
+    end = next(e for e in events if isinstance(e, ToolExecutionEnd))
+    assert end.is_error is True
+    assert "invalid arguments for add" in end.result.content
+    tool_message = harness.messages[2]
+    assert tool_message.is_error is True and tool_message.content == end.result.content
+    assert harness.messages[-1].content == "sorry"
 
 
 def test_render_decides_what_the_model_reads_and_details_keeps_the_rest(echo_tool):
@@ -44,7 +64,7 @@ def test_render_decides_what_the_model_reads_and_details_keeps_the_rest(echo_too
     assert result.details == {"text": "hello", "length": 5}
 
 
-def test_executor_exception_is_an_error_result():
+def test_an_executor_that_raises_or_returns_the_wrong_shape_is_an_error_result():
     async def boom(args: NoArgs) -> TextResult:
         raise RuntimeError("no disk")
 
@@ -52,23 +72,12 @@ def test_executor_exception_is_an_error_result():
     result = asyncio.run(tool.run({}))
     assert result.is_error and "boom failed: RuntimeError: no disk" == result.content
 
-
-def test_wrong_result_shape_is_an_error_result():
     async def wrong(args: NoArgs):
         return {"not": "a text result"}
 
     tool = AgentTool("wrong", "returns junk", NoArgs, TextResult, wrong)
     result = asyncio.run(tool.run({}))
     assert result.is_error and "wrong shape" in result.content
-
-
-def test_a_dict_of_the_right_shape_is_validated_into_the_result_model():
-    async def as_dict(args: AddArgs):
-        return {"total": args.a + args.b}
-
-    tool = AgentTool("add", "adds", AddArgs, AddResult, as_dict)
-    result = asyncio.run(tool.run({"a": 1, "b": 1}))
-    assert result.is_error is False and result.details == {"total": 2}
 
 
 def test_cancellation_escapes_the_tool():
@@ -128,9 +137,7 @@ def test_a_ruling_is_appended_in_one_format_with_the_rows_that_still_differ():
     assert result.details["rulings"] == [
         {"name": "body", "accepted": False, "line": "2 of 5 calls differ", "rows": rows}
     ]
-
-
-def test_an_accepted_ruling_with_no_rows_is_the_head_the_line_and_the_close():
+    # an accepted ruling with no rows is the head, the line and the close
     result = attach_ruling(ToolResult(content="ok"), Ruling(name="verifier", accepted=True, line="every check held"))
     assert result.content == 'ok\n<ruling name="verifier" accepted="yes">\nevery check held\n</ruling>'
     assert result.details == {"rulings": [{"name": "verifier", "accepted": True, "line": "every check held", "rows": []}]}
