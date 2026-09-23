@@ -1246,3 +1246,11 @@ def test_every_session_command_is_in_the_table_and_in_help(name):
     from kullback.tui import COMMANDS, HELP
 
     assert name in {row[0] for row in COMMANDS} and f"/{name}" in HELP
+
+
+def test_the_login_menu_questions_keep_their_bracketed_hints(tmp_path):
+    console = Console(file=io.StringIO(), width=100, force_terminal=False, no_color=True)
+    console.input = lambda prompt="", **_: console.print(prompt, end="") or ""
+    screen = Screen(tmp_path, console=console)
+    screen._ask("    model [openai/gpt-6-luna]: ")
+    assert "model [openai/gpt-6-luna]:" in _text(console)

@@ -905,9 +905,14 @@ class Screen:
         self.console.print(self._login_status())
 
     def _ask(self, prompt: str) -> str:
-        """One question to the person typing. A method so tests can answer without stdin."""
+        """One question to the person typing. A method so tests can answer without stdin.
+
+        Escaped, because rich reads the bracketed hint ("[1-6 or name]", "[default model]") as a
+        style tag and the person was asked "model :" with the default gone."""
+        from rich.markup import escape
+
         try:
-            return self.console.input(prompt)
+            return self.console.input(escape(prompt))
         except (EOFError, KeyboardInterrupt, OSError):
             return ""
 
