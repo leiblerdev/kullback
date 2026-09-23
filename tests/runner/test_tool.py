@@ -9,7 +9,7 @@ import pytest
 
 from kullback.ai.provider import ModelReply, TestModel, ToolCallRequest
 from kullback.runner import tool
-from kullback.runner.records import RawPtr, ToolCall, Trace, Turn, Verifier, write_json
+from kullback.runner.records import RawPtr, ToolCall, Trace, Turn, Verifier, run_path, stored_run_path, write_json
 from kullback.runner.world.loading import EnvironmentError
 from tests.episode.invented import write_env
 
@@ -177,7 +177,8 @@ def test_run_plays_verdicts_and_diffs_one_run(tmp_path):
         ModelReply(content="Done.", model="test"),
     ])
     report = tool.run(root, "widget_task", model, workdir=tmp_path / "work")
-    assert Path(report.path).is_file()
+    assert report.path == "runs/widget_task-0.jsonl"
+    assert (tmp_path / "work" / report.path).is_file()
     assert [taken["name"] for taken in report.routes] == ["describe_widget", "rename_widget"]
     assert {taken["route"] for taken in report.routes} == {"code"}
     assert report.world_diff["widgets"]["w1"] == {
@@ -217,7 +218,8 @@ def test_probe_scores_the_write_it_was_told_to_reach_and_lands_under_probes(tmp_
     report = tool.probe(root, "widget_task", _rename_script(), verifier=verifier,
                         workdir=tmp_path / "work")
     assert report.run_id == "probe-widget_task"
-    assert Path(report.path).is_file() and Path(report.path).parent.name == "probes"
+    assert report.path == "probes/probe-widget_task.jsonl"
+    assert (tmp_path / "work" / report.path).is_file()
     assert list((tmp_path / "work" / "runs").glob("*.jsonl")) == []
     assert report.verdict is not None and report.verdict.passed is True
 
@@ -234,7 +236,7 @@ def test_replay_calls_writes_the_given_run_id_under_the_task_and_reseeds_stably(
     first = tool.replay_calls(root, "widget_task", calls, run_id="synth-1",
                               workdir=tmp_path / "work")
     assert first.run_id == "synth-1"
-    assert Path(first.path) == tmp_path / "work" / "runs" / "widget_task" / "synth-1.jsonl"
+    assert first.path == "runs/widget_task/synth-1.jsonl"
     second = tool.replay_calls(root, "widget_task", calls, run_id="synth-1",
                                workdir=tmp_path / "work")
     assert [(call.tool, call.recorded, call.ours) for call in second.calls] == [
@@ -248,8 +250,29 @@ def test_reroll_with_prefix_names_its_files_for_the_buyer_and_carries_user_end(t
                           workdir=tmp_path / "work", prefix="second-path-r0-b0")
     assert [report.run_id for report in reports] == ["second-path-r0-b0-0", "second-path-r0-b0-1"]
     assert all(Path(report.path).name.startswith("second-path-r0-b0-") for report in reports)
-    assert all(Path(report.path).is_file() for report in reports)
+    assert all((tmp_path / "work" / report.path).is_file() for report in reports)
     assert all("user_end" in report.as_dict() for report in reports)
     direct = tool.run(root, "widget_task", _rename_script(), workdir=tmp_path / "named", run_id="custom-7")
     assert direct.run_id == "custom-7" and (tmp_path / "named" / "runs" / "custom-7.jsonl").is_file()
 
+
+
+def test_every_run_path_a_report_stores_is_relative_to_the_workdir_whatever_the_cwd(tmp_path, monkeypatch):
+    """A workdir named relative to the cwd still stores runs/..., which opens against the workdir."""
+    root = _env_with_trace(tmp_path / "env")
+    monkeypatch.chdir(tmp_path)
+    played = tool.run(root, "widget_task", _rename_script(), workdir="work")
+    replayed = tool.replay(root, "widget_task", workdir="work")
+    assert played.path == "runs/widget_task-0.jsonl"
+    assert replayed.path.startswith("runs/widget_task/") and not Path(replayed.path).is_absolute()
+    assert all(run_path(tmp_path / "work", report.path).is_file() for report in (played, replayed))
+
+
+def test_run_path_joins_a_relative_path_to_the_workdir_and_keeps_an_absolute_one(tmp_path):
+    """A row an older workdir wrote with an absolute path still opens; a relative one joins the workdir."""
+    older = tmp_path / "elsewhere" / "runs" / "a.jsonl"
+    assert run_path(tmp_path / "work", "runs/t/a.jsonl") == tmp_path / "work" / "runs" / "t" / "a.jsonl"
+    assert run_path(tmp_path / "work", str(older)) == older
+    assert stored_run_path(tmp_path / "work", tmp_path / "work" / "runs" / "a.jsonl") == "runs/a.jsonl"
+    assert stored_run_path(tmp_path / "work", older) == str(older)
+    assert stored_run_path(tmp_path / "work", "") == ""

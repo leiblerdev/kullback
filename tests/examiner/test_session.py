@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from examiner.worlds import make_world
 from gates.examiner_fixtures import SIGS
 from kullback.agent.events import ToolExecutionEnd
@@ -175,7 +177,8 @@ def _proposed_over_a_runner_world(tmp_path, probe_model):
     write_json(root / "replays.json", {"widget_task": {
         "rec1": {"trace_id": "rec1", "run_id": seed.run_id, "confirmed": True, "path": seed.path}}})
     write_json(root / "rerolls.json", {"widget_task": [
-        {"run_id": other.run_id, "path": other.path, "termination_reason": "user_stop"}]})
+        {"run_id": other.run_id, "path": str(root / "second" / other.path),
+         "termination_reason": "user_stop"}]})
     write_json(root / "constraints.json", [])
     events: list = []
     S.examine(root, model=TestModel([
@@ -214,3 +217,60 @@ def test_an_examiner_session_prices_its_model_calls_into_the_ledger_under_its_st
     S.examine(world.workdir, model=model)
     stage = budget.load_totals(world.workdir)["stages"]["examiner"]
     assert stage["calls"] == 1 and stage["usd"] > 0
+
+
+def _replayed_root(tmp_path):
+    """The invented environment with one seed Run played into its own runs/ and a replay row naming it."""
+    root = _env_with_trace(tmp_path / "env")
+    seed = tool.run(root, "widget_task", _rename_loop(), workdir=root)
+    write_json(root / "replays.json", {"widget_task": {
+        "rec1": {"trace_id": "rec1", "run_id": seed.run_id, "confirmed": True, "path": seed.path}}})
+    write_json(root / "rerolls.json", {"widget_task": []})
+    write_json(root / "constraints.json", [])
+    return root
+
+
+def test_every_run_path_in_the_exam_replays_opens_under_the_exam_root(tmp_path):
+    """The Examiner reads exam/ only, so each path its replays.json names is a file under exam/."""
+    root = _replayed_root(tmp_path)
+    S.examine(root, model=None)
+    replays = read_json(root / "exam" / "replays.json")
+    paths = [row["path"] for rows in replays.values() for row in rows.values()]
+    assert paths and all(not Path(path).is_absolute() for path in paths)
+    assert all((root / "exam" / path).is_file() for path in paths)
+
+
+def test_examine_from_another_cwd_opens_the_runs_and_stores_bought_rows_relative(tmp_path, monkeypatch):
+    """Run rows resolve against the workdir, not the cwd: second paths are bought and stored as runs/..."""
+    root = _replayed_root(tmp_path)
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    monkeypatch.chdir(elsewhere)
+    S.examine(root, model=None, reroll_model=_rename_loop())
+    rows = (read_json(root / "examiner" / "rerolls.json", {}) or {}).get("widget_task") or []
+    assert rows and all(row["path"].startswith("runs/") for row in rows)
+    assert all((root / row["path"]).is_file() for row in rows)
+    status = read_json(root / "task_status.json")
+    assert status["widget_task"]["reference_confirmed"] is True
+
+
+def test_an_examiner_stopped_on_its_turn_cap_says_its_findings_are_partial(tmp_path):
+    """A session that is still reading at the cap files one note naming the cap, in findings.json too."""
+    world = make_world(tmp_path)
+    materialize(world)
+    reading = TestModel([reply("reading", ("ls", {"path": "."}))], loop=True)
+    findings = S.examine(world.workdir, model=reading, max_turns=2)
+    note = findings[-1]
+    assert note.change.startswith("the Examiner ran out of turns at 2")
+    assert note.rows == [{"max_turns": 2}]
+    written = read_json(world.workdir / "findings.json")
+    assert written[-1]["change"] == note.change
+
+
+def test_an_examiner_that_finishes_under_its_cap_files_no_turn_note(tmp_path):
+    """The default cap leaves room for the reading, and a session that ends on its own adds nothing."""
+    world = make_world(tmp_path)
+    materialize(world)
+    reading = TestModel([reply("reading", ("ls", {"path": "."}))] * 9 + [reply("done")])
+    findings = S.examine(world.workdir, model=reading)
+    assert not any("ran out of turns" in f.change for f in findings)

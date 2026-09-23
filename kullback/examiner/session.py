@@ -39,11 +39,16 @@ from kullback.gates.ledger import GateLedger
 from kullback.gates.verifier_suite import load_run
 from kullback.runner import budget
 from kullback.runner.canon import rules_of
-from kullback.runner.records import Constraint, Task, ToolSig, UserRules, Verifier, read_json, write_json
+from kullback.runner.records import Constraint, Task, ToolSig, UserRules, Verifier, read_json, run_path, write_json
 
 BASE_ONLY = ("read", "write", "edit", "grep", "find", "ls", "web_search")
 WRITABLE_DIRS = ("verifiers", "probes")
 EXAMINE_MESSAGE = "Examine."
+# The Examiner's turn cap: reading Runs, replays and Verifiers before filing takes tens of turns, and
+# at 8 every live session stopped while still reading (F17).
+EXAMINE_MAX_TURNS = 40
+# The harness's own words when a session stops on its cap (agent/loop.py).
+CAP_STOP = "stopped after max_turns="
 HINT_CHARS = 200
 
 
@@ -260,21 +265,24 @@ def _load_keyed(folder: Path, single: str) -> dict:
     return out
 
 
-def task_runs_of(replays: dict, rerolls: dict) -> dict[str, list]:
-    """Every Run on disk per Task, loaded tolerantly: a missing file is skipped (D133)."""
+def task_runs_of(replays: dict, rerolls: dict, *, workdir: Any) -> dict[str, list]:
+    """Every Run on disk per Task, loaded tolerantly: a missing file is skipped (D133).
+
+    A row's path is resolved against the workdir (records.run_path)."""
     out: dict[str, list] = {}
     for task_id, rows in sorted((replays or {}).items()):
         for _, row in sorted((rows or {}).items()):
-            _append_run(out, task_id, row)
+            _append_run(out, task_id, row, workdir)
     for task_id, rows in sorted((rerolls or {}).items()):
         for row in rows or []:
-            _append_run(out, task_id, row)
+            _append_run(out, task_id, row, workdir)
     return out
 
 
-def _append_run(out: dict, task_id: str, row: Any) -> None:
-    path = row.get("path") if isinstance(row, dict) else None
-    if not path or not Path(path).is_file():
+def _append_run(out: dict, task_id: str, row: Any, workdir: Any) -> None:
+    stored = row.get("path") if isinstance(row, dict) else None
+    path = run_path(workdir, stored) if stored else None
+    if path is None or not path.is_file():
         return
     try:
         run = load_run(str(path))
@@ -302,7 +310,7 @@ def derive_findings(workdir: Any, store: dict) -> list[Finding]:
                       for path in sorted((root / "verifiers").glob("*.json"))] if (root / "verifiers").is_dir() else [],
         "sigs": store.get("sigs") or [], "replays": replays, "rerolls": rerolls,
         "task_status": status, "canon_rules": rules_of({"canon_rules": store.get("canon_rules")}),
-        "task_runs": task_runs_of(replays, rerolls)})
+        "task_runs": task_runs_of(replays, rerolls, workdir=root)})
     return [finding_from_row(row) for row in rows]
 
 
@@ -343,12 +351,13 @@ def _one_line(text: str, limit: int = HINT_CHARS) -> str:
 def examine(workdir: Any, *, task_ids: Optional[Iterable[str]] = None, model: Any,
             judge_model: Any = None, probe_model: Any = None, reroll_model: Any = None,
             allowance_usd: Optional[float] = None, session_path: Any = None,
-            subscribers: Iterable[Callable] = (), max_turns: int = 8) -> list[Finding]:
+            subscribers: Iterable[Callable] = (), max_turns: int = EXAMINE_MAX_TURNS) -> list[Finding]:
     """Derive the Verifiers by code, file what the records say, then run one model session.
 
     With `model=None` the session is code only: the derivation and its findings. With a model,
     one message over the Examiner's root, capped at `max_turns`; the Builder decides when to
-    call again. Returns every finding, derive-filed and model-filed, and writes findings.json.
+    call again. A session stopped on the cap adds one finding saying so, so the Builder reads the
+    rest as partial. Returns every finding, derive-filed and model-filed, and writes findings.json.
     The session seeds one Verifier history per Task at version 1 from the derived files, so the
     trusted and loosening gates rule on proposals (D127).
 
@@ -385,13 +394,31 @@ def examine(workdir: Any, *, task_ids: Optional[Iterable[str]] = None, model: An
     harness.subscribe(budget.subscriber(root, "examiner", getattr(model, "name", None)))
     load_extensions(harness, [examiner_extension(exam_root)])
 
+    capped: list[bool] = []
+
     async def go() -> None:
-        async for _ in harness.prompt(EXAMINE_MESSAGE):
-            pass
+        async for event in harness.prompt(EXAMINE_MESSAGE):
+            if getattr(event, "type", None) == "turn_end" and _stopped_on_cap(event.message):
+                capped.append(True)
 
     asyncio.run(go())
-    write_json(root / "findings.json", [f.as_dict() for f in exam_root.findings])
-    return list(exam_root.findings)
+    out = list(exam_root.findings) + ([turns_ran_out(max_turns)] if capped else [])
+    write_json(root / "findings.json", [f.as_dict() for f in out])
+    return out
+
+
+def _stopped_on_cap(message: Any) -> bool:
+    """Did this turn end because the harness reached the session's turn cap?"""
+    return str(getattr(message, "error_message", None) or "").startswith(CAP_STOP)
+
+
+def turns_ran_out(max_turns: int) -> Finding:
+    """The note a session stopped on its cap files: the findings beside it are partial (F17)."""
+    return Finding(kind="other", source="derive",
+                   text=f"the Examiner ran out of turns at {max_turns} before it finished reading",
+                   rows=[{"max_turns": max_turns}],
+                   change=(f"the Examiner ran out of turns at {max_turns}, so these findings are "
+                           "partial; call examine again to continue"))
 
 
 def _exam_root(workdir: Any, store: dict, findings: list[Finding], reroll_model: Any = None,
@@ -430,4 +457,4 @@ def _exam_root(workdir: Any, store: dict, findings: list[Finding], reroll_model:
     save_history(exam_root, history)
     return exam_root
 __all__ = ["BASE_ONLY", "EXAMINE_MESSAGE", "derive_findings", "examine", "examiner_extension",
-           "finding_from_row", "load_store", "rulings_line", "task_runs_of"]
+           "finding_from_row", "load_store", "rulings_line", "task_runs_of", "turns_ran_out"]
