@@ -425,3 +425,17 @@ def test_the_cap_note_names_ten_tasks_and_counts_the_rest():
     assert note.text.startswith("12 confirmed Tasks not derived yet: t01, t02,")
     assert "t10 and 2 more; call examine again" in note.text
     assert len(note.rows) == 12
+
+
+def test_a_task_left_unconfirmed_is_picked_again_once_its_replay_is_confirmed(tmp_path):
+    world = make_world(tmp_path, confirmed=False, rerolls=())
+    materialize(world)
+    S.examine(world.workdir, model=None)
+    status = read_json(world.workdir / "task_status.json")
+    assert status["t1"]["reference_confirmed"] is False
+    assert not (world.workdir / "verifiers" / "t1.json").exists()
+    assert S.derive_pick(world.workdir, S.load_store(world.workdir), None) == []
+    replays = read_json(world.workdir / "replays.json")
+    replays["t1"]["ref"].update(confirmed=True, reasons=[])
+    write_json(world.workdir / "replays.json", replays)
+    assert S.derive_pick(world.workdir, S.load_store(world.workdir), None) == ["t1"]

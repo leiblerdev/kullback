@@ -230,8 +230,9 @@ def derive_pick(workdir: Any, store: dict, task_ids: Optional[list[str]]) -> lis
     """The Tasks this examine call is about, in id order, before the cap (F40).
 
     With task_ids, those that name a Task. Without, every Task not derived yet: it has no status
-    row because no derivation has read it, or its row holds a confirmed Reference and its Verifier
-    file is absent."""
+    row because no derivation has read it, or its Verifier file is absent and either its row holds
+    a confirmed Reference or replays.json now holds a confirmed replay for it, read the way
+    select_for_session reads one, so a Task left unconfirmed is revisited once evidence confirms it."""
     known = sorted(task.id for task in store.get("tasks") or [])
     if task_ids is not None:
         wanted = set(task_ids)
@@ -239,9 +240,17 @@ def derive_pick(workdir: Any, store: dict, task_ids: Optional[list[str]]) -> lis
     root = Path(workdir)
     status = read_json(root / "task_status.json", {}) or {}
     status = status if isinstance(status, dict) else {}
-    return [task_id for task_id in known
-            if task_id not in status or ((status[task_id] or {}).get("reference_confirmed")
-                                         and not (root / "verifiers" / f"{task_id}.json").is_file())]
+    replays = store.get("replays") or {}
+
+    def pending(task_id: str) -> bool:
+        if task_id not in status:
+            return True
+        if (root / "verifiers" / f"{task_id}.json").is_file():
+            return False
+        return bool((status[task_id] or {}).get("reference_confirmed")
+                    or finished_run_ids(task_id, replays, {}))
+
+    return [task_id for task_id in known if pending(task_id)]
 
 
 def not_derived_finding(later: list[str]) -> Finding:
