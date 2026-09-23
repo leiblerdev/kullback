@@ -7,7 +7,10 @@ import json
 from pathlib import Path
 
 from kullback.builder import compile_env, env_files
+from kullback.gates.bindings import rulings_for
+from kullback.gates.confinement import ALLOWED_IMPORTS, CONTEXT_READS, PROVIDED_HELPERS
 from kullback.runner.records import RawPtr, ToolCall, Trace, Turn, read_json, write_json
+from kullback.runner.world.loading import SandboxError, load_toolkit
 from tests.episode.invented import write_env
 
 PTR = RawPtr(file_hash="f" * 64, sim_index=0, msg_index=0)
@@ -156,3 +159,77 @@ def test_an_edited_stub_survives_a_second_explode(tmp_path):
     assert env_files.explode(root) == []
     assert stub.read_text(encoding="utf-8") == edited
     assert not env_files.is_stub(stub)
+
+
+# --- the write gate reads the module the Runner loads ---
+
+
+def _mined_args(root: Path) -> None:
+    """The mined arguments, as derive writes them: the rendered module takes its signature from here."""
+    sigs = read_json(root / "tool_sigs.json", [])
+    for sig in sigs:
+        sig["args_fields"] = [{"name": name, "types": ["str"], "optional": False}
+                              for name in sig.get("args_schema", {}).get("properties", {})]
+    write_json(root / "tool_sigs.json", sigs)
+
+
+def _write_rename(root: Path, body: str) -> dict:
+    """Write one rename body as the model would, and rule on it the way the session hook does."""
+    _mined_args(root)
+    env_files.explode(root)
+    path = root / "env" / "tools" / "rename_widget.py"
+    sig = next(sig for sig in env_files._read_sigs(root) if sig.name == "rename_widget")
+    path.write_text(env_files._tool_file("rename_widget", sig, body), encoding="utf-8")
+    execute = env_files.executor(root)
+    rulings = rulings_for(root / "env", "tools/rename_widget.py", root, execute=execute)
+    return {"confined": next(r for r in rulings if r.stage == "confined"),
+            "module": execute.render(path.read_text(encoding="utf-8"))}
+
+
+def _runner_refusal(module: str) -> str:
+    """What the Runner's loader says about this module: its refusal, or "" when it loads."""
+    try:
+        load_toolkit(module, {})
+    except SandboxError as exc:
+        return str(exc)
+    except Exception:  # noqa: BLE001, a module past confinement may still fail on an empty db
+        return ""
+    return ""
+
+
+def test_a_body_importing_a_module_off_the_list_fails_the_write_gate_as_the_runner_would(tmp_path):
+    root = write_env(tmp_path / "work")
+    ruled = _write_rename(root, "import ast\n" + RENAME_BODY)
+    refusal = _runner_refusal(ruled["module"])
+    assert not ruled["confined"].passed
+    assert "rename_widget imports ast" in ruled["confined"].failures
+    assert refusal and all(failure in refusal for failure in ruled["confined"].failures)
+
+
+def test_a_body_naming_eval_fails_the_write_gate_as_the_runner_would(tmp_path):
+    root = write_env(tmp_path / "work")
+    ruled = _write_rename(root, 'label = eval("label")\n' + RENAME_BODY)
+    refusal = _runner_refusal(ruled["module"])
+    assert not ruled["confined"].passed
+    assert "rename_widget uses eval" in ruled["confined"].failures
+    assert refusal and all(failure in refusal for failure in ruled["confined"].failures)
+
+
+def test_a_body_calling_the_provided_helper_passes_the_write_gate_and_the_runner(tmp_path):
+    root = write_env(tmp_path / "work")
+    body = RENAME_BODY.replace("row.label = label", "row.label = str(evaluate_arithmetic(label))")
+    ruled = _write_rename(root, body)
+    assert ruled["confined"].passed, ruled["confined"].failures
+    assert _runner_refusal(ruled["module"]) == ""
+
+
+def test_every_stub_header_names_the_gate_s_allowed_imports_helpers_and_context_reads(tmp_path):
+    root = write_env(tmp_path / "work")
+    env_files.explode(root)
+    text = (root / "env" / "tools" / "describe_widget.py").read_text(encoding="utf-8")
+    header = text.split("from typing")[0]
+    assert ", ".join(sorted(ALLOWED_IMPORTS)) in header
+    assert all(helper in header for helper in PROVIDED_HELPERS)
+    assert all(read in header for read in CONTEXT_READS)
+    assert "eval, exec, compile and ast are refused" in header
+    assert len(header.splitlines()) <= 8

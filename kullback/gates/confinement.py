@@ -55,6 +55,8 @@ MAX_NAMED_FAILURES = 5
 # reaches for one of these modules is told where to reach instead.
 _CONTEXT_IMPORTS = {"datetime": "self.ctx.now()", "time": "self.ctx.now()",
                     "random": "self.ctx.random()", "uuid": "self.ctx.new_id(table)"}
+#: The context reads a body uses in place of those modules, for the words that tell the model so.
+CONTEXT_READS = tuple(dict.fromkeys(_CONTEXT_IMPORTS.values()))
 
 
 def _context_hint(top: str) -> str:

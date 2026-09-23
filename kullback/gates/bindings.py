@@ -46,6 +46,8 @@ from kullback.gates.tool_runs import (
 )
 from kullback.gates.trust import finished_runs, refuse_gate, trusted_gate
 from kullback.gates.verifier_suite import D79_STAGES, validate_verifier
+from kullback.runner.canon import CanonRules
+from kullback.runner.canon import load_rules as load_canon_rules
 from kullback.runner.records import EntitySchema, GateResult, ToolCall, Verifier, content_hash
 
 #: How many rows one ruling carries before the count of the rest.
@@ -121,9 +123,18 @@ def load_db(workdir: Path, path: str) -> Any:
     return _read_json(workdir, "db.json")
 
 
-def load_rules(workdir: Path, path: str) -> Any:
+def load_rules(workdir: Path, path: str) -> Optional[CanonRules]:
+    """The workdir's canon rules as the canonicalizer takes them, or None for the defaults.
+
+    The raw JSON dict is not enough: every gate that canonicalizes a value reads the rules as
+    `CanonRules`, and a dict made each of them raise, which the suite skips silently, so a write
+    drew no deterministic, non-trivial or fidelity ruling at all.
+    """
     _ = path
-    return _read_json(workdir, "canon-rules.json")
+    try:
+        return load_canon_rules(Path(workdir) / "canon-rules.json")
+    except (OSError, ValueError):
+        return None
 
 
 def _file_loader(name: str) -> Loader:
@@ -220,9 +231,24 @@ def _exec_error(evidence: dict, calls: list[ToolCall]) -> Optional[str]:
 # --- the bound gates, each a list of results so the suite can rule nine times ---
 
 def _gate_confined(evidence: dict) -> Optional[list[GateResult]]:
-    if evidence.get("source") is None:
+    """Confinement over the module the Runner will load, when the caller can render it.
+
+    The written file is one plain function, so a check over it alone finds no tool method and
+    passes what `load_toolkit` then refuses. `render(source)` (the executor's, see
+    builder/env_files.py) returns the whole rendered module with this body in place, and the
+    gate reads that; a body that does not render is ruled on its own text.
+    """
+    source = evidence.get("source")
+    if source is None:
         return None
-    return [gate_confined(evidence["source"])]
+    render = evidence.get("render")
+    module = None
+    if callable(render):
+        try:
+            module = render(source)
+        except Exception:  # noqa: BLE001, a body that does not render is ruled on its own text
+            module = None
+    return [gate_confined(module or source)]
 
 
 def _gate_parses(evidence: dict) -> Optional[list[GateResult]]:
@@ -687,7 +713,8 @@ def rulings_for(root: Any, written_path: str, workdir: Any, *, execute: Any = No
     refusal. A path no binding matches, or a file that is gone, draws nothing.
 
     `execute(source, calls, db)` runs a tool body over recorded calls; without it the
-    execution gates are skipped for missing evidence. `evidence` overrides or extends
+    execution gates are skipped for missing evidence; its `render(source)`, when it carries
+    one, is the rendered module the confinement gate reads. `evidence` overrides or extends
     what the loaders read from the workdir, keyed by evidence name. Each gate sees the
     rulings drawn before it as evidence "rulings", so trusted reads the suite that just ran.
     """
@@ -715,6 +742,8 @@ def rulings_for(root: Any, written_path: str, workdir: Any, *, execute: Any = No
             merged.setdefault(name, None)
     if execute is not None:
         merged["execute"] = execute
+        if callable(getattr(execute, "render", None)):
+            merged["render"] = execute.render
     for name, value in (evidence or {}).items():
         if value is not None:
             merged[name] = value

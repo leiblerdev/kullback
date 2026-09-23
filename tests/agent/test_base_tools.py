@@ -8,6 +8,7 @@ import asyncio
 import pytest
 
 from kullback.agent.base_tools import (
+    MAX_OUTPUT_BYTES,
     MAX_OUTPUT_LINES,
     Allowlist,
     base_tools,
@@ -244,6 +245,25 @@ def test_truncation_also_stops_at_the_byte_limit():
     text = "\n".join("x" * 100 for _ in range(10))
     output, cut = truncate_head(text, max_lines=50, max_bytes=250)
     assert cut.truncated is True and cut.truncated_by == "bytes" and len(output.encode()) <= 250
+
+
+def test_a_line_longer_than_the_byte_limit_is_shown_cut_not_dropped():
+    text = "a" * 300 + "\nnext"
+    head, head_cut = truncate_head(text, max_lines=50, max_bytes=100)
+    assert head == "a" * 100 and head_cut.output_lines == 1 and head_cut.truncated_by == "bytes"
+    assert head_cut.line_cut is True
+    tail, tail_cut = truncate_tail("first\n" + "b" * 300, max_lines=50, max_bytes=100)
+    assert tail == "b" * 100 and tail_cut.line_cut is True
+
+
+def test_read_of_a_line_over_the_limit_shows_its_head_and_names_the_cut(root):
+    (root / "run.jsonl").write_text("\n".join(['{"row": 1}', "z" * (MAX_OUTPUT_BYTES + 500), '{"row": 3}']),
+                                    encoding="utf-8")
+    result = run(tools(root)["read"], path="run.jsonl", offset=2, limit=2)
+    assert result.content.startswith("z" * 1000)
+    assert "line 2 is longer than" in result.content and "was cut" in result.content
+    assert "offset=3" in result.content
+    assert "showing lines 2 to 1" not in result.content
 
 
 # --- web_search ---
