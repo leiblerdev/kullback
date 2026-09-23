@@ -428,7 +428,7 @@ at 13:44 UTC, in their second session, in the Examiner stage. Two luna arms besi
 | airline | 100 of 119 | 0.9687 | 0.9564 over 1513 calls | 22 (97 open, 89 no Verifier yet) | 105 | 5.11 |
 | telecom | telecom: not in this round | | | | | |
 
-Previous rows, the luna arms of the same smoke (killed 13:22 UTC): retail 15 of 205 confirmed at 0.7509, 0 trusted,
+Beside them, the luna arms of the same smoke (killed 13:22 UTC): retail 15 of 205 confirmed at 0.7509, 0 trusted,
 15 turns, 0.27 USD; airline 10 of 119 at 0.6183, 0 trusted, 271 turns, 0.51 USD.
 
 Fidelity is the share of recorded calls whose replay agrees with the recording; a confirmed Reference is a whole
