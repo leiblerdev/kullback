@@ -57,12 +57,16 @@ OPENING = ("Begin in your root env/. Derive the world when the traces are stored
 
 @dataclass
 class BuilderRoot:
-    """What the Builder extension is bound to: the workdir, its env root, examine_fn, ceiling."""
+    """What the Builder extension is bound to: the workdir, its env root, examine_fn, ceiling,
+    and the models examine hands the judges, the probe and the re-rolls."""
 
     workdir: Path
     env_root: Optional[Path] = None
     examine_fn: Optional[Callable[[Any, Any], Any]] = None
     ceiling_usd: Optional[float] = None
+    judge_model: Any = None
+    probe_model: Any = None
+    reroll_model: Any = None
 
     @property
     def env(self) -> Path:
@@ -196,7 +200,9 @@ def builder_extension(root: BuilderRoot) -> Callable[[ExtensionAPI], None]:
         env.mkdir(parents=True, exist_ok=True)
         register_base_tools(api, env, allowlist=DEFAULT_ALLOWLIST)
         model = getattr(getattr(api, "harness", None), "model", None)
-        for tool in domain_tools(workdir=root.workdir, model=model, examine_fn=root.examine_fn):
+        for tool in domain_tools(workdir=root.workdir, model=model, examine_fn=root.examine_fn,
+                                 judge_model=root.judge_model, probe_model=root.probe_model,
+                                 reroll_model=root.reroll_model):
             api.register_tool(tool)
         for name, text in prompt_mod.sections():
             api.add_prompt_section(f"builder_{name}", text)
@@ -219,13 +225,15 @@ def build(workdir: Any, model: Any, *, files: Optional[list] = None,
           examine_fn: Optional[Callable[[Any, Any], Any]] = None,
           ceiling_usd: Optional[float] = None, session_path: Any = None,
           subscribers: Iterable[Callable[[Any], Any]] = (),
-          max_turns: Optional[int] = None) -> dict:
+          max_turns: Optional[int] = None, judge_model: Any = None, probe_model: Any = None,
+          reroll_model: Any = None) -> dict:
     """Run one Builder session over the workdir and say how it stopped.
 
     `files` are customer files to ingest first, as paths under the workdir. `session_path`
     defaults to workdir/sessions/builder.jsonl. The dict carries the status tool's rows,
     the trusted, refused and open counts, the spend, the turns, how it stopped (one of:
-    no tool call, ceiling, cancelled, max turns) and the last assistant line.
+    no tool call, ceiling, cancelled, max turns) and the last assistant line. `judge_model`, `probe_model` and `reroll_model` reach examine;
+    each is `model` when not named.
     """
     root = Path(workdir)
     env = root / "env"
@@ -242,7 +250,8 @@ def build(workdir: Any, model: Any, *, files: Optional[list] = None,
         context=ContextConfig(window=budget.window_for(getattr(model, "name", None))),
         bus=Bus(root / "bus.jsonl", agent="builder"), max_turns=max_turns)
     load_extensions(harness, [builder_extension(
-        BuilderRoot(workdir=root, env_root=env, examine_fn=examine_fn, ceiling_usd=ceiling_usd))])
+        BuilderRoot(workdir=root, env_root=env, examine_fn=examine_fn, ceiling_usd=ceiling_usd,
+                    judge_model=judge_model, probe_model=probe_model, reroll_model=reroll_model))])
     for subscriber in subscribers:
         harness.subscribe(subscriber)
     guard_stop: dict = {}

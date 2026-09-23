@@ -152,3 +152,21 @@ def test_the_bus_holds_the_events_in_gapless_order(tmp_path):
     assert len(lines) > 0
     seqs = [json.loads(line)["seq"] for line in lines]
     assert seqs == list(range(1, len(lines) + 1))
+
+
+def test_build_hands_examine_the_judge_probe_and_reroll_models(tmp_path, monkeypatch):
+    from kullback.examiner import session as examiner_session
+
+    seen = {}
+
+    def examine(workdir, *, task_ids=None, model=None, judge_model=None, probe_model=None,
+                reroll_model=None, **kwargs):
+        seen.update(judge_model=judge_model, probe_model=probe_model, reroll_model=reroll_model)
+        return []
+
+    monkeypatch.setattr(examiner_session, "examine", examine)
+    root = _workdir(tmp_path)
+    model = TestModel([reply("Examining.", ("examine", {})), reply("Done.")])
+    judge, probe, reroll = object(), object(), object()
+    session_mod.build(root, model, judge_model=judge, probe_model=probe, reroll_model=reroll)
+    assert seen == {"judge_model": judge, "probe_model": probe, "reroll_model": reroll}
