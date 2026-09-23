@@ -223,3 +223,73 @@ def test_proposal_on_a_task_with_a_reference_is_refused_when_the_loophole_probe_
     assert "reached the End state and scored pass" in str(excinfo.value)
     assert root.history["t1"].versions[-1].rejected_by == ["verifier_loophole"]
     assert not (world.workdir / "exam" / "task_status.json").exists(), "a refusal changes no status"
+
+
+def test_an_added_row_carrying_its_own_predicate_src_is_taken_not_crashed_on(tmp_path):
+    root, world, current = _root(tmp_path)
+    [tool] = [t for t in D.domain_tools(root) if t.name == "propose_verifier"]
+    add = {"id": "atom-new", "kind": current.atoms[0].kind, "payload": dict(current.atoms[0].target),
+           "predicate_src": "lambda state: True", "description": "kept"}
+    result = _run(tool.execute(D.ProposeArgs(task_id="t1", reason="tighten", add=[add])))
+    body = read_json(world.workdir / "exam" / "verifiers" / "t1.json")
+    [atom] = [a for a in body["atoms"] if a["id"] == "atom-new"]
+    assert atom["predicate_src"] != "lambda state: True", "the tool sets the predicate from the payload"
+    assert atom["description"] == "kept"
+    assert result.verifier_version == body["verifier_version"]
+
+
+def test_an_added_row_with_an_unknown_field_is_refused_naming_it_and_the_corrected_atom(tmp_path):
+    root, _, current = _root(tmp_path)
+    [tool] = [t for t in D.domain_tools(root) if t.name == "propose_verifier"]
+    add = {"id": "atom-new", "kind": current.atoms[0].kind, "payload": dict(current.atoms[0].target),
+           "weight": 2}
+    with pytest.raises(RetryableToolError) as excinfo:
+        _run(tool.execute(D.ProposeArgs(task_id="t1", reason="tighten", add=[add])))
+    message = str(excinfo.value)
+    assert "weight" in message.split("The same atom")[0], message
+    assert '"id": "atom-new"' in message and '"weight"' not in message.split("The same atom")[1], message
+
+
+def _refused_loosening(tmp_path):
+    root, world, current = _root(tmp_path)
+    write_json(world.workdir / "exam" / "verifiers" / "t1.json", as_dict(current))
+    _with_reference(world)
+    [tool] = [t for t in D.domain_tools(root) if t.name == "propose_verifier"]
+    drop = [a.id for a in current.atoms if a.id != "w0.reason"]
+    return root, world, tool, drop
+
+
+def test_a_repeated_refused_proposal_is_answered_without_running_the_suite(tmp_path):
+    root, world, tool, drop = _refused_loosening(tmp_path)
+    with pytest.raises(RetryableToolError):
+        _run(tool.execute(D.ProposeArgs(task_id="t1", reason="loosen", drop=drop)))
+    rows = len(root.history["t1"].versions)
+    written = read_json(world.workdir / "exam" / "history.json")
+    with pytest.raises(RetryableToolError) as excinfo:
+        _run(tool.execute(D.ProposeArgs(task_id="t1", reason="loosen again", drop=drop)))
+    message = str(excinfo.value)
+    assert message.startswith("already refused at version"), message
+    assert "verifier_empty_run" in message and "move on to another Task" in message, message
+    assert len(root.history["t1"].versions) == rows, "the suite did not run, so no history row was added"
+    assert read_json(world.workdir / "exam" / "history.json") == written
+
+
+def test_the_fourth_refusal_of_one_task_says_stop_proposing_for_it(tmp_path):
+    root, _, tool, drop = _refused_loosening(tmp_path)
+    messages = []
+    for _ in range(D.REFUSALS_PER_TASK + 1):
+        with pytest.raises(RetryableToolError) as excinfo:
+            _run(tool.execute(D.ProposeArgs(task_id="t1", reason="loosen", drop=drop)))
+        messages.append(str(excinfo.value))
+    assert not any("Stop proposing" in message for message in messages[:-1]), messages
+    assert "Stop proposing for this Task in this session" in messages[-1]
+
+
+def test_a_refusal_names_the_atom_its_empty_run_rows_carry():
+    records = [{"name": "verifier_empty_run", "accepted": False, "line": "verifier_empty_run fail",
+                "rows": [{"check": "verifier_empty_run", "atom": "w0.reason", "text": "reason is given"}]},
+               {"name": "verifier_alt_path", "accepted": False, "line": "verifier_alt_path fail",
+                "rows": [{"check": "verifier_alt_path", "failure": "not run"}]}]
+    message = str(D._refuse_proposal("t1", "2", records))
+    assert "verifier_empty_run: the atom the empty Run passed on is w0.reason (reason is given)" in message
+    assert "verifier_alt_path: the atom" not in message, "no atom in the rows, none named"

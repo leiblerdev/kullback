@@ -24,6 +24,7 @@ from kullback.examiner import runners as runners_mod
 from kullback.examiner import stage as stage_mod
 from kullback.examiner.domain_tools import domain_tools
 from kullback.examiner.exam_files import (
+    DERIVED_DIR,
     ExamRoot,
     Finding,
     evidence_of,
@@ -173,10 +174,29 @@ def _runs_part(root: ExamRoot, task_id: str) -> str:
 
 
 def _verifier_part(root: ExamRoot, task_id: str) -> str:
+    """The Task's derived Verifier, its proposal and its user rules, as paths under the root (F33)."""
+    derived = f"{DERIVED_DIR}/{task_id}.json"
     rel = f"verifiers/{task_id}.json"
-    if (root.exam_dir / rel).is_file():
-        return f"verifier: {rel}"
-    return f"verifier: {rel} once you first propose one"
+    parts = [f"derived verifier: {derived}" if (root.exam_dir / derived).is_file()
+             else "derived verifier: none copied"]
+    parts.append(f"proposal: {rel}" if (root.exam_dir / rel).is_file()
+                 else f"proposal: {rel} once you first propose one")
+    trace_id = reference_trace_id(root, task_id)
+    parts.append(f"user rules: user_rules/{trace_id}.json" if trace_id
+                 else "user rules: no user rules until the Reference is confirmed")
+    return "; ".join(parts)
+
+
+def reference_trace_id(root: ExamRoot, task_id: str) -> Optional[str]:
+    """The confirmed replay's trace id off the Task's replay rows, the choice the Runner's rules make.
+
+    Rows in id order, confirmed ones only; the first whose rules sit in the root wins, else the first.
+    """
+    rows = (root.replays or {}).get(task_id) or {}
+    confirmed = [str(row["trace_id"]) for _, row in sorted(rows.items())
+                 if isinstance(row, dict) and row.get("confirmed") and row.get("trace_id")]
+    held = [trace for trace in confirmed if (root.exam_dir / "user_rules" / f"{trace}.json").is_file()]
+    return (held or confirmed or [None])[0]
 
 
 def _relative_to(path: Path, base: Path) -> Optional[str]:

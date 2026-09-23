@@ -40,6 +40,8 @@ from kullback.runner.records import (
 
 RUNS_DIR = "runs"
 SPOKEN_DIR = "spoken"
+# Where expose copies each Task's derived Verifier: read-only, never the proposal path verifiers/ (F33).
+DERIVED_DIR = "derived"
 
 # The JSON files copied by name from the workdir root into the Examiner's root.
 COPIED_JSON = ("replays.json", "rerolls.json", "references.json", "task_status.json",
@@ -226,8 +228,28 @@ def expose(workdir: Any) -> dict:
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_bytes(path.read_bytes())
             copied.append(str(rel))
+    copied += copy_derived(root, exam)
     spoken = write_spoken(root, exam)
     return {"copied": copied, "spoken": spoken}
+
+
+def copy_derived(root: Path, exam: Path) -> list[str]:
+    """Each Task's derived Verifier (workdir/verifiers/<task>.json) as exam/derived/<task>.json.
+
+    The derived file only, never a proposal, and never into exam/verifiers/, which is the
+    proposal path the gates rule on.
+    """
+    source = root / "verifiers"
+    written: list[str] = []
+    for path in sorted(source.glob("*.json")) if source.is_dir() else []:
+        rel = f"{DERIVED_DIR}/{path.name}"
+        if names_forbidden_path(rel) is not None:
+            continue
+        target = exam / rel
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(path.read_bytes())
+        written.append(rel)
+    return written
 
 
 def write_spoken(root: Path, exam: Path) -> list[str]:
@@ -341,7 +363,7 @@ def reference_evidence(root: ExamRoot, task_id: str) -> dict:
             "run_probe": root.run_probe}
 
 
-__all__ = ["COPIED_DIRS", "COPIED_JSON", "EXAM_DIR", "RUNS_DIR", "SPOKEN_DIR", "ExamRoot",
+__all__ = ["COPIED_DIRS", "COPIED_JSON", "DERIVED_DIR", "copy_derived", "EXAM_DIR", "RUNS_DIR", "SPOKEN_DIR", "ExamRoot",
            "Finding", "evidence_of", "finding_id_of", "finding_key", "history_path", "load_history",
            "names_forbidden_path", "open_by_key", "reference_evidence", "reference_runs", "save_history",
            "save_ruling_files", "seeded_history",
