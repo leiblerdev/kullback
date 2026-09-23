@@ -28,7 +28,6 @@ from kullback.examiner.exam_files import (
     SPOKEN_DIR,
     ExamRoot,
     Finding,
-    evidence_of,
     expose,
     load_history,
     names_forbidden_path,
@@ -36,7 +35,7 @@ from kullback.examiner.exam_files import (
     seeded_history,
 )
 from kullback.gates import names_protected_path
-from kullback.gates.hook import PATH_KEYS, WRITE_TOOLS, gate_writes
+from kullback.gates.hook import WRITE_TOOLS
 from kullback.gates.ledger import GateLedger
 from kullback.gates.loosening import finished_run_ids
 from kullback.gates.verifier_suite import load_run
@@ -44,7 +43,7 @@ from kullback.runner import budget
 from kullback.runner.canon import rules_of
 from kullback.runner.records import Constraint, Task, ToolSig, UserRules, Verifier, read_json, run_path, write_json
 
-BASE_ONLY = ("read", "write", "edit", "grep", "find", "ls", "web_search")
+BASE_ONLY = ("read", "grep", "find", "ls", "web_search")
 WRITABLE_DIRS = prompt_mod.WRITABLE_DIRS
 EXAMINE_MESSAGE = "Examine."
 # The Examiner's turn cap: reading Runs, replays and Verifiers before filing takes tens of turns, and
@@ -62,17 +61,6 @@ TASKS_PER_CALL = 10
 NOT_DERIVED_SHOWN = 10
 NO_FINISHED_RUN = "no finished Run"
 NO_CONFIRMED_REFERENCE = "no confirmed Reference"
-
-
-def _written_path(arguments: Any) -> Optional[str]:
-    """Where a write or edit lands, first path-like argument wins."""
-    if not isinstance(arguments, dict):
-        return None
-    for key in PATH_KEYS:
-        value = arguments.get(key)
-        if isinstance(value, str) and value:
-            return value
-    return None
 
 
 def _refuse_forbidden_paths() -> Callable:
@@ -93,53 +81,24 @@ def _refuse_forbidden_paths() -> Callable:
     return refuse
 
 
-def _refuse_outside_roots() -> Callable:
-    """A tool_call hook refusing a write or edit outside verifiers/ and probes/."""
+EXAMINER_WRITES = ("the Examiner writes Verifiers through propose_verifier and probes through probe, "
+                   "not with write or edit")
+
+
+def _refuse_generic_writes() -> Callable:
+    """A tool_call hook refusing write and edit everywhere, so a model that asks for them hears why.
+
+    The Examiner has no write and no edit: a generic write under verifiers/ would land before the
+    gates ruled and stay live when they refused it; propose_verifier and probe run the gates first.
+    """
 
     def refuse(call: Any) -> None:
-        if getattr(call, "name", None) not in WRITE_TOOLS:
-            return None
-        rel = (_written_path(call.arguments or {}) or "").replace("\\", "/").lstrip("/")
-        if (rel == "verifiers" or rel.startswith("verifiers/") or rel == "probes"
-                or rel.startswith("probes/")):
-            return None
-        raise PermissionError(
-            f"the Examiner writes only under verifiers/ and probes/, not {rel!r}")
-
-    refuse.hook_name = "examiner_writes_only_proposals"  # type: ignore[attr-defined]
-    return refuse
-
-
-def _result_protection(api: ExtensionAPI) -> Callable:
-    """A tool_result hook (D124): a result carrying a failed ruling stays protected.
-
-    The entry is guarded until the next write of the same path, so a failed ruling cannot
-    be compacted away before the proposal that answers it.
-    """
-    guarded: dict[str, str] = {}
-
-    def protect(call: Any, result: Any) -> Any:
-        if result is None or getattr(result, "is_error", False):
-            return None
-        details = getattr(result, "details", None) or {}
-        path = _written_path(getattr(call, "arguments", None) or {})
-        if getattr(call, "name", None) in WRITE_TOOLS and path in guarded:
-            api.unprotect([guarded.pop(path)])
-            return None
-        rulings = details.get("rulings") or []
-        if not any(isinstance(r, dict) and not r.get("accepted", True) for r in rulings):
-            return None
-        if path is None:
-            return None
-        entry = api.entry_id_for(call.id)
-        if entry is None:
-            return None
-        api.protect([entry], f"unacted ruling on {path}")
-        guarded[path] = entry
+        if getattr(call, "name", None) in WRITE_TOOLS:
+            raise PermissionError(EXAMINER_WRITES)
         return None
 
-    protect.hook_name = "examiner_result_protection"  # type: ignore[attr-defined]
-    return protect
+    refuse.hook_name = "examiner_writes_through_its_tools"  # type: ignore[attr-defined]
+    return refuse
 
 
 def rulings_line(root: ExamRoot, task_ids: Optional[Iterable[str]] = None) -> str:
@@ -243,10 +202,7 @@ def examiner_extension(root: ExamRoot,
             names_protected_path, "under the gates or the Runner, which no agent writes (D122)",
             "examiner_protected_paths"))
         api.tool_call(_refuse_forbidden_paths())
-        api.tool_call(_refuse_outside_roots())
-        api.tool_result(gate_writes(root=root.exam_dir, workdir=root.workdir,
-                                    evidence=evidence_of(root)))
-        api.tool_result(_result_protection(api))
+        api.tool_call(_refuse_generic_writes())
 
     return setup
 

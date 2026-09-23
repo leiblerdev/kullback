@@ -96,18 +96,21 @@ def test_model_propose_verifier_is_refused_while_the_loophole_probe_cannot_run(t
     assert not (world.workdir / "exam" / "task_status.json").exists(), "a refusal writes no status"
 
 
-def test_model_write_of_verifiers_carries_rulings_runs_write_refused(tmp_path):
+def test_a_model_write_or_edit_under_verifiers_is_refused_and_names_the_tools_that_write(tmp_path):
     world = make_world(tmp_path)
     materialize(world)
+    before = read_json(world.workdir / "exam" / "verifiers" / "t1.json")
     events = _scripted_events(world, [
         reply("proposing", ("write", {"path": "verifiers/t1.json", "content": "{}"})),
-        reply("bad idea", ("write", {"path": "runs/x.jsonl", "content": "{}"})),
+        reply("editing", ("edit", {"path": "verifiers/t1.json", "old": "t1", "new": "t2"})),
         reply("done"),
     ])
-    writes = _ends(events, "write")
-    assert writes[0].is_error is False
-    assert writes[0].result.details["rulings"], "the verifiers binding rules on the write"
-    assert writes[1].is_error is True
+    refused = _ends(events, "write") + _ends(events, "edit")
+    assert [end.is_error for end in refused] == [True, True]
+    for end in refused:
+        assert ("the Examiner writes Verifiers through propose_verifier and probes through probe, "
+                "not with write or edit") in end.result.content
+    assert read_json(world.workdir / "exam" / "verifiers" / "t1.json") == before
 
 
 def test_model_finding_publishes_and_duplicates_are_refused_with_the_id(tmp_path):
@@ -131,14 +134,14 @@ def test_model_finding_publishes_and_duplicates_are_refused_with_the_id(tmp_path
     assert any(w.get("finding_id") == finding_id for w in written)
 
 
-def test_bash_is_not_registered_and_base_tools_are_scoped_to_exam(tmp_path):
+def test_bash_write_and_edit_are_not_registered_and_base_tools_are_scoped_to_exam(tmp_path):
     world = make_world(tmp_path)
     root = ExamRoot(workdir=world.workdir)
     harness = AgentHarness(model=TestModel([]))
     load_extensions(harness, [S.examiner_extension(root)])
     names = harness.registry.names()
-    assert "bash" not in names
-    assert {"read", "write", "edit", "grep", "find", "ls", "web_search",
+    assert not {"bash", "write", "edit"} & set(names)
+    assert {"read", "grep", "find", "ls", "web_search",
             "propose_verifier", "probe", "finding", "reroll"} <= set(names)
     S.expose(world.workdir)
     refused = drive_tool(harness, "write", {"path": "runs/x.jsonl", "content": "{}"})
