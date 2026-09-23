@@ -7,7 +7,7 @@ import json
 import pytest
 from test_route import SHARED, sigs, tools_module
 
-from kullback.ai.provider import TestModel
+from kullback.ai.provider import RetryExhausted, TestModel
 from kullback.runner.loop import finish, new_run_state, run, step
 from kullback.runner.records import Event, Run
 from kullback.runner.route import Router
@@ -93,14 +93,10 @@ def test_step_by_step_equals_run(workdir):
     assert stepped.run.end_state_hash == whole.run.end_state_hash
     assert stepped.messages == whole.messages
 
-
-def test_step_on_a_stopped_run_does_nothing(workdir):
-    state = new_run_state("r1", workdir=workdir)
-    model = scripted()
-    run(state, model, router=make_router())
-    before = lines_of(state.path)
-    step(state, model, router=make_router())
-    assert lines_of(state.path) == before
+    # a step on a stopped Run does nothing
+    before = lines_of(stepped.path)
+    step(stepped, model, router=stepped_router)
+    assert lines_of(stepped.path) == before
 
 
 def test_max_turns_stops_the_run(workdir):
@@ -182,109 +178,109 @@ class Answering:
         return answer
 
 
-def test_the_user_turn_carries_the_users_own_assisted_mark(workdir):
-    """D49, D77: a Simulated user read that hit a synthetic row makes the whole Run Assisted."""
-    user = Answering(["My email is ada@b.com."], payload={"sources": {"email": "world"}}, assisted=True)
-    state = new_run_state("r1", workdir=workdir, user=user, max_turns=2)
-    run(state, TestModel([{"content": "What is your email address?"}], loop=True), router=make_router())
+@pytest.mark.parametrize(
+    "user, question, payload, assisted",
+    [
+        # D49, D77: a Simulated user read that hit a synthetic row makes the whole Run Assisted.
+        (lambda: Answering(["My email is ada@b.com."], payload={"sources": {"email": "world"}}, assisted=True),
+         "What is your email address?",
+         {"sources": {"email": "world"}, "text": "My email is ada@b.com."}, True),
+        # D77: the fact_unavailable event carries the field name, which is what the report separates on.
+        (lambda: Answering(["I do not have my email."],
+                           payload={"tags": ["fact_unavailable"], "unavailable_fields": ["email"]}),
+         "What is your email address?",
+         {"tags": ["fact_unavailable"], "fact_unavailable": True, "unavailable_fields": ["email"],
+          "text": "I do not have my email."}, False),
+        # The refusal count reaches the Run's JSONL, a zero included: a build's report reads the refusal rate off it.
+        (lambda: Answering(["My zip is 19122."], payload={"refused": 0, "refused_so_far": 2}),
+         "What is your zip code?",
+         {"refused": 0, "refused_so_far": 2, "text": "My zip is 19122."}, False),
+        # The turn carries what the user recorded for this turn, not what it recorded for the last one.
+        (lambda: Answering(["sure"], events=[Event(idx=0, type="user_turn", payload={"tags": ["fact_unavailable"]})]),
+         "anything else?", {"text": "sure"}, False),
+    ],
+    ids=["assisted_mark", "unavailable_field", "refusal_count", "no_earlier_tag"],
+)
+def test_a_user_turn_carries_its_own_marks_and_no_earlier_ones(workdir, user, question, payload, assisted):
+    state = new_run_state("r1", workdir=workdir, user=user(), max_turns=1 if question == "anything else?" else 2)
+    run(state, TestModel([{"content": question}], loop=True), router=make_router())
     turn = [e for e in state.run.events if e.type == "user_turn"][0]
-    assert turn.assisted is True
-    assert turn.payload["sources"] == {"email": "world"}
-    assert state.run.assisted is True
-    assert [e for e in lines_of(state.path) if e["type"] == "user_turn"][0]["assisted"] is True
+    assert turn.payload == payload
+    assert turn.assisted is assisted
+    assert state.run.assisted is assisted
+    assert [e for e in lines_of(state.path) if e["type"] == "user_turn"][0]["assisted"] is assisted
 
 
-def test_the_user_turn_names_the_field_the_world_could_not_give(workdir):
-    """D77: the fact_unavailable event carries the field name, which is what the report separates on."""
-    user = Answering(["I do not have my email."],
-                     payload={"tags": ["fact_unavailable"], "unavailable_fields": ["email"]})
-    state = new_run_state("r1", workdir=workdir, user=user, max_turns=2)
-    run(state, TestModel([{"content": "What is your email address?"}], loop=True), router=make_router())
-    payload = [e for e in state.run.events if e.type == "user_turn"][0].payload
-    assert payload["tags"] == ["fact_unavailable"]
-    assert payload["fact_unavailable"] is True
-    assert payload["unavailable_fields"] == ["email"]
-
-
-def test_the_user_turn_carries_the_count_of_asks_the_simulated_user_refused(workdir):
-    """The refusal count the Simulated user keeps reaches the Run's JSONL, a zero included, which
-    is the line a build's report reads the refusal rate off."""
-    user = Answering(["My zip is 19122."], payload={"refused": 0, "refused_so_far": 2})
-    state = new_run_state("r1", workdir=workdir, user=user, max_turns=2)
-    run(state, TestModel([{"content": "What is your zip code?"}], loop=True), router=make_router())
-    payload = [e for e in state.run.events if e.type == "user_turn"][0].payload
-    assert payload["refused"] == 0
-    assert payload["refused_so_far"] == 2
-
-
-def test_a_tag_from_an_earlier_turn_is_not_copied_onto_this_one(workdir):
-    """The turn carries what the user recorded for this turn, not what it recorded for the last one."""
-    earlier = Event(idx=0, type="user_turn", payload={"tags": ["fact_unavailable"]})
-    user = Answering(["sure"], events=[earlier])  # answers without recording an event of its own
-    state = new_run_state("r1", workdir=workdir, user=user, max_turns=1)
-    run(state, TestModel([{"content": "anything else?"}], loop=True), router=make_router())
-    payload = [e for e in state.run.events if e.type == "user_turn"][0].payload
-    assert payload == {"text": "sure"}
-
-
-def test_a_transfer_is_named_in_the_termination_reason(workdir):
-    """D46: a Run handed to a human is a transfer, which is the class the Verdict reads."""
-    state = new_run_state("r1", workdir=workdir, user=Answering(["ok"]))
-    run(state, TestModel([{"content": "I will transfer you to a human. ###TRANSFER###"}]),
-        router=make_router())
-    assert state.run.termination_reason == "transfer"
-    assert footer_of(state.path)["termination_reason"] == "transfer"
-
-
-def test_a_stop_marker_is_still_a_user_stop(workdir):
-    state = new_run_state("r1", workdir=workdir, user=Answering(["###STOP###"]))
-    run(state, TestModel([{"content": "anything else?"}], loop=True), router=make_router())
-    assert state.run.termination_reason == "user_stop"
-
-
-def test_a_model_that_raises_ends_the_run_with_an_error_event_and_a_footer(workdir):
-    """Section 5: a provider that fell over leaves a Run that says so, not a JSONL with no ending."""
-    class Boom(TestModel):
-        def query(self, messages, tools=None, config=None):
-            raise RuntimeError("provider down")
-
-    state = new_run_state("r1", workdir=workdir)
-    with pytest.raises(RuntimeError):
-        run(state, Boom([]), router=make_router())
-    error = [e for e in lines_of(state.path) if e["type"] == "error"][0]
-    assert error["payload"]["class"] == "env_error"
-    assert "provider down" in error["payload"]["message"]
-    assert state.run.termination_reason == "env_error"
-    assert footer_of(state.path)["termination_reason"] == "env_error"
-    assert len([line for line in state.path.read_text(encoding="utf-8").splitlines() if line.strip()]) == 3
-
-
-def test_a_user_that_raises_ends_the_run_the_same_way(workdir):
-    class Angry:
-        done = False
-
-        def reply(self, transcript):
-            raise RuntimeError("user sim down")
-
-    state = new_run_state("r1", workdir=workdir, user=Angry())
-    with pytest.raises(RuntimeError):
-        run(state, TestModel([{"content": "anything else?"}], loop=True), router=make_router())
-    assert state.run.termination_reason == "env_error"
-    assert footer_of(state.path)["termination_reason"] == "env_error"
-
-
-def test_leaving_by_max_steps_still_names_a_termination_reason(workdir):
-    """D90: a Run stepped by a caller that stops early is still a Run with an ending."""
-    calling = TestModel(
+def _calling() -> TestModel:
+    return TestModel(
         [{"tool_calls": [{"id": "c1", "name": "get_order_details", "arguments": {"order_id": "123"}}]}],
         loop=True,
     )
-    state = new_run_state("r1", workdir=workdir, max_turns=50)
-    run(state, calling, router=make_router(), max_steps=2)
-    assert state.run.termination_reason == "max_steps"
+
+
+@pytest.mark.parametrize(
+    "user, model, extra, reason",
+    [
+        # D46: a Run handed to a human is a transfer, which is the class the Verdict reads.
+        (["ok"], lambda: TestModel([{"content": "I will transfer you to a human. ###TRANSFER###"}]), {}, "transfer"),
+        (["###STOP###"], lambda: TestModel([{"content": "anything else?"}], loop=True), {}, "user_stop"),
+        # D90: a Run stepped by a caller that stops early is still a Run with an ending.
+        (None, _calling, {"max_steps": 2}, "max_steps"),
+    ],
+    ids=["transfer", "stop_marker", "max_steps"],
+)
+def test_every_way_out_is_named_in_the_termination_reason(workdir, user, model, extra, reason):
+    state = new_run_state("r1", workdir=workdir, user=Answering(user) if user else None, max_turns=50)
+    run(state, model(), router=make_router(), **extra)
+    assert state.run.termination_reason == reason
     assert state.stopped is True
     assert [e["type"] for e in lines_of(state.path)][-1] == "stop"
-    assert footer_of(state.path)["termination_reason"] == "max_steps"
+    assert footer_of(state.path)["termination_reason"] == reason
+
+
+class _Boom(TestModel):
+    def query(self, messages, tools=None, config=None):
+        raise RuntimeError("provider down")
+
+
+class _Down(TestModel):
+    def query(self, messages, tools=None, config=None):
+        raise RetryExhausted("anthropic/claude-opus-5: 5 attempts failed", status=503, attempts=5)
+
+
+class _Angry:
+    done = False
+
+    def reply(self, transcript):
+        raise RuntimeError("user sim down")
+
+
+@pytest.mark.parametrize(
+    "model, user, raised, error",
+    [
+        (lambda: _Boom([]), None, RuntimeError, {"message": "provider down"}),
+        # The status and the attempts say whether the provider refused the body once or was down for five tries.
+        (lambda: _Down([]), None, RetryExhausted, {"status": 503, "attempts": 5}),
+        (lambda: TestModel([{"content": "anything else?"}], loop=True), _Angry, RuntimeError, None),
+    ],
+    ids=["model_raises", "provider_error", "user_raises"],
+)
+def test_a_raising_model_or_user_ends_the_run_with_an_error_event(workdir, model, user, raised, error):
+    """Section 5: a provider that fell over leaves a Run that says so, not a JSONL with no ending.
+    The class stays env_error, which is what the Verdict reads."""
+    state = new_run_state("r1", workdir=workdir, user=user() if user else None)
+    with pytest.raises(raised):
+        run(state, model(), router=make_router())
+    assert state.run.termination_reason == "env_error"
+    assert footer_of(state.path)["termination_reason"] == "env_error"
+    if error is not None:
+        event = [e for e in lines_of(state.path) if e["type"] == "error"][0]
+        assert event["payload"]["class"] == "env_error"
+        if "message" in error:
+            assert error["message"] in event["payload"]["message"]
+            assert len([line for line in state.path.read_text(encoding="utf-8").splitlines() if line.strip()]) == 3
+        else:
+            assert {key: event["payload"][key] for key in error} == error
 
 
 def test_events_carry_no_wall_clock(workdir):
@@ -396,22 +392,3 @@ def test_the_stop_event_carries_the_system_prompt_and_the_tool_specs_the_candida
     stop = [e for e in lines_of(bare.path) if e["type"] == "stop"][-1]
     assert stop["payload"]["system_prompt"] is None
     assert stop["payload"]["tools"] == []
-
-
-def test_a_provider_error_ends_the_run_with_its_status_and_attempts(workdir):
-    """The class stays env_error, which is what the Verdict reads; the status and the attempts say
-    whether the provider refused the body once or was down for five tries."""
-    from kullback.ai.provider import RetryExhausted
-
-    class Down(TestModel):
-        def query(self, messages, tools=None, config=None):
-            raise RetryExhausted("anthropic/claude-opus-5: 5 attempts failed", status=503, attempts=5)
-
-    state = new_run_state("r1", workdir=workdir)
-    with pytest.raises(RetryExhausted):
-        run(state, Down([]), router=make_router())
-    error = [e for e in lines_of(state.path) if e["type"] == "error"][0]
-    assert error["payload"]["class"] == "env_error"
-    assert error["payload"]["status"] == 503
-    assert error["payload"]["attempts"] == 5
-    assert state.run.termination_reason == "env_error"
