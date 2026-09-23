@@ -252,6 +252,11 @@ def _keep_suite_status(root: ExamRoot, task_id: str, records: list[dict]) -> Non
 _ATOM_CHECKS = {"verifier_empty_run": "the atom the empty Run passed on",
                 "verifier_alt_path": "the atom that turned the second path away"}
 
+# Atom kinds an empty Run passes whatever the Task: none of them demands that the Run did or said something (F37).
+_EMPTY_PASSING_KINDS = {"allowed", "forbidden", "hard"}
+_EMPTY_RUN_ADVICE = ("every atom here passes an empty Run: add a question or communicate atom for what the "
+                     "Reference said, or a required write")
+
 # How many refusals of one Task a session takes before the tool says to stop proposing for it (F32).
 REFUSALS_PER_TASK = 3
 _STOP = " Stop proposing for this Task in this session."
@@ -267,6 +272,9 @@ def _atoms_named(records: list[dict]) -> str:
             if isinstance(row, dict) and row.get("atom"):
                 text = f" ({row['text']})" if row.get("text") else ""
                 lines.append(f"{record['name']}: {_ATOM_CHECKS[record['name']]} is {row['atom']}{text}")
+        kinds = {row["kind"] for row in record["rows"] if isinstance(row, dict) and row.get("kind")}
+        if record["name"] == "verifier_empty_run" and kinds and kinds <= _EMPTY_PASSING_KINDS:
+            lines.append(_EMPTY_RUN_ADVICE)
     return "\n".join(lines)
 
 
@@ -309,6 +317,13 @@ def _propose_verifier(root: ExamRoot):
             "atoms": _candidate_atoms(current, args.drop, args.add),
             "verifier_version": _next_version(current)})
         atoms_digest = atoms_hash(candidate.atoms)
+        if atoms_digest == atoms_hash(current.atoms):
+            # F37: a proposal that changes nothing is answered without the suite, and counts as a refusal.
+            refusals[args.task_id] = refusals.get(args.task_id, 0) + 1
+            raise RetryableToolError(
+                f"the proposal changes nothing: version {current.verifier_version} already holds these "
+                f"atoms; drop or add an atom, or move on to another Task"
+                + (_STOP if refusals[args.task_id] > REFUSALS_PER_TASK else ""))
         seen = refused.setdefault(args.task_id, {}).get(atoms_digest)
         if seen is not None:
             refusals[args.task_id] = refusals.get(args.task_id, 0) + 1
