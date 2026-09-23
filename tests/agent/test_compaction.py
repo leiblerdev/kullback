@@ -98,6 +98,19 @@ def test_a_mechanical_summary_stands_in_when_the_model_cannot_write_one(tmp_path
     stats = harness.context_stats
     assert stats.compactions == 1 and stats.mechanical_summaries == 1
     assert harness.messages[0].content.startswith("[summary of earlier context]\n[mechanical summary")
+    # the summary lists kinds and first lines, one entry per line
+    entries = [
+        MessageEntry(id="a", message=UserMessage(content="\n\nfirst line\nsecond")),
+        MessageEntry(id="b", message=AssistantMessage(content=None, tool_calls=[{"id": "c", "name": "add", "arguments": {"a": 1}}])),
+        MessageEntry(id="c", message=ToolResultMessage(tool_call_id="c", tool_name="add", content="3")),
+    ]
+    text = mechanical_summary(entries, "no model")
+    assert text.splitlines() == [
+        "[mechanical summary: no model]",
+        "- a user: first line",
+        '- b assistant: call add({"a": 1})',
+        "- c tool result add: 3",
+    ]
 
 
 def test_the_estimate_reads_characters_after_a_compaction_made_the_usage_stale(tmp_path):
@@ -149,9 +162,7 @@ def test_the_recent_tool_batches_are_kept_verbatim_and_an_exchange_goes_whole(tm
     assert [m.role for m in harness.messages] == ["user", "assistant", "tool", "assistant"]
     assert harness.messages[2].content == big
     assert harness.context_stats.compactions == 1
-
-
-def test_an_assistant_message_and_the_results_answering_it_are_one_unit():
+    # an assistant message and the results answering it are one unit
     messages = [
         MessageEntry(id="a", message=UserMessage(content="go")),
         MessageEntry(id="b", message=AssistantMessage(tool_calls=[{"id": "c1", "name": "t", "arguments": {}}])),
@@ -187,33 +198,12 @@ def test_compact_on_request_summarizes_whatever_the_estimate_says(tmp_path):
     ]
 
 
-def test_compact_on_request_with_nothing_older_than_the_kept_window_does_nothing(tmp_path):
+def test_compact_on_request_does_nothing_without_a_session_or_with_nothing_older_than_the_window(tmp_path):
+    harness = AgentHarness(TestModel(["one"]))
+    collect(harness.prompt("go"))
+    assert asyncio.run(harness.compact()) is None
     harness = harness_with_session(tmp_path, TestModel(["one"]), window=1_000_000, keep_recent_batches=10)
     collect(harness.prompt("go"))
     assert asyncio.run(harness.compact()) is None
     assert harness.context_stats.compactions == 0
     assert [m.content for m in harness.messages] == ["go", "one"]
-
-
-def test_compact_without_a_session_has_nothing_to_replace():
-    harness = AgentHarness(TestModel(["one"]))
-    collect(harness.prompt("go"))
-    assert asyncio.run(harness.compact()) is None
-
-
-# --- the mechanical summary itself ---
-
-
-def test_mechanical_summary_lists_kinds_and_first_lines():
-    entries = [
-        MessageEntry(id="a", message=UserMessage(content="\n\nfirst line\nsecond")),
-        MessageEntry(id="b", message=AssistantMessage(content=None, tool_calls=[{"id": "c", "name": "add", "arguments": {"a": 1}}])),
-        MessageEntry(id="c", message=ToolResultMessage(tool_call_id="c", tool_name="add", content="3")),
-    ]
-    text = mechanical_summary(entries, "no model")
-    assert text.splitlines() == [
-        "[mechanical summary: no model]",
-        "- a user: first line",
-        '- b assistant: call add({"a": 1})',
-        "- c tool result add: 3",
-    ]

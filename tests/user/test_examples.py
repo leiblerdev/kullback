@@ -1,18 +1,15 @@
 from __future__ import annotations
 
 from collections import UserDict
-from pathlib import Path
 from types import MappingProxyType
 
 import pytest
 from pydantic import ValidationError
 
 from kullback.runner.records import RawPtr, Trace, Turn
-from kullback.user import examples
 from kullback.user.examples import (
     ExampleCandidate,
     ExampleSpan,
-    ExampleWithheld,
     assemble_candidates,
     trace_content_hash,
 )
@@ -83,7 +80,14 @@ def _reasons(dropped):
     return [(w.recording_id, w.reason) for w in dropped]
 
 
-def test_all_five_situations_supplied():
+def _as_kind(span, kind):
+    if kind == "typed":
+        return ExampleSpan(**span)
+    return MappingProxyType(span) if kind == "mapping_proxy" else UserDict(span)
+
+
+@pytest.mark.parametrize("kind", ["typed", "mapping_proxy", "user_dict"])
+def test_each_of_the_five_situations_yields_a_candidate(kind):
     situations = ["unknown_fact", "company_only", "agent_refuses", "confirmation", "giving_up"]
     traces = {}
     spans = []
@@ -92,9 +96,9 @@ def test_all_five_situations_supplied():
         rid = "r" + str(pos)
         content = "excerpt for " + rid
         traces[rid] = _trace(rid, [_turn(0, "assistant", content)])
-        spans.append(_span(traces[rid], situation, 0, content, content))
+        spans.append(_as_kind(_raw_span(traces[rid], situation, 0, content, content), kind))
         known[rid] = []
-    cands, dropped = _run(traces, spans, known=known)
+    cands, dropped = _run(traces, spans, held={"held"}, known=known)
     assert dropped == ()
     assert len(cands) == 5
     assert sorted(c.situation for c in cands) == sorted(situations)
@@ -102,59 +106,186 @@ def test_all_five_situations_supplied():
         assert cand.masked_excerpt == "excerpt for " + cand.recording_id
 
 
-@pytest.mark.parametrize(
-    "offsets",
-    [
-        pytest.param({"turn_idx": True, "start": 0, "end": 1}, id="bool_idx"),
-        pytest.param({"turn_idx": 1.0, "start": 0, "end": 1}, id="float_idx"),
-        pytest.param({"turn_idx": "0", "start": 0, "end": 1}, id="str_idx"),
-        pytest.param({"turn_idx": 0, "start": "0", "end": 1}, id="str_start"),
-        pytest.param({"turn_idx": 0, "start": 0, "end": 1.5}, id="float_end"),
-    ],
-)
-def test_strict_offsets_reject_bool_float_string(offsets):
-    with pytest.raises(ValidationError):
-        ExampleSpan(recording_id="r", situation="confirmation", trace_hash="0" * 64, **offsets)
+def _hello():
+    return {"r": _trace("r", [_turn(0, "user", "hello")])}
 
 
-def test_raw_bool_float_string_offsets_withheld():
-    content = "hello"
-    traces = {"r": _trace("r", [_turn(0, "user", content)])}
-    known = {"r": []}
-    digest = trace_content_hash(traces["r"])
-    bad_idx = [
-        {"recording_id": "r", "situation": "confirmation", "turn_idx": True, "start": 0, "end": 1, "trace_hash": digest},
-        {"recording_id": "r", "situation": "confirmation", "turn_idx": 1.0, "start": 0, "end": 1, "trace_hash": digest},
-        {"recording_id": "r", "situation": "confirmation", "turn_idx": "0", "start": 0, "end": 1, "trace_hash": digest},
-    ]
-    cands, dropped = _run(traces, bad_idx, known=known)
-    assert cands == ()
-    assert _reasons(dropped) == [("r", "unknown_turn")]
-    bad_bounds = [
-        {"recording_id": "r", "situation": "confirmation", "turn_idx": 0, "start": "0", "end": 1, "trace_hash": digest},
-        {"recording_id": "r", "situation": "confirmation", "turn_idx": 0, "start": 0, "end": 1.5, "trace_hash": digest},
-        {"recording_id": "r", "situation": "confirmation", "turn_idx": 0, "start": False, "end": 1, "trace_hash": digest},
-    ]
-    cands, dropped = _run(traces, bad_bounds, known=known)
-    assert cands == ()
-    assert _reasons(dropped) == [("r", "bad_bounds")]
+def _raw(digest=None, **fields):
+    span = {"recording_id": "r", "situation": "confirmation", "turn_idx": 0, "start": 0, "end": 1}
+    if digest is not None:
+        span["trace_hash"] = digest
+    span.update(fields)
+    return span
 
 
-def test_malformed_spans_withheld():
-    content = "hello"
-    traces = {"r": _trace("r", [_turn(0, "user", content)])}
-    known = {"r": []}
+def _typed(**fields):
+    return {**_raw("0" * 64), **fields}
+
+
+def _withheld(traces, spans, known, want, leaks=(), typed=()):
+    return traces, list(spans), known, want, leaks, typed
+
+
+def _malformed_shape():
     raws = [
-        {"recording_id": "r", "situation": "nope", "turn_idx": 0, "start": 0, "end": 1},
+        _raw(situation="nope"),
         {"recording_id": "r", "situation": "confirmation", "turn_idx": 0, "start": 0},
-        {"recording_id": "r", "situation": "confirmation", "turn_idx": 0, "start": 0, "end": 1, "extra": 1},
+        _raw(extra=1),
         {"situation": "confirmation", "turn_idx": 0, "start": 0, "end": 1},
-        {"recording_id": "r", "situation": "confirmation", "turn_idx": 0, "start": 0, "end": 1, "task_id": "t"},
+        _raw(task_id="t"),
         42,
     ]
-    cands, dropped = _run(traces, raws, known=known)
+    typed = [_typed(recording_id=b"r"), _typed(recording_id=7)]
+    return _withheld(_hello(), raws, {"r": []}, [("r", "malformed_span"), ("unknown", "malformed_span")], typed=typed)
+
+
+def _turn_idx_not_int():
+    traces = _hello()
+    digest = trace_content_hash(traces["r"])
+    raws = [_raw(digest, turn_idx=True), _raw(digest, turn_idx=1.0), _raw(digest, turn_idx="0")]
+    typed = [_typed(turn_idx=True), _typed(turn_idx=1.0), _typed(turn_idx="0")]
+    return _withheld(traces, raws, {"r": []}, [("r", "unknown_turn")], typed=typed)
+
+
+def _bounds_not_int():
+    traces = _hello()
+    digest = trace_content_hash(traces["r"])
+    raws = [_raw(digest, start="0"), _raw(digest, end=1.5), _raw(digest, start=False)]
+    typed = [_typed(start="0"), _typed(end=1.5)]
+    return _withheld(traces, raws, {"r": []}, [("r", "bad_bounds")], typed=typed)
+
+
+def _prerequisite(case):
+    def build():
+        content = "hi there"
+        if case == "missing_trace":
+            phantom = _trace("ghost", [_turn(0, "user", "hi")])
+            return _withheld({}, [_span(phantom, "confirmation", 0, "hi", "hi")], {}, [("ghost", "missing_trace")])
+        traces = {"r": _trace("r", [_turn(0, "user", content)])}
+        if case == "missing_inventory":
+            span = _span(traces["r"], "confirmation", 0, content, content)
+            return _withheld(traces, [span], {}, [("r", "unknown_mask_inventory")])
+        other = {"r": _trace("other", [_turn(0, "user", content)])}
+        span = ExampleSpan(
+            recording_id="r",
+            situation="confirmation",
+            turn_idx=0,
+            start=0,
+            end=len(content),
+            trace_hash=trace_content_hash(other["r"]),
+        )
+        return _withheld(other, [span], {"r": []}, [("r", "trace_mismatch")])
+
+    return build
+
+
+def _phantom_never_leaks_its_inventory():
+    secret = "zxq-secret-9"
+    content = "wrap " + secret + " twice " + secret
+    traces = {"r": _trace("r", [_turn(0, "user", content)])}
+    phantom = _trace("ghost", [_turn(0, "user", "x")])
+    span = _span(phantom, "confirmation", 0, "x", "x")
+    return _withheld(traces, [span], {"ghost": [secret]}, [("ghost", "missing_trace")], leaks=[secret])
+
+
+def _unknown_turn():
+    traces = _hello()
+    return _withheld(traces, [_span(traces["r"], "confirmation", 9, "hello", "hell")], {"r": []}, [("r", "unknown_turn")])
+
+
+def _ambiguous_turn():
+    dup = {"r": _trace("r", [_turn(1, "user", "first"), _turn(1, "assistant", "second")])}
+    span = _span(dup["r"], "confirmation", 1, "first", "first")
+    return _withheld(dup, [span], {"r": []}, [("r", "ambiguous_turn")])
+
+
+def _bad_bounds():
+    traces = _hello()
+    bounds = [(2, 2), (3, 2), (-1, 2), (0, 99)]
+    spans = [_span_at(traces["r"], "confirmation", 0, start, end) for start, end in bounds]
+    return _withheld(traces, spans, {"r": []}, [("r", "bad_bounds")])
+
+
+def _empty_turn():
+    none_trace = {"r": _trace("r", [_turn(0, "user", None)])}
+    ghost = _span_at(none_trace["r"], "confirmation", 0, 0, 1)
+    return _withheld(none_trace, [ghost], {"r": []}, [("r", "bad_bounds")])
+
+
+def _partial_boundary(start, end, known_values, content="hello WORLD bye"):
+    def build():
+        traces = {"r": _trace("r", [_turn(0, "user", content)])}
+        cut = _span_at(traces["r"], "confirmation", 0, start, end)
+        return _withheld(traces, [cut], {"r": known_values}, [("r", "partial_boundary")])
+
+    return build
+
+
+def _one_turn_whole(content, known_values, want, leaks=()):
+    def build():
+        traces = {"r": _trace("r", [_turn(0, "user", content)])}
+        span = _span(traces["r"], "confirmation", 0, content, content)
+        return _withheld(traces, [span], {"r": known_values}, [("r", want)], leaks=leaks)
+
+    return build
+
+
+def _malformed_fingerprint():
+    raws = [_raw("zzz"), _raw("A" * 64), _raw(""), _raw(123), _raw()]
+    return _withheld(_hello(), raws, {"r": []}, [("r", "malformed_span")], typed=[_typed(trace_hash="zzz")])
+
+
+_BAD_INVENTORY_LEAKS = ("zxq-secret-9", "ok")
+
+
+@pytest.mark.parametrize(
+    "case",
+    [
+        pytest.param(_malformed_shape, id="malformed_shape"),
+        pytest.param(_turn_idx_not_int, id="turn_idx_not_int"),
+        pytest.param(_bounds_not_int, id="bounds_not_int"),
+        pytest.param(_prerequisite("missing_trace"), id="missing_trace"),
+        pytest.param(_prerequisite("missing_inventory"), id="missing_inventory"),
+        pytest.param(_prerequisite("trace_mismatch"), id="trace_mismatch"),
+        pytest.param(_phantom_never_leaks_its_inventory, id="missing_trace_keeps_inventory_private"),
+        pytest.param(_unknown_turn, id="unknown_turn"),
+        pytest.param(_ambiguous_turn, id="ambiguous_turn"),
+        pytest.param(_bad_bounds, id="bad_bounds"),
+        pytest.param(_empty_turn, id="empty_turn"),
+        pytest.param(_partial_boundary(8, 14, ["WORLD"]), id="partial_boundary_start"),
+        pytest.param(_partial_boundary(0, 8, ["WORLD"]), id="partial_boundary_end"),
+        pytest.param(_partial_boundary(1, 3, ["hello WORLD bye"]), id="partial_boundary_covering"),
+        pytest.param(_partial_boundary(3, 5, ["ab", "bc"], "xxabcxx"), id="partial_boundary_inside_overlap"),
+        pytest.param(_one_turn_whole("see MASK here", ["MASK"], "token_collision"), id="token_collision_word"),
+        pytest.param(_one_turn_whole("see MASK here", ["<MASKED>"], "token_collision"), id="token_collision_token"),
+        pytest.param(_one_turn_whole("see MASK here", [">"], "token_collision"), id="token_collision_char"),
+        pytest.param(_one_turn_whole("xb", ["x", "<MASKED>b"], "residual_known_value"), id="residual_known_value"),
+        *[
+            pytest.param(
+                _one_turn_whole("has zxq-secret-9 inside", bad, "bad_inventory", leaks=_BAD_INVENTORY_LEAKS),
+                id="bad_inventory_" + name,
+            )
+            for name, bad in [
+                ("non_string", ["ok", 7]),
+                ("empty_value", ["ok", ""]),
+                ("string", "ok-string"),
+                ("none", None),
+                ("mapping", {"k": "v"}),
+            ]
+        ],
+        pytest.param(_malformed_fingerprint, id="malformed_fingerprint"),
+    ],
+)
+def test_a_malformed_span_is_withheld_with_its_reason(case):
+    traces, spans, known, want, leaks, typed = case()
+    cands, dropped = _run(traces, spans, known=known)
     assert cands == ()
-    assert _reasons(dropped) == [("r", "malformed_span"), ("unknown", "malformed_span")]
+    assert _reasons(dropped) == want
+    for leak in leaks:
+        assert leak not in repr(dropped)
+    for fields in typed:
+        with pytest.raises(ValidationError):
+            ExampleSpan(**fields)
 
 
 class _Watch(dict):
@@ -179,249 +310,159 @@ class _Boom:
         raise AssertionError("held inventory read")
 
 
-def test_held_out_poison_never_read():
-    ok_content = "ok 111 here"
-    held_content = "held 999 here"
-    traces = _Watch(
-        {
-            "ok": _trace("ok", [_turn(0, "user", ok_content)]),
-            "held": _trace("held", [_turn(0, "user", held_content)]),
-        }
-    )
-    known = _Watch({"ok": ["111"], "held": _Boom()})
-    spans = [
-        _span(traces["ok"], "confirmation", 0, ok_content, ok_content),
-        _span(traces["held"], "confirmation", 0, held_content, held_content),
+HELD_CONTENT = "private-held-content"
+OK_CONTENT = "ok 111 here"
+
+
+def _held_raw(**fields):
+    return {"recording_id": "held", "situation": "confirmation", "turn_idx": 0, "start": 0, "end": 7, **fields}
+
+
+def _held_spans(case, traces):
+    held_typed = _span(traces["held"], "confirmation", 0, HELD_CONTENT, HELD_CONTENT)
+    held_raw = _raw_span(traces["held"], "confirmation", 0, HELD_CONTENT, HELD_CONTENT)
+    if case == "typed_beside_allowed":
+        return [_span(traces["ok"], "confirmation", 0, OK_CONTENT, OK_CONTENT), held_typed]
+    if case == "bytes_identity":
+        return [_held_raw(recording_id=b"held")]
+    if case == "mapping_proxy":
+        return [MappingProxyType(_held_raw())]
+    if case == "user_dict":
+        return [UserDict(_held_raw())]
+    if case == "plain_dict_invalid_offsets":
+        return [_held_raw(turn_idx=99, end=1), _held_raw(start=2, end=2)]
+    if case == "typed":
+        return [held_typed]
+    return [
+        _held_raw(recording_id=b"held"),
+        MappingProxyType(held_raw),
+        UserDict(held_raw),
+        held_typed,
+        _span(traces["ok"], "confirmation", 0, OK_CONTENT, OK_CONTENT),
     ]
-    cands, dropped = assemble_candidates(
-        traces, spans, held_out_ids={"held"}, known_values_by_id=known
-    )
-    assert [c.masked_excerpt for c in cands] == ["ok <MASKED> here"]
-    assert _reasons(dropped) == [("held", "held_out")]
-    assert "held" not in traces.touched
-    assert "held" not in known.touched
-    assert "ok" in traces.touched
-    assert "ok" in known.touched
-
-
-def _prerequisite_case(case):
-    content = "hi there"
-    if case == "missing_trace":
-        phantom = _trace("ghost", [_turn(0, "user", "hi")])
-        span = _span(phantom, "confirmation", 0, "hi", "hi")
-        return {}, [span], {}, [("ghost", "missing_trace")]
-    traces = {"r": _trace("r", [_turn(0, "user", content)])}
-    if case == "missing_inventory":
-        span = _span(traces["r"], "confirmation", 0, content, content)
-        return traces, [span], {}, [("r", "unknown_mask_inventory")]
-    other = {"r": _trace("other", [_turn(0, "user", content)])}
-    span = ExampleSpan(
-        recording_id="r",
-        situation="confirmation",
-        turn_idx=0,
-        start=0,
-        end=len(content),
-        trace_hash=trace_content_hash(other["r"]),
-    )
-    return other, [span], {"r": []}, [("r", "trace_mismatch")]
 
 
 @pytest.mark.parametrize(
-    "case",
+    ("case", "with_ok", "want_excerpts", "want_reasons"),
     [
-        pytest.param("missing_trace", id="missing_trace"),
-        pytest.param("missing_inventory", id="missing_inventory"),
-        pytest.param("trace_mismatch", id="trace_mismatch"),
+        pytest.param("typed_beside_allowed", True, ["ok <MASKED> here"], [("held", "held_out")], id="typed_beside_allowed"),
+        pytest.param("bytes_identity", False, [], [("unknown", "malformed_span")], id="bytes_identity"),
+        pytest.param("mapping_proxy", False, [], [("held", "held_out")], id="mapping_proxy"),
+        pytest.param("user_dict", False, [], [("held", "held_out")], id="user_dict"),
+        pytest.param("plain_dict_invalid_offsets", False, [], [("held", "held_out")], id="plain_dict_invalid_offsets"),
+        pytest.param("typed", False, [], [("held", "held_out")], id="typed"),
+        pytest.param(
+            "mixed",
+            True,
+            ["ok <MASKED> here"],
+            [("held", "held_out"), ("unknown", "malformed_span")],
+            id="mixed_identities",
+        ),
     ],
 )
-def test_missing_prerequisites_withheld(case):
-    traces, spans, known, want = _prerequisite_case(case)
-    cands, dropped = _run(traces, spans, known=known)
-    assert cands == ()
-    assert _reasons(dropped) == want
+def test_a_held_out_recording_is_never_read(case, with_ok, want_excerpts, want_reasons):
+    world = {"held": _trace("held", [_turn(0, "user", HELD_CONTENT)])}
+    inventory = {"held": _Boom()}
+    if with_ok:
+        world["ok"] = _trace("ok", [_turn(0, "user", OK_CONTENT)])
+        inventory["ok"] = ["111"]
+    traces = _Watch(world)
+    known = _Watch(inventory)
+    spans = _held_spans(case, traces)
+    cands, dropped = assemble_candidates(traces, spans, held_out_ids={"held"}, known_values_by_id=known)
+    assert [c.masked_excerpt for c in cands] == want_excerpts
+    assert _reasons(dropped) == want_reasons
+    touched = {"ok"} if with_ok else set()
+    assert set(traces.touched) == touched
+    assert set(known.touched) == touched
+    assert HELD_CONTENT not in repr((cands, dropped))
 
 
-def test_unknown_and_ambiguous_turn():
-    traces = {"r": _trace("r", [_turn(0, "user", "hello")])}
-    cands, dropped = _run(traces, [_span(traces["r"], "confirmation", 9, "hello", "hell")], known={"r": []})
-    assert cands == ()
-    assert _reasons(dropped) == [("r", "unknown_turn")]
-    dup = {"r": _trace("r", [_turn(1, "user", "first"), _turn(1, "assistant", "second")])}
-    cands, dropped = _run(dup, [_span(dup["r"], "confirmation", 1, "first", "first")], known={"r": []})
-    assert cands == ()
-    assert _reasons(dropped) == [("r", "ambiguous_turn")]
-
-
-def test_bad_bounds_and_empty():
-    content = "hello"
-    traces = {"r": _trace("r", [_turn(0, "user", content)])}
-    known = {"r": []}
-    bounds = [
-        _span_at(traces["r"], "confirmation", 0, 2, 2),
-        _span_at(traces["r"], "confirmation", 0, 3, 2),
-        _span_at(traces["r"], "confirmation", 0, -1, 2),
-        _span_at(traces["r"], "confirmation", 0, 0, 99),
-    ]
-    cands, dropped = _run(traces, bounds, known=known)
-    assert cands == ()
-    assert _reasons(dropped) == [("r", "bad_bounds")]
-    none_trace = {"r": _trace("r", [_turn(0, "user", None)])}
-    ghost = _span_at(none_trace["r"], "confirmation", 0, 0, 1)
-    cands, dropped = _run(none_trace, [ghost], known=known)
-    assert cands == ()
-    assert _reasons(dropped) == [("r", "bad_bounds")]
-
-
-def test_full_and_user_spoken_masking():
-    content = "call me at 555-0100"
-    traces = {"r": _trace("r", [_turn(0, "user", content)])}
-    known = {"r": ["555-0100"]}
-    cands, dropped = _run(traces, [_span(traces["r"], "confirmation", 0, content, content)], known=known)
-    assert dropped == ()
-    assert [c.masked_excerpt for c in cands] == ["call me at <MASKED>"]
-    cands, dropped = _run(traces, [_span(traces["r"], "confirmation", 0, content, "555-0100")], known=known)
-    assert dropped == ()
-    assert [c.masked_excerpt for c in cands] == ["<MASKED>"]
-
-
-def test_short_single_char_and_repeated_masking():
-    content = "banana banana"
-    traces = {"r": _trace("r", [_turn(3, "assistant", content)])}
-    known = {"r": ["a"]}
-    cands, dropped = _run(traces, [_span(traces["r"], "company_only", 3, content, content)], known=known)
-    assert dropped == ()
-    assert [c.masked_excerpt for c in cands] == ["b<MASKED>n<MASKED>n<MASKED> b<MASKED>n<MASKED>n<MASKED>"]
-
-
-def test_overlapping_longest_first_no_leftover():
-    content = "xxabcdefxx"
-    traces = {"r": _trace("r", [_turn(0, "assistant", content)])}
-    known = {"r": ["cde", "abcdef"]}
-    cands, dropped = _run(traces, [_span(traces["r"], "unknown_fact", 0, content, content)], known=known)
-    assert dropped == ()
-    assert [c.masked_excerpt for c in cands] == ["xx<MASKED>xx"]
-    assert cands[0].masked_excerpt.count("<MASKED>") == 1
-
-
-def test_substring_overmask_short_common():
-    content = "hello"
-    traces = {"r": _trace("r", [_turn(0, "user", content)])}
-    known = {"r": ["he"]}
-    cands, dropped = _run(traces, [_span(traces["r"], "giving_up", 0, content, content)], known=known)
-    assert dropped == ()
-    assert [c.masked_excerpt for c in cands] == ["<MASKED>llo"]
-
-
-def test_adjacent_values():
-    content = "abcd"
-    traces = {"r": _trace("r", [_turn(0, "assistant", content)])}
-    known = {"r": ["ab", "cd"]}
-    cands, dropped = _run(traces, [_span(traces["r"], "agent_refuses", 0, content, content)], known=known)
-    assert dropped == ()
-    assert [c.masked_excerpt for c in cands] == ["<MASKED><MASKED>"]
-
-
-def test_unicode_and_metachar_literal_masking():
-    uni = "says 日本語 ok"
-    traces = {"r": _trace("r", [_turn(0, "user", uni)])}
-    known = {"r": ["日本語"]}
-    cands, dropped = _run(traces, [_span(traces["r"], "confirmation", 0, uni, uni)], known=known)
-    assert dropped == ()
-    assert [c.masked_excerpt for c in cands] == ["says <MASKED> ok"]
-    meta = "key a.c*(x)[y]\\z end"
-    traces = {"r": _trace("r", [_turn(1, "assistant", meta)])}
-    known = {"r": ["a.c*(x)[y]\\z"]}
-    cands, dropped = _run(traces, [_span(traces["r"], "company_only", 1, meta, meta)], known=known)
-    assert dropped == ()
-    assert [c.masked_excerpt for c in cands] == ["key <MASKED> end"]
-
-
-def test_case_sensitive_matching():
-    content = "secret Secret SECRET"
-    traces = {"r": _trace("r", [_turn(0, "user", content)])}
-    known = {"r": ["Secret"]}
-    cands, dropped = _run(traces, [_span(traces["r"], "confirmation", 0, content, content)], known=known)
-    assert dropped == ()
-    assert [c.masked_excerpt for c in cands] == ["secret <MASKED> SECRET"]
-
-
-def test_value_outside_excerpt_ignored():
-    content = "aaa BBB aaa"
-    traces = {"r": _trace("r", [_turn(0, "assistant", content)])}
-    known = {"r": ["BBB"]}
-    tail = _span_at(traces["r"], "confirmation", 0, 8, 11)
-    cands, dropped = _run(traces, [tail], known=known)
-    assert dropped == ()
-    assert [c.masked_excerpt for c in cands] == ["aaa"]
+SECRET = "zxq-secret-9"
 
 
 @pytest.mark.parametrize(
-    ("start", "end", "known_values"),
+    ("world", "spans", "known", "want"),
     [
-        pytest.param(8, 14, ["WORLD"], id="start"),
-        pytest.param(0, 8, ["WORLD"], id="end"),
-        pytest.param(1, 3, ["hello WORLD bye"], id="covering"),
+        pytest.param(
+            {"r": (0, "user", "call me at 555-0100")},
+            [("r", 0, "call me at 555-0100")],
+            {"r": ["555-0100"]},
+            ["call me at <MASKED>"],
+            id="full_excerpt",
+        ),
+        pytest.param(
+            {"r": (0, "user", "call me at 555-0100")},
+            [("r", 0, "555-0100")],
+            {"r": ["555-0100"]},
+            ["<MASKED>"],
+            id="user_spoken_value",
+        ),
+        pytest.param(
+            {"r": (3, "assistant", "banana banana")},
+            [("r", 3, "banana banana")],
+            {"r": ["a"]},
+            ["b<MASKED>n<MASKED>n<MASKED> b<MASKED>n<MASKED>n<MASKED>"],
+            id="single_char_repeated",
+        ),
+        pytest.param({"r": (0, "user", "hello")}, [("r", 0, "hello")], {"r": ["he"]}, ["<MASKED>llo"], id="substring"),
+        pytest.param({"r": (0, "user", "abcd")}, [("r", 0, "abcd")], {"r": ["ab", "cd"]}, ["<MASKED><MASKED>"], id="adjacent"),
+        pytest.param(
+            {"r": (0, "user", "says 日本語 ok")},
+            [("r", 0, "says 日本語 ok")],
+            {"r": ["日本語"]},
+            ["says <MASKED> ok"],
+            id="unicode",
+        ),
+        pytest.param(
+            {"r": (1, "assistant", "key a.c*(x)[y]\\z end")},
+            [("r", 1, "key a.c*(x)[y]\\z end")],
+            {"r": ["a.c*(x)[y]\\z"]},
+            ["key <MASKED> end"],
+            id="regex_metachars_literal",
+        ),
+        pytest.param(
+            {"r": (0, "user", "secret Secret SECRET")},
+            [("r", 0, "secret Secret SECRET")],
+            {"r": ["Secret"]},
+            ["secret <MASKED> SECRET"],
+            id="case_sensitive",
+        ),
+        pytest.param({"r": (0, "user", "aaa BBB aaa")}, [("r", 0, (8, 11))], {"r": ["BBB"]}, ["aaa"], id="value_outside_excerpt"),
+        pytest.param({"r": (0, "user", "plain text 123")}, [("r", 0, "plain text 123")], {"r": []}, ["plain text 123"], id="empty_inventory"),
+        pytest.param(
+            {"r": (0, "user", "wrap " + SECRET + " twice " + SECRET)},
+            [("r", 0, "wrap " + SECRET + " twice " + SECRET)],
+            {"r": [SECRET]},
+            ["wrap <MASKED> twice <MASKED>"],
+            id="repeated_secret",
+        ),
+        pytest.param(
+            {"r1": (0, "user", "alpha beta"), "r2": (0, "user", "beta gamma")},
+            [("r1", 0, "alpha beta"), ("r2", 0, "beta gamma")],
+            {"r1": ["alpha"], "r2": ["gamma"]},
+            ["<MASKED> beta", "beta <MASKED>"],
+            id="only_own_inventory",
+        ),
     ],
 )
-def test_partial_boundary_withheld(start, end, known_values):
-    content = "hello WORLD bye"
-    traces = {"r": _trace("r", [_turn(0, "user", content)])}
-    cut = _span_at(traces["r"], "confirmation", 0, start, end)
-    cands, dropped = _run(traces, [cut], known={"r": known_values})
-    assert cands == ()
-    assert _reasons(dropped) == [("r", "partial_boundary")]
-
-
-def test_token_collision_withheld():
-    content = "see MASK here"
-    traces = {"r": _trace("r", [_turn(0, "user", content)])}
-    cands, dropped = _run(
-        traces, [_span(traces["r"], "confirmation", 0, content, content)], known={"r": ["MASK"]}
-    )
-    assert cands == ()
-    assert _reasons(dropped) == [("r", "token_collision")]
-    cands, dropped = _run(
-        traces, [_span(traces["r"], "confirmation", 0, content, content)], known={"r": ["<MASKED>"]}
-    )
-    assert cands == ()
-    assert _reasons(dropped) == [("r", "token_collision")]
-    cands, dropped = _run(
-        traces, [_span(traces["r"], "confirmation", 0, content, content)], known={"r": [">"]}
-    )
-    assert cands == ()
-    assert _reasons(dropped) == [("r", "token_collision")]
-
-
-def test_empty_inventory_passes_through():
-    content = "plain text 123"
-    traces = {"r": _trace("r", [_turn(0, "assistant", content)])}
-    cands, dropped = _run(traces, [_span(traces["r"], "unknown_fact", 0, content, content)], known={"r": []})
+def test_every_known_value_is_masked_and_no_raw_value_escapes(world, spans, known, want):
+    traces = {rid: _trace(rid, [_turn(idx, role, content)]) for rid, (idx, role, content) in world.items()}
+    made = []
+    for rid, idx, quote in spans:
+        content = world[rid][2]
+        if isinstance(quote, tuple):
+            made.append(_span_at(traces[rid], "confirmation", idx, *quote))
+        else:
+            made.append(_span(traces[rid], "confirmation", idx, content, quote))
+    cands, dropped = _run(traces, made, known=known)
     assert dropped == ()
-    assert [c.masked_excerpt for c in cands] == [content]
-
-
-def test_bad_inventory_withheld_without_raw():
-    content = "has zxq-secret-9 inside"
-    traces = {"r": _trace("r", [_turn(0, "user", content)])}
-    span = _span(traces["r"], "confirmation", 0, content, content)
-    for bad in (["ok", 7], ["ok", ""], "ok-string", None, {"k": "v"}):
-        cands, dropped = _run(traces, [span], known={"r": bad})
-        assert cands == ()
-        assert _reasons(dropped) == [("r", "bad_inventory")]
-        for w in dropped:
-            assert "zxq-secret-9" not in w.reason
-            assert "ok" not in w.reason
-
-
-def test_no_raw_values_anywhere():
-    secret = "zxq-secret-9"
-    content = "wrap " + secret + " twice " + secret
-    traces = {"r": _trace("r", [_turn(0, "user", content)])}
-    known = {"r": [secret]}
-    cands, dropped = _run(traces, [_span(traces["r"], "confirmation", 0, content, content)], known=known)
-    assert dropped == ()
-    assert secret not in cands[0].masked_excerpt
-    assert secret not in repr(cands[0])
+    assert [c.masked_excerpt for c in cands] == want
+    for cand in cands:
+        for value in known[cand.recording_id]:
+            assert value not in cand.masked_excerpt
+            if len(value) >= 3:
+                assert value not in repr(cand)
     assert set(ExampleCandidate.model_fields) == {
         "recording_id",
         "situation",
@@ -432,31 +473,9 @@ def test_no_raw_values_anywhere():
         "trace_hash",
         "source",
     }
-    phantom = _trace("ghost", [_turn(0, "user", "x")])
-    cands, dropped = _run(
-        traces, [_span(phantom, "confirmation", 0, "x", "x")], known={"ghost": [secret]}
-    )
-    assert cands == ()
-    for w in dropped:
-        assert secret not in w.reason
 
 
-def test_only_own_inventory_used():
-    traces = {
-        "r1": _trace("r1", [_turn(0, "user", "alpha beta")]),
-        "r2": _trace("r2", [_turn(0, "user", "beta gamma")]),
-    }
-    known = {"r1": ["alpha"], "r2": ["gamma"]}
-    spans = [
-        _span(traces["r1"], "confirmation", 0, "alpha beta", "alpha beta"),
-        _span(traces["r2"], "confirmation", 0, "beta gamma", "beta gamma"),
-    ]
-    cands, dropped = _run(traces, spans, known=known)
-    assert dropped == ()
-    assert [c.masked_excerpt for c in cands] == ["<MASKED> beta", "beta <MASKED>"]
-
-
-def test_deterministic_ordering():
+def test_candidates_are_deterministic_deduplicated_and_order_free():
     traces = {
         "b": _trace("b", [_turn(0, "user", "bee")]),
         "a": _trace("a", [_turn(0, "user", "aye")]),
@@ -476,20 +495,15 @@ def test_deterministic_ordering():
         ("confirmation", "b"),
     ]
 
-
-def test_duplicate_identical_deduplicated():
     content = "dup here"
     traces = {"r": _trace("r", [_turn(0, "user", content)])}
-    known = {"r": []}
     span = _span(traces["r"], "confirmation", 0, content, content)
     twin = _raw_span(traces["r"], "confirmation", 0, content, content)
-    cands, dropped = _run(traces, [span, span, twin], known=known)
+    cands, dropped = _run(traces, [span, span, twin], known={"r": []})
     assert dropped == ()
     assert len(cands) == 1
     assert cands[0].masked_excerpt == content
 
-
-def test_stable_under_reorder():
     traces = {
         "a": _trace("a", [_turn(0, "user", "aye 1")]),
         "b": _trace("b", [_turn(0, "user", "bee 2")]),
@@ -510,8 +524,6 @@ def test_stable_under_reorder():
     )
     assert first == flipped
 
-
-def test_mutation_isolation():
     content = "call 555-0100 now"
     traces = {"r": _trace("r", [_turn(0, "user", content)])}
     known = {"r": ["555-0100"]}
@@ -528,403 +540,98 @@ def test_mutation_isolation():
     assert again == ()
     assert _reasons(redropped) == [("r", "stale_trace")]
 
-
-def test_provenance_detached():
-    first = _turn(0, "user", "hi 555 there")
-    traces = {"r": _trace("r", [first])}
+    first_turn = _turn(0, "user", "hi 555 there")
+    traces = {"r": _trace("r", [first_turn])}
     cands, dropped = _run(
         traces, [_span(traces["r"], "confirmation", 0, "hi 555 there", "hi 555 there")], known={"r": ["555"]}
     )
     assert dropped == ()
-    assert cands[0].source == first.raw_ptr
-    assert cands[0].source is not first.raw_ptr
+    assert cands[0].source == first_turn.raw_ptr
+    assert cands[0].source is not first_turn.raw_ptr
     assert cands[0].trace_hash == trace_content_hash(traces["r"])
     assert (cands[0].recording_id, cands[0].turn_idx, cands[0].start, cands[0].end) == ("r", 0, 0, 12)
 
 
-def test_no_task_builder_promotion_surface():
-    text = Path("kullback/user/examples.py").read_text(encoding="utf-8")
-    assert "kullback.builder" not in text
-    assert "kullback.examiner" not in text
-    assert "kullback.rounds" not in text
-    assert "Task" not in text
-    assert "promote" not in text
-    assert "activate" not in text
-    assert not hasattr(examples, "promote_view")
-    assert callable(examples.assemble_candidates)
-    assert set(ExampleWithheld.model_fields) == {"recording_id", "reason"}
-
-
-def test_strict_identity_rejects_bytes():
-    digest = "0" * 64
-    with pytest.raises(ValidationError):
-        ExampleSpan(recording_id=b"r", situation="confirmation", turn_idx=0, start=0, end=1, trace_hash=digest)
-    with pytest.raises(ValidationError):
-        ExampleSpan(recording_id=7, situation="confirmation", turn_idx=0, start=0, end=1, trace_hash=digest)
-
-
-def test_bytes_identity_never_touches_held():
-    held_content = "private-held-content"
-    traces = _Watch({"held": _trace("held", [_turn(0, "user", held_content)])})
-    known = _Watch({"held": ["private"]})
-    raw = {
-        "recording_id": b"held",
-        "situation": "confirmation",
-        "turn_idx": 0,
-        "start": 0,
-        "end": 7,
-    }
-    cands, dropped = assemble_candidates(
-        traces, [raw], held_out_ids={"held"}, known_values_by_id=known
-    )
-    assert cands == ()
-    assert _reasons(dropped) == [("unknown", "malformed_span")]
-    assert traces.touched == []
-    assert known.touched == []
-    assert held_content not in repr((cands, dropped))
-
-
 @pytest.mark.parametrize(
-    "kind",
+    ("content", "inventory", "bounds", "want"),
     [
-        pytest.param("mapping_proxy", id="mapping_proxy"),
-        pytest.param("user_dict", id="user_dict"),
+        pytest.param("abc", ["ab", "bc"], None, "<MASKED>", id="abc"),
+        pytest.param("ababa", ["aba", "bab"], None, "<MASKED>", id="ababa"),
+        pytest.param("xxabcdefxx", ["cde", "abcdef"], None, "xx<MASKED>xx", id="longest_first"),
+        pytest.param("aaa", ["aa"], None, "<MASKED>", id="repeated_self_overlap"),
+        pytest.param("zzabcdefzz", ["abcdef", "cde", "bcd"], None, "zz<MASKED>zz", id="nested_single_token"),
+        pytest.param("abab", ["ab"], None, "<MASKED><MASKED>", id="adjacent_same_value_stays_split"),
+        pytest.param("a日本b", ["a日本", "日本b"], None, "<MASKED>", id="unicode"),
+        pytest.param("xxabcxx", ["ab", "bc"], None, "xx<MASKED>xx", id="inside_excerpt"),
+        pytest.param("xxabcxx", ["ab", "bc"], (1, 6), "x<MASKED>x", id="inside_part_of_excerpt"),
     ],
 )
-def test_mapping_held_out_without_access(kind):
-    held_content = "private-held-content"
-    traces = _Watch({"held": _trace("held", [_turn(0, "user", held_content)])})
-    known = _Watch({"held": ["private"]})
-    span = {
-        "recording_id": "held",
-        "situation": "confirmation",
-        "turn_idx": 0,
-        "start": 0,
-        "end": 7,
-    }
-    raw = MappingProxyType(span) if kind == "mapping_proxy" else UserDict(span)
-    cands, dropped = assemble_candidates(
-        traces, [raw], held_out_ids={"held"}, known_values_by_id=known
-    )
-    assert cands == ()
-    assert _reasons(dropped) == [("held", "held_out")]
-    assert traces.touched == []
-    assert known.touched == []
-    assert held_content not in repr((cands, dropped))
-
-
-def test_plain_dict_held_out_invalid_offsets_still_held_out():
-    held_content = "private-held-content"
-    traces = _Watch({"held": _trace("held", [_turn(0, "user", held_content)])})
-    known = _Watch({"held": ["private"]})
-    raws = [
-        {
-            "recording_id": "held",
-            "situation": "confirmation",
-            "turn_idx": 99,
-            "start": 0,
-            "end": 1,
-        },
-        {
-            "recording_id": "held",
-            "situation": "confirmation",
-            "turn_idx": 0,
-            "start": 2,
-            "end": 2,
-        },
-    ]
-    cands, dropped = assemble_candidates(
-        traces, raws, held_out_ids={"held"}, known_values_by_id=known
-    )
-    assert cands == ()
-    assert _reasons(dropped) == [("held", "held_out")]
-    assert traces.touched == []
-    assert known.touched == []
-
-
-def test_typed_span_held_out_without_access():
-    held_content = "private-held-content"
-    traces = _Watch({"held": _trace("held", [_turn(0, "user", held_content)])})
-    known = _Watch({"held": ["private"]})
-    span = _span(traces["held"], "confirmation", 0, held_content, held_content)
-    cands, dropped = assemble_candidates(
-        traces, [span], held_out_ids={"held"}, known_values_by_id=known
-    )
-    assert cands == ()
-    assert _reasons(dropped) == [("held", "held_out")]
-    assert traces.touched == []
-    assert known.touched == []
-
-
-@pytest.mark.parametrize(
-    "kind",
-    [
-        pytest.param("mapping_proxy", id="mapping_proxy"),
-        pytest.param("user_dict", id="user_dict"),
-    ],
-)
-def test_mapping_allowed_id_works(kind):
-    content = "ok public here"
-    traces = {"ok": _trace("ok", [_turn(0, "user", content)])}
-    span = {
-        "recording_id": "ok",
-        "situation": "confirmation",
-        "turn_idx": 0,
-        "start": 0,
-        "end": len(content),
-        "trace_hash": trace_content_hash(traces["ok"]),
-    }
-    raw = MappingProxyType(span) if kind == "mapping_proxy" else UserDict(span)
-    cands, dropped = assemble_candidates(
-        traces, [raw], held_out_ids={"held"}, known_values_by_id={"ok": []}
-    )
-    assert dropped == ()
-    assert [c.masked_excerpt for c in cands] == [content]
-
-
-def test_mixed_identities_only_allowed_candidate():
-    held_content = "private-held-content"
-    ok_content = "ok public here"
-    traces = _Watch(
-        {
-            "ok": _trace("ok", [_turn(0, "user", ok_content)]),
-            "held": _trace("held", [_turn(0, "user", held_content)]),
-        }
-    )
-    known = _Watch({"ok": [], "held": ["private"]})
-    spans = [
-        {
-            "recording_id": b"held",
-            "situation": "confirmation",
-            "turn_idx": 0,
-            "start": 0,
-            "end": 7,
-        },
-        MappingProxyType(_raw_span(traces["held"], "confirmation", 0, held_content, held_content)),
-        UserDict(_raw_span(traces["held"], "confirmation", 0, held_content, held_content)),
-        _span(traces["held"], "confirmation", 0, held_content, held_content),
-        _span(traces["ok"], "confirmation", 0, ok_content, ok_content),
-    ]
-    cands, dropped = assemble_candidates(
-        traces, spans, held_out_ids={"held"}, known_values_by_id=known
-    )
-    assert [c.masked_excerpt for c in cands] == [ok_content]
-    assert _reasons(dropped) == [("held", "held_out"), ("unknown", "malformed_span")]
-    assert "held" not in traces.touched
-    assert "held" not in known.touched
-    assert held_content not in repr((cands, dropped))
-
-
-@pytest.mark.parametrize(
-    ("content", "situation", "role", "orders"),
-    [
-        pytest.param("abc", "confirmation", "user", (["ab", "bc"], ["bc", "ab"]), id="abc"),
-        pytest.param("ababa", "unknown_fact", "assistant", (["aba", "bab"], ["bab", "aba"]), id="ababa"),
-    ],
-)
-def test_overlapping_orders_fully_masked(content, situation, role, orders):
-    traces = {"r": _trace("r", [_turn(0, role, content)])}
-    span = _span(traces["r"], situation, 0, content, content)
-    for inventory in orders:
-        cands, dropped = _run(traces, [span], known={"r": list(inventory)})
+def test_overlapping_values_are_masked_whole_in_any_order(content, inventory, bounds, want):
+    traces = {"r": _trace("r", [_turn(0, "user", content)])}
+    if bounds is None:
+        span = _span(traces["r"], "confirmation", 0, content, content)
+    else:
+        span = _span_at(traces["r"], "confirmation", 0, *bounds)
+    for order in (list(inventory), list(reversed(inventory))):
+        cands, dropped = _run(traces, [span], known={"r": order})
         assert dropped == ()
-        assert [c.masked_excerpt for c in cands] == ["<MASKED>"]
+        assert [c.masked_excerpt for c in cands] == [want]
 
 
-def test_repeated_self_overlap_no_leak():
-    content = "aaa"
-    traces = {"r": _trace("r", [_turn(0, "user", content)])}
-    cands, dropped = _run(
-        traces, [_span(traces["r"], "confirmation", 0, content, content)], known={"r": ["aa"]}
-    )
-    assert dropped == ()
-    assert [c.masked_excerpt for c in cands] == ["<MASKED>"]
-
-
-def test_nested_long_short_single_token():
-    content = "zzabcdefzz"
-    traces = {"r": _trace("r", [_turn(0, "assistant", content)])}
-    cands, dropped = _run(
-        traces, [_span(traces["r"], "company_only", 0, content, content)], known={"r": ["abcdef", "cde", "bcd"]}
-    )
-    assert dropped == ()
-    assert [c.masked_excerpt for c in cands] == ["zz<MASKED>zz"]
-    assert cands[0].masked_excerpt.count("<MASKED>") == 1
-
-
-def test_adjacent_same_value_stays_split():
-    content = "abab"
-    traces = {"r": _trace("r", [_turn(0, "assistant", content)])}
-    cands, dropped = _run(
-        traces, [_span(traces["r"], "agent_refuses", 0, content, content)], known={"r": ["ab"]}
-    )
-    assert dropped == ()
-    assert [c.masked_excerpt for c in cands] == ["<MASKED><MASKED>"]
-
-
-def test_unicode_overlap_no_leak():
-    content = "a日本b"
-    traces = {"r": _trace("r", [_turn(0, "user", content)])}
-    cands, dropped = _run(
-        traces, [_span(traces["r"], "confirmation", 0, content, content)], known={"r": ["a日本", "日本b"]}
-    )
-    assert dropped == ()
-    assert [c.masked_excerpt for c in cands] == ["<MASKED>"]
-
-
-def test_overlap_inside_excerpt_only_covered_part():
-    content = "xxabcxx"
-    traces = {"r": _trace("r", [_turn(0, "user", content)])}
-    known = {"r": ["ab", "bc"]}
-    cands, dropped = _run(traces, [_span(traces["r"], "confirmation", 0, content, content)], known=known)
-    assert dropped == ()
-    assert [c.masked_excerpt for c in cands] == ["xx<MASKED>xx"]
-    mid = _span_at(traces["r"], "confirmation", 0, 1, 6)
-    cands, dropped = _run(traces, [mid], known=known)
-    assert dropped == ()
-    assert [c.masked_excerpt for c in cands] == ["x<MASKED>x"]
-    tight = _span_at(traces["r"], "confirmation", 0, 3, 5)
-    cands, dropped = _run(traces, [tight], known=known)
-    assert cands == ()
-    assert _reasons(dropped) == [("r", "partial_boundary")]
-
-
-def test_residual_synthesized_by_token_withheld():
-    content = "xb"
-    traces = {"r": _trace("r", [_turn(0, "user", content)])}
-    cands, dropped = _run(
-        traces, [_span(traces["r"], "confirmation", 0, content, content)], known={"r": ["x", "<MASKED>b"]}
-    )
-    assert cands == ()
-    assert _reasons(dropped) == [("r", "residual_known_value")]
-
-
-def test_stale_same_length_text_withheld():
-    actual = _trace("r", [_turn(0, "user", "abcd")])
-    traces = {"r": actual}
-    other = _trace("r", [_turn(0, "user", "abce")])
-    stale = ExampleSpan(
+def _stale_span(source, end):
+    return ExampleSpan(
         recording_id="r",
         situation="confirmation",
         turn_idx=0,
         start=0,
-        end=4,
-        trace_hash=trace_content_hash(other),
+        end=end,
+        trace_hash=trace_content_hash(source),
     )
-    cands, dropped = _run(traces, [stale], known={"r": []})
-    assert cands == ()
-    assert _reasons(dropped) == [("r", "stale_trace")]
-    assert "abce" not in repr(dropped)
-    assert "abcd" not in repr(dropped)
 
 
-def test_changed_raw_ptr_withheld():
-    actual = _trace("r", [_turn(0, "user", "hello")])
-    traces = {"r": actual}
-    moved = _trace("r", [_turn(0, "user", "hello")])
-    moved.turns[0].raw_ptr = RawPtr(file_hash="dd", sim_index=9)
-    stale = ExampleSpan(
-        recording_id="r",
-        situation="confirmation",
-        turn_idx=0,
-        start=0,
-        end=5,
-        trace_hash=trace_content_hash(moved),
-    )
-    cands, dropped = _run(traces, [stale], known={"r": []})
-    assert cands == ()
-    assert _reasons(dropped) == [("r", "stale_trace")]
-
-
-def test_copied_trace_hash_field_not_trusted():
+def _copied_hash_field():
     actual = _trace("r", [_turn(0, "user", "changed content here")])
     original = _trace("r", [_turn(0, "user", "original content here")])
-    digest = trace_content_hash(original)
-    actual.hash = digest
-    stale = ExampleSpan(
-        recording_id="r",
-        situation="confirmation",
-        turn_idx=0,
-        start=0,
-        end=7,
-        trace_hash=digest,
-    )
-    traces = {"r": actual}
-    cands, dropped = _run(traces, [stale], known={"r": []})
+    actual.hash = trace_content_hash(original)
+    return actual, _stale_span(original, 7), ()
+
+
+def _same_length_text():
+    other = _trace("r", [_turn(0, "user", "abce")])
+    return _trace("r", [_turn(0, "user", "abcd")]), _stale_span(other, 4), ("abce", "abcd")
+
+
+def _changed_raw_ptr():
+    moved = _trace("r", [_turn(0, "user", "hello")])
+    moved.turns[0].raw_ptr = RawPtr(file_hash="dd", sim_index=9)
+    return _trace("r", [_turn(0, "user", "hello")]), _stale_span(moved, 5), ()
+
+
+@pytest.mark.parametrize(
+    "case",
+    [
+        pytest.param(_copied_hash_field, id="copied_hash_field"),
+        pytest.param(_same_length_text, id="same_length_text"),
+        pytest.param(_changed_raw_ptr, id="changed_raw_ptr"),
+    ],
+)
+def test_a_span_over_a_changed_recording_is_withheld_as_stale(case):
+    actual, stale, leaks = case()
+    traces = _Watch({"r": actual})
+    known = _Watch({"r": []})
+    cands, dropped = assemble_candidates(traces, [stale], held_out_ids=set(), known_values_by_id=known)
     assert cands == ()
     assert _reasons(dropped) == [("r", "stale_trace")]
+    assert known.touched == []
+    for leak in leaks:
+        assert leak not in repr(dropped)
 
-
-def test_reconstructed_equal_trace_accepted():
     first = _trace("r", [_turn(0, "user", "same words")])
     second = _trace("r", [_turn(0, "user", "same words")])
     assert trace_content_hash(first) == trace_content_hash(second)
-    traces = {"r": second}
     cands, dropped = _run(
-        traces, [_span(first, "confirmation", 0, "same words", "same words")], known={"r": []}
+        {"r": second}, [_span(first, "confirmation", 0, "same words", "same words")], known={"r": []}
     )
     assert dropped == ()
     assert [c.masked_excerpt for c in cands] == ["same words"]
     assert cands[0].trace_hash == trace_content_hash(second)
-
-
-def test_malformed_fingerprint_withheld():
-    content = "hello"
-    traces = {"r": _trace("r", [_turn(0, "user", content)])}
-    known = {"r": []}
-    good = trace_content_hash(traces["r"])
-    raws = [
-        {"recording_id": "r", "situation": "confirmation", "turn_idx": 0, "start": 0, "end": 1, "trace_hash": "zzz"},
-        {"recording_id": "r", "situation": "confirmation", "turn_idx": 0, "start": 0, "end": 1, "trace_hash": "A" * 64},
-        {"recording_id": "r", "situation": "confirmation", "turn_idx": 0, "start": 0, "end": 1, "trace_hash": ""},
-        {"recording_id": "r", "situation": "confirmation", "turn_idx": 0, "start": 0, "end": 1, "trace_hash": 123},
-        {"recording_id": "r", "situation": "confirmation", "turn_idx": 0, "start": 0, "end": 1},
-    ]
-    cands, dropped = _run(traces, raws, known=known)
-    assert cands == ()
-    assert _reasons(dropped) == [("r", "malformed_span")]
-    with pytest.raises(ValidationError):
-        ExampleSpan(recording_id="r", situation="confirmation", turn_idx=0, start=0, end=1, trace_hash="zzz")
-    assert good == trace_content_hash(traces["r"])
-
-
-def test_stale_check_before_inventory():
-    actual = _trace("r", [_turn(0, "user", "abcd")])
-    traces = _Watch({"r": actual})
-    other = _trace("r", [_turn(0, "user", "abce")])
-    stale = ExampleSpan(
-        recording_id="r",
-        situation="confirmation",
-        turn_idx=0,
-        start=0,
-        end=4,
-        trace_hash=trace_content_hash(other),
-    )
-    known = _Watch({})
-    cands, dropped = assemble_candidates(
-        traces, [stale], held_out_ids=set(), known_values_by_id=known
-    )
-    assert cands == ()
-    assert _reasons(dropped) == [("r", "stale_trace")]
-    assert known.touched == []
-
-
-def test_span_candidate_field_sets_include_revision():
-    assert set(ExampleSpan.model_fields) == {
-        "recording_id",
-        "situation",
-        "turn_idx",
-        "start",
-        "end",
-        "trace_hash",
-    }
-    assert set(ExampleCandidate.model_fields) == {
-        "recording_id",
-        "situation",
-        "masked_excerpt",
-        "turn_idx",
-        "start",
-        "end",
-        "trace_hash",
-        "source",
-    }

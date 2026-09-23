@@ -40,15 +40,11 @@ def test_replay_reads_the_log_back_as_typed_events_after_a_sequence_number(tmp_p
     assert isinstance(records[0], BusRecord) and isinstance(records[0].event, TurnStart)
     assert [e.turn for e in reader.events()] == [1, 2]
     assert [e.turn for e in reader.events(since_seq=1)] == [2]
-
-
-def test_a_custom_event_carries_a_name_and_a_payload_the_core_never_reads(tmp_path):
-    bus = Bus(tmp_path / "bus.jsonl")
+    # a custom event carries a name and a payload the core never reads
     bus.publish_custom("verdict", {"task": "t1", "trusted": True})
-    event = Bus(tmp_path / "bus.jsonl").events()[0]
+    event = Bus(tmp_path / "bus.jsonl").events(since_seq=2)[0]
     assert isinstance(event, CustomEvent)
     assert event.name == "verdict" and event.payload == {"task": "t1", "trusted": True}
-
 
 def test_a_line_the_reader_cannot_parse_is_skipped_and_the_rest_still_reads(tmp_path):
     path = tmp_path / "bus.jsonl"
@@ -69,21 +65,24 @@ def test_subscribers_are_called_in_registration_order_and_unsubscribe_stops_one(
     unsubscribe()
     bus.publish_sync(TurnStart(turn=2))
     assert seen == [("first", "turn_start"), ("second", "turn_start"), ("first", "turn_start")]
-
-
-def test_an_async_subscriber_is_awaited_by_publish(tmp_path):
-    bus = Bus(tmp_path / "bus.jsonl")
-    seen = []
+    # an async subscriber is awaited by publish and by the harness
+    bus = Bus(tmp_path / "async.jsonl")
+    heard = []
 
     async def watch(event):
-        seen.append(event.type)
+        await asyncio.sleep(0)
+        heard.append(event.type)
 
     bus.subscribe(watch)
     asyncio.run(bus.publish(TurnStart(turn=1)))
-    assert seen == ["turn_start"]
+    assert heard == ["turn_start"]
+    harness = AgentHarness(TestModel(["one"]))
+    harness.subscribe(watch)
+    collect(harness.prompt("a"))
+    assert heard[1] == "agent_start" and heard[-1] == "agent_end"
 
 
-def test_a_harness_with_a_bus_writes_its_run_to_the_log_and_feeds_subscribers_through_it(tmp_path):
+def test_a_harness_feeds_subscribers_through_its_bus_log_or_in_process_without_one(tmp_path):
     bus = Bus(tmp_path / "bus.jsonl", agent="builder")
     harness = AgentHarness(TestModel(["done"]), bus=bus)
     seen = []
@@ -97,15 +96,17 @@ def test_a_harness_with_a_bus_writes_its_run_to_the_log_and_feeds_subscribers_th
     unsubscribe()
     collect(harness.prompt("again"))
     assert len(seen) < len(Bus(tmp_path / "bus.jsonl").replay())
-
-
-def test_a_harness_without_a_bus_keeps_its_subscribers_in_this_process(tmp_path):
-    harness = AgentHarness(TestModel(["done"]))
+    # without a bus the subscribers stay in this process and nothing is written
+    local = tmp_path / "local"
+    local.mkdir()
+    harness = AgentHarness(TestModel(["one", "two"]))
     seen = []
-    harness.subscribe(lambda e: seen.append(e.type))
-    collect(harness.prompt("go"))
-    assert "agent_end" in seen and not list(tmp_path.iterdir())
-
+    unsubscribe = harness.subscribe(seen.append)
+    yielded = collect(harness.prompt("a"))
+    assert [e.type for e in seen] == [e.type for e in yielded] and seen[-1].type == "agent_end"
+    unsubscribe()
+    collect(harness.prompt("b"))
+    assert len(seen) == len(yielded) and not list(local.iterdir())
 
 def test_a_follower_reads_what_is_there_and_then_what_appears(tmp_path):
     path = tmp_path / "bus.jsonl"

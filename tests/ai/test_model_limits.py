@@ -17,16 +17,14 @@ def snapshot(tmp_path, providers):
     return str(path)
 
 
-def test_the_core_compacts_at_two_fifths_of_the_usable_window():
-    limits = ModelLimits(context_window=200_000)
-    assert limits.effective_context_window == 200_000
-    assert limits.compaction_token_limit == 80_000
-
-
-def test_a_surface_that_keeps_headroom_shrinks_both_numbers():
-    limits = ModelLimits(context_window=200_000, effective_context_window_percent=90)
-    assert limits.effective_context_window == 180_000
-    assert limits.compaction_token_limit == 72_000
+@pytest.mark.parametrize(
+    ("kwargs", "usable", "compact_at"),
+    [({}, 200_000, 80_000), ({"effective_context_window_percent": 90}, 180_000, 72_000)],
+)
+def test_the_core_compacts_at_two_fifths_of_the_usable_window(kwargs, usable, compact_at):
+    limits = ModelLimits(context_window=200_000, **kwargs)
+    assert limits.effective_context_window == usable
+    assert limits.compaction_token_limit == compact_at
 
 
 @pytest.mark.parametrize(
@@ -39,15 +37,13 @@ def test_limits_that_cannot_be_true_are_refused(kwargs):
         ModelLimits(**kwargs)
 
 
-def test_a_model_the_snapshot_sizes_takes_the_window_it_lists(tmp_path):
-    path = snapshot(tmp_path, {"p": {"models": {"m": {"limit": {"context": 500_000}}}}})
-    assert model_limits.limits_for("p/m", path=path).context_window == 500_000
-
-
-def test_a_model_the_snapshot_does_not_size_takes_the_generic_window(tmp_path):
-    path = snapshot(tmp_path, {"p": {"models": {"m": {}}}})
-    limits = model_limits.limits_for("p/m", path=path)
-    assert limits.context_window == model_limits.DEFAULT_CONTEXT_WINDOW
+@pytest.mark.parametrize(
+    ("row", "window"),
+    [({"limit": {"context": 500_000}}, 500_000), ({}, model_limits.DEFAULT_CONTEXT_WINDOW)],
+)
+def test_a_model_takes_the_window_the_snapshot_lists_else_the_generic_one(tmp_path, row, window):
+    path = snapshot(tmp_path, {"p": {"models": {"m": row}}})
+    assert model_limits.limits_for("p/m", path=path).context_window == window
 
 
 def test_the_catalog_names_every_model_by_provider_and_wire_id(tmp_path):

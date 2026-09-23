@@ -12,7 +12,6 @@ from kullback.agent.base_tools import (
     Allowlist,
     base_tools,
     register_base_tools,
-    resolve_in_root,
     truncate_head,
     truncate_tail,
 )
@@ -52,7 +51,7 @@ def root(tmp_path):
         ("ls", {"path": "PATH"}),
     ],
 )
-@pytest.mark.parametrize("outside", ["/etc/passwd", "../outside.txt", "sub/../../outside.txt"])
+@pytest.mark.parametrize("outside", ["/etc/passwd", "../outside.txt", "sub/../../outside.txt", ""])
 def test_every_path_tool_refuses_a_path_outside_the_root_and_names_the_rule(root, name, arguments, outside):
     tool = tools(root)[name]
     result = run(tool, **{key: (outside if value == "PATH" else value) for key, value in arguments.items()})
@@ -66,16 +65,6 @@ def test_a_link_that_leads_out_of_the_root_is_refused_like_a_path_that_steps_out
     (root / "link.txt").symlink_to(outside)
     result = run(tools(root)["read"], path="link.txt")
     assert result.is_error is True and "resolves outside" in result.content
-
-
-def test_an_empty_path_is_refused_because_every_path_is_relative_to_the_root(root):
-    with pytest.raises(Exception) as refusal:
-        resolve_in_root(root, "")
-    assert "rule root" in str(refusal.value)
-
-
-def test_a_path_inside_the_root_resolves_to_the_file_it_names(root):
-    assert resolve_in_root(root, "sub/deep.py") == (root / "sub" / "deep.py").resolve()
 
 
 # --- read, write, ls, find, grep ---
@@ -96,13 +85,21 @@ def test_read_of_a_missing_file_and_of_a_directory_are_both_refused(root):
     assert "is a directory" in run(read, path="sub").content
 
 
-def test_read_shows_the_first_lines_of_a_file_over_the_limit_and_says_how_to_continue(root):
+def test_output_over_the_limit_keeps_the_head_or_the_tail_and_read_says_how_to_continue(root):
     (root / "big.txt").write_text("\n".join(str(i) for i in range(MAX_OUTPUT_LINES + 500)), encoding="utf-8")
     result = run(tools(root)["read"], path="big.txt")
     assert result.details["truncation"]["truncated"] is True
     assert result.details["truncation"]["output_lines"] == MAX_OUTPUT_LINES
     assert f"showing lines 1 to {MAX_OUTPUT_LINES} of {MAX_OUTPUT_LINES + 500}" in result.content
     assert f"offset={MAX_OUTPUT_LINES + 1}" in result.content
+    # truncate_head keeps the start, truncate_tail keeps the end
+    text = "\n".join(str(i) for i in range(10))
+    head, head_cut = truncate_head(text, max_lines=3)
+    tail, tail_cut = truncate_tail(text, max_lines=3)
+    assert head == "0\n1\n2" and head_cut.truncated is True and head_cut.total_lines == 10
+    assert tail == "7\n8\n9" and tail_cut.truncated is True and tail_cut.output_lines == 3
+    whole, untouched = truncate_head(text, max_lines=50)
+    assert whole == text and untouched.truncated is False
 
 
 def test_write_creates_a_file_with_its_parents_and_then_overwrites_it(root):
@@ -143,9 +140,18 @@ def test_edit_replaces_the_one_exact_occurrence_and_says_where(root):
     assert (root / "notes.txt").read_text(encoding="utf-8") == "alpha\nBETA\ngamma\n"
 
 
-def test_edit_refuses_text_that_does_not_occur_exactly_as_given(root):
-    result = run(tools(root)["edit"], path="notes.txt", old="Beta", new="x")
-    assert result.is_error is True and "does not occur" in result.content
+@pytest.mark.parametrize(
+    "path, old, new, refusal",
+    [
+        ("notes.txt", "Beta", "x", "does not occur"),
+        ("notes.txt", "", "x", "old must not be empty"),
+        ("notes.txt", "beta", "beta", "change nothing"),
+        ("gone.txt", "a", "b", "no file"),
+    ],
+)
+def test_edit_refuses_text_that_does_not_occur_exactly_as_given_or_would_change_nothing(root, path, old, new, refusal):
+    result = run(tools(root)["edit"], path=path, old=old, new=new)
+    assert result.is_error is True and refusal in result.content
     assert (root / "notes.txt").read_text(encoding="utf-8") == "alpha\nbeta\ngamma\n"
 
 
@@ -160,23 +166,7 @@ def test_edit_refuses_text_that_occurs_more_than_once_unless_replace_all_is_set(
     assert (root / "twice.txt").read_text(encoding="utf-8") == "other\nother\n"
 
 
-def test_edit_refuses_an_empty_old_and_an_edit_that_would_change_nothing(root):
-    edit = tools(root)["edit"]
-    assert "old must not be empty" in run(edit, path="notes.txt", old="", new="x").content
-    assert "change nothing" in run(edit, path="notes.txt", old="beta", new="beta").content
-
-
-def test_edit_of_a_file_that_is_not_there_is_refused(root):
-    assert "no file" in run(tools(root)["edit"], path="gone.txt", old="a", new="b").content
-
-
 # --- the shell allowlist ---
-
-
-def test_the_allowlist_splits_a_command_into_the_segments_it_checks():
-    allowlist = Allowlist.of(("ls", "head"))
-    assert allowlist.segments("ls -la | head -n 3") == [["ls", "-la"], ["head", "-n", "3"]]
-    assert allowlist.segments("ls && head f") == [["ls"], ["head", "f"]]
 
 
 def test_bash_runs_a_command_on_the_allowlist_in_the_root(root):
@@ -186,13 +176,7 @@ def test_bash_runs_a_command_on_the_allowlist_in_the_root(root):
     assert result.details["exit_code"] == 0
 
 
-def test_bash_refuses_a_command_that_is_not_on_the_allowlist(root):
-    result = run(tools(root)["bash"], command="python3 -c pass")
-    assert result.is_error is True and "rule allowlist" in result.content
-    assert "'python3' is not one of the commands this agent may run" in result.content
-
-
-def test_bash_checks_every_segment_of_a_pipeline_and_of_an_and_list(root):
+def test_bash_refuses_a_command_off_the_allowlist_in_every_segment_of_a_pipeline_and_of_an_and_list(root):
     bash = tools(root)["bash"]
     piped = run(bash, command="cat notes.txt | python3 -")
     assert piped.is_error is True and "rule allowlist" in piped.content and "'python3'" in piped.content
@@ -200,6 +184,10 @@ def test_bash_checks_every_segment_of_a_pipeline_and_of_an_and_list(root):
     assert chained.is_error is True and "'python3'" in chained.content
     # the allowed command of the refused pipeline never ran
     assert run(bash, command="ls | wc -l").is_error is False
+    # a single command off the allowlist is refused with the rule named
+    result = run(tools(root)["bash"], command="python3 -c pass")
+    assert result.is_error is True and "rule allowlist" in result.content
+    assert "'python3' is not one of the commands this agent may run" in result.content
 
 
 @pytest.mark.parametrize(
@@ -243,16 +231,6 @@ def test_bash_reports_a_failing_command_as_its_exit_code_not_as_a_tool_error(roo
 
 
 # --- truncation on its own ---
-
-
-def test_truncate_head_keeps_the_start_and_truncate_tail_keeps_the_end():
-    text = "\n".join(str(i) for i in range(10))
-    head, head_cut = truncate_head(text, max_lines=3)
-    tail, tail_cut = truncate_tail(text, max_lines=3)
-    assert head == "0\n1\n2" and head_cut.truncated is True and head_cut.total_lines == 10
-    assert tail == "7\n8\n9" and tail_cut.truncated is True and tail_cut.output_lines == 3
-    whole, untouched = truncate_head(text, max_lines=50)
-    assert whole == text and untouched.truncated is False
 
 
 def test_truncation_also_stops_at_the_byte_limit():
