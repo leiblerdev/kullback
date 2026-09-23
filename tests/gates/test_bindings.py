@@ -326,3 +326,51 @@ def test_every_bound_gate_lives_in_the_registry():
         for gate in binding.gates:
             assert gate in names, gate
     assert len(GATES) == 43
+
+
+# --- F27: a write's confinement ruling is about the write ---
+
+_TWO_BODIES = ("class DomainTools:\n"
+               "    def cancel_order(self, order_id):\n"
+               "        setattr(self, 'x', order_id)\n"
+               "        return order_id\n"
+               "    def show_order(self, order_id):\n"
+               "        return order_id\n")
+_CLEAN_SHOW = "def show_order(self, order_id):\n    return order_id\n"
+_BAD_CANCEL = "def cancel_order(self, order_id):\n    setattr(self, 'x', order_id)\n    return order_id\n"
+
+
+def _confined_of(tmp_path, rel: str, written: str, module: str):
+    from kullback.gates.hook import ruling_line
+
+    root = tmp_path / "root"
+    (root / "tools").mkdir(parents=True, exist_ok=True)
+    (root / rel).write_text(written, encoding="utf-8")
+    rulings = rulings_for(root, rel, tmp_path / "work", evidence={"render": lambda source: module})
+    ruling = next(r for r in rulings if r.stage == "confined")
+    return ruling, ruling_line(ruling)
+
+
+def test_the_write_of_a_clean_body_passes_confined_and_notes_the_other_body_s_failure(tmp_path):
+    ruling, line = _confined_of(tmp_path, "tools/show_order.py", _CLEAN_SHOW, _TWO_BODIES)
+    assert ruling.passed and ruling.failures == []
+    assert line.splitlines() == ["confined pass",
+                                 "the module still fails confinement on: cancel_order uses setattr"]
+
+
+def test_the_write_of_the_failing_body_fails_confined_on_its_own_line(tmp_path):
+    ruling, line = _confined_of(tmp_path, "tools/cancel_order.py", _BAD_CANCEL, _TWO_BODIES)
+    assert not ruling.passed
+    assert ruling.failures == ["cancel_order uses setattr"]
+    assert line == "confined fail (cancel_order uses setattr) [1 rows]"
+    assert ruling.note == ""
+
+
+def test_a_module_where_only_the_written_body_fails_carries_no_note(tmp_path):
+    module = _TWO_BODIES.replace("setattr(self, 'x', order_id)", "order_id = str(order_id)")
+    module = module.replace("    def show_order(self, order_id):\n        return order_id\n",
+                            "    def show_order(self, order_id):\n        return eval(order_id)\n")
+    written = "def show_order(self, order_id):\n    return eval(order_id)\n"
+    ruling, line = _confined_of(tmp_path, "tools/show_order.py", written, module)
+    assert not ruling.passed and ruling.failures == ["show_order uses eval"]
+    assert ruling.note == "" and "\n" not in line

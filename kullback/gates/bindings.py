@@ -24,7 +24,7 @@ import json
 from pathlib import Path, PurePosixPath
 from typing import Any, Callable, NamedTuple, Optional
 
-from kullback.gates.confinement import gate_confined, predicate_confinement_gate
+from kullback.gates.confinement import gate_confined, predicate_confinement_gate, written_body
 from kullback.gates.fidelity import oracle_replay_gate
 from kullback.gates.loosening import false_rejection_gate, loosening_gate
 from kullback.gates.stages import intent_gate
@@ -263,7 +263,8 @@ def _gate_confined(evidence: dict) -> Optional[list[GateResult]]:
     The written file is one plain function, so a check over it alone finds no tool method and
     passes what `load_toolkit` then refuses. `render(source)` (the executor's, see
     builder/env_files.py) returns the whole rendered module with this body in place, and the
-    gate reads that; a body that does not render is ruled on its own text.
+    gate reads that; a body that does not render is ruled on its own text. The ruling is about
+    the written body: another body's failures ride it as a note (F27, see `gate_confined`).
     """
     source = evidence.get("source")
     if source is None:
@@ -275,7 +276,9 @@ def _gate_confined(evidence: dict) -> Optional[list[GateResult]]:
             module = render(source)
         except Exception:  # noqa: BLE001, a body that does not render is ruled on its own text
             module = None
-    return [gate_confined(module or source)]
+    if module is None:
+        return [gate_confined(source)]
+    return [gate_confined(module, written=written_body(source))]
 
 
 def _gate_parses(evidence: dict) -> Optional[list[GateResult]]:
@@ -724,7 +727,7 @@ def _to_ruling(result: GateResult, evidence: dict) -> Any:
     from kullback.gates import Ruling
 
     return Ruling(stage=result.stage, passed=bool(result.passed), failures=list(result.failures),
-                  rows=rows_for(result, evidence))
+                  rows=rows_for(result, evidence), note=str(result.metrics.get("note") or ""))
 
 
 def _rel(root: Any, written_path: str) -> Optional[str]:
