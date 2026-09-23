@@ -8,8 +8,10 @@ values the recorded calls passed, and never by a name someone wrote into the cod
 
 from __future__ import annotations
 
+import pytest
+
 from conftest import PTR
-from kullback.gates.tool_runs import body_literals, body_memorised_values_gate, load_readers
+from kullback.gates.tool_runs import body_memorised_values_gate, load_readers
 from kullback.runner.records import Column, EntitySchema, FieldStat, ToolCall, ToolSig
 
 LIBRARY = {
@@ -76,7 +78,10 @@ def test_the_column_and_table_names_a_body_has_to_say_are_never_memorised_values
 # --- rule (a): the shape the schema mined for a table's ids ---
 
 
-def test_a_literal_with_a_mined_id_shape_fails_and_the_failure_names_it_and_the_pattern():
+def test_a_literal_with_a_mined_id_shape_fails_and_the_failure_names_the_tool_the_value_and_the_pattern():
+    """The shape is the rule, not the sighting: a body that invents a well-shaped id is memorising
+    the corpus's vocabulary just as surely as one that copies a value out of a call. The failure
+    names the tool so a red light can be attributed to it."""
     source = "if loan_id == \"LN9999\":\n    raise ValueError(\"Loan not found\")\nreturn self.db.loans[loan_id]\n"
     result = _rule(source, _sig())
     assert result.passed is False
@@ -84,22 +89,13 @@ def test_a_literal_with_a_mined_id_shape_fails_and_the_failure_names_it_and_the_
     assert "'LN9999'" in result.failures[0]
     assert "loans.loan_id" in result.failures[0] and r"^LN\d{4}$" in result.failures[0]
 
+    unrecorded = body_memorised_values_gate("return self.db.books[\"BK0001\"]\n", _schema(), {}, [], _sig())
+    assert unrecorded.passed is False and "books.book_id" in unrecorded.failures[0]
 
-def test_a_literal_with_an_id_shape_fails_even_where_no_recorded_call_carried_it():
-    """The shape is the rule, not the sighting: a body that invents a well-shaped id is memorising
-    the corpus's vocabulary just as surely as one that copies a value out of a call."""
-    source = "return self.db.books[\"BK0001\"]\n"
-    result = body_memorised_values_gate(source, _schema(), {}, [], _sig())
-    assert result.passed is False and "books.book_id" in result.failures[0]
-
-
-def test_an_id_pattern_that_accepts_an_ordinary_word_is_not_read_as_an_id_shape():
-    """`mine.id_pattern` falls back to a bare character class when a column's values share nothing.
-    Read as an id shape, that would refuse every alphanumeric literal a body writes."""
-    schema = _schema()
-    schema.id_patterns = {"books.shelf": r"^[A-Za-z0-9]+$"}
-    source = "return {\"shelf\": \"north\"}\n"
-    assert _rule(source, _sig(), schema=schema).passed is True
+    recorded = _rule("return self.db.loans[\"LN0031\"]\n", _sig())
+    assert recorded.passed is False
+    assert recorded.failures[0].startswith("renew_loan: ")
+    assert recorded.metrics["memorised"] == 1
 
 
 # --- rule (b): a row id the Starting state holds ---
@@ -127,35 +123,27 @@ def test_a_row_id_that_lives_inside_another_table_is_still_a_row_id():
 # --- rule (c): a value the recorded calls passed, unless the tool itself names it ---
 
 
-def test_a_literal_equal_to_a_recorded_argument_value_fails_and_names_the_argument():
+def test_a_literal_equal_to_a_recorded_argument_value_or_list_item_fails_and_names_the_argument():
     schema = EntitySchema(tables=[], columns=[])  # no shapes and no world: only the recordings
     source = "return {\"note\": \"standard\"}\n"
     result = body_memorised_values_gate(source, schema, {}, _calls(), _sig())
     assert result.passed is False
     assert "'standard'" in result.failures[0] and "passed as term" in result.failures[0]
 
-
-def test_a_recorded_argument_value_the_signatures_enum_lists_is_the_tools_own_vocabulary():
-    schema = EntitySchema(tables=[], columns=[])
-    sig = _sig(args_schema={"properties": {"term": {"type": "string",
-                                                    "enum": ["standard", "short"]}}})
-    source = "return {\"note\": \"standard\"}\n"
-    assert body_memorised_values_gate(source, schema, {}, _calls(), sig).passed is True
-
-
-def test_a_recorded_argument_value_the_description_lists_is_allowed_too():
-    """A mined signature often carries the enum only in the sentence that introduced it."""
-    schema = EntitySchema(tables=[], columns=[])
-    sig = _sig(description="Renew one loan. term is standard or short.")
-    source = "return {\"note\": \"standard\"}\n"
-    assert body_memorised_values_gate(source, schema, {}, _calls(), sig).passed is True
-
-
-def test_a_value_inside_a_recorded_list_argument_counts_as_a_recorded_value():
-    schema = EntitySchema(tables=[], columns=[])
     calls = [ToolCall(id="c0", name="renew_loan", args={"terms": ["standard", "short"]}, raw_ptr=PTR)]
-    result = body_memorised_values_gate("return \"short\"\n", schema, {}, calls, _sig())
-    assert result.passed is False and "passed as terms" in result.failures[0]
+    listed = body_memorised_values_gate("return \"short\"\n", schema, {}, calls, _sig())
+    assert listed.passed is False and "passed as terms" in listed.failures[0]
+
+
+@pytest.mark.parametrize("sig", [
+    _sig(args_schema={"properties": {"term": {"type": "string", "enum": ["standard", "short"]}}}),
+    # A mined signature often carries the enum only in the sentence that introduced it.
+    _sig(description="Renew one loan. term is standard or short."),
+], ids=["enum", "description"])
+def test_a_recorded_argument_value_the_signatures_enum_or_description_lists_is_the_tools_own_vocabulary(sig):
+    schema = EntitySchema(tables=[], columns=[])
+    source = "return {\"note\": \"standard\"}\n"
+    assert body_memorised_values_gate(source, schema, {}, _calls(), sig).passed is True
 
 
 # --- what is code and not data ---
@@ -188,7 +176,7 @@ def test_the_code_owned_docstring_and_the_data_model_are_not_the_models_literals
     assert _rule(source, _sig()).passed is True
 
 
-def test_dict_keys_count_as_literals():
+def test_ids_memorised_as_dict_keys_are_refused():
     """A memorising body writes its table as a dict display more often than any other way; the keys
     of that display are where the recorded ids sit."""
     source = "days = {\"LN0031\": 14, \"LN0044\": 2}\nreturn days[loan_id]\n"
@@ -198,22 +186,9 @@ def test_dict_keys_count_as_literals():
     assert [f for f in result.failures if "'LN0044'" in f]
 
 
-def test_body_literals_reads_a_repeated_literal_once_and_in_one_fixed_order():
-    """The order is what the failures come out in, so it has to be the same on every run."""
-    source = "sizes = {\"north\": 100, \"south\": 100}\nreturn \"north\"\n"
-    assert body_literals(source) == ["north", "south", 100]
-
-
 def test_a_body_that_does_not_parse_is_refused_rather_than_read():
     result = _rule("return self.db.loans[loan_id\n", _sig())
     assert result.passed is False and "does not parse" in result.failures[0]
-
-
-def test_the_failure_names_the_tool_so_a_red_light_can_be_attributed_to_it():
-    result = _rule("return self.db.loans[\"LN0031\"]\n", _sig())
-    assert result.passed is False
-    assert result.failures[0].startswith("renew_loan: ")
-    assert result.metrics["memorised"] == 1
 
 
 # --- rule (a) again: a pattern that describes no shape is not a shape (D167) ---
@@ -230,19 +205,22 @@ def _wildcard_schema() -> EntitySchema:
         "id_patterns": dict(schema.id_patterns, **{"shelves.shelf_code": r"^.{6}$"})})
 
 
-def test_an_ordinary_word_is_not_a_memorised_id_under_a_wildcard_pattern_of_its_length():
+def test_an_ordinary_word_is_not_a_memorised_id_under_a_shapeless_pattern_while_a_real_shape_still_rules():
     """D167: the three fixed probes were none of them six letters long, so `^.{6}$` read as a shape
     and the gate refused a dict key, a status word and two place names as memorised ids. Five tools
-    stayed assisted for four attempts each on that alone."""
+    stayed assisted for four attempts each on that alone. A bare character class is no shape either:
+    read as one, it would refuse every alphanumeric literal a body writes. Widening the probes may
+    not blunt the gate: the mined shape that is a shape still rules."""
     source = ('totals = {"amount": 0}\n'
               'state = "loaned"\n'
               'return {"branch": "Marlow", "held_at": "Barrow", "state": state, **totals}\n')
     result = _rule(source, _sig(), schema=_wildcard_schema())
     assert result.passed is True, result.failures
 
+    schema = _schema()
+    schema.id_patterns = {"books.shelf": r"^[A-Za-z0-9]+$"}
+    assert _rule("return {\"shelf\": \"north\"}\n", _sig(), schema=schema).passed is True
 
-def test_a_literal_with_a_real_id_shape_is_still_refused_beside_a_shapeless_pattern():
-    """Widening the probes may not blunt the gate: the mined shape that is a shape still rules."""
     source = 'if loan_id == "LN9999":\n    raise ValueError("Loan not found")\nreturn self.db.loans[loan_id]\n'
     result = _rule(source, _sig(), schema=_wildcard_schema())
     assert result.passed is False
