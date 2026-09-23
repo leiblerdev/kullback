@@ -1,28 +1,16 @@
-"""The worlds the Examiner tests share: the fixture build's store (no Task there has a Reference, so it is the
-world for the no-Reference rows, the surface and the session tests) and a small hand-built world with
-one Task, one confirmed replay and one finished re-roll of the same End state, which is the world a
-Verifier is derived in, probed, repaired and refused."""
+"""The worlds the Examiner tests share: a small hand-built world with one Task, one confirmed
+replay and one finished re-roll of the same End state, which is the world a Verifier is derived
+in, probed and refused."""
 
 from __future__ import annotations
 
-import json
-import shutil
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Optional
 
-from builder.test_build import Bodies
 from gates import verifier_fixtures as VF
 from gates.examiner_fixtures import SIGS
-from kullback.agent.harness import AgentHarness
-from kullback.agent.session import SessionStore
-from kullback.agent.tools import ToolResult
-from kullback.builder import build as build_module
-from kullback.builder import pipeline
-from kullback.builder.build import BuildPlan
-from kullback.examiner import agent as examiner_agent
 from kullback.examiner.plan import ExaminerPlan
-from kullback.examiner.stage import DERIVE_INPUTS
 from kullback.runner.records import Run, Task, as_dict
 
 WORLD_TASK = "t1"
@@ -94,54 +82,3 @@ def probe_runner_over(run: Optional[Run] = None):
     return run_probe
 
 
-def _fixture_path(request) -> Path:
-    return Path(request.config.rootpath) / "tests" / "fixtures" / "tau2_retail_small.json"
-
-
-@dataclass
-class FixtureBuild:
-    """The Builder's store over the small tau2 file, built once per session, and the Examiner's slice of it."""
-    workdir: Path
-    plan: BuildPlan
-
-    @property
-    def inputs(self) -> dict:
-        return {key: self.plan.store[key] for key in DERIVE_INPUTS if key in self.plan.store}
-
-    def copy(self, into: Path) -> Path:
-        """A copy of the workdir a test may write into, the Run paths in it pointed at the copy."""
-        target = into / "build"
-        shutil.copytree(self.workdir, target)
-        return target
-
-    def inputs_for(self, workdir: Path) -> dict:
-        """The inputs with every Run path under the copy rather than the session's workdir."""
-        text = json.dumps(_plain(self.inputs), default=str)
-        moved = json.loads(text.replace(str(self.workdir.resolve()), str(workdir.resolve()))
-                           .replace(str(self.workdir), str(workdir)))
-        out = dict(self.inputs)
-        out["replays"], out["rerolls"] = moved["replays"], moved["rerolls"]
-        return out
-
-
-def _plain(inputs: dict) -> dict:
-    return {"replays": inputs.get("replays") or {}, "rerolls": inputs.get("rerolls") or {}}
-
-
-def build_fixture(workdir: Path, request) -> FixtureBuild:
-    plan = BuildPlan(workdir=workdir, model=Bodies(), files=[_fixture_path(request)], max_attempts=0)
-    build_module.execute(plan)
-    return FixtureBuild(workdir=workdir, plan=plan)
-
-
-def anchor_of(workdir: Path):
-    return pipeline.load_anchor(workdir)
-
-
-def session_harness(plan: ExaminerPlan, path: Path, agent_model=None, subscribers=()) -> AgentHarness:
-    """An Examiner harness with a session file, so entry ids exist for the context guards."""
-    return examiner_agent.examiner_harness(plan, agent_model, subscribers, session=SessionStore.load(path))
-
-
-def drive(harness: AgentHarness, name: str, arguments: dict, call_id: str = "call-1") -> ToolResult:
-    return examiner_agent.drive_tool(harness, name, arguments, call_id=call_id)

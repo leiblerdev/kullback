@@ -30,6 +30,7 @@ from kullback.runner.records import (
     VerifierHistory,
     as_dict,
     read_json,
+    run_path,
     write_json,
 )
 
@@ -137,7 +138,7 @@ class ExaminerPlan:
             "rerolls": rerolls,
             "canon_rules": rules_of(self.inputs),
             "sigs": list(self.inputs.get("sigs") or []),
-            "task_runs": task_runs_of(replays, rerolls),
+            "task_runs": task_runs_of(replays, rerolls, workdir=workdir),
             "auto_loosen": loosened,
         })
 
@@ -208,28 +209,30 @@ def merged_rerolls(builder_rows: dict, examiner_rows: dict) -> dict:
     return out
 
 
-def task_runs_of(replays: dict, rerolls: dict) -> dict:
+def task_runs_of(replays: dict, rerolls: dict, *, workdir: Any) -> dict:
     """Per Task, every Run on disk the loosening gate may compare versions over: the replays and the re-rolls.
 
     A row whose file is missing or unreadable is skipped rather than failing the whole load: the
     gate then rules over what it can read, and a Run that is not there cannot be newly passed.
+    A row's path is resolved against the workdir (records.run_path).
     """
     out: dict[str, list] = {}
     for task_id, rows in sorted((replays or {}).items()):
         for _, row in sorted((rows or {}).items()):
-            _append_run(out, task_id, row)
+            _append_run(out, task_id, row, workdir)
     for task_id, rows in sorted((rerolls or {}).items()):
         for row in rows or []:
-            _append_run(out, task_id, row)
+            _append_run(out, task_id, row, workdir)
     return out
 
 
-def _append_run(out: dict, task_id: str, row: dict) -> None:
-    path = row.get("path") if isinstance(row, dict) else None
-    if not path or not Path(path).is_file():
+def _append_run(out: dict, task_id: str, row: dict, workdir: Any) -> None:
+    stored = row.get("path") if isinstance(row, dict) else None
+    path = run_path(workdir, stored) if stored else None
+    if path is None or not path.is_file():
         return
     try:
-        run = load_run(path)
+        run = load_run(str(path))
     except (OSError, ValueError, TypeError, json.JSONDecodeError):
         return
     if any(r.run_id == run.run_id for r in out.get(task_id, [])):

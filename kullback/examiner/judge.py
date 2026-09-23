@@ -468,8 +468,10 @@ class AgentJudge:
 
     def __init__(self, model: Any, *, constraints: Iterable[Any] = (), write_tools: Iterable[str] = (),
                  read_tools: Iterable[str] = (), fn: Optional[Callable] = None,
-                 max_calls: int = MAX_CALLS, max_turns: int = MAX_TURNS):
+                 max_calls: int = MAX_CALLS, max_turns: int = MAX_TURNS, workdir: Any = None):
         self.model = model
+        # With a workdir, every session's model calls are priced into its budget.json (stage judge).
+        self.workdir = workdir
         self.name = getattr(model, "name", "model")
         self.constraints = tuple(constraints)
         self.write_tools = frozenset(write_tools)
@@ -543,6 +545,8 @@ class AgentJudge:
                 harness.steer(ANSWER_NOW)
 
         harness.subscribe(watch)
+        if self.workdir is not None:
+            harness.subscribe(budget.subscriber(self.workdir, "judge", getattr(self.model, "name", None)))
         said = ""
 
         async def go() -> None:

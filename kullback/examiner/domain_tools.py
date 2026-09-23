@@ -1,0 +1,469 @@
+"""The Examiner's domain tools over its root: propose_verifier, probe, finding, reroll.
+
+`propose_verifier` writes the next Verifier version off the current one; the D79 suite,
+the pool and the loosening gate rule on the write through `gate_writes`, never here
+(D79). `probe` scores a hand-written Run against the current Verifier and keeps it in
+the pool. `finding` files what is wrong on the Builder's side with the file to edit
+and what should differ, never a verb. `reroll` buys frontier Runs through the Runner
+tool, refused at or below the remaining allowance (D112, D133). Every result carries
+rows, never a count alone.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import json
+from typing import Any, Iterable, Optional
+
+from pydantic import BaseModel, ConfigDict, Field
+
+from kullback.agent.tools import AgentTool, RetryableToolError
+from kullback.examiner.exam_files import (
+    ExamRoot,
+    Finding,
+    evidence_of,
+    finding_key,
+    open_by_key,
+    save_ruling_files,
+    seeded_history,
+)
+from kullback.gates.bindings import ALT_PATH_STAGE, WAIVED_ROW, rulings_for
+from kullback.gates.hook import ruling_line
+from kullback.gates.probes import version_hash, write_tools_of
+from kullback.gates.verifier_suite import D79_STAGES, HELPERS_SRC, check_run, make_atom
+from kullback.runner import tool as runner_tool
+from kullback.runner.records import Atom, Event, Run, Verifier, VerifierVersion, as_dict, write_json
+
+PRODUCED_VERIFIERS = ["verifiers"]
+PRODUCED_PROBES = ["probes"]
+PRODUCED_FINDINGS = ["findings"]
+PRODUCED_REROLLS = ["rerolls"]
+
+
+def render(result: BaseModel) -> str:
+    """The summary line; everything else stays in details for the transcript."""
+    return getattr(result, "summary", None) or getattr(result, "text", "") or ""
+
+
+class ProposeArgs(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    task_id: str
+    reason: str = Field(description="Why the current version is wrong and what the new one changes.")
+    drop: list[str] = Field(default_factory=list, description="Atom ids to remove.")
+    add: list[dict] = Field(default_factory=list, description="Atoms to add: id, kind and payload.")
+
+
+class ProposeResult(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    summary: str
+    task_id: str
+    content_hash: str
+    verifier_version: str
+    atoms: int = 0
+    rulings: list[dict] = Field(default_factory=list, description="One record per ruling in the "
+                                "shape attach_ruling uses: name, accepted, line, rows.")
+    produced: list[str] = Field(default_factory=lambda: list(PRODUCED_VERIFIERS))
+
+
+class ProbeArgs(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    task_id: str = Field(description="The Task whose Verifier the probe attacks.")
+    bug_class: str = Field(default="", description="What the probe changes, in one phrase.")
+    note: str = Field(default="", description="Why the Task is not done.")
+    events: list[dict] = Field(description="The probe's events: type and payload each.")
+    termination_reason: str = Field(default="success", description="How the Run ended.")
+    base_run_id: Optional[str] = Field(default=None, description="The Run the probe was edited from.")
+
+
+class ProbeResult(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    summary: str
+    probe_id: str
+    task_id: str
+    scored_pass: bool
+    failing_atom: Optional[str] = None
+    pool_size: int
+    produced: list[str] = Field(default_factory=lambda: list(PRODUCED_PROBES))
+
+
+class FindingArgs(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    task_id: Optional[str] = Field(default=None)
+    kind: str = Field(description="What the finding is about: assisted_tool, fidelity, "
+                                  "reference_disagreement, suite, false_rejection, environment, other.")
+    text: str = Field(description="What is wrong, in sentences.")
+    rows: list[dict] = Field(default_factory=list, description="The evidence, one record per call or Task.")
+    path: str = Field(default="", description="The Environment file the Builder should edit, or empty.")
+    change: str = Field(default="", description="One line saying what should differ.")
+
+
+class FindingResult(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    summary: str
+    finding_id: str
+    finding: dict = Field(default_factory=dict)
+    produced: list[str] = Field(default_factory=lambda: list(PRODUCED_FINDINGS))
+
+
+class RerollArgs(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    task_id: str
+    count: int = Field(default=1, ge=1, le=10, description="How many frontier Runs to buy (D112, D133).")
+
+
+class RerollResult(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    summary: str
+    task_id: str
+    runs: list[dict] = Field(default_factory=list)
+    spent_usd: float = 0.0
+    produced: list[str] = Field(default_factory=lambda: list(PRODUCED_REROLLS))
+
+
+FINDING_KINDS = ("assisted_tool", "fidelity", "reference_disagreement", "suite",
+                 "false_rejection", "environment", "other")
+
+# Carried from kullback/examiner/tools.py: the atom shape the repair tool takes. An atom is
+# an object with `id`, `kind` and `payload`, an object naming the atom's target.
+ATOM_SHAPE = ("an atom is an object with `id`, `kind` (required, allowed, question, communicate, hard) "
+              "and `payload`, an object naming the atom's target")
+_SHAPE_ASK = ("Your proposal was refused for the shape of one atom, not for what it says. Call "
+              "propose_verifier again with the same reason and that atom written as: {shape}")
+
+
+def payload_shape(atoms: Iterable[Any], kind: Any) -> dict:
+    """The payload an atom of this kind carries in the Verifier being proposed from."""
+    rows = [atom for atom in atoms or () if getattr(atom, "target", None)]
+    for atom in rows:
+        if getattr(atom, "kind", None) == kind:
+            return dict(atom.target)
+    return dict(rows[0].target) if rows else {}
+
+
+# The fields propose_verifier sets itself on an atom: a row's own copy is taken out first (F30).
+SET_BY_TOOL = ("id", "kind", "payload", "target", "predicate_src")
+# The fields a row may carry beside them, passed through to the Atom as they are.
+ROW_FIELDS = tuple(name for name in Atom.model_fields if name not in SET_BY_TOOL)
+
+
+def corrected_atom(row: dict, atoms: Iterable[Any] = ()) -> str:
+    """The row the model sent, written out in the shape the tool takes."""
+    example = {"id": row.get("id") or "atom-1", "kind": row.get("kind") or "required",
+               "payload": payload_shape(atoms, row.get("kind"))}
+    example.update({key: value for key, value in row.items() if key in ROW_FIELDS})
+    return json.dumps(example, sort_keys=True, default=str, ensure_ascii=False)
+
+
+def _atom_of(row: dict, atoms: Iterable[Any] = ()):
+    """One `add` row as an Atom, carried from kullback/examiner/tools.py (`_atom_of`)."""
+    missing = [name for name in ("id", "kind") if not row.get(name)]
+    if missing:
+        raise RetryableToolError(
+            f"the atom {row!r} names no {', '.join(missing)}: {ATOM_SHAPE}. The same atom with "
+            f"every field it needs: {corrected_atom(row, atoms)}",
+            ask=_SHAPE_ASK.format(shape=corrected_atom(row, atoms)))
+    unknown = sorted(key for key in row if key not in SET_BY_TOOL and key not in ROW_FIELDS)
+    if unknown:
+        raise RetryableToolError(
+            f"the atom {row['id']!r} carries fields an atom does not have: {', '.join(unknown)}. "
+            f"{ATOM_SHAPE}. The same atom with every field it needs: {corrected_atom(row, atoms)}",
+            ask=_SHAPE_ASK.format(shape=corrected_atom(row, atoms)))
+    payload = row.get("payload") or row.get("target") or {}
+    if not isinstance(payload, dict):
+        raise RetryableToolError(
+            f"the atom {row['id']!r} carries its payload as a {type(payload).__name__}, not an object: "
+            f"{ATOM_SHAPE}. The same atom with every field it needs: {corrected_atom(row, atoms)}",
+            ask=_SHAPE_ASK.format(shape=corrected_atom(row, atoms)))
+    fields = {key: value for key, value in row.items() if key in ROW_FIELDS}
+    return make_atom(row["id"], row["kind"], payload, helpers=HELPERS_SRC, **fields)
+
+
+def _candidate_atoms(current: Verifier, drop: Iterable[str], add: Iterable[Any]) -> list:
+    """The atoms of the next version, carried from kullback/examiner/tools.py (`_repair`)."""
+    dropped = set(drop)
+    added = [row if hasattr(row, "kind") else _atom_of(row, current.atoms) for row in add]
+    atoms = [a for a in current.atoms if a.id not in dropped] + added
+    if not atoms:
+        raise ValueError("a proposal cannot leave the Verifier without atoms")
+    return atoms
+
+
+def _events(rows: list[dict]) -> list[Event]:
+    """Probe event rows as Events, carried from kullback/examiner/tools.py."""
+    out = []
+    for number, row in enumerate(rows):
+        body = dict(row)
+        body.setdefault("idx", number)
+        out.append(Event.model_validate(body))
+    return out
+
+
+def _current(root: ExamRoot, task_id: str) -> Verifier:
+    verifier = root.current(task_id)
+    if verifier is None:
+        raise LookupError(f"task {task_id} has no live Verifier; derive first")
+    return verifier
+
+
+def _next_version(current: Verifier) -> str:
+    try:
+        return str(int(current.verifier_version or 0) + 1)
+    except (TypeError, ValueError):
+        return f"{current.verifier_version or 1}+1"
+
+
+def _ruling_records(rulings: Iterable[Any]) -> list[dict]:
+    """One record per ruling in the shape attach_ruling uses: name, accepted, line, rows."""
+    return [{"name": ruling.stage, "accepted": bool(ruling.passed), "line": ruling_line(ruling),
+             "rows": [dict(row) for row in (ruling.rows or [])]} for ruling in rulings]
+
+
+def _keep_suite_status(root: ExamRoot, task_id: str, records: list[dict]) -> None:
+    """An accepted proposal's D79 suite as the Task's status row, in the exposed exam/task_status.json.
+
+    Never the workdir's file: that one is derive_all's. A ruling with no suite leaves the row as it was.
+    """
+    ran = {record["name"]: record["accepted"] for record in records if record["name"] in D79_STAGES}
+    if not ran:
+        return
+    # D199: a waived alt-path check passed the ruling on the waiver its row names; the row keeps the
+    # check as not passed and the waiver beside it, as the derivation writes them.
+    waived = any(record["name"] == ALT_PATH_STAGE and record["accepted"]
+                 and any(WAIVED_ROW in row for row in record["rows"]) for record in records)
+    passed = all(ran.values())
+    if waived:
+        ran[ALT_PATH_STAGE] = False
+    root.task_status[task_id] = {**(root.task_status.get(task_id) or {}), "verifier_passed": passed,
+                                 "second_path_waived": waived,
+                                 "checks": {D79_STAGES[stage]: passed for stage, passed in ran.items()},
+                                 "not_run": [stage for stage in D79_STAGES if stage not in ran]}
+    write_json(root.exam_dir / "task_status.json", root.task_status)
+
+
+# The D79 checks a Run should fail or pass, where the atom the rows name is the one to change.
+_ATOM_CHECKS = {"verifier_empty_run": "the atom the empty Run passed on",
+                "verifier_alt_path": "the atom that turned the second path away"}
+
+# How many refusals of one Task a session takes before the tool says to stop proposing for it (F32).
+REFUSALS_PER_TASK = 3
+_STOP = " Stop proposing for this Task in this session."
+
+
+def _atoms_named(records: list[dict]) -> str:
+    """The atom ids the empty-run and alt-path failures turn on, off their rows, when the rows carry them."""
+    lines = []
+    for record in records:
+        if record["accepted"] or record["name"] not in _ATOM_CHECKS:
+            continue
+        for row in record["rows"]:
+            if isinstance(row, dict) and row.get("atom"):
+                text = f" ({row['text']})" if row.get("text") else ""
+                lines.append(f"{record['name']}: {_ATOM_CHECKS[record['name']]} is {row['atom']}{text}")
+    return "\n".join(lines)
+
+
+def _refuse_proposal(task_id: str, version: str, records: list[dict], stop: bool = False) -> RetryableToolError:
+    """A refused proposal as a retryable error: every ruling line, and the rows behind each failure."""
+    lines = "\n".join(record["line"] for record in records) or "no gate ruled on the proposal"
+    rows = "; ".join(f"{record['name']}: {record['rows']!r}"
+                     for record in records if not record["accepted"])
+    atoms = _atoms_named(records)
+    return RetryableToolError(
+        f"proposal version {version} for task {task_id} refused, the previous file stands:\n"
+        f"{lines}" + (f"\nrows behind the failures: {rows}" if rows else "")
+        + (f"\n{atoms}" if atoms else "") + (_STOP if stop else ""),
+        ask=("Read the rows behind the failures and propose again with atoms answering them, "
+             "or file a finding naming the Environment file and what differs after two refusals."))
+
+
+def atoms_hash(atoms: Iterable[Any]) -> str:
+    """The content hash of a candidate's atoms, so a proposal refused once is known again (F32)."""
+    body = json.dumps([as_dict(atom) for atom in atoms], sort_keys=True, default=str)
+    return hashlib.sha256(body.encode()).hexdigest()
+
+
+def _propose_verifier(root: ExamRoot):
+    """One proposal as a transaction (D201): ruled on the write, kept only when every ruling passed.
+
+    The candidate joins the Task's history as an accepted trial version before the ruling, so
+    the trusted gate reads it as the current accepted version and the loosening gate compares
+    it against the version before it (D127). A refused proposal keeps its row, rewritten as
+    rejected with the gates that rejected it: the history is the record, never dropped (D201).
+    """
+    # Per Task in this session: each refused candidate's atoms hash, with its version and the gates
+    # that refused it, and how many refusals the Task has had (F32).
+    refused: dict[str, dict[str, tuple[str, list[str]]]] = {}
+    refusals: dict[str, int] = {}
+
+    async def propose_verifier(args: ProposeArgs) -> ProposeResult:
+        current = _current(root, args.task_id)
+        candidate = current.model_copy(deep=True, update={
+            "atoms": _candidate_atoms(current, args.drop, args.add),
+            "verifier_version": _next_version(current)})
+        atoms_digest = atoms_hash(candidate.atoms)
+        seen = refused.setdefault(args.task_id, {}).get(atoms_digest)
+        if seen is not None:
+            refusals[args.task_id] = refusals.get(args.task_id, 0) + 1
+            version, gates = seen
+            raise RetryableToolError(
+                f"already refused at version {version} for {', '.join(gates) or 'no gate'}: change the "
+                f"atoms or move on to another Task"
+                + (_STOP if refusals[args.task_id] > REFUSALS_PER_TASK else ""))
+        digest = version_hash(candidate)
+        hist = seeded_history(root.history, args.task_id, current)
+        hist.versions.append(VerifierVersion(
+            task_id=args.task_id, content_hash=digest, verifier_version=str(len(hist.versions) + 1),
+            parent_hash=next((v.content_hash for v in reversed(hist.versions) if v.accepted), None),
+            by="repair", reason=args.reason, accepted=True, verifier=candidate))
+        root.history[args.task_id] = hist
+        target = root.exam_dir / "verifiers" / f"{args.task_id}.json"
+        previous = target.read_bytes() if target.is_file() else None
+        previous_verifier = root.verifiers.get(args.task_id)
+        root.verifiers[args.task_id] = candidate
+        write_json(target, as_dict(candidate))
+        save_ruling_files(root)
+        records = _ruling_records(rulings_for(
+            root.exam_dir, f"verifiers/{args.task_id}.json", root.workdir,
+            evidence=evidence_of(root, task_id=args.task_id)))
+        if records and all(record["accepted"] for record in records):
+            _keep_suite_status(root, args.task_id, records)
+            summary = (f"proposal version {candidate.verifier_version} for task {args.task_id} "
+                       f"({digest[:12]}) accepted: " + "; ".join(record["line"] for record in records))
+            return ProposeResult(summary=summary, task_id=args.task_id, content_hash=digest,
+                                verifier_version=candidate.verifier_version,
+                                atoms=len(candidate.atoms), rulings=records)
+        if previous_verifier is None:
+            root.verifiers.pop(args.task_id, None)
+        else:
+            root.verifiers[args.task_id] = previous_verifier
+        gates = [record["name"] for record in records if not record["accepted"]]
+        hist.versions[-1] = hist.versions[-1].model_copy(update={"accepted": False, "rejected_by": gates})
+        root.history[args.task_id] = hist
+        save_ruling_files(root)
+        if previous is None:
+            target.unlink(missing_ok=True)
+        else:
+            target.write_bytes(previous)
+        refused[args.task_id][atoms_digest] = (candidate.verifier_version, gates)
+        refusals[args.task_id] = refusals.get(args.task_id, 0) + 1
+        raise _refuse_proposal(args.task_id, candidate.verifier_version, records,
+                               stop=refusals[args.task_id] > REFUSALS_PER_TASK)
+
+    return propose_verifier
+
+
+def _probe(root: ExamRoot):
+    async def probe(args: ProbeArgs) -> ProbeResult:
+        verifier = _current(root, args.task_id)
+        pool = root.probes.setdefault(args.task_id, [])
+        probe_id = f"probe-{args.task_id}-{len(pool) + 1}"
+        run = Run(run_id=probe_id, task_id=args.task_id, model="probe:examiner",
+                  events=_events(args.events), termination_reason=args.termination_reason,
+                  parent_run_id=args.base_run_id)
+        write_tools = write_tools_of(root.sigs)
+        passed, failing = check_run(verifier, run, root.canon_rules, write_tools=write_tools)
+        pool.append(run)
+        target = root.exam_dir / "probes" / args.task_id / f"{len(pool)}.json"
+        write_json(target, as_dict(run))
+        verdict = ("accepted: it scores a pass, so the Verifier is loose"
+                   if passed else f"rejected at {failing}")
+        summary = (f"probe {probe_id} ({args.bug_class or 'no class'}) on task {args.task_id}: "
+                   f"{verdict}; pool holds {len(pool)}")
+        return ProbeResult(summary=summary, probe_id=probe_id, task_id=args.task_id,
+                           scored_pass=bool(passed),
+                           failing_atom=failing if not passed else None, pool_size=len(pool))
+
+    return probe
+
+
+def _finding(root: ExamRoot):
+    async def finding(args: FindingArgs) -> FindingResult:
+        kind = (args.kind or "").strip()
+        if kind not in FINDING_KINDS:
+            raise ValueError(f"{args.kind!r} is not a finding kind. The kinds are: "
+                             f"{', '.join(FINDING_KINDS)}.")
+        record = Finding(task_id=args.task_id, kind=kind, text=args.text, rows=list(args.rows),
+                         path=args.path, change=args.change, source="model")
+        key = finding_key(kind, record.path or record.change, args.task_id or "")
+        existing = open_by_key(root.findings).get(key)
+        if existing is not None:
+            raise ValueError(f"{existing} already says this ({kind}"
+                             + (f" in {args.path}" if args.path else "")
+                             + (f" on task {args.task_id}" if args.task_id else "")
+                             + "); it is filed and the Builder has not answered it yet. Act on it, "
+                               "or file a finding that says something else.")
+        root.findings.append(record)
+        body = record.as_dict()
+        if root.bus is not None:
+            root.bus.publish_custom("finding", body)
+        summary = f"finding {body['finding_id']} ({kind}) filed" + \
+            (f" on task {args.task_id}" if args.task_id else "") + \
+            (f", naming {args.path}" if args.path else "")
+        return FindingResult(summary=summary, finding_id=body["finding_id"], finding=body)
+
+    return finding
+
+
+def _reroll(root: ExamRoot):
+    async def reroll(args: RerollArgs) -> RerollResult:
+        if root.allowance_remaining is not None and root.allowance_remaining <= 0:
+            raise RuntimeError(f"the allowance is spent ({root.allowance_remaining:.2f} left)")
+        if root.reroll_model is None:
+            raise ValueError("no reroll model was given to this examination; "
+                             "file a finding naming the Task instead")
+        reports = runner_tool.reroll(root.workdir, args.task_id, root.reroll_model,
+                                     count=args.count, workdir=root.workdir)
+        rows = []
+        spent = 0.0
+        for report in reports or []:
+            body = report.as_dict() if hasattr(report, "as_dict") else dict(report)
+            spend = body.get("spend") or {}
+            price = spend.get("usd", 0.0) if isinstance(spend, dict) else 0.0
+            try:
+                spent += float(price)
+            except (TypeError, ValueError):
+                pass
+            rows.append({"run_id": body.get("run_id"), "verdict": body.get("verdict"),
+                         "termination_reason": body.get("termination_reason"), "spend": spend})
+        if root.allowance_remaining is not None:
+            root.allowance_remaining -= spent
+        summary = (f"reroll of task {args.task_id}: {len(rows)} Runs, "
+                   f"{sum(1 for r in rows if r['termination_reason'] == 'success')} finished, "
+                   f"{spent:.4f} USD")
+        return RerollResult(summary=summary, task_id=args.task_id, runs=rows, spent_usd=spent)
+
+    return reroll
+
+
+def domain_tools(root: ExamRoot) -> list[AgentTool]:
+    """The four domain tools over one ExamRoot."""
+    return [
+        AgentTool("propose_verifier", "Propose a new Verifier version by dropping and adding atoms; "
+                  "the D79 suite, the pool and the loosening gate rule on the write.",
+                  ProposeArgs, ProposeResult, _propose_verifier(root), render=render),
+        AgentTool("probe", "Score a hand-written Run against a Task's current Verifier and keep it "
+                  "in the Task's pool.",
+                  ProbeArgs, ProbeResult, _probe(root), render=render),
+        AgentTool("finding", "File what is wrong on the Builder's side: the Environment file to edit "
+                  "in `path` and the one line saying what should differ in `change`, never a verb.",
+                  FindingArgs, FindingResult, _finding(root), render=render),
+        AgentTool("reroll", "Buy more frontier Runs of a Task through the Runner (D112, D133).",
+                  RerollArgs, RerollResult, _reroll(root), render=render),
+    ]
+
+
+def tool_names() -> tuple[str, ...]:
+    """The domain tool names, so tests pin the Builder-called surface."""
+    return ("propose_verifier", "probe", "finding", "reroll")
+
+
+__all__ = ["REFUSALS_PER_TASK", "ROW_FIELDS", "SET_BY_TOOL", "FindingArgs", "FindingResult", "ProbeArgs", "ProbeResult", "ProposeArgs",
+           "ProposeResult", "RerollArgs", "RerollResult", "atoms_hash", "domain_tools", "render", "tool_names"]

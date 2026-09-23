@@ -48,6 +48,8 @@ from kullback.runner.records import (
     as_dict,
     content_hash,
     read_json,
+    run_path,
+    stored_run_path,
     write_json,
 )
 
@@ -234,6 +236,28 @@ def pool_user_ends(task_id: str, rerolls: dict) -> dict[str, str]:
             if row.get("run_id") and row.get("user_end")}
 
 
+def with_run_paths(workdir: Any, index: Any) -> dict:
+    """A replay or re-roll index with every row's Run path resolved against the workdir (F14).
+
+    The rows store paths relative to the workdir; the derivation opens them from any cwd, so the
+    index is resolved once where it is read, per Task a dict of rows (replays) or a list (re-rolls).
+    """
+    def one(row: Any) -> Any:
+        if isinstance(row, dict) and row.get("path"):
+            return {**row, "path": str(run_path(workdir, row["path"]))}
+        return row
+
+    out: dict = {}
+    for task_id, rows in (index or {}).items() if isinstance(index, dict) else ():
+        if isinstance(rows, dict):
+            out[task_id] = {key: one(row) for key, row in rows.items()}
+        elif isinstance(rows, list):
+            out[task_id] = [one(row) for row in rows]
+        else:
+            out[task_id] = rows
+    return out
+
+
 def pool_runs_of(task_id: str, replays: dict, rerolls: dict) -> list[tuple[str, str]]:
     """The Runs D133's pool holds for one Task, as (run id, path): the confirmed replays, the anchor
     among them (D81), and the re-rolls of any round that reached a success termination.
@@ -291,7 +315,8 @@ def second_path_rows(workdir: Path, task_id: str) -> list[dict]:
         rows = read_json(extra_rerolls_path(workdir), {}) or {}
     except (OSError, ValueError):
         return []
-    return [dict(row) for row in (rows.get(task_id) or [])
+    resolved = with_run_paths(workdir, {task_id: rows.get(task_id) or []})[task_id]
+    return [dict(row) for row in resolved
             if isinstance(row, dict) and row.get("reason") == SECOND_PATH_REASON
             and row.get("path") and Path(row["path"]).is_file()]
 
@@ -315,6 +340,7 @@ def record_second_path(workdir: Path, task_id: str, rows: Iterable[dict], batch:
     the frontier pool, the loosening gate and the next derivation all see them.
     """
     tagged = [{**dict(row), "reason": SECOND_PATH_REASON, "batch": int(batch)} for row in rows]
+    stored = [{**row, "path": stored_run_path(workdir, row.get("path"))} for row in tagged]
     with _EXTRA_REROLLS_LOCK:
         path = extra_rerolls_path(workdir)
         try:
@@ -322,7 +348,7 @@ def record_second_path(workdir: Path, task_id: str, rows: Iterable[dict], batch:
         except (OSError, ValueError):
             every = {}
         seen = {row.get("run_id") for row in every.get(task_id) or []}
-        every.setdefault(task_id, []).extend(row for row in tagged if row.get("run_id") not in seen)
+        every.setdefault(task_id, []).extend(row for row in stored if row.get("run_id") not in seen)
         write_json(path, every)
     return tagged
 
@@ -1236,13 +1262,14 @@ def _seed_row_confirmed(row: dict) -> bool:
 
 
 def _build_judge(judge_model: Any, judge_agent: bool, constraints: list, write_tools: set,
-                 read_tools: set, fn: Any) -> Any:
+                 read_tools: set, fn: Any, workdir: Any = None) -> Any:
     """The residue judge: nothing, the one-shot judge, or the agent with a bounded look (D185)."""
     if judge_model is None:
         return None
     if judge_agent:
         return judge_mod.AgentJudge(judge_model, constraints=constraints,
-                                    write_tools=write_tools, read_tools=read_tools, fn=fn)
+                                    write_tools=write_tools, read_tools=read_tools, fn=fn,
+                                    workdir=workdir)
     return judge_model
 
 
@@ -1293,8 +1320,8 @@ def _init_state(ctx: ExamContext, inputs: dict, *, probe_model: Any = None,
     canon_rules = rules_of(inputs)
     fn = verifier_suite.canon_fn(canon_rules)
     write_tools, read_tools = _tool_names(inputs["sigs"])
-    replays = _store_map(inputs, "replays")
-    rerolls = _store_map(inputs, "rerolls")
+    replays = with_run_paths(ctx.workdir, _store_map(inputs, "replays"))
+    rerolls = with_run_paths(ctx.workdir, _store_map(inputs, "rerolls"))
     intents = _validated_intents(inputs)
     user_rules = _store_map(inputs, "user_rules")
     traces = _trace_index(inputs)
@@ -1304,7 +1331,8 @@ def _init_state(ctx: ExamContext, inputs: dict, *, probe_model: Any = None,
     assisted_tools = set(_store_list(inputs, "assisted_tools"))
     tool_fidelity = _store_map(inputs, "tool_fidelity")
     atoms = reference_mod.hard_atoms(constraints, write_tools, read_tools)
-    judge = _build_judge(judge_model, judge_agent, constraints, write_tools, read_tools, fn)
+    judge = _build_judge(judge_model, judge_agent, constraints, write_tools, read_tools, fn,
+                         workdir=ctx.workdir)
     probe = _probe_of(run_probe, probe_model)
     common = _key_base(code_hash, canon_rules, constraints, policy_lines, write_tools,
                        probe_model, probe_limit, probe, judge_model, judge_agent)

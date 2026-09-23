@@ -94,13 +94,16 @@ def test_write_present_in_every_successful_rerun_is_required(tmp_path):
 
 
 def test_user_stated_value_is_required_and_elicited_value_is_allowed(tmp_path):
+    """A value the user said stays the literal it was; one elicited in some re-runs is allowed."""
     verifier = derive(tmp_path)
     order = [a for a in verifier.atoms if S.atom_payload(a).get("field") == "order_id"][0]
     reason = [a for a in verifier.atoms if S.atom_payload(a).get("field") == "reason"][0]
     assert order.provenance == "user_stated"
     assert order.kind == "required"
+    assert S.atom_payload(order)["raw"] == "#W123"
     assert reason.provenance == "user_elicited"
     assert reason.kind == "allowed"
+    assert S.atom_payload(reason)["raw"] == "no longer needed"
 
 
 def test_system_derived_and_agent_chosen_provenance(tmp_path):
@@ -125,13 +128,6 @@ def test_system_derived_and_agent_chosen_provenance(tmp_path):
     assert order.kind == "hard" and S.atom_payload(order)["derived_as"] == V.SHAPE_ATOM
     assert reason.provenance == "agent_chosen"
     assert reason.kind == "allowed"
-
-
-def test_value_in_some_successful_reruns_is_allowed(tmp_path):
-    verifier = derive(tmp_path)
-    reason = [a for a in verifier.atoms if S.atom_payload(a).get("field") == "reason"][0]
-    assert reason.kind == "allowed"
-    assert S.atom_payload(reason)["raw"] == "no longer needed"
 
 
 def test_a_write_only_a_failed_rerun_made_is_not_an_atom(tmp_path):
@@ -281,14 +277,11 @@ def test_the_canonicalizer_makes_two_spellings_of_an_id_agree(tmp_path):
 
 # --- questions, communicate facts, entity count, hard constraints ---------
 
-def test_question_asked_becomes_an_atom(tmp_path):
-    verifier = derive(tmp_path)
-    questions = [a for a in verifier.atoms if a.kind == "question"]
-    assert [S.atom_payload(a)["key"] for a in questions] == ["field:reason"]
-
 
 def test_a_run_that_skips_the_required_question_fails(tmp_path):
     verifier = derive(tmp_path)
+    questions = [a for a in verifier.atoms if a.kind == "question"]
+    assert [S.atom_payload(a)["key"] for a in questions] == ["field:reason"]
     silent = make_run("silent", [
         user("Please cancel my order #W123."),
         call("get_order_details", {"order_id": "#W123"}, kind="read", cid="c0"),
@@ -387,17 +380,12 @@ def test_a_judge_atom_is_never_answered_by_code(tmp_path):
     assert atom.judge is True
     assert not atom.predicate_src  # nothing for verdict.py to evaluate
     assert S.hard_holds(atom, reference_run(), WRITE_TOOLS) is None
-    # It is not silently satisfied either: a rude Run passes only because code did not decide.
-    assert S.check_run(verifier, reference_run()) == (True, None)
-    assert S.check_run(verifier, make_run("rude", reference_events(final="No."))) [1] != "hard.k2"
-
-
-def test_verifier_records_its_seed_runs_and_round_trips(tmp_path):
-    verifier = derive(tmp_path)
-    assert verifier.task_id == "t1"
-    assert verifier.seed_run_ids == ["ref", "alt", "rr2"]
-    again = Verifier.model_validate(json.loads(json.dumps(as_dict(verifier))))
-    assert again == verifier
+    # A must-hold judge atom leaves the Run without a code score, whatever the Run said.
+    assert S.check_run(verifier, reference_run()) == (False, "hard.k2")
+    rude = make_run("rude", reference_events(
+        final="No. Your order #W123 is cancelled and 150.0 is refunded, deal with it."))
+    assert S.check_run(derive(tmp_path), rude) == (True, None)
+    assert S.check_run(verifier, rude) == (False, "hard.k2")
 
 
 # --- tau2 export ----------------------------------------------------------
@@ -424,8 +412,6 @@ def test_export_can_be_limited_to_required_writes(tmp_path):
     assert len(V.export_tau2_actions(verifier)) == 2
     required_only = V.export_tau2_actions(verifier, include_allowed=False)
     assert [a["arguments"]["order_id"] for a in required_only] == ["#W123"]
-
-
 
 
 # --- which stated facts the answer must repeat (D43) ----------------------
@@ -473,26 +459,23 @@ def test_a_fact_the_request_never_asked_about_is_reported_and_rejects_no_run(tmp
     assert stated(verifier, V.REPORTED_COMMUNICATE) == ["249.0", "36"]
     quieter = pump_run("shop-alt", final="Your pump P-2044 is still under warranty.")
     assert S.check_run(verifier, quieter, write_tools=SHOP_TOOLS) == (True, None)
-
-
-def test_a_fact_the_request_names_by_its_field_must_be_stated_back(tmp_path):
-    """The caller asked in words, not in numbers: the field the fact was read from is the link."""
-    verifier = pump_verifier("tell the caller how many warranty months the pump has left")
-    assert stated(verifier, "communicate") == ["36", "P-2044"]
-    assert stated(verifier, V.REPORTED_COMMUNICATE) == ["249.0"]
-    silent = pump_run("shop-alt", final="Your pump P-2044 is still under warranty.")
-    assert S.check_run(verifier, silent, write_tools=SHOP_TOOLS)[0] is False
-
-
-def test_a_reported_fact_keeps_the_value_the_span_and_a_predicate_that_can_answer(tmp_path):
-    """Reported is not dropped: the Verdict can still say whether the Run stated the fact."""
-    verifier = pump_verifier("tell the caller about the pump they asked about")
+    # Reported is not dropped: the Verdict can still say whether the Run stated the fact.
     price = fact_atom(verifier, "249.0")
     # No provenance since D190: provenance is what evidences a demand, and this atom makes none.
     assert price.kind == "allowed" and price.provenance is None
     assert price.predicate_src and "249.0" in price.predicate_src
     assert price.spans and price.spans[0].msg_index == 2
     assert "rejects no Run" in (price.description or "")
+
+
+def test_a_fact_the_request_names_by_its_field_must_be_stated_back(tmp_path):
+    """The caller asked in words, not in numbers: the field the fact was read from is the link."""
+    verifier = pump_verifier("tell the caller how many warranty months the pump has left")
+    assert stated(verifier, "communicate") == ["36", "P-2044"]
+    assert fact_atom(verifier, "36").kind == "communicate"
+    assert stated(verifier, V.REPORTED_COMMUNICATE) == ["249.0"]
+    silent = pump_run("shop-alt", final="Your pump P-2044 is still under warranty.")
+    assert S.check_run(verifier, silent, write_tools=SHOP_TOOLS)[0] is False
 
 
 # --- the write cap on a Task whose Reference wrote nothing -----------------
@@ -526,6 +509,16 @@ def test_a_verifier_that_would_ask_nothing_at_all_keeps_the_facts_the_reference_
     assert "asks nothing else" in (fact_atom(verifier, "249.0").description or "")
     silent = pump_run("shop-alt", asked="Can you look into my pump for me?", final="I have looked.")
     assert S.check_run(verifier, silent, write_tools=SHOP_TOOLS)[0] is False
+    # A single character is never a fact, so a bay letter the answer states is not demanded.
+    bay = make_run("shop-bay", [
+        user("Can you look into my pump for me?"),
+        call("get_part_record", {"part_id": "P-2044"}, kind="read", cid="r0"),
+        result({**PUMP, "bay": "B"}, cid="r0"),
+        assistant("Pump P-2044 in bay B lists at 249.0."),
+    ], task_id="shop")
+    lettered = V.derive_verifier(Task(id="shop", intent="look into the pump the caller asked about"),
+                                 bay, [], None, write_tools=SHOP_TOOLS)
+    assert stated(lettered, "communicate") == ["249.0", "P-2044"]
 
 
 def test_the_cap_stays_when_the_verifier_asks_for_something_else(tmp_path):

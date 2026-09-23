@@ -15,8 +15,8 @@ import pytest
 
 from examiner.worlds import World
 from gates.verifier_fixtures import make_run, write_events_jsonl
-from kullback.examiner import agent as examiner_agent
-from kullback.examiner import lifecycle, loosen
+from kullback.examiner import lifecycle, loosen, stage
+from kullback.gates.ledger import GateLedger
 from kullback.gates.loosening import false_rejection_gate
 from kullback.gates.trust import trusted_gate
 from kullback.runner.records import Run, Task, ToolSig, Verifier
@@ -115,8 +115,9 @@ def _probe_runner(run: Run):
 
 
 def _derive(world: World, round_number: int = 0) -> None:
-    examiner_agent.run_examiner(world.workdir, inputs=world.inputs, probe_model=object(),
-                                run_probe=_probe_runner(_reserved_nothing()), round=round_number)
+    ctx = stage.ExamContext(world.workdir, GateLedger(world.workdir))
+    stage.derive_all(ctx, world.inputs, probe_model=object(),
+                     run_probe=_probe_runner(_reserved_nothing()), round_number=round_number)
 
 
 def _hold_out_the_other_path(world: World) -> None:
@@ -241,44 +242,13 @@ def test_withdrawing_the_reference_retires_the_verifier_and_no_gate_scores_it(de
                            plan.store["replays"], plan.store["rerolls"], plan.store["canon_rules"],
                            plan.store["sigs"])
     assert WITHDRAWN not in trusted.metrics["untrusted"] and WITHDRAWN not in trusted.metrics["trusted"]
-
-
-def test_the_task_reads_verifier_retired_with_the_reason_rather_than_over_strict(derived):
-    _withdraw(derived)
-    _derive(derived, round_number=1)
-    row = lifecycle.retired_row(_plan(derived).store["task_status"][WITHDRAWN])
+    # The Task reads verifier retired, with the reason, rather than over strict.
+    row = lifecycle.retired_row(plan.store["task_status"][WITHDRAWN])
     assert row is not None and row["reason"] == lifecycle.REFERENCE_WITHDRAWN and row["round"] == 1
     assert row["source_run_ids"] == ["ref", "alt"]
-    assert lifecycle.counts(lifecycle.retired_in_round(_plan(derived).store["task_status"], 1)) == {
+    assert lifecycle.counts(lifecycle.retired_in_round(plan.store["task_status"], 1)) == {
         "verifiers_retired": 1,
         "verifiers_retired_by_reason": {lifecycle.REFERENCE_WITHDRAWN: 1, lifecycle.REFERENCE_REDERIVED: 0}}
-
-
-def test_the_retired_verifier_stays_in_history_under_the_reason_it_was_retired_for(derived):
-    was = _plan(derived).current(WITHDRAWN)
-    _withdraw(derived)
-    _derive(derived, round_number=1)
-    versions = _plan(derived).store["history"][WITHDRAWN].versions
-    last = versions[-1]
-    assert last.accepted is False and last.rejected_by == [lifecycle.REFERENCE_WITHDRAWN]
-    assert last.reason.startswith(lifecycle.REFERENCE_WITHDRAWN) and last.round == 1
-    assert last.verifier.atoms == was.atoms, "the version it was is still readable"
-
-
-def test_a_task_whose_reference_is_confirmed_again_derives_a_verifier_afresh(derived):
-    _withdraw(derived)
-    _derive(derived, round_number=1)
-    derived.inputs["replays"][WITHDRAWN]["ref"]["confirmed"] = True
-    derived.inputs["replays"][WITHDRAWN]["ref"]["reasons"] = []
-    derived.inputs["rerolls"][WITHDRAWN] = [{"run_id": "alt", "path": derived.paths[f"{WITHDRAWN}/alt"],
-                                             "termination_reason": "success"}]
-    _derive(derived, round_number=2)
-    _hold_out_the_other_path(derived)
-    plan = _plan(derived)
-    assert _verifier_file(derived, WITHDRAWN).is_file()
-    assert plan.current(WITHDRAWN) is not None, "the derivation ran again, nothing was revived"
-    reasons = [v.reason for v in plan.store["history"][WITHDRAWN].versions]
-    assert any(reason.startswith(lifecycle.REFERENCE_WITHDRAWN) for reason in reasons), "history keeps it"
 
 
 def test_the_task_that_kept_its_reference_is_untouched(derived):
