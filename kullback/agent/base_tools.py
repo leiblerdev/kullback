@@ -421,11 +421,24 @@ class BaseToolConfig:
     timeout_s: float = DEFAULT_BASH_TIMEOUT_S
 
 
+# How many same-stem siblings a missing-file refusal names (F35).
+SIBLINGS_SHOWN = 5
+
+
+def _siblings_note(root: Path, path: Path) -> str:
+    """The files beside a missing one that share its stem, so a wrong extension costs one turn (F35)."""
+    if not path.parent.is_dir():
+        return ""
+    names = sorted(_relative(root, p) for p in path.parent.iterdir() if p.is_file() and p.stem == path.stem)
+    return f"; the directory holds {', '.join(names[:SIBLINGS_SHOWN])}" if names else ""
+
+
 def _read_tool(config: BaseToolConfig) -> AgentTool:
     async def execute(args: ReadArgs) -> ReadResult:
         path = resolve_in_root(config.root, args.path)
         if not path.exists():
-            raise PathRefused(f"no file {args.path!r} under this agent's root directory")
+            raise PathRefused(f"no file {args.path!r} under this agent's root directory"
+                              + _siblings_note(config.root, path))
         if path.is_dir():
             raise PathRefused(f"{args.path!r} is a directory; ls lists one and read reads a file")
         if args.offset is not None and args.offset < 0:

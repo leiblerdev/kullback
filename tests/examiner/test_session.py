@@ -337,3 +337,32 @@ def test_the_rulings_line_names_the_derived_verifier_and_the_user_rules_of_a_con
     assert "proposal: verifiers/t1.json once you first propose one" in lines["t1"]
     assert "user rules: user_rules/ref.json" in lines["t1"]
     assert "no user rules until the Reference is confirmed" in lines["t2"]
+
+
+def test_the_rulings_line_names_the_spoken_file_expose_wrote_with_its_extension(tmp_path):
+    """The spoken part is the real file under exam/spoken, so no read guesses its extension (F35)."""
+    world = make_world(tmp_path)
+    materialize(world)
+    write_json(world.workdir / "references.json", {"t1": {"references": [{"run_id": "ref"}]}})
+    S.examine(world.workdir, model=None)
+    root = S._exam_root(world.workdir, S.load_store(world.workdir), [])
+    [spoken] = sorted((root.exam_dir / "spoken").glob("t1.*"))
+    assert f"spoken: spoken/{spoken.name}" in S.rulings_line(root, ["t1"])
+    spoken.rename(spoken.with_suffix(".md"))
+    assert "spoken: spoken/t1.md" in S.rulings_line(root, ["t1"])
+    spoken.with_suffix(".md").unlink()
+    assert "spoken: none" in S.rulings_line(root, ["t1"])
+
+
+def test_a_session_capped_after_a_refused_proposal_files_its_note_on_that_task_with_the_refusal(tmp_path):
+    """The turn-cap finding names the Task the session was on and the last refusal it read (F36)."""
+    world = make_world(tmp_path)
+    materialize(world)
+    proposing = TestModel([reply("proposing", ("propose_verifier", {"task_id": "t1", "reason": "tighten",
+                                                                    "drop": [], "add": []}))], loop=True)
+    findings = S.examine(world.workdir, model=proposing, max_turns=2)
+    note = findings[-1]
+    assert note.change.startswith("the Examiner ran out of turns at 2")
+    assert note.task_id == "t1"
+    assert "; last refusal: " in note.change
+    assert read_json(world.workdir / "findings.json")[-1]["task_id"] == "t1"

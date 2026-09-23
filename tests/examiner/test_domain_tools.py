@@ -293,3 +293,17 @@ def test_a_refusal_names_the_atom_its_empty_run_rows_carry():
     message = str(D._refuse_proposal("t1", "2", records))
     assert "verifier_empty_run: the atom the empty Run passed on is w0.reason (reason is given)" in message
     assert "verifier_alt_path: the atom" not in message, "no atom in the rows, none named"
+
+
+def test_a_reroll_from_the_tool_lands_its_model_calls_in_the_runner_stage(tmp_path):
+    """The Examiner's own reroll tool prices its Runs like the derivation's runners (F29)."""
+    from kullback.runner import budget
+    from tests.examiner.test_runners import _exam_env, _priced_script
+
+    workdir = _exam_env(tmp_path / "env")
+    model = _priced_script()
+    root = ExamRoot(workdir=workdir, reroll_model=model)
+    [tool] = [t for t in D.domain_tools(root) if t.name == "reroll"]
+    _run(tool.execute(D.RerollArgs(task_id="widget_task", count=1)))
+    stage = budget.load_totals(workdir)["stages"]["runner"]
+    assert stage["calls"] == len(model.calls) > 0 and stage["usd"] > 0
