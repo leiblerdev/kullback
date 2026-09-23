@@ -439,11 +439,16 @@ because Verifiers failed: 195 retail and 79 airline Tasks were never derived. Bo
 and were sent back by the stop rule guard.
 
 Hugging Face, 2026-09-23. The cards count from the workdir status, since no round closed; fidelity over Tasks
-there is the Tasks whose Reference replays confirmed, where the table above counts calls.
+there is the Tasks whose Reference replays confirmed, where the table above gives the Reference fidelity and the
+share of every recorded call that agrees.
 - retail: release, tag build-20260923, 98.5% over Tasks (202 of 205), 96.7% over Runs, 20 Verifiers, 14 trusted,
   https://huggingface.co/datasets/leibler/retail
 - airline: preview, tag build-20260923, 84.0% over Tasks (100 of 119), 84.5% over Runs, 30 Verifiers, 22 trusted,
   https://huggingface.co/datasets/leibler/airline
+
+Earlier the same day, before publish counted from the workdir status: retail went out as a release under the tag
+round-unknown (dataset commit f1613092) with 20 References and 0 trusted, and airline was refused as a release at
+84.0% over Tasks.
 
 Readings: `.claude/reports/smoke-luna-observations-2026-09-23.md` (section "Smoke 7 final numbers"),
 `.claude/reports/sol-behaviour-2026-09-23.md` and `.claude/reports/env-quality-vs-tau2-2026-09-23.md`.
