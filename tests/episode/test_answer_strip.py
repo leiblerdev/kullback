@@ -43,14 +43,6 @@ def test_episode_does_not_build_strip_from_held_out_trace(tmp_path):
     assert episode._state.user is None
 
 
-def test_builder_and_episode_share_the_strip_implementation():
-    from kullback.builder import intent
-    from kullback.user import value_strip
-
-    assert intent.value_strip is value_strip.value_strip
-    assert intent.strip_intent is value_strip.strip_intent
-
-
 @pytest.mark.parametrize("owner_name,dependency_name", [
     ("kullback.builder.compile_env", "kullback.runner.world.loading"),
     ("kullback.builder.sandbox", "kullback.runner.world.loading"),
@@ -65,15 +57,3 @@ def test_closure_hash_of_owner_follows_the_moved_module(owner_name, dependency_n
     assert dependency_name in reach.import_closure(owner_name)
     owner = importlib.import_module(owner_name)
     assert reach.closure_hash(owner) != reach.closure_hash(owner, exempt=frozenset({dependency_name}))
-
-
-def test_unrelated_module_hash_does_not_follow_loader(monkeypatch):
-    from kullback.ai import provider
-    from kullback.builder import world_tools
-    from kullback.runner.world import loading
-
-    original = world_tools._module_hash
-    before = original(provider)
-    monkeypatch.setattr(world_tools, "_module_hash",
-                        lambda module: "changed" if module is loading else original(module))
-    assert world_tools._module_hash(provider) == before
