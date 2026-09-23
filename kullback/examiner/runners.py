@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Any, Iterable, Optional
 
 from kullback.runner import tool as runner_tool
-from kullback.runner.records import UserRules, read_json
+from kullback.runner.records import UserRules, read_json, run_path
 from kullback.runner.target import as_run
 from kullback.runner.world.environment import BuiltEnvironment
 from kullback.user import ends as user_ends
@@ -109,7 +109,8 @@ def runners_for(workdir: Any, *, reroll_model: Any = None, anchor: Any = None) -
     Returns `run_probe(model, verifier)`, `run_rerolls(task_id, count, prefix)` and
     `run_variant(task_id, calls, run_id, transcript=())` with the exact signatures and return
     shapes the derivation consumes, plus `run_variant.write_runs_index` for the caller after its
-    gather. Nothing here opens the compiled side; the runner reads it, the Examiner does not
+    gather. Every row's path is resolved against the workdir, so it opens from any cwd; the
+    Examiner's re-roll file stores it relative again. Nothing here opens the compiled side; the runner reads it, the Examiner does not
     (D123).
     """
     root = Path(workdir)
@@ -124,7 +125,7 @@ def runners_for(workdir: Any, *, reroll_model: Any = None, anchor: Any = None) -
         report = runner_tool.probe(
             root, verifier.task_id, model, verifier=verifier, workdir=root,
             make_user=lambda router: _make_user(root, verifier.task_id, anchor, router))
-        return as_run(report.path)
+        return as_run(run_path(root, report.path))
 
     def run_rerolls(task_id: str, count: int, prefix: str) -> list[dict]:
         """Second-path re-rolls as the derivation takes them: rows bought through the runner (D112).
@@ -141,11 +142,12 @@ def runners_for(workdir: Any, *, reroll_model: Any = None, anchor: Any = None) -
             make_user=lambda router: _make_user(root, task_id, anchor, router))
         rows = []
         for report in reports:
+            path = str(run_path(root, report.path))
             try:
-                user_end: Optional[str] = user_ends.end_of_run(as_run(report.path))
+                user_end: Optional[str] = user_ends.end_of_run(as_run(path))
             except (OSError, ValueError, TypeError):
                 user_end = report.user_end
-            rows.append({"run_id": report.run_id, "path": report.path,
+            rows.append({"run_id": report.run_id, "path": path,
                          "termination_reason": report.termination_reason,
                          "user_end": user_end if user_end is not None else report.user_end})
         return rows
@@ -163,11 +165,12 @@ def runners_for(workdir: Any, *, reroll_model: Any = None, anchor: Any = None) -
             transcript=tuple(transcript), workdir=root)
         if not report.path:
             return None
+        path = str(run_path(root, report.path))
         try:
-            run = as_run(report.path)
+            run = as_run(path)
         except (OSError, ValueError, TypeError):
             return None
-        return {"run_id": report.run_id, "path": report.path,
+        return {"run_id": report.run_id, "path": path,
                 "termination_reason": run.termination_reason, "crashed": None}
 
     def write_runs_index() -> Path:

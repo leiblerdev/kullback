@@ -320,7 +320,7 @@ def save_ruling_files(root: ExamRoot) -> None:
     evidence the session holds. task_runs rows are the Run dicts, as_dict of each Run.
     """
     save_history(root, root.history)
-    runs = task_runs_of(root.replays, root.rerolls)
+    runs = task_runs_of(root.replays, root.rerolls, workdir=root.workdir)
     write_json(root.exam_dir / "task_runs.json",
                {task_id: [as_dict(run) for run in rows] for task_id, rows in (runs or {}).items()})
 
@@ -339,7 +339,7 @@ def evidence_of(root: ExamRoot, task_id: Optional[str] = None) -> dict:
     suite is skipped for missing evidence as before.
     """
     evidence = {"replays": root.replays or None, "rerolls": root.rerolls or None,
-                "history": root.history or None, "task_runs": task_runs_of(root.replays, root.rerolls) or None,
+                "history": root.history or None, "task_runs": task_runs_of(root.replays, root.rerolls, workdir=root.workdir) or None,
                 "verifiers": list(root.verifiers.values()) or None, "probes": _probe_pools(root) or None,
                 "sigs": root.sigs or None, "rules": root.canon_rules,
                 "task_status": root.task_status or None}

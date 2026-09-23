@@ -82,6 +82,30 @@ def read_json(path: Any, default: Any = None) -> Any:
     return json.loads(path.read_text(encoding="utf-8")) if path.is_file() else default
 
 
+def run_path(workdir: Any, path: Any) -> Path:
+    """A stored Run path as a file to open: an absolute path stays, a relative one joins the workdir.
+
+    Run rows (replays.json, rerolls.json, the Examiner's re-roll file) store the path relative to
+    the workdir, so the rows read the same from any cwd and from the Examiner's exam/ copy. Rows an
+    older workdir wrote carry absolute paths, which still open.
+    """
+    path = Path(str(path))
+    return path if path.is_absolute() else Path(workdir) / path
+
+
+def stored_run_path(workdir: Any, path: Any) -> str:
+    """A Run path as a row stores it: relative to the workdir where it lies under it, else as given."""
+    if not path:
+        return ""
+    path, root = Path(str(path)), Path(workdir)
+    for inner, outer in ((path, root), (path.resolve(), root.resolve())):
+        try:
+            return inner.relative_to(outer).as_posix()
+        except ValueError:
+            continue
+    return str(path)
+
+
 class Record(BaseModel):
     """Base for every record: aliases work both ways so `class` and `pass` survive a round trip.
 

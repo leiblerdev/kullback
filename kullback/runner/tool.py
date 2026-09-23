@@ -25,7 +25,17 @@ from typing import Any, Optional
 from kullback import sampling
 from kullback.runner import loop, route
 from kullback.runner import replay as replay_mod
-from kullback.runner.records import RawPtr, ToolCall, Trace, Turn, as_dict, plain, read_json, write_json
+from kullback.runner.records import (
+    RawPtr,
+    ToolCall,
+    Trace,
+    Turn,
+    as_dict,
+    plain,
+    read_json,
+    stored_run_path,
+    write_json,
+)
 from kullback.runner.replay import AGREES
 from kullback.runner.target import load_run
 from kullback.runner.verdict import verdict as score_verdict
@@ -41,7 +51,10 @@ PROBE_TURNS = 6
 
 @dataclass
 class RunReport:
-    """One Run played: its Verdict, the route each call took, the world diff and the spend."""
+    """One Run played: its Verdict, the route each call took, the world diff and the spend.
+
+    `path` is relative to the workdir (runs/...), resolved with records.run_path by every reader.
+    """
 
     run_id: str
     task_id: str
@@ -82,7 +95,10 @@ class ReplayCall:
 
 @dataclass
 class ReplayReport:
-    """One Task replayed: per-call answers column by column, and the fidelity they compose."""
+    """One Task replayed: per-call answers column by column, and the fidelity they compose.
+
+    `path` is relative to the workdir, the way RunReport stores it.
+    """
 
     task_id: str
     trace_id: str
@@ -222,7 +238,7 @@ def run(environment_dir: Any, task_id: str, model: Any, *, user: Any = None, mak
     taken = [{"id": event.payload.get("id"), "name": event.payload.get("name"),
               "route": event.route}
              for event in state.run.events if event.type == "tool_result"]
-    return RunReport(run_id=run_id, task_id=task_id, path=str(state.path) if state.path else "",
+    return RunReport(run_id=run_id, task_id=task_id, path=stored_run_path(workdir, state.path),
                      verdict=scored, routes=taken,
                      world_diff=_world_diff(router.start_world, router.world()),
                      spend=as_dict(state.run.cost), runner_version=report_version,
@@ -251,7 +267,7 @@ def _first_differing_column(check: dict) -> Optional[str]:
     return None
 
 
-def _replay_report(task_id: str, out: Any) -> ReplayReport:
+def _replay_report(task_id: str, out: Any, workdir: Any) -> ReplayReport:
     """One replayed Trace as a report: per-call answers with the first differing column named."""
     calls = [ReplayCall(call_id=check.get("call_id"), tool=str(check.get("tool")),
                         kind=str(check.get("kind")), verdict=str(check.get("verdict")),
@@ -262,7 +278,8 @@ def _replay_report(task_id: str, out: Any) -> ReplayReport:
     total = len(calls)
     fidelity = sum(1 for call in calls if call.verdict in AGREES) / total if total else 1.0
     return ReplayReport(task_id=task_id, trace_id=out.trace_id, run_id=out.run_id,
-                        path=out.path, confirmed=out.confirmed, fidelity=fidelity,
+                        path=stored_run_path(workdir, out.path), confirmed=out.confirmed,
+                        fidelity=fidelity,
                         calls=calls, counts=dict(out.counts), reasons=list(out.reasons),
                         runner_version=version())
 
@@ -284,7 +301,7 @@ def _replay_one(env: BuiltEnvironment, task_id: str, trace: Trace, *, workdir: A
     out = replay_mod.replay_trace(
         trace, router, workdir=runs_dir, task_id=task_id, env_id=env.env_id,
         write_tools=env.write_tools(), canon_rules=env.canon_rules)
-    report = _replay_report(task_id, out)
+    report = _replay_report(task_id, out, workdir)
     report.held_out = trace.trace_id in held_out
     report.reference = reference is not None and trace.trace_id == reference.trace_id
     return report
@@ -426,7 +443,7 @@ def probe(environment_dir: Any, task_id: str, model: Any, *, verifier: Any, work
     taken = [{"id": event.payload.get("id"), "name": event.payload.get("name"),
               "route": event.route}
              for event in state.run.events if event.type == "tool_result"]
-    return RunReport(run_id=run_id, task_id=task_id, path=str(state.path) if state.path else "",
+    return RunReport(run_id=run_id, task_id=task_id, path=stored_run_path(workdir, state.path),
                      verdict=scored, routes=taken,
                      world_diff=_world_diff(router.start_world, router.world()),
                      spend=as_dict(state.run.cost), runner_version=report_version,
@@ -482,7 +499,7 @@ def replay_calls(environment_dir: Any, task_id: str, calls: Any, *, run_id: str,
     out = replay_mod.replay_trace(
         trace, router, workdir=task_dir, task_id=task_id, env_id=env.env_id,
         write_tools=env.write_tools(), canon_rules=env.canon_rules, run_id=run_id)
-    return _replay_report(task_id, out)
+    return _replay_report(task_id, out, workdir)
 
 
 def write_runs_index(workdir: Any) -> Path:
