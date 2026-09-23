@@ -13,6 +13,7 @@ Carried: D155 (the recording is the standard a replay row measures against), D17
 
 from __future__ import annotations
 
+import asyncio
 import json
 from pathlib import Path
 from typing import Any, Callable, Optional
@@ -532,7 +533,8 @@ def domain_tools(*, workdir: Any, model: Any = None,
                          task_id=args.task_id, runs=rows)
 
     async def examine(args: ExamineArgs) -> ExamineResult:
-        return _coerce_examine(examine_call(root, args.task_ids))
+        # The Examiner session owns its own event loop, so it runs off the Builder's, on a thread.
+        return _coerce_examine(await asyncio.to_thread(examine_call, root, args.task_ids))
 
     return [
         AgentTool("ingest", "Store customer files as traces under the workdir.",

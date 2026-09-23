@@ -276,27 +276,13 @@ def test_status_answers_one_row_per_task_and_per_tool(tmp_path):
     assert by_tool["rename_widget"]["fidelity"] == 1.0
     assert by_tool["describe_widget"]["reason"] == "no replay rows yet"
 
-def test_default_examine_passes_the_session_model_through(tmp_path, monkeypatch):
-    import sys
-    import types
-
-    seen = {}
-
-    def fake_examine(workdir, *, task_ids=None, model=None, **kwargs):
-        seen["model"] = model
-        seen["task_ids"] = task_ids
-        return []
-
-    stub = types.ModuleType("kullback.examiner.session")
-    stub.examine = fake_examine
-    monkeypatch.setitem(sys.modules, "kullback.examiner.session", stub)
+def test_the_examine_tool_runs_the_examiner_session_from_inside_the_builders_loop(tmp_path):
     root = _workdir(tmp_path)
-    sentinel = object()
-    tools = {tool.name: tool for tool in domain_tools_mod.domain_tools(workdir=root, model=sentinel)}
+    model = TestModel([reply("Nothing to file.")])
+    tools = {tool.name: tool for tool in domain_tools_mod.domain_tools(workdir=root, model=model)}
     result = _run(tools["examine"], {})
     assert not result.is_error, result.content
-    assert seen["model"] is sentinel
-    assert seen["task_ids"] is None
+    assert (root / "findings.json").exists()
 
 
 def _record_examine(monkeypatch):
