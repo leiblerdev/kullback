@@ -40,8 +40,8 @@ TOOLS = (
     'ingest: {"files": ["batch.json"]}\n'
     'derive_world: {"grow": null}\n'
     'grow: {"table": "a-table", "count": 2}\n'
-    'replay: {"task_id": "task-1"}\n'
-    'run: {"task_id": "task-1", "count": 2}\n'
+    'replay: {"task_id": "task-1"}, or {} to replay every Task\n'
+    'run: {"task_ids": ["task-1"], "count": 2}, or {} for every open Task with a confirmed Reference\n'
     'status: {}\n'
     'examine: {"task_ids": null}'
 )
@@ -64,7 +64,10 @@ CHOICE = (
     "exception: write it whole, once, from its calls. Where several recorded "
     "calls agree with each other and against the description, the body reproduces what "
     "the recording does: the recording is the standard. Never write world rows, Verifiers "
-    "or probes. Refuse a Task only when no frontier Run of it finished."
+    "or probes. Refuse a Task only when no frontier Run of it finished. "
+    "The order of the loop: derive the world first, write the bodies from the calls, replay "
+    "until the Reference is confirmed, examine to derive the Verifier, run to play the Task "
+    "against it, then examine again for findings. A Run before its Verifier has no verdict."
 )
 
 FEEDBACK = (

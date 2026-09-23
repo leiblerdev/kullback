@@ -108,11 +108,12 @@ def _render_derive(result: DeriveResult) -> str:
 
 
 class ReplayArgs(BaseModel):
-    """The Task whose recorded calls to replay."""
+    """The Task whose recorded calls to replay, or none for every Task."""
 
     model_config = ConfigDict(extra="forbid")
 
-    task_id: str = Field(description="The Task whose recorded calls to replay.")
+    task_id: Optional[str] = Field(default=None, description="The Task whose recorded calls to "
+                                   "replay; leave it out to replay every Task.")
 
 
 class ReplayRow(BaseModel):
@@ -142,8 +143,26 @@ class ReplayTrace(BaseModel):
     calls: int = 0
 
 
+class ReplayTask(BaseModel):
+    """One Task of a replay over every Task: its reference and where it first parts."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    task_id: str = ""
+    fidelity: float = 0.0
+    confirmed: bool = False
+    traces: int = 0
+    first_differing_tool: Optional[str] = None
+    first_differing_column: Optional[str] = None
+    error: Optional[str] = None
+
+
 class ReplayResult(BaseModel):
-    """One Task replayed over every Trace: a line per Trace, the reference's per-call rows."""
+    """One Task replayed over every Trace: a line per Trace, the reference's per-call rows.
+
+    Over every Task (no task_id), `tasks` holds one row per Task and `tools` the per-tool
+    fidelity the status tool reads; the rows of every reference ride in details.
+    """
 
     summary: str = ""
     task_id: str = ""
@@ -153,9 +172,36 @@ class ReplayResult(BaseModel):
     total: int = 0
     rulings: list[dict] = Field(default_factory=list, description="One record per ruling in the "
                                 "shape attach_ruling uses: name, accepted, line, rows.")
+    tasks: list[ReplayTask] = Field(default_factory=list)
+    tools: list[dict] = Field(default_factory=list)
+
+
+def _render_replay_all(result: ReplayResult) -> str:
+    lines = [result.summary]
+    for row in result.tools:
+        fidelity = row.get("fidelity")
+        lines.append(f"tool {row.get('tool')}: "
+                     + (f"fidelity {fidelity:.4f} over {row.get('calls')} calls"
+                        if fidelity is not None else str(row.get("reason"))))
+    worst = sorted(result.tasks, key=lambda task: (task.error is None, task.fidelity, task.task_id))
+    for task in worst[:ROWS_SHOWN]:
+        if task.error is not None:
+            lines.append(f"task {task.task_id}: not replayed ({task.error})")
+            continue
+        where = (f"first differs at {task.first_differing_tool} [{task.first_differing_column}]"
+                 if task.first_differing_tool else "every call agrees")
+        lines.append(f"task {task.task_id}: fidelity {task.fidelity:.4f}, "
+                     f"{'confirmed' if task.confirmed else 'not confirmed'}, {where}")
+    rest = len(result.tasks) - len(worst[:ROWS_SHOWN])
+    if rest > 0:
+        lines.append(f"and {rest} more Tasks, all at or above the fidelity shown")
+    lines += [ruling["line"] for ruling in result.rulings]
+    return "\n".join(lines)
 
 
 def _render_replay(result: ReplayResult) -> str:
+    if result.tasks:
+        return _render_replay_all(result)
     lines = [result.summary]
     for trace in result.traces:
         grain = "reference" if trace.reference else "held out" if trace.held_out else "seed"
@@ -218,13 +264,20 @@ def fidelity_index(replays: Any) -> dict[str, Any]:
     return {"tools": tools, "tasks": tasks}
 
 
+#: The most fresh Runs one run call plays; the Tasks past it are named as not run.
+RUNS_PER_CALL = 20
+
+
 class RunArgs(BaseModel):
-    """The Task to play fresh Runs of, and how many."""
+    """The Tasks to play fresh Runs of, and how many per Task."""
 
     model_config = ConfigDict(extra="forbid")
 
-    task_id: str = Field(description="The Task to play fresh Runs of.")
-    count: int = Field(default=1, ge=1, le=10, description="How many fresh Runs to play.")
+    task_id: Optional[str] = Field(default=None, description="One Task to play fresh Runs of.")
+    task_ids: Optional[list[str]] = Field(
+        default=None, description="The Tasks to play fresh Runs of; leave both out for every "
+        "open Task with a confirmed Reference.")
+    count: int = Field(default=1, ge=1, le=10, description="How many fresh Runs to play per Task.")
 
 
 class RunRow(BaseModel):
@@ -239,14 +292,16 @@ class RunRow(BaseModel):
     spend: dict = Field(default_factory=dict)
     termination_reason: str = ""
     user_end: Optional[str] = None
+    task_id: str = ""
 
 
 class RunResult(BaseModel):
-    """Fresh Runs played: one row per Run, never a count alone."""
+    """Fresh Runs played: one row per Run, never a count alone, and the Tasks left unplayed."""
 
     summary: str = ""
     task_id: str = ""
     runs: list[RunRow] = Field(default_factory=list)
+    not_run: list[str] = Field(default_factory=list)
 
 
 def _render_run(result: RunResult) -> str:
@@ -257,7 +312,14 @@ def _render_run(result: RunResult) -> str:
         spend = row.spend.get("usd") if isinstance(row.spend, dict) else None
         lines.append(f"run {row.run_id}: verdict {row.verdict} [{routes or 'no calls'}]; "
                      f"world: {diff_tables}; spend: {spend} USD; ended: {row.termination_reason}"
-                     + (f", user {row.user_end}" if row.user_end else ""))
+                     + (f", user {row.user_end}" if row.user_end else "")
+                     + ("; no Verifier yet: examine derives it from the confirmed Reference, "
+                        "then run scores against it" if row.verdict is None else ""))
+    if result.not_run:
+        shown = ", ".join(result.not_run[:ROWS_SHOWN])
+        more = len(result.not_run) - len(result.not_run[:ROWS_SHOWN])
+        lines.append(f"not run, past the cap of {RUNS_PER_CALL} Runs per call: {shown}"
+                     + (f" and {more} more" if more > 0 else ""))
     return "\n".join(lines)
 
 
@@ -361,16 +423,24 @@ def stage_line(stage: dict[str, Any]) -> str:
             f"tasks with a finished run {stage['finished']} of {stage['tasks']}")
 
 
+def root_line(workdir: Any) -> str:
+    """What env/ holds directly, names only, sorted, directories with a trailing slash (F19)."""
+    env = Path(workdir) / "env"
+    names = sorted(path.name + ("/" if path.is_dir() else "") for path in env.iterdir()) if env.is_dir() else []
+    return f"Your root holds: {', '.join(names)}." if names else "Your root is empty."
+
+
 def opening_for(workdir: Any, default: str) -> str:
-    """The Builder's first message: the state and the next step, else `default`."""
+    """The Builder's first message: the state and the next step, what the root holds, then `default`."""
     stage = stage_of(workdir)
+    lines = []
     if stage["traces"] and not stage["world_derived"]:
-        return (f"{stage['traces']} traces are stored and the world is not derived: "
-                f"call derive_world first. {default}")
-    if stage["world_derived"] and stage["tools"] and stage["stubs"] == stage["tools"]:
-        return (f"The world is derived and every body is a stub ({stage['stubs']} of {stage['tools']}): "
-                f"write each body from its calls, then replay. {default}")
-    return default
+        lines.append(f"{stage['traces']} traces are stored and the world is not derived: "
+                     f"call derive_world first.")
+    elif stage["world_derived"] and stage["tools"] and stage["stubs"] == stage["tools"]:
+        lines.append(f"The world is derived and every body is a stub ({stage['stubs']} of {stage['tools']}): "
+                     f"write each body from its calls, then replay.")
+    return "\n".join(lines + [root_line(workdir), default])
 
 
 def status_of(workdir: Any) -> dict[str, Any]:
@@ -569,26 +639,67 @@ def domain_tools(*, workdir: Any, model: Any = None,
             stage=stage_of(root), tasks=body["tasks"], tools=body["tools"])
 
 
-    async def replay(args: ReplayArgs) -> ReplayResult:
-        reports = runner_tool.replay_all(root, args.task_id, workdir=root)
-        if not reports:
-            raise ValueError(f"task {args.task_id} holds no recorded Trace to replay")
-        replays = read_json(root / REPLAYS_FILE, None) or {}
-        if not isinstance(replays, dict):
-            replays = {}
-        # Every Trace of the Task was replayed just now, so the Task's rows are replaced whole.
-        replays[args.task_id] = {report.trace_id: report.as_dict() for report in reports}
-        write_json(root / REPLAYS_FILE, replays)
-        write_json(root / "tool_fidelity.json", fidelity_index(replays))
-        write_json(root / HOLDOUT_ANSWERS_FILE, holdout_answers(replays, HeldOutRuns.of(root)))
-        # D108 section 6: a Task none of whose Traces replay to their End state is named.
-        ruling = GateLedger(root).record("replay_reference", reference_replay_gate(replays))
-        reference = reports[0]
-        rows = [ReplayRow(call_id=str(call.call_id or ""), tool=str(call.tool),
+    def replay_rows(reference: Any) -> list[ReplayRow]:
+        return [ReplayRow(call_id=str(call.call_id or ""), tool=str(call.tool),
                           verdict=str(call.verdict),
                           first_differing_column=call.first_differing_column,
                           recorded=str(call.recorded), ours=str(call.ours))
                 for call in reference.calls]
+
+    def store_replays(replayed: dict[str, list]) -> Any:
+        replays = read_json(root / REPLAYS_FILE, None) or {}
+        if not isinstance(replays, dict):
+            replays = {}
+        # Every Trace of each Task was replayed just now, so each Task's rows are replaced whole.
+        for task_id, reports in replayed.items():
+            replays[task_id] = {report.trace_id: report.as_dict() for report in reports}
+        write_json(root / REPLAYS_FILE, replays)
+        write_json(root / "tool_fidelity.json", fidelity_index(replays))
+        write_json(root / HOLDOUT_ANSWERS_FILE, holdout_answers(replays, HeldOutRuns.of(root)))
+        # D108 section 6: a Task none of whose Traces replay to their End state is named.
+        return GateLedger(root).record("replay_reference", reference_replay_gate(replays))
+
+    def replay_every_task() -> ReplayResult:
+        task_ids = [path.stem for path in sorted((root / "tasks").glob("*.json"))
+                    if path.name != "tasks.json"]
+        replayed: dict[str, list] = {}
+        tasks: list[ReplayTask] = []
+        rows: list[ReplayRow] = []
+        for task_id in task_ids:
+            try:
+                reports = runner_tool.replay_all(root, task_id, workdir=root)
+            except Exception as exc:  # noqa: BLE001 - one Task that cannot replay never stops the rest
+                tasks.append(ReplayTask(task_id=task_id, error=str(exc) or type(exc).__name__))
+                continue
+            if not reports:
+                tasks.append(ReplayTask(task_id=task_id, error="no recorded Trace to replay"))
+                continue
+            replayed[task_id] = reports
+            reference = reports[0]
+            first = next((call for call in reference.calls if call.verdict not in AGREES), None)
+            rows += replay_rows(reference)
+            tasks.append(ReplayTask(task_id=task_id, fidelity=reference.fidelity,
+                                    confirmed=reference.confirmed, traces=len(reports),
+                                    first_differing_tool=str(first.tool) if first else None,
+                                    first_differing_column=first.first_differing_column if first else None))
+        ruling = store_replays(replayed)
+        confirmed = sum(1 for task in tasks if task.confirmed)
+        mean = sum(task.fidelity for task in tasks) / len(tasks) if tasks else 0.0
+        return ReplayResult(
+            summary=(f"replay of every Task: {len(replayed)} of {len(task_ids)} Tasks replayed, "
+                     f"{confirmed} confirmed References, mean reference fidelity {mean:.4f}"),
+            fidelity=mean, rows=rows, total=len(rows), rulings=[_ruling_record(ruling)],
+            tasks=tasks, tools=status_of(root)["tools"])
+
+    async def replay(args: ReplayArgs) -> ReplayResult:
+        if args.task_id is None:
+            return replay_every_task()
+        reports = runner_tool.replay_all(root, args.task_id, workdir=root)
+        if not reports:
+            raise ValueError(f"task {args.task_id} holds no recorded Trace to replay")
+        ruling = store_replays({args.task_id: reports})
+        reference = reports[0]
+        rows = replay_rows(reference)
         traces = [ReplayTrace(trace_id=report.trace_id, reference=report.reference,
                               held_out=report.held_out,
                               confirmed=report.confirmed, fidelity=report.fidelity,
@@ -601,24 +712,46 @@ def domain_tools(*, workdir: Any, model: Any = None,
             task_id=args.task_id, fidelity=reference.fidelity, traces=traces, rows=rows,
             total=len(rows), rulings=[_ruling_record(ruling)])
 
+    def runnable_tasks() -> list[str]:
+        """Every open Task whose reference Trace replayed confirmed, in Task order."""
+        replays = read_json(root / REPLAYS_FILE, None) or {}
+        open_ids = [row["task_id"] for row in status_of(root)["tasks"] if row["state"] == "open"]
+        return [task_id for task_id in open_ids
+                if any(isinstance(trace, dict) and trace.get("reference") and trace.get("confirmed")
+                       for trace in ((replays.get(task_id) or {}) if isinstance(replays, dict)
+                                     else {}).values())]
+
     async def run(args: RunArgs) -> RunResult:
         if model is None:
             raise ValueError("run needs the session model to play fresh Runs with")
-        reports = runner_tool.reroll(root, args.task_id, model, count=args.count, workdir=root,
-                                     make_user=lambda router: rule_user(root, args.task_id, router))
-        rows = [RunRow(run_id=item.run_id, verdict=item.verdict,
-                       routes=[dict(route) for route in item.routes],
-                       world_diff=dict(item.world_diff or {}),
-                       spend=dict(item.spend or {}) if isinstance(item.spend, dict) else {},
-                       termination_reason=str(item.termination_reason or ""),
-                       user_end=item.user_end)
-                for item in reports]
-        # A Run is finished when its Simulated user ended it with the goal met (D210); the loop's
-        # own end reason says only who stopped, never whether the goal was reached.
-        finished = sum(1 for item in reports if item.user_end == GOAL_SATISFIED)
-        return RunResult(summary=(f"reroll of task {args.task_id}: {len(rows)} Runs, "
-                                  f"{finished} finished"),
-                         task_id=args.task_id, runs=rows)
+        named = args.task_ids if args.task_ids is not None else [args.task_id] if args.task_id else None
+        task_ids = list(named) if named is not None else runnable_tasks()
+        fits = max(1, RUNS_PER_CALL // args.count)
+        played, not_run = task_ids[:fits], task_ids[fits:]
+        rows: list[RunRow] = []
+        finished = 0
+        for task_id in played:
+            reports = runner_tool.reroll(root, task_id, model, count=args.count, workdir=root,
+                                         make_user=lambda router, task_id=task_id: rule_user(root, task_id, router))
+            rows += [RunRow(run_id=item.run_id, verdict=item.verdict,
+                            routes=[dict(route) for route in item.routes],
+                            world_diff=dict(item.world_diff or {}),
+                            spend=dict(item.spend or {}) if isinstance(item.spend, dict) else {},
+                            termination_reason=str(item.termination_reason or ""),
+                            user_end=item.user_end, task_id=task_id)
+                     for item in reports]
+            # A Run is finished when its Simulated user ended it with the goal met (D210); the loop's
+            # own end reason says only who stopped, never whether the goal was reached.
+            finished += sum(1 for item in reports if item.user_end == GOAL_SATISFIED)
+        if len(task_ids) == 1 and named is not None:
+            summary = f"reroll of task {task_ids[0]}: {len(rows)} Runs, {finished} finished"
+        else:
+            summary = (f"reroll of {len(played)} Tasks: {len(rows)} Runs, {finished} finished, "
+                       f"{len(not_run)} Tasks left not run"
+                       + ("" if task_ids or named is not None
+                          else "; no open Task has a confirmed Reference, replay first"))
+        return RunResult(summary=summary, task_id=task_ids[0] if len(task_ids) == 1 else "",
+                         runs=rows, not_run=not_run)
 
     async def examine(args: ExamineArgs) -> ExamineResult:
         # The Examiner session owns its own event loop, so it runs off the Builder's, on a thread.
@@ -640,9 +773,10 @@ def domain_tools(*, workdir: Any, model: Any = None,
         AgentTool("grow", "Grow one table with synthetic rows, never in a trusted Task.",
                   GrowArgs, GrowResult, grow, render=_render_grow),
         AgentTool("replay", "Replay every recorded Trace of one Task through the built tools, "
-                  "call by call.",
+                  "call by call, or of every Task when no task_id is given.",
                   ReplayArgs, ReplayResult, replay, render=_render_replay),
-        AgentTool("run", "Play fresh Runs of one Task through the runner and report each one.",
+        AgentTool("run", "Play fresh Runs of the Tasks named, or of every open Task with a confirmed "
+                  "Reference, through the runner and report each one.",
                   RunArgs, RunResult, run, render=_render_run),
         AgentTool("status", "Read one row per Task and per tool off the workdir files.",
                   StatusArgs, StatusResult, status, render=_render_status),
@@ -651,5 +785,5 @@ def domain_tools(*, workdir: Any, model: Any = None,
     ]
 
 
-__all__ = ["ROWS_SHOWN", "default_examine_fn", "domain_tools", "fidelity_index", "opening_for", "stage_line",
+__all__ = ["ROWS_SHOWN", "RUNS_PER_CALL", "default_examine_fn", "domain_tools", "fidelity_index", "opening_for", "root_line", "stage_line",
            "stage_of", "status_of"]

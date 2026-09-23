@@ -42,3 +42,15 @@ def test_receive_points_at_the_tool_file_header_and_names_every_provided_helper(
 
     assert "header of every tool file names the imports and helpers" in prompt_mod.RECEIVE
     assert all(helper in prompt_mod.RECEIVE for helper in PROVIDED_HELPERS)
+
+
+def test_choice_orders_the_loop_replay_then_examine_then_run():
+    choice = prompt_mod.CHOICE
+    replay, examine, run = (choice.index(word) for word in ("replay until", "examine to derive", "run to play"))
+    assert replay < examine < run
+    assert "examine again for findings" in choice
+
+
+def test_the_replay_and_run_examples_show_the_every_task_form():
+    assert "or {} to replay every Task" in prompt_mod.TOOLS
+    assert "or {} for every open Task with a confirmed Reference" in prompt_mod.TOOLS
