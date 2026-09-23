@@ -13,6 +13,7 @@ from typing import Any, Optional
 import typer
 
 from kullback import difficulty, round_snapshot
+from kullback.ai.provider import DEFAULT_MODEL
 from kullback.report import coverage_rows, load, load_tool_sigs, write_report
 from kullback.runner import feed, heartbeat
 from kullback.runner.records import (
@@ -390,7 +391,10 @@ def _live_model(model_id: str, base_url: Optional[str]):
 @app.command()
 def build(
     workdir: Path = WORKDIR,
-    model: Optional[str] = typer.Option(None, "--model", help="Builder model id, as provider/model."),
+    model: str = typer.Option(DEFAULT_MODEL, "--model",
+                              help=f"Builder model id, as provider/model; the default is {DEFAULT_MODEL}."),
+    judge_model: Optional[str] = typer.Option(None, "--judge-model",
+                                              help="Model id for the judges (D160); the default is --model."),
     base_url: Optional[str] = typer.Option(None, "--base-url", help="Endpoint for an OpenAI-compatible model."),
     files: Optional[list[Path]] = typer.Option(None, "--file", help="Customer export to ingest first."),  # noqa: B008
     ceiling_usd: Optional[float] = typer.Option(None, "--ceiling-usd", help="Per-build spend ceiling (D86)."),
@@ -400,10 +404,12 @@ def build(
     The Builder is an extension on the agent core: it ingests, derives the world, reads and edits
     its Environment with the base tools, calls examine when the Environment is ready, acts on the
     findings, and stops when every Task is trusted or refused, when the spend ceiling is reached,
-    or when it states why it cannot go further. By default no model drives it, so the run answers
-    nothing and stops at once; `--model` hands the session to the model.
+    or when it states why it cannot go further. `--model` drives the session and, unless named
+    otherwise, the Examiner, the judges, the loophole probe and the re-rolls; `--judge-model`
+    puts the judges on a model of their own.
     """
-    adapter = _live_model(model, base_url) if model else None
+    adapter = _live_model(model, base_url)
+    judge_adapter = _live_model(judge_model, base_url) if judge_model else None
     # The screen lists running builds from these heartbeats; the pid tells it who is alive. The
     # pulse keeps beating while the build runs so a screen watching from another directory sees
     # the spend move, rather than a stale $0.0000 until the build is over.
@@ -414,7 +420,8 @@ def build(
     try:
         result = _entry("kullback.builder.session", "build")(
             workdir, adapter, files=list(files or []), ceiling_usd=ceiling_usd,
-            subscribers=[_session_subscriber(workdir)])
+            subscribers=[_session_subscriber(workdir)], judge_model=judge_adapter,
+            probe_model=adapter, reroll_model=adapter)
     except Exception:
         pulse.stop()
         heartbeat.beat(workdir, model, "failed")

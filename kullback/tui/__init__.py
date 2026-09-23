@@ -30,6 +30,7 @@ from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
 
+from kullback.ai.provider import DEFAULT_MODEL
 from kullback.tui import diagrams
 
 GLYPHS = {
@@ -87,10 +88,11 @@ FEED_LINES = 12
 # GET of its own model list, 2026-09-10); the OpenRouter default is the cheapest tool-capable model
 # in the registry snapshot at a whole megatoken of context, and its nested id is deliberate, since
 # an id with a second slash is the shape OpenRouter mostly speaks. Providers the local registry
-# adds are appended to this in _login_defaults, never repeated here.
+# adds are appended to this in _login_defaults, never repeated here. OpenAI starts at the harness
+# default model, so a login lands on the model the builds run on.
 LOGIN_DEFAULT_MODELS = {
     "anthropic": "anthropic/claude-opus-5",
-    "openai": "openai/gpt-4.1-mini",
+    "openai": DEFAULT_MODEL,
     "opencode-go": "opencode-go/glm-5.3-flash",
     "deepseek": "deepseek/deepseek-flash",
     "openrouter": "openrouter/qwen/qwen3.7-flash",
