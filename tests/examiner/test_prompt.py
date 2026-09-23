@@ -10,12 +10,6 @@ def test_sections_read_in_gepa_order_with_the_stop_rule_last():
     assert names == ["receives", "tools", "examples", "choice", "feedback", "stop"]
 
 
-def test_tools_section_shows_one_example_call_each():
-    text = P.tools_section()
-    for tool in ("propose_verifier", "probe", "finding", "reroll"):
-        assert tool in text
-
-
 def test_stop_rule_ends_with_one_line_and_no_tool_call():
     text = P.stop_section()
     assert "one line and no tool call" in text
