@@ -1,10 +1,11 @@
-"""The base tools every extension may have: read, write, edit, grep, find, ls, web_search, bash.
+"""The base tools every extension may have: read, write, edit, grep, find, ls, inspect, web_search, bash.
 
 Ported from tau_coding's coding tools (read, write, edit, bash: the line slicing and its
 continuation hint, the exact-match edit, the head and tail truncation, the shell's captured output)
 and bound to a root directory, because an extension of this core owns a directory and nothing
 above it. grep, find and ls are ours: tau reaches them through the shell, and an extension whose
-shell is an allowlist needs them as tools.
+shell is an allowlist needs them as tools. inspect is ours too: the shape of a large JSON or JSONL
+file (keys, row counts, columns, samples) in one call, where the allowlist has no JSON reader.
 
 Two levels of boundary, and no third. Cannot: the tool is not registered (`only` decides what an
 extension gets, so the Examiner has no write and no bash, and the user has no file tools at all).
@@ -21,11 +22,13 @@ from __future__ import annotations
 
 import asyncio
 import fnmatch
+import json
 import os
 import re
 import shlex
 import signal
 import time
+from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable, Optional, Sequence
@@ -52,7 +55,12 @@ DEFAULT_BASH_TIMEOUT_S = 120.0
 GREP_MAX_MATCHES = 200
 FIND_MAX_PATHS = 500
 
-TOOL_NAMES = ("read", "write", "edit", "grep", "find", "ls", "web_search", "bash")
+INSPECT_MAX_CHARS = 4_000
+INSPECT_ROW_CHARS = 200
+INSPECT_MAX_ROWS = 5
+INSPECT_MAX_FIELDS = 60
+
+TOOL_NAMES = ("read", "write", "edit", "grep", "find", "ls", "inspect", "web_search", "bash")
 
 
 class PathRefused(ValueError):
@@ -448,6 +456,22 @@ class SearchResult(BaseModel):
     hits: list[SearchHit] = Field(default_factory=list)
 
 
+class InspectArgs(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    path: str = Field(description="A .json or .jsonl file, relative to your root.")
+    key: Optional[str] = Field(default=None, description="A dotted path into a JSON document, such as a table name.")
+    rows: int = Field(default=2, description=f"Sample rows to show, 0 to {INSPECT_MAX_ROWS}.")
+
+
+class InspectResult(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    path: str
+    summary: str
+    truncated: bool = False
+
+
 class BashArgs(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -721,6 +745,222 @@ def _ls_tool(config: BaseToolConfig) -> AgentTool:
     )
 
 
+# --- inspect: the shape of a JSON document or a JSONL file ---------------------
+
+
+def _kind(value: Any) -> str:
+    if value is None:
+        return "null"
+    if isinstance(value, bool):
+        return "boolean"
+    if isinstance(value, int):
+        return "integer"
+    if isinstance(value, float):
+        return "number"
+    if isinstance(value, str):
+        return "string"
+    if isinstance(value, list):
+        return "list"
+    return "object"
+
+
+def _table_rows(value: Any) -> Optional[list[tuple[Optional[str], dict]]]:
+    """The rows of a table (an object of row objects, or a list of objects), else None.
+
+    An object of objects is a table only when its rows share their columns: the cells filled are
+    at least half of rows times columns. An object of differently shaped objects is a document.
+    """
+    if isinstance(value, dict) and value and all(isinstance(row, dict) for row in value.values()):
+        columns = set().union(*value.values())
+        filled = sum(len(row) for row in value.values())
+        if columns and filled * 2 < len(value) * len(columns):
+            return None
+        return [(str(key), row) for key, row in value.items()]
+    if isinstance(value, list) and value and all(isinstance(row, dict) for row in value):
+        return [(None, row) for row in value]
+    return None
+
+
+def _size(value: Any) -> str:
+    if _table_rows(value) is not None:
+        return f"table of {len(value)} rows"
+    if isinstance(value, dict):
+        return f"{len(value)} keys"
+    if isinstance(value, list):
+        return f"{len(value)} items"
+    if isinstance(value, str):
+        return f"{len(value)} chars"
+    return _compact(value)
+
+
+def _compact(value: Any) -> str:
+    text = json.dumps(value, ensure_ascii=False, separators=(",", ":"), default=str)
+    return text if len(text) <= INSPECT_ROW_CHARS else text[:INSPECT_ROW_CHARS] + "..."
+
+
+def _fields(rows: Iterable[dict], total: int) -> list[str]:
+    """Each key the rows carry, with its value types and how many of the `total` rows carry it."""
+    counts: Counter[str] = Counter()
+    kinds: dict[str, Counter[str]] = {}
+    for row in rows:
+        for key, value in row.items():
+            counts[key] += 1
+            kinds.setdefault(key, Counter())[_kind(value)] += 1
+    lines = [f"  {key}: {'|'.join(kind for kind, _ in kinds[key].most_common())} ({count} of {total} rows)"
+             for key, count in list(counts.items())[:INSPECT_MAX_FIELDS]]
+    if len(counts) > INSPECT_MAX_FIELDS:
+        lines.append(f"  [and {len(counts) - INSPECT_MAX_FIELDS} more columns]")
+    return lines
+
+
+def _describe(value: Any, rows: int) -> list[str]:
+    table = _table_rows(value)
+    if table is not None:
+        lines = [f"table: {len(table)} rows ({'object keyed by row id' if isinstance(value, dict) else 'list'})",
+                 "columns:"]
+        lines += _fields((row for _, row in table), len(table))
+        if rows:
+            lines.append(f"sample rows ({min(rows, len(table))}):")
+            lines += [f"  {key}: {_compact(row)}" if key is not None else f"  {_compact(row)}"
+                      for key, row in table[:rows]]
+        return lines
+    if isinstance(value, dict):
+        lines = [f"object with {len(value)} keys:"] + [
+            f"  {key}: {_kind(item)}, {_size(item)}" for key, item in list(value.items())[:INSPECT_MAX_FIELDS]]
+        if len(value) > INSPECT_MAX_FIELDS:
+            lines.append(f"  [and {len(value) - INSPECT_MAX_FIELDS} more keys]")
+        return lines
+    if isinstance(value, list):
+        kinds = Counter(_kind(item) for item in value)
+        lines = [f"list of {len(value)} items: " + ", ".join(f"{kind} {count}" for kind, count in kinds.most_common())]
+        return lines + [f"  {_compact(item)}" for item in value[:rows]]
+    return [f"{_kind(value)}: {_compact(value)}"]
+
+
+def _at_key(document: Any, key: str) -> Any:
+    value = document
+    walked: list[str] = []
+    for part in key.split("."):
+        if isinstance(value, dict) and part in value:
+            value = value[part]
+        elif isinstance(value, list) and part.lstrip("-").isdigit() and -len(value) <= int(part) < len(value):
+            value = value[int(part)]
+        else:
+            where = ".".join(walked) or "the document"
+            options = (", ".join(list(value)[:20]) if isinstance(value, dict)
+                       else f"indexes 0 to {len(value) - 1}" if isinstance(value, list) else "nothing below it")
+            raise KeyError(f"no {part!r} under {where}; it holds {options}")
+        walked.append(part)
+    return value
+
+
+def _shape(value: Any) -> str:
+    """A generic name for a value's shape: its type, and its keys when it is an object."""
+    if isinstance(value, dict):
+        keys = sorted(value)
+        return "object{" + ",".join(keys[:8]) + (",..." if len(keys) > 8 else "") + "}"
+    if isinstance(value, list):
+        inner = sorted({_kind(item) for item in value})
+        return f"list[{'|'.join(inner)}]" if inner else "list[]"
+    return _kind(value)
+
+
+def _error_class(value: Any) -> str:
+    """The class of an error value: a type or name field of an object, or the head of a message."""
+    if isinstance(value, dict):
+        for field_name in ("type", "class", "name", "code", "kind"):
+            if isinstance(value.get(field_name), (str, int)):
+                return str(value[field_name])
+        return _shape(value)
+    if isinstance(value, str):
+        head = value.split(":", 1)[0].strip()
+        return head[:60] or "(empty)"
+    return _kind(value)
+
+
+def _counted(label: str, counts: Counter[str]) -> list[str]:
+    return [f"{label} ({sum(counts.values())} lines):"] + [
+        f"  {name}: {count}" for name, count in counts.most_common()]
+
+
+def _describe_lines(text: str, rows: int) -> list[str]:
+    records: list[Any] = []
+    broken = 0
+    lines = [line for line in text.split("\n") if line.strip()]
+    for line in lines:
+        try:
+            records.append(json.loads(line))
+        except json.JSONDecodeError:
+            broken += 1
+    objects = [record for record in records if isinstance(record, dict)]
+    out = [f"jsonl: {len(lines)} lines" + (f", {broken} not JSON" if broken else "")]
+    if len(objects) < len(records):
+        out.append(f"{len(records) - len(objects)} lines are not objects")
+    if objects:
+        out += ["keys:"] + _fields(objects, len(objects))
+    results = Counter(_shape(record["result"]) for record in objects if "result" in record)
+    if results:
+        out += _counted("result types", results)
+    errors = Counter(_error_class(record["error"]) for record in objects if record.get("error") is not None)
+    if errors:
+        out += _counted("error classes", errors)
+    if rows and records:
+        out.append(f"sample lines ({min(rows, len(records))}):")
+        out += [f"  {_compact(record)}" for record in records[:rows]]
+    return out
+
+
+def _capped(lines: list[str]) -> tuple[str, bool]:
+    kept: list[str] = []
+    size = 0
+    for index, line in enumerate(lines):
+        if size + len(line) + 1 > INSPECT_MAX_CHARS:
+            kept.append(f"[and {len(lines) - index} more lines; pass key to look inside one value]")
+            return "\n".join(kept), True
+        kept.append(line)
+        size += len(line) + 1
+    return "\n".join(kept), False
+
+
+def _inspect_tool(config: BaseToolConfig) -> AgentTool:
+    async def execute(args: InspectArgs) -> InspectResult:
+        path = resolve_in_root(config.root, args.path)
+        if not path.is_file():
+            raise PathRefused(f"no file {args.path!r} under this agent's root directory"
+                              + _siblings_note(config.root, path))
+        if not 0 <= args.rows <= INSPECT_MAX_ROWS:
+            raise ValueError(f"rows must be 0 to {INSPECT_MAX_ROWS}")
+        text = path.read_text(encoding="utf-8", errors="replace")
+        try:
+            document = json.loads(text)
+        except json.JSONDecodeError:
+            if args.key:
+                raise ValueError(f"{args.path} is not one JSON document, so key does not apply; "
+                                 "inspect it without key") from None
+            lines = _describe_lines(text, args.rows)
+        else:
+            value = _at_key(document, args.key) if args.key else document
+            where = f"{args.key}: " if args.key else "document: "
+            lines = _describe(value, args.rows)
+            lines[0] = where + lines[0]
+        summary, truncated = _capped(lines)
+        return InspectResult(path=_relative(config.root, path), summary=summary, truncated=truncated)
+
+    def render(result: InspectResult) -> str:
+        return result.summary
+
+    return AgentTool(
+        "inspect",
+        "Summarise a JSON or JSONL file under your root directory: keys, sizes, table rows, columns and "
+        "their types, sample rows, and for JSONL the result types and error classes. key looks inside one value.",
+        InspectArgs,
+        InspectResult,
+        execute,
+        render=render,
+        prompt_snippet="Summarise the shape of a JSON or JSONL file",
+    )
+
+
 def _search_backend() -> Any:
     """The provider layer's web search, when it has one. `kullback.ai` owns which service that is."""
     from kullback import ai  # noqa: PLC0415 - imported here so the tool module stays cheap
@@ -804,6 +1044,7 @@ _FACTORIES = {
     "grep": _grep_tool,
     "find": _find_tool,
     "ls": _ls_tool,
+    "inspect": _inspect_tool,
     "web_search": _web_search_tool,
     "bash": _bash_tool,
 }
