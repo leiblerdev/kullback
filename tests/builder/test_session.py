@@ -170,3 +170,21 @@ def test_build_hands_examine_the_judge_probe_and_reroll_models(tmp_path, monkeyp
     judge, probe, reroll = object(), object(), object()
     session_mod.build(root, model, judge_model=judge, probe_model=probe, reroll_model=reroll)
     assert seen == {"judge_model": judge, "probe_model": probe, "reroll_model": reroll}
+
+
+def test_build_hands_the_caller_the_live_harness_before_the_first_model_turn(tmp_path):
+    """The screen runs the session on another thread and steers it; the seam is the harness itself,
+    handed over before the model is first asked, and the return value is unchanged."""
+    root = _workdir(tmp_path)
+    model = TestModel([reply("Done.")])
+    seen = []
+
+    def on_harness(harness):
+        seen.append((harness, len(model.calls)))
+        harness.steer("Read the calls first.")
+
+    result = session_mod.build(root, model, on_harness=on_harness)
+    assert len(seen) == 1 and seen[0][1] == 0
+    assert result["stopped"] == "no tool call" and result["last_line"] == "Done."
+    first_prompt = model.calls[0]["messages"]
+    assert any("Read the calls first." in str(message.get("content")) for message in first_prompt)
