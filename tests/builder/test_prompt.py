@@ -13,11 +13,50 @@ def test_sections_are_in_gepa_order_with_the_stop_rule_last():
     assert names[-1] == "stop"
 
 
-def test_every_tool_has_one_example_call():
-    tools = prompt_mod.TOOLS
-    for name in ("read", "write", "edit", "bash", "grep", "find", "ls", "web_search",
-                 "ingest", "derive_world", "grow", "replay", "run", "status", "examine"):
-        assert f"{name}:" in tools
+def _builder_tool_names(tmp_path):
+    from kullback.builder.domain_tools import domain_tools
+    from kullback.builder.session import BUILDER_BASE_TOOLS
+
+    return set(BUILDER_BASE_TOOLS) | {tool.name for tool in domain_tools(workdir=tmp_path)}
+
+
+def test_every_tool_has_one_example_call(tmp_path):
+    lines = prompt_mod.TOOLS.splitlines()[1:]
+    named = [line.split(":", 1)[0] for line in lines]
+    assert sorted(named) == sorted(_builder_tool_names(tmp_path))
+
+
+def test_the_builder_is_not_handed_web_search_or_shown_it(tmp_path):
+    assert "web_search" not in _builder_tool_names(tmp_path)
+    assert "web_search" not in prompt_mod.TOOLS
+
+
+def test_the_examples_name_the_refusal_sentence_and_the_body_fault():
+    examples = prompt_mod.EXAMPLES
+    assert "raise ValueError(" in examples
+    assert "word for word" in examples
+    assert "the replay compares that message" in examples
+    assert "KeyError or an IndexError is a body fault at its line, never a refusal" in examples
+
+
+def test_the_examples_show_rulings_and_inspect_before_one_edit():
+    examples = prompt_mod.EXAMPLES
+    assert "Call rulings on the tool file to see every failing row grouped" in examples
+    assert "inspect the large file for its shape before reading it" in examples
+    assert "one hypothesis and make one edit" in examples
+
+
+def test_the_choice_rule_names_valueerror_refusals_inspect_and_rulings():
+    choice = prompt_mod.CHOICE
+    assert "only with ValueError and the recorded message" in choice
+    assert "Use inspect for the shape of a large file" in choice
+    assert "Use rulings to see every failing row at once instead of one write per guess" in choice
+
+
+def test_feedback_says_the_write_result_names_body_faults_and_differing_refusals():
+    feedback = prompt_mod.FEEDBACK
+    assert "body fault with its line" in feedback
+    assert "refusal whose message differs" in feedback
 
 
 def test_sections_name_no_corpus():
