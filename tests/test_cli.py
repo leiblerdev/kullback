@@ -122,7 +122,6 @@ def test_build_passes_files_and_the_ceiling_through_to_the_session(workdir, fake
     call = fake_modules["kullback.builder.session.build"][0]
     assert [Path(f).name for f in call["kwargs"]["files"]] == ["traces.json"]
     assert call["kwargs"]["ceiling_usd"] == 2.5
-    assert call["args"][1] is None, "no --model, so the session gets no adapter"
 
 
 def test_a_missing_entry_point_is_one_clear_message(capsys):
@@ -148,6 +147,49 @@ def test_build_and_run_reach_a_function_that_actually_exists():
     assert {"files", "ceiling_usd", "subscribers"} <= set(build_args)
     reroll_args = inspect.signature(runner_tool.reroll).parameters
     assert {"count", "workdir"} <= set(reroll_args)
+
+
+def _named_adapters(monkeypatch):
+    from kullback.ai.provider import TestModel
+
+    built: dict = {}
+
+    def live(model_id, base_url=None):
+        return built.setdefault(model_id, TestModel([], name=model_id, loop=True))
+
+    monkeypatch.setattr(cli, "_live_model", live)
+    return built
+
+
+def test_build_without_a_model_runs_the_session_on_the_default_model(workdir, fake_modules, monkeypatch):
+    from kullback.ai.provider import DEFAULT_MODEL
+
+    _named_adapters(monkeypatch)
+    result = invoke("build", "--workdir", str(workdir))
+    assert result.exit_code == 0, result.output
+    call = fake_modules["kullback.builder.session.build"][0]
+    assert call["args"][1].name == DEFAULT_MODEL
+
+
+def test_build_hands_a_named_judge_model_to_the_session_as_the_judges(workdir, fake_modules, monkeypatch):
+    built = _named_adapters(monkeypatch)
+    result = invoke("build", "--workdir", str(workdir), "--model", "vendor/large",
+                    "--judge-model", "other/small")
+    assert result.exit_code == 0, result.output
+    kwargs = fake_modules["kullback.builder.session.build"][0]["kwargs"]
+    assert kwargs["judge_model"] is built["other/small"]
+
+
+def test_build_runs_the_probe_and_the_rerolls_on_the_builder_model(workdir, fake_modules, monkeypatch):
+    built = _named_adapters(monkeypatch)
+    result = invoke("build", "--workdir", str(workdir), "--model", "vendor/large")
+    assert result.exit_code == 0, result.output
+    call = fake_modules["kullback.builder.session.build"][0]
+    builder = built["vendor/large"]
+    assert call["args"][1] is builder
+    assert call["kwargs"]["probe_model"] is builder and call["kwargs"]["reroll_model"] is builder
+    assert call["kwargs"]["judge_model"] is None, "no --judge-model, so examine puts the judges on --model"
+    assert set(built) == {"vendor/large"}
 
 
 def test_build_prints_one_line_per_tool_result_and_the_counts_before_the_json(workdir, fake_modules):
