@@ -25,6 +25,7 @@ from kullback.ai._provider_events import (
 )
 from kullback.ai._sse import async_client, loads_object, stream_sse_events
 from kullback.ai.events import StreamEvent
+from kullback.ai.http_errors import ProviderError
 from kullback.ai.messages import AssistantMessage, Message, ToolCall, to_wire
 from kullback.ai.provider import (
     CancellationToken,
@@ -106,12 +107,37 @@ class OpenAICompatibleProvider:
         settings = (config or ModelConfig()).model_copy(deep=True)
         if session_id and not settings.prompt_cache_key:
             settings.prompt_cache_key = session_id
-        payload = dict(self.handle.build_body(to_wire(messages, system or None), list(tools) or None, settings))
+        wire, tool_list = to_wire(messages, system or None), list(tools) or None
+        return self._stream_learning_shape(wire, tool_list, settings, signal)
+
+    async def _stream_learning_shape(self, wire: list, tools: Optional[list], settings: ModelConfig,
+                                     signal: Optional[CancellationToken]) -> AsyncIterator[ProviderEvent]:
+        """The stream, posted once more when a 400 names a shape field the handle can adjust.
+
+        The same one-retry rule as HttpModel.query: the handle keeps what it learned, so the next
+        call never pays the 400.
+        """
+        payload = self._payload(wire, tools, settings)
+        async for event in self._post_stream(payload, signal):
+            if isinstance(event, ProviderErrorEvent) and (event.data or {}).get("status") == 400:
+                error = ProviderError(event.message, status=400, body=(event.data or {}).get("body"))
+                retry = self._payload(wire, tools, settings) if self.handle.learn_shape(error, settings) else payload
+                if retry != payload:
+                    async for again in self._post_stream(retry, signal):
+                        yield again
+                    return
+            yield event
+
+    def _payload(self, wire: list, tools: Optional[list], settings: ModelConfig) -> dict:
+        payload = dict(self.handle.build_body(wire, tools, settings))
         payload["stream"] = True
         if not self.responses:
             # Without this the final chunk carries no usage at all, and a Run would record a call
             # that cost nothing.
             payload["stream_options"] = {"include_usage": True}
+        return payload
+
+    def _post_stream(self, payload: dict, signal: Optional[CancellationToken]) -> AsyncIterator[ProviderEvent]:
         return stream_sse_events(
             client=self._get_client,
             url=self.handle.base_url + self.handle.path,
