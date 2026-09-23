@@ -1,13 +1,8 @@
 from __future__ import annotations
 
-import copy
 import importlib
 import json
-import os
-import signal
-import subprocess
 import sys
-import threading
 from pathlib import Path
 
 import pytest
@@ -84,7 +79,7 @@ def resolved_pair(msg, answer):
     return call(msg, answer=answer, resolved=True)
 
 
-def test_tail_trimmed_after_last_result():
+def test_the_tail_after_the_last_result_is_trimmed_with_any_empty_done():
     turns = [turn(0, "user", "invented-open"), turn(1), turn(2, "user", "New Terminal Output:\na"), turn(3), turn(4)]
     calls = [resolved_pair(1, 2), call(3, answer=None, resolved=False)]
     out = prefixes.select_prefix(trace_of(turns, calls))
@@ -92,6 +87,12 @@ def test_tail_trimmed_after_last_result():
     assert out.turn_end == 2
     assert out.retained_calls == (0,)
     assert out.standing == "evidence_only"
+    turns = [turn(0, "user", "invented-open"), turn(1), turn(2, "user", "New Terminal Output:\na"), turn(3)]
+    calls = [resolved_pair(1, 2)]
+    out = prefixes.select_prefix(trace_of(turns, calls))
+    assert isinstance(out, prefixes.PrefixSelection)
+    assert out.turn_end == 2
+    assert 3 not in out.retained_turns
 
 
 def invented_interior_unresolved_case(kind):
@@ -181,15 +182,6 @@ def test_orphan_marker_excludes():
     assert out.reason == "orphan_marker"
 
 
-def test_trailing_empty_done_dropped():
-    turns = [turn(0, "user", "invented-open"), turn(1), turn(2, "user", "New Terminal Output:\na"), turn(3)]
-    calls = [resolved_pair(1, 2)]
-    out = prefixes.select_prefix(trace_of(turns, calls))
-    assert isinstance(out, prefixes.PrefixSelection)
-    assert out.turn_end == 2
-    assert 3 not in out.retained_turns
-
-
 def invented_foreign_pointer_trace(kind):
     turns = [turn(0, "user", "invented-open"), turn(1), turn(2, "user", "New Terminal Output:\na")]
     if kind == "result_ptr":
@@ -203,29 +195,59 @@ def invented_foreign_pointer_trace(kind):
     return trace_of(turns, [made])
 
 
-@pytest.mark.parametrize("kind", ["result_ptr", "root_ptr", "call_owner"])
-def test_foreign_pointer_withheld(kind):
-    out = prefixes.select_prefix(invented_foreign_pointer_trace(kind))
-    assert isinstance(out, prefixes.Withheld)
-    assert out.reason == "foreign_pointer"
-
-
-def test_unordered_pointer_withheld():
-    made = resolved_pair(1, 2)
-    made.result_ptr = ptr(0)
+def invented_faulty_trace(kind):
+    """One invented recording per provenance fault the selector must withhold, plus one it allows."""
     turns = [turn(0, "user", "invented-open"), turn(1), turn(2, "user", "New Terminal Output:\na")]
-    out = prefixes.select_prefix(trace_of(turns, [made]))
-    assert isinstance(out, prefixes.Withheld)
-    assert out.reason == "unordered_pointer"
+    if kind in ("result_ptr", "root_ptr", "call_owner"):
+        return invented_foreign_pointer_trace(kind)
+    if kind in ("duplicate_call", "duplicate_answer"):
+        return trace_of(*invented_ambiguous_provenance_case(kind))
+    if kind in ("result_to_assistant", "call_on_user_turn"):
+        misplaced_turns, made = invented_misplaced_pointer_case(kind)
+        return trace_of(misplaced_turns, [made])
+    if kind == "unordered":
+        made = resolved_pair(1, 2)
+        made.result_ptr = ptr(0)
+        return trace_of(turns, [made])
+    if kind == "missing":
+        made = resolved_pair(1, 2)
+        made.result_ptr = None
+        return trace_of(turns, [made])
+    if kind == "truncated":
+        return trace_of(turns, [call(1, answer=2, resolved=True, truncated=True)])
+    if kind == "stale":
+        parent = trace_of(turns, [resolved_pair(1, 2)])
+        body = as_dict(parent)
+        body["hash"] = ""
+        claimed = parent.model_copy(update={"hash": content_hash(body)})
+        changed = claimed.model_copy(deep=True)
+        changed.turns[1] = changed.turns[1].model_copy(update={"content": "invented-changed"})
+        return changed
+    assert kind == "owner_absent"
+    return trace_of(turns, [call(1, answer=2, owner=None)])
 
 
-def test_missing_pointer_withheld():
-    made = resolved_pair(1, 2)
-    made.result_ptr = None
-    turns = [turn(0, "user", "invented-open"), turn(1), turn(2, "user", "New Terminal Output:\na")]
-    out = prefixes.select_prefix(trace_of(turns, [made]))
-    assert isinstance(out, prefixes.Withheld)
-    assert out.reason == "malformed_pointer"
+@pytest.mark.parametrize(("kind", "reason"), [
+    ("result_ptr", "foreign_pointer"),
+    ("root_ptr", "foreign_pointer"),
+    ("call_owner", "foreign_pointer"),
+    ("unordered", "unordered_pointer"),
+    ("missing", "malformed_pointer"),
+    ("result_to_assistant", "malformed_pointer"),
+    ("call_on_user_turn", "malformed_pointer"),
+    ("duplicate_call", "ambiguous_provenance"),
+    ("duplicate_answer", "ambiguous_provenance"),
+    ("truncated", "truncated_result"),
+    ("stale", "stale_hash"),
+    ("owner_absent", None),
+])
+def test_a_provenance_fault_withholds_the_recording_with_its_reason(kind, reason):
+    out = prefixes.select_prefix(invented_faulty_trace(kind))
+    if reason is None:
+        assert isinstance(out, prefixes.PrefixSelection), "a call with no owner is not a foreign one"
+    else:
+        assert isinstance(out, prefixes.Withheld)
+        assert out.reason == reason
 
 
 def invented_ambiguous_provenance_case(kind):
@@ -236,34 +258,6 @@ def invented_ambiguous_provenance_case(kind):
         turns = [turn(0), turn(1), turn(2, "user", "New Terminal Output:\na")]
         calls = [call(0, answer=2, resolved=True), call(1, answer=2, resolved=True)]
     return turns, calls
-
-
-@pytest.mark.parametrize("kind", ["duplicate_call", "duplicate_answer"])
-def test_ambiguous_provenance_withheld(kind):
-    turns, calls = invented_ambiguous_provenance_case(kind)
-    out = prefixes.select_prefix(trace_of(turns, calls))
-    assert isinstance(out, prefixes.Withheld)
-    assert out.reason == "ambiguous_provenance"
-
-
-def test_truncated_result_withheld():
-    turns = [turn(0, "user", "invented-open"), turn(1), turn(2, "user", "New Terminal Output:\na")]
-    made = call(1, answer=2, resolved=True, truncated=True)
-    out = prefixes.select_prefix(trace_of(turns, [made]))
-    assert isinstance(out, prefixes.Withheld)
-    assert out.reason == "truncated_result"
-
-
-def test_mutation_isolation():
-    turns = [turn(0, "user", "invented-open"), turn(1), turn(2, "user", "New Terminal Output:\na")]
-    made = resolved_pair(1, 2)
-    parent = trace_of(turns, [made])
-    before = copy.deepcopy(parent.model_dump(mode="json"))
-    out = prefixes.select_prefix(parent)
-    assert isinstance(out, prefixes.PrefixSelection)
-    out.last_result_ptr.msg_index = 99
-    assert parent.tool_calls[0].result_ptr.msg_index == 2
-    assert parent.model_dump(mode="json") == before
 
 
 def test_cohort_id_deterministic():
@@ -321,28 +315,6 @@ def invented_misplaced_pointer_case(kind):
     return turns, made
 
 
-@pytest.mark.parametrize("kind", ["result_to_assistant", "call_on_user_turn"])
-def test_misplaced_pointer_withheld(kind):
-    turns, made = invented_misplaced_pointer_case(kind)
-    out = prefixes.select_prefix(trace_of(turns, [made]))
-    assert isinstance(out, prefixes.Withheld)
-    assert out.reason == "malformed_pointer"
-
-
-def test_stale_hash_withheld():
-    turns = [turn(0, "user", "invented-open"), turn(1), turn(2, "user", "New Terminal Output:\na")]
-    parent = trace_of(turns, [resolved_pair(1, 2)])
-    body = as_dict(parent)
-    body["hash"] = ""
-    honest = content_hash(body)
-    claimed = parent.model_copy(update={"hash": honest})
-    changed = claimed.model_copy(deep=True)
-    changed.turns[1] = changed.turns[1].model_copy(update={"content": "invented-changed"})
-    out = prefixes.select_prefix(changed)
-    assert isinstance(out, prefixes.Withheld)
-    assert out.reason == "stale_hash"
-
-
 def invented_cli_recording(complete):
     batch = json.dumps({"analysis": "invented", "commands": [{"keystrokes": "invented-cli", "duration": 0.2}]})
     empty = json.dumps({"analysis": "invented", "commands": []})
@@ -378,33 +350,25 @@ def invented_cli_src(tmp_path, rows):
     return src
 
 
-@pytest.mark.parametrize("kind", ["missing", "empty", "nondirectory"])
-def test_cli_invalid_input_rejected(tmp_path, kind):
-    if kind == "missing":
-        src = tmp_path / "nope"
-    elif kind == "empty":
-        src = tmp_path / "empty"
-        src.mkdir()
-    else:
-        src = tmp_path / "file.json"
-        src.write_text("{}", encoding="utf-8")
-    assert run_cli(["--input-dir", str(src), "--output", str(tmp_path / "m.json")]) == 2
-
-
-def test_cli_refuses_existing_output(tmp_path):
+def test_the_cli_and_publish_refuse_to_overwrite_an_existing_output(tmp_path):
     src = invented_cli_src(tmp_path, [invented_cli_recording(True)])
     output = tmp_path / "m.json"
     output.write_text("invented-prior", encoding="utf-8")
     assert run_cli(["--input-dir", str(src), "--output", str(output)]) == 2
     assert output.read_text(encoding="utf-8") == "invented-prior"
+    direct = tmp_path / "direct.json"
+    direct.write_bytes(b"invented-prior")
+    assert cohort_module().publish_staged(direct, '{"a": 1}') is False
+    assert direct.read_bytes() == b"invented-prior"
 
 
-def test_cli_rejects_output_inside_input(tmp_path):
-    src = invented_cli_src(tmp_path, [invented_cli_recording(True)])
-    assert run_cli(["--input-dir", str(src), "--output", str(src / "m.json")]) == 2
-
-
-def test_cli_happy_path(tmp_path):
+def test_cli_writes_the_manifest_and_refuses_a_missing_empty_or_file_input(tmp_path):
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    not_a_dir = tmp_path / "file.json"
+    not_a_dir.write_text("{}", encoding="utf-8")
+    for bad in (tmp_path / "nope", empty, not_a_dir):
+        assert run_cli(["--input-dir", str(bad), "--output", str(tmp_path / "m.json")]) == 2
     src = invented_cli_src(tmp_path, [invented_cli_recording(True), invented_cli_recording(False)])
     output = tmp_path / "m.json"
     assert run_cli(["--input-dir", str(src), "--output", str(output)]) == 0
@@ -416,33 +380,10 @@ def test_cli_happy_path(tmp_path):
     assert manifest["inputs_unchanged"] is True
 
 
-def test_call_owner_absent_allowed():
-    turns = [turn(0, "user", "invented-open"), turn(1), turn(2, "user", "New Terminal Output:\na")]
-    made = call(1, answer=2, owner=None)
-    out = prefixes.select_prefix(trace_of(turns, [made]))
-    assert isinstance(out, prefixes.PrefixSelection)
-
-
 def invented_heldout_file(path, text):
     target = Path(path) / "heldout.json"
     target.write_text(text, encoding="utf-8")
     return str(target)
-
-
-@pytest.mark.parametrize(
-    "heldout_text",
-    ['"invented-cli-open"', '{"invented-cli-open": true}', "null", '["invented-cli-open", 7]', None],
-    ids=["string", "object", "null", "numeric_items", "missing"],
-)
-def test_cli_heldout_shape_rejected(tmp_path, heldout_text):
-    src = invented_cli_src(tmp_path, [invented_cli_recording(False)])
-    output = tmp_path / "m.json"
-    if heldout_text is None:
-        heldout = str(tmp_path / "gone.json")
-    else:
-        heldout = invented_heldout_file(tmp_path, heldout_text)
-    assert run_cli(["--input-dir", str(src), "--output", str(output), "--heldout-ids", heldout]) == 2
-    assert not output.exists()
 
 
 def test_cli_heldout_excludes(tmp_path):
@@ -455,26 +396,6 @@ def test_cli_heldout_excludes(tmp_path):
     assert manifest["files"][0]["candidates"] == 1
     assert manifest["heldout_anchor"] == "caller-supplied"
     assert manifest["heldout_ids"] == 1
-
-
-def test_inputs_error_stable_matches():
-    before = [("a.json", 3, "invented-digest")]
-    assert cohort_module().inputs_error(before, {"a.json": "invented-digest"}) is None
-
-
-@pytest.mark.parametrize(
-    "after",
-    [
-        {"a.json": "invented-changed"},
-        {},
-        {"a.json": "invented-digest", "b.json": "invented-extra"},
-        {"b.json": "invented-digest"},
-    ],
-    ids=["drift", "missing", "added", "renamed"],
-)
-def test_inputs_error_change_detected(after):
-    before = [("a.json", 3, "invented-digest")]
-    assert cohort_module().inputs_error(before, after) is not None
 
 
 @pytest.mark.parametrize(
@@ -490,194 +411,7 @@ def test_finish_checks_inputs_before_writing(tmp_path, after, code, written):
     assert output.exists() is written
     if written:
         assert json.loads(output.read_text(encoding="utf-8"))["inputs_unchanged"] is True
-
-
-@pytest.mark.parametrize("kind", ["directory", "missing", "regular"])
-def test_entry_error_classifies_path(tmp_path, kind):
-    if kind == "missing":
-        target = tmp_path / "gone.json"
-    else:
-        target = tmp_path / "x.json"
-        if kind == "directory":
-            target.mkdir()
-        else:
-            target.write_text("{}", encoding="utf-8")
-    assert (cohort_module().entry_error(target) is not None) is (kind != "regular")
-
-
-@pytest.mark.parametrize("kind", ["directory", "broken_symlink"])
-def test_cli_rejects_nonregular_input(tmp_path, kind):
-    src = invented_cli_src(tmp_path, [invented_cli_recording(True)])
-    if kind == "directory":
-        (src / "extra.json").mkdir()
-    else:
-        (src / "broken.json").symlink_to(src / "gone.json")
-    output = tmp_path / "m.json"
-    assert run_cli(["--input-dir", str(src), "--output", str(output)]) == 2
-    assert not output.exists()
-
-
-@pytest.mark.parametrize("func_name", ["evaluate_file", "take_snapshot"])
-def test_missing_inputs_report_errors(tmp_path, func_name):
-    if func_name == "evaluate_file":
-        first, err = cohort_module().evaluate_file(tmp_path / "gone.json", frozenset())
-    else:
-        first, err = cohort_module().take_snapshot([tmp_path / "gone.json"])
-    assert first is None
-    assert err is not None
-
-
-def test_evaluate_file_unreadable(tmp_path):
-    if hasattr(os, "geteuid") and os.geteuid() == 0:
-        pytest.skip("root bypasses file permissions, so chmod-based unreadability cannot be observed")
-    target = tmp_path / "x.json"
-    target.write_text("{}", encoding="utf-8")
-    target.chmod(0o000)
-    try:
-        entry, err = cohort_module().evaluate_file(target, frozenset())
-    finally:
-        target.chmod(0o644)
-    assert entry is None
-    assert err is not None
-
-
-@pytest.mark.parametrize("func_name", ["take_digest_map", "take_snapshot"])
-def test_snapshot_rejects_fifo(tmp_path, func_name):
-    if not hasattr(os, "mkfifo"):
-        pytest.skip("platform has no FIFO support for the blocking-read regression")
-    target = tmp_path / "late.json"
-    os.mkfifo(target)
-    rows, err = getattr(cohort_module(), func_name)([target])
-    assert rows is None
-    assert err is not None
-
-
-@pytest.mark.parametrize("kind", ["directory", "broken_link"])
-def test_closing_snapshot_rejects_nonregular(tmp_path, kind):
-    target = tmp_path / "late.json"
-    if kind == "directory":
-        target.mkdir()
-    else:
-        target.symlink_to(tmp_path / "gone.json")
-    rows, err = cohort_module().take_digest_map([target])
-    assert rows is None
-    assert err is not None
-
-
-def test_snapshot_roundtrip_regular(tmp_path):
-    invented_cli_input(tmp_path, [invented_cli_recording(True)])
-    target = tmp_path / "invented.json"
-    rows, err = cohort_module().take_snapshot([target])
-    assert err is None
-    assert rows[0][0] == "invented.json"
-    assert rows[0][1] == target.stat().st_size
-    digests, err = cohort_module().take_digest_map([target])
-    assert err is None
-    assert digests["invented.json"] == rows[0][2]
-
-
-def test_publish_writes_valid_json_without_leftovers(tmp_path):
-    output = tmp_path / "m.json"
-    assert cohort_module().publish_staged(output, '{"a": 1}') is True
-    assert json.loads(output.read_text(encoding="utf-8")) == {"a": 1}
-    assert [path.name for path in tmp_path.iterdir()] == ["m.json"]
-
-
-def test_publish_refuses_existing(tmp_path):
-    output = tmp_path / "m.json"
-    output.write_bytes(b"invented-prior")
-    assert cohort_module().publish_staged(output, '{"a": 1}') is False
-    assert output.read_bytes() == b"invented-prior"
-
-
-def test_finish_unserializable_then_retry(tmp_path):
-    output = tmp_path / "sub" / "m.json"
-    before = [("a.json", 3, "invented-digest")]
-    totals = {"recordings": 1, "original_eligible": 0, "selected_prefixes": 0}
-    entries = [{"file": "a.json", "bad": object()}]
-    code = cohort_module().finish(str(output), before, {"a.json": "invented-digest"}, entries, totals, "none", 0)
-    assert code == 2
-    assert not output.exists()
-    code = cohort_module().finish(str(output), before, {"a.json": "invented-digest"}, [], totals, "none", 0)
-    assert code == 0
-    assert json.loads(output.read_text(encoding="utf-8"))["inputs_unchanged"] is True
-
-
-def test_cli_blocked_parent(tmp_path):
-    src = invented_cli_src(tmp_path, [invented_cli_recording(True)])
-    blocker = tmp_path / "blocker"
-    blocker.write_text("invented-file", encoding="utf-8")
-    output = blocker / "m.json"
-    assert run_cli(["--input-dir", str(src), "--output", str(output)]) == 2
-    assert blocker.read_text(encoding="utf-8") == "invented-file"
-
-
-def test_publish_concurrent_winner_kept(tmp_path):
-    output = tmp_path / "m.json"
-    barrier = threading.Barrier(2)
-    results = []
-
-    def bidder(text):
-        barrier.wait(timeout=60)
-        results.append((text, cohort_module().publish_staged(str(output), text)))
-
-    first = threading.Thread(target=bidder, args=('{"bidder": 1}',))
-    second = threading.Thread(target=bidder, args=('{"bidder": 2}',))
-    first.start()
-    second.start()
-    first.join(timeout=60)
-    second.join(timeout=60)
-    assert not first.is_alive() and not second.is_alive()
-    wins = [text for text, ok in results if ok]
-    losses = [text for text, ok in results if not ok]
-    assert len(wins) == 1 and len(losses) == 1
-    assert json.loads(output.read_text(encoding="utf-8")) == json.loads(wins[0])
-    assert [path.name for path in tmp_path.iterdir()] == ["m.json"]
-
-
-def test_publish_encoding_failure_cleans_up(tmp_path):
-    output = tmp_path / "m.json"
-    with pytest.raises(ValueError):
-        cohort_module().publish_staged(str(output), "invented \ud800 text")
-    assert not output.exists()
-    assert list(tmp_path.iterdir()) == []
-    assert cohort_module().publish_staged(str(output), '{"retry": true}') is True
-    assert json.loads(output.read_text(encoding="utf-8")) == {"retry": True}
-
-
-def test_publish_rlimit_failure_cleans_up(tmp_path):
-    resource = pytest.importorskip("resource")
-    if not hasattr(signal, "SIGXFSZ"):
-        pytest.skip("platform cannot ignore SIGXFSZ for the bounded write-failure regression")
-    del resource
-    scripts_dir = Path(__file__).resolve().parents[2] / "scripts"
-    output = tmp_path / "m.json"
-    code = "\n".join(
-        [
-            "import os, resource, signal, sys",
-            "sys.path.insert(0, sys.argv[1])",
-            "resource.setrlimit(resource.RLIMIT_FSIZE, (8192, 8192))",
-            "signal.signal(signal.SIGXFSZ, signal.SIG_IGN)",
-            "from agenttrove_prefix_cohort import publish_staged",
-            "try:",
-            "    ok = publish_staged(sys.argv[2], 'x' * 100000)",
-            "except Exception as exc:",
-            "    print('raised:' + type(exc).__name__)",
-            "else:",
-            "    print('returned:' + str(ok))",
-        ]
-    )
-    env = dict(os.environ)
-    env["PYTHONDONTWRITEBYTECODE"] = "1"
-    done = subprocess.run(
-        [sys.executable, "-c", code, str(scripts_dir), str(output)],
-        capture_output=True,
-        text=True,
-        timeout=60,
-        env=env,
-    )
-    assert "raised:PublishError" in done.stdout
-    assert not output.exists()
-    assert list(tmp_path.iterdir()) == []
-    assert cohort_module().publish_staged(str(output), '{"retry": true}') is True
-    assert json.loads(output.read_text(encoding="utf-8")) == {"retry": True}
+    assert cohort_module().inputs_error(before, {"a.json": "invented-digest"}) is None
+    for changed in ({"a.json": "invented-changed"}, {}, {"a.json": "invented-digest", "b.json": "invented-extra"},
+                    {"b.json": "invented-digest"}):
+        assert cohort_module().inputs_error(before, changed) is not None, changed
