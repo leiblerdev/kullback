@@ -69,7 +69,7 @@ def test_branch_moves_the_leaf_and_the_old_branch_stays(tmp_path):
     assert lines[3]["entry_id"] == a.id
 
 
-def test_compaction_replaces_entries_on_replay(tmp_path):
+def test_compaction_replaces_entries_on_replay_by_list_or_by_first_kept_entry(tmp_path):
     store = SessionStore(tmp_path / "s.jsonl")
     root = store.append(SessionInfoEntry())
     e1 = store.append_message(UserMessage(content="one"))
@@ -90,11 +90,8 @@ def test_compaction_replaces_entries_on_replay(tmp_path):
     assert [m.content for m in messages[1:]] == ["three", "four", "five"]
     reloaded = SessionStore.load(store.path)
     assert [e.id for e in reloaded.active_path()] == [e.id for e in active]
-
-
-def test_compaction_by_first_kept_entry_replaces_everything_before_it(tmp_path):
-    # The code fallback compacts tau's way: a first kept entry and no explicit list (D124).
-    store = SessionStore(tmp_path / "s.jsonl")
+    # by first kept entry: the code fallback compacts tau's way: a first kept entry and no explicit list (D124).
+    store = SessionStore(tmp_path / "first_kept.jsonl")
     root = store.append(SessionInfoEntry())
     e1 = store.append_message(UserMessage(content="one"))
     e2 = store.append_message(AssistantMessage(content="two"))
@@ -104,6 +101,12 @@ def test_compaction_by_first_kept_entry_replaces_everything_before_it(tmp_path):
     assert [e.id for e in store.active_path()] == [root.id, compaction.id, e3.id, e4.id]
     assert store.get(e1.id) is not None and store.get(e2.id) is not None
     assert [m.content for m in store.active_messages()][1:] == ["three", "four"]
+    # a compaction that replaces nothing on the path stays where it was
+    store = SessionStore(tmp_path / "off_path.jsonl")
+    store.append(SessionInfoEntry())
+    a = store.append_message(UserMessage(content="a"))
+    c = store.append(CompactionEntry(summary="of something off-path", replaces_entry_ids=["nope"]))
+    assert [e.id for e in store.active_path()][1:] == [a.id, c.id]
 
 
 def test_session_info_is_never_compacted_away(tmp_path):
@@ -114,45 +117,33 @@ def test_session_info_is_never_compacted_away(tmp_path):
     assert [e.id for e in store.active_path()] == [root.id, compaction.id]
 
 
-def test_compaction_that_replaces_nothing_on_the_path_stays_where_it_was(tmp_path):
-    store = SessionStore(tmp_path / "s.jsonl")
-    store.append(SessionInfoEntry())
-    a = store.append_message(UserMessage(content="a"))
-    c = store.append(CompactionEntry(summary="of something off-path", replaces_entry_ids=["nope"]))
-    assert [e.id for e in store.active_path()][1:] == [a.id, c.id]
-
-
-def test_branching_to_an_unknown_entry_is_a_tree_error(tmp_path):
-    store = SessionStore(tmp_path / "s.jsonl")
-    store.append(SessionInfoEntry())
-    with pytest.raises(SessionTreeError):
-        store.branch("missing")
-
-
-def test_appending_under_an_unknown_parent_is_a_tree_error(tmp_path):
-    store = SessionStore(tmp_path / "s.jsonl")
-    store.append(SessionInfoEntry())
-    with pytest.raises(SessionTreeError):
-        store.append(MessageEntry(message=UserMessage(content="x"), parent_id="missing"))
-
-
-def test_appending_a_leaf_entry_directly_is_a_tree_error(tmp_path):
-    store = SessionStore(tmp_path / "s.jsonl")
-    store.append(SessionInfoEntry())
-    with pytest.raises(SessionTreeError):
-        store.append(LeafEntry(entry_id=store.leaf_id))
-
-
-def test_loading_a_file_with_a_duplicate_entry_id_is_a_tree_error(tmp_path):
-    path = tmp_path / "s.jsonl"
+def load_duplicate_ids(path):
     path.write_text(
         json.dumps({"type": "session_info", "id": "r", "parent_id": None, "timestamp": 0, "created_at": 0}) + "\n"
         + json.dumps({"type": "message", "id": "r", "parent_id": "r", "timestamp": 0, "message": {"role": "user", "content": "x"}})
         + "\n",
         encoding="utf-8",
     )
+    return SessionStore.load(path)
+
+
+@pytest.mark.parametrize(
+    "act",
+    [
+        pytest.param(lambda store, tmp: store.branch("missing"), id="branch-to-unknown"),
+        pytest.param(
+            lambda store, tmp: store.append(MessageEntry(message=UserMessage(content="x"), parent_id="missing")),
+            id="unknown-parent",
+        ),
+        pytest.param(lambda store, tmp: store.append(LeafEntry(entry_id=store.leaf_id)), id="leaf-directly"),
+        pytest.param(lambda store, tmp: load_duplicate_ids(tmp / "dup.jsonl"), id="duplicate-id-on-load"),
+    ],
+)
+def test_a_broken_tree_is_a_tree_error(tmp_path, act):
+    store = SessionStore(tmp_path / "s.jsonl")
+    store.append(SessionInfoEntry())
     with pytest.raises(SessionTreeError):
-        SessionStore.load(path)
+        act(store, tmp_path)
 
 
 def test_load_of_a_missing_file_starts_empty(tmp_path):

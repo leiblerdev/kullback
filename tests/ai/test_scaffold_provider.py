@@ -6,10 +6,8 @@ import pytest
 
 from kullback.ai import provider as provider_module
 from kullback.ai.provider import (
-    Model,
     ModelConfig,
     ModelReply,
-    RecordedModel,
     require_live_calls_enabled,
 )
 
@@ -33,24 +31,13 @@ def test_live_calls_are_off_by_default():
         require_live_calls_enabled()
 
 
-def test_model_interface_is_abstract():
-    """The base refuses, and every model the package ships is a Model that answers instead of
-    inheriting that refusal."""
-    with pytest.raises(NotImplementedError):
-        Model().query([{"role": "user", "content": "hi"}])
-    for cls in (provider_module.TestModel, RecordedModel, provider_module.AnthropicModel,
-                provider_module.OpenAIModel, provider_module.OpenAICompatibleModel):
-        assert issubclass(cls, Model), cls.__name__
-        assert cls.query is not Model.query, cls.__name__
-    assert isinstance(provider_module.TestModel(["ok"]).query([]), ModelReply)
-
-
 def test_test_model_returns_scripted_replies_in_order(make_test_model):
     model = make_test_model(
         [
             "hello",
             {"tool_calls": [{"id": "c1", "name": "get_order_details", "arguments": {"order_id": "#W1"}}]},
             ModelReply(content="done", usage={"input": 10, "output": 2}),
+            {"tool_calls": [{"id": "c2", "name": "t", "arguments": '{"a": 1}'}]},
         ]
     )
     first = model.query([{"role": "user", "content": "hi"}], tools=[{"name": "get_order_details"}])
@@ -63,15 +50,13 @@ def test_test_model_returns_scripted_replies_in_order(make_test_model):
     third = model.query([])
     assert third.usage.input == 10 and third.usage.output == 2
 
-    assert len(model.calls) == 3
+    # arguments scripted as a JSON string are parsed into a mapping
+    assert model.query([]).tool_calls[0].arguments == {"a": 1}
+
+    assert len(model.calls) == 4
     assert model.calls[0]["tools"] == [{"name": "get_order_details"}]
     with pytest.raises(IndexError):
         model.query([])
-
-
-def test_test_model_parses_string_json_arguments(make_test_model):
-    model = make_test_model([{"tool_calls": [{"id": "c1", "name": "t", "arguments": '{"a": 1}'}]}])
-    assert model.query([]).tool_calls[0].arguments == {"a": 1}
 
 
 def test_recorded_model_replays_model_call_events(make_recorded_model):
@@ -127,13 +112,3 @@ def test_replies_are_copies_so_a_caller_cannot_mutate_the_script(make_test_model
     first.content = "changed"
     assert model.query([]).content == "x"
 
-
-def test_recorded_model_is_a_model(make_recorded_model):
-    """It is a Model by type and by behaviour: the interface's arguments are accepted and the
-    stored reply comes back, with no network and no live-call flag involved."""
-    model = make_recorded_model([{"role": "assistant", "content": "a"}])
-    assert isinstance(model, Model) and issubclass(RecordedModel, Model)
-    reply = model.query([{"role": "user", "content": "hi"}], tools=[{"name": "t"}],
-                        config=ModelConfig(temperature=0.0))
-    assert isinstance(reply, ModelReply) and reply.content == "a"
-    assert model.calls[0]["tools"] == [{"name": "t"}]

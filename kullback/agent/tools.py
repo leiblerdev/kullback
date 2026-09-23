@@ -35,6 +35,10 @@ class ToolResult(BaseModel):
     is_error: bool = False
 
 
+# tau's name for a tool's result; ours carries text plus the validated result as `details`.
+AgentToolResult = ToolResult
+
+
 class RetryableToolError(ValueError):
     """A refusal that already knows what the corrected call looks like.
 
@@ -52,7 +56,13 @@ class RetryableToolError(ValueError):
 
 
 class AgentTool(Generic[Args, Result]):
-    """One tool: args model, result model, executor. `run` is the only way the loop calls it."""
+    """One tool: args model, result model, executor. `run` is the only way the loop calls it.
+
+    tau_agent/tools.py's `AgentTool` carries a raw JSON schema and an executor over a mapping;
+    this one is given the pydantic models the schema is derived from and validates both sides, so
+    the schema the provider sees and the arguments the executor gets can never disagree. The loop
+    runs a turn's calls in order, so there is no `execution_mode`: every tool is sequential.
+    """
 
     def __init__(
         self,
@@ -62,8 +72,14 @@ class AgentTool(Generic[Args, Result]):
         result_model: type[Result],
         execute: Callable[[Args], Awaitable[Result]],
         render: Optional[Callable[[Result], str]] = None,
+        label: Optional[str] = None,
+        prompt_snippet: Optional[str] = None,
     ):
         self.name = name
+        # tau's `label` and `prompt_snippet`: the name a frontend prints, and the one line a
+        # system prompt lists the tool under. Both default to what the tool already says.
+        self.label = label or name
+        self.prompt_snippet = prompt_snippet or description
         self.description = description
         self.args_model = args_model
         self.result_model = result_model
@@ -88,6 +104,15 @@ class AgentTool(Generic[Args, Result]):
             "description": self.description,
             "input_schema": self._input_schema,
         }
+
+    @property
+    def parameters(self) -> dict:
+        """The arguments' JSON schema, tau's name for it; `input_schema` is the same thing."""
+        return self.schema()["input_schema"]
+
+    @property
+    def input_schema(self) -> dict:
+        return self.parameters
 
     def parse_arguments(self, arguments: dict[str, Any]) -> Args:
         return self.args_model.model_validate(arguments)
@@ -213,3 +238,39 @@ def counted_ruling_line(label: str, rulings: Any) -> str:
     `failures`, which is what `gates.Ruling` and `runner.records.GateResult` both are.
     """
     return f"{label}: " + "; ".join(counted_failure(r) for r in rulings)
+
+
+# --- how a gate's ruling reaches the model ------------------------------------
+
+RULING_TAG = "ruling"
+
+
+def attach_ruling(result: ToolResult, ruling: Any) -> ToolResult:
+    """One ruling appended to a tool result, in the one format every gate writes.
+
+    A gate rules on the write the model just made, and the model reads the ruling on that write's
+    result. The block is the gate's name, whether it accepted, one line of why, and the rows that
+    still differ, one per line, because a count is what a live round fed back for six recompiles
+    while nothing moved. `ruling` is anything with `name`, `accepted`, `line` and `rows`; the rows
+    are dicts and ride in `details` as data as well, so a consumer reads them without parsing.
+    """
+    name = str(getattr(ruling, "name", "") or getattr(ruling, "stage", "") or RULING_TAG)
+    accepted = bool(getattr(ruling, "accepted", getattr(ruling, "passed", False)))
+    line = str(getattr(ruling, "line", "") or "")
+    rows = [dict(row) for row in (getattr(ruling, "rows", None) or [])]
+    head = f"<{RULING_TAG} name=\"{name}\" accepted=\"{'yes' if accepted else 'no'}\">"
+    body = [head]
+    if line:
+        body.append(line)
+    for row in rows:
+        body.append(json.dumps(row, ensure_ascii=False, sort_keys=True))
+    if rows:
+        body.append(f"{len(rows)} row(s) still differ; each line above is one of them.")
+    body.append(f"</{RULING_TAG}>")
+    details = dict(result.details or {})
+    rulings = list(details.get("rulings") or [])
+    rulings.append({"name": name, "accepted": accepted, "line": line, "rows": rows})
+    details["rulings"] = rulings
+    # The ruling never changes `is_error`: whether the call itself failed is the tool's word,
+    # whether the gate accepted is the ruling's, and the model reads both.
+    return ToolResult(content=f"{result.content}\n" + "\n".join(body), details=details, is_error=result.is_error)

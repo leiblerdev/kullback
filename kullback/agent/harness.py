@@ -6,13 +6,13 @@ system prompt's sections, and the subscribers every event is pushed to. One run 
 `prompt` while one is running is refused, because two runs would write one transcript (tau's rule,
 and the discipline turn-taking gives two harnesses on one workdir, D128).
 
-Context (phase 7, D124, D131). A harness given a `session` records every message the loop appends
-into that session tree and puts the tree's active path in front of the model, so a compaction
-(the model's forget, or the code floor) changes what the model sees on its next turn without
-rewriting the transcript's history. `context` configures the window, the line, whether every tool
-result carries the context note (off by default, so a build without it is byte-identical), whether
-the floor runs at the end of each turn, and which arm the session is under. Without a session the
-harness behaves as it did in phase 2, and `context_stats` still counts the fill at each turn end.
+Context (D124). A harness given a `session` records every message the loop appends into that
+session tree and puts the tree's active path in front of the model, so a compaction changes what
+the model sees on its next turn without rewriting the transcript's history. `context` configures
+the window, the line, whether every tool result carries the context note (off by default, so a
+build without it is byte-identical), whether a turn that ends over the line compacts, and how many
+recent tool batches a compaction keeps verbatim. Without a session the harness holds the messages
+it was given, and `context_stats` still counts the fill at each turn end.
 """
 
 from __future__ import annotations
@@ -21,27 +21,30 @@ import asyncio
 import inspect
 from collections import deque
 from contextlib import suppress
+from dataclasses import dataclass, field
 from typing import Any, AsyncIterator, Awaitable, Callable, Iterable, Literal, Optional, Union
 
+from kullback.agent.bus import Bus
 from kullback.agent.context import ContextConfig, ContextManager, ContextStats, prompt_block
-from kullback.agent.events import AgentEvent, CustomMessage, MessageEnd, MessageStart
+from kullback.agent.events import AgentEvent, CustomMessage, MessageEndEvent, MessageStartEvent
 from kullback.agent.loop import (
     CancelToken,
     Hooks,
     LoopState,
     execute_tool_call,
-    interrupted_tool_results,
     run_agent_loop,
 )
 from kullback.agent.messages import Message, ToolCall, UserMessage
+from kullback.agent.provider import ModelProvider
 from kullback.agent.session import SessionStore
+from kullback.agent.tool_history import interrupted_tool_results
 from kullback.agent.tools import AgentTool, ToolRegistry, ToolResult
 from kullback.ai.provider import Model, ModelConfig
 
 Subscriber = Callable[[AgentEvent], Union[None, Awaitable[None]]]
 
 
-__all__ = ["AgentHarness", "PromptSection", "prompt_block"]
+__all__ = ["AgentHarness", "AgentHarnessConfig", "PromptSection", "prompt_block"]
 
 
 class PromptSection:
@@ -52,10 +55,44 @@ class PromptSection:
         self.text = text
 
 
+@dataclass
+class AgentHarnessConfig:
+    """Everything one harness is made of, in one value (tau_agent's AgentHarnessConfig).
+
+    tau builds its harness from this and nothing else; here the keyword constructor stays too,
+    because the applications above call it. `model` is a provider or a model the core adapts to one.
+    """
+
+    model: Union[Model, "ModelProvider"]
+    system: str = ""
+    tools: list[AgentTool] = field(default_factory=list)
+    hooks: Optional[Hooks] = None
+    config: Optional[ModelConfig] = None
+    max_turns: Optional[int] = None
+    messages: list[Message] = field(default_factory=list)
+    session: Optional[SessionStore] = None
+    context: Optional[ContextConfig] = None
+    bus: Optional["Bus"] = None
+
+    def build(self) -> "AgentHarness":
+        return AgentHarness(
+            model=self.model,
+            system=self.system,
+            tools=self.tools,
+            hooks=self.hooks,
+            config=self.config,
+            max_turns=self.max_turns,
+            messages=self.messages,
+            session=self.session,
+            context=self.context,
+            bus=self.bus,
+        )
+
+
 class AgentHarness:
     def __init__(
         self,
-        model: Model,
+        model: Union[Model, ModelProvider],
         system: str = "",
         tools: Iterable[AgentTool] = (),
         hooks: Optional[Hooks] = None,
@@ -64,8 +101,13 @@ class AgentHarness:
         messages: Iterable[Message] = (),
         session: Optional[SessionStore] = None,
         context: Optional[ContextConfig] = None,
+        bus: Optional[Bus] = None,
     ):
         self.model = model
+        # The workdir's bus, when there is one: every event goes onto it, and the subscribers are
+        # its subscribers, so one durable ordered stream carries what the run did. None keeps the
+        # subscribers in this process, which is what a test wants.
+        self.bus = bus
         self.registry = ToolRegistry(list(tools))
         self.hooks = hooks or Hooks()
         self.config = config
@@ -126,8 +168,22 @@ class AgentHarness:
         self.sections = [section for section in self.sections if section.name != name]
         return len(self.sections) < before
 
+    @classmethod
+    def from_config(cls, config: "AgentHarnessConfig") -> "AgentHarness":
+        """tau's way in: one config value builds the harness."""
+        return config.build()
+
     def register_tool(self, tool: AgentTool) -> None:
         self.registry.register(tool)
+
+    async def compact(self, reason: str = "the run asked for it") -> Any:
+        """Compact the context now: the older prefix becomes one summary, recent turns stand.
+
+        This is tau's manual compaction. The automatic one runs at the end of a turn that left the
+        context over the line; both are the same policy (compaction.py), and the model has no tool
+        for either.
+        """
+        return await self.context.compact(reason)
 
     def sync_context(self) -> None:
         """Put the session's active path in front of the model, and re-read the system prompt
@@ -178,6 +234,9 @@ class AgentHarness:
     # --- subscribers ---
 
     def subscribe(self, fn: Subscriber) -> Callable[[], None]:
+        """Watch this harness's events; with a bus, this is a subscription to the bus."""
+        if self.bus is not None:
+            return self.bus.subscribe(fn)
         self._subscribers.append(fn)
 
         def unsubscribe() -> None:
@@ -187,6 +246,9 @@ class AgentHarness:
         return unsubscribe
 
     async def _notify(self, event: AgentEvent) -> None:
+        if self.bus is not None:
+            await self.bus.publish(event)
+            return
         for subscriber in list(self._subscribers):
             result = subscriber(event)
             if inspect.isawaitable(result):
@@ -195,6 +257,9 @@ class AgentHarness:
     def _notify_sync(self, event: AgentEvent) -> None:
         # Queueing is synchronous, so an async subscriber is scheduled on the running loop, or
         # run to completion when no loop is running (a message queued before the first run).
+        if self.bus is not None:
+            self.bus.publish_sync(event)
+            return
         for subscriber in list(self._subscribers):
             result = subscriber(event)
             if inspect.isawaitable(result):
@@ -258,8 +323,8 @@ class AgentHarness:
                 repairs = interrupted_tool_results(self._messages)
                 for repair in repairs:
                     self._messages.append(repair)
-                    await emit(MessageStart(message=repair))
-                    await emit(MessageEnd(message=repair))
+                    await emit(MessageStartEvent(message=repair))
+                    await emit(MessageEndEvent(message=repair))
                 await run_agent_loop(state, self.model, self.registry, self.hooks, emit, prompts=prompts)
             finally:
                 await queue.put(done)

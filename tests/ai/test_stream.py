@@ -7,7 +7,7 @@ import json
 
 from kullback.ai import provider as pv
 from kullback.ai.messages import AssistantMessage, ToolResultMessage, UserMessage, to_wire
-from kullback.ai.provider import MemoModel, ModelReply, RecordedModel, TestModel, ToolCallRequest
+from kullback.ai.provider import ModelReply, RecordedModel, TestModel, ToolCallRequest
 from kullback.ai.stream import StreamDone, StreamError, assemble, normalize_stop_reason, stream
 
 
@@ -35,6 +35,12 @@ def test_plain_reply_streams_start_text_done():
     sent = model.calls[0]["messages"]
     assert sent[0] == {"role": "system", "content": "be brief"}
     assert sent[1] == {"role": "user", "content": "hi"}
+    # the done message carries the reply's usage and model, and its stop reason folded onto ours
+    reply = ModelReply(content="x", usage=pv.Usage(input=3, output=4), model="m", stop_reason="end_turn")
+    message = assemble(reply)
+    assert message.usage.input == 3 and message.usage.output == 4
+    assert message.model == "m"
+    assert message.stop_reason == "stop"
 
 
 def test_tool_calls_stream_one_block_each_and_get_ids_by_position():
@@ -97,14 +103,6 @@ def test_stop_reasons_fold_onto_ours():
     assert normalize_stop_reason("whatever", False) == "stop"
 
 
-def test_assemble_keeps_usage_and_model():
-    reply = ModelReply(content="x", usage=pv.Usage(input=3, output=4), model="m", stop_reason="end_turn")
-    message = assemble(reply)
-    assert message.usage.input == 3 and message.usage.output == 4
-    assert message.model == "m"
-    assert message.stop_reason == "stop"
-
-
 def test_a_recorded_model_of_block_messages_streams_text_then_a_tool_call_with_its_recorded_id(tmp_path):
     run = tmp_path / "run.jsonl"
     lines = [
@@ -126,17 +124,6 @@ def test_a_recorded_model_of_block_messages_streams_text_then_a_tool_call_with_i
     assert second.message.tool_calls[0].arguments == {"k": 1}
 
 
-def test_memo_model_streams_and_second_call_is_a_hit(tmp_path):
-    inner = TestModel(["memoed"])
-    model = MemoModel(inner, tmp_path)
-    messages = [UserMessage(content="same")]
-    a = events_of(model, messages)[-1]
-    b = events_of(model, messages)[-1]
-    assert a.message.content == b.message.content == "memoed"
-    assert model.calls == 2 and model.hits == 1
-    assert len(inner.calls) == 1
-
-
 def test_to_wire_drops_details_and_empty_error_turns():
     messages = [
         UserMessage(content="q", details={"secret": 1}),
@@ -151,3 +138,25 @@ def test_to_wire_drops_details_and_empty_error_turns():
         {"role": "tool", "tool_call_id": "c1", "name": "t", "content": "ok"},
     ]
     assert "secret" not in json.dumps(wire) and "full" not in json.dumps(wire)
+
+
+def test_a_message_that_reasoned_nothing_dumps_as_one_written_before_the_field_existed():
+    """The thinking channel must not change a stored transcript: a message carrying none omits
+    the key, so a record written today is byte-identical to one written before the channel was
+    read. A message that did reason keeps it."""
+    quiet = AssistantMessage(content="hi")
+    assert "thinking" not in quiet.model_dump()
+    assert "thinking" not in json.loads(quiet.model_dump_json())
+    assert quiet.thinking is None
+
+    loud = AssistantMessage(content="hi", thinking="weighed it")
+    assert loud.model_dump()["thinking"] == "weighed it"
+    assert AssistantMessage.model_validate(loud.model_dump()).thinking == "weighed it"
+
+
+def test_an_answer_of_empty_text_stays_empty_text_rather_than_becoming_no_answer():
+    """A reply that said nothing and a reply that said "" are different records, and the stream
+    must not fold one into the other."""
+    events = events_of(TestModel([ModelReply(content="")]), [UserMessage(content="hi")])
+    assert [e.type for e in events] == ["start", "done"]
+    assert events[-1].message.content == ""

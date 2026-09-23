@@ -1,28 +1,17 @@
 """Context accounting: the estimate, the session record behind a harness, the note on tool results,
-the floor at the line with the model's summary and with the mechanical one, protect, the counters."""
+protect, the counters. What happens when the estimate crosses the line is test_compaction.py."""
 
 from __future__ import annotations
 
-import pytest
-from pydantic import BaseModel, ConfigDict
-
-from kullback.agent.context import (
-    SUMMARY_PROMPT,
-    ContextConfig,
-    ContextEstimate,
-    Refused,
-    estimate_context,
-    mechanical_summary,
-    text_tokens,
-)
+from kullback.agent.context import ContextConfig, ContextEstimate, estimate_context, text_tokens
 from kullback.agent.extensions import ExtensionAPI, load_extensions
 from kullback.agent.harness import AgentHarness
 from kullback.agent.messages import AssistantMessage, ToolResultMessage, UserMessage
-from kullback.agent.session import CompactionEntry, MessageEntry, SessionInfoEntry, SessionStore
-from kullback.agent.tools import AgentTool, ToolResult
+from kullback.agent.session import SessionInfoEntry, SessionStore
+from kullback.agent.tools import ToolResult
 from kullback.ai.provider import ModelReply, TestModel
 from kullback.ai.usage import Usage
-from tests.agent.conftest import call, collect, reply, types_of
+from tests.agent.conftest import call, collect, reply
 
 
 def harness_with_session(tmp_path, model, tools=(), **config):
@@ -67,36 +56,29 @@ def test_over_line_is_strictly_above_the_line():
 # --- the record ---
 
 
-def test_a_harness_with_a_session_records_every_message_and_reads_the_active_path(tmp_path, add_tool):
+def test_a_session_records_every_message_and_reloads_without_reusing_entry_ids(tmp_path, add_tool):
     model = TestModel([reply(None, call("add", {"a": 1, "b": 2}, "c1")), reply("three")])
-    harness = harness_with_session(tmp_path, model, [add_tool], arm="code_only")
+    harness = harness_with_session(tmp_path, model, [add_tool])
     collect(harness.prompt("go"))
     store = harness.session
     kinds = [(e.id, e.type) for e in store.active_path()]
     assert kinds == [("e1", "session_info"), ("e2", "message"), ("e3", "message"), ("e4", "message"), ("e5", "message")]
-    assert isinstance(store.entries[0], SessionInfoEntry) and store.entries[0].arm == "code_only"
+    assert isinstance(store.entries[0], SessionInfoEntry)
     assert [e.message.role for e in store.entries[1:]] == ["user", "assistant", "tool", "assistant"]
     assert [m.role for m in harness.messages] == ["user", "assistant", "tool", "assistant"]
     reloaded = SessionStore.load(store.path)
     assert [m.content for m in reloaded.active_messages()] == [m.content for m in harness.messages]
-
-
-def test_messages_given_at_construction_are_recorded_first(tmp_path):
-    store = SessionStore(tmp_path / "s.jsonl")
-    harness = AgentHarness(TestModel(["ok"]), messages=[UserMessage(content="earlier")], session=store)
-    assert [e.type for e in store.entries] == ["session_info", "message"]
-    assert [m.content for m in harness.messages] == ["earlier"]
-
-
-def test_entry_ids_never_reuse_numbers_on_a_reloaded_session(tmp_path):
-    store = SessionStore(tmp_path / "s.jsonl")
-    first = AgentHarness(TestModel(["one"]), session=store)
-    collect(first.prompt("go"))
-    second = AgentHarness(TestModel(["two"]), session=SessionStore.load(store.path))
+    # a harness on the reloaded session never reuses an entry number
+    second = AgentHarness(TestModel(["two"]), session=reloaded)
     collect(second.prompt("again"))
     ids = [e.id for e in second.session.entries]
     assert len(ids) == len(set(ids))
     assert ids[-1] == f"e{len(ids)}"
+    # messages given at construction are recorded first
+    early = SessionStore(tmp_path / "early.jsonl")
+    seeded = AgentHarness(TestModel(["ok"]), messages=[UserMessage(content="earlier")], session=early)
+    assert [e.type for e in early.entries] == ["session_info", "message"]
+    assert [m.content for m in seeded.messages] == ["earlier"]
 
 
 # --- the note ---
@@ -112,14 +94,17 @@ def test_context_note_is_off_by_default(tmp_path, add_tool):
     assert plain.messages[2].content == '{"total": 3}'
 
 
-def test_context_note_on_appends_the_estimate_and_the_entry_id_and_the_hook_is_gone_between_runs(tmp_path, add_tool):
+def test_context_note_on_appends_the_estimate_and_the_entry_id_after_the_extension_hooks(tmp_path, add_tool):
     model = TestModel([reply(None, call("add", {"a": 1, "b": 2}, "c1")), reply("ok")])
     harness = harness_with_session(tmp_path, model, [add_tool], note=True, window=5000)
     events = collect(harness.prompt("go"))
     content = harness.messages[2].content
     first, note = content.split("\n")
     assert first == '{"total": 3}'
-    assert note.startswith("context ") and "of 5000, line at 40%, estimated from characters; this result is entry e4" in note
+    assert (
+        note.startswith("context ")
+        and "of 5000, line at 40%, estimated from characters; this result is entry e4" in note
+    )
     assert harness.session.get("e4").message.tool_call_id == "c1"
     end = next(e for e in events if e.type == "tool_execution_end")
     assert end.result.content == content and end.result.details == {"total": 3}
@@ -128,178 +113,40 @@ def test_context_note_on_appends_the_estimate_and_the_entry_id_and_the_hook_is_g
     # and the hook is gone between runs
     assert harness.hooks.tool_result == []
 
+    # without a session the note carries no entry id
+    bare = AgentHarness(
+        TestModel([reply(None, call("add", {"a": 1, "b": 2}, "c1")), reply("ok")]),
+        tools=[add_tool],
+        context=ContextConfig(note=True),
+    )
+    collect(bare.prompt("go"))
+    bare_note = bare.messages[2].content.split("\n")[1]
+    assert bare_note.startswith("context ") and "entry" not in bare_note
 
-def test_context_note_without_a_session_carries_no_entry_id(add_tool):
-    model = TestModel([reply(None, call("add", {"a": 1, "b": 2}, "c1")), reply("ok")])
-    harness = AgentHarness(model, tools=[add_tool], context=ContextConfig(note=True))
-    collect(harness.prompt("go"))
-    note = harness.messages[2].content.split("\n")[1]
-    assert note.startswith("context ") and "entry" not in note
+    # the note reads usage when the provider reported it
+    first_reply = ModelReply(tool_calls=[call("add", {"a": 1, "b": 2}, "c1")], usage=Usage(input=4000, output=20))
+    used = harness_with_session(
+        tmp_path / "usage", TestModel([first_reply, reply("ok")]), [add_tool], note=True, window=10000
+    )
+    collect(used.prompt("go"))
+    usage_note = used.messages[2].content.split("\n")[1]
+    assert "estimated from usage" in usage_note and usage_note.startswith("context 40% of 10000")
 
-
-def test_context_note_reads_usage_when_the_provider_reported_it(tmp_path, add_tool):
-    first = ModelReply(tool_calls=[call("add", {"a": 1, "b": 2}, "c1")], usage=Usage(input=4000, output=20))
-    model = TestModel([first, reply("ok")])
-    harness = harness_with_session(tmp_path, model, [add_tool], note=True, window=10000)
-    collect(harness.prompt("go"))
-    note = harness.messages[2].content.split("\n")[1]
-    assert "estimated from usage" in note and note.startswith("context 40% of 10000")
-
-
-def test_note_hook_runs_after_the_extension_hooks(tmp_path, add_tool):
-    model = TestModel([reply(None, call("add", {"a": 1, "b": 2}, "c1")), reply("ok")])
-    harness = harness_with_session(tmp_path, model, [add_tool], note=True)
+    # the note hook runs after the extension hooks
+    gated = harness_with_session(
+        tmp_path / "gate",
+        TestModel([reply(None, call("add", {"a": 1, "b": 2}, "c1")), reply("ok")]),
+        [add_tool],
+        note=True,
+    )
 
     def setup(api: ExtensionAPI):
         api.tool_result(lambda c, r: ToolResult(content=r.content + "\ngate: accepted", details=r.details))
 
-    load_extensions(harness, [setup])
-    collect(harness.prompt("go"))
-    lines = harness.messages[2].content.split("\n")
+    load_extensions(gated, [setup])
+    collect(gated.prompt("go"))
+    lines = gated.messages[2].content.split("\n")
     assert lines[0] == '{"total": 3}' and lines[1] == "gate: accepted" and lines[2].startswith("context ")
-
-
-# --- the floor ---
-
-
-def floor_harness(tmp_path, replies, **config):
-    defaults = dict(window=1000, line=0.4, recent_tool_turns=1, arm="code_only")
-    defaults.update(config)
-    harness = harness_with_session(tmp_path, TestModel(replies), **defaults)
-    harness.follow_up("next")
-    return harness
-
-
-def test_floor_compacts_at_the_line_with_the_models_summary(tmp_path):
-    harness = floor_harness(tmp_path, ["one", "two", "the user sent a long x; the answer was one"])
-    events = collect(harness.prompt("x" * 3000))
-    kinds = types_of(events)
-    assert kinds.count("compaction") == 1
-    turn_ends = [i for i, k in enumerate(kinds) if k == "turn_end"]
-    compaction_at = kinds.index("compaction")
-    assert turn_ends[0] < compaction_at and turn_ends[1] < compaction_at < kinds.index("agent_end")
-    event = events[compaction_at]
-    # the oldest entry alone brings the estimate under the line, so the floor stops there
-    assert event.by == "code_fallback" and event.replaces_entry_ids == ["e2"] and event.first_kept_entry_id == "e3"
-    assert event.summary == "the user sent a long x; the answer was one" and event.entry_id == "e6"
-    entry = harness.session.get("e6")
-    assert isinstance(entry, CompactionEntry) and entry.by == "code_fallback"
-    assert "code_fallback at turn 2" in entry.note and "summary by the model" in entry.note
-    # the active path and the transcript now start with the summary; the record keeps the originals
-    assert [e.id for e in harness.session.active_path()] == ["e1", "e6", "e3", "e4", "e5"]
-    assert [m.content for m in harness.messages] == [
-        "[summary of earlier context]\nthe user sent a long x; the answer was one",
-        "one",
-        "next",
-        "two",
-    ]
-    assert isinstance(harness.session.get("e2"), MessageEntry)
-    # one summarization call through the same model, with the dropped entries in the prompt
-    summary_call = harness.model.calls[2]["messages"]
-    assert len(summary_call) == 1 and summary_call[0]["role"] == "user"
-    assert summary_call[0]["content"].startswith(SUMMARY_PROMPT) and "[e2] user:" in summary_call[0]["content"]
-    stats = harness.context_stats
-    assert stats.fallback_compactions == 1 and stats.mechanical_summaries == 0
-    assert len(stats.fill_at_turn_end) == 2 and all(f > 0.4 for f in stats.fill_at_turn_end)
-
-
-def test_floor_does_not_trigger_below_the_line(tmp_path):
-    harness = floor_harness(tmp_path, ["one", "two"], window=100_000)
-    events = collect(harness.prompt("x" * 3000))
-    assert "compaction" not in types_of(events)
-    assert harness.context_stats.fallback_compactions == 0
-    assert len(harness.model.calls) == 2
-    assert all(f < 0.4 for f in harness.context_stats.fill_at_turn_end)
-
-
-def test_floor_can_be_switched_off(tmp_path):
-    harness = floor_harness(tmp_path, ["one", "two"], floor=False)
-    events = collect(harness.prompt("x" * 3000))
-    assert "compaction" not in types_of(events)
-    assert harness.context_stats.fallback_compactions == 0
-    # over the line at both turn ends and still no compaction, and no summarization call went out
-    fills = harness.context_stats.fill_at_turn_end
-    assert len(fills) == 2 and all(f > 0.4 for f in fills)
-    assert len(harness.model.calls) == 2
-
-
-def test_floor_writes_a_mechanical_summary_when_the_model_cannot(tmp_path):
-    harness = floor_harness(tmp_path, ["one", "two"])
-    events = collect(harness.prompt("x" * 3000))
-    event = next(e for e in events if e.type == "compaction")
-    assert event.by == "code_fallback"
-    assert event.summary.startswith("[mechanical summary: ") and "ran out of replies" in event.summary
-    assert event.summary.splitlines()[1] == "- e2 user: " + "x" * 77 + "..."
-    assert "mechanical summary because" in event.note
-    stats = harness.context_stats
-    assert stats.fallback_compactions == 1 and stats.mechanical_summaries == 1
-    assert harness.messages[0].content.startswith("[summary of earlier context]\n[mechanical summary")
-
-
-def test_mechanical_summary_lists_kinds_and_first_lines():
-    entries = [
-        MessageEntry(id="a", message=UserMessage(content="\n\nfirst line\nsecond")),
-        MessageEntry(id="b", message=AssistantMessage(content=None, tool_calls=[{"id": "c", "name": "add", "arguments": {"a": 1}}])),
-        MessageEntry(id="c", message=ToolResultMessage(tool_call_id="c", tool_name="add", content="3")),
-    ]
-    text = mechanical_summary(entries, "no model")
-    assert text.splitlines() == [
-        "[mechanical summary: no model]",
-        "- a user: first line",
-        '- b assistant: call add({"a": 1})',
-        "- c tool result add: 3",
-    ]
-
-
-def test_floor_keeps_protected_entries_and_the_current_turn(tmp_path):
-    harness = floor_harness(tmp_path, ["one", "two", "summary"])
-    api = ExtensionAPI(harness)
-    api.protect(["e2"], "open finding refers to it")
-    events = collect(harness.prompt("x" * 3000))
-    event = next(e for e in events if e.type == "compaction")
-    # e2 (protected) and e4, e5 (the current turn) stay; only e3 is old and free
-    assert event.replaces_entry_ids == ["e3"]
-    # e2 is kept, so the dropped set is not a prefix and the entry claims no prefix
-    assert event.first_kept_entry_id is None
-    assert [e.id for e in harness.session.active_path()] == ["e1", "e2", "e6", "e4", "e5"]
-    assert "still over the line" in event.note
-
-
-def test_floor_keeps_recent_tool_output_and_whole_exchanges(tmp_path, echo_tool):
-    big = "y" * 1200
-    replies = [
-        reply(None, call("echo", {"text": big}, "c1")),
-        reply(None, call("echo", {"text": big}, "c2")),
-        "summary of the first echo",
-        "done",
-        "summary again",
-    ]
-    harness = harness_with_session(tmp_path, TestModel(replies), [echo_tool], window=1500, line=0.4, recent_tool_turns=1)
-    events = collect(harness.prompt("go"))
-    compactions = [e for e in events if e.type == "compaction"]
-    assert len(compactions) == 2
-    # at the end of turn 2 the first exchange (assistant e3 with its result e4) went as one unit
-    # with the prompt; the second exchange is the current turn and stayed, still over the line
-    assert compactions[0].replaces_entry_ids == ["e2", "e3", "e4"] and "still over the line" in compactions[0].note
-    # at the end of turn 3 the second exchange is the last tool output and stays; only the
-    # summary itself is old and free, so it is summarized again
-    assert compactions[1].replaces_entry_ids == ["e7"] and "still over the line" in compactions[1].note
-    assert [e.id for e in harness.session.active_path()] == ["e1", "e9", "e5", "e6", "e8"]
-    roles = [m.role for m in harness.messages]
-    assert roles == ["user", "assistant", "tool", "assistant"]
-    assert harness.context_stats.fallback_compactions == 2
-
-
-def test_floor_uses_characters_after_a_compaction_made_usage_stale(tmp_path):
-    # The first assistant reports a huge usage; after the floor compacts, that number is stale
-    # and the next estimate must not read it, or the floor would fire on every later turn.
-    first = ModelReply(content="one", usage=Usage(input=90_000, output=10))
-    harness = floor_harness(tmp_path, [first, "two", "summary", "three"], window=100_000, line=0.5)
-    harness.follow_up("and then")
-    events = collect(harness.prompt("go"))
-    assert types_of(events).count("compaction") == 1
-    fills = harness.context_stats.fill_at_turn_end
-    assert fills[0] > 0.5 and fills[-1] < 0.01
 
 
 # --- protect through the api, and the counters ---
@@ -307,7 +154,7 @@ def test_floor_uses_characters_after_a_compaction_made_usage_stale(tmp_path):
 
 def test_protect_and_unprotect_through_the_api_by_tool_call_id(tmp_path, add_tool):
     model = TestModel([reply(None, call("add", {"a": 1, "b": 2}, "c1")), reply("ok")])
-    harness = harness_with_session(tmp_path, model, [add_tool], arm="code_only")
+    harness = harness_with_session(tmp_path, model, [add_tool])
     ids = []
 
     def setup(api: ExtensionAPI):
@@ -333,87 +180,3 @@ def test_the_fill_is_counted_at_every_turn_end_without_a_session():
     collect(harness.prompt("again"))
     fills = harness.context_stats.fill_at_turn_end
     assert len(fills) == 2 and all(0 < f < 1 for f in fills)
-
-
-# --- the floor's cut of one result that is over the line on its own ---
-
-
-class BulkArgs(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    size: int
-
-
-class BulkResult(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    text: str
-
-
-async def _bulk(args: BulkArgs) -> BulkResult:
-    return BulkResult(text="y" * args.size)
-
-
-def bulk_harness(tmp_path, replies, **config):
-    """A harness whose one tool answers a large result to a small call, which is the shape the cut
-    is for: the assistant's call is cheap and the result alone is over the line."""
-    tool = AgentTool("bulk", "Answer with a block of text.", BulkArgs, BulkResult, _bulk, render=lambda r: r.text)
-    defaults = dict(window=1500, line=0.4, recent_tool_turns=1, arm="code_only")
-    defaults.update(config)
-    return harness_with_session(tmp_path, TestModel(replies), [tool], **defaults)
-
-
-def test_floor_cuts_one_guarded_tool_result_that_is_over_the_line_on_its_own(tmp_path):
-    """D124's floor drops only what is unguarded, so one protected result larger than the line holds
-    the context over it whatever else goes; that result is read shorter in place instead."""
-    harness = bulk_harness(tmp_path, [reply(None, call("bulk", {"size": 6000}, "c1")), "done"])
-    events = collect(harness.prompt("go"))
-    compactions = [e for e in events if e.type == "compaction"]
-    assert len(compactions) == 1 and compactions[0].by == "code_fallback"
-    # the whole turn is guarded, so nothing was dropped and nothing claims a prefix
-    assert compactions[0].replaces_entry_ids == [] and compactions[0].first_kept_entry_id is None
-    assert "nothing dropped, so nothing summarized" in compactions[0].note
-    assert "cut entry e4 from 1518 to 405 tokens" in compactions[0].note
-    stats = harness.context_stats
-    assert stats.cuts == 1 and stats.tokens_cut == 1518 - 405 and stats.fallback_compactions == 1
-    assert stats.fill_at_turn_end[-1] < 0.4
-
-
-def test_a_cut_keeps_the_entry_paired_with_its_call_and_whole_on_the_file(tmp_path):
-    harness = bulk_harness(tmp_path, [reply(None, call("bulk", {"size": 6000}, "c1")), "done"])
-    collect(harness.prompt("go"))
-    # the pair stands where it stood: the call, its result, and every id still on the path
-    assert [e.id for e in harness.session.active_path()] == ["e1", "e2", "e3", "e4", "e5", "e6"]
-    # the cut-only compaction (e5) is a line of the record and adds no message of its own
-    assert [m.role for m in harness.messages] == ["user", "assistant", "tool", "assistant"]
-    entry = harness.session.get("e4")
-    assert isinstance(entry, MessageEntry) and entry.message.content == "y" * 6000
-    cut = harness.messages[2].content
-    assert cut.startswith("y" * 1200 + "\n[mechanical summary: entry e4 is over the line on its own]")
-    assert cut.splitlines()[2].startswith("- e4 tool result bulk: " + "y" * 77)
-    assert 'recall(entry_id="e4") reads back' in cut and "y" * 1300 not in cut
-
-
-def test_recall_of_a_cut_entry_answers_the_whole_result(tmp_path):
-    harness = bulk_harness(tmp_path, [reply(None, call("bulk", {"size": 6000}, "c1")), "done"])
-    collect(harness.prompt("go"))
-    result = harness.context.recall("e4")
-    assert result.entry_id == "e4" and result.kind == "tool result bulk" and result.content == "y" * 6000
-    # an entry standing whole in the context is still refused: only a cut one may be read back
-    with pytest.raises(Refused) as refusal:
-        harness.context.recall("e3")
-    assert refusal.value.rule == "in_context"
-
-
-def test_floor_leaves_a_guarded_result_that_fits_inside_the_line_whole(tmp_path):
-    harness = bulk_harness(tmp_path, [reply(None, call("bulk", {"size": 1200}, "c1")), "done",
-                                      "the prompt was long"])
-    harness.follow_up("next")
-    events = collect(harness.prompt("x" * 3000))
-    compactions = [e for e in events if e.type == "compaction"]
-    # the prompt is dropped whole; the result is guarded tool output and fits inside the line
-    assert len(compactions) == 1 and compactions[0].replaces_entry_ids == ["e2"]
-    assert "cut entry" not in compactions[0].note
-    assert harness.session.get("e4").message.content == "y" * 1200
-    assert harness.messages[2].content == "y" * 1200
-    assert harness.context_stats.cuts == 0 and harness.context_stats.tokens_cut == 0

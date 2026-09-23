@@ -1,31 +1,97 @@
-"""One interface for model calls, with the three offline models tests are allowed to use."""
+"""The provider contract every model answers through, and the model handle the Harness holds.
+
+Two things live here, mirroring tau_ai/provider.py plus what Kullback still needs beside it.
+
+`ModelProvider` is the contract: `stream_response` yields the canonical events of `events.py` as
+the provider produces them. The streaming adapters (`openai_compatible.py`, `anthropic.py`) and the
+replay seam (`replay.py`) implement it, and the agent core sees one interface for live and replayed
+models.
+
+`Model`, `ModelReply` and the adapters under them are the older synchronous handle: one blocking
+`query` that returns a whole reply. It is temporary. Every caller listed in the overhaul brief
+(builder, examiner, user, runner) still holds a `Model`, so the handle stays until they take a
+`ModelProvider` instead; `replay.ReplayProvider` is how a handle is used behind the new contract in
+the meantime.
+
+The three offline models tests are allowed to use (TestModel, RecordedModel, MemoModel) are handles
+and live here with the live adapters, because `ADAPTERS`, `model_for` and the live-call switch are
+read off this module by name from elsewhere in the Harness.
+"""
 
 from __future__ import annotations
 
 import copy
 import hashlib
 import json
-import math
 import os
 import random
 import re
 import threading
 import time
 import uuid
-from email.utils import parsedate_to_datetime
 from pathlib import Path
-from typing import Any, Iterable, NamedTuple, Optional
+from typing import Any, AsyncIterator, Iterable, Optional, Protocol, Sequence, runtime_checkable
 from urllib.parse import urlparse
 
 import httpx
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from kullback.ai.usage import Usage
+# ruff: noqa: F401 - the imports below that this module does not itself use are the re-exports
+# named in the note under them: the rest of the Harness spells them kullback.ai.provider.X.
+from kullback.ai.events import StreamEvent
+from kullback.ai.http import (
+    CONNECT_TIMEOUT_S,
+    DEFAULT_READ_TIMEOUT_S,
+    MODEL_TIMEOUT_ENV_VAR,
+    REQUEST_ID_HEADERS,
+    Posted,
+    body_hash,
+    json_body,
+    model_read_timeout_s,
+    request_id_of,
+    request_timeout,
+    timeout_note,
+)
+from kullback.ai.http_errors import (
+    CONTEXT_OVERFLOW_MARKERS,
+    ContextOverflowError,
+    ProviderError,
+    RetryExhausted,
+    error_text,
+    is_context_overflow,
+)
+from kullback.ai.messages import Message
+from kullback.ai.retry import (
+    RetryPolicy,
+    backoff_delay,
+    retry_after_seconds,
+    retryable_status,
+)
+from kullback.ai.tool_call_ids import ID_ALLOWED, ID_DIGEST_LEN, clean_tool_call_id
+from kullback.ai.usage import (
+    Usage,
+    reasoning_of,
+    reasoning_share,
+    usage_from_anthropic,
+    usage_from_openai_chat,
+    usage_from_openai_responses,
+)
+
+# The names below were defined here before the modules above were carved out of this one. They
+# stay importable from `kullback.ai.provider` because the rest of the Harness spells them that way.
+_error_text = error_text
+_retryable_status = retryable_status
+_reasoning_share = reasoning_share
+_reasoning_of = reasoning_of
 
 # Tests never call a real model. Only a real adapter checks this flag; TestModel, RecordedModel
 # and MemoModel ignore it: the first two never leave the machine and the third only forwards to
 # the model it wraps.
 ALLOW_MODEL_REQUESTS = False
+
+# The harness default for the Builder, the Examiner, the judges, the probe and the re-rolls;
+# founder decision 2026-09-22.
+DEFAULT_MODEL = "openai/gpt-6-luna"
 
 # The one way to turn live calls on: a person exports this before running the CLI. There is
 # no flag a module can set by accident, and the default above stays False.
@@ -134,6 +200,37 @@ TOOL_CHOICES = ("auto", "required", "none")
 
 # Anthropic spells the same three answers its own way on the Messages API.
 ANTHROPIC_TOOL_CHOICE = {"auto": {"type": "auto"}, "required": {"type": "any"}, "none": {"type": "none"}}
+
+
+@runtime_checkable
+class CancellationToken(Protocol):
+    """Anything that can say the Run behind a stream was cancelled."""
+
+    def is_cancelled(self) -> bool:
+        ...
+
+
+@runtime_checkable
+class ModelProvider(Protocol):
+    """The contract every model answers through: one response, streamed as canonical events.
+
+    `stream_response` returns the iterator without awaiting anything, so the caller decides when
+    the first byte is asked for. It never raises for a provider failure: a refusal, a dead host or
+    an exhausted retry arrives as a StreamError event, because the loop has to record it in the
+    transcript rather than unwind through it.
+    """
+
+    def stream_response(
+        self,
+        *,
+        model: str,
+        system: str,
+        messages: Sequence[Message],
+        tools: Sequence[dict],
+        signal: Optional[CancellationToken] = None,
+        session_id: Optional[str] = None,
+    ) -> AsyncIterator[StreamEvent]:
+        ...
 
 
 class Model:
@@ -401,45 +498,6 @@ def _reply_from_dict(data: dict) -> ModelReply:
     )
 
 
-def _reasoning_of(usage: Any) -> int:
-    """The reasoning count a provider usage payload reports, or zero when it carries none.
-
-    One reader for every shape the adapters parse: a flat reasoning key on a stored reply,
-    the chat shape's completion_tokens_details.reasoning_tokens, and the Responses shape's
-    output_tokens_details.reasoning_tokens. This reads the reported number only; whether it is
-    a share of output is the boundary's call in `_reasoning_share` below. Zero here means the
-    provider did not report it, not that no reasoning happened.
-    """
-    if not isinstance(usage, dict):
-        return 0
-    direct = usage.get("reasoning", 0) or 0
-    chat = usage.get("completion_tokens_details") or {}
-    answered = usage.get("output_tokens_details") or {}
-    if not isinstance(chat, dict):
-        chat = {}
-    if not isinstance(answered, dict):
-        answered = {}
-    return int(direct or chat.get("reasoning_tokens", 0) or answered.get("reasoning_tokens", 0) or 0)
-
-
-def _reasoning_share(usage: Any, output: int) -> int:
-    """The reported count as a share of output, or zero when it is not one.
-
-    The boundary is tolerant where the record is strict: some routed providers report reasoning
-    outside the completion total, and a reply the build already paid for must not die over a
-    telemetry field. A count that is negative or above the reported output is recorded as zero,
-    which means "not reported as a part of output", and is never rewritten into a different
-    nonzero number. The oddity stays visible on the reply's `raw` payload beside it, which is
-    the one way this module surfaces something non-fatal (there is no log line and no warning
-    here). `Usage` itself still refuses such a record, so a stored file carrying one fails at
-    load instead of loading wrong.
-    """
-    reported = _reasoning_of(usage)
-    if reported < 0 or reported > output:
-        return 0
-    return reported
-
-
 def _arguments_of(call: dict) -> dict:
     args = call.get("arguments")
     if args is None:
@@ -477,111 +535,19 @@ def _read_assistant_replies(path: Path) -> list[ModelReply]:
 # require_live_calls_enabled() first.
 
 
-class ProviderError(RuntimeError):
-    """A provider said no. Carries the status, the body and how many attempts were made.
-
-    `attempts` is 1 for an error raised without a retry loop behind it (a missing key, a body the
-    provider refused once); the retry loop sets the real count on the error it raises, which is what
-    a Run's error event reports (D159).
-    """
-
-    def __init__(self, message: str, status: Optional[int] = None, body: Any = None,
-                 attempts: int = 1):
-        self.status = status
-        self.body = body
-        self.attempts = attempts
-        super().__init__(message)
-
-
-class ContextOverflowError(ProviderError):
-    """The prompt did not fit. Never retried: the same prompt will not fit next time either."""
-
-
-class RetryExhausted(ProviderError):
-    """Every attempt failed on a retryable error."""
-
-
-class RetryPolicy(BaseModel):
-    """Five attempts, exponential backoff with jitter, nothing clever."""
-
-    attempts: int = 5
-    base_delay_s: float = 0.5
-    max_delay_s: float = 30.0
-    jitter: float = 0.25
-    # A provider may ask for a wait longer than the build is willing to sit still for; past
-    # this the call gives up rather than blocking the build for hours.
-    max_retry_after_s: float = 120.0
-
-
-CONTEXT_OVERFLOW_MARKERS = (
-    "context length",
-    "context window",
-    "context_length",
-    "prompt is too long",
-    "too long for",
-    "maximum context",
-    "reduce the length",
-)
-ID_ALLOWED = re.compile(r"[^a-zA-Z0-9_-]")
 ENV_VAR = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}")
 CACHE_CONTROL = {"type": "ephemeral"}
 TEXT_BLOCK_TYPES = ("text", "reasoning", "thinking")
-ID_DIGEST_LEN = 8
 # The keys of a request body that are the prompt itself rather than the sampling: each adapter
 # builds a different body, so the sampling is what is left after these come out, never a list of
 # the fields worth keeping (a field nobody enumerated is a field a Run would not record).
 PROMPT_BODY_KEYS = ("messages", "tools", "input", "system", "instructions")
-# The provider's own id for one exchange, under whichever header that provider sends it.
-REQUEST_ID_HEADERS = ("x-request-id", "request-id", "cf-ray")
 # The Responses API returns logprobs only for what the include list asks for.
 RESPONSES_LOGPROBS_INCLUDE = "message.output_text.logprobs"
 # An empty user turn cannot be dropped (that would end the request on an assistant message,
 # which the current Anthropic API rejects: prefill is gone on 4.6 and later), and it cannot be
 # sent empty either, so it goes as one placeholder block.
 EMPTY_USER_PLACEHOLDER = "(no content)"
-# The read budget for one model call. A code-generating answer at the size the compile_tools
-# stage asks for can take minutes, while a dead host should still fail fast, so the default is
-# generous and only establishing contact stays short. One variable overrides it per process.
-MODEL_TIMEOUT_ENV_VAR = "KULLBACK_MODEL_TIMEOUT_S"
-DEFAULT_READ_TIMEOUT_S = 300.0
-CONNECT_TIMEOUT_S = 10.0
-
-
-def model_read_timeout_s(env: dict[str, str], explicit: Optional[float] = None) -> float:
-    """The read timeout in seconds: an explicit argument wins, then the environment, then 300 s.
-
-    A set variable that is not a positive finite number is an error naming the variable,
-    never a silent default. An empty value counts as set, so it raises too.
-    """
-    if explicit is not None:
-        return float(explicit)
-    raw = env.get(MODEL_TIMEOUT_ENV_VAR)
-    if raw is None:
-        return DEFAULT_READ_TIMEOUT_S
-    try:
-        value = float(raw)
-    except (TypeError, ValueError):
-        raise ValueError(
-            f"{MODEL_TIMEOUT_ENV_VAR} must be a number of seconds, got {raw!r}"
-        ) from None
-    if not (value > 0 and math.isfinite(value)):
-        raise ValueError(
-            f"{MODEL_TIMEOUT_ENV_VAR} must be a positive number of seconds, got {raw!r}"
-        )
-    return value
-
-
-def timeout_note(exc: Exception, connect_s: float, read_s: float) -> str:
-    """Name the budget an expired timeout spent: read for a slow answer, connect or pool for a dead host."""
-    if isinstance(exc, (httpx.ReadTimeout, httpx.WriteTimeout)):
-        return f" (read timeout {read_s:g}s)"
-    if isinstance(exc, httpx.PoolTimeout):
-        return f" (pool timeout {connect_s:g}s)"
-    if isinstance(exc, httpx.ConnectTimeout):
-        return f" (connect timeout {connect_s:g}s)"
-    return ""
-
-
 def split_model_id(model_id: str) -> tuple[str, str]:
     """'anthropic/claude-opus-5' into the provider and the wire id sent on the wire."""
     provider, _, wire_id = model_id.partition("/")
@@ -615,22 +581,6 @@ def strip_surrogates_deep(value: Any) -> Any:
     if isinstance(value, list):
         return [strip_surrogates_deep(v) for v in value]
     return value
-
-
-def clean_tool_call_id(call_id: Any) -> str:
-    """Tool call ids are restricted to [a-zA-Z0-9_-]; other characters become underscores.
-
-    Replacing characters can collide: 'a:b' and 'a_b' both cleaned to 'a_b', and a tool_result
-    could then be paired with the wrong tool_use in the same message. When anything was
-    replaced, a short digest of the original id is appended so distinct ids stay distinct.
-    """
-    original = str(call_id or "")
-    cleaned = ID_ALLOWED.sub("_", original)
-    if not cleaned:
-        return "id"
-    if cleaned == original:
-        return cleaned
-    return f"{cleaned}_{hashlib.sha256(original.encode('utf-8')).hexdigest()[:ID_DIGEST_LEN]}"
 
 
 def _is_empty_block(block: Any) -> bool:
@@ -699,91 +649,6 @@ def cache_last_two(messages: list[dict]) -> list[dict]:
     return out
 
 
-def json_body(request: Any) -> dict:
-    """The JSON a request carries; used by the adapters' tests and by error reporting."""
-    try:
-        return json.loads(request.content or b"{}")
-    except (json.JSONDecodeError, TypeError):
-        return {}
-
-
-def body_hash(part: Any) -> str:
-    """sha256 of one part of a request body, so a renderer can check it rebuilt the same prompt.
-
-    `records.content_hash` does the same job for the Harness' records, and this is not it: `ai`
-    imports nothing of ours (D121), so the hash the adapters take is written here. It is a
-    fingerprint of what was sent, compared with itself, never with a record's hash.
-    """
-    return hashlib.sha256(json.dumps(part, sort_keys=True, default=str).encode("utf-8")).hexdigest()
-
-
-def request_id_of(headers: Any) -> Optional[str]:
-    """The provider's id for one exchange: the first of the known headers that is there."""
-    get = getattr(headers, "get", None)
-    if get is None:
-        return None
-    for key in REQUEST_ID_HEADERS:
-        value = get(key)
-        if value:
-            return str(value)
-    return None
-
-
-class Posted(NamedTuple):
-    """One finished post: the JSON it answered with, and how it answered.
-
-    `post` returns the JSON alone, as it always did; `query` takes this so the Exchange it records
-    can say how many attempts the retry loop made and which request the provider logged.
-    """
-
-    data: dict
-    status: Optional[int] = None
-    attempts: int = 0
-    headers: Any = None
-
-
-def retry_after_seconds(headers: Any, now: Optional[float] = None) -> Optional[float]:
-    """Retry-After as seconds, whether the provider sent a count or an HTTP date."""
-    raw = None
-    for key in ("Retry-After", "retry-after"):
-        if key in headers:
-            raw = headers[key]
-            break
-    if raw is None:
-        return None
-    try:
-        return max(0.0, float(raw))
-    except (TypeError, ValueError):
-        pass
-    stamp = parsedate_to_datetime(str(raw))
-    if stamp is None:
-        return None
-    reference = time.time() if now is None else now
-    return max(0.0, stamp.timestamp() - reference)
-
-
-def backoff_delay(attempt: int, policy: RetryPolicy, rng: random.Random) -> float:
-    """Exponential backoff with jitter, capped."""
-    delay = min(policy.max_delay_s, policy.base_delay_s * (2 ** (attempt - 1)))
-    return delay + rng.random() * policy.jitter * delay
-
-
-def _retryable_status(status: int) -> bool:
-    """Only rate limits and server faults. A 400 is our bug and retrying it wastes money."""
-    return status == 429 or status >= 500
-
-
-def _error_text(body: Any) -> str:
-    if isinstance(body, dict):
-        error = body.get("error")
-        if isinstance(error, dict):
-            return str(error.get("message") or error)
-        if error:
-            return str(error)
-        return str(body.get("message") or body)
-    return str(body)
-
-
 class HttpModel(Model):
     """Shared plumbing for the HTTP adapters: ids, keys, the retry loop, one httpx client."""
 
@@ -816,16 +681,13 @@ class HttpModel(Model):
         # then 300 s. Reads and writes share it; only establishing contact stays short, so
         # the post below carries a split timeout object rather than one number.
         self.timeout = model_read_timeout_s(self.env, timeout)
-        self.request_timeout = httpx.Timeout(
-            connect=CONNECT_TIMEOUT_S,
-            read=self.timeout,
-            write=self.timeout,
-            pool=CONNECT_TIMEOUT_S,
-        )
+        self.request_timeout = request_timeout(self.timeout)
         self.sleep = sleep or time.sleep
         self.rng = rng or random.Random()
         self._client = client
         self._client_lock = threading.Lock()
+        # Request-shape fields an endpoint's 400 taught this instance (see `shape_adjustment`).
+        self.shape_fixes: set[str] = set()
 
     def client(self) -> Any:
         # httpx.Client is safe to share across threads; creating it is the one step that is
@@ -845,9 +707,19 @@ class HttpModel(Model):
         require_live_calls_enabled()
         if self.key_required and not self.api_key:
             raise ProviderError(f"no API key for {self.name}; set {self.key_env_var} or pass api_key")
-        body = self.build_body(messages, tools, config or ModelConfig())
+        config = config or ModelConfig()
+        body = self.build_body(messages, tools, config)
         started = time.monotonic()
-        posted = self._post_full(body)
+        try:
+            posted = self._post_full(body)
+        except ProviderError as error:
+            # One silent retry when the 400 named a shape field this instance can adjust; the
+            # adjustment stays, so the next call never pays the 400.
+            retry = self.build_body(messages, tools, config) if self.learn_shape(error, config) else body
+            if retry == body:
+                raise
+            body = retry
+            posted = self._post_full(body)
         wall_ms = (time.monotonic() - started) * 1000.0
         reply = self.parse_reply(posted.data)
         reply.exchange = self.exchange_of(body, posted, wall_ms)
@@ -923,7 +795,7 @@ class HttpModel(Model):
                     continue
             error = self.error_for(response)
             error.attempts = attempt
-            if isinstance(error, ContextOverflowError) or not _retryable_status(response.status_code):
+            if isinstance(error, ContextOverflowError) or not retryable_status(response.status_code):
                 raise error
             if last_attempt:
                 raise RetryExhausted(
@@ -944,14 +816,17 @@ class HttpModel(Model):
             self.sleep(backoff_delay(attempt, self.retry, self.rng) if wait is None else wait)
         raise RetryExhausted(f"{self.name}: no attempts were made", attempts=0)
 
+    def learn_shape(self, error: ProviderError, config: ModelConfig) -> bool:
+        """Whether this error taught a request-shape adjustment. Only the OpenAI shape learns."""
+        return False
+
     def error_for(self, response: Any) -> ProviderError:
         try:
             body = response.json()
         except ValueError:
             body = response.text
-        message = _error_text(body).lower()
-        text = f"{self.name}: HTTP {response.status_code}: {_error_text(body)}"
-        if any(marker in message for marker in CONTEXT_OVERFLOW_MARKERS):
+        text = f"{self.name}: HTTP {response.status_code}: {error_text(body)}"
+        if is_context_overflow(body):
             return ContextOverflowError(text, status=response.status_code, body=body)
         return ProviderError(text, status=response.status_code, body=body)
 
@@ -1024,24 +899,40 @@ class AnthropicModel(HttpModel):
                         arguments=block.get("input") or {},
                     )
                 )
-        usage = data.get("usage") or {}
-        output = int(usage.get("output_tokens", 0) or 0)
         return ModelReply(
             content="".join(text) or None,
             tool_calls=calls,
-            usage=Usage(
-                input=int(usage.get("input_tokens", 0) or 0),
-                output=output,
-                cache_read=int(usage.get("cache_read_input_tokens", 0) or 0),
-                cache_write=int(usage.get("cache_creation_input_tokens", 0) or 0),
-                # The Messages API reports no separate reasoning count today (thinking tokens
-                # sit inside output_tokens), so this reads zero until the payload carries one.
-                reasoning=_reasoning_share(usage, output),
-            ),
+            usage=usage_from_anthropic(data.get("usage")),
             model=data.get("model") or self.wire_id,
             stop_reason=data.get("stop_reason"),
             raw=data,
         )
+
+
+# gpt-<major> or o<digit>, after an optional gateway prefix such as 'openai/'.
+_REASONING_WIRE = re.compile(r"(?:.*/)?(?:gpt-(\d+)|o\d)(?![a-z])")
+
+
+def reasoning_family(wire_id: str) -> bool:
+    """Whether a wire id has the reasoning-family shape: gpt-<major> with major 5 or above, or o<digit>."""
+    match = _REASONING_WIRE.match(wire_id.lower())
+    return bool(match) and (match.group(1) is None or int(match.group(1)) >= 5)
+
+
+def shape_adjustment(error_text: str) -> Optional[str]:
+    """The request-shape field a 400's text asks to change, or None.
+
+    'reasoning_effort': send it as 'none' with tools. 'max_completion_tokens': cap under that name.
+    'temperature': drop it.
+    """
+    text = (error_text or "").lower()
+    if "reasoning_effort" in text and ("tool" in text or "'none'" in text or '"none"' in text):
+        return "reasoning_effort"
+    if "max_completion_tokens" in text:
+        return "max_completion_tokens"
+    if "temperature" in text:
+        return "temperature"
+    return None
 
 
 class OpenAIModel(HttpModel):
@@ -1068,7 +959,7 @@ class OpenAIModel(HttpModel):
                 body["tool_choice"] = config.tool_choice
         if config.max_tokens is not None:
             body[self.token_cap_field()] = config.max_tokens
-        if config.temperature is not None and not self._reasoning_family():
+        if config.temperature is not None and not self._reasoning_family() and "temperature" not in self.shape_fixes:
             body["temperature"] = config.temperature
         if config.seed is not None:
             body["seed"] = config.seed
@@ -1081,7 +972,8 @@ class OpenAIModel(HttpModel):
         if config.top_logprobs is not None:
             body["top_logprobs"] = config.top_logprobs
         body.update(self.reasoning_fields(config))
-        if tools and self._reasoning_family() and "reasoning_effort" not in body:
+        wants_none = self._reasoning_family() or "reasoning_effort" in self.shape_fixes
+        if tools and wants_none and "reasoning_effort" not in body:
             # Found live: gpt-5.6-luna answers a tool call with HTTP 400 saying function tools and
             # reasoning_effort cannot be combined on /v1/chat/completions unless the effort is
             # 'none'. The endpoint applies a default effort we never sent, so not sending one is
@@ -1096,14 +988,27 @@ class OpenAIModel(HttpModel):
 
         Found live, not read: gpt-5.6-luna answers `max_tokens` with HTTP 400 telling us to send
         `max_completion_tokens`, and the same families refuse any temperature but the default. The
-        test is on the wire id rather than a list of model names, because a list would be stale the
-        week after it was written and the failure mode is a whole build dying on its first call.
+        test is a shape of the wire id (gpt-<major> with major 5 or above, or o<digit>) rather than
+        a list of names: a prefix list went stale the week after it was written. `learn_shape` is the
+        safety net when the guess is wrong.
         """
-        wire = (self.wire_id or "").lower()
-        return wire.startswith(("gpt-5", "o1", "o3", "o4"))
+        return reasoning_family(self.wire_id or "")
 
     def token_cap_field(self) -> str:
-        return "max_completion_tokens" if self._reasoning_family() else "max_tokens"
+        learned = "max_completion_tokens" in self.shape_fixes
+        return "max_completion_tokens" if self._reasoning_family() or learned else "max_tokens"
+
+    def learn_shape(self, error: ProviderError, config: ModelConfig) -> bool:
+        """Keep the adjustment a 400 names. A caller who asked for an effort keeps it and the 400."""
+        if getattr(error, "status", None) != 400:
+            return False
+        field = shape_adjustment(str(error))
+        if field is None or field in self.shape_fixes:
+            return False
+        if field == "reasoning_effort" and config.reasoning_effort:
+            return False
+        self.shape_fixes.add(field)
+        return True
 
     def reasoning_fields(self, config: ModelConfig) -> dict:
         """Reasoning branch two of three: OpenAI takes one reasoning_effort field."""
@@ -1112,17 +1017,6 @@ class OpenAIModel(HttpModel):
     def parse_reply(self, data: dict) -> ModelReply:
         choices = data.get("choices") or [{}]
         message = (choices[0] or {}).get("message") or {}
-        usage = data.get("usage") or {}
-        details = usage.get("prompt_tokens_details") or {}
-        # Usage.input means uncached input everywhere in the Harness, which is what Anthropic
-        # already reports. OpenAI's prompt_tokens includes the cached ones, so subtract here,
-        # at the adapter, and let budget.py bill each count at its own rate with no arithmetic.
-        cached = int(details.get("cached_tokens", 0) or 0)
-        # Endpoints that charge to write the cache report what they wrote, and this one does:
-        # a reply carrying cached_tokens 0 still carried cache_write_tokens 1339, billed at the
-        # model's own cache_write rate. Dropping it billed a build for less than it cost.
-        written = int(details.get("cache_write_tokens", 0) or 0)
-        output = int(usage.get("completion_tokens", 0) or 0)
         return ModelReply(
             content=message.get("content"),
             tool_calls=[
@@ -1133,13 +1027,7 @@ class OpenAIModel(HttpModel):
                 )
                 for call in (message.get("tool_calls") or [])
             ],
-            usage=Usage(
-                input=max(0, int(usage.get("prompt_tokens", 0) or 0) - cached),
-                output=output,
-                cache_read=cached,
-                cache_write=written,
-                reasoning=_reasoning_share(usage, output),
-            ),
+            usage=usage_from_openai_chat(data.get("usage")),
             model=data.get("model") or self.wire_id,
             stop_reason=(choices[0] or {}).get("finish_reason"),
             raw=data,
@@ -1310,23 +1198,10 @@ class OpenAIResponsesModel(HttpModel):
                         arguments=_arguments_of({"arguments": item.get("arguments")}),
                     )
                 )
-        usage = data.get("usage") or {}
-        details = usage.get("input_tokens_details") or {}
-        # Same convention as the chat adapter: Usage.input means uncached input everywhere,
-        # so the cached tokens come off here, at the adapter, and budget.py bills plain counts.
-        cached = int(details.get("cached_tokens", 0) or 0)
-        written = int(details.get("cache_write_tokens", 0) or 0)
-        output = int(usage.get("output_tokens", 0) or 0)
         return ModelReply(
             content="".join(texts) or None,
             tool_calls=calls,
-            usage=Usage(
-                input=max(0, int(usage.get("input_tokens", 0) or 0) - cached),
-                output=output,
-                cache_read=cached,
-                cache_write=written,
-                reasoning=_reasoning_share(usage, output),
-            ),
+            usage=usage_from_openai_responses(data.get("usage")),
             model=data.get("model") or self.wire_id,
             stop_reason=data.get("status"),
             raw=data,
@@ -1448,6 +1323,27 @@ def model_for(model_id: str, base_url: Optional[str] = None, **kwargs) -> Model:
     return RegistryModel(model_id, base_url=endpoint.base_url, key_env_var=endpoint.key_env_var, **kwargs)
 
 
+def provider_for(model_id: str, base_url: Optional[str] = None, **kwargs) -> Any:
+    """The streaming provider for a model id: the same three ways in as `model_for`.
+
+    The handle `model_for` built decides the shape, and the provider that reads that shape wraps it,
+    so a model reached through the registry streams exactly as one with an adapter of its own does.
+    The adapter modules are imported here rather than at the top because they import this one: the
+    request shaping they stream is the handle's, written once.
+    """
+    from kullback.ai.anthropic import AnthropicProvider
+    from kullback.ai.openai_compatible import OpenAICompatibleProvider
+
+    handle = model_for(model_id, base_url, **kwargs)
+    if isinstance(handle, AnthropicModel):
+        return AnthropicProvider(handle)
+    if isinstance(handle, HttpModel):
+        return OpenAICompatibleProvider(handle)
+    from kullback.ai.replay import ReplayProvider
+
+    return ReplayProvider(handle)
+
+
 def live_model(model_id: str, base_url: Optional[str] = None, **kwargs) -> Model:
     """One live adapter, after the environment has said live calls are allowed.
 
@@ -1460,6 +1356,15 @@ def live_model(model_id: str, base_url: Optional[str] = None, **kwargs) -> Model
         raise RuntimeError(
             f"live model requests are off; put {LIVE_ENV_VAR}=1 in .env or export it")
     return model_for(model_id, base_url, **kwargs)
+
+
+def live_provider(model_id: str, base_url: Optional[str] = None, **kwargs) -> Any:
+    """One live streaming provider, after the environment has said live calls are allowed."""
+    load_dotenv()
+    if not enable_live_calls_from_env():
+        raise RuntimeError(
+            f"live model requests are off; put {LIVE_ENV_VAR}=1 in .env or export it")
+    return provider_for(model_id, base_url, **kwargs)
 
 
 def _anthropic_tool(tool: dict) -> dict:
