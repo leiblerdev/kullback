@@ -67,7 +67,7 @@ ignore = ["E501"]
 root_package = "kullback"
 
 [[tool.importlinter.contracts]]
-name = "the Builder and the Examiner sit on the user, the agent core, the Runner and the gates, on the provider layer"
+name = "the Builder sits on the Examiner, both on the user, the agent core, the Runner and the gates, on the provider layer"
 type = "layers"
 containers = ["kullback"]
 layers = [
@@ -81,7 +81,7 @@ layers = [
 ]
 
 [[tool.importlinter.contracts]]
-name = "the world inside the runner imports neither builder, examiner, user nor rounds"
+name = "the world inside the runner imports neither builder, examiner nor user"
 type = "forbidden"
 source_modules = ["kullback.runner.world"]
 forbidden_modules = ["kullback.builder", "kullback.examiner", "kullback.user"]
