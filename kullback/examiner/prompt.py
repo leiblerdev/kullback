@@ -7,16 +7,32 @@ the rulings after the proposals are the ones already answered.
 
 from __future__ import annotations
 
+from typing import Iterable
 
-def receives_section(rulings: str, root: str) -> str:
-    """What the session receives: the derivation's rulings per Task with rows, and its root."""
+#: Where the session's writes land; each directory appears on its first write.
+WRITABLE_DIRS = ("verifiers", "probes")
+
+
+def receives_section(rulings: str, entries: Iterable[str] = (),
+                     writable: Iterable[str] = WRITABLE_DIRS) -> str:
+    """What the session receives: the rulings per Task with their paths, and its root as ".".
+
+    The root is never named by a host path: every path the session passes is relative to it,
+    and `entries` is what the root held when the session opened (directories end with "/").
+    """
+    listed = ", ".join(entries) or "nothing yet"
+    later = ", ".join(f"{name}/" for name in writable)
     return ("You receive the rulings of a derivation: one Verifier per Task from its References "
             "through the suite, with the rows that still differ on each ruling. "
-            f"Your root is {root}. The read surface under it holds the Runs as JSONL, the replay "
+            'Your root is ".", the exam directory: every path you pass is relative to it, never '
+            "a host path. The read surface under it holds the Runs as JSONL, the replay "
             "and re-roll rows, the References, the task status, the Verifiers, the probe pools, "
             "the task, intent and user-rule records, and one spoken file per Task with the user "
             "turns of its References.\n"
-            f"The rulings to answer:\n{rulings}")
+            f"The root holds: {listed}.\n"
+            f"These appear on your first write under them: {later}.\n"
+            "The rulings to answer, each Task with the paths of its Runs and its Verifier; open "
+            f"those paths rather than searching for them:\n{rulings}")
 
 
 def tools_section() -> str:
@@ -72,9 +88,9 @@ def stop_section() -> str:
             "answered. Say which Tasks remain and what you filed for each.")
 
 
-def sections(rulings: str, root: str) -> list[tuple[str, str]]:
+def sections(rulings: str, entries: Iterable[str] = ()) -> list[tuple[str, str]]:
     """Every prompt section in GEPA order, the stop rule last."""
-    return [("receives", receives_section(rulings, root)),
+    return [("receives", receives_section(rulings, entries)),
             ("tools", tools_section()),
             ("examples", examples_section()),
             ("choice", choice_section()),
@@ -87,5 +103,5 @@ def render(sections_list: list[tuple[str, str]]) -> str:
     return "\n\n".join(text for _, text in sections_list)
 
 
-__all__ = ["choice_section", "examples_section", "feedback_section", "receives_section",
+__all__ = ["WRITABLE_DIRS", "choice_section", "examples_section", "feedback_section", "receives_section",
            "render", "sections", "stop_section", "tools_section"]

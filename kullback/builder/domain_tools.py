@@ -353,11 +353,21 @@ def default_examine_fn(workdir: Any, task_ids: Any, *, model: Any = None, judge_
 
     `model` runs the Examiner session; with None the call is derivation only. The judges, the
     loophole probe and the re-rolls run on their own models when named, else on `model`.
+    With no finished Run among the named Tasks the examination opens no Examiner session: its
+    selection hands the session only Tasks with a finished Run and a confirmed Reference (F24).
     """
     from kullback.examiner.session import examine
 
     return examine(Path(workdir), task_ids=task_ids, model=model, judge_model=judge_model or model,
                    probe_model=probe_model or model, reroll_model=reroll_model or model)
+
+
+def reader_model(model: Any, workdir: Any) -> Any:
+    """The session model as the readers step takes it, priced under its own stage (F12, F23)."""
+    if model is None:
+        return None
+    return budget.BudgetedModel(model, stage="readers", workdir=Path(workdir),
+                                model_id=getattr(model, "name", None))
 
 
 def _finding_row(item: Any) -> dict:
@@ -614,10 +624,7 @@ def domain_tools(*, workdir: Any, model: Any = None,
     async def derive(args: DeriveArgs) -> DeriveResult:
         # A corpus with prose results needs a model to propose its readers: the session model,
         # priced under its own stage so its calls land in budget.json.
-        reader_model = (budget.BudgetedModel(model, stage="readers", workdir=root,
-                                             model_id=getattr(model, "name", None))
-                        if model is not None else None)
-        report = world_tools.derive_world(root, reader_model=reader_model,
+        report = world_tools.derive_world(root, reader_model=reader_model(model, root),
                                           grow=dict(args.grow or {}) if args.grow else None)
         written = env_files.explode(root)
         env_files.regenerate(root)
@@ -630,7 +637,8 @@ def domain_tools(*, workdir: Any, model: Any = None,
             calls_exposed={k: int(v) for k, v in (exposed.get("calls") or {}).items()})
 
     async def grow(args: GrowArgs) -> GrowResult:
-        report = world_tools.derive_world(root, grow={args.table: args.count})
+        report = world_tools.derive_world(root, reader_model=reader_model(model, root),
+                                          grow={args.table: args.count})
         return GrowResult(summary=(f"grew table {args.table} to {args.count} rows with synthetic rows"),
                           tables={key: int(value) for key, value in report.tables.items()},
                           paths=list(report.paths))
@@ -762,8 +770,13 @@ def domain_tools(*, workdir: Any, model: Any = None,
     async def examine(args: ExamineArgs) -> ExamineResult:
         # The Examiner session owns its own event loop, so it runs off the Builder's, on a thread.
         result = _coerce_examine(await asyncio.to_thread(examine_call, root, args.task_ids))
-        if not result.findings:
-            stage = stage_of(root)
+        # The Tasks the Examiner session left out, and why, lead the summary (F24).
+        left_out = [f.get("change") for f in result.findings
+                    if any(isinstance(r, dict) and "left_out" in r for r in f.get("rows") or [])]
+        if left_out:
+            result.summary = "; ".join(filter(None, [result.summary, *left_out]))
+        stage = stage_of(root)
+        if not result.findings or not stage["finished"]:
             why = f"{stage['finished']} of {stage['tasks']} tasks have a finished run"
             if not stage["finished"]:
                 why += ", so there is nothing to examine yet: replay or run the Tasks first"
