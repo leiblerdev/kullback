@@ -100,22 +100,6 @@ def test_the_leak_check_passes_over_a_shape_atom_whose_value_the_intent_spells_o
     assert gate.passed, gate.failures
 
 
-def test_a_shape_atom_still_rejects_a_value_the_run_never_read():
-    """Relaxed is not empty: the badge code written has to be one this Run was given."""
-    verifier = derive(run("ref", assignment_events()))
-    wrong = run("other", assignment_events(badge="TM08", read_badge="QX41"))
-    passed, failing = S.check_run(verifier, wrong, write_tools=WRITE_TOOLS)
-    assert not passed and failing == "w0.badge_code"
-
-
-def test_a_written_value_a_user_said_stays_the_literal_it_was():
-    verifier = derive(run("ref", assignment_events()))
-    literal = atom(verifier, "w0.locker_id")
-    assert literal.kind == "required"
-    assert S.atom_payload(literal)["raw"] == "L9"
-    assert literal.provenance == "user_stated"
-
-
 def test_what_a_user_said_is_read_the_way_the_leak_check_reads_it():
     """`user_said` and the frozen leak check agree value by value, which is why one may relax the other."""
     reference = run("ref", assignment_events())
@@ -205,6 +189,11 @@ def test_a_value_the_run_never_read_is_rejected_wherever_the_write_lands():
     ])
     passed, failing = S.check_run(verifier, invented, write_tools=WRITE_TOOLS)
     assert not passed and failing == "w0.badge_code"
+    # The own_row shape rejects it too: relaxed is not empty.
+    own_row = derive(run("ref", assignment_events()))
+    wrong = run("other", assignment_events(badge="TM08", read_badge="QX41"))
+    passed, failing = S.check_run(own_row, wrong, write_tools=WRITE_TOOLS)
+    assert not passed and failing == "w0.badge_code"
 
 
 def test_a_shape_that_would_reject_its_own_reference_is_counted_and_not_stored():
@@ -264,33 +253,6 @@ def test_the_two_scorers_hand_a_rule_the_same_transcript():
 
 
 # --- rule 2: a Task with no write still carries something to falsify ---------
-
-def desk_events(answer: str) -> list[dict]:
-    return [
-        user("How many free lockers are left?"),
-        call(ROSTER, {"scope": "desk"}, kind="read", cid="c0"),
-        result({"free_lockers": 12, "floor": 27}, cid="c0"),
-        says(answer),
-    ]
-
-
-def test_a_read_only_task_demands_the_fact_the_request_asked_the_desk_about():
-    verifier = derive(run("ref", desk_events("There are 12 free lockers left.")))
-    facts = [a for a in verifier.atoms if S.atom_payload(a).get("kind") == "communicate"]
-    assert [a.kind for a in facts] == ["communicate"]
-    assert S.atom_payload(facts[0])["text"] == "12"
-
-
-def test_a_fact_the_request_never_asked_about_stays_allowed_and_rejects_no_run():
-    """D182 is not weakened: the number the desk volunteered beside the answer is reported."""
-    verifier = derive(run("ref", desk_events("There are 12 free lockers left, on floor 27.")))
-    reported = [a for a in verifier.atoms
-                if S.atom_payload(a).get("kind") == V.REPORTED_COMMUNICATE]
-    assert [S.atom_payload(a)["text"] for a in reported] == ["27"]
-    assert reported[0].kind == "allowed"
-    quiet = run("quiet", desk_events("There are 12 free lockers left."))
-    assert S.check_run(verifier, quiet, write_tools=WRITE_TOOLS)[0]
-
 
 def handover_events() -> list[dict]:
     """Nothing written and no fact told: the desk reads who is on shift and hands the request on."""

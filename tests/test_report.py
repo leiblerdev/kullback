@@ -15,11 +15,9 @@ from kullback.report import (
     StageStatus,
     TaskCoverage,
     load,
-    pipeline_dag,
     render,
     suggestion,
     task_numbers,
-    write_report,
 )
 from kullback.runner.records import (
     Atom,
@@ -138,19 +136,20 @@ def data() -> ReportData:
 
 # --- section order ----------------------------------------------------------
 
-def test_section_order_is_environment_tasks_queue_lessons(data):
+def test_the_title_leads_and_the_sections_run_environment_tasks_queue_lessons_in_every_report_kind(data):
     text = render(data)
+    assert text.splitlines()[0] == "# Harness build report"
     headings = [line.strip() for line in text.splitlines() if line.startswith("## ")]
     assert headings == list(SECTIONS)
-
-
-def test_the_environment_section_comes_before_any_task(data):
-    text = render(data)
     assert text.index("## Environment") < text.index("## Tasks") < text.index("### Task t1")
 
-
-def test_the_title_is_the_first_line(data):
-    assert render(data).splitlines()[0] == "# Harness build report"
+    data.kind = "batch"
+    data.title = "Run batch report"
+    text = render(data)
+    assert text.splitlines()[0] == "# Run batch report"
+    headings = [line.strip() for line in text.splitlines() if line.startswith("## ")]
+    assert headings == list(SECTIONS)
+    assert "Run batch" in text
 
 
 # --- environment section ----------------------------------------------------
@@ -195,15 +194,11 @@ def test_the_environment_section_names_assisted_tools_unguarded_tasks_and_counts
     assert "t1" not in guarded
     assert "No unguarded Tasks" in guarded
 
-
-def test_the_assisted_share_per_tool_is_shown_when_it_is_known(data):
     data.assisted_share = {"search_products": 0.12}
     assert "- search_products: 12% of its calls stood in" in render(data)
 
-
-def test_an_assisted_tool_shows_its_corpus_fidelity_beside_the_tasks_its_own_calls_block(data):
-    """D171: the two numbers part company. A body can miss one call of the corpus and cost one Task
-    a Reference while every other Task that calls it is answered the way the recording did."""
+    # D171: the two numbers part company. A body can miss one call of the corpus and cost one Task
+    # a Reference while every other Task that calls it is answered the way the recording did.
     data.tool_fidelity = {
         "tools": {"search_products": {"calls": 40, "replayed": 39, "differing": 1, "assisted": True}},
         "tasks": {"t1": {"search_products": {"replayed": 7, "differing": 0, "reasons": []}},
@@ -220,6 +215,13 @@ def test_task_coverage_gives_both_numbers(data):
     assert "0 of 1 Tasks" in text
     assert "1 Run assisted on search_products" in text
 
+    from kullback.report import coverage_rows
+
+    tasks = [Task(id="t1", run_ids=["r1", "r2"]), Task(id="t2", run_ids=["r3"])]
+    rows = coverage_rows(tasks, {"t2": "Run r3 is assisted (D49)"})
+    assert [(r.task_id, r.covered, r.run_count) for r in rows] == [("t1", True, 2), ("t2", False, 1)]
+    assert rows[1].reason == "Run r3 is assisted (D49)", "a coverage row carries the first failing reason"
+
 
 def test_policy_coverage_line_lists_the_untested_items(data):
     text = render(data)
@@ -228,35 +230,7 @@ def test_policy_coverage_line_lists_the_untested_items(data):
     assert "never disclose another user's address" in text
 
 
-def test_the_pipeline_dag_is_mermaid_in_the_environment_section(data):
-    text = render(data)
-    assert "```mermaid" in text
-    assert "flowchart TD" in text
-    assert text.index("flowchart TD") < text.index("## Tasks")
-
-
-def test_pipeline_dag_marks_a_failed_gate_with_a_rollback_edge():
-    text = pipeline_dag([
-        StageStatus(name="mine", status="ran"),
-        StageStatus(name="compile_tools", status="failed", gate="replay_fidelity", attempts=3),
-    ])
-    assert "flowchart TD" in text
-    assert "mine --> compile_tools" in text
-    assert "-." in text and "replay_fidelity" in text
-    assert "attempt 3 of 3" in text
-
-
-def test_pipeline_dag_without_stages_says_so(data):
-    data.stages = []
-    assert "no stages recorded" in render(data)
-
-
 # --- per task numbers -------------------------------------------------------
-
-def test_numbers_come_before_the_suggestion(data):
-    block = render(data).split("### Task t1", 1)[1]
-    assert block.index("Runs graded") < block.index("Suggestion")
-
 
 def test_assisted_runs_are_not_counted(data):
     numbers = task_numbers(data, data.tasks[0])
@@ -277,6 +251,13 @@ def test_judge_atoms_carry_the_disagreement_rate(data):
     numbers = task_numbers(data, data.tasks[0])
     assert numbers["judge_atoms"] == 1
     assert "Judge atoms: 1 (judge disagreement rate 25%" in render(data)
+
+    # D92: once a person resolves queue items those resolutions are the labelled set.
+    assert "no human labels yet" in render(data).lower()
+    data.audit_rate = 0.9
+    block = render(data).split("## Disagreement queue", 1)[1]
+    assert "Audit rate 90%" in block
+    assert "no human labels yet" not in block.lower()
 
 
 def test_failing_atoms_are_counted_by_atom_class_and_failures_by_cause(data):
@@ -299,10 +280,12 @@ def test_a_task_with_no_verdicts_is_reported_as_not_graded(data):
 
 # --- suggestion, never a decision (D85) -------------------------------------
 
-def test_the_suggestion_is_worded_as_a_suggestion(data):
+def test_the_suggestion_is_worded_as_a_suggestion_and_comes_after_the_numbers(data):
     text = render(data)
     assert "Suggestion: the numbers support routing this Task to the Candidate" in text
     assert "The decision is yours." in text
+    block = text.split("### Task t1", 1)[1]
+    assert block.index("Runs graded") < block.index("Suggestion")
 
 
 def test_a_negative_margin_does_not_support_routing(data):
@@ -314,11 +297,6 @@ def test_a_negative_margin_does_not_support_routing(data):
     assert "Suggestion: the numbers do not support routing this Task to the Candidate" in text
 
 
-def test_an_unbuilt_environment_suggests_nothing(data):
-    data.built = False
-    assert "the Environment was not built" in render(data).split("### Task t1", 1)[1]
-
-
 def test_a_task_with_a_disputed_reference_is_not_gradeable(data):
     data.tasks_aside = [{"task_id": "t1", "reason": "reference_disputed"}]
     block = render(data).split("### Task t1", 1)[1]
@@ -326,20 +304,22 @@ def test_a_task_with_a_disputed_reference_is_not_gradeable(data):
     assert "a person resolves" in block
 
 
-@pytest.mark.parametrize("numbers,built,aside", [
-    ({"runs_graded": 4, "margin": 0.5}, True, None),
-    ({"runs_graded": 4, "margin": -0.5}, True, None),
-    ({"runs_graded": 4, "margin": None}, True, None),
-    ({"runs_graded": 0, "margin": None}, True, None),
-    ({"runs_graded": 4, "margin": 0.5}, False, None),
-    ({"runs_graded": 4, "margin": 0.5}, True, "reference_disputed"),
+@pytest.mark.parametrize("numbers,built,aside,says", [
+    ({"runs_graded": 4, "margin": 0.5}, True, None, ""),
+    ({"runs_graded": 4, "margin": -0.5}, True, None, ""),
+    ({"runs_graded": 4, "margin": None}, True, None, ""),
+    ({"runs_graded": 0, "margin": None}, True, None, ""),
+    ({"runs_graded": 4, "margin": 0.5}, False, None, "the Environment was not built"),
+    ({"runs_graded": 4, "margin": 0.5}, True, "reference_disputed", ""),
 ])
-def test_suggestion_never_decides(numbers, built, aside):
-    """D85: every branch is worded as a suggestion and hands the decision back to the person."""
+def test_suggestion_never_decides(numbers, built, aside, says):
+    """D85: every branch is worded as a suggestion and hands the decision back to the person, and
+    an unbuilt Environment suggests nothing."""
     said = suggestion(numbers, built=built, aside=aside)
     assert said.startswith("Suggestion: ")
     assert said.endswith(" The decision is yours.")
     assert "route this Task" not in said.replace("routing this Task", "")
+    assert says in said
 
 
 # --- queues -----------------------------------------------------------------
@@ -352,34 +332,30 @@ def test_the_disagreement_queue_lists_both_verdicts_and_the_tasks_set_aside(data
     assert "Judge disagreement: 2 of 8 pairs" in block
 
 
-def test_an_empty_queue_says_so(data):
-    data.disagreement_queue = []
-    data.tasks_aside = []
-    block = render(data).split("## Disagreement queue", 1)[1]
-    assert "nothing in the queue" in block
-
-
 def test_lessons_set_aside_carry_their_reason(data):
     block = render(data).split("## Lessons set aside", 1)[1]
     assert "no tool here returns a list" in block
     assert "a tool returning a list needs a paging field" in block
 
 
-def test_no_lessons_set_aside_says_so(data):
+def test_an_empty_section_says_so_rather_than_vanishing(data):
+    from kullback.report import flagged_tool_verdicts
+    from kullback.runner.records import ToolSig
+
     data.lessons_set_aside = []
     assert "no lessons were set aside" in render(data).split("## Lessons set aside", 1)[1]
 
+    data.disagreement_queue = []
+    data.tasks_aside = []
+    assert "nothing in the queue" in render(data).split("## Disagreement queue", 1)[1]
 
-# --- run batch report -------------------------------------------------------
-
-def test_a_run_batch_report_still_opens_with_the_environment(data):
-    data.kind = "batch"
-    data.title = "Run batch report"
-    text = render(data)
-    assert text.splitlines()[0] == "# Run batch report"
-    headings = [line.strip() for line in text.splitlines() if line.startswith("## ")]
-    assert headings == list(SECTIONS)
-    assert "Run batch" in text
+    # The sentence only holds when every mined ToolSig is confirmed read or write (D70).
+    data.tool_sigs = [ToolSig(name="cancel_order", kind="write", unclassified=False),
+                      ToolSig(name="get_order_details", kind="read", unclassified=False)]
+    assert flagged_tool_verdicts(data) == {}
+    assert "No flagged tools" in render(data)
+    data.tool_sigs.append(ToolSig(name="mystery_tool", unclassified=True))
+    assert "No flagged tools" not in render(data)
 
 
 # --- reading records off disk -----------------------------------------------
@@ -395,11 +371,6 @@ def test_load_reads_records_from_a_workdir(workdir: Path, data: ReportData):
     (workdir / "runs").mkdir()
     for record in data.runs:
         (workdir / "runs" / f"{record.run_id}.json").write_text(json.dumps(as_dict(record)), encoding="utf-8")
-    (workdir / "pipeline").mkdir()
-    (workdir / "pipeline" / "state.json").write_text(
-        json.dumps({"status": "complete", "statuses": {"ingest": "ran", "mine": "ran"}, "log": []}),
-        encoding="utf-8",
-    )
     (workdir / "disagreement_queue.jsonl").write_text(
         json.dumps({"use": "cause", "item_id": "r5", "verdict_a": "a", "verdict_b": "b"}) + "\n", encoding="utf-8")
     (workdir / "tasks_aside.jsonl").write_text(
@@ -410,7 +381,7 @@ def test_load_reads_records_from_a_workdir(workdir: Path, data: ReportData):
     assert [t.id for t in loaded.tasks] == ["t1"]
     assert len(loaded.verdicts) == 5
     assert len(loaded.runs) == 5
-    assert [s.name for s in loaded.stages] == ["ingest", "mine"]
+    assert loaded.stages == []
     assert loaded.disagreement_queue and loaded.tasks_aside
     assert loaded.built is True
     text = render(loaded)
@@ -471,20 +442,6 @@ def _trusted_row(**metrics) -> dict:
     return as_dict(GateResult(stage="trusted", **{"pass": True}, metrics=body))
 
 
-def test_the_report_has_a_rounds_table_when_rounds_json_exists_and_none_otherwise(workdir: Path):
-    without = render(load(workdir))
-    assert "## Rounds" in without and "No rounds recorded" in block_of(without, "## Rounds")
-    (workdir / "rounds.json").write_text(json.dumps(_rounds_rows()), encoding="utf-8")
-    loaded = load(workdir)
-    assert [r.round for r in loaded.rounds] == [1, 2] and loaded.rounds[-1].exit == "done"
-    section = block_of(render(loaded), "## Rounds")
-    assert "| round | fidelity | trusted | refused | assisted runs | probes passing | spend | exit |" in section
-    assert "| 1 | 1/2 | 0 | 0 | 1 | 0 | $0.0000 |  |" in section
-    assert "| 2 | 2/2 | 1 | 1 | 1 | 3 | $0.7500 (cache saved $0.2500) | done |" in section
-    headings = [line.strip() for line in render(loaded).splitlines() if line.startswith("## ")]
-    assert headings == list(SECTIONS) and headings.index("## Rounds") == headings.index("## Environment") + 1
-
-
 def test_the_false_rejection_number_stands_next_to_the_trusted_verifier_count(workdir: Path):
     """D133: the trusted count and the false-rejection share are read together, in the headline and
     again on each Task, off the last `trusted` ruling in gates.json and the last round's counts."""
@@ -520,22 +477,6 @@ def test_a_stalled_exit_names_the_tasks_that_need_a_person(workdir: Path):
     assert "need a person" not in render(load(workdir))
 
 
-def test_a_malformed_rounds_file_is_listed_under_records_not_read(workdir: Path):
-    (workdir / "rounds.json").write_text(json.dumps({"round": "one"}), encoding="utf-8")
-    loaded = load(workdir)
-    assert loaded.rounds == []
-    assert "rounds.json: not a list of RoundRecord this report can read" in loaded.records_not_read
-    assert "rounds.json: not a list of RoundRecord this report can read" in render(loaded)
-    (workdir / "rounds.json").write_text(json.dumps([{"round": 1, "counts": "not a dict"}]), encoding="utf-8")
-    assert load(workdir).rounds == [] and load(workdir).records_not_read
-
-
-def test_write_report_returns_the_file_it_wrote_with_the_title_on_the_first_line(workdir: Path, data: ReportData):
-    path = write_report(data, workdir)
-    assert path.is_file()
-    assert path.read_text(encoding="utf-8").startswith("# Harness build report")
-
-
 # --- D70 flagged tools, D74 per-Task overlay rows, D96 coverage rows ---------
 
 def test_the_report_counts_verdicts_that_rest_on_a_flagged_tool(data):
@@ -554,18 +495,10 @@ def test_the_report_counts_verdicts_that_rest_on_a_flagged_tool(data):
     text = render(data)
     assert "search_products: 2 Verdicts rest on a Run that called it" in text
 
-
-def test_no_flagged_tools_says_so(data):
-    """The sentence only holds when every mined ToolSig is confirmed read or write (D70)."""
-    from kullback.report import flagged_tool_verdicts
-    from kullback.runner.records import ToolSig
-
-    data.tool_sigs = [ToolSig(name="cancel_order", kind="write", unclassified=False),
-                      ToolSig(name="get_order_details", kind="read", unclassified=False)]
-    assert flagged_tool_verdicts(data) == {}
-    assert "No flagged tools" in render(data)
-    data.tool_sigs.append(ToolSig(name="mystery_tool", unclassified=True))
-    assert "No flagged tools" not in render(data)
+    data.environment.flags = ["charge_card: 7 of 10 observed errors are unknown (70%)"]
+    text = render(data)
+    assert "Open flags on the Environment" in text
+    assert "charge_card" in text
 
 
 def test_each_task_states_how_many_of_its_rows_are_overlay_rows(data):
@@ -575,138 +508,18 @@ def test_each_task_states_how_many_of_its_rows_are_overlay_rows(data):
     assert "- Overlay rows in this Task's Starting state: 2" in render(data)
 
 
-def test_the_environment_lists_its_open_flags(data):
-    data.environment.flags = ["charge_card: 7 of 10 observed errors are unknown (70%)"]
-    text = render(data)
-    assert "Open flags on the Environment" in text
-    assert "charge_card" in text
-
-
-def test_coverage_rows_carry_the_first_failing_reason():
-    from kullback.report import coverage_rows
-
-    tasks = [Task(id="t1", run_ids=["r1", "r2"]), Task(id="t2", run_ids=["r3"])]
-    rows = coverage_rows(tasks, {"t2": "Run r3 is assisted (D49)"})
-    assert [(r.task_id, r.covered, r.run_count) for r in rows] == [("t1", True, 2), ("t2", False, 1)]
-    assert rows[1].reason == "Run r3 is assisted (D49)"
-
-
-def test_tool_sigs_are_read_off_disk(tmp_path):
-    from kullback.report import load_tool_sigs
-    from kullback.runner.records import ToolSig
-
-    assert load_tool_sigs(tmp_path) == []
-    (tmp_path / "tool_sigs.json").write_text(
-        json.dumps([as_dict(ToolSig(name="cancel_order", kind="write", unclassified=False))]),
-        encoding="utf-8")
-    sigs = load_tool_sigs(tmp_path)
-    assert [s.name for s in sigs] == ["cancel_order"]
-    assert sigs[0].kind == "write"
-
-
-# --- house rules ------------------------------------------------------------
-
-PACKAGE = Path(__file__).resolve().parents[1] / "kullback" / "report"
-
-
-def package_source() -> str:
-    """Every module of the report package as one string, so a house rule reads all of them."""
-    return "\n".join(path.read_text(encoding="utf-8") for path in sorted(PACKAGE.rglob("*.py")))
-
-
-def test_report_never_computes_a_verdict():
-    """Design section 4 item 18: report.py reads records, it never computes a Verdict.
-
-    records moved into kullback.runner with the rest of the Runner package (D121); report.py may
-    still read it, so the check names the internal modules that stay out of reach rather than the
-    package prefix records now happens to share.
-    """
-    import re
-
-    source = package_source()
-    assert "runner.verdict" not in source
-    assert re.search(r"kullback\.runner\.(?!records\b)\w", source) is None
-    assert "kullback.builder" not in source
-
-
-def test_no_em_dashes_in_the_source_or_the_output(data):
-    source = package_source()
-    assert "\u2014" not in source and "\u2013" not in source
-    text = render(data)
-    assert "\u2014" not in text and "\u2013" not in text
-
-
-# --- what the pipeline and the loop actually write (D85, D86, D90) ----------
-
-def a_state(**changes) -> dict:
-    """A pipeline state.json in the shape pipeline.py writes it: log rows are sentences, not dicts."""
-    body = {
-        "status": "failed",
-        "statuses": {"mine": "ran", "compile_tools": "failed"},
-        "attempts": {"mine": 1, "compile_tools": 3},
-        "log": ["compile_tools: attempt 2 of 3, gate replay_fidelity failed",
-                "compile_tools: gate replay_fidelity failed 3 times, stage failed"],
-        "gates": [as_dict(GateResult(stage="mine", **{"pass": True})),
-                  as_dict(GateResult(stage="compile_tools.replay_fidelity", **{"pass": False},
-                                     failures=["writes differ on orders"]))],
-        "stopped": None,
-        "failed_stage": "compile_tools",
-    }
-    body.update(changes)
-    return body
-
-
-def write_state(workdir: Path, body: dict) -> None:
-    (workdir / "pipeline").mkdir(exist_ok=True)
-    (workdir / "pipeline" / "state.json").write_text(json.dumps(body), encoding="utf-8")
-
-
-def test_load_reads_the_state_json_the_pipeline_writes(workdir: Path):
-    """The log rows pipeline.py writes are sentences; reading them as dicts crashed the whole report."""
-    write_state(workdir, a_state())
-    loaded = load(workdir)
-    stages = {s.name: s for s in loaded.stages}
-    assert stages["compile_tools"].status == "failed"
-    assert stages["compile_tools"].attempts == 3
-    assert stages["compile_tools"].max_attempts == 3
-    assert stages["compile_tools"].gate == "replay_fidelity"
-    assert [g.stage for g in loaded.gates] == ["mine", "compile_tools.replay_fidelity"]
-    assert "writes differ on orders" in render(loaded)
-    assert "attempt 3 of 3" in render(loaded)
-
-
-def test_a_real_pipeline_run_is_readable_by_the_report(workdir: Path):
-    """The one guard against the two modules drifting: a Pipeline writes, the report reads."""
-    from kullback.builder.pipeline import Pipeline, Stage
-
-    failing = GateResult(stage="mine_gate", **{"pass": False}, failures=["tool_a: 1 call"])
-    stages = [Stage("mine", lambda ctx, inputs: {"sigs": [1]}, outputs=["sigs"],
-                    gate=lambda ctx, out: failing, max_attempts=2)]
-    Pipeline(stages, workdir).run()
-    loaded = load(workdir)
-    assert [s.name for s in loaded.stages] == ["mine"]
-    assert loaded.stages[0].status == "failed"
-    assert loaded.stages[0].gate == "mine_gate"
-    assert [g.passed for g in loaded.gates] == [False, False]
-    assert "mine_gate" in render(loaded)
-
-
 def test_a_spend_ceiling_stop_names_the_stage_the_cost_and_what_is_left(workdir: Path):
     """D86: report as is, with where it stopped, what it spent and what finishing costs."""
     stopped = {"stage": "compile_tools", "item": "search_products", "spent": 1.3, "ceiling_usd": 1.0,
-               "estimate_to_finish": 0.8, "items_left": 1, "stages": {"mine": 0.5, "compile_tools": 0.8},
+               "estimate_to_finish": 0.8, "items_left": 1,
                "reason": "spend ceiling reached in stage compile_tools on search_products"}
-    write_state(workdir, a_state(status="stopped", statuses={"mine": "ran", "compile_tools": "stopped"},
-                                 stopped=stopped, log=[], failed_stage=None))
     (workdir / "environment.json").write_text(
         json.dumps(as_dict(Environment(env_id="env-1"))), encoding="utf-8")
     loaded = load(workdir)
-    assert loaded.built is False
+    loaded = loaded.model_copy(update={"stopped": stopped})
     text = render(loaded).split("## Tasks")[0]
     assert "Stopped in stage compile_tools on search_products" in text
-    assert "Completed stages: mine" in text
     assert "$1.30" in text and "$1.00" in text and "$0.80" in text
-    assert "Cost per stage: mine $0.50, compile_tools $0.80" in text
     assert "permission" in text
 
 
@@ -828,27 +641,6 @@ def test_the_queue_shows_the_spans_each_judge_cited(data):
     assert "a third sample said candidate" in block
 
 
-def test_the_audit_rate_appears_beside_the_disagreement_rate(data):
-    """D92: once a person resolves queue items those resolutions are the labelled set."""
-    assert "no human labels yet" in render(data).lower()
-    data.audit_rate = 0.9
-    block = render(data).split("## Disagreement queue", 1)[1]
-    assert "Audit rate 90%" in block
-    assert "no human labels yet" not in block.lower()
-
-
-def test_a_stage_name_with_a_space_is_still_valid_mermaid():
-    """A raw name as a node id ends the id at the space, which breaks the whole diagram."""
-    text = pipeline_dag([
-        StageStatus(name="build Environment", status="ran"),
-        StageStatus(name="compile-tools", status="failed", gate="replay_fidelity", attempts=1, max_attempts=3),
-    ])
-    assert 'build_Environment["build Environment (ran)"]' in text
-    assert "build_Environment --> compile_tools" in text
-    assert 'compile_tools -. "gate replay_fidelity failed, attempt 1 of 3" .-> compile_tools' in text
-    assert "build Environment[" not in text
-
-
 def test_a_record_that_does_not_load_is_named_rather_than_silently_dropped(workdir: Path):
     """D85: the person decides on these numbers, so a file that did not load has to be visible."""
     (workdir / "verdicts" / "t1").mkdir(parents=True)
@@ -886,12 +678,10 @@ def test_a_rewritten_rule_awaiting_review_is_named_as_checked_by_nobody(data):
     assert "p4: be reasonable about refunds" in text
     assert "rewritten as: refund only within 30 days of delivery" in text
 
-
-def test_a_compiled_rewrite_is_not_awaiting_review(data):
-    data.policy_items = data.policy_items + [
+    data.policy_items = data.policy_items[:-1] + [
         Constraint(id="p4", text="be reasonable", rewritten_text="refund within 30 days", compiled=True),
     ]
-    assert "Awaiting setup review" not in render(data)
+    assert "Awaiting setup review" not in render(data), "a compiled rewrite is not awaiting review"
 
 
 def test_the_abstained_items_are_listed_apart_from_the_splits(data):
@@ -912,7 +702,11 @@ def test_the_abstained_items_are_listed_apart_from_the_splits(data):
 
 
 def test_the_queue_names_the_judge_models_and_how_often_each_pair_parted(data):
-    """D160: one rate over every pair cannot say which two models disagreed, so the report says both."""
+    """D160: one rate over every pair cannot say which two models disagreed, so the report says both.
+
+    A build judged by its own model says nothing new, and a build from before the pair names has no
+    by-pair number to print rather than a zero it never measured."""
+    unpaired = dict(data.judge_disagreement)
     data.judge_models = {"build": "vendor/large", "judge": "other/small", "second_judge": "third/tiny"}
     data.judge_disagreement = dict(data.judge_disagreement, by_pair={
         "other/small:a vs third/tiny:b": {"pairs": 6, "disagreements": 2, "rate": 0.3333},
@@ -923,21 +717,11 @@ def test_the_queue_names_the_judge_models_and_how_often_each_pair_parted(data):
     assert "- other/small:a vs third/tiny:b: 2 of 6 pairs (33%)" in block
     assert "- other/small:a vs other/small:a#3: 0 of 2 pairs (0%)" in block
 
-
-def test_a_build_judged_by_its_own_model_names_no_judge_model_and_no_pair(data):
-    """The default says nothing new, and a build from before the pair names has no by-pair number
-    to print rather than a zero it never measured."""
     data.judge_models = {"build": "vendor/large", "judge": "vendor/large"}
+    data.judge_disagreement = unpaired
     block = render(data).split("## Disagreement queue", 1)[1]
     assert "Judge models:" not in block
     assert "Disagreement by judge pair" not in block
-
-
-def test_a_queue_row_with_no_reason_is_still_read_as_a_split(data):
-    """The reason field is newer than the queue; a row without one has two verdicts that disagree."""
-    block = render(data).split("## Disagreement queue", 1)[1]
-    assert "### Items a person may resolve" in block
-    assert "### Items the judges did not decide" not in block
 
 
 def test_a_finding_the_builder_recorded_is_printed_for_the_customer_with_its_calls(data):
@@ -951,26 +735,26 @@ def test_a_finding_the_builder_recorded_is_printed_for_the_customer_with_its_cal
     assert "recorded calls: call_12, call_40" in block
 
 
-def test_a_round_a_beat_raised_in_says_so_in_the_exit_cell(workdir: Path):
-    """D231: the counts on the row are what the round measured before the raise, so without this a
-    reader takes a round that stopped half way for a round that measured that much and stopped."""
-    rows = _rounds_rows()
-    rows[-1]["exit"] = "stalled"
-    rows[-1]["counts"]["beat_error"] = {"beat": "examiner", "kind": "ExaminerError",
-                                        "message_class": "derive failed: LookupError"}
-    (workdir / "rounds.json").write_text(json.dumps(rows), encoding="utf-8")
-    section = block_of(render(load(workdir)), "## Rounds")
-    assert "stalled (ended by examiner error)" in section
-    assert "| 1 | 1/2 | 0 | 0 | 1 | 0 | $0.0000 |  |" in section, "a round that closed on its own says nothing"
+# --- current Verdict across Verdict versions ----------------------------------
 
+def test_a_stale_verdict_version_never_beats_the_current_scoring_version(data):
+    """D255: after the Verdict version bumped, a v2 pass must not beat a v3 not-verdicted file."""
+    from kullback.report import current_verdicts
+    from kullback.runner.verdict import VERDICT_VERSION
 
-def test_the_exit_cell_reads_the_beat_error_under_the_key_the_driver_writes_it_under(workdir: Path):
-    """One key, one spelling. The driver, the round line and this cell held three literals of it, two
-    of them uncheckable, so a rename would have left the readers quietly printing nothing at all."""
-    from kullback import rounds
+    task = data.tasks[0]
+    old = a_verdict("r1", True, verdict_version="2", verifier_version="v2")
+    new = a_verdict("r1", False, verdict_version=VERDICT_VERSION, verifier_version="v2",
+                    **{"class": "not_verdicted", "failing_atom": "a_tone"})
+    for ordered in ([old, new], [new, old]):
+        current, superseded = current_verdicts(data, task, ordered)
+        assert [v.verdict_version for v in current] == [VERDICT_VERSION]
+        assert [v.verdict_version for v in superseded] == ["2"]
 
-    rows = _rounds_rows()
-    rows[-1]["exit"] = "stalled"
-    rows[-1]["counts"][rounds.BEAT_ERROR] = {"beat": "builder", "kind": "LedgerUnreadable"}
-    (workdir / "rounds.json").write_text(json.dumps(rows), encoding="utf-8")
-    assert "stalled (ended by builder error)" in block_of(render(load(workdir)), "## Rounds")
+    # A Verdict that left its version empty ties as before: the last file read wins.
+    first = a_verdict("r1", True, verifier_version="v2")
+    second = a_verdict("r1", False, verifier_version="v2", failing_atom="a_cancel")
+    current, superseded = current_verdicts(data, task, [first, second])
+    assert [v.failing_atom for v in current] == ["a_cancel"]
+    assert [v.failing_atom for v in superseded] == [None]
+

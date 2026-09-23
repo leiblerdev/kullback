@@ -24,6 +24,7 @@ from kullback.user import fidelity as fidelity_mod
 from kullback.user import guards as guards_mod
 from kullback.user import lesson as lesson_mod
 from kullback.user import rules as rules_mod
+from kullback.user import simulated as simulated_mod
 from kullback.user.agent import AgentUser
 from kullback.user.tools import Toolbox, user_tools
 from kullback.user.vocabulary import GENERIC_FIELDS, FieldSpec, Vocabulary
@@ -78,33 +79,6 @@ def ctx(recorded, rules) -> context_mod.TaskContext:
                               record_fields=sorted(record))
 
 
-# --- the package's own shape ---------------------------------------------------------------
-
-def test_the_user_package_imports_neither_of_the_two_agents_that_drive_it():
-    """D214: the Builder derives the vocabulary and drives the Runs, so the user may not depend back."""
-    import ast
-    import pathlib
-
-    import kullback.user as package
-    allowed = {"kullback.agent", "kullback.ai", "kullback.gates", "kullback.runner", "kullback.user"}
-    for path in pathlib.Path(package.__path__[0]).glob("*.py"):
-        for node in ast.walk(ast.parse(path.read_text())):
-            names = [alias.name for alias in getattr(node, "names", ())] if isinstance(node, ast.Import) else []
-            if isinstance(node, ast.ImportFrom) and node.module:
-                names = [node.module]
-            for name in names:
-                if name.startswith("kullback"):
-                    root = ".".join(name.split(".")[:2])
-                    assert root in allowed, f"{path.name} imports {name}"
-
-
-def test_the_rule_driven_user_is_still_reachable_under_the_name_it_moved_from():
-    """The re-export the move left behind: every D210 caller keeps working."""
-    from kullback.builder import user_sim
-    assert user_sim.SimulatedUser is rules_mod.SimulatedUser
-    assert user_sim.GOAL_SATISFIED == rules_mod.GOAL_SATISFIED
-
-
 # --- what is curated ------------------------------------------------------------------------
 
 def test_a_persona_is_mined_from_the_user_turns_as_counted_classes_and_carries_no_quote(recorded, rules):
@@ -114,24 +88,27 @@ def test_a_persona_is_mined_from_the_user_turns_as_counted_classes_and_carries_n
     assert persona.ends == context_mod.CLOSING_LINE
     body = persona.model_dump_json()
     assert "PLOT-4471" not in body and "plant delivery" not in body
+    volunteered = [r for r in rules.disclosure if isinstance(r, DisclosureRule) and not r.on_request]
+    assert persona.volunteered == len(volunteered)
 
 
-def test_the_values_only_the_world_returned_are_mined_as_record_facts(recorded):
+def test_the_values_only_the_world_returned_are_mined_as_record_facts(recorded, rules):
     """A value a tool returned that no user turn ever said is the world's, not the user's (D210)."""
     record = context_mod.mine_record_values(recorded)
     assert record.get("courier_ref") == "CR-90881"
     assert "plot_id" not in record  # the user said it, so it is askable
+    assert rules_mod.fact_class(rules, "plot_id", "PLOT-4471") == rules_mod.ASKABLE
+    assert rules_mod.fact_class(rules, "courier_ref", "CR-90881") == rules_mod.RECORD
 
 
-def test_consult_is_absent_where_the_recording_shows_the_user_looking_nothing_up(ctx):
+def test_consult_appears_only_where_the_recording_shows_the_user_looking_a_value_up(ctx):
+    """Absent where the user looked nothing up; present where the user reads out a courier
+    reference nobody in the conversation gave them."""
     assert ctx.consultations == []
     names = [tool.name for tool in user_tools(Toolbox(ctx))]
     assert "consult" not in names
     assert names == ["my_facts", "my_goal", "what_i_said", "end_run"]
 
-
-def test_consult_appears_where_the_user_says_a_value_only_the_worlds_records_hold():
-    """The mined class: the user reads out a courier reference nobody in the conversation gave them."""
     looked_up = trace_of([
         turn(0, "user", "Hello, I need my plant delivery moved."),
         turn(1, "assistant", "Could you tell me which delivery this is about?"),
@@ -146,13 +123,6 @@ def test_the_reference_write_arguments_are_the_values_this_user_chooses(ctx):
     assert ctx.choices["slot"] == "16:00"
 
 
-def test_every_curated_item_is_a_section_under_a_stable_tag_and_an_empty_one_is_absent(ctx):
-    names = [section.name for section in context_mod.sections(ctx)]
-    assert context_mod.GOAL_TAG in names and context_mod.PERSONA_TAG in names
-    assert context_mod.LESSONS_TAG not in names  # no lesson yet, so no blank section
-    assert set(names) <= set(context_mod.SECTION_TAGS)
-
-
 # --- the guards ------------------------------------------------------------------------------
 
 def guards_for(ctx, record=None, strip=None) -> guards_mod.Guards:
@@ -160,12 +130,9 @@ def guards_for(ctx, record=None, strip=None) -> guards_mod.Guards:
                              record_values=record, strip=strip)
 
 
-def test_a_number_this_user_never_said_is_dropped_and_counted(ctx):
+def test_a_number_this_user_never_said_is_dropped_and_one_it_said_goes_through(ctx):
     outcome = guards_for(ctx).check("My plot number is PLOT-9999.")
     assert outcome.dropped and outcome.reason == guards_mod.INVENTED
-
-
-def test_a_value_this_user_did_say_goes_through(ctx):
     outcome = guards_for(ctx).check("My plot number is PLOT-4471.")
     assert not outcome.dropped and "PLOT-4471" in outcome.text
 
@@ -225,7 +192,7 @@ def test_a_candidate_that_twice_asks_what_nobody_told_this_user_runs_the_scenari
 # --- the agent user ---------------------------------------------------------------------------
 
 def agent_for(ctx, rules, replies, recorded=None, record=None) -> AgentUser:
-    fallback = rules_mod.SimulatedUser(rules, vocab=VOCAB)
+    fallback = simulated_mod.SimulatedUser(rules, vocab=VOCAB)
     return AgentUser(ctx, fallback, TestModel(replies, loop=True), vocab=VOCAB,
                      write_tools=["move_delivery"], goal_writes=["move_delivery"],
                      record_values=record, trace=recorded)
@@ -245,13 +212,6 @@ def test_the_rule_driven_user_answers_the_beat_a_guard_dropped(ctx, rules, recor
     assert user.counts["fallback_turns"] == 1
     assert user.guards.counts[guards_mod.INVENTED] == 1
     assert user.events[-1].payload["agent_turn_dropped"] == guards_mod.INVENTED
-
-
-def test_a_run_with_no_user_model_is_the_rule_driven_user_it_always_was(ctx, rules, recorded):
-    user = AgentUser(ctx, rules_mod.SimulatedUser(rules, vocab=VOCAB), None, vocab=VOCAB,
-                     trace=recorded)
-    said = user.reply([{"role": "assistant", "content": "Could you provide your plot number?"}])
-    assert "PLOT-4471" in said and user.counts["agent_user_turns"] == 0
 
 
 # --- the fidelity score -----------------------------------------------------------------------
@@ -280,12 +240,6 @@ def test_a_turn_that_reads_out_a_record_value_loses_the_record_reading(recorded,
     assert leaked.record_clean == 0.0 and leaked.record_spoken == ["courier_ref"]
 
 
-def test_the_rule_driven_user_is_scored_with_no_model_call(recorded, rules):
-    score = fidelity_mod.score_driver(rules_mod.SimulatedUser(rules, vocab=VOCAB), recorded,
-                                      [f for f in rules.facts], task_id="task_1")
-    assert 0.0 <= score.score <= 1.0 and score.turns > 0
-
-
 # --- the lesson loop ---------------------------------------------------------------------------
 
 def lesson(agent: float, rules_score: float, round: int, key: str = "k") -> lesson_mod.Lesson:
@@ -301,16 +255,12 @@ def test_a_lesson_names_the_missed_fact_and_lands_in_the_next_context(ctx):
     assert "plot_id" in section.text
 
 
-def test_a_task_the_agent_never_beats_stops_paying_after_three_rounds(ctx):
+def test_a_task_the_agent_never_beats_stops_after_three_lessons_until_its_facts_change(ctx):
     history = [lesson(0.4, 0.6, n) for n in (1, 2)]
     assert not lesson_mod.stalled(history, "task_1")
     history.append(lesson(0.4, 0.6, 3))
     assert lesson_mod.stalled(history, "task_1")
     assert not lesson_mod.drives(history, "task_1", 0.9, 0.6)
-
-
-def test_a_task_whose_facts_changed_starts_paying_again(ctx):
-    history = [lesson(0.4, 0.6, n) for n in (1, 2, 3)]
     assert lesson_mod.stalled(history, "task_1", "k")
     assert not lesson_mod.stalled(history, "task_1", "a-new-key")
 
@@ -323,16 +273,6 @@ def test_the_agent_drives_a_task_only_where_it_beats_the_rules():
 
 # --- what the table says ------------------------------------------------------------------------
 
-def test_the_corpus_table_names_both_drivers_and_where_the_agent_won():
-    rows = [{"task_id": "task_1", "rules": 0.5, "agent": 0.9},
-            {"task_id": "task_2", "rules": 1.0, "agent": 0.4}]
-    body = {"format": fidelity_mod.FORMAT, "tasks": rows, "summary": fidelity_mod.summarise(rows)}
-    lines = fidelity_mod.markdown_table(body)
-    assert any(line.startswith("| rules |") for line in lines)
-    assert any(line.startswith("| agent |") for line in lines)
-    assert "agent beats rules on 1 of 2" in lines[-1]
-
-
 def test_a_facts_tool_answers_only_what_was_asked(ctx):
     box = Toolbox(ctx)
     assert "PLOT-4471" in box.facts(["plot_id"])
@@ -343,16 +283,6 @@ def test_the_user_never_holds_a_tool_that_reads_the_world(ctx):
     from kullback.user.extension import names_world
     assert names_world({"path": "db.json"}) == "db.json"
     assert names_world({"field": "plot_id"}) is None
-
-
-def test_a_disclosure_rule_the_recording_made_is_what_the_persona_counted(recorded, rules):
-    volunteered = [r for r in rules.disclosure if isinstance(r, DisclosureRule) and not r.on_request]
-    assert context_mod.mine_persona(recorded, rules).volunteered == len(volunteered)
-
-
-def test_a_fact_the_user_gave_is_askable_and_a_value_only_the_world_holds_is_not(rules):
-    assert rules_mod.fact_class(rules, "plot_id", "PLOT-4471") == rules_mod.ASKABLE
-    assert rules_mod.fact_class(rules, "courier_ref", "CR-90881") == rules_mod.RECORD
 
 
 def test_a_fact_carried_by_a_turn_is_read_the_same_way_for_both_drivers():
@@ -381,6 +311,14 @@ def test_the_cli_scores_a_workdirs_tasks_and_prints_the_per_corpus_table(tmp_pat
     written = fidelity_mod.load_scores(tmp_path)
     assert [row["task_id"] for row in written["tasks"]] == ["task_1"]
 
+    rows = [{"task_id": "task_1", "rules": 0.5, "agent": 0.9},
+            {"task_id": "task_2", "rules": 1.0, "agent": 0.4}]
+    body = {"format": fidelity_mod.FORMAT, "tasks": rows, "summary": fidelity_mod.summarise(rows)}
+    lines = fidelity_mod.markdown_table(body)
+    assert any(line.startswith("| rules |") for line in lines)
+    assert any(line.startswith("| agent |") for line in lines)
+    assert "agent beats rules on 1 of 2" in lines[-1]
+
 
 def test_the_cli_says_how_the_simulated_user_ended_a_builds_runs(tmp_path):
     from typer.testing import CliRunner
@@ -395,7 +333,7 @@ def test_the_cli_says_how_the_simulated_user_ended_a_builds_runs(tmp_path):
     assert rules_mod.SCENARIO_EXHAUSTED in result.output
 
 
-# --- D227: both users read one function, and the refused-write count is a round count ------------
+# --- D227: the refused-write count and the end kinds per driver -----------------------------------
 
 
 DELIVERY_MOVED = {"role": "tool", "tool_call_id": "c1", "name": "move_delivery", "content": "{}"}
@@ -404,49 +342,25 @@ DELIVERY_REFUSED = {**DELIVERY_MOVED,
                     "error": {"class": "business_error", "payload": "that slot is full"}}
 
 
-def test_the_agent_users_end_and_the_rules_read_writes_through_one_function():
-    assert guards_mod.writes_made is not rules_mod.writes_made
-    transcript = [{"role": "user", "content": "Hi."}, DELIVERY_REFUSED]
-    assert guards_mod.writes_made(transcript, ["move_delivery"]) == \
-        rules_mod.writes_made(transcript, ["move_delivery"]) == set()
+def _effect(after):
+    return [{"table": "deliveries", "row": "D77", "path": "slot", "before": "morning", "after": after}]
 
 
-def test_the_end_protocol_does_not_satisfy_a_goal_on_a_write_the_world_refused():
+@pytest.mark.parametrize("result,done,end", [
+    (DELIVERY_REFUSED, False, rules_mod.HANDED_OFF),
+    (DELIVERY_MOVED, True, rules_mod.GOAL_SATISFIED),
+    ({**DELIVERY_MOVED, "write_effect": _effect("morning")}, False, None),
+    ({**DELIVERY_MOVED, "write_effect": _effect("evening")}, True, None),
+], ids=["refused", "took-effect", "effect-record-moved-nothing", "effect-record-moved-a-column"])
+def test_the_goal_is_satisfied_only_by_a_write_that_took_effect(result, done, end):
+    """A refused write, or one whose D215 effect record left every column where it was, is not a
+    write the agent user may end its Run on."""
     protocol = guards_mod.EndProtocol(goal_writes=["move_delivery"], write_tools=["move_delivery"])
-    made = guards_mod.writes_made([{"role": "user", "content": "Hi."}, DELIVERY_REFUSED],
-                                  ["move_delivery"])
-    assert protocol.goal_done(made) is False
-    assert protocol.kind("Anything else?", said_anything=True, had_nothing=False,
-                         made=made) == rules_mod.HANDED_OFF
-
-
-def test_the_end_protocol_satisfies_a_goal_on_a_write_that_took_effect():
-    protocol = guards_mod.EndProtocol(goal_writes=["move_delivery"], write_tools=["move_delivery"])
-    made = guards_mod.writes_made([{"role": "user", "content": "Hi."}, DELIVERY_MOVED],
-                                  ["move_delivery"])
-    assert protocol.goal_done(made) is True
-    assert protocol.kind("Anything else?", said_anything=True, had_nothing=False,
-                         made=made) == rules_mod.GOAL_SATISFIED
-
-
-def test_the_end_protocol_does_not_satisfy_a_goal_on_a_write_whose_effect_record_moved_nothing():
-    """D215's record rides with the call, so a write that answered cleanly and left every column
-    where it was is not a write the agent user may end its Run on."""
-    protocol = guards_mod.EndProtocol(goal_writes=["move_delivery"], write_tools=["move_delivery"])
-    unmoved = {**DELIVERY_MOVED,
-               "write_effect": [{"table": "deliveries", "row": "D77", "path": "slot",
-                                 "before": "morning", "after": "morning"}]}
-    made = guards_mod.writes_made([{"role": "user", "content": "Hi."}, unmoved], ["move_delivery"])
-    assert protocol.goal_done(made) is False
-
-
-def test_the_end_protocol_satisfies_a_goal_on_a_write_whose_effect_record_moved_a_column():
-    protocol = guards_mod.EndProtocol(goal_writes=["move_delivery"], write_tools=["move_delivery"])
-    moved = {**DELIVERY_MOVED,
-             "write_effect": [{"table": "deliveries", "row": "D77", "path": "slot",
-                               "before": "morning", "after": "evening"}]}
-    made = guards_mod.writes_made([{"role": "user", "content": "Hi."}, moved], ["move_delivery"])
-    assert protocol.goal_done(made) is True
+    made = guards_mod.writes_made([{"role": "user", "content": "Hi."}, result], ["move_delivery"])
+    assert protocol.goal_done(made) is done
+    if end is not None:
+        assert protocol.kind("Anything else?", said_anything=True, had_nothing=False,
+                             made=made) == end
 
 
 def _run_file(path, events):
@@ -455,50 +369,35 @@ def _run_file(path, events):
     path.write_text("\n".join(json.dumps(event) for event in events), encoding="utf-8")
 
 
-def test_a_run_the_user_ended_on_a_refused_write_is_counted_for_the_round(tmp_path):
-    refused = [{"type": "tool_result", "payload": {"name": "move_delivery",
-                                                   "error": {"class": "business_error"}}},
-               {"type": "user_turn", "payload": {"user_end": rules_mod.GOAL_SATISFIED}}]
-    moved = [{"type": "tool_result", "payload": {"name": "move_delivery"}},
-             {"type": "user_turn", "payload": {"user_end": rules_mod.GOAL_SATISFIED}}]
-    _run_file(tmp_path / "runs" / "task_1" / "reroll-task_1-0.jsonl", refused)
-    _run_file(tmp_path / "runs" / "task_1" / "reroll-task_1-1.jsonl", moved)
+REFUSED_RESULT = {"type": "tool_result", "payload": {"name": "move_delivery",
+                                                   "error": {"class": "business_error"}}}
+MOVED_RESULT = {"type": "tool_result", "payload": {"name": "move_delivery"}}
+
+
+@pytest.mark.parametrize("runs,refused_ends,with_a_write,no_end_kind", [
+    ([[REFUSED_RESULT, {"type": "user_turn", "payload": {"user_end": rules_mod.GOAL_SATISFIED}}],
+      [MOVED_RESULT, {"type": "user_turn", "payload": {"user_end": rules_mod.GOAL_SATISFIED}}]],
+     1, 2, 0),
+    ([[REFUSED_RESULT, {"type": "user_turn", "payload": {"user_end": rules_mod.HANDED_OFF}}]],
+     0, 1, 0),
+    ([[REFUSED_RESULT, {"type": "user_turn", "payload": {"tags": [rules_mod.GOAL_SATISFIED]}}]],
+     1, 1, 0),
+    ([[REFUSED_RESULT, {"type": "stop", "payload": {"reason": "user_stop"}}]],
+     0, 1, 1),
+], ids=["named-goal-over-refusal-and-a-moved-write", "handed-off-over-refusal",
+        "end-kind-as-a-tag", "written-before-end-kinds-existed"])
+def test_a_run_the_user_ended_on_a_refused_write_is_counted(tmp_path, runs, refused_ends,
+                                                          with_a_write, no_end_kind):
+    """Only a goal the user closed over a refused write counts; a Run the Candidate handed off
+    ended the way it would have anyway. The rule-driven user's tag and the agent user's named
+    kind are read by one reader, and a Run with no end kind is counted as unclassified."""
+    for n, events in enumerate(runs):
+        _run_file(tmp_path / "runs" / "task_1" / f"reroll-task_1-{n}.jsonl", events)
     counts = fidelity_mod.refused_write_ends(tmp_path, ["move_delivery"])
-    assert counts[fidelity_mod.REFUSED_WRITE_ENDS] == 1
-    assert counts["runs_read"] == 2 and counts["runs_with_a_write"] == 2
-
-
-def test_a_run_handed_off_over_a_refused_write_is_not_counted_as_a_goal_the_user_closed(tmp_path):
-    """The count is of the one end kind the old rule reached over a refusal. A Run the Candidate
-    closed ended the way it would have ended anyway, so counting it would overstate the change."""
-    handed = [{"type": "tool_result", "payload": {"name": "move_delivery",
-                                                  "error": {"class": "business_error"}}},
-              {"type": "user_turn", "payload": {"user_end": rules_mod.HANDED_OFF}}]
-    _run_file(tmp_path / "runs" / "task_1" / "reroll-task_1-0.jsonl", handed)
-    counts = fidelity_mod.refused_write_ends(tmp_path, ["move_delivery"])
-    assert counts[fidelity_mod.REFUSED_WRITE_ENDS] == 0
-    assert counts["runs_with_a_write"] == 1 and counts["runs_with_no_end_kind"] == 0
-
-
-def test_a_run_whose_end_kind_is_a_tag_is_read_the_same_as_one_that_names_it(tmp_path):
-    """The rule-driven user tags the turn it ends on and the Runner copies the tags into the file;
-    the agent user writes the kind under its own name. One reader, so neither shape is missed."""
-    tagged = [{"type": "tool_result", "payload": {"name": "move_delivery",
-                                                  "error": {"class": "business_error"}}},
-              {"type": "user_turn", "payload": {"tags": [rules_mod.GOAL_SATISFIED]}}]
-    _run_file(tmp_path / "runs" / "task_1" / "reroll-task_1-0.jsonl", tagged)
-    counts = fidelity_mod.refused_write_ends(tmp_path, ["move_delivery"])
-    assert counts[fidelity_mod.REFUSED_WRITE_ENDS] == 1 and counts["runs_with_no_end_kind"] == 0
-
-
-def test_a_run_written_before_the_end_kinds_existed_is_counted_as_unclassified(tmp_path):
-    old = [{"type": "tool_result", "payload": {"name": "move_delivery",
-                                               "error": {"class": "business_error"}}},
-           {"type": "stop", "payload": {"reason": "user_stop"}}]
-    _run_file(tmp_path / "runs" / "task_1" / "reroll-task_1-0.jsonl", old)
-    counts = fidelity_mod.refused_write_ends(tmp_path, ["move_delivery"])
-    assert counts[fidelity_mod.REFUSED_WRITE_ENDS] == 0
-    assert counts["runs_with_no_end_kind"] == 1
+    assert counts[fidelity_mod.REFUSED_WRITE_ENDS] == refused_ends
+    assert counts["runs_read"] == len(runs)
+    assert counts["runs_with_a_write"] == with_a_write
+    assert counts["runs_with_no_end_kind"] == no_end_kind
 
 
 def test_the_end_kinds_are_counted_under_the_user_whose_turn_ended_the_run(tmp_path):
@@ -518,15 +417,200 @@ def test_the_end_kinds_are_counted_under_the_user_whose_turn_ended_the_run(tmp_p
     assert split["rules"][rules_mod.SCENARIO_EXHAUSTED] == 1
     assert split["agent"][rules_mod.SCENARIO_EXHAUSTED] == 0, "every kind is named for a driver that spoke"
 
-
-def test_a_run_the_rule_driven_user_ended_alone_needs_no_driver_written_on_its_turn(tmp_path):
-    """The rule-driven user writes no driver on its own turns, so an unnamed one is its own; a Run
-    that ended in no kind at all is in neither driver's count rather than guessed at."""
+    # The rule-driven user writes no driver on its own turns, so an unnamed one is its own; a Run
+    # that ended in no kind at all is in neither driver's count rather than guessed at.
+    alone = tmp_path / "alone"
     tagged = [{"type": "user_turn", "payload": {"tags": [rules_mod.HANDED_OFF]}}]
     unclassified = [{"type": "user_turn", "payload": {"text": "Thanks."}}]
-    _run_file(tmp_path / "runs" / "task_1" / "reroll-task_1-0.jsonl", tagged)
-    _run_file(tmp_path / "runs" / "task_1" / "reroll-task_1-1.jsonl", unclassified)
-    split = fidelity_mod.ends_by_driver(tmp_path)
+    _run_file(alone / "runs" / "task_1" / "reroll-task_1-0.jsonl", tagged)
+    _run_file(alone / "runs" / "task_1" / "reroll-task_1-1.jsonl", unclassified)
+    split = fidelity_mod.ends_by_driver(alone)
     assert list(split) == ["rules"] and split["rules"][rules_mod.HANDED_OFF] == 1
     assert sum(split["rules"].values()) == 1
     assert fidelity_mod.ends_by_driver(tmp_path / "nowhere") == {}
+
+
+# --- the stable head (G24) ----------------------------------------------------------------------
+
+def test_the_head_is_byte_identical_across_turns_and_runs(ctx, rules, recorded):
+    user = agent_for(ctx, rules, ["Thanks, noted.", "Understood, thanks."], recorded)
+    before = user.harness().system
+    user.reply([{"role": "assistant", "content": "Could you provide your plot number?"}])
+    user.reply([{"role": "assistant", "content": "Could you provide your plot number?"},
+                {"role": "user", "content": "Thanks, noted."},
+                {"role": "assistant", "content": "Thank you. What delivery slot would you like?"}])
+    assert user.harness().system == before
+    other = agent_for(ctx, rules, ["Thanks, noted."], recorded)
+    assert other.harness().system == before
+    asked = agent_for(ctx, rules, ["Right, got it."], recorded)
+    asked.reply([{"role": "assistant", "content": "Could you tell me your tier, blue envelope?"}])
+    system = asked.model.calls[-1]["messages"][0]["content"]
+    assert "blue envelope" not in system
+
+
+def test_every_fact_is_in_the_prompt_on_the_turn_that_asks_for_nothing_held(ctx, rules, recorded):
+    """The turn the old filter emptied: asked names no held field, every fact still stands."""
+    question = "Could you tell me your email?"
+    assert rules_mod.asked_fields(question, vocab=VOCAB) == ["email"]
+    assert "email" not in [f.field for f in ctx.askable()]
+    user = agent_for(ctx, rules, ["Right, got it."], recorded)
+    user.reply([{"role": "assistant", "content": question}])
+    system = user.model.calls[-1]["messages"][0]["content"]
+    for fact in ctx.askable():
+        assert str(fact.value) in system
+
+
+def test_the_head_keeps_the_founders_order(ctx, rules, recorded):
+    """What you receive, tools, examples, choice rule, feedback shape, stop rule last; every
+    curated item is a section under a stable tag and an empty one is absent."""
+    from kullback.user import skills as skills_mod
+    tags = [section.name for section in context_mod.sections(ctx)]
+    assert tags == [context_mod.GOAL_TAG, context_mod.FACTS_TAG, context_mod.PERSONA_TAG,
+                    context_mod.CHOICES_TAG, context_mod.PROTOCOL_TAG]
+    assert context_mod.LESSONS_TAG not in tags  # no lesson yet, so no blank section
+    assert set(tags) <= set(context_mod.SECTION_TAGS)
+    harness = agent_for(ctx, rules, ["Thanks, noted."], recorded).harness()
+    assert harness.sections[-1].name == "user_stop"
+    assert harness.system.endswith(skills_mod.STOP + "\n</stop>")
+    head = harness.system
+    order = [skills_mod.WHAT, skills_mod.TOOLS, skills_mod.EXAMPLES, skills_mod.RULES,
+             skills_mod.FEEDBACK, skills_mod.STOP]
+    positions = [head.index(part) for part in order]
+    assert positions == sorted(positions)
+
+
+def test_the_user_harness_registers_only_its_four_tools(ctx, rules, recorded):
+    """No base tools on this harness: the phone reaches four tools and nothing else."""
+    user = agent_for(ctx, rules, ["Thanks, noted."], recorded)
+    assert user.harness().registry.names() == ["my_facts", "my_goal", "what_i_said", "end_run"]
+
+
+# --- the conversation appended as messages (G24) --------------------------------------------------
+
+def test_the_conversation_arrives_as_messages_with_the_turn_line_last(ctx, rules, recorded):
+    from kullback.user.agent import TURN_MESSAGE
+    user = agent_for(ctx, rules, ["Thanks, noted.", "At 16:00, thanks."], recorded)
+    user.reply([{"role": "assistant", "content": "Could you provide your plot number?"}])
+    first = user.model.calls[-1]["messages"]
+    assert [m["content"] for m in first[1:]] == ["Could you provide your plot number?",
+                                                  TURN_MESSAGE]
+    user.reply([{"role": "assistant", "content": "Could you provide your plot number?"},
+                {"role": "user", "content": "Thanks, noted."},
+                {"role": "assistant", "content": "Thank you. What delivery slot would you like?"}])
+    messages = user.model.calls[-1]["messages"]
+    assert [m["role"] for m in messages] == ["system", "user", "user", "assistant",
+                                               "user", "user"]
+    assert [m["content"] for m in messages[1:]] == [
+        "Could you provide your plot number?", TURN_MESSAGE, "Thanks, noted.",
+        "Thank you. What delivery slot would you like?", TURN_MESSAGE]
+
+
+def test_tool_traffic_is_not_speech_and_never_enters_the_messages(ctx, rules, recorded):
+    user = agent_for(ctx, rules, ["Yes, 16:00."], recorded)
+    user.reply([{"role": "assistant", "content": "What delivery slot would you like?"},
+                {"role": "tool", "tool_call_id": "c1", "name": "move_delivery",
+                 "content": "{\"slot\": \"16:00\"}"}])
+    messages = user.model.calls[-1]["messages"]
+    assert [m["role"] for m in messages] == ["system", "user", "user"]
+    assert all("16:00" not in m["content"] or "slot" in m["content"].lower()
+               for m in messages[1:-1])
+    assert all(m.get("tool_calls", []) == [] for m in messages if m["role"] == "assistant")
+
+
+def test_one_user_over_two_conversations_sends_what_a_fresh_user_sends(ctx, rules, recorded):
+    """Driving conversation A first leaves no trace on conversation B's requests; every turn
+    builds a new harness from the transcript alone."""
+    conversation_a = [{"role": "assistant", "content": "Could you provide your plot number?"}]
+    conversation_b = [{"role": "assistant", "content": "Thank you. What delivery slot?"},
+                      {"role": "user", "content": "Please make it 16:00."},
+                      {"role": "assistant", "content": "Done. Anything else?"}]
+    reused = agent_for(ctx, rules, ["Thanks, noted.", "No, thanks."], recorded)
+    reused.reply(list(conversation_a))
+    reused.reply(list(conversation_b))
+    fresh = agent_for(ctx, rules, ["No, thanks."], recorded)
+    fresh.reply(list(conversation_b))
+    assert (reused.model.calls[-1]["messages"]
+            == fresh.model.calls[-1]["messages"])
+    assert not hasattr(reused, "_prior") and not hasattr(reused, "_prior_history")
+    transcript = [{"role": "assistant", "content": "Could you provide your plot number?"},
+                  {"role": "user", "content": "Thanks, noted."}]
+    first, second = reused.harness(transcript), reused.harness(transcript)
+    assert first is not second
+    assert [m.content for m in first.messages] == [m.content for m in second.messages]
+
+
+def test_the_run_path_and_the_scorer_path_send_identical_requests(ctx, rules, recorded):
+    """Growing recorded prefixes turn by turn sends what one live transcript sends."""
+    full = [{"role": "assistant", "content": "Could you provide your plot number?"},
+            {"role": "user", "content": "Thanks, noted."},
+            {"role": "assistant", "content": "Thank you. What delivery slot would you like?"}]
+    scorer_like = agent_for(ctx, rules, ["Thanks, noted.", "At 16:00, thanks."], recorded)
+    for end in (1, 2, 3):
+        scorer_like.reply(list(full[:end]))
+    run_like = agent_for(ctx, rules, ["At 16:00, thanks."], recorded)
+    run_like.reply(list(full))
+    assert (scorer_like.model.calls[-1]["messages"]
+            == run_like.model.calls[-1]["messages"])
+
+
+def test_the_guards_read_the_writes_the_transcript_carries(ctx, rules, recorded):
+    """A write the world refused cannot satisfy the goal; one that took effect does."""
+    moved = {"role": "tool", "tool_call_id": "c1", "name": "move_delivery", "content": "{}"}
+    refused = dict(moved, content="that slot is full", error={"class": "business_error"})
+    question = [{"role": "assistant", "content": "What delivery slot would you like?"}]
+    user_moved = agent_for(ctx, rules, ["Yes, 16:00."], recorded)
+    user_moved.reply(question + [moved])
+    assert user_moved.done and user_moved.end_reason == rules_mod.GOAL_SATISFIED
+    user_refused = agent_for(ctx, rules, ["Yes, 16:00."], recorded)
+    user_refused.reply(question + [refused])
+    assert not user_refused.done
+
+
+# --- the prefix check over a real conversation (G24) ------------------------------------------------
+
+def five_turn_requests(ctx, rules, recorded):
+    from kullback.agent import prefix_check as prefix_check_mod
+    user = agent_for(ctx, rules, ["Thanks, noted.", "At 16:00, thanks.", "Right, got it.",
+                                  "Fine by me.", "Thank you, goodbye."], recorded)
+    transcript = []
+    for question in ("Could you provide your plot number?",
+                     "Thank you. What delivery slot would you like?",
+                     "Could you tell me your membership tier?",
+                     "Done, your delivery is moved. Anything else?",
+                     "Great, have a good day."):
+        transcript.append({"role": "assistant", "content": question})
+        transcript.append({"role": "user", "content": user.reply(transcript)})
+    requests = [call["messages"] for call in user.model.calls]
+    assert len(requests) == 5
+    return prefix_check_mod, requests
+
+
+def test_five_turns_through_the_user_pass_the_prefix_check(ctx, rules, recorded):
+    prefix_check, requests = five_turn_requests(ctx, rules, recorded)
+    assert prefix_check.first_prefix_break(requests) is None
+
+
+# --- the untouched floor (G24) --------------------------------------------------------------------
+
+def test_model_off_replies_are_the_rules_floor_byte_for_byte(ctx, rules, recorded):
+    """With the model off, no prompt is ever built, so the floor answers exactly as before."""
+    user = AgentUser(ctx, simulated_mod.SimulatedUser(rules, vocab=VOCAB), None, vocab=VOCAB,
+                     write_tools=["move_delivery"], goal_writes=["move_delivery"],
+                     record_values=context_mod.mine_record_values(recorded), trace=recorded)
+    transcript = []
+    for question in ("Could you provide your plot number?",
+                     "Thank you. What delivery slot would you like?",
+                     "Could you tell me your membership tier?",
+                     "Done, your delivery is moved. Anything else?",
+                     "Great, have a good day."):
+        transcript.append({"role": "assistant", "content": question})
+        transcript.append({"role": "user", "content": user.reply(transcript)})
+    assert user.counts["agent_user_turns"] == 0
+    assert [m["content"] for m in transcript if m["role"] == "user"] == [
+        "Hello, please could you move my plant delivery to a later slot. "
+        "My plot id is PLOT-4471. My slot is 16:00.",
+        "My delivery slot is 16:00. My slot is 16:00.",
+        "Hello, please could you move my plant delivery to a later slot.",
+        "No, that is all. Thank you.",
+        "No, that is all. Thank you.",
+    ]

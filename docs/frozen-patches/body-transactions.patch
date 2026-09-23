@@ -23,7 +23,9 @@ index 0d8d070..c93321c 100644
  import inspect
  import json
  from typing import Any, Iterable, NamedTuple, Optional
-@@ -9,7 +10,7 @@ from typing import Any, Iterable, NamedTuple, Optional
+@@ -9,7 +10,9 @@ from typing import Any, Iterable, NamedTuple, Optional
++from pydantic import BaseModel
++
  from kullback.runner.canon import canonical_args
  from kullback.runner.records import ToolCallError, ToolSig, content_hash
  from kullback.runner.records import plain as _plain
@@ -73,7 +75,7 @@ index 0d8d070..c93321c 100644
  
      def _reads_synthetic(self, result: Any, args: dict) -> bool:
          """The call named or returned a synthetic row (D40): the Run is assisted (D49)."""
-@@ -239,6 +263,134 @@ class Router:
+@@ -239,6 +263,137 @@ class Router:
          return RouteResult(payload, "code", False, error, self._misses())
  
  
@@ -175,6 +177,9 @@ index 0d8d070..c93321c 100644
 +    later body still reads rows by attribute. A plain dict db already holds plain rows, so its
 +    snapshot values land as they are and tables the snapshot never held are removed outright.
 +    """
++    if isinstance(db, BaseModel) and isinstance(snapshot, type(db)):
++        db.__setstate__(copy.deepcopy(snapshot.__getstate__()))
++        return
 +    if db is None or snapshot is None or not isinstance(snapshot, dict):
 +        return
 +    if isinstance(db, dict):

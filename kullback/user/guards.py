@@ -23,6 +23,7 @@ import re
 from typing import Any, Callable, Iterable, Optional, Sequence
 
 from kullback.runner.records import Record
+from kullback.user import ends as ends_mod
 from kullback.user import rules as rules_mod
 
 # The reasons a turn is dropped or changed. They are the counters a round reports.
@@ -291,10 +292,10 @@ def grounding_for(facts: Iterable[Any], sentences: Iterable[str] = ()) -> Ground
 
 
 def writes_made(transcript: Sequence[Any], write_tools: Iterable[str]) -> set[str]:
-    """The writes this transcript shows made, read through the rules' own function (D227).
+    """The writes this transcript shows made, read through the transcript readers (D227).
 
     This used to be a second copy of the reading, which is how the two Simulated users came to be
     able to disagree about whether the goal was done. There is one function now and it lives with
-    the rules; this name stays so the agent user's callers keep reading it from its own package.
+    the readers; this name stays so the agent user's callers keep reading it from its own package.
     """
-    return rules_mod.writes_made(transcript, write_tools)
+    return ends_mod.writes_made(transcript, write_tools)

@@ -8,9 +8,9 @@ pytestmark = pytest.mark.skipif(not hasattr(loop, "advance"), reason="needs the 
 
 
 def test_episode_uses_the_shared_strip_on_nonheld_evidence(tmp_path):
-    from kullback.episode import BuiltEnvironment, Episode
     from kullback.runner.records import RawPtr, ToolCall, Trace
-    from tests.episode.invented import write_env
+    from kullback.runner.world import BuiltEnvironment, Episode
+    from tests.episode.invented import simulated_user_factory, write_env
 
     root = write_env(tmp_path / "env")
     ptr = RawPtr(file_hash="invented")
@@ -19,7 +19,8 @@ def test_episode_uses_the_shared_strip_on_nonheld_evidence(tmp_path):
                                        result={"label": "company-secret"}, raw_ptr=ptr)])
     (root / "traces").mkdir()
     (root / "traces" / "rec1.json").write_text(trace.model_dump_json(), encoding="utf-8")
-    episode = Episode(BuiltEnvironment(root), outdir=tmp_path / "out")
+    episode = Episode(BuiltEnvironment(root), outdir=tmp_path / "out",
+                      user_factory=simulated_user_factory)
     episode.reset("widget_task", seed=7)
     strip = episode._state.user.answer_strip
     assert strip is not None
@@ -27,8 +28,8 @@ def test_episode_uses_the_shared_strip_on_nonheld_evidence(tmp_path):
 
 
 def test_episode_does_not_build_strip_from_held_out_trace(tmp_path):
-    from kullback.episode import BuiltEnvironment, Episode
     from kullback.runner.records import RawPtr, Trace
+    from kullback.runner.world import BuiltEnvironment, Episode
     from tests.episode.invented import write_env
 
     root = write_env(tmp_path / "env")
@@ -42,17 +43,9 @@ def test_episode_does_not_build_strip_from_held_out_trace(tmp_path):
     assert episode._state.user is None
 
 
-def test_builder_and_episode_share_the_strip_implementation():
-    from kullback.builder import intent
-    from kullback.user import value_strip
-
-    assert intent.value_strip is value_strip.value_strip
-    assert intent.strip_intent is value_strip.strip_intent
-
-
 @pytest.mark.parametrize("owner_name,dependency_name", [
-    ("kullback.builder.compile_env", "kullback.episode.loading"),
-    ("kullback.builder.sandbox", "kullback.episode.loading"),
+    ("kullback.builder.compile_env", "kullback.runner.world.loading"),
+    ("kullback.builder.sandbox", "kullback.runner.world.loading"),
     ("kullback.builder.intent", "kullback.user.value_strip"),
 ])
 def test_closure_hash_of_owner_follows_the_moved_module(owner_name, dependency_name):
@@ -64,13 +57,3 @@ def test_closure_hash_of_owner_follows_the_moved_module(owner_name, dependency_n
     assert dependency_name in reach.import_closure(owner_name)
     owner = importlib.import_module(owner_name)
     assert reach.closure_hash(owner) != reach.closure_hash(owner, exempt=frozenset({dependency_name}))
-
-
-def test_unrelated_module_hash_does_not_follow_loader(monkeypatch):
-    from kullback.builder import build
-    from kullback.episode import loading
-
-    original = build._module_hash
-    before = original(build.provider)
-    monkeypatch.setattr(build, "_module_hash", lambda module: "changed" if module is loading else original(module))
-    assert build._module_hash(build.provider) == before

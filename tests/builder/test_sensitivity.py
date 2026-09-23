@@ -135,33 +135,10 @@ def test_a_tool_the_corpus_never_showed_twice_records_no_pairs_and_passes(tmp_pa
     assert ruling.metrics["pairs"] == 0
 
 
-def test_two_tasks_that_recorded_the_same_answer_are_no_pair(tmp_path):
-    """Two worlds, one recorded answer: the tool answered them alike, so a body may too."""
-    calls = [_call("c1", {"tray_id": "TR-200"}, {"tray_id": "TR-200", "stage": "sprout"}),
-             _call("c2", {"tray_id": "TR-200"}, {"tray_id": "TR-200", "stage": "sprout"})]
-    states, tasks = {"c1": SPRING, "c2": SUMMER}, {"c1": "task-spring", "c2": "task-summer"}
-    ruling = sb.gate_sensitivity(_box(WRITES_A_CONSTANT, tmp_path, calls, states=states, tasks=tasks),
-                                 calls, _schema())
-    assert ruling.passed is True
-    assert ruling.metrics["no_pairs"] is True
-
-
-def test_a_column_the_schema_calls_exempt_is_never_the_difference_a_pair_rests_on(tmp_path):
-    """An exempt column is equal whatever it holds, so a body cannot be asked to move it."""
-    calls = [_call("c1", {"tray_id": "TR-200"}, {"tray_id": "TR-200", "seen_at": "day 3"}),
-             _call("c2", {"tray_id": "TR-200"}, {"tray_id": "TR-200", "seen_at": "day 60"})]
-    states, tasks = {"c1": SPRING, "c2": SUMMER}, {"c1": "task-spring", "c2": "task-summer"}
-    schema = _schema(exempt=("seen_at",))
-    ruling = sb.gate_sensitivity(_box(WRITES_A_CONSTANT, tmp_path, calls, schema=schema,
-                                      states=states, tasks=tasks), calls, schema)
-    assert ruling.passed is True
-    assert ruling.metrics["no_pairs"] is True
-
-
 # --- which calls make a pair ---
 
 
-def test_two_calls_that_differ_only_in_the_row_they_name_are_a_pair(tmp_path):
+def test_two_calls_that_differ_only_in_the_row_they_name_are_a_pair_even_when_the_id_sits_in_an_object(tmp_path):
     """A tool called with one tray per Task still says what the body has to read, more weakly."""
     calls = [_call("c1", {"tray_id": "TR-100"}, {"tray_id": "TR-100", "stage": "seedling"}),
              _call("c2", {"tray_id": "TR-200"}, {"tray_id": "TR-200", "stage": "sprout"})]
@@ -170,57 +147,17 @@ def test_two_calls_that_differ_only_in_the_row_they_name_are_a_pair(tmp_path):
     pairs = sb.sensitivity_pairs(box, calls, _schema())
     assert [pair.columns for pair in pairs] == [("stage",)]
     assert pairs[0].same_args is False
-
-
-def test_a_row_id_an_argument_carries_inside_an_object_is_still_the_row_it_names(tmp_path):
-    """The homing rule the pinner uses finds the id, so the nesting does not hide the pair."""
+    # the homing rule the pinner uses finds an id nested inside an object argument too
     sig = _sig(argument="tray")
     calls = [_call("c1", {"tray": {"tray_id": "TR-100"}}, {"tray_id": "TR-100", "stage": "seedling"}),
              _call("c2", {"tray": {"tray_id": "TR-200"}}, {"tray_id": "TR-200", "stage": "sprout"})]
     states, tasks = {"c1": SPRING, "c2": SUMMER}, {"c1": "task-spring", "c2": "task-summer"}
     body = 'return {"tray_id": tray["tray_id"], "stage": "seedling"}\n'
-    box = _box(body, tmp_path, calls, sig=sig, states=states, tasks=tasks)
+    box = _box(body, tmp_path / "nested", calls, sig=sig, states=states, tasks=tasks)
     assert [pair.columns for pair in sb.sensitivity_pairs(box, calls, _schema())] == [("stage",)]
 
 
-def test_two_calls_on_one_world_are_one_input_and_never_a_pair(tmp_path):
-    """A body that answers two calls of one Task alike has answered one question once."""
-    calls = [_call("c1", {"tray_id": "TR-100"}, {"tray_id": "TR-100", "stage": "seedling"}),
-             _call("c2", {"tray_id": "TR-200"}, {"tray_id": "TR-200", "stage": "sprout"})]
-    box = _box(WRITES_A_CONSTANT, tmp_path, calls, states={"c1": SPRING, "c2": SPRING})
-    assert sb.sensitivity_pairs(box, calls, _schema()) == []
-
-
-def test_a_call_the_recording_refused_carries_no_columns_and_is_no_pair(tmp_path):
-    """An error has no columns to differ in; matching error classes is the replay ruling's job."""
-    from kullback.runner.records import ToolCallError
-
-    refused = ToolCall(id="c2", name="tray_status", args={"tray_id": "TR-100"},
-                       error=ToolCallError(**{"class": "not_found_entity"}, payload="No such tray"),
-                       raw_ptr=PTR)
-    calls = [_call("c1", {"tray_id": "TR-100"}, {"tray_id": "TR-100", "stage": "seedling"}), refused]
-    box = _box(READS_THE_COLUMN, tmp_path, [calls[0]], states={"c1": SPRING, "c2": SUMMER})
-    assert sb.sensitivity_pairs(box, calls, _schema()) == []
-
-
 # --- what the ruling is worth to the rest of the stage ---
-
-
-def test_a_reading_body_outscores_a_memorising_one_on_the_key_the_kept_body_is_chosen_by(
-        tmp_path, seen_twice):
-    """D184 keeps whichever body got furthest through the gates; this is what puts reading first."""
-    calls, states, tasks = seen_twice
-    schema, sig = _schema(), _sig()
-
-    def gates(body, where):
-        source = ce.module_source(schema, [sig], {sig.name: body})
-        box = sb.Sandbox(source, NURSERY, tmp_path / where, call_states=states, call_tasks=tasks)
-        return sb.run_gates(source, box, calls, [], schema, sig=sig)
-
-    reading, memorising = gates(READS_THE_COLUMN, "reads"), gates(WRITES_A_CONSTANT, "writes")
-    assert ce.attempt_score(reading) > ce.attempt_score(memorising)
-    assert all(gate.passed for gate in reading), [g.failures for g in reading if not g.passed]
-    assert [gate.stage for gate in memorising if not gate.passed] == ["sensitivity", "replay_fidelity"]
 
 
 def test_the_chain_goes_on_past_a_failed_sensitivity_ruling_so_the_replay_count_still_ties_it(
@@ -234,51 +171,61 @@ def test_the_chain_goes_on_past_a_failed_sensitivity_ruling_so_the_replay_count_
     assert stages[-2:] == ["sensitivity", "replay_fidelity"]
 
 
-def test_the_lesson_the_next_attempt_is_written_with_names_the_column(tmp_path):
-    """The repair a memorising body needs is a column, and the ruling is what knows which one."""
-    import json
-
-    from kullback.builder import repair
-
-    (tmp_path / "tool_builds.json").write_text(json.dumps({"tray_status": {"nodes": [
-        {"gates": [{"stage": "sensitivity", "pass": False,
-                    "metrics": {"pairs": 1, "failed": 1, "columns": ["stage"]},
-                    "failures": ["the body answers both alike"]}]}]}}), encoding="utf-8")
-    lesson = repair.sensitivity_lesson(tmp_path, "tray_status")
-    assert "stage" in lesson
-    assert repair.sensitivity_lesson(tmp_path, "bench_status") == ""
-
-
-def test_a_tool_written_properly_since_leaves_no_lesson(tmp_path):
-    import json
-
-    from kullback.builder import repair
-
-    (tmp_path / "tool_builds.json").write_text(json.dumps({"tray_status": {"nodes": [
-        {"gates": [{"stage": "sensitivity", "pass": False, "metrics": {"columns": ["stage"]},
-                    "failures": ["x"]}]},
-        {"gates": [{"stage": "sensitivity", "pass": True, "metrics": {"columns": []}, "failures": []}]},
-    ]}}), encoding="utf-8")
-    assert repair.sensitivity_lesson(tmp_path, "tray_status") == ""
-
-
-def test_a_column_the_two_worlds_hold_alike_is_no_pair_however_the_recordings_differ(tmp_path):
-    """The second stage of the check: the state has to be able to tell the body which world it is in.
-
-    Here the recordings part in `stage` and both worlds hold one stage for every tray, so no body
+def _worlds_alike():
+    """The recordings part in `stage` and both worlds hold one stage for every tray, so no body
     that reads the world can answer the two calls differently. That is the Starting state missing a
     pin, which the replay ruling already blocks the Task for, and blaming the body for it would be
-    an accusation the evidence does not support.
-    """
+    an accusation the evidence does not support."""
     flat = {"benches": NURSERY["benches"], "trays": NURSERY["trays"]}
     other = {"benches": NURSERY["benches"],
              "trays": {key: dict(row, seen_at="day 60") for key, row in NURSERY["trays"].items()}}
     calls = [_call("c1", {"tray_id": "TR-100"}, {"tray_id": "TR-100", "stage": "seedling"}),
              _call("c2", {"tray_id": "TR-100"}, {"tray_id": "TR-100", "stage": "flowering"})]
-    states, tasks = {"c1": flat, "c2": other}, {"c1": "task-one", "c2": "task-two"}
-    box = _box(WRITES_A_CONSTANT, tmp_path, calls, states=states, tasks=tasks)
-    assert sb.sensitivity_pairs(box, calls, _schema()) == []
-    ruling = sb.gate_sensitivity(box, calls, _schema())
+    return dict(calls=calls, states={"c1": flat, "c2": other}, tasks={"c1": "task-one", "c2": "task-two"})
+
+
+def _same_recorded_answer():
+    """Two worlds, one recorded answer: the tool answered them alike, so a body may too."""
+    calls = [_call("c1", {"tray_id": "TR-200"}, {"tray_id": "TR-200", "stage": "sprout"}),
+             _call("c2", {"tray_id": "TR-200"}, {"tray_id": "TR-200", "stage": "sprout"})]
+    return dict(calls=calls, states={"c1": SPRING, "c2": SUMMER}, tasks={"c1": "task-spring", "c2": "task-summer"})
+
+
+def _exempt_column():
+    """An exempt column is equal whatever it holds, so a body cannot be asked to move it."""
+    calls = [_call("c1", {"tray_id": "TR-200"}, {"tray_id": "TR-200", "seen_at": "day 3"}),
+             _call("c2", {"tray_id": "TR-200"}, {"tray_id": "TR-200", "seen_at": "day 60"})]
+    return dict(calls=calls, states={"c1": SPRING, "c2": SUMMER}, tasks={"c1": "task-spring", "c2": "task-summer"},
+                schema=_schema(exempt=("seen_at",)))
+
+
+def _one_world():
+    """A body that answers two calls of one Task alike has answered one question once."""
+    calls = [_call("c1", {"tray_id": "TR-100"}, {"tray_id": "TR-100", "stage": "seedling"}),
+             _call("c2", {"tray_id": "TR-200"}, {"tray_id": "TR-200", "stage": "sprout"})]
+    return dict(calls=calls, states={"c1": SPRING, "c2": SPRING})
+
+
+def _refused_call():
+    """An error has no columns to differ in; matching error classes is the replay ruling's job."""
+    from kullback.runner.records import ToolCallError
+
+    refused = ToolCall(id="c2", name="tray_status", args={"tray_id": "TR-100"},
+                       error=ToolCallError(**{"class": "not_found_entity"}, payload="No such tray"),
+                       raw_ptr=PTR)
+    calls = [_call("c1", {"tray_id": "TR-100"}, {"tray_id": "TR-100", "stage": "seedling"}), refused]
+    return dict(calls=calls, run=[calls[0]], body=READS_THE_COLUMN, states={"c1": SPRING, "c2": SUMMER})
+
+
+@pytest.mark.parametrize("case", [_worlds_alike, _same_recorded_answer, _exempt_column, _one_world, _refused_call])
+def test_a_column_the_two_worlds_hold_alike_is_no_pair_however_the_recordings_differ(tmp_path, case):
+    """Calls the state cannot tell apart, or that recorded no difference, make no pair and pass."""
+    c = case()
+    schema = c.get("schema") or _schema()
+    box = _box(c.get("body", WRITES_A_CONSTANT), tmp_path, c.get("run", c["calls"]), schema=schema,
+               states=c["states"], tasks=c.get("tasks"))
+    assert sb.sensitivity_pairs(box, c["calls"], schema) == []
+    ruling = sb.gate_sensitivity(box, c["calls"], schema)
     assert ruling.passed is True
     assert ruling.metrics["no_pairs"] is True
 

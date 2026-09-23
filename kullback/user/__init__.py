@@ -28,10 +28,12 @@ from __future__ import annotations
 
 from kullback.user.agent import AgentUser, run_user
 from kullback.user.context import Persona, TaskContext, curate
+from kullback.user.ends import end_of_run, ends_by_kind
 from kullback.user.fidelity import TaskScore, TurnScore, score_driver, score_turn
 from kullback.user.guards import EndProtocol, GuardOutcome, Guards
 from kullback.user.lesson import Lesson, drives, stalled
-from kullback.user.rules import SimulatedUser, derive_user_rules, end_of_run, ends_by_kind
+from kullback.user.rules import derive_user_rules
+from kullback.user.simulated import SimulatedUser
 
 __all__ = [
     "AgentUser",

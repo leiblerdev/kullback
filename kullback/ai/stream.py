@@ -1,104 +1,69 @@
-"""A provider-neutral stream of one assistant message, over today's non-streaming Model.query.
+"""One assistant message as canonical events, from a provider stream or from a whole reply.
 
-The event shape follows tau's AssistantMessageEvent: start, then text and tool-call blocks each
-opened, filled by deltas and closed, then done with the assembled message, or error. Every event
-before done carries the message as assembled so far, so a consumer can render the partial without
-keeping its own copy. In this phase every provider answers whole (Model.query returns a ModelReply),
-so the stream emits the assembled events at once after the call returns: one delta per text block,
-one delta per tool call. A true token stream is a later phase and changes only this file; the loop
-and every consumer already read the events, not the reply.
+Mirrors tau_ai/stream.py. `canonicalize_provider_stream` is the one place a provider's own report
+(`_provider_events`) becomes the events the loop reads: it opens a block when a channel first
+speaks, grows the partial message on every delta, closes the block when the channel changes or the
+answer ends, and finishes with done or error. A consumer sees the same events whether the text
+arrived token by token from a live endpoint or whole from a replay.
 
-The model call runs in a worker thread so an async loop is not held by the network wait. That is
-also what keeps MemoModel, RecordedModel and TestModel working unchanged: each is a plain
-Model.query, and the thread is where it is called.
+`stream` below is the older path over `Model.query`: a whole reply, taken in a worker thread so an
+async loop is not held by the network wait, then emitted as one delta per block. It is what keeps
+the three offline models and every caller that holds a `Model` working while the callers move to
+the provider protocol; `replay.ReplayProvider` is the same adaptation behind the protocol.
 """
 
 from __future__ import annotations
 
 import asyncio
 import json
-from typing import Annotated, AsyncIterator, Literal, Optional, Sequence, Union
+from typing import Any, AsyncIterator, Optional, Sequence
 
-from pydantic import BaseModel, ConfigDict, Field
-
+from kullback.ai._provider_events import (
+    ProviderErrorEvent,
+    ProviderEvent,
+    ProviderResponseEnd,
+    ProviderResponseStart,
+    ProviderRetry,
+    ProviderTextDelta,
+    ProviderThinkingDelta,
+    ProviderToolCall,
+)
+from kullback.ai.events import (
+    StreamDone,
+    StreamError,
+    StreamEvent,
+    StreamStart,
+    TextDelta,
+    TextEnd,
+    TextStart,
+    ThinkingDelta,
+    ThinkingEnd,
+    ThinkingStart,
+    ToolCallDelta,
+    ToolCallEnd,
+    ToolCallStart,
+)
 from kullback.ai.messages import AssistantMessage, Message, StopReason, ToolCall, to_wire
-from kullback.ai.provider import Model, ModelConfig, ModelReply
 
-
-class _Event(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-
-class StreamStart(_Event):
-    type: Literal["start"] = "start"
-    partial: AssistantMessage
-
-
-class TextStart(_Event):
-    type: Literal["text_start"] = "text_start"
-    content_index: int
-    partial: AssistantMessage
-
-
-class TextDelta(_Event):
-    type: Literal["text_delta"] = "text_delta"
-    content_index: int
-    delta: str
-    partial: AssistantMessage
-
-
-class TextEnd(_Event):
-    type: Literal["text_end"] = "text_end"
-    content_index: int
-    content: str
-    partial: AssistantMessage
-
-
-class ToolCallStart(_Event):
-    type: Literal["toolcall_start"] = "toolcall_start"
-    content_index: int
-    partial: AssistantMessage
-
-
-class ToolCallDelta(_Event):
-    type: Literal["toolcall_delta"] = "toolcall_delta"
-    content_index: int
-    delta: str
-    partial: AssistantMessage
-
-
-class ToolCallEnd(_Event):
-    type: Literal["toolcall_end"] = "toolcall_end"
-    content_index: int
-    tool_call: ToolCall
-    partial: AssistantMessage
-
-
-class StreamDone(_Event):
-    type: Literal["done"] = "done"
-    reason: StopReason
-    message: AssistantMessage
-
-
-class StreamError(_Event):
-    type: Literal["error"] = "error"
-    reason: Literal["error"]
-    error: AssistantMessage
-
-
-StreamEvent = Annotated[
-    Union[
-        StreamStart,
-        TextStart,
-        TextDelta,
-        TextEnd,
-        ToolCallStart,
-        ToolCallDelta,
-        ToolCallEnd,
-        StreamDone,
-        StreamError,
-    ],
-    Field(discriminator="type"),
+__all__ = [
+    "StreamDone",
+    "StreamError",
+    "StreamEvent",
+    "StreamStart",
+    "TextDelta",
+    "TextEnd",
+    "TextStart",
+    "ThinkingDelta",
+    "ThinkingEnd",
+    "ThinkingStart",
+    "ToolCallDelta",
+    "ToolCallEnd",
+    "ToolCallStart",
+    "assemble",
+    "canonicalize_provider_stream",
+    "error_message",
+    "normalize_stop_reason",
+    "stream",
 ]
 
 # What the adapters report, folded onto the four reasons the loop acts on. Anything unknown is
@@ -123,7 +88,7 @@ def normalize_stop_reason(raw: Optional[str], has_tool_calls: bool) -> StopReaso
     return "tool_use" if has_tool_calls else "stop"
 
 
-def assemble(reply: ModelReply, call_id_prefix: str = "call") -> AssistantMessage:
+def assemble(reply: Any, call_id_prefix: str = "call") -> AssistantMessage:
     """One ModelReply as an AssistantMessage. A tool call with no id gets one from its position:
     a scripted model rarely names its calls, and a transcript needs every result to answer an id."""
     calls = [
@@ -148,18 +113,169 @@ def error_message(text: str, model: Optional[str] = None) -> AssistantMessage:
     return AssistantMessage(content=None, stop_reason="error", error_message=text, model=model)
 
 
+async def canonicalize_provider_stream(
+    source: AsyncIterator[ProviderEvent],
+    *,
+    model: Optional[str] = None,
+    independent_channels: bool = False,
+) -> AsyncIterator[StreamEvent]:
+    """One adapter's report as the canonical events, emitted as the report arrives.
+
+    A block is opened the first time its channel speaks and closed when another channel speaks or
+    the answer ends. Chat completions interleave text and reasoning freely, so it passes
+    `independent_channels`: a switch back and forth reopens neither block and the two keep their
+    own indices. Transports that keep their blocks in order (the Responses API, Anthropic) leave it
+    off, and a channel switch closes the block it left.
+
+    A provider error never escapes as an exception: it becomes an error event carrying an assistant
+    message with stop_reason "error", so the loop can record what happened in the transcript.
+    """
+    partial = AssistantMessage(model=model, stop_reason="stop")
+    active_index: Optional[int] = None
+    active_kind: Optional[str] = None
+    channel_indices: dict[str, int] = {}
+    next_index = 0
+    started = False
+    terminal = False
+
+    def snapshot() -> AssistantMessage:
+        return partial.model_copy(deep=True)
+
+    def end_block(index: Optional[int]) -> list[StreamEvent]:
+        if index is None:
+            return []
+        kind = next((name for name, value in channel_indices.items() if value == index), None)
+        if kind == "text":
+            return [TextEnd(content_index=index, content=partial.content or "", partial=snapshot())]
+        if kind == "thinking":
+            return [ThinkingEnd(content_index=index, content=partial.thinking or "", partial=snapshot())]
+        return []
+
+    async for event in source:
+        if isinstance(event, ProviderRetry):
+            # A retry is the adapter's business; the loop is told what finally happened.
+            continue
+        if isinstance(event, ProviderResponseStart):
+            if event.model:
+                partial.model = event.model
+            if not started:
+                started = True
+                yield StreamStart(partial=snapshot())
+            continue
+        if not started:
+            started = True
+            yield StreamStart(partial=snapshot())
+
+        if isinstance(event, (ProviderTextDelta, ProviderThinkingDelta)):
+            thinking = isinstance(event, ProviderThinkingDelta)
+            kind = "thinking" if thinking else "text"
+            if independent_channels:
+                active_index = channel_indices.get(kind)
+                active_kind = kind if active_index is not None else None
+            if active_kind != kind:
+                if not independent_channels:
+                    for ended in end_block(active_index):
+                        yield ended
+                    channel_indices.pop(active_kind, None)
+                active_index = next_index
+                next_index += 1
+                active_kind = kind
+                channel_indices[kind] = active_index
+                # A reopened channel keeps what it already said: the message carries one text
+                # and one thinking string, so a second block on the same channel appends to it.
+                if thinking:
+                    partial.thinking = partial.thinking or ""
+                    yield ThinkingStart(content_index=active_index, partial=snapshot())
+                else:
+                    partial.content = partial.content or ""
+                    yield TextStart(content_index=active_index, partial=snapshot())
+            if thinking:
+                partial.thinking = (partial.thinking or "") + event.delta
+                yield ThinkingDelta(content_index=active_index, delta=event.delta, partial=snapshot())
+            else:
+                partial.content = (partial.content or "") + event.delta
+                yield TextDelta(content_index=active_index, delta=event.delta, partial=snapshot())
+        elif isinstance(event, ProviderToolCall):
+            for index in (sorted(channel_indices.values()) if independent_channels else [active_index]):
+                for ended in end_block(index):
+                    yield ended
+            channel_indices.clear()
+            active_index = None
+            active_kind = None
+            index = next_index
+            next_index += 1
+            yield ToolCallStart(content_index=index, partial=snapshot())
+            arguments = json.dumps(event.tool_call.arguments, sort_keys=True, ensure_ascii=False)
+            yield ToolCallDelta(content_index=index, delta=arguments, partial=snapshot())
+            partial.tool_calls.append(event.tool_call.model_copy(deep=True))
+            yield ToolCallEnd(content_index=index, tool_call=event.tool_call, partial=snapshot())
+        elif isinstance(event, ProviderResponseEnd):
+            for index in (sorted(channel_indices.values()) if independent_channels else [active_index]):
+                for ended in end_block(index):
+                    yield ended
+            channel_indices.clear()
+            active_index = None
+            active_kind = None
+            # What the deltas said is the content; the adapter's final message is authoritative
+            # for usage, the model name and the stop reason, and for nothing else.
+            final = snapshot()
+            final.usage = event.message.usage
+            final.model = event.message.model or partial.model
+            final.error_message = event.message.error_message
+            # An adapter that reported no delta but ended with content keeps it, and an answer of
+            # empty text stays empty text rather than becoming no text: a reply that said nothing
+            # and a reply that said "" are not the same record.
+            if final.content is None and not final.tool_calls and event.message.content is not None:
+                final.content = event.message.content
+            final.stop_reason = normalize_stop_reason(event.finish_reason, bool(final.tool_calls))
+            yield StreamDone(reason=final.stop_reason, message=final)
+            terminal = True
+        elif isinstance(event, ProviderErrorEvent):
+            error = snapshot()
+            error.stop_reason = "error"
+            error.error_message = event.message
+            yield StreamError(reason="error", error=error)
+            terminal = True
+
+    if not started:
+        yield StreamStart(partial=snapshot())
+    if not terminal:
+        error = snapshot()
+        error.stop_reason = "error"
+        error.error_message = "the provider stream ended without a done or an error"
+        yield StreamError(reason="error", error=error)
+
+
+async def reply_events(reply: Any, *, call_id_prefix: str = "call") -> AsyncIterator[ProviderEvent]:
+    """One whole reply as the adapter report a live stream would have made of it.
+
+    This is the replay seam: a memoised, recorded or scripted reply is reported as a response
+    start, one delta per block and a response end, so the canonicaliser above produces the same
+    events it produces for a live endpoint.
+    """
+    final = assemble(reply, call_id_prefix=call_id_prefix)
+    yield ProviderResponseStart(model=final.model)
+    if final.thinking:
+        yield ProviderThinkingDelta(delta=final.thinking)
+    if final.content:
+        yield ProviderTextDelta(delta=final.content)
+    for call in final.tool_calls:
+        yield ProviderToolCall(tool_call=call)
+    yield ProviderResponseEnd(message=final, finish_reason=final.stop_reason)
+
+
 async def stream(
-    model: Model,
+    model: Any,
     messages: Sequence[Message],
     tools: Optional[Sequence[dict]] = None,
     system: Optional[str] = None,
-    config: Optional[ModelConfig] = None,
+    config: Optional[Any] = None,
 ) -> AsyncIterator[StreamEvent]:
-    """Stream one assistant message for the transcript, over Model.query.
+    """Stream one assistant message for the transcript over the older `Model.query` handle.
 
-    A provider error becomes an error event carrying an assistant message with stop_reason
-    "error"; it never escapes as an exception, so the loop can record it in the transcript. A
-    cancellation of the awaiting task does escape: that is the caller stopping the run.
+    The call runs in a worker thread so an async loop is not held by the network wait. A provider
+    error becomes an error event; a cancellation of the awaiting task does escape, because that is
+    the caller stopping the run.
     """
     wire = to_wire(messages, system)
     tool_list = list(tools) if tools else None
@@ -169,24 +285,13 @@ async def stream(
     # CancelledError is a BaseException on the Python this package requires, so the clause below
     # lets a cancellation through on its own; the caller stopping the run is not a provider error.
     except Exception as exc:  # noqa: BLE001 - the provider is an isolation boundary
-        error = error_message(f"{type(exc).__name__}: {exc}", model=getattr(model, "name", None))
-        yield StreamError(reason="error", error=error)
+        yield StreamError(
+            reason="error",
+            error=error_message(f"{type(exc).__name__}: {exc}", model=getattr(model, "name", None)),
+        )
         return
-    final = assemble(reply, call_id_prefix=prefix)
-    partial = AssistantMessage(model=final.model, stop_reason="stop")
-    yield StreamStart(partial=partial.model_copy(deep=True))
-    index = 0
-    if final.content:
-        yield TextStart(content_index=index, partial=partial.model_copy(deep=True))
-        partial.content = final.content
-        yield TextDelta(content_index=index, delta=final.content, partial=partial.model_copy(deep=True))
-        yield TextEnd(content_index=index, content=final.content, partial=partial.model_copy(deep=True))
-        index += 1
-    for call in final.tool_calls:
-        yield ToolCallStart(content_index=index, partial=partial.model_copy(deep=True))
-        delta = json.dumps(call.arguments, sort_keys=True, ensure_ascii=False)
-        yield ToolCallDelta(content_index=index, delta=delta, partial=partial.model_copy(deep=True))
-        partial.tool_calls.append(call)
-        yield ToolCallEnd(content_index=index, tool_call=call, partial=partial.model_copy(deep=True))
-        index += 1
-    yield StreamDone(reason=final.stop_reason, message=final)
+    async for event in canonicalize_provider_stream(
+        reply_events(reply, call_id_prefix=prefix),
+        model=reply.model,
+    ):
+        yield event

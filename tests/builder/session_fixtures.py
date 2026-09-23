@@ -11,7 +11,9 @@ from __future__ import annotations
 import asyncio
 from pathlib import Path
 
-from kullback.ai.provider import ModelReply, ToolCallRequest
+from kullback.ai.http_errors import ProviderError
+from kullback.ai.provider import Model, ModelReply, ToolCallRequest
+from kullback.ai.usage import Usage
 
 COMPARED = ("bodies.json", "constraints.json", "gates.json", "environment.json", "replays.json",
             "tasks.json", "schema.json", "tool_sigs.json", "user_facts.json", "vocabulary.json")
@@ -26,6 +28,12 @@ def reply(content, *calls) -> ModelReply:
     """One scripted assistant turn: some text, and the tool calls it asks for in order."""
     return ModelReply(content=content, tool_calls=[ToolCallRequest(id=f"c{i}", name=n, arguments=a)
                                                   for i, (n, a) in enumerate(calls)])
+
+
+def priced(model_reply: ModelReply, **usage) -> ModelReply:
+    """The same scripted turn carrying the usage a provider reports, so the ledger has a call to price."""
+    return model_reply.model_copy(update={"usage": Usage(**(usage or {"input": 1890, "output": 17,
+                                                                        "cache_write": 1887}))})
 
 
 def collect(aiter) -> list:
@@ -52,3 +60,19 @@ def tree(workdir: Path) -> dict:
     for path in sorted((workdir / "runs").rglob("*.jsonl")):
         out[str(path.relative_to(workdir))] = read(path)
     return out
+
+
+class ErrorModel(Model):
+    """A model whose every call is refused the way an endpoint refuses one, with `text`."""
+
+    def __init__(self, text: str, name: str = "error"):
+        self.name = name
+        self.text = text
+
+    def query(self, messages, tools=None, config=None) -> ModelReply:
+        raise ProviderError(self.text, status=400)
+
+
+def error(text: str) -> ErrorModel:
+    """A scripted session whose first model call fails with `text`."""
+    return ErrorModel(text)

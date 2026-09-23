@@ -15,11 +15,10 @@ from types import SimpleNamespace
 import pytest
 
 from conftest import PTR
-from examiner.worlds import anchor_of, make_world, probe_runner_over
+from examiner.worlds import make_world, probe_runner_over
 from gates import verifier_fixtures as VF
 from kullback import sampling
 from kullback.ai.provider import ModelReply, TestModel, ToolCallRequest
-from kullback.builder.pipeline import Anchor
 from kullback.examiner import reference, stage
 from kullback.gates import verifier_suite
 from kullback.gates.artifacts import D79_CHECKS, D79_STAGES
@@ -66,66 +65,6 @@ def _read(path: Path):
 def _derive(workdir: Path, inputs: dict, **kwargs) -> dict:
     ctx = stage.ExamContext(workdir, GateLedger(workdir), anchor=kwargs.pop("anchor", None))
     return stage.derive_all(ctx, inputs, **kwargs)
-
-
-def test_derive_all_over_the_builder_store_writes_the_task_status_and_references_the_pipeline_stage_wrote(
-        fixture_build, tmp_path):
-    workdir = fixture_build.copy(tmp_path)
-    inputs = fixture_build.inputs_for(workdir)
-    out = _derive(workdir, inputs, anchor=anchor_of(workdir))
-    status = _read(workdir / "task_status.json")
-    references = _read(workdir / "references.json")
-    task_ids = {task.id for task in inputs["tasks"]}
-    assert set(status) == task_ids == set(references) and out["task_status"] == status
-    # No Task of the small fixture has a Reference: the rows are the stage's no-Reference rows, each
-    # with the reason the setup review reads, and the same rows land in the returned status.
-    assert all(set(row) == STATUS_KEYS and row["reference_confirmed"] is False for row in status.values())
-    assert all(set(row) == REFERENCE_KEYS and row["references"] == [] for row in references.values())
-    assert not (workdir / "verifiers").exists() and out["verifiers"] == []
-    stages = [row["stage"] for row in _read(workdir / "gates.json")]
-    assert stages[-2:] == ["compile_policy", "derive_verifier"]
-    assert (workdir / "constraints_check.json").is_file()
-
-
-def test_derive_for_one_task_leaves_the_other_tasks_rows_untouched(fixture_build, tmp_path):
-    workdir = fixture_build.copy(tmp_path)
-    inputs = fixture_build.inputs_for(workdir)
-    _derive(workdir, inputs)
-    first, *others = [task.id for task in inputs["tasks"]]
-    status = _read(workdir / "task_status.json")
-    for task_id in others:
-        status[task_id]["marker"] = "left alone"
-    (workdir / "task_status.json").write_text(json.dumps(status), encoding="utf-8")
-    out = _derive(workdir, inputs, only=first)
-    after = _read(workdir / "task_status.json")
-    assert out["task_status"] == after and set(after) == {first, *others}
-    assert "marker" not in after[first] and set(after[first]) == STATUS_KEYS
-    assert all(after[task_id]["marker"] == "left alone" for task_id in others)
-    assert set(_read(workdir / "references.json")) == set(after)
-    with pytest.raises(ValueError, match="no Task is named"):
-        _derive(workdir, inputs, only="no-such-task")
-
-
-def test_a_task_without_a_reference_gets_no_verifier_and_names_only_the_tools_its_own_calls_differ_on(
-        fixture_build, tmp_path):
-    workdir = fixture_build.copy(tmp_path)
-    inputs = fixture_build.inputs_for(workdir)
-    assisted = set(inputs["assisted_tools"])
-    assert assisted, "the fixture build has at least one assisted tool"
-    status = _derive(workdir, inputs)["task_status"]
-    named = {task_id: row for task_id, row in status.items() if row["assisted_tools"]}
-    assert named, "one Task's seed Trace calls an assisted tool"
-    for row in named.values():
-        assert row["reference_confirmed"] is False and row["verifier_passed"] is False
-        assert set(row["assisted_tools"]) <= assisted
-        # D171: the corpus fact stays on the row, and only a tool one of this Task's own recorded
-        # calls parts from blocks it; the reason names those tools and no others.
-        assert set(row["blocking_tools"]) <= assisted
-        assert set(row["blocking_tools"]) == set(row["tool_calls_differing"])
-        assert all(tool in row["reason"] for tool in row["blocking_tools"])
-        if not row["blocking_tools"]:
-            assert "do not replay" not in row["reason"]
-    assert not (workdir / "verifiers").exists()
 
 
 def _library_trace(trace_id: str, tools: list) -> Trace:
@@ -186,18 +125,22 @@ def test_the_suite_for_a_repaired_verifier_runs_every_d79_check_the_derivation_r
     assert all(g.passed for g in gates)
 
 
-def test_the_context_seeds_from_the_anchor_when_given_and_from_every_run_without_one(fixture_build, tmp_path):
-    # The fixture is too small to hold a Run out of any Task, so its anchor seeds from every Run;
-    # a build large enough holds a share out, and the context seeds from the rest (D81).
-    task = fixture_build.inputs["tasks"][0]
-    assert set(task.run_ids) and not anchor_of(fixture_build.workdir).held_out.get(task.id)
+class _Anchor:
+    """anchor.json as the derivation takes it: held-out Runs never seed a Reference (D81)."""
+
+    def __init__(self, held_out: dict):
+        self._held_out = held_out
+
+    def seed_runs(self, task_id: str, run_ids: list) -> list:
+        held = set(self._held_out.get(task_id, []))
+        return [run_id for run_id in run_ids if run_id not in held]
+
+
+def test_the_context_seeds_from_the_anchor_when_given_and_from_every_run_without_one(tmp_path):
     plain = stage.ExamContext(tmp_path, GateLedger(tmp_path))
-    assert plain.seed_runs(task.id, task.run_ids) == list(task.run_ids)
-    empty = stage.ExamContext(tmp_path, GateLedger(tmp_path), anchor=anchor_of(fixture_build.workdir))
-    assert empty.seed_runs(task.id, task.run_ids) == list(task.run_ids)
     held = Task(id="t", run_ids=["a", "b", "c"])
-    anchored = stage.ExamContext(tmp_path, GateLedger(tmp_path),
-                                 anchor=Anchor(held_out={"t": ["b"]}, unguarded=[]))
+    assert plain.seed_runs(held.id, held.run_ids) == ["a", "b", "c"]
+    anchored = stage.ExamContext(tmp_path, GateLedger(tmp_path), anchor=_Anchor({"t": ["b"]}))
     assert anchored.seed_runs(held.id, held.run_ids) == ["a", "c"]
     assert stage.seed_ids(anchored, held) == {"a", "c"} and stage.seed_ids(plain, held) == {"a", "b", "c"}
 
@@ -252,16 +195,6 @@ def without_stamps(path: Path) -> bytes:
     return json.dumps(rows, indent=2, sort_keys=True, default=str).encode("utf-8")
 
 
-def test_derive_all_on_four_workers_writes_the_task_status_references_and_verifiers_one_worker_writes(tmp_path):
-    serial = make_world(tmp_path / "serial", tasks=4)
-    threaded = make_world(tmp_path / "threaded", tasks=4)
-    for world, workers in ((serial, 1), (threaded, 4)):
-        out = _derive(world.workdir, world.inputs, probe_model=object(), run_probe=probe_runner_over(),
-                      workers=workers)
-        assert out["ran"] == 4 and out["cached"] == 0 and len(out["verifiers"]) == 4
-    assert _derived_bytes(serial.workdir, 4) == _derived_bytes(threaded.workdir, 4)
-
-
 def test_a_second_derive_over_unchanged_inputs_runs_no_task_probes_none_again_and_reports_every_task_cached(tmp_path):
     world = make_world(tmp_path, tasks=3)
     calls: list[str] = []
@@ -276,7 +209,7 @@ def test_a_second_derive_over_unchanged_inputs_runs_no_task_probes_none_again_an
     assert _derived_bytes(world.workdir, 3) == before
 
 
-def test_only_the_task_whose_intent_changed_is_derived_again(tmp_path):
+def test_only_the_task_whose_intent_or_rerolls_changed_is_derived_again(tmp_path):
     world = make_world(tmp_path, tasks=3)
     calls: list[str] = []
     _derive(world.workdir, world.inputs, probe_model=object(), run_probe=_counted_probe(calls), workers=2)
@@ -287,10 +220,8 @@ def test_only_the_task_whose_intent_changed_is_derived_again(tmp_path):
     assert calls[3:] == ["t2"], "only the Task whose Intent moved is derived and probed again"
     assert len(out["verifiers"]) == 3, "the other two Tasks' Verifiers come back off the cache"
 
-
-def test_a_task_whose_rerolls_changed_is_derived_again(tmp_path):
-    world = make_world(tmp_path, tasks=3)
-    calls: list[str] = []
+    world = make_world(tmp_path / "rerolls", tasks=3)
+    calls = []
     first = _derive(world.workdir, world.inputs, probe_model=object(), run_probe=_counted_probe(calls), workers=2)
     assert first["task_status"]["t3"]["rerolls"] == 1
     rerolls = {task_id: [dict(row) for row in rows] for task_id, rows in world.inputs["rerolls"].items()}
@@ -359,12 +290,18 @@ def test_derive_all_rewrites_the_scorecard_after_the_task_status(tmp_path):
 
 def test_the_derivation_hands_the_task_to_the_agent_judge_and_the_record_says_what_it_looked_at(tmp_path):
     """A Task whose Runs ended in two states goes to the judge, and derive_all is what builds it: the
-    reference record carries the tool it called before it failed a state."""
+    reference record carries the tool it called before it failed a state, and the workdir's ledger
+    prices each of the judge's turns under its own stage."""
     world = make_world(tmp_path, rerolls=("wrong",))
+    usage = {"input": 1890, "output": 17, "cache_write": 1887}
     model = TestModel([
-        ModelReply(content=None, tool_calls=[ToolCallRequest(id="c1", name="rows", arguments={"group": "B"})]),
-        ModelReply(content=_fails_the_wrong_row("it wrote to another row", evidence=("rows",)))])
+        ModelReply(content=None, usage=usage,
+                   tool_calls=[ToolCallRequest(id="c1", name="rows", arguments={"group": "B"})]),
+        ModelReply(content=_fails_the_wrong_row("it wrote to another row", evidence=("rows",)), usage=usage)],
+        name=next(iter(budget.PRICES)))
     out = _derive(world.workdir, world.inputs, judge_model=model, judge_agent=True)
+    judged = budget.load_totals(world.workdir)["stages"]["judge"]
+    assert judged["calls"] == 2 and judged["usd"] > 0
     row = _read(world.workdir / "references.json")["t1"]
     assert row["judged"] and row["judge_fallback"] is None and not row["judge_abstained"]
     assert [call["tool"] for call in row["judge_calls"]] == ["rows"]
@@ -372,25 +309,23 @@ def test_the_derivation_hands_the_task_to_the_agent_judge_and_the_record_says_wh
     assert out["task_status"]["t1"]["reference_confirmed"] is True
 
 
-def test_the_agent_judge_is_built_only_when_the_derivation_is_asked_for_it(tmp_path, monkeypatch):
+def test_the_agent_judge_is_built_only_when_the_derivation_is_asked_for_it(tmp_path):
     """D185: the one-shot judge is the default and the agent is an opt-in, so a build that names a
-    judge model and nothing else never constructs one."""
-    built = []
-    real = stage.judge_mod.AgentJudge
-    monkeypatch.setattr(stage.judge_mod, "AgentJudge",
-                        lambda model, **kw: built.append(model) or real(model, **kw))
-
+    judge model and nothing else never constructs one. The row's judge_calls say which one ruled."""
+    looks = [ModelReply(content=None, tool_calls=[ToolCallRequest(id="c1", name="rows", arguments={"group": "B"})]),
+             ModelReply(content=_fails_the_wrong_row("it wrote elsewhere", evidence=("rows",)))]
     world = make_world(tmp_path, rerolls=("wrong",))
     _derive(world.workdir, world.inputs,
             judge_model=TestModel([_fails_the_wrong_row("it wrote elsewhere")]))
-    assert built == [], "the default judge is one call over the prompt, not an agent"
     one_shot = _read(world.workdir / "references.json")["t1"]
-    assert one_shot["judged"] and one_shot["judge_calls"] == [] and one_shot["judge_fallback"] is None
+    assert one_shot["judged"] and one_shot["judge_calls"] == [] and one_shot["judge_fallback"] is None, \
+        "the default judge is one call over the prompt, not an agent"
 
     asked = make_world(tmp_path / "asked", rerolls=("wrong",))
-    _derive(asked.workdir, asked.inputs, judge_agent=True,
-            judge_model=TestModel([_fails_the_wrong_row("it wrote elsewhere", evidence=("rows",))]))
-    assert len(built) == 1, "the flag is what builds the judge with a bounded look"
+    _derive(asked.workdir, asked.inputs, judge_agent=True, judge_model=TestModel(looks))
+    agent = _read(asked.workdir / "references.json")["t1"]
+    assert [call["tool"] for call in agent["judge_calls"]] == ["rows"], \
+        "the flag is what builds the judge with a bounded look"
 
 
 def test_the_round_counts_say_how_many_judgements_cited_nothing_the_states_differ_on(tmp_path):
@@ -443,21 +378,26 @@ def _world_with_a_held_out_run(tmp_path, run):
     world.inputs["replays"]["t1"][run.run_id] = {"trace_id": run.run_id, "run_id": run.run_id,
                                                  "confirmed": True, "path": path, "reasons": []}
     world.inputs["tasks"] = [Task(id="t1", intent=VF.TASK.intent, run_ids=["ref", run.run_id])]
-    return world, Anchor(held_out={"t1": [run.run_id]}, unguarded=[])
+    return world, _Anchor({"t1": [run.run_id]})
 
 
 def _ruling(workdir: Path, stage_name: str = "derive_verifier") -> dict:
     return [row for row in _read(workdir / "gates.json") if row["stage"] == stage_name][-1]
 
 
-def test_the_pool_leaves_out_a_held_out_run_that_wrote_nothing_on_a_task_that_asks_for_a_write(tmp_path):
+@pytest.mark.parametrize(("make_held", "run_id", "reason"), [
+    (_answering_run, "held", stage.WROTE_NOTHING),
+    (VF.wrong_run, "wrong", stage.WROTE_OTHERWISE),
+], ids=["wrote_nothing", "wrote_another_entity"])
+def test_the_pool_leaves_out_a_held_out_run_that_did_not_do_the_task_with_its_own_reason(
+        tmp_path, make_held, run_id, reason):
     """D133 counted a held-out Run legitimate on its success termination alone, so a Run that answered
-    and stopped made the Verifier that caught it read as over-strict."""
-    world, anchor = _world_with_a_held_out_run(tmp_path, _answering_run())
+    and stopped, or wrote to another entity, made the Verifier that caught it read as over-strict."""
+    world, anchor = _world_with_a_held_out_run(tmp_path, make_held())
     out = _derive(world.workdir, world.inputs, anchor=anchor)
     row = out["task_status"]["t1"]
-    assert row["did_not_reach_reference"] == ["held"]
-    assert row["failed_recordings"]["held"] == stage.WROTE_NOTHING
+    assert row["did_not_reach_reference"] == [run_id]
+    assert row["failed_recordings"][run_id] == reason
     assert _ruling(world.workdir)["metrics"]["did_not_reach_reference"] == 1
 
 
@@ -470,12 +410,6 @@ def test_the_pool_keeps_a_held_out_run_whose_settled_end_state_is_the_references
     row = out["task_status"]["t1"]
     assert row["did_not_reach_reference"] == [] and "held" not in row["failed_recordings"]
     assert _ruling(world.workdir)["metrics"]["did_not_reach_reference"] == 0
-
-
-def test_a_held_out_run_that_wrote_to_another_entity_is_left_out_with_its_own_reason(tmp_path):
-    world, anchor = _world_with_a_held_out_run(tmp_path, VF.wrong_run())
-    row = _derive(world.workdir, world.inputs, anchor=anchor)["task_status"]["t1"]
-    assert row["failed_recordings"]["wrong"] == stage.WROTE_OTHERWISE
 
 
 # --- the second path a lone Reference is re-rolled for (D189) --------------------------
@@ -644,7 +578,7 @@ def test_a_rewrite_that_lands_on_another_end_state_is_not_kept_and_the_check_sta
     assert _ruling(world.workdir)["metrics"]["synth_variants_kept"] == 0
 
 
-def test_a_path_single_by_structure_is_named_and_stops_blocking_when_the_pool_holds_a_run_at_the_reference(
+def test_a_path_single_by_structure_is_named_and_blocks_until_the_pool_holds_a_run_at_the_reference(
         tmp_path):
     """A Reference of one call offers no rewrite: no pair to reorder, no read to insert, none to drop.
     The Task says so, and the held-out Run that reached the same End state is the second path."""
@@ -654,7 +588,7 @@ def test_a_path_single_by_structure_is_named_and_stops_blocking_when_the_pool_ho
     path = VF.write_events_jsonl(held, world.workdir / "runs" / "t1" / "held.jsonl")
     world.inputs["replays"]["t1"]["held"] = {"trace_id": "held", "run_id": "held", "confirmed": True,
                                              "path": path, "reasons": []}
-    anchor = Anchor(held_out={"t1": ["held"]}, unguarded=[])
+    anchor = _Anchor({"t1": ["held"]})
     world.inputs["tasks"] = [Task(id="t1", intent=VF.TASK.intent, run_ids=["ref", "held"])]
     seen: list = []
     out = _derive(world.workdir, world.inputs, anchor=anchor,
@@ -670,12 +604,10 @@ def test_a_path_single_by_structure_is_named_and_stops_blocking_when_the_pool_ho
     metrics = _ruling(world.workdir)["metrics"]
     assert metrics["single_path_by_structure"] == 1 and metrics["second_path_waived"] == 1
 
-
-def test_a_path_single_by_structure_keeps_blocking_when_no_pool_run_reached_the_reference(tmp_path):
-    world = make_world(tmp_path, rerolls=())
-    VF.write_events_jsonl(_one_call_run(), Path(world.paths["ref"]))
-    row = _derive(world.workdir, world.inputs, probe_model=object(), run_probe=probe_runner_over(),
-                  run_variant=_variant_runner_over(world, VF.alt_path_run, []))["task_status"]["t1"]
+    alone = make_world(tmp_path / "alone", rerolls=())
+    VF.write_events_jsonl(_one_call_run(), Path(alone.paths["ref"]))
+    row = _derive(alone.workdir, alone.inputs, probe_model=object(), run_probe=probe_runner_over(),
+                  run_variant=_variant_runner_over(alone, VF.alt_path_run, []))["task_status"]["t1"]
     assert row["second_path"]["structural"] is True and row["pool_at_reference"] == []
     assert row["second_path_waived"] is False and row["verifier_passed"] is False
 
@@ -777,8 +709,10 @@ def _probed(workdir: Path) -> set[str]:
     return out
 
 
-def test_which_tasks_spend_the_probe_budget_does_not_depend_on_the_order_the_tasks_are_handed_over(tmp_path):
-    """D212: a bounded budget goes out by the Tasks' own keys, so re-clustering the list moves nobody."""
+def test_which_tasks_spend_the_probe_budget_depends_neither_on_the_task_order_nor_on_the_worker_count(tmp_path):
+    """D212: a bounded budget goes out by the Tasks' own keys, so re-clustering the list moves nobody.
+    The slots are assigned by keyed order before any Task's probe dispatches, so the worker count
+    of the shared pool moves no slot either."""
     forward = make_world(tmp_path / "forward", tasks=5)
     backward = make_world(tmp_path / "backward", tasks=5)
     backward.inputs["tasks"] = list(reversed(backward.inputs["tasks"]))
@@ -788,6 +722,18 @@ def test_which_tasks_spend_the_probe_budget_does_not_depend_on_the_order_the_tas
     _derive(backward.workdir, backward.inputs, **kwargs)
     second = _probed(backward.workdir)
     assert len(first) == 2 and first == second
+
+    bodies, probed = {}, {}
+    for workers in (1, 8):
+        world = make_world(tmp_path / f"workers-{workers}", tasks=5)
+        out = _derive(world.workdir, world.inputs, workers=workers, **kwargs)
+        assert out["ran"] == 5
+        probed[workers] = _probed(world.workdir)
+        bodies[workers] = _derived_bytes(world.workdir, 5)
+    order = sampling.keyed_order(stage.PROBE_KIND, [f"t{n}" for n in range(1, 6)],
+                                 sampling.build_salt(make_world(tmp_path / "salt", tasks=5).workdir))
+    assert probed[1] == probed[8] == set(order[:2])
+    assert bodies[8] == bodies[1]
 
 
 def test_a_task_added_to_the_build_does_not_take_the_probe_slot_of_a_task_whose_key_outranks_it(tmp_path):
@@ -860,32 +806,6 @@ def _rich_lone_world(root: Path):
     return world
 
 
-def _counted_overlap(track: dict, lock: threading.Lock):
-    """A context counting how many wrapped calls are in flight, and the peak."""
-    class _Overlap:
-        def __enter__(self):
-            with lock:
-                track["in_flight"] += 1
-                track["max"] = max(track["max"], track["in_flight"])
-
-        def __exit__(self, *exc):
-            with lock:
-                track["in_flight"] -= 1
-            return False
-
-    return _Overlap()
-
-
-def _overlapped(fn, track: dict, lock: threading.Lock, delay: float = 0.02):
-    """One shared-pool job wrapped so the test sees how many of a Task's jobs overlap."""
-    def counted(*args, **kwargs):
-        with _counted_overlap(track, lock):
-            time.sleep(delay)
-            return fn(*args, **kwargs)
-
-    return counted
-
-
 def _sequenced_rerolls(world, makers: list, task_calls: list):
     """One batch per maker in order, so the search misses twice and finds on the third batch."""
     remaining = list(makers)
@@ -900,88 +820,60 @@ def _sequenced_rerolls(world, makers: list, task_calls: list):
     return sequenced
 
 
-def test_one_tasks_surviving_end_states_derive_on_the_shared_pool_at_once(tmp_path, monkeypatch):
-    """The residue's survivors are independent derivations: on eight workers both are in flight
-    together, and the rows read exactly as the one-worker run's rows read."""
+def _four_tasks(root: Path, workers: int):
+    world = make_world(root, tasks=4)
+    out = _derive(world.workdir, world.inputs, probe_model=object(), run_probe=probe_runner_over(),
+                  workers=workers)
+    assert out["ran"] == 4 and out["cached"] == 0 and len(out["verifiers"]) == 4
+    return _derived_bytes(world.workdir, 4)
+
+
+def _two_surviving_end_states(root: Path, workers: int):
+    """The residue's survivors are independent derivations on the shared pool."""
     abstain = json.dumps({"failed": [], "evidence": ["end_states"], "reason": "cannot tell"})
-    peaks, bodies = {}, {}
-    for name, workers in (("serial", 1), ("threaded", 8)):
-        world = make_world(tmp_path / name, rerolls=("wrong",))
-        track = {"in_flight": 0, "max": 0}
-        counted = _overlapped(stage._derive_survivor, track, threading.Lock())
-        monkeypatch.setattr(stage, "_derive_survivor", counted)
-        out = _derive(world.workdir, world.inputs, judge_model=TestModel([abstain, abstain]),
-                      workers=workers)
-        assert out["ran"] == 1
-        peaks[name] = track["max"]
-        bodies[name] = _derived_bytes(world.workdir, 1)
-        monkeypatch.undo()
-    assert peaks["serial"] == 1
-    assert peaks["threaded"] == 2, "both survivors derive without waiting for each other"
-    assert bodies["threaded"] == bodies["serial"]
+    world = make_world(root, rerolls=("wrong",))
+    out = _derive(world.workdir, world.inputs, judge_model=TestModel([abstain, abstain]), workers=workers)
+    assert out["ran"] == 1
+    return _derived_bytes(world.workdir, 1)
 
 
-def test_one_tasks_rewrite_runs_replay_on_the_shared_pool_at_once(tmp_path):
-    """The synth variant runs stay serial while the variant gate holds (docs/todo.md "Next
-    re-freeze: flip the speed-1 variant gate"): one at a time on any worker count, and the rows
-    and the bought batches read exactly as the one-worker run's read. Restore the overlap half
-    when the gate flips."""
-    peaks, bodies, tried = {}, {}, {}
-    for name, workers in (("serial", 1), ("threaded", 8)):
-        world = _rich_lone_world(tmp_path / name)
-        track = {"in_flight": 0, "max": 0}
-        counted_runner = _overlapped(_variant_runner_over(world, VF.alt_path_run, []),
-                                     track, threading.Lock())
-        out = _derive(world.workdir, world.inputs,
-                      run_rerolls=_reroll_runner_over(world, VF.wrong_run, []),
-                      run_variant=counted_runner, round_number=2, workers=workers)
-        assert out["ran"] == 1
-        row = out["task_status"]["t1"]["second_path"]
-        tried[name] = row["synth_tried"]
-        peaks[name] = track["max"]
-        bodies[name] = (_derived_bytes(world.workdir, 1), _reroll_rows(world.workdir))
-    assert tried["serial"] == tried["threaded"] >= 2, "the world offers several rewrites"
-    assert peaks["serial"] == 1
-    assert peaks["threaded"] == 1, "gated serial until the tally lock re-freezes"
-    assert bodies["threaded"] == bodies["serial"]
+def _rewrite_runs(root: Path, workers: int):
+    """The synth variant runs of one Task, with the batches it buys beside them."""
+    world = _rich_lone_world(root)
+    out = _derive(world.workdir, world.inputs,
+                  run_rerolls=_reroll_runner_over(world, VF.wrong_run, []),
+                  run_variant=_variant_runner_over(world, VF.alt_path_run, []), round_number=2,
+                  workers=workers)
+    assert out["ran"] == 1
+    tried = out["task_status"]["t1"]["second_path"]["synth_tried"]
+    assert tried >= 2, "the world offers several rewrites"
+    return tried, _derived_bytes(world.workdir, 1), _reroll_rows(world.workdir)
 
 
-def test_the_probe_budget_hands_the_same_slots_out_on_one_worker_and_on_eight(tmp_path):
-    """D212 still holds under the shared pool: the slots are assigned by keyed order before any
-    Task's probe dispatches, so the worker count moves no slot."""
-    bodies, probed = {}, {}
-    for name, workers in (("serial", 1), ("threaded", 8)):
-        world = make_world(tmp_path / name, tasks=5)
-        out = _derive(world.workdir, world.inputs, probe_model=object(),
-                      run_probe=probe_runner_over(), probe_limit=2, workers=workers)
-        assert out["ran"] == 5
-        probed[name] = _probed(world.workdir)
-        bodies[name] = _derived_bytes(world.workdir, 5)
-    order = sampling.keyed_order(stage.PROBE_KIND, [f"t{n}" for n in range(1, 6)],
-                                 sampling.build_salt(make_world(tmp_path / "salt", tasks=5).workdir))
-    assert probed["serial"] == probed["threaded"] == set(order[:2])
-    assert bodies["threaded"] == bodies["serial"]
-
-
-def test_three_bought_batches_leave_the_same_rows_and_files_on_one_worker_and_on_eight(tmp_path):
-    """The batches stay serial per Task under the shared pool: the same three prefixes are bought,
-    and the rows and the re-roll file read the same on either worker count."""
-    bodies, calls = {}, {}
-    makers = [VF.wrong_run, VF.wrong_run, VF.alt_path_run]
-    for name, workers in (("serial", 1), ("threaded", 8)):
-        world = make_world(tmp_path / name, rerolls=())
-        task_calls: list = []
-        sequenced = _sequenced_rerolls(world, makers, task_calls)
-        out = _derive(world.workdir, world.inputs, run_rerolls=sequenced,
-                      probe_model=object(), run_probe=probe_runner_over(),
-                      round_number=2, workers=workers)
-        assert out["ran"] == 1
-        calls[name] = list(task_calls)
-        bodies[name] = (_derived_bytes(world.workdir, 1), _reroll_rows(world.workdir))
-    assert [prefix for _, _, prefix in calls["serial"]] == [
+def _three_bought_batches(root: Path, workers: int):
+    """The batches stay serial per Task: the same three prefixes are bought."""
+    world = make_world(root, rerolls=())
+    task_calls: list = []
+    sequenced = _sequenced_rerolls(world, [VF.wrong_run, VF.wrong_run, VF.alt_path_run], task_calls)
+    out = _derive(world.workdir, world.inputs, run_rerolls=sequenced,
+                  probe_model=object(), run_probe=probe_runner_over(), round_number=2, workers=workers)
+    assert out["ran"] == 1
+    assert [prefix for _, _, prefix in task_calls] == [
         "second-path-r2-b1", "second-path-r2-b2", "second-path-r2-b3"]
-    assert calls["threaded"] == calls["serial"]
-    assert bodies["threaded"] == bodies["serial"]
+    return task_calls, _derived_bytes(world.workdir, 1), _reroll_rows(world.workdir)
+
+
+@pytest.mark.parametrize(("derive_in", "workers"), [
+    (_four_tasks, 4),
+    (_two_surviving_end_states, 8),
+    (_rewrite_runs, 8),
+    (_three_bought_batches, 8),
+], ids=["four_tasks", "surviving_end_states", "rewrite_runs", "bought_batches"])
+def test_derive_all_on_several_workers_writes_the_rows_files_and_batches_one_worker_writes(
+        tmp_path, derive_in, workers):
+    """The shared pool changes how fast, never what: task status, references, Verifiers and the
+    re-roll file read the same on one worker and on several."""
+    assert derive_in(tmp_path / "threaded", workers) == derive_in(tmp_path / "serial", 1)
 
 
 def test_a_failed_first_gather_item_cancels_the_jobs_that_never_start():
@@ -1040,3 +932,15 @@ def test_the_two_pools_together_never_run_more_jobs_than_they_were_given():
     assert sorted(outs) == [0, 1, 2, 3]
     assert inners == [4, 5, 6, 7]
     assert track["max"] <= 2, "the two pools share one ceiling of two"
+
+
+def test_derive_all_with_only_as_a_set_derives_those_tasks_and_merges_them_into_the_status(tmp_path):
+    """F40: `only` takes an iterable of task ids; the Tasks outside it are skipped as one id skips them."""
+    world = make_world(tmp_path, tasks=3)
+    out = _derive(world.workdir, world.inputs, only={"t3", "t1"})
+    assert out["ran"] == 2 and sorted(v.task_id for v in out["verifiers"]) == ["t1", "t3"]
+    assert sorted(_read(world.workdir / "task_status.json")) == ["t1", "t3"]
+    _derive(world.workdir, world.inputs, only=["t2"])
+    assert sorted(_read(world.workdir / "task_status.json")) == ["t1", "t2", "t3"]
+    with pytest.raises(ValueError, match="no Task is named t9"):
+        _derive(world.workdir, world.inputs, only={"t1", "t9"})

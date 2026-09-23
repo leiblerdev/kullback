@@ -14,7 +14,7 @@ from typing import Any, Optional
 from pydantic import ValidationError
 
 from kullback.ai.provider import Model
-from kullback.builder import sources
+from kullback.builder import prefixes, sources
 from kullback.builder.mine import _reply_json
 from kullback.runner.records import (
     GateResult,
@@ -228,13 +228,17 @@ def unparsed_json(value: Any) -> bool:
 # --- trace derivation behind the seam ------------------------------------------
 
 
-def derive_traces(raw_hash: str, workdir: str | Path, model: Optional[Model] = None) -> list[Trace]:
+def derive_traces(raw_hash: str, workdir: str | Path, model: Optional[Model] = None,
+                  floor: Optional[float] = None) -> list[Trace]:
     """Derive Trace records from a stored raw file, writing one grader sidecar per trace.
 
     The winning adapter behind the intake seam (sources) reads the payload; this function only
     orchestrates (derive, sidecar, rejects). A simulation the records refuse is left out with its
     reason in workdir/rejects, which the gate reads, so one broken message never costs the whole
-    file (design section 6, on failure: reject trace with reason)."""
+    file (design section 6, on failure: reject trace with reason). The declared floor rules the
+    file (an omitted floor is the module floor); the rescue step then prefixes what was set
+    aside, inside the same ruling."""
+    floor = _check_floor(floor)
     document, jsonl = _decode(raw_path(raw_hash, workdir).read_bytes())
     decision = sources.detect_format(document, jsonl)
     adapter = sources.by_name(decision.winner)
@@ -273,7 +277,8 @@ def derive_traces(raw_hash: str, workdir: str | Path, model: Optional[Model] = N
         trace.hash = trace_hash(trace)
         _write_grader(trace, adapter.sidecar(simulation, document), workdir)
         traces.append(trace)
-    ruling = rule_recordings(raw_hash, decision.winner, recordings, traces, rejects)
+    ruling = rule_recordings(raw_hash, decision.winner, recordings, traces, rejects, floor=floor)
+    _rescue_into_ruling(adapter, document, recordings, traces, ruling, workdir)
     _write_ruling(raw_hash, ruling, workdir)
     _write_rejects(raw_hash, rejects, workdir)
     return traces
@@ -363,6 +368,24 @@ def _write_grader(trace: Trace, fields: dict, workdir: str | Path) -> Path:
 # recording among good ones is set aside and the rest build.
 MIN_TASK_ELIGIBLE_SHARE = 0.75
 
+
+def _check_floor(floor: Optional[float]) -> float:
+    """The declared floor as a float: an omitted floor is the module floor, anything else is
+    refused unless it lies in [0, 1], since the floor is a share."""
+    if floor is None:
+        return MIN_TASK_ELIGIBLE_SHARE
+    try:
+        value = float(floor)
+    except (TypeError, ValueError):
+        raise ValueError(f"intake floor must lie within [0, 1], got {floor!r}") from None
+    if not 0.0 <= value <= 1.0:
+        raise ValueError(f"intake floor must lie within [0, 1], got {floor!r}")
+    return value
+
+
+# The standing a D263 rescued prefix carries: evidence-only, never a complete record.
+RESCUED_REASON = "rescued_prefix"
+
 TASK_ELIGIBLE = "task_eligible"
 EVIDENCE_ONLY = "evidence_only"
 REJECTED = "rejected"
@@ -440,9 +463,15 @@ def _standing_for(problems: dict, simulation: Any, duplicate: bool) -> tuple[str
 
 
 def rule_recordings(raw_hash: str, format_name: str, recordings: list, traces: list[Trace],
-                    rejects: list[dict]) -> dict:
+                    rejects: list[dict], floor: float = MIN_TASK_ELIGIBLE_SHARE) -> dict:
     """Rule every recording of one file to a standing, with counts per standing and per reason and
-    the outcome and length mix of what was set aside, so a drift toward easy Tasks stays visible."""
+    the outcome and length mix of what was set aside, so a drift toward easy Tasks stays visible.
+
+    The floor is declared per ingest and written into the ruling as judged: the default is the
+    module floor, so an omitted floor rules exactly as before. Rescued prefixes never appear in
+    the counts: the rescue step fills the ruling's own rescued block beside the recordings, and
+    the floor judges originals only."""
+    floor = _check_floor(floor)
     sim_of = {}
     for trace in traces:
         index = trace.raw_ptr.sim_index if trace.raw_ptr else None
@@ -464,15 +493,93 @@ def rule_recordings(raw_hash: str, format_name: str, recordings: list, traces: l
     total = len(rows)
     share = eligible / total if total else 1.0
     return {
-        "raw_hash": raw_hash, "format": format_name, "floor": MIN_TASK_ELIGIBLE_SHARE,
+        "raw_hash": raw_hash, "format": format_name, "floor": floor,
         "recordings": rows, "counts": counts, "reasons": per_reason,
         "set_aside": {
             "outcomes": _mix([row["termination"] or "unstated" for row in set_aside]),
             "turns": _mix([_turn_bucket(row["turns"]) for row in set_aside]),
             "tool_calls": _mix([_call_bucket(row["tool_calls"]) for row in set_aside]),
         },
-        "eligible_share": share, "passed": share >= MIN_TASK_ELIGIBLE_SHARE,
+        "eligible_share": share, "passed": share >= floor,
+        "rescued": {"count": 0, "reasons_withheld": {}, "rows": []},
     }
+
+
+def rescue_prefixes(traces: list[Trace], rows: list[dict]
+                    ) -> tuple[list[Trace], list[dict], dict]:
+    """Try the D263 rescue on every row set aside for an unresolved call: the last-answered-call
+    prefix through the prefix selector, kept evidence-only beside its parent.
+
+    Only evidence-only rows carrying unresolved_call are candidates; the selector settles
+    whether the prefix is clean (an interior unresolved call withholds with its reason, which
+    is counted, not raised). The parent row is never touched: the prefix gets its own row with
+    the rescue marker, and the floor never sees either of them."""
+    by_digest = {row.get("trace_hash"): row for row in rows if row.get("trace_hash")}
+    rescued, rescued_rows, withheld = [], [], {}
+    for trace in traces:
+        row = by_digest.get(trace.hash or trace_hash(trace))
+        if row is None or row.get("standing") != EVIDENCE_ONLY:
+            continue
+        if "unresolved_call" not in (row.get("reasons") or []):
+            continue
+        outcome = prefixes.select_prefix(trace)
+        if isinstance(outcome, prefixes.PrefixSelection):
+            prefix = _prefix_trace(trace, outcome)
+            rescued.append(prefix)
+            rescued_rows.append(_rescued_row(trace, row, outcome, prefix))
+        else:
+            withheld[outcome.reason] = withheld.get(outcome.reason, 0) + 1
+    return (rescued, rescued_rows, withheld)
+
+
+def _prefix_trace(trace: Trace, outcome: prefixes.PrefixSelection) -> Trace:
+    """The retained turns and calls as their own trace: the parent's ids, a fresh content hash."""
+    prefix = trace.model_copy(update={
+        "turns": [trace.turns[i] for i in outcome.retained_turns],
+        "tool_calls": [trace.tool_calls[i] for i in outcome.retained_calls],
+    })
+    prefix.hash = trace_hash(prefix)
+    return prefix
+
+
+def _rescued_row(parent: Trace, row: dict, outcome: prefixes.PrefixSelection, rescued: Trace) -> dict:
+    """One rescued prefix's ruling row: evidence-only with the rescue marker, never complete.
+
+    The marker lives on the ruling row, where every standing lives: reason rescued_prefix
+    with the rescue payload naming the kind, the cohort id and the parent hash, so a report
+    reading the ruling can tell a prefix from a complete recording."""
+    return {
+        "trace_id": parent.trace_id,
+        "sim_index": parent.raw_ptr.sim_index if parent.raw_ptr else None,
+        "standing": EVIDENCE_ONLY, "reason": RESCUED_REASON, "reasons": [RESCUED_REASON],
+        "trace_hash": rescued.hash,
+        "turns": len(outcome.retained_turns), "tool_calls": len(outcome.retained_calls),
+        "termination": row.get("termination"),
+        "rescue": {
+            "kind": "last_answered_prefix",
+            "cohort_id": outcome.cohort_id,
+            "parent_trace_hash": outcome.parent_trace_hash,
+            "retained_calls": len(outcome.retained_calls),
+            "dropped_calls": len(parent.tool_calls) - len(outcome.retained_calls),
+        },
+    }
+
+
+def _rescue_into_ruling(adapter: Any, document: Any, recordings: list,
+                        traces: list[Trace], ruling: dict, workdir: str | Path) -> None:
+    """Run the rescue inside the ruling step: sidecar each prefix with its parent's grader
+    fields, fill the ruling's rescued block, and publish the prefixes behind the originals.
+
+    The gate judges originals only and publishes nothing when it fails, so a failed file
+    keeps its rescued rows in the ruling but writes no trace for them, rescued or not."""
+    rescued, rows, withheld = rescue_prefixes(traces, ruling.get("recordings", []))
+    for prefix in rescued:
+        index = prefix.raw_ptr.sim_index if prefix.raw_ptr else None
+        simulation = recordings[index] if isinstance(index, int) and 0 <= index < len(recordings) else None
+        fields = adapter.sidecar(simulation, document) if isinstance(simulation, dict) else {}
+        _write_grader(prefix, fields, workdir)
+    ruling["rescued"] = {"count": len(rescued), "reasons_withheld": withheld, "rows": rows}
+    traces.extend(rescued)
 
 
 def _rule_trace_row(trace: Trace, simulation: Any, seen_content: set[str],
@@ -600,8 +707,9 @@ def _update_aggregate_ruling(workdir: str | Path, raw_hash: str, ruling: dict) -
             per_reason[reason] = per_reason.get(reason, 0) + count
     total = sum(counts.values())
     share = counts[TASK_ELIGIBLE] / total if total else 1.0
+    rescued = sum(int((entry.get("rescued") or {}).get("count") or 0) for entry in files.values())
     aggregate = {"files": files, "counts": counts, "reasons": per_reason,
-                 "floor": MIN_TASK_ELIGIBLE_SHARE,
+                 "floor": MIN_TASK_ELIGIBLE_SHARE, "rescued": rescued,
                  "eligible_share": share, "passed": share >= MIN_TASK_ELIGIBLE_SHARE}
     target.parent.mkdir(parents=True, exist_ok=True)
     _write_json(target, aggregate)
@@ -623,14 +731,45 @@ def write_evidence(traces: list[Trace], workdir: str | Path) -> list[Path]:
 # --- gate and entry point --------------------------------------------------
 
 
-def gate_ingest(traces: list[Trace], workdir: str | Path, raw_hash: Optional[str] = None) -> GateResult:
+def _rescued_digests(workdir: str | Path, raw_hash: Optional[str] = None) -> set[str]:
+    """Trace hashes the ruling set aside as rescued prefixes: the gate judges originals only."""
+    folder = Path(workdir) / "intake"
+    if raw_hash is not None:
+        files = [intake_file(raw_hash, workdir)]
+    elif folder.is_dir():
+        files = sorted(folder.glob("*.json"))
+    else:
+        files = []
+    digests: set[str] = set()
+    for path in files:
+        try:
+            body = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        for row in (body.get("rescued") or {}).get("rows", []):
+            if row.get("trace_hash"):
+                digests.add(row["trace_hash"])
+    return digests
+
+
+def _originals_only(traces: list[Trace], workdir: str | Path,
+                    raw_hash: Optional[str] = None) -> list[Trace]:
+    """The gate's scope: the original traces, with rescued prefixes filtered by the ruling."""
+    rescued = _rescued_digests(workdir, raw_hash)
+    return [trace for trace in traces if (trace.hash or trace_hash(trace)) not in rescued]
+
+
+def gate_ingest(traces: list[Trace], workdir: str | Path, raw_hash: Optional[str] = None,
+                floor: float = MIN_TASK_ELIGIBLE_SHARE) -> GateResult:
     """Section 6 ingest gate: per-recording standings rule, and the stage fails only under the floor.
 
     Each recording is task-eligible, evidence-only, or rejected (see _standing_for); the gate keeps
     the per-problem lines below for the report, and passes when no trace is corrupt on disk and the
-    task-eligible share reaches MIN_TASK_ELIGIBLE_SHARE. Downstream stages read workdir/traces,
-    which ingest_file fills with task-eligible recordings only."""
-    traces = list(traces)
+    task-eligible share reaches the declared floor. Rescued prefixes never enter the share: they
+    are filtered before anything is counted, so the floor judges originals only. Downstream stages
+    read workdir/traces, which ingest_file fills with task-eligible recordings only."""
+    floor = _check_floor(floor)
+    traces = _originals_only(traces, workdir, raw_hash)
     notes: list[str] = []
     hard: list[str] = []
     calls = errors = truncated = unresolved = unparseable = orphans = reused = 0
@@ -665,11 +804,11 @@ def gate_ingest(traces: list[Trace], workdir: str | Path, raw_hash: Optional[str
     rejected = sum(1 for standing, _ in standings if standing == REJECTED)
     total = len(standings)
     share = eligible / total if total else 1.0
-    floor_ok = share >= MIN_TASK_ELIGIBLE_SHARE
+    floor_ok = share >= floor
     failures: list[str] = []
     if not floor_ok:
         failures.append(
-            f"task-eligible share {share:.2f} is under the floor {MIN_TASK_ELIGIBLE_SHARE:.2f}: "
+            f"task-eligible share {share:.2f} is under the floor {floor:.2f}: "
             f"{eligible} of {total} recordings task-eligible "
             f"({eligible} task-eligible, {evidence} evidence-only, {rejected} rejected)"
         )
@@ -680,7 +819,7 @@ def gate_ingest(traces: list[Trace], workdir: str | Path, raw_hash: Optional[str
                "unresolved": unresolved, "unparseable": unparseable, "orphan_results": orphans,
                "reused_pending_ids": reused, "rejected": rejected,
                "task_eligible": eligible, "evidence_only": evidence,
-               "eligible_share": share, "floor": MIN_TASK_ELIGIBLE_SHARE}
+               "eligible_share": share, "floor": floor}
     return GateResult(stage="ingest", passed=not failures, metrics=metrics, failures=failures)
 
 
@@ -782,20 +921,57 @@ def _gate_message(path: str | Path, gate: GateResult) -> str:
     return f"intake for {path} failed: {shown}{extra}"
 
 
-def ingest_file(path: str | Path, workdir: str | Path, model: Optional[Model] = None) -> dict:
+# Published artifact folders keyed by content hash; ownership is read from the file,
+# which names the raw hash it was derived from (trace, evidence trace and sidecar alike).
+_WITHDRAW_FOLDERS = ("traces", "evidence_traces", "grader")
+
+
+def _withdraw_raw_hash(raw_hash: str, workdir: str | Path) -> int:
+    """Remove every published artifact naming this raw hash, and only those.
+
+    A stricter re-ingest must not leave the traces an earlier permissive ingest published:
+    downstream loads every JSON under traces/ without consulting the ruling, so a failed
+    file would still feed the build. Files that do not parse are left alone, since their
+    ownership cannot be proven."""
+    removed = 0
+    for folder in _WITHDRAW_FOLDERS:
+        directory = Path(workdir) / folder
+        if not directory.is_dir():
+            continue
+        for path in sorted(directory.glob("*.json")):
+            try:
+                body = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                continue
+            if isinstance(body, dict) and body.get("raw_hash") == raw_hash:
+                path.unlink()
+                removed += 1
+    return removed
+
+
+def ingest_file(path: str | Path, workdir: str | Path, model: Optional[Model] = None,
+                intake_floor: float = MIN_TASK_ELIGIBLE_SHARE) -> dict:
     """Store one customer file, derive its Traces, write them, run the gate, print the counts.
 
     Only task-eligible recordings reach workdir/traces, which is what downstream stages read;
     evidence-only recordings are written beside them under evidence_traces and counted, and nothing
-    consumes them yet. When the gate fails the file raises IntakeGateError instead of returning,
-    so a build stops under the floor rather than building on what was set aside."""
+    consumes them yet. Rescued prefixes publish as evidence beside their parents, never as
+    task-eligible traces. The floor is declared per ingest and rules the file; a floor outside
+    [0, 1] is refused. When the gate fails the file raises IntakeGateError instead of returning,
+    so a build stops under the floor rather than building on what was set aside: nothing is
+    published, rescued or not, and the traces, evidence traces and sidecars an earlier ingest
+    published for the same bytes are withdrawn while the ruling records withdrawn True."""
+    intake_floor = _check_floor(intake_floor)
     raw = store_raw(path, workdir)
-    traces = derive_traces(raw.raw_hash, workdir, model=model)
+    traces = derive_traces(raw.raw_hash, workdir, model=model, floor=intake_floor)
     ruling = read_intake_ruling(workdir, raw.raw_hash)
     if ruling:
         _update_aggregate_ruling(workdir, raw.raw_hash, ruling)
-    gate = gate_ingest(traces, workdir, raw_hash=raw.raw_hash)
+    gate = gate_ingest(traces, workdir, raw_hash=raw.raw_hash, floor=intake_floor)
     if not gate.passed:
+        _withdraw_raw_hash(raw.raw_hash, workdir)
+        ruling["withdrawn"] = True
+        _write_ruling(raw.raw_hash, ruling, workdir)
         raise IntakeGateError(_gate_message(path, gate), gate)
     # Eligible traces publish only on a passing gate: a failed intake raises above, so a later
     # build reusing this workdir never loads recordings from a file that failed admission.
@@ -813,6 +989,7 @@ def ingest_file(path: str | Path, workdir: str | Path, model: Optional[Model] = 
         "rejected": gate.metrics["rejected"],
         "task_eligible": gate.metrics["task_eligible"],
         "evidence_only": gate.metrics["evidence_only"],
+        "rescued": (ruling.get("rescued") or {}).get("count", 0) if ruling else 0,
         "trace_hashes": [trace.hash for trace in eligible],
         "gate": as_dict(gate),
     }

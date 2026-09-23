@@ -714,3 +714,101 @@ okay cool! we need to now segregrate stuff from the folders and organize to stre
 > [GLM 5.3's post-training environment design, quoted at length: expert-work tasks with real resources, research agents converting workflow patterns into long-horizon environments, a judge agent checking solvability, a verifier generated without the reference solution, solver trajectories closing reward shortcuts, the three verifier checks] we also need to use this deisgn for glm 5.3 for environment generation add this in todo.
 
 > this judge agent which checks every environment is solvabale is important, also we need a judge as an agent as well. there are 3 checks 1. oracle checks ( must award reward ) 2. null run check ( agent did nothing -> must award none ) 4. incomplete check -> must aware none and then we should have a trusted verifier as well.
+
+## 2026-09-18 (architecture grill)
+
+Recorded live during the grill on the architecture review. Each quote is as .claude/reports/arch-review-2026-09-18/grill-decisions.md has it, with the decision it belongs to named above it.
+
+On taking both off-path options, the property harness and the second number (D258):
+
+> because we need this
+
+Naming that second number, published beside replay fidelity (D258):
+
+> Environment consistency
+
+On the controllable synthetic Task system beside the current generator (D259):
+
+> the current method is good but we also need to explore possible tasks, need a researcher for that
+
+> different levels of synthetic tasks, one solvable, other unsolvable, other partially
+
+> we need to control the difficulty based on what the model under training is able to solve
+
+On whether a solved Run can be the admission rule for a synthetic Task (D259):
+
+> agreed, but there are also difficult synthetic tasks which the models cannot solve.
+
+On how far a synthetic Task can be trusted at birth (D259):
+
+> some checks, and we can fully only test this at run time.
+
+On telling a broken Task from a hard one at run time, deferred to the training run (D259):
+
+> There is no good way to verify this... it gets tricky once you have the difficulty knob as you want the model to fail on the task to post train it. Add this in todo, just do the consistency checks for now and we will see this in action in the training run.
+
+On grouping by what the customer asked for rather than by what the agent did (D260):
+
+> funnily the mistake becomes a reference.
+
+On the intake seam and the ten telemetry formats behind it (D261):
+
+> as the architecture improves the fidelity will definitely improve.
+
+On how an adapter earns "supported", with real trace collections first (D261):
+
+> we need to use this to build the environments
+
+> I have given you the collection of traces in different formats
+
+On running a tool for real rather than imitating it (D262):
+
+> Run it for real, have the bash tool with it. We should always run it for real.
+
+On who decides which tools are run for real and which are imitated (D262):
+
+> The customer is not going to say which tools to run or imitate. Mostly we should run all the tools to check the problems then and there, and then the harness infers from the traces where to imitate and where to run. Whatever can be run should be run and whatever should be imitated should be imitated. Add a skill or something here to help the harness.
+
+On what happens to the recordings intake does not admit (D263):
+
+> keep the good recordings and try to learn about the structure of the environment from the broken recordings. Ideally we should only keep the recordings which are good (data filtering 101), but the recordings which are not should be used for learnings, and the unfinished recordings do have a lot of information about the user behaviour, like why did the user leave.
+
+On the five terminal cheats, in recordings and in Runs (D263):
+
+> check for reward hacking as well
+
+On which recordings drive a Run and which teach the user signals (D264):
+
+> unfinished recordings will give us the user signals, but for running we shall use the runs which are complete
+
+On code and a model both reading the user signals (D265):
+
+> both, but with one source of truth. Harness and the code reads the signals.
+
+On how the harness's own agents should read recordings and Runs (D266):
+
+> We need to be very very honest and strict with ourselves to design this much much better.
+
+On the second proposer for a grouping merge (D268):
+
+> the harness could also group using embeddings and then cosine similarity and use option 2 as well.
+
+On appended prompts and the Simulated user's stable head (D269):
+
+> I thought this is appended, right? On appending we will hit higher cache rates for sure. But option 3 doesn't generalize, right? And the system prompt should have examples on how the user should handle this and that, which should be added there after inspecting the traces.
+
+On what fidelity means when the tool is a real shell (D262):
+
+> end state, be as close as possible to the truth
+
+On the order the work lands in (docs/todo.md, build order from the grill):
+
+> all the improvements we discussed, and then fidelity checks (if anything improved, if yes why), and then we test on AgentTrove as well.
+
+On where the grill's decisions land:
+
+> if the experiments come well they go into the harness
+
+On the stopped architecture review workflow:
+
+> We will run this later to improve the architecture.

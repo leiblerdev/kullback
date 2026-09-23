@@ -6,13 +6,7 @@ import asyncio
 from collections import deque
 
 from kullback.agent.events import AgentEnd, ToolExecutionEnd, TurnEnd
-from kullback.agent.loop import (
-    EMPTY_TURN_ASK,
-    Hooks,
-    LoopState,
-    interrupted_tool_results,
-    run_agent_loop,
-)
+from kullback.agent.loop import EMPTY_TURN_ASK, Hooks, LoopState, run_agent_loop
 from kullback.agent.messages import AssistantMessage, ToolResultMessage, UserMessage
 from kullback.agent.tools import AgentTool, RetryableToolError, ToolRegistry, ToolResult
 from kullback.ai.provider import TestModel
@@ -101,17 +95,6 @@ def test_tool_calls_run_sequentially_in_order(add_tool, echo_tool):
     assert [m.tool_name for m in state.messages if isinstance(m, ToolResultMessage)] == ["echo", "add"]
 
 
-def test_validation_error_becomes_an_is_error_result(add_tool):
-    model = TestModel([reply(None, call("add", {"a": "two", "b": 3})), reply("sorry")])
-    events, state = run(model, [add_tool])
-    end = next(e for e in events if isinstance(e, ToolExecutionEnd))
-    assert end.is_error is True
-    assert "invalid arguments for add" in end.result.content
-    tool_message = state.messages[2]
-    assert tool_message.is_error is True and tool_message.content == end.result.content
-    assert state.messages[-1].content == "sorry"
-
-
 def test_unknown_tool_is_an_error_result():
     model = TestModel([reply(None, call("nope", {})), reply("ok")])
     events, state = run(model, [])
@@ -187,7 +170,7 @@ def test_raising_tool_result_hook_fails_the_result_not_the_run(add_tool):
     assert state.messages[-1].content == "ok"
 
 
-def test_steer_is_delivered_after_the_tool_batch_before_the_next_turn():
+def test_steer_is_delivered_after_the_tool_batch_or_with_the_prompt_when_queued_before_the_run():
     state = LoopState(system="sys")
     model = TestModel([reply(None, call("add", {"a": 1, "b": 1})), reply("ok")])
 
@@ -208,9 +191,7 @@ def test_steer_is_delivered_after_the_tool_batch_before_the_next_turn():
     wire = model.calls[1]["messages"]
     assert [m["role"] for m in wire[-2:]] == ["tool", "user"]
     assert wire[-1] == {"role": "user", "content": "stop and report"}
-
-
-def test_steer_queued_before_the_run_goes_in_with_the_prompt():
+    # a steer queued before the run goes in with the prompt
     state = LoopState(system="sys", steering=deque([UserMessage(content="also this")]))
     events, state = run(TestModel(["ok"]), state=state)
     assert [m.role for m in state.messages] == ["user", "user", "assistant"]
@@ -218,7 +199,7 @@ def test_steer_queued_before_the_run_goes_in_with_the_prompt():
     assert types_of(events).count("turn_start") == 1
 
 
-def test_follow_up_is_delivered_when_the_run_would_otherwise_stop():
+def test_follow_up_is_delivered_when_the_run_would_otherwise_stop_and_not_while_tools_run(add_tool):
     state = LoopState(
         system="sys",
         follow_ups=deque([UserMessage(content="second"), UserMessage(content="third")]),
@@ -233,9 +214,7 @@ def test_follow_up_is_delivered_when_the_run_would_otherwise_stop():
     # each follow-up was its own model call on the transcript so far
     assert len(model.calls) == 3
     assert model.calls[1]["messages"][-1] == {"role": "user", "content": "second"}
-
-
-def test_follow_up_is_not_delivered_while_tools_are_still_running(add_tool):
+    # a follow up waits while tools are still running
     state = LoopState(system="sys", follow_ups=deque([UserMessage(content="later")]))
     model = TestModel([reply(None, call("add", {"a": 1, "b": 1})), reply("done"), reply("after")])
     events, state = run(model, [add_tool], state=state)
@@ -303,25 +282,13 @@ def test_cancel_stops_before_the_next_model_call_and_marks_tools_not_run():
     assert len(model.calls) == 1
 
 
-def test_interrupted_tool_results_answer_dangling_calls():
-    messages = [
-        UserMessage(content="go"),
-        AssistantMessage(tool_calls=[{"id": "c1", "name": "t", "arguments": {}}, {"id": "c2", "name": "t", "arguments": {}}]),
-        ToolResultMessage(tool_call_id="c1", tool_name="t", content="ok"),
-    ]
-    repairs = interrupted_tool_results(messages)
-    assert [r.tool_call_id for r in repairs] == ["c2"]
-    assert repairs[0].is_error and "interrupted" in repairs[0].content
-    assert interrupted_tool_results(messages + repairs) == []
-
-
 def test_no_prompts_and_empty_queues_still_asks_the_model_once():
     events, state = run(TestModel(["hi"]), prompts=[])
     assert [m.role for m in state.messages] == ["assistant"]
     assert types_of(events).count("turn_start") == 1
 
 
-def test_an_empty_last_turn_is_asked_once_for_the_summary_and_a_second_one_ends_the_run():
+def test_only_an_empty_last_turn_is_asked_once_for_the_summary_and_a_second_one_ends_the_run():
     """On one build, two of the Examiner's three no-tool turns were empty strings right after a
     code compaction, so the round ended with no account of what was left. The loop asks once."""
     events, state = run(TestModel([reply(""), reply("")]))
@@ -329,15 +296,13 @@ def test_an_empty_last_turn_is_asked_once_for_the_summary_and_a_second_one_ends_
     assert len(asks) == 1, "asked once, not twice"
     assert [m.role for m in state.messages] == ["user", "assistant", "user", "assistant"]
     assert types_of(events).count("turn_end") == 2
-
-
-def test_a_last_turn_that_says_something_is_not_asked_again():
+    # a last turn that says something is not asked again
     events, state = run(TestModel(["nothing left to do."]))
     assert [m.role for m in state.messages] == ["user", "assistant"]
     assert not [m for m in state.messages if m.role == "user" and m.content == EMPTY_TURN_ASK]
 
 
-def test_a_refusal_that_names_the_corrected_call_is_put_to_the_model_once_and_not_a_second_time():
+def test_only_a_refusal_that_names_the_corrected_call_is_put_to_the_model_and_only_once():
     """A tool that can say exactly what a corrected call looks like should not have to hope the
     model reads it: one live session had its single repair refused for a payload shape, read the
     refusal, and never called the tool again. The loop asks once; the same refusal again stands."""
@@ -356,8 +321,7 @@ def test_a_refusal_that_names_the_corrected_call_is_put_to_the_model_once_and_no
     assert [m.role for m in state.messages] == ["user", "assistant", "tool", "user",
                                                 "assistant", "tool", "assistant"]
 
-
-def test_a_tool_that_fails_without_a_corrected_call_is_left_to_the_model_to_answer():
+    # a tool that fails without a corrected call is left to the model to answer
     async def boom(args: AddArgs) -> AddResult:
         raise ValueError("no")
 

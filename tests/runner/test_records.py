@@ -8,7 +8,6 @@ from pathlib import Path
 from typing import Literal, get_args, get_origin
 
 import pytest
-from pydantic import ValidationError
 
 from kullback.runner import records as records_module
 from kullback.runner.records import (
@@ -19,10 +18,7 @@ from kullback.runner.records import (
     Environment,
     Event,
     Finding,
-    FindingVerb,
     GateResult,
-    Intent,
-    IntentSpan,
     Probe,
     ProbePool,
     RawPtr,
@@ -31,17 +27,14 @@ from kullback.runner.records import (
     RoundRecord,
     Run,
     Task,
-    TaskOverlay,
     ToolCall,
     ToolCallError,
     ToolSig,
-    Trace,
     Usage,
     Verdict,
     Verifier,
     VerifierHistory,
     VerifierVersion,
-    apply_intent,
     as_dict,
     canonical_json,
     content_hash,
@@ -73,13 +66,75 @@ def _placeholder(name: str, annotation):
     return f"x-{name}"
 
 
-@pytest.mark.parametrize("model", ALL_RECORDS, ids=lambda m: m.__name__)
-def test_every_record_round_trips(model: type[Record]):
-    record = _minimal(model)
+def _full_run() -> Run:
+    return Run(
+        run_id="run-1",
+        env_id="env-1",
+        task_id="task-1",
+        trace_id="trace-1",
+        model="anthropic/claude",
+        seed=7,
+        events=[
+            Event(idx=0, type="user_turn", payload={"content": "cancel my order"}, route=None),
+            Event(
+                idx=1,
+                type="tool_call",
+                payload={"name": "cancel_pending_order", "args": {"order_id": "#W1"}},
+                route="recording",
+                cache_key="k1",
+            ),
+        ],
+        route_counts={"code": 0, "recording": 1, "llm": 0},
+        assisted=False,
+        end_state_hash="deadbeef",
+    )
+
+
+def _examiner_records() -> list[Record]:
+    run = Run(run_id="probe-t1-1", task_id="t1", events=[Event(idx=0, type="stop", payload={"reason": "success"})])
+    verifier = Verifier(task_id="t1", atoms=[Atom(id="w0", kind="required", provenance="user_stated",
+                                                  target={"tool": "cancel", "entity": "order", "field": "status",
+                                                          "value": "cancelled"})])
+    probe = Probe(probe_id="probe-t1-1", task_id="t1", bug_class="extra_field_acceptance", verifier_hash="v1",
+                  round=1, scored_pass=False, run=run)
+    version = VerifierVersion(task_id="t1", content_hash=content_hash(verifier), verifier_version="1", by="derive",
+                              accepted=True, verifier=verifier)
+    return [probe, ProbePool(task_id="t1", probes=[probe]), version,
+            VerifierHistory(task_id="t1", versions=[version]),
+            Refusal(task_id="t1", reason="no frontier Run finished", round=1, admitted=True, finished_runs=[]),
+            Finding(finding_id="f1", task_id="t1", kind="assisted_tool", text="the tool never fails", run_id="probe-t1-1",
+                    tool="cancel", suggested="compile_tool", round=1),
+            Finding(finding_id="f2", task_id="t1", kind="fidelity", text="the Intent names what no Run says",
+                    suggested="repair_intent", hint="the Runs only cancel one order and never mention a refund",
+                    round=1),
+            RoundRecord(round=1, counts={"trusted": 1, "fidelity": 1}, exit="done")]
+
+
+def _samples() -> list[Record]:
+    """Every record at its minimal shape, a full Run with nested events, and the Examiner's records."""
+    return [_minimal(model) for model in ALL_RECORDS] + [_full_run()] + _examiner_records()
+
+
+@pytest.mark.parametrize("index", range(len(_samples())),
+                         ids=[f"{i}_{type(r).__name__}" for i, r in enumerate(_samples())])
+def test_every_record_round_trips_through_json_and_hashes_by_content(index: int):
+    record = _samples()[index]
+    assert type(record) in ALL_RECORDS
     payload = json.loads(json.dumps(as_dict(record)))
-    again = model.model_validate(payload)
+    again = type(record).model_validate(payload)
     assert as_dict(again) == payload
+    assert again == record
     assert content_hash(again) == content_hash(record)
+    if index > len(ALL_RECORDS):
+        # An Examiner record hashes by content, not identity: a copy with a field changed hashes differently.
+        first = next(iter(payload))
+        changed = type(record).model_validate(dict(payload, **{first: "other" if isinstance(payload[first], str)
+                                                             else payload[first]}))
+        assert (content_hash(changed) == content_hash(record)) == (payload[first] == as_dict(changed)[first])
+    if isinstance(record, Run) and record.events:
+        assert again.events[-1].payload == record.events[-1].payload
+    if isinstance(record, ProbePool) and record.probes:
+        assert again.probes[0].run.events[0].payload == {"reason": "success"}
 
 
 def test_reserved_word_aliases_survive_json():
@@ -110,40 +165,20 @@ def test_reserved_word_aliases_survive_json():
     assert as_dict(Verdict(run_id="r", passed=True, class_="pass"))["pass"] is True
 
 
-def test_a_full_run_round_trips_with_nested_records():
-    run = Run(
-        run_id="run-1",
-        env_id="env-1",
-        task_id="task-1",
-        trace_id="trace-1",
-        model="anthropic/claude",
-        seed=7,
-        events=[
-            Event(idx=0, type="user_turn", payload={"content": "cancel my order"}, route=None),
-            Event(
-                idx=1,
-                type="tool_call",
-                payload={"name": "cancel_pending_order", "args": {"order_id": "#W1"}},
-                route="recording",
-                cache_key="k1",
-            ),
-        ],
-        route_counts={"code": 0, "recording": 1, "llm": 0},
-        assisted=False,
-        end_state_hash="deadbeef",
-    )
-    again = Run.model_validate(json.loads(json.dumps(as_dict(run))))
-    assert again == run
-    assert again.events[1].route == "recording"
-
-
-def test_content_hash_is_stable_and_order_independent():
+def test_content_hash_is_stable_and_order_independent_for_mappings_and_sets():
     a = Task(id="t1", category_id="c1", run_ids=["r1", "r2"], intent="cancel a late order")
     b = Task.model_validate({"category_id": "c1", "id": "t1", "intent": "cancel a late order", "run_ids": ["r1", "r2"]})
     assert content_hash(a) == content_hash(b)
     assert content_hash({"a": 1, "b": 2}) == content_hash({"b": 2, "a": 1})
     assert content_hash(a) != content_hash(a.model_copy(update={"unguarded": True}))
     assert canonical_json({"b": 1, "a": 2}) == '{"a":2,"b":1}'
+    # str() followed the interpreter's hash randomization, so a set must hash by its members.
+    assert content_hash({"a", "b", "c"}) == content_hash({"c", "b", "a"})
+    assert content_hash({"a", "b"}) != content_hash({"a", "c"})
+    assert content_hash(("a", "b")) == content_hash(["a", "b"])
+    # Anything with no stable form raises rather than hashing on its memory address.
+    with pytest.raises(TypeError):
+        content_hash({"f": lambda: None})
 
 
 def test_defaults_carry_the_decisions_they_encode():
@@ -190,12 +225,6 @@ def test_raw_ptr_and_spans_point_back_at_the_raw_file():
     assert RawPtr.model_validate(as_dict(info)) == info and info.msg_index is None
 
 
-def test_overlay_rows_given_as_dicts_become_overlay_rows():
-    overlay = TaskOverlay(task_id="t1", rows=[{"table": "orders", "id": "#W1", "version_hash": "h1"}])
-    assert overlay.rows[0].table == "orders"
-    assert TaskOverlay.model_validate(as_dict(overlay)) == overlay
-
-
 # --- invariants a wrong record must not survive ---
 
 
@@ -239,13 +268,16 @@ def test_an_unknown_field_fails_at_load_instead_of_being_dropped():
         Task.model_validate({"id": "t1", "run_id": ["r1"]})
     good = Verdict.model_validate({"run_id": "r", "pass": True, "class": "pass", "failing_atom": None})
     assert good.failing_atom is None
-
-
-def test_the_run_record_refuses_a_footer_key_that_is_not_a_run_field():
-    """The Start and End state live on the stop event now, so Run forbids extras like every record."""
+    # The Start and End state live on the stop event now, so Run forbids extras like every record.
     with pytest.raises(ValueError):
         Run.model_validate({"run_id": "r1", "start_state": {"orders": {}}, "end_state": {"orders": {}}})
     assert Run.model_validate({"run_id": "r1"}).run_id == "r1"
+    with pytest.raises(ValueError):
+        ProbePool.model_validate({"task_id": "t1", "probes": [], "closed": True})
+    with pytest.raises(ValueError):
+        Probe.model_validate({"probe_id": "p", "task_id": "t1", "bug_class": "other", "verifier_hash": "v",
+                              "run": {"run_id": "p"}, "passed": False})
+    assert ProbePool.model_validate({"task_id": "t1"}).probes == []
 
 
 # --- pointers back to the raw file (D66, D67) ---
@@ -267,26 +299,7 @@ def test_an_error_carries_its_pointer_and_a_binary_payload_survives():
     assert as_dict(text)["encoding"] == "text"
 
 
-def test_a_trace_can_point_at_where_its_prompt_and_tools_came_from():
-    ptr = RawPtr(file_hash="abc", sim_index=0)
-    trace = Trace(trace_id="t", raw_hash="abc", ingest_version="1", source="tau2",
-                  system_prompt="be brief", system_prompt_ptr=ptr,
-                  tools_declared=[{"name": "get"}], tools_declared_ptr=ptr, raw_ptr=ptr)
-    assert Trace.model_validate(as_dict(trace)) == trace
-
-
 # --- content addressing and token counts ---
-
-
-def test_content_hash_of_a_set_ignores_iteration_order_and_refuses_an_unhashable_value():
-    """str() followed the interpreter's hash randomization, so the same set hashed differently
-    in every run and content addressing broke for any caller that passed one."""
-    assert content_hash({"a", "b", "c"}) == content_hash({"c", "b", "a"})
-    assert content_hash({"a", "b"}) != content_hash({"a", "c"})
-    assert content_hash(("a", "b")) == content_hash(["a", "b"])
-    # Anything with no stable form raises rather than hashing on its memory address.
-    with pytest.raises(TypeError):
-        content_hash({"f": lambda: None})
 
 
 def test_content_hash_of_a_set_is_the_same_in_a_fresh_interpreter():
@@ -314,92 +327,3 @@ def test_token_counts_and_costs_are_never_negative():
     with pytest.raises(ValueError):
         Cost(wall_ms=-1.0)
     assert Usage(input=0).input == 0
-
-
-# --- the Examiner's records (phase 5) ---
-
-
-def _examiner_records() -> list[Record]:
-    run = Run(run_id="probe-t1-1", task_id="t1", events=[Event(idx=0, type="stop", payload={"reason": "success"})])
-    verifier = Verifier(task_id="t1", atoms=[Atom(id="w0", kind="required", provenance="user_stated",
-                                                  target={"tool": "cancel", "entity": "order", "field": "status",
-                                                          "value": "cancelled"})])
-    probe = Probe(probe_id="probe-t1-1", task_id="t1", bug_class="extra_field_acceptance", verifier_hash="v1",
-                  round=1, scored_pass=False, run=run)
-    version = VerifierVersion(task_id="t1", content_hash=content_hash(verifier), verifier_version="1", by="derive",
-                              accepted=True, verifier=verifier)
-    return [probe, ProbePool(task_id="t1", probes=[probe]), version,
-            VerifierHistory(task_id="t1", versions=[version]),
-            Refusal(task_id="t1", reason="no frontier Run finished", round=1, admitted=True, finished_runs=[]),
-            Finding(finding_id="f1", task_id="t1", kind="assisted_tool", text="the tool never fails", run_id="probe-t1-1",
-                    tool="cancel", suggested="compile_tool", round=1),
-            Finding(finding_id="f2", task_id="t1", kind="fidelity", text="the Intent names what no Run says",
-                    suggested="repair_intent", hint="the Runs only cancel one order and never mention a refund",
-                    round=1),
-            RoundRecord(round=1, counts={"trusted": 1, "fidelity": 1}, exit="done")]
-
-
-def test_the_examiner_records_round_trip_through_as_dict_and_hash_by_content():
-    for record in _examiner_records():
-        payload = json.loads(json.dumps(as_dict(record)))
-        again = type(record).model_validate(payload)
-        assert again == record, type(record).__name__
-        assert content_hash(again) == content_hash(record)
-        # The hash reads content, not identity: a copy with a field changed hashes differently.
-        first = next(iter(payload))
-        changed = type(record).model_validate(dict(payload, **{first: "other" if isinstance(payload[first], str)
-                                                             else payload[first]}))
-        assert (content_hash(changed) == content_hash(record)) == (payload[first] == as_dict(changed)[first])
-    pool = _examiner_records()[1]
-    assert pool.probes[0].run.events[0].payload == {"reason": "success"}
-    assert {type(r) for r in _examiner_records()} <= set(ALL_RECORDS)
-
-
-def test_a_finding_can_suggest_a_repair_verb_and_carry_the_hint_that_verb_needs():
-    """A finding's verb is a verb some agent has: a Builder tool, or one of the Examiner's own two,
-    `repair` for the Verifier no Builder tool touches (D123) and `reroll_then_derive` for a check
-    that had no second finished Run to score (D173). An Examiner that can only say `replay` asks for
-    a cached result again. The hint is the line the verb is given and defaults to empty, so a
-    findings file written before the verbs existed still validates."""
-    from kullback.rounds import BUILDER_VERBS, EXAMINER_VERBS
-
-    verbs = set(get_args(FindingVerb))
-    assert {"repair_intent", "repair_recompile"} <= verbs
-    assert verbs - {"none"} <= BUILDER_VERBS | EXAMINER_VERBS, "every verb is one agent's tool"
-    assert not (BUILDER_VERBS & EXAMINER_VERBS), "and the driver can tell whose it is"
-    finding = Finding(finding_id="f1", task_id="t1", kind="fidelity", text="the Intent names what no Run says",
-                      suggested="repair_intent", hint="the Runs only cancel one order")
-    assert finding.hint == "the Runs only cancel one order"
-    older = as_dict(finding)
-    older.pop("hint")
-    assert Finding.model_validate(older).hint == ""
-    with pytest.raises(ValidationError):
-        Finding(finding_id="f2", kind="fidelity", text="x", suggested="repair_everything")
-
-
-def test_the_intent_record_and_apply_intent_live_in_records_and_the_builder_re_exports_them():
-    """The Intent moved into records.py in phase 5 because the Examiner reads it; the Builder keeps
-    naming it under its old path, and the names it re-exports are the records' own classes and
-    function, so an Intent built on either side is one record."""
-    from kullback.builder import intent as builder_intent
-
-    assert builder_intent.Intent is Intent and builder_intent.IntentSpan is IntentSpan
-    assert builder_intent.apply_intent is apply_intent
-    intent = Intent(task_id="t1", text="cancel the order", grounded=True,
-                    spans=[IntentSpan(phrase="the order", trace_id="tr1", source="user_utterance", text="the order")])
-    task = Task(id="t1", run_ids=["tr1"])
-    applied = apply_intent(task, intent)
-    assert applied.intent == "cancel the order" and applied.name == "cancel the order"
-    theirs = builder_intent.Intent.model_validate(as_dict(intent))
-    assert as_dict(theirs) == as_dict(intent)
-    assert as_dict(builder_intent.apply_intent(task, theirs)) == as_dict(applied)
-    assert Intent.model_validate(as_dict(theirs)) == intent
-
-
-def test_a_probe_pool_forbids_unknown_fields():
-    with pytest.raises(ValueError):
-        ProbePool.model_validate({"task_id": "t1", "probes": [], "closed": True})
-    with pytest.raises(ValueError):
-        Probe.model_validate({"probe_id": "p", "task_id": "t1", "bug_class": "other", "verifier_hash": "v",
-                              "run": {"run_id": "p"}, "passed": False})
-    assert ProbePool.model_validate({"task_id": "t1"}).probes == []

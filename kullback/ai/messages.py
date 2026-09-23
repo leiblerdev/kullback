@@ -16,7 +16,7 @@ from __future__ import annotations
 
 from typing import Annotated, Any, Literal, Optional, Sequence, Union
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_serializer
 
 from kullback.ai.usage import Usage
 
@@ -50,11 +50,25 @@ class AssistantMessage(BaseModel):
 
     role: Literal["assistant"] = "assistant"
     content: Optional[str] = None
+    # What the model reasoned before it answered, when the provider streamed a thinking channel.
+    # It is kept for a reader and never sent back: replaying reasoning we did not produce would
+    # be fabrication, so `to_wire` leaves it out. A message that carries none omits the key when
+    # it is dumped, so a stored transcript is byte-identical to one written before the field
+    # existed, the same rule `Usage` keeps for an unreported reasoning count. Readers must use
+    # attribute access, which always answers, never key access on a dumped dict.
+    thinking: Optional[str] = None
     tool_calls: list[ToolCall] = Field(default_factory=list)
     usage: Usage = Field(default_factory=Usage)
     stop_reason: StopReason = "stop"
     model: Optional[str] = None
     error_message: Optional[str] = None
+
+    @model_serializer(mode="wrap")
+    def _omit_absent_thinking(self, handler):
+        data = handler(self)
+        if self.thinking is None:
+            data.pop("thinking", None)
+        return data
 
 
 class ToolResultMessage(BaseModel):

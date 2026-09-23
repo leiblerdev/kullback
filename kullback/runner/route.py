@@ -1,17 +1,29 @@
-"""Answers one tool call: code first, then the recording table, then an LLM stand-in (D45, D49, D74)."""
+"""Answers one tool call: real first, then code, the recording table, an LLM stand-in (D262, D45, D49, D74)."""
 
 from __future__ import annotations
 
+import copy
 import inspect
 import json
 from typing import Any, Iterable, NamedTuple, Optional
 
+from pydantic import BaseModel
+
 from kullback.runner.canon import canonical_args
+from kullback.runner.real_tools import RealTool, limit_kept_export
 from kullback.runner.records import ToolCallError, ToolSig, content_hash
 from kullback.runner.records import plain as _plain
-from kullback.runner.state import StateView, _db_put
+from kullback.runner.state import StateView, _db_put, _row_model
+
+# The default cap on one real tool's kept workspace export: 64 MiB, overridable per
+# Router through `real_export_limit` (D262).
+REAL_EXPORT_LIMIT_BYTES = 64 * 1024 * 1024
 
 STATE_PARAMS = ("state", "db", "world", "env")
+# The Run stops here: a tool the Environment lists to the Candidate and cannot answer by code
+# or by the recording (G28). The Candidate is never shown an answer for it, and the Verdict
+# carries no reward either way.
+CANNOT_ANSWER_REASON = "environment_cannot_answer"
 EXCEPTION_CLASSES = {
     TypeError: "invalid_arguments",
     KeyError: "not_found_entity",
@@ -66,14 +78,19 @@ def recording(tool: str, args: dict, state_hash: str, result: Any, error: Option
 
 
 class Router:
-    """Route order: code, then recording, then the LLM stand-in; a bad call gets an error, not a raise."""
+    """Route order: real, then code, then recording, then the LLM stand-in (D262); a bad call gets an error, not a raise."""
 
     def __init__(self, env_tools_module: Any = None, recordings: Any = None, starting_state: Any = None,
                  overlay: Any = None, stand_in_model: Any = None, tool_sigs: Optional[list[ToolSig]] = None,
                  overlay_rows: Optional[dict] = None, canon_rules: Any = None,
                  synthetic_rows: Optional[Iterable[str]] = None,
-                 overlay_steps: Optional[Iterable[Any]] = None):
+                 overlay_steps: Optional[Iterable[Any]] = None,
+                 real_tools: Optional[dict[str, RealTool]] = None):
         self.tools = env_tools_module
+        self.real_tools = dict(real_tools or {})
+        self._last_real_receipts: dict[str, list] = {}
+        self.real_export_limit = REAL_EXPORT_LIMIT_BYTES
+        self.real_end_states: dict[str, bytes] = {}
         # D40: a result that names a synthetic row was answered from a row no trace showed.
         self.synthetic_rows = frozenset(synthetic_rows or ())
         self.state = starting_state if isinstance(starting_state, StateView) else StateView(starting_state)
@@ -130,6 +147,10 @@ class Router:
             # Run refuses it too, in the same class, before any code, recording or stand-in is asked
             # and without touching the world.
             return self._error(name, "tool_not_found", f"no tool named {name} for the {requestor}")
+        if name in self.real_tools:
+            # D262: a Real tool runs for real before any imitation, and never touches the
+            # in-memory world, so the pin bookkeeping below does not see the call either.
+            return self._real(name, args)
         self._advance(name, args)
         function = getattr(self.tools, name, None) if self.tools is not None else None
         if self._is_tool(name, function):
@@ -143,6 +164,11 @@ class Router:
             if error is None:
                 self._apply(entry)  # a recorded write has to change the world, not only answer
             return RouteResult(entry.get("result"), "recording", False, error, self._misses())
+        if self._listed_for(name, requestor):
+            # G28: the Environment lists this tool to this caller and has neither code nor a
+            # recording for it, so the Run ends here. A model stand-in never answers a listed
+            # tool, and the Candidate is never shown a made up answer.
+            return self._cannot_answer(name)
         if self.stand_in is not None:
             return self._stand_in(name, args)
         return self._error(name, "tool_not_found", f"no tool named {name}")
@@ -196,14 +222,103 @@ class Router:
         """D88: a Starting state the Builder could not pin is an environment mark on every call of the Run."""
         return list(self.state.overlay_misses) or None
 
+    def _real(self, name: str, args: dict) -> RouteResult:
+        """D262: run the tool for real in its container, before any imitation.
+
+        The container is the world for that tool: the in-memory db world is untouched and
+        `state_hash` stays what it is. A command the world ran is an ordinary result,
+        whatever its exit code. But a world that could not run the call at all (a start
+        or exec failure, a timeout, an unavailable runtime, an export or output limit
+        refused) is an Environment failure, never the Candidate's answer: the outcome
+        carries `world_answered` False and the Run ends here as `cannot_answer` with
+        reason `environment_cannot_answer`, exactly as for a tool no code can answer,
+        with the tool name and the world's own failure class and message on the record.
+        """
+        outcome = self.real_tools[name].call(args)
+        self._last_real_receipts[name] = list(outcome.receipts or [])
+        if not outcome.world_answered:
+            error = ToolCallError(class_="cannot_answer", payload={
+                "tool": name, "reason": CANNOT_ANSWER_REASON,
+                "world_error_class": outcome.error_class, "world_error": outcome.error_message},
+                encoding="json", classified_by="code")
+            return RouteResult(None, "cannot_answer", False, error, self._misses())
+        if outcome.error_class is None:
+            return RouteResult(outcome.result, "real", False, None, self._misses())
+        return self._error(name, outcome.error_class, outcome.error_message or outcome.error_class,
+                           route="real")
+
+    def last_real_receipts(self, name: str) -> list:
+        """The receipts of the latest real call of that tool, oldest first (D262).
+
+        The result stays the terminal text; the exit codes live here for the record, so a
+        later round can read them without re-running. Empty before any call of the tool.
+        """
+        return list(self._last_real_receipts.get(name) or [])
+
+    def close_real(self) -> list[tuple[str, str]]:
+        """Release every opened real world and keep each export, whatever fails (D262).
+
+        Every tool is closed even when one close raises, and nothing is raised: failures
+        come back as (tool name, message) pairs, so a failing close never masks the Run's
+        own outcome. Each opened tool's workspace is exported once before its close under
+        `real_export_limit` and kept for `real_end_state`; a failed export is listed too.
+        """
+        failures: list[tuple[str, str]] = []
+        for name, tool in self.real_tools.items():
+            if tool.opened:
+                try:
+                    self.real_end_states[name] = tool.end_state(self.real_export_limit)
+                except Exception as exc:
+                    failures.append((name, _message_of(exc)))
+            try:
+                tool.close()
+            except Exception as exc:
+                failures.append((name, _message_of(exc)))
+        return failures
+
+    def real_end_state(self, name: str, limit_bytes: int) -> bytes:
+        """One real tool's workspace bytes: the live export while open, the kept bytes after close (D262).
+
+        The kept bytes obey the caller's limit the same way the live export does: over the
+        limit is the same refusal the open path gives, never a silent truncation and never a
+        larger payload. A tool never called has nothing to export and answers empty bytes.
+        """
+        tool = self.real_tools[name]
+        if tool.opened:
+            return tool.end_state(limit_bytes)
+        return limit_kept_export(self.real_end_states.get(name, b""), limit_bytes)
+
     def _code(self, name: str, function: Any, args: dict) -> RouteResult:
+        snapshot = _snapshot_world(self.tools, self.state)
         try:
             result = _call(function, self.state, args)
             return RouteResult(result, "code", self._reads_synthetic(result, args), None, self._misses())
-        except Exception as exc:  # the customer's tools answer with an error, they do not crash the Run
-            error_class = _class_of(exc)
-            sample = _corpus_error(self.sigs.get(name), error_class) if _is_pythons(exc) else None
-            return self._error(name, error_class, _message_of(exc), sample=sample)
+        except Exception as exc:  # every call is a transaction: a body that raises leaves the world as it found it
+            _restore_world(self.tools, self.state, snapshot)
+            if type(exc) is ValueError or _is_pythons(exc):
+                # A deliberate refusal is exactly ValueError, which is what the body-writing prompt
+                # tells bodies to raise. A subclass (a validation failure, a decode error, a unicode
+                # error) is the body failing at its own work, so it is a fault, not the customer's answer.
+                error_class = _class_of(exc)
+                sample = _corpus_error(self.sigs.get(name), error_class) if _is_pythons(exc) else None
+                return self._error(name, error_class, _message_of(exc), sample=sample)
+            return self._body_fault(name, exc)
+
+    def _body_fault(self, name: str, exc: Exception) -> RouteResult:
+        """A body fault (G27): the body's own bug, never the customer's answer and never a business error.
+
+        The Candidate gets a neutral unavailable answer in the tool's own error encoding. The Run
+        records the tool name and the exception type, never the message, and carries the D88
+        environment mark so the fault counts against the Environment and not the Candidate.
+        """
+        fault = type(exc).__name__
+        encoding = _encoding_for(self.sigs.get(name), "body_fault")
+        result: Any = "unavailable" if encoding == "text" else {"error": "unavailable", "class": "body_fault"}
+        error = ToolCallError(class_="body_fault", payload={"tool": name, "fault": fault},
+                              encoding="json", classified_by="code")
+        misses = self._misses() or []
+        misses.append({"body_fault": name, "fault": fault})
+        return RouteResult(result, "code", False, error, misses)
 
     def _reads_synthetic(self, result: Any, args: dict) -> bool:
         """The call named or returned a synthetic row (D40): the Run is assisted (D49)."""
@@ -211,6 +326,29 @@ class Router:
             return False
         text = json.dumps([result, args], default=str, ensure_ascii=False)
         return any(row_id in text for row_id in self.synthetic_rows)
+
+    def _listed_for(self, name: str, requestor: str) -> bool:
+        """Whether the Environment lists this tool to this caller (G28).
+
+        The mined tool list decides: a name it never held is a Candidate mistake and keeps
+        today's refusal, while a tool it lists to this caller and cannot answer ends the Run.
+        A tool listed only to other callers never reaches here, the D164 refusal above keeps it.
+        """
+        sig = self.sigs.get(name)
+        if sig is None:
+            return False
+        return requestor in (getattr(sig, "callers", None) or ["assistant"])
+
+    def _cannot_answer(self, name: str) -> RouteResult:
+        """A listed tool with no code and no recording (G28): no answer, only the record.
+
+        The result is never shown to the Candidate: loop.py stops the Run on this route before
+        appending anything to the transcript. The event carries the tool name and the reason,
+        and the Verdict reads the reason as an environment failure with no reward either way.
+        """
+        error = ToolCallError(class_="cannot_answer", payload={"tool": name, "reason": CANNOT_ANSWER_REASON},
+                              encoding="json", classified_by="code")
+        return RouteResult(None, "cannot_answer", False, error, self._misses())
 
     def _stand_in(self, name: str, args: dict) -> RouteResult:
         """D49: an LLM answers a tool with no code and no recording, and the Run is Assisted."""
@@ -222,7 +360,8 @@ class Router:
         reply = self.stand_in.query([{"role": "user", "content": prompt}])
         return RouteResult(_parsed(reply.content), "llm", True, None, self._misses())
 
-    def _error(self, name: str, error_class: str, message: str, sample: Any = None) -> RouteResult:
+    def _error(self, name: str, error_class: str, message: str, sample: Any = None,
+               route: str = "code") -> RouteResult:
         """D45: answered in the customer's own error encoding, taken from ToolSig.error_shapes.
 
         `sample` is the corpus's own payload for this class on this tool, used in place of the
@@ -236,7 +375,149 @@ class Router:
         else:
             payload = message if encoding == "text" else {"error": message, "class": error_class}
         error = ToolCallError(class_=error_class, payload=payload, encoding=encoding, classified_by="code")
-        return RouteResult(payload, "code", False, error, self._misses())
+        return RouteResult(payload, route, False, error, self._misses())
+
+
+def _freeze(value: Any) -> tuple[str, Any]:
+    """Snapshot one store as bytes when it round trips through JSON, else as plain objects.
+
+    The success path pays only the serialise; the bytes are parsed back solely on rollback, which
+    almost never happens. A pydantic db serialises through its own Rust encoder. Where serialising
+    fails (a value JSON cannot carry, like a set), the snapshot falls back to a deep copy, which
+    restores by replacement with no aliases back into the live world.
+    """
+    try:
+        if hasattr(value, "model_dump_json"):
+            return ("json", value.model_dump_json().encode("utf-8"))
+        return ("json", json.dumps(value).encode("utf-8"))
+    except (TypeError, ValueError):
+        return ("deepcopy", copy.deepcopy(value))
+
+
+def _thaw(snapshot: Any) -> Any:
+    """Parse a frozen snapshot back to plain data. Runs only on rollback, never per call."""
+    if snapshot is None:
+        return None
+    kind, payload = snapshot
+    return json.loads(payload) if kind == "json" else payload
+
+
+def _snapshot_world(tools: Any, state: StateView) -> tuple[Any, Any, Any, Any]:
+    """The world before one body runs, frozen: the toolkit db and the whole StateView.
+
+    Two snapshots, not one: the toolkit db and the StateView shared world are different objects
+    (model rows beside plain rows) and a body can move either one, so one snapshot cannot cover
+    both. Frozen, not aliased: a snapshot that shared objects with the live world would move with
+    it and restore nothing. No mined tool kind is trusted to skip the snapshot.
+    """
+    db = getattr(tools, "db", None)
+    return (_freeze(db) if db is not None else None, _freeze(state.shared),
+            _freeze(state.overlay), _freeze(state.overlay_misses))
+
+
+def _restore_world(tools: Any, state: StateView, snapshot: tuple[Any, Any, Any, Any]) -> None:
+    """Roll one body's writes back: the toolkit db and the StateView as the call found them.
+
+    The whole StateView: the shared world, the overlay pins and the miss list. A body reaches
+    all three through the state it is handed, so restoring only the shared world would let a
+    failed body's pins and marks leak into later calls. Thawing parses the bytes, so it runs
+    only here, on the rare rollback, and never on the per call path.
+    """
+    db_snapshot, shared_snapshot, overlay_snapshot, misses_snapshot = snapshot
+    state.shared.clear()
+    state.shared.update(_thaw(shared_snapshot))
+    state.overlay.clear()
+    state.overlay.update(_thaw(overlay_snapshot))
+    state.overlay_misses[:] = _thaw(misses_snapshot)
+    _restore_db(getattr(tools, "db", None), _thaw(db_snapshot))
+
+
+def _prune_added(current: dict, snapshot: dict) -> None:
+    """Drop the rows a body added: everything the snapshot never held."""
+    for key in [key for key in current if key not in snapshot]:
+        del current[key]
+
+
+def _restore_plain_db(db: dict, snapshot: dict) -> None:
+    """Put a plain dict db back: added tables removed, added rows dropped, kept rows reset."""
+    for table in [key for key in db if key not in snapshot]:
+        del db[table]
+    for table, rows in snapshot.items():
+        current = db.get(table)
+        if isinstance(current, dict) and isinstance(rows, dict):
+            _prune_added(current, rows)
+            current.update(rows)
+        else:
+            db[table] = rows
+
+
+def _restore_model_table(db: Any, table: str, rows: Any) -> None:
+    """Put one table of a pydantic db back, its row classes rebuilt as `_db_put` builds them.
+
+    A body that replaced the table with a plain value or deleted it gets a fresh dict, so the
+    corruption does not survive the rollback and later bodies read rows by attribute again.
+    """
+    if not isinstance(rows, dict):
+        return
+    current = getattr(db, table, None)
+    if not isinstance(current, dict):
+        current = {}
+        setattr(db, table, current)
+    _prune_added(current, rows)
+    model = _row_model(db, table)
+    for row_id, row in rows.items():
+        current[row_id] = model.model_validate(_plain(row)) if model is not None else row
+
+
+def _restore_db(db: Any, snapshot: Any) -> None:
+    """Put a toolkit db back to its snapshot: added rows go, removed rows return, changed rows reset.
+
+    A pydantic db gets its row classes back through the same model lookup `_db_put` uses, so a
+    later body still reads rows by attribute. A plain dict db already holds plain rows, so its
+    snapshot values land as they are and tables the snapshot never held are removed outright.
+    """
+    if isinstance(db, BaseModel) and isinstance(snapshot, type(db)):
+        db.__setstate__(copy.deepcopy(snapshot.__getstate__()))
+        return
+    if db is None or snapshot is None or not isinstance(snapshot, dict):
+        return
+    if isinstance(db, dict):
+        _restore_plain_db(db, snapshot)
+        return
+    for table, rows in snapshot.items():
+        _restore_model_table(db, table, rows)
+    _clear_added_tables(db, snapshot)
+
+
+def _clear_added_tables(db: Any, snapshot: dict) -> None:
+    """Drop what a body added past the snapshot: unknown tables emptied, unknown attrs removed."""
+    for table in (getattr(type(db), "model_fields", {}) or {}):
+        current = getattr(db, table, None)
+        if table not in snapshot and isinstance(current, dict):
+            current.clear()
+    _drop_unknown_attrs(db, snapshot)
+
+
+def _drop_unknown_attrs(db: Any, snapshot: dict) -> None:
+    """Remove the non field attributes a body set past the snapshot."""
+    fields = set(getattr(type(db), "model_fields", {}) or {})
+    for name in [key for key in vars(db) if key not in snapshot and key not in fields
+                 and not key.startswith("_")]:
+        try:
+            delattr(db, name)
+        except AttributeError:
+            pass
+
+
+def refuse_stand_in(router: Any) -> None:
+    """A Run that will be scored can never be given a model stand-in (G28).
+
+    The scoring callers call this on the Router they built: a Router carrying a stand-in is
+    refused loudly instead of merely going unused, so no scored Run can ever be answered by
+    a model. The stand-in class itself stays for unlisted tools off the scoring path (D49).
+    """
+    if getattr(router, "stand_in", None) is not None:
+        raise ValueError("a scored Run cannot use a Router carrying a model stand-in (G28)")
 
 
 def _has_tool_markers(tools: Any) -> bool:

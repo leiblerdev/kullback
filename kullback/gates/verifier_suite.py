@@ -29,23 +29,17 @@ it builds its atoms with `make_atom` from here, wrapping a Hard predicate with `
 from __future__ import annotations
 
 import ast
-import json
-import re
 from typing import Any, Callable, Iterable, Optional
 
-from kullback.runner.canon import CanonRules, canon_value
-from kullback.runner.confinement import SAFE_BUILTINS, confine
+from kullback.runner import target as _target
 from kullback.runner.records import (
     Atom,
-    Event,
     GateResult,
-    RawPtr,
     Run,
     UserRules,
     Verifier,
     as_dict,
     canonical_json,
-    load_run_jsonl,
 )
 
 # loop.py's own stop reasons are in here: a re-run that ran to the end without a Simulated user
@@ -53,11 +47,11 @@ from kullback.runner.records import (
 # Success is properly the caller's to say (`successful_run_ids`); this list is the fallback.
 SUCCESS_TERMINATIONS = frozenset({"success", "stop", "user_stop", "agent_stop", "task_complete",
                                   "completed", "done"})
-AFFIRMATIONS = ("yes", "yeah", "yep", "sure", "please do", "go ahead", "confirm", "correct", "ok", "okay")
-_TOKEN = re.compile(r"[#$]?[A-Za-z0-9][A-Za-z0-9_./#-]*")
-_WORD = re.compile(r"[A-Za-z0-9#$€£¥._/-]+")
+AFFIRMATIONS = _target.AFFIRMATIONS  # moved to kullback/runner/target.py (G3), imported here
+_TOKEN = _target._TOKEN  # moved to kullback/runner/target.py (G3), imported here
+_WORD = _target._WORD  # moved to kullback/runner/target.py (G3), imported here
 # canon.py's default currency symbols (D39); a word starting with one is also the bare number.
-CURRENCY = "".join(CanonRules().currency_symbols)
+CURRENCY = _target.CURRENCY  # moved to kullback/runner/target.py (G3), imported here
 # What check 8 puts in an atom's place: a value no Run of the customer's world produced.
 _MUTANT = "harness_mutation_no_such_value"
 _NEVER_HOLDS = "def check(pre_state, write_call, transcript):\n    return False\n"
@@ -156,309 +150,92 @@ def predicate_args(case: Any) -> tuple[dict, dict, list]:
 
 # --- reading Runs off disk (D91) ------------------------------------------
 
-def load_run(path: Any) -> Run:
-    """Read one Run from a JSONL of events (header or footer lines included) or from a whole-Run JSON.
-
-    `records.load_run_jsonl` is the reader, the same one verdict.py calls: loop.py writes the
-    Starting and End state on a trailing footer line, which is not a `Run` field, and those keys
-    become a stop event, so a Hard rule that reads the state sees it here too. The suite kept its
-    own copy while derivation sat on the far side of the D89 boundary; this package imports the
-    records directly, so one reader is enough.
-    """
-    return load_run_jsonl(path)
+load_run = _target.load_run  # moved to kullback/runner/target.py (G3), imported here
 
 
-def as_run(obj: Any) -> Run:
-    return obj if isinstance(obj, Run) else load_run(obj)
+as_run = _target.as_run  # moved to kullback/runner/target.py (G3), imported here
 
 
 # --- events ----------------------------------------------------------------
 
-def _payload(event: Event) -> dict:
-    return event.payload or {}
+_payload = _target._payload  # moved to kullback/runner/target.py (G3), imported here
 
 
-def _reply(event: Event) -> dict:
-    """A model_call's assistant message, whether the payload nests it under `reply` or not."""
-    payload = _payload(event)
-    return payload.get("reply") if isinstance(payload.get("reply"), dict) else payload
+_reply = _target._reply  # moved to kullback/runner/target.py (G3), imported here
 
 
-def _assistant_text(event: Event) -> str:
-    return str(_reply(event).get("content") or "") if event.type == "model_call" else ""
+_assistant_text = _target._assistant_text  # moved to kullback/runner/target.py (G3), imported here
 
 
-def _user_text(event: Event) -> str:
-    return str(_payload(event).get("content") or _payload(event).get("text") or "")
+_user_text = _target._user_text  # moved to kullback/runner/target.py (G3), imported here
 
 
-def _entity(args: dict, fn: Callable) -> tuple[str, Any, str]:
-    """The id a write acts on: its field, its raw value and its canonical form.
-
-    A scalar id wins over a list of ids, so tau2's `exchange_delivered_order_items` keys on
-    `order_id` and not on `item_ids`, whose order two equally good Runs may differ on.
-    """
-    named = [f for f in sorted(args) if f in ("id", "ids") or f.endswith(("_id", "_ids"))]
-    scalar = [f for f in named if not isinstance(args[f], (list, tuple, dict))]
-    field = next(iter(scalar + named), "")
-    return (field, args[field], text_of(fn(args[field]))) if field else ("", None, "")
+_entity = _target._entity  # moved to kullback/runner/target.py (G3), imported here
 
 
-def ptr(run: Run, idx: Optional[int]) -> RawPtr:
-    return RawPtr(file_hash=run.trace_id or run.run_id, msg_index=idx)
+ptr = _target.ptr  # moved to kullback/runner/target.py (G3), imported here
 
 
-def resolve_write_tools(runs: Iterable[Run], write_tools: Optional[Iterable[str]] = None) -> set[str]:
-    """The write tools the caller named, plus any tool a Run's own event marked as a write."""
-    tools = set(write_tools or ())
-    for run in runs:
-        for event in run.events:
-            marked = _payload(event).get("kind") == "write" or _payload(event).get("is_write") is True
-            if event.type == "tool_call" and marked:
-                tools.add(str(_payload(event).get("name") or ""))
-    tools.discard("")
-    return tools
+resolve_write_tools = _target.resolve_write_tools  # moved to kullback/runner/target.py (G3), imported here
 
 
-def _args(event: Event) -> dict:
-    return _payload(event).get("args") or _payload(event).get("arguments") or {}
+_args = _target._args  # moved to kullback/runner/target.py (G3), imported here
 
 
-def run_calls(run: Run) -> list[dict]:
-    """Every tool call of the Run with the error its result carried, paired by call id (D67)."""
-    out: list[dict] = []
-    for pos, event in enumerate(run.events):
-        if event.type == "tool_call":
-            out.append({"i": len(out), "pos": pos, "idx": event.idx, "id": _payload(event).get("id"),
-                        "name": str(_payload(event).get("name") or ""), "error": None,
-                        "requestor": _payload(event).get("requestor"), "args": _args(event)})
-        elif event.type == "tool_result":
-            for call in reversed(out):
-                if _payload(event).get("id") in (None, call["id"]):
-                    call["error"] = _payload(event).get("error")
-                    break
-    return out
+run_calls = _target.run_calls  # moved to kullback/runner/target.py (G3), imported here
 
 
-def write_effects(run: Run, write_tools: set[str], fn: Callable) -> dict[str, dict]:
-    """The Run's write set: one entry per write call that succeeded, keyed by tool, entity and repeat.
-
-    A call whose result carried an error changed nothing (D67), so it is not an effect and never
-    becomes an atom the next Run has to reproduce.
-    """
-    out: dict[str, dict] = {}
-    for call in run_calls(run):
-        if call["name"] not in write_tools or call["error"]:
-            continue
-        args = call["args"]
-        id_field, entity_raw, entity = _entity(args, fn)
-        key = base = f"{call['name']}|{entity}"
-        repeat = 1
-        while key in out:
-            repeat += 1
-            key = f"{base}|{repeat}"
-        out[key] = {"tool": call["name"], "entity": entity, "entity_raw": entity_raw,
-                    "id_field": id_field, "requestor": call["requestor"], "pos": call["pos"],
-                    "idx": call["idx"], "args": args,
-                    "values": {f: _key(fn, v) for f, v in args.items()}}
-    return out
+write_effects = _target.write_effects  # moved to kullback/runner/target.py (G3), imported here
 
 
 # --- canonicalization and text matching ------------------------------------
 
-def canon_fn(canon: Any) -> Callable[[Any], Any]:
-    """canon.py's rules by default (D39); a caller may pass the module or its own callable.
-
-    The default used to be the identity, so a Verifier derived without an explicit canon compared
-    raw values while the Runner compared canonical ones. There is one canonicalizer; this is it.
-
-    The customer's own CanonRules are accepted here as well, and bound to that one canonicalizer.
-    They used to fall through to the module defaults, because a CanonRules is neither callable nor a
-    module, so a Verifier ignored the rules learned from the customer's own corpus (D39).
-    """
-    if canon is None:
-        return canon_value
-    if isinstance(canon, CanonRules):
-        return lambda value: canon_value(value, rules=canon)
-    for attr in ("canon_value", "canonicalize", "canonical", "normalize"):
-        if callable(getattr(canon, attr, None)):
-            return getattr(canon, attr)
-    return canon if callable(canon) else canon_value
+canon_fn = _target.canon_fn  # moved to kullback/runner/target.py (G3), imported here
 
 
-def _key(fn: Callable, value: Any) -> str:
-    return canonical_json(fn(value))
+_key = _target._key  # moved to kullback/runner/target.py (G3), imported here
 
 
-def text_of(value: Any) -> str:
-    return value if isinstance(value, str) else canonical_json(value).strip('"')
+text_of = _target.text_of  # moved to kullback/runner/target.py (G3), imported here
 
 
-def _texts(value: Any) -> list[str]:
-    if isinstance(value, (list, tuple)):
-        return [t for item in value for t in _texts(item)]
-    if isinstance(value, dict):
-        return [t for item in value.values() for t in _texts(item)]
-    return [text_of(value)]
+_texts = _target._texts  # moved to kullback/runner/target.py (G3), imported here
 
 
-def _token_in(haystack: str, needle: str) -> bool:
-    """Substring match that will not fire inside a longer word or id."""
-    if not needle or not haystack:
-        return False
-    hay, need = haystack.lower(), needle.lower()
-    start = 0
-    while True:
-        at = hay.find(need, start)
-        if at < 0:
-            return False
-        before = hay[at - 1] if at else " "
-        after = hay[at + len(need)] if at + len(need) < len(hay) else " "
-        if not before.isalnum() and not after.isalnum():
-            return True
-        start = at + 1
+_token_in = _target._token_in  # moved to kullback/runner/target.py (G3), imported here
 
 
-def _words_of(text: str) -> list[str]:
-    """The words a value could hide in, split the way the generated predicates split them.
-
-    "$150" is one word and also the number 150, and the canonicalizer keeps the currency (D39), so
-    both spellings go to it and it decides whether either is the written value.
-    """
-    out = []
-    for word in _WORD.findall(text or ""):
-        word = word.strip("./-")
-        out.append(word)
-        if word[:1] in CURRENCY:
-            out.append(word[1:])
-    return [w for w in out if w]
+_words_of = _target._words_of  # moved to kullback/runner/target.py (G3), imported here
 
 
-def _matches(haystack: str, value: Any, fn: Optional[Callable] = None) -> bool:
-    """Does this text hold the value, verbatim or after canonicalization?
-
-    "$150" and 150.0 are the same value to canon.py (D39), so a user who said one and an agent that
-    wrote the other is user_stated, not agent_chosen.
-    """
-    parts = [t for t in _texts(value) if t]
-    if not parts:
-        return False
-    if all(_token_in(haystack, part) for part in parts):
-        return True
-    if fn is None:
-        return False
-    words = {str(fn(word)) for word in _words_of(haystack) if word}
-    return all(str(fn(part)) in words for part in parts)
+_matches = _target._matches  # moved to kullback/runner/target.py (G3), imported here
 
 
-def _tokens(text: str) -> list[str]:
-    """The id-shaped and numeric tokens of a message: the facts an answer can state."""
-    out = []
-    for token in _TOKEN.findall(text or ""):
-        token = token.rstrip("./-") if token.startswith(("#", "$")) else token.strip("./-#")
-        if len(token) > 1 and any(c.isdigit() for c in token):
-            out.append(token)
-    return out
+_tokens = _target._tokens  # moved to kullback/runner/target.py (G3), imported here
 
 
 # --- provenance (D42) ------------------------------------------------------
 
-def classify_provenance(run: Run, write_pos: int, value: Any, fn: Optional[Callable] = None):
-    """Where a written value came from, with the span that evidences it (D42).
-
-    D42 makes this an audited LLM call; this is the code half of it, and the model half is on the
-    todo list, so a value only a person would recognise as quoted is still agent_chosen here.
-    """
-    for pos in range(0, write_pos):
-        event = run.events[pos]
-        if event.type == "user_turn" and _matches(_user_text(event), value, fn):
-            elicited = _preceded_by_question(run, pos)
-            return ("user_elicited" if elicited else "user_stated"), ptr(run, event.idx)
-    for pos in range(0, write_pos):
-        event = run.events[pos]
-        if event.type == "tool_result" and _matches(canonical_json(_payload(event).get("result")), value, fn):
-            return "system_derived", ptr(run, event.idx)
-    return "agent_chosen", ptr(run, run.events[write_pos].idx if write_pos < len(run.events) else None)
+classify_provenance = _target.classify_provenance  # moved to kullback/runner/target.py (G3), imported here
 
 
-def _preceded_by_question(run: Run, user_pos: int) -> bool:
-    """Did the agent ask something just before this user turn? Then the answer was elicited, not stated."""
-    for pos in range(user_pos - 1, -1, -1):
-        event = run.events[pos]
-        if event.type == "user_turn":
-            return False
-        if event.type == "model_call" and _assistant_text(event):
-            return "?" in _assistant_text(event)
-    return False
+_preceded_by_question = _target._preceded_by_question  # moved to kullback/runner/target.py (G3), imported here
 
 
-def _next_user(run: Run, pos: int) -> Optional[int]:
-    return next((later for later in range(pos + 1, len(run.events)) if run.events[later].type == "user_turn"), None)
+_next_user = _target._next_user  # moved to kullback/runner/target.py (G3), imported here
 
 
 # --- questions and communicate facts (D43) --------------------------------
 
-def question_keys(run: Run, effects: dict, fn: Callable) -> dict[str, dict]:
-    """The questions this Run asked, keyed so the same question is recognisable in another Run.
-
-    Each key carries the write it belongs to, so the atom's predicate can bind the written value to
-    the user's own reply in the Candidate's Run (D43) instead of trusting the field name.
-    """
-    out: dict[str, dict] = {}
-    for effect in effects.values():
-        for field, value in effect["args"].items():
-            kind, span = classify_provenance(run, effect["pos"], value, fn)
-            if kind == "user_elicited":
-                out.setdefault(f"field:{field}", {"span": span, "tool": effect["tool"], "field": field})
-    for pos, event in enumerate(run.events):
-        reply_pos = _next_user(run, pos) if "?" in _assistant_text(event) else None
-        if reply_pos is None:
-            continue
-        answer = _user_text(run.events[reply_pos]).strip().lower()
-        if not any(answer.startswith(word) for word in AFFIRMATIONS):
-            continue
-        for effect in effects.values():
-            if effect["pos"] > reply_pos:
-                out.setdefault(f"confirm:{effect['tool']}",
-                               {"span": ptr(run, run.events[reply_pos].idx), "tool": effect["tool"],
-                                "field": None})
-    return out
+question_keys = _target.question_keys  # moved to kullback/runner/target.py (G3), imported here
 
 
-def communicate_values(run: Run, fn: Callable) -> dict[str, dict]:
-    """Facts read from the world that the Run's answers state back to the user.
-
-    Every answer turn counts, not the closing one alone: a recorded conversation usually ends with a
-    farewell after the user's thanks, and the facts were stated the turn before. The second retail
-    build derived no communicate atom for 25 read-only Tasks this way, and each of their Verifiers
-    was one write cap an empty Run passes. The Runner's `communicated()` reads every assistant turn
-    too, so the atom and its check agree on where a fact may be said.
-    """
-    out: dict[str, dict] = {}
-    answers = [(pos, _assistant_text(e)) for pos, e in enumerate(run.events)
-               if _assistant_text(e) and not _reply(e).get("tool_calls")]
-    results = [(pos, canonical_json(_payload(e).get("result")))
-               for pos, e in enumerate(run.events) if e.type == "tool_result"]
-    for answer_pos, text in answers:
-        for token in _tokens(text):
-            for pos, blob in results:
-                if pos < answer_pos and _token_in(blob, token):
-                    out.setdefault(_key(fn, token), {"text": token, "span": ptr(run, run.events[pos].idx)})
-                    break
-    return out
+communicate_values = _target.communicate_values  # moved to kullback/runner/target.py (G3), imported here
 
 
 # --- atoms: the payload and the predicate vocabulary -----------------------
 
-def atom_payload(atom: Atom) -> dict:
-    """The structured target an Atom carries; an atom stored before `target` existed is decoded."""
-    if atom.target:
-        return dict(atom.target)
-    try:
-        loaded = json.loads(atom.predicate_src or "{}")
-    except (TypeError, ValueError):
-        return {}
-    return loaded if isinstance(loaded, dict) else {}
+atom_payload = _target.atom_payload  # moved to kullback/runner/target.py (G3), imported here
 
 
 # The pieces every generated predicate shares: value matching that agrees with the Builder's own
@@ -624,88 +401,16 @@ def check():
 """
 
 
-def start_state(run: Run) -> dict:
-    """The Starting state the Run's stop event carries, which is what a Hard rule reads."""
-    for event in run.events:
-        if event.type == "stop" and isinstance(_payload(event).get("start_state"), dict):
-            return _payload(event)["start_state"]
-    return {}
+start_state = _target.start_state  # moved to kullback/runner/target.py (G3), imported here
 
 
-def _result_turn(event: Event) -> dict:
-    """One tool result as a turn: what the Run was handed, under `result`, with no content of its own.
-
-    D206 needs a rule to be able to ask what the Run had already read when it wrote, and a rule that
-    cannot see a result can only ask about the row. The content stays None and the role is neither
-    user nor assistant, so every helper and every rule written before this one reads the turn as it
-    read the tool-call turns that already carry no content: `user_confirmed` looks for the last user
-    turn and the assistant turn before it, `said_before` reads assistant turns, `_elicited` skips a
-    turn with no content, and `_before` counts calls. One turn per result, in event order, so a rule
-    handed the turns before a call sees exactly the results that call came after.
-    """
-    return {"role": "tool", "content": None, "result": _payload(event).get("result"), "tool_calls": []}
+_result_turn = _target._result_turn  # moved to kullback/runner/target.py (G3), imported here
 
 
-def _transcript(run: Run) -> list[dict]:
-    """The Run as a policy predicate reads it: role, content, results and tool calls, in event order."""
-    out: list[dict] = []
-    for event in run.events:
-        if event.type == "model_call" and _assistant_text(event):
-            out.append({"role": "assistant", "content": _assistant_text(event), "tool_calls": []})
-        elif event.type == "user_turn":
-            out.append({"role": "user", "content": _user_text(event), "tool_calls": []})
-        elif event.type == "tool_call":
-            out.append({"role": "assistant", "content": None, "tool_calls": [
-                {"name": str(_payload(event).get("name") or ""),
-                 "arguments": _payload(event).get("args") or _payload(event).get("arguments") or {}}]})
-        elif event.type == "tool_result":
-            out.append(_result_turn(event))
-    return out
+_transcript = _target._transcript  # moved to kullback/runner/target.py (G3), imported here
 
 
-def hard_holds(atom: Atom, run: Run, write_tools: Optional[set[str]] = None,
-                fn: Optional[Callable] = None) -> Optional[bool]:
-    """Does this compiled Hard constraint hold over the Run? None when it judged nothing (D76, D173).
-
-    None is "no answer", and there are two ways to have none: the atom is not code (a judge atom,
-    D76), or the rule was asked about no call at all, which is every Run of a Task whose frontier
-    only ever read. The wrapper's `check()` returns True in that second case because that is what
-    the Verdict needs, so the count of calls it judged is read back off the namespace here rather
-    than inferred from the answer. A caller must not report None as "the constraint held": nothing
-    was checked, and on a read-only Run no compiled constraint is checked at all.
-
-    A predicate that raises is a Verifier defect and returns False, so the D79 oracle check reports
-    it; returning None used to read as "the constraint held" and hid a rule that never ran. A
-    predicate `confine` refuses is the same kind of defect: it is never given the chance to run.
-    Restricting the namespace's __builtins__ is not enough on its own, which is why the source is
-    certified first: ().__class__.__base__.__subclasses__() walks every loaded class and reaches
-    sys.modules whatever the mapping carries. The mapping is a fresh copy of the one allowlist
-    (runner/confinement.py's, the same one verdict.py's atom gate runs under, so the two gates a
-    Hard constraint's source passes through cannot drift): a predicate that mutates what it is
-    handed changes its own copy and not what the next predicate in this process runs under.
-    """
-    source = atom.predicate_src
-    if not source or atom.judge:
-        return None
-    if confine(source):
-        return False
-    calls = [dict(call) for call in run_calls(run)]
-    tools = set(write_tools or ())
-    namespace: dict = {"__builtins__": dict(SAFE_BUILTINS), "start_state": start_state(run),
-                       "transcript": _transcript(run), "calls": calls, "canon": fn or canon_value,
-                       "write_calls": lambda: [c for c in calls if c["name"] in tools and not c["error"]]}
-    try:
-        exec(compile(source, "<hard>", "exec"), namespace)  # noqa: S102
-        check = namespace.get("check")
-        if check is None:
-            return None
-        held = bool(check())
-        judged = namespace.get("judged")
-        # An atom stored before `judged` existed answers as it always did; a rule that judged a call
-        # and failed on it is a real False whatever the count says.
-        return None if held and callable(judged) and not judged() else held
-    except Exception:
-        return False
+hard_holds = _target.hard_holds  # moved to kullback/runner/target.py (G3), imported here
 
 
 
@@ -720,13 +425,13 @@ def _write_fields(payload: dict) -> dict:
 
 
 def _predicate(payload: dict, helpers: str = "") -> str:
-    """One atom target as source in the Runner's atom vocabulary (verdict.py evaluates this).
+    """One atom target as source in the Runner's atom vocabulary.
 
-    The predicate has to express the same check as the target: the D79 suite scores Runs off the
-    target and the Verdict scores them off this source, so anything the target says and the source
-    leaves out is a hole no gate can see. `helpers` is the transcript helper source a compiled Hard
-    rule may call (policy.py's, passed by the derivation); a gate that only needs a rule that never
-    holds passes none.
+    Stored on every atom for now and read only for Hard rules, which are compiled policy
+    source by nature. Every other atom is scored off its structured target by the one
+    interpreter in kullback/runner/target.py, which the Verdict and the gates both call (G3).
+    `helpers` is the transcript helper source a compiled Hard rule may call (policy.py's,
+    passed by the derivation); a gate that only needs a rule that never holds passes none.
     """
     kind = payload.get("kind")
     if kind in ("write", "write_value"):
@@ -763,102 +468,19 @@ def make_atom(atom_id: str, kind: str, payload: dict, *, helpers: str = "", **fi
 
 # --- scoring a Run against the atoms (the gates' side; verdict.py has its own, D91) ---
 
-def verifier_write_tools(verifier: Verifier) -> set[str]:
-    return {p["tool"] for p in map(atom_payload, verifier.atoms) if p.get("tool")}
+verifier_write_tools = _target.verifier_write_tools  # moved to kullback/runner/target.py (G3), imported here
 
 
-def scored_write_tools(verifier: Verifier, run: Run, write_tools: Optional[Iterable[str]] = None) -> set[str]:
-    """The tools whose calls count as writes when scoring this Run.
-
-    A caller with the mined write tools (mine.py's classification) is the authority and is taken as
-    given, so this scorer and the Verdict count the same calls. With no caller set, the Verifier's
-    own atoms are not enough on their own: a Run that called a write tool the Reference never used
-    would be scored as if it had written nothing, so the Run's own event marking is read too.
-    """
-    if write_tools:
-        return set(write_tools)
-    return resolve_write_tools([run], verifier_write_tools(verifier))
+scored_write_tools = _target.scored_write_tools  # moved to kullback/runner/target.py (G3), imported here
 
 
-def names_no_row(payload: dict) -> bool:
-    """Is this write atom about the tool rather than about one row?
-
-    A write payload that names no entity, no raw entity and no id field carries the predicate
-    `wrote(tool)` with no fields, which the Runner satisfies with any successful call of the tool and
-    marks every one of them covered. The scorer here has to read the same atom the same way or the
-    two would disagree about the very Runs the D79 gates are made of: a Verifier the gates rejected
-    for a row it never wrote would be passed by the Verdict. It is the shape an over-specific write
-    atom is relaxed to (D205), and it is the shape the derivation writes whenever a write leaves no
-    id field behind, so nothing about it belongs to one relaxation.
-    """
-    return not (payload.get("entity") or payload.get("entity_raw") or payload.get("id_field"))
+names_no_row = _target.names_no_row  # moved to kullback/runner/target.py (G3), imported here
 
 
-def check_run(verifier: Verifier, run: Any, canon: Any = None, *,
-              write_tools: Optional[Iterable[str]] = None) -> tuple[bool, Optional[str]]:
-    """Does this Run satisfy the atoms? Used by the D79 checks below, never by the Runner."""
-    fn = canon_fn(canon)
-    run = as_run(run)
-    tools = scored_write_tools(verifier, run, write_tools)
-    effects = write_effects(run, tools, fn)
-    present = {(e["tool"], e["entity"]) for e in effects.values()}
-    wrote_with = {e["tool"] for e in effects.values()}
-    values = {(e["tool"], e["entity"], f, v) for e in effects.values() for f, v in e["values"].items()}
-    asked, said = set(question_keys(run, effects, fn)), set(communicate_values(run, fn))
-    for atom in verifier.atoms:
-        payload = atom_payload(atom)
-        kind = payload.get("kind")
-        target = (payload.get("tool"), payload.get("entity"))
-        if atom.kind == "forbidden" and kind == "write" and target in present:
-            return False, atom.id
-        if atom.kind == "hard":
-            # A Hard constraint is a gate; the D79 checks have to see it fail on a Run that breaks it.
-            if hard_holds(atom, run, tools, fn) is False:
-                return False, atom.id
-            continue
-        if atom.kind != "required" and kind not in ("question", "communicate"):
-            continue
-        if kind == "write" and (payload.get("tool") not in wrote_with if names_no_row(payload)
-                                else target not in present):
-            return False, atom.id
-        if kind == "write_value" and target + (payload.get("field"), payload.get("value")) not in values:
-            return False, atom.id
-        # The cap counts write calls, which is what the Runner's `writes_count()` counts; counting
-        # entities here let a Run that wrote the same entity twice pass the Builder and fail the Verdict.
-        if kind == "entity_count" and len(effects) > payload.get("count", 0):
-            return False, atom.id
-        if kind == "question" and payload.get("key") not in asked:
-            return False, atom.id
-        if kind == "communicate" and payload.get("value") not in said:
-            return False, atom.id
-    extra = _extra_write(verifier, effects, write_tools)
-    return (True, None) if extra is None else (False, extra)
+check_run = _target.check_run  # moved to kullback/runner/target.py (G3), imported here
 
 
-def _extra_write(verifier: Verifier, effects: dict, write_tools: Optional[Iterable[str]]) -> Optional[str]:
-    """The first write no atom asked for or allowed, named the way the Verdict names it.
-
-    verdict.py fails a Run on a write to a write tool that no atom covers, so a Verifier with no
-    write atom used to pass here and fail there on the very Runs the D79 gates are made of. The
-    check only runs when the caller supplied the mined write tools, which is the same condition
-    the Verdict puts on it (`AtomContext.write_tools is not None`).
-    """
-    if not write_tools:
-        return None
-    covered = set()
-    whole_tool = set()
-    for atom in verifier.atoms:
-        payload = atom_payload(atom)
-        if atom.kind != "forbidden" and payload.get("kind") in ("write", "write_value"):
-            covered.add((payload.get("tool"), payload.get("entity")))
-            if names_no_row(payload):
-                # `wrote(tool)` with no fields marks every call of the tool covered on the Runner's
-                # side, so an atom about the tool covers every row it wrote here too.
-                whole_tool.add(payload.get("tool"))
-    for effect in effects.values():
-        if effect["tool"] not in whole_tool and (effect["tool"], effect["entity"]) not in covered:
-            return f"extra_write:{effect['tool']}"
-    return None
+_extra_write = _target._extra_write  # moved to kullback/runner/target.py (G3), imported here
 
 
 # --- D79 validation --------------------------------------------------------
@@ -910,14 +532,33 @@ def validate_verifier(verifier: Verifier, reference_run: Any, empty_run: Any = N
     def scored(run):
         return score(verifier, run)
 
+    def oracle_scored(run):
+        """The oracle plus admission: a Hard defect fails the Verifier, never the Run.
+
+        check_run passes a Run over a defective Hard rule (it is not a Candidate failure),
+        so the oracle asks the extra question the reward must not: did every Hard rule run.
+        A defective rule fails admission here while probes, trust and loosening keep scoring
+        the Run a pass through check_run.
+        """
+        passed, failing = score(verifier, run)
+        if not passed:
+            return passed, failing
+        fn = canon_fn(canon)
+        tools = scored_write_tools(verifier, as_run(run), write_tools)
+        for atom in verifier.atoms:
+            if atom.kind == "hard" and _target.hard_defect(atom, as_run(run), tools, fn):
+                return False, atom.id
+        return True, None
+
     return [
         _spans_gate(verifier, runs, canon_fn(canon)),
-        _run_gate("verifier_oracle", scored, reference, expect_pass=True),
+        _run_gate("verifier_oracle", oracle_scored, reference, expect_pass=True),
         _run_gate("verifier_empty_run", scored,
-                  empty_run if empty_run is not None else _empty_run(reference), expect_pass=False),
-        _run_gate("verifier_wrong_run", scored, wrong_run, expect_pass=False),
+                  empty_run if empty_run is not None else _empty_run(reference), expect_pass=False,
+                  atoms=verifier.atoms),
+        _run_gate("verifier_wrong_run", scored, wrong_run, expect_pass=False, atoms=verifier.atoms),
         _run_gate("verifier_unfinished_run", scored, unfinished_run(verifier, reference, canon),
-                  expect_pass=False),
+                  expect_pass=False, atoms=verifier.atoms),
         _run_gate("verifier_alt_path", scored, alt_path_run, expect_pass=True, missing=ALT_PATH_NOT_RUN),
         loophole_probe(verifier, model, run_probe=run_probe, canon=canon, write_tools=write_tools),
         _leak_gate(verifier, reference, intent_text, user_rules, runs.values(), intent),
@@ -1084,13 +725,21 @@ def _spans_gate(verifier: Verifier, runs: dict[str, Run], fn: Callable) -> GateR
                       metrics={"atoms_checked": checked}, failures=failures)
 
 
+# An expected-fail Run passed a Verifier none of whose atoms check_run evaluates (F37).
+NO_ATOM_CHECKED = "no atom of the Verifier is one a Run is checked on, so no Run can fail it"
+
+
 def _run_gate(stage: str, scored: Callable, run: Any, *, expect_pass: bool,
-              missing: str = "no Run was supplied for this check") -> GateResult:
+              missing: str = "no Run was supplied for this check",
+              atoms: Iterable[Atom] = ()) -> GateResult:
     """Checks 2 to 5: one Run, one expected outcome. No Run, no evidence, so no pass.
 
     A check with no Run is still a failure, and `missing` says which kind it is: the second path is
     missing because the Task has one Reference and not because the Verifier turned a second path
     away, and a reader that cannot tell those apart reaches for the wrong repair (D173).
+
+    A Run expected to fail that passed passed every atom check_run evaluates, so the result names
+    those by id and kind as the atoms to change (F37), and never an atom check_run skips.
     """
     if run is None:
         return GateResult(stage=stage, passed=False, metrics={"skipped": True, "not_run_reason": missing},
@@ -1098,8 +747,13 @@ def _run_gate(stage: str, scored: Callable, run: Any, *, expect_pass: bool,
     passed, failing_atom = scored(run)
     want = "pass" if expect_pass else "fail"
     failures = [] if passed is expect_pass else [f"expected {want}, got {'pass' if passed else 'fail'}"]
-    return GateResult(stage=stage, passed=passed is expect_pass, failures=failures,
-                      metrics={"run_passed": passed, "failing_atom": failing_atom})
+    metrics = {"run_passed": passed, "failing_atom": failing_atom}
+    if passed and not expect_pass:
+        checked = _target.evaluated_atoms(atoms)
+        metrics["passing_atoms"] = [{"id": atom.id, "kind": atom.kind} for atom in checked]
+        if not checked:
+            failures.append(NO_ATOM_CHECKED)
+    return GateResult(stage=stage, passed=passed is expect_pass, failures=failures, metrics=metrics)
 
 
 def _mutation_gate(verifier: Verifier, reference: Run, score: Callable, fn: Callable,

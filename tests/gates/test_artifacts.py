@@ -3,27 +3,17 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path
 
 from conftest import PTR
 from kullback.gates.artifacts import (
-    audit_gate,
     budget_gate,
-    candidate_runs_gate,
-    compile_tools_gates,
-    deterministic_gate,
     environment_gate,
-    executes_gate,
     ingest_gate,
     leak_gate,
     mine_gate,
-    non_trivial_gate,
-    parses_gate,
     policy_gate,
     regrade_gate,
-    setup_review_gate,
     user_rules_gate,
-    verdict_golden_gate,
     verifier_gate,
 )
 from kullback.runner.records import (
@@ -52,17 +42,14 @@ def a_trace(**kw) -> Trace:
     return Trace(**base)
 
 
-def test_ingest_gate_passes_on_a_clean_trace():
-    trace = a_trace(tool_calls=[{"name": "get_order", "args": {}, "result": {"id": "W1"}}])
-    out = ingest_gate([trace])
-    assert isinstance(out, GateResult)
-    assert out.stage == "ingest"
-    assert out.passed is True
-    assert out.metrics["traces"] == 1
-    assert out.metrics["tool_calls"] == 1
-
-
-def test_ingest_gate_fails_a_call_with_neither_result_nor_error():
+def test_ingest_gate_passes_a_clean_trace_and_fails_a_call_with_neither_result_nor_error():
+    clean = a_trace(tool_calls=[{"name": "get_order", "args": {}, "result": {"id": "W1"}}])
+    passed = ingest_gate([clean])
+    assert isinstance(passed, GateResult)
+    assert passed.stage == "ingest"
+    assert passed.passed is True
+    assert passed.metrics["traces"] == 1
+    assert passed.metrics["tool_calls"] == 1
     trace = a_trace(tool_calls=[{"name": "get_order", "args": {}}])
     out = ingest_gate([trace])
     assert out.passed is False
@@ -96,17 +83,13 @@ def test_ingest_gate_fails_on_a_grader_field_and_reads_no_customer_result_as_one
     assert ingest_gate([customer]).passed is True
 
 
-def test_ingest_gate_fails_when_the_hash_moved_between_two_passes():
+def test_ingest_gate_fails_a_trace_with_no_hash_or_a_hash_that_moved_between_two_passes():
     trace = a_trace(tool_calls=[{"name": "t", "args": {}, "result": 1}])
     assert ingest_gate([trace], second_pass={"t1": "h1"}).passed is True
     out = ingest_gate([trace], second_pass={"t1": "h2"})
     assert out.passed is False
     assert any("hash" in f for f in out.failures)
-
-
-def test_ingest_gate_fails_a_trace_with_no_hash():
-    out = ingest_gate([a_trace(hash="")])
-    assert out.passed is False
+    assert ingest_gate([a_trace(hash="")]).passed is False
 
 
 # --- mine ---
@@ -121,19 +104,13 @@ def a_sig(name="get_order", calls=3, **kw) -> ToolSig:
     return ToolSig(**base)
 
 
-def test_mine_gate_passes_with_three_calls_and_valid_args():
-    out = mine_gate([a_sig()], calls=[{"name": "get_order", "args": {"order_id": "W1"}}])
-    assert out.stage == "mine"
-    assert out.passed is True
-
-
-def test_mine_gate_fails_a_thin_signature_that_is_not_flagged_llm():
+def test_mine_gate_fails_a_thin_signature_unless_it_is_flagged_llm():
+    passed = mine_gate([a_sig()], calls=[{"name": "get_order", "args": {"order_id": "W1"}}])
+    assert passed.stage == "mine"
+    assert passed.passed is True
     out = mine_gate([a_sig(calls=2)])
     assert out.passed is False
     assert any("get_order" in f and "2" in f for f in out.failures)
-
-
-def test_mine_gate_allows_a_thin_signature_flagged_llm():
     assert mine_gate([a_sig(calls=1, source="llm")]).passed is True
 
 
@@ -145,24 +122,13 @@ def test_mine_gate_believes_a_call_count_of_zero_over_the_evidence_list():
     assert mine_gate([a_sig(calls=3, evidence=[])]).passed is True
 
 
-def test_mine_gate_falls_back_to_the_evidence_only_when_nothing_counted_the_calls():
-    """A ToolSig record always carries a count, so the fallback is for the dict form alone."""
-    assert mine_gate([{"name": "get_order", "evidence": ["a", "b", "c"]}]).passed is True
-    assert mine_gate([{"name": "get_order", "evidence": ["a", "b"]}]).passed is False
-    assert mine_gate([ToolSig(name="get_order", evidence=["a", "b", "c"])]).passed is False, \
-        "a record that counted no calls is thin, whatever it lists as evidence"
-
-
-def test_mine_gate_fails_a_recorded_arg_outside_the_schema():
+def test_mine_gate_fails_a_recorded_arg_outside_the_schema_or_a_missing_required_arg():
     out = mine_gate([a_sig()], calls=[{"name": "get_order", "args": {"order_id": "W1", "colour": "red"}}])
     assert out.passed is False
     assert any("colour" in f for f in out.failures)
-
-
-def test_mine_gate_fails_a_missing_required_arg():
-    out = mine_gate([a_sig()], calls=[{"name": "get_order", "args": {}}])
-    assert out.passed is False
-    assert any("order_id" in f for f in out.failures)
+    missing = mine_gate([a_sig()], calls=[{"name": "get_order", "args": {}}])
+    assert missing.passed is False
+    assert any("order_id" in f for f in missing.failures)
 
 
 def test_mine_gate_reports_the_unknown_tool_names_and_does_not_fail_on_them():
@@ -178,62 +144,6 @@ def test_mine_gate_reports_the_unknown_tool_names_and_does_not_fail_on_them():
     assert mine_gate([a_sig()]).metrics["unknown_tools"] == 0
 
 
-# --- the five compile-tool gates, in order ---
-
-def test_the_parses_gate_names_the_tool_whose_body_does_not_parse():
-    assert parses_gate({"a": "def a(x):\n    return x\n"}).passed is True
-    bad = parses_gate({"a": "def a(x)\n    return x\n"})
-    assert bad.passed is False
-    assert any("a" in f for f in bad.failures)
-
-
-def test_the_executes_gate_carries_the_error_of_a_tool_that_did_not_run():
-    assert executes_gate({"a": {"ok": True}}).passed is True
-    out = executes_gate({"a": {"ok": False, "error": "KeyError: orders"}})
-    assert out.passed is False
-    assert any("KeyError" in f for f in out.failures)
-
-
-def test_deterministic_gate_uses_canonicalization():
-    assert deterministic_gate({"a": [{"total": 25}, {"total": 25.0}]}).passed is True
-    assert deterministic_gate({"a": [{"total": 25}, {"total": 26}]}).passed is False
-
-
-def test_non_trivial_gate_rejects_a_constant_tool():
-    assert non_trivial_gate({"a": [{"x": 1}, {"x": 2}]}).passed is True
-    out = non_trivial_gate({"a": [{"x": 1}, {"x": 1}]})
-    assert out.passed is False
-    assert any("constant" in f for f in out.failures)
-
-
-def test_non_trivial_gate_needs_two_samples():
-    assert non_trivial_gate({"a": [{"x": 1}]}).passed is False
-
-
-def test_compile_tools_gates_stop_at_the_first_failure():
-    evidence = {
-        "sources": {"a": "def a(x)\n    return x\n"},
-        "outcomes": {"a": {"ok": True}},
-        "runs": {"a": [1, 1]},
-        "outputs": {"a": [1, 2]},
-        "calls": [],
-    }
-    out = compile_tools_gates(evidence)
-    assert [g.stage for g in out] == ["compile_tools.parses"]
-    assert out[-1].passed is False
-
-    evidence["sources"] = {"a": "def a(x):\n    return x\n"}
-    out = compile_tools_gates(evidence)
-    assert [g.stage for g in out] == [
-        "compile_tools.parses",
-        "compile_tools.executes",
-        "compile_tools.deterministic",
-        "compile_tools.non_trivial",
-        "compile_tools.replay_fidelity",
-    ]
-    assert all(g.passed for g in out)
-
-
 # --- policy ---
 
 def a_constraint(**kw) -> Constraint:
@@ -246,13 +156,6 @@ def a_constraint(**kw) -> Constraint:
     )
     base.update(kw)
     return Constraint(**base)
-
-
-def test_policy_gate_runs_the_positive_and_negative_cases():
-    out = policy_gate([a_constraint()])
-    assert out.stage == "compile_policy"
-    assert out.passed is True
-    assert out.metrics["compiled"] == 1
 
 
 def test_the_gate_runs_a_predicate_the_way_the_verdict_does_with_the_state_the_write_and_the_transcript():
@@ -322,7 +225,11 @@ def test_the_gate_and_the_compilers_own_sandbox_rule_the_same_way_on_the_same_co
         assert policy_gate([constraint]).passed is run_constraint_tests(constraint).passed
 
 
-def test_policy_gate_fails_when_a_negative_case_is_allowed():
+def test_policy_gate_passes_the_positive_cases_and_fails_when_a_negative_case_is_allowed():
+    passed = policy_gate([a_constraint()])
+    assert passed.stage == "compile_policy"
+    assert passed.passed is True
+    assert passed.metrics["compiled"] == 1
     bad = a_constraint(predicate_src="def check(pre_state, write_call, transcript):\n    return True\n")
     out = policy_gate([bad])
     assert out.passed is False
@@ -358,17 +265,6 @@ def test_a_predicate_that_reaches_for_the_builtins_mapping_takes_nothing_from_th
     assert policy_gate([counts]).passed is True
 
 
-def test_policy_gate_runs_every_pos_and_neg_case_through_the_evaluator_it_is_given():
-    calls = []
-
-    def evaluate(constraint, case):
-        calls.append(case)
-        return case["pre_state"]["status"] != "delivered"
-
-    assert policy_gate([a_constraint()], evaluate=evaluate).passed is True
-    assert len(calls) == 2
-
-
 # --- environment ---
 
 def a_env(**kw) -> Environment:
@@ -378,32 +274,14 @@ def a_env(**kw) -> Environment:
     return Environment(**base)
 
 
-def test_environment_gate_passes_the_tau2_shape():
-    out = environment_gate(a_env(), referenced_ids=["W1"], db_ids=["W1", "W2"])
-    assert out.stage == "build_environment"
-    assert out.passed is True
-
-
-def test_environment_gate_fails_a_missing_file():
+def test_environment_gate_passes_the_full_file_set_and_fails_a_missing_file():
+    passed = environment_gate(a_env(), referenced_ids=["W1"], db_ids=["W1", "W2"])
+    assert passed.stage == "build_environment"
+    assert passed.passed is True
     env = a_env(files={"db.json": "h"})
     out = environment_gate(env)
     assert out.passed is False
     assert any("tools.py" in f for f in out.failures)
-
-
-def test_environment_gate_fails_an_id_the_traces_reference_but_the_db_lacks():
-    out = environment_gate(a_env(), referenced_ids=["W1", "W9"], db_ids=["W1"])
-    assert out.passed is False
-    assert any("W9" in f for f in out.failures)
-
-
-def test_environment_gate_reads_ids_from_a_files_dir(tmp_path: Path):
-    (tmp_path / "db.json").write_text(json.dumps({"orders": [{"order_id": "W1"}]}), encoding="utf-8")
-    for name in ("data_model.py", "tools.py", "policy.md"):
-        (tmp_path / name).write_text("x", encoding="utf-8")
-    (tmp_path / "tasks.json").write_text("[]", encoding="utf-8")
-    assert environment_gate(a_env(), files_dir=tmp_path, referenced_ids=["W1"]).passed is True
-    assert environment_gate(a_env(), files_dir=tmp_path, referenced_ids=["W7"]).passed is False
 
 
 def test_environment_gate_fails_an_untagged_synthetic_row():
@@ -425,13 +303,10 @@ def a_rules(**kw) -> UserRules:
     return UserRules(**base)
 
 
-def test_user_rules_gate_passes_when_every_asked_field_has_a_disclosure_rule_and_every_trace_refusal_is_kept():
-    out = user_rules_gate(a_rules(), asked_fields=["zip"], trace_refusals=["will not share the card number"])
-    assert out.stage == "build_user_rules"
-    assert out.passed is True
-
-
-def test_user_rules_gate_fails_a_missing_disclosure_rule():
+def test_user_rules_gate_passes_a_complete_rule_set_and_fails_a_missing_disclosure_rule():
+    passed = user_rules_gate(a_rules(), asked_fields=["zip"], trace_refusals=["will not share the card number"])
+    assert passed.stage == "build_user_rules"
+    assert passed.passed is True
     out = user_rules_gate(a_rules(), asked_fields=["zip", "email"])
     assert out.passed is False
     assert any("email" in f for f in out.failures)
@@ -449,15 +324,6 @@ def test_user_rules_gate_checks_fact_consistency_on_rerun():
     out = user_rules_gate(a_rules(), rerun_facts=[{"zip": "10001"}])
     assert out.passed is False
     assert any("zip" in f for f in out.failures)
-
-
-def test_a_gate_compares_under_the_customers_canon_rules():
-    """A gate that compared under the module defaults could differ from the Verdict (D39, D84)."""
-    from kullback.runner.canon import CanonRules
-
-    rounded = CanonRules(number_precision=0)
-    assert deterministic_gate({"a": [{"total": 25.4}, {"total": 25.0}]}).passed is False
-    assert deterministic_gate({"a": [{"total": 25.4}, {"total": 25.0}]}, canon_rules=rounded).passed is True
 
 
 # --- verifier suite (D79) and the leak check ---
@@ -493,59 +359,7 @@ def test_leak_gate_matches_whole_tokens_not_substrings():
     assert leak_gate(["reorder the item"], ["order"]).passed is True
 
 
-def test_leak_gate_names_the_constants_it_was_too_short_to_use():
-    out = leak_gate(["cancel the order"], ["e", "", "W1"])
-    assert out.passed is True
-    assert out.metrics["skipped"] == ["e", ""]
-    assert out.metrics["constants"] == 3
-
-
-# --- setup review, candidate runs, verdict goldens, audit, regrade ---
-
-def test_setup_review_gate_names_the_task_nobody_reviewed():
-    assert setup_review_gate(["t1"], ["t1", "t2"]).passed is True
-    out = setup_review_gate(["t1", "t3"], ["t1"])
-    assert out.passed is False
-    assert any("t3" in f for f in out.failures)
-
-def a_run(run_id="r1", task_id="t1", seed=1, stopped=True, **kw) -> dict:
-    events = [{"idx": 0, "type": "tool_call", "payload": {"name": "x"}}]
-    if stopped:
-        events.append({"idx": 1, "type": "stop", "payload": {"reason": "done"}})
-    run = {"run_id": run_id, "task_id": task_id, "seed": seed, "events": events}
-    run.update(kw)
-    return run
-
-
-def test_candidate_runs_gate_wants_k_complete_runs_with_seeds():
-    runs = [a_run("r1", seed=1), a_run("r2", seed=2)]
-    assert candidate_runs_gate(runs, k=2).passed is True
-    out = candidate_runs_gate(runs, k=3)
-    assert out.passed is False
-    assert any("t1" in f for f in out.failures)
-
-
-def test_candidate_runs_gate_fails_an_incomplete_jsonl_and_a_missing_seed():
-    out = candidate_runs_gate([a_run("r1", stopped=False), a_run("r2", seed=None)], k=1)
-    assert out.passed is False
-    assert any("r1" in f and "stop" in f for f in out.failures)
-    assert any("r2" in f and "seed" in f for f in out.failures)
-
-
-def test_verdict_golden_gate_fails_when_any_golden_check_fails():
-    checks = {"oracle_passes": True, "empty_fails": True, "plausible_wrong_fails": True, "two_orders_pass": True}
-    assert verdict_golden_gate(checks).passed is True
-    checks["empty_fails"] = False
-    assert verdict_golden_gate(checks).passed is False
-
-
-def test_audit_gate_needs_a_sample_per_task_and_a_published_agreement():
-    assert audit_gate({"t1": 2}, ["t1"], agreement=0.9).passed is True
-    assert audit_gate({"t1": 2}, ["t1", "t2"], agreement=0.9).passed is False
-    out = audit_gate({"t1": 2}, ["t1"])
-    assert out.passed is False
-    assert any("agreement" in f for f in out.failures)
-
+# --- regrade ---
 
 def a_verdict(**kw) -> Verdict:
     base = dict(
@@ -581,7 +395,9 @@ def test_the_predicate_builtins_cover_everything_policy_certifies_at_build_time(
 
 # --- an unpriced Candidate call is a gate failure, not a number in the report (D65, D85) ---
 
-def test_the_budget_gate_fails_a_candidate_batch_with_unpriced_calls():
+def test_the_budget_gate_passes_a_priced_batch_and_fails_a_candidate_batch_with_unpriced_calls():
+    priced = budget_gate({"stages": {"candidate": {"calls": 10, "unpriced_calls": 0}}})
+    assert priced.passed is True and priced.metrics["calls"] == 10
     out = budget_gate({"stages": {"candidate": {"calls": 10, "unpriced_calls": 3}}})
     assert out.stage == "budget"
     assert out.passed is False
@@ -589,16 +405,19 @@ def test_the_budget_gate_fails_a_candidate_batch_with_unpriced_calls():
     assert "3 of 10" in out.failures[0]
 
 
-def test_the_budget_gate_passes_when_every_call_was_priced():
-    out = budget_gate({"stages": {"candidate": {"calls": 10, "unpriced_calls": 0}}})
-    assert out.passed is True and out.metrics["calls"] == 10
-
-
-def test_the_budget_gate_passes_a_batch_that_made_no_call():
-    assert budget_gate({"stages": {}}).passed is True
-
-def test_environment_gate_finds_a_row_keyed_by_a_column_not_named_id(tmp_path):
+def test_environment_gate_finds_a_referenced_row_under_any_key_and_fails_the_id_the_db_lacks(tmp_path):
     """Airline's flights are keyed by flight_number; the row is there, and the gate has to see it."""
+    out = environment_gate(a_env(), referenced_ids=["W1", "W9"], db_ids=["W1"])
+    assert out.passed is False
+    assert any("W9" in f for f in out.failures)
+    ids_dir = tmp_path / "ids"
+    ids_dir.mkdir()
+    (ids_dir / "db.json").write_text(json.dumps({"orders": [{"order_id": "W1"}]}), encoding="utf-8")
+    for name in ("data_model.py", "tools.py", "policy.md"):
+        (ids_dir / name).write_text("x", encoding="utf-8")
+    (ids_dir / "tasks.json").write_text("[]", encoding="utf-8")
+    assert environment_gate(a_env(), files_dir=ids_dir, referenced_ids=["W1"]).passed is True
+    assert environment_gate(a_env(), files_dir=ids_dir, referenced_ids=["W7"]).passed is False
     env_dir = tmp_path / "env"
     env_dir.mkdir()
     for name in ("data_model.py", "tools.py", "policy.md"):

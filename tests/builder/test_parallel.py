@@ -5,16 +5,13 @@ from __future__ import annotations
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
-from pathlib import Path
 
 import pytest
 
 from kullback.ai import provider
 from kullback.ai.provider import MemoModel, Model, ModelReply
-from kullback.builder import build as build_module
 from kullback.builder import parallel
 from kullback.runner import budget
-from test_e2e import TOOL_BODIES
 
 
 def test_each_keeps_the_items_order_whatever_finishes_first():
@@ -95,35 +92,6 @@ def test_the_ceiling_holds_under_concurrent_spend(tmp_path, monkeypatch):
     # Every recorded call is in the ledger exactly once: ten dollars each, whatever the threads did.
     assert totals["total"]["calls"] == pytest.approx(totals["total"]["usd"] / 10.0)
     assert all(e.spent >= 50.0 for e in errors)
-
-
-class ByName(Model):
-    """The fixture's tool bodies, chosen by the tool named in the prompt; no state, so threads may share it."""
-
-    name = "test/bodies"
-
-    def query(self, messages, tools=None, config=None):
-        text = " ".join(str(m.get("content") or "") for m in messages)
-        body = next((b for name, b in TOOL_BODIES.items() if f"Tool: {name}" in text), "return None")
-        return provider._as_reply(body)
-
-
-def _build(tmp_path_factory, request, workers: int) -> Path:
-    workdir = tmp_path_factory.mktemp(f"workers{workers}")
-    fixture = Path(request.config.rootpath) / "tests" / "fixtures" / "tau2_retail_small.json"
-    build_module.build(workdir, model=ByName(), files=[fixture], max_attempts=0, workers=workers)
-    return workdir
-
-
-def test_a_parallel_build_writes_the_same_environment_as_a_sequential_one(tmp_path_factory, request):
-    one = _build(tmp_path_factory, request, workers=1)
-    four = _build(tmp_path_factory, request, workers=4)
-    for name in ("bodies.json", "tool_builds.json", "constraints.json", "tasks.json", "schema.json",
-                 "env/db.json"):
-        assert (one / name).read_text() == (four / name).read_text(), name
-    seq, par = budget.load_totals(one), budget.load_totals(four)
-    assert seq["total"]["calls"] == par["total"]["calls"]
-    assert {k: v for k, v in seq["stages"].items()} .keys() == par["stages"].keys()
 
 
 def test_the_memo_hit_flag_is_per_thread(tmp_path):

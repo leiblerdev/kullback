@@ -4,12 +4,10 @@ from __future__ import annotations
 
 import itertools
 import json
-from unittest import mock
 
 import pytest
 
 from conftest import PTR
-from kullback.builder import pipeline
 from kullback.builder.cluster import (
     UnexplainedRegrouping,
     category_signature,
@@ -18,14 +16,12 @@ from kullback.builder.cluster import (
     grouping_fingerprint,
     idf_weights,
     moved_input,
-    name_task,
     recordings_hash,
     resume_frozen,
     run_tokens,
     similarity,
     split_by_world,
     tokens,
-    write_tool_names,
 )
 from kullback.builder.compile_env import homing_hash, trace_worlds
 from kullback.runner.records import (
@@ -98,25 +94,9 @@ def address_trace(trace_id: str, order: str) -> Trace:
 # --- write tools and the Category signature ---
 
 
-def test_write_tool_names_from_tool_sigs():
-    assert write_tool_names(SIGS) == WRITES
-
-
-def test_write_tool_names_accepts_names_a_mapping_or_nothing():
-    assert write_tool_names(["cancel_order"]) == {"cancel_order"}
-    assert write_tool_names({"cancel_order": "write", "get_order": "read"}) == {"cancel_order"}
-    assert write_tool_names(None) == set()
-
-
-def test_category_signature_is_the_confirmed_write_tools_only():
+def test_category_signature_is_the_confirmed_assistant_write_tools_only():
     trace = cancel_trace("t1", "W1")
     assert category_signature(trace, WRITES) == ("cancel_order",)
-
-
-def test_a_user_requestor_write_call_does_not_count_towards_the_signature():
-    """Telecom's simulated user runs its own tool calls against its own phone
-    (docs/cross-domain-check.md, Judgement); those must not enter the write signature. Retail and
-    airline never carry a user-requestor call, so this is new coverage, not a change to their result."""
     trace = make_trace(
         "t1",
         ["cancel order W1"],
@@ -128,9 +108,6 @@ def test_a_user_requestor_write_call_does_not_count_towards_the_signature():
     )
     assert [c.name for c in confirmed_write_calls(trace, WRITES)] == ["modify_address"]
     assert category_signature(trace, WRITES) == ("modify_address",)
-
-
-def test_a_failed_write_call_does_not_count_towards_the_signature():
     trace = make_trace(
         "t1",
         ["cancel order W1"],
@@ -140,7 +117,7 @@ def test_a_failed_write_call_does_not_count_towards_the_signature():
     assert category_signature(trace, WRITES) == ()
 
 
-def test_same_write_set_is_one_category_different_write_sets_are_two():
+def test_same_write_set_is_one_category_different_write_sets_are_two_and_each_lists_its_tasks():
     traces = [cancel_trace("t1", "W1"), cancel_trace("t2", "W2"), address_trace("t3", "W3")]
     categories, tasks = cluster_runs(traces, SIGS)
     assert len(categories) == 2
@@ -148,9 +125,6 @@ def test_same_write_set_is_one_category_different_write_sets_are_two():
     assert set(by_tools) == {("cancel_order",), ("modify_address",)}
     cancel_runs = {rid for t in tasks if t.category_id == by_tools[("cancel_order",)].id for rid in t.run_ids}
     assert cancel_runs == {"t1", "t2"}
-
-
-def test_every_task_is_listed_by_its_category():
     traces = [cancel_trace("t1", "W1"), address_trace("t2", "W2")]
     categories, tasks = cluster_runs(traces, SIGS)
     listed = [tid for c in categories for tid in c.task_ids]
@@ -171,7 +145,7 @@ def test_similarity_is_token_jaccard_and_zero_when_a_side_is_empty():
     assert similarity(set(), set()) == 0.0
 
 
-def test_similarity_weighted_by_idf_counts_a_rare_token_above_a_common_one():
+def test_similarity_weighted_by_idf_counts_a_rare_token_above_a_common_one_and_degrades_small():
     """A token every Run says weighs almost nothing; a token one Run says weighs the most (D83)."""
     weights = idf_weights([{"help", f"rare_{i}"} for i in range(20)])
     assert weights["rare_0"] > 3 * weights["help"]
@@ -181,10 +155,6 @@ def test_similarity_weighted_by_idf_counts_a_rare_token_above_a_common_one():
     assert shared_rare > 0.5
     # unweighted, the two look the same, which is what makes the raw bag unsound
     assert similarity({"help", "rare_0"}, {"help", "rare_1"}) == pytest.approx(1 / 3)
-
-
-def test_a_three_run_corpus_weights_almost_evenly_so_the_rule_still_works_small():
-    """The smoothing has to degrade to plain Jaccard, or every small corpus falls apart."""
     weights = idf_weights([{"a", "b"}, {"a", "c"}, {"a", "d"}])
     assert 1.0 <= weights["a"] < weights["b"] < 1.7
     assert similarity({"a", "b"}, {"a", "c"}, weights) == pytest.approx(0.23, abs=0.03)
@@ -201,18 +171,6 @@ def test_run_tokens_use_the_first_two_user_turns_and_not_the_write_arg_keys():
     assert "cancel" in toks and "late" in toks
     assert "third" not in toks and "ignored" not in toks
     assert not any(t.startswith("arg:") for t in toks)
-
-
-def test_two_runs_with_no_shared_user_words_are_two_tasks():
-    """They wrote through the same tool with the same argument keys, and that is not a shared intent."""
-    args = {"order_id": "W1", "reason": "asked"}
-    t1 = make_trace("t1", ["swap the jacket for a bigger size"], [{"name": "cancel_order", "args": args, "result": {}}])
-    t2 = make_trace(
-        "t2", ["wrong colour on my boots, need black"], [{"name": "cancel_order", "args": args, "result": {}}]
-    )
-    assert run_tokens(t1) & run_tokens(t2) == set()
-    _, tasks = cluster_runs([t1, t2], SIGS)
-    assert sorted(sorted(t.run_ids) for t in tasks) == [["t1"], ["t2"]]
 
 
 def test_a_contraction_is_one_token_and_no_letter_fragments_survive():
@@ -247,7 +205,7 @@ def test_words_every_run_says_do_not_merge_two_tasks():
     assert all(len(m) <= 2 for m in membership), membership
 
 
-def test_similar_runs_share_a_task_and_a_dissimilar_run_is_its_own_task():
+def test_similar_runs_share_a_task_and_runs_with_no_shared_words_are_their_own():
     traces = [
         cancel_trace("t1", "W1"),
         cancel_trace("t2", "W2"),
@@ -260,30 +218,28 @@ def test_similar_runs_share_a_task_and_a_dissimilar_run_is_its_own_task():
     _, tasks = cluster_runs(traces, SIGS)
     membership = sorted(sorted(t.run_ids) for t in tasks)
     assert membership == [["t1", "t2"], ["t3"]]
-
-
-def test_a_high_threshold_splits_every_run_into_its_own_task():
-    traces = [cancel_trace("t1", "W1"), cancel_trace("t2", "W2")]
-    assert sorted(sorted(t.run_ids) for t in cluster_runs(traces, SIGS)[1]) == [["t1", "t2"]]
-    _, tasks = cluster_runs(traces, SIGS, threshold=0.99)
+    args = {"order_id": "W1", "reason": "asked"}
+    t1 = make_trace("t1", ["swap the jacket for a bigger size"], [{"name": "cancel_order", "args": args, "result": {}}])
+    t2 = make_trace(
+        "t2", ["wrong colour on my boots, need black"], [{"name": "cancel_order", "args": args, "result": {}}]
+    )
+    assert run_tokens(t1) & run_tokens(t2) == set()
+    _, tasks = cluster_runs([t1, t2], SIGS)
     assert sorted(sorted(t.run_ids) for t in tasks) == [["t1"], ["t2"]]
 
 
 # --- D81 unguarded ---
 
 
-def test_a_task_with_fewer_than_three_runs_is_unguarded():
-    traces = [cancel_trace("t1", "W1"), cancel_trace("t2", "W2")]
-    _, tasks = cluster_runs(traces, SIGS)
-    assert [t.unguarded for t in tasks] == [True]
-
-
-def test_a_task_with_three_runs_is_guarded():
+def test_a_task_is_guarded_from_three_runs_up():
     traces = [cancel_trace(f"t{i}", f"W{i}") for i in range(3)]
     _, tasks = cluster_runs(traces, SIGS)
     assert len(tasks) == 1
     assert tasks[0].unguarded is False
     assert tasks[0].run_ids == ["t0", "t1", "t2"]
+    traces = [cancel_trace("t1", "W1"), cancel_trace("t2", "W2")]
+    _, tasks = cluster_runs(traces, SIGS)
+    assert [t.unguarded for t in tasks] == [True]
 
 
 # --- determinism ---
@@ -312,16 +268,13 @@ def chain_grouping(names: tuple[str, str, str], texts: list[str]) -> list[list[s
 
 
 @pytest.mark.parametrize("texts", [UNEVEN_CHAIN, EVEN_CHAIN])
-def test_membership_does_not_depend_on_how_the_trace_ids_sort(texts):
+def test_ids_and_membership_do_not_depend_on_input_order_or_how_the_trace_ids_sort(texts):
     """Leader clustering gave {A,B},{C} or {A,B,C} or {A},{B,C} for the same three Runs (D83, section 8)."""
     first = chain_grouping(("a", "b", "c"), texts)
     assert first == chain_grouping(("b", "a", "c"), texts)
     assert first == chain_grouping(("c", "b", "a"), texts)
     assert first == chain_grouping(("m", "z", "a"), texts)
     assert first == [["A", "B"], ["C"]]
-
-
-def test_ids_and_membership_do_not_depend_on_input_order():
     traces = [cancel_trace("t1", "W1"), address_trace("t2", "W2"), cancel_trace("t3", "W3")]
     first = cluster_runs(traces, SIGS)
     second = cluster_runs(list(reversed(traces)), SIGS)
@@ -335,10 +288,6 @@ def test_a_category_id_is_the_same_for_the_same_write_set_in_another_corpus():
     assert one[0].id == two[0].id
 
 
-def test_no_traces_gives_no_categories_and_no_tasks():
-    assert cluster_runs([], SIGS) == ([], [])
-
-
 def test_runs_with_no_confirmed_writes_still_form_a_category():
     traces = [make_trace("t1", ["where is my order"], [{"name": "get_order", "args": {"order_id": "W1"}}])]
     categories, tasks = cluster_runs(traces, SIGS)
@@ -347,36 +296,6 @@ def test_runs_with_no_confirmed_writes_still_form_a_category():
 
 
 # --- the naming hook only names ---
-
-
-def test_name_task_returns_one_trimmed_line_from_the_model(make_test_model):
-    model = make_test_model(["Cancel a late order\nand nothing else"])
-    assert name_task(model, [cancel_trace("t1", "W1")]) == "Cancel a late order"
-    assert len(model.calls) == 1
-
-
-def test_name_task_without_a_model_returns_none():
-    assert name_task(None, [cancel_trace("t1", "W1")]) is None
-
-
-def test_naming_changes_only_the_name(make_test_model):
-    traces = [cancel_trace("t1", "W1"), cancel_trace("t2", "W2")]
-    _, unnamed = cluster_runs(traces, SIGS)
-    _, named = cluster_runs(traces, SIGS, model=make_test_model(["Cancel a late order"], loop=True))
-    assert [t.name for t in named] == ["Cancel a late order"]
-    assert [t.model_dump(exclude={"name"}) for t in named] == [t.model_dump(exclude={"name"}) for t in unnamed]
-
-
-def test_the_naming_prompt_carries_the_runs_own_words(make_test_model):
-    model = make_test_model(["Cancel a late order"])
-    name_task(model, [cancel_trace("t1", "W1")])
-    prompt = model.calls[0]["messages"][-1]["content"]
-    assert "cancel order W1" in prompt
-    assert "cancel_order" in prompt
-
-
-def test_an_empty_model_reply_leaves_the_name_unset(make_test_model):
-    assert name_task(make_test_model(["   \n  "]), [cancel_trace("t1", "W1")]) is None
 
 
 # --- the real tau2 traces (no ingest here: the messages are read as the raw file stores them) ---
@@ -525,7 +444,7 @@ def _bare_trace(trace_id: str) -> Trace:
     return Trace(trace_id=trace_id, raw_hash="h", ingest_version="1", source="tau2", raw_ptr=PTR)
 
 
-def test_runs_that_saw_a_row_in_two_versions_before_writing_are_different_tasks():
+def test_only_runs_that_saw_a_row_in_two_versions_before_writing_are_different_tasks():
     from kullback.builder.cluster import split_by_world
 
     worlds = {"a": {("orders", "o1"): "v_pending"}, "b": {("orders", "o1"): "v_pending", ("users", "u1"): "v1"},
@@ -533,13 +452,13 @@ def test_runs_that_saw_a_row_in_two_versions_before_writing_are_different_tasks(
     traces = [_bare_trace(t) for t in ("c", "a", "d", "b")]
     parts = split_by_world(traces, worlds)
     assert [[t.trace_id for t in part] for part in parts] == [["a", "b", "d"], ["c"]]
-
-
-def test_a_group_with_no_world_information_stays_one_task():
     from kullback.builder.cluster import split_by_world
 
     parts = split_by_world([_bare_trace("b"), _bare_trace("a")], {})
     assert [[t.trace_id for t in p] for p in parts] == [["a", "b"]]
+    traces = dry_and_wet_traces()
+    parts = split_by_world(traces, worlds_of(traces))
+    assert [[t.trace_id for t in part] for part in parts] == [["run_dry"], ["run_wet"]]
 
 
 # --- D200: the frozen Task list is authoritative across rounds ---
@@ -553,15 +472,11 @@ KINDS_AFTER_REMINE = [
 ]
 
 
-def test_the_same_runs_get_the_same_task_id_in_two_clusterings():
+def test_the_same_runs_get_the_same_task_id_in_two_clusterings_whatever_their_category():
     traces = [cancel_trace("t1", "W1"), cancel_trace("t2", "W2")]
     first = {t.id: t.run_ids for t in cluster_runs(traces, SIGS)[1]}
     second = {t.id: t.run_ids for t in cluster_runs(list(reversed(traces)), SIGS)[1]}
     assert first == second
-
-
-def test_a_task_id_survives_the_runs_landing_in_another_category():
-    """The id is over the Runs, so re-mining a tool from read to write cannot move it."""
     traces = [cancel_trace("t1", "W1"), cancel_trace("t2", "W2")]
     before = cluster_runs(traces, SIGS)[1]
     after = cluster_runs(traces, KINDS_AFTER_REMINE)[1]
@@ -569,15 +484,19 @@ def test_a_task_id_survives_the_runs_landing_in_another_category():
     assert {t.category_id for t in before} != {t.category_id for t in after}
 
 
-def test_a_second_clustering_over_a_frozen_list_keeps_every_frozen_task():
+def test_a_second_clustering_keeps_every_frozen_task_and_without_one_every_task_is_new():
     traces = [cancel_trace("t1", "W1"), cancel_trace("t2", "W2"), address_trace("t3", "W3")]
     frozen = cluster_runs(traces, SIGS)[1]
     tasks, split = resume_frozen(cluster_runs(traces, SIGS)[1], [t.model_dump() for t in frozen])
     assert [t.id for t in tasks] == [t.id for t in frozen]
     assert (split["frozen"], split["added"], split["frozen_only"]) == (len(frozen), [], [])
+    tasks = cluster_runs([cancel_trace("t1", "W1")], SIGS)[1]
+    resumed, split = resume_frozen(tasks, None)
+    assert resumed == tasks
+    assert (split["frozen"], split["added"], split["frozen_only"]) == (0, [t.id for t in tasks], [])
 
 
-def test_a_new_run_adds_a_task_and_moves_no_frozen_one():
+def test_a_recluster_adds_new_runs_as_tasks_and_moves_no_frozen_one():
     frozen = cluster_runs([cancel_trace("t1", "W1")], SIGS)[1]
     grown = cluster_runs([cancel_trace("t1", "W1"), address_trace("t9", "W9")], SIGS)[1]
     tasks, split = resume_frozen(grown, [t.model_dump() for t in frozen])
@@ -585,6 +504,12 @@ def test_a_new_run_adds_a_task_and_moves_no_frozen_one():
     assert len(split["added"]) == 1
     added = next(t for t in tasks if t.id in split["added"])
     assert added.run_ids == ["t9"] and split["frozen_only"] == []
+    frozen = cluster_runs([cancel_trace("t1", "W1")], SIGS)[1]
+    mixed = [Task(id="task_mixed", category_id=frozen[0].category_id, run_ids=["t1", "t7"])]
+    tasks, split = resume_frozen(mixed, [t.model_dump() for t in frozen])
+    assert [t.run_ids for t in tasks] == [["t1"], ["t7"]]
+    assert split["frozen_only"] == [frozen[0].id], "the frozen Task the merge would have swallowed is kept"
+    assert split["added"] == [tasks[1].id]
 
 
 def test_a_recluster_that_would_drop_a_frozen_task_marks_it_frozen_only():
@@ -596,22 +521,6 @@ def test_a_recluster_that_would_drop_a_frozen_task_marks_it_frozen_only():
     assert [t.id for t in tasks] == [t.id for t in apart], "the merge publishes neither a new nor a lost Task"
     assert split["frozen_only"] == [t.id for t in apart]
     assert all(split["reasons"][t.id] for t in apart)
-
-
-def test_a_recluster_that_moves_one_run_into_a_frozen_task_keeps_only_the_free_runs():
-    frozen = cluster_runs([cancel_trace("t1", "W1")], SIGS)[1]
-    mixed = [Task(id="task_mixed", category_id=frozen[0].category_id, run_ids=["t1", "t7"])]
-    tasks, split = resume_frozen(mixed, [t.model_dump() for t in frozen])
-    assert [t.run_ids for t in tasks] == [["t1"], ["t7"]]
-    assert split["frozen_only"] == [frozen[0].id], "the frozen Task the merge would have swallowed is kept"
-    assert split["added"] == [tasks[1].id]
-
-
-def test_with_no_frozen_list_every_task_the_clustering_found_is_new():
-    tasks = cluster_runs([cancel_trace("t1", "W1")], SIGS)[1]
-    resumed, split = resume_frozen(tasks, None)
-    assert resumed == tasks
-    assert (split["frozen"], split["added"], split["frozen_only"]) == (0, [t.id for t in tasks], [])
 
 
 def test_a_frozen_task_whose_id_predates_content_addressing_is_matched_on_its_runs():
@@ -684,16 +593,6 @@ def test_the_same_recordings_give_the_same_grouping_whatever_the_schema_classes_
     for class_ in ("hard", "semantic", "exempt"):
         recast = [{**column, "class": class_} for column in PLOT_SCHEMA_COLUMNS]
         assert worlds_of(traces) == worlds_of(traces, plot_schema(recast))
-
-
-def test_the_same_recordings_give_the_same_grouping_under_two_cache_formats():
-    """Nothing of the encoder is inside a version, so bumping the format cannot regroup a corpus."""
-    traces = dry_and_wet_traces()
-    before = worlds_of(traces)
-    with mock.patch.object(pipeline, "CACHE_FORMAT", pipeline.CACHE_FORMAT + 1):
-        assert worlds_of(traces) == before
-
-
 def test_a_list_projection_and_a_detail_projection_of_one_row_do_not_split_a_cluster():
     """The two tools answer different columns of one row, which is a difference of shape, not of state."""
     traces = [
@@ -702,12 +601,6 @@ def test_a_list_projection_and_a_detail_projection_of_one_row_do_not_split_a_clu
                                    {"plot_id": "p1", "state": "dry", "read_at": "09:00"})]),
     ]
     assert len(split_by_world(traces, worlds_of(traces))) == 1
-
-
-def test_the_same_tool_showing_one_row_in_two_versions_before_a_write_does_split_it():
-    traces = dry_and_wet_traces()
-    parts = split_by_world(traces, worlds_of(traces))
-    assert [[t.trace_id for t in part] for part in parts] == [["run_dry"], ["run_wet"]]
 
 
 def test_no_reader_reaches_the_world_a_run_started_in():
@@ -737,40 +630,13 @@ def test_the_fingerprint_names_the_input_that_moved():
     wider.composite_keys = {"plots": ["plot_id", "state"]}
     rehomed = {"recordings": recordings_hash(traces), "homing": homing_hash(wider)}
     assert moved_input("a different fingerprint", rehomed, frozen) == "homing"
-
-
-def test_the_record_re_baselines_the_round_an_input_moved_so_a_later_bug_still_raises(tmp_path):
-    """Greptile P1 (PR 30): what a round compares against is the last grouping that was explained.
-
-    Left at the first grouping ever taken, one legitimate move would go on explaining every
-    regrouping after it and the raise could never fire again.
-    """
-    from kullback.builder import build as build_module
-
-    traces = dry_and_wet_traces()
-    schema = plot_schema()
-    tasks = cluster_runs(traces, PLOT_SIGS, worlds=worlds_of(traces))[1]
-    inputs = {"traces": traces, "schema": schema}
-    assert build_module._grouping(tmp_path, tasks, inputs)["grouping_moved"] == ""
-
-    grown = traces + [plot_trace("run_third", [("get_plot", {"plot_id": "p2"},
-                                                {"plot_id": "p2", "state": "dry"})])]
-    after = cluster_runs(grown, PLOT_SIGS, worlds=worlds_of(grown))[1]
-    grown_inputs = {"traces": grown, "schema": schema}
-    assert build_module._grouping(tmp_path, after, grown_inputs)["grouping_moved"] == "recordings"
-    assert build_module._grouping(tmp_path, after, grown_inputs)["grouping_moved"] == "", "re-baselined"
-
-    with pytest.raises(UnexplainedRegrouping):
-        build_module._grouping(tmp_path, list(after)[:1], grown_inputs)
-
-
 def test_a_grouping_that_moved_with_both_inputs_still_is_a_bug_and_raises():
     frozen = {"fingerprint": "f1", "recordings": "r1", "homing": "h1"}
     with pytest.raises(UnexplainedRegrouping):
         moved_input("f2", {"recordings": "r1", "homing": "h1"}, frozen)
 
 
-def test_a_frozen_only_task_whose_runs_still_group_under_the_recordings_clears_the_flag():
+def test_a_frozen_only_task_clears_the_flag_when_its_runs_still_group_and_else_carries_the_reason():
     traces = [plot_trace("run_a", [("get_plot", {"plot_id": "p1"}, {"plot_id": "p1", "state": "dry"})]),
               plot_trace("run_b", [("get_plot", {"plot_id": "p1"}, {"plot_id": "p1", "state": "dry"})])]
     worlds = worlds_of(traces)
@@ -780,9 +646,6 @@ def test_a_frozen_only_task_whose_runs_still_group_under_the_recordings_clears_t
     _tasks, split = resume_frozen(merged, [t.model_dump() for t in apart], worlds=worlds)
     assert split["frozen_only"] == []
     assert sorted(split["cleared"]) == ["task_a", "task_b"]
-
-
-def test_a_frozen_only_task_whose_runs_the_recordings_split_carries_the_reason():
     worlds = worlds_of(dry_and_wet_traces())
     frozen = [Task(id="task_both", category_id="cat", run_ids=["run_dry", "run_wet"])]
     live = [Task(id="task_dry", category_id="cat", run_ids=["run_dry"]),

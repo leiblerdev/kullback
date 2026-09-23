@@ -193,14 +193,31 @@ class TraceUser:
         counts[outcome.route] = counts.get(outcome.route, 0) + 1
 
 
+def _owned_effect_rows(expected, check):
+    unattributed = 0
+    owned = []
+    for row in expected:
+        # D234: a column no write in its span owed rides along flagged rather than
+        # charged. It is counted on the check and never failed against this call.
+        if row.get("unattributed") is True:
+            unattributed += 1
+            continue
+        owned.append(row)
+    check["effect_checks"] = len(expected) - unattributed
+    if unattributed:
+        check["unattributed_effects"] = unattributed
+    return owned
+
+
 class ScoredRouter:
     """The Router with each answer compared against the call the Trace recorded for it."""
 
     def __init__(self, router: Any, expected: deque, write_tools: Iterable[str] = (), canon_rules: Any = None,
                  comparer: Any = None, effects: Optional[dict] = None,
-                 holdout_values: Optional[dict] = None):
+                 holdout_values: Optional[dict] = None, before_call: Any = None):
         self.inner = router
         self.expected = expected
+        self.before_call = before_call
         self.write_tools = set(write_tools)
         self.canon_rules = canon_rules
         # D220 rule 2c: the values the world holds only because a held-out Run witnessed them, as
@@ -225,11 +242,16 @@ class ScoredRouter:
     def __getattr__(self, name: str) -> Any:  # state_hash, world, start_world, state: the loop's reads
         return getattr(self.inner, name)
 
+    def _feed_context(self, recorded: Optional[ToolCall]) -> None:
+        if self.before_call is not None:
+            self.before_call(recorded)
+
     def route(self, name: str, args: Optional[dict] = None, recorded: Optional[ToolCall] = None,
               requestor: str = "assistant") -> Any:
         # D164: the caller goes through, so the inner Router can refuse a tool this caller never had.
-        outcome = self.inner.route(name, args, requestor=requestor)
         recorded = recorded if recorded is not None else self._take(name)
+        self._feed_context(recorded)
+        outcome = self.inner.route(name, args, requestor=requestor)
         verdict, notes, verdict_route = (UNRECORDED, [], BY_VALUE) if recorded is None else compare_call_route(
             recorded, outcome.result, outcome.error, self.canon_rules, self.comparer)
         check = {
@@ -279,7 +301,8 @@ class ScoredRouter:
             return
         world = self.inner.world() if hasattr(self.inner, "world") else {}
         misses = []
-        for row in expected:
+        owned = _owned_effect_rows(expected, check)
+        for row in owned:
             held = ((world.get(str(row.get("table"))) or {}) if isinstance(world, dict) else {})
             record = held.get(str(row.get("row"))) if isinstance(held, dict) else None
             path = str(row.get("path") or "")
@@ -292,7 +315,6 @@ class ScoredRouter:
                 continue
             misses.append({**_effect_note(row), "ours": _preview(value if found else None),
                            "reason": "the column is not there" if not found else "the column did not move"})
-        check["effect_checks"] = len(expected)
         if misses:
             check["effect_failures"] = misses[:EFFECTS_NAMED]
             check["effect_failures_total"] = len(misses)
@@ -532,7 +554,7 @@ class Replay:
 def replay_trace(trace: Trace, router: Any, *, workdir: Any, task_id: str, env_id: Optional[str] = None,
                  write_tools: Iterable[str] = (), canon_rules: Any = None, run_id: Optional[str] = None,
                  comparer: Any = None, effects: Optional[dict] = None,
-                 holdout_values: Optional[dict] = None) -> Replay:
+                 holdout_values: Optional[dict] = None, before_call: Any = None) -> Replay:
     """Drive the loop with the Trace's own turns over `router`; the Run lands under `workdir`.
 
     `effects` is D215's write evidence, per recorded call id: the rows and columns the recording
@@ -546,7 +568,7 @@ def replay_trace(trace: Trace, router: Any, *, workdir: Any, task_id: str, env_i
     script = _Script(trace)
     model, user = TraceModel(script), TraceUser(script)
     scored = ScoredRouter(router, model.expected, write_tools, canon_rules, comparer, effects,
-                          holdout_values=holdout_values)
+                          holdout_values=holdout_values, before_call=before_call)
     run_id = run_id or f"replay-{trace.trace_id}"
     state = loop.new_run_state(run_id, workdir=workdir, env_id=env_id, task_id=task_id,
                                trace_id=trace.trace_id, model=RECORDED, user=user,
@@ -558,6 +580,16 @@ def replay_trace(trace: Trace, router: Any, *, workdir: Any, task_id: str, env_i
     except Exception as exc:  # the loop wrote the error and the stop before raising
         crashed = f"{type(exc).__name__}: {exc}"
     return _score(trace, state, scored, script, model, user, crashed)
+
+
+def _count_unattributed_effects(effects):
+    # D234: columns the recording shows moving that no write in their span owed. They ride
+    # under the tagged unattributed key, or flagged inside a call's own rows where a
+    # recorded id claimed that key, so every flagged row is counted here and none is failed
+    # against a call.
+    return sum(1 for rows in (effects or {}).values()
+                 for row in (rows or [])
+                 if isinstance(row, dict) and row.get("unattributed") is True)
 
 
 def _by_route(checks: Iterable[dict], verdict: str, route: str) -> int:
@@ -594,6 +626,7 @@ def _score(trace: Trace, state: Any, scored: ScoredRouter, script: _Script, mode
         # the value the recording shows, and the later calls those columns are blamed for.
         "effect_checks": sum(int(c.get("effect_checks") or 0) for c in scored.checks),
         "effect_failures": sum(int(c.get("effect_failures_total") or 0) for c in scored.checks),
+        "effect_unattributed": _count_unattributed_effects(scored.effects),
         "effects_downstream": sum(1 for c in scored.checks if c.get(DOWNSTREAM)),
         # D220 rule 2c: calls whose answer carried a value the world holds on a held-out Run's
         # word alone, and the columns those values sat in.

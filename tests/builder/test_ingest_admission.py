@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 
 import pytest
+from test_ingest import rescue_path
 
 from kullback.builder import ingest
 
@@ -55,6 +56,7 @@ def ingest_raises(payload, workdir, tmp_path, name="file.json") -> ingest.Intake
 def test_one_bad_call_sets_that_recording_aside_and_the_rest_build(workdir, tmp_path):
     sims = [good_sim("g1"), good_sim("g2"), good_sim("g3"), dangling_sim("b1")]
     summary = ingest_payload(wrap(sims), workdir, tmp_path)
+    assert summary["gate"]["metrics"]["eligible_share"] == 0.75, "exactly at the floor passes"
     assert summary["gate"]["pass"] is True
     assert summary["task_eligible"] == 3
     assert summary["evidence_only"] == 1
@@ -72,24 +74,17 @@ def test_one_bad_call_sets_that_recording_aside_and_the_rest_build(workdir, tmp_
 
 
 def test_nothing_downstream_reads_the_evidence_folder(workdir, tmp_path):
-    from kullback.builder.build import load_traces
+    from kullback.builder.world_tools import load_traces
 
     sims = [good_sim("g1"), good_sim("g2"), good_sim("g3"), dangling_sim("b1")]
     ingest_payload(wrap(sims), workdir, tmp_path)
     assert {t.trace_id for t in load_traces(workdir)} == {"g1", "g2", "g3"}
 
 
-def test_under_the_floor_ingest_stops_instead_of_returning(workdir, tmp_path):
-    error = ingest_raises(wrap([good_sim("g1"), dangling_sim("b1")]), workdir, tmp_path)
-    assert "1 of 2 recordings task-eligible" in str(error)
-    assert error.gate.metrics["task_eligible"] == 1
-    assert error.gate.metrics["evidence_only"] == 1
-
-
 # --- under the floor the stage fails with the counts in the message -----------
 
 
-def test_under_the_floor_the_stage_fails_with_the_counts_in_the_message(workdir, tmp_path):
+def test_under_the_floor_ingest_stops_and_the_stage_fails_with_the_counts_in_the_message(workdir, tmp_path):
     error = ingest_raises(wrap([good_sim("g1"), dangling_sim("b1")]), workdir, tmp_path)
     gate = error.gate
     assert gate.passed is False
@@ -98,13 +93,9 @@ def test_under_the_floor_the_stage_fails_with_the_counts_in_the_message(workdir,
     assert "1 of 2 recordings task-eligible" in floor_lines[0]
     assert "1 task-eligible, 1 evidence-only, 0 rejected" in floor_lines[0]
     assert any("c9" in line for line in gate.failures)
-
-
-def test_at_the_floor_the_stage_passes(workdir, tmp_path):
-    sims = [good_sim("g1"), good_sim("g2"), good_sim("g3"), dangling_sim("b1")]
-    summary = ingest_payload(wrap(sims), workdir, tmp_path)
-    assert summary["gate"]["metrics"]["eligible_share"] == 0.75
-    assert summary["gate"]["pass"] is True
+    assert "1 of 2 recordings task-eligible" in str(error)
+    assert error.gate.metrics["task_eligible"] == 1
+    assert error.gate.metrics["evidence_only"] == 1
 
 
 # --- the ruling counts per standing and per reason, with the set-aside mix ----
@@ -131,13 +122,22 @@ def test_a_duplicate_recording_is_evidence_only(workdir, tmp_path):
     assert ruling["reasons"] == {"complete_record": 1, "duplicate": 1}
 
 
-def test_a_failed_intake_publishes_no_traces(workdir, tmp_path):
+def test_a_failed_intake_publishes_no_traces_rescued_or_not(workdir, tmp_path):
     with pytest.raises(ingest.IntakeGateError):
         ingest_payload(wrap([good_sim("g1"), dangling_sim("b1")]), workdir, tmp_path)
     assert list((workdir / "traces").glob("*.json")) == []
     assert not (workdir / "evidence_traces").exists()
     # The ruling is still written, so the failure stays readable.
     assert len(list((workdir / "intake").glob("*.json"))) == 1
+    # A failed intake that rescued a prefix publishes the rescue nowhere either.
+    rescue_work = tmp_path / "rescue-work"
+    rescue_work.mkdir()
+    with pytest.raises(ingest.IntakeGateError):
+        ingest.ingest_file(rescue_path(tmp_path), rescue_work)
+    ruling = ingest.read_intake_ruling(rescue_work, ingest.store_raw(rescue_path(tmp_path), rescue_work).raw_hash)
+    assert ruling["rescued"]["count"] == 1
+    assert list((rescue_work / "traces").glob("*.json")) == []
+    assert list((rescue_work / "evidence_traces").glob("*.json")) == []
 
 
 def test_customer_keys_ending_in_ptr_are_not_blanked_for_duplicates(workdir, tmp_path):
@@ -207,12 +207,3 @@ def test_a_recording_with_no_end_marker_reads_as_complete_when_every_call_resolv
 
 
 # --- the seam hashes after the move -------------------------------------------
-
-
-def test_fixture_hashes_are_stable_within_this_seam(tau2_small_path, workdir):
-    summary = ingest.ingest_file(tau2_small_path, workdir)
-    assert summary["trace_hashes"] == [
-        "452ccae335ba1c9999ac120978ac32927f8265b45a2cc0e225cd541b4172fb81",
-        "82818ebaba242db1498492ecb33943741acb23daf983e62e89b3a82949ebccc3",
-        "b201add5d7eb96a93d8f079b63ea3067519757f7f122fe569dfde84f1193cdb2",
-    ]

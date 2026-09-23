@@ -25,7 +25,7 @@ from kullback.runner.records import Cost, Event, Usage
 # checked by hand on the date below anyway, and add an entry for every model a build
 # actually calls: a model priced by neither source is not priced at zero quietly, its calls
 # are counted under unpriced_calls in the totals file and the report shows that count.
-PRICES_CHECKED = "2026-08-28"
+PRICES_CHECKED = "2026-09-23"
 PRICES_NOTE = (
     "list prices per 1M tokens, checked by hand on "
     + PRICES_CHECKED
@@ -44,6 +44,16 @@ PRICES: dict[str, dict[str, float]] = {
     # cannot see the model at all.
     "opencode-go/muse-spark-1.3-contributor": {"input": 0.10, "output": 0.20, "cache_read": 0.002,
                                                 "cache_write": 0.0},
+    # The harness default model (provider.DEFAULT_MODEL). OpenRouter's catalogue
+    # (api/v1/models, read 2026-09-23), per-token prices times 1M, the tier below 272,000 prompt
+    # tokens; a longer prompt is billed at twice the input and one and a half times the output,
+    # so prompt_tier_limit keeps the D65 cap inside the priced tier (window_for).
+    "openai/gpt-6-luna": {"input": 0.10, "output": 0.50, "cache_read": 0.01, "cache_write": 0.125,
+                          "prompt_tier_limit": 272_000},
+    # models.dev's snapshot lacks it. OpenRouter's catalogue (api/v1/models, read 2026-09-23),
+    # per-token prices times 1M, the tier below 272,000 prompt tokens (prompt_tier_limit).
+    "openai/gpt-6-sol": {"input": 2.0, "output": 10.0, "cache_read": 0.2, "cache_write": 2.5,
+                         "prompt_tier_limit": 272_000},
 }
 
 # What fits in one call, per model, for the D65 cap. A model with no row uses the default.
@@ -60,6 +70,11 @@ CONTEXT_WINDOWS: dict[str, int] = {
     "openai/gpt-5.6-luna": 400_000,
     "openai/gpt-5.6-sol": 400_000,
     "openai/gpt-5.6-terra": 400_000,
+    # The harness default model: context_length in OpenRouter's catalogue (api/v1/models, read
+    # 2026-09-23).
+    "openai/gpt-6-luna": 1_050_000,
+    # context_length in OpenRouter's catalogue (api/v1/models, read 2026-09-23).
+    "openai/gpt-6-sol": 1_050_000,
 }
 
 TOTALS_NAME = "budget.json"
@@ -199,10 +214,18 @@ def window_for(model_id: Optional[str]) -> int:
     The hand table first, since two of its rows were measured against a live endpoint rather than
     read off a page, then models.dev, then the default. A model the registry knows no longer takes
     the 200,000 default and a cap four fifths smaller than the one it could have had.
+
+    A price row that carries `prompt_tier_limit` is priced only for prompts under that many
+    tokens, so the window is cut to the limit over CONTEXT_CAP_FRACTION: the D65 cap never lets
+    a prompt past the priced tier, where the ledger would bill it at the lower rate.
     """
-    return (_lookup(CONTEXT_WINDOWS, model_id)
-            or pricing_module.window_from_catalog(_price_catalog(), model_id)
-            or DEFAULT_CONTEXT_WINDOW)
+    window = (_lookup(CONTEXT_WINDOWS, model_id)
+              or pricing_module.window_from_catalog(_price_catalog(), model_id)
+              or DEFAULT_CONTEXT_WINDOW)
+    tier_limit = (_lookup(PRICES, model_id) or {}).get("prompt_tier_limit")
+    if tier_limit:
+        return min(window, int(tier_limit / CONTEXT_CAP_FRACTION))
+    return window
 
 
 def priced_model_id(cost: Any) -> Optional[str]:
@@ -359,6 +382,45 @@ def _record_locked(event: Event, usage: Usage, source: Optional[str], stage: str
     if ceiling is not None:
         ceiling.charge_recorded(totals, stage, item or str(event.idx), items_left)
     return event
+
+
+def subscriber(workdir: str | Path, stage: str, model_id: Optional[str],
+               ceiling: Optional[Ceiling] = None) -> Any:
+    """A harness subscriber that prices every assistant message the core streams into budget.json.
+
+    The agent core streams its model and never calls BudgetedModel.query, so its calls are priced
+    here, off the events: one assistant message_end with reported usage is one call, built into the
+    same model_call Event BudgetedModel builds and recorded under `stage`. turn_end carries the same
+    message again and is ignored, so no call is counted twice. The runner sits below the agent core,
+    so the event is read by its shape, not its class. With a ceiling, record_call charges it; the
+    stop itself is the caller's guard, since a raise here would end the run from inside its stream.
+    """
+    name = model_id or "model"
+    provider = name.split("/", 1)[0] if "/" in name else None
+    calls = 0
+
+    def price(event: Any) -> None:
+        nonlocal calls
+        if getattr(event, "type", None) != "message_end":
+            return
+        message = getattr(event, "message", None)
+        usage = getattr(message, "usage", None)
+        if getattr(message, "role", None) != "assistant" or not isinstance(usage, Usage):
+            return
+        if usage.input + usage.output + usage.cache_read + usage.cache_write <= 0:
+            return
+        with _LEDGER_LOCK:
+            calls += 1
+            idx = calls - 1
+        record = Event(idx=idx, type="model_call",
+                       cost=Cost(provider=provider, model=getattr(message, "model", None) or name,
+                                 usage=usage, wall_ms=0.0))
+        try:
+            record_call(record, stage, workdir, ceiling=ceiling, item=name)
+        except BudgetExceeded:
+            return
+
+    return price
 
 
 def estimate_tokens(*parts: Any) -> int:

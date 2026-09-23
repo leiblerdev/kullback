@@ -113,7 +113,7 @@ def test_store_raw_labels_an_unknown_format_and_the_rejection_happens_at_derive(
     raw = ingest.store_raw(path, workdir)
     assert raw.format_detected == "unknown"
     assert Path(raw.path).read_bytes() == path.read_bytes()
-    with pytest.raises(ValueError) as caught:
+    with pytest.raises(ValueError, match="unknown") as caught:
         ingest.derive_traces(raw.raw_hash, workdir)
     assert raw.raw_hash in str(caught.value)
     assert not (workdir / "traces").exists()
@@ -135,12 +135,6 @@ def test_an_otel_file_is_stored_and_detected_and_then_refused_because_no_mapper_
     raw = ingest.store_raw(write_json(tmp_path / "otel.json", otel), workdir)
     assert raw.format_detected == "otel_genai"
     with pytest.raises(NotImplementedError, match="OpenTelemetry"):
-        ingest.derive_traces(raw.raw_hash, workdir)
-
-
-def test_derive_traces_rejects_unknown_format(workdir, tmp_path):
-    raw = ingest.store_raw(write_json(tmp_path / "odd.json", {"hello": "world"}), workdir)
-    with pytest.raises(ValueError, match="unknown"):
         ingest.derive_traces(raw.raw_hash, workdir)
 
 
@@ -199,18 +193,13 @@ def test_error_call_keeps_verbatim_payload_and_class(small_file, workdir):
     assert failing.result is None
 
 
-def test_truncated_result_is_marked(small_file, workdir):
+def test_only_a_truncated_result_is_marked(small_file, workdir):
     raw = ingest.store_raw(small_file, workdir)
     trace = ingest.derive_traces(raw.raw_hash, workdir)[0]
     cut = trace.tool_calls[2]
     assert cut.truncated is True
     assert cut.visible_len == len("order o1, order o2, order o3...")
     assert cut.cut_marker == "..."
-
-
-def test_untruncated_result_is_not_marked(small_file, workdir):
-    raw = ingest.store_raw(small_file, workdir)
-    trace = ingest.derive_traces(raw.raw_hash, workdir)[0]
     assert trace.tool_calls[0].truncated is False
     assert trace.tool_calls[0].visible_len is None
 
@@ -218,7 +207,7 @@ def test_untruncated_result_is_not_marked(small_file, workdir):
 # --- grader stripping (D66) ------------------------------------------------
 
 
-def test_grader_fields_go_to_the_sidecar_and_not_into_the_trace(small_file, workdir):
+def test_grader_fields_go_to_the_sidecar_and_not_into_the_trace(small_file, tau2_small_path, workdir, tmp_path):
     """The negative half scans what the rest of the pipeline actually reads: the files under traces/."""
     raw = ingest.store_raw(small_file, workdir)
     trace = ingest.derive_traces(raw.raw_hash, workdir)[0]
@@ -235,6 +224,18 @@ def test_grader_fields_go_to_the_sidecar_and_not_into_the_trace(small_file, work
     assert sidecar["fields"]["task_id"] == "7"
     assert sidecar["fields"]["trial"] == 0
     assert sidecar["fields"]["evaluation_criteria"]["actions"][0]["action_id"] == "7_0"
+    fixture_work = tmp_path / "fixture"
+    fixture_work.mkdir()
+    raw = ingest.store_raw(tau2_small_path, fixture_work)
+    traces = ingest.derive_traces(raw.raw_hash, fixture_work)
+    for trace in traces:
+        blob = json.dumps(trace.model_dump(mode="json", by_alias=True))
+        for word in ("reward_info", "action_checks", "nl_assertions", "evaluation_criteria"):
+            assert word not in blob
+        sidecar = ingest.grader_file(trace, fixture_work)
+        assert sidecar.is_file()
+        fields = json.loads(sidecar.read_text(encoding="utf-8"))["fields"]
+        assert "reward_info" in fields and "task_id" in fields
 
 
 def test_grader_sidecar_written_even_when_the_source_has_no_grader_fields(workdir, tmp_path):
@@ -248,7 +249,8 @@ def test_grader_sidecar_written_even_when_the_source_has_no_grader_fields(workdi
 # --- hashes stable ---------------------------------------------------------
 
 
-def test_two_ingests_of_one_file_into_different_workdirs_produce_the_same_raw_and_trace_hashes(small_file, workdir, tmp_path):
+def test_ingests_of_one_file_repeated_or_in_different_workdirs_produce_the_same_raw_and_trace_hashes(
+        small_file, tau2_small_path, workdir, tmp_path):
     raw = ingest.store_raw(small_file, workdir)
     first = ingest.derive_traces(raw.raw_hash, workdir)
     other = tmp_path / "work2"
@@ -258,6 +260,16 @@ def test_two_ingests_of_one_file_into_different_workdirs_produce_the_same_raw_an
     assert again_raw.raw_hash == raw.raw_hash
     assert [t.hash for t in first] == [t.hash for t in second]
     assert first[0].hash != ""
+    first = ingest.ingest_file(small_file, workdir)
+    second = ingest.ingest_file(small_file, workdir)
+    assert first["trace_hashes"] == second["trace_hashes"]
+    assert first["raw_hash"] == second["raw_hash"]
+    left, right = tmp_path / "fixture-a", tmp_path / "fixture-b"
+    left.mkdir()
+    right.mkdir()
+    first_fixture = ingest.ingest_file(tau2_small_path, left)
+    second_fixture = ingest.ingest_file(tau2_small_path, right)
+    assert first_fixture["trace_hashes"] == second_fixture["trace_hashes"]
 
 
 def test_trace_hash_covers_the_content(small_file, workdir):
@@ -305,12 +317,6 @@ def test_classify_error_keeps_json_encoding():
     err = ingest.classify_error('{"code": "not_found", "message": "no such order"}')
     assert err.encoding == "json"
     assert err.class_ == "not_found_entity"
-
-
-def test_classify_error_uses_a_structured_code_when_the_source_has_one():
-    err = ingest.classify_error("boom", structured={"code": "permission_denied"})
-    assert err.class_ == "permission_denied"
-    assert err.classified_by == "code"
 
 
 # --- truncation rules ------------------------------------------------------
@@ -415,52 +421,21 @@ def test_ingest_file_writes_traces_and_prints_counts(small_file, workdir, capsys
     assert written["hash"] == summary["trace_hashes"][0]
 
 
-def test_ingest_file_is_repeatable(small_file, workdir):
-    first = ingest.ingest_file(small_file, workdir)
-    second = ingest.ingest_file(small_file, workdir)
-    assert first["trace_hashes"] == second["trace_hashes"]
-    assert first["raw_hash"] == second["raw_hash"]
-
-
 # --- the real tau2 fixture -------------------------------------------------
 
 
-def test_tau2_fixture_ingests(tau2_small_path, tau2_small, workdir, capsys):
+def test_tau2_fixture_ingests_with_its_policy_and_every_call_paired(tau2_small_path, tau2_small, workdir, capsys):
     summary = ingest.ingest_file(tau2_small_path, workdir)
     capsys.readouterr()
     assert summary["runs"] == len(tau2_small["simulations"]) == 3
     assert summary["tool_calls"] > 0
     assert summary["gate"]["pass"] is True
-
-
-def test_tau2_fixture_strips_grader_fields(tau2_small_path, tau2_small, workdir):
-    raw = ingest.store_raw(tau2_small_path, workdir)
-    traces = ingest.derive_traces(raw.raw_hash, workdir)
-    for trace in traces:
-        blob = json.dumps(trace.model_dump(mode="json", by_alias=True))
-        for word in ("reward_info", "action_checks", "nl_assertions", "evaluation_criteria"):
-            assert word not in blob
-        sidecar = ingest.grader_file(trace, workdir)
-        assert sidecar.is_file()
-        fields = json.loads(sidecar.read_text(encoding="utf-8"))["fields"]
-        assert "reward_info" in fields and "task_id" in fields
-
-
-def test_tau2_fixture_carries_policy_and_pairs_every_call(tau2_small_path, workdir):
     raw = ingest.store_raw(tau2_small_path, workdir)
     traces = ingest.derive_traces(raw.raw_hash, workdir)
     assert all(t.system_prompt and "retail agent policy" in t.system_prompt.lower() for t in traces)
     for trace in traces:
         for call in trace.tool_calls:
             assert call.result is not None or call.error is not None
-
-
-def test_tau2_fixture_hashes_stable_across_two_runs(tau2_small_path, workdir, tmp_path):
-    other = tmp_path / "work2"
-    other.mkdir()
-    first = ingest.ingest_file(tau2_small_path, workdir)
-    second = ingest.ingest_file(tau2_small_path, other)
-    assert first["trace_hashes"] == second["trace_hashes"]
 
 
 # --- one raw file per trace, files named by content (ingest-1, ingest-13) ---
@@ -515,7 +490,8 @@ def test_a_simulation_id_with_path_separators_cannot_escape_the_folders(workdir,
 CUT_JSON = '{"orders": [{"order_id": "#W1", "status": "pending"}, {"order_id": "#W2", "sta'
 
 
-def test_a_json_result_cut_off_without_a_marker_is_marked_and_fails_the_gate(workdir, tmp_path):
+def test_a_json_result_cut_off_with_or_without_a_marker_fails_the_gate_and_a_whole_one_does_not(
+        small_file, workdir, tmp_path):
     calls = [{"id": "c1", "name": "list_orders", "arguments": {}, "requestor": "assistant"}]
     sim = {"id": "cut", "messages": [assistant_msg(0, tool_calls=calls), tool_msg(1, "c1", CUT_JSON)]}
     raw = ingest.store_raw(write_json(tmp_path / "cut.json", tau2_file([sim])), workdir)
@@ -528,9 +504,6 @@ def test_a_json_result_cut_off_without_a_marker_is_marked_and_fails_the_gate(wor
     assert gate.passed is False
     assert gate.metrics["unparseable"] == 1
     assert any("does not parse" in failure for failure in gate.failures)
-
-
-def test_a_json_result_cut_off_with_a_marker_also_fails_the_gate(workdir, tmp_path):
     calls = [{"id": "c1", "name": "list_orders", "arguments": {}, "requestor": "assistant"}]
     sim = {"id": "cutm", "messages": [assistant_msg(0, tool_calls=calls),
                                       tool_msg(1, "c1", CUT_JSON + "... (truncated)")]}
@@ -540,9 +513,6 @@ def test_a_json_result_cut_off_with_a_marker_also_fails_the_gate(workdir, tmp_pa
     gate = ingest.gate_ingest(traces, workdir)
     assert gate.passed is False
     assert gate.metrics["unparseable"] == 1
-
-
-def test_a_whole_json_result_is_neither_truncated_nor_unparseable(small_file, workdir):
     raw = ingest.store_raw(small_file, workdir)
     trace = ingest.derive_traces(raw.raw_hash, workdir)[0]
     assert ingest.unparsed_json(trace.tool_calls[0].result) is False
@@ -603,7 +573,7 @@ def test_ingest_version_is_the_hash_of_the_ingest_source(small_file, workdir):
 # --- the classification sources: code, rule, llm (ingest-7) ----------------
 
 
-def test_a_structured_error_body_is_classified_by_code_through_derive(workdir, tmp_path):
+def test_a_structured_error_body_is_classified_by_code_directly_and_through_derive(workdir, tmp_path):
     calls = [{"id": "c1", "name": "get_user", "arguments": {}, "requestor": "assistant"}]
     body = json.dumps({"code": "permission_denied", "message": "boom"})
     sim = {"id": "structured", "messages": [assistant_msg(0, tool_calls=calls),
@@ -614,6 +584,9 @@ def test_a_structured_error_body_is_classified_by_code_through_derive(workdir, t
     assert error.classified_by == "code"
     assert error.encoding == "json"
     assert error.payload == body
+    err = ingest.classify_error("boom", structured={"code": "permission_denied"})
+    assert err.class_ == "permission_denied"
+    assert err.classified_by == "code"
 
 
 def test_the_llm_second_pass_only_sees_what_the_rules_left_unknown(workdir, tmp_path):
@@ -743,3 +716,169 @@ def test_rejects_do_not_linger_when_the_file_is_ingested_again(workdir, tmp_path
     other = ingest.store_raw(write_json(tmp_path / "fixed.json", tau2_file([fixed])), workdir)
     ingest.derive_traces(other.raw_hash, workdir)
     assert ingest.read_rejects(workdir, other.raw_hash) == []
+
+
+# --- declared intake floor and D263 rescue -----------------------------------
+
+# Every recording below is invented in the terminal shape: one complete, one whose
+# only unresolved call is its last, one with an interior call left unanswered.
+
+
+def rescue_batch(keystrokes):
+    return json.dumps({"analysis": "invented", "commands": [{"keystrokes": keystrokes, "duration": 0.2}]})
+
+
+def rescue_empty():
+    return json.dumps({"analysis": "invented", "commands": []})
+
+
+def rescue_recording(name, turns):
+    return {"trial_name": name, "original_source": "invented", "conversations": turns}
+
+
+def rescue_sims():
+    opening = {"role": "user", "content": "Invented instruction"}
+    whole = rescue_recording("invented-whole", [
+        opening,
+        {"role": "assistant", "content": rescue_batch("invented-a")},
+        {"role": "user", "content": "New Terminal Output:\ninvented-a"},
+        {"role": "assistant", "content": rescue_empty()},
+    ])
+    tailed = rescue_recording("invented-tailed", [
+        opening,
+        {"role": "assistant", "content": rescue_batch("invented-a")},
+        {"role": "user", "content": "New Terminal Output:\ninvented-a"},
+        {"role": "assistant", "content": rescue_batch("invented-b")},
+    ])
+    gappy = rescue_recording("invented-gappy", [
+        opening,
+        {"role": "assistant", "content": rescue_batch("invented-a")},
+        {"role": "user", "content": "invented note: retry"},
+        {"role": "assistant", "content": rescue_batch("invented-b")},
+        {"role": "user", "content": "New Terminal Output:\ninvented-b"},
+    ])
+    return [whole, tailed, gappy]
+
+
+def rescue_path(tmp_path):
+    envelope = {"rows": [{"row": sim} for sim in rescue_sims()]}
+    return write_json(tmp_path / "rescue.json", envelope)
+
+
+def derive_rescue(workdir, tmp_path):
+    """The invented file derived once: three originals plus the rescued prefix."""
+    raw = ingest.store_raw(rescue_path(tmp_path), workdir)
+    traces = ingest.derive_traces(raw.raw_hash, workdir)
+    assert [t.trace_id for t in traces[:3]] == ["invented-whole", "invented-tailed", "invented-gappy"]
+    return raw, traces
+
+
+def test_the_ruling_carries_its_floor_and_passes_below_the_share_only_when_declared(workdir, tmp_path):
+    raw, traces = derive_rescue(workdir, tmp_path)
+    ruling = ingest.rule_recordings(raw.raw_hash, "terminus_2", rescue_sims(), traces[:3], [], floor=0.25)
+    assert ruling["floor"] == 0.25
+    assert ruling["counts"] == {"task_eligible": 1, "evidence_only": 2, "rejected": 0}
+    assert ruling["eligible_share"] == pytest.approx(1 / 3)
+    assert ruling["passed"] is True
+    ruling = ingest.rule_recordings(raw.raw_hash, "terminus_2", rescue_sims(), traces[:3], [])
+    assert ruling["floor"] == ingest.MIN_TASK_ELIGIBLE_SHARE == 0.75
+    assert ruling["eligible_share"] == pytest.approx(1 / 3)
+    assert ruling["passed"] is False
+
+
+@pytest.mark.parametrize("floor", [-0.5, 1.5])
+def test_floor_outside_unit_interval_is_refused(workdir, tmp_path, floor):
+    raw, traces = derive_rescue(workdir, tmp_path)
+    with pytest.raises(ValueError, match=r"within \[0, 1\]"):
+        ingest.rule_recordings(raw.raw_hash, "terminus_2", rescue_sims(), traces[:3], [], floor=floor)
+    with pytest.raises(ValueError, match=r"within \[0, 1\]"):
+        ingest.gate_ingest(traces[:3], workdir, floor=floor)
+
+
+def rescue_case(workdir, tmp_path):
+    """The derived invented file with its ruling and the one rescued row."""
+    raw, traces = derive_rescue(workdir, tmp_path)
+    ruling = ingest.read_intake_ruling(workdir, raw.raw_hash)
+    assert ruling["rescued"]["count"] == 1
+    (row,) = ruling["rescued"]["rows"]
+    return raw, traces, ruling, row
+
+
+def test_last_call_unresolved_is_rescued_as_its_answered_prefix(workdir, tmp_path):
+    _raw, traces, _ruling, row = rescue_case(workdir, tmp_path)
+    assert row["standing"] == "evidence_only" and row["reason"] == "rescued_prefix"
+    rescue = row["rescue"]
+    assert rescue["kind"] == "last_answered_prefix"
+    assert rescue["cohort_id"].startswith("prefix-")
+    parent = next(t for t in traces if t.trace_id == "invented-tailed" and t.hash != row["trace_hash"])
+    assert rescue["parent_trace_hash"] == parent.hash
+    assert (rescue["retained_calls"], rescue["dropped_calls"]) == (1, 1)
+    rescued = next(t for t in traces if t.hash == row["trace_hash"])
+    assert len(rescued.tool_calls) == 1
+    assert all(call.resolved for call in rescued.tool_calls)
+
+
+def test_rescue_leaves_the_parent_row_untouched(workdir, tmp_path):
+    _raw, _traces, ruling, row = rescue_case(workdir, tmp_path)
+    original = next(r for r in ruling["recordings"] if r["trace_id"] == "invented-tailed")
+    assert original["standing"] == "evidence_only" and original["reason"] == "unresolved_call"
+    assert "rescue" not in original
+    assert original["trace_hash"] != row["trace_hash"]
+
+
+def test_interior_unresolved_call_is_withheld_and_counted(workdir, tmp_path):
+    raw, _traces = derive_rescue(workdir, tmp_path)
+    ruling = ingest.read_intake_ruling(workdir, raw.raw_hash)
+    assert ruling["rescued"]["count"] == 1
+    assert ruling["rescued"]["reasons_withheld"] == {"interior_unresolved": 1}
+    assert all(row["trace_id"] != "invented-gappy" for row in ruling["rescued"]["rows"])
+
+
+def test_rescued_prefix_never_counts_toward_the_share_and_is_marked_not_complete(workdir, tmp_path):
+    raw, traces = derive_rescue(workdir, tmp_path)
+    ruling = ingest.read_intake_ruling(workdir, raw.raw_hash)
+    assert ruling["counts"] == {"task_eligible": 1, "evidence_only": 2, "rejected": 0}
+    assert ruling["eligible_share"] == pytest.approx(1 / 3)
+    assert ruling["passed"] is False
+    (row,) = ruling["rescued"]["rows"]
+    assert row["standing"] == "evidence_only" and row["reason"] == "rescued_prefix"
+    assert "rescue" in row
+    gate = ingest.gate_ingest(traces, workdir, raw_hash=raw.raw_hash)
+    assert gate.metrics["task_eligible"] == 1 and gate.metrics["evidence_only"] == 2
+    assert gate.passed is False
+
+
+def test_rescued_prefix_publishes_beside_its_parent_but_builds_nothing(workdir, tmp_path):
+    summary = ingest.ingest_file(rescue_path(tmp_path), workdir, intake_floor=0.0)
+    assert summary["gate"]["pass"] is True
+    assert summary["rescued"] == 1
+    ruling = ingest.read_intake_ruling(workdir, summary["raw_hash"])
+    parent = next(r for r in ruling["recordings"] if r["trace_id"] == "invented-tailed")
+    (rescued_row,) = ruling["rescued"]["rows"]
+    evidence = {p.stem for p in (workdir / "evidence_traces").glob("*.json")}
+    assert parent["trace_hash"] in evidence
+    assert rescued_row["trace_hash"] in evidence
+    published = json.loads(
+        (workdir / "evidence_traces" / (rescued_row["trace_hash"] + ".json")).read_text(encoding="utf-8"))
+    assert len(published["tool_calls"]) == 1
+    assert all(call["resolved"] for call in published["tool_calls"])
+    assert [p.stem for p in (workdir / "traces").glob("*.json")] == summary["trace_hashes"]
+
+
+def test_stricter_reingest_withdraws_only_that_hash(workdir, tmp_path):
+    """A file that passed permissive and fails strict leaves no artifact naming its hash,
+    while a different file's traces in the same workdir stay put."""
+    first = ingest.ingest_file(rescue_path(tmp_path), workdir, intake_floor=0.0)
+    other_path = write_json(tmp_path / "other.json", {"rows": [{"row": rescue_sims()[0]}]})
+    other = ingest.ingest_file(other_path, workdir)
+    assert other["gate"]["pass"] is True
+    with pytest.raises(ingest.IntakeGateError):
+        ingest.ingest_file(rescue_path(tmp_path), workdir)
+    gone = first["raw_hash"]
+    for folder in ("traces", "evidence_traces", "grader"):
+        for path in (workdir / folder).glob("*.json"):
+            body = json.loads(path.read_text(encoding="utf-8"))
+            assert body.get("raw_hash") != gone, path
+    ruling = ingest.read_intake_ruling(workdir, gone)
+    assert ruling["withdrawn"] is True
+    assert (workdir / "traces" / (other["trace_hashes"][0] + ".json")).is_file()

@@ -47,14 +47,14 @@ Build your own Environment from a trace export:
 ```bash
 uv sync
 uv run kullback ingest path/to/traces.json --workdir work
-uv run kullback build --workdir work --model provider/model --workers 8
+uv run kullback build --workdir work
 uv run kullback freeze-runner --workdir work --yes
 uv run kullback run --workdir work --task <task id> --model provider/candidate
 uv run kullback verdict --workdir work
 uv run kullback report --workdir work
 ```
 
-`kullback tui` watches a build as it runs. `kullback publish --workdir work --repo <org>/<name>` puts the result on Hugging Face. Live model calls need `HARNESS_ALLOW_MODEL_REQUESTS=1` and an API key in the environment or a `.env` file. Any `provider/model` id works. `--model provider/model` reaches any provider models.dev lists with an OpenAI-shaped API (Anthropic, OpenAI, OpenCode Go, DeepSeek, OpenRouter and others), with the key in the variable models.dev names for it, and `--base-url` reaches anything else.
+`kullback build` takes an optional `--model`; without it the Builder, the Examiner, the judges, the probe and the re-rolls all run on `openai/gpt-6-luna`. `kullback tui` watches a build as it runs. `kullback publish --workdir work --repo <org>/<name>` puts the result on Hugging Face. Live model calls need `HARNESS_ALLOW_MODEL_REQUESTS=1` and an API key in the environment or a `.env` file. Any `provider/model` id works. `--model provider/model` reaches any provider models.dev lists with an OpenAI-shaped API (Anthropic, OpenAI, OpenCode Go, DeepSeek, OpenRouter and others), with the key in the variable models.dev names for it, and `--base-url` reaches anything else.
 
 ## How it works
 

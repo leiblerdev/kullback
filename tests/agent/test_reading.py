@@ -70,7 +70,7 @@ def test_kind_of_tells_a_run_from_a_trace_and_refuses_the_rest():
         reading.kind_of([])
 
 
-def test_outline_of_a_trace_counts_turns_and_calls_by_name():
+def test_outline_of_a_trace_or_a_run_counts_turns_and_calls_and_names_what_errored():
     found = reading.outline(_trace())
     assert found["kind"] == "trace" and found["outline"] is True
     assert found["trace_id"] == "trace-shelf-1"
@@ -79,27 +79,21 @@ def test_outline_of_a_trace_counts_turns_and_calls_by_name():
     assert found["call_count"] == 2 and found["calls_total"] == 2
     assert found["by_tool"] == {"fetch_slot": 1, "mark_slot": 1}
     assert found["total_chars"] == len(_dump(_trace()))
-
-
-def test_outline_of_a_trace_names_what_errored_and_how_to_continue():
+    # what errored in a trace and how to continue
     found = reading.outline(_trace())
     assert found["errored"] == ["call:1"]
     assert found["end"] is None
     assert all(set(row) == {"locator", "role", "size"} for row in found["turns"])
     assert all(set(row) == {"locator", "name", "size", "error"} for row in found["calls"])
     assert "turn:<n>" in found["note"] and "call:<n>" in found["note"]
-
-
-def test_outline_of_a_run_echoes_what_it_outlines_and_counts_turns_and_calls():
+    # a run echoes what it outlines and counts turns and calls
     found = reading.outline(_run())
     assert found["kind"] == "run" and found["outline"] is True
     assert found["run_id"] == "run-shelf-1" and found["model"] == "probe:shelf"
     assert found["turn_count"] == 1 and found["call_count"] == 2
     assert found["by_tool"] == {"fetch_slot": 1, "mark_slot": 1}
     assert found["end"] == "success"
-
-
-def test_outline_of_a_run_names_errored_events_and_how_to_continue():
+    # a run names errored events and how to continue
     found = reading.outline(_run())
     assert found["errored"] == ["event:4"], "the result carrying the error is what errored"
     assert [row["locator"] for row in found["events"]] == [f"event:{n}" for n in range(5)]
@@ -110,22 +104,6 @@ def test_outline_of_a_run_names_errored_events_and_how_to_continue():
 def test_outline_never_carries_a_payload_whatever_the_record_holds():
     text = _dump(reading.outline(_run())) + _dump(reading.outline(_trace()))
     assert "crate" not in text and SLOT not in text and "jammed" not in text
-
-
-def test_outline_of_a_long_record_stays_small_while_every_part_stays_addressable():
-    big = _run()
-    big["events"] = [
-        _event(n, "tool_call", {"id": f"c{n}", "name": "fetch_slot",
-                                "args": {"slot": SLOT, "padding": "x" * 4000}})
-        for n in range(60)
-    ]
-    assert len(_dump(big)) > 200000
-    found = reading.outline(big)
-    assert len(_dump(found)) < 8000, "the map stays a fixed size whatever the record's length"
-    assert found["events_total"] == 60 and found["call_count"] == 60
-    assert found["by_tool"] == {"fetch_slot": 60}
-    for n in (0, 30, 59):
-        assert reading.part(big, f"event:{n}")["payload"]["id"] == f"c{n}"
 
 
 def test_pages_walk_a_text_end_to_end_with_no_character_lost_or_repeated():
@@ -156,6 +134,15 @@ def test_locate_answers_locators_with_ranges_into_the_part_and_a_snippet_each():
         assert SLOT in hit["snippet"] or SLOT.casefold() in hit["snippet"].casefold()
     with pytest.raises(ValueError):
         reading.locate(_trace(), "   ")
+    # ranges slice the rendered text even when case folding changes lengths
+    record = {"trace_id": "trace-shelf-8",
+              "turns": [_turn(0, "user", "die StraSSE ist breit")], "tool_calls": []}
+    found = reading.locate(record, "straße")
+    assert found["total"] == 1 and found["truncated"] is False
+    hit = found["matches"][0]
+    body = reading._dump(reading.part(record, hit["locator"]))
+    assert body[hit["start"]:hit["end"]] == "StraSSE"
+    assert "StraSSE" in hit["snippet"]
 
 
 def test_locate_stops_at_the_cap_and_says_so():
@@ -197,30 +184,6 @@ def test_around_shows_the_neighbours_as_skeletons_without_payloads():
         reading.around(_run(), "event:1", -1)
 
 
-def test_errored_lists_are_capped_with_a_total_on_long_failing_records():
-    calls = [_call("fetch_slot", {"slot": SLOT}, None, {"code": "jammed"}) for _ in range(60)]
-    record = {"trace_id": "trace-shelf-9", "turns": [_turn(0, "user", "go")], "tool_calls": calls}
-    found = reading.outline(record)
-    assert len(found["errored"]) == reading.OUTLINE_PARTS and found["errored_total"] == 60
-    assert len(_dump(found)) < 8000, "even an all-error record outlines small"
-    run = _run()
-    run["events"] = [_event(n, "error", {"note": f"bad {n}"}) for n in range(60)]
-    outlined = reading.outline(run)
-    assert len(outlined["errored"]) == reading.OUTLINE_PARTS and outlined["errored_total"] == 60
-    assert outlined["errored"][0] == "event:0" and outlined["errored"][-1] == "event:49"
-
-
-def test_locate_ranges_slice_the_rendered_text_even_when_folding_changes_lengths():
-    record = {"trace_id": "trace-shelf-8",
-              "turns": [_turn(0, "user", "die StraSSE ist breit")], "tool_calls": []}
-    found = reading.locate(record, "straße")
-    assert found["total"] == 1 and found["truncated"] is False
-    hit = found["matches"][0]
-    body = reading._dump(reading.part(record, hit["locator"]))
-    assert body[hit["start"]:hit["end"]] == "StraSSE"
-    assert "StraSSE" in hit["snippet"]
-
-
 def test_select_answers_one_part_a_range_or_a_whole_view():
     assert reading.select(_trace(), "turn:1") == reading.part(_trace(), "turn:1")
     assert reading.select(_run(), "header") == reading.part(_run(), "header")
@@ -234,9 +197,7 @@ def test_select_answers_one_part_a_range_or_a_whole_view():
     for bad in ("turn:2-0", "turn:0-9", "event:0-1", "everywhere"):
         with pytest.raises(ValueError):
             reading.select(_trace(), bad)
-
-
-def test_a_reversed_or_out_of_range_range_is_refused_with_the_valid_range_named():
+    # a reversed or out of range range is refused with the valid range named
     with pytest.raises(ValueError, match="turn:0-2"):
         reading.select(_trace(), "turn:2-0")
     with pytest.raises(ValueError, match="call:0-1"):
@@ -258,9 +219,7 @@ def test_turns_view_is_every_spoken_turn_in_order_without_tool_payloads():
     assert [(row["speaker"], row["text"]) for row in spoken] == [
         ("user", "hello"), ("assistant", "on my way")]
     assert [row["locator"] for row in spoken] == ["event:0", "event:2"]
-
-
-def test_turns_view_reads_text_where_the_runner_writes_user_speech():
+    # user speech reads from text where the Runner writes it, and from content on older rows
     run = {"run_id": "run-shelf-3", "events": [
         _event(0, "user_turn", {"text": "the Runner writes speech here"}),
         _event(1, "user_turn", {"content": "older rows say it here"})]}
@@ -269,7 +228,7 @@ def test_turns_view_reads_text_where_the_runner_writes_user_speech():
         ("user", "the Runner writes speech here"), ("user", "older rows say it here")]
 
 
-def test_a_long_record_reads_end_to_end_through_outlines_parts_and_pages():
+def test_a_long_record_outlines_small_and_reads_end_to_end_through_parts_and_pages():
     big = _run()
     big["events"] = [
         _event(n, "tool_call", {"id": f"c{n}", "name": "fetch_slot",
@@ -290,3 +249,28 @@ def test_a_long_record_reads_end_to_end_through_outlines_parts_and_pages():
             offset = batch["next"]
         rebuilt.append(json.loads(faced))
     assert rebuilt == big["events"], "every event back exactly once, no character lost or repeated"
+    # every part of a long record stays addressable from a small outline
+    big = _run()
+    big["events"] = [
+        _event(n, "tool_call", {"id": f"c{n}", "name": "fetch_slot",
+                                "args": {"slot": SLOT, "padding": "x" * 4000}})
+        for n in range(60)
+    ]
+    assert len(_dump(big)) > 200000
+    found = reading.outline(big)
+    assert len(_dump(found)) < 8000, "the map stays a fixed size whatever the record's length"
+    assert found["events_total"] == 60 and found["call_count"] == 60
+    assert found["by_tool"] == {"fetch_slot": 60}
+    for n in (0, 30, 59):
+        assert reading.part(big, f"event:{n}")["payload"]["id"] == f"c{n}"
+    # errored lists are capped with a total on long failing records
+    calls = [_call("fetch_slot", {"slot": SLOT}, None, {"code": "jammed"}) for _ in range(60)]
+    record = {"trace_id": "trace-shelf-9", "turns": [_turn(0, "user", "go")], "tool_calls": calls}
+    found = reading.outline(record)
+    assert len(found["errored"]) == reading.OUTLINE_PARTS and found["errored_total"] == 60
+    assert len(_dump(found)) < 8000, "even an all-error record outlines small"
+    run = _run()
+    run["events"] = [_event(n, "error", {"note": f"bad {n}"}) for n in range(60)]
+    outlined = reading.outline(run)
+    assert len(outlined["errored"]) == reading.OUTLINE_PARTS and outlined["errored_total"] == 60
+    assert outlined["errored"][0] == "event:0" and outlined["errored"][-1] == "event:49"

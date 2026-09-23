@@ -116,61 +116,36 @@ def given(message: dict, state, router) -> None:
     loop.advance(state, message, router)
 
 
-def test_advance_of_a_hand_written_tool_message_matches_step(workdir):
-    reply = {"content": None, "tool_calls": [
-        {"id": "c1", "name": "describe_widget", "arguments": {"widget_id": "w1"}}]}
-    whole = new_run_state("r1", workdir=workdir, first_user="what is on shelf w1")
-    run(whole, TestModel([reply, {"content": "here it is."}]),
-        tools=WIDGET_TOOLS, router=make_router())
+def _said(reply: dict) -> dict:
+    return {"role": "assistant", "content": reply.get("content"), "tool_calls": reply.get("tool_calls", [])}
 
-    message = {"role": "assistant", "content": None, "tool_calls": [
-        {"id": "c1", "name": "describe_widget", "arguments": {"widget_id": "w1"}}]}
-    state = new_run_state("r2", first_user="what is on shelf w1")
+
+_READ = {"content": None, "tool_calls": [
+    {"id": "c1", "name": "describe_widget", "arguments": {"widget_id": "w1"}}]}
+_SEVERAL = {"content": None, "tool_calls": [
+    {"id": "c1", "name": "describe_widget", "arguments": {"widget_id": "w1"}},
+    {"id": "c2", "name": "rename_widget", "arguments": {"widget_id": "w1", "label": ""}},
+    {"id": "c3", "name": "levitate_widget", "arguments": {}}]}
+_ASK_BACK = {"content": "which one?"}
+
+
+@pytest.mark.parametrize(("replies", "looping", "answers", "said"), [
+    ([_READ, {"content": "here it is."}], False, None, [_READ, {"content": "here it is."}]),
+    # the looping model asks again; the user ends it
+    ([_ASK_BACK], True, ["w1 please."], [_ASK_BACK, _ASK_BACK]),
+    ([_SEVERAL, {"content": "nothing worked."}], False, None, [_SEVERAL, {"content": "nothing worked."}]),
+], ids=["tool-message", "text-turn-with-a-user", "several-calls-and-a-refusal"])
+def test_advance_of_hand_written_messages_matches_step(workdir, replies, looping, answers, said):
+    def user():
+        return ScriptedUser(answers) if answers is not None else None
+
+    whole = new_run_state("r1", workdir=workdir, first_user="what is on shelf w1", user=user())
+    run(whole, TestModel(replies, loop=looping), tools=WIDGET_TOOLS, router=make_router())
+
+    state = new_run_state("r2", first_user="what is on shelf w1", user=user())
     router = make_router()
-    given(message, state, router)
-    given({"role": "assistant", "content": "here it is.", "tool_calls": []}, state, router)
-    finish(state, router)
-
-    assert world_shape(state) == world_shape(whole)
-
-
-def test_advance_of_a_hand_written_text_turn_matches_step_with_a_user(workdir):
-    whole = new_run_state("r1", workdir=workdir, first_user="what is on shelf w1",
-                          user=ScriptedUser(["w1 please."]))
-    run(whole, TestModel([{"content": "which one?"}], loop=True),
-        tools=WIDGET_TOOLS, router=make_router())
-
-    state = new_run_state("r2", first_user="what is on shelf w1",
-                          user=ScriptedUser(["w1 please."]))
-    router = make_router()
-    text = {"role": "assistant", "content": "which one?", "tool_calls": []}
-    given(text, state, router)
-    given(text, state, router)  # the looping model asks again; the user ends it
-    finish(state, router)
-
-    assert world_shape(state) == world_shape(whole)
-
-
-def test_advance_of_several_calls_and_a_refusal_matches_step():
-    replies = [
-        {"content": None, "tool_calls": [
-            {"id": "c1", "name": "describe_widget", "arguments": {"widget_id": "w1"}},
-            {"id": "c2", "name": "rename_widget",
-             "arguments": {"widget_id": "w1", "label": ""}},
-            {"id": "c3", "name": "levitate_widget", "arguments": {}}]},
-        {"content": "nothing worked."},
-    ]
-    whole = new_run_state("r1", first_user="what is on shelf w1")
-    run(whole, TestModel(replies), tools=WIDGET_TOOLS, router=make_router())
-
-    message = {"role": "assistant", "content": None, "tool_calls": [
-        {"id": "c1", "name": "describe_widget", "arguments": {"widget_id": "w1"}},
-        {"id": "c2", "name": "rename_widget", "arguments": {"widget_id": "w1", "label": ""}},
-        {"id": "c3", "name": "levitate_widget", "arguments": {}}]}
-    state = new_run_state("r2", first_user="what is on shelf w1")
-    router = make_router()
-    given(message, state, router)
-    given({"role": "assistant", "content": "nothing worked.", "tool_calls": []}, state, router)
+    for reply in said:
+        given(_said(reply), state, router)
     finish(state, router)
 
     assert world_shape(state) == world_shape(whole)

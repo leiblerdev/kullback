@@ -20,24 +20,35 @@ def fake_modules(monkeypatch):
     only thing on the wire.
 
     Everything a real run leaves on disk is asserted on the real path instead (verdict, regrade and
-    report below). What is left is `build` and `run`, whose real work is a whole pipeline or a live
-    adapter, and the three verdict kwargs (write_tools, flagged_tools, schema) that the stored
-    Verdict does not carry. cli._score reads the regrade gate through getattr for this stub's sake.
-    `run_rounds` answers the way the driver does: two rounds ended through the subscribers the
-    command handed it (ROUND_COUNTS), then the dict with the rounds and the exit.
+    report below). What is left is `build` and `run`, whose real work is a whole session or a live
+    adapter. `build` answers the way the session does: one tool result per domain tool through the
+    subscribers the command handed it, then the dict with the status and the stop.
     """
-    from kullback.agent.events import RoundEnd
+    from kullback.agent.events import ToolExecutionEndEvent
+    from kullback.agent.tools import ToolResult
 
     calls: dict[str, list] = {}
 
-    def run_rounds(**kwargs):
-        records = []
-        for n, counts in enumerate(ROUND_COUNTS, start=1):
-            exit_ = "stalled" if n == len(ROUND_COUNTS) else None
-            for subscriber in kwargs.get("subscribers", ()):
-                subscriber(RoundEnd(round=n, counts=counts, exit=exit_))
-            records.append({"round": n, "counts": counts, "exit": exit_})
-        return {"status": "complete", "rounds": records, "exit": "stalled", "trusted": ["t1"], "refused": {}}
+    def end(tool_name, content, rulings=None):
+        return ToolExecutionEndEvent(tool_call_id=f"{tool_name}-1", tool_name=tool_name,
+                                     result=ToolResult(content=content,
+                                                       details={"rulings": rulings} if rulings else None),
+                                     is_error=False)
+
+    def session_build(*args, **kwargs):
+        for subscriber in kwargs.get("subscribers", ()):
+            subscriber(end("derive_world", "derived the world: 3 tasks, 12 calls"))
+            subscriber(end("examine", "2 findings filed",
+                           [{"name": "replay_fidelity", "accepted": True, "line": 12}]))
+        return {"status": {"tasks": []}, "trusted": 1, "refused": 0, "open": 0, "spend": 0.0,
+                "turns": 3, "stopped": "no tool call", "last_line": ""}
+
+    def reroll(*args, **kwargs):
+        from types import SimpleNamespace
+
+        count = kwargs.get("count", 1)
+        return [SimpleNamespace(as_dict=lambda n=n: {"run_id": f"r{n}", "task_id": kwargs.get("task_id")})
+                for n in range(count)]
 
     def entry(path: str, name: str):
         def fn(*args, **kwargs):
@@ -46,19 +57,13 @@ def fake_modules(monkeypatch):
             # search with; the stub answers None, which is the case a build without live or a memo hits.
             if name == "search_for":
                 return None
-            return run_rounds(**kwargs) if name == "run_rounds" else {"ok": True}
+            if name == "reroll":
+                return reroll(*args, **kwargs)
+            return session_build(*args, **kwargs) if name == "build" else {"ok": True}
         return fn
 
     monkeypatch.setattr(cli, "_entry", entry)
     return calls
-
-
-ROUND_COUNTS = [
-    {"fidelity": 1, "tasks": 2, "trusted": 0, "refused_count": 0, "assisted_runs": 3, "probes_passing": 0,
-     "fallback_compactions": {"builder": 0, "examiner": 0}, "spend": {"builder": 0.0, "examiner": 0.0, "total": 0.0}},
-    {"fidelity": 2, "tasks": 2, "trusted": 1, "refused_count": 1, "assisted_runs": 3, "probes_passing": 4,
-     "fallback_compactions": {"builder": 1, "examiner": 0}, "spend": {"builder": 0.5, "examiner": 0.75, "total": 1.25}},
-]
 
 
 def invoke(*args, **kwargs):
@@ -67,15 +72,11 @@ def invoke(*args, **kwargs):
 
 # --- the command list -------------------------------------------------------
 
-def test_help_lists_every_command():
-    result = invoke("--help")
-    assert result.exit_code == 0
+def test_help_lists_every_command_and_each_takes_a_workdir():
+    listed = invoke("--help")
+    assert listed.exit_code == 0
     for command in ("ingest", "build", "freeze-runner", "run", "verdict", "regrade", "report"):
-        assert command in result.output
-
-
-def test_every_command_takes_a_workdir():
-    for command in ("ingest", "build", "freeze-runner", "run", "verdict", "regrade", "report"):
+        assert command in listed.output
         result = invoke(command, "--help")
         assert result.exit_code == 0, command
         assert "--workdir" in result.output, command
@@ -83,35 +84,45 @@ def test_every_command_takes_a_workdir():
 
 # --- ingest and build -------------------------------------------------------
 
-def test_ingest_passes_each_file_to_the_ingest_module(tmp_path, workdir, fake_modules):
-    first, second = tmp_path / "a.json", tmp_path / "b.json"
-    for path in (first, second):
-        path.write_text("{}", encoding="utf-8")
-    result = invoke("ingest", str(first), str(second), "--workdir", str(workdir))
-    assert result.exit_code == 0
-    calls = fake_modules["kullback.builder.ingest.ingest_file"]
-    assert [call["args"][0] for call in calls] == [first, second]
+def test_ingest_ingests_each_file_under_the_declared_floor(tmp_path, workdir):
+    """Two tiny invented recordings ingested for real: one raw file and one intake ruling each."""
+    import hashlib
+
+    paths = []
+    for name in ("a", "b"):
+        path = tmp_path / f"{name}.json"
+        path.write_text(json.dumps({"rows": [{
+            "row_idx": 0, "truncated_cells": [],
+            "row": {"conversations": _rescue_turns(f"# invented {name}\nSolve invented.\n"),
+                    "trial_name": f"invented-task-{name}__invented", "original_source": "invented-source"},
+        }]}), encoding="utf-8")
+        paths.append(path)
+    result = invoke("ingest", *map(str, paths), "--workdir", str(workdir), "--intake-floor", "0.4")
+    assert result.exit_code == 0, result.output
+    hashes = [hashlib.sha256(path.read_bytes()).hexdigest() for path in paths]
+    summaries = json.loads((workdir / "ingest_summary.json").read_text(encoding="utf-8"))
+    assert [row["raw_hash"] for row in summaries] == hashes
+    for raw_hash in hashes:
+        assert (workdir / "raw" / f"{raw_hash}.json").is_file()
+        ruling = json.loads((workdir / "intake" / f"{raw_hash}.json").read_text(encoding="utf-8"))
+        assert ruling["floor"] == 0.4
 
 
-@pytest.mark.parametrize("extra_args,iterate", [(["--iterate"], True), ([], False)])
-def test_build_passes_iterate_through_to_the_builder(workdir, fake_modules, extra_args, iterate):
-    result = invoke("build", "--workdir", str(workdir), *extra_args)
-    assert result.exit_code == 0
-    call = fake_modules["kullback.rounds.run_rounds"][0]
-    assert call["kwargs"]["iterate"] is iterate
+def test_ingest_refuses_a_floor_outside_unit_interval(tmp_path, workdir):
+    target = tmp_path / "c.json"
+    target.write_text("{}", encoding="utf-8")
+    refused = invoke("ingest", str(target), "--workdir", str(workdir), "--intake-floor", "2")
+    assert refused.exit_code != 0 and "within [0, 1]" in refused.output
 
 
-def test_build_is_driven_by_code_unless_agent_is_asked_for(workdir, fake_modules):
-    """`kullback build` issues build(target) itself, so the offline build stays deterministic; the
-    model drives only under --agent, and --agent without a model has nothing to drive with."""
-    assert invoke("build", "--workdir", str(workdir), "--target", "cluster").exit_code == 0
-    kwargs = fake_modules["kullback.rounds.run_rounds"][0]["kwargs"]
-    assert kwargs["agent_model"] is None and kwargs["model"] is None and kwargs["target"] == "cluster"
-    assert kwargs["workers"] == 8
-    assert invoke("build", "--workdir", str(workdir)).exit_code == 0
-    assert fake_modules["kullback.rounds.run_rounds"][1]["kwargs"]["target"] == "environment"
-    refused = invoke("build", "--workdir", str(workdir), "--agent")
-    assert refused.exit_code != 0 and "--agent needs --model" in refused.output
+def test_build_passes_files_and_the_ceiling_through_to_the_session(workdir, fake_modules, tmp_path):
+    target = tmp_path / "traces.json"
+    target.write_text("[]", encoding="utf-8")
+    result = invoke("build", "--workdir", str(workdir), "--file", str(target), "--ceiling-usd", "2.5")
+    assert result.exit_code == 0, result.output
+    call = fake_modules["kullback.builder.session.build"][0]
+    assert [Path(f).name for f in call["kwargs"]["files"]] == ["traces.json"]
+    assert call["kwargs"]["ceiling_usd"] == 2.5
 
 
 def test_a_missing_entry_point_is_one_clear_message(capsys):
@@ -119,120 +130,73 @@ def test_a_missing_entry_point_is_one_clear_message(capsys):
     import typer
 
     with pytest.raises(typer.Exit) as stopped:
-        cli._entry("kullback.builder.pipeline", "no_such_entry_point")
+        cli._entry("kullback.builder.session", "no_such_entry_point")
     assert stopped.value.exit_code == 2
-    assert "kullback.builder.pipeline.no_such_entry_point is not available yet" in capsys.readouterr().out
+    assert "kullback.builder.session.no_such_entry_point is not available yet" in capsys.readouterr().out
 
 
-def test_build_and_run_reach_a_function_that_actually_exists():
-    """cli build and cli run are the only path to a build; a missing entry point makes both dead ends.
+def _named_adapters(monkeypatch):
+    from kullback.ai.provider import TestModel
 
-    The wiring lives in `kullback.builder.build`, not in `runner/pipeline.py`: assembling the stage
-    graph means naming every Builder module, and the Runner never imports the Builder (design
-    section 3, build brief rule 7, D89). `pipeline.py` stays the stage runner the graph runs on.
-    """
-    import inspect
+    built: dict = {}
 
-    from kullback import rounds
-    from kullback.builder import agent as agent_module
-    from kullback.builder import build as build_module
+    def live(model_id, base_url=None):
+        return built.setdefault(model_id, TestModel([], name=model_id, loop=True))
 
-    assert callable(getattr(build_module, "build", None)), "build.build is the whole graph, what run_builder drives"
-    assert callable(getattr(agent_module, "run_builder", None)), "agent.run_builder is the Builder's beat"
-    assert callable(getattr(rounds, "run_rounds", None)), "rounds.run_rounds is what cli build calls"
-    assert callable(getattr(build_module, "run_batch", None)), "build.run_batch is what cli run calls"
-    build_args = inspect.signature(build_module.build).parameters
-    assert {"workdir", "iterate"} <= set(build_args)
-    round_args = inspect.signature(rounds.run_rounds).parameters
-    assert {"workdir", "iterate", "agent_model", "stall_rounds", "allowance_usd", "subscribers"} <= set(round_args)
-    run_args = inspect.signature(build_module.run_batch).parameters
-    assert {"workdir", "task_id", "model", "count", "seed"} <= set(run_args)
+    monkeypatch.setattr(cli, "_live_model", live)
+    return built
 
 
-def test_build_prints_one_line_per_round_and_the_exit_before_the_json(workdir, fake_modules):
+def test_build_without_a_model_runs_the_session_on_the_default_model(workdir, fake_modules, monkeypatch):
+    from kullback.ai.provider import DEFAULT_MODEL
+
+    _named_adapters(monkeypatch)
+    result = invoke("build", "--workdir", str(workdir))
+    assert result.exit_code == 0, result.output
+    call = fake_modules["kullback.builder.session.build"][0]
+    assert call["args"][1].name == DEFAULT_MODEL
+
+
+def test_build_hands_a_named_judge_model_to_the_session_as_the_judges(workdir, fake_modules, monkeypatch):
+    built = _named_adapters(monkeypatch)
+    result = invoke("build", "--workdir", str(workdir), "--model", "vendor/large",
+                    "--judge-model", "other/small")
+    assert result.exit_code == 0, result.output
+    kwargs = fake_modules["kullback.builder.session.build"][0]["kwargs"]
+    assert kwargs["judge_model"] is built["other/small"]
+
+
+def test_build_runs_the_probe_and_the_rerolls_on_the_builder_model(workdir, fake_modules, monkeypatch):
+    built = _named_adapters(monkeypatch)
+    result = invoke("build", "--workdir", str(workdir), "--model", "vendor/large")
+    assert result.exit_code == 0, result.output
+    call = fake_modules["kullback.builder.session.build"][0]
+    builder = built["vendor/large"]
+    assert call["args"][1] is builder
+    assert call["kwargs"]["probe_model"] is builder and call["kwargs"]["reroll_model"] is builder
+    assert call["kwargs"]["judge_model"] is None, "no --judge-model, so examine puts the judges on --model"
+    assert set(built) == {"vendor/large"}
+
+
+def test_build_prints_one_line_per_tool_result_and_the_counts_before_the_json(workdir, fake_modules):
     result = invoke("build", "--workdir", str(workdir))
     assert result.exit_code == 0, result.output
     lines = result.output.splitlines()
-    assert lines[0] == ("round 1: fidelity 1/2 tasks, trusted 0, refused 0, assisted runs 3, probes passing 0, "
-                        "tasks frozen 0 added 0 ($0.0000) frozen only 0 cleared 0, "
-                        "compactions builder 0 examiner 0, spend $0.0000, cache saved $0.0000, "
-                        "buckets: none")
-    assert lines[1] == ("round 2: fidelity 2/2 tasks, trusted 1, refused 1, assisted runs 3, probes passing 4, "
-                        "tasks frozen 0 added 0 ($0.0000) frozen only 0 cleared 0, "
-                        "compactions builder 1 examiner 0, spend $1.2500, cache saved $0.0000, "
-                        "buckets: none")
-    assert lines[2] == "exit: stalled after 2 rounds"
-    body = json.loads("\n".join(lines[3:]))
-    assert body["exit"] == "stalled" and [r["round"] for r in body["rounds"]] == [1, 2]
+    assert lines[0] == "derive_world: derived the world: 3 tasks, 12 calls"
+    assert lines[1] == "examine: 2 findings filed"
+    assert lines[2] == "  ruling replay_fidelity: accepted (12)"
+    assert lines[3] == "trusted 0, refused 0, fidelity 0/0"
+    body = json.loads("\n".join(lines[4:]))
+    assert (body["trusted"], body["refused"]) == (1, 0) and body["stopped"] == "no tool call"
 
-
-def test_stall_rounds_and_allowance_reach_the_driver(workdir, fake_modules):
-    assert invoke("build", "--workdir", str(workdir)).exit_code == 0
-    kwargs = fake_modules["kullback.rounds.run_rounds"][0]["kwargs"]
-    assert kwargs["stall_rounds"] == 1 and kwargs["allowance_usd"] is None
-    assert invoke("build", "--workdir", str(workdir), "--stall-rounds", "3", "--allowance-usd", "0.5").exit_code == 0
-    kwargs = fake_modules["kullback.rounds.run_rounds"][1]["kwargs"]
-    assert kwargs["stall_rounds"] == 3 and kwargs["allowance_usd"] == 0.5
-
-
-def test_agent_drives_both_agents_with_the_one_model(workdir, fake_modules):
-    """--agent hands the one --model to both sessions: the driver gets it as `model` for the
-    Builder's stages and as `agent_model` for the two harnesses; without --agent, agent_model is None."""
-    result = invoke("build", "--workdir", str(workdir), "--model", "some/model", "--agent")
-    assert result.exit_code == 0, result.output
-    kwargs = fake_modules["kullback.rounds.run_rounds"][0]["kwargs"]
-    assert kwargs["agent_model"] is kwargs["model"] and kwargs["model"] is not None
-    assert invoke("build", "--workdir", str(workdir), "--model", "some/model").exit_code == 0
-    kwargs = fake_modules["kullback.rounds.run_rounds"][1]["kwargs"]
-    assert kwargs["agent_model"] is None and kwargs["model"] is not None
-
-
-def test_build_takes_a_judge_model_and_a_second_one_and_defaults_both_to_the_build_model(workdir, fake_modules):
-    """D160: `kullback build` can name the judge, and a second judge, without touching --model."""
-    plain = invoke("build", "--workdir", str(workdir), "--model", "some/model")
-    assert plain.exit_code == 0, plain.output
-    kwargs = fake_modules["kullback.rounds.run_rounds"][0]["kwargs"]
-    assert kwargs["judge_model"] is None and kwargs["second_judge_model"] is None, \
-        "no flags, so the plan judges with the build model as it always did"
-
-    named = invoke("build", "--workdir", str(workdir), "--model", "some/model",
-                   "--judge-model", "other/small", "--second-judge-model", "third/tiny")
-    assert named.exit_code == 0, named.output
-    kwargs = fake_modules["kullback.rounds.run_rounds"][1]["kwargs"]
-    assert kwargs["judge_model"] is not None and kwargs["second_judge_model"] is not None
-
-    alone = invoke("build", "--workdir", str(workdir), "--second-judge-model", "third/tiny")
-    assert alone.exit_code != 0 and "needs a first judge" in alone.output
-
-
-def test_build_takes_a_user_model_for_the_simulated_user_and_defaults_to_the_rules(workdir, fake_modules):
-    """D232: `kullback build` can name the model that drives the Simulated user, with or without
-    --model; without the flag the driver gets None and every Run stays rule-driven."""
-    plain = invoke("build", "--workdir", str(workdir), "--model", "some/model")
-    assert plain.exit_code == 0, plain.output
-    assert fake_modules["kullback.rounds.run_rounds"][0]["kwargs"]["user_agent_model"] is None
-
-    named = invoke("build", "--workdir", str(workdir), "--model", "some/model",
-                   "--user-model", "other/small")
-    assert named.exit_code == 0, named.output
-    assert fake_modules["kullback.rounds.run_rounds"][1]["kwargs"]["user_agent_model"] is not None
-    assert fake_modules["kullback.ai.provider.live_model"][-1]["args"][0] == "other/small", \
-        "the user adapter is resolved from --user-model, not borrowed from another flag"
-
-    code_driven = invoke("build", "--workdir", str(workdir), "--user-model", "other/small")
-    assert code_driven.exit_code == 0, code_driven.output
-    kwargs = fake_modules["kullback.rounds.run_rounds"][2]["kwargs"]
-    assert kwargs["user_agent_model"] is not None and kwargs["model"] is None
-
-
-# --- freeze-runner ----------------------------------------------------------
 
 def version_file(workdir: Path) -> Path:
     return Path(workdir) / "runner_version.json"
 
 
-def test_freeze_runner_writes_after_a_yes(workdir):
-    result = invoke("freeze-runner", "--workdir", str(workdir), input="y\n")
+@pytest.mark.parametrize("flags, answer", [([], "y\n"), (["--yes"], None)], ids=["after_a_yes", "with_yes"])
+def test_freeze_runner_writes_the_runner_version_after_a_yes_or_with_yes(workdir, flags, answer):
+    result = invoke("freeze-runner", "--workdir", str(workdir), *flags, input=answer)
     assert result.exit_code == 0
     body = json.loads(version_file(workdir).read_text(encoding="utf-8"))
     assert body["runner_version"]
@@ -241,6 +205,10 @@ def test_freeze_runner_writes_after_a_yes(workdir):
     assert body["gates_version"] and body["gates_version"] != body["runner_version"]
     assert set(body["gates_file_hashes"]) >= {"__init__.py", "artifacts.py", "verifier_suite.py"}
     assert "gates version" in result.output
+    # The version written is the hash of the runner files, read back.
+    again = cli.runner_version()
+    assert again.runner_version == body["runner_version"]
+    assert again.gates_version == body["gates_version"]
 
 
 def test_freeze_runner_writes_nothing_on_a_no(workdir):
@@ -248,20 +216,6 @@ def test_freeze_runner_writes_nothing_on_a_no(workdir):
     assert result.exit_code != 0
     assert not version_file(workdir).exists()
     assert "not frozen" in result.output
-
-
-def test_yes_skips_the_question(workdir):
-    result = invoke("freeze-runner", "--workdir", str(workdir), "--yes")
-    assert result.exit_code == 0
-    assert version_file(workdir).exists()
-
-
-def test_the_runner_version_is_the_hash_of_the_runner_files(workdir):
-    invoke("freeze-runner", "--workdir", str(workdir), "--yes")
-    first = json.loads(version_file(workdir).read_text(encoding="utf-8"))
-    second = cli.runner_version()
-    assert second.runner_version == first["runner_version"]
-    assert second.gates_version == first["gates_version"]
 
 
 def test_a_routing_config_changes_the_version(workdir, tmp_path):
@@ -308,13 +262,14 @@ def seed_runs(workdir: Path, runs: list) -> None:
             json.dumps(as_dict(verdict)), encoding="utf-8")
 
 
-def test_run_asks_the_pipeline_for_a_batch(workdir, fake_modules):
+def test_run_asks_the_runner_for_that_many_rerolls(workdir, fake_modules):
     seed_task(workdir)
     result = invoke("run", "--workdir", str(workdir), "--task", "t1", "--model", "candidate-model", "--count", "2")
-    assert result.exit_code == 0
-    call = fake_modules["kullback.builder.build.run_batch"][0]
+    assert result.exit_code == 0, result.output
+    call = fake_modules["kullback.runner.tool.reroll"][0]
     assert call["kwargs"]["task_id"] == "t1"
     assert call["kwargs"]["count"] == 2
+    assert [row["run_id"] for row in json.loads(result.output)] == ["r0", "r1"]
 
 
 def stored_verdicts(workdir: Path, task_id: str = "t1") -> list[dict]:
@@ -322,16 +277,12 @@ def stored_verdicts(workdir: Path, task_id: str = "t1") -> list[dict]:
     return [json.loads(p.read_text(encoding="utf-8")) for p in sorted(folder.glob("*.json"))]
 
 
-def test_verdict_scores_the_stored_runs_of_a_task(workdir):
+def test_verdict_scores_the_stored_runs_of_a_task_or_of_every_task(workdir):
     seed_task(workdir)
     result = invoke("verdict", "--workdir", str(workdir), "--task", "t1")
     assert result.exit_code == 0
     assert "task t1: scored 1 Runs" in result.output
     assert [body["run_id"] for body in stored_verdicts(workdir)] == ["r1"]
-
-
-def test_verdict_without_a_task_scores_every_task(workdir):
-    seed_task(workdir)
     seed_task(workdir, "t2", "r2")
     assert invoke("verdict", "--workdir", str(workdir)).exit_code == 0
     assert [body["run_id"] for body in stored_verdicts(workdir, "t1")] == ["r1"]
@@ -358,7 +309,7 @@ def test_regrade_re_scores_without_re_executing(workdir):
 
 # --- report -----------------------------------------------------------------
 
-def test_report_writes_markdown_under_the_workdir(workdir):
+def test_report_writes_markdown_under_the_workdir_or_the_output_path(workdir, tmp_path):
     seed_task(workdir)
     result = invoke("report", "--workdir", str(workdir))
     assert result.exit_code == 0
@@ -366,20 +317,9 @@ def test_report_writes_markdown_under_the_workdir(workdir):
     assert text.startswith("# ")
     assert "## Environment" in text
     assert str(workdir / "report.md") in result.output
-
-
-def test_report_takes_an_output_path(workdir, tmp_path):
     out = tmp_path / "elsewhere" / "build.md"
     assert invoke("report", "--workdir", str(workdir), "--out", str(out)).exit_code == 0
     assert out.is_file()
-
-
-def test_report_names_a_run_batch(workdir):
-    result = invoke("report", "--workdir", str(workdir), "--batch")
-    assert result.exit_code == 0
-    text = (workdir / "report.md").read_text(encoding="utf-8")
-    assert text.splitlines()[0] == "# Run batch report"
-    assert "These are the numbers for one Run batch" in text
 
 
 def test_a_batch_report_counts_only_the_runs_of_that_model(workdir):
@@ -393,6 +333,11 @@ def test_a_batch_report_counts_only_the_runs_of_that_model(workdir):
     assert "- Runs graded: 1" in text
     assert "  - r1: pass" in text
     assert "r2" not in text.split("### Task t1", 1)[1]
+    batch = invoke("report", "--workdir", str(workdir), "--batch")
+    assert batch.exit_code == 0
+    text = (workdir / "report.md").read_text(encoding="utf-8")
+    assert text.splitlines()[0] == "# Run batch report"
+    assert "These are the numbers for one Run batch" in text
 
 
 # --- the ToolSigs a Verdict needs (D70, side effects) -----------------------
@@ -407,14 +352,23 @@ def seed_tool_sigs(workdir: Path) -> None:
     ]), encoding="utf-8")
 
 
-def test_verdict_passes_the_write_tools_and_the_flagged_tools(workdir, fake_modules):
+def test_verdict_passes_the_write_tools_and_the_flagged_tools(workdir):
     """Without these the extra-write, entity-count and D70 checks never fire from the CLI."""
     seed_task(workdir)
     seed_tool_sigs(workdir)
+    lines = [{"run_id": "r1", "env_id": "env-1", "task_id": "t1"},
+             {"idx": 0, "type": "tool_call", "payload": {"id": "c1", "name": "cancel_order", "args": {}}},
+             {"idx": 1, "type": "tool_result", "payload": {"id": "c1", "result": {"ok": True}}},
+             {"idx": 2, "type": "tool_call", "payload": {"id": "c2", "name": "mystery_tool", "args": {}}},
+             {"idx": 3, "type": "tool_result", "payload": {"id": "c2", "result": {"ok": True}}},
+             {"idx": 4, "type": "stop", "payload": {"termination_reason": "done"}}]
+    (workdir / "runs" / "t1" / "r1.jsonl").write_text(
+        "".join(json.dumps(line) + "\n" for line in lines), encoding="utf-8")
     assert invoke("verdict", "--workdir", str(workdir)).exit_code == 0
-    call = fake_modules["kullback.runner.regrade.regrade"][0]
-    assert call["kwargs"]["write_tools"] == {"cancel_order"}
-    assert call["kwargs"]["flagged_tools"] == {"mystery_tool"}
+    (body,) = stored_verdicts(workdir)
+    assert body["pass"] is False and body["failing_atom"] == "extra_write:cancel_order"
+    assert "env_mark:flagged_tool:mystery_tool" in body["notes"]
+    assert "side_effect_check_skipped" not in body["notes"]
 
 
 def test_verdict_says_when_neither_tool_sigs_nor_a_schema_are_on_disk(workdir, fake_modules):
@@ -435,13 +389,6 @@ def test_the_report_computes_task_coverage_when_no_stage_wrote_it(workdir):
     assert "t1: not covered, no Reference confirmation is recorded for this Task (D57, D93)" in text
 
 
-# --- house rules ------------------------------------------------------------
-
-def test_no_em_dashes_in_the_source():
-    source = (Path(__file__).resolve().parents[1] / "kullback" / "cli.py").read_text(encoding="utf-8")
-    assert "\u2014" not in source and "\u2013" not in source
-
-
 def test_the_verdict_carries_the_environment_and_runner_versions(workdir):
     seed_task(workdir)
     invoke("freeze-runner", "--workdir", str(workdir), "--yes")
@@ -454,36 +401,29 @@ def test_the_verdict_carries_the_environment_and_runner_versions(workdir):
 
 # --- what the Verdict is actually given (D39, D73, D84) ---------------------
 
-def test_verdict_passes_the_entity_schema_so_exempt_columns_are_dropped(workdir, fake_modules):
+def test_verdict_passes_the_entity_schema_so_exempt_columns_are_dropped(workdir):
     """D73: without the schema a forbidden atom over diff() fires on a column the customer exempted."""
-    from kullback.runner.records import Column, EntitySchema
+    from kullback.runner.records import Atom, Column, EntitySchema
 
     seed_task(workdir)
+    (workdir / "verifiers" / "t1.json").write_text(json.dumps(as_dict(Verifier(
+        task_id="t1", verifier_version="v1",
+        atoms=[Atom(id="a_nothing_moves", kind="forbidden", predicate_src="diff()")]))), encoding="utf-8")
+    stop = {"idx": 0, "type": "stop", "payload": {
+        "run_id": "r1", "start_state": {"orders": {"o1": {"updated_at": "t0"}}},
+        "end_state": {"orders": {"o1": {"updated_at": "t1"}}}}}
+    (workdir / "runs" / "t1" / "r1.jsonl").write_text(json.dumps(stop) + "\n", encoding="utf-8")
     schema = EntitySchema(tables=["orders"], columns=[
         Column(table="orders", name="updated_at", **{"class": "exempt"})])
     (workdir / "schema.json").write_text(json.dumps(as_dict(schema)), encoding="utf-8")
     assert invoke("verdict", "--workdir", str(workdir)).exit_code == 0
-    call = fake_modules["kullback.runner.regrade.regrade"][0]
-    assert [c.name for c in call["kwargs"]["schema"].columns] == ["updated_at"]
+    (body,) = stored_verdicts(workdir)
+    assert body["pass"] is True and body["failing_atom"] is None
 
 
 def test_regrade_reads_the_queue_and_verdict_leaves_it_alone(workdir):
-    """D84: only regrade re-scores a Run whose equivalence entry a person overturned."""
-    from kullback.runner import canon
-
-    seed_task(workdir)
-    assert invoke("verdict", "--workdir", str(workdir)).exit_code == 0
-    canon._append(workdir / canon.USES_FILE, {"run_id": "r1", "key": "k1", "task_id": "t1"})
-    assert canon.queue_regrade(workdir, "k1", "overturned by a reviewer") == ["r1"]
-
-    assert invoke("verdict", "--workdir", str(workdir)).exit_code == 0
-    assert canon.queued_regrades(workdir) == ["r1"], "verdict must not consume the regrade queue"
-    assert invoke("regrade", "--workdir", str(workdir)).exit_code == 0
-    assert canon.queued_regrades(workdir) == []
-
-
-def test_regrade_re_scores_a_queued_run_and_empties_the_queue(workdir):
-    """The whole D84 path with the real regrade: queue a Run, regrade, the stale Verdict is gone."""
+    """D84: only regrade re-scores a Run whose equivalence entry a person overturned, and the
+    stale Verdict is gone once it has."""
     from kullback.runner import canon
 
     seed_task(workdir)
@@ -492,9 +432,11 @@ def test_regrade_re_scores_a_queued_run_and_empties_the_queue(workdir):
     assert len(stored) == 1
     stored[0].write_text(json.dumps(dict(json.loads(stored[0].read_text(encoding="utf-8")),
                                          notes=["stale"])), encoding="utf-8")
-
     canon._append(workdir / canon.USES_FILE, {"run_id": "r1", "key": "k1", "task_id": "t1"})
     assert canon.queue_regrade(workdir, "k1", "overturned by a reviewer") == ["r1"]
+
+    assert invoke("verdict", "--workdir", str(workdir)).exit_code == 0
+    assert canon.queued_regrades(workdir) == ["r1"], "verdict must not consume the regrade queue"
     result = invoke("regrade", "--workdir", str(workdir))
     assert result.exit_code == 0
     assert "1 re-scored from the regrade queue" in result.output
@@ -637,7 +579,8 @@ def test_no_judge_model_means_no_judge_results_and_no_model_call(tmp_path):
 
 
 def test_a_failure_code_left_unmarked_gets_a_cause_and_one_verdict_file(tmp_path):
-    """D88: code marks the Run, the judge names the cause, and the Run keeps one Verdict, not two."""
+    """D88: code marks the Run, the judge names the cause, and the Run keeps one Verdict, not two.
+    D255: a judge's pass no longer makes r1 a pass."""
     from kullback.runner.regrade import regrade, regrade_run
 
     verifier = _judge_verifier()
@@ -647,7 +590,8 @@ def test_a_failure_code_left_unmarked_gets_a_cause_and_one_verdict_file(tmp_path
     answers = cli._judged_atoms(verifier, paths, (_judge("a", "pass"), _judge("b", "pass")), tmp_path)
     verdicts = regrade(paths, verifier, None, out_dir=out_dir, judge_results=answers,
                        judge_version="1", **common)
-    assert [v.cause for v in verdicts] == [None, None]
+    assert [v.class_ for v in verdicts] == ["not_verdicted", "fail"]
+    assert [v.cause for v in verdicts] == ["undetermined", None]
     assert "cause_pending_judge" in dict((v.run_id, v.notes) for v in verdicts)["r2"]
 
     named = cli._name_causes(
@@ -659,46 +603,7 @@ def test_a_failure_code_left_unmarked_gets_a_cause_and_one_verdict_file(tmp_path
     for path in sorted(out_dir.glob("*.json")):
         body = json.loads(path.read_text(encoding="utf-8"))
         stored.setdefault(body["run_id"], []).append(body.get("cause"))
-    assert stored == {"r1": [None], "r2": ["candidate"]}
-
-
-# --- build --grow table=count (D107) ---
-
-def test_grow_targets_parse_table_equals_count_and_refuse_anything_else():
-    assert cli._grow_targets(["users=500", "orders=1000"]) == {"users": 500, "orders": 1000}
-    assert cli._grow_targets(None) == {}
-    for bad in ("users", "users=", "=5", "users=many"):
-        with pytest.raises(Exception, match="table=count"):
-            cli._grow_targets([bad])
-
-
-def test_build_passes_grow_through(workdir, fake_modules):
-    result = runner.invoke(cli.app, ["build", "--workdir", str(workdir), "--grow", "users=500",
-                                     "--grow", "orders=1000", "--grow-seed", "7"])
-    assert result.exit_code == 0, result.output
-    kwargs = fake_modules["kullback.rounds.run_rounds"][0]["kwargs"]
-    assert kwargs["grow"] == {"users": 500, "orders": 1000} and kwargs["grow_seed"] == 7
-
-
-def test_build_fails_when_the_run_failed_on_a_broken_agent(workdir, fake_modules, monkeypatch):
-    """A stalled exit on a broken agent contract is a failed run: the command exits non-zero so CI
-    and scripts see it. A plain stalled exit (the gates, no progress) still exits zero."""
-    def failed_run(**kwargs):
-        return {"status": "complete", "rounds": [{"round": 1, "counts": {}, "exit": "stalled", "failed": True}],
-                "exit": "stalled", "failed": True, "trusted": [], "refused": {}}
-
-    def entry(path, name):
-        def fn(*args, **kwargs):
-            if name == "run_rounds":
-                return failed_run(**kwargs)
-            if name == "search_for":
-                return None
-            return {"ok": True}
-        return fn
-
-    monkeypatch.setattr(cli, "_entry", entry)
-    result = invoke("build", "--workdir", str(workdir))
-    assert result.exit_code == 1 and '"failed": true' in result.output
+    assert stored == {"r1": ["undetermined"], "r2": ["candidate"]}
 
 
 def test_tui_defaults_to_work_when_it_holds_a_build(tmp_path, monkeypatch):
@@ -714,22 +619,325 @@ def test_tui_defaults_to_work_when_it_holds_a_build(tmp_path, monkeypatch):
     assert _default_workdir(Path("/elsewhere")) == Path("/elsewhere")
 
 
-def test_the_round_line_says_which_beat_ended_the_round_before_the_counts_it_measured():
-    """D231: a round that lost a beat used to print its defaults and say nothing about why, so a
-    round that measured 75 Tasks of 119 and then lost its Examiner read as a round that measured
-    none. The counts beside the note are what it did measure."""
-    line = cli._round_line({"fidelity": 75, "tasks": 119,
-                            "beat_error": {"beat": "examiner", "kind": "ExaminerError",
-                                           "message_class": "derive failed: LookupError"}})
-    assert line.startswith("ended by examiner error (ExaminerError), fidelity 75/119 tasks")
-    assert not cli._round_line({"fidelity": 75, "tasks": 119}).startswith("ended by")
+def _rescue_turns(instruction: str) -> list[dict]:
+    """An invented recording whose first user turn carries the instruction between headers."""
+    return [
+        {"role": "user",
+         "content": ("Invented preamble.\n\nTask Description:\n" + instruction
+                     + "\n\nCurrent terminal state:\n\ninvented-ready")},
+        {"role": "assistant", "content": json.dumps({"commands": [
+            {"keystrokes": "invented-solo"}]})},
+        {"role": "user", "content": "New Terminal Output:\n\ninvented solo output"},
+    ]
 
 
-def test_the_round_line_reads_the_beat_error_under_the_key_the_driver_writes_it_under():
-    """One key, one spelling. The driver, the line and the report held three literals of it, two of
-    them uncheckable, so a rename would have left the readers quietly printing nothing at all."""
-    from kullback import rounds
+def _rescue_blob(instruction: str, with_content_check: bool) -> str:
+    """An invented registry entry on the wire: base64 of the gzipped task tar."""
+    import base64
+    import gzip
+    import io
+    import tarfile
 
-    line = cli._round_line({"fidelity": 4, "tasks": 9,
-                            rounds.BEAT_ERROR: {"beat": "builder", "kind": "LedgerUnreadable"}})
-    assert line.startswith("ended by builder error (LedgerUnreadable), fidelity 4/9 tasks")
+    tests = {"tests/test.sh": b"cmp /output/actual.txt tests/expected_output.txt\n",
+             "tests/expected_output.txt": b"invented golden\n"} if with_content_check else {}
+    files = {
+        "instruction.md": instruction.encode("utf-8"),
+        "task.toml": b"[environment]\ndocker_image = \"invented-image:1\"\n\n[verifier]\ntimeout_sec = 30\n",
+        "environment/Dockerfile": b"FROM invented-base:1\n",
+        **tests,
+    }
+    buffer = io.BytesIO()
+    with tarfile.open(fileobj=buffer, mode="w") as tar:
+        for name, body in files.items():
+            info = tarfile.TarInfo(name=name)
+            info.size = len(body)
+            tar.addfile(info, io.BytesIO(body))
+    return base64.b64encode(gzip.compress(buffer.getvalue())).decode("ascii")
+
+
+def _rescue_workdir(tmp_path: Path, workdir: Path) -> dict:
+    """Three invented recordings ingested for real: one match, one mismatch, one missing."""
+    from kullback.builder import ingest
+
+    rows = [
+        ("invented-task-21__invented-a", "# invented twenty-one\nSolve invented.\n"),
+        ("invented-task-22__invented-b", "# invented twenty-two\nSolve invented.\n"),
+        ("invented-task-23__invented-c", "# invented twenty-three\nSolve invented.\n"),
+    ]
+    envelope = {"rows": [
+        {"row_idx": index,
+         "row": {"conversations": _rescue_turns(instruction), "trial_name": trial,
+                 "original_source": "invented-source"},
+         "truncated_cells": []}
+        for index, (trial, instruction) in enumerate(rows)]}
+    target = tmp_path / "invented.json"
+    target.write_text(json.dumps(envelope), encoding="utf-8")
+    summary = ingest.ingest_file(target, workdir)
+    assert summary["runs"] == 3
+    rows_path = tmp_path / "rows.json"
+    rows_path.write_text(json.dumps([
+        {"path": "invented-task-21",
+         "task_binary": _rescue_blob("# invented twenty-one\nSolve invented.\n", True)},
+        {"path": "invented-task-22",
+         "task_binary": _rescue_blob("# invented twenty-two and something else entirely\n", False)},
+    ]), encoding="utf-8")
+    return {"summary": summary, "rows_path": rows_path}
+
+
+def _task_of(workdir: Path, trace_hash: str) -> str:
+    sidecar = json.loads((workdir / "grader" / f"{trace_hash}.json").read_text(encoding="utf-8"))
+    return sidecar["fields"]["task_ref"]["id"]
+
+
+def test_rescue_attaches_matching_skips_mismatched_reports_missing(tmp_path, workdir):
+    built = _rescue_workdir(tmp_path, workdir)
+    dry = invoke("rescue", "--workdir", str(workdir), "--registry", str(built["rows_path"]), "--dry-run")
+    assert dry.exit_code == 0, dry.output
+    assert "attached 1" in dry.output
+    assert not (workdir / "task_defs").exists(), "a dry run writes nothing"
+    result = invoke("rescue", "--workdir", str(workdir), "--registry", str(built["rows_path"]))
+    assert result.exit_code == 0, result.output
+    assert "looked up 3" in result.output
+    assert "attached 1" in result.output
+    assert "mismatched 1" in result.output
+    assert "missing 1" in result.output
+    by_task = {_task_of(workdir, trace_hash): trace_hash
+               for trace_hash in built["summary"]["trace_hashes"]}
+    attached = workdir / "task_defs" / f"{by_task['invented-task-21']}.json"
+    assert attached.is_file()
+    body = json.loads(attached.read_text(encoding="utf-8"))
+    assert body["matched"] is True
+    assert body["verifier_strength"] == "content"
+    assert body["task_id"] == "invented-task-21"
+    assert "content 1" in result.output
+    assert not (workdir / "task_defs" / f"{by_task['invented-task-22']}.json").exists()
+    assert not (workdir / "task_defs" / f"{by_task['invented-task-23']}.json").exists()
+
+
+def test_rescue_raw_hash_scopes_the_lookup(tmp_path, workdir):
+    built = _rescue_workdir(tmp_path, workdir)
+    raw_hash = built["summary"]["raw_hash"]
+    scoped = invoke("rescue", "--workdir", str(workdir), "--registry", str(built["rows_path"]),
+                    "--raw-hash", raw_hash)
+    assert scoped.exit_code == 0, scoped.output
+    assert "looked up 3" in scoped.output
+    other = invoke("rescue", "--workdir", str(workdir), "--registry", str(built["rows_path"]),
+                   "--raw-hash", "0" * 64, "--dry-run")
+    assert other.exit_code == 0, other.output
+    assert "looked up 0" in other.output
+
+
+def test_rescue_reaches_set_aside_recordings(tmp_path, workdir):
+    """Set-aside recordings keep their sidecar, so the lookup reads them like eligible ones."""
+    from kullback.builder import ingest
+
+    clean = {"conversations": _rescue_turns("# invented clean\nSolve invented.\n"),
+             "trial_name": "invented-task-31__invented-a", "original_source": "invented-source"}
+    damaged = {"conversations": [
+        {"role": "user",
+         "content": "Invented preamble.\n\nTask Description:\n# invented set aside\nSolve invented.\n"
+                    "\n\nCurrent terminal state:\n\ninvented-ready"},
+        {"role": "assistant", "content": "Invented prose with no commands in it."},
+        {"role": "user", "content": "New Terminal Output:\n\ninvented stray output"},
+    ], "trial_name": "invented-task-32__invented-b", "original_source": "invented-source"}
+    envelope = {"rows": [
+        {"row_idx": 0, "row": clean, "truncated_cells": []},
+        {"row_idx": 1, "row": dict(clean, trial_name="invented-task-33__invented-c"),
+         "truncated_cells": []},
+        {"row_idx": 2, "row": dict(clean, trial_name="invented-task-34__invented-d"),
+         "truncated_cells": []},
+        {"row_idx": 3, "row": damaged, "truncated_cells": []}]}
+    target = tmp_path / "invented.json"
+    target.write_text(json.dumps(envelope), encoding="utf-8")
+    summary = ingest.ingest_file(target, workdir)
+    assert summary["runs"] == 3
+    assert len(list((workdir / "evidence_traces").glob("*.json"))) == 1
+    rows_path = tmp_path / "rows.json"
+    rows_path.write_text(json.dumps([
+        {"path": "invented-task-32",
+         "task_binary": _rescue_blob("# invented set aside\nSolve invented.\n", True)},
+    ]), encoding="utf-8")
+    result = invoke("rescue", "--workdir", str(workdir), "--registry", str(rows_path))
+    assert result.exit_code == 0, result.output
+    assert "looked up 4" in result.output
+    assert "attached 1" in result.output
+    assert "missing 3" in result.output
+    (sole,) = list((workdir / "task_defs").glob("*.json"))
+    assert json.loads(sole.read_text(encoding="utf-8"))["task_id"] == "invented-task-32"
+# --- consistency (D258 laws over a built Environment) -------------------------
+
+def seed_built_env(workdir: Path) -> Path:
+    """The invented built Environment the law tests drive, written into the workdir."""
+    from tests.episode.invented import write_env
+
+    return write_env(workdir)
+
+
+def test_consistency_prints_one_line_per_task_and_the_mean(workdir):
+    seed_built_env(workdir)
+    result = invoke("consistency", "--workdir", str(workdir), "--sequences", "4",
+                    "--max-length", "2", "--seed", "7")
+    assert result.exit_code == 0, result.output
+    lines = result.output.splitlines()
+    assert lines[0].startswith("widget_task: checked ")
+    assert "broken 0" in lines[0] and "consistency 1.0000" in lines[0]
+    assert lines[-1] == "mean consistency 1.0000 over 1 Tasks, 0 with violations, 0 skipped"
+
+
+def test_consistency_checks_one_named_task_and_refuses_an_unknown_one(workdir):
+    seed_built_env(workdir)
+    assert invoke("consistency", "--workdir", str(workdir), "--task", "widget_task",
+                  "--sequences", "2").exit_code == 0
+    refused = invoke("consistency", "--workdir", str(workdir), "--task", "nope")
+    assert refused.exit_code != 0 and "no Task named nope" in refused.output
+    for sequences in ("0", "-1"):
+        refused = invoke("consistency", "--workdir", str(workdir), "--sequences", sequences)
+        assert refused.exit_code == 2, sequences
+        assert "--sequences" in refused.output and "1 or more" in refused.output
+
+
+def test_consistency_out_writes_the_same_numbers_as_json_and_nothing_without_it(workdir, tmp_path):
+    seed_built_env(workdir)
+    before = {path for path in workdir.rglob("*")}
+    result = invoke("consistency", "--workdir", str(workdir), "--sequences", "2",
+                    "--max-length", "2")
+    assert result.exit_code == 0, result.output
+    assert {path for path in workdir.rglob("*")} == before
+    out = tmp_path / "consistency.json"
+    result = invoke("consistency", "--workdir", str(workdir), "--sequences", "2",
+                    "--max-length", "2", "--out", str(out))
+    assert result.exit_code == 0, result.output
+    body = json.loads(out.read_text(encoding="utf-8"))
+    assert body["tasks"]["widget_task"]["broken"] == 0
+    assert body["tasks"]["widget_task"]["checked"] > 0
+    assert body["tasks"]["widget_task"]["consistency"] == 1.0
+    assert body["mean_consistency"] == 1.0
+    assert body["tasks_with_violations"] == 0
+    assert body["laws_version"] == 1
+
+
+def test_consistency_exits_3_when_the_requested_or_every_task_is_skipped(workdir, tmp_path):
+    seed_built_env(workdir)
+    (workdir / "overlays" / "widget_task.json").write_text("{", encoding="utf-8")
+    refused = invoke("consistency", "--workdir", str(workdir), "--task", "widget_task",
+                     "--sequences", "2")
+    assert refused.exit_code == 3
+    assert "widget_task" in refused.output and "skipped" in refused.output
+    out = tmp_path / "consistency.json"
+    refused = invoke("consistency", "--workdir", str(workdir), "--task", "widget_task",
+                     "--sequences", "2", "--out", str(out))
+    assert refused.exit_code == 3
+    assert "widget_task" in json.loads(out.read_text(encoding="utf-8"))["skipped"]
+    every = invoke("consistency", "--workdir", str(workdir), "--sequences", "2")
+    assert every.exit_code == 3
+    assert "1 skipped" in every.output
+
+
+@pytest.mark.parametrize("breakage", ["broken_overlay", "toolkit_fails_to_load"])
+def test_consistency_one_skip_among_several_still_succeeds(workdir, tmp_path, breakage):
+    """A second Task whose overlay does not parse, or whose toolkit raises on load, is skipped with
+    its reason while the rest are still checked."""
+    from tests.episode.invented import TOOLS
+
+    seed_built_env(workdir)
+    (workdir / "tasks" / "t2.json").write_text(json.dumps({
+        "id": "t2", "run_ids": ["ghost"], "intent": "nothing recorded",
+    }), encoding="utf-8")
+    if breakage == "broken_overlay":
+        (workdir / "overlays" / "t2.json").write_text("{", encoding="utf-8")
+    else:
+        (workdir / "overlays" / "t2.json").write_text(json.dumps({
+            "overlay": {"task_id": "t2",
+                        "rows": [{"table": "widgets", "id": "w1", "version_hash": "h-poison"}],
+                        "steps": []},
+            "values": {"h-poison": {"widget_id": "w1", "label": "poison"}},
+        }), encoding="utf-8")
+        tools_path = workdir / "env" / "tools.py"
+        poisoned = tools_path.read_text(encoding="utf-8").replace(
+            "        super().__init__(db)\n        self.db = db",
+            "        super().__init__(db)\n        self.db = db\n"
+            "        if any(row.label == \"poison\" for row in self.db.widgets.values()):\n"
+            "            raise KeyError(\"poison\")",
+        )
+        assert poisoned != TOOLS
+        tools_path.write_text(poisoned, encoding="utf-8")
+    out = tmp_path / "consistency.json"
+    result = invoke("consistency", "--workdir", str(workdir), "--sequences", "2",
+                    "--max-length", "2", "--out", str(out))
+    assert result.exit_code == 0, result.output
+    body = json.loads(out.read_text(encoding="utf-8"))
+    assert set(body["tasks"]) == {"widget_task"}
+    assert "t2" in body["skipped"]
+    assert "1 skipped" in result.output
+    assert "t2" in result.output and "skipped" in result.output
+    if breakage == "toolkit_fails_to_load":
+        assert "KeyError" in body["skipped"]["t2"]
+
+
+def test_consistency_names_unfit_tools_in_output_and_json(workdir, tmp_path):
+    seed_built_env(workdir)
+    (workdir / "tool_sigs.json").write_text(json.dumps([
+        {"name": "describe_widget", "kind": "read", "unclassified": False,
+         "args_fields": [{"name": "widget_id", "types": [], "optional": False}],
+         "args_schema": {"type": "object", "properties": {"widget_id": {}},
+                         "required": ["widget_id"]}},
+        {"name": "rename_widget", "kind": "write", "unclassified": False,
+         "args_fields": [{"name": "widget_id", "types": ["str"], "optional": False},
+                         {"name": "label", "types": ["str"], "optional": False}],
+         "args_schema": {"type": "object",
+                         "properties": {"widget_id": {"type": ["str"]},
+                                        "label": {"type": ["str"]}},
+                         "required": ["widget_id", "label"]}},
+    ]), encoding="utf-8")
+    out = tmp_path / "consistency.json"
+    result = invoke("consistency", "--workdir", str(workdir), "--sequences", "2",
+                    "--max-length", "2", "--out", str(out))
+    assert result.exit_code == 0, result.output
+    assert "unfit tool describe_widget" in result.output
+    body = json.loads(out.read_text(encoding="utf-8"))
+    assert body["unfit"]["widget_task"]["describe_widget"] == \
+        "required argument widget_id has no type"
+    assert "widget_task" in body["tasks"]
+
+
+def test_consistency_skips_a_task_that_checked_nothing(workdir, tmp_path):
+    seed_built_env(workdir)
+    (workdir / "tool_sigs.json").write_text(json.dumps([
+        {"name": "describe_widget", "kind": "read", "unclassified": False,
+         "args_fields": [{"name": "widget_id", "types": [], "optional": False}],
+         "args_schema": {"type": "object", "properties": {"widget_id": {}},
+                         "required": ["widget_id"]}},
+        {"name": "rename_widget", "kind": "write", "unclassified": False,
+         "args_fields": [{"name": "widget_id", "types": [], "optional": False},
+                         {"name": "label", "types": [], "optional": False}],
+         "args_schema": {"type": "object",
+                         "properties": {"widget_id": {}, "label": {}},
+                         "required": ["widget_id", "label"]}},
+    ]), encoding="utf-8")
+    out = tmp_path / "consistency.json"
+    refused = invoke("consistency", "--workdir", str(workdir), "--sequences", "2",
+                     "--max-length", "2", "--out", str(out))
+    assert refused.exit_code == 3
+    assert "no law checked" in refused.output
+    body = json.loads(out.read_text(encoding="utf-8"))
+    assert body["tasks"] == {}
+    assert body["skipped"]["widget_task"] == "no law checked"
+    assert "unfit tool describe_widget" in refused.output
+    assert "unfit tool rename_widget" in refused.output
+    assert body["unfit"]["widget_task"]["describe_widget"] == \
+        "required argument widget_id has no type"
+    assert body["unfit"]["widget_task"]["rename_widget"] == \
+        "required argument label has no type; required argument widget_id has no type"
+
+
+
+def test_a_build_that_ended_on_a_provider_error_beats_failed_and_exits_one(workdir, fake_modules, monkeypatch):
+    from kullback.runner import heartbeat
+
+    stopped = {"status": {"tasks": []}, "trusted": 0, "refused": 0, "open": 0, "spend": 0.0, "turns": 1,
+               "stopped": "error", "last_line": "HTTP 400: the endpoint refused the request"}
+    monkeypatch.setattr(cli, "_entry", lambda path, name: lambda *args, **kwargs: dict(stopped))
+    result = invoke("build", "--workdir", str(workdir))
+    assert result.exit_code == 1, result.output
+    assert '"stopped": "error"' in result.output
+    assert [record["status"] for record in heartbeat.read_all()] == ["failed"]

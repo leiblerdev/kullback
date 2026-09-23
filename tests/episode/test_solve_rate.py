@@ -12,7 +12,8 @@ pytestmark = pytest.mark.skipif(
 )
 
 from kullback.ai.provider import TestModel  # noqa: E402
-from kullback.episode import BuiltEnvironment, markdown_table, solve_rate  # noqa: E402
+from kullback.runner.world import BuiltEnvironment  # noqa: E402
+from kullback.runner.world.solve import markdown_table, solve_rate  # noqa: E402
 from tests.episode.invented import write_env  # noqa: E402
 
 
@@ -31,9 +32,9 @@ def test_solve_rate_counts_passes_and_leaves_no_signal_out():
             encoding="utf-8")
         (root / "verifiers" / "quiet.json").write_text(json.dumps({
             "task_id": "quiet",
-            "atoms": [{"id": "j1", "kind": "hard", "judge": True,
-                         "predicate_src": "wrote('rename_widget')",
-                         "target": {"kind": "write"}}],
+            "atoms": [{"id": "a1", "kind": "required", "predicate_src": "wrote('rename_widget')",
+                         "target": {"kind": "write", "tool": "rename_widget"}},
+                        {"id": "j1", "kind": "hard", "judge": True, "description": "policy tone"}],
             "verifier_version": "1",
         }), encoding="utf-8")
         env = BuiltEnvironment(root)

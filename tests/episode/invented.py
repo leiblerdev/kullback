@@ -151,7 +151,7 @@ def write_env(root: Path, *, task_id: str = "widget_task", run_id: str = "rec1",
     if with_verifier:
         atoms = verifier_atoms if verifier_atoms is not None else [
             {"id": "a1", "kind": "required", "predicate_src": "wrote('rename_widget')",
-             "target": {"kind": "write"}},
+             "target": {"kind": "write", "tool": "rename_widget"}},
         ]
         (root / "verifiers" / f"{task_id}.json").write_text(json.dumps({
             "task_id": task_id, "atoms": atoms, "verifier_version": "1",
@@ -166,3 +166,24 @@ SCRIPTED_RENAME = [
                                       "arguments": {"widget_id": "w1", "label": "striped"}}]},
     {"content": "done", "tool_calls": []},
 ]
+
+
+def simulated_user_factory(env, task, router, rules, reference):
+    """The Simulated user over the Task's own evidence, for Episode tests.
+
+    The world owns no user extension, so Episode takes the builder of its user from the
+    caller; tests build it here, where importing the user package is allowed. An env with
+    no stored vocabulary reads the generic core, the way the world did before the move.
+    """
+    from kullback.user.rules import goal_write_set
+    from kullback.user.simulated import SimulatedUser
+    from kullback.user.value_strip import value_strip
+    from kullback.user.vocabulary import GENERIC
+    goal_writes = goal_write_set(reference, env.write_tools()) if reference is not None else None
+    members = env.members(task)
+    answer_strip = value_strip(members, schema=env.schema,
+                               rules=env.canon_rules) if members else None
+    vocab = env.vocab if len(env.vocab.fields) else GENERIC
+    return SimulatedUser(
+        rules, starting_state_reader=router.state, vocab=vocab,
+        write_tools=env.write_tools(), goal_writes=goal_writes, answer_strip=answer_strip)

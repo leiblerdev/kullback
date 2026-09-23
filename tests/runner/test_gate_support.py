@@ -9,9 +9,11 @@ from __future__ import annotations
 # default both survived the whole suite.
 
 
-def test_passed_reads_all_three_spellings_of_the_same_field():
+def test_passed_reads_all_three_spellings_of_the_same_field_and_defaults_to_false():
     """`Verdict.passed` carries the alias `pass`, so a record, a dump by alias and a dump by field
-    name are three shapes of one Verdict and a gate must read the same answer off each."""
+    name are three shapes of one Verdict and a gate must read the same answer off each. A value
+    that carries no verdict at all has not passed: a True default would count an object the gate
+    does not understand as a pass."""
     from kullback.runner.gate_support import _passed
     from kullback.runner.records import Verdict
 
@@ -24,12 +26,6 @@ def test_passed_reads_all_three_spellings_of_the_same_field():
     assert _passed(failed) is False
     assert _passed(failed.model_dump(by_alias=True)) is False
     assert _passed(failed.model_dump()) is False
-
-
-def test_passed_is_false_when_nothing_says_it_passed():
-    """A value that carries no verdict at all has not passed. The default must not be True: a gate
-    reading an object it does not understand would then count it as a pass."""
-    from kullback.runner.gate_support import _passed
 
     class Nothing:
         pass

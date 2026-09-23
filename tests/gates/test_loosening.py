@@ -19,11 +19,9 @@ def test_the_legitimate_pool_is_the_confirmed_replays_and_the_finished_rerolls_a
     assert L.legitimate_runs({}, {}) == {}
     # A Task with rows and nothing finished is present with an empty pool, so a count can name it.
     assert L.legitimate_runs({"t9": {"x": replay_row("x", False)}}, {}) == {"t9": set()}
-
-
-def test_the_pool_grows_with_rerolls_of_a_later_round_merged_from_the_examiners_rows():
-    merged = {TASK: REROLLS[TASK] + [reroll_row("reroll-r2-t1-0", "user_stop"), reroll_row("reroll-r2-t1-1", "error")]}
-    assert L.legitimate_runs(REPLAYS, merged)[TASK] == {"ref", "rr2", "reroll-r2-t1-0"}
+    # A reroll that died unfinished is not in the pool.
+    assert "reroll-t1-1" not in L.legitimate_runs(REPLAYS, REROLLS)[TASK]
+    assert L.legitimate_runs({}, {TASK: [reroll_row("r", "max_steps"), reroll_row("s", "error")]}) == {TASK: set()}
 
 
 def test_the_pool_leaves_out_the_recordings_the_reference_rule_discarded_when_it_is_asked_to():
@@ -35,11 +33,6 @@ def test_the_pool_leaves_out_the_recordings_the_reference_rule_discarded_when_it
     assert L.discarded_runs({TASK: {}}) == {TASK: set()}
     assert L.legitimate_runs(REPLAYS, REROLLS, discarded) == {TASK: {"rr2"}}
     assert L.legitimate_runs(REPLAYS, REROLLS) == {TASK: {"ref", "rr2"}}
-
-
-def test_a_reroll_that_died_unfinished_is_not_in_the_pool():
-    assert "reroll-t1-1" not in L.legitimate_runs(REPLAYS, REROLLS)[TASK]
-    assert L.legitimate_runs({}, {TASK: [reroll_row("r", "max_steps"), reroll_row("s", "error")]}) == {TASK: set()}
 
 
 def test_a_new_version_may_newly_pass_the_reference_or_a_frontier_reroll(tmp_path):
@@ -140,7 +133,7 @@ def test_false_rejection_with_no_held_out_runs_is_none_not_zero(tmp_path):
                                                                           "fraction": None, "rejected_ids": []}
 
 
-def test_a_verifier_that_rejects_every_held_out_frontier_run_fails_the_false_rejection_gate_and_one_that_passes_some_does_not(tmp_path):
+def test_rejecting_every_held_out_frontier_run_fails_the_false_rejection_gate(tmp_path):
     strict = tighten(base(tmp_path)).model_copy(update={"seed_run_ids": ["ref"]})
     single_path = L.false_rejection_gate([strict], {TASK: [reference_run(), other_reason_run()]}, REPLAYS, REROLLS,
                                          None, SIGS)

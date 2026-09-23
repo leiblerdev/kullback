@@ -42,24 +42,26 @@ from __future__ import annotations
 import inspect
 from collections import deque
 from dataclasses import dataclass, field
-from typing import Any, Awaitable, Callable, Optional, Union
+from typing import Any, Awaitable, Callable, Optional, Sequence, Union
 
 from kullback.agent.events import (
-    AgentEnd,
+    AgentEndEvent,
     AgentEvent,
-    AgentStart,
-    MessageEnd,
-    MessageStart,
-    MessageUpdate,
-    ToolExecutionEnd,
-    ToolExecutionStart,
-    TurnEnd,
-    TurnStart,
+    AgentStartEvent,
+    MessageEndEvent,
+    MessageStartEvent,
+    MessageUpdateEvent,
+    ToolExecutionEndEvent,
+    ToolExecutionStartEvent,
+    TurnEndEvent,
+    TurnStartEvent,
 )
 from kullback.agent.messages import AssistantMessage, Message, ToolCall, ToolResultMessage, UserMessage
+from kullback.agent.provider import ModelProvider, provider_for
+from kullback.agent.tool_history import repair_tool_history
 from kullback.agent.tools import ToolRegistry, ToolResult
 from kullback.ai.provider import Model, ModelConfig
-from kullback.ai.stream import StreamDone, StreamError, error_message, stream
+from kullback.ai.stream import StreamDone, StreamError, error_message
 
 ToolCallHook = Callable[[ToolCall], Union[Optional[dict], Awaitable[Optional[dict]]]]
 ToolResultHook = Callable[[ToolCall, ToolResult], Union[Optional[ToolResult], Awaitable[Optional[ToolResult]]]]
@@ -99,7 +101,7 @@ class LoopState:
 
 async def run_agent_loop(
     state: LoopState,
-    model: Model,
+    model: Union[Model, ModelProvider],
     tools: ToolRegistry,
     hooks: Optional[Hooks] = None,
     emit: Optional[Emit] = None,
@@ -107,6 +109,7 @@ async def run_agent_loop(
 ) -> list[Message]:
     """Run until the model stops and both queues are empty. Returns the messages this run appended."""
     hooks = hooks or Hooks()
+    provider = provider_for(model)
     new: list[Message] = []
 
     async def send(event: AgentEvent) -> None:
@@ -119,10 +122,10 @@ async def run_agent_loop(
     async def append(message: Message) -> None:
         state.messages.append(message)
         new.append(message)
-        await send(MessageStart(message=message))
-        await send(MessageEnd(message=message))
+        await send(MessageStartEvent(message=message))
+        await send(MessageEndEvent(message=message))
 
-    await send(AgentStart())
+    await send(AgentStartEvent())
     turn = 0
     asked_for_summary = False  # the empty-turn ask is made once per run, never twice
     asked_shapes: set[str] = set()  # the retry asks already made; the same refusal twice stands
@@ -132,36 +135,36 @@ async def run_agent_loop(
         has_more_tools = True
         while has_more_tools or pending:
             turn += 1
-            await send(TurnStart(turn=turn))
+            await send(TurnStartEvent(turn=turn))
             for message in pending:
                 await append(message)
             pending = []
             if state.cancel.cancelled:
                 assistant = error_message("cancelled before the model was called", getattr(model, "name", None))
                 await append(assistant)
-                await send(TurnEnd(turn=turn, message=assistant))
-                await send(AgentEnd(messages=new))
+                await send(TurnEndEvent(turn=turn, message=assistant))
+                await send(AgentEndEvent(messages=new))
                 return new
             if state.max_turns is not None and turn > state.max_turns:
                 assistant = error_message(f"stopped after max_turns={state.max_turns}", getattr(model, "name", None))
                 await append(assistant)
-                await send(TurnEnd(turn=turn, message=assistant))
-                await send(AgentEnd(messages=new))
+                await send(TurnEndEvent(turn=turn, message=assistant))
+                await send(AgentEndEvent(messages=new))
                 return new
-            assistant = await _stream_assistant(state, model, tools, send)
+            assistant = await _stream_assistant(state, provider, tools, send)
             state.messages.append(assistant)
             new.append(assistant)
-            await send(MessageEnd(message=assistant))
+            await send(MessageEndEvent(message=assistant))
             if assistant.stop_reason == "error":
-                await send(TurnEnd(turn=turn, message=assistant))
-                await send(AgentEnd(messages=new))
+                await send(TurnEndEvent(turn=turn, message=assistant))
+                await send(AgentEndEvent(messages=new))
                 return new
             results: list[ToolResultMessage] = []
             for call in assistant.tool_calls:
                 result = await _execute(call, state, tools, hooks, send)
                 results.append(result)
                 await append(result)
-            await send(TurnEnd(turn=turn, message=assistant, tool_results=results))
+            await send(TurnEndEvent(turn=turn, message=assistant, tool_results=results))
             has_more_tools = bool(assistant.tool_calls)
             pending = _drain_all(state.steering)
             pending += [user_message(ask, {"retry_ask": ask}) for ask in _retry_asks(results, asked_shapes)]
@@ -173,7 +176,7 @@ async def run_agent_loop(
             pending = [state.follow_ups.popleft()]
             continue
         break
-    await send(AgentEnd(messages=new))
+    await send(AgentEndEvent(messages=new))
     return new
 
 
@@ -211,28 +214,40 @@ def _drain_all(queue: deque[Message]) -> list[Message]:
     return drained
 
 
-async def _stream_assistant(state: LoopState, model: Model, tools: ToolRegistry, send) -> AssistantMessage:
-    """One assistant message through the stream, as message events. Always returns a message."""
+def provider_context(messages: Sequence[Message]) -> list[Message]:
+    """What the provider is sent: the transcript with its tool calls and results paired (tau's
+    `_provider_context`). The transcript itself is never rewritten; the repair is per request."""
+    return list(repair_tool_history(messages).messages)
+
+
+async def _stream_assistant(state: LoopState, provider: ModelProvider, tools: ToolRegistry, send) -> AssistantMessage:
+    """One assistant message through the provider's stream, as message events. Always returns one."""
     started = False
     final: Optional[AssistantMessage] = None
     schemas = tools.schemas() or None
-    async for event in stream(model, state.messages, tools=schemas, system=state.system, config=state.config):
+    async for event in provider.stream_response(
+        model=getattr(provider, "name", "") or "",
+        system=state.system,
+        messages=provider_context(state.messages),
+        tools=schemas,
+        config=state.config,
+    ):
         if isinstance(event, StreamDone):
             final = event.message
             if not started:
-                await send(MessageStart(message=final))
+                await send(MessageStartEvent(message=final))
         elif isinstance(event, StreamError):
             final = event.error
             if not started:
-                await send(MessageStart(message=final))
+                await send(MessageStartEvent(message=final))
         else:
             if not started:
                 started = True
-                await send(MessageStart(message=event.partial))
-            await send(MessageUpdate(message=event.partial, stream_event=event))
+                await send(MessageStartEvent(message=event.partial))
+            await send(MessageUpdateEvent(message=event.partial, stream_event=event))
     if final is None:  # pragma: no cover - the stream always ends in done or error
-        final = error_message("the stream ended without a message", getattr(model, "name", None))
-        await send(MessageStart(message=final))
+        final = error_message("the stream ended without a message", getattr(provider, "name", None))
+        await send(MessageStartEvent(message=final))
     return final
 
 
@@ -249,7 +264,7 @@ async def execute_tool_call(call: ToolCall, tools: ToolRegistry, hooks: Hooks, s
     call is: builder/agent.py's driver issues the build call through it with no model turn, so the
     two cannot drift apart in hook order or in the events a call emits.
     """
-    await send(ToolExecutionStart(tool_call_id=call.id, tool_name=call.name, arguments=dict(call.arguments)))
+    await send(ToolExecutionStartEvent(tool_call_id=call.id, tool_name=call.name, arguments=dict(call.arguments)))
     arguments = dict(call.arguments)
     result: Optional[ToolResult] = None
     for hook in hooks.tool_call:
@@ -281,7 +296,7 @@ async def execute_tool_call(call: ToolCall, tools: ToolRegistry, hooks: Hooks, s
             continue
         if rewritten_result is not None:
             result = rewritten_result
-    await send(ToolExecutionEnd(tool_call_id=call.id, tool_name=call.name, result=result, is_error=result.is_error))
+    await send(ToolExecutionEndEvent(tool_call_id=call.id, tool_name=call.name, result=result, is_error=result.is_error))
     return result
 
 
@@ -305,33 +320,6 @@ async def _maybe_await(value: Any) -> Any:
 
 def _hook_name(hook: Callable) -> str:
     return getattr(hook, "hook_name", None) or getattr(hook, "__name__", None) or type(hook).__name__
-
-
-def interrupted_tool_results(messages: list[Message]) -> list[ToolResultMessage]:
-    """The results a transcript is missing: every tool call no result answers, marked as interrupted.
-
-    A run that was cancelled between a call and its result leaves the transcript ending on an
-    assistant turn with an unanswered call, which no provider accepts; the harness appends these
-    before the next run so the transcript stays valid without rewriting history.
-    """
-    answered = {m.tool_call_id for m in messages if isinstance(m, ToolResultMessage)}
-    repairs: list[ToolResultMessage] = []
-    for message in messages:
-        if not isinstance(message, AssistantMessage):
-            continue
-        for call in message.tool_calls:
-            if call.id in answered:
-                continue
-            answered.add(call.id)
-            repairs.append(
-                ToolResultMessage(
-                    tool_call_id=call.id,
-                    tool_name=call.name,
-                    content="tool call interrupted before it returned",
-                    is_error=True,
-                )
-            )
-    return repairs
 
 
 def user_message(content: str, details: Optional[dict] = None) -> UserMessage:

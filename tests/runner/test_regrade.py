@@ -7,8 +7,8 @@ import json
 import pytest
 
 from kullback.runner.canon import canon_value
-from kullback.runner.records import Atom, Environment, Verdict, Verifier
-from kullback.runner.regrade import cache_key, regrade, regrade_run, verdict_path
+from kullback.runner.records import Atom, Environment, Verifier
+from kullback.runner.regrade import cache_key, regrade, verdict_path
 
 CANCEL = "cancel_pending_order"
 READ = "get_order_details"
@@ -46,6 +46,22 @@ def _verifier(version="v1", order_id="W123"):
     )
 
 
+FIRST_ENV = Environment(env_id="env-1", schema_version="s1", tools_version="t1", policy_version="p1")
+
+
+def _canon_lower(value):
+    return str(value).lower()
+
+
+def _canon_upper_same_name():
+    def canon_upper(value):
+        return str(value).upper()
+
+    canon_upper.__qualname__ = _canon_lower.__qualname__
+    canon_upper.__name__ = _canon_lower.__name__
+    return canon_upper
+
+
 @pytest.fixture
 def runs(tmp_path):
     """Two stored Runs: one cancels W123, one cancels W999."""
@@ -60,11 +76,19 @@ def runs(tmp_path):
     return paths
 
 
-def test_regrade_scores_stored_runs_without_re_executing(runs, tmp_path):
-    out = regrade(runs, _verifier(), canon_value, out_dir=tmp_path / "verdicts", write_tools=WRITE_TOOLS)
+def test_regrade_scores_stored_runs_without_re_executing_and_writes_each_verdict(runs, tmp_path):
+    out_dir = tmp_path / "verdicts"
+    verifier = _verifier()
+    out = regrade(runs, verifier, canon_value, out_dir=out_dir, write_tools=WRITE_TOOLS)
     assert [v.run_id for v in out] == ["r1", "r2"]
     assert [v.passed for v in out] == [True, False]
     assert out[1].failing_atom == "a_cancel"
+    for record in out:
+        path = verdict_path(out_dir, record.run_id,
+                            cache_key(record.run_id, verifier, canon=canon_value,
+                                      write_tools=WRITE_TOOLS))
+        assert path.is_file()
+        assert json.loads(path.read_text(encoding="utf-8"))["run_id"] == record.run_id
 
 
 def test_every_version_lands_on_the_regraded_verdict(runs, tmp_path):
@@ -85,23 +109,14 @@ def test_every_version_lands_on_the_regraded_verdict(runs, tmp_path):
     assert out.verdict_version
 
 
-def test_verdicts_are_written_to_disk(runs, tmp_path):
-    out_dir = tmp_path / "verdicts"
-    verifier = _verifier()
-    written = regrade(runs, verifier, canon_value, out_dir=out_dir, write_tools=WRITE_TOOLS)
-    for record in written:
-        path = verdict_path(out_dir, record.run_id,
-                            cache_key(record.run_id, verifier, canon=canon_value,
-                                      write_tools=WRITE_TOOLS))
-        assert path.is_file()
-        assert json.loads(path.read_text(encoding="utf-8"))["run_id"] == record.run_id
-
-
 @pytest.mark.parametrize("with_queue_dir", [False, True], ids=["no_queue_dir", "empty_queue"])
-def test_a_cached_verdict_is_reused_when_no_version_changed(runs, tmp_path, with_queue_dir):
+def test_a_cached_verdict_is_served_until_a_version_or_the_write_tool_set_changes(runs, tmp_path, with_queue_dir):
     """Tamper with the stored Verdict: an unchanged key must serve the file, not recompute.
 
     A queue directory with no regrade_queue.jsonl in it queues nothing, so it serves the cache too.
+    Bump verifier_version or an Environment version and the old Verdict is neither read nor returned;
+    it stays on disk beside the new one. The Verdict reads write_tools, so a Verdict scored without
+    it must not be served with it.
     """
     out_dir = tmp_path / "verdicts"
     verifier = _verifier()
@@ -118,41 +133,34 @@ def test_a_cached_verdict_is_reused_when_no_version_changed(runs, tmp_path, with
     assert again.passed is False
     assert again.failing_atom == "tampered"
 
-
-def test_a_new_verifier_version_does_not_serve_the_stale_verdict(runs, tmp_path):
-    """The stale-cache test: bump verifier_version and the old Verdict is neither read nor returned."""
-    out_dir = tmp_path / "verdicts"
-    old = _verifier("v1")
-    regrade(runs[:1], old, canon_value, out_dir=out_dir, write_tools=WRITE_TOOLS)
-    stale_path = verdict_path(out_dir, "r1", cache_key("r1", old, canon=canon_value,
-                                                       write_tools=WRITE_TOOLS))
-    stored = json.loads(stale_path.read_text(encoding="utf-8"))
-    stored["pass"] = False
-    stored["failing_atom"] = "tampered"
-    stale_path.write_text(json.dumps(stored), encoding="utf-8")
-
     new = _verifier("v2")
     fresh = regrade(runs[:1], new, canon_value, out_dir=out_dir, write_tools=WRITE_TOOLS)[0]
     assert fresh.passed is True
     assert fresh.failing_atom is None
     assert fresh.verifier_version == "v2"
     assert verdict_path(out_dir, "r1", cache_key("r1", new, canon=canon_value,
-                                                 write_tools=WRITE_TOOLS)) != stale_path
-    assert stale_path.is_file()  # the old version's Verdict stays on disk beside the new one
+                                                 write_tools=WRITE_TOOLS)) != path
+    assert path.is_file()
 
+    second = FIRST_ENV.model_copy(update={"tools_version": "t2"})
+    for env in (FIRST_ENV, second):
+        regrade(runs[:1], verifier, canon_value, out_dir=out_dir, environment=env, write_tools=WRITE_TOOLS)
+    assert all(verdict_path(out_dir, "r1", cache_key("r1", verifier, env, canon=canon_value,
+                                                     write_tools=WRITE_TOOLS)).is_file()
+               for env in (FIRST_ENV, second))
 
-def test_a_new_environment_version_invalidates_the_cache(runs, tmp_path):
-    first = Environment(env_id="env-1", schema_version="s1", tools_version="t1", policy_version="p1")
-    second = first.model_copy(update={"tools_version": "t2"})
-    verifier = _verifier()
-    assert cache_key("r1", verifier, first) != cache_key("r1", verifier, second)
-
-    out_dir = tmp_path / "verdicts"
-    regrade(runs[:1], verifier, canon_value, out_dir=out_dir, environment=first, write_tools=WRITE_TOOLS)
-    regrade(runs[:1], verifier, canon_value, out_dir=out_dir, environment=second, write_tools=WRITE_TOOLS)
-    keys = [cache_key("r1", verifier, env, canon=canon_value, write_tools=WRITE_TOOLS)
-            for env in (first, second)]
-    assert all(verdict_path(out_dir, "r1", key).is_file() for key in keys)
+    lines = oracle_lines()
+    lines.insert(-1, {"idx": 7, "type": "tool_call",
+                      "payload": {"id": "c7", "name": "modify_order", "args": {"order_id": "W900"}}})
+    lines.insert(-1, {"idx": 8, "type": "tool_result", "payload": {"id": "c7", "result": {"ok": True}}})
+    extra_write = tmp_path / "extra" / "r1.jsonl"
+    extra_write.parent.mkdir()
+    extra_write.write_text("".join(json.dumps(line) + "\n" for line in lines), encoding="utf-8")
+    loose = regrade([extra_write], verifier, canon_value, out_dir=out_dir / "extra")[0]
+    strict = regrade([extra_write], verifier, canon_value, out_dir=out_dir / "extra", write_tools=WRITE_TOOLS)[0]
+    assert loose.passed is True
+    assert strict.passed is False
+    assert strict.failing_atom == "extra_write:modify_order"
 
 
 @pytest.mark.parametrize(
@@ -180,6 +188,22 @@ def test_a_new_environment_version_invalidates_the_cache(runs, tmp_path):
             lambda: cache_key("r1", _verifier(), canon=canon_value),
             lambda: cache_key("r1", _verifier(), canon=None),
         ),
+        (
+            lambda: cache_key("r1", _verifier("v1")),
+            lambda: cache_key("r1", _verifier("v2")),
+        ),
+        (
+            lambda: cache_key("r1", _verifier(), FIRST_ENV),
+            lambda: cache_key("r1", _verifier(), FIRST_ENV.model_copy(update={"tools_version": "t2"})),
+        ),
+        (
+            lambda: cache_key("r1", _verifier()),
+            lambda: cache_key("r1", _verifier(), write_tools=WRITE_TOOLS),
+        ),
+        (
+            lambda: cache_key("r1", _verifier(), canon=_canon_lower),
+            lambda: cache_key("r1", _verifier(), canon=_canon_upper_same_name()),
+        ),
     ],
     ids=[
         "runner_version",
@@ -187,12 +211,17 @@ def test_a_new_environment_version_invalidates_the_cache(runs, tmp_path):
         "judge_answers_at_the_same_judge_version_D84",
         "verifier_body_at_the_same_verifier_version",
         "the_canonicalizer_D39",
+        "verifier_version",
+        "environment_tools_version",
+        "the_write_tool_set",
+        "a_code_change_to_a_same_named_canonicalizer",
     ],
 )
 def test_the_cache_key_moves_with_every_input_a_verdict_rests_on(left, right):
     """D76 retires every Verdict that rested on an old judge version; D84 puts the overturned
     answers in the key because a person who overturns one moves no version; D39 makes the canon
-    rules data, so two Verdicts under different rules are different Verdicts."""
+    rules data, so two Verdicts under different rules are different Verdicts. A qualname alone is
+    not a body: an edited canon.py function must not share its old cache key."""
     assert left() != right()
 
 
@@ -214,19 +243,21 @@ def test_judge_results_are_looked_up_per_run(runs, tmp_path):
         judge_version="j1",
         write_tools=WRITE_TOOLS,
     )
-    assert [v.passed for v in out] == [True, False]
+    assert [v.passed for v in out] == [False, False]
     assert all(v.judge_used for v in out)
+    assert [v.class_ for v in out] == ["not_verdicted", "not_verdicted"]
+    assert [v.failing_atom for v in out] == ["a_polite", "a_polite"]
+    assert "judge_reported:a_polite:pass" in out[0].notes
+    assert "judge_reported:a_polite:fail" in out[1].notes
 
-
-def test_regrade_run_returns_one_verdict(runs, tmp_path):
-    out = regrade_run(runs[0], _verifier(), canon_value, out_dir=tmp_path, write_tools=WRITE_TOOLS)
-    assert isinstance(out, Verdict)
-    assert out.run_id == "r1"
-
-
-def test_regrade_works_without_an_out_dir(runs):
-    out = regrade(runs, _verifier(), canon_value, write_tools=WRITE_TOOLS)
-    assert [v.passed for v in out] == [True, False]
+    # changed answers at the same judge version are not served from the cache
+    for answer in ("pass", "fail"):
+        again = regrade(runs[:1], verifier, canon_value, out_dir=tmp_path / "verdicts", judge_version="j1",
+                        judge_results={"r1": {"a_polite": {"verdict": answer}}}, write_tools=WRITE_TOOLS)[0]
+        assert again.passed is False
+        assert again.class_ == "not_verdicted"
+        assert again.failing_atom == "a_polite"
+        assert f"judge_reported:a_polite:{answer}" in again.notes
 
 
 def test_regrade_never_calls_a_model():
@@ -241,8 +272,9 @@ def test_regrade_never_calls_a_model():
 
 # --- D84: a Run in canon.py's regrade queue is re-scored even under the same versions ---
 
-def test_a_queued_run_is_rescored_and_the_queue_is_emptied(runs, tmp_path):
-    """An overturned equivalence entry moves no version, so only the queue can force the re-score."""
+def test_a_queued_run_is_rescored_and_the_queue_keeps_only_the_runs_not_yet_rescored(runs, tmp_path):
+    """An overturned equivalence entry moves no version, so only the queue can force the re-score.
+    D84 queues every Run that used an overturned pair; a batch of one must not drop the others."""
     from kullback.runner.canon import queue_regrade, queued_regrades
 
     out_dir, verifier = tmp_path / "verdicts", _verifier()
@@ -254,11 +286,14 @@ def test_a_queued_run_is_rescored_and_the_queue_is_emptied(runs, tmp_path):
     path.write_text(json.dumps(stored), encoding="utf-8")
 
     (tmp_path / "equivalence_uses.jsonl").write_text(
-        json.dumps({"key": "k1", "run_id": "r1", "route": "cache"}) + "\n", encoding="utf-8")
-    assert queue_regrade(tmp_path, "k1", "a person overturned reason") == ["r1"]
+        json.dumps({"key": "k1", "run_id": "r1", "route": "cache"}) + "\n"
+        + json.dumps({"key": "k1", "run_id": "r2", "route": "cache"}) + "\n", encoding="utf-8")
+    assert queue_regrade(tmp_path, "k1", "a person overturned reason") == ["r1", "r2"]
     again = regrade(runs[:1], verifier, canon_value, out_dir=out_dir, write_tools=WRITE_TOOLS,
                     queue_dir=tmp_path)[0]
     assert again.failing_atom is None
+    assert queued_regrades(tmp_path) == ["r2"]
+    regrade(runs[1:], verifier, canon_value, out_dir=out_dir, write_tools=WRITE_TOOLS, queue_dir=tmp_path)
     assert queued_regrades(tmp_path) == []
 
 
@@ -276,67 +311,3 @@ def test_regrade_takes_refresh_and_re_scores_every_run(runs, tmp_path):
     assert again.failing_atom is None
 
 
-def test_the_queue_keeps_the_runs_this_batch_did_not_re_score(runs, tmp_path):
-    """D84 queues every Run that used an overturned pair; a batch of one must not drop the others."""
-    from kullback.runner.canon import queue_regrade, queued_regrades
-
-    (tmp_path / "equivalence_uses.jsonl").write_text(
-        json.dumps({"key": "k1", "run_id": "r1", "route": "cache"}) + "\n"
-        + json.dumps({"key": "k1", "run_id": "r2", "route": "cache"}) + "\n", encoding="utf-8")
-    assert queue_regrade(tmp_path, "k1", "a person overturned reason") == ["r1", "r2"]
-    regrade(runs[:1], _verifier(), canon_value, out_dir=tmp_path / "verdicts",
-            write_tools=WRITE_TOOLS, queue_dir=tmp_path)
-    assert queued_regrades(tmp_path) == ["r2"]
-    regrade(runs[1:], _verifier(), canon_value, out_dir=tmp_path / "verdicts",
-            write_tools=WRITE_TOOLS, queue_dir=tmp_path)
-    assert queued_regrades(tmp_path) == []
-
-
-def test_the_write_tool_set_is_part_of_the_cache_key(tmp_path):
-    """The Verdict reads write_tools, so a Verdict scored without it must not be served with it."""
-    lines = oracle_lines()
-    lines.insert(-1, {"idx": 7, "type": "tool_call",
-                      "payload": {"id": "c7", "name": "modify_order", "args": {"order_id": "W900"}}})
-    lines.insert(-1, {"idx": 8, "type": "tool_result", "payload": {"id": "c7", "result": {"ok": True}}})
-    path = tmp_path / "r1.jsonl"
-    with path.open("w", encoding="utf-8") as handle:
-        for line in lines:
-            handle.write(json.dumps(line) + "\n")
-
-    out_dir, verifier = tmp_path / "verdicts", _verifier()
-    assert cache_key("r1", verifier) != cache_key("r1", verifier, write_tools=WRITE_TOOLS)
-    loose = regrade([path], verifier, canon_value, out_dir=out_dir)[0]
-    strict = regrade([path], verifier, canon_value, out_dir=out_dir, write_tools=WRITE_TOOLS)[0]
-    assert loose.passed is True
-    assert strict.passed is False
-    assert strict.failing_atom == "extra_write:modify_order"
-
-
-def test_a_code_change_to_a_same_named_canonicalizer_moves_the_cache_key():
-    """A qualname alone is not a body: an edited canon.py function must not share its old cache key."""
-    verifier = _verifier()
-
-    def canon_a(value):
-        return str(value).lower()
-
-    def canon_b(value):
-        return str(value).upper()
-
-    canon_b.__qualname__ = canon_a.__qualname__
-    canon_b.__name__ = canon_a.__name__
-
-    assert cache_key("r1", verifier, canon=canon_a) != cache_key("r1", verifier, canon=canon_b)
-
-
-def test_changed_judge_results_are_not_served_from_the_cache(runs, tmp_path):
-    verifier = Verifier(task_id="t1", verifier_version="v1", atoms=[
-        Atom(id="a_cancel", kind="allowed", predicate_src='wrote("cancel_pending_order")'),
-        Atom(id="a_polite", kind="required", judge=True)])
-    out_dir = tmp_path / "verdicts"
-    held = regrade(runs[:1], verifier, canon_value, out_dir=out_dir, judge_version="j1",
-                   judge_results={"r1": {"a_polite": {"verdict": "pass"}}}, write_tools=WRITE_TOOLS)[0]
-    assert held.passed is True
-    turned = regrade(runs[:1], verifier, canon_value, out_dir=out_dir, judge_version="j1",
-                     judge_results={"r1": {"a_polite": {"verdict": "fail"}}}, write_tools=WRITE_TOOLS)[0]
-    assert turned.passed is False
-    assert turned.failing_atom == "a_polite"

@@ -285,3 +285,15 @@ def test_the_prompt_names_its_tools_and_puts_the_stop_rule_last():
         assert f"- {name} " in prompt
     assert prompt.index("Your tools") < prompt.index("Two worked examples") < prompt.index("The rule for")
     assert prompt.rstrip().endswith("your judgement is lost.")
+
+
+def test_a_judge_with_a_workdir_prices_its_session_into_the_ledger_under_its_stage(tmp_path):
+    from kullback.runner import budget
+
+    workdir = tmp_path / "work"
+    usage = {"input": 1890, "output": 17, "cache_write": 1887}
+    model = TestModel([ModelReply(content=RULING, usage=usage)], name=next(iter(budget.PRICES)))
+    ref.confirm([refusing_run(tmp_path), cancelling_run(tmp_path)], intent=INTENT,
+                policy_lines=POLICY, judge=_judge(model, workdir=workdir))
+    stage = budget.load_totals(workdir)["stages"]["judge"]
+    assert stage["calls"] == 1 and stage["usd"] > 0

@@ -3,6 +3,8 @@ suite, the pool, the history and the refusals (D126)."""
 
 from __future__ import annotations
 
+import pytest
+
 from gates.examiner_fixtures import (
     SIGS,
     TASK,
@@ -34,20 +36,21 @@ def test_a_refusal_is_admitted_only_when_no_frontier_run_of_the_task_finished():
     assert T.refuse_gate({}, {}, {}).passed
 
 
-def test_a_refusal_of_a_task_with_a_confirmed_replay_is_rejected_and_names_the_run():
-    replays = {TASK: {"tr1": replay_row("tr1", True)}}
-    ruling = T.refuse_gate(REFUSAL, replays, {})
+FINISHED_REROLLS = {TASK: [reroll_row("reroll-t1-0", "max_steps"), reroll_row("reroll-t1-2", "user_stop")]}
+
+
+@pytest.mark.parametrize("replays, rerolls, finished", [
+    ({TASK: {"tr1": replay_row("tr1", True)}}, {}, "replay-tr1"),
+    ({TASK: {"tr1": replay_row("tr1", False)}}, FINISHED_REROLLS, "reroll-t1-2"),
+], ids=["confirmed_replay", "finished_reroll"])
+def test_a_refusal_of_a_task_the_frontier_finished_is_rejected_and_names_the_run_that_finished(
+        replays, rerolls, finished):
+    ruling = T.refuse_gate(REFUSAL, replays, rerolls)
     assert not ruling.passed
-    assert ruling.failures == ["task t1: the frontier finished it: replay-tr1"]
+    assert ruling.failures == [f"task t1: the frontier finished it: {finished}"]
     assert ruling.metrics == {"refused": [], "rejected": [TASK]}
-
-
-def test_a_refusal_of_a_task_whose_reroll_finished_is_rejected_and_names_the_reroll():
-    rerolls = {TASK: [reroll_row("reroll-t1-0", "max_steps"), reroll_row("reroll-t1-2", "user_stop")]}
-    ruling = T.refuse_gate(REFUSAL, {TASK: {"tr1": replay_row("tr1", False)}}, rerolls)
-    assert not ruling.passed
-    assert ruling.failures == ["task t1: the frontier finished it: reroll-t1-2"]
-    assert T.finished_runs(TASK, {TASK: {"tr1": replay_row("tr1", True)}}, rerolls) == ["replay-tr1", "reroll-t1-2"]
+    assert T.finished_runs(TASK, {TASK: {"tr1": replay_row("tr1", True)}}, FINISHED_REROLLS) == [
+        "replay-tr1", "reroll-t1-2"]
 
 
 def _world(tmp_path, verifier=None):
@@ -61,7 +64,7 @@ def _world(tmp_path, verifier=None):
                 canon_rules=None, sigs=SIGS)
 
 
-def test_a_trusted_verifier_passed_the_suite_rejects_every_probe_is_an_accepted_version_and_its_task_is_not_refused(tmp_path):
+def test_a_verifier_meeting_every_trust_condition_is_trusted(tmp_path):
     ruling = T.trusted_gate(**_world(tmp_path))
     assert ruling.passed and ruling.stage == "trusted"
     assert ruling.metrics["trusted"] == [TASK] and ruling.metrics["untrusted"] == {}
@@ -87,10 +90,12 @@ def test_a_verifier_that_failed_the_suite_is_not_trusted(tmp_path):
     assert ruling.metrics["checks_not_run"] == {}
 
 
-def test_a_task_with_one_reference_says_the_second_path_check_was_not_run_rather_than_failed(tmp_path):
+def test_a_suite_failure_names_each_failing_check_and_says_why_a_check_had_no_input(tmp_path):
     """The rule is unchanged: a Task the suite refused is untrusted whatever the reason. What the
     ruling says changes, because a check with no input asks for more Runs of the Task and a check
-    that failed asks for a looser Verifier, and until D173 both read the same."""
+    that failed asks for a looser Verifier, and until D173 both read the same. A reader groups the
+    Tasks that stop at the suite by what stopped them, so the reason names each check in the
+    suite's own order and says why the ones with no input had none."""
     world = _world(tmp_path)
     world["task_status"] = {TASK: status(verifier_passed=False, not_run=["verifier_alt_path"],
                                          checks={"second_path_passes": False, "oracle_passes": True})}
@@ -105,11 +110,6 @@ def test_a_task_with_one_reference_says_the_second_path_check_was_not_run_rather
                                          checks={"second_path_passes": False, "mutation_flips": False})}
     assert T.trusted_gate(**world).metrics["untrusted"][TASK].endswith("mutation_flips failed")
 
-
-def test_a_suite_failure_names_every_failing_check_and_every_check_with_no_input(tmp_path):
-    """A reader groups the Tasks that stop at the suite by what stopped them, so the reason names
-    each check in the suite's own order and says why the ones with no input had none."""
-    world = _world(tmp_path)
     checks = {name: True for name in T.D79_STAGES.values()}
     checks["mutation_flips"] = checks["plausible_wrong_fails"] = checks["loophole_probe_fails"] = False
     world["task_status"] = {TASK: status(verifier_passed=False, checks=checks,

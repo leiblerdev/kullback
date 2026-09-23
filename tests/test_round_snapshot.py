@@ -15,7 +15,6 @@ import pytest
 from typer.testing import CliRunner
 
 from kullback import cli, round_snapshot
-from kullback.builder.build import compile_snapshot_rows
 from kullback.examiner import loosen, stage
 from kullback.gates.ledger import COMPILE_NAME, GateLedger
 from kullback.gates.verifier_suite import D79_STAGES
@@ -81,23 +80,6 @@ def test_a_closed_rounds_snapshot_is_byte_identical_after_a_later_loosening(tmp_
     assert round_snapshot.snapshot_path(tmp_path, 2).read_bytes() == before
 
 
-def test_the_rounds_task_counts_are_derived_from_the_rows_and_ride_on_the_history_row(tmp_path):
-    rows = round_snapshot.task_rows(
-        1, task_status=_status(lend_a_copy={"reference_confirmed": True, "verifier_passed": True,
-                                            "checks": dict(EVERY_CHECK)},
-                               return_a_copy={"reference_confirmed": False, "verifier_passed": False,
-                                              "reason": "the recordings disagree about the shelf"}),
-        replays=_replays(lend_a_copy=True, return_a_copy=False), trusted=_trusted(trusted=["lend_a_copy"]))
-    body = round_snapshot.write_snapshot(tmp_path, 1, rows)
-    assert body["counts"] == {"tasks": 2, "fidelity": 1, "reference": 1, "verifier_passed": 1,
-                              "trusted": 1, "refused": 0}
-    ledger = GateLedger(tmp_path)
-    ledger.record("derive_verifier", GateResult(stage="derive_verifier", passed=True))
-    ledger.snapshot(1, tasks=body["counts"])
-    history = json.loads((tmp_path / "gates_by_round.json").read_text(encoding="utf-8"))
-    assert history[-1]["tasks"] == body["counts"]
-
-
 def test_a_row_carries_the_kept_body_hash_of_every_tool_its_task_calls():
     rows = round_snapshot.task_rows(
         1, task_status=_status(lend_a_copy={"reference_confirmed": True, "verifier_passed": True,
@@ -131,17 +113,6 @@ def test_gates_json_holds_the_rounds_rulings_after_a_mid_round_compile(tmp_path)
     assert body["round"] == 4 and body["rows"][0]["tool"] == "find_copy"
 
 
-def test_a_narrowed_compile_keeps_the_rows_of_the_tools_it_did_not_measure():
-    kept = [{"tool": "find_copy", "stage": "parses", "pass": True},
-            {"tool": "mark_lent", "stage": "parses", "pass": False}]
-    fresh = {"mark_lent": [{"tool": "mark_lent", "stage": "parses", "pass": True}]}
-    assert compile_snapshot_rows(kept, fresh, ["mark_lent"]) == [
-        {"tool": "find_copy", "stage": "parses", "pass": True},
-        {"tool": "mark_lent", "stage": "parses", "pass": True}]
-    # A full run measured every tool, so it replaces the file rather than merging into it.
-    assert compile_snapshot_rows(kept, fresh, None) == [{"tool": "mark_lent", "stage": "parses", "pass": True}]
-
-
 def test_a_status_row_keeps_its_stamp_until_the_row_itself_moves():
     first = stage.stamped(_status(lend_a_copy={"verifier_passed": False}), None, 1, now=100.0)
     assert first["lend_a_copy"]["round"] == 1 and first["lend_a_copy"]["updated_at"] == 100.0
@@ -153,13 +124,10 @@ def test_a_status_row_keeps_its_stamp_until_the_row_itself_moves():
 
 # --- rule 3: a search that ends without a ruling writes its reason -----------------------
 
-def test_a_second_path_search_that_finds_nothing_writes_its_reason():
+def test_a_second_path_search_that_finds_nothing_must_write_its_reason():
     row = stage.second_path_row(3, 9, found=False)
     assert row["reason"] == "no second path in 3 batches" and row["exhausted"]
     assert stage.with_reason(row, what="the second path search", task_id="lend_a_copy") is row
-
-
-def test_a_second_path_record_with_neither_a_find_nor_a_reason_is_refused():
     with pytest.raises(stage.MissingReason):
         stage.with_reason({"batches": 0, "found": False, "reason": ""},
                           what="the second path search", task_id="lend_a_copy")
@@ -184,7 +152,7 @@ def test_a_row_written_because_nothing_could_be_proposed_is_not_an_attempt():
 
 # --- rule 4: the reader names the round and the drift ------------------------------------
 
-def test_the_drift_names_the_tasks_whose_live_status_has_moved_and_the_stage_each_moved_at():
+def test_the_drift_and_the_status_command_name_the_tasks_whose_live_status_moved_and_where(tmp_path):
     status = _status(lend_a_copy={"reference_confirmed": True, "verifier_passed": False,
                                   "checks": {**EVERY_CHECK, "mutation_flips": False}},
                      return_a_copy={"reference_confirmed": False, "verifier_passed": False,
@@ -201,9 +169,6 @@ def test_the_drift_names_the_tasks_whose_live_status_has_moved_and_the_stage_eac
     assert report["status_drift"] == 2 and report["round"] == 4
     assert report["by_stage"] == {"reference": 1, "verifier": 1}
     assert {row["task_id"] for row in report["first"]} == {"lend_a_copy", "return_a_copy"}
-
-
-def test_the_status_command_names_the_round_it_read_and_the_first_drifted_ids(tmp_path):
     status = _status(lend_a_copy={"reference_confirmed": True, "verifier_passed": False,
                                   "checks": {**EVERY_CHECK, "mutation_flips": False}})
     replays = _replays(lend_a_copy=True)

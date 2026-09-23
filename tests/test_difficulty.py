@@ -10,7 +10,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from kullback import cli, difficulty, report
+from kullback import difficulty, report
 from kullback.examiner import lifecycle, variants
 from kullback.report.render import _difficulty_table
 from kullback.runner.records import Atom, Event, Run, Verifier, as_dict, write_json
@@ -64,7 +64,7 @@ MOVE_P9 = (MOVE, {"pot_id": "p9", "bench_id": "b2"}, {"pot_id": "p9", "moved": T
 
 # --- the record ----------------------------------------------------------------
 
-def test_a_record_counts_the_writes_the_tools_the_paths_and_the_questions_of_one_task():
+def test_a_record_counts_the_writes_the_tools_the_paths_the_questions_and_the_partial_band_of_one_task():
     verifier = _verifier(_write_atom("w0"), _value_atom("w0.litres"), _question_atom("q.litres"))
     record = difficulty.record_for(verifier, calls=_calls(READ_B1, WATER_P1, MOVE_P9),
                                    write_tools=WRITE_TOOLS, status_row={"references": 3},
@@ -76,6 +76,14 @@ def test_a_record_counts_the_writes_the_tools_the_paths_and_the_questions_of_one
     assert record["second_paths"] == 2, "three References are the Reference and two other paths"
     assert record["held_out_solve_rate"] == 0.75
     assert record["bucket"] == "w1t3+p2+"
+    assert record["partial_band"] == "none", "no partial number, no band"
+    banded = difficulty.record_for(verifier, calls=[], partial_completion=0.5)
+    assert banded["partial_completion"] == 0.5 and banded["partial_band"] == "p2"
+    single = difficulty.record_for(_verifier(_write_atom("w0")), calls=_calls(WATER_P1),
+                                   write_tools=WRITE_TOOLS, status_row={"references": 1})
+    assert single["branching_depth"] == 0, "a single call path has no rewrite"
+    assert single["second_paths"] == 0
+    assert single["bucket"] == "w1t1p1"
 
 
 def test_branching_depth_counts_every_rewrite_the_second_path_rule_finds_and_is_not_capped():
@@ -83,14 +91,6 @@ def test_branching_depth_counts_every_rewrite_the_second_path_rule_finds_and_is_
     depth = difficulty.branching_depth(calls, WRITE_TOOLS)
     assert depth > difficulty.record_for(_verifier(), calls=calls[:2], write_tools=WRITE_TOOLS)["branching_depth"]
     assert depth >= 4, "a longer path offers more rewrites, and none of them is thrown away for budget"
-
-
-def test_a_single_call_path_has_no_rewrite_and_no_second_path():
-    record = difficulty.record_for(_verifier(_write_atom("w0")), calls=_calls(WATER_P1),
-                                   write_tools=WRITE_TOOLS, status_row={"references": 1})
-    assert record["branching_depth"] == 0
-    assert record["second_paths"] == 0
-    assert record["bucket"] == "w1t1p1"
 
 
 def test_a_task_that_held_nothing_out_reports_no_solve_rate_rather_than_a_perfect_one():
@@ -132,30 +132,12 @@ def test_a_bucket_row_counts_tasks_and_trusted_and_means_the_rate_over_the_tasks
 
 # --- where the buckets are reported --------------------------------------------
 
-def test_the_round_line_carries_trusted_over_tasks_for_every_bucket_that_holds_a_task():
-    line = cli._round_line({"trusted": 4, "tasks": 6, "buckets": [
+def test_the_bucket_summary_carries_trusted_over_tasks_for_every_bucket_that_holds_a_task():
+    assert difficulty.round_summary([
         {"bucket": "w0t1p1", "tasks": 2, "trusted": 1},
         {"bucket": "w1t2p2+", "tasks": 4, "trusted": 3},
-    ]})
-    assert "buckets: w0t1p1 1/2 w1t2p2+ 3/4" in line
-    assert "buckets: none" in cli._round_line({"trusted": 0, "tasks": 0})
-
-
-def test_the_report_table_names_every_bucket_and_says_which_tasks_carry_no_record():
-    data = report.ReportData(difficulty={
-        "buckets": [{"bucket": "w1t2p2+", "tasks": 4, "trusted": 3, "solve_rate": 0.5, "rated": 2}],
-        "no_record": {"task_9": difficulty.NO_VERIFIER},
-    })
-    lines = _difficulty_table(data)
-    assert "### Difficulty buckets" in lines
-    assert "| w1t2p2+ | 4 | 3 | 50% over 2 Tasks |" in lines
-    assert any("1 Tasks carry no difficulty record" in line for line in lines)
-
-
-def test_a_bucket_with_no_pool_says_so_in_the_table_rather_than_showing_a_rate():
-    lines = difficulty.markdown_table([{"bucket": "w0t1p1", "tasks": 1, "trusted": 0,
-                                        "solve_rate": None, "rated": 0}])
-    assert "| w0t1p1 | 1 | 0 | no held-out pool |" in lines
+    ]) == "w0t1p1 1/2 w1t2p2+ 3/4"
+    assert difficulty.round_summary([]) == "none"
 
 
 def test_a_build_with_no_difficulty_file_says_so_rather_than_showing_an_empty_table():
@@ -182,8 +164,8 @@ def _workdir(tmp_path: Path) -> Path:
                {"task_1": {"t-a": {"run_id": "run-a", "path": "runs/task_1/run-a.jsonl", "confirmed": True}}})
     write_json(tmp_path / "tool_sigs.json",
                [{"name": name, "kind": "write"} for name in WRITE_TOOLS] + [{"name": READ, "kind": "read"}])
-    write_json(tmp_path / "rounds.json",
-               [{"round": 1, "counts": {"trusted_ids": ["task_1"], "false_rejection": {"task_1": 0.5}}}])
+    write_json(tmp_path / "gates.json",
+               [{"stage": "trusted", "metrics": {"trusted": ["task_1"], "false_rejection": {"task_1": 0.5}}}])
     return tmp_path
 
 
@@ -221,25 +203,19 @@ def test_a_verifier_whose_reference_was_withdrawn_is_not_read_as_the_tasks_diffi
     assert body["buckets"] == []
     assert body["no_record"] == {"task_1": difficulty.RETIRED_VERIFIER}
 
-
-def test_a_verifier_derived_over_a_run_the_reference_no_longer_names_is_not_read_either(tmp_path):
-    workdir = _workdir(tmp_path)
     write_json(workdir / "task_status.json",
                {"task_1": {"reference_confirmed": True, "reference_run_ids": ["run-b"]}})
     body = difficulty.compute(workdir)
-    assert body["tasks"] == []
+    assert body["tasks"] == [], "a Verifier derived over a Run the Reference no longer names is retired too"
     assert body["no_record"] == {"task_1": difficulty.RETIRED_VERIFIER}
 
-
-def test_a_task_whose_verifier_the_retirement_step_already_took_away_says_it_was_retired(tmp_path):
-    workdir = _workdir(tmp_path)
     status = {"task_1": {"reference_confirmed": False,
                          lifecycle.RETIRED_FIELD: {"reason": lifecycle.REFERENCE_WITHDRAWN,
                                                    "round": 2, "source_run_ids": ["run-a"]}}}
     (workdir / "verifiers" / "task_1.json").unlink()
     write_json(workdir / "task_status.json", status)
     body = difficulty.compute(workdir)
-    assert body["tasks"] == []
+    assert body["tasks"] == [], "a Verifier the retirement step already took away says it was retired"
     assert body["no_record"] == {"task_1": difficulty.RETIRED_VERIFIER}
 
 

@@ -29,6 +29,7 @@ Nothing here calls a model, reads a body or executes a Run: it is pure over the 
 from __future__ import annotations
 
 import hashlib
+import json
 import time
 from pathlib import Path
 from typing import Any, Iterable, Optional
@@ -185,6 +186,53 @@ def buckets_by_task(body: Optional[dict]) -> dict[str, str]:
             for record in ((body or {}).get("tasks") or []) if isinstance(record, dict)}
 
 
+def _trusted_ruling(task_status: dict, replays: dict, root: Path) -> Any:
+    """The trusted ruling over the live workdir files, the way the status tool reads it."""
+    from kullback.gates.trust import trusted_gate
+
+    verifiers = []
+    folder = root / "verifiers"
+    if folder.is_dir():
+        for path in sorted(folder.glob("*.json")):
+            try:
+                verifiers.append(json.loads(path.read_text(encoding="utf-8")))
+            except (OSError, ValueError):
+                continue
+    refusals: dict = {}
+    for folder in (root / "refusals", root / "env" / "refusals"):
+        if folder.is_dir():
+            for path in sorted(folder.glob("*.json")):
+                try:
+                    refusals.setdefault(path.stem, json.loads(path.read_text(encoding="utf-8")))
+                except (OSError, ValueError):
+                    continue
+    return trusted_gate(task_status, verifiers, {}, {}, refusals, {},
+                        replays, read_json(root / "rerolls.json", None) or {},
+                        read_json(root / "canon-rules.json", None),
+                        read_json(root / "tool_sigs.json", None) or [])
+
+
+def snapshot_rows(workdir: Any, round_number: int) -> list[dict]:
+    """One row per Task off the live workdir files: the status rows, the replays, the trusted
+    ruling over them, the difficulty record and the bodies.
+
+    Carried from the round driver's close: it handed the same pieces from memory, and the session
+    has no memory of them, so the checkpoint reads them back off the files the tools wrote.
+    """
+    root = Path(workdir)
+    task_status = read_json(root / "task_status.json", None) or {}
+    replays = read_json(root / "replays.json", None) or {}
+    return task_rows(round_number, task_status=task_status, replays=replays,
+                     trusted=_trusted_ruling(task_status, replays, root),
+                     bodies=read_json(root / "bodies.json", None) or {},
+                     buckets=buckets_by_task(read_json(root / "difficulty.json", None) or {}))
+
+
+def checkpoint(workdir: Any, number: int) -> dict:
+    """Write the numbered snapshot from the live files, so status and report keep their drift."""
+    return write_snapshot(workdir, number, snapshot_rows(workdir, number))
+
+
 def write_snapshot(workdir: Any, round_number: int, rows: Iterable[dict],
                    *, now: Optional[float] = None) -> dict:
     """This round's table, written once. A round already closed keeps the snapshot it has.
@@ -288,6 +336,6 @@ def drift_line(report: dict) -> str:
 
 
 __all__ = ["CHECK_ORDER", "FAILED", "NOT_RUN", "PASSED", "ROUNDS_DIR", "SNAPSHOT_FORMAT", "STAGES",
-           "TASKS_NAME", "body_hashes", "buckets_by_task", "checks_of", "closed_rounds", "counts_of",
-           "drift", "drift_line", "fidelity_of", "read_snapshot", "snapshot_path", "task_row",
-           "task_rows", "tools_of", "write_snapshot"]
+           "TASKS_NAME", "body_hashes", "buckets_by_task", "checks_of", "checkpoint", "closed_rounds",
+           "counts_of", "drift", "drift_line", "fidelity_of", "read_snapshot", "snapshot_path",
+           "snapshot_rows", "task_row", "task_rows", "tools_of", "write_snapshot"]
