@@ -8,13 +8,16 @@ Everything here is under active development. Environments are republished after 
 
 ## Environments
 
-Smoke 7, 2026-09-23, Builder `openai/gpt-6-sol`:
+Smoke 7, 2026-09-23, Builder `openai/gpt-6-sol`, tag `build-20260923`. Fidelity over Tasks is the card's number:
+Tasks whose Reference replays confirmed, over all Tasks. Call fidelity is over every recorded call.
 
-| Environment | Confirmed References | Reference fidelity | Call fidelity | Trusted Tasks | Status |
-| --- | --- | --- | --- | --- | --- |
-| [retail](https://huggingface.co/datasets/leibler/retail) | 202 of 205 | 99.82% | 99.53% over 3220 calls | 14 | release, republished 2026-09-23 |
-| [airline](https://huggingface.co/datasets/leibler/airline) | 100 of 119 | 96.87% | 95.64% over 1513 calls | 22 | preview, the 2026-09-09 package |
-| [telecom](https://huggingface.co/datasets/leibler/telecom) | telecom: not in this round | | | | preview |
+| Environment | Fidelity over Tasks | Over Runs | Call fidelity | References confirmed | Verifiers | Trusted Tasks | Status |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| [retail](https://huggingface.co/datasets/leibler/retail) | 98.5% (202 of 205) | 96.7% | 99.53% over 3220 calls | 202 | 20 | 14 | release |
+| [airline](https://huggingface.co/datasets/leibler/airline) | 84.0% (100 of 119) | 84.5% | 95.64% over 1513 calls | 100 | 30 | 22 | preview |
+| [telecom](https://huggingface.co/datasets/leibler/telecom) | telecom: not in this round | | | | | | preview |
+
+Counts come from the workdir status when no round closed, as each card's "Counts from" row says.
 
 Previous numbers (replay fidelity, trusted, round): retail 95.1%, 122 of 205, round 1; airline 72.3%, 38 of 119, round 3;
 telecom 9.3%, 0 of 183, round 5.
